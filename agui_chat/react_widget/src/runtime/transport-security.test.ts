@@ -51,6 +51,18 @@ describe('production transport contract', () => {
           hostRevision: 1,
           interactive: true,
           surface: 'dock',
+          pageTarget: {
+            snapshotId: 'snapshot-test-1',
+            hostRevision: 1
+          },
+          viewTarget: {
+            snapshotId: 'snapshot-test-1',
+            hostRevision: 1,
+            controllerId: 'controller-test-1',
+            dataPointId: 'data-test-1',
+            model: 'res.partner',
+            resId: 7
+          },
           controller: testHostState.controller,
           action: {
             id: 1,
@@ -68,6 +80,35 @@ describe('production transport contract', () => {
       { description: 'Agent ID', value: 'odoo-assistant' }
     ])
     expect(input.forwardedProps).toEqual({})
+  })
+
+  it('binds the form target to the record instead of the window action', () => {
+    const input = buildRunInput(
+      [{ id: '1', role: 'user', content: 'update the current record' }],
+      v2Props({
+        hostState: {
+          ...testHostState,
+          action: { id: 1, resModel: 'res.partner', resId: false }
+        }
+      }),
+      'thread-1',
+      null,
+      {}
+    )
+    const hostContext = input.context.find(
+      (item) => item.description === 'Odoo host snapshot'
+    )
+    const snapshot = JSON.parse(hostContext?.value || '{}')
+
+    expect(snapshot.action.resId).toBe(false)
+    expect(snapshot.viewTarget).toEqual({
+      snapshotId: testHostState.snapshotId,
+      hostRevision: testHostState.hostRevision,
+      controllerId: testHostState.controller.controllerId,
+      dataPointId: testHostState.controller.dataPointId,
+      model: 'res.partner',
+      resId: 7
+    })
   })
 
   it('sends only the selected menu and record candidate as structured context', () => {

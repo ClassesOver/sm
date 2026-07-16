@@ -29,16 +29,17 @@ New installs and upgrades start with Chat disabled. Enable in this order:
 4. `write_tools_enabled`
 5. exact entries in `enabled_business_commands`
 
-An empty command list enables no commands. Tool policies still default-deny by
-exact command, user group, model, and field allowlist. Kill switches disable
-the affected feature without RPC, CRUD, or simulated-state fallback.
+An empty command list enables no commands. A matching tool policy restricts the
+exact command, user group, model, and field allowlist; without a matching
+policy, no additional policy restriction is applied. Kill switches disable the
+affected feature without RPC, CRUD, or simulated-state fallback.
 
-The module includes a read-only `odoo.apply_filter` policy for `hr.employee`
-and internal users. It only applies on the current bound List or Kanban view;
-Odoo access controls, record rules, and the snapshot `filterFields` allowlist
-still determine which employee records and fields can be filtered. Keep
-model-specific policies for any additional models instead of adding a global
-filter policy.
+The module includes a read-only `odoo.apply_filter` policy that restricts
+`hr.employee` filtering to internal users. It only applies on the current bound
+List or Kanban view; Odoo access controls, record rules, and the snapshot
+`filterFields` allowlist still determine which records and fields can be
+filtered. Add model-specific policies where additional user-group or field
+restrictions are required.
 
 ## Deployment
 

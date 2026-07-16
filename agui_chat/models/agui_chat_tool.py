@@ -155,15 +155,21 @@ class AguiChatToolPolicy(models.Model):
             field_names.add(arguments.get("field"))
         user_groups = set(self.env.user.groups_id.ids)
         policies = self.sudo().search([("active", "=", True), ("tool_name", "=", tool_name)])
-        mismatches = set()
+        policies = policies.filtered(
+            lambda policy: not policy.model_name or policy.model_name == model_name
+        )
         if not policies:
-            mismatches.add("missing_tool_policy")
+            return {
+                "allowed": True,
+                "requires_confirmation": False,
+                "policy_id": False,
+                "risk_reasons": [],
+                "field_types": {},
+            }
+        mismatches = set()
         for policy in policies:
             if policy.group_ids and not user_groups.intersection(policy.group_ids.ids):
                 mismatches.add("group_mismatch")
-                continue
-            if policy.model_name and policy.model_name != model_name:
-                mismatches.add("model_mismatch")
                 continue
             allowed_fields = {
                 item.strip() for item in (policy.field_names or "").split(",") if item.strip()

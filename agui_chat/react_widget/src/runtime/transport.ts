@@ -141,12 +141,30 @@ function agentHostContext(host: OdooHostSnapshot): Record<string, unknown> {
   const action = host.action && typeof host.action === 'object'
     ? host.action as Record<string, unknown>
     : null
+  const record = host.record && typeof host.record === 'object'
+    ? host.record as Record<string, unknown>
+    : null
+  const selection = host.selection && typeof host.selection === 'object'
+    ? host.selection as Record<string, unknown>
+    : null
   return {
     protocol: host.protocol,
     snapshotId: host.snapshotId,
     hostRevision: host.hostRevision,
     interactive: host.interactive,
     surface: host.surface,
+    pageTarget: {
+      snapshotId: host.snapshotId,
+      hostRevision: host.hostRevision
+    },
+    viewTarget: {
+      snapshotId: host.snapshotId,
+      hostRevision: host.hostRevision,
+      controllerId: host.controller.controllerId,
+      dataPointId: host.controller.dataPointId,
+      model: record?.model || selection?.model || false,
+      resId: record?.resId || false
+    },
     controller: clone(host.controller),
     action: action ? {
       id: action.id,

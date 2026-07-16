@@ -12,21 +12,72 @@ from ..models.agui_chat_tool import normalize_host_arguments
 
 class TestDefaultReadPolicies(TransactionCase):
 
-    def test_employee_filter_is_allowed_without_widening_other_models(self):
+    def test_missing_model_policy_adds_no_restriction(self):
         policy = self.env["agui.chat.tool.policy"]
-        allowed = policy.evaluate(
+        configured = policy.evaluate(
             "odoo.apply_filter", {"target": {"model": "hr.employee"}},
         )
-        denied = policy.evaluate(
+        unconfigured = policy.evaluate(
             "odoo.apply_filter", {"target": {"model": "res.partner"}},
         )
 
-        self.assertTrue(allowed["allowed"])
-        self.assertFalse(allowed["requires_confirmation"])
-        self.assertFalse(denied["allowed"])
-        self.assertEqual(denied["reason"], "policy_denied")
-        self.assertIn("model_mismatch", denied["policy_mismatches"])
+        self.assertTrue(configured["allowed"])
+        self.assertFalse(configured["requires_confirmation"])
+        self.assertTrue(unconfigured["allowed"])
+        self.assertFalse(unconfigured["requires_confirmation"])
+        self.assertFalse(unconfigured["policy_id"])
 
+    def test_unconfigured_employee_filter_is_authorized(self):
+        policy = self.env["agui.chat.tool.policy"]
+        policy.search([
+            ("tool_name", "=", "odoo.apply_filter"),
+            ("model_name", "=", "hr.employee"),
+        ]).write({"active": False})
+        policy.create({
+            "name": "联系人筛选限制",
+            "tool_name": "odoo.apply_filter",
+            "access_level": "read",
+            "model_name": "res.partner",
+            "confirmation_mode": "never",
+        })
+        self.env["agui.chat.config"].sudo().get_active_config().write({
+            "chat_enabled": True,
+            "host_tools_enabled": True,
+            "enabled_commands": "odoo.apply_filter",
+        })
+
+        decision = self.env["agui.chat.tool.authorization"].prepare_host_command({
+            "id": "unconfigured-employee-filter",
+            "tool": "odoo.apply_filter",
+            "arguments": {
+                "target": {
+                    "snapshotId": "agui-filter-snapshot",
+                    "hostRevision": 1,
+                    "controllerId": "controller-1",
+                    "dataPointId": "hr.employee_30",
+                    "model": "hr.employee",
+                    "resId": False,
+                },
+                "domain": [["name", "ilike", "admin"]],
+                "label": "名称包含 admin",
+            },
+            "context": {
+                "requestId": "request-unconfigured-filter",
+                "runId": "run-unconfigured-filter",
+                "threadId": "thread-unconfigured-filter",
+            },
+        })
+
+        self.assertTrue(decision["ok"])
+        self.assertFalse(decision.get("needs_confirmation"))
+        self.assertEqual(
+            decision["bound_call"]["arguments"]["domain"],
+            [["name", "ilike", "admin"]],
+        )
+        authorization = self.env["agui.chat.tool.authorization"].search([
+            ("token", "=", decision["authorization_id"]),
+        ])
+        self.assertFalse(authorization.policy_id)
 
 class TestHostArgumentNormalization(TransactionCase):
 
