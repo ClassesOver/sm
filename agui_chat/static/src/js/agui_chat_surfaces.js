@@ -547,7 +547,11 @@ odoo.define("agui_chat.surfaces", function (require) {
     WebClient.include({
         start: function () {
             var self = this;
-            var result = this._super.apply(this, arguments);
+            try {
+                var result = this._super.apply(this, arguments);
+            } catch(result_error) {
+                var result = $.when();
+            }
             $.when(result).then(function () {
                 try {
                     self.aguiChatSurfaceManager = new ChatSurfaceManager(self);
