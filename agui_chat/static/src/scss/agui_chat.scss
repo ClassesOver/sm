@@ -1,0 +1,286 @@
+.o_agui_chat_surface_manager {
+    --agui-dock-size: 720px;
+    --agui-float-height: 720px;
+    --agui-float-left: 16px;
+    --agui-float-top: 16px;
+    --agui-float-width: 720px;
+    --main-color: #7C7BAD;
+    --main-hover-color: #5f5e97;
+
+    .o_agui_chat_dock_toggle {
+        align-items: center;
+        background: var(--main-color);
+        background-image: none;
+        border: 1px solid var(--main-color);
+        border-radius: 50%;
+        bottom: 20px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08),
+            0 5px 16px rgba(15, 23, 42, 0.18);
+        box-sizing: border-box;
+        color: #ffffff;
+        cursor: pointer;
+        display: none;
+        font-size: 18px;
+        height: 44px;
+        justify-content: center;
+        line-height: 1;
+        padding: 0;
+        position: fixed;
+        right: 20px;
+        text-shadow: none;
+        transition: background-color 160ms ease, border-color 160ms ease,
+            box-shadow 160ms ease, transform 160ms ease;
+        width: 44px;
+        z-index: 1050;
+    }
+    .o_agui_chat_dock_toggle:hover {
+        background: var(--main-hover-color);
+        border-color: var(--main-hover-color);
+        box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06),
+            0 6px 18px rgba(15, 23, 42, 0.16);
+        color: #ffffff;
+        transform: translateY(-1px);
+    }
+    .o_agui_chat_dock_toggle:focus {
+        background: var(--main-color);
+        border-color: var(--main-color);
+        box-shadow: 0 0 0 3px var(--main-color),
+            0 4px 14px rgba(15, 23, 42, 0.14);
+        color: #ffffff;
+        outline: none;
+    }
+    .o_agui_chat_dock_toggle:active {
+        background: var(--main-hover-color);
+        border-color: var(--main-hover-color);
+        box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.06),
+            0 2px 8px rgba(15, 23, 42, 0.14);
+        color: #ffffff;
+        transform: translateY(0);
+    }
+    .o_agui_chat_dock_toggle:disabled {
+        box-shadow: none;
+        cursor: not-allowed;
+        opacity: 0.5;
+        text-shadow: none;
+        transform: none;
+    }
+    .o_agui_chat_toggle_icon {
+        display: block;
+        flex: 0 0 auto;
+        font-family: FontAwesome;
+        font-size: 19px;
+        font-style: normal;
+        font-weight: normal;
+        height: 19px;
+        line-height: 19px;
+        pointer-events: none;
+        width: 19px;
+    }
+    .o_agui_chat_toggle_icon::before {
+        content: "\f27b";
+    }
+
+    .o_agui_chat_dock,
+    .o_agui_chat_standalone_overlay {
+        background: #ffffff;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+        display: none;
+        position: fixed;
+        z-index: 1040;
+    }
+
+    &.o_agui_chat_dock_open .o_agui_chat_dock,
+    &.o_agui_chat_standalone_active .o_agui_chat_standalone_overlay,
+    &.o_agui_chat_dock_open .o_agui_chat_resize_handles,
+    &.o_agui_chat_standalone_active .o_agui_chat_resize_handles {
+        display: block;
+    }
+
+    &.o_agui_chat_dock_open .o_agui_chat_surface_actions,
+    &.o_agui_chat_standalone_active .o_agui_chat_surface_actions {
+        display: flex;
+    }
+
+    &.o_agui_chat_enabled:not(.o_agui_chat_dock_open):not(.o_agui_chat_standalone_active) .o_agui_chat_dock_toggle {
+        display: inline-flex;
+    }
+
+    &.o_agui_chat_dock_left .o_agui_chat_dock {
+        bottom: 0; left: 0; top: 0; width: var(--agui-dock-size);
+    }
+    &.o_agui_chat_dock_right .o_agui_chat_dock {
+        bottom: 0; right: 0; top: 0; width: var(--agui-dock-size);
+    }
+    &.o_agui_chat_dock_top .o_agui_chat_dock {
+        height: var(--agui-dock-size); left: 0; right: 0; top: 0;
+    }
+    &.o_agui_chat_dock_bottom .o_agui_chat_dock {
+        bottom: 0; height: var(--agui-dock-size); left: 0; right: 0;
+    }
+
+    .o_agui_chat_standalone_overlay {
+        height: var(--agui-float-height);
+        left: var(--agui-float-left);
+        top: var(--agui-float-top);
+        width: var(--agui-float-width);
+        z-index: 1055;
+    }
+
+    .o_agui_chat_surface_actions {
+        align-items: center;
+        background: #ffffff;
+        border-bottom: 1px solid #dfe3e8;
+        box-sizing: border-box;
+        color: #374151;
+        cursor: default;
+        display: none;
+        height: 40px;
+        justify-content: space-between;
+        overflow: hidden;
+        padding-left: 12px;
+        position: fixed;
+        user-select: none;
+        z-index: 1058;
+    }
+
+    &.o_agui_chat_standalone_active .o_agui_chat_surface_actions {
+        cursor: move;
+        height: 40px;
+        left: var(--agui-float-left);
+        top: var(--agui-float-top);
+        width: var(--agui-float-width);
+    }
+    &.o_agui_chat_dock_left .o_agui_chat_surface_actions {
+        left: 0; top: 0; width: var(--agui-dock-size);
+    }
+    &.o_agui_chat_dock_right .o_agui_chat_surface_actions {
+        right: 0; top: 0; width: var(--agui-dock-size);
+    }
+    &.o_agui_chat_dock_top .o_agui_chat_surface_actions {
+        left: 0; right: 0; top: 0;
+    }
+    &.o_agui_chat_dock_bottom .o_agui_chat_surface_actions {
+        bottom: calc(var(--agui-dock-size) - 40px); left: 0; right: 0;
+    }
+
+    .o_agui_chat_title {
+        flex: 0 1 auto;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 40px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .o_agui_chat_action_buttons {
+        display: flex;
+        flex: 0 0 auto;
+        height: 40px;
+        margin-left: auto;
+    }
+    .o_agui_chat_action {
+        align-items: center;
+        background: transparent;
+        border: 0;
+        color: #64748b;
+        display: inline-flex;
+        font-size: 18px;
+        height: 40px;
+        justify-content: center;
+        padding: 0;
+        width: 36px;
+    }
+    .o_agui_chat_action:hover,
+    .o_agui_chat_action:focus,
+    .o_agui_chat_action[aria-pressed="true"] {
+        background: #eef2f7;
+        color: #111827;
+        outline: none;
+    }
+    .o_agui_chat_float,
+    .o_agui_chat_close,
+    .o_agui_chat_error_close {
+        font-size: 14px;
+    }
+
+    .o_agui_chat_dock_slot,
+    .o_agui_chat_standalone_slot,
+    .o_agui_chat_runtime_host {
+        box-sizing: border-box;
+        height: 100%;
+        min-height: 0;
+    }
+    .o_agui_chat_runtime_host {
+        overflow: hidden;
+        position: relative;
+        width: 100%;
+    }
+    .o_agui_chat_dock_slot,
+    .o_agui_chat_standalone_slot { padding-top: 40px; }
+
+    .o_agui_chat_resize_handles { display: none; }
+    .o_agui_chat_resize_handle { display: none; position: fixed; z-index: 1059; }
+    .o_agui_chat_resize_top,
+    .o_agui_chat_resize_bottom { cursor: ns-resize; height: 8px; }
+    .o_agui_chat_resize_left,
+    .o_agui_chat_resize_right { cursor: ew-resize; width: 8px; }
+    .o_agui_chat_resize_top-left,
+    .o_agui_chat_resize_bottom-right { cursor: nwse-resize; height: 12px; width: 12px; }
+    .o_agui_chat_resize_top-right,
+    .o_agui_chat_resize_bottom-left { cursor: nesw-resize; height: 12px; width: 12px; }
+
+    &.o_agui_chat_standalone_active {
+        .o_agui_chat_resize_handle { display: block; }
+        .o_agui_chat_resize_top { left: var(--agui-float-left); top: calc(var(--agui-float-top) - 4px); width: var(--agui-float-width); }
+        .o_agui_chat_resize_right { height: var(--agui-float-height); left: calc(var(--agui-float-left) + var(--agui-float-width) - 4px); top: var(--agui-float-top); }
+        .o_agui_chat_resize_bottom { left: var(--agui-float-left); top: calc(var(--agui-float-top) + var(--agui-float-height) - 4px); width: var(--agui-float-width); }
+        .o_agui_chat_resize_left { height: var(--agui-float-height); left: calc(var(--agui-float-left) - 4px); top: var(--agui-float-top); }
+        .o_agui_chat_resize_top-left { left: calc(var(--agui-float-left) - 6px); top: calc(var(--agui-float-top) - 6px); }
+        .o_agui_chat_resize_top-right { left: calc(var(--agui-float-left) + var(--agui-float-width) - 6px); top: calc(var(--agui-float-top) - 6px); }
+        .o_agui_chat_resize_bottom-right { left: calc(var(--agui-float-left) + var(--agui-float-width) - 6px); top: calc(var(--agui-float-top) + var(--agui-float-height) - 6px); }
+        .o_agui_chat_resize_bottom-left { left: calc(var(--agui-float-left) - 6px); top: calc(var(--agui-float-top) + var(--agui-float-height) - 6px); }
+    }
+
+    &.o_agui_chat_dock_left .o_agui_chat_resize_right { bottom: 0; display: block; left: calc(var(--agui-dock-size) - 4px); top: 0; }
+    &.o_agui_chat_dock_right .o_agui_chat_resize_left { bottom: 0; display: block; right: calc(var(--agui-dock-size) - 4px); top: 0; }
+    &.o_agui_chat_dock_top .o_agui_chat_resize_bottom { display: block; left: 0; right: 0; top: calc(var(--agui-dock-size) - 4px); }
+    &.o_agui_chat_dock_bottom .o_agui_chat_resize_top { bottom: calc(var(--agui-dock-size) - 4px); display: block; left: 0; right: 0; }
+
+    .o_agui_chat_error {
+        align-items: center; background: #7f1d1d; border: 1px solid #ef4444; bottom: 18px;
+        color: #fff; display: none; gap: 8px; max-width: 90vw; padding: 8px 10px 8px 14px;
+        position: fixed; right: 18px; width: 420px; z-index: 1060;
+    }
+    &.o_agui_chat_has_error .o_agui_chat_error { display: flex; }
+}
+
+.o_agui_chat_webclient_dock_left { padding-left: var(--agui-chat-dock-size) !important; }
+.o_agui_chat_webclient_dock_right { padding-right: var(--agui-chat-dock-size) !important; }
+.o_agui_chat_webclient_dock_top { padding-top: var(--agui-chat-dock-size) !important; }
+.o_agui_chat_webclient_dock_bottom { padding-bottom: var(--agui-chat-dock-size) !important; }
+
+.o_field_widget.o_agui_wrap_field {
+    display: block;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+
+textarea.o_field_widget.o_agui_wrap_field {
+    resize: vertical;
+    width: 100%;
+}
+
+@media (max-width: 767px) {
+    .o_agui_chat_webclient_dock_left,
+    .o_agui_chat_webclient_dock_right,
+    .o_agui_chat_webclient_dock_top,
+    .o_agui_chat_webclient_dock_bottom { padding: 0 !important; }
+
+    .o_agui_chat_surface_manager {
+        .o_agui_chat_dock,
+        .o_agui_chat_standalone_overlay { bottom: 0 !important; height: auto !important; left: 0 !important; right: 0 !important; top: 0 !important; width: auto !important; }
+        .o_agui_chat_surface_actions { left: 0 !important; right: 0 !important; top: 0 !important; width: auto !important; }
+        .o_agui_chat_resize_handles { display: none !important; }
+    }
+}

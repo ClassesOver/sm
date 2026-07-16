@@ -1,0 +1,322 @@
+{
+	"jsonrpc": "2.0",
+	"id": 773659906,
+	"result": [
+		{
+			"id": 112889,
+			"state": "approving",
+			"amount_for_search": {
+				"source": "7728.0",
+				"parsedValue": 7728
+			},
+			"approval_id": false,
+			"payment_id": false,
+			"company_for_bank_id": [
+				1,
+				"上海交通大学医学院附属瑞金医院"
+			],
+			"track_state": false,
+			"allow_special_approver_ids": [
+				10022
+			],
+			"expense_document_type_id": [
+				130,
+				"（专项）测试化验费报销单"
+			],
+			"name": "2603253928",
+			"employee": [
+				10022,
+				"[10970]毛恩强"
+			],
+			"project_type_id": [
+				36,
+				"学科经费"
+			],
+			"department": [
+				368,
+				"急诊科"
+			],
+			"operator_id": [
+				10022,
+				"[10970]毛恩强"
+			],
+			"mobile_phone": "13501747906",
+			"application_date": "2026-07-15",
+			"attachment_num": 2,
+			"project_id": [
+				20758,
+				"[XK20250080]急诊科专利转化-科室专项经费"
+			],
+			"payment_method_id": [
+				5445,
+				"银行-总院"
+			],
+			"start_date": "2025-08-01",
+			"end_date": "2028-08-01",
+			"reason": "扫描电镜费用报销",
+			"invoice_name": "广州谷佰威生物科技有限公司",
+			"aggregate_amount": {
+				"source": "7728.0",
+				"parsedValue": 7728
+			},
+			"reconcile_warn": false,
+			"expense_application_id": false,
+			"is_multi_payee": "no",
+			"eb_account_holder_id": [
+				54201,
+				"广州谷佰威生物科技有限公司"
+			],
+			"card_holder_name": "广州谷佰威生物科技有限公司",
+			"eb_bank_name_id": [
+				72176,
+				"招商银行股份有限公司广州开发区支行"
+			],
+			"bank_account_number": "120910165110701",
+			"payee_tax_no": "91440116MA59B1GK2L",
+			"detail_item_name_id": false,
+			"period_id": [
+				1191,
+				"2026/07"
+			],
+			"budget_type_id": false,
+			"email": "NEWmeq10970@rjh.com.cn",
+			"attendant_id": [],
+			"creator": [
+				10022,
+				"[10970]毛恩强"
+			],
+			"business_employee_id": [
+				10022,
+				"[10970]毛恩强"
+			],
+			"cost_center_id": [
+				6187,
+				"[RJ439.01] 急诊科RJ439.01"
+			],
+			"budget_unit_id": [
+				1710,
+				"急诊科"
+			],
+			"invoice_number": false,
+			"bank_account_name": false,
+			"purchase_plat_id": false,
+			"bank_branch_name": "招商银行股份有限公司广州开发区支行",
+			"expense_date": false,
+			"attachment_ids": [
+				974384,
+				974383
+			],
+			"company_id": [
+				1,
+				"上海交通大学医学院附属瑞金医院"
+			],
+			"accounting_date": false,
+			"business_area": false,
+			"fund_source": "research_funding",
+			"fund_source_department_id": false,
+			"currency_id": [
+				7,
+				"CNY"
+			],
+			"certifier_id": false,
+			"special_approver_ids": [
+				10022
+			],
+			"graduate_student_name": false,
+			"transfer_budget_type_id": false,
+			"transfer_project_id": false,
+			"is_expense_credited": false,
+			"reimbursement_way": false,
+			"taxable_outside_flag": "no",
+			"invoice_state": "uploaded",
+			"dept_attribute": false,
+			"graduate_student_num": false,
+			"virtual_expense_id": "expense1784097332248172",
+			"degree": false,
+			"tip": false,
+			"summary_line_ids": [],
+			"expense_report_lines": [
+				328779
+			],
+			"reimbursement_detail_ids": [
+				865804
+			],
+			"transfer_line_ids": [],
+			"reconcile_id": [],
+			"reconcile_summary_ids": [],
+			"repayment_line_ids": [],
+			"accounting": [],
+			"boss_attachment": "扫描的文稿 20.pdf",
+			"audit_result_id": false,
+			"has_approve": true,
+			"is_no_tax_extramural_funds": false,
+			"is_extramural_funds": false,
+			"is_auto_generate_subsidies": false,
+			"is_show_import_line": false,
+			"has_refuse": true,
+			"has_transfer": false,
+			"has_fallback": true,
+			"is_first_approve": false,
+			"approve_task": false,
+			"has_withdraw": false,
+			"to_audit": true,
+			"fund_application_control": true,
+			"transfer_information": false,
+			"is_allow_borrowing_reconcile": true,
+			"repayment_setup": false,
+			"company_bank_ids": [
+				1,
+				17,
+				16,
+				2,
+				15,
+				9,
+				11,
+				4,
+				5,
+				6,
+				13,
+				14,
+				10,
+				8,
+				18
+			],
+			"is_show_print": true,
+			"allow_department_ids": [
+				368,
+				1045
+			],
+			"allow_employee_ids": [
+				1,
+				2817,
+				11013,
+				11,
+				13453,
+				11670,
+				13592,
+				111384,
+				127898,
+				127899,
+				13596,
+				127901,
+				127902,
+				10778,
+				4253,
+				7325,
+				127900,
+				13337,
+				6948,
+				13341,
+				10022,
+				4266,
+				7086,
+				7727,
+				4272,
+				4532,
+				10933,
+				10677,
+				13624,
+				6593,
+				6594,
+				67,
+				3782,
+				13511,
+				13256,
+				13514,
+				5067,
+				10579,
+				11475,
+				4181,
+				11477,
+				10968,
+				6232,
+				13272,
+				13534,
+				11486,
+				10337,
+				11491,
+				4580,
+				107620,
+				12779,
+				10989,
+				11631,
+				11504,
+				10995,
+				11512
+			],
+			"allow_expense_item_ids": [
+				970,
+				971
+			],
+			"is_credit_remind": false,
+			"enable_reimbursement_detail": false,
+			"is_create_user": false,
+			"to_draft": false,
+			"budget_type_ids": [
+				219
+			],
+			"allow_project_employee_ids": [
+				10022
+			],
+			"is_over_standard": false,
+			"payment_requisition_number": 0,
+			"expense_requisition_number": 0,
+			"payment_number": 0,
+			"funds_account_number": 0,
+			"project_name": "急诊科专利转化-科室专项经费",
+			"project_category_id": [
+				716,
+				"-/-/学科经费"
+			],
+			"project_number": false,
+			"kingdee_account": "急诊科专利转化-科室专项经费-毛恩强",
+			"expense_app_is_display": false,
+			"matched": false,
+			"default_fund_source": "research_funding",
+			"unissued_amount": {
+				"source": "0.0",
+				"parsedValue": 0
+			},
+			"filling_explanation": false,
+			"is_internal_external": false,
+			"is_reimbursable": false,
+			"project_investigator_ids": [
+				10022
+			],
+			"total_personal_tax": {
+				"source": "0.0",
+				"parsedValue": 0
+			},
+			"total_final_paying_amount": {
+				"source": "0.0",
+				"parsedValue": 0
+			},
+			"is_zero_balance": "no",
+			"taxpayer_identify_number": "12310000425026564B",
+			"is_enable_invoice_folder": true,
+			"payment_method_description": "支付账号",
+			"is_bank_required": true,
+			"is_line_bank_required": false,
+			"corp_or_ind": "corporate",
+			"water_eletric_gas": false,
+			"wkf_state": "processing",
+			"wkf_task": [
+				1809005,
+				1809006,
+				1809007,
+				1809008
+			],
+			"is_approval_tasks": false,
+			"approval_tasks": [],
+			"is_attachment_show": true,
+			"audit_result_check_result": "审核不通过",
+			"audit_result_sum_cnt": 0,
+			"audit_result_violation_cnt": 0,
+			"audit_result_warning_cnt": 0,
+			"audit_result_pass_cnt": 0,
+			"audit_result_remind_cnt": 0,
+			"audit_result_detail_display_ids": [],
+			"display_name": "2603253928"
+		}
+	]
+}

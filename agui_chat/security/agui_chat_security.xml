@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="rule_agui_chat_session_user" model="ir.rule">
+        <field name="name">AG-UI 对话会话仅属于当前用户</field>
+        <field name="model_id" ref="model_agui_chat_session"/>
+        <field name="domain_force">[('user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="rule_agui_chat_tool_authorization_user" model="ir.rule">
+        <field name="name">命令授权仅属于当前用户</field>
+        <field name="model_id" ref="model_agui_chat_tool_authorization"/>
+        <field name="domain_force">[('user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="rule_agui_chat_tool_audit_user" model="ir.rule">
+        <field name="name">工具审计仅属于当前用户</field>
+        <field name="model_id" ref="model_agui_chat_tool_audit"/>
+        <field name="domain_force">[('user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="rule_agui_chat_command_execution_user" model="ir.rule">
+        <field name="name">业务命令执行记录仅属于当前用户</field>
+        <field name="model_id" ref="model_agui_chat_command_execution"/>
+        <field name="domain_force">[('user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+</odoo>

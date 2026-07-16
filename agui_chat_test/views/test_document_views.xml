@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_test_document_tree" model="ir.ui.view">
+        <field name="name">agui.chat.test.document.tree</field>
+        <field name="model">agui.chat.test.document</field>
+        <field name="arch" type="xml">
+            <tree string="AG-UI 通用测试单据">
+                <field name="name"/>
+                <field name="required_code"/>
+                <field name="document_type"/>
+                <field name="candidate_id"/>
+                <field name="amount"/>
+                <field name="state"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_test_document_form" model="ir.ui.view">
+        <field name="name">agui.chat.test.document.form</field>
+        <field name="model">agui.chat.test.document</field>
+        <field name="arch" type="xml">
+            <form string="AG-UI 通用测试单据">
+                <sheet>
+                    <field name="domain_key" invisible="1"/>
+                    <field name="secret_token" invisible="1"/>
+                    <field name="currency_id" invisible="1"/>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="required_code"/>
+                            <field name="description"/>
+                            <field name="enabled"/>
+                            <field name="quantity"/>
+                            <field name="amount"/>
+                            <field name="document_date"/>
+                            <field name="priority"/>
+                        </group>
+                        <group>
+                            <field name="document_type"/>
+                            <field name="candidate_id" domain="[('domain_key', '=', domain_key)]"/>
+                            <field name="tag_ids" widget="many2many_tags" domain="[('domain_key', '=', domain_key)]"/>
+                            <field name="show_extra"/>
+                            <field name="dynamic_note" attrs="{'invisible': [('show_extra', '=', False)]}"/>
+                            <field name="locked_note" attrs="{'readonly': [('state', '=', 'confirmed')]}"/>
+                            <field name="state" widget="statusbar"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="明细">
+                            <field name="line_ids">
+                                <tree editable="bottom">
+                                    <field name="name"/>
+                                    <field name="quantity"/>
+                                </tree>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_test_document" model="ir.actions.act_window">
+        <field name="name">AG-UI 通用测试单据</field>
+        <field name="res_model">agui.chat.test.document</field>
+        <field name="view_mode">tree,form</field>
+        <field name="context">{'default_document_type': 'standard', 'default_domain_key': 'standard'}</field>
+    </record>
+
+    <record id="view_test_navigation_hub_kanban" model="ir.ui.view">
+        <field name="name">agui.chat.test.option.navigation.kanban</field>
+        <field name="model">agui.chat.test.option</field>
+        <field name="arch" type="xml">
+            <kanban string="AG-UI 导航入口">
+                <field name="name"/>
+                <templates>
+                    <t t-name="kanban-box">
+                        <div class="oe_kanban_global_click">
+                            <strong><field name="name"/></strong>
+                            <div class="mt8">
+                                <button type="action" name="%(action_test_document)d" string="打开测试单据" class="btn btn-primary"/>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <record id="action_test_navigation_hub" model="ir.actions.act_window">
+        <field name="name">AG-UI 导航入口</field>
+        <field name="res_model">agui.chat.test.option</field>
+        <field name="view_mode">kanban,tree,form</field>
+        <field name="view_id" ref="view_test_navigation_hub_kanban"/>
+    </record>
+
+    <menuitem id="menu_test_navigation_root" name="AG-UI 导航测试" sequence="90"/>
+    <menuitem id="menu_test_navigation_hub" name="入口看板"
+              parent="menu_test_navigation_root" action="action_test_navigation_hub" sequence="10"/>
+</odoo>

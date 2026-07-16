@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <record id="option_standard_exact" model="agui.chat.test.option">
+            <field name="name">标准唯一候选</field>
+            <field name="domain_key">standard</field>
+        </record>
+        <record id="option_standard_first" model="agui.chat.test.option">
+            <field name="name">标准候选一</field>
+            <field name="domain_key">standard</field>
+        </record>
+        <record id="option_standard_second" model="agui.chat.test.option">
+            <field name="name">标准候选二</field>
+            <field name="domain_key">standard</field>
+        </record>
+        <record id="option_special_exact" model="agui.chat.test.option">
+            <field name="name">特殊唯一候选</field>
+            <field name="domain_key">special</field>
+        </record>
+
+        <record id="policy_test_relation" model="agui.chat.tool.policy">
+            <field name="name">测试单据关系查询</field>
+            <field name="sequence">1</field>
+            <field name="tool_name">odoo.search_relation</field>
+            <field name="access_level">read</field>
+            <field name="model_name">agui.chat.test.document</field>
+            <field name="field_names">candidate_id,tag_ids</field>
+        </record>
+        <record id="policy_test_patch" model="agui.chat.tool.policy">
+            <field name="name">测试单据表单修改</field>
+            <field name="sequence">1</field>
+            <field name="tool_name">odoo.patch_current_form</field>
+            <field name="access_level">write</field>
+            <field name="model_name">agui.chat.test.document</field>
+            <field name="field_names">name,required_code,description,enabled,quantity,amount,currency_id,document_date,priority,document_type,domain_key,candidate_id,tag_ids,line_ids,show_extra,dynamic_note,locked_note,state,secret_token</field>
+            <field name="confirmation_mode">never</field>
+        </record>
+        <record id="policy_test_validate" model="agui.chat.tool.policy">
+            <field name="name">测试单据表单校验</field>
+            <field name="sequence">1</field>
+            <field name="tool_name">odoo.validate_current_form</field>
+            <field name="access_level">read</field>
+            <field name="model_name">agui.chat.test.document</field>
+        </record>
+        <record id="policy_test_save" model="agui.chat.tool.policy">
+            <field name="name">测试单据表单保存</field>
+            <field name="sequence">1</field>
+            <field name="tool_name">odoo.save_current_form</field>
+            <field name="access_level">write</field>
+            <field name="model_name">agui.chat.test.document</field>
+        </record>
+        <record id="policy_test_discard" model="agui.chat.tool.policy">
+            <field name="name">测试单据放弃修改</field>
+            <field name="sequence">1</field>
+            <field name="tool_name">odoo.discard_current_form</field>
+            <field name="access_level">write</field>
+            <field name="model_name">agui.chat.test.document</field>
+        </record>
+        <record id="policy_test_open_menu" model="agui.chat.tool.policy">
+            <field name="name">测试菜单导航</field>
+            <field name="sequence">1</field>
+            <field name="tool_name">odoo.open_menu</field>
+            <field name="access_level">navigation</field>
+            <field name="confirmation_mode">never</field>
+        </record>
+        <record id="policy_test_filter" model="agui.chat.tool.policy">
+            <field name="name">测试单据筛选</field>
+            <field name="sequence">1</field>
+            <field name="tool_name">odoo.apply_filter</field>
+            <field name="access_level">read</field>
+            <field name="model_name">agui.chat.test.document</field>
+            <field name="confirmation_mode">never</field>
+        </record>
+        <record id="policy_test_open_record" model="agui.chat.tool.policy">
+            <field name="name">测试单据打开</field>
+            <field name="sequence">1</field>
+            <field name="tool_name">odoo.open_record</field>
+            <field name="access_level">navigation</field>
+            <field name="model_name">agui.chat.test.document</field>
+            <field name="confirmation_mode">never</field>
+        </record>
+        <record id="policy_test_open_create" model="agui.chat.tool.policy">
+            <field name="name">测试单据新建</field>
+            <field name="sequence">1</field>
+            <field name="tool_name">odoo.open_create</field>
+            <field name="access_level">navigation</field>
+            <field name="model_name">agui.chat.test.document</field>
+            <field name="confirmation_mode">never</field>
+        </record>
+        <record id="policy_test_activate_control" model="agui.chat.tool.policy">
+            <field name="name">测试看板控件</field>
+            <field name="sequence">1</field>
+            <field name="tool_name">odoo.activate_view_control</field>
+            <field name="access_level">navigation</field>
+            <field name="model_name">agui.chat.test.option</field>
+            <field name="confirmation_mode">never</field>
+        </record>
+
+    </data>
+    <data>
+        <function model="agui.chat.config" name="configure_test_environment"/>
+    </data>
+</odoo>

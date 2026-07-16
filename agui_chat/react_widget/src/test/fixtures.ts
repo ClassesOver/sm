@@ -1,0 +1,68 @@
+import type { AguiChatProps, AguiClientTool, OdooHostSnapshot, ProtocolHandshake } from '../types'
+
+export const testHostState: OdooHostSnapshot = {
+  protocol: 'agui.odoo.v2',
+  snapshotId: 'snapshot-test-1',
+  hostRevision: 1,
+  capturedAt: '2026-07-15T00:00:00.000Z',
+  interactive: true,
+  surface: 'dock',
+  controller: {
+    actionId: 1,
+    controllerId: 'controller-test-1',
+    dataPointId: 'data-test-1',
+    viewType: 'form',
+    mode: 'edit'
+  },
+  action: { id: 1, resModel: 'res.partner' },
+  menu: false,
+  record: {
+    model: 'res.partner',
+    resId: 7,
+    values: { name: 'Acme' },
+    dirty: {},
+    dirtyFields: []
+  },
+  selection: false,
+  fields: {},
+  capabilities: {
+    create: true,
+    open: true,
+    edit: true,
+    filter: false,
+    totalCount: 1,
+    filterFields: {},
+    records: [],
+    controls: []
+  }
+}
+
+export const testHandshake: ProtocolHandshake = {
+  protocol: 'agui.odoo.v2',
+  moduleVersion: '12.0.7.0.0',
+  bundleVersion: '12.0.7.0.0',
+  agentProtocol: 'agui.odoo.v2',
+  agentBundleVersion: '12.0.7.0.0',
+  commandCatalogHash: 'a'.repeat(64),
+  agentCommandCatalogHash: 'a'.repeat(64)
+}
+
+export const patchTool: AguiClientTool = {
+  name: 'odoo.patch_current_form',
+  parameters: { type: 'object' }
+}
+
+export function v2Props(overrides: Partial<AguiChatProps> = {}): AguiChatProps {
+  return {
+    handshake: testHandshake,
+    hostState: testHostState,
+    agentState: {},
+    tools: [patchTool],
+    menuOptions: [],
+    surface: 'dock',
+    ...overrides,
+    ...(overrides.session
+      ? { session: { ...overrides.session, protocol: 'agui.odoo.v2' } }
+      : {})
+  }
+}

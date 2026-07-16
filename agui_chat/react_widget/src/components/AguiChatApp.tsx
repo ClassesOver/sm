@@ -1,0 +1,168 @@
+import React, { useEffect, useRef, useState } from 'react'
+import type { AguiChatProps, AttachmentRef, ErrorMessageProps, RuntimeSnapshot } from '../types'
+import { ChatRuntime } from '../runtime/ChatRuntime'
+import { asText } from '../runtime/utils'
+import { mergeIcons, mergeLabels, observeInteraction } from '../customization'
+import { ChatInput } from './ChatInput'
+import { Messages } from './Messages'
+import { FilePreviewPanel } from './FilePreviewPanel'
+import { Sidebar } from './Sidebar'
+
+interface AguiChatAppProps {
+  runtime: ChatRuntime
+  props: AguiChatProps
+}
+
+export function DefaultErrorMessage({ error }: ErrorMessageProps) {
+  return <div className="mx-auto mb-2 w-full max-w-3xl px-4 text-sm text-destructive">{error}</div>
+}
+
+export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
+  const [snapshot, setSnapshot] = useState<RuntimeSnapshot>(() => runtime.getSnapshot())
+  const [previewAttachment, setPreviewAttachment] = useState<AttachmentRef | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const followsStream = useRef(true)
+  const previousThread = useRef(snapshot.threadId)
+  const previousUserCount = useRef(0)
+  const labels = mergeLabels(props.labels)
+  const icons = mergeIcons(props.icons)
+
+  const scrollVersion = snapshot.messages
+    .map((message) =>
+      `${message.id}:${String(message.content || '').length}:${message.tool_calls?.length || 0}`
+    ).join('|')
+  useEffect(() => runtime.subscribe(() => setSnapshot(runtime.getSnapshot())), [runtime])
+
+  useEffect(() => setPreviewAttachment(null), [snapshot.threadId])
+
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+    const observer = new MutationObserver(() => {
+      if (followsStream.current) element.scrollTop = element.scrollHeight
+    })
+    observer.observe(element, { childList: true, characterData: true, subtree: true })
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+    const userCount = snapshot.messages.filter((message) => message.role === 'user').length
+    const threadChanged = previousThread.current !== snapshot.threadId
+    const userAdded = userCount > previousUserCount.current
+    if (threadChanged || userAdded || followsStream.current) {
+      element.scrollTop = element.scrollHeight
+      followsStream.current = true
+    }
+    previousThread.current = snapshot.threadId
+    previousUserCount.current = userCount
+  }, [snapshot.threadId, scrollVersion])
+
+  return (
+    <div className="agui-chat-react relative">
+      <div className="flex h-full min-h-0 overflow-hidden bg-background/90 text-secondary">
+        <Sidebar
+          snapshot={snapshot}
+          initialCollapsed={props.ui?.initialSidebarCollapsed}
+          onNewSession={() => void runtime.newSession()}
+          onRefreshSessions={() => void runtime.refreshSessions()}
+          onLoadSession={(sessionId) => void runtime.loadSession(sessionId)}
+          labels={labels}
+        />
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background-panel">
+          <div
+            ref={scrollRef}
+            className="min-h-0 flex-1 overflow-y-auto"
+            onScroll={(event) => {
+              const element = event.currentTarget
+              followsStream.current =
+                element.scrollHeight - element.scrollTop - element.clientHeight <= 24
+            }}
+          >
+            <Messages
+              messages={snapshot.messages}
+              running={snapshot.running}
+              suggestions={props.suggestions}
+              toolRenderers={props.toolRenderers}
+              labels={labels}
+              icons={icons}
+              components={props.components}
+              hostState={snapshot.hostState}
+              onSelectRelation={(tool, candidates) => {
+                void runtime.selectRelationCandidates(tool, candidates).then((content) => {
+                  if (content) observeInteraction(() => props.onInteraction?.({ type: 'send', content, attachments: [] }))
+                })
+              }}
+              onSelectRecord={(tool, candidate) => {
+                void runtime.selectRecordCandidate(tool, candidate).then((content) => {
+                  if (content) observeInteraction(() => props.onInteraction?.({
+                    type: 'send', content, attachments: [],
+                    recordSelection: {
+                      ...candidate,
+                      snapshotId: snapshot.hostState.snapshotId,
+                      hostRevision: snapshot.hostState.hostRevision
+                    }
+                  }))
+                })
+              }}
+              onRemoveMenuMention={(messageId) => runtime.removeMenuMention(messageId)}
+              onCopy={(message) => {
+                const write = navigator.clipboard?.writeText(asText(message.content))
+                if (write) void write.catch(() => undefined)
+                observeInteraction(() => props.onInteraction?.({ type: 'copy', message }))
+              }}
+              onFeedback={(message, feedback) => {
+                observeInteraction(() => props.onFeedback?.(message, feedback))
+                observeInteraction(() => props.onInteraction?.({ type: 'feedback', message, feedback }))
+              }}
+              onPreviewAttachment={setPreviewAttachment}
+              onRegenerate={(messageId) => {
+                const message = snapshot.messages.find((candidate) => candidate.id === messageId)
+                void runtime.regenerate(messageId)
+                if (message) observeInteraction(() => props.onInteraction?.({ type: 'regenerate', message }))
+              }}
+              onSuggestion={(suggestion) => {
+                void runtime.send(suggestion.message)
+                observeInteraction(() => props.onInteraction?.({ type: 'suggestion', suggestion }))
+                observeInteraction(() => props.onInteraction?.({ type: 'send', content: suggestion.message, attachments: [] }))
+              }}
+              onConfirmTool={(tool, approved) => void runtime.confirmTool(tool, approved)}
+              onUndoTool={(tool) => void runtime.undoTool(tool)}
+            />
+          </div>
+          {snapshot.error
+            ? React.createElement(props.components?.ErrorMessage || DefaultErrorMessage, { error: snapshot.error })
+            : null}
+          <ChatInput
+            running={snapshot.running}
+            disabled={snapshot.loadingSessions}
+            attachments={props.attachments}
+            menuOptions={props.menuOptions || []}
+            labels={labels}
+            icons={icons}
+            onSend={(content, attachments, menuMention) => {
+              void runtime.send(content, attachments, menuMention)
+              observeInteraction(() => props.onInteraction?.({
+                type: 'send', content, attachments, menuMention
+              }))
+            }}
+            onStop={() => {
+              runtime.stop()
+              observeInteraction(() => props.onInteraction?.({ type: 'stop' }))
+            }}
+            onUpload={(file, onProgress) => runtime.uploadAttachment(file, onProgress)}
+            onRemove={(attachmentId) => runtime.deleteAttachment(attachmentId)}
+          />
+        </main>
+        {previewAttachment
+          ? <FilePreviewPanel
+              attachment={previewAttachment}
+              labels={labels}
+              onClose={() => setPreviewAttachment(null)}
+            />
+          : null}
+      </div>
+    </div>
+  )
+}

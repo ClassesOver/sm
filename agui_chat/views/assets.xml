@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <template id="assets_backend" inherit_id="web.assets_backend" name="AG-UI Chat Assets">
+        <xpath expr="." position="inside">
+            <link rel="stylesheet" type="text/scss" href="/agui_chat/static/src/scss/agui_chat.scss"/>
+            <script type="text/javascript" src="/agui_chat/static/src/js/agui_model_adapter.js"/>
+            <script type="text/javascript" src="/agui_chat/static/src/js/agui_command_registry.js"/>
+            <script type="text/javascript" src="/agui_chat/static/src/js/agui_host_service.js"/>
+            <script type="text/javascript" src="/agui_chat/static/src/js/agui_chat_bridge.js"/>
+            <script type="text/javascript" src="/agui_chat/static/lib/agui-chat-react/agui_chat_widget.12.0.7.0.0.js"/>
+            <script type="text/javascript" src="/agui_chat/static/src/js/agui_chat_surfaces.js"/>
+        </xpath>
+    </template>
+    <template id="qunit_suite_tests" inherit_id="web.qunit_suite" name="AG-UI Chat QUnit Tests">
+        <xpath expr="//script[last()]" position="after">
+            <script type="text/javascript" src="/agui_chat/static/src/js/agui_model_adapter.js"/>
+            <script type="text/javascript" src="/agui_chat/static/src/js/agui_command_registry.js"/>
+            <script type="text/javascript" src="/agui_chat/static/tests/agui_host_tests.js"/>
+        </xpath>
+    </template>
+</odoo>
