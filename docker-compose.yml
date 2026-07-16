@@ -9,7 +9,7 @@ services:
     env_file:
       - .env
     ports:
-      - "${AGENT_OS_PORT:-7777}:7777"
+      - "${AGENT_OS_PORT:-7777}:${AGENT_OS_PORT:-7777}"
     environment:
       AGENT_DB_FILE: /data/agui_agentos.db
     volumes:
