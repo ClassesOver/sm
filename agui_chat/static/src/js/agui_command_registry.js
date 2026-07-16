@@ -272,6 +272,14 @@ odoo.define("agui_chat.command_registry", function (require) {
             return context.refresh(controller, true);
         }).then(function (nextSnapshot) {
             var capabilities = nextSnapshot.capabilities || {};
+            if (capabilities.totalCount !== 1 || (capabilities.records || []).length) {
+                return nextSnapshot;
+            }
+            return Adapter.expandUniqueRecordCandidate(controller).then(function (expanded) {
+                return expanded ? context.refresh(controller, true) : nextSnapshot;
+            });
+        }).then(function (nextSnapshot) {
+            var capabilities = nextSnapshot.capabilities || {};
             return {
                 label: label,
                 domain: domain,
@@ -295,8 +303,14 @@ odoo.define("agui_chat.command_registry", function (require) {
         }
         return $.when(context.openRecord(record, args.mode)).then(function () {
             return navigationResult(context, before, {
-                opened: true, mode: args.mode, displayName: record.displayName,
+                mode: args.mode, displayName: record.displayName,
             });
+        }).then(function (result) {
+            if (!result.navigated) {
+                throw commandError("record_open_failed", "客户端未进入记录表单。");
+            }
+            result.opened = true;
+            return result;
         });
     };
 

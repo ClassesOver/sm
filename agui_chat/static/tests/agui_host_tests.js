@@ -35,7 +35,11 @@ odoo.define("agui_chat.tests.host", function (require) {
             fieldsInfo: {
                 form: {
                     name: {modifiers: {}},
-                    partner_id: {modifiers: {}, domain: "[(\'company_id\', \'=\', company_id)]"},
+                    partner_id: {
+                        string: "Current View Partner",
+                        modifiers: {},
+                        domain: "[(\'company_id\', \'=\', company_id)]",
+                    },
                     secret_token: {modifiers: {}},
                     tag_ids: {modifiers: {}},
                     line_ids: {modifiers: {}},
@@ -89,9 +93,10 @@ odoo.define("agui_chat.tests.host", function (require) {
     QUnit.module("agui_chat v2 host adapter");
 
     QUnit.test("snapshot is bounded to view fields and redacts secrets", function (assert) {
-        assert.expect(4);
+        assert.expect(5);
         var state = snapshot(fakeController());
         assert.strictEqual(state.protocol, "agui.odoo.v2");
+        assert.strictEqual(state.fields.partner_id.string, "Current View Partner");
         assert.strictEqual(state.record.values.secret_token, "[redacted]");
         assert.deepEqual(state.record.values.tag_ids, {ids: [2, 3], count: 2});
         assert.notOk(state.fields.image, "binary fields are omitted");
@@ -382,7 +387,7 @@ odoo.define("agui_chat.tests.host", function (require) {
     });
 
     QUnit.test("relation search uses the live domain and context", function (assert) {
-        assert.expect(5);
+        assert.expect(6);
         var done = assert.async();
         var request;
         var requestOptions;
@@ -399,6 +404,7 @@ odoo.define("agui_chat.tests.host", function (require) {
             assert.deepEqual(request.kwargs.args, [["company_id", "=", 1]]);
             assert.deepEqual(request.kwargs.context, {company_id: 1});
             assert.deepEqual(requestOptions, {shadow: true});
+            assert.strictEqual(result.fieldLabel, "Current View Partner");
             assert.strictEqual(result.resolution, "unique_exact");
             assert.strictEqual(result.candidates[0].id, 9);
             done();
@@ -793,6 +799,110 @@ odoo.define("agui_chat.tests.host", function (require) {
             assert.deepEqual(controller.__aguiAssistantFilters, [{id: "assistant-new"}]);
             assert.strictEqual(result.count, 2);
             assert.deepEqual(result.candidates, next.capabilities.records);
+            done();
+        });
+    });
+
+    QUnit.test("unique grouped filter expands collapsed groups before returning candidate", function (assert) {
+        assert.expect(8);
+        var done = assert.async();
+        var record = {
+            id: "record-7", type: "record", count: 1, model: "res.partner", res_id: 7,
+            data: {display_name: "Acme"},
+        };
+        var group = {
+            id: "group-1", type: "list", count: 1, isOpen: false, data: [],
+        };
+        var root = {
+            id: "root", type: "list", count: 1, data: [group], groupedBy: ["company_id"],
+        };
+        var controller = {
+            handle: "root",
+            searchView: {
+                updateFilters: function () { return [{id: "assistant-filter"}]; },
+            },
+            reload: function () { return $.when(); },
+            update: function (params, options) {
+                assert.deepEqual(params, {});
+                assert.deepEqual(options, {keepSelection: true, reload: false});
+                return $.when();
+            },
+            model: {
+                get: function () { return root; },
+                toggleGroup: function (groupId) {
+                    assert.strictEqual(groupId, "group-1");
+                    group.isOpen = true;
+                    group.data = [record];
+                    return $.when(groupId);
+                },
+            },
+        };
+        var current = {
+            interactive: true,
+            controller: {viewType: "list"},
+            capabilities: {
+                filter: true,
+                filterFields: {name: {type: "char", operators: ["ilike"]}},
+            },
+        };
+        var filtered = _.extend({}, current, {
+            snapshotId: "filtered", hostRevision: 2,
+            capabilities: _.extend({}, current.capabilities, {totalCount: 1, records: []}),
+        });
+        var expanded = _.extend({}, filtered, {
+            snapshotId: "expanded", hostRevision: 3,
+            capabilities: _.extend({}, filtered.capabilities, {
+                records: [{token: "record-1", displayName: "Acme"}],
+            }),
+        });
+        var refreshes = 0;
+        Commands.execute({
+            getController: function () { return controller; },
+            getSnapshot: function () { return current; },
+            refresh: function () {
+                refreshes += 1;
+                return $.when(refreshes === 1 ? filtered : expanded);
+            },
+        }, {
+            tool: "odoo.apply_filter",
+            arguments: {domain: [["name", "ilike", "Acme"]], label: "Acme 客户"},
+        }).then(function (result) {
+            assert.strictEqual(refreshes, 2);
+            assert.strictEqual(result.count, 1);
+            assert.deepEqual(result.candidates, expanded.capabilities.records);
+            assert.strictEqual(result.snapshotId, "expanded");
+            assert.strictEqual(result.hostRevision, 3);
+            done();
+        });
+    });
+
+    QUnit.test("open record rejects when the host does not navigate", function (assert) {
+        assert.expect(3);
+        var done = assert.async();
+        var opened = false;
+        var current = {
+            snapshotId: "list-snapshot",
+            capabilities: {edit: true},
+        };
+        Commands.execute({
+            resolveToken: function () {
+                return {localId: "record-7", resId: 7, displayName: "Acme"};
+            },
+            validateToken: function () { return true; },
+            hasUnsavedChanges: function () { return false; },
+            getSnapshot: function () { return current; },
+            openRecord: function () { opened = true; return $.when(); },
+            waitForSnapshotChange: function () { return $.when(current); },
+        }, {
+            tool: "odoo.open_record",
+            arguments: {recordToken: "record-1", mode: "readonly"},
+        }).then(function () {
+            assert.ok(false, "unchanged host snapshot must not report a successful open");
+            done();
+        }, function (error) {
+            assert.ok(opened, "the native open event was attempted");
+            assert.strictEqual(error.code, "record_open_failed");
+            assert.strictEqual(error.message, "客户端未进入记录表单。");
             done();
         });
     });

@@ -174,7 +174,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
             modifiers = evaluateModifiers(record, info);
             result[name] = {
                 name: name,
-                string: field.string || name,
+                string: info.string || field.string || name,
                 type: field.type,
                 relation: field.relation || false,
                 selection: bounded(field.selection || false),
@@ -244,6 +244,52 @@ odoo.define("agui_chat.model_adapter", function (require) {
             }
         });
         return result;
+    }
+
+    function uniqueClosedGroup(state) {
+        if (!state || state.type !== "list" || state.count !== 1) {
+            return false;
+        }
+        var children = _.filter(state.data || [], function (item) {
+            return item && item.count > 0;
+        });
+        if (children.length !== 1 || children[0].type !== "list" || children[0].count !== 1) {
+            return false;
+        }
+        return children[0].isOpen ? uniqueClosedGroup(children[0]) : children[0];
+    }
+
+    function expandUniqueRecordCandidate(controller) {
+        var model = controller && controller.model;
+        var expanded = false;
+        var visited = {};
+        if (!model || !_.isFunction(model.toggleGroup)) {
+            return $.when(false);
+        }
+        function expandNext() {
+            var state = getRecord(controller, false);
+            var group;
+            if (collectRecordStates(state).length === 1) {
+                return $.when(true);
+            }
+            group = uniqueClosedGroup(state);
+            if (!group || visited[group.id]) {
+                return $.when(false);
+            }
+            visited[group.id] = true;
+            return $.when(model.toggleGroup(group.id)).then(function () {
+                expanded = true;
+                return expandNext();
+            });
+        }
+        return expandNext().then(function (found) {
+            if (!found || !expanded || !_.isFunction(controller.update)) {
+                return found;
+            }
+            return $.when(controller.update({}, {keepSelection: true, reload: false})).then(function () {
+                return true;
+            });
+        });
     }
 
     function kanbanRecordWidgets(renderer) {
@@ -1242,6 +1288,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
         applyPatch: applyPatch,
         validateForm: validateForm,
         validateFilterDomain: validateFilterDomain,
+        expandUniqueRecordCandidate: expandUniqueRecordCandidate,
         clone: clone,
     };
 });
