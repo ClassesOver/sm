@@ -1059,9 +1059,12 @@ export class ChatRuntime {
   }
 
   private mergeTool(tool: ToolCall): ToolCall {
-    const message = this.ensureAssistant(tool.parentMessageId)
     const key = toolKey(tool)
     const existing = this.toolsByKey[key] || {}
+    const parentMessageId = String(
+      tool.parentMessageId || existing.parentMessageId || tool.message_id || existing.message_id || ''
+    )
+    const message = this.ensureAssistant(parentMessageId || undefined)
     const cleanTool = Object.fromEntries(
       Object.entries(tool).filter(([, value]) => value !== undefined && value !== '')
     ) as ToolCall
@@ -1080,6 +1083,7 @@ export class ChatRuntime {
       tool_args: args,
       key,
       status: mergeStatus(existing.status, tool.status || 'pending'),
+      parentMessageId: parentMessageId || message.id,
       message_id: tool.message_id || existing.message_id || message.id
     }
     this.toolsByKey[key] = next

@@ -56,6 +56,8 @@ function main() {
             };
         },
     };
+    function jquery(value) { return value; }
+    jquery.when = function (value) { return Promise.resolve(value); };
     const sandbox = {
         console,
         Date,
@@ -88,7 +90,7 @@ function main() {
             isFunction(value) { return typeof value === "function"; },
             filter(values, callback) { return values.filter(callback); },
         },
-        $: {when(value) { return Promise.resolve(value); }},
+        $: jquery,
     };
     vm.runInNewContext(source, sandbox, {filename: "agui_host_service.js"});
 
@@ -102,6 +104,7 @@ function main() {
 
     const second = new Controller();
     second.handle = "record-2";
+    second.actionViews = [{type: "list", multiRecord: true}, {type: "form", multiRecord: false}];
     current = {widget: second};
     const recovered = service.getSnapshot();
 
@@ -117,6 +120,32 @@ function main() {
     assert.strictEqual(listEvent.data.view_type, "form");
     assert.strictEqual(listEvent.data.res_id, 7);
     assert.strictEqual(listEvent.data.mode, "readonly");
+
+    let clicked = false;
+    const row = {
+        length: 1,
+        data(name) { return name === "id" ? "list-record-8" : undefined; },
+        trigger(name) { clicked = name === "click"; },
+    };
+    second.actionViews = [{type: "list", multiRecord: true}];
+    second.renderer.$ = function (selector) {
+        assert.strictEqual(selector, ".o_data_row");
+        return {
+            filter(callback) {
+                return {first() { return callback.call(row) ? row : {length: 0}; }};
+            },
+        };
+    };
+    listEvent = undefined;
+    service._openRecord({localId: "list-record-8", resId: 8}, "readonly");
+    assert.strictEqual(clicked, true);
+    assert.strictEqual(listEvent, undefined);
+
+    clicked = false;
+    service._openRecord({localId: "list-record-9", resId: 9}, "readonly");
+    assert.strictEqual(clicked, false);
+    assert.strictEqual(listEvent.name, "switch_view");
+    assert.strictEqual(listEvent.data.res_id, 9);
 
     let kanbanEvent;
     const widget = {

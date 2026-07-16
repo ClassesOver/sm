@@ -674,13 +674,18 @@ odoo.define("agui_chat.model_adapter", function (require) {
             var idValue = value;
             if (_.isArray(value)) {
                 if (value.length !== 2 || !_.isString(value[1])) {
-                    throw new Error("Many2one 字段必须提供整数 ID 或 [ID, 显示名称] 二元数组。")
+                    throw new Error("Many2one 字段必须提供整数 ID、[ID, 显示名称] 二元数组或 {id, displayName} 对象。")
                 }
                 idValue = value[0];
+            } else if (_.isObject(value)) {
+                if (!_.has(value, "id") || !_.isString(value.displayName)) {
+                    throw new Error("Many2one 字段必须提供整数 ID、[ID, 显示名称] 二元数组或 {id, displayName} 对象。")
+                }
+                idValue = value.id;
             }
             var id = parseInt(idValue, 10);
             if (_.isObject(idValue) || isNaN(id) || id <= 0 || String(id) !== String(idValue)) {
-                throw new Error("Many2one 字段必须提供整数 ID 或 [ID, 显示名称] 二元数组。")
+                throw new Error("Many2one 字段必须提供整数 ID、[ID, 显示名称] 二元数组或 {id, displayName} 对象。")
             }
             return {id: id};
         }

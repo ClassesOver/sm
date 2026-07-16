@@ -92,8 +92,9 @@ Patch rules:
 
 - Fields must be present in `fieldsInfo.form` and currently visible/writable.
 - Existing dirty fields conflict; partial application is not allowed.
-- Scalars use Odoo field parsers; many2one accepts an explicit integer ID or
-  an Odoo-style `[ID, displayName]` pair.
+- Scalars use Odoo field parsers; many2one accepts an explicit integer ID, an
+  Odoo-style `[ID, displayName]` pair, or a snapshot-style `{id, displayName}`
+  object.
 - many2many supports only `link`, `unlink`, and `replace` of existing IDs.
 - Generic one2many create/update/delete is rejected.
 - Changes use `FormController._applyChanges`; there is no RPC fallback.

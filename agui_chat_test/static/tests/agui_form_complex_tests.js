@@ -300,8 +300,8 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
         form.destroy();
     });
 
-    QUnit.test("many2one patch accepts an Odoo id and display name pair", async function (assert) {
-        assert.expect(4);
+    QUnit.test("many2one patch accepts serialized relation values", async function (assert) {
+        assert.expect(7);
         var form = await testUtils.createAsyncView({
             View: FormView,
             model: "agui.chat.test.document",
@@ -310,16 +310,24 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
             res_id: 1,
             viewOptions: {mode: "edit"},
         });
-        var result = await executePatch(form, commandContext(form), {
+        var pairResult = await executePatch(form, commandContext(form), {
             candidate_id: [11, "标准候选二"],
         });
         var state = snapshot(form);
 
-        assert.ok(result.saved);
+        assert.ok(pairResult.saved);
         assert.strictEqual(state.record.values.candidate_id.id, 11);
-        var invalid = await Adapter.applyPatch(form, state, {patch: {candidate_id: [10]}});
-        assert.strictEqual(invalid.rejected[0].code, "invalid_value");
-        assert.strictEqual(snapshot(form).record.values.candidate_id.id, 11, "invalid pair is not applied");
+        var objectResult = await executePatch(form, commandContext(form), {
+            candidate_id: {id: 10, displayName: "标准唯一候选"},
+        });
+        state = snapshot(form);
+        assert.ok(objectResult.saved);
+        assert.strictEqual(state.record.values.candidate_id.id, 10);
+        var invalidPair = await Adapter.applyPatch(form, state, {patch: {candidate_id: [11]}});
+        var invalidObject = await Adapter.applyPatch(form, state, {patch: {candidate_id: {id: 11}}});
+        assert.strictEqual(invalidPair.rejected[0].code, "invalid_value");
+        assert.strictEqual(invalidObject.rejected[0].code, "invalid_value");
+        assert.strictEqual(snapshot(form).record.values.candidate_id.id, 10, "invalid values are not applied");
         form.destroy();
     });
 

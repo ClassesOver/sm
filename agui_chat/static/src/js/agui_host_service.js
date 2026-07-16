@@ -693,12 +693,29 @@ odoo.define("agui_chat.host_service", function (require) {
 
         _openRecord: function (binding, mode) {
             var controller = this._resolveCurrentController();
+            var actionViews;
+            var hasFormView;
+            var $row;
             if (binding.widget) {
                 binding.widget.trigger_up("open_record", {
                     id: binding.localId,
                     mode: mode || "readonly",
                 });
                 return $.when();
+            }
+            actionViews = controller.actionViews || [];
+            hasFormView = _.filter(actionViews, function (view) {
+                return view && (view.type === "form" || view[1] === "form");
+            }).length > 0;
+            if (actionViews.length && !hasFormView && controller.renderer &&
+                    _.isFunction(controller.renderer.$)) {
+                $row = controller.renderer.$(".o_data_row").filter(function () {
+                    return $(this).data("id") === binding.localId;
+                }).first();
+                if ($row.length) {
+                    $row.trigger("click");
+                    return $.when();
+                }
             }
             controller.trigger_up("switch_view", {
                 view_type: "form",

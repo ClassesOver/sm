@@ -143,6 +143,43 @@ describe('ChatRuntime protocol handling', () => {
     expect(assistantMessages[1].content).toBe('done')
   })
 
+  it('keeps an asynchronous host result on the original tool card', () => {
+    const runtime = createRuntime()
+    const internal = runtime as any
+    internal.messages = [
+      {
+        id: 'assistant-original', role: 'assistant', content: '', tool_calls: [], created_at: 1
+      },
+      {
+        id: 'assistant-current', role: 'assistant', content: '', tool_calls: [], created_at: 2
+      }
+    ]
+    internal.pendingAssistantId = 'assistant-current'
+    const tool = internal.mergeTool({
+      id: 'call-open-1',
+      name: 'odoo.open_record',
+      parentMessageId: 'assistant-original',
+      args: { recordToken: 'record-1', mode: 'readonly' },
+      status: 'running'
+    })
+
+    internal.recordHostBridgeResult(tool, {
+      ok: true,
+      code: 'ok',
+      operation: 'odoo.open_record',
+      navigated: true,
+      opened: true
+    })
+
+    const messages = runtime.getSnapshot().messages
+    const original = messages.find((message) => message.id === 'assistant-original')
+    const current = messages.find((message) => message.id === 'assistant-current')
+    expect(original?.tool_calls?.[0].result).toEqual(expect.objectContaining({
+      ok: true, navigated: true, opened: true
+    }))
+    expect(current?.tool_calls).toEqual([])
+  })
+
   it.each([
     { approved: true, decision: { ok: true, code: 'ok', saved: true }, status: 'ok' },
     {
