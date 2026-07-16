@@ -4,6 +4,7 @@ odoo.define("agui_chat.tests.host", function (require) {
     var Adapter = require("agui_chat.model_adapter");
     var ChatBridge = require("agui_chat.host_bridge");
     var Commands = require("agui_chat.command_registry");
+    var HostService = require("agui_chat.host_service");
 
     function fakeController(options) {
         options = options || {};
@@ -25,7 +26,7 @@ odoo.define("agui_chat.tests.host", function (require) {
         };
         var raw = _.extend({}, record, {
             fields: {
-                name: {type: "char", string: "Name"},
+                name: {type: "char", string: "Name", readonly: true, required: true},
                 partner_id: {type: "many2one", string: "Partner", relation: "res.partner"},
                 secret_token: {type: "char", string: "Secret"},
                 tag_ids: {type: "many2many", relation: "res.partner.category"},
@@ -34,7 +35,9 @@ odoo.define("agui_chat.tests.host", function (require) {
             },
             fieldsInfo: {
                 form: {
-                    name: {modifiers: {}},
+                    name: {
+                        readonly: "0", required: "0", invisible: "0", modifiers: {},
+                    },
                     partner_id: {
                         string: "Current View Partner",
                         modifiers: {},
@@ -42,7 +45,9 @@ odoo.define("agui_chat.tests.host", function (require) {
                     },
                     secret_token: {modifiers: {}},
                     tag_ids: {modifiers: {}},
-                    line_ids: {modifiers: {}},
+                    line_ids: {
+                        modifiers: {readonly: true, required: true, invisible: true},
+                    },
                     image: {modifiers: {}},
                 },
             },
@@ -92,11 +97,44 @@ odoo.define("agui_chat.tests.host", function (require) {
 
     QUnit.module("agui_chat v2 host adapter");
 
+    QUnit.test("menu options refresh when WebClient menu data arrives late", function (assert) {
+        var webClient = {menu_data: null};
+        var service = Object.create(HostService.prototype);
+        service._webClient = null;
+        service._menuData = null;
+        service._menuOptions = [];
+
+        service.configureNavigation(webClient, null);
+        assert.deepEqual(service.getMenuOptions(), []);
+
+        webClient.menu_data = {
+            children: [{
+                id: 90,
+                name: "员工",
+                action: "ir.actions.act_window,115",
+                children: [],
+            }],
+        };
+        assert.deepEqual(service.getMenuOptions(), [{
+            menuId: 90,
+            actionId: 115,
+            name: "员工",
+            path: ["员工"],
+            fullPath: "员工",
+        }]);
+    });
+
     QUnit.test("snapshot is bounded to view fields and redacts secrets", function (assert) {
-        assert.expect(5);
+        assert.expect(11);
         var state = snapshot(fakeController());
         assert.strictEqual(state.protocol, "agui.odoo.v2");
         assert.strictEqual(state.fields.partner_id.string, "Current View Partner");
+        assert.notOk(state.fields.name.readonly, "evaluated modifiers override model readonly");
+        assert.notOk(state.fields.name.required, "evaluated modifiers override model required");
+        assert.notOk(state.fields.name.invisible, "XML string zero is false");
+        assert.ok(state.fields.line_ids.readonly, "evaluated readonly is exported");
+        assert.ok(state.fields.line_ids.required, "evaluated required is exported");
+        assert.ok(state.fields.line_ids.invisible, "evaluated invisible is exported");
         assert.strictEqual(state.record.values.secret_token, "[redacted]");
         assert.deepEqual(state.record.values.tag_ids, {ids: [2, 3], count: 2});
         assert.notOk(state.fields.image, "binary fields are omitted");

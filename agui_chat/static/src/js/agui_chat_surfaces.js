@@ -47,6 +47,7 @@ odoo.define("agui_chat.surfaces", function (require) {
     var ChatSurfaceManager = Widget.extend({
         className: "o_agui_chat_surface_manager",
         events: {
+            "focusin": "_onSurfaceFocusIn",
             "click .o_agui_chat_dock_toggle": "_onToggleDock",
             "click .o_agui_chat_direction": "_onDirection",
             "click .o_agui_chat_float": "_onFloat",
@@ -164,12 +165,14 @@ odoo.define("agui_chat.surfaces", function (require) {
         _initialize: function () {
             var self = this;
             try {
-                if (this.webClient && this.webClient.action_manager) {
+                if (this.webClient) {
                     this.call("agui_host", "configureNavigation", this.webClient, this.webClient.menu_data);
-                    this.call("agui_host", "setCurrentController",
-                        this.webClient.action_manager.getCurrentAction(), {
-                            __actionManager: this.webClient.action_manager,
-                        });
+                    if (this.webClient.action_manager) {
+                        this.call("agui_host", "setCurrentController",
+                            this.webClient.action_manager.getCurrentAction(), {
+                                __actionManager: this.webClient.action_manager,
+                            });
+                    }
                 }
                 this.hostState = this.call("agui_host", "getSnapshot");
                 this.call("agui_host", "subscribe", this, this._onHostState);
@@ -237,7 +240,11 @@ odoo.define("agui_chat.surfaces", function (require) {
             if (this.dockOpen && snapshot && snapshot.surface && snapshot.surface !== this.surface) {
                 this._applySurface(snapshot.surface);
             }
-            if (this.chatHandle) this.chatHandle.update({hostState: snapshot, surface: this.surface});
+            if (this.chatHandle) this.chatHandle.update({
+                hostState: snapshot,
+                menuOptions: this.call("agui_host", "getMenuOptions"),
+                surface: this.surface,
+            });
         },
 
         openSurface: function (surface) {
@@ -267,7 +274,11 @@ odoo.define("agui_chat.surfaces", function (require) {
             this._applyGeometry();
             this._updatePressedStates();
             this._saveLayout();
-            if (this.chatHandle) this.chatHandle.update({surface: surface, hostState: this.hostState});
+            if (this.chatHandle) this.chatHandle.update({
+                surface: surface,
+                hostState: this.hostState,
+                menuOptions: this.call("agui_host", "getMenuOptions"),
+            });
         },
 
         _applyGeometry: function () {
@@ -338,6 +349,11 @@ odoo.define("agui_chat.surfaces", function (require) {
         },
 
         _onErrorClose: function () { setClass(this.$el, "o_agui_chat_has_error", false); },
+
+        _onSurfaceFocusIn: function (event) {
+            // 阻止 Odoo modal 的全局焦点约束将焦点抢回弹窗。
+            event.stopPropagation();
+        },
 
         _onToggleDock: function () {
             this.dockOpen = true;

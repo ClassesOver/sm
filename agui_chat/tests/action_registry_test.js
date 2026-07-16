@@ -73,6 +73,7 @@ function main() {
         const args = Array.prototype.slice.call(arguments, 2);
         if (method === "getSnapshot") return service.snapshot;
         if (method === "getToolCatalog") return [];
+        if (method === "getMenuOptions") return [];
         if (method === "subscribe") {
             service.subscribers.push({owner: args[0], callback: args[1]});
             return true;
@@ -213,6 +214,12 @@ function main() {
         assert.strictEqual(manager.dockOpen, false);
         assert(!WEBCLIENT_HAS_DOCK_CLASS(webClientRoot));
         assert.strictEqual(webClientRoot.style.values["--agui-chat-dock-size"], undefined);
+        let focusPropagationStopped = false;
+        assert.strictEqual(manager.events.focusin, "_onSurfaceFocusIn");
+        manager._onSurfaceFocusIn({
+            stopPropagation() { focusPropagationStopped = true; },
+        });
+        assert.strictEqual(focusPropagationStopped, true);
 
         manager._onHostState({surface: "dock"});
         assert.strictEqual(manager.surface, "standalone");

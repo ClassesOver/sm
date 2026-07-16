@@ -176,6 +176,11 @@ odoo.define("agui_chat.host_service", function (require) {
         },
 
         getMenuOptions: function () {
+            var menuData = this._webClient && this._webClient.menu_data || this._menuData;
+            if (menuData && (menuData !== this._menuData || !this._menuOptions.length)) {
+                this._menuData = menuData;
+                this._menuOptions = buildMenuOptions(menuData);
+            }
             return Adapter.clone(_.map(this._menuOptions, function (option) {
                 return _.omit(option, "primaryMenuId");
             }));
@@ -688,9 +693,16 @@ odoo.define("agui_chat.host_service", function (require) {
 
         _openRecord: function (binding, mode) {
             var controller = this._resolveCurrentController();
-            var source = binding.widget || controller.renderer;
-            source.trigger_up("open_record", {
-                id: binding.localId,
+            if (binding.widget) {
+                binding.widget.trigger_up("open_record", {
+                    id: binding.localId,
+                    mode: mode || "readonly",
+                });
+                return $.when();
+            }
+            controller.trigger_up("switch_view", {
+                view_type: "form",
+                res_id: binding.resId,
                 mode: mode || "readonly",
             });
             return $.when();

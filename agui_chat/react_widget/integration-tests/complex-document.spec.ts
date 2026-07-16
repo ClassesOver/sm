@@ -127,6 +127,43 @@ test.describe.serial('真实 AgentOS 通用单据业务场景', () => {
     await startSessionTracking(page)
   })
 
+  test('表单 modal 打开时聊天输入仍保持焦点', async ({ page }) => {
+    const documentId = await rpc<number>(page, 'agui.chat.test.document', 'create', [{
+      name: `AGUI-E2E-MODAL-${Date.now()}`,
+      required_code: 'MODAL-001'
+    }])
+    try {
+      await openDocuments(page, documentId)
+      await page.getByRole('button', { name: '打开智能助手' }).click()
+      await page.evaluate(() => {
+        const modal = document.createElement('div')
+        modal.className = 'modal'
+        modal.tabIndex = -1
+        modal.setAttribute('role', 'dialog')
+        modal.setAttribute('data-agui-focus-test', 'true')
+        modal.innerHTML = '<div class="modal-dialog"><div class="modal-content">' +
+          '<input aria-label="明细弹窗输入" /></div></div>'
+        document.body.appendChild(modal)
+        ;(globalThis as any).$(modal).modal({ backdrop: false, keyboard: false, show: true })
+      })
+      await expect(page.locator('[data-agui-focus-test].in')).toBeVisible()
+
+      const input = page.getByPlaceholder('输入消息，开始提问')
+      await input.click()
+      await expect(input).toBeFocused()
+      await page.keyboard.type('modal 输入回归')
+      await expect(input).toHaveValue('modal 输入回归')
+    } finally {
+      await page.evaluate(() => {
+        const modal = document.querySelector('[data-agui-focus-test]')
+        if (!modal) return
+        ;(globalThis as any).$(modal).modal('hide')
+        modal.remove()
+      }).catch(() => undefined)
+      await cleanup(page, [documentId])
+    }
+  })
+
   test('中文指令从空白表单新建并持久化单据', async ({ page }) => {
     const marker = `AGUI-E2E-新建-${Date.now()}`
     let documentId = 0

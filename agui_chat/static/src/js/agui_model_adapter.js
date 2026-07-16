@@ -178,9 +178,9 @@ odoo.define("agui_chat.model_adapter", function (require) {
                 type: field.type,
                 relation: field.relation || false,
                 selection: bounded(field.selection || false),
-                readonly: !!(field.readonly || info.readonly || modifiers.readonly),
-                required: !!(field.required || info.required || modifiers.required),
-                invisible: !!(info.invisible || modifiers.invisible),
+                readonly: !!modifiers.readonly,
+                required: !!modifiers.required,
+                invisible: !!modifiers.invisible,
                 redacted: SECRET_FIELD.test(name) || sensitiveFields.indexOf(name) !== -1,
             };
         });

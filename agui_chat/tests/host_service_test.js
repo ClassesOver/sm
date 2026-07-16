@@ -111,10 +111,11 @@ function main() {
     assert.strictEqual(service._controller, second);
 
     let listEvent;
-    second.renderer.trigger_up = function (name, data) { listEvent = {name, data}; };
+    second.trigger_up = function (name, data) { listEvent = {name, data}; };
     service._openRecord({localId: "list-record-7", resId: 7}, "readonly");
-    assert.strictEqual(listEvent.name, "open_record");
-    assert.strictEqual(listEvent.data.id, "list-record-7");
+    assert.strictEqual(listEvent.name, "switch_view");
+    assert.strictEqual(listEvent.data.view_type, "form");
+    assert.strictEqual(listEvent.data.res_id, 7);
     assert.strictEqual(listEvent.data.mode, "readonly");
 
     let kanbanEvent;
