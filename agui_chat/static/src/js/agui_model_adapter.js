@@ -671,9 +671,16 @@ odoo.define("agui_chat.model_adapter", function (require) {
             return value;
         }
         if (field.type === "many2one") {
-            var id = parseInt(value, 10);
-            if (_.isObject(value) || isNaN(id) || id <= 0 || String(id) !== String(value)) {
-                throw new Error("Many2one 字段必须提供一个明确的整数 ID。")
+            var idValue = value;
+            if (_.isArray(value)) {
+                if (value.length !== 2 || !_.isString(value[1])) {
+                    throw new Error("Many2one 字段必须提供整数 ID 或 [ID, 显示名称] 二元数组。")
+                }
+                idValue = value[0];
+            }
+            var id = parseInt(idValue, 10);
+            if (_.isObject(idValue) || isNaN(id) || id <= 0 || String(id) !== String(idValue)) {
+                throw new Error("Many2one 字段必须提供整数 ID 或 [ID, 显示名称] 二元数组。")
             }
             return {id: id};
         }

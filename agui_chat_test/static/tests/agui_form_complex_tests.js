@@ -300,6 +300,29 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
         form.destroy();
     });
 
+    QUnit.test("many2one patch accepts an Odoo id and display name pair", async function (assert) {
+        assert.expect(4);
+        var form = await testUtils.createAsyncView({
+            View: FormView,
+            model: "agui.chat.test.document",
+            data: testData(),
+            arch: formArch(),
+            res_id: 1,
+            viewOptions: {mode: "edit"},
+        });
+        var result = await executePatch(form, commandContext(form), {
+            candidate_id: [11, "标准候选二"],
+        });
+        var state = snapshot(form);
+
+        assert.ok(result.saved);
+        assert.strictEqual(state.record.values.candidate_id.id, 11);
+        var invalid = await Adapter.applyPatch(form, state, {patch: {candidate_id: [10]}});
+        assert.strictEqual(invalid.rejected[0].code, "invalid_value");
+        assert.strictEqual(snapshot(form).record.values.candidate_id.id, 11, "invalid pair is not applied");
+        form.destroy();
+    });
+
     QUnit.test("one2many generic operations and stale relation ids are rejected", async function (assert) {
         assert.expect(4);
         var form = await testUtils.createAsyncView({
