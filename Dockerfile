@@ -1,9 +1,12 @@
-FROM python:3.12-slim
+ARG PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
+FROM ${PYTHON_IMAGE}
+
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 
 WORKDIR /app
 
 COPY agentos_dev/requirements.txt ./agentos_dev/requirements.txt
-RUN pip install --no-cache-dir -r agentos_dev/requirements.txt
+RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r agentos_dev/requirements.txt
 
 COPY agentos_dev ./agentos_dev
 
