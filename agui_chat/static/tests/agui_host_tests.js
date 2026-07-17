@@ -98,6 +98,7 @@ odoo.define("agui_chat.tests.host", function (require) {
     QUnit.module("agui_chat v2 host adapter");
 
     QUnit.test("menu options refresh when WebClient menu data arrives late", function (assert) {
+        assert.expect(2);
         var webClient = {menu_data: null};
         var service = Object.create(HostService.prototype);
         service._webClient = null;
@@ -499,7 +500,12 @@ odoo.define("agui_chat.tests.host", function (require) {
     QUnit.test("client catalog requires the appropriate host target", function (assert) {
         assert.expect(Commands.getCatalog().length * 2);
         _.each(Commands.getCatalog(), function (tool) {
-            var requiredTarget = tool.name === "odoo.open_menu" ?
+            var pageTools = [
+                "odoo.open_menu", "odoo.read_mentioned_records",
+                "odoo.open_mentioned_menu", "odoo.open_mentioned_record",
+                "odoo.apply_mentioned_filter",
+            ];
+            var requiredTarget = pageTools.indexOf(tool.name) !== -1 ?
                 ["snapshotId", "hostRevision"] :
                 ["snapshotId", "hostRevision", "controllerId", "dataPointId", "model", "resId"];
             assert.ok(tool.parameters.required.indexOf("target") !== -1, tool.name);
@@ -967,6 +973,91 @@ odoo.define("agui_chat.tests.host", function (require) {
             assert.ok(false, "dirty form navigation must not execute");
         }, function (error) {
             assert.strictEqual(error.code, "unsaved_changes");
+            done();
+        });
+    });
+
+    QUnit.test("mentioned record keeps the bound view mode across menu navigation", function (assert) {
+        assert.expect(4);
+        var done = assert.async();
+        var opened = false;
+        var waits = 0;
+        var listSnapshot = {
+            snapshotId: "mentioned-list",
+            selection: {model: "res.partner"},
+            record: false,
+        };
+        var formSnapshot = {
+            snapshotId: "mentioned-form",
+            controller: {mode: "readonly"},
+            record: {model: "res.partner", resId: 17},
+        };
+        Commands.execute({
+            getSnapshot: function () { return {snapshotId: "before"}; },
+            hasUnsavedChanges: function () { return false; },
+            openMenu: function (menuId) {
+                assert.strictEqual(menuId, 8);
+                return $.when();
+            },
+            waitForSnapshotChange: function () {
+                waits += 1;
+                return $.when(waits === 1 ? listSnapshot : formSnapshot);
+            },
+            openMentionedRecord: function (recordId, mode) {
+                opened = true;
+                assert.strictEqual(recordId, 17);
+                assert.strictEqual(mode, "readonly");
+                return $.when();
+            },
+        }, {
+            tool: "odoo.open_mentioned_record",
+            authorizationId: "authorization-1",
+            arguments: {
+                token: "bound-record", __mention: [{
+                    token: "bound-record", kind: "record", action: "view",
+                    model: "res.partner", record_id: 17, menu_id: 8, label: "Acme",
+                }],
+            },
+        }).then(function (result) {
+            assert.ok(opened && result.opened);
+            done();
+        }, function (error) {
+            assert.ok(false, error && error.message);
+            done();
+        });
+    });
+
+    QUnit.test("mentioned filters replace the query through the native host adapter", function (assert) {
+        assert.expect(3);
+        var done = assert.async();
+        var waits = 0;
+        var applied;
+        var binding = {
+            token: "bound-filter", kind: "current_filter", action: "apply",
+            model: "res.partner", menu_id: 8, label: "当前筛选",
+            domain: [["name", "ilike", "Acme"]], context: {}, group_by: ["company_id"],
+            sort: ["-name"],
+        };
+        Commands.execute({
+            getSnapshot: function () { return {snapshotId: "before"}; },
+            hasUnsavedChanges: function () { return false; },
+            openMenu: function () { return $.when(); },
+            waitForSnapshotChange: function () {
+                waits += 1;
+                return $.when({snapshotId: "filter-" + waits, hostRevision: waits});
+            },
+            applyMentionFilter: function (value) { applied = value; return $.when(); },
+        }, {
+            tool: "odoo.apply_mentioned_filter",
+            authorizationId: "authorization-filter",
+            arguments: {token: binding.token, __mention: [binding]},
+        }).then(function (result) {
+            assert.strictEqual(applied, binding);
+            assert.ok(result.applied);
+            assert.strictEqual(result.snapshotId, "filter-2");
+            done();
+        }, function (error) {
+            assert.ok(false, error && error.message);
             done();
         });
     });

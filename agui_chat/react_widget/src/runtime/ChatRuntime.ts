@@ -5,6 +5,7 @@ import type {
   HostBridgeToolCall,
   LoadedSession,
   MenuMention,
+  MentionReference,
   RecordCandidate,
   RecordSelection,
   RelationCandidate,
@@ -255,7 +256,9 @@ export class ChatRuntime {
     } else if (nextProps.threadId && nextProps.threadId !== previousThreadId) {
       this.resetThread(nextProps.threadId, nextProps.initialMessages || [])
     }
-    if (nextProps.menuOptions && this.revalidateMenuMentions()) {
+    const menuMentionsChanged = Boolean(nextProps.menuOptions && this.revalidateMenuMentions())
+    const mentionsChanged = this.revalidateMentions()
+    if (menuMentionsChanged || mentionsChanged) {
       this.notifyMessages()
       this.scheduleSave()
     }
@@ -337,13 +340,23 @@ export class ChatRuntime {
   async send(
     content: string,
     attachments: AttachmentRef[] = [],
-    menuMention?: MenuMention,
+    selection?: MentionReference[] | MenuMention,
     recordSelection?: RecordSelection
   ): Promise<void> {
     const text = content.trim()
+    const mentions = Array.isArray(selection) ? selection.map((item) => clone(item)) : []
+    const menuMention = selection && !Array.isArray(selection) ? selection : undefined
     const currentMenu = menuMention ? this.resolveMenuMention(menuMention) : undefined
     if (menuMention && !currentMenu) {
       const error = new Error('所选菜单已失效或无权访问，请重新选择。')
+      this.error = error.message
+      this.props.onError?.(error)
+      this.emit()
+      return
+    }
+    const mentionError = this.validateMentions(mentions)
+    if (mentionError) {
+      const error = new Error(mentionError)
       this.error = error.message
       this.props.onError?.(error)
       this.emit()
@@ -356,7 +369,7 @@ export class ChatRuntime {
       this.emit()
       return
     }
-    if ((!text && !attachments.length && !currentMenu && !recordSelection) || this.running || this.loadingSessions) {
+    if ((!text && !attachments.length && !currentMenu && !mentions.length && !recordSelection) || this.running || this.loadingSessions) {
       return
     }
     try {
@@ -374,6 +387,7 @@ export class ChatRuntime {
       role: 'user',
       content: text,
       attachments: clone(attachments),
+      mentions: mentions.length ? mentions : undefined,
       menuMention: currentMenu,
       recordSelection: recordSelection ? clone(recordSelection) : undefined,
       created_at: Date.now()
@@ -412,7 +426,12 @@ export class ChatRuntime {
     const call: HostBridgeToolCall = {
       id: toolCallId(current) || false, tool: toolName(current),
       arguments: toolArgs(current), message_id: current.message_id || false,
-      context: { requestId: this.currentRequestId, runId: this.currentRunId, threadId: this.threadId }
+      context: {
+        requestId: this.currentRequestId,
+        runId: this.currentRunId,
+        threadId: this.threadId,
+        selectedMentionTokens: this.latestMentionTokens()
+      }
     }
     this.confirmingHostBridgeTools[key] = true
     const context = this.createRunContext()
@@ -573,6 +592,17 @@ export class ChatRuntime {
     this.emit()
   }
 
+  removeMention(messageId: string, referenceId: string): void {
+    if (this.running) return
+    const message = this.messages.find((item) => item.id === messageId && item.role === 'user')
+    if (!message?.mentions?.some((mention) => mention.id === referenceId)) return
+    message.mentions = message.mentions.filter((mention) => mention.id !== referenceId)
+    if (!message.mentions.length) delete message.mentions
+    this.notifyMessages()
+    this.scheduleSave()
+    this.emit()
+  }
+
   async regenerate(messageId: string): Promise<void> {
     if (this.running) {
       return
@@ -592,6 +622,14 @@ export class ChatRuntime {
       return
     }
     const userMessage = this.messages[userIndex]
+    const mentionError = this.validateMentions(userMessage.mentions || [])
+    if (mentionError) {
+      const error = new Error(`消息中的对象引用无效，无法重新执行：${mentionError}`)
+      this.error = error.message
+      this.props.onError?.(error)
+      this.emit()
+      return
+    }
     if (userMessage.menuMention && !this.resolveMenuMention(userMessage.menuMention)) {
       const error = new Error('消息中的菜单已失效，无法重新执行。')
       this.error = error.message
@@ -1241,7 +1279,8 @@ export class ChatRuntime {
       context: {
         requestId: context.currentRequestId,
         runId: context.currentRunId,
-        threadId: context.threadId
+        threadId: context.threadId,
+        selectedMentionTokens: this.latestMentionTokens()
       }
     }
     return bridge.executeTool ? Promise.resolve(bridge.executeTool(call)) : null
@@ -1438,6 +1477,12 @@ export class ChatRuntime {
         valid: false
       }
     }
+    if (Array.isArray(result.mentions)) {
+      result.mentions = result.mentions.map((mention) => ({
+        ...clone(mention),
+        valid: this.isMentionCurrent(mention)
+      }))
+    }
     if (result.streamingError && !result.streaming_error) {
       result.streaming_error = 'AG-UI run failed.'
     }
@@ -1506,10 +1551,55 @@ export class ChatRuntime {
     if (previous.menuMention && !message.menuMention) {
       message.menuMention = previous.menuMention
     }
+    if (previous.mentions?.length && !message.mentions?.length) {
+      message.mentions = previous.mentions
+    }
     if (previous.recordSelection && !message.recordSelection) {
       message.recordSelection = previous.recordSelection
     }
     return message
+  }
+
+  private isMentionCurrent(mention: MentionReference): boolean {
+    if (!mention?.token || !mention.resourceKey || !mention.kind || !mention.action) return false
+    const normalized = String(mention.expiresAt || '').includes('T')
+      ? String(mention.expiresAt)
+      : `${String(mention.expiresAt || '').replace(' ', 'T')}Z`
+    const expires = Date.parse(normalized)
+    return mention.valid !== false && Number.isFinite(expires) && expires > Date.now()
+  }
+
+  private latestMentionTokens(): string[] {
+    const message = [...this.messages].reverse().find((item) => item.role === 'user')
+    return (message?.mentions || []).filter((mention) => mention.valid).map((mention) => mention.token)
+  }
+
+  private validateMentions(mentions: MentionReference[]): string | null {
+    if (mentions.length > 5) return '每条消息最多引用 5 个对象。'
+    if (new Set(mentions.map((mention) => mention.resourceKey)).size !== mentions.length) {
+      return '不能重复引用同一对象。'
+    }
+    const pageActions = mentions.filter((mention) => mention.pageAction ||
+      ['open', 'create', 'view', 'edit', 'apply'].includes(mention.action))
+    if (pageActions.length > 1) return '每条消息最多包含 1 个页面动作。'
+    if (mentions.some((mention) => !this.isMentionCurrent(mention))) {
+      return '对象引用已过期，请重新选择。'
+    }
+    return null
+  }
+
+  private revalidateMentions(): boolean {
+    let changed = false
+    this.messages.forEach((message) => {
+      if (!message.mentions?.length) return
+      message.mentions = message.mentions.map((mention) => {
+        const valid = this.isMentionCurrent(mention)
+        if (valid === mention.valid) return mention
+        changed = true
+        return { ...mention, valid }
+      })
+    })
+    return changed
   }
 
   private resolveMenuMention(mention: MenuMention): MenuMention | undefined {

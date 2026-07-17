@@ -4,7 +4,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
     var ajax = require("web.ajax");
 
     var PROTOCOL = "agui.odoo.v2";
-    var MODULE_VERSION = "12.0.7.0.0";
+    var MODULE_VERSION = "12.0.8.0.0";
     var WRITE_COMMANDS = {
         "odoo.patch_current_form": true,
         "odoo.save_current_form": true,
@@ -195,6 +195,8 @@ odoo.define("agui_chat.host_bridge", function (require) {
                 return self.confirmTool(call, authorizationId, approved);
             },
             undoTool: function (authorizationId) { return self.undoTool(authorizationId); },
+            searchMentions: function (values) { return self.searchMentions(values); },
+            bindMention: function (values) { return self.bindMention(values); },
             listSessions: function () { return self.listSessions(); },
             createSession: function (values) { return self.createSession(values); },
             loadSession: function (sessionId) { return self.loadSession(sessionId); },
@@ -236,6 +238,27 @@ odoo.define("agui_chat.host_bridge", function (require) {
 
     HostBridge.prototype.openSurface = function (surface) {
         return $.when(this.owner.call("agui_host", "setSurface", surface));
+    };
+
+    HostBridge.prototype.searchMentions = function (values) {
+        values = clone(values || {});
+        var context = this.owner.call("agui_host", "getMentionSearchContext") || {};
+        return this._rpc("/agui_chat/mention/search", {
+            query: values.query || "",
+            scope: values.scope || "all",
+            model_scope: values.modelScope || false,
+            current_model: context.currentModel || false,
+            recent_models: context.recentModels || [],
+            current_filter: context.currentFilter || false,
+        });
+    };
+
+    HostBridge.prototype.bindMention = function (values) {
+        values = values || {};
+        return this._rpc("/agui_chat/mention/bind", {
+            candidate_token: values.candidateToken || "",
+            action: values.action || "",
+        });
     };
 
     HostBridge.prototype._cleanCall = function (call) {
@@ -452,7 +475,12 @@ odoo.define("agui_chat.host_bridge", function (require) {
             });
         }
         bound.authorizationId = decision.authorization_id;
-        return $.when(this.owner.call("agui_host", "executeHostCommand", bound)).then(function (result) {
+        var execute = function () {
+            return self.owner.call("agui_host", "executeHostCommand", bound);
+        };
+        var execution = this.owner && typeof this.owner._withChatFocusPreserved === "function" ?
+            this.owner._withChatFocusPreserved(execute) : execute();
+        return $.when(execution).then(function (result) {
             return finish(result);
         }, function (error) {
             var failure = error && error.ok === false && error.code ? clone(error) :

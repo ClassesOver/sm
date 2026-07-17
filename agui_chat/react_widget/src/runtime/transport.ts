@@ -218,6 +218,21 @@ function normalizeRunContext(
     context.push({ description: 'Agent ID', value: props.agentId })
   }
   const latestUserMessage = [...messages].reverse().find((message) => message.role === 'user')
+  const mentions = (latestUserMessage?.mentions || []).filter((mention) => mention.valid)
+  if (mentions.length) {
+    context.push({
+      description: 'Selected Odoo references',
+      value: contextValue(mentions.map((mention) => ({
+        kind: mention.kind,
+        action: mention.action,
+        token: mention.token,
+        label: mention.label,
+        detail: mention.detail,
+        model: mention.model,
+        expiresAt: mention.expiresAt
+      })))
+    })
+  }
   if (latestUserMessage?.menuMention?.valid) {
     const mention = latestUserMessage.menuMention
     context.push({

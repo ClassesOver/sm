@@ -53,6 +53,89 @@ export interface MenuMention extends MenuMentionOption {
   valid: boolean
 }
 
+export type MentionKind = 'menu' | 'record' | 'saved_filter' | 'current_filter'
+export type MentionAction = 'read' | 'open' | 'create' | 'view' | 'edit' | 'apply'
+export type MentionScope = 'all' | MentionKind
+
+interface MentionReferenceBase {
+  id: string
+  token: string
+  resourceKey: string
+  action: MentionAction
+  label: string
+  detail: string
+  model: string | false
+  expiresAt: string
+  valid: boolean
+  pageAction: boolean
+}
+
+export interface MenuReference extends MentionReferenceBase {
+  kind: 'menu'
+  action: 'open' | 'create'
+}
+
+export interface RecordReference extends MentionReferenceBase {
+  kind: 'record'
+  action: 'read' | 'view' | 'edit'
+  model: string
+}
+
+export interface SavedFilterReference extends MentionReferenceBase {
+  kind: 'saved_filter'
+  action: 'apply'
+  model: string
+}
+
+export interface CurrentFilterReference extends MentionReferenceBase {
+  kind: 'current_filter'
+  action: 'apply'
+  model: string
+}
+
+export type MentionReference =
+  | MenuReference
+  | RecordReference
+  | SavedFilterReference
+  | CurrentFilterReference
+
+export interface MentionCandidate {
+  candidateToken: string
+  resourceKey: string
+  kind: MentionKind
+  label: string
+  detail: string
+  model: string | false
+  actions: MentionAction[]
+  expiresAt: string
+}
+
+export interface MentionSearchRequest {
+  query: string
+  scope: MentionScope
+  modelScope?: string
+}
+
+export interface MentionSearchResult {
+  ok?: boolean
+  code?: string
+  error?: string
+  candidates: MentionCandidate[]
+  modelScopes: Array<{ model: string; label: string }>
+}
+
+export interface MentionBindRequest {
+  candidateToken: string
+  action: MentionAction
+}
+
+export interface MentionBindResult {
+  ok: boolean
+  code?: string
+  error?: string
+  reference?: MentionReference
+}
+
 export interface RecordCandidate {
   token: string
   displayName: string
@@ -243,6 +326,7 @@ export interface ChatMessage {
     mime_type?: string
   }
   attachments?: AttachmentRef[]
+  mentions?: MentionReference[]
   menuMention?: MenuMention
   recordSelection?: RecordSelection
 }
@@ -319,6 +403,7 @@ export type ChatInteractionEvent =
       type: 'send'
       content: string
       attachments: AttachmentRef[]
+      mentions?: MentionReference[]
       menuMention?: MenuMention
       recordSelection?: RecordSelection
     }
@@ -352,6 +437,7 @@ export interface UserMessageProps {
   labels: ChatLabels
   onPreviewAttachment: (attachment: AttachmentRef) => void
   onRemoveMenuMention?: () => void
+  onRemoveMention?: (referenceId: string) => void
 }
 
 export interface ErrorMessageProps {
@@ -401,6 +487,7 @@ export interface HostBridgeToolCall {
     requestId: string
     runId: string
     threadId: string
+    selectedMentionTokens?: string[]
   }
 }
 
@@ -421,6 +508,8 @@ export interface HostBridge {
     call: HostBridgeToolCall, authorizationId: string, approved: boolean
   ) => Promise<unknown> | unknown
   undoTool?: (authorizationId: string) => Promise<unknown> | unknown
+  searchMentions?: (request: MentionSearchRequest) => Promise<MentionSearchResult>
+  bindMention?: (request: MentionBindRequest) => Promise<MentionBindResult>
   listSessions?: SessionApi['list']
   createSession?: SessionApi['create']
   loadSession?: SessionApi['load']

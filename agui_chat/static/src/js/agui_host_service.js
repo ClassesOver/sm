@@ -40,7 +40,7 @@ odoo.define("agui_chat.host_service", function (require) {
             fields: {},
             capabilities: {
                 create: false, open: false, edit: false, filter: false,
-                totalCount: 0, filterFields: {}, records: [], controls: [],
+                totalCount: 0, filterFields: {}, records: [], controls: [], x2many: [],
             },
         };
     }
@@ -100,6 +100,7 @@ odoo.define("agui_chat.host_service", function (require) {
                     !_.isFunction(controller.model.isDirty) ||
                     !controller.model.isDirty(controller.handle)) {
                 controller.__aguiHostDirtyFields = [];
+                controller.__aguiHostStagedFields = {};
                 return;
             }
             controller.__aguiHostDirtyFields = _.uniq(
@@ -113,6 +114,7 @@ odoo.define("agui_chat.host_service", function (require) {
     function clearDirtyFields(controller) {
         if (controller) {
             controller.__aguiHostDirtyFields = [];
+            controller.__aguiHostStagedFields = {};
         }
     }
 
@@ -143,6 +145,7 @@ odoo.define("agui_chat.host_service", function (require) {
             this._webClient = null;
             this._menuData = null;
             this._menuOptions = [];
+            this._recentModels = [];
             this._tokens = {};
             this._snapshotWaiters = [];
         },
@@ -184,6 +187,41 @@ odoo.define("agui_chat.host_service", function (require) {
             return Adapter.clone(_.map(this._menuOptions, function (option) {
                 return _.omit(option, "primaryMenuId");
             }));
+        },
+
+        getMentionSearchContext: function () {
+            var snapshot = this.getSnapshot();
+            var model = snapshot.record && snapshot.record.model ||
+                snapshot.selection && snapshot.selection.model || false;
+            var option = _.find(this._menuOptions, function (item) {
+                return snapshot.menu && item.menuId === snapshot.menu.id ||
+                    !snapshot.menu && item.actionId === snapshot.controller.actionId;
+            });
+            var currentFilter = false;
+            var controller = this._resolveCurrentController();
+            if (model && option && snapshot.selection && controller) {
+                try {
+                    var raw = controller.model.get(controller.handle, {raw: true}) || {};
+                    currentFilter = {
+                        label: "当前筛选",
+                        model: model,
+                        menuId: option.menuId,
+                        domain: Adapter.clone(snapshot.selection.domain || []),
+                        context: Adapter.clone(snapshot.selection.context || {}),
+                        groupBy: Adapter.clone(raw.groupedBy || []),
+                        sort: _.map(raw.orderedBy || [], function (item) {
+                            return (item.asc === false ? "-" : "") + item.name;
+                        }),
+                    };
+                } catch (error) {
+                    currentFilter = false;
+                }
+            }
+            return {
+                currentModel: model,
+                recentModels: Adapter.clone(this._recentModels),
+                currentFilter: currentFilter,
+            };
         },
 
         setCurrentController: function (action, descriptor) {
@@ -265,6 +303,11 @@ odoo.define("agui_chat.host_service", function (require) {
         prepareHostCommand: function (call, allowStaleRetry) {
             var self = this;
             var cleanCall = Adapter.clone(call || {});
+            if (cleanCall.arguments) {
+                delete cleanCall.arguments.__mention;
+                delete cleanCall.arguments.__control;
+                delete cleanCall.arguments.__row;
+            }
             var snapshot = this.getSnapshot();
             var validation = this._validateTarget(cleanCall, snapshot);
             var target = cleanCall.arguments && cleanCall.arguments.target;
@@ -279,9 +322,28 @@ odoo.define("agui_chat.host_service", function (require) {
                 if (retry) {
                     cleanCall.arguments.target = Adapter.targetFromSnapshot(nextSnapshot);
                 }
-                if (cleanCall.tool === "odoo.patch_current_form") {
+                var rowBinding = cleanCall.arguments && cleanCall.arguments.rowToken &&
+                    self._resolveToken(cleanCall.arguments.rowToken, "x2many_row");
+                if (cleanCall.arguments && cleanCall.arguments.rowToken &&
+                        (!rowBinding || !self._validateToken(rowBinding, "x2many_row"))) {
+                    return self._commandResult(
+                        false, cleanCall, "stale_x2many_row_token", {}, nextSnapshot
+                    );
+                }
+                if (rowBinding) {
+                    cleanCall.arguments.__row = {
+                        field: rowBinding.fieldName,
+                        model: rowBinding.model,
+                    };
+                }
+                if (cleanCall.tool === "odoo.patch_current_form" ||
+                        cleanCall.tool === "odoo.stage_current_form") {
                     preview = Adapter.buildPatchPreview(
-                        self._resolveCurrentController(), nextSnapshot, cleanCall.arguments || {}
+                        self._resolveCurrentController(), nextSnapshot, cleanCall.arguments || {},
+                        cleanCall.tool === "odoo.stage_current_form" ? {
+                            allowStaged: true,
+                            rowBinding: rowBinding,
+                        } : {}
                     );
                     if (preview.rejected.length) {
                         return self._commandResult(
@@ -301,6 +363,7 @@ odoo.define("agui_chat.host_service", function (require) {
                     }
                     cleanCall.arguments.__control = {
                         type: control.type,
+                        name: control.name,
                         label: control.label,
                         recordLabel: control.recordLabel,
                     };
@@ -422,6 +485,7 @@ odoo.define("agui_chat.host_service", function (require) {
             controller.__aguiHostControllerId = this._controllerId;
             controller.__aguiHostViewType = viewType;
             controller.__aguiHostDirtyFields = controller.__aguiHostDirtyFields || [];
+            controller.__aguiHostStagedFields = controller.__aguiHostStagedFields || {};
             return this._refreshNow(controller);
         },
 
@@ -454,6 +518,13 @@ odoo.define("agui_chat.host_service", function (require) {
                         return token;
                     },
                 });
+                var model = this._snapshot.record && this._snapshot.record.model ||
+                    this._snapshot.selection && this._snapshot.selection.model;
+                if (model) {
+                    this._recentModels = [model].concat(_.filter(
+                        this._recentModels, function (item) { return item !== model; }
+                    )).slice(0, 5);
+                }
                 this._tokens = tokens;
                 this._publish();
                 return $.when(Adapter.clone(this._snapshot));
@@ -551,7 +622,11 @@ odoo.define("agui_chat.host_service", function (require) {
         _validateTarget: function (call, snapshot) {
             var args = call && call.arguments;
             var target = args && args.target;
-            if (call && call.tool === "odoo.open_menu") {
+            if (call && [
+                    "odoo.open_menu", "odoo.read_mentioned_records",
+                    "odoo.open_mentioned_menu", "odoo.open_mentioned_record",
+                    "odoo.apply_mentioned_filter",
+                ].indexOf(call.tool) !== -1) {
                 if (!target || !_.has(target, "snapshotId") || !_.has(target, "hostRevision")) {
                     return "invalid_target";
                 }
@@ -601,8 +676,18 @@ odoo.define("agui_chat.host_service", function (require) {
                 validateToken: function (binding, kind) { return self._validateToken(binding, kind); },
                 openMenu: function (menuId) { return self._openMenu(menuId); },
                 openRecord: function (binding, mode) { return self._openRecord(binding, mode); },
+                openMentionedRecord: function (recordId, mode) {
+                    return self._openMentionedRecord(recordId, mode);
+                },
                 openCreate: function (controller) { return self._openCreate(controller); },
                 activateControl: function (binding) { return self._activateControl(binding); },
+                applyMentionFilter: function (binding) { return self._applyMentionFilter(binding); },
+                readMentions: function (tokens, authorizationId) {
+                    return self._rpc({
+                        route: "/agui_chat/mention/read",
+                        params: {tokens: tokens, authorization_token: authorizationId},
+                    });
+                },
             };
         },
 
@@ -662,7 +747,28 @@ odoo.define("agui_chat.host_service", function (require) {
             if (!binding || !controller) {
                 return false;
             }
-            if (binding.widget) {
+            if (binding.widget && (binding.x2manyAction ||
+                    kind === "x2many_row" || kind === "x2many_field")) {
+                if (!binding.widget.$el || !binding.widget.$el.length ||
+                        binding.widget.isDestroyed && binding.widget.isDestroyed() ||
+                        binding.widget.name !== binding.fieldName ||
+                        binding.widget.field.relation !== binding.model) {
+                    return false;
+                }
+                if (kind === "x2many_row" || binding.x2manyAction === "open") {
+                    state = controller.model.localData &&
+                        controller.model.localData[binding.localId];
+                    if (!state || state.model !== binding.model ||
+                            (state.res_id || false) !== binding.resId) {
+                        return false;
+                    }
+                }
+                $element = binding.$element || binding.widget.$el;
+                if (!$element.length || !$.contains(binding.widget.$el[0], $element[0]) &&
+                        binding.widget.$el[0] !== $element[0]) {
+                    return false;
+                }
+            } else if (binding.widget) {
                 state = binding.widget.state;
                 if (!state || state.res_id !== binding.resId || !binding.widget.$el ||
                         !binding.widget.$el.length || binding.widget.isDestroyed && binding.widget.isDestroyed()) {
@@ -681,12 +787,14 @@ odoo.define("agui_chat.host_service", function (require) {
                     return false;
                 }
             }
-            if (kind === "control" && binding.$element && (
-                    !binding.$element.length ||
-                    (!$.contains(binding.widget.$el[0], binding.$element[0]) &&
-                        binding.widget.$el[0] !== binding.$element[0])
-                )) {
-                return false;
+            if (kind === "control" && binding.$element) {
+                var $root = binding.widget && binding.widget.$el ||
+                    controller.renderer && controller.renderer.$el;
+                if (!$root || !$root.length || !binding.$element.length ||
+                        (!$.contains($root[0], binding.$element[0]) &&
+                            $root[0] !== binding.$element[0])) {
+                    return false;
+                }
             }
             return true;
         },
@@ -722,6 +830,57 @@ odoo.define("agui_chat.host_service", function (require) {
                 res_id: binding.resId,
                 mode: mode || "readonly",
             });
+            return $.when();
+        },
+
+        _openMentionedRecord: function (recordId, mode) {
+            var controller = this._resolveCurrentController();
+            if (!controller) {
+                var unavailable = new Error("当前菜单控制器不可用。");
+                unavailable.code = "host_unavailable";
+                throw unavailable;
+            }
+            controller.trigger_up("switch_view", {
+                view_type: "form",
+                res_id: parseInt(recordId, 10),
+                mode: mode || "readonly",
+            });
+            return $.when();
+        },
+
+        _applyMentionFilter: function (binding) {
+            var controller = this._resolveCurrentController();
+            var searchView = controller && controller.searchView;
+            var favorite = searchView && searchView.favorite_menu;
+            var snapshot = this.getSnapshot();
+            if (!controller || !searchView || !favorite || !searchView.query ||
+                    !_.isFunction(favorite.facet_for) ||
+                    !(snapshot.selection && snapshot.selection.model === binding.model)) {
+                var unavailable = new Error("当前菜单不支持原生收藏筛选。");
+                unavailable.code = "filter_unavailable";
+                throw unavailable;
+            }
+            var context = Adapter.clone(binding.context || {});
+            if (_.isArray(binding.group_by) && binding.group_by.length) {
+                context.group_by = Adapter.clone(binding.group_by);
+            }
+            var sort = binding.sort || [];
+            if (_.isString(sort)) {
+                try { sort = JSON.parse(sort); } catch (error) { sort = []; }
+            }
+            if (!_.isArray(sort)) sort = [];
+            var filter = {
+                id: binding.filter_id || "agui-current-" + binding.token,
+                name: binding.label,
+                domain: Adapter.clone(binding.domain || []),
+                context: context,
+                sort: JSON.stringify(sort),
+                user_id: false,
+                action_id: binding.action_id || false,
+            };
+            searchView.query.reset([], {preventSearch: true});
+            searchView.query.reset([favorite.facet_for(filter)]);
+            searchView.dataset.set_sort(sort);
             return $.when();
         },
 

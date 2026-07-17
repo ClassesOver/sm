@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FileViewerProps } from '@file-viewer/react-full'
 
-const SCRIPT_URL = '/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.7.0.0.js'
+const SCRIPT_URL = '/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.0.0.js'
 
 type FileViewerComponent = typeof import('@file-viewer/react-full')['FileViewer']
 type FileViewerModule = { FileViewer: FileViewerComponent }

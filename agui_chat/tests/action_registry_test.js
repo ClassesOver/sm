@@ -74,6 +74,8 @@ function main() {
         if (method === "getSnapshot") return service.snapshot;
         if (method === "getToolCatalog") return [];
         if (method === "getMenuOptions") return [];
+        if (method === "configureNavigation") return [];
+        if (method === "setCurrentController") return service.snapshot;
         if (method === "subscribe") {
             service.subscribers.push({owner: args[0], callback: args[1]});
             return true;

@@ -7,7 +7,7 @@ import { AGUI_ODOO_PROTOCOL } from './types'
 import type { AguiChatApi, AguiChatProps, MountHandle } from './types'
 import './styles.css'
 
-const VERSION = '12.0.7.0.0'
+const VERSION = '12.0.8.0.0'
 
 declare global {
   interface Window {
@@ -67,5 +67,6 @@ export { ChatRuntime }
 export type {
   AguiChatProps, AguiClientTool, AssistantMessageProps, ChatComponents, ChatFeedback,
   ChatIcons, ChatInteractionEvent, ChatLabels, ErrorMessageProps, MountHandle,
+  HostBridge, MentionCandidate, MentionReference, MentionSearchRequest,
   OdooHostSnapshot, ProtocolHandshake, UserMessageProps
 } from './types'

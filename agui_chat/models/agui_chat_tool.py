@@ -10,9 +10,11 @@ from psycopg2 import IntegrityError
 from odoo import api, fields, models
 
 from .agui_chat_config import HOST_COMMAND_NAMES, PROTOCOL
+from .agui_chat_mention import MentionTokenError
 
 
 WRITE_COMMANDS = {
+    "odoo.stage_current_form",
     "odoo.patch_current_form",
     "odoo.save_current_form",
     "odoo.discard_current_form",
@@ -26,11 +28,15 @@ UNDO_FIELD_TYPES = {
     "boolean", "char", "date", "datetime", "float", "html", "integer",
     "many2many", "many2one", "monetary", "selection", "text",
 }
-SECRET_KEYS = re.compile(r"(cookie|session|token|secret|password|api[_-]?key)", re.I)
+SECRET_KEYS = re.compile(r"(cookie|session|token|secret|password|api[_-]?key|phone|mobile|bank|card|vat|tax[_-]?id|identity|id[_-]?card)", re.I)
 MAX_ARGUMENT_BYTES = 64 * 1024
 MAX_RESULT_BYTES = 128 * 1024
 MAX_HOST_RESULT_BYTES = 512 * 1024
 BUSINESS_COMMANDS = {}
+MENTION_COMMANDS = {
+    "odoo.read_mentioned_records", "odoo.open_mentioned_menu",
+    "odoo.open_mentioned_record", "odoo.apply_mentioned_filter",
+}
 
 
 def canonical_json(value):
@@ -53,7 +59,7 @@ def normalize_host_arguments(tool_name, arguments):
     ):
         normalized["domain"] = [domain]
     patch = normalized.get("patch")
-    if tool_name != "odoo.patch_current_form" or not isinstance(patch, str):
+    if tool_name not in ("odoo.patch_current_form", "odoo.stage_current_form") or not isinstance(patch, str):
         return normalized
     try:
         patch = json.loads(patch)
@@ -107,6 +113,10 @@ class AguiChatToolPolicy(models.Model):
     high_risk_field_names = fields.Char(
         string="高风险字段", help="填写以逗号分隔、必须确认的字段名。",
     )
+    button_names = fields.Char(
+        string="允许的按钮",
+        help="仅用于页面控件命令；填写以逗号分隔的原生按钮 name 白名单。",
+    )
 
     @api.model
     def _patch_field_names(self, arguments):
@@ -149,16 +159,25 @@ class AguiChatToolPolicy(models.Model):
             return {"allowed": False, "reason": "unsupported_command"}
         arguments = arguments if isinstance(arguments, dict) else {}
         target = arguments.get("target") if isinstance(arguments.get("target"), dict) else {}
-        model_name = target.get("model") or arguments.get("model")
+        row = arguments.get("__row") if isinstance(arguments.get("__row"), dict) else {}
+        control = arguments.get("__control") if isinstance(arguments.get("__control"), dict) else {}
+        model_name = row.get("model") or target.get("model") or arguments.get("model")
         field_names = self._patch_field_names(arguments)
         if arguments.get("field"):
             field_names.add(arguments.get("field"))
         user_groups = set(self.env.user.groups_id.ids)
-        policies = self.sudo().search([("active", "=", True), ("tool_name", "=", tool_name)])
-        policies = policies.filtered(
+        all_policies = self.sudo().search([
+            ("active", "=", True), ("tool_name", "=", tool_name)
+        ])
+        policies = all_policies.filtered(
             lambda policy: not policy.model_name or policy.model_name == model_name
         )
+        protected_control = control.get("type") in (
+            "object", "create", "delete", "state"
+        )
         if not policies:
+            if tool_name in WRITE_COMMANDS or protected_control:
+                return {"allowed": False, "reason": "policy_missing"}
             return {
                 "allowed": True,
                 "requires_confirmation": False,
@@ -177,9 +196,16 @@ class AguiChatToolPolicy(models.Model):
             if allowed_fields and not field_names.issubset(allowed_fields):
                 mismatches.add("field_mismatch")
                 continue
+            allowed_buttons = {
+                item.strip() for item in (policy.button_names or "").split(",")
+                if item.strip()
+            }
+            if allowed_buttons and control.get("name") not in allowed_buttons:
+                mismatches.add("button_mismatch")
+                continue
             risk_reasons = []
             field_types = {}
-            if tool_name == "odoo.patch_current_form":
+            if tool_name in ("odoo.patch_current_form", "odoo.stage_current_form"):
                 risk_reasons, field_types = self._patch_risk(
                     policy, model_name, field_names
                 )
@@ -187,7 +213,9 @@ class AguiChatToolPolicy(models.Model):
                 risk_reasons = ["destructive_command"]
             mode = policy.confirmation_mode or "risk"
             requires_confirmation = (
-                mode == "always" or mode == "risk" and bool(risk_reasons)
+                mode == "always" or
+                tool_name != "odoo.stage_current_form" and
+                mode == "risk" and bool(risk_reasons)
             )
             return {
                 "allowed": True,
@@ -270,6 +298,7 @@ class AguiChatToolAuthorization(models.Model):
         if control:
             return {"control": redact({
                 "type": control.get("type"),
+                "name": str(control.get("name") or "")[:160],
                 "label": str(control.get("label") or "")[:160],
                 "recordLabel": str(control.get("recordLabel") or "")[:160],
             })}
@@ -314,7 +343,7 @@ class AguiChatToolAuthorization(models.Model):
         reasons = json.loads(self.risk_reasons_json or "[]")
         preview["riskReasons"] = reasons
         field_types = {}
-        if self.policy_id and self.tool_name == "odoo.patch_current_form":
+        if self.policy_id and self.tool_name in ("odoo.patch_current_form", "odoo.stage_current_form"):
             arguments = json.loads(self.arguments_json or "{}")
             _, field_types = self.env["agui.chat.tool.policy"]._patch_risk(
                 self.policy_id,
@@ -344,21 +373,65 @@ class AguiChatToolAuthorization(models.Model):
             return {"ok": False, "code": "host_tools_disabled"}
         if tool_name not in config.enabled_command_names():
             return {"ok": False, "code": "command_disabled"}
+        context = call.get("context") if isinstance(call.get("context"), dict) else {}
+        if tool_name in MENTION_COMMANDS:
+            selected = context.get("selectedMentionTokens")
+            selected = selected if isinstance(selected, list) else []
+            requested = arguments.get("tokens") if tool_name == "odoo.read_mentioned_records" else [
+                arguments.get("token")
+            ]
+            if (
+                not requested or len(requested) > 5 or
+                any(not isinstance(token, str) or token not in selected for token in requested)
+            ):
+                self.env["agui.chat.tool.audit"].log(
+                    tool_name, "denied", details={"reason": "mention_not_selected"},
+                    **self._audit_values(call)
+                )
+                return {"ok": False, "code": "mention_not_selected"}
+        mention_audit = False
+        try:
+            arguments, mention_audit = self.env["agui.chat.mention.token"].resolve_tool_arguments(
+                tool_name, arguments, self.env.context.get("agui_session_key") or "",
+            )
+        except MentionTokenError as error:
+            self.env["agui.chat.tool.audit"].log(
+                tool_name or "unknown", "denied",
+                details=dict(error.audit_details, reason=error.code),
+                **self._audit_values(call)
+            )
+            return {"ok": False, "code": error.code, "error": str(error)}
         control = arguments.get("__control") if isinstance(arguments.get("__control"), dict) else {}
         if tool_name == "odoo.activate_view_control":
-            if control.get("type") not in ("open", "edit", "action", "object"):
+            if control.get("type") not in (
+                "open", "edit", "action", "object", "create", "delete", "state"
+            ):
                 return {"ok": False, "code": "invalid_control_token"}
+            control["name"] = str(control.get("name") or "")[:160]
             control["label"] = str(control.get("label") or "")[:160]
             control["recordLabel"] = str(control.get("recordLabel") or "")[:160]
             arguments["__control"] = control
         else:
             arguments.pop("__control", None)
-        if (tool_name in WRITE_COMMANDS or control.get("type") == "object") and not config.write_tools_enabled:
+        row = arguments.get("__row") if isinstance(arguments.get("__row"), dict) else {}
+        if tool_name not in ("odoo.stage_current_form", "odoo.search_relation"):
+            arguments.pop("__row", None)
+            row = {}
+        elif not row.get("field") or not row.get("model"):
+            arguments.pop("__row", None)
+            row = {}
+        if (
+            tool_name in WRITE_COMMANDS or
+            control.get("type") in ("object", "create", "delete", "state")
+        ) and not config.write_tools_enabled:
             return {"ok": False, "code": "write_tools_disabled"}
         if tool_name not in HOST_COMMAND_NAMES:
             return {"ok": False, "code": "unsupported_command"}
         target = arguments.get("target") if isinstance(arguments.get("target"), dict) else {}
-        target_keys = {"snapshotId", "hostRevision"} if tool_name == "odoo.open_menu" else {
+        target_keys = {"snapshotId", "hostRevision"} if tool_name in (
+            "odoo.open_menu", "odoo.read_mentioned_records", "odoo.open_mentioned_menu",
+            "odoo.open_mentioned_record", "odoo.apply_mentioned_filter",
+        ) else {
             "snapshotId", "hostRevision", "controllerId", "dataPointId", "model", "resId",
         }
         if not target_keys.issubset(set(target.keys())):
@@ -388,22 +461,43 @@ class AguiChatToolAuthorization(models.Model):
         ], limit=1)
         if existing:
             return existing._existing_decision(binding_hash)
-        decision = self.env["agui.chat.tool.policy"].evaluate(tool_name, arguments)
+        mention_bindings = arguments.get("__mention") if mention_audit else []
+        decisions = [
+            self.env["agui.chat.tool.policy"].evaluate(
+                tool_name, dict(arguments, model=binding.get("model")),
+            )
+            for binding in mention_bindings
+        ] if mention_bindings else [
+            self.env["agui.chat.tool.policy"].evaluate(tool_name, arguments)
+        ]
+        decision = next((item for item in decisions if not item.get("allowed")), decisions[0])
+        if all(item.get("allowed") for item in decisions):
+            decision = {
+                "allowed": True,
+                "requires_confirmation": any(item.get("requires_confirmation") for item in decisions),
+                "policy_id": next((item.get("policy_id") for item in decisions if item.get("policy_id")), False),
+                "risk_reasons": sorted(set(
+                    reason for item in decisions for reason in item.get("risk_reasons") or []
+                )),
+            }
         if not decision.get("allowed"):
             self.env["agui.chat.tool.audit"].log(
                 tool_name, "denied", details={
                     "reason": decision.get("reason"),
                     "policy_mismatches": decision.get("policy_mismatches") or [],
-                    "arguments": arguments,
+                    "mention": mention_audit,
                 },
                 **self._audit_values(call)
             )
             return {"ok": False, "code": decision.get("reason") or "policy_denied"}
-        if control.get("type") == "object":
+        if control.get("type") in ("object", "delete", "state"):
             decision["requires_confirmation"] = True
-            decision["risk_reasons"] = list(decision.get("risk_reasons") or []) + [
-                "object_button"
-            ]
+            reason = {
+                "object": "object_button",
+                "delete": "delete_control",
+                "state": "state_change",
+            }[control.get("type")]
+            decision["risk_reasons"] = list(decision.get("risk_reasons") or []) + [reason]
         if decision.get("requires_confirmation") and tool_name == "odoo.patch_current_form" and not preview:
             return {"ok": False, "code": "preview_required"}
         expires_at = fields.Datetime.to_string(
@@ -434,7 +528,7 @@ class AguiChatToolAuthorization(models.Model):
             ], limit=1)
             return authorization._existing_decision(binding_hash)
         self.env["agui.chat.tool.audit"].log(
-            tool_name, "allowed", details={"arguments": arguments},
+            tool_name, "allowed", details=(mention_audit or {"arguments": arguments}),
             authorization_id=authorization.id, **self._audit_values(call)
         )
         if decision.get("requires_confirmation"):
@@ -559,10 +653,15 @@ class AguiChatToolAuthorization(models.Model):
         context = json.loads(self.context_json or "{}")
         arguments = json.loads(self.arguments_json or "{}")
         call = {"id": self.tool_call_id, "context": context, "arguments": arguments}
+        audit_details = (
+            self.env["agui.chat.mention.token"].audit_details(
+                self.tool_name, arguments, result,
+            ) if arguments.get("__mention") else result
+        )
         self.env["agui.chat.tool.audit"].log(
             self.tool_name,
             "ok" if isinstance(result, dict) and result.get("ok") else "error",
-            details=result,
+            details=audit_details,
             authorization_id=self.id,
             **self._audit_values(call)
         )
@@ -887,5 +986,8 @@ class AguiChatToolAudit(models.Model):
         ]).unlink()
         self.env["agui.chat.command.execution"].sudo().search([
             ("create_date", "<", audit_cutoff)
+        ]).unlink()
+        self.env["agui.chat.mention.token"].sudo().search([
+            ("expires_at", "<=", fields.Datetime.now())
         ]).unlink()
         return True

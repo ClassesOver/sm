@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import {
-  AtSign, CheckCircle2, ChevronRight, CircleAlert, Clock3, FileText, Hammer, Loader2,
-  RotateCcw, Workflow, X
+  AtSign, CheckCircle2, ChevronRight, CircleAlert, Clock3, Database, FileText,
+  Filter as FilterIcon, Hammer, Loader2, Menu, RotateCcw, SlidersHorizontal, Workflow, X
 } from 'lucide-react'
 import type {
   AssistantMessageProps, AttachmentRef, ChatComponents, ChatFeedback, ChatIcons,
@@ -32,6 +32,7 @@ export interface MessagesProps {
   onSelectRelation: (tool: ToolCall, candidates: RelationCandidate[]) => void
   onSelectRecord: (tool: ToolCall, candidate: RecordCandidate) => void
   onRemoveMenuMention?: (messageId: string) => void
+  onRemoveMention?: (messageId: string, referenceId: string) => void
 }
 
 function statusIcon(status?: ToolStatus) {
@@ -377,11 +378,32 @@ export function DefaultAssistantMessage({
   </div>
 }
 
-export function DefaultUserMessage({ message, labels, onPreviewAttachment, onRemoveMenuMention }: UserMessageProps) {
+export function DefaultUserMessage({ message, labels, onPreviewAttachment, onRemoveMenuMention, onRemoveMention }: UserMessageProps) {
   const mention = message.menuMention
+  const actionLabels = {
+    read: '引用数据', open: '打开', create: '新建', view: '查看', edit: '编辑', apply: '应用'
+  }
+  const mentionIcon = (kind: string) => {
+    if (kind === 'menu') return <Menu className="size-3.5 shrink-0" />
+    if (kind === 'record') return <Database className="size-3.5 shrink-0" />
+    if (kind === 'saved_filter') return <FilterIcon className="size-3.5 shrink-0" />
+    return <SlidersHorizontal className="size-3.5 shrink-0" />
+  }
   return <div className="flex w-full justify-end">
     <div className="min-w-0 max-w-[82%]">
       <Attachments attachments={message.attachments} labels={labels} onPreview={onPreviewAttachment} />
+      {message.mentions?.length ? <div className="mb-2 flex flex-wrap justify-end gap-1.5">
+        {message.mentions.map((reference) => <span key={reference.id} className={cn(
+          'inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs',
+          reference.valid ? 'border-primary/20 bg-accent text-primary' : 'border-warning/35 bg-warning/10 text-warning'
+        )} title={reference.detail}>
+          {mentionIcon(reference.kind)}
+          <span className="truncate">{reference.label}</span>
+          <span className="shrink-0 opacity-70">{actionLabels[reference.action]}</span>
+          {!reference.valid ? <span className="shrink-0">（已失效）</span> : null}
+          {onRemoveMention ? <button type="button" className="grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-current opacity-65 hover:bg-background hover:opacity-100" aria-label={`移除引用 ${reference.label}`} title="移除引用" onClick={() => onRemoveMention(reference.id)}><X className="size-3" /></button> : null}
+        </span>)}
+      </div> : null}
       {mention ? <div className="mb-2 flex justify-end">
         <span className={cn(
           'inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs',
@@ -411,7 +433,7 @@ function Suggestions({ suggestions, disabled, onSelect }: { suggestions?: Sugges
 export function Messages({
   messages, running, suggestions, toolRenderers, labels, icons, components,
   onRegenerate, onSuggestion, onConfirmTool, onUndoTool, onCopy, onFeedback, onPreviewAttachment,
-  hostState, onSelectRelation, onSelectRecord, onRemoveMenuMention
+  hostState, onSelectRelation, onSelectRecord, onRemoveMenuMention, onRemoveMention
 }: MessagesProps) {
   const [feedback, setFeedback] = useState<Record<string, ChatFeedback>>({})
   const displayMessages = visibleMessages(messages)
@@ -435,7 +457,7 @@ export function Messages({
         setFeedback((current) => ({ ...current, [message.id]: value }))
         onFeedback(message, value)
       }} onConfirmTool={onConfirmTool} onUndoTool={(tool) => onUndoTool?.(tool)} />
-      if (role === 'user') return <UserMessage key={message.id || `user-${index}`} message={message} icons={icons} labels={labels} onPreviewAttachment={onPreviewAttachment} onRemoveMenuMention={message.menuMention && onRemoveMenuMention ? () => onRemoveMenuMention(message.id) : undefined} />
+      if (role === 'user') return <UserMessage key={message.id || `user-${index}`} message={message} icons={icons} labels={labels} onPreviewAttachment={onPreviewAttachment} onRemoveMenuMention={message.menuMention && onRemoveMenuMention ? () => onRemoveMenuMention(message.id) : undefined} onRemoveMention={message.mentions?.length && onRemoveMention ? (referenceId) => onRemoveMention(message.id, referenceId) : undefined} />
       return null
     })}
     {running ? <div className="agui-activity flex items-center gap-1.5 py-1" aria-label={labels.generatingResponse}>{[0, 1, 2].map((index) => <React.Fragment key={index}>{icons.activity}</React.Fragment>)}</div> : <Suggestions suggestions={suggestions} disabled={false} onSelect={onSuggestion} />}

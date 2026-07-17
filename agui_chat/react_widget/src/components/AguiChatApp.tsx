@@ -107,6 +107,7 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
                 })
               }}
               onRemoveMenuMention={(messageId) => runtime.removeMenuMention(messageId)}
+              onRemoveMention={(messageId, referenceId) => runtime.removeMention(messageId, referenceId)}
               onCopy={(message) => {
                 const write = navigator.clipboard?.writeText(asText(message.content))
                 if (write) void write.catch(() => undefined)
@@ -139,12 +140,15 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
             disabled={snapshot.loadingSessions}
             attachments={props.attachments}
             menuOptions={props.menuOptions || []}
+            hostBridge={props.hostBridge}
             labels={labels}
             icons={icons}
-            onSend={(content, attachments, menuMention) => {
-              void runtime.send(content, attachments, menuMention)
+            onSend={(content, attachments, selection) => {
+              void runtime.send(content, attachments, selection)
+              const mentions = Array.isArray(selection) ? selection : undefined
+              const menuMention = selection && !Array.isArray(selection) ? selection : undefined
               observeInteraction(() => props.onInteraction?.({
-                type: 'send', content, attachments, menuMention
+                type: 'send', content, attachments, mentions, menuMention
               }))
             }}
             onStop={() => {

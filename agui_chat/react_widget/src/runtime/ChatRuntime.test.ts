@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.7.0.0')
+    expect(AguiChat.version).toBe('12.0.8.0.0')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -841,6 +841,64 @@ describe('ChatRuntime protocol handling', () => {
 
     runtime.removeMenuMention(runtime.getSnapshot().messages[0].id)
     expect(runtime.getSnapshot().messages[0].menuMention).toBeUndefined()
+  })
+
+  it('sends bound references as opaque context and enforces page-action limits', async () => {
+    let body: any
+    const fetchMock = vi.fn((_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body))
+      return Promise.resolve(sseResponse([{ type: 'RUN_FINISHED' }]))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const expiresAt = '2099-01-01 00:00:00'
+    const readReference = {
+      id: 'read-1', token: 'opaque-read-token', resourceKey: 'record-a', kind: 'record' as const,
+      action: 'read' as const, label: '客户甲', detail: '销售 / 客户', model: 'res.partner',
+      expiresAt, valid: true, pageAction: false
+    }
+    const runtime = createRuntime({ runtimeUrl: '/runtime/run' })
+    await runtime.send('比较资料', [], [readReference])
+
+    expect(runtime.getSnapshot().messages[0].mentions).toEqual([readReference])
+    expect(body.messages[0]).not.toHaveProperty('mentions')
+    expect(body.context).toContainEqual({
+      description: 'Selected Odoo references',
+      value: JSON.stringify([{
+        kind: 'record', action: 'read', token: 'opaque-read-token', label: '客户甲',
+        detail: '销售 / 客户', model: 'res.partner', expiresAt
+      }])
+    })
+    expect(JSON.stringify(body)).not.toContain('record-a')
+
+    const onError = vi.fn()
+    const rejected = createRuntime({ runtimeUrl: '/runtime/run', onError })
+    await rejected.send('连续操作', [], [
+      { ...readReference, id: 'view', token: 'view-token', resourceKey: 'record-b', action: 'view', pageAction: true },
+      { ...readReference, id: 'open', token: 'open-token', resourceKey: 'menu-a', kind: 'menu', action: 'open', pageAction: true }
+    ])
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('最多包含 1 个页面动作')
+    }))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks expired stored references invalid and blocks regeneration', async () => {
+    const onError = vi.fn()
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run', onError,
+      initialMessages: [{
+        id: 'user-expired', role: 'user', content: '读取', mentions: [{
+          id: 'expired', token: 'expired-token', resourceKey: 'expired-key', kind: 'record',
+          action: 'read', label: '旧记录', detail: '客户', model: 'res.partner',
+          expiresAt: '2000-01-01 00:00:00', valid: true, pageAction: false
+        }]
+      }, { id: 'assistant-expired', role: 'assistant', content: '旧回答' }]
+    })
+    expect(runtime.getSnapshot().messages[0].mentions?.[0].valid).toBe(false)
+    await runtime.regenerate('assistant-expired')
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('对象引用无效')
+    }))
   })
 
   it('sends record choices as structured context and rejects stale candidates', async () => {

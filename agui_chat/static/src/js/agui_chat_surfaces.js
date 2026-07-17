@@ -6,7 +6,7 @@ odoo.define("agui_chat.surfaces", function (require) {
     var core = require("web.core");
     var ChatBridge = require("agui_chat.host_bridge");
     var CHAT_CSS_URL = "/agui_chat/static/lib/agui-chat-react/" +
-        "agui_chat_widget.12.0.7.0.0.css";
+        "agui_chat_widget.12.0.8.0.0.css";
     var DIRECTIONS = ["left", "right", "top", "bottom"];
     var WEBCLIENT_CLASSES = [
         "o_agui_chat_webclient_dock_left", "o_agui_chat_webclient_dock_right",
@@ -76,6 +76,7 @@ odoo.define("agui_chat.surfaces", function (require) {
             this.runtimeStyleFailed = false;
             this.runtimeStyleError = "";
             this.runtimeMountRequested = false;
+            this._chatFocusLease = null;
             this.subscribed = false;
             this.interaction = null;
             this._boundPointerMove = this._onWindowPointerMove.bind(this);
@@ -146,6 +147,7 @@ odoo.define("agui_chat.surfaces", function (require) {
         },
 
         destroy: function () {
+            this._cancelChatFocusLease();
             if (_.isFunction(window.removeEventListener)) window.removeEventListener("resize", this._boundViewportResize);
             this._stopInteraction();
             this._clearWebClientLayout();
@@ -204,7 +206,10 @@ odoo.define("agui_chat.surfaces", function (require) {
 
         _setEnabled: function (enabled) {
             setClass(this.$el, "o_agui_chat_enabled", enabled);
-            if (!enabled) this._clearWebClientLayout();
+            if (!enabled) {
+                this._cancelChatFocusLease();
+                this._clearWebClientLayout();
+            }
         },
 
         _mountOnce: function () {
@@ -245,6 +250,147 @@ odoo.define("agui_chat.surfaces", function (require) {
                 menuOptions: this.call("agui_host", "getMenuOptions"),
                 surface: this.surface,
             });
+            if (this._chatFocusLease) this._chatFocusLease.schedule();
+        },
+
+        _withChatFocusPreserved: function (task) {
+            var self = this;
+            var root = this.runtimeHost && this.runtimeHost.shadowRoot;
+            var active = root && root.activeElement;
+            var lease;
+            var result;
+            if (!this.dockOpen || !root || !active || !root.contains(active)) return task();
+
+            this._cancelChatFocusLease();
+            lease = {
+                root: root,
+                target: active,
+                selection: null,
+                frame: null,
+                cancelled: false,
+                finished: false,
+            };
+
+            function captureSelection(target) {
+                lease.selection = null;
+                try {
+                    if (typeof target.selectionStart === "number" && typeof target.selectionEnd === "number") {
+                        lease.selection = {
+                            start: target.selectionStart,
+                            end: target.selectionEnd,
+                            direction: target.selectionDirection,
+                        };
+                    }
+                } catch (error) {}
+            }
+
+            function isVisibleAndEnabled(target) {
+                var style;
+                if (!target || target.disabled || !lease.root.contains(target) || target.isConnected === false) return false;
+                if (target.getClientRects && !target.getClientRects().length) return false;
+                if (_.isFunction(window.getComputedStyle)) {
+                    style = window.getComputedStyle(target);
+                    if (style.display === "none" || style.visibility === "hidden") return false;
+                }
+                return true;
+            }
+
+            function restore() {
+                var target = lease.target;
+                var detached = !target || !lease.root.contains(target) || target.isConnected === false;
+                var selection = lease.selection;
+                if (lease.cancelled || self._chatFocusLease !== lease || !self.dockOpen ||
+                        !self.runtimeHost || self.runtimeHost.shadowRoot !== lease.root) return;
+                if (detached) target = lease.root.querySelector("textarea:not([disabled])");
+                if (!isVisibleAndEnabled(target)) return;
+                try {
+                    target.focus({preventScroll: true});
+                } catch (error) {
+                    target.focus();
+                }
+                if (selection && _.isFunction(target.setSelectionRange)) {
+                    try {
+                        target.setSelectionRange(
+                            selection.start,
+                            selection.end,
+                            selection.direction
+                        );
+                    } catch (error) {}
+                }
+            }
+
+            function cleanup() {
+                lease.root.removeEventListener("focusin", onFocusIn);
+                document.removeEventListener("pointerdown", onPointerDown, true);
+                document.removeEventListener("keydown", onKeyDown, true);
+                if (self._chatFocusLease === lease) self._chatFocusLease = null;
+            }
+
+            function cancel() {
+                if (lease.cancelled) return;
+                lease.cancelled = true;
+                if (lease.frame !== null && _.isFunction(window.cancelAnimationFrame)) {
+                    window.cancelAnimationFrame(lease.frame);
+                }
+                lease.frame = null;
+                cleanup();
+            }
+
+            function onFocusIn(event) {
+                if (!event.target || !lease.root.contains(event.target)) return;
+                lease.target = event.target;
+                captureSelection(event.target);
+            }
+
+            function onPointerDown(event) {
+                var path = _.isFunction(event.composedPath) ? event.composedPath() : [];
+                var inside = path.indexOf(self.runtimeHost) !== -1 ||
+                    self.runtimeHost && self.runtimeHost.contains(event.target);
+                if (!inside) cancel();
+            }
+
+            function onKeyDown(event) {
+                if (event.key === "Tab") cancel();
+            }
+
+            lease.schedule = function () {
+                if (lease.cancelled || lease.frame !== null) return;
+                lease.frame = window.requestAnimationFrame(function () {
+                    lease.frame = null;
+                    restore();
+                    if (lease.finished) cleanup();
+                });
+            };
+            lease.cancel = cancel;
+            captureSelection(active);
+            root.addEventListener("focusin", onFocusIn);
+            document.addEventListener("pointerdown", onPointerDown, true);
+            document.addEventListener("keydown", onKeyDown, true);
+            this._chatFocusLease = lease;
+
+            function finish() {
+                if (lease.cancelled || self._chatFocusLease !== lease) return;
+                lease.finished = true;
+                lease.schedule();
+            }
+
+            try {
+                result = task();
+            } catch (error) {
+                cancel();
+                throw error;
+            }
+            return $.when(result).then(function (value) {
+                finish();
+                return value;
+            }, function (error) {
+                finish();
+                return $.Deferred().reject(error).promise();
+            });
+        },
+
+        _cancelChatFocusLease: function () {
+            if (this._chatFocusLease) this._chatFocusLease.cancel();
         },
 
         openSurface: function (surface) {
@@ -361,6 +507,7 @@ odoo.define("agui_chat.surfaces", function (require) {
         },
 
         _onClose: function () {
+            this._cancelChatFocusLease();
             this.dockOpen = false;
             setClass(this.$el, "o_agui_chat_dock_open", false);
             setClass(this.$el, "o_agui_chat_standalone_active", false);

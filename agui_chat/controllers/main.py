@@ -2,12 +2,14 @@
 import base64
 import json
 import logging
+import hashlib
 
 from odoo import http
 from odoo.exceptions import AccessError, ValidationError
 from odoo.http import content_disposition, request
 
 from ..models.agui_chat_config import COMMAND_CATALOG_HASH, MODULE_VERSION, PROTOCOL
+from ..models.agui_chat_mention import MentionTokenError
 
 
 _logger = logging.getLogger(__name__)
@@ -159,10 +161,61 @@ class AguiChatController(http.Controller):
         session.write({"active": False})
         return {"ok": True}
 
+    @http.route("/agui_chat/mention/search", type="json", auth="user")
+    def mention_search(self, query="", scope="all", model_scope=None,
+                       current_model=None, recent_models=None, current_filter=None):
+        try:
+            return request.env["agui.chat.mention.token"].search_mentions(
+                query, scope, model_scope, current_model,
+                recent_models if isinstance(recent_models, list) else [],
+                current_filter, self._session_key(),
+            )
+        except (AccessError, MentionTokenError, ValueError) as error:
+            return {
+                "ok": False,
+                "code": getattr(error, "code", "mention_search_rejected"),
+                "error": str(error),
+            }
+
+    @http.route("/agui_chat/mention/bind", type="json", auth="user")
+    def mention_bind(self, candidate_token, action):
+        try:
+            reference = request.env["agui.chat.mention.token"].bind_mention(
+                candidate_token, action, self._session_key(),
+            )
+            return {"ok": True, "reference": reference}
+        except (AccessError, MentionTokenError, ValueError) as error:
+            return {
+                "ok": False,
+                "code": getattr(error, "code", "mention_bind_rejected"),
+                "error": str(error),
+            }
+
+    @http.route("/agui_chat/mention/read", type="json", auth="user")
+    def mention_read(self, tokens, authorization_token):
+        try:
+            authorization = self._load_authorization(authorization_token)
+            if authorization.tool_name != "odoo.read_mentioned_records" or authorization.state != "executing":
+                raise MentionTokenError("authorization_invalid", "读取授权无效。")
+            stored = json.loads(authorization.arguments_json or "{}")
+            if stored.get("tokens") != tokens:
+                raise MentionTokenError("authorization_payload_mismatch", "读取授权与引用不匹配。")
+            return request.env["agui.chat.mention.token"].read_tokens(
+                tokens, self._session_key(),
+            )
+        except (AccessError, MentionTokenError, ValueError) as error:
+            return {
+                "ok": False,
+                "code": getattr(error, "code", "mention_read_rejected"),
+                "error": str(error),
+            }
+
     @http.route("/agui_chat/host_command", type="json", auth="user")
     def host_command(self, phase, call=None, authorization_id=None, approved=False, result=None):
         try:
-            authorizations = request.env["agui.chat.tool.authorization"]
+            authorizations = request.env["agui.chat.tool.authorization"].with_context(
+                agui_session_key=self._session_key()
+            )
             if phase == "prepare":
                 return authorizations.prepare_host_command(call)
             authorization = self._load_authorization(authorization_id)
@@ -251,3 +304,7 @@ class AguiChatController(http.Controller):
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    def _session_key(self):
+        sid = str(getattr(request.session, "sid", "") or "")
+        return hashlib.sha256(sid.encode("utf-8")).hexdigest()

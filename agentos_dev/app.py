@@ -10,8 +10,8 @@ from fastapi import FastAPI
 
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.7.0.0"
-COMMAND_CATALOG_HASH = "53d746a41bb0bbfcb97ba179c1f4f8f1e4d5e4f274cb8358e3562368c99ccdf6"
+BUNDLE_VERSION = "12.0.8.0.0"
+COMMAND_CATALOG_HASH = "691a5cd1ba9515e767701306399585c5f225a98da3c0f0ca54e1513d9512c574"
 DEFAULT_ENV_FILE = "/home/junge/pros/agents_app/.env"
 DEFAULT_MODEL_ID = "qwen3.6-35b-a3b"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -79,6 +79,8 @@ assistant = Agent(
         "涉及 Odoo 业务数据时仅使用请求中的 Odoo 页面状态和本次请求明确选择的菜单或记录候选；页面状态无法确认的数据不要猜测。",
         "调用 odoo.open_menu 时，target 必须原样复制 Odoo host snapshot.pageTarget；调用其他 Odoo 页面工具时，target 必须原样复制 Odoo host snapshot.viewTarget。不得从 action.resId 推导当前表单记录。",
         "上下文存在 Selected Odoo menu 时，先用其中的 menuId 和当前 PageTarget 调用 odoo.open_menu；只能使用该菜单，不能改选或猜测其他菜单。导航后必须等待客户端返回新快照再决定下一步。",
+        "上下文存在 Selected Odoo references 时，只能使用其中原样提供的 token 和绑定动作，不得改选对象、猜测对象或把 read/view 动作升级为 edit。多个 read 记录必须先用当前 PageTarget 一次调用 odoo.read_mentioned_records 批量读取；唯一的页面动作随后执行，并使用当前 PageTarget。菜单 open/create 分别调用 odoo.open_mentioned_menu，记录 view/edit 调用 odoo.open_mentioned_record，收藏或临时筛选 apply 调用 odoo.apply_mentioned_filter。",
+        "对象引用工具返回 mention_token_expired、mention_permission_revoked、mention_resource_unavailable 或 policy_denied 时，必须准确报告令牌过期、权限撤销、资源不可用或策略拒绝，不得改用其他对象或旧页面工具绕过。",
         "上下文不存在 Selected Odoo menu 时，只能操作当前 action；当前 action 无法满足意图时，请用户用 @ 选择菜单，不要从其他菜单中猜目标。",
         "筛选只能使用当前快照 capabilities.filterFields 中的字段和运算符，提交 JSON domain 与简短可见标签；即使只有一个条件也必须使用条件列表，例如 [[\"id\", \"=\", 1]]；禁止字符串 domain、点号字段和表达式。",
         "严格区分搜索、查看和编辑记录。用户仅要求搜索、筛选或查找记录时，只调用 odoo.apply_filter；无论命中数量多少都必须停止，不得调用 odoo.open_record。只有用户明确要求打开、查看或编辑记录时，才先按名称调用 odoo.apply_filter：唯一命中后立即使用返回的记录 token 调用 odoo.open_record，多条命中时停止并等待用户选择。打开或查看必须使用 readonly 模式；只有用户明确要求编辑或修改时才使用 edit 模式，不得因唯一命中自行升级用户意图。Selected Odoo record candidate 只能在其 snapshotId 和 hostRevision 仍匹配时使用。若工具返回 policy_denied，应准确说明服务器策略拒绝了操作，不得归因于视图或 token。",

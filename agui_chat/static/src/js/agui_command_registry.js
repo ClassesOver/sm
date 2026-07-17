@@ -49,6 +49,37 @@ odoo.define("agui_chat.command_registry", function (require) {
 
     var CATALOG = [
         {
+            name: "odoo.read_mentioned_records",
+            description: "批量读取用户明确选择且绑定为引用数据动作的 1 至 5 条记录。",
+            parameters: pageSchema({
+                tokens: {
+                    type: "array", minItems: 1, maxItems: 5, uniqueItems: true,
+                    items: {type: "string", minLength: 1, maxLength: 160},
+                },
+            }, ["tokens"]),
+        },
+        {
+            name: "odoo.open_mentioned_menu",
+            description: "执行用户明确绑定的菜单打开或新建动作。",
+            parameters: pageSchema({
+                token: {type: "string", minLength: 1, maxLength: 160},
+            }, ["token"]),
+        },
+        {
+            name: "odoo.open_mentioned_record",
+            description: "执行用户明确绑定的记录查看或编辑动作。",
+            parameters: pageSchema({
+                token: {type: "string", minLength: 1, maxLength: 160},
+            }, ["token"]),
+        },
+        {
+            name: "odoo.apply_mentioned_filter",
+            description: "应用用户明确绑定的收藏筛选或当前临时筛选，并替换当前查询。",
+            parameters: pageSchema({
+                token: {type: "string", minLength: 1, maxLength: 160},
+            }, ["token"]),
+        },
+        {
             name: "odoo.open_menu",
             description: "打开用户已明确选择的 Odoo 窗口菜单；不要猜测 menuId。",
             parameters: pageSchema({
@@ -93,10 +124,22 @@ odoo.define("agui_chat.command_registry", function (require) {
             description: "使用当前表单的域和上下文搜索可写关系字段。",
             parameters: schema({
                 field: {type: "string", minLength: 1, maxLength: 128},
+                rowToken: {type: "string", minLength: 1, maxLength: 160},
                 query: {type: "string", minLength: 1, maxLength: 120},
                 operation: {type: "string", enum: ["set", "link", "unlink"]},
                 limit: {type: "integer", minimum: 1, maximum: 20},
             }, ["field", "query", "operation"]),
+        },
+        {
+            name: "odoo.stage_current_form",
+            description: "在当前原生表单暂存字段并执行 onchange，但不保存；修改 One2many 行时必须使用当前编辑态快照中的 rowToken。",
+            parameters: schema({
+                rowToken: {type: "string", minLength: 1, maxLength: 160},
+                patch: {
+                    type: "object",
+                    description: "当前表单或当前快照签发子表行的字段名到新值映射。",
+                },
+            }, ["patch"]),
         },
         {
             name: "odoo.patch_current_form",
@@ -127,10 +170,17 @@ odoo.define("agui_chat.command_registry", function (require) {
 
     var COMMANDS = {};
     var WRITE_COMMANDS = {
+        "odoo.stage_current_form": true,
         "odoo.patch_current_form": true,
         "odoo.undo_current_form": true,
         "odoo.save_current_form": true,
         "odoo.discard_current_form": true,
+    };
+    var BOUND_MENTION_COMMANDS = {
+        "odoo.read_mentioned_records": true,
+        "odoo.open_mentioned_menu": true,
+        "odoo.open_mentioned_record": true,
+        "odoo.apply_mentioned_filter": true,
     };
     function commandError(code, message) {
         var error = new Error(message || code);
@@ -233,8 +283,108 @@ odoo.define("agui_chat.command_registry", function (require) {
         });
     }
 
+    function resolveRowBinding(context, args) {
+        var row = args && args.rowToken &&
+            context.resolveToken(args.rowToken, "x2many_row");
+        if (!args || !args.rowToken) {
+            return false;
+        }
+        if (!row || !context.validateToken(row, "x2many_row")) {
+            throw commandError("stale_x2many_row_token", "One2many 行令牌已过期，请使用最新快照重试。");
+        }
+        return row;
+    }
+
     COMMANDS["odoo.search_relation"] = function (context, args) {
-        return Adapter.searchRelation(requireForm(context), context.getSnapshot(), args);
+        return Adapter.searchRelation(
+            requireForm(context), context.getSnapshot(), args, resolveRowBinding(context, args)
+        );
+    };
+
+    function mentionBinding(args, kind) {
+        var bindings = args && args.__mention;
+        var binding = _.isArray(bindings) && bindings.length === 1 ? bindings[0] : false;
+        if (!binding || binding.kind !== kind) {
+            throw commandError("invalid_mention_binding", "对象引用绑定无效。");
+        }
+        return binding;
+    }
+
+    function openMentionMenu(context, binding) {
+        var before = context.getSnapshot();
+        rejectUnsavedChanges(context);
+        return $.when(context.openMenu(binding.menu_id)).then(function () {
+            return context.waitForSnapshotChange(before.snapshotId);
+        });
+    }
+
+    COMMANDS["odoo.read_mentioned_records"] = function (context, args, call) {
+        if (!_.isArray(args.__mention) || args.__mention.length !== args.tokens.length) {
+            throw commandError("invalid_mention_binding", "记录引用绑定无效。");
+        }
+        return context.readMentions(args.tokens, call.authorizationId);
+    };
+
+    COMMANDS["odoo.open_mentioned_menu"] = function (context, args) {
+        var binding = mentionBinding(args, "menu");
+        return openMentionMenu(context, binding).then(function (snapshot) {
+            if (binding.action !== "create") {
+                return {opened: true, mode: "open", label: binding.label};
+            }
+            var controller = context.getController();
+            if (!controller || !(snapshot.capabilities && snapshot.capabilities.create)) {
+                throw commandError("create_not_allowed", "当前菜单不允许新建记录。");
+            }
+            return $.when(context.openCreate(controller)).then(function () {
+                return context.waitForSnapshotChange(snapshot.snapshotId);
+            }).then(function (next) {
+                return {opened: next.snapshotId !== snapshot.snapshotId, mode: "create", label: binding.label};
+            });
+        });
+    };
+
+    COMMANDS["odoo.open_mentioned_record"] = function (context, args) {
+        var binding = mentionBinding(args, "record");
+        var mode = binding.action === "edit" ? "edit" : "readonly";
+        return openMentionMenu(context, binding).then(function (snapshot) {
+            var model = snapshot.record && snapshot.record.model ||
+                snapshot.selection && snapshot.selection.model;
+            if (model !== binding.model) {
+                throw commandError("mention_model_mismatch", "菜单与所选记录模型不匹配。");
+            }
+            return $.when(context.openMentionedRecord(binding.record_id, mode)).then(function () {
+                return context.waitForSnapshotChange(snapshot.snapshotId);
+            });
+        }).then(function (snapshot) {
+            if (!snapshot.record || snapshot.record.model !== binding.model ||
+                    snapshot.record.resId !== binding.record_id) {
+                throw commandError("record_open_failed", "客户端未进入所选记录表单。");
+            }
+            if (mode === "edit" && snapshot.controller.mode !== "edit") {
+                throw commandError("edit_mode_unavailable", "所选记录未进入编辑模式。");
+            }
+            return {opened: true, mode: mode, displayName: binding.label};
+        });
+    };
+
+    COMMANDS["odoo.apply_mentioned_filter"] = function (context, args) {
+        var bindings = args && args.__mention;
+        var binding = _.isArray(bindings) && bindings.length === 1 ? bindings[0] : false;
+        if (!binding || ["saved_filter", "current_filter"].indexOf(binding.kind) === -1) {
+            throw commandError("invalid_mention_binding", "筛选引用绑定无效。");
+        }
+        return openMentionMenu(context, binding).then(function (snapshot) {
+            return $.when(context.applyMentionFilter(binding)).then(function () {
+                return context.waitForSnapshotChange(snapshot.snapshotId);
+            });
+        }).then(function (snapshot) {
+            return {
+                applied: true,
+                label: binding.label,
+                snapshotId: snapshot.snapshotId,
+                hostRevision: snapshot.hostRevision,
+            };
+        });
     };
 
     COMMANDS["odoo.open_menu"] = function (context, args) {
@@ -338,11 +488,12 @@ odoo.define("agui_chat.command_registry", function (require) {
     COMMANDS["odoo.activate_view_control"] = function (context, args) {
         var before = context.getSnapshot();
         var control = context.resolveToken(args.controlToken, "control");
-        requireView(context, ["kanban"]);
+        requireView(context, ["form", "list", "kanban"]);
         if (!control || !context.validateToken(control, "control")) {
             throw commandError("stale_control_token", "页面控件已过期，请刷新页面后重试。");
         }
-        if (["open", "edit", "action"].indexOf(control.type) !== -1) {
+        if (["open", "edit", "action"].indexOf(control.type) !== -1 &&
+                !control.x2manyAction) {
             rejectUnsavedChanges(context);
         }
         return $.when(context.activateControl(control)).then(function () {
@@ -351,6 +502,54 @@ odoo.define("agui_chat.command_registry", function (require) {
                 controlType: control.type,
                 label: control.label,
                 recordLabel: control.recordLabel,
+            });
+        });
+    };
+
+    COMMANDS["odoo.stage_current_form"] = function (context, args) {
+        var controller = requireForm(context);
+        if (args.rowToken && controller.mode !== "edit") {
+            throw commandError(
+                "edit_mode_required",
+                "修改 One2many 行前必须先进入编辑模式并使用新快照中的行令牌。"
+            );
+        }
+        return ensureFormEditMode(context, controller).then(function (editable) {
+            var rowBinding = resolveRowBinding(context, args);
+            var options = {allowStaged: true, rowBinding: rowBinding};
+            var preview = Adapter.buildPatchPreview(
+                controller, editable.snapshot, args, options
+            );
+            return Adapter.applyPatch(
+                controller, editable.snapshot, args, options
+            ).then(function (prepared) {
+                if (prepared.rejected.length) {
+                    var code = prepared.rejected.length === 1 ?
+                        prepared.rejected[0].code : "patch_rejected";
+                    throw _.extend(commandError(code, "表单暂存变更已被拒绝。"), {
+                        rejected: prepared.rejected,
+                    });
+                }
+                Adapter.markStagedPatch(controller, rowBinding, prepared.applied);
+                return context.refresh(controller, true).then(function (snapshot) {
+                    return {
+                        applied: prepared.applied,
+                        rejected: [],
+                        staged: true,
+                        saved: false,
+                        enteredEditMode: editable.enteredEditMode,
+                        rowToken: rowBinding ? args.rowToken : false,
+                        preview: preview,
+                        dirtyFields: snapshot.record && snapshot.record.dirtyFields || [],
+                    };
+                });
+            }, function (error) {
+                if (error && error.code) {
+                    throw error;
+                }
+                throw commandError(
+                    "onchange_failed", error && error.message || "表单 onchange 执行失败。"
+                );
             });
         });
     };
@@ -518,12 +717,12 @@ odoo.define("agui_chat.command_registry", function (require) {
         if (!COMMANDS[tool]) {
             return $.Deferred().reject(commandError("unsupported_command", "不支持此页面命令。")).promise();
         }
-        if ((WRITE_COMMANDS[tool] || control && control.type === "object") &&
+        if ((WRITE_COMMANDS[tool] || BOUND_MENTION_COMMANDS[tool] || control && control.type === "object") &&
                 !(call && call.authorizationId)) {
             return $.Deferred().reject(commandError("authorization_required", "此命令需要服务端授权。")).promise();
         }
         try {
-            return $.when(COMMANDS[tool](context, args));
+            return $.when(COMMANDS[tool](context, args, call));
         } catch (error) {
             return $.Deferred().reject(error).promise();
         }

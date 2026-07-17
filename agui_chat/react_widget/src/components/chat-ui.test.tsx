@@ -165,6 +165,142 @@ describe('chat customization', () => {
     expect(screen.queryByText('销售 / 客户')).toBeNull()
   })
 
+  it('binds multiple record references only after an explicit action choice', async () => {
+    const onSend = vi.fn()
+    const expiresAt = '2099-01-01 00:00:00'
+    const candidates = {
+      客户: {
+        candidateToken: 'candidate-customer', resourceKey: 'customer', kind: 'record' as const,
+        label: '客户甲', detail: '销售 / 客户', model: 'res.partner',
+        actions: ['read', 'view'] as const, expiresAt
+      },
+      线索: {
+        candidateToken: 'candidate-lead', resourceKey: 'lead', kind: 'record' as const,
+        label: '线索乙', detail: '销售 / 线索', model: 'crm.lead',
+        actions: ['read', 'view'] as const, expiresAt
+      }
+    }
+    const searchMentions = vi.fn(async ({ query }: { query: string }) => ({
+      candidates: query.includes('线索') ? [candidates.线索] : [candidates.客户],
+      modelScopes: []
+    }))
+    const bindMention = vi.fn(async ({ candidateToken, action }: { candidateToken: string; action: string }) => {
+      const candidate = candidateToken === candidates.线索.candidateToken ? candidates.线索 : candidates.客户
+      return {
+        ok: true,
+        reference: {
+          id: `bound-${candidate.resourceKey}`, token: `bound-${candidate.resourceKey}`,
+          resourceKey: candidate.resourceKey, kind: candidate.kind, action: action as 'read',
+          label: candidate.label, detail: candidate.detail, model: candidate.model,
+          expiresAt, valid: true, pageAction: false
+        }
+      }
+    })
+    render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
+      hostBridge={{ searchMentions: searchMentions as any, bindMention: bindMention as any }}
+      onSend={onSend} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
+
+    fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
+    expect(await screen.findByText('客户甲')).toBeTruthy()
+    fireEvent.click(screen.getByText('客户甲'))
+    expect(bindMention).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('option', { name: '引用数据' }))
+    await waitFor(() => expect(bindMention).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(input, { target: { value: '@线索', selectionStart: 3 } })
+    expect(await screen.findByText('线索乙')).toBeTruthy()
+    fireEvent.click(screen.getByText('线索乙'))
+    fireEvent.click(screen.getByRole('option', { name: '引用数据' }))
+    await waitFor(() => expect(bindMention).toHaveBeenCalledTimes(2))
+    fireEvent.click(screen.getByRole('button', { name: labels.sendMessage }))
+    expect(onSend).toHaveBeenCalledWith('', [], [
+      expect.objectContaining({ resourceKey: 'customer', action: 'read' }),
+      expect.objectContaining({ resourceKey: 'lead', action: 'read' })
+    ])
+  })
+
+  it('rejects a second page-changing reference before binding it', async () => {
+    const expiresAt = '2099-01-01 00:00:00'
+    const searchMentions = vi.fn(async ({ query }: { query: string }) => ({
+      candidates: [{
+        candidateToken: query.includes('客户') ? 'record' : 'menu',
+        resourceKey: query.includes('客户') ? 'record-key' : 'menu-key',
+        kind: query.includes('客户') ? 'record' : 'menu',
+        label: query.includes('客户') ? '客户甲' : '客户菜单', detail: '销售 / 客户',
+        model: 'res.partner', actions: query.includes('客户') ? ['view'] : ['open'], expiresAt
+      }],
+      modelScopes: []
+    }))
+    const bindMention = vi.fn(async ({ candidateToken, action }: { candidateToken: string; action: string }) => ({
+      ok: true,
+      reference: {
+        id: candidateToken, token: candidateToken, resourceKey: `${candidateToken}-key`,
+        kind: candidateToken === 'record' ? 'record' : 'menu', action,
+        label: candidateToken === 'record' ? '客户甲' : '客户菜单', detail: '销售 / 客户',
+        model: 'res.partner', expiresAt, valid: true, pageAction: true
+      }
+    }))
+    render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
+      hostBridge={{ searchMentions: searchMentions as any, bindMention: bindMention as any }}
+      onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
+    fireEvent.change(input, { target: { value: '@菜单', selectionStart: 3 } })
+    fireEvent.click(await screen.findByText('客户菜单'))
+    fireEvent.click(screen.getByRole('option', { name: '打开' }))
+    await waitFor(() => expect(bindMention).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
+    fireEvent.click(await screen.findByText('客户甲'))
+    fireEvent.click(screen.getByRole('option', { name: '打开查看' }))
+    expect(await screen.findByText('每条消息最多包含 1 个页面动作')).toBeTruthy()
+    expect(bindMention).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps only the newest asynchronous mention search result', async () => {
+    vi.useFakeTimers()
+    try {
+      let resolveOld!: (value: any) => void
+      let resolveNew!: (value: any) => void
+      const oldResult = new Promise((resolve) => { resolveOld = resolve })
+      const newResult = new Promise((resolve) => { resolveNew = resolve })
+      const searchMentions = vi.fn(({ query }: { query: string }) =>
+        query.includes('新') ? newResult : oldResult
+      )
+      render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
+        hostBridge={{ searchMentions: searchMentions as any, bindMention: vi.fn() as any }}
+        onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+      const input = screen.getByPlaceholderText(labels.inputPlaceholder)
+      fireEvent.change(input, { target: { value: '@旧查询', selectionStart: 4 } })
+      await act(async () => { vi.advanceTimersByTime(300) })
+      fireEvent.change(input, { target: { value: '@新查询', selectionStart: 4 } })
+      await act(async () => { vi.advanceTimersByTime(300) })
+
+      resolveNew({
+        candidates: [{
+          candidateToken: 'new', resourceKey: 'new-key', kind: 'record', label: '新结果',
+          detail: '客户', model: 'res.partner', actions: ['read'], expiresAt: '2099-01-01 00:00:00'
+        }],
+        modelScopes: []
+      })
+      await act(async () => { await Promise.resolve() })
+      expect(screen.getByText('新结果')).toBeTruthy()
+
+      resolveOld({
+        candidates: [{
+          candidateToken: 'old', resourceKey: 'old-key', kind: 'record', label: '旧结果',
+          detail: '客户', model: 'res.partner', actions: ['read'], expiresAt: '2099-01-01 00:00:00'
+        }],
+        modelScopes: []
+      })
+      await act(async () => { await Promise.resolve() })
+      expect(screen.queryByText('旧结果')).toBeNull()
+      expect(screen.getByText('新结果')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows and removes an invalid menu mention from a sent message', () => {
     const onRemoveMenuMention = vi.fn()
     renderMessages({

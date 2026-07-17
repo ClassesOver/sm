@@ -68,7 +68,11 @@ async function loginToOdoo(page: Page) {
   await expect(page.locator('.o_agui_chat_runtime_host')).toHaveCount(1)
   await page.waitForFunction(() => {
     const webClient = (globalThis as any).odoo?.__DEBUG__?.services?.['web.web_client']
-    return Boolean(webClient?.action_manager?.getCurrentController())
+    const manager = webClient?.aguiChatSurfaceManager
+    return Boolean(
+      webClient?.action_manager?.getCurrentController() &&
+      manager?.bridge?.catalog?.length
+    )
   })
 }
 
@@ -530,6 +534,95 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
       saved: true,
       enteredEditMode: true
     })
+  })
+
+  test('host command 更新表单 DOM 后保留聊天草稿焦点和选区', async ({ page }) => {
+    await openFirstPartner(page, false)
+    await openAssistant(page)
+    await page.getByRole('button', { name: '新建对话' }).click()
+    const input = page.getByPlaceholder('输入消息，开始提问')
+    const draft = '未发送的聊天草稿'
+    await expect(input).toBeEnabled()
+    await input.fill(draft)
+    await input.evaluate((element: HTMLTextAreaElement) => {
+      element.focus()
+      element.setSelectionRange(2, 6, 'backward')
+    })
+
+    const entered = await executeTool(page, 'odoo.enter_edit_mode')
+    expect(entered.result).toMatchObject({ ok: true, editing: true, enteredEditMode: true })
+    await expect.poll(() => currentHostState(page).then((state) => state.mode)).toBe('edit')
+    await expect(input).toBeFocused()
+    await expect(input).toHaveValue(draft)
+    expect(await input.evaluate((element: HTMLTextAreaElement) => ({
+      start: element.selectionStart,
+      end: element.selectionEnd,
+      direction: element.selectionDirection
+    }))).toEqual({ start: 2, end: 6, direction: 'backward' })
+
+    await page.keyboard.insertText('继续')
+    await expect(input).toHaveValue(`${draft.slice(0, 2)}继续${draft.slice(6)}`)
+  })
+
+  test('chat 未聚焦时 host command 不主动聚焦 chat', async ({ page }) => {
+    await openFirstPartner(page, false)
+    await openAssistant(page)
+    await page.getByRole('button', { name: '新建对话' }).click()
+    const input = page.getByPlaceholder('输入消息，开始提问')
+    await expect(input).toBeEnabled()
+    await input.blur()
+    await expect(input).not.toBeFocused()
+
+    const entered = await executeTool(page, 'odoo.enter_edit_mode')
+    expect(entered.result).toMatchObject({ ok: true, editing: true, enteredEditMode: true })
+    await expect.poll(() => currentHostState(page).then((state) => state.mode)).toBe('edit')
+    await expect(input).not.toBeFocused()
+  })
+
+  test('用户在 host command 期间切到 Odoo 字段后 chat 不抢回焦点', async ({ page }) => {
+    await openFirstPartner(page, false)
+    await openAssistant(page)
+    await page.evaluate(() => {
+      const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
+      manager.openSurface('dock')
+    })
+    await page.getByRole('button', { name: '新建对话' }).click()
+    const input = page.getByPlaceholder('输入消息，开始提问')
+    await expect(input).toBeEnabled()
+    await input.fill('切换焦点草稿')
+    await input.focus()
+    await page.evaluate(() => {
+      const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
+      const originalCall = manager.call
+      manager.call = function (this: any, serviceName: string, methodName: string, ...args: unknown[]) {
+        const result = originalCall.call(this, serviceName, methodName, ...args)
+        if (serviceName !== 'agui_host' || methodName !== 'executeHostCommand') return result
+        return result.then((value: unknown) => {
+          const deferred = (globalThis as any).$.Deferred()
+          manager.__aguiE2eReleaseHostCommand = () => deferred.resolve(value)
+          return deferred.promise()
+        })
+      }
+    })
+
+    const execution = executeTool(page, 'odoo.enter_edit_mode')
+    await page.waitForFunction(() => {
+      const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
+      return typeof manager.__aguiE2eReleaseHostCommand === 'function'
+    })
+    const odooInput = page.getByRole('textbox', { name: '名称', exact: true }).first()
+    await odooInput.click()
+    await expect(odooInput).toBeFocused()
+    await page.evaluate(() => {
+      const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
+      manager.__aguiE2eReleaseHostCommand()
+    })
+
+    const entered = await execution
+    expect(entered.result).toMatchObject({ ok: true, editing: true, enteredEditMode: true })
+    await expect(odooInput).toBeFocused()
+    await expect(input).not.toBeFocused()
+    await expect(input).toHaveValue('切换焦点草稿')
   })
 
   test('AgentOS 客户端工具续跑只保留一次最终回复', async ({ page }) => {

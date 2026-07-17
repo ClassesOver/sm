@@ -7,9 +7,18 @@ from odoo.exceptions import ValidationError
 
 
 PROTOCOL = "agui.odoo.v2"
-MODULE_VERSION = "12.0.7.0.0"
-COMMAND_CATALOG_REVISION = 4
+MODULE_VERSION = "12.0.8.0.0"
+COMMAND_CATALOG_REVISION = 5
+DEFAULT_SENSITIVE_FIELD_NAMES = (
+    "phone", "mobile", "phone_number", "mobile_number",
+    "bank_account", "bank_account_id", "acc_number", "card_number",
+    "vat", "tax_id", "identity_number", "id_card", "id_number",
+)
 HOST_COMMAND_NAMES = (
+    "odoo.read_mentioned_records",
+    "odoo.open_mentioned_menu",
+    "odoo.open_mentioned_record",
+    "odoo.apply_mentioned_filter",
     "odoo.open_menu",
     "odoo.apply_filter",
     "odoo.open_record",
@@ -17,6 +26,7 @@ HOST_COMMAND_NAMES = (
     "odoo.enter_edit_mode",
     "odoo.activate_view_control",
     "odoo.search_relation",
+    "odoo.stage_current_form",
     "odoo.patch_current_form",
     "odoo.validate_current_form",
     "odoo.save_current_form",
@@ -175,9 +185,10 @@ class AguiChatConfig(models.Model):
 
     def sensitive_fields(self):
         self.ensure_one()
-        return [
+        configured = {
             item.strip() for item in (self.sensitive_field_names or "").split(",") if item.strip()
-        ]
+        }
+        return sorted(configured.union(DEFAULT_SENSITIVE_FIELD_NAMES))
 
     @api.model
     def get_active_config(self):

@@ -1,8 +1,9 @@
-import { AtSign, UploadCloud, X } from 'lucide-react'
+import { AtSign, Database, Filter, Menu, SlidersHorizontal, UploadCloud, X } from 'lucide-react'
 import { ClipboardEvent, FormEvent, KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type {
-  AttachmentOptions, AttachmentRef, ChatIcons, ChatLabels, MenuMention, MenuMentionOption
+  AttachmentOptions, AttachmentRef, ChatIcons, ChatLabels, HostBridge, MenuMention,
+  MenuMentionOption, MentionAction, MentionCandidate, MentionReference, MentionScope
 } from '../types'
 import { cn } from '../lib'
 import { Button } from './Button'
@@ -20,6 +21,15 @@ const ACCEPTED_TYPES: Record<string, 'image' | 'document'> = {
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'document'
 }
 const MB = 1024 * 1024
+const MAX_MENTIONS = 5
+const PAGE_ACTIONS = new Set<MentionAction>(['open', 'create', 'view', 'edit', 'apply'])
+const ACTION_LABELS: Record<MentionAction, string> = {
+  read: '引用数据', open: '打开', create: '新建', view: '打开查看', edit: '打开编辑', apply: '应用'
+}
+const SCOPE_LABELS: Array<[MentionScope, string]> = [
+  ['all', '全部'], ['menu', '菜单'], ['record', '记录'],
+  ['saved_filter', '收藏'], ['current_filter', '当前筛选']
+]
 
 interface UploadItem {
   localId: string
@@ -36,7 +46,10 @@ export interface ChatInputProps {
   disabled?: boolean
   attachments?: boolean | AttachmentOptions
   menuOptions: MenuMentionOption[]
-  onSend: (content: string, attachments: AttachmentRef[], menuMention?: MenuMention) => void
+  hostBridge?: HostBridge
+  onSend: (
+    content: string, attachments: AttachmentRef[], mentions?: MentionReference[] | MenuMention
+  ) => void
   onStop: () => void
   onUpload: (file: File, onProgress: (progress: number) => void) => Promise<AttachmentRef>
   onRemove: (attachmentId: string) => Promise<void>
@@ -80,19 +93,37 @@ function fileKind(file: File): string {
   return '文档'
 }
 
+function MentionIcon({ kind }: { kind: MentionCandidate['kind'] | MentionReference['kind'] }) {
+  if (kind === 'menu') return <Menu className="size-3.5 shrink-0" />
+  if (kind === 'record') return <Database className="size-3.5 shrink-0" />
+  if (kind === 'saved_filter') return <Filter className="size-3.5 shrink-0" />
+  return <SlidersHorizontal className="size-3.5 shrink-0" />
+}
+
 export function ChatInput({
-  running, disabled = false, attachments, menuOptions, onSend, onStop, onUpload, onRemove,
+  running, disabled = false, attachments, menuOptions, hostBridge, onSend, onStop, onUpload, onRemove,
   labels, icons
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [menuMention, setMenuMention] = useState<MenuMention | undefined>()
+  const [mentions, setMentions] = useState<MentionReference[]>([])
   const [menuQuery, setMenuQuery] = useState<MenuQuery | null>(null)
   const [activeMenuIndex, setActiveMenuIndex] = useState(0)
+  const [scope, setScope] = useState<MentionScope>('all')
+  const [modelScope, setModelScope] = useState('')
+  const [candidates, setCandidates] = useState<MentionCandidate[]>([])
+  const [modelScopes, setModelScopes] = useState<Array<{ model: string; label: string }>>([])
+  const [pendingCandidate, setPendingCandidate] = useState<MentionCandidate | null>(null)
+  const [mentionLoading, setMentionLoading] = useState(false)
+  const [mentionBinding, setMentionBinding] = useState(false)
+  const [mentionError, setMentionError] = useState('')
   const [items, setItems] = useState<UploadItem[]>([])
   const [dragging, setDragging] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const dragDepth = useRef(0)
+  const mentionRequest = useRef(0)
+  const unifiedMentions = Boolean(hostBridge?.searchMentions && hostBridge?.bindMention)
   const config = typeof attachments === 'object' ? attachments : {}
   const enabled = attachments !== false && config.enabled !== false
   const maxFileSize = config.maxFileSize || 10 * MB
@@ -104,6 +135,41 @@ export function ChatInput({
         !normalizedMenuQuery || option.fullPath.toLocaleLowerCase().includes(normalizedMenuQuery)
       ).slice(0, 8)
     : []
+
+  useEffect(() => {
+    if (!unifiedMentions || !menuQuery || !hostBridge?.searchMentions) return
+    const query = menuQuery.query.trim()
+    const requestId = ++mentionRequest.current
+    setPendingCandidate(null)
+    setMentionError('')
+    if (scope !== 'menu' && query.length < 2) {
+      setCandidates([])
+      setMentionLoading(false)
+      return
+    }
+    setMentionLoading(true)
+    const timer = window.setTimeout(() => {
+      void hostBridge.searchMentions?.({
+        query, scope, modelScope: modelScope || undefined
+      }).then((result) => {
+        if (requestId !== mentionRequest.current) return
+        if (result?.ok === false) {
+          setCandidates([])
+          setMentionError(result.error || result.code || '对象搜索失败')
+        } else {
+          setCandidates(result?.candidates || [])
+          setModelScopes(result?.modelScopes || [])
+        }
+      }, (error) => {
+        if (requestId !== mentionRequest.current) return
+        setCandidates([])
+        setMentionError((error as Error)?.message || '对象搜索失败')
+      }).finally(() => {
+        if (requestId === mentionRequest.current) setMentionLoading(false)
+      })
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [hostBridge, menuQuery?.query, modelScope, scope, unifiedMentions])
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -202,7 +268,7 @@ export function ChatInput({
 
   const readyAttachments = items.flatMap((item) => item.attachment ? [item.attachment] : [])
   const canSend = !running && !disabled && !items.some((item) => item.status !== 'ready') &&
-    (!!value.trim() || readyAttachments.length > 0 || !!menuMention)
+    (!!value.trim() || readyAttachments.length > 0 || !!menuMention || mentions.length > 0)
 
   const selectMenu = (option: MenuMentionOption) => {
     if (!menuQuery) return
@@ -217,16 +283,59 @@ export function ChatInput({
     }, 0)
   }
 
+  const bindCandidate = async (candidate: MentionCandidate, action: MentionAction) => {
+    if (!menuQuery || !hostBridge?.bindMention || mentionBinding) return
+    setMentionError('')
+    if (mentions.length >= MAX_MENTIONS) {
+      setMentionError('每条消息最多引用 5 个对象')
+      return
+    }
+    if (mentions.some((mention) => mention.resourceKey === candidate.resourceKey)) {
+      setMentionError('不能重复引用同一对象')
+      return
+    }
+    if (PAGE_ACTIONS.has(action) && mentions.some((mention) => mention.pageAction)) {
+      setMentionError('每条消息最多包含 1 个页面动作')
+      return
+    }
+    setMentionBinding(true)
+    try {
+      const result = await hostBridge.bindMention({
+        candidateToken: candidate.candidateToken, action
+      })
+      if (!result?.ok || !result.reference) {
+        setMentionError(result?.error || result?.code || '对象绑定失败')
+        return
+      }
+      const cursor = menuQuery.start
+      setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end))
+      setMentions((current) => [...current, result.reference as MentionReference])
+      setMenuQuery(null)
+      setPendingCandidate(null)
+      setCandidates([])
+      setActiveMenuIndex(0)
+      window.setTimeout(() => {
+        textareaRef.current?.focus()
+        textareaRef.current?.setSelectionRange(cursor, cursor)
+      }, 0)
+    } catch (error) {
+      setMentionError((error as Error)?.message || '对象绑定失败')
+    } finally {
+      setMentionBinding(false)
+    }
+  }
+
   const submit = () => {
     if (!canSend) return
     const content = value.trim()
     setValue('')
-    const selectedMenu = menuMention
+    const selectedMentions = unifiedMentions ? mentions : menuMention
     setMenuMention(undefined)
+    setMentions([])
     setMenuQuery(null)
     items.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl))
     setItems([])
-    onSend(content, readyAttachments, selectedMenu)
+    onSend(content, readyAttachments, selectedMentions || undefined)
     window.setTimeout(() => textareaRef.current?.focus(), 0)
   }
 
@@ -234,20 +343,37 @@ export function ChatInput({
     if (menuQuery) {
       if (event.key === 'Escape') {
         event.preventDefault()
+        if (pendingCandidate) {
+          setPendingCandidate(null)
+          setActiveMenuIndex(0)
+          return
+        }
         setMenuQuery(null)
         return
       }
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault()
         const direction = event.key === 'ArrowDown' ? 1 : -1
-        setActiveMenuIndex((current) => filteredMenus.length
-          ? (current + direction + filteredMenus.length) % filteredMenus.length
+        const length = unifiedMentions
+          ? pendingCandidate?.actions.length || candidates.length
+          : filteredMenus.length
+        setActiveMenuIndex((current) => length
+          ? (current + direction + length) % length
           : 0)
         return
       }
       if (event.key === 'Enter') {
         event.preventDefault()
-        if (filteredMenus[activeMenuIndex]) selectMenu(filteredMenus[activeMenuIndex])
+        if (unifiedMentions) {
+          if (pendingCandidate?.actions[activeMenuIndex]) {
+            void bindCandidate(pendingCandidate, pendingCandidate.actions[activeMenuIndex])
+          } else if (candidates[activeMenuIndex]) {
+            setPendingCandidate(candidates[activeMenuIndex])
+            setActiveMenuIndex(0)
+          }
+        } else if (filteredMenus[activeMenuIndex]) {
+          selectMenu(filteredMenus[activeMenuIndex])
+        }
         return
       }
     }
@@ -324,6 +450,16 @@ export function ChatInput({
         </div>
       ) : null}
       <div>
+        {mentions.length ? <div className="mb-2 flex flex-wrap gap-1.5" aria-label="已选对象引用">
+          {mentions.map((mention) => <span key={mention.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-primary/20 bg-accent px-2 py-1 text-xs text-primary" title={`${mention.detail} · ${ACTION_LABELS[mention.action]}`}>
+            <MentionIcon kind={mention.kind} />
+            <span className="truncate">{mention.label}</span>
+            <span className="shrink-0 text-muted">{ACTION_LABELS[mention.action]}</span>
+            <button type="button" className="grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-background hover:text-primary" aria-label={`移除引用 ${mention.label}`} title="移除引用" onClick={() => setMentions((current) => current.filter((item) => item.id !== mention.id))}>
+              <X className="size-3" />
+            </button>
+          </span>)}
+        </div> : null}
         {menuMention ? <div className="mb-2 flex items-center">
           <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-primary/20 bg-accent px-2 py-1 text-xs text-primary" title={menuMention.fullPath}>
             <AtSign className="size-3.5 shrink-0" />
@@ -344,8 +480,32 @@ export function ChatInput({
             const cursor = event.currentTarget.selectionStart ?? value.length
             setMenuQuery(menuQueryAtCursor(value, cursor))
           }} onBlur={() => window.setTimeout(() => setMenuQuery(null), 120)} onKeyDown={onKeyDown} onPaste={onPaste} aria-autocomplete="list" aria-expanded={Boolean(menuQuery)} />
-          {menuQuery ? <div role="listbox" className="absolute bottom-full left-0 right-0 z-40 mb-1 max-h-64 overflow-y-auto rounded-md border border-border bg-background-panel p-1 shadow-lg">
-            {filteredMenus.length ? filteredMenus.map((option, index) => <button key={option.menuId} type="button" role="option" aria-selected={index === activeMenuIndex} className={cn('flex w-full items-center gap-2 rounded border-0 bg-transparent px-2.5 py-2 text-left text-xs text-secondary hover:bg-accent', index === activeMenuIndex && 'bg-accent text-primary')} onMouseDown={(event) => event.preventDefault()} onClick={() => selectMenu(option)}>
+          {menuQuery ? <div role="listbox" className="absolute bottom-full left-0 right-0 z-40 mb-1 max-h-72 overflow-y-auto rounded-md border border-border bg-background-panel p-1 shadow-lg">
+            {unifiedMentions ? <>
+              <div className="sticky top-0 z-10 flex flex-wrap items-center gap-1 border-b border-border bg-background-panel p-1.5">
+                {SCOPE_LABELS.map(([value, label]) => <button key={value} type="button" className={cn('h-7 rounded px-2 text-[11px] text-muted hover:bg-accent hover:text-primary', scope === value && 'bg-accent text-primary')} aria-pressed={scope === value} onMouseDown={(event) => event.preventDefault()} onClick={() => { setScope(value); setActiveMenuIndex(0); setPendingCandidate(null) }}>{label}</button>)}
+                {modelScopes.length ? <select className="ml-auto h-7 min-w-0 max-w-40 rounded border border-border bg-background-panel px-1.5 text-[11px] text-secondary" aria-label="搜索模型" value={modelScope} onMouseDown={(event) => event.preventDefault()} onChange={(event) => { setModelScope(event.target.value); setActiveMenuIndex(0) }}>
+                  <option value="">优先模型</option>
+                  {modelScopes.map((item) => <option key={item.model} value={item.model}>{item.label}</option>)}
+                </select> : null}
+              </div>
+              {pendingCandidate ? <div className="p-1">
+                <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-xs text-primary">
+                  <MentionIcon kind={pendingCandidate.kind} />
+                  <span className="min-w-0 flex-1 truncate" title={pendingCandidate.detail}>{pendingCandidate.label}</span>
+                </div>
+                <div className="flex flex-wrap gap-1 px-2 pb-2">
+                  {pendingCandidate.actions.map((action, index) => <button key={action} type="button" role="option" aria-selected={index === activeMenuIndex} disabled={mentionBinding} className={cn('h-8 rounded border border-border bg-background-panel px-2.5 text-xs text-secondary hover:bg-accent hover:text-primary disabled:opacity-45', index === activeMenuIndex && 'bg-accent text-primary')} onMouseDown={(event) => event.preventDefault()} onClick={() => void bindCandidate(pendingCandidate, action)}>{ACTION_LABELS[action]}</button>)}
+                </div>
+              </div> : candidates.length ? candidates.map((candidate, index) => <button key={candidate.candidateToken} type="button" role="option" aria-selected={index === activeMenuIndex} className={cn('flex w-full items-center gap-2 rounded border-0 bg-transparent px-2.5 py-2 text-left text-xs text-secondary hover:bg-accent', index === activeMenuIndex && 'bg-accent text-primary')} onMouseDown={(event) => event.preventDefault()} onClick={() => { setPendingCandidate(candidate); setActiveMenuIndex(0) }}>
+                <MentionIcon kind={candidate.kind} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-primary" title={candidate.label}>{candidate.label}</span>
+                  <span className="block truncate text-[10px] text-muted" title={candidate.detail}>{candidate.detail}</span>
+                </span>
+              </button>) : <div className="px-2.5 py-2 text-xs text-muted">{mentionLoading ? '搜索中' : mentionError || '没有匹配的对象'}</div>}
+              {mentionError && candidates.length ? <div className="px-2.5 py-2 text-xs text-destructive">{mentionError}</div> : null}
+            </> : filteredMenus.length ? filteredMenus.map((option, index) => <button key={option.menuId} type="button" role="option" aria-selected={index === activeMenuIndex} className={cn('flex w-full items-center gap-2 rounded border-0 bg-transparent px-2.5 py-2 text-left text-xs text-secondary hover:bg-accent', index === activeMenuIndex && 'bg-accent text-primary')} onMouseDown={(event) => event.preventDefault()} onClick={() => selectMenu(option)}>
               <AtSign className="size-3.5 shrink-0 text-muted" />
               <span className="min-w-0 flex-1 truncate" title={option.fullPath}>{option.fullPath}</span>
             </button>) : <div className="px-2.5 py-2 text-xs text-muted">没有匹配的菜单</div>}

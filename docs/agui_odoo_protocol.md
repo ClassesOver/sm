@@ -14,8 +14,8 @@ configured AgentOS protocol endpoint must agree on:
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.7.0.0",
-  "bundle_version": "12.0.7.0.0",
+  "module_version": "12.0.8.0.0",
+  "bundle_version": "12.0.8.0.0",
   "command_catalog_hash": "sha256"
 }
 ```
@@ -60,6 +60,10 @@ sizes, and export x2many values as persisted IDs/count only.
 Odoo publishes standard AG-UI client tool schemas in the current
 `RunAgentInput.tools`:
 
+- `odoo.read_mentioned_records`
+- `odoo.open_mentioned_menu`
+- `odoo.open_mentioned_record`
+- `odoo.apply_mentioned_filter`
 - `odoo.search_relation`
 - `odoo.patch_current_form`
 - `odoo.validate_current_form`
@@ -69,10 +73,40 @@ Odoo publishes standard AG-UI client tool schemas in the current
 React executes a tool only if its exact name was declared for that run. Agno
 server tools remain display-only until their `TOOL_CALL_RESULT` arrives.
 
-Every host command carries a `target` containing `snapshotId`, `hostRevision`,
-`controllerId`, `dataPointId`, `model`, and `resId`. Missing or stale target
-members fail closed. Patch/save/discard also require a server-bound one-time
-authorization.
+Mention tools and `odoo.open_menu` carry a page target containing only
+`snapshotId` and `hostRevision`. Commands bound to the current view carry the
+full target with `controllerId`, `dataPointId`, `model`, and `resId`. Missing or
+stale target members fail closed. Patch/save/discard and all mention tools also
+require a server-bound one-time authorization.
+
+## Object References
+
+User messages may contain up to five discriminated `mentions`. A message may
+contain at most one action that changes the page. The legacy `menuMention`
+field remains readable for stored sessions.
+
+Search candidates expire after five minutes. An explicit action choice binds a
+new two-hour opaque token to the current user, company, browser session,
+resource kind, and exact action. AG-UI receives only the final token and display
+metadata; record IDs and filter domain/context never enter the AG-UI request.
+
+Record search runs `name_search` as the current user across at most twenty
+models exposed by visible window-action menus. Saved filters come from
+`ir.filters.get_filters`; temporary filters are evaluated and size-limited by
+the native host before tokenization. Execution repeats menu, ACL, record-rule,
+company, filter-visibility, expiry, and exact-action checks.
+
+`odoo.read_mentioned_records` accepts one to five tokens bound to `read`. An
+exact-model policy `field_names` allowlist wins; otherwise fields are derived
+from the default form view. Secret-like, configured-sensitive, and binary
+fields are always removed. HTML becomes plain text, scalar text is truncated,
+many2one returns its display name, and x2many returns only a count. Results are
+limited to twenty fields per record and 64 KB per call.
+
+Mentioned filters replace the current query through Odoo 12 `FavoriteMenu` and
+`SearchView`, including context, group-by, and sort. Cross-menu record actions
+re-enter the token-bound menu before switching its native controller to the
+form; dirty forms still reject navigation.
 
 Relation search rules:
 

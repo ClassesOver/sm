@@ -1,5 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo noupdate="1">
+    <record id="command_read_mentioned_records" model="agui.chat.command">
+        <field name="name">读取引用记录</field>
+        <field name="code">odoo.read_mentioned_records</field>
+        <field name="command_type">page</field>
+        <field name="description">批量受控读取用户明确绑定为引用数据的记录。</field>
+        <field name="sequence">1</field>
+    </record>
+    <record id="command_open_mentioned_menu" model="agui.chat.command">
+        <field name="name">执行引用菜单动作</field>
+        <field name="code">odoo.open_mentioned_menu</field>
+        <field name="command_type">page</field>
+        <field name="description">执行引用令牌绑定的菜单打开或新建动作。</field>
+        <field name="sequence">2</field>
+    </record>
+    <record id="command_open_mentioned_record" model="agui.chat.command">
+        <field name="name">执行引用记录动作</field>
+        <field name="code">odoo.open_mentioned_record</field>
+        <field name="command_type">page</field>
+        <field name="description">执行引用令牌绑定的记录查看或编辑动作。</field>
+        <field name="sequence">3</field>
+    </record>
+    <record id="command_apply_mentioned_filter" model="agui.chat.command">
+        <field name="name">应用引用筛选</field>
+        <field name="code">odoo.apply_mentioned_filter</field>
+        <field name="command_type">page</field>
+        <field name="description">应用引用令牌绑定的收藏或当前临时筛选。</field>
+        <field name="sequence">4</field>
+    </record>
     <record id="command_open_menu" model="agui.chat.command">
         <field name="name">打开菜单</field>
         <field name="code">odoo.open_menu</field>

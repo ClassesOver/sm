@@ -15,7 +15,7 @@ and a registry-only synchronous business-command endpoint. It does not proxy
 SSE and does not expose generic RPC or CRUD.
 
 Configure `runtime_url`; Odoo derives the matching `/config` handshake URL
-from its `/agui` path. Deploy matching `12.0.7.0.0` declarations, then enable
+from its `/agui` path. Deploy matching `12.0.8.0.0` declarations, then enable
 the rollout kill switches. See [protocol](docs/agui_odoo_protocol.md) and
 [production deployment](docs/agui_chat_production.md).
 
