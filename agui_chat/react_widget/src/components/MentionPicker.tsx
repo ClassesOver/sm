@@ -88,9 +88,16 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
   const [loading, setLoading] = useState(false)
   const [binding, setBinding] = useState(false)
   const [error, setError] = useState('')
+  const pickerRef = useRef<HTMLDivElement | null>(null)
   const requestNumber = useRef(0)
   const normalizedQuery = searchText.trim()
   useEffect(() => setSearchText(query.query), [query.query])
+
+  useEffect(() => {
+    if (open && (view === 'home' || view === 'actions')) {
+      pickerRef.current?.focus({ preventScroll: true })
+    }
+  }, [open, view])
 
 
   useEffect(() => {
@@ -293,7 +300,9 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
 
   if (!open) return null
   return <div
-    className="agui-picker absolute bottom-full left-0 z-40 mb-2 w-full max-w-md overflow-hidden rounded-md border border-border/70 bg-white text-secondary shadow-[0_12px_32px_rgba(15,23,42,0.14)]"
+    ref={pickerRef}
+    tabIndex={-1}
+    className="agui-picker absolute outline-none bottom-full left-0 z-40 mb-2 w-full max-w-md overflow-hidden rounded-md border border-border/70 bg-white text-secondary shadow-[0_12px_32px_rgba(15,23,42,0.14)]"
     role="dialog" onKeyDown={(event) => handleKey(event)}
     aria-label="添加到对话"
   >

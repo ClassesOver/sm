@@ -11273,9 +11273,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const [loading, setLoading] = reactExports.useState(false);
     const [binding, setBinding] = reactExports.useState(false);
     const [error, setError] = reactExports.useState("");
+    const pickerRef = reactExports.useRef(null);
     const requestNumber = reactExports.useRef(0);
     const normalizedQuery = searchText.trim();
     reactExports.useEffect(() => setSearchText(query.query), [query.query]);
+    reactExports.useEffect(() => {
+      var _a2;
+      if (open && (view === "home" || view === "actions")) {
+        (_a2 = pickerRef.current) == null ? void 0 : _a2.focus({ preventScroll: true });
+      }
+    }, [open, view]);
     reactExports.useEffect(() => {
       if (!open) {
         requestNumber.current += 1;
@@ -11458,7 +11465,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return /* @__PURE__ */ jsxRuntimeExports.jsxs(
       "div",
       {
-        className: "agui-picker absolute bottom-full left-0 z-40 mb-2 w-full max-w-md overflow-hidden rounded-md border border-border/70 bg-white text-secondary shadow-[0_12px_32px_rgba(15,23,42,0.14)]",
+        ref: pickerRef,
+        tabIndex: -1,
+        className: "agui-picker absolute outline-none bottom-full left-0 z-40 mb-2 w-full max-w-md overflow-hidden rounded-md border border-border/70 bg-white text-secondary shadow-[0_12px_32px_rgba(15,23,42,0.14)]",
         role: "dialog",
         onKeyDown: (event) => handleKey(event),
         "aria-label": "添加到对话",

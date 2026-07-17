@@ -357,6 +357,41 @@ describe('chat customization', () => {
     const reopenedSearch = await screen.findByLabelText('搜索业务类型')
     fireEvent.keyDown(reopenedSearch, { key: 'Escape' })
     expect(await screen.findByRole('option', { name: /菜单\s+按完整路径打开菜单，或直接进入新建/ })).toBeTruthy()
+    const picker = screen.getByRole("dialog", { name: "添加到对话" })
+    await waitFor(() => expect(document.activeElement).toBe(picker))
+    fireEvent.keyDown(picker, { key: "Enter" })
+    expect(await screen.findByLabelText("搜索菜单")).toBeTruthy()
+  })
+
+  it('keeps Enter and ArrowLeft active across the menu action view', async () => {
+    const candidate = {
+      candidateToken: 'menu-sales', resourceKey: 'menu-sales', kind: 'menu' as const,
+      label: '销售订单', detail: '销售 / 订单', model: 'sale.order',
+      actions: ['open', 'create'] as const, expiresAt: '2099-01-01 00:00:00'
+    }
+    const searchMentions = vi.fn(async () => ({ candidates: [candidate], modelScopes: [] }))
+    const bindMention = vi.fn(async () => ({ ok: false, error: '测试绑定停止' }))
+    render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
+      hostBridge={{ searchMentions: searchMentions as any, bindMention: bindMention as any }}
+      onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    fireEvent.click(screen.getByRole('option', { name: /菜单\s+按完整路径打开菜单，或直接进入新建/ }))
+    const search = await screen.findByLabelText('搜索菜单')
+    expect(await screen.findByRole('option', { name: /销售订单/ })).toBeTruthy()
+
+    fireEvent.keyDown(search, { key: 'ArrowRight' })
+    const picker = screen.getByRole('dialog', { name: '添加到对话' })
+    await waitFor(() => expect(document.activeElement).toBe(picker))
+    fireEvent.keyDown(picker, { key: 'ArrowLeft' })
+    const restoredSearch = await screen.findByLabelText('搜索菜单')
+
+    fireEvent.keyDown(restoredSearch, { key: 'ArrowRight' })
+    await waitFor(() => expect(document.activeElement).toBe(picker))
+    fireEvent.keyDown(picker, { key: 'Enter' })
+    await waitFor(() => expect(bindMention).toHaveBeenCalledWith({
+      candidateToken: 'menu-sales', action: 'open'
+    }))
   })
 
   it('shares skill selection between @ and toolbar entry points', () => {
