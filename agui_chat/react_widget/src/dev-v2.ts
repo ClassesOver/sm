@@ -24,12 +24,12 @@ export const devHostState: OdooHostSnapshot = {
     viewType: 'form',
     mode: 'edit'
   },
-  action: { id: 1, name: 'Sales Opportunities', resModel: 'crm.lead' },
+  action: { id: 1, name: '销售商机', resModel: 'crm.lead' },
   menu: false,
   record: {
     model: 'crm.lead',
     resId: 42,
-    values: { name: 'Annual renewal', expected_revenue: 126000 },
+    values: { name: '年度续约', expected_revenue: 126000 },
     dirty: {},
     dirtyFields: []
   },

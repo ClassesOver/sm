@@ -104,7 +104,7 @@ window.fetch = async (input, init) => {
 }
 
 const root = document.getElementById('root')
-if (!root) throw new Error('Dev root element was not found.')
+if (!root) throw new Error('未找到开发预览根节点。')
 
 const props: AguiChatProps = {
   runtimeUrl: scenario === 'error' ? undefined : '/dev/agui',

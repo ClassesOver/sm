@@ -57,6 +57,6 @@ export function observeInteraction(callback: (() => void) | undefined): void {
   try {
     callback()
   } catch (error) {
-    console.error('AG-UI interaction observer failed', error)
+    console.error('AG-UI 交互监听器执行失败', error)
   }
 }

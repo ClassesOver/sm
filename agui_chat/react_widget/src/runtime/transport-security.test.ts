@@ -16,9 +16,9 @@ describe('production transport contract', () => {
   })
 
   it('rejects missing, protocol-relative, and unapproved absolute URLs', () => {
-    expect(() => endpoint({})).toThrow(/not configured/)
-    expect(() => endpoint({ runtimeUrl: '//evil.example/agui' })).toThrow(/not allowed/)
-    expect(() => endpoint({ runtimeUrl: 'https://evil.example/agui' })).toThrow(/not allowed/)
+    expect(() => endpoint({})).toThrow(/尚未配置/)
+    expect(() => endpoint({ runtimeUrl: '//evil.example/agui' })).toThrow(/不允许/)
+    expect(() => endpoint({ runtimeUrl: 'https://evil.example/agui' })).toThrow(/不允许/)
   })
 
   it('enforces message and encoded request limits', () => {
@@ -26,8 +26,8 @@ describe('production transport contract', () => {
       { id: '1', role: 'user', content: 'one' },
       { id: '2', role: 'user', content: 'two' }
     ], v2Props(), 'thread-1', null, {})
-    expect(() => validateRunInput(input, v2Props({ limits: { messages: 1 } }))).toThrow(/Message limit/)
-    expect(() => validateRunInput(input, v2Props({ limits: { requestBytes: 10 } }))).toThrow(/larger/)
+    expect(() => validateRunInput(input, v2Props({ limits: { messages: 1 } }))).toThrow(/消息数量超过限制/)
+    expect(() => validateRunInput(input, v2Props({ limits: { requestBytes: 10 } }))).toThrow(/请求大小超过配置限制/)
   })
 
   it('emits the AgentOS RunAgentInput context contract', () => {
@@ -44,7 +44,7 @@ describe('production transport contract', () => {
     )
     expect(input.context).toEqual([
       {
-        description: 'Odoo host snapshot',
+        description: 'Odoo 宿主快照',
         value: JSON.stringify({
           protocol: 'agui.odoo.v2',
           snapshotId: 'snapshot-test-1',
@@ -76,8 +76,8 @@ describe('production transport contract', () => {
         })
       },
       { description: 'company', value: '{"id":1,"name":"Main"}' },
-      { description: 'Odoo user', value: '{"id":2,"name":"Administrator"}' },
-      { description: 'Agent ID', value: 'odoo-assistant' }
+      { description: 'Odoo 用户', value: '{"id":2,"name":"Administrator"}' },
+      { description: '智能体 ID', value: 'odoo-assistant' }
     ])
     expect(input.forwardedProps).toEqual({})
   })
@@ -96,7 +96,7 @@ describe('production transport contract', () => {
       {}
     )
     const hostContext = input.context.find(
-      (item) => item.description === 'Odoo host snapshot'
+      (item) => item.description === 'Odoo 宿主快照'
     )
     const snapshot = JSON.parse(hostContext?.value || '{}')
 
@@ -131,13 +131,13 @@ describe('production transport contract', () => {
 
     expect(input.messages).toEqual([{ id: 'selected', role: 'user', content: '打开它' }])
     expect(input.context).toContainEqual({
-      description: 'Selected Odoo menu',
+      description: '已选 Odoo 菜单',
       value: JSON.stringify({
         menuId: 8, actionId: 42, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户'
       })
     })
     expect(input.context).toContainEqual({
-      description: 'Selected Odoo record candidate', value: JSON.stringify(recordSelection)
+      description: '已选 Odoo 记录候选项', value: JSON.stringify(recordSelection)
     })
     expect(JSON.stringify(input)).not.toContain('机密菜单')
   })
@@ -150,7 +150,7 @@ describe('production transport contract', () => {
       ]
     }], v2Props(), 'thread-1', null, {})
     expect(input.context).toContainEqual({
-      description: 'Selected workspace references',
+      description: '已选工作区引用',
       value: JSON.stringify([
         { path: '合同/甲.txt', type: 'file', tool: 'workspace_read_file' },
         { path: '报表', type: 'directory', tool: 'workspace_list_files' }
@@ -160,8 +160,8 @@ describe('production transport contract', () => {
   })
 
   it('maps authentication, permission, and rate-limit failures', () => {
-    expect(transportError(401).message).toMatch(/Authentication/)
-    expect(transportError(403).message).toMatch(/permission/)
-    expect(transportError(429).message).toMatch(/Too many/)
+    expect(transportError(401).message).toMatch(/登录状态已过期/)
+    expect(transportError(403).message).toMatch(/没有.*权限/)
+    expect(transportError(429).message).toMatch(/请求过于频繁/)
   })
 })

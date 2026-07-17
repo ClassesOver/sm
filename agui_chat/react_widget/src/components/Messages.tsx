@@ -318,11 +318,11 @@ function attachmentUrl(attachment: AttachmentRef) {
 }
 
 function attachmentMeta(attachment: AttachmentRef): string {
-  const type = attachment.mimeType.includes('pdf') ? 'PDF' : attachment.mimeType.split('/').pop()?.toUpperCase() || 'FILE'
+  const type = attachment.mimeType.includes('pdf') ? 'PDF' : attachment.mimeType.split('/').pop()?.toUpperCase() || '文件'
   const size = attachment.size < 1024 * 1024
     ? `${Math.max(1, Math.round(attachment.size / 1024))} KB`
     : `${(attachment.size / (1024 * 1024)).toFixed(2)} MB`
-  return `${type} Document · ${size}`
+  return `${type} 文档 · ${size}`
 }
 
 function Attachments({ attachments, labels, onPreview }: { attachments?: AttachmentRef[]; labels: ChatLabels; onPreview: (attachment: AttachmentRef) => void }) {

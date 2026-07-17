@@ -2,7 +2,7 @@
 {
     "name": "AG-UI 通用单据测试",
     "version": "12.0.2.0.0",
-    "category": "Tests",
+    "category": "测试",
     "summary": "仅供 E2E 数据库使用的 AG-UI 通用单据测试模型",
     "depends": ["agui_chat"],
     "data": [
@@ -16,4 +16,3 @@
     "application": False,
     "license": "LGPL-3",
 }
-

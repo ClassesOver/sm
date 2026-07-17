@@ -139,9 +139,9 @@ def test_each_thread_gets_private_persistent_sandbox_and_registry_survives_resta
 
 def test_paths_sizes_symlinks_and_destroy_are_enforced(tmp_path):
     current = service(tmp_path)
-    with pytest.raises(WorkspaceError, match="traversal"):
+    with pytest.raises(WorkspaceError, match="目录穿越"):
         current.upload("thread", "../escape", b"bad")
-    with pytest.raises(WorkspaceError, match="Absolute"):
+    with pytest.raises(WorkspaceError, match="绝对路径"):
         current.list_files("thread", "/etc")
     with pytest.raises(WorkspaceError, match="10 MB"):
         current.upload("thread", "large.bin", b"x" * (MAX_UPLOAD_BYTES + 1))
@@ -152,13 +152,13 @@ def test_paths_sizes_symlinks_and_destroy_are_enforced(tmp_path):
     sandbox.fs.entries["/home/daytona/workspace/link"] = (
         Info("link", mode="lrwxrwxrwx"), b"outside",
     )
-    with pytest.raises(WorkspaceError, match="Symbolic"):
+    with pytest.raises(WorkspaceError, match="符号链接"):
         current.file_bytes("thread", "link")
-    with pytest.raises(WorkspaceError, match="Symbolic"):
+    with pytest.raises(WorkspaceError, match="符号链接"):
         current.upload("thread", "link", b"overwrite")
 
     current.upload("thread", "move-source.txt", b"move")
-    with pytest.raises(WorkspaceError, match="Symbolic"):
+    with pytest.raises(WorkspaceError, match="符号链接"):
         current.move_file("thread", "move-source.txt", "link")
 
     assert current.destroy("thread") is True

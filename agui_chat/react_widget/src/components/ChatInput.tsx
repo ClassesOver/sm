@@ -83,7 +83,7 @@ function formatSize(size: number): string {
 
 function fileBadge(file: File): string {
   const extension = file.name.split('.').pop()?.toUpperCase()
-  return extension && extension.length <= 4 ? extension : 'FILE'
+  return extension && extension.length <= 4 ? extension : '文件'
 }
 
 function uploadedLabel(template: string, count: number): string {

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <template id="assets_backend" inherit_id="web.assets_backend" name="AG-UI Chat Assets">
+    <template id="assets_backend" inherit_id="web.assets_backend" name="AG-UI 聊天资源">
         <xpath expr="." position="inside">
             <link rel="stylesheet" type="text/scss" href="/agui_chat/static/src/scss/agui_chat.scss"/>
             <script type="text/javascript" src="/agui_chat/static/src/js/agui_model_adapter.js"/>
@@ -11,7 +11,7 @@
             <script type="text/javascript" src="/agui_chat/static/src/js/agui_chat_surfaces.js"/>
         </xpath>
     </template>
-    <template id="qunit_suite_tests" inherit_id="web.qunit_suite" name="AG-UI Chat QUnit Tests">
+    <template id="qunit_suite_tests" inherit_id="web.qunit_suite" name="AG-UI 聊天 QUnit 测试">
         <xpath expr="//script[last()]" position="after">
             <script type="text/javascript" src="/agui_chat/static/tests/agui_host_tests.js"/>
         </xpath>

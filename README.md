@@ -1,25 +1,23 @@
-# AG-UI Chat for Odoo 12
+# Odoo 12 AG-UI 智能助手
 
-This addon mounts one React AG-UI chat runtime inside Odoo 12 and exposes the
-current native FormController/ListController state through `agui.odoo.v2`.
-Odoo BasicModel remains the only page-state authority.
+本插件在 Odoo 12 中挂载 React AG-UI 聊天运行时，并通过 `agui.odoo.v2`
+暴露当前原生 FormController/ListController 状态。Odoo BasicModel 始终是页面状态的
+唯一权威来源。
 
-Production traffic is:
+生产环境流量路径如下：
 
 ```text
-browser -> same-origin reverse proxy -> AgentOS AG-UI POST/SSE
+浏览器 -> 同源反向代理 -> AgentOS AG-UI POST/SSE
 ```
 
-Odoo serves `/agui_chat/config`, v2 UI sessions, browser host-command policy,
-and a registry-only synchronous business-command endpoint. It does not proxy
-SSE and does not expose generic RPC or CRUD.
+Odoo 提供 `/agui_chat/config`、v2 界面会话、浏览器宿主命令策略，以及仅允许已注册命令的
+同步业务命令端点。Odoo 不代理 SSE，也不开放通用 RPC 或 CRUD。
 
-Configure `runtime_url`; Odoo derives the matching `/config` handshake URL
-from its `/agui` path. Deploy matching `12.0.8.1.0` declarations, then enable
-the rollout kill switches. See [protocol](docs/agui_odoo_protocol.md) and
-[production deployment](docs/agui_chat_production.md).
+配置 `runtime_url` 后，Odoo 会根据其中的 `/agui` 路径推导对应的 `/config` 握手地址。
+部署匹配的 `12.0.8.1.0` 声明后，再启用灰度开关。详情参见
+[协议说明](docs/agui_odoo_protocol.md)和[生产部署指南](docs/agui_chat_production.md)。
 
-Frontend verification:
+前端验证：
 
 ```bash
 cd agui_chat/react_widget
@@ -28,10 +26,9 @@ npm run test
 npm run build
 ```
 
-Thread-isolated attachments, workspace files, and confirmed code execution use
-the pinned Daytona deployment in `docker-compose.daytona.yml`. See the
-[production deployment guide](docs/agui_chat_production.md#isolated-workspaces)
-for bootstrap, secrets, API-key creation, backup, and license requirements.
+按对话隔离的附件、工作区文件和经确认的代码执行，使用
+`docker-compose.daytona.yml` 中锁定版本的 Daytona 部署。有关初始化、密钥、API 密钥创建、
+备份和许可证要求，请参见[生产部署指南](docs/agui_chat_production.md#isolated-workspaces)。
 
 集成开发环境可直接启动仓库内的最小 AgentOS 应用：
 
@@ -45,7 +42,6 @@ Odoo 默认使用 `http://127.0.0.1:7777/agui`，并自动从该地址推导
 `http://127.0.0.1:7777/config` 完成 v2 握手。开发智能体默认复用
 `/home/junge/pros/agents_app/.env` 中的模型配置。
 
-The only supported surfaces are Dock and an in-WebClient floating window.
-They move the same React DOM root and keep the current Odoo action alive. Dock
-supports all four viewport edges; on narrow screens both surfaces cover the
-viewport without shrinking the Odoo WebClient.
+目前仅支持停靠面板和 WebClient 内浮动窗口两种界面形态。两者移动的是同一个 React DOM
+根节点，因此不会中断当前 Odoo 操作。停靠面板支持视口四边；在窄屏上，两种形态都会覆盖
+整个视口，而不会压缩 Odoo WebClient。

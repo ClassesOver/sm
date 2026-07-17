@@ -115,14 +115,14 @@ function normalizeReasoningSteps(value: unknown, fallbackContent?: unknown) {
   return source.map((step) => {
     if (typeof step === 'string') {
       return {
-        title: textSummary(step, 80) || 'Reasoning',
+        title: textSummary(step, 80) || '推理过程',
         content: step
       }
     }
     const raw = step && typeof step === 'object' ? (step as Record<string, unknown>) : {}
     const content = raw.content || raw.reasoning || raw.text || raw.action || ''
     return {
-      title: String(raw.title || textSummary(content || raw, 80) || 'Reasoning'),
+      title: String(raw.title || textSummary(content || raw, 80) || '推理过程'),
       content: typeof content === 'string' ? content : textSummary(content, 240),
       action: raw.action ? String(raw.action) : undefined,
       result: raw.result ? String(raw.result) : undefined,
@@ -513,7 +513,7 @@ export class ChatRuntime {
           (error): Record<string, unknown> => ({
             ok: false,
             operation: toolName(current),
-            error: (error as Error)?.message || 'Tool confirmation failed.'
+            error: (error as Error)?.message || '工具确认失败。'
           })
         )
         .then((finalResult) => {
@@ -798,7 +798,7 @@ export class ChatRuntime {
   async uploadAttachment(file: File, onProgress?: (progress: number) => void): Promise<AttachmentRef> {
     await this.ensureSession()
     if (!this.session) {
-      throw new Error('A chat session is required to upload attachments.')
+      throw new Error('上传附件前需要先创建聊天会话。')
     }
     const sessionId = String(this.session.id || '')
     if (!/^\d+$/.test(sessionId)) {
@@ -816,17 +816,17 @@ export class ChatRuntime {
           onProgress?.(Math.round((event.loaded / event.total) * 100))
         }
       }
-      xhr.onerror = () => reject(new Error('Attachment upload failed.'))
+      xhr.onerror = () => reject(new Error('附件上传失败。'))
       xhr.onload = () => {
         let payload: { attachment?: AttachmentRef; error?: string } = {}
         try {
           payload = JSON.parse(xhr.responseText || '{}')
         } catch (_error) {
-          reject(new Error('Invalid attachment upload response.'))
+          reject(new Error('附件上传响应无效。'))
           return
         }
         if (xhr.status < 200 || xhr.status >= 300 || !payload.attachment) {
-          reject(new Error(payload.error || 'Attachment upload failed.'))
+          reject(new Error(payload.error || '附件上传失败。'))
           return
         }
         onProgress?.(100)
@@ -844,7 +844,7 @@ export class ChatRuntime {
       body: JSON.stringify({ attachment_id: attachmentId })
     })
     if (!response.ok) {
-      throw new Error('Attachment deletion failed.')
+      throw new Error('附件删除失败。')
     }
   }
 
@@ -1069,7 +1069,7 @@ export class ChatRuntime {
     } else if (type === 'TOOL_CALL_RESULT') {
       this.applyToolResult(event)
     } else if (type === 'RUN_ERROR') {
-      const message = String(data.message || data.content || event.message || 'AG-UI run failed.')
+      const message = String(data.message || data.content || event.message || 'AG-UI 运行失败。')
       if (context) {
         context.upstreamError = message
         context.receivedTerminalEvent = true
@@ -1129,7 +1129,7 @@ export class ChatRuntime {
 
   private applyLoadedSession(session: LoadedSession): void {
     if (session.protocol !== AGUI_ODOO_PROTOCOL) {
-      throw new Error('Unsupported chat session protocol.')
+      throw new Error('不支持此聊天会话协议。')
     }
     this.session = session
     this.threadId = session.thread_id || this.props.threadId || uuid()
@@ -1223,7 +1223,7 @@ export class ChatRuntime {
       this.transportState = 'cancelled'
       return
     }
-    this.error = context.upstreamError || (error as Error)?.message || 'AG-UI run failed.'
+    this.error = context.upstreamError || (error as Error)?.message || 'AG-UI 运行失败。'
     this.recordRunError(this.error)
     try {
       this.setTransportState('error')
@@ -1329,16 +1329,16 @@ export class ChatRuntime {
       throw transportError(response.status)
     }
     if (!(response.headers.get("content-type") || "").includes("text/event-stream")) {
-      throw new Error("AG-UI runtime must return text/event-stream.")
+      throw new Error("AG-UI 运行服务必须返回 text/event-stream。")
     }
     if (!response.body) {
-      throw new Error("AG-UI SSE response has no body.")
+      throw new Error("AG-UI SSE 响应没有正文。")
     }
     this.setTransportState("streaming")
     await this.readSse(response.body, context)
     this.throwIfRunCancelled(context)
     if (!context.receivedTerminalEvent) {
-      throw new Error("AG-UI stream ended before RUN_FINISHED.")
+      throw new Error("AG-UI 数据流在 RUN_FINISHED 事件之前结束。")
     }
     if (context.upstreamError) {
       throw new Error(context.upstreamError)
@@ -1363,7 +1363,7 @@ export class ChatRuntime {
         }
         buffer += decoder.decode(result.value, { stream: true })
         if (new TextEncoder().encode(buffer).byteLength > limit && !/\r?\n\r?\n/.test(buffer)) {
-          throw new Error('SSE event exceeds the configured size limit.')
+          throw new Error('SSE 事件超过配置的大小限制。')
         }
         buffer = this.flushSse(buffer, limit, context)
         if (context.receivedTerminalEvent) {
@@ -1401,7 +1401,7 @@ export class ChatRuntime {
     try {
       event = JSON.parse(data)
     } catch {
-      this.props.onError?.(new Error('Ignored malformed SSE event.'))
+      this.props.onError?.(new Error('已忽略格式错误的 SSE 事件。'))
       return
     }
     this.applyEventForContext(event, context)
@@ -1476,7 +1476,7 @@ export class ChatRuntime {
   }
 
   private recordRunError(message: string): void {
-    this.ensureAssistant().streaming_error = message || 'AG-UI run failed.'
+    this.ensureAssistant().streaming_error = message || 'AG-UI 运行失败。'
   }
 
   private mergeTool(tool: ToolCall): ToolCall {
@@ -1558,7 +1558,7 @@ export class ChatRuntime {
         this.recordHostBridgeResult(tool, {
           ok: false,
           operation: toolName(tool),
-          error: (error as Error)?.message || String(error || 'Host bridge failed.')
+          error: (error as Error)?.message || String(error || '宿主桥接调用失败。')
         }, context)
       }
     ).finally(() => {
@@ -1661,7 +1661,7 @@ export class ChatRuntime {
       await this.queueSave()
     } catch (error) {
       const failure = error instanceof Error
-        ? error : new Error(String(error || 'Session save failed.'))
+        ? error : new Error(String(error || '会话保存失败。'))
       if (this.error === failure.message) return
       this.error = failure.message
       try {
@@ -1715,13 +1715,13 @@ export class ChatRuntime {
     message.extra_data = message.extra_data || {}
     message.extra_data.reasoning_steps = message.extra_data.reasoning_steps || []
     message.extra_data.reasoning_steps.push({
-      title: 'Reasoning',
+      title: '推理过程',
       content
     })
   }
 
   private reportHostStateMutation(): void {
-    this.props.onError?.(new Error("Ignored an agent attempt to mutate Odoo hostState."))
+    this.props.onError?.(new Error("已忽略智能体修改 Odoo 宿主状态的尝试。"))
   }
 
   private extractAgentState(value: unknown): Record<string, unknown> {
@@ -1807,7 +1807,7 @@ export class ChatRuntime {
       }))
     }
     if (result.streamingError && !result.streaming_error) {
-      result.streaming_error = 'AG-UI run failed.'
+      result.streaming_error = 'AG-UI 运行失败。'
     }
     if (result.references) {
       result.extra_data = {
@@ -2065,7 +2065,7 @@ export class ChatRuntime {
       return
     }
     const result = await this.props.hostBridge.saveSession(this.session.id, {
-      name: this.session.name || 'New chat',
+      name: this.session.name || '新对话',
       surface: this.props.surface || this.session.surface || 'dock',
       messages: this.messages,
       agentState: normalizeAgentState(this.agentState),
@@ -2078,7 +2078,7 @@ export class ChatRuntime {
           this.props.hostBridge.createSession) {
         const previous = this.session
         const replacement = sessionFromResult(await this.props.hostBridge.createSession({
-          name: previous.name || 'New chat',
+          name: previous.name || '新对话',
           surface: this.props.surface || previous.surface || 'dock',
           agent_id: previous.agent_id || this.props.agentId || false
         }))
@@ -2109,7 +2109,7 @@ export class ChatRuntime {
       const error = new Error(
         failure.error === 'session_revision_conflict'
           ? '会话保存连续发生版本冲突，确认结果仍保留在当前页面。'
-          : failure.error || 'Session save failed.'
+          : failure.error || '会话保存失败。'
       )
       this.error = error.message
       this.props.onError?.(error)

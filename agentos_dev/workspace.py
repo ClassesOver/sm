@@ -114,7 +114,7 @@ class WorkspaceService:
             labels={"agui-thread": value}, limit=2,
         )))
         if len(matches) > 1:
-            raise WorkspaceError("Multiple sandboxes are bound to one thread")
+            raise WorkspaceError("一个对话绑定了多个沙箱")
         if matches:
             self.registry.set(value, matches[0].id)
             return matches[0]
@@ -159,13 +159,13 @@ class WorkspaceService:
         raw = str(path or "").replace("\\", "/")
         candidate = PurePosixPath(raw)
         if candidate.is_absolute() or "\x00" in raw:
-            raise WorkspaceError("Absolute workspace paths are not allowed")
+            raise WorkspaceError("工作区路径不能使用绝对路径")
         parts = [part for part in candidate.parts if part not in ("", ".")]
         if any(part == ".." for part in parts):
-            raise WorkspaceError("Workspace path traversal is not allowed")
+            raise WorkspaceError("工作区路径不能包含目录穿越")
         relative = "/".join(parts)
         if not relative and not allow_root:
-            raise WorkspaceError("A workspace path is required")
+            raise WorkspaceError("必须提供工作区路径")
         remote = WORKSPACE_ROOT + (f"/{relative}" if relative else "")
         return relative, remote
 
@@ -186,7 +186,7 @@ class WorkspaceService:
             remote = f"{WORKSPACE_ROOT}/{'/'.join(parts[:index])}"
             info = self._info(sandbox, remote)
             if self._is_symlink(info):
-                raise WorkspaceError("Symbolic links are not allowed in workspace paths")
+                raise WorkspaceError("工作区路径不能包含符号链接")
 
     def _validate_destination(self, sandbox, relative: str, remote: str):
         self._validate_existing_path(sandbox, relative, include_leaf=False)
@@ -195,14 +195,14 @@ class WorkspaceService:
         except DaytonaNotFoundError:
             return
         if self._is_symlink(info):
-            raise WorkspaceError("Symbolic links are not allowed in workspace paths")
+            raise WorkspaceError("工作区路径不能包含符号链接")
 
     def _ensure_directory(self, sandbox, remote: str):
         if remote == WORKSPACE_ROOT:
             try:
                 info = self._info(sandbox, remote)
                 if self._is_symlink(info) or not info.is_dir:
-                    raise WorkspaceError("Workspace root is not a safe directory")
+                    raise WorkspaceError("工作区根路径不是安全目录")
                 return
             except WorkspaceError:
                 raise
@@ -217,7 +217,7 @@ class WorkspaceService:
             try:
                 info = self._info(sandbox, current)
                 if self._is_symlink(info) or not info.is_dir:
-                    raise WorkspaceError("Workspace parent is not a safe directory")
+                    raise WorkspaceError("工作区父路径不是安全目录")
             except WorkspaceError:
                 raise
             except Exception:
@@ -229,7 +229,7 @@ class WorkspaceService:
         self._validate_existing_path(sandbox, relative)
         entries = sandbox.fs.list_files(remote)
         if len(entries) > MAX_LIST_ENTRIES:
-            raise WorkspaceError("Workspace directory contains too many entries")
+            raise WorkspaceError("工作区目录包含的条目过多")
         result = []
         for entry in entries:
             if entry.name in (".", "..") or self._is_symlink(entry):
@@ -249,7 +249,7 @@ class WorkspaceService:
 
     def upload(self, thread: str, path: str, content: bytes) -> dict[str, Any]:
         if len(content) > MAX_UPLOAD_BYTES:
-            raise WorkspaceError("Workspace upload exceeds 10 MB")
+            raise WorkspaceError("工作区上传内容超过 10 MB")
         relative, remote = self.normalize_path(path, allow_root=False)
         sandbox = self.sandbox_for(thread)
         parent = remote.rsplit("/", 1)[0]
@@ -264,20 +264,20 @@ class WorkspaceService:
         self._validate_existing_path(sandbox, relative)
         info = self._info(sandbox, remote)
         if info.is_dir or int(info.size or 0) > MAX_DOWNLOAD_BYTES:
-            raise WorkspaceError("Workspace file is not downloadable or exceeds 25 MB")
+            raise WorkspaceError("工作区文件不可下载或超过 25 MB")
         content = sandbox.fs.download_file(remote)
         if not isinstance(content, bytes) or len(content) > MAX_DOWNLOAD_BYTES:
-            raise WorkspaceError("Workspace response exceeds 25 MB")
+            raise WorkspaceError("工作区响应超过 25 MB")
         return content, mimetypes.guess_type(relative)[0] or "application/octet-stream"
 
     def read_text(self, thread: str, path: str) -> str:
         content, _mime_type = self.file_bytes(thread, path)
         if len(content) > MAX_READ_BYTES or b"\x00" in content:
-            raise WorkspaceError("Workspace file is binary or exceeds 1 MB")
+            raise WorkspaceError("工作区文件是二进制文件或超过 1 MB")
         try:
             return content.decode("utf-8")
         except UnicodeDecodeError as error:
-            raise WorkspaceError("Workspace file is not UTF-8 text") from error
+            raise WorkspaceError("工作区文件不是 UTF-8 文本") from error
 
     def delete_file(self, thread: str, path: str, recursive: bool = False):
         relative, remote = self.normalize_path(path, allow_root=False)
@@ -340,7 +340,7 @@ class WorkspaceService:
         extension = PurePosixPath(safe_name).suffix.lower()
         interpreter = {".py": "python", ".js": "node", ".sh": "sh"}.get(extension)
         if not interpreter:
-            raise WorkspaceError("Skill script type is not executable")
+            raise WorkspaceError("技能脚本类型不可执行")
         return self.shell(
             thread,
             f"{interpreter} {shlex.quote(remote)} {arguments}".rstrip(),
@@ -350,39 +350,39 @@ class WorkspaceService:
 
 def _thread(run_context: RunContext) -> str:
     if not run_context or not run_context.session_id:
-        raise WorkspaceError("A thread-bound run context is required")
+        raise WorkspaceError("需要绑定对话的运行上下文")
     return run_context.session_id
 
 
 def workspace_tools(service: WorkspaceService, skills: SecureSkills) -> list[Function]:
     def list_files(path: str = "", run_context: RunContext = None):
-        """List files in the current thread workspace."""
+        """列出当前对话工作区中的文件。"""
         return json.dumps(service.list_files(_thread(run_context), path), ensure_ascii=False)
 
     def read_file(path: str, run_context: RunContext = None):
-        """Read a bounded UTF-8 text file from the current thread workspace."""
+        """读取当前对话工作区中大小受限的 UTF-8 文本文件。"""
         return service.read_text(_thread(run_context), path)
 
     def write_file(path: str, content: str, run_context: RunContext = None):
-        """Write a UTF-8 file in the current thread workspace."""
+        """在当前对话工作区中写入 UTF-8 文件。"""
         return service.upload(_thread(run_context), path, content.encode("utf-8"))
 
     def move_file(source: str, destination: str, run_context: RunContext = None):
-        """Move a file inside the current thread workspace."""
+        """在当前对话工作区中移动文件。"""
         service.move_file(_thread(run_context), source, destination)
         return {"ok": True}
 
     def delete_file(path: str, recursive: bool = False, run_context: RunContext = None):
-        """Delete a file or directory from the current thread workspace."""
+        """删除当前对话工作区中的文件或目录。"""
         service.delete_file(_thread(run_context), path, recursive)
         return {"ok": True}
 
     def shell(command: str, timeout: int = 30, run_context: RunContext = None):
-        """Run a bounded shell command in the current thread Daytona sandbox."""
+        """在当前对话的 Daytona 沙箱中运行受限的 Shell 命令。"""
         return service.shell(_thread(run_context), command, timeout)
 
     def run_code(code: str, timeout: int = 30, run_context: RunContext = None):
-        """Run bounded Python code in the current thread Daytona sandbox."""
+        """在当前对话的 Daytona 沙箱中运行受限的 Python 代码。"""
         return service.run_code(_thread(run_context), code, timeout)
 
     def run_skill_script(
@@ -392,7 +392,7 @@ def workspace_tools(service: WorkspaceService, skills: SecureSkills) -> list[Fun
         timeout: int = 30,
         run_context: RunContext = None,
     ):
-        """Copy and execute a declared skill script in the current Daytona sandbox."""
+        """在当前 Daytona 沙箱中复制并执行已声明的技能脚本。"""
         return service.run_skill_script(
             _thread(run_context), skills, skill_name, script_path, args, timeout,
         )

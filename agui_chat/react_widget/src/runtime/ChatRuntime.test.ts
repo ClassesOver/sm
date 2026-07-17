@@ -818,19 +818,19 @@ describe('ChatRuntime protocol handling', () => {
       status: 200, headers: { 'content-type': 'application/json' }
     }))))
     await runtime.send('json')
-    expect(runtime.getSnapshot().error).toBe('AG-UI runtime must return text/event-stream.')
+    expect(runtime.getSnapshot().error).toBe('AG-UI 运行服务必须返回 text/event-stream。')
 
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(null, {
       status: 200, headers: { 'content-type': 'text/event-stream' }
     }))))
     await runtime.send('no body')
-    expect(runtime.getSnapshot().error).toBe('AG-UI SSE response has no body.')
+    expect(runtime.getSnapshot().error).toBe('AG-UI SSE 响应没有正文。')
 
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(sseResponse([
       { type: 'TEXT_MESSAGE_CONTENT', delta: 'partial' }
     ]))))
     await runtime.send('early end')
-    expect(runtime.getSnapshot().error).toBe('AG-UI stream ended before RUN_FINISHED.')
+    expect(runtime.getSnapshot().error).toBe('AG-UI 数据流在 RUN_FINISHED 事件之前结束。')
   })
 
   it('parses fragmented CRLF events, reports malformed events, and isolates run and thread ids', async () => {
@@ -861,7 +861,7 @@ describe('ChatRuntime protocol handling', () => {
     await runtime.send('stream')
 
     expect(runtime.getSnapshot().messages[1].content).toBe('accepted')
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'Ignored malformed SSE event.' }))
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: '已忽略格式错误的 SSE 事件。' }))
   })
 
   it('does not execute AgentOS server tools that were not declared as client tools', async () => {
@@ -950,7 +950,7 @@ describe('ChatRuntime protocol handling', () => {
 
     expect(runtime.getSnapshot().messages[0].menuMention).toEqual({ ...option, valid: true })
     expect(body.messages[0].content).toBe('打开')
-    expect(body.context).toContainEqual(expect.objectContaining({ description: 'Selected Odoo menu' }))
+    expect(body.context).toContainEqual(expect.objectContaining({ description: '已选 Odoo 菜单' }))
 
     runtime.update({ menuOptions: [] })
     expect(runtime.getSnapshot().messages[0].menuMention?.valid).toBe(false)
@@ -981,7 +981,7 @@ describe('ChatRuntime protocol handling', () => {
     expect(runtime.getSnapshot().messages[0].mentions).toEqual([readReference])
     expect(body.messages[0]).not.toHaveProperty('mentions')
     expect(body.context).toContainEqual({
-      description: 'Selected Odoo references',
+      description: '已选 Odoo 引用',
       value: JSON.stringify([{
         kind: 'record', action: 'read', token: 'opaque-read-token', label: '客户甲',
         detail: '销售 / 客户', model: 'res.partner', expiresAt
@@ -1048,7 +1048,7 @@ describe('ChatRuntime protocol handling', () => {
     expect(body.messages[0].content).toBe(content)
     expect(body.messages[0]).not.toHaveProperty('recordSelection')
     expect(body.context).toContainEqual({
-      description: 'Selected Odoo record candidate',
+      description: '已选 Odoo 记录候选项',
       value: JSON.stringify({
         token: 'record-token', displayName: '上海某公司',
         snapshotId: hostState.snapshotId, hostRevision: hostState.hostRevision
@@ -1105,7 +1105,7 @@ describe('ChatRuntime protocol handling', () => {
 
     expect(runtime.getSnapshot().agentState).toEqual({ revision: 2, model: 'res.partner' })
     expect(states).toHaveLength(2)
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('hostState') }))
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('宿主状态') }))
     expect(runtime.getSnapshot().hostState.interactive).toBe(true)
   })
 

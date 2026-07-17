@@ -30,7 +30,7 @@ export interface RunInput {
 export function endpoint(props: Pick<AguiChatProps, 'runtimeUrl' | 'allowCrossOriginDev'>): string {
   const value = String(props.runtimeUrl || '').trim()
   if (!value) {
-    throw new Error('AG-UI runtime is not configured.')
+    throw new Error('尚未配置 AG-UI 运行服务。')
   }
   if (value.startsWith('/') && !value.startsWith('//') && !value.includes('://')) {
     return value
@@ -38,41 +38,41 @@ export function endpoint(props: Pick<AguiChatProps, 'runtimeUrl' | 'allowCrossOr
   if (props.allowCrossOriginDev && /^https?:\/\//i.test(value)) {
     return value
   }
-  throw new Error('AG-UI runtime URL is not allowed.')
+  throw new Error('不允许使用此 AG-UI 运行服务地址。')
 }
 
 export function transportError(status: number): Error {
   const messages: Record<number, string> = {
-    401: 'Authentication expired. Sign in again.',
-    403: 'You do not have permission to run this agent.',
-    429: 'Too many requests. Try again later.'
+    401: '登录状态已过期，请重新登录。',
+    403: '您没有运行此智能体的权限。',
+    429: '请求过于频繁，请稍后重试。'
   }
-  return new Error(messages[status] || `AG-UI request failed (HTTP ${status}).`)
+  return new Error(messages[status] || `AG-UI 请求失败（HTTP ${status}）。`)
 }
 
 export function validateHandshake(props: AguiChatProps): void {
   const handshake = props.handshake
   if (!handshake || handshake.protocol !== AGUI_ODOO_PROTOCOL) {
-    throw new Error('Odoo AG-UI protocol handshake failed.')
+    throw new Error('Odoo AG-UI 协议握手失败。')
   }
   if (handshake.agentProtocol !== AGUI_ODOO_PROTOCOL) {
-    throw new Error('AgentOS AG-UI protocol handshake failed.')
+    throw new Error('AgentOS AG-UI 协议握手失败。')
   }
   if (
     !handshake.moduleVersion ||
     handshake.moduleVersion !== handshake.bundleVersion ||
     handshake.bundleVersion !== handshake.agentBundleVersion
   ) {
-    throw new Error('AG-UI module, bundle, and AgentOS versions do not match.')
+    throw new Error('AG-UI 模块、前端资源与 AgentOS 版本不匹配。')
   }
   if (
     !/^[a-f0-9]{64}$/.test(handshake.commandCatalogHash || '') ||
     handshake.commandCatalogHash !== handshake.agentCommandCatalogHash
   ) {
-    throw new Error('AG-UI command catalogs do not match.')
+    throw new Error('AG-UI 命令目录不匹配。')
   }
   if (!props.hostState || props.hostState.protocol !== AGUI_ODOO_PROTOCOL) {
-    throw new Error('Odoo host snapshot protocol does not match the runtime.')
+    throw new Error('Odoo 宿主快照协议与运行服务不匹配。')
   }
 }
 
@@ -191,7 +191,7 @@ function normalizeRunContext(
   messages: ChatMessage[]
 ): Array<{ description: string; value: string }> {
   const context: Array<{ description: string; value: string }> = [{
-    description: 'Odoo host snapshot',
+    description: 'Odoo 宿主快照',
     value: contextValue(agentHostContext(props.hostState))
   }]
   if (Array.isArray(props.context)) {
@@ -203,7 +203,7 @@ function normalizeRunContext(
       ) {
         context.push(clone(item as { description: string; value: string }))
       } else {
-        context.push({ description: `Context ${index + 1}`, value: contextValue(item) })
+        context.push({ description: `上下文 ${index + 1}`, value: contextValue(item) })
       }
     })
   } else if (props.context && typeof props.context === 'object') {
@@ -212,16 +212,16 @@ function normalizeRunContext(
     })
   }
   if (props.user !== undefined) {
-    context.push({ description: 'Odoo user', value: contextValue(props.user) })
+    context.push({ description: 'Odoo 用户', value: contextValue(props.user) })
   }
   if (props.agentId !== undefined) {
-    context.push({ description: 'Agent ID', value: props.agentId })
+    context.push({ description: '智能体 ID', value: props.agentId })
   }
   const latestUserMessage = [...messages].reverse().find((message) => message.role === 'user')
   const selectedSkills = (latestUserMessage?.skills || []).filter((skill) => skill.valid)
   if (selectedSkills.length) {
     context.push({
-      description: 'Selected Agent Skills',
+      description: '已选智能体技能',
       value: contextValue(selectedSkills.map((skill) => ({
         id: skill.id,
         name: skill.name,
@@ -232,7 +232,7 @@ function normalizeRunContext(
   const workspaceReferences = latestUserMessage?.workspaceReferences || []
   if (workspaceReferences.length) {
     context.push({
-      description: 'Selected workspace references',
+      description: '已选工作区引用',
       value: contextValue(workspaceReferences.map((reference) => ({
         path: reference.path,
         type: reference.isDirectory ? 'directory' : 'file',
@@ -243,7 +243,7 @@ function normalizeRunContext(
   const mentions = (latestUserMessage?.mentions || []).filter((mention) => mention.valid)
   if (mentions.length) {
     context.push({
-      description: 'Selected Odoo references',
+      description: '已选 Odoo 引用',
       value: contextValue(mentions.map((mention) => ({
         kind: mention.kind,
         action: mention.action,
@@ -258,7 +258,7 @@ function normalizeRunContext(
   if (latestUserMessage?.menuMention?.valid) {
     const mention = latestUserMessage.menuMention
     context.push({
-      description: 'Selected Odoo menu',
+      description: '已选 Odoo 菜单',
       value: contextValue({
         menuId: mention.menuId,
         actionId: mention.actionId,
@@ -274,7 +274,7 @@ function normalizeRunContext(
     latestUserMessage.recordSelection.hostRevision === props.hostState.hostRevision
   ) {
     context.push({
-      description: 'Selected Odoo record candidate',
+      description: '已选 Odoo 记录候选项',
       value: contextValue(latestUserMessage.recordSelection)
     })
   }
@@ -321,10 +321,10 @@ export function validateRunInput(input: RunInput, props: AguiChatProps): void {
   const maxMessages = props.limits?.messages ?? 200
   const maxBytes = props.limits?.requestBytes ?? 2 * 1024 * 1024
   if (input.messages.length > maxMessages) {
-    throw new Error(`Message limit exceeded (${maxMessages}).`)
+    throw new Error(`消息数量超过限制（${maxMessages}）。`)
   }
   if (new TextEncoder().encode(JSON.stringify(input)).byteLength > maxBytes) {
-    throw new Error('Request is larger than the configured limit.')
+    throw new Error('请求大小超过配置限制。')
   }
 }
 

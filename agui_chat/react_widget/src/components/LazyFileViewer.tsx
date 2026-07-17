@@ -22,8 +22,8 @@ function loadProductionBundle(): Promise<FileViewerModule> {
     const script = existing || document.createElement('script')
     const handleLoad = () => window.AguiFileViewerBundle?.FileViewer
       ? resolve(window.AguiFileViewerBundle)
-      : reject(new Error('File viewer bundle did not register'))
-    const handleError = () => reject(new Error('Unable to load file viewer bundle'))
+      : reject(new Error('文件查看器资源未正确注册'))
+    const handleError = () => reject(new Error('无法加载文件查看器资源'))
 
     script.addEventListener('load', handleLoad, { once: true })
     script.addEventListener('error', handleError, { once: true })
