@@ -71,25 +71,58 @@ def normalize_host_arguments(tool_name, arguments):
     return normalized
 
 
-def redact(value, depth=0):
+def redact(value, depth=0, sensitive_keys=None):
+    sensitive_keys = sensitive_keys or set()
     if depth > 5:
         return "[truncated]"
     if isinstance(value, dict):
         return {
-            str(key): "[redacted]" if SECRET_KEYS.search(str(key)) else redact(item, depth + 1)
+            str(key): "[redacted]" if (
+                str(key) in sensitive_keys or SECRET_KEYS.search(str(key))
+            ) else redact(item, depth + 1, sensitive_keys)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [redact(item, depth + 1) for item in value[:100]]
+        return [redact(item, depth + 1, sensitive_keys) for item in value[:100]]
     if isinstance(value, str):
         return value[:2000]
     return value
 
 
-def register_business_command(name, schema, handler):
-    if not name.startswith("odoo.business.") or not callable(handler):
+def register_business_command(name, schema, handler, description=None):
+    if (
+        not re.match(r"^odoo\.business\.[a-z0-9_]+\.[a-z0-9_]+$", name or "") or
+        not callable(handler)
+    ):
         raise ValueError("业务命令必须使用 odoo.business.* 名称并提供可调用处理器。")
-    BUSINESS_COMMANDS[name] = {"schema": schema or {}, "handler": handler}
+    if not isinstance(schema, dict):
+        raise ValueError("业务命令 schema 必须是 JSON 对象。")
+    if name in BUSINESS_COMMANDS:
+        raise ValueError("业务命令名称已注册：%s" % name)
+    BUSINESS_COMMANDS[name] = {
+        "schema": schema or {},
+        "handler": handler,
+        "description": description or "",
+    }
+
+
+def business_tool_catalog(env, config):
+    enabled = set(config.enabled_business_command_names())
+    commands = env["agui.chat.command"].sudo().search([
+        ("active", "=", True),
+        ("command_type", "=", "business"),
+        ("code", "in", list(enabled)),
+    ])
+    by_code = {command.code: command for command in commands}
+    return [
+        {
+            "name": name,
+            "description": spec.get("description") or by_code[name].name,
+            "parameters": spec.get("schema") or {},
+        }
+        for name, spec in sorted(BUSINESS_COMMANDS.items())
+        if name in enabled and name in by_code
+    ]
 
 
 class AguiChatToolPolicy(models.Model):
@@ -176,7 +209,9 @@ class AguiChatToolPolicy(models.Model):
             "object", "create", "delete", "state"
         )
         if not policies:
-            if tool_name in WRITE_COMMANDS or protected_control:
+            if (
+                tool_name in WRITE_COMMANDS or tool_name in BUSINESS_COMMANDS or protected_control
+            ):
                 return {"allowed": False, "reason": "policy_missing"}
             return {
                 "allowed": True,
@@ -254,7 +289,7 @@ class AguiChatToolAuthorization(models.Model):
     risk_reasons_json = fields.Text(string="风险原因", default="[]")
     policy_id = fields.Many2one("agui.chat.tool.policy", string="工具策略", ondelete="set null")
     authorization_kind = fields.Selection([
-        ("command", "页面命令"), ("undo", "撤销"),
+        ("command", "页面命令"), ("business", "业务命令"), ("undo", "撤销"),
     ], string="授权类型", required=True, default="command", index=True)
     parent_authorization_id = fields.Many2one(
         "agui.chat.tool.authorization", string="原始授权", ondelete="cascade",
@@ -296,12 +331,15 @@ class AguiChatToolAuthorization(models.Model):
     def _normalize_preview(self, preview, arguments):
         control = arguments.get("__control") if isinstance(arguments.get("__control"), dict) else {}
         if control:
-            return {"control": redact({
+            control_preview = {
                 "type": control.get("type"),
-                "name": str(control.get("name") or "")[:160],
                 "label": str(control.get("label") or "")[:160],
                 "recordLabel": str(control.get("recordLabel") or "")[:160],
-            })}
+            }
+            name = str(control.get("name") or "")[:160]
+            if name:
+                control_preview["name"] = name
+            return {"control": redact(control_preview)}
         if not isinstance(preview, dict):
             return {}
         target = arguments.get("target") or {}
@@ -378,6 +416,105 @@ class AguiChatToolAuthorization(models.Model):
                 "policy_high_risk_field" in reasons
             ) else []
         return preview
+
+    @api.model
+    def prepare_business_command(self, call):
+        call = call if isinstance(call, dict) else {}
+        tool_name = str(call.get("tool") or "")
+        payload = call.get("arguments")
+        config = self.env["agui.chat.config"].sudo().get_active_config()
+        spec = BUSINESS_COMMANDS.get(tool_name)
+        sensitive = set(config.sensitive_fields())
+        if not config.chat_enabled or not config.host_tools_enabled:
+            return {"ok": False, "code": "host_tools_disabled"}
+        if not config.write_tools_enabled:
+            return {"ok": False, "code": "write_tools_disabled"}
+        if not spec or tool_name not in config.enabled_business_command_names():
+            return {"ok": False, "code": "unsupported_business_command"}
+        validation = self.env["agui.chat.command.execution"]._validate_schema(
+            payload, spec.get("schema") or {}, "payload"
+        )
+        if validation:
+            return {
+                "ok": False,
+                "code": "schema_validation_failed",
+                "error": validation,
+            }
+        context = call.get("context") if isinstance(call.get("context"), dict) else {}
+        key = self._host_idempotency_key(call)
+        if not key:
+            return {"ok": False, "code": "missing_idempotency_context"}
+        binding = {
+            "tool": tool_name,
+            "arguments": payload,
+            "id": str(call.get("id") or ""),
+            "message_id": call.get("message_id") or False,
+            "context": context,
+        }
+        binding_json = canonical_json(binding)
+        if len(binding_json.encode("utf-8")) > MAX_ARGUMENT_BYTES:
+            return {"ok": False, "code": "arguments_too_large"}
+        binding_hash = payload_hash(payload)
+        existing = self.search([
+            ("idempotency_key", "=", key),
+            ("user_id", "=", self.env.user.id),
+            ("company_id", "=", self.env.user.company_id.id),
+        ], limit=1)
+        if existing:
+            return existing._existing_decision(binding_hash)
+        decision = self.env["agui.chat.tool.policy"].evaluate(tool_name, payload)
+        if not decision.get("allowed"):
+            self.env["agui.chat.tool.audit"].log(
+                tool_name,
+                "denied",
+                details={
+                    "reason": decision.get("reason"),
+                    "policy_mismatches": decision.get("policy_mismatches") or [],
+                },
+                **self._audit_values(call)
+            )
+            return {"ok": False, "code": decision.get("reason") or "policy_denied"}
+        requires_confirmation = bool(decision.get("requires_confirmation"))
+        expires_at = fields.Datetime.to_string(
+            fields.Datetime.from_string(fields.Datetime.now()) + timedelta(minutes=5)
+        )
+        values = {
+            "idempotency_key": key,
+            "payload_hash": binding_hash,
+            "tool_call_id": binding["id"],
+            "tool_name": tool_name,
+            "arguments_json": canonical_json(payload),
+            "context_json": canonical_json(context),
+            "preview_json": canonical_json({"payload": redact(payload, sensitive_keys=sensitive)}),
+            "risk_reasons_json": canonical_json(
+                decision.get("risk_reasons") or ["business_command"]
+            ),
+            "policy_id": decision.get("policy_id") or False,
+            "authorization_kind": "business",
+            "confirmation_required": requires_confirmation,
+            "state": "pending" if requires_confirmation else "approved",
+            "expires_at": expires_at,
+        }
+        try:
+            with self.env.cr.savepoint():
+                authorization = self.create(values)
+        except IntegrityError:
+            authorization = self.search([
+                ("idempotency_key", "=", key),
+                ("user_id", "=", self.env.user.id),
+                ("company_id", "=", self.env.user.company_id.id),
+            ], limit=1)
+            return authorization._existing_decision(binding_hash)
+        self.env["agui.chat.tool.audit"].log(
+            tool_name,
+            "allowed",
+            details={"payload": redact(payload, sensitive_keys=sensitive)},
+            authorization_id=authorization.id,
+            **self._audit_values(call)
+        )
+        if requires_confirmation:
+            return authorization._confirmation_decision()
+        return authorization._business_decision()
 
     @api.model
     def prepare_host_command(self, call):
@@ -554,10 +691,32 @@ class AguiChatToolAuthorization(models.Model):
             return authorization._confirmation_decision()
         return authorization.begin_execution()
 
+    def _business_decision(self):
+        self.ensure_one()
+        return {
+            "ok": True,
+            "authorization_id": self.token,
+            "confirmation_required": bool(self.confirmation_required),
+            "bound_call": {
+                "id": self.tool_call_id,
+                "tool": self.tool_name,
+                "arguments": json.loads(self.arguments_json or "{}"),
+                "context": json.loads(self.context_json or "{}"),
+            },
+        }
+
     def _existing_decision(self, binding_hash):
         self.ensure_one()
         if self.payload_hash != binding_hash:
             return {"ok": False, "code": "idempotency_payload_mismatch"}
+        if self.authorization_kind == "business":
+            if self.state == "pending":
+                return self._confirmation_decision()
+            if self.state in ("approved", "consumed"):
+                return self._business_decision()
+            if self.state == "executing":
+                return {"ok": False, "code": "command_in_progress"}
+            return {"ok": False, "code": "authorization_%s" % self.state}
         if self.state == "consumed":
             return {
                 "ok": True,
@@ -618,7 +777,10 @@ class AguiChatToolAuthorization(models.Model):
             self.write({"state": "rejected"})
             return {"ok": False, "code": "authorization_rejected"}
         self.write({"state": "approved"})
-        return self.begin_execution()
+        return (
+            self._business_decision()
+            if self.authorization_kind == "business" else self.begin_execution()
+        )
 
     def begin_execution(self):
         self.ensure_one()
@@ -826,11 +988,19 @@ class AguiChatCommandExecution(models.Model):
 
     @api.model
     def execute_named(self, command_name, payload, authorization_token, idempotency_key):
-        payload = payload if isinstance(payload, dict) else {}
         spec = BUSINESS_COMMANDS.get(command_name)
         config = self.env["agui.chat.config"].sudo().get_active_config()
+        if not config.chat_enabled or not config.host_tools_enabled:
+            return {"ok": False, "code": "host_tools_disabled"}
+        if not config.write_tools_enabled:
+            return {"ok": False, "code": "write_tools_disabled"}
         if not spec or command_name not in config.enabled_business_command_names():
             return {"ok": False, "code": "unsupported_business_command"}
+        if (
+            not isinstance(idempotency_key, str) or not idempotency_key or
+            len(idempotency_key) > 160
+        ):
+            return {"ok": False, "code": "invalid_idempotency_key"}
         validation = self._validate_schema(payload, spec.get("schema") or {}, "payload")
         if validation:
             return {"ok": False, "code": "schema_validation_failed", "error": validation}
@@ -840,6 +1010,7 @@ class AguiChatCommandExecution(models.Model):
             ("user_id", "=", self.env.user.id),
             ("company_id", "=", self.env.user.company_id.id),
             ("tool_name", "=", command_name),
+            ("authorization_kind", "=", "business"),
         ], limit=1)
         if not authorization or authorization.payload_hash != value_hash:
             return {"ok": False, "code": "authorization_invalid"}
@@ -870,16 +1041,29 @@ class AguiChatCommandExecution(models.Model):
             ], limit=1)
             return existing._stored_result()
         self.env.cr.execute(
-            "SELECT state FROM agui_chat_tool_authorization WHERE id = %s FOR UPDATE",
+            "SELECT state, expires_at FROM agui_chat_tool_authorization WHERE id = %s FOR UPDATE",
             (authorization.id,),
         )
-        if self.env.cr.fetchone()[0] != "approved":
+        state, expires_at = self.env.cr.fetchone()
+        expires_at = (
+            expires_at if hasattr(expires_at, "tzinfo")
+            else fields.Datetime.from_string(expires_at)
+        )
+        if (
+            state != "approved" or
+            expires_at <= fields.Datetime.from_string(fields.Datetime.now())
+        ):
+            if state == "approved":
+                authorization.write({"state": "expired"})
             execution.write({"state": "error", "error_code": "authorization_invalid"})
             return execution._stored_result()
         authorization.write({"state": "executing"})
         try:
             with self.env.cr.savepoint():
-                result = spec["handler"](self.env, payload)
+                result = redact(
+                    spec["handler"](self.env, payload),
+                    sensitive_keys=set(config.sensitive_fields()),
+                )
                 result_json = canonical_json(result if result is not None else {})
                 if len(result_json.encode("utf-8")) > MAX_RESULT_BYTES:
                     raise ValueError("result_too_large")
@@ -924,8 +1108,33 @@ class AguiChatCommandExecution(models.Model):
             "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
             "boolean": lambda item: isinstance(item, bool),
         }
-        if expected and expected in type_checks and not type_checks[expected](value):
+        if expected and expected not in type_checks:
+            return "%s 使用了不支持的 schema 类型" % path
+        if expected and not type_checks[expected](value):
             return "%s 必须是 %s 类型" % (path, expected)
+        if "enum" in schema and value not in schema["enum"]:
+            return "%s 不在允许值范围内" % path
+        if expected == "string":
+            minimum = schema.get("minLength")
+            maximum = schema.get("maxLength")
+            if minimum is not None and len(value) < minimum:
+                return "%s 长度不足" % path
+            if maximum is not None and len(value) > maximum:
+                return "%s 长度超限" % path
+        if expected in ("integer", "number"):
+            minimum = schema.get("minimum")
+            maximum = schema.get("maximum")
+            if minimum is not None and value < minimum:
+                return "%s 小于允许值" % path
+            if maximum is not None and value > maximum:
+                return "%s 大于允许值" % path
+        if expected == "array":
+            minimum = schema.get("minItems")
+            maximum = schema.get("maxItems")
+            if minimum is not None and len(value) < minimum:
+                return "%s 项目数量不足" % path
+            if maximum is not None and len(value) > maximum:
+                return "%s 项目数量超限" % path
         if expected == "object":
             properties = schema.get("properties") or {}
             for name in schema.get("required") or []:

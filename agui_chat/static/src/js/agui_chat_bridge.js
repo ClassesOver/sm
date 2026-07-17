@@ -4,8 +4,9 @@ odoo.define("agui_chat.host_bridge", function (require) {
     var ajax = require("web.ajax");
 
     var PROTOCOL = "agui.odoo.v2";
-    var MODULE_VERSION = "12.0.8.2.0";
+    var MODULE_VERSION = "12.0.8.3.0";
     var WRITE_COMMANDS = {
+        "odoo.stage_current_form": true,
         "odoo.patch_current_form": true,
         "odoo.save_current_form": true,
         "odoo.discard_current_form": true,
@@ -135,6 +136,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
     HostBridge.prototype.setCatalog = function (catalog) {
         var self = this;
         var enabled = this.config && this.config.enabled_commands || [];
+        var business = this.config && this.config.business_tools || [];
         this.catalog = [];
         this.allowedTools = {};
         if (!this.config || !this.config.host_tools_enabled) {
@@ -148,8 +150,21 @@ odoo.define("agui_chat.host_bridge", function (require) {
                 return;
             }
             self.catalog.push(clone(tool));
-            self.allowedTools[tool.name] = true;
+            self.allowedTools[tool.name] = "host";
         });
+        if (this.config.write_tools_enabled) {
+            _.each(business, function (tool) {
+                var name = tool && String(tool.name || "");
+                if (
+                    !tool || !/^odoo\.business\.[a-z0-9_]+\.[a-z0-9_]+$/.test(name) ||
+                    !_.isObject(tool.parameters)
+                ) {
+                    return;
+                }
+                self.catalog.push(clone(tool));
+                self.allowedTools[name] = "business";
+            });
+        }
         return clone(this.catalog);
     };
 
@@ -294,6 +309,9 @@ odoo.define("agui_chat.host_bridge", function (require) {
         if (!this.allowedTools[cleanCall.tool]) {
             return $.when(resultError(cleanCall.tool, "tool_not_declared", "本次运行未声明该客户端工具。"));
         }
+        if (this.allowedTools[cleanCall.tool] === "business") {
+            return this._businessPrepare(cleanCall);
+        }
         return this._browserPrepare(cleanCall, true).then(function (prepared) {
             if (!prepared || !prepared.ok) {
                 return prepared || resultError(cleanCall.tool, "host_unavailable");
@@ -301,6 +319,40 @@ odoo.define("agui_chat.host_bridge", function (require) {
             return self._serverPrepare(prepared.call, 0);
         }, function (error) {
             return resultError(cleanCall.tool, error.code || "host_unavailable", error.message);
+        });
+    };
+
+    HostBridge.prototype._businessPrepare = function (call) {
+        var self = this;
+        return this._rpc("/agui_chat/business/prepare", {
+            call: clone(call),
+        }).then(function (decision) {
+            if (!decision || !decision.ok || decision.needs_confirmation) {
+                return decision || resultError(call.tool, "policy_denied");
+            }
+            return self._executeBusiness(decision);
+        }, function (error) {
+            return resultError(call.tool, error.code || "policy_unavailable", error.message);
+        });
+    };
+
+    HostBridge.prototype._executeBusiness = function (decision) {
+        var bound = clone(decision && decision.bound_call || {});
+        var authorizationId = decision && decision.authorization_id;
+        if (!bound.tool || !authorizationId) {
+            return $.when(resultError(bound.tool, "authorization_invalid"));
+        }
+        return this._rpc("/agui_chat/business/execute", {
+            command_name: bound.tool,
+            payload: bound.arguments,
+            authorization_token: authorizationId,
+            idempotency_key: authorizationId,
+        }).then(function (result) {
+            result = clone(result || {});
+            result.operation = bound.tool;
+            return result;
+        }, function (error) {
+            return resultError(bound.tool, error.code || "business_command_failed", error.message);
         });
     };
 
@@ -338,6 +390,15 @@ odoo.define("agui_chat.host_bridge", function (require) {
         }
         if (!approved) {
             return this._confirmAuthorization(cleanCall.tool, authorizationId, false);
+        }
+        if (this.allowedTools[cleanCall.tool] === "business") {
+            return this._confirmAuthorization(cleanCall.tool, authorizationId, true).then(
+                function (decision) {
+                    if (!decision || !decision.ok) {
+                        return decision || resultError(cleanCall.tool, "authorization_rejected");
+                    }
+                    return self._executeBusiness(decision);
+                });
         }
         return this._browserPrepare(cleanCall, true).then(function (prepared) {
             if (!prepared || !prepared.ok) {

@@ -28,8 +28,17 @@ def odoo_contract():
 
 def test_agentos_contract_matches_odoo_source():
     values, digest = odoo_contract()
-    assert values["COMMAND_CATALOG_REVISION"] == 6
-    assert digest == "53c315d2ff38112adfd76577259f46247767e2b7414f0ce7045535b780ffa94d"
+    assert values["COMMAND_CATALOG_REVISION"] == 7
+    assert digest == "b198faa202457040a5d1549837c2f9128cc3cbaea8788d4bc6b04046faf22245"
     assert app.PROTOCOL == values["PROTOCOL"]
     assert app.BUNDLE_VERSION == values["MODULE_VERSION"]
     assert app.COMMAND_CATALOG_HASH == digest
+
+
+def test_agent_instructions_enforce_staged_odoo_workflow():
+    instructions = "\n".join(app.assistant.instructions)
+
+    assert "能力发现 → odoo.stage_current_form 暂存依赖标量" in instructions
+    assert "等待 onchange 新快照 → odoo.search_relation" in instructions
+    assert "odoo.validate_current_form" in instructions
+    assert "独立确认后 odoo.save_current_form" in instructions

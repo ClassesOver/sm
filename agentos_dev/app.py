@@ -17,8 +17,8 @@ from .workspace import WorkspaceError, WorkspaceService, workspace_tools
 
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.8.2.0"
-COMMAND_CATALOG_HASH = "53c315d2ff38112adfd76577259f46247767e2b7414f0ce7045535b780ffa94d"
+BUNDLE_VERSION = "12.0.8.3.0"
+COMMAND_CATALOG_HASH = "b198faa202457040a5d1549837c2f9128cc3cbaea8788d4bc6b04046faf22245"
 DEFAULT_ENV_FILE = "/home/junge/pros/agents_app/.env"
 DEFAULT_MODEL_ID = "qwen3.6-35b-a3b"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -216,6 +216,7 @@ assistant = Agent(
         "使用中文简洁回答。",
         "可以使用本次请求携带的完整对话历史。",
         "涉及 Odoo 业务数据时仅使用请求中的 Odoo 页面状态和本次请求明确选择的菜单或记录候选；页面状态无法确认的数据不要猜测。",
+        "每次页面工具返回新快照后，必须重新发现当前 viewType、可见字段、动态 modifiers、capabilities 和本次 Run 声明的工具；旧快照字段、记录、候选和控件 token 一律不得复用。",
         "调用 odoo.open_menu 时，target 必须原样复制 Odoo host snapshot.pageTarget；调用其他 Odoo 页面工具时，target 必须原样复制 Odoo host snapshot.viewTarget。不得从 action.resId 推导当前表单记录。",
         "上下文存在 Selected Odoo menu 时，先用其中的 menuId 和当前 PageTarget 调用 odoo.open_menu；只能使用该菜单，不能改选或猜测其他菜单。导航后必须等待客户端返回新快照再决定下一步。",
         "上下文存在 Selected Odoo references 时，只能使用其中原样提供的 token 和绑定动作，不得改选对象、猜测对象或把 read/view 动作升级为 edit。多个 read 记录必须先用当前 PageTarget 一次调用 odoo.read_mentioned_records 批量读取；唯一的页面动作随后执行，并使用当前 PageTarget。菜单 open/create 分别调用 odoo.open_mentioned_menu，记录 view/edit 调用 odoo.open_mentioned_record，收藏或临时筛选 apply 调用 odoo.apply_mentioned_filter。",
@@ -223,12 +224,14 @@ assistant = Agent(
         "上下文不存在 Selected Odoo menu 时，只能操作当前 action；当前 action 无法满足意图时，请用户用 @ 选择菜单，不要从其他菜单中猜目标。",
         "筛选只能使用当前快照 capabilities.filterFields 中的字段和运算符，提交 JSON domain 与简短可见标签；即使只有一个条件也必须使用条件列表，例如 [[\"id\", \"=\", 1]]；禁止字符串 domain、点号字段和表达式。",
         "严格区分搜索、查看和编辑记录。用户仅要求搜索、筛选或查找记录时，只调用 odoo.apply_filter；无论命中数量多少都必须停止，不得调用 odoo.open_record。只有用户明确要求打开、查看或编辑记录时，才先按名称调用 odoo.apply_filter：唯一命中后立即使用返回的记录 token 调用 odoo.open_record，多条命中时停止并等待用户选择。打开或查看必须使用 readonly 模式；只有用户明确要求编辑或修改时才使用 edit 模式，不得因唯一命中自行升级用户意图。Selected Odoo record candidate 只能在其 snapshotId 和 hostRevision 仍匹配时使用。若工具返回 policy_denied，应准确说明服务器策略拒绝了操作，不得归因于视图或 token。",
-        "创建只调用 odoo.open_create 进入空白原生新建表单，不填写、不保存。打开编辑态后不修改字段、不保存。",
+        "创建先调用 odoo.open_create 进入空白原生新建表单并等待新快照；随后只能按新快照真实可见可写字段和控件继续暂存、校验与保存，不得假设固定 action、view、模型或字段。",
         "跨模型操作只能使用新快照中真实可见的 Kanban 控件 token 逐步导航；控件语义不明确或存在多个合理路径时请用户选择，不能猜测。",
         "每轮最多跟进四次客户端页面工具；达到上限后明确停止，并请用户继续发送消息完成剩余操作。",
         "页面操作必须通过对应工具调用实现，不能用文字代替执行；收到工具成功结果前，严禁声称已打开、已进入、已修改、已保存或已完成。",
         "One2many 明细必须使用快照 fields 中的 childFields、operations 和 capabilities.x2many 中当前可见的控件、行 token；新增关系字段时先激活可见创建控件，再用新行 token 暂存标量依赖、执行关系搜索并暂存候选；批量 create 只填写可见标量，update/delete 只使用 record.values 中已加载的持久行 ID；禁止猜测未加载行 ID、嵌套 One2many 或临时行别名。",
-        "用户只要求编辑当前表单、进入编辑模式，且未提供任何字段修改内容时，第一个响应必须只调用 odoo.enter_edit_mode，不要先回复文字或询问要修改的字段；该操作不修改字段也不保存。用户明确提供字段和值时才调用 odoo.patch_current_form；只读模式会自动进入编辑模式、同步状态并保存。",
+        "新建单据、存在 onchange/domain 依赖或需要分步填写的表单，必须按“能力发现 → odoo.stage_current_form 暂存依赖标量 → 等待 onchange 新快照 → odoo.search_relation 选择候选并继续暂存 → odoo.validate_current_form → 经独立确认后 odoo.save_current_form”执行；任何一步失败都停止，不能绕过原生校验或直接猜关系 ID。",
+        "用户只要求进入编辑模式且未提供字段修改内容时，第一个响应只调用 odoo.enter_edit_mode。odoo.patch_current_form 保留“修改并立即保存”语义，只用于用户明确要求立即保存且不存在待 onchange/domain 依赖的独立修改；复杂或已暂存表单不得改用 patch_current_form。",
+        "odoo.business.* 只有在本次 Run 动态声明且用户意图匹配其精确 schema 时才能调用；不得构造未声明业务命令，不得把业务命令降级为通用 RPC、CRUD 或任意模型方法，提交和审批类命令必须等待独立确认结果。",
         "上下文存在 Selected Agent Skills 时，必须先对每个手动选择的技能按原样调用 get_skill_instructions；手动选择不代表禁止自动使用其他可用技能。",
         "工作区只属于当前 thread。读取目录和文本使用 workspace_list_files、workspace_read_file；写入、移动、删除、Shell、代码和技能脚本执行必须使用对应的需确认工具。",
     ],

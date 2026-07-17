@@ -18,7 +18,7 @@ test('通用单据真实 BasicModel/FormController QUnit', async ({ page }) => {
 
   const moduleName = 'agui_chat_test real form integration'
   await page.goto(
-    `/web/tests?db=${encodeURIComponent(database)}&mod=agui_chat_test&module=${encodeURIComponent(moduleName)}&failfast`
+    `/web/tests?db=${encodeURIComponent(database)}&mod=agui_chat_test&module=${encodeURIComponent(moduleName)}&failfast&debug=assets`
   )
   await page.waitForFunction(() => {
     const result = document.querySelector('#qunit-testresult')

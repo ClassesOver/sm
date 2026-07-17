@@ -7,14 +7,12 @@
             <script type="text/javascript" src="/agui_chat/static/src/js/agui_command_registry.js"/>
             <script type="text/javascript" src="/agui_chat/static/src/js/agui_host_service.js"/>
             <script type="text/javascript" src="/agui_chat/static/src/js/agui_chat_bridge.js"/>
-            <script type="text/javascript" src="/agui_chat/static/lib/agui-chat-react/agui_chat_widget.12.0.8.2.0.js"/>
+            <script type="text/javascript" src="/agui_chat/static/lib/agui-chat-react/agui_chat_widget.12.0.8.3.0.js"/>
             <script type="text/javascript" src="/agui_chat/static/src/js/agui_chat_surfaces.js"/>
         </xpath>
     </template>
     <template id="qunit_suite_tests" inherit_id="web.qunit_suite" name="AG-UI Chat QUnit Tests">
         <xpath expr="//script[last()]" position="after">
-            <script type="text/javascript" src="/agui_chat/static/src/js/agui_model_adapter.js"/>
-            <script type="text/javascript" src="/agui_chat/static/src/js/agui_command_registry.js"/>
             <script type="text/javascript" src="/agui_chat/static/tests/agui_host_tests.js"/>
         </xpath>
     </template>

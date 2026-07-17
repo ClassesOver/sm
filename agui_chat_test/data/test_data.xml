@@ -1,6 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
     <data noupdate="1">
+        <record id="command_test_document_confirm" model="agui.chat.command">
+            <field name="name">确认通用测试单据</field>
+            <field name="code">odoo.business.test_document.confirm</field>
+            <field name="command_type">business</field>
+        </record>
+        <record id="policy_test_document_confirm" model="agui.chat.tool.policy">
+            <field name="name">确认通用测试单据</field>
+            <field name="sequence">1</field>
+            <field name="tool_name">odoo.business.test_document.confirm</field>
+            <field name="access_level">write</field>
+            <field name="model_name">agui.chat.test.document</field>
+            <field name="confirmation_mode">always</field>
+        </record>
+
         <record id="option_standard_exact" model="agui.chat.test.option">
             <field name="name">标准唯一候选</field>
             <field name="domain_key">standard</field>

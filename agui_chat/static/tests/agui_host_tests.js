@@ -200,6 +200,107 @@ odoo.define("agui_chat.tests.host", function (require) {
         }).code, "undo_conflict");
     });
 
+    QUnit.test("business tools use the explicit write gate and server-bound execution", function (assert) {
+        assert.expect(19);
+        var done = assert.async();
+        var command = "odoo.business.test_document.confirm";
+        var call = {
+            id: "business-call",
+            tool: command,
+            arguments: {
+                model: "agui.chat.test.document",
+                document_id: 7,
+                expected_state: "draft",
+            },
+            context: {
+                requestId: "request-business",
+                runId: "run-business",
+                threadId: "thread-business",
+            },
+        };
+        var businessTool = {
+            name: command,
+            description: "确认测试单据",
+            parameters: {type: "object"},
+        };
+        var stageTool = {
+            name: "odoo.stage_current_form",
+            description: "暂存",
+            parameters: {type: "object"},
+        };
+        var bridge = new ChatBridge.HostBridge({
+            call: function () {
+                assert.ok(false, "business tools must not execute through the page host service");
+            },
+        });
+        bridge.config = {
+            host_tools_enabled: true,
+            write_tools_enabled: false,
+            enabled_commands: ["odoo.stage_current_form"],
+            business_tools: [businessTool],
+        };
+        assert.deepEqual(bridge.setCatalog([stageTool]), []);
+        assert.notOk(bridge.allowedTools[command]);
+        assert.notOk(bridge.allowedTools["odoo.stage_current_form"]);
+
+        bridge.config.write_tools_enabled = true;
+        assert.deepEqual(
+            _.pluck(bridge.setCatalog([stageTool]), "name"),
+            ["odoo.stage_current_form", command]
+        );
+        assert.strictEqual(bridge.allowedTools[command], "business");
+        assert.strictEqual(bridge.allowedTools["odoo.stage_current_form"], "host");
+
+        var routes = [];
+        bridge._rpc = function (route, values) {
+            routes.push(route);
+            if (route === "/agui_chat/business/prepare") {
+                assert.deepEqual(values.call.arguments, call.arguments);
+                return $.when({
+                    ok: false,
+                    needs_confirmation: true,
+                    authorization_id: "business-authorization",
+                    code: "confirmation_required",
+                });
+            }
+            if (route === "/agui_chat/host_command") {
+                assert.strictEqual(values.phase, "confirm");
+                assert.ok(values.approved);
+                return $.when({
+                    ok: true,
+                    authorization_id: "business-authorization",
+                    bound_call: {
+                        id: call.id,
+                        tool: command,
+                        arguments: call.arguments,
+                        context: call.context,
+                    },
+                });
+            }
+            assert.strictEqual(values.command_name, command);
+            assert.deepEqual(values.payload, call.arguments);
+            assert.strictEqual(values.authorization_token, "business-authorization");
+            assert.strictEqual(values.idempotency_key, "business-authorization");
+            return $.when({ok: true, result: {state: "confirmed"}});
+        };
+
+        bridge.executeTool(call).then(function (decision) {
+            assert.ok(decision.needs_confirmation);
+            assert.strictEqual(decision.authorization_id, "business-authorization");
+            return bridge.confirmTool(call, decision.authorization_id, true);
+        }).then(function (result) {
+            assert.ok(result.ok);
+            assert.strictEqual(result.operation, command);
+            assert.strictEqual(result.result.state, "confirmed");
+            assert.deepEqual(routes, [
+                "/agui_chat/business/prepare",
+                "/agui_chat/host_command",
+                "/agui_chat/business/execute",
+            ]);
+            done();
+        });
+    });
+
     QUnit.test("host bridge completes rejected undo conflicts", function (assert) {
         assert.expect(4);
         var done = assert.async();

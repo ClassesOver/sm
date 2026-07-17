@@ -4,8 +4,10 @@ import { startSessionTracking, trackedSessionIds } from './session-tracker'
 const database = process.env.ODOO_E2E_DB || 'odoo12_agui_e2e'
 const login = process.env.ODOO_E2E_LOGIN || 'admin'
 const password = process.env.ODOO_E2E_PASSWORD || 'admin'
+const workspaceSecret = process.env.AGUI_WORKSPACE_HMAC_SECRET || ''
 
 interface ToolResult {
+  result?: Record<string, unknown>
   ok?: boolean
   code?: string
   authorization_id?: string
@@ -198,7 +200,9 @@ async function executeTool(
     const call = {
       id,
       tool: toolName,
-      arguments: { target, ...argumentsValue },
+      arguments: toolName.startsWith('odoo.business.')
+        ? argumentsValue
+        : { target, ...argumentsValue },
       context: {
         requestId: `request-${id}`,
         runId: `run-${id}`,
@@ -264,6 +268,11 @@ async function rpcLoadingEvents(page: Page, operation: () => Promise<unknown>) {
 test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
   test.beforeEach(async ({ page }) => {
     await loginToOdoo(page)
+    if (workspaceSecret) {
+      await rpc(page, 'ir.config_parameter', 'set_param', [
+        'agui_chat.workspace_hmac_secret', workspaceSecret
+      ])
+    }
     await startSessionTracking(page)
   })
 
@@ -359,6 +368,49 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     expect(await rpc<number>(page, 'agui.chat.test.document', 'search_count', [[]])).toBe(documentCount)
   })
 
+  test('动态业务插件经独立确认执行并脱敏结果', async ({ page }) => {
+    const command = 'odoo.business.test_document.confirm'
+    const catalog = await page.evaluate(() => {
+      const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
+      return manager.bridge.catalog.map((tool: any) => tool.name)
+    })
+    expect(catalog).toContain(command)
+
+    const marker = `AGUI-E2E-业务插件-${Date.now()}`
+    const documentId = await rpc<number>(page, 'agui.chat.test.document', 'create', [{
+      name: marker,
+      required_code: marker,
+    }])
+    const execution = await executeTool(page, command, {
+      model: 'agui.chat.test.document',
+      document_id: documentId,
+      expected_state: 'draft',
+    }, { approve: true })
+
+    expect(execution.decision).toMatchObject({
+      needs_confirmation: true,
+      code: 'confirmation_required',
+      authorization_id: expect.any(String),
+    })
+    expect(execution.result).toMatchObject({
+      ok: true,
+      operation: command,
+      result: {
+        document_id: documentId,
+        state: 'confirmed',
+        phone_number: '[redacted]',
+        configured_secret: '[redacted]',
+      },
+    })
+    const [document] = await rpc<Array<{ state: string }>>(
+      page,
+      'agui.chat.test.document',
+      'read',
+      [[documentId], ['state']]
+    )
+    expect(document.state).toBe('confirmed')
+  })
+
   test('关系查询使用实时 domain/context 且不触发 Odoo 全局加载', async ({ page }) => {
     await openFirstPartner(page, true)
     const state = await currentHostState(page)
@@ -428,15 +480,20 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     const marker = `AGUI-E2E-闭环-${Date.now()}`
     const partnerId = await rpc<number>(page, 'res.partner', 'create', [{
       name: marker,
-      phone: '010-00000000'
+      function: '初始岗位'
     }])
     try {
       await openPartner(page, partnerId)
       const initial = await currentHostState(page)
+      const sensitive = await executeTool(page, 'odoo.patch_current_form', {
+        patch: { phone: '010-11111111' }
+      })
+      expect(sensitive.result).toMatchObject({ ok: false, code: 'field_sensitive' })
+
       const changedName = `${marker}-已确认`
-      const changedPhone = '010-11111111'
+      const changedFunction = '确认岗位'
       const prepared = await executeTool(page, 'odoo.patch_current_form', {
-        patch: { name: changedName, phone: changedPhone }
+        patch: { name: changedName, function: changedFunction }
       })
 
       expect(prepared.decision).toMatchObject({
@@ -457,15 +514,15 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
               oldValue: marker, newValue: changedName
             }),
             expect.objectContaining({
-              field: 'phone', label: expect.any(String),
-              oldValue: '010-00000000', newValue: changedPhone
+              field: 'function', label: expect.any(String),
+              oldValue: '初始岗位', newValue: changedFunction
             })
           ])
         }
       })
       expect((await rpc<any[]>(page, 'res.partner', 'read', [
-        [partnerId], ['name', 'phone']
-      ]))[0]).toMatchObject({ name: marker, phone: '010-00000000' })
+        [partnerId], ['name', 'function']
+      ]))[0]).toMatchObject({ name: marker, function: '初始岗位' })
 
       const applied = await confirmTool(
         page,
@@ -478,7 +535,7 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
         receipt: {
           changes: expect.arrayContaining([
             expect.objectContaining({ field: 'name', newValue: changedName }),
-            expect.objectContaining({ field: 'phone', newValue: changedPhone })
+            expect.objectContaining({ field: 'function', newValue: changedFunction })
           ]),
           undo: {
             available: true,
@@ -489,35 +546,35 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
       })
       expect(applied).not.toHaveProperty('undo_payload')
       expect((await rpc<any[]>(page, 'res.partner', 'read', [
-        [partnerId], ['name', 'phone']
-      ]))[0]).toMatchObject({ name: changedName, phone: changedPhone })
+        [partnerId], ['name', 'function']
+      ]))[0]).toMatchObject({ name: changedName, function: changedFunction })
 
       const undoToken = String(applied.receipt?.undo?.authorization_id)
       const undone = await undoTool(page, undoToken)
       expect(undone).toMatchObject({ ok: true, code: 'ok', saved: true, undone: true })
       expect((await rpc<any[]>(page, 'res.partner', 'read', [
-        [partnerId], ['name', 'phone']
-      ]))[0]).toMatchObject({ name: marker, phone: '010-00000000' })
+        [partnerId], ['name', 'function']
+      ]))[0]).toMatchObject({ name: marker, function: '初始岗位' })
       expect(await undoTool(page, undoToken)).toEqual(undone)
 
       const secondPatch = await executeTool(page, 'odoo.patch_current_form', {
-        patch: { phone: changedPhone }
+        patch: { function: changedFunction }
       })
       expect(secondPatch.result).toMatchObject({ ok: true, saved: true })
       const conflictToken = String(secondPatch.result.receipt?.undo?.authorization_id)
 
       await page.locator('.o_form_button_edit').click()
-      await page.locator('.o_form_view input[name="phone"]:visible').fill('010-22222222')
-      await page.locator('.o_form_view input[name="phone"]:visible').blur()
-      await expect.poll(() => currentHostState(page).then((state) => state.dirtyFields)).toContain('phone')
+      await page.locator('.o_form_view input[name="function"]:visible').fill('并发岗位')
+      await page.locator('.o_form_view input[name="function"]:visible').blur()
+      await expect.poll(() => currentHostState(page).then((state) => state.dirtyFields)).toContain('function')
 
       expect(await undoTool(page, conflictToken)).toMatchObject({
         ok: false,
         code: 'undo_conflict'
       })
       expect((await rpc<any[]>(page, 'res.partner', 'read', [
-        [partnerId], ['phone']
-      ]))[0].phone).toBe(changedPhone)
+        [partnerId], ['function']
+      ]))[0].function).toBe(changedFunction)
     } finally {
       await rpc(page, 'res.partner', 'unlink', [[partnerId]]).catch(() => undefined)
     }
@@ -540,7 +597,7 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     await openFirstPartner(page, false)
     await openAssistant(page)
     await page.getByRole('button', { name: '新建对话' }).click()
-    const input = page.getByPlaceholder('输入消息，开始提问')
+    const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
     const draft = '未发送的聊天草稿'
     await expect(input).toBeEnabled()
     await input.fill(draft)
@@ -568,7 +625,7 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     await openFirstPartner(page, false)
     await openAssistant(page)
     await page.getByRole('button', { name: '新建对话' }).click()
-    const input = page.getByPlaceholder('输入消息，开始提问')
+    const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
     await expect(input).toBeEnabled()
     await input.blur()
     await expect(input).not.toBeFocused()
@@ -587,7 +644,7 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
       manager.openSurface('dock')
     })
     await page.getByRole('button', { name: '新建对话' }).click()
-    const input = page.getByPlaceholder('输入消息，开始提问')
+    const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
     await expect(input).toBeEnabled()
     await input.fill('切换焦点草稿')
     await input.focus()
@@ -627,6 +684,44 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
 
   test('AgentOS 客户端工具续跑只保留一次最终回复', async ({ page }) => {
     await openFirstPartner(page, true)
+    let agentRequestCount = 0
+    await page.route('http://127.0.0.1:7777/agui', async (route) => {
+      agentRequestCount += 1
+      const request = route.request().postDataJSON() as { state?: { host?: any } }
+      const host = request.state?.host
+      const event = (value: Record<string, unknown>) => `data: ${JSON.stringify(value)}\n\n`
+      const body = agentRequestCount === 1
+        ? event({ type: 'TOOL_CALL_START', toolCallId: 'validate-e2e', toolCallName: 'odoo.validate_current_form' }) +
+          event({
+            type: 'TOOL_CALL_ARGS',
+            toolCallId: 'validate-e2e',
+            delta: JSON.stringify({
+              target: {
+                snapshotId: host.snapshotId,
+                hostRevision: host.hostRevision,
+                controllerId: host.controller.controllerId,
+                dataPointId: host.controller.dataPointId,
+                model: host.record.model,
+                resId: host.record.resId
+              }
+            })
+          }) +
+          event({ type: 'TOOL_CALL_END', toolCallId: 'validate-e2e' }) +
+          event({ type: 'RUN_FINISHED' })
+        : event({ type: 'TEXT_MESSAGE_START', messageId: 'validate-reply' }) +
+          event({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'validate-reply', delta: '当前表单校验通过。' }) +
+          event({ type: 'TEXT_MESSAGE_END', messageId: 'validate-reply' }) +
+          event({ type: 'RUN_FINISHED' })
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        headers: {
+          'Access-Control-Allow-Origin': 'http://127.0.0.1:18069',
+          'Access-Control-Allow-Credentials': 'true'
+        },
+        body
+      })
+    })
     const sessionsBefore = await page.evaluate(async () => {
       const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
       const result = await Promise.resolve(manager.bridge.listSessions())
@@ -634,12 +729,13 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     })
     await openAssistant(page)
     await page.getByRole('button', { name: '新建对话' }).click()
-    const input = page.getByPlaceholder('输入消息，开始提问')
+    const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
     await expect(input).toBeEnabled()
     await input.fill('请调用 odoo.validate_current_form 校验当前表单，并只回复一次最终结论。')
     await page.getByLabel('发送消息', { exact: true }).click()
     await expect(page.getByRole('button', { name: '停止生成' })).toBeVisible()
     await expect(page.getByRole('button', { name: '停止生成' })).toBeHidden({ timeout: 90_000 })
+    expect(agentRequestCount).toBe(2)
 
     await expect.poll(async () => page.evaluate(async (existingIds) => {
       const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
@@ -670,7 +766,7 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     await openPartnerList(page)
     await openAssistant(page)
     await page.getByRole('button', { name: '新建对话' }).click()
-    await expect(page.getByPlaceholder('输入消息，开始提问')).toBeEnabled()
+    await expect(page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')).toBeEnabled()
 
     const uploadResponse = page.waitForResponse((response) =>
       response.url().endsWith('/agui_chat/attachment/upload') && response.request().method() === 'POST'
@@ -699,7 +795,7 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     await openPartnerList(page)
     await openAssistant(page)
     await page.getByRole('button', { name: '新建对话' }).click()
-    const input = page.getByPlaceholder('输入消息，开始提问')
+    const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
     await expect(input).toBeEnabled()
 
     const uploadResponse = page.waitForResponse((response) =>
@@ -713,6 +809,13 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     expect((await uploadResponse).status()).toBe(200)
     await expect(page.getByText('中文预览测试.pdf')).toBeVisible()
 
+    await page.route('http://127.0.0.1:7777/workspace/upload', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true })
+      })
+    })
     await page.route('http://127.0.0.1:7777/agui', async (route) => {
       const event = (value: Record<string, unknown>) => `data: ${JSON.stringify(value)}\n\n`
       await route.fulfill({
@@ -769,7 +872,7 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     await openPartnerList(page)
     await openAssistant(page)
     await page.getByRole('button', { name: '新建对话' }).click()
-    const input = page.getByPlaceholder('输入消息，开始提问')
+    const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
     await expect(input).toBeEnabled()
 
     await page.route('http://127.0.0.1:7777/agui', (route) => route.abort('failed'))

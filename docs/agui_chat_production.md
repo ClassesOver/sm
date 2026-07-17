@@ -30,8 +30,11 @@ New installs and upgrades start with Chat disabled. Enable in this order:
 5. exact entries in `enabled_business_commands`
 
 An empty command list enables no commands. A matching tool policy restricts the
-exact command, user group, model, and field allowlist; without a matching
-policy, no additional policy restriction is applied. Kill switches disable the
+exact command, user group, model, field, and visible button allowlist. Missing
+policies fail closed for stage/patch/save/discard, protected object/create/
+delete/state controls, and every `odoo.business.*` command. Read-only and
+navigation page commands without a policy receive no additional model
+restriction but remain bound to the current visible snapshot. Kill switches disable the
 affected feature without RPC, CRUD, or simulated-state fallback.
 
 The module includes a read-only `odoo.apply_filter` policy that restricts

@@ -14,8 +14,8 @@ configured AgentOS protocol endpoint must agree on:
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.2.0",
-  "bundle_version": "12.0.8.2.0",
+  "module_version": "12.0.8.3.0",
+  "bundle_version": "12.0.8.3.0",
   "command_catalog_hash": "sha256"
 }
 ```
@@ -65,7 +65,14 @@ Odoo publishes standard AG-UI client tool schemas in the current
 - `odoo.open_mentioned_menu`
 - `odoo.open_mentioned_record`
 - `odoo.apply_mentioned_filter`
+- `odoo.open_menu`
+- `odoo.apply_filter`
+- `odoo.open_record`
+- `odoo.open_create`
+- `odoo.enter_edit_mode`
+- `odoo.activate_view_control`
 - `odoo.search_relation`
+- `odoo.stage_current_form`
 - `odoo.patch_current_form`
 - `odoo.validate_current_form`
 - `odoo.save_current_form`
@@ -77,7 +84,7 @@ server tools remain display-only until their `TOOL_CALL_RESULT` arrives.
 Mention tools and `odoo.open_menu` carry a page target containing only
 `snapshotId` and `hostRevision`. Commands bound to the current view carry the
 full target with `controllerId`, `dataPointId`, `model`, and `resId`. Missing or
-stale target members fail closed. Patch/save/discard and all mention tools also
+stale target members fail closed. Stage/patch/save/discard and all mention tools also
 require a server-bound one-time authorization.
 
 ## Object References
@@ -128,6 +135,14 @@ Relation search rules:
 - Relation IDs are checked again against the latest domain before a patch is
   applied. Many2many unlink is limited to IDs currently selected.
 
+Stage rules:
+
+- `odoo.stage_current_form` uses the same visible/writable field validation,
+  native `_applyChanges`, relation-domain recheck, and onchange completion as a
+  patch, but never calls `saveRecord()`.
+- Every successful stage publishes a fresh snapshot. Later relation searches,
+  validation, and save must use that snapshot rather than stale tokens.
+
 Patch rules:
 
 - Fields must be present in `fieldsInfo.form` and currently visible/writable.
@@ -142,7 +157,8 @@ Patch rules:
   relational child values require a native row token. Loaded-row updates
   support the existing scalar, many2one, and many2many forms.
 - Patches containing one2many use native BasicModel `CREATE`, `UPDATE`, and
-  `DELETE` and save the parent form once. There is no generic RPC fallback.
+  `DELETE`. Patch saves the parent once; stage keeps the parent dirty for a
+  later explicit validate/save. There is no generic RPC fallback.
 
 Patch policies expose `confirmation_mode` with `risk` (default), `always`, and
 `never`, plus an optional high-risk field allowlist. In `risk` mode the server,
@@ -195,12 +211,20 @@ of this protocol.
 
 ## Business Commands
 
-Synchronous server-side commands use `/agui_chat/business/execute` and exact
-names under `odoo.business.<domain>.<verb>`. Each command must be registered in
-the Python registry with a schema and handler. The executor applies schema
-validation, current-user ACL/record rules, payload-bound authorization,
-idempotency locking, a database savepoint, stored result replay, and redacted
-audit. There is no generic business handler.
+Synchronous server-side commands use exact names under
+`odoo.business.<domain>.<verb>`. Only commands present in both the Python
+registry and `enabled_business_commands` are published as client tools for the
+current Run; their registered JSON schema is the tool's `parameters`.
+
+The browser calls `/agui_chat/business/prepare`, reuses the normal confirmation
+UI when required, and then calls `/agui_chat/business/execute` with the
+server-bound payload and authorization token. Business commands require an
+exact tool policy; missing policies fail closed. Each plugin owns its model
+ACL, record-rule, state, and domain checks. The executor additionally applies
+server-side schema validation, user/company/run/tool-call payload binding,
+authorization expiry, idempotency locking, a database savepoint, stored result
+replay, default sensitive-key redaction, and redacted audit. There is no generic
+business handler, RPC, CRUD, or arbitrary model-method fallback.
 
 ## Sessions And Surfaces
 

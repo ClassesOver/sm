@@ -85,6 +85,9 @@ class AguiChatTestDocument(models.Model):
     tax_id = fields.Char(string="税号", default="91310000TEST")
     identity_number = fields.Char(string="身份证号", default="310101199001010000")
 
+    configured_secret = fields.Char(
+        string="配置敏感值", default="configured-sensitive-value"
+    )
     @api.onchange("document_type")
     def _onchange_document_type(self):
         for record in self:
@@ -195,7 +198,8 @@ class AguiChatTestConfig(models.Model):
             "host_tools_enabled": True,
             "write_tools_enabled": True,
             "enabled_commands": ",".join(HOST_COMMAND_NAMES),
-            "sensitive_field_names": "secret_token",
+            "enabled_business_commands": "odoo.business.test_document.confirm",
+            "sensitive_field_names": "secret_token,configured_secret",
         })
         patch_policy = self.env.ref(
             "agui_chat_test.policy_test_patch", raise_if_not_found=False

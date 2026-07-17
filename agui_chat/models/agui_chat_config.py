@@ -7,8 +7,8 @@ from odoo.exceptions import ValidationError
 
 
 PROTOCOL = "agui.odoo.v2"
-MODULE_VERSION = "12.0.8.2.0"
-COMMAND_CATALOG_REVISION = 6
+MODULE_VERSION = "12.0.8.3.0"
+COMMAND_CATALOG_REVISION = 7
 DEFAULT_SENSITIVE_FIELD_NAMES = (
     "phone", "mobile", "phone_number", "mobile_number",
     "bank_account", "bank_account_id", "acc_number", "card_number",

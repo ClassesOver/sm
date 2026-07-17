@@ -18,7 +18,7 @@ test('AG-UI 宿主适配与命令 QUnit', async ({ page }) => {
 
   const moduleName = 'agui_chat v2 host adapter'
   await page.goto(
-    `/web/tests?db=${encodeURIComponent(database)}&mod=agui_chat&module=${encodeURIComponent(moduleName)}&failfast`
+    `/web/tests?db=${encodeURIComponent(database)}&mod=agui_chat&module=${encodeURIComponent(moduleName)}&failfast&debug=assets`
   )
   await page.waitForFunction(() => {
     const result = document.querySelector('#qunit-testresult')
@@ -38,5 +38,5 @@ test('AG-UI 宿主适配与命令 QUnit', async ({ page }) => {
   expect(result.failed).toBe(0)
   expect(result.passed).toBeGreaterThan(0)
   expect(result.total).toBe(result.passed)
-  expect(result.executedTests).toBe(35)
+  expect(result.executedTests).toBe(36)
 })

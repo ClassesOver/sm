@@ -12,6 +12,7 @@ from odoo.http import content_disposition, request
 
 from ..models.agui_chat_config import COMMAND_CATALOG_HASH, MODULE_VERSION, PROTOCOL
 from ..models.agui_chat_mention import MentionTokenError
+from ..models.agui_chat_tool import business_tool_catalog
 from ..models.agui_chat_workspace import issue_workspace_capability
 
 
@@ -49,6 +50,9 @@ class AguiChatController(http.Controller):
             "host_tools_enabled": bool(config.host_tools_enabled),
             "write_tools_enabled": bool(config.write_tools_enabled),
             "enabled_commands": config.enabled_command_names(),
+            "business_tools": business_tool_catalog(request.env, config) if (
+                config.host_tools_enabled and config.write_tools_enabled
+            ) else [],
             "sensitive_fields": config.sensitive_fields(),
             "runtime_url": config.public_runtime_url(),
             "runtime_config_url": config.public_runtime_config_url(),
@@ -283,6 +287,22 @@ class AguiChatController(http.Controller):
         except Exception:
             _logger.exception("AG-UI host command policy failed")
             return {"ok": False, "code": "host_command_failed"}
+
+    @http.route("/agui_chat/business/prepare", type="json", auth="user")
+    def business_prepare(self, call):
+        try:
+            return request.env["agui.chat.tool.authorization"].with_context(
+                agui_session_key=self._session_key()
+            ).prepare_business_command(call)
+        except (ValueError, AccessError, ValidationError) as error:
+            return {
+                "ok": False,
+                "code": "business_command_rejected",
+                "error": str(error),
+            }
+        except Exception:
+            _logger.exception("AG-UI business command preparation failed")
+            return {"ok": False, "code": "business_command_failed"}
 
     @http.route("/agui_chat/business/execute", type="json", auth="user")
     def business_execute(self, command_name, payload, authorization_token, idempotency_key):

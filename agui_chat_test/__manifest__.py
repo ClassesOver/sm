@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     "name": "AG-UI 通用单据测试",
-    "version": "12.0.1.0.0",
+    "version": "12.0.2.0.0",
     "category": "Tests",
     "summary": "仅供 E2E 数据库使用的 AG-UI 通用单据测试模型",
     "depends": ["agui_chat"],

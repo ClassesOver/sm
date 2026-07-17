@@ -74,12 +74,12 @@ async function startAgentSession(page: Page) {
   const before = await sessionIds(page)
   await page.getByRole('button', { name: '打开智能助手' }).click()
   await page.getByRole('button', { name: '新建对话' }).click()
-  await expect(page.getByPlaceholder('输入消息，开始提问')).toBeEnabled()
+  await expect(page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')).toBeEnabled()
   return before
 }
 
 async function sendChineseMessage(page: Page, message: string) {
-  const input = page.getByPlaceholder('输入消息，开始提问')
+  const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
   await input.fill(message)
   await page.getByLabel('发送消息', { exact: true }).click()
   await expect(page.getByRole('button', { name: '停止生成' })).toBeVisible({ timeout: 15_000 })
@@ -148,7 +148,7 @@ test.describe.serial('真实 AgentOS 通用单据业务场景', () => {
       })
       await expect(page.locator('[data-agui-focus-test].in')).toBeVisible()
 
-      const input = page.getByPlaceholder('输入消息，开始提问')
+      const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
       await input.click()
       await expect(input).toBeFocused()
       await page.keyboard.type('modal 输入回归')
@@ -259,7 +259,7 @@ test.describe.serial('真实 AgentOS 通用单据业务场景', () => {
       await expect.poll(() => hostState(page).then((state) => state.dirtyFields)).toContain('quantity')
       beforeSessions = await startAgentSession(page)
 
-      const input = page.getByPlaceholder('输入消息，开始提问')
+      const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
       await input.fill('请调用 odoo.save_current_form 保存当前表单。不要调用 patch，不要只解释。')
       await page.getByLabel('发送消息', { exact: true }).click()
       await expect(page.getByText('需要确认：保存当前表单')).toBeVisible({ timeout: 120_000 })
