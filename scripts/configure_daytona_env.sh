@@ -52,32 +52,6 @@ set_env() {
     mv "$temporary" "$ENV_FILE"
 }
 
-bcrypt_hash() {
-    local password=$1
-    local value
-    if command -v htpasswd >/dev/null 2>&1; then
-        value=$(printf '%s\n' "$password" | htpasswd -niBC 10 admin)
-        printf '%s' "${value#admin:}"
-        return
-    fi
-    command -v python3 >/dev/null 2>&1 || die "生成 Dex bcrypt 需要 htpasswd 或支持 crypt 的 python3。"
-    value=$(printf '%s' "$password" | python3 -W ignore::DeprecationWarning -c '
-import secrets
-import sys
-try:
-    import crypt
-except ImportError as error:
-    raise SystemExit("python crypt unavailable") from error
-alphabet = "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-salt = "$2b$10$" + "".join(secrets.choice(alphabet) for _ in range(22))
-result = crypt.crypt(sys.stdin.read(), salt)
-if not result or not result.startswith("$2"):
-    raise SystemExit("system crypt does not support bcrypt")
-print(result, end="")
-') || die "系统无法生成 Dex bcrypt；请安装 apache2-utils/htpasswd。"
-    printf '%s' "$value"
-}
-
 is_new=false
 if [[ ! -f "$ENV_FILE" ]]; then
     mkdir -p "$ENV_DIR"
@@ -96,7 +70,6 @@ fi
 
 rotate_runtime=$is_new
 rotate_persistent=$is_new
-configure_dex=$is_new
 
 if [[ "$is_new" == false ]]; then
     if ask_yes_no '重新生成工作区 HMAC、Proxy 和健康检查密钥？' n; then
@@ -106,9 +79,6 @@ if [[ "$is_new" == false ]]; then
     printf '%s\n' '已运行的部署不能只修改 .env；还必须迁移数据库/服务凭据，或重建 Daytona 数据卷。'
     if ask_yes_no '确认这是首次部署或已安排完整凭据迁移，并重新生成这些值？' n; then
         rotate_persistent=true
-    fi
-    if ask_yes_no '更新 Dex 管理员登录？' n; then
-        configure_dex=true
     fi
 fi
 
@@ -128,26 +98,6 @@ if [[ "$rotate_persistent" == true ]]; then
     set_env DAYTONA_REGISTRY_PASSWORD "$(random_secret)"
     set_env DAYTONA_MINIO_PASSWORD "$(random_secret)"
     printf '%s\n' '已更新 Daytona 持久化服务密钥和口令。'
-fi
-
-if [[ "$configure_dex" == true ]]; then
-    read -r -p 'Dex 管理员邮箱 [admin@example.com]: ' dex_email
-    dex_email=${dex_email:-admin@example.com}
-    [[ "$dex_email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || die "Dex 管理员邮箱格式无效。"
-    while true; do
-        read -r -s -p 'Dex 管理员密码（至少 12 个字符）: ' dex_password
-        printf '\n'
-        [[ ${#dex_password} -ge 12 ]] || { printf '%s\n' '密码太短。' >&2; continue; }
-        read -r -s -p '再次输入 Dex 管理员密码: ' dex_password_confirm
-        printf '\n'
-        [[ "$dex_password" == "$dex_password_confirm" ]] && break
-        printf '%s\n' '两次密码不一致。' >&2
-    done
-    dex_hash=$(bcrypt_hash "$dex_password")
-    unset dex_password dex_password_confirm
-    set_env DEX_ADMIN_EMAIL "$dex_email"
-    set_env DEX_STATIC_PASSWORD_HASH "'$dex_hash'"
-    printf '%s\n' '已更新 Dex 管理员登录。'
 fi
 
 if ask_yes_no '现在写入已创建的 Daytona API Key？' n; then
