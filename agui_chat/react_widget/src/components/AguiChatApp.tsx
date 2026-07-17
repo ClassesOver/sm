@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { AguiChatProps, AttachmentRef, ErrorMessageProps, RuntimeSnapshot } from '../types'
 import { ChatRuntime } from '../runtime/ChatRuntime'
 import { asText } from '../runtime/utils'
@@ -7,6 +7,7 @@ import { ChatInput } from './ChatInput'
 import { Messages } from './Messages'
 import { FilePreviewPanel } from './FilePreviewPanel'
 import { Sidebar } from './Sidebar'
+import { WorkspacePanel } from './WorkspacePanel'
 
 interface AguiChatAppProps {
   runtime: ChatRuntime
@@ -20,6 +21,7 @@ export function DefaultErrorMessage({ error }: ErrorMessageProps) {
 export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot>(() => runtime.getSnapshot())
   const [previewAttachment, setPreviewAttachment] = useState<AttachmentRef | null>(null)
+  const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const followsStream = useRef(true)
   const previousThread = useRef(snapshot.threadId)
@@ -33,7 +35,21 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
     ).join('|')
   useEffect(() => runtime.subscribe(() => setSnapshot(runtime.getSnapshot())), [runtime])
 
-  useEffect(() => setPreviewAttachment(null), [snapshot.threadId])
+  useEffect(() => {
+    setPreviewAttachment(null)
+    setWorkspaceOpen(false)
+  }, [snapshot.threadId])
+
+  const recentMentions = useMemo(() => {
+    const seen = new Set<string>()
+    return [...snapshot.messages].reverse().flatMap((message) =>
+      message.role === 'user' ? [...(message.mentions || [])].reverse() : []
+    ).filter((mention) => {
+      if (!mention.valid || seen.has(mention.resourceKey)) return false
+      seen.add(mention.resourceKey)
+      return true
+    }).slice(0, 8)
+  }, [snapshot.messages])
 
   useEffect(() => {
     const element = scrollRef.current
@@ -68,6 +84,7 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
           onNewSession={() => void runtime.newSession()}
           onRefreshSessions={() => void runtime.refreshSessions()}
           onLoadSession={(sessionId) => void runtime.loadSession(sessionId)}
+          onArchiveSession={(sessionId) => void runtime.archiveSession(sessionId)}
           labels={labels}
         />
         <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background-panel">
@@ -117,7 +134,10 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
                 observeInteraction(() => props.onFeedback?.(message, feedback))
                 observeInteraction(() => props.onInteraction?.({ type: 'feedback', message, feedback }))
               }}
-              onPreviewAttachment={setPreviewAttachment}
+              onPreviewAttachment={(attachment) => {
+                setWorkspaceOpen(false)
+                setPreviewAttachment(attachment)
+              }}
               onRegenerate={(messageId) => {
                 const message = snapshot.messages.find((candidate) => candidate.id === messageId)
                 void runtime.regenerate(messageId)
@@ -140,16 +160,20 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
             disabled={snapshot.loadingSessions}
             attachments={props.attachments}
             menuOptions={props.menuOptions || []}
+            agentSkills={props.agentSkills || []}
+            recentMentions={recentMentions}
             hostBridge={props.hostBridge}
             labels={labels}
             icons={icons}
-            onSend={(content, attachments, selection) => {
-              void runtime.send(content, attachments, selection)
+            onSend={async (content, attachments, selection, skills) => {
+              const sent = await runtime.send(content, attachments, selection, undefined, skills)
+              if (!sent) return false
               const mentions = Array.isArray(selection) ? selection : undefined
               const menuMention = selection && !Array.isArray(selection) ? selection : undefined
               observeInteraction(() => props.onInteraction?.({
-                type: 'send', content, attachments, mentions, menuMention
+                type: 'send', content, attachments, mentions, menuMention, skills
               }))
+              return true
             }}
             onStop={() => {
               runtime.stop()
@@ -157,6 +181,10 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
             }}
             onUpload={(file, onProgress) => runtime.uploadAttachment(file, onProgress)}
             onRemove={(attachmentId) => runtime.deleteAttachment(attachmentId)}
+            onOpenWorkspace={() => {
+              setPreviewAttachment(null)
+              setWorkspaceOpen(true)
+            }}
           />
         </main>
         {previewAttachment
@@ -164,6 +192,13 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
               attachment={previewAttachment}
               labels={labels}
               onClose={() => setPreviewAttachment(null)}
+            />
+          : null}
+        {workspaceOpen
+          ? <WorkspacePanel
+              runtime={runtime}
+              threadId={snapshot.threadId}
+              onClose={() => setWorkspaceOpen(false)}
             />
           : null}
       </div>

@@ -2,10 +2,10 @@ import type { OdooHostSnapshot, ProtocolHandshake } from './types'
 
 export const devHandshake: ProtocolHandshake = {
   protocol: 'agui.odoo.v2',
-  moduleVersion: '12.0.8.0.0',
-  bundleVersion: '12.0.8.0.0',
+  moduleVersion: '12.0.8.1.0',
+  bundleVersion: '12.0.8.1.0',
   agentProtocol: 'agui.odoo.v2',
-  agentBundleVersion: '12.0.8.0.0',
+  agentBundleVersion: '12.0.8.1.0',
   commandCatalogHash: 'a'.repeat(64),
   agentCommandCatalogHash: 'a'.repeat(64)
 }

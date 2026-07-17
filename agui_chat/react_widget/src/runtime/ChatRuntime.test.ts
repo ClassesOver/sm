@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.0.0')
+    expect(AguiChat.version).toBe('12.0.8.1.0')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -433,6 +433,125 @@ describe('ChatRuntime protocol handling', () => {
       size: 128, modality: 'document'
     }])
     expect(JSON.stringify(request?.body)).not.toContain('base64')
+  })
+
+  it('syncs actual attachments before sending and keeps workspacePath in the message', async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+      requests.push({ url, init })
+      if (url.startsWith('/agui_chat/attachment/')) {
+        return Promise.resolve(new Response('report', {
+          status: 200, headers: { 'content-type': 'application/pdf' }
+        }))
+      }
+      if (url === '/runtime/workspace/upload') {
+        return Promise.resolve(new Response(JSON.stringify({ ok: true }), {
+          status: 200, headers: { 'content-type': 'application/json' }
+        }))
+      }
+      return Promise.resolve(sseResponse([{ type: 'RUN_FINISHED' }]))
+    }))
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/agui',
+      headers: {
+        'X-AGUI-Capability': 'caller-override',
+        'X-AGUI-Thread': 'caller-thread'
+      },
+      session: {
+        id: 9, protocol: 'agui.odoo.v2', thread_id: 'thread-sync', sessionRevision: 0
+      },
+      hostBridge: {
+        getWorkspaceCapability: async () => ({
+          ok: true, capability: 'signed-capability', threadId: 'thread-sync',
+          expiresAt: Date.now() / 1000 + 600
+        })
+      }
+    })
+
+    expect(await runtime.send('检查', [{
+      id: '42', name: '../../report.pdf', mimeType: 'application/pdf', size: 6,
+      modality: 'document'
+    }])).toBe(true)
+
+    const upload = requests.find((request) => request.url === '/runtime/workspace/upload')
+    const form = upload?.init.body as FormData
+    expect(form.get('threadId')).toBe('thread-sync')
+    expect(form.get('path')).toMatch(/^attachments\/.+\/1-report\.pdf$/)
+    expect(upload?.init.headers).toMatchObject({
+      'X-AGUI-Capability': 'signed-capability', 'X-AGUI-Thread': 'thread-sync'
+    })
+    const sent = requests.find((request) => request.url === '/runtime/agui')
+    const body = JSON.parse(String(sent?.init.body))
+    expect(sent?.init.headers).toMatchObject({
+      'X-AGUI-Capability': 'signed-capability', 'X-AGUI-Thread': 'thread-sync'
+    })
+    expect(body.messages[0].attachments[0].workspacePath).toBe(form.get('path'))
+  })
+
+  it('does not send when attachment workspace synchronization fails', async () => {
+    const onError = vi.fn()
+    const fetchMock = vi.fn((url: string) => {
+      if (url.startsWith('/agui_chat/attachment/')) return Promise.resolve(new Response('file'))
+      return Promise.resolve(new Response(JSON.stringify({ detail: 'sandbox unavailable' }), {
+        status: 503, headers: { 'content-type': 'application/json' }
+      }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/agui', onError,
+      session: { id: 9, protocol: 'agui.odoo.v2', thread_id: 'thread-failed-sync' },
+      hostBridge: {
+        getWorkspaceCapability: async () => ({
+          ok: true, capability: 'capability', threadId: 'thread-failed-sync',
+          expiresAt: Date.now() / 1000 + 600
+        })
+      }
+    })
+
+    const sent = await runtime.send('检查', [{
+      id: '42', name: 'report.pdf', mimeType: 'application/pdf', size: 4,
+      modality: 'document'
+    }])
+    expect(sent).toBe(false)
+    expect(runtime.getSnapshot().messages).toEqual([])
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'sandbox unavailable'
+    }))
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('collects all AgentOS tool decisions and resumes the paused thread once', async () => {
+    const requests: any[] = []
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+      requests.push(JSON.parse(String(init.body)))
+      return Promise.resolve(sseResponse(requests.length === 1 ? [
+        { type: 'TOOL_CALL_START', toolCallId: 'server-1', toolCallName: 'workspace_write_file' },
+        { type: 'TOOL_CALL_ARGS', toolCallId: 'server-1', delta: '{"path":"a.txt"}' },
+        { type: 'TOOL_CALL_END', toolCallId: 'server-1' },
+        { type: 'TOOL_CALL_START', toolCallId: 'server-2', toolCallName: 'workspace_shell' },
+        { type: 'TOOL_CALL_ARGS', toolCallId: 'server-2', delta: '{"command":"ls"}' },
+        { type: 'TOOL_CALL_END', toolCallId: 'server-2' },
+        { type: 'RUN_FINISHED' }
+      ] : [
+        { type: 'TEXT_MESSAGE_CONTENT', delta: '已处理决定' },
+        { type: 'RUN_FINISHED' }
+      ]))
+    }))
+    const runtime = createRuntime({ runtimeUrl: '/runtime/run', attachments: false })
+    await runtime.send('执行两个操作')
+    const tools = runtime.getSnapshot().messages.flatMap((message) => message.tool_calls || [])
+    expect(tools.map((tool) => tool.status)).toEqual(['needs_confirmation', 'needs_confirmation'])
+
+    await runtime.confirmTool(tools[0], true)
+    expect(requests).toHaveLength(1)
+    await runtime.confirmTool(tools[1], false)
+    expect(requests).toHaveLength(2)
+    expect(requests[1].threadId).toBe(requests[0].threadId)
+    const decisions = requests[1].messages.filter((message: any) => message.role === 'tool')
+    expect(decisions.map((message: any) => JSON.parse(message.content))).toEqual([
+      { accepted: true },
+      { accepted: false, note: '用户拒绝执行此工具。' }
+    ])
   })
 
   it('stops without an error and preserves streamed content', async () => {

@@ -136,6 +136,31 @@ export interface MentionBindResult {
   reference?: MentionReference
 }
 
+export interface AgentSkillOption {
+  id: string
+  name: string
+  description: string
+}
+
+export interface SelectedAgentSkill extends AgentSkillOption {
+  valid: boolean
+}
+
+export interface WorkspaceEntry {
+  path: string
+  name: string
+  isDirectory: boolean
+  size: number
+  mimeType: string | false
+  modifiedAt: string
+}
+
+export interface WorkspaceCapability {
+  capability: string
+  threadId: string
+  expiresAt: number
+}
+
 export interface RecordCandidate {
   token: string
   displayName: string
@@ -327,6 +352,7 @@ export interface ChatMessage {
   }
   attachments?: AttachmentRef[]
   mentions?: MentionReference[]
+  skills?: SelectedAgentSkill[]
   menuMention?: MenuMention
   recordSelection?: RecordSelection
 }
@@ -339,6 +365,7 @@ export interface AttachmentRef {
   mimeType: string
   size: number
   modality: AttachmentModality
+  workspacePath?: string
 }
 
 export interface AttachmentOptions {
@@ -404,6 +431,7 @@ export type ChatInteractionEvent =
       content: string
       attachments: AttachmentRef[]
       mentions?: MentionReference[]
+      skills?: SelectedAgentSkill[]
       menuMention?: MenuMention
       recordSelection?: RecordSelection
     }
@@ -510,6 +538,9 @@ export interface HostBridge {
   undoTool?: (authorizationId: string) => Promise<unknown> | unknown
   searchMentions?: (request: MentionSearchRequest) => Promise<MentionSearchResult>
   bindMention?: (request: MentionBindRequest) => Promise<MentionBindResult>
+  getWorkspaceCapability?: (
+    sessionId: string | number
+  ) => Promise<{ ok?: boolean; code?: string; error?: string } & Partial<WorkspaceCapability>>
   listSessions?: SessionApi['list']
   createSession?: SessionApi['create']
   loadSession?: SessionApi['load']
@@ -538,6 +569,7 @@ export interface AguiChatProps {
   hostBridge?: HostBridge
   tools: AguiClientTool[]
   menuOptions: MenuMentionOption[]
+  agentSkills?: AgentSkillOption[]
   resume?: unknown[]
   ui?: {
     initialSidebarCollapsed?: boolean

@@ -60,6 +60,83 @@ class TestMentionReferences(TransactionCase):
         self.assertLessEqual(len(result["candidates"]), 20)
         self.assertLessEqual(len(result["modelScopes"]), 20)
 
+    def test_global_soft_quotas_empty_browse_and_explicit_model_budget(self):
+        for index in range(12):
+            self.env["res.partner"].create({"name": "配额客户 %02d" % index})
+        for index in range(8):
+            action = self.env["ir.actions.act_window"].create({
+                "name": "配额菜单 %02d" % index,
+                "res_model": "res.partner",
+                "view_mode": "tree,form",
+            })
+            self.env["ir.ui.menu"].create({
+                "name": "配额菜单 %02d" % index,
+                "parent_id": self.root_menu.id,
+                "action": "ir.actions.act_window,%s" % action.id,
+            })
+        for index in range(8):
+            self.env["ir.filters"].create({
+                "name": "配额收藏 %02d" % index,
+                "model_id": "res.partner",
+                "user_id": self.env.user.id,
+                "action_id": self.action.id,
+                "domain": "[]",
+                "context": "{}",
+                "sort": "[]",
+            })
+        self.env["ir.ui.menu"].clear_caches()
+        current_filter = {
+            "label": "配额当前筛选",
+            "model": "res.partner",
+            "menuId": self.menu.id,
+            "domain": [],
+            "context": {},
+            "groupBy": [],
+            "sort": [],
+        }
+
+        result = self.tokens.search_mentions(
+            "配额", "all", False, "res.partner", [], current_filter, self.session_key,
+        )
+        kinds = [item["kind"] for item in result["candidates"]]
+        self.assertEqual(len(kinds), 20)
+        self.assertLessEqual(kinds.count("record"), 5)
+        self.assertGreaterEqual(kinds.count("menu"), 4)
+        self.assertGreaterEqual(kinds.count("saved_filter"), 5)
+        self.assertEqual(kinds.count("current_filter"), 1)
+
+        explicit = self.tokens.search_mentions(
+            "配额", "record", "res.partner", "res.partner", [], False,
+            self.session_key,
+        )
+        self.assertGreater(len(explicit["candidates"]), 5)
+        self.assertLessEqual(len(explicit["candidates"]), 20)
+        self.assertTrue(self.tokens.search_mentions(
+            "", "menu", False, "res.partner", [], False, self.session_key,
+        )["candidates"])
+        self.assertTrue(self.tokens.search_mentions(
+            "", "saved_filter", False, "res.partner", [], False, self.session_key,
+        )["candidates"])
+        self.assertTrue(self.tokens.search_mentions(
+            "", "current_filter", False, "res.partner", [], current_filter,
+            self.session_key,
+        )["candidates"])
+        self.assertFalse(self.tokens.search_mentions(
+            "", "record", False, "res.partner", [], False, self.session_key,
+        )["candidates"])
+
+    def test_model_picker_exposes_up_to_one_hundred_visible_models(self):
+        catalog = [{
+            "model": "x.model.%03d" % index,
+            "fullPath": "模型 %03d" % index,
+            "menu_id": index + 1,
+            "action_id": index + 1000,
+        } for index in range(120)]
+        scopes = self.tokens._model_scopes(False, [], catalog)
+        self.assertEqual(len(scopes), 100)
+        self.assertEqual(scopes[0]["model"], "x.model.000")
+        self.assertEqual(scopes[-1]["model"], "x.model.099")
+
     def test_token_is_bound_to_user_company_session_and_exact_action(self):
         candidate = self._candidate(self._search(), "record")
         reference = self.tokens.bind_mention(

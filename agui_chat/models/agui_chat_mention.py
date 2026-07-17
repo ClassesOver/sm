@@ -18,7 +18,16 @@ BOUND_TTL_HOURS = 2
 MAX_CANDIDATES = 100
 MAX_BOUND_TOKENS = 200
 MAX_SEARCH_MODELS = 20
+MAX_MODEL_SCOPES = 100
 MAX_SEARCH_RESULTS = 20
+MAX_GLOBAL_RECORDS_PER_MODEL = 5
+GLOBAL_RESULT_QUOTAS = {
+    "menu": 4,
+    "record": 10,
+    "saved_filter": 5,
+    "current_filter": 1,
+}
+GLOBAL_RESULT_PRIORITY = ("record", "menu", "saved_filter", "current_filter")
 MAX_READ_FIELDS = 20
 MAX_READ_RESULT_BYTES = 64 * 1024
 MAX_CURRENT_FILTER_BYTES = 16 * 1024
@@ -103,15 +112,23 @@ class AguiChatMentionToken(models.Model):
         scope = scope if scope in (
             "all", "menu", "record", "saved_filter", "current_filter"
         ) else "all"
-        if scope != "menu" and len(query) < 2:
-            return {"candidates": [], "modelScopes": self._model_scopes(current_model, recent_models)}
+        empty_browse_scopes = {"menu", "saved_filter", "current_filter"}
+        if len(query) < 2 and scope not in empty_browse_scopes:
+            return {
+                "candidates": [],
+                "modelScopes": self._model_scopes(current_model, recent_models),
+            }
 
         catalog = self._menu_catalog()
         enabled_actions = self._enabled_reference_actions()
         model_entries = self._ordered_model_entries(
             catalog, current_model, recent_models, model_scope
-        )[:MAX_SEARCH_MODELS]
-        results = []
+        )
+        if not model_scope:
+            model_entries = model_entries[:MAX_SEARCH_MODELS]
+        buckets = {
+            "menu": [], "record": [], "saved_filter": [], "current_filter": [],
+        }
 
         if scope in ("all", "menu"):
             for item in catalog:
@@ -123,21 +140,24 @@ class AguiChatMentionToken(models.Model):
                     actions.append("create")
                 if not actions:
                     continue
-                results.append(self._create_candidate(
+                buckets["menu"].append(self._create_candidate(
                     "menu", item["fullPath"], item["fullPath"], model, actions,
                     item, session_key,
                 ))
-                if len(results) >= MAX_SEARCH_RESULTS:
+                if len(buckets["menu"]) >= MAX_SEARCH_RESULTS:
                     break
 
-        if len(results) < MAX_SEARCH_RESULTS and scope in ("all", "record"):
+        if len(query) >= 2 and scope in ("all", "record"):
+            record_limit = MAX_SEARCH_RESULTS if model_scope else MAX_GLOBAL_RECORDS_PER_MODEL
             for entry in model_entries:
-                if len(results) >= MAX_SEARCH_RESULTS:
+                if len(buckets["record"]) >= MAX_SEARCH_RESULTS:
                     break
                 model = entry["model"]
                 if not self._can(model, "read") or not self.env[model]._rec_name:
                     continue
-                limit = MAX_SEARCH_RESULTS - len(results)
+                limit = min(
+                    record_limit, MAX_SEARCH_RESULTS - len(buckets["record"]),
+                )
                 try:
                     matches = self.env[model].name_search(
                         name=query, args=[], operator="ilike", limit=limit,
@@ -153,12 +173,12 @@ class AguiChatMentionToken(models.Model):
                     if not actions:
                         continue
                     payload = dict(entry, record_id=record_id)
-                    results.append(self._create_candidate(
+                    buckets["record"].append(self._create_candidate(
                         "record", display_name, entry["label"], model, actions,
                         payload, session_key,
                     ))
 
-        if len(results) < MAX_SEARCH_RESULTS and scope in ("all", "saved_filter"):
+        if scope in ("all", "saved_filter"):
             filter_entries = []
             for model_entry in model_entries:
                 for menu_entry in catalog:
@@ -171,11 +191,14 @@ class AguiChatMentionToken(models.Model):
                         })
             seen_filters = set()
             for entry in filter_entries:
-                if len(results) >= MAX_SEARCH_RESULTS:
+                if len(buckets["saved_filter"]) >= MAX_SEARCH_RESULTS:
                     break
-                filters = self.env["ir.filters"].get_filters(
-                    entry["model"], entry.get("action_id") or None,
-                )
+                try:
+                    filters = self.env["ir.filters"].get_filters(
+                        entry["model"], entry.get("action_id") or None,
+                    )
+                except AccessError:
+                    continue
                 for item in filters:
                     if item["id"] in seen_filters:
                         continue
@@ -186,20 +209,45 @@ class AguiChatMentionToken(models.Model):
                     seen_filters.add(item["id"])
                     owner = "个人收藏" if item.get("user_id") else "共享收藏"
                     payload = dict(entry, filter_id=item["id"])
-                    results.append(self._create_candidate(
+                    buckets["saved_filter"].append(self._create_candidate(
                         "saved_filter", item["name"], "%s · %s" % (entry["label"], owner),
                         entry["model"], ["apply"], payload, session_key,
                     ))
-                    if len(results) >= MAX_SEARCH_RESULTS:
+                    if len(buckets["saved_filter"]) >= MAX_SEARCH_RESULTS:
                         break
 
-        if len(results) < MAX_SEARCH_RESULTS and scope in ("all", "current_filter"):
+        if scope in ("all", "current_filter"):
             payload = self._normalize_current_filter(current_filter, catalog)
-            if payload and "apply" in enabled_actions and query.lower() in payload["label"].lower():
-                results.append(self._create_candidate(
+            if payload and "apply" in enabled_actions and (
+                    not query or query.lower() in payload["label"].lower()):
+                buckets["current_filter"].append(self._create_candidate(
                     "current_filter", payload["label"], payload["menu_label"],
                     payload["model"], ["apply"], payload, session_key,
                 ))
+
+        if scope == "all":
+            results = []
+            offsets = {}
+            for kind in GLOBAL_RESULT_PRIORITY:
+                quota = GLOBAL_RESULT_QUOTAS[kind]
+                selected = buckets[kind][:quota]
+                results.extend(selected)
+                offsets[kind] = len(selected)
+            while len(results) < MAX_SEARCH_RESULTS:
+                added = False
+                for kind in GLOBAL_RESULT_PRIORITY:
+                    offset = offsets[kind]
+                    if offset >= len(buckets[kind]):
+                        continue
+                    results.append(buckets[kind][offset])
+                    offsets[kind] = offset + 1
+                    added = True
+                    if len(results) >= MAX_SEARCH_RESULTS:
+                        break
+                if not added:
+                    break
+        else:
+            results = buckets[scope]
 
         self._enforce_token_limit("candidate", MAX_CANDIDATES)
         return {
@@ -576,7 +624,7 @@ class AguiChatMentionToken(models.Model):
         return [
             {"model": item["model"], "label": item["label"]}
             for item in self._ordered_model_entries(catalog, current_model, recent_models, False)
-        ][:MAX_SEARCH_MODELS]
+        ][:MAX_MODEL_SCOPES]
 
     @api.model
     def _normalize_current_filter(self, value, catalog):

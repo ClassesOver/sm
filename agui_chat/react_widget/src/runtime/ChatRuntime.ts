@@ -10,9 +10,12 @@ import type {
   RecordSelection,
   RelationCandidate,
   RuntimeSnapshot,
+  SelectedAgentSkill,
   SessionEntry,
   ToolCall,
-  TransportState
+  TransportState,
+  WorkspaceCapability,
+  WorkspaceEntry
 } from '../types'
 import { AGUI_ODOO_PROTOCOL } from '../types'
 import { applyJsonPatch, deepMerge } from './jsonPatch'
@@ -203,6 +206,10 @@ export class ChatRuntime {
 
   private saveQueue: Promise<void> = Promise.resolve()
 
+  private workspaceCapability: WorkspaceCapability | null = null
+
+  private serverConfirmationDecisions: Record<string, boolean> = {}
+
   constructor(props: AguiChatProps) {
     this.props = props
     const initialSession = props.session?.protocol === AGUI_ODOO_PROTOCOL ? props.session : null
@@ -258,7 +265,8 @@ export class ChatRuntime {
     }
     const menuMentionsChanged = Boolean(nextProps.menuOptions && this.revalidateMenuMentions())
     const mentionsChanged = this.revalidateMentions()
-    if (menuMentionsChanged || mentionsChanged) {
+    const skillsChanged = this.revalidateSkills()
+    if (menuMentionsChanged || mentionsChanged || skillsChanged) {
       this.notifyMessages()
       this.scheduleSave()
     }
@@ -337,12 +345,32 @@ export class ChatRuntime {
     }
   }
 
+  async archiveSession(sessionId: string | number): Promise<boolean> {
+    if (this.running || !this.props.hostBridge?.archiveSession) return false
+    try {
+      const result = await Promise.resolve(this.props.hostBridge.archiveSession(sessionId))
+      if (isRecord(result) && result.ok === false) {
+        throw new Error(String(result.error || result.code || '归档失败。'))
+      }
+      if (this.session?.id === sessionId) await this.newSession()
+      await this.refreshSessions()
+      return true
+    } catch (reason) {
+      const error = reason instanceof Error ? reason : new Error(String(reason))
+      this.error = error.message
+      this.props.onError?.(error)
+      this.emit()
+      return false
+    }
+  }
+
   async send(
     content: string,
     attachments: AttachmentRef[] = [],
     selection?: MentionReference[] | MenuMention,
-    recordSelection?: RecordSelection
-  ): Promise<void> {
+    recordSelection?: RecordSelection,
+    skills: SelectedAgentSkill[] = []
+  ): Promise<boolean> {
     const text = content.trim()
     const mentions = Array.isArray(selection) ? selection.map((item) => clone(item)) : []
     const menuMention = selection && !Array.isArray(selection) ? selection : undefined
@@ -352,7 +380,7 @@ export class ChatRuntime {
       this.error = error.message
       this.props.onError?.(error)
       this.emit()
-      return
+      return false
     }
     const mentionError = this.validateMentions(mentions)
     if (mentionError) {
@@ -360,17 +388,25 @@ export class ChatRuntime {
       this.error = error.message
       this.props.onError?.(error)
       this.emit()
-      return
+      return false
     }
     if (recordSelection && !this.isCurrentRecordSelection(recordSelection)) {
       const error = new Error('记录候选已过期，请重新筛选。')
       this.error = error.message
       this.props.onError?.(error)
       this.emit()
-      return
+      return false
+    }
+    const skillError = this.validateSkills(skills)
+    if (skillError) {
+      const error = new Error(skillError)
+      this.error = error.message
+      this.props.onError?.(error)
+      this.emit()
+      return false
     }
     if ((!text && !attachments.length && !currentMenu && !mentions.length && !recordSelection) || this.running || this.loadingSessions) {
-      return
+      return false
     }
     try {
       endpoint(this.props)
@@ -378,16 +414,30 @@ export class ChatRuntime {
       this.error = (error as Error).message
       this.props.onError?.(error)
       this.emit()
-      return
+      return false
     }
     await this.ensureSession()
 
+    const messageId = uuid()
+    let syncedAttachments: AttachmentRef[]
+    try {
+      await this.ensureWorkspaceCapability()
+      syncedAttachments = await this.syncAttachments(messageId, attachments)
+    } catch (reason) {
+      const error = reason instanceof Error ? reason : new Error(String(reason))
+      this.error = error.message
+      this.props.onError?.(error)
+      this.emit()
+      return false
+    }
+
     this.messages.push({
-      id: uuid(),
+      id: messageId,
       role: 'user',
       content: text,
-      attachments: clone(attachments),
+      attachments: clone(syncedAttachments),
       mentions: mentions.length ? mentions : undefined,
+      skills: skills.length ? skills.map((skill) => ({ ...skill, valid: true })) : undefined,
       menuMention: currentMenu,
       recordSelection: recordSelection ? clone(recordSelection) : undefined,
       created_at: Date.now()
@@ -403,9 +453,14 @@ export class ChatRuntime {
     this.executedHostBridgeTools = {}
     this.confirmingHostBridgeTools = {}
     this.resumedToolResults = {}
+    this.serverConfirmationDecisions = {}
     this.undoInFlight = {}
     const context = this.createRunContext()
     await this.executeRunLifecycle(context, () => this.run(context, 0))
+    if (this.transportState === 'error') {
+      return false
+    }
+    return true
   }
 
   stop(): void {
@@ -418,6 +473,10 @@ export class ChatRuntime {
     const current = this.toolsByKey[key] || tool
     const result = current.result && typeof current.result === 'object'
       ? current.result as Record<string, unknown> : {}
+    if (result.server_confirmation === true) {
+      await this.confirmServerTool(current, approved)
+      return
+    }
     const authorizationId = String(result.authorization_id || tool.confirmation_id || '')
     if (
       !bridge?.confirmTool || !authorizationId || this.running ||
@@ -479,6 +538,61 @@ export class ChatRuntime {
     }, () => {
       delete this.confirmingHostBridgeTools[key]
     })
+  }
+
+  private async confirmServerTool(tool: ToolCall, approved: boolean): Promise<void> {
+    const key = toolKey(tool)
+    if (this.running || this.serverConfirmationDecisions[key] !== undefined ||
+        tool.status !== 'needs_confirmation') return
+    this.serverConfirmationDecisions[key] = approved
+    tool.status = 'running'
+    tool.needs_confirmation = false
+    this.notifyMessages()
+    this.emit()
+
+    const paused = Object.values(this.toolsByKey).filter((candidate) =>
+      isRecord(candidate.result) && candidate.result.server_confirmation === true
+    )
+    if (!paused.length || paused.some((candidate) =>
+      this.serverConfirmationDecisions[toolKey(candidate)] === undefined
+    )) return
+
+    paused.forEach((candidate) => {
+      const accepted = this.serverConfirmationDecisions[toolKey(candidate)]
+      const id = toolCallId(candidate)
+      const content = accepted
+        ? { accepted: true }
+        : { accepted: false, note: '用户拒绝执行此工具。' }
+      this.messages.push({
+        id: `tool-server-${id || uuid()}`,
+        role: 'tool',
+        name: toolName(candidate),
+        toolCallId: id,
+        tool_call_id: id,
+        content: JSON.stringify(content),
+        hidden: true,
+        created_at: Date.now()
+      })
+      if (!accepted) {
+        candidate.status = 'error'
+        candidate.error = '用户拒绝执行此工具。'
+      }
+      candidate.result = {
+        ...(isRecord(candidate.result) ? candidate.result : {}),
+        server_confirmation: false,
+        accepted
+      }
+    })
+    this.pendingAssistantId = uuid()
+    this.messages.push({
+      id: this.pendingAssistantId,
+      role: 'assistant',
+      content: '',
+      tool_calls: [],
+      created_at: Date.now()
+    })
+    const context = this.createRunContext()
+    await this.executeRunLifecycle(context, () => this.run(context, 0))
   }
 
   async undoTool(tool: ToolCall): Promise<void> {
@@ -630,6 +744,14 @@ export class ChatRuntime {
       this.emit()
       return
     }
+    const skillError = this.validateSkills(userMessage.skills || [])
+    if (skillError) {
+      const error = new Error(`消息中的技能无效，无法重新执行：${skillError}`)
+      this.error = error.message
+      this.props.onError?.(error)
+      this.emit()
+      return
+    }
     if (userMessage.menuMention && !this.resolveMenuMention(userMessage.menuMention)) {
       const error = new Error('消息中的菜单已失效，无法重新执行。')
       this.error = error.message
@@ -714,6 +836,167 @@ export class ChatRuntime {
     }
   }
 
+  async listWorkspace(path = ''): Promise<WorkspaceEntry[]> {
+    const capability = await this.ensureWorkspaceCapability(true)
+    if (!capability) throw new Error('工作区 capability 不可用。')
+    const query = new URLSearchParams({ threadId: this.threadId, path })
+    const response = await fetch(`${this.workspaceEndpoint('/workspace/files')}?${query}`, {
+      credentials: this.runtimeCredentials(),
+      headers: this.workspaceHeaders(capability)
+    })
+    const payload = await this.workspaceJson(response)
+    return Array.isArray(payload.entries) ? payload.entries as WorkspaceEntry[] : []
+  }
+
+  async readWorkspaceFile(path: string): Promise<{ blob: Blob; mimeType: string }> {
+    const capability = await this.ensureWorkspaceCapability(true)
+    if (!capability) throw new Error('工作区 capability 不可用。')
+    const query = new URLSearchParams({ threadId: this.threadId, path })
+    const response = await fetch(`${this.workspaceEndpoint('/workspace/file')}?${query}`, {
+      credentials: this.runtimeCredentials(),
+      headers: this.workspaceHeaders(capability)
+    })
+    if (!response.ok) throw new Error(await this.workspaceError(response))
+    return {
+      blob: await response.blob(),
+      mimeType: response.headers.get('content-type') || 'application/octet-stream'
+    }
+  }
+
+  async downloadWorkspaceFile(path: string): Promise<void> {
+    const capability = await this.ensureWorkspaceCapability(true)
+    if (!capability) throw new Error('工作区 capability 不可用。')
+    const query = new URLSearchParams({ threadId: this.threadId, path, download: 'true' })
+    const response = await fetch(`${this.workspaceEndpoint('/workspace/file')}?${query}`, {
+      credentials: this.runtimeCredentials(),
+      headers: this.workspaceHeaders(capability)
+    })
+    if (!response.ok) throw new Error(await this.workspaceError(response))
+    const url = URL.createObjectURL(await response.blob())
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = path.split('/').pop() || 'download'
+    anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
+  async deleteWorkspaceEntry(path: string, recursive = false): Promise<void> {
+    const capability = await this.ensureWorkspaceCapability(true)
+    if (!capability) throw new Error('工作区 capability 不可用。')
+    const response = await fetch(this.workspaceEndpoint('/workspace/file'), {
+      method: 'DELETE',
+      credentials: this.runtimeCredentials(),
+      headers: {
+        ...this.workspaceHeaders(capability),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ threadId: this.threadId, path, recursive })
+    })
+    if (!response.ok) throw new Error(await this.workspaceError(response))
+  }
+
+  private runtimeCredentials(): RequestCredentials {
+    return this.props.credentials || (this.props.allowCrossOriginDev ? 'include' : 'same-origin')
+  }
+
+  private workspaceEndpoint(path: string): string {
+    const runtime = endpoint(this.props)
+    return `${runtime.slice(0, -'/agui'.length)}${path}`
+  }
+
+  private workspaceHeaders(capability: WorkspaceCapability): Record<string, string> {
+    return {
+      'X-AGUI-Capability': capability.capability,
+      'X-AGUI-Thread': this.threadId
+    }
+  }
+
+  private async workspaceError(response: Response): Promise<string> {
+    try {
+      const payload = await response.clone().json() as { detail?: string; error?: string }
+      return payload.detail || payload.error || `工作区请求失败（HTTP ${response.status}）。`
+    } catch (_error) {
+      return `工作区请求失败（HTTP ${response.status}）。`
+    }
+  }
+
+  private async workspaceJson(response: Response): Promise<Record<string, unknown>> {
+    if (!response.ok) throw new Error(await this.workspaceError(response))
+    return response.json() as Promise<Record<string, unknown>>
+  }
+
+  private async ensureWorkspaceCapability(required = false): Promise<WorkspaceCapability | null> {
+    const current = this.workspaceCapability
+    if (current && current.threadId === this.threadId && current.expiresAt > Date.now() / 1000 + 30) {
+      return current
+    }
+    const bridge = this.props.hostBridge
+    if (!bridge?.getWorkspaceCapability) {
+      if (required) throw new Error('Odoo 未提供工作区 capability。')
+      return null
+    }
+    if (!this.session?.id) throw new Error('当前聊天会话不可用。')
+    const result = await Promise.resolve(bridge.getWorkspaceCapability(this.session.id))
+    if (
+      result?.ok === false || !result.capability || !result.threadId ||
+      typeof result.expiresAt !== 'number' || result.threadId !== this.threadId
+    ) {
+      throw new Error(result?.error || result?.code || '工作区 capability 获取失败。')
+    }
+    this.workspaceCapability = {
+      capability: result.capability,
+      threadId: result.threadId,
+      expiresAt: result.expiresAt
+    }
+    return this.workspaceCapability
+  }
+
+  private safeAttachmentName(name: string, index: number): string {
+    const basename = name.replace(/\\/g, '/').split('/').pop() || `attachment-${index + 1}`
+    const safe = basename.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '').slice(0, 120)
+    return `${index + 1}-${safe || `attachment-${index + 1}`}`
+  }
+
+  private async syncAttachments(
+    messageId: string,
+    attachments: AttachmentRef[]
+  ): Promise<AttachmentRef[]> {
+    if (!attachments.length) return []
+    if (!this.props.hostBridge?.getWorkspaceCapability) return clone(attachments)
+    const capability = await this.ensureWorkspaceCapability(true)
+    if (!capability) throw new Error('工作区 capability 不可用。')
+    const synced: AttachmentRef[] = []
+    try {
+      for (let index = 0; index < attachments.length; index += 1) {
+        const attachment = attachments[index]
+        const source = await fetch(`/agui_chat/attachment/${encodeURIComponent(attachment.id)}`, {
+          credentials: this.props.credentials || 'same-origin'
+        })
+        if (!source.ok) throw new Error(`附件 ${attachment.name} 读取失败。`)
+        const blob = await source.blob()
+        const path = `attachments/${messageId}/${this.safeAttachmentName(attachment.name, index)}`
+        const form = new FormData()
+        form.set('threadId', this.threadId)
+        form.set('path', path)
+        form.set('file', blob, attachment.name)
+        const response = await fetch(this.workspaceEndpoint('/workspace/upload'), {
+          method: 'POST',
+          credentials: this.runtimeCredentials(),
+          headers: this.workspaceHeaders(capability),
+          body: form
+        })
+        if (!response.ok) throw new Error(await this.workspaceError(response))
+        synced.push({ ...clone(attachment), workspacePath: path })
+      }
+      return synced
+    } catch (error) {
+      await Promise.all(synced.map((attachment) => this.deleteWorkspaceEntry(
+        attachment.workspacePath || ''
+      ).catch(() => undefined)))
+      throw error
+    }
+  }
+
   applyEvent(rawEvent: unknown): void {
     this.applyEventForContext(rawEvent, this.activeRunContext)
   }
@@ -782,7 +1065,7 @@ export class ChatRuntime {
       this.recordRunError(message)
     } else if (type === 'RUN_FINISHED') {
       if (context) context.receivedTerminalEvent = true
-      this.applyRunFinished(event)
+      this.applyRunFinished(event, context)
     } else if (type === 'REASONING_START' || type === 'REASONING_MESSAGE_START') {
       this.ensureAssistant()
     } else if (type === 'REASONING_MESSAGE_CONTENT' || type === 'REASONING_MESSAGE_CHUNK') {
@@ -838,6 +1121,7 @@ export class ChatRuntime {
     }
     this.session = session
     this.threadId = session.thread_id || this.props.threadId || uuid()
+    this.workspaceCapability = null
     const storedAgentState = session.agentState || this.props.agentState || {}
     this.agentState = normalizeAgentState(storedAgentState)
     this.messages = this.normalizeStoredMessages(session.messages || [])
@@ -848,6 +1132,7 @@ export class ChatRuntime {
     this.executedHostBridgeTools = {}
     this.confirmingHostBridgeTools = {}
     this.resumedToolResults = {}
+    this.serverConfirmationDecisions = {}
     this.undoInFlight = {}
     this.props.onSessionChange?.(session)
     this.notifyMessages()
@@ -860,6 +1145,7 @@ export class ChatRuntime {
   private resetThread(threadId: string, messages: ChatMessage[]): void {
     this.cancel()
     this.threadId = threadId
+    this.workspaceCapability = null
     this.messages = this.normalizeStoredMessages(messages)
     this.agentState = normalizeAgentState(this.props.agentState || {})
     this.running = false
@@ -870,6 +1156,7 @@ export class ChatRuntime {
     this.executedHostBridgeTools = {}
     this.confirmingHostBridgeTools = {}
     this.resumedToolResults = {}
+    this.serverConfirmationDecisions = {}
     this.undoInFlight = {}
     this.notifyMessages()
   }
@@ -997,6 +1284,7 @@ export class ChatRuntime {
 
   private async run(context: RunContext, depth: number): Promise<void> {
     this.throwIfRunCancelled(context)
+    const capability = await this.ensureWorkspaceCapability()
     context.pendingHostBridgePromises = []
     context.hostBridgeFollowupNeeded = false
     const input = buildRunInput(
@@ -1016,10 +1304,11 @@ export class ChatRuntime {
       credentials:
         this.props.credentials || (this.props.allowCrossOriginDev ? 'include' : 'same-origin'),
       headers: {
+        ...(this.props.headers || {}),
         Accept: 'text/event-stream',
         'Content-Type': 'application/json',
         'X-Request-ID': input.requestId,
-        ...(this.props.headers || {})
+        ...(capability ? this.workspaceHeaders(capability) : {})
       },
       body: JSON.stringify(input),
       signal: context.controller.signal
@@ -1376,7 +1665,7 @@ export class ChatRuntime {
     }
   }
 
-  private applyRunFinished(event: Record<string, unknown>): void {
+  private applyRunFinished(event: Record<string, unknown>, context: RunContext | null): void {
     const outcome =
       event.outcome && typeof event.outcome === 'object'
         ? (event.outcome as Record<string, unknown>)
@@ -1388,7 +1677,23 @@ export class ChatRuntime {
         id: String(value.toolCallId || value.id || ''),
         name: String(value.reason || 'interrupt'),
         status: 'needs_confirmation',
-        result: value
+        result: { ...value, server_confirmation: true }
+      })
+    })
+    if (!context) return
+    Object.values(this.toolsByKey).forEach((candidate) => {
+      if (context.activeClientTools.has(toolName(candidate)) || candidate.result !== undefined ||
+          !['pending', 'running'].includes(candidate.status || 'pending')) return
+      this.mergeTool({
+        id: toolCallId(candidate),
+        name: toolName(candidate),
+        status: 'needs_confirmation',
+        needs_confirmation: true,
+        result: {
+          server_confirmation: true,
+          operation: toolName(candidate),
+          arguments: toolArgs(candidate)
+        }
       })
     })
   }
@@ -1483,6 +1788,12 @@ export class ChatRuntime {
         valid: this.isMentionCurrent(mention)
       }))
     }
+    if (Array.isArray(result.skills)) {
+      result.skills = result.skills.map((skill) => ({
+        ...clone(skill),
+        valid: this.isSkillCurrent(skill)
+      }))
+    }
     if (result.streamingError && !result.streaming_error) {
       result.streaming_error = 'AG-UI run failed.'
     }
@@ -1554,6 +1865,9 @@ export class ChatRuntime {
     if (previous.mentions?.length && !message.mentions?.length) {
       message.mentions = previous.mentions
     }
+    if (previous.skills?.length && !message.skills?.length) {
+      message.skills = previous.skills
+    }
     if (previous.recordSelection && !message.recordSelection) {
       message.recordSelection = previous.recordSelection
     }
@@ -1597,6 +1911,37 @@ export class ChatRuntime {
         if (valid === mention.valid) return mention
         changed = true
         return { ...mention, valid }
+      })
+    })
+    return changed
+  }
+
+  private isSkillCurrent(skill: SelectedAgentSkill): boolean {
+    return Boolean((this.props.agentSkills || []).some((option) =>
+      option.id === skill.id && option.name === skill.name
+    ))
+  }
+
+  private validateSkills(skills: SelectedAgentSkill[]): string | null {
+    if (skills.length > 3) return '每条消息最多选择 3 个技能。'
+    if (new Set(skills.map((skill) => skill.id)).size !== skills.length) {
+      return '不能重复选择同一技能。'
+    }
+    if (skills.some((skill) => !this.isSkillCurrent(skill))) {
+      return '所选技能已移除，请重新选择。'
+    }
+    return null
+  }
+
+  private revalidateSkills(): boolean {
+    let changed = false
+    this.messages.forEach((message) => {
+      if (!message.skills?.length) return
+      message.skills = message.skills.map((skill) => {
+        const valid = this.isSkillCurrent(skill)
+        if (valid === skill.valid) return skill
+        changed = true
+        return { ...skill, valid }
       })
     })
     return changed

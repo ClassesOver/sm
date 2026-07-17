@@ -40,6 +40,7 @@
                             <group>
                                 <group string="服务连接">
                                     <field name="runtime_url" placeholder="例如：/contract-review/agui"/>
+                                    <field name="agentos_internal_url" placeholder="例如：http://agent:7777"/>
                                     <field name="default_agent_id" placeholder="例如：odoo-assistant"/>
                                 </group>
                                 <group string="开发选项">
@@ -232,6 +233,7 @@
                     <group string="字段范围">
                         <field name="field_names" widget="text" class="o_agui_wrap_field" placeholder="留空表示所有字段；多个字段以逗号分隔"/>
                         <field name="high_risk_field_names" widget="text" class="o_agui_wrap_field" placeholder="多个字段以逗号分隔"/>
+                        <field name="button_names" widget="text" class="o_agui_wrap_field" placeholder="原生按钮 name；多个名称以逗号分隔"/>
                     </group>
                 </sheet>
             </form>

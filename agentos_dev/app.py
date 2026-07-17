@@ -1,4 +1,5 @@
 import os
+import json
 
 from agno.agent import Agent
 from agno.db.sqlite import SqliteDb
@@ -6,12 +7,18 @@ from agno.models.openai import OpenAIChat
 from agno.os import AgentOS
 from agno.os.interfaces.agui import AGUI
 from dotenv import dotenv_values
-from fastapi import FastAPI
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
+
+from .security import CapabilityError, verify_capability
+from .skills import load_skills
+from .workspace import WorkspaceError, WorkspaceService, workspace_tools
 
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.8.0.0"
-COMMAND_CATALOG_HASH = "691a5cd1ba9515e767701306399585c5f225a98da3c0f0ca54e1513d9512c574"
+BUNDLE_VERSION = "12.0.8.1.0"
+COMMAND_CATALOG_HASH = "03dc60812aad2fa725f65bbbf70bb2ae892ed5d0312319ae114fba6909d3cbea"
 DEFAULT_ENV_FILE = "/home/junge/pros/agents_app/.env"
 DEFAULT_MODEL_ID = "qwen3.6-35b-a3b"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -51,6 +58,39 @@ def allowed_origins():
 
 
 base_app = FastAPI(title="Odoo AG-UI 开发智能体")
+workspace_secret = os.getenv("AGUI_WORKSPACE_HMAC_SECRET", "")
+agent_skills = load_skills()
+workspace_service = WorkspaceService(secret=workspace_secret)
+
+
+def _request_thread(request: Request) -> str:
+    return str(request.headers.get("X-AGUI-Thread", "")).strip()
+
+
+@base_app.middleware("http")
+async def require_workspace_capability(request: Request, call_next):
+    path = request.url.path.rstrip("/") or "/"
+    protected = path == "/agui" or path.startswith("/workspace")
+    if not protected:
+        return await call_next(request)
+    thread = _request_thread(request)
+    if path == "/agui":
+        try:
+            payload = json.loads((await request.body()).decode("utf-8") or "{}")
+            body_thread = str(payload.get("threadId") or "")
+        except (UnicodeDecodeError, ValueError):
+            return JSONResponse({"error": "invalid_run_payload"}, status_code=400)
+        if not thread:
+            thread = body_thread
+        if body_thread != thread:
+            return JSONResponse({"error": "capability_thread_mismatch"}, status_code=403)
+    try:
+        request.state.capability = verify_capability(
+            request.headers.get("X-AGUI-Capability", ""), workspace_secret, thread,
+        )
+    except CapabilityError as error:
+        return JSONResponse({"error": str(error)}, status_code=401)
+    return await call_next(request)
 
 
 @base_app.get("/config", include_in_schema=False)
@@ -59,7 +99,106 @@ async def integration_config():
         "protocol": PROTOCOL,
         "bundle_version": BUNDLE_VERSION,
         "command_catalog_hash": COMMAND_CATALOG_HASH,
+        "skills": agent_skills.public_metadata(),
     }
+
+
+def _check_thread(request: Request, thread_id: str):
+    claims = getattr(request.state, "capability", None)
+    if not claims or claims.thread != thread_id or _request_thread(request) != thread_id:
+        raise HTTPException(status_code=403, detail="capability_thread_mismatch")
+
+
+def _workspace_error(error: Exception):
+    if isinstance(error, WorkspaceError):
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    raise HTTPException(status_code=502, detail="workspace_backend_failed") from error
+
+
+@base_app.get("/workspace/files", include_in_schema=False)
+async def workspace_files(request: Request, threadId: str, path: str = ""):
+    _check_thread(request, threadId)
+    try:
+        entries = await run_in_threadpool(workspace_service.list_files, threadId, path)
+        return {"ok": True, "path": path, "entries": entries}
+    except Exception as error:
+        _workspace_error(error)
+
+
+@base_app.post("/workspace/upload", include_in_schema=False)
+async def workspace_upload(
+    request: Request,
+    threadId: str = Form(...),
+    path: str = Form(...),
+    file: UploadFile = File(...),
+):
+    _check_thread(request, threadId)
+    content = await file.read(10 * 1024 * 1024 + 1)
+    try:
+        entry = await run_in_threadpool(workspace_service.upload, threadId, path, content)
+        return {"ok": True, "entry": entry}
+    except Exception as error:
+        _workspace_error(error)
+
+
+@base_app.get("/workspace/file", include_in_schema=False)
+async def workspace_file(
+    request: Request,
+    threadId: str,
+    path: str,
+    download: bool = False,
+):
+    _check_thread(request, threadId)
+    try:
+        content, mime_type = await run_in_threadpool(
+            workspace_service.file_bytes, threadId, path,
+        )
+    except Exception as error:
+        _workspace_error(error)
+    safe_name = "".join(
+        char for char in path.rsplit("/", 1)[-1]
+        if ord(char) >= 32 and ord(char) != 127 and char not in {'"', "\\"}
+    ) or "download"
+    disposition = "attachment" if download else "inline"
+    if not download and mime_type not in {
+        "application/json", "application/pdf", "image/jpeg", "image/png", "image/webp",
+        "text/csv", "text/markdown", "text/plain",
+    }:
+        mime_type = "application/octet-stream"
+        disposition = "attachment"
+    return Response(content, media_type=mime_type, headers={
+        "Content-Disposition": f'{disposition}; filename="{safe_name}"',
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
+@base_app.delete("/workspace/file", include_in_schema=False)
+async def workspace_delete_file(request: Request, payload: dict = Body(...)):
+    thread_id = str(payload.get("threadId") or "")
+    _check_thread(request, thread_id)
+    try:
+        await run_in_threadpool(
+            workspace_service.delete_file,
+            thread_id,
+            str(payload.get("path") or ""),
+            bool(payload.get("recursive")),
+        )
+        return {"ok": True}
+    except Exception as error:
+        _workspace_error(error)
+
+
+@base_app.delete("/workspace/sandbox", include_in_schema=False)
+async def workspace_destroy(request: Request, payload: dict = Body(...)):
+    thread_id = str(payload.get("threadId") or "")
+    _check_thread(request, thread_id)
+    try:
+        deleted = await run_in_threadpool(workspace_service.destroy, thread_id)
+    except Exception as error:
+        _workspace_error(error)
+    if not deleted:
+        return JSONResponse({"ok": True, "deleted": False}, status_code=404)
+    return {"ok": True, "deleted": True}
 
 
 assistant = Agent(
@@ -89,7 +228,11 @@ assistant = Agent(
         "每轮最多跟进四次客户端页面工具；达到上限后明确停止，并请用户继续发送消息完成剩余操作。",
         "页面操作必须通过对应工具调用实现，不能用文字代替执行；收到工具成功结果前，严禁声称已打开、已进入、已修改、已保存或已完成。",
         "用户只要求编辑当前表单、进入编辑模式，且未提供任何字段修改内容时，第一个响应必须只调用 odoo.enter_edit_mode，不要先回复文字或询问要修改的字段；该操作不修改字段也不保存。用户明确提供字段和值时才调用 odoo.patch_current_form；只读模式会自动进入编辑模式、同步状态并保存。",
+        "上下文存在 Selected Agent Skills 时，必须先对每个手动选择的技能按原样调用 get_skill_instructions；手动选择不代表禁止自动使用其他可用技能。",
+        "工作区只属于当前 thread。读取目录和文本使用 workspace_list_files、workspace_read_file；写入、移动、删除、Shell、代码和技能脚本执行必须使用对应的需确认工具。",
     ],
+    skills=agent_skills,
+    tools=workspace_tools(workspace_service, agent_skills),
     db=SqliteDb(db_file=os.getenv("AGENT_DB_FILE", DEFAULT_DB_FILE)),
     add_history_to_context=True,
     num_history_runs=10,

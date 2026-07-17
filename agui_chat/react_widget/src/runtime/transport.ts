@@ -218,6 +218,17 @@ function normalizeRunContext(
     context.push({ description: 'Agent ID', value: props.agentId })
   }
   const latestUserMessage = [...messages].reverse().find((message) => message.role === 'user')
+  const selectedSkills = (latestUserMessage?.skills || []).filter((skill) => skill.valid)
+  if (selectedSkills.length) {
+    context.push({
+      description: 'Selected Agent Skills',
+      value: contextValue(selectedSkills.map((skill) => ({
+        id: skill.id,
+        name: skill.name,
+        description: skill.description
+      })))
+    })
+  }
   const mentions = (latestUserMessage?.mentions || []).filter((mention) => mention.valid)
   if (mentions.length) {
     context.push({

@@ -28,6 +28,14 @@
   font: inherit;
 }
 
+.agui-chat-react .agui-picker button {
+  appearance: none;
+  border-radius: 3px;
+  box-shadow: none;
+  margin: 0;
+  text-transform: none;
+}
+
 .agui-chat-react pre,
 .agui-chat-react code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;

@@ -4,7 +4,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
     var ajax = require("web.ajax");
 
     var PROTOCOL = "agui.odoo.v2";
-    var MODULE_VERSION = "12.0.8.0.0";
+    var MODULE_VERSION = "12.0.8.1.0";
     var WRITE_COMMANDS = {
         "odoo.patch_current_form": true,
         "odoo.save_current_form": true,
@@ -182,6 +182,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
             agentState: {},
             tools: clone(this.catalog),
             menuOptions: clone(this.owner.call("agui_host", "getMenuOptions") || []),
+            agentSkills: clone(config.agent && config.agent.skills || []),
             surface: surface,
             hostBridge: this.publicApi(),
         };
@@ -197,6 +198,9 @@ odoo.define("agui_chat.host_bridge", function (require) {
             undoTool: function (authorizationId) { return self.undoTool(authorizationId); },
             searchMentions: function (values) { return self.searchMentions(values); },
             bindMention: function (values) { return self.bindMention(values); },
+            getWorkspaceCapability: function (sessionId) {
+                return self.getWorkspaceCapability(sessionId);
+            },
             listSessions: function () { return self.listSessions(); },
             createSession: function (values) { return self.createSession(values); },
             loadSession: function (sessionId) { return self.loadSession(sessionId); },
@@ -258,6 +262,12 @@ odoo.define("agui_chat.host_bridge", function (require) {
         return this._rpc("/agui_chat/mention/bind", {
             candidate_token: values.candidateToken || "",
             action: values.action || "",
+        });
+    };
+
+    HostBridge.prototype.getWorkspaceCapability = function (sessionId) {
+        return this._rpc("/agui_chat/workspace/capability", {
+            session_id: sessionId,
         });
     };
 

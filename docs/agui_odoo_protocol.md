@@ -14,8 +14,8 @@ configured AgentOS protocol endpoint must agree on:
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.0.0",
-  "bundle_version": "12.0.8.0.0",
+  "module_version": "12.0.8.1.0",
+  "bundle_version": "12.0.8.1.0",
   "command_catalog_hash": "sha256"
 }
 ```

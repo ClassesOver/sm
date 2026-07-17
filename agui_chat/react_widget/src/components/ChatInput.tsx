@@ -1,12 +1,18 @@
-import { AtSign, Database, Filter, Menu, SlidersHorizontal, UploadCloud, X } from 'lucide-react'
+import { AtSign, FolderOpen, Sparkles, UploadCloud, X } from 'lucide-react'
 import { ClipboardEvent, FormEvent, KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type {
-  AttachmentOptions, AttachmentRef, ChatIcons, ChatLabels, HostBridge, MenuMention,
-  MenuMentionOption, MentionAction, MentionCandidate, MentionReference, MentionScope
+  AgentSkillOption, AttachmentOptions, AttachmentRef, ChatIcons, ChatLabels, HostBridge,
+  MenuMention, MenuMentionOption, MentionReference, SelectedAgentSkill
 } from '../types'
 import { cn } from '../lib'
 import { Button } from './Button'
+import {
+  ACTION_LABELS, MentionPicker, type MentionPickerHandle, type MentionQuery, mentionIcon
+} from './MentionPicker'
+import {
+  SkillPicker, type SkillPickerHandle, type SkillQuery, skillQueryAtCursor
+} from './SkillPicker'
 
 const ACCEPTED_TYPES: Record<string, 'image' | 'document'> = {
   'image/png': 'image',
@@ -21,15 +27,6 @@ const ACCEPTED_TYPES: Record<string, 'image' | 'document'> = {
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'document'
 }
 const MB = 1024 * 1024
-const MAX_MENTIONS = 5
-const PAGE_ACTIONS = new Set<MentionAction>(['open', 'create', 'view', 'edit', 'apply'])
-const ACTION_LABELS: Record<MentionAction, string> = {
-  read: '引用数据', open: '打开', create: '新建', view: '打开查看', edit: '打开编辑', apply: '应用'
-}
-const SCOPE_LABELS: Array<[MentionScope, string]> = [
-  ['all', '全部'], ['menu', '菜单'], ['record', '记录'],
-  ['saved_filter', '收藏'], ['current_filter', '当前筛选']
-]
 
 interface UploadItem {
   localId: string
@@ -46,29 +43,35 @@ export interface ChatInputProps {
   disabled?: boolean
   attachments?: boolean | AttachmentOptions
   menuOptions: MenuMentionOption[]
+  agentSkills?: AgentSkillOption[]
+  recentMentions?: MentionReference[]
   hostBridge?: HostBridge
   onSend: (
-    content: string, attachments: AttachmentRef[], mentions?: MentionReference[] | MenuMention
-  ) => void
+    content: string,
+    attachments: AttachmentRef[],
+    mentions?: MentionReference[] | MenuMention,
+    skills?: SelectedAgentSkill[]
+  ) => Promise<boolean | void> | boolean | void
   onStop: () => void
   onUpload: (file: File, onProgress: (progress: number) => void) => Promise<AttachmentRef>
   onRemove: (attachmentId: string) => Promise<void>
   labels: ChatLabels
   icons: ChatIcons
+  onOpenWorkspace?: () => void
 }
 
-export interface MenuQuery {
-  start: number
-  end: number
-  query: string
-}
+const MENTION_BOUNDARY = /[\s，。！？；：、（）【】《》“”‘’]/u
+const MENTION_TERMINATOR = /[\s@，。！？；：、（）【】《》“”‘’]/u
 
-export function menuQueryAtCursor(value: string, cursor: number): MenuQuery | null {
-  const prefix = value.slice(0, cursor)
-  const match = prefix.match(/(^|\s)@([^\s@]*)$/)
-  if (!match || match.index === undefined) return null
-  const start = match.index + match[1].length
-  return { start, end: cursor, query: match[2] }
+export function menuQueryAtCursor(value: string, cursor: number): MentionQuery | null {
+  const safeCursor = Math.max(0, Math.min(cursor, value.length))
+  let at = safeCursor - 1
+  while (at >= 0 && value[at] !== '@' && !MENTION_TERMINATOR.test(value[at])) at -= 1
+  if (at < 0 || value[at] !== '@') return null
+  if (at > 0 && !MENTION_BOUNDARY.test(value[at - 1])) return null
+  let end = safeCursor
+  while (end < value.length && !MENTION_TERMINATOR.test(value[end])) end += 1
+  return { start: at, end, query: value.slice(at + 1, end) }
 }
 
 function formatSize(size: number): string {
@@ -93,36 +96,28 @@ function fileKind(file: File): string {
   return '文档'
 }
 
-function MentionIcon({ kind }: { kind: MentionCandidate['kind'] | MentionReference['kind'] }) {
-  if (kind === 'menu') return <Menu className="size-3.5 shrink-0" />
-  if (kind === 'record') return <Database className="size-3.5 shrink-0" />
-  if (kind === 'saved_filter') return <Filter className="size-3.5 shrink-0" />
-  return <SlidersHorizontal className="size-3.5 shrink-0" />
-}
-
 export function ChatInput({
-  running, disabled = false, attachments, menuOptions, hostBridge, onSend, onStop, onUpload, onRemove,
-  labels, icons
+  running, disabled = false, attachments, menuOptions, agentSkills = [], recentMentions = [], hostBridge,
+  onSend, onStop, onUpload, onRemove, labels, icons, onOpenWorkspace
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [menuMention, setMenuMention] = useState<MenuMention | undefined>()
   const [mentions, setMentions] = useState<MentionReference[]>([])
-  const [menuQuery, setMenuQuery] = useState<MenuQuery | null>(null)
+  const [menuQuery, setMenuQuery] = useState<MentionQuery | null>(null)
+  const [selectedSkills, setSelectedSkills] = useState<SelectedAgentSkill[]>([])
+  const [skillQuery, setSkillQuery] = useState<SkillQuery | null>(null)
+  const [skillSearch, setSkillSearch] = useState('')
+  const [skillOpen, setSkillOpen] = useState(false)
+  const [sending, setSending] = useState(false)
   const [activeMenuIndex, setActiveMenuIndex] = useState(0)
-  const [scope, setScope] = useState<MentionScope>('all')
-  const [modelScope, setModelScope] = useState('')
-  const [candidates, setCandidates] = useState<MentionCandidate[]>([])
-  const [modelScopes, setModelScopes] = useState<Array<{ model: string; label: string }>>([])
-  const [pendingCandidate, setPendingCandidate] = useState<MentionCandidate | null>(null)
-  const [mentionLoading, setMentionLoading] = useState(false)
-  const [mentionBinding, setMentionBinding] = useState(false)
-  const [mentionError, setMentionError] = useState('')
   const [items, setItems] = useState<UploadItem[]>([])
   const [dragging, setDragging] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const formRef = useRef<HTMLFormElement | null>(null)
+  const mentionPickerRef = useRef<MentionPickerHandle | null>(null)
+  const skillPickerRef = useRef<SkillPickerHandle | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const dragDepth = useRef(0)
-  const mentionRequest = useRef(0)
   const unifiedMentions = Boolean(hostBridge?.searchMentions && hostBridge?.bindMention)
   const config = typeof attachments === 'object' ? attachments : {}
   const enabled = attachments !== false && config.enabled !== false
@@ -137,39 +132,19 @@ export function ChatInput({
     : []
 
   useEffect(() => {
-    if (!unifiedMentions || !menuQuery || !hostBridge?.searchMentions) return
-    const query = menuQuery.query.trim()
-    const requestId = ++mentionRequest.current
-    setPendingCandidate(null)
-    setMentionError('')
-    if (scope !== 'menu' && query.length < 2) {
-      setCandidates([])
-      setMentionLoading(false)
-      return
+    const closeOutside = (event: PointerEvent | FocusEvent) => {
+      if (!formRef.current?.contains(event.target as Node)) {
+        setMenuQuery(null)
+        setSkillOpen(false)
+      }
     }
-    setMentionLoading(true)
-    const timer = window.setTimeout(() => {
-      void hostBridge.searchMentions?.({
-        query, scope, modelScope: modelScope || undefined
-      }).then((result) => {
-        if (requestId !== mentionRequest.current) return
-        if (result?.ok === false) {
-          setCandidates([])
-          setMentionError(result.error || result.code || '对象搜索失败')
-        } else {
-          setCandidates(result?.candidates || [])
-          setModelScopes(result?.modelScopes || [])
-        }
-      }, (error) => {
-        if (requestId !== mentionRequest.current) return
-        setCandidates([])
-        setMentionError((error as Error)?.message || '对象搜索失败')
-      }).finally(() => {
-        if (requestId === mentionRequest.current) setMentionLoading(false)
-      })
-    }, 300)
-    return () => window.clearTimeout(timer)
-  }, [hostBridge, menuQuery?.query, modelScope, scope, unifiedMentions])
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('focusin', closeOutside)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('focusin', closeOutside)
+    }
+  }, [])
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -267,7 +242,7 @@ export function ChatInput({
   }
 
   const readyAttachments = items.flatMap((item) => item.attachment ? [item.attachment] : [])
-  const canSend = !running && !disabled && !items.some((item) => item.status !== 'ready') &&
+  const canSend = !running && !sending && !disabled && !items.some((item) => item.status !== 'ready') &&
     (!!value.trim() || readyAttachments.length > 0 || !!menuMention || mentions.length > 0)
 
   const selectMenu = (option: MenuMentionOption) => {
@@ -283,80 +258,77 @@ export function ChatInput({
     }, 0)
   }
 
-  const bindCandidate = async (candidate: MentionCandidate, action: MentionAction) => {
-    if (!menuQuery || !hostBridge?.bindMention || mentionBinding) return
-    setMentionError('')
-    if (mentions.length >= MAX_MENTIONS) {
-      setMentionError('每条消息最多引用 5 个对象')
-      return
-    }
-    if (mentions.some((mention) => mention.resourceKey === candidate.resourceKey)) {
-      setMentionError('不能重复引用同一对象')
-      return
-    }
-    if (PAGE_ACTIONS.has(action) && mentions.some((mention) => mention.pageAction)) {
-      setMentionError('每条消息最多包含 1 个页面动作')
-      return
-    }
-    setMentionBinding(true)
-    try {
-      const result = await hostBridge.bindMention({
-        candidateToken: candidate.candidateToken, action
-      })
-      if (!result?.ok || !result.reference) {
-        setMentionError(result?.error || result?.code || '对象绑定失败')
-        return
+  const selectMention = (reference: MentionReference) => {
+    if (!menuQuery) return
+    const cursor = menuQuery.start
+    setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end))
+    setMentions((current) => [...current, { ...reference }])
+    setMenuQuery(null)
+    window.setTimeout(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(cursor, cursor)
+    }, 0)
+  }
+
+  const toggleSkill = (skill: AgentSkillOption) => {
+    setSelectedSkills((current) => {
+      if (current.some((item) => item.id === skill.id)) {
+        return current.filter((item) => item.id !== skill.id)
       }
-      const cursor = menuQuery.start
-      setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end))
-      setMentions((current) => [...current, result.reference as MentionReference])
-      setMenuQuery(null)
-      setPendingCandidate(null)
-      setCandidates([])
-      setActiveMenuIndex(0)
-      window.setTimeout(() => {
-        textareaRef.current?.focus()
-        textareaRef.current?.setSelectionRange(cursor, cursor)
-      }, 0)
-    } catch (error) {
-      setMentionError((error as Error)?.message || '对象绑定失败')
-    } finally {
-      setMentionBinding(false)
+      return current.length >= 3 ? current : [...current, { ...skill, valid: true }]
+    })
+    if (skillQuery) {
+      setValue((current) => current.slice(0, skillQuery.start) + current.slice(skillQuery.end))
+      setSkillQuery(null)
+      setSkillSearch('')
     }
   }
 
-  const submit = () => {
+  const submit = async () => {
     if (!canSend) return
     const content = value.trim()
-    setValue('')
     const selectedMentions = unifiedMentions ? mentions : menuMention
+    setSending(true)
+    let sent: boolean | void = false
+    try {
+      sent = await Promise.resolve(selectedSkills.length
+        ? onSend(
+            content,
+            readyAttachments,
+            selectedMentions || undefined,
+            selectedSkills.map((skill) => ({ ...skill }))
+          )
+        : onSend(content, readyAttachments, selectedMentions || undefined))
+    } catch (_error) {
+      sent = false
+    } finally {
+      setSending(false)
+    }
+    if (sent === false) return
+    setValue('')
     setMenuMention(undefined)
     setMentions([])
+    setSelectedSkills([])
     setMenuQuery(null)
+    setSkillOpen(false)
     items.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl))
     setItems([])
-    onSend(content, readyAttachments, selectedMentions || undefined)
     window.setTimeout(() => textareaRef.current?.focus(), 0)
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (skillOpen && skillPickerRef.current?.handleKey(event)) return
+    if (unifiedMentions && menuQuery && mentionPickerRef.current?.handleKey(event)) return
     if (menuQuery) {
       if (event.key === 'Escape') {
         event.preventDefault()
-        if (pendingCandidate) {
-          setPendingCandidate(null)
-          setActiveMenuIndex(0)
-          return
-        }
         setMenuQuery(null)
         return
       }
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault()
         const direction = event.key === 'ArrowDown' ? 1 : -1
-        const length = unifiedMentions
-          ? pendingCandidate?.actions.length || candidates.length
-          : filteredMenus.length
+        const length = filteredMenus.length
         setActiveMenuIndex((current) => length
           ? (current + direction + length) % length
           : 0)
@@ -364,14 +336,7 @@ export function ChatInput({
       }
       if (event.key === 'Enter') {
         event.preventDefault()
-        if (unifiedMentions) {
-          if (pendingCandidate?.actions[activeMenuIndex]) {
-            void bindCandidate(pendingCandidate, pendingCandidate.actions[activeMenuIndex])
-          } else if (candidates[activeMenuIndex]) {
-            setPendingCandidate(candidates[activeMenuIndex])
-            setActiveMenuIndex(0)
-          }
-        } else if (filteredMenus[activeMenuIndex]) {
+        if (filteredMenus[activeMenuIndex]) {
           selectMenu(filteredMenus[activeMenuIndex])
         }
         return
@@ -379,7 +344,7 @@ export function ChatInput({
     }
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
-      submit()
+      void submit()
     }
   }
 
@@ -392,13 +357,13 @@ export function ChatInput({
   }
 
   return (
-    <form
+    <form ref={formRef}
       className="relative w-full shrink-0 border border-solid border-border/60 bg-background-panel px-4 pb-3 pt-3 shadow-none sm:px-6"
       onClick={(event) => {
         const target = event.target as HTMLElement
         if (!target.closest('button, a, input, textarea')) textareaRef.current?.focus()
       }}
-      onSubmit={(event: FormEvent) => { event.preventDefault(); submit() }}
+      onSubmit={(event: FormEvent) => { event.preventDefault(); void submit() }}
     >
       {dragging && textareaRef.current?.closest('main') ? createPortal(
         <div className="pointer-events-none absolute inset-0 z-50 grid place-items-center border-2 border-dashed border-primary/30 bg-background-panel/95 text-secondary backdrop-blur-[1px]" aria-label="拖放附件">
@@ -452,12 +417,19 @@ export function ChatInput({
       <div>
         {mentions.length ? <div className="mb-2 flex flex-wrap gap-1.5" aria-label="已选对象引用">
           {mentions.map((mention) => <span key={mention.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-primary/20 bg-accent px-2 py-1 text-xs text-primary" title={`${mention.detail} · ${ACTION_LABELS[mention.action]}`}>
-            <MentionIcon kind={mention.kind} />
+            {mentionIcon(mention.kind)}
             <span className="truncate">{mention.label}</span>
             <span className="shrink-0 text-muted">{ACTION_LABELS[mention.action]}</span>
             <button type="button" className="grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-background hover:text-primary" aria-label={`移除引用 ${mention.label}`} title="移除引用" onClick={() => setMentions((current) => current.filter((item) => item.id !== mention.id))}>
               <X className="size-3" />
             </button>
+          </span>)}
+        </div> : null}
+        {selectedSkills.length ? <div className="mb-2 flex flex-wrap gap-1.5" aria-label="已选技能">
+          {selectedSkills.map((skill) => <span key={skill.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-emerald-700/30 bg-emerald-50 px-2 py-1 text-xs text-emerald-900" title={skill.description}>
+            <Sparkles className="size-3.5 shrink-0" />
+            <span className="truncate">{skill.name}</span>
+            <button type="button" className="grid size-5 shrink-0 place-items-center border-0 bg-transparent p-0 text-emerald-800 hover:bg-white" aria-label={`移除技能 ${skill.name}`} onClick={() => setSelectedSkills((current) => current.filter((item) => item.id !== skill.id))}><X className="size-3" /></button>
           </span>)}
         </div> : null}
         {menuMention ? <div className="mb-2 flex items-center">
@@ -470,50 +442,47 @@ export function ChatInput({
           </span>
         </div> : null}
         <div className="relative">
-          <textarea ref={textareaRef} rows={1} disabled={disabled} className="block min-h-11 w-full resize-none rounded-lg border-0 bg-background-secondary px-3 py-3 text-sm leading-5 text-primary outline-none placeholder:text-muted/90 focus:bg-background focus:ring-1 focus:ring-primary/15 disabled:cursor-not-allowed disabled:opacity-45" placeholder={labels.inputPlaceholder} value={value} onChange={(event) => {
+          <textarea ref={textareaRef} rows={1} disabled={disabled || sending} className="block min-h-11 w-full resize-none rounded-lg border-0 bg-background-secondary px-3 py-3 text-sm leading-5 text-primary outline-none placeholder:text-muted/90 focus:bg-background focus:ring-1 focus:ring-primary/15 disabled:cursor-not-allowed disabled:opacity-45" placeholder={labels.inputPlaceholder} value={value} onChange={(event) => {
             const nextValue = event.target.value
             const cursor = event.target.selectionStart ?? nextValue.length
+            const nextSkillQuery = skillQueryAtCursor(nextValue, cursor)
             setValue(nextValue)
             setActiveMenuIndex(0)
-            setMenuQuery(menuQueryAtCursor(nextValue, cursor))
+            if (nextSkillQuery && agentSkills.length) {
+              setSkillQuery(nextSkillQuery)
+              setSkillSearch(nextSkillQuery.query)
+              setSkillOpen(true)
+              setMenuQuery(null)
+            } else {
+              setSkillQuery(null)
+              const nextMention = menuQueryAtCursor(nextValue, cursor)
+              setMenuQuery(nextMention)
+              if (nextMention) setSkillOpen(false)
+            }
           }} onClick={(event) => {
             const cursor = event.currentTarget.selectionStart ?? value.length
-            setMenuQuery(menuQueryAtCursor(value, cursor))
-          }} onBlur={() => window.setTimeout(() => setMenuQuery(null), 120)} onKeyDown={onKeyDown} onPaste={onPaste} aria-autocomplete="list" aria-expanded={Boolean(menuQuery)} />
-          {menuQuery ? <div role="listbox" className="absolute bottom-full left-0 right-0 z-40 mb-1 max-h-72 overflow-y-auto rounded-md border border-border bg-background-panel p-1 shadow-lg">
-            {unifiedMentions ? <>
-              <div className="sticky top-0 z-10 flex flex-wrap items-center gap-1 border-b border-border bg-background-panel p-1.5">
-                {SCOPE_LABELS.map(([value, label]) => <button key={value} type="button" className={cn('h-7 rounded px-2 text-[11px] text-muted hover:bg-accent hover:text-primary', scope === value && 'bg-accent text-primary')} aria-pressed={scope === value} onMouseDown={(event) => event.preventDefault()} onClick={() => { setScope(value); setActiveMenuIndex(0); setPendingCandidate(null) }}>{label}</button>)}
-                {modelScopes.length ? <select className="ml-auto h-7 min-w-0 max-w-40 rounded border border-border bg-background-panel px-1.5 text-[11px] text-secondary" aria-label="搜索模型" value={modelScope} onMouseDown={(event) => event.preventDefault()} onChange={(event) => { setModelScope(event.target.value); setActiveMenuIndex(0) }}>
-                  <option value="">优先模型</option>
-                  {modelScopes.map((item) => <option key={item.model} value={item.model}>{item.label}</option>)}
-                </select> : null}
-              </div>
-              {pendingCandidate ? <div className="p-1">
-                <div className="flex min-w-0 items-center gap-2 px-2.5 py-2 text-xs text-primary">
-                  <MentionIcon kind={pendingCandidate.kind} />
-                  <span className="min-w-0 flex-1 truncate" title={pendingCandidate.detail}>{pendingCandidate.label}</span>
-                </div>
-                <div className="flex flex-wrap gap-1 px-2 pb-2">
-                  {pendingCandidate.actions.map((action, index) => <button key={action} type="button" role="option" aria-selected={index === activeMenuIndex} disabled={mentionBinding} className={cn('h-8 rounded border border-border bg-background-panel px-2.5 text-xs text-secondary hover:bg-accent hover:text-primary disabled:opacity-45', index === activeMenuIndex && 'bg-accent text-primary')} onMouseDown={(event) => event.preventDefault()} onClick={() => void bindCandidate(pendingCandidate, action)}>{ACTION_LABELS[action]}</button>)}
-                </div>
-              </div> : candidates.length ? candidates.map((candidate, index) => <button key={candidate.candidateToken} type="button" role="option" aria-selected={index === activeMenuIndex} className={cn('flex w-full items-center gap-2 rounded border-0 bg-transparent px-2.5 py-2 text-left text-xs text-secondary hover:bg-accent', index === activeMenuIndex && 'bg-accent text-primary')} onMouseDown={(event) => event.preventDefault()} onClick={() => { setPendingCandidate(candidate); setActiveMenuIndex(0) }}>
-                <MentionIcon kind={candidate.kind} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-primary" title={candidate.label}>{candidate.label}</span>
-                  <span className="block truncate text-[10px] text-muted" title={candidate.detail}>{candidate.detail}</span>
-                </span>
-              </button>) : <div className="px-2.5 py-2 text-xs text-muted">{mentionLoading ? '搜索中' : mentionError || '没有匹配的对象'}</div>}
-              {mentionError && candidates.length ? <div className="px-2.5 py-2 text-xs text-destructive">{mentionError}</div> : null}
-            </> : filteredMenus.length ? filteredMenus.map((option, index) => <button key={option.menuId} type="button" role="option" aria-selected={index === activeMenuIndex} className={cn('flex w-full items-center gap-2 rounded border-0 bg-transparent px-2.5 py-2 text-left text-xs text-secondary hover:bg-accent', index === activeMenuIndex && 'bg-accent text-primary')} onMouseDown={(event) => event.preventDefault()} onClick={() => selectMenu(option)}>
+            const nextSkill = skillQueryAtCursor(value, cursor)
+            if (nextSkill && agentSkills.length) {
+              setSkillQuery(nextSkill)
+              setSkillSearch(nextSkill.query)
+              setSkillOpen(true)
+              setMenuQuery(null)
+            } else {
+              setMenuQuery(menuQueryAtCursor(value, cursor))
+            }
+          }} onKeyDown={onKeyDown} onPaste={onPaste} aria-autocomplete="list" aria-expanded={Boolean(menuQuery || skillOpen)} />
+          {unifiedMentions && menuQuery && hostBridge ? <MentionPicker ref={mentionPickerRef} open query={menuQuery} selected={mentions} recent={recentMentions} hostBridge={hostBridge} onSelect={selectMention} onClose={() => setMenuQuery(null)} /> : null}
+          {!unifiedMentions && menuQuery ? <div role="listbox" className="absolute bottom-full left-0 right-0 z-40 mb-1 max-h-72 overflow-y-auto rounded-md border border-border bg-background-panel p-1 shadow-lg">
+            {filteredMenus.length ? filteredMenus.map((option, index) => <button key={option.menuId} type="button" role="option" aria-selected={index === activeMenuIndex} className={cn('flex w-full items-center gap-2 rounded border-0 bg-transparent px-2.5 py-2 text-left text-xs text-secondary hover:bg-accent', index === activeMenuIndex && 'bg-accent text-primary')} onPointerDown={(event) => event.preventDefault()} onClick={() => selectMenu(option)}>
               <AtSign className="size-3.5 shrink-0 text-muted" />
               <span className="min-w-0 flex-1 truncate" title={option.fullPath}>{option.fullPath}</span>
             </button>) : <div className="px-2.5 py-2 text-xs text-muted">没有匹配的菜单</div>}
           </div> : null}
+          <SkillPicker ref={skillPickerRef} open={skillOpen && agentSkills.length > 0} query={skillSearch} skills={agentSkills} selected={selectedSkills} onQueryChange={setSkillSearch} onToggle={toggleSkill} onClose={() => { setSkillOpen(false); setSkillQuery(null) }} />
         </div>
         <div className="mt-2 flex min-h-8 items-center justify-between gap-2">
-          {enabled ? (
-            <>
+          <div className="flex items-center gap-1">
+            {enabled ? <>
             <input ref={inputRef} className="hidden" type="file" disabled={disabled} multiple accept={Object.keys(ACCEPTED_TYPES).join(',')} onChange={(event) => {
               addFiles(Array.from(event.target.files || []))
               event.target.value = ''
@@ -521,8 +490,14 @@ export function ChatInput({
             <Button type="button" variant="ghost" size="icon" disabled={disabled} className="size-8 shrink-0 rounded-md border-border bg-background-panel text-secondary shadow-none hover:border-primary/20 hover:bg-accent" aria-label={labels.addAttachments} title={labels.addAttachments} onClick={() => inputRef.current?.click()}>
               {icons.upload}
             </Button>
-            </>
-          ) : <span />}
+            </> : null}
+            {agentSkills.length ? <Button type="button" variant="ghost" size="icon" disabled={disabled || sending} className={cn('size-8 shrink-0 rounded-md border-border bg-background-panel text-secondary shadow-none hover:bg-accent', skillOpen && 'bg-accent text-primary')} aria-label="选择技能" title="选择技能" aria-pressed={skillOpen} onClick={() => { setSkillOpen((current) => !current); setSkillQuery(null); setSkillSearch(''); setMenuQuery(null) }}>
+              <Sparkles className="size-4" />
+            </Button> : null}
+            {onOpenWorkspace ? <Button type="button" variant="ghost" size="icon" disabled={disabled} className="size-8 shrink-0 rounded-md border-border bg-background-panel text-secondary shadow-none hover:bg-accent" aria-label="打开工作区" title="打开工作区" onClick={onOpenWorkspace}>
+              <FolderOpen className="size-4" />
+            </Button> : null}
+          </div>
           <Button type={running ? 'button' : 'submit'} variant="primary" size="icon" className={cn('size-8 shrink-0 rounded-md shadow-none disabled:border-border disabled:bg-border disabled:text-muted', running && 'ring-1 ring-primary/15')} disabled={running ? false : disabled || !canSend} aria-label={running ? labels.stopGenerating : labels.sendMessage} title={running ? labels.stopGenerating : labels.sendMessage} onClick={running ? onStop : undefined}>
             {running ? icons.stop : icons.send}
           </Button>

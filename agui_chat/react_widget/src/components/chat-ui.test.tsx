@@ -7,6 +7,7 @@ import { ChatRuntime } from '../runtime/ChatRuntime'
 import { testHostState, v2Props } from '../test/fixtures'
 import { AguiChatApp } from './AguiChatApp'
 import { ChatInput, menuQueryAtCursor } from './ChatInput'
+import { skillQueryAtCursor } from './SkillPicker'
 import { FilePreviewPanel } from './FilePreviewPanel'
 import { Messages } from './Messages'
 
@@ -127,7 +128,10 @@ describe('chat customization', () => {
   it('recognizes menu mention boundaries', () => {
     expect(menuQueryAtCursor('@客户', 3)).toEqual({ start: 0, end: 3, query: '客户' })
     expect(menuQueryAtCursor('打开 @客户', 6)).toEqual({ start: 3, end: 6, query: '客户' })
+    expect(menuQueryAtCursor('打开，@客户。', 6)).toEqual({ start: 3, end: 6, query: '客户' })
+    expect(menuQueryAtCursor('打开 @客户资料', 5)).toEqual({ start: 3, end: 8, query: '客户资料' })
     expect(menuQueryAtCursor('打开@客户', 5)).toBeNull()
+    expect(menuQueryAtCursor('user@example.com', 8)).toBeNull()
   })
 
   it('searches, selects, replaces, removes, and sends one menu mention', () => {
@@ -247,13 +251,12 @@ describe('chat customization', () => {
     const input = screen.getByPlaceholderText(labels.inputPlaceholder)
     fireEvent.change(input, { target: { value: '@菜单', selectionStart: 3 } })
     fireEvent.click(await screen.findByText('客户菜单'))
-    fireEvent.click(screen.getByRole('option', { name: '打开' }))
     await waitFor(() => expect(bindMention).toHaveBeenCalledTimes(1))
 
     fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
-    fireEvent.click(await screen.findByText('客户甲'))
-    fireEvent.click(screen.getByRole('option', { name: '打开查看' }))
-    expect(await screen.findByText('每条消息最多包含 1 个页面动作')).toBeTruthy()
+    const candidate = await screen.findByRole('option', { name: /客户甲/ })
+    expect((candidate as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText('本条消息已有页面动作')).toBeTruthy()
     expect(bindMention).toHaveBeenCalledTimes(1)
   })
 
@@ -299,6 +302,95 @@ describe('chat customization', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('normalizes jQuery-style Deferred mention searches through Promise.resolve', async () => {
+    const result = {
+      candidates: [{
+        candidateToken: 'deferred', resourceKey: 'deferred-key', kind: 'record' as const,
+        label: 'Deferred 客户', detail: '销售 / 客户', model: 'res.partner',
+        actions: ['read' as const], expiresAt: '2099-01-01 00:00:00'
+      }],
+      modelScopes: []
+    }
+    const deferred = {
+      then(resolve: (value: typeof result) => void) {
+        resolve(result)
+      }
+    }
+    render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
+      hostBridge={{ searchMentions: vi.fn(() => deferred as any), bindMention: vi.fn() as any }}
+      onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
+    fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
+    expect(await screen.findByText('Deferred 客户')).toBeTruthy()
+  })
+
+  it('supports keyboard navigation inside the record model picker', async () => {
+    const searchMentions = vi.fn(async () => ({
+      candidates: [],
+      modelScopes: [
+        { model: 'res.partner', label: '联系人' },
+        { model: 'crm.lead', label: '线索' }
+      ]
+    }))
+    render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
+      hostBridge={{ searchMentions: searchMentions as any, bindMention: vi.fn() as any }}
+      onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    fireEvent.click(screen.getByRole('option', { name: /记录\s+引用、查看或编辑记录/ }))
+
+    const modelSearch = await screen.findByLabelText('搜索记录模型')
+    fireEvent.change(modelSearch, { target: { value: '线索' } })
+    fireEvent.keyDown(modelSearch, { key: 'Enter' })
+    expect(await screen.findByText('记录搜索至少需要 2 个字符')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '返回' }))
+    fireEvent.click(screen.getByRole('option', { name: /记录\s+引用、查看或编辑记录/ }))
+    const reopenedSearch = await screen.findByLabelText('搜索记录模型')
+    fireEvent.keyDown(reopenedSearch, { key: 'Escape' })
+    expect(await screen.findByRole('option', { name: /菜单\s+打开菜单或新建记录/ })).toBeTruthy()
+  })
+
+  it('opens skills from the toolbar and first-line slash, then clears only after success', async () => {
+    expect(skillQueryAtCursor('/审计\n检查合同', 2)).toEqual({
+      start: 0, end: 4, query: '审计'
+    })
+    const onSend = vi.fn(async () => true)
+    const agentSkills = [{ id: 'audit', name: '合同审计', description: '核对合同字段' }]
+    render(<ChatInput running={false} attachments={false} menuOptions={[]} agentSkills={agentSkills}
+      labels={labels} icons={icons} onSend={onSend} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
+
+    fireEvent.click(screen.getByRole('button', { name: '选择技能' }))
+    fireEvent.keyDown(screen.getByLabelText('搜索技能'), { key: 'Enter' })
+    expect(screen.getByLabelText('已选技能')).toBeTruthy()
+    fireEvent.change(input, { target: { value: '检查合同', selectionStart: 4 } })
+    fireEvent.click(screen.getByRole('button', { name: labels.sendMessage }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith(
+      '检查合同', [], undefined, [expect.objectContaining({ id: 'audit', valid: true })]
+    ))
+    await waitFor(() => expect(screen.queryByLabelText('已选技能')).toBeNull())
+
+    fireEvent.change(input, { target: { value: '/审计', selectionStart: 3 } })
+    expect(await screen.findByRole('option', { name: /合同审计/ })).toBeTruthy()
+  })
+
+  it('retains the draft and manual skills when sending fails', async () => {
+    const onSend = vi.fn(async () => false)
+    render(<ChatInput running={false} attachments={false} menuOptions={[]}
+      agentSkills={[{ id: 'audit', name: '审计', description: '审计技能' }]}
+      labels={labels} icons={icons} onSend={onSend} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
+    fireEvent.click(screen.getByRole('button', { name: '选择技能' }))
+    fireEvent.click(screen.getByRole('option', { name: /审计技能/ }))
+    fireEvent.change(input, { target: { value: '保留草稿', selectionStart: 4 } })
+    fireEvent.click(screen.getByRole('button', { name: labels.sendMessage }))
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+    expect(input.value).toBe('保留草稿')
+    expect(screen.getByLabelText('已选技能')).toBeTruthy()
   })
 
   it('shows and removes an invalid menu mention from a sent message', () => {

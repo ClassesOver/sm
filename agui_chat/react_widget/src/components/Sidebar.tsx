@@ -1,4 +1,4 @@
-import { ChevronsLeft, ChevronsRight, MessageSquarePlus, RefreshCw } from 'lucide-react'
+import { Archive, Check, ChevronsLeft, ChevronsRight, MessageSquarePlus, RefreshCw, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { ChatLabels, RuntimeSnapshot } from '../types'
 import { cn } from '../lib'
@@ -10,6 +10,7 @@ interface SidebarProps {
   onNewSession: () => void
   onRefreshSessions: () => void
   onLoadSession: (sessionId: string | number) => void
+  onArchiveSession: (sessionId: string | number) => void
   labels: ChatLabels
 }
 
@@ -33,9 +34,11 @@ export function Sidebar({
   onNewSession,
   onRefreshSessions,
   onLoadSession,
+  onArchiveSession,
   labels
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(!!initialCollapsed)
+  const [confirmArchive, setConfirmArchive] = useState<string | number | null>(null)
   const currentSessionId = snapshot.session?.id
   const sortedSessions = useMemo(() => snapshot.sessions || [], [snapshot.sessions])
 
@@ -128,14 +131,16 @@ export function Sidebar({
                 {sortedSessions.map((session) => {
                   const selected = session.id === currentSessionId
                   return (
-                    <button
-                      key={session.id}
-                      type="button"
+                    <div key={session.id} className={cn(
+                      'group flex h-11 w-full items-center rounded-lg border border-solid transition-colors',
+                      selected ? 'border-primary/25 bg-accent' : 'border-transparent hover:bg-accent'
+                    )}>
+                    <button type="button"
                       className={cn(
-                        'flex h-11 w-full items-center justify-between gap-2 rounded-lg border border-solid px-3 text-left text-sm transition-colors',
+                        'flex h-full min-w-0 flex-1 items-center justify-between gap-2 border-0 bg-transparent px-3 text-left text-sm',
                         selected
-                          ? 'border-primary/25 bg-accent text-primary'
-                          : 'border-transparent text-muted hover:bg-accent hover:text-primary'
+                          ? 'text-primary'
+                          : 'text-muted hover:text-primary'
                       )}
                       onClick={() => onLoadSession(session.id)}
                     >
@@ -144,6 +149,11 @@ export function Sidebar({
                         {formatSessionDate(session.write_date)}
                       </span>
                     </button>
+                    {confirmArchive === session.id ? <>
+                      <button type="button" className="grid size-7 shrink-0 place-items-center border-0 bg-transparent text-destructive" aria-label={`确认归档 ${session.name || session.thread_id}`} title="确认归档" onClick={() => { onArchiveSession(session.id); setConfirmArchive(null) }}><Check className="size-3.5" /></button>
+                      <button type="button" className="mr-1 grid size-7 shrink-0 place-items-center border-0 bg-transparent text-muted" aria-label="取消归档" title="取消归档" onClick={() => setConfirmArchive(null)}><X className="size-3.5" /></button>
+                    </> : <button type="button" className="mr-1 grid size-7 shrink-0 place-items-center border-0 bg-transparent text-muted opacity-0 hover:text-destructive group-hover:opacity-100 focus:opacity-100" aria-label={`归档 ${session.name || session.thread_id}`} title="归档" onClick={() => setConfirmArchive(session.id)}><Archive className="size-3.5" /></button>}
+                    </div>
                   )
                 })}
               </div>

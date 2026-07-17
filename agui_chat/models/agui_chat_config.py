@@ -7,7 +7,7 @@ from odoo.exceptions import ValidationError
 
 
 PROTOCOL = "agui.odoo.v2"
-MODULE_VERSION = "12.0.8.0.0"
+MODULE_VERSION = "12.0.8.1.0"
 COMMAND_CATALOG_REVISION = 5
 DEFAULT_SENSITIVE_FIELD_NAMES = (
     "phone", "mobile", "phone_number", "mobile_number",
@@ -80,6 +80,11 @@ class AguiChatConfig(models.Model):
         default="http://127.0.0.1:7777/agui",
         help="开发环境可直接填写 AgentOS 的 /agui 地址；协议配置地址会自动推导为同路径下的 /config。",
     )
+    agentos_internal_url = fields.Char(
+        string="AgentOS 内部服务地址",
+        default="http://127.0.0.1:7777",
+        help="仅供 Odoo 服务端销毁工作区使用，不会发送到浏览器。",
+    )
     allow_cross_origin_dev = fields.Boolean(
         string="允许跨域开发服务",
         help="仅限开发环境。允许携带凭据访问 HTTP(S) 绝对地址。",
@@ -96,7 +101,7 @@ class AguiChatConfig(models.Model):
     session_retention_days = fields.Integer(string="会话保留天数", default=180)
     audit_retention_days = fields.Integer(string="审计保留天数", default=180)
 
-    @api.constrains("runtime_url", "allow_cross_origin_dev")
+    @api.constrains("runtime_url", "allow_cross_origin_dev", "agentos_internal_url")
     def _check_runtime_urls(self):
         for record in self:
             value = (record.runtime_url or "").strip()
@@ -108,6 +113,11 @@ class AguiChatConfig(models.Model):
                 )
             if value and not value.rstrip("/").endswith("/agui"):
                 raise ValidationError("AG-UI 运行服务地址必须以 /agui 结尾。")
+            internal = (record.agentos_internal_url or "").strip()
+            if internal and not internal.startswith(("http://", "https://")):
+                raise ValidationError("AgentOS 内部服务地址必须是 HTTP(S) 绝对地址。")
+            if "@" in internal.split("://", 1)[-1].split("/", 1)[0]:
+                raise ValidationError("AgentOS 内部服务地址不能包含认证信息。")
 
     @api.constrains("enabled_commands")
     def _check_enabled_commands(self):
@@ -168,6 +178,10 @@ class AguiChatConfig(models.Model):
         self.ensure_one()
         runtime_url = self.public_runtime_url().rstrip("/")
         return runtime_url[:-len("/agui")] + "/config" if runtime_url.endswith("/agui") else ""
+
+    def internal_agentos_url(self):
+        self.ensure_one()
+        return (self.agentos_internal_url or "").strip().rstrip("/")
 
     def enabled_command_names(self):
         self.ensure_one()

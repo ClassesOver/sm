@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import {
   AtSign, CheckCircle2, ChevronRight, CircleAlert, Clock3, Database, FileText,
-  Filter as FilterIcon, Hammer, Loader2, Menu, RotateCcw, SlidersHorizontal, Workflow, X
+  Filter as FilterIcon, Hammer, Loader2, Menu, RotateCcw, SlidersHorizontal, Sparkles, Workflow, X
 } from 'lucide-react'
 import type {
   AssistantMessageProps, AttachmentRef, ChatComponents, ChatFeedback, ChatIcons,
@@ -206,6 +206,7 @@ function ToolCard({ tool, onConfirm, onUndo, labels, running }: {
     'odoo.enter_edit_mode': '进入编辑模式',
     'odoo.activate_view_control': '激活页面控件',
     'odoo.search_relation': '查询关系记录',
+    'odoo.stage_current_form': '暂存当前表单',
     'odoo.patch_current_form': '修改当前表单',
     'odoo.validate_current_form': '校验当前表单',
     'odoo.save_current_form': '保存当前表单',
@@ -402,6 +403,18 @@ export function DefaultUserMessage({ message, labels, onPreviewAttachment, onRem
           <span className="shrink-0 opacity-70">{actionLabels[reference.action]}</span>
           {!reference.valid ? <span className="shrink-0">（已失效）</span> : null}
           {onRemoveMention ? <button type="button" className="grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-current opacity-65 hover:bg-background hover:opacity-100" aria-label={`移除引用 ${reference.label}`} title="移除引用" onClick={() => onRemoveMention(reference.id)}><X className="size-3" /></button> : null}
+        </span>)}
+      </div> : null}
+      {message.skills?.length ? <div className="mb-2 flex flex-wrap justify-end gap-1.5" aria-label="消息技能">
+        {message.skills.map((skill) => <span key={skill.id} className={cn(
+          'inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs',
+          skill.valid
+            ? 'border-emerald-700/20 bg-emerald-50 text-emerald-900'
+            : 'border-warning/35 bg-warning/10 text-warning'
+        )} title={skill.description}>
+          <Sparkles className="size-3.5 shrink-0" />
+          <span className="truncate">{skill.name}</span>
+          {!skill.valid ? <span className="shrink-0">（已失效）</span> : null}
         </span>)}
       </div> : null}
       {mention ? <div className="mb-2 flex justify-end">

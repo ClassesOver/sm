@@ -15,7 +15,7 @@ and a registry-only synchronous business-command endpoint. It does not proxy
 SSE and does not expose generic RPC or CRUD.
 
 Configure `runtime_url`; Odoo derives the matching `/config` handshake URL
-from its `/agui` path. Deploy matching `12.0.8.0.0` declarations, then enable
+from its `/agui` path. Deploy matching `12.0.8.1.0` declarations, then enable
 the rollout kill switches. See [protocol](docs/agui_odoo_protocol.md) and
 [production deployment](docs/agui_chat_production.md).
 
@@ -27,6 +27,11 @@ npm run typecheck
 npm run test
 npm run build
 ```
+
+Thread-isolated attachments, workspace files, and confirmed code execution use
+the pinned Daytona deployment in `docker-compose.daytona.yml`. See the
+[production deployment guide](docs/agui_chat_production.md#isolated-workspaces)
+for bootstrap, secrets, API-key creation, backup, and license requirements.
 
 集成开发环境可直接启动仓库内的最小 AgentOS 应用：
 

@@ -4,12 +4,15 @@ import json
 import logging
 import hashlib
 
+import requests
+
 from odoo import http
 from odoo.exceptions import AccessError, ValidationError
 from odoo.http import content_disposition, request
 
 from ..models.agui_chat_config import COMMAND_CATALOG_HASH, MODULE_VERSION, PROTOCOL
 from ..models.agui_chat_mention import MentionTokenError
+from ..models.agui_chat_workspace import issue_workspace_capability
 
 
 _logger = logging.getLogger(__name__)
@@ -26,6 +29,7 @@ ALLOWED_ATTACHMENT_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "document",
 }
 MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
+WORKSPACE_CLEANUP_TIMEOUT = 8
 
 
 class ChatSessionNotFound(ValueError):
@@ -158,8 +162,54 @@ class AguiChatController(http.Controller):
     @http.route("/agui_chat/session/archive", type="json", auth="user")
     def session_archive(self, session_id):
         session = self._load_session(session_id)
+        config = request.env["agui.chat.config"].sudo().get_active_config()
+        try:
+            capability, _claims = issue_workspace_capability(
+                request.env, session, getattr(request.session, "sid", ""),
+            )
+            response = requests.delete(
+                "%s/workspace/sandbox" % config.internal_agentos_url(),
+                json={"threadId": session.thread_id},
+                headers={
+                    "X-AGUI-Capability": capability,
+                    "X-AGUI-Thread": session.thread_id,
+                },
+                timeout=WORKSPACE_CLEANUP_TIMEOUT,
+            )
+        except (requests.RequestException, ValidationError) as error:
+            _logger.warning("AG-UI workspace cleanup failed: %s", error)
+            return {"ok": False, "code": "workspace_cleanup_failed", "error": str(error)}
+        if response.status_code not in (200, 204, 404):
+            _logger.warning(
+                "AG-UI workspace cleanup returned HTTP %s", response.status_code,
+            )
+            return {
+                "ok": False,
+                "code": "workspace_cleanup_failed",
+                "error": "AgentOS 工作区清理失败（HTTP %s）。" % response.status_code,
+            }
         session.write({"active": False})
         return {"ok": True}
+
+    @http.route("/agui_chat/workspace/capability", type="json", auth="user")
+    def workspace_capability(self, session_id):
+        try:
+            session = self._load_session(session_id)
+            token, claims = issue_workspace_capability(
+                request.env, session, getattr(request.session, "sid", ""),
+            )
+            return {
+                "ok": True,
+                "capability": token,
+                "threadId": session.thread_id,
+                "expiresAt": claims["exp"],
+            }
+        except (AccessError, ValueError, ValidationError) as error:
+            return {
+                "ok": False,
+                "code": "workspace_capability_rejected",
+                "error": str(error),
+            }
 
     @http.route("/agui_chat/mention/search", type="json", auth="user")
     def mention_search(self, query="", scope="all", model_scope=None,

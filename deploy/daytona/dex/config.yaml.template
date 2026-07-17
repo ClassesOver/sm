@@ -1,0 +1,26 @@
+issuer: __DEX_ISSUER__
+storage:
+  type: sqlite3
+  config:
+    file: /var/dex/dex.db
+web:
+  http: 0.0.0.0:5556
+  allowedOrigins: ['*']
+  allowedHeaders: ['x-requested-with']
+oauth2:
+  skipApprovalScreen: true
+enablePasswordDB: true
+staticClients:
+  - id: daytona
+    public: true
+    name: Daytona
+    redirectURIs:
+      - __DEX_DASHBOARD_BASE_URL__
+      - __DEX_DASHBOARD_BASE_URL__/dashboard
+      - __DEX_DASHBOARD_BASE_URL__/api/oauth2-redirect.html
+      - __DEX_PROXY_CALLBACK_URL__
+staticPasswords:
+  - email: __DEX_ADMIN_EMAIL__
+    hash: __DEX_STATIC_PASSWORD_HASH__
+    username: admin
+    userID: 00000000-0000-0000-0000-000000000001
