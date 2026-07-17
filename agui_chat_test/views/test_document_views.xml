@@ -11,6 +11,8 @@
                 <field name="candidate_id"/>
                 <field name="amount"/>
                 <field name="state"/>
+                <button name="action_confirm" type="object" string="确认"
+                        attrs="{'invisible': [('state', '!=', 'draft')]}"/>
             </tree>
         </field>
     </record>
@@ -20,6 +22,11 @@
         <field name="model">agui.chat.test.document</field>
         <field name="arch" type="xml">
             <form string="AG-UI 通用测试单据">
+                <header>
+                    <button name="action_confirm" type="object" string="确认"
+                            attrs="{'invisible': [('state', '!=', 'draft')]}"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
                 <sheet>
                     <field name="domain_key" invisible="1"/>
                     <field name="secret_token" invisible="1"/>
@@ -45,12 +52,23 @@
                             <field name="state" widget="statusbar"/>
                         </group>
                     </group>
+                    <group string="敏感字段">
+                        <field name="phone_number"/>
+                        <field name="bank_account"/>
+                        <field name="tax_id"/>
+                        <field name="identity_number"/>
+                    </group>
                     <notebook>
                         <page string="明细">
-                            <field name="line_ids">
+                            <field name="detail_item_ids">
                                 <tree editable="bottom">
                                     <field name="name"/>
                                     <field name="quantity"/>
+                                    <field name="domain_key"/>
+                                    <field name="candidate_id"
+                                           domain="[('domain_key', '=', domain_key)]"/>
+                                    <field name="tag_ids"/>
+                                    <field name="secret_token" invisible="1"/>
                                 </tree>
                             </field>
                         </page>

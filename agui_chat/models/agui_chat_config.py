@@ -7,8 +7,8 @@ from odoo.exceptions import ValidationError
 
 
 PROTOCOL = "agui.odoo.v2"
-MODULE_VERSION = "12.0.8.1.0"
-COMMAND_CATALOG_REVISION = 5
+MODULE_VERSION = "12.0.8.2.0"
+COMMAND_CATALOG_REVISION = 6
 DEFAULT_SENSITIVE_FIELD_NAMES = (
     "phone", "mobile", "phone_number", "mobile_number",
     "bank_account", "bank_account_id", "acc_number", "card_number",
@@ -91,6 +91,12 @@ class AguiChatConfig(models.Model):
         default=True,
     )
     default_agent_id = fields.Char(string="默认智能体 ID", default="odoo-assistant")
+    mention_model_id = fields.Many2one(
+        "ir.model",
+        string="业务模型白名单",
+        ondelete="set null",
+        help="仅允许引用所选业务模型；留空表示允许菜单中可读的全部业务类型。",
+    )
     sensitive_field_names = fields.Char(
         string="敏感字段",
         help="填写以逗号分隔的 Odoo 字段名，这些字段在页面快照中会被脱敏。",
@@ -196,6 +202,10 @@ class AguiChatConfig(models.Model):
             for item in (self.enabled_business_commands or "").split(",")
             if item.strip()
         ]
+
+    def mention_model_names(self):
+        self.ensure_one()
+        return [self.mention_model_id.model] if self.mention_model_id else []
 
     def sensitive_fields(self):
         self.ensure_one()

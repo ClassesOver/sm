@@ -229,6 +229,17 @@ function normalizeRunContext(
       })))
     })
   }
+  const workspaceReferences = latestUserMessage?.workspaceReferences || []
+  if (workspaceReferences.length) {
+    context.push({
+      description: 'Selected workspace references',
+      value: contextValue(workspaceReferences.map((reference) => ({
+        path: reference.path,
+        type: reference.isDirectory ? 'directory' : 'file',
+        tool: reference.isDirectory ? 'workspace_list_files' : 'workspace_read_file'
+      })))
+    })
+  }
   const mentions = (latestUserMessage?.mentions || []).filter((mention) => mention.valid)
   if (mentions.length) {
     context.push({

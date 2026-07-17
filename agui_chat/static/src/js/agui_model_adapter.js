@@ -199,18 +199,15 @@ odoo.define("agui_chat.model_adapter", function (require) {
         }
     }
 
-    function one2manyStructure(controller, rawRecord, name) {
-        var model = controller && controller.model;
+    function one2manyStructure(controller, rawRecord, name, list) {
         var info = fieldInfo(rawRecord, "form")[name];
         var field = rawRecord && rawRecord.fields && rawRecord.fields[name];
         var view = info && info.views && info.views[info.mode];
-        var listId = rawRecord && rawRecord._changes && rawRecord._changes[name] ||
-            rawRecord && rawRecord.data && rawRecord.data[name];
-        var list = model && model.localData && model.localData[listId];
+        var listId = list && list.id;
         var childInfos = view && view.fieldsInfo && view.fieldsInfo[view.type];
         if (!field || field.type !== "one2many" || !info || !view || !view.arch ||
                 !view.fields || !childInfos || !list || list.type !== "list" ||
-                !list.static || list.model !== field.relation || !_.isArray(list.data) ||
+                list.model !== field.relation || !_.isArray(list.data) ||
                 !_.isArray(list.res_ids)) {
             return false;
         }
@@ -258,7 +255,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
         };
     }
 
-    function decorateOne2manyFields(controller, rawRecord, fields, sensitiveFields) {
+    function decorateOne2manyFields(controller, record, rawRecord, fields, sensitiveFields) {
         _.each(fields, function (meta, name) {
             var structure;
             if (meta.type !== "one2many") {
@@ -266,7 +263,8 @@ odoo.define("agui_chat.model_adapter", function (require) {
             }
             meta.operations = {create: false, update: false, delete: false};
             meta.childFields = {};
-            structure = one2manyStructure(controller, rawRecord, name);
+            structure = one2manyStructure(
+                controller, rawRecord, name, record.data && record.data[name]);
             if (!structure) {
                 return;
             }
@@ -277,7 +275,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
 
     function serializeChildRecord(controller, structure, localId, childFields) {
         var record = controller.model.get(localId);
-        var rawRecord = controller.model.localData[localId];
+        var rawRecord = controller.model.get(localId, {raw: true});
         var values = {};
         var modifiers = {};
         if (!record || !rawRecord || record.type !== "record" || rawRecord.type !== "record") {
@@ -315,13 +313,13 @@ odoo.define("agui_chat.model_adapter", function (require) {
 
     function serializeOne2many(controller, rawRecord, name, meta, value) {
         var base = serializeValue(value, rawRecord.fields[name]);
-        var structure = one2manyStructure(controller, rawRecord, name);
+        var structure = one2manyStructure(controller, rawRecord, name, value);
         var state;
         var records;
         if (!structure) {
             return base;
         }
-        state = controller.model.get(structure.listId);
+        state = structure.list;
         if (!state || state.type !== "list" || !_.isArray(state.data)) {
             return base;
         }
@@ -336,14 +334,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
     }
 
     function one2manyIsDirty(controller, rawRecord, name) {
-        var structure = one2manyStructure(controller, rawRecord, name);
-        if (!structure || structure.list._changes && structure.list._changes.length) {
-            return !!(structure && structure.list._changes && structure.list._changes.length);
-        }
-        return _.some(structure.list.data, function (localId) {
-            var child = controller.model.localData[localId];
-            return !!(child && (child._isDirty || child._changes && _.keys(child._changes).length));
-        });
+        return (controller.__aguiHostDirtyFields || []).indexOf(name) !== -1;
     }
 
     function serializeFormRecord(controller, record, rawRecord, fields) {
@@ -517,15 +508,17 @@ odoo.define("agui_chat.model_adapter", function (require) {
                     !visibleElement($element) || $element.closest(".o_field_x2many").length) {
                 return;
             }
-            node = matchingButtonNode(nodes, name, occurrences[name] || 0);
+            node = matchingButtonNode(
+                nodes, name, viewType === "list" ? 0 : occurrences[name] || 0
+            );
             occurrences[name] = (occurrences[name] || 0) + 1;
             if (!node) {
                 return;
             }
             if (viewType === "list") {
                 localId = $element.closest(".o_data_row").data("id");
-                record = controller.model && controller.model.localData &&
-                    controller.model.localData[localId];
+                record = controller.model && controller.model.get &&
+                    controller.model.get(localId, {raw: true});
                 if (!record || !record.res_id) {
                     return;
                 }
@@ -971,7 +964,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
         fields = buildFields(record, rawRecord, viewType, options.sensitiveFields || []);
         if (viewType === "form") {
             decorateOne2manyFields(
-                controller, rawRecord, fields, options.sensitiveFields || []
+                controller, record, rawRecord, fields, options.sensitiveFields || []
             );
         }
         snapshot = {
@@ -1440,6 +1433,205 @@ odoo.define("agui_chat.model_adapter", function (require) {
         return serialized;
     }
 
+    function one2manyError(code, message, details) {
+        return _.extend(new Error(message || code), details || {}, {code: code});
+    }
+
+    function loadedOne2manyRow(controller, structure, rowId) {
+        var listState = structure.list;
+        var rowState = _.find(listState && listState.data || [], function (candidate) {
+            return candidate && parseInt(candidate.res_id, 10) === rowId;
+        });
+        var localId = rowState && rowState.id;
+        if (!localId) {
+            return false;
+        }
+        var record = localId && controller.model.get(localId);
+        var rawRecord = localId && controller.model.get(localId, {raw: true});
+        return record && rawRecord ? {
+            localId: localId, record: record, rawRecord: rawRecord,
+        } : false;
+    }
+
+    function snapshotHasOne2manyRow(snapshot, name, rowId) {
+        var value = snapshot.record && snapshot.record.values && snapshot.record.values[name];
+        return _.some(value && value.records || [], function (row) {
+            return row && row.id === rowId;
+        });
+    }
+
+    function childFieldForWrite(structure, row, name, childFields) {
+        var field = structure.childFields[name];
+        var info = structure.childInfos[name];
+        var meta = childFields[name];
+        var modifiers = row ? evaluateModifiers(row.record, info) : {};
+        if (!field || !info || !meta) {
+            throw one2manyError("field_not_in_view", "当前子视图不存在该字段。", {
+                childField: name,
+            });
+        }
+        if (meta.redacted) {
+            throw one2manyError("field_sensitive", "敏感子字段不可修改。", {
+                childField: name,
+            });
+        }
+        if (field.type === "binary" || field.type === "one2many") {
+            throw one2manyError(
+                "one2many_operation_not_allowed", "该子字段类型不支持批量修改。",
+                {childField: name}
+            );
+        }
+        if (modifiers.readonly) {
+            throw one2manyError("field_readonly", "该子字段当前只读。", {
+                childField: name,
+            });
+        }
+        if (modifiers.invisible) {
+            throw one2manyError("field_invisible", "该子字段当前不可见。", {
+                childField: name,
+            });
+        }
+        return field;
+    }
+
+    function parseOne2manyValues(structure, row, values, childFields, creating) {
+        var changes = {};
+        var relationChecks = [];
+        if (!_.isObject(values) || _.isArray(values)) {
+            throw one2manyError("invalid_one2many_patch", "明细 values 必须是字段映射。");
+        }
+        _.each(values, function (value, name) {
+            var field = childFieldForWrite(structure, row, name, childFields);
+            if (creating && (field.type === "many2one" || field.type === "many2many")) {
+                throw one2manyError(
+                    "one2many_relation_requires_row_token",
+                    "新增明细的关系字段必须先通过可见创建控件生成行令牌。",
+                    {childField: name}
+                );
+            }
+            if (field.type === "many2many") {
+                var operation = String(value && (value.operation || value.op) || "").toLowerCase();
+                var inputIds = parseIds(value && (value.ids || value.id) || []);
+                var currentValue = row && row.record.data && row.record.data[name];
+                var current = resolveRelation(currentValue);
+                if (creating && operation === "unlink") {
+                    throw one2manyError(
+                        "one2many_operation_not_allowed",
+                        "待创建明细的 Many2many 不支持 unlink。",
+                        {childField: name}
+                    );
+                }
+                changes[name] = many2manyCommand(currentValue, value);
+                relationChecks.push({
+                    name: name,
+                    relation: field.relation,
+                    operation: operation,
+                    ids: operation === "replace" ? changes[name].ids : inputIds,
+                    currentIds: current.ids,
+                });
+            } else {
+                changes[name] = parseScalar(field, value);
+                if (field.type === "many2one" && changes[name] && changes[name].id) {
+                    relationChecks.push({
+                        name: name,
+                        relation: field.relation,
+                        operation: "set",
+                        ids: [changes[name].id],
+                        currentIds: [],
+                    });
+                }
+            }
+        });
+        return {changes: changes, relationChecks: relationChecks};
+    }
+
+    function prepareOne2manyField(controller, snapshot, name, value, meta, record, rawRecord) {
+        var structure = one2manyStructure(
+            controller, rawRecord, name, record.data && record.data[name]);
+        var operations = value && value.operations;
+        var seen = {};
+        var result = [];
+        if (!structure || !meta.operations || !_.isObject(value) || _.isArray(value) ||
+                !_.isArray(operations) || !operations.length) {
+            throw one2manyError("invalid_one2many_patch", "One2many patch 结构无效。");
+        }
+        _.each(operations, function (item) {
+            var operation = String(item && item.operation || "").toLowerCase();
+            var rowId = item && item.id;
+            var row = false;
+            var parsed;
+            var oldValues = {};
+            if (["create", "update", "delete"].indexOf(operation) === -1) {
+                throw one2manyError("invalid_one2many_patch", "明细操作类型无效。");
+            }
+            if (!meta.operations[operation]) {
+                throw one2manyError(
+                    "one2many_operation_not_allowed", "当前子视图不允许该明细操作。",
+                    {rowId: rowId || false}
+                );
+            }
+            if (operation === "create") {
+                if (_.has(item, "id")) {
+                    throw one2manyError("invalid_one2many_patch", "create 不接受明细 ID。");
+                }
+                parsed = parseOne2manyValues(
+                    structure, false, item.values, meta.childFields || {}, true
+                );
+            } else {
+                if (!_.isNumber(rowId) || !isFinite(rowId) ||
+                        Math.floor(rowId) !== rowId || rowId <= 0) {
+                    throw one2manyError("invalid_one2many_patch", "明细 ID 必须是正整数。", {
+                        rowId: rowId || false,
+                    });
+                }
+                if (seen[rowId]) {
+                    throw one2manyError(
+                        "one2many_operation_conflict", "同一明细行只能操作一次。",
+                        {rowId: rowId}
+                    );
+                }
+                seen[rowId] = true;
+                row = loadedOne2manyRow(controller, structure, rowId);
+                if (!row || !snapshotHasOne2manyRow(snapshot, name, rowId)) {
+                    var listState = structure.list;
+                    var snapshotValue = snapshot.record && snapshot.record.values &&
+                        snapshot.record.values[name];
+                    throw one2manyError(
+                        "one2many_row_not_loaded", "明细行不属于当前有效快照。",
+                        {
+                            rowId: rowId,
+                            liveRowIds: _.pluck(listState && listState.data || [], "res_id"),
+                            snapshotRowIds: _.pluck(snapshotValue && snapshotValue.records || [], "id"),
+                        }
+                    );
+                }
+                parsed = operation === "update" ? parseOne2manyValues(
+                    structure, row, item.values, meta.childFields || {}, false
+                ) : {changes: {}, relationChecks: []};
+                _.each(parsed.relationChecks, function (check) {
+                    check.localId = row.localId;
+                });
+                _.each(parsed.changes, function (_change, childName) {
+                    oldValues[childName] = previewValue(
+                        row.record.data && row.record.data[childName],
+                        structure.childFields[childName]
+                    );
+                });
+            }
+            result.push({
+                operation: operation,
+                id: operation === "create" ? false : rowId,
+                localId: row && row.localId || false,
+                rowLabel: row ? recordDisplayName(row.record) : "新增明细",
+                inputValues: clone(item.values || {}),
+                changes: parsed.changes,
+                oldValues: oldValues,
+                relationChecks: parsed.relationChecks,
+            });
+        });
+        return {name: name, operations: result};
+    }
+
     function preparePatch(controller, snapshot, args, options) {
         options = options || {};
         var target = patchRecord(controller, snapshot, options.rowBinding);
@@ -1453,6 +1645,8 @@ odoo.define("agui_chat.model_adapter", function (require) {
         var beforeValues = {};
         var undoPatch = {};
         var undoSupported = true;
+        var one2manyFields = [];
+        var one2manyOperationCount = 0;
         var dirtyFields = _.keys(rawRecord && rawRecord._changes || {});
         var stagedFields = controller.__aguiHostStagedFields &&
             controller.__aguiHostStagedFields[target.localId] || [];
@@ -1501,7 +1695,22 @@ odoo.define("agui_chat.model_adapter", function (require) {
                 if (undoPatch[name] === undefined || field.type === "binary" || field.type === "one2many") {
                     undoSupported = false;
                 }
-                if (field.type === "many2many") {
+                if (field.type === "one2many") {
+                    var one2many = prepareOne2manyField(
+                        controller, snapshot, name, item.value, meta, record, rawRecord
+                    );
+                    one2manyOperationCount += one2many.operations.length;
+                    if (one2manyOperationCount > MAX_ONE2MANY_OPERATIONS) {
+                        throw one2manyError(
+                            "one2many_operation_limit_exceeded",
+                            "单次 One2many 操作数量不能超过 40 个。"
+                        );
+                    }
+                    one2manyFields.push(one2many);
+                    _.each(one2many.operations, function (entry) {
+                        relationChecks = relationChecks.concat(entry.relationChecks);
+                    });
+                } else if (field.type === "many2many") {
                     var operation = String(item.value && (item.value.operation || item.value.op) || "").toLowerCase();
                     var inputIds = parseIds(item.value && (item.value.ids || item.value.id) || []);
                     var current = resolveRelation(record.data && record.data[name]);
@@ -1533,6 +1742,10 @@ odoo.define("agui_chat.model_adapter", function (require) {
                     field: name || false,
                     code: error.code || "invalid_value",
                     message: error.message || false,
+                    rowId: error.rowId || false,
+                    childField: error.childField || false,
+                    liveRowIds: error.liveRowIds || undefined,
+                    snapshotRowIds: error.snapshotRowIds || undefined,
                 });
             }
         });
@@ -1540,6 +1753,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
             changes = {};
             applied = [];
             relationChecks = [];
+            one2manyFields = [];
         }
         return {
             changes: changes,
@@ -1549,7 +1763,41 @@ odoo.define("agui_chat.model_adapter", function (require) {
             beforeValues: beforeValues,
             undoPatch: undoPatch,
             undoSupported: undoSupported,
+            one2manyFields: one2manyFields,
         };
+    }
+
+    function one2manyPreview(preparedField, meta) {
+        var childFields = meta.childFields || {};
+        var result = [];
+        _.each(preparedField.operations, function (operation) {
+            if (operation.operation === "delete") {
+                result.push({
+                    operation: "delete",
+                    rowId: operation.id,
+                    rowLabel: operation.rowLabel,
+                    childField: false,
+                    oldValue: operation.rowLabel,
+                    newValue: false,
+                    sensitive: false,
+                });
+                return;
+            }
+            _.each(operation.inputValues, function (value, name) {
+                var sensitive = !!(childFields[name] && childFields[name].redacted);
+                result.push({
+                    operation: operation.operation,
+                    rowId: operation.id,
+                    rowLabel: operation.rowLabel,
+                    childField: name,
+                    oldValue: sensitive ? "[redacted]" :
+                        operation.oldValues[name] === undefined ? false : operation.oldValues[name],
+                    newValue: sensitive ? "[redacted]" : bounded(value),
+                    sensitive: sensitive,
+                });
+            });
+        });
+        return result;
     }
 
     function buildPatchPreview(controller, snapshot, args, options) {
@@ -1580,6 +1828,9 @@ odoo.define("agui_chat.model_adapter", function (require) {
                 newValue = "[redacted]";
             } else if (_.has(prepared.changes, name)) {
                 newValue = proposedValue(prepared.changes[name], field);
+            } else if (field.type === "one2many") {
+                var preparedField = _.findWhere(prepared.one2manyFields || [], {name: name});
+                newValue = preparedField ? one2manyPreview(preparedField, meta) : "[invalid]";
             } else if (!rejectedByField[name]) {
                 newValue = bounded(item && item.value);
             }
@@ -1662,7 +1913,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
             if (prepared.rejected.length) {
                 return prepared;
             }
-            return $.when(controller._applyChanges(target.localId, prepared.changes, {
+            var event = {
                 target: {name: "__agui_host__"},
                 data: {
                     context: record.context || {},
@@ -1671,7 +1922,31 @@ odoo.define("agui_chat.model_adapter", function (require) {
                     allowWarning: true,
                 },
                 stopPropagation: function () {},
-            })).then(function () {
+            };
+            var applied = _.keys(prepared.changes).length ?
+                $.when(controller._applyChanges(target.localId, prepared.changes, event)) : $.when();
+            _.each(prepared.one2manyFields || [], function (field) {
+                _.each(field.operations, function (operation) {
+                    applied = applied.then(function () {
+                        var command = operation.operation === "create" ? {
+                            operation: "CREATE",
+                            data: operation.changes,
+                            position: "bottom",
+                        } : operation.operation === "update" ? {
+                            operation: "UPDATE",
+                            id: operation.localId,
+                            data: operation.changes,
+                        } : {
+                            operation: "DELETE",
+                            ids: [operation.localId],
+                        };
+                        var changes = {};
+                        changes[field.name] = command;
+                        return controller._applyChanges(target.localId, changes, event);
+                    });
+                });
+            });
+            return applied.then(function () {
                 return prepared;
             });
         });

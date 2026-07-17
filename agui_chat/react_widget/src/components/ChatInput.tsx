@@ -1,9 +1,9 @@
-import { AtSign, FolderOpen, Sparkles, UploadCloud, X } from 'lucide-react'
+import { AtSign, FileText, Folder, FolderOpen, Sparkles, UploadCloud, X } from 'lucide-react'
 import { ClipboardEvent, FormEvent, KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type {
   AgentSkillOption, AttachmentOptions, AttachmentRef, ChatIcons, ChatLabels, HostBridge,
-  MenuMention, MenuMentionOption, MentionReference, SelectedAgentSkill
+  MenuMention, MenuMentionOption, MentionReference, SelectedAgentSkill, WorkspaceReference
 } from '../types'
 import { cn } from '../lib'
 import { Button } from './Button'
@@ -44,13 +44,16 @@ export interface ChatInputProps {
   attachments?: boolean | AttachmentOptions
   menuOptions: MenuMentionOption[]
   agentSkills?: AgentSkillOption[]
-  recentMentions?: MentionReference[]
   hostBridge?: HostBridge
+  workspaceReferences?: WorkspaceReference[]
+  onRemoveWorkspaceReference?: (id: string) => void
+  onMentionsChange?: (count: number) => void
   onSend: (
     content: string,
     attachments: AttachmentRef[],
     mentions?: MentionReference[] | MenuMention,
-    skills?: SelectedAgentSkill[]
+    skills?: SelectedAgentSkill[],
+    workspaceReferences?: WorkspaceReference[]
   ) => Promise<boolean | void> | boolean | void
   onStop: () => void
   onUpload: (file: File, onProgress: (progress: number) => void) => Promise<AttachmentRef>
@@ -97,8 +100,8 @@ function fileKind(file: File): string {
 }
 
 export function ChatInput({
-  running, disabled = false, attachments, menuOptions, agentSkills = [], recentMentions = [], hostBridge,
-  onSend, onStop, onUpload, onRemove, labels, icons, onOpenWorkspace
+  running, disabled = false, attachments, menuOptions, agentSkills = [], hostBridge,
+  onSend, onStop, onUpload, onRemove, labels, icons, onOpenWorkspace, workspaceReferences = [], onRemoveWorkspaceReference, onMentionsChange
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [menuMention, setMenuMention] = useState<MenuMention | undefined>()
@@ -146,6 +149,12 @@ export function ChatInput({
     }
   }, [])
 
+  useEffect(() => {
+    setSelectedSkills((current) => {
+      const next = current.map((skill) => ({ ...skill, valid: agentSkills.some((option) => option.id === skill.id && option.name === skill.name) }))
+      return next.every((skill, index) => skill.valid === current[index].valid) ? current : next
+    })
+  }, [agentSkills])
   useLayoutEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) return
@@ -197,43 +206,59 @@ export function ChatInput({
     if (!enabled || disabled) return
     const dropRegion = textareaRef.current?.closest('main')
     if (!dropRegion) return
-    const hasFiles = (event: globalThis.DragEvent) =>
-      Array.from(event.dataTransfer?.types || []).includes('Files')
-    const insideDropRegion = (event: globalThis.DragEvent) => dropRegion.contains(event.target as Node)
-    const dragEnter = (event: globalThis.DragEvent) => {
-      if (!hasFiles(event) || !insideDropRegion(event)) return
+    const hasFiles = (transfer: DataTransfer | null) => Boolean(transfer && (
+      transfer.files.length ||
+      Array.from(transfer.types || []).some((type) => String(type).toLocaleLowerCase() === 'files') ||
+      Array.from(transfer.items || []).some((item) => item.kind === 'file')
+    ))
+    const filesFrom = (transfer: DataTransfer | null): File[] => {
+      if (!transfer) return []
+      const files = Array.from(transfer.files || [])
+      Array.from(transfer.items || []).forEach((item) => {
+        if (item.kind !== 'file') return
+        const file = item.getAsFile()
+        if (file && !files.includes(file)) files.push(file)
+      })
+      return files
+    }
+    const dragEnter = (rawEvent: Event) => {
+      const event = rawEvent as globalThis.DragEvent
+      if (!hasFiles(event.dataTransfer)) return
       event.preventDefault()
       dragDepth.current += 1
       setDragging(true)
     }
-    const dragOver = (event: globalThis.DragEvent) => {
-      if (hasFiles(event) && insideDropRegion(event)) event.preventDefault()
+    const dragOver = (rawEvent: Event) => {
+      const event = rawEvent as globalThis.DragEvent
+      if (hasFiles(event.dataTransfer)) event.preventDefault()
     }
-    const dragLeave = (event: globalThis.DragEvent) => {
-      if (!dragging && dragDepth.current === 0) return
+    const dragLeave = (rawEvent: Event) => {
+      const event = rawEvent as globalThis.DragEvent
+      if (dragDepth.current === 0) return
       event.preventDefault()
       dragDepth.current = Math.max(0, dragDepth.current - 1)
       if (dragDepth.current === 0) setDragging(false)
     }
-    const drop = (event: globalThis.DragEvent) => {
-      const files = Array.from(event.dataTransfer?.files || [])
+    const drop = (rawEvent: Event) => {
+      const event = rawEvent as globalThis.DragEvent
+      const files = filesFrom(event.dataTransfer)
       dragDepth.current = 0
       setDragging(false)
-      if (!files.length || !insideDropRegion(event)) return
+      if (!files.length) return
       event.preventDefault()
       addFiles(files)
     }
-    window.addEventListener('dragenter', dragEnter)
-    window.addEventListener('dragover', dragOver)
-    window.addEventListener('dragleave', dragLeave)
-    window.addEventListener('drop', drop)
+    dropRegion.addEventListener('dragenter', dragEnter)
+    dropRegion.addEventListener('dragover', dragOver)
+    dropRegion.addEventListener('dragleave', dragLeave)
+    dropRegion.addEventListener('drop', drop)
     return () => {
-      window.removeEventListener('dragenter', dragEnter)
-      window.removeEventListener('dragover', dragOver)
-      window.removeEventListener('dragleave', dragLeave)
-      window.removeEventListener('drop', drop)
+      dropRegion.removeEventListener('dragenter', dragEnter)
+      dropRegion.removeEventListener('dragover', dragOver)
+      dropRegion.removeEventListener('dragleave', dragLeave)
+      dropRegion.removeEventListener('drop', drop)
     }
-  }, [disabled, enabled, dragging, items])
+  }, [disabled, enabled, items])
 
   const removeItem = (item: UploadItem) => {
     setItems((current) => current.filter((candidate) => candidate.localId !== item.localId))
@@ -243,7 +268,7 @@ export function ChatInput({
 
   const readyAttachments = items.flatMap((item) => item.attachment ? [item.attachment] : [])
   const canSend = !running && !sending && !disabled && !items.some((item) => item.status !== 'ready') &&
-    (!!value.trim() || readyAttachments.length > 0 || !!menuMention || mentions.length > 0)
+    (!!value.trim() || readyAttachments.length > 0 || !!menuMention || mentions.length > 0 || selectedSkills.length > 0 || workspaceReferences.length > 0)
 
   const selectMenu = (option: MenuMentionOption) => {
     if (!menuQuery) return
@@ -262,7 +287,11 @@ export function ChatInput({
     if (!menuQuery) return
     const cursor = menuQuery.start
     setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end))
-    setMentions((current) => [...current, { ...reference }])
+    setMentions((current) => {
+      const next = [...current, { ...reference }]
+      onMentionsChange?.(next.length)
+      return next
+    })
     setMenuQuery(null)
     window.setTimeout(() => {
       textareaRef.current?.focus()
@@ -275,8 +304,9 @@ export function ChatInput({
       if (current.some((item) => item.id === skill.id)) {
         return current.filter((item) => item.id !== skill.id)
       }
-      return current.length >= 3 ? current : [...current, { ...skill, valid: true }]
+      return [{ ...skill, valid: true }]
     })
+    setSkillOpen(false)
     if (skillQuery) {
       setValue((current) => current.slice(0, skillQuery.start) + current.slice(skillQuery.end))
       setSkillQuery(null)
@@ -296,9 +326,10 @@ export function ChatInput({
             content,
             readyAttachments,
             selectedMentions || undefined,
-            selectedSkills.map((skill) => ({ ...skill }))
+            selectedSkills.map((skill) => ({ ...skill })),
+            workspaceReferences.map((reference) => ({ ...reference }))
           )
-        : onSend(content, readyAttachments, selectedMentions || undefined))
+        : onSend(content, readyAttachments, selectedMentions || undefined, undefined, workspaceReferences.map((reference) => ({ ...reference }))))
     } catch (_error) {
       sent = false
     } finally {
@@ -308,6 +339,7 @@ export function ChatInput({
     setValue('')
     setMenuMention(undefined)
     setMentions([])
+    onMentionsChange?.(0)
     setSelectedSkills([])
     setMenuQuery(null)
     setSkillOpen(false)
@@ -334,11 +366,9 @@ export function ChatInput({
           : 0)
         return
       }
-      if (event.key === 'Enter') {
+      if (event.key === 'Enter' && filteredMenus[activeMenuIndex]) {
         event.preventDefault()
-        if (filteredMenus[activeMenuIndex]) {
-          selectMenu(filteredMenus[activeMenuIndex])
-        }
+        selectMenu(filteredMenus[activeMenuIndex])
         return
       }
     }
@@ -351,6 +381,11 @@ export function ChatInput({
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     if (!enabled) return
     const files = Array.from(event.clipboardData.files || [])
+    Array.from(event.clipboardData.items || []).forEach((item) => {
+      if (item.kind !== 'file') return
+      const file = item.getAsFile()
+      if (file && !files.includes(file)) files.push(file)
+    })
     if (!files.length) return
     event.preventDefault()
     addFiles(files)
@@ -419,17 +454,23 @@ export function ChatInput({
           {mentions.map((mention) => <span key={mention.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-primary/20 bg-accent px-2 py-1 text-xs text-primary" title={`${mention.detail} · ${ACTION_LABELS[mention.action]}`}>
             {mentionIcon(mention.kind)}
             <span className="truncate">{mention.label}</span>
-            <span className="shrink-0 text-muted">{ACTION_LABELS[mention.action]}</span>
-            <button type="button" className="grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-background hover:text-primary" aria-label={`移除引用 ${mention.label}`} title="移除引用" onClick={() => setMentions((current) => current.filter((item) => item.id !== mention.id))}>
+
+            <button type="button" className="grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-background hover:text-primary" aria-label={`移除引用 ${mention.label}`} title="移除引用" onClick={() => setMentions((current) => { const next = current.filter((item) => item.id !== mention.id); onMentionsChange?.(next.length); return next })}>
               <X className="size-3" />
             </button>
           </span>)}
         </div> : null}
+        {workspaceReferences.length ? <div className="mb-2 flex flex-wrap gap-1.5" aria-label="已选工作区引用">
+          {workspaceReferences.map((reference) => <span key={reference.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-background-panel px-2 py-1 text-xs text-primary" title={reference.path}>
+            {reference.isDirectory ? <Folder className="size-3.5 shrink-0" /> : <FileText className="size-3.5 shrink-0" />}<span className="truncate">{reference.name}</span>
+            <button type="button" className="grid size-5 shrink-0 place-items-center border-0 bg-transparent p-0 text-muted hover:bg-accent hover:text-primary" aria-label={`移除工作区引用 ${reference.name}`} onClick={() => onRemoveWorkspaceReference?.(reference.id)}><X className="size-3" /></button>
+          </span>)}
+        </div> : null}
         {selectedSkills.length ? <div className="mb-2 flex flex-wrap gap-1.5" aria-label="已选技能">
-          {selectedSkills.map((skill) => <span key={skill.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-emerald-700/30 bg-emerald-50 px-2 py-1 text-xs text-emerald-900" title={skill.description}>
+          {selectedSkills.map((skill) => <span key={skill.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-background-panel px-2 py-1 text-xs text-primary" title={skill.valid ? skill.description : '技能已不可用，请移除后重试'}>
             <Sparkles className="size-3.5 shrink-0" />
-            <span className="truncate">{skill.name}</span>
-            <button type="button" className="grid size-5 shrink-0 place-items-center border-0 bg-transparent p-0 text-emerald-800 hover:bg-white" aria-label={`移除技能 ${skill.name}`} onClick={() => setSelectedSkills((current) => current.filter((item) => item.id !== skill.id))}><X className="size-3" /></button>
+            <span className="truncate">{skill.name}</span>{!skill.valid ? <span className="shrink-0 text-destructive">（不可用）</span> : null}
+            <button type="button" className="grid size-5 shrink-0 place-items-center border-0 bg-transparent p-0 text-muted hover:bg-accent" aria-label={`移除技能 ${skill.name}`} onClick={() => setSelectedSkills((current) => current.filter((item) => item.id !== skill.id))}><X className="size-3" /></button>
           </span>)}
         </div> : null}
         {menuMention ? <div className="mb-2 flex items-center">
@@ -442,7 +483,7 @@ export function ChatInput({
           </span>
         </div> : null}
         <div className="relative">
-          <textarea ref={textareaRef} rows={1} disabled={disabled || sending} className="block min-h-11 w-full resize-none rounded-lg border-0 bg-background-secondary px-3 py-3 text-sm leading-5 text-primary outline-none placeholder:text-muted/90 focus:bg-background focus:ring-1 focus:ring-primary/15 disabled:cursor-not-allowed disabled:opacity-45" placeholder={labels.inputPlaceholder} value={value} onChange={(event) => {
+          <textarea ref={textareaRef} rows={1} disabled={disabled || sending} className="block min-h-11 w-full resize-none rounded-lg border-0 bg-background-secondary px-3 py-3 text-sm leading-5 text-primary outline outline-1 outline-transparent transition-[border-color,background-color,outline-color,box-shadow] placeholder:text-muted/90 focus:bg-background focus:outline-primary/15 focus:shadow-[0_0_0_3px_rgba(59,130,246,0.06)] disabled:cursor-not-allowed disabled:opacity-45" placeholder={labels.inputPlaceholder} value={value} onChange={(event) => {
             const nextValue = event.target.value
             const cursor = event.target.selectionStart ?? nextValue.length
             const nextSkillQuery = skillQueryAtCursor(nextValue, cursor)
@@ -470,8 +511,8 @@ export function ChatInput({
             } else {
               setMenuQuery(menuQueryAtCursor(value, cursor))
             }
-          }} onKeyDown={onKeyDown} onPaste={onPaste} aria-autocomplete="list" aria-expanded={Boolean(menuQuery || skillOpen)} />
-          {unifiedMentions && menuQuery && hostBridge ? <MentionPicker ref={mentionPickerRef} open query={menuQuery} selected={mentions} recent={recentMentions} hostBridge={hostBridge} onSelect={selectMention} onClose={() => setMenuQuery(null)} /> : null}
+          }} onKeyDown={onKeyDown} onPasteCapture={onPaste} aria-autocomplete="list" aria-expanded={Boolean(menuQuery || skillOpen)} aria-controls={skillOpen ? 'agui-skill-options' : menuQuery ? 'agui-mention-options' : undefined} />
+          {unifiedMentions && menuQuery && hostBridge ? <MentionPicker ref={mentionPickerRef} open query={menuQuery} selected={mentions} workspaceReferenceCount={workspaceReferences.length} hostBridge={hostBridge} onSelect={selectMention} onOpenSkills={() => { const cursor = menuQuery.start; setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end)); setMenuQuery(null); setSkillQuery(null); setSkillSearch(String()); setSkillOpen(true); window.setTimeout(() => textareaRef.current?.setSelectionRange(cursor, cursor), 0) }} onClose={() => setMenuQuery(null)} /> : null}
           {!unifiedMentions && menuQuery ? <div role="listbox" className="absolute bottom-full left-0 right-0 z-40 mb-1 max-h-72 overflow-y-auto rounded-md border border-border bg-background-panel p-1 shadow-lg">
             {filteredMenus.length ? filteredMenus.map((option, index) => <button key={option.menuId} type="button" role="option" aria-selected={index === activeMenuIndex} className={cn('flex w-full items-center gap-2 rounded border-0 bg-transparent px-2.5 py-2 text-left text-xs text-secondary hover:bg-accent', index === activeMenuIndex && 'bg-accent text-primary')} onPointerDown={(event) => event.preventDefault()} onClick={() => selectMenu(option)}>
               <AtSign className="size-3.5 shrink-0 text-muted" />

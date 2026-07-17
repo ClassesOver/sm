@@ -27,6 +27,10 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
                     tag_ids: {
                         string: "候选标签", type: "many2many", relation: "agui.chat.test.option",
                     },
+                    detail_item_ids: {
+                        string: "通用明细", type: "one2many", relation: "agui.chat.test.line",
+                        relation_field: "document_id",
+                    },
                     line_ids: {
                         string: "明细", type: "one2many", relation: "agui.chat.test.line",
                         relation_field: "document_id",
@@ -40,6 +44,7 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
                         selection: [["draft", "草稿"], ["confirmed", "已确认"]],
                     },
                     secret_token: {string: "敏感令牌", type: "char"},
+                    phone_number: {string: "手机号", type: "char"},
                 },
                 records: [{
                     id: 1,
@@ -49,6 +54,7 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
                     domain_key: "standard",
                     candidate_id: 10,
                     tag_ids: [10],
+                    detail_item_ids: [100, 101],
                     line_ids: [100],
                     show_extra: false,
                     dynamic_note: false,
@@ -56,6 +62,7 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
                     quantity: 1,
                     state: "draft",
                     secret_token: "never-export-this",
+                    phone_number: "13800138000",
                 }],
                 onchanges: {
                     document_type: function (record) {
@@ -76,21 +83,37 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
             },
             "agui.chat.test.line": {
                 fields: {
-                    name: {string: "明细名称", type: "char"},
+                    name: {string: "明细名称", type: "char", required: true},
                     quantity: {string: "数量", type: "integer"},
+                    domain_key: {
+                        string: "关系域键", type: "selection",
+                        selection: [["standard", "标准"], ["special", "特殊"]],
+                    },
+                    candidate_id: {
+                        string: "明细候选", type: "many2one", relation: "agui.chat.test.option",
+                    },
+                    tag_ids: {
+                        string: "明细标签", type: "many2many", relation: "agui.chat.test.option",
+                    },
+                    secret_token: {string: "明细敏感令牌", type: "char"},
                     document_id: {
                         string: "单据", type: "many2one", relation: "agui.chat.test.document",
                     },
                 },
-                records: [{id: 100, name: "原明细", quantity: 1, document_id: 1}],
+                records: [
+                    {id: 100, name: "原明细 A", quantity: 1, domain_key: "standard", candidate_id: 10, tag_ids: [10], secret_token: "child-secret", document_id: 1},
+                    {id: 101, name: "原明细 B", quantity: 2, domain_key: "special", candidate_id: 20, tag_ids: [20], secret_token: "child-secret", document_id: 1},
+                ],
             },
         };
     }
 
     function formArch() {
         return '<form string="通用单据">' +
+            '<header><button name="action_confirm" type="object" string="确认"/></header>' +
             '<field name="domain_key" invisible="1"/>' +
             '<field name="secret_token" invisible="1"/>' +
+            '<field name="phone_number"/>' +
             '<field name="name"/>' +
             '<field name="required_code"/>' +
             '<field name="document_type"/>' +
@@ -104,10 +127,18 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
             '<field name="line_ids"><tree editable="bottom">' +
                 '<field name="name"/><field name="quantity"/>' +
             '</tree></field>' +
+            '<field name="detail_item_ids"><tree editable="bottom">' +
+                '<field name="name"/><field name="quantity"/>' +
+                '<field name="domain_key"/>' +
+                '<field name="candidate_id" domain="[(\'domain_key\', \'=\', domain_key)]"/>' +
+                '<field name="tag_ids"/><field name="secret_token" invisible="1"/>' +
+            '</tree></field>' +
         '</form>';
     }
 
-    function snapshot(controller) {
+    function snapshot(controller, tokenStore) {
+        var sequence = 0;
+        _.each(_.keys(tokenStore || {}), function (token) { delete tokenStore[token]; });
         return Adapter.buildSnapshot({
             controller: controller,
             controllerId: "complex-controller",
@@ -118,19 +149,46 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
             snapshotId: "complex-snapshot",
             surface: "dock",
             sensitiveFields: [],
+            registerToken: tokenStore ? function (kind, binding) {
+                sequence += 1;
+                var token = kind + "-" + sequence;
+                tokenStore[token] = {kind: kind, binding: binding};
+                return token;
+            } : undefined,
         });
     }
 
-    function commandContext(controller) {
-        var current = snapshot(controller);
-        return {
+    function commandContext(controller, tokenStore) {
+        tokenStore = tokenStore || {};
+        var current = snapshot(controller, tokenStore);
+        var context = {
             getController: function () { return controller; },
             getSnapshot: function () { return current; },
+            hasUnsavedChanges: function () { return controller.model.isDirty(controller.handle); },
+            resolveToken: function (token, kind) {
+                var entry = tokenStore[token];
+                return entry && entry.kind === kind ? entry.binding : false;
+            },
+            validateToken: function (binding, kind) {
+                return _.some(tokenStore, function (entry) {
+                    return entry.kind === kind && entry.binding === binding;
+                });
+            },
+            activateControl: function (binding) {
+                binding.$element.trigger("click");
+                return $.when();
+            },
             refresh: function () {
-                current = snapshot(controller);
+                current = snapshot(controller, tokenStore);
                 return $.when(current);
             },
         };
+        context.waitForSnapshotChange = function () {
+            var ready = controller.mutex && controller.mutex.getUnlockedDef ?
+                controller.mutex.getUnlockedDef() : $.when();
+            return $.when(ready).then(context.refresh);
+        };
+        return context;
     }
 
     function executePatch(controller, context, patch) {
@@ -138,6 +196,14 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
             tool: "odoo.patch_current_form",
             authorizationId: "qunit-authorization",
             arguments: {patch: patch},
+        });
+    }
+
+    function executeStage(context, patch, rowToken) {
+        return Commands.execute(context, {
+            tool: "odoo.stage_current_form",
+            authorizationId: "qunit-stage-authorization",
+            arguments: _.extend({patch: patch}, rowToken ? {rowToken: rowToken} : {}),
         });
     }
 
@@ -300,6 +366,97 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
         form.destroy();
     });
 
+    QUnit.test("staged onchange updates relation domain and saves only once", async function (assert) {
+        assert.expect(8);
+        var writes = 0;
+        var form = await testUtils.createAsyncView({
+            View: FormView,
+            model: "agui.chat.test.document",
+            data: testData(),
+            arch: formArch(),
+            res_id: 1,
+            viewOptions: {mode: "edit"},
+            mockRPC: function (route, args) {
+                if (args.method === "write") {
+                    writes += 1;
+                }
+                return this._super.apply(this, arguments);
+            },
+        });
+        var context = commandContext(form);
+        var first = await executeStage(context, {document_type: "special"});
+
+        assert.ok(first.staged);
+        assert.notOk(first.saved);
+        assert.strictEqual(writes, 0);
+        assert.strictEqual(context.getSnapshot().record.values.domain_key, "special");
+        assert.deepEqual(form.model.get(form.handle).getDomain({fieldName: "candidate_id"}), [
+            ["domain_key", "=", "special"],
+        ]);
+
+        var second = await executeStage(context, {candidate_id: 20});
+        assert.ok(second.staged);
+        assert.strictEqual(writes, 0, "sequential stages never persist the form");
+
+        var saved = await Commands.execute(context, {
+            tool: "odoo.save_current_form",
+            authorizationId: "qunit-save-authorization",
+            arguments: {},
+        });
+        assert.ok(saved.saved && writes === 1, "the explicit save persists all staged changes once");
+        form.destroy();
+    });
+
+    QUnit.test("visible One2many tokens create and stage a native child row", async function (assert) {
+        assert.expect(10);
+        var writes = 0;
+        var tokens = {};
+        var form = await testUtils.createAsyncView({
+            View: FormView,
+            model: "agui.chat.test.document",
+            data: testData(),
+            arch: formArch(),
+            res_id: 1,
+            viewOptions: {mode: "edit"},
+            mockRPC: function (route, args) {
+                if (args.method === "write") {
+                    writes += 1;
+                }
+                return this._super.apply(this, arguments);
+            },
+        });
+        var context = commandContext(form, tokens);
+        var state = context.getSnapshot();
+        var x2many = state.capabilities.x2many[0];
+        var formButton = _.findWhere(state.capabilities.controls, {
+            name: "action_confirm", type: "object",
+        });
+
+        assert.strictEqual(x2many.field, "line_ids");
+        assert.strictEqual(x2many.relation, "agui.chat.test.line");
+        assert.ok(x2many.token && x2many.rows[0].token);
+        assert.ok(x2many.rows[0].fields.name && x2many.rows[0].fields.quantity);
+        assert.ok(formButton && formButton.token, "visible Form object button has a token");
+        assert.strictEqual(state.record.values.phone_number, "[redacted]");
+
+        var create = _.findWhere(x2many.controls, {type: "create"});
+        assert.ok(create && create.token, "native create control has a token");
+        await Commands.execute(context, {
+            tool: "odoo.activate_view_control",
+            authorizationId: "qunit-create-authorization",
+            arguments: {controlToken: create.token},
+        });
+        state = context.getSnapshot();
+        x2many = state.capabilities.x2many[0];
+        assert.strictEqual(x2many.rows.length, 2, "native One2many added a local row");
+
+        var newRow = x2many.rows[x2many.rows.length - 1];
+        var staged = await executeStage(context, {name: "差旅明细", quantity: 3}, newRow.token);
+        assert.ok(staged.staged && !staged.saved);
+        assert.strictEqual(writes, 0, "child row remains local until the parent save");
+        form.destroy();
+    });
+
     QUnit.test("many2one patch accepts serialized relation values", async function (assert) {
         assert.expect(7);
         var form = await testUtils.createAsyncView({
@@ -332,7 +489,7 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
     });
 
     QUnit.test("one2many generic operations and stale relation ids are rejected", async function (assert) {
-        assert.expect(4);
+        assert.expect(5);
         var form = await testUtils.createAsyncView({
             View: FormView,
             model: "agui.chat.test.document",
@@ -352,8 +509,163 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
         var line = await Adapter.applyPatch(form, state, {
             patch: {line_ids: {operation: "create", values: {name: "禁止创建"}}},
         });
-        assert.strictEqual(line.rejected[0].code, "invalid_value");
+        var unsafeCreate = await Adapter.applyPatch(form, state, {
+            patch: {detail_item_ids: {operations: [{operation: "create", values: {
+                name: "禁止猜测关系", candidate_id: {id: 10, displayName: "标准唯一候选"},
+            }}]}},
+        });
+        assert.strictEqual(line.rejected[0].code, "invalid_one2many_patch");
+        assert.strictEqual(unsafeCreate.rejected[0].code, "one2many_relation_requires_row_token");
         assert.strictEqual(snapshot(form).record.values.line_ids.count, 1, "no child row is created");
+        form.destroy();
+    });
+
+    QUnit.test("generic one2many snapshot is metadata driven and bounded", async function (assert) {
+        assert.expect(11);
+        var form = await testUtils.createAsyncView({
+            View: FormView,
+            model: "agui.chat.test.document",
+            data: testData(),
+            arch: formArch(),
+            res_id: 1,
+            viewOptions: {mode: "edit"},
+        });
+        var state = snapshot(form);
+        var meta = state.fields.detail_item_ids;
+        var value = state.record.values.detail_item_ids;
+
+        assert.strictEqual(meta.type, "one2many");
+        assert.deepEqual(meta.operations, {create: true, update: true, delete: true});
+        assert.strictEqual(meta.childFields.candidate_id.relation, "agui.chat.test.option");
+        assert.ok(meta.childFields.secret_token.redacted);
+        assert.deepEqual(value.ids, [100, 101]);
+        assert.strictEqual(value.count, 2);
+        assert.strictEqual(value.loadedCount, 2);
+        assert.notOk(value.hasMore);
+        assert.strictEqual(value.records.length, 2);
+        assert.strictEqual(value.records[0].values.secret_token, "[redacted]");
+        assert.strictEqual(value.records[0].modifiers.name.required, true);
+        form.destroy();
+    });
+
+    QUnit.test("one patch saves parent create update and delete once", async function (assert) {
+        assert.expect(11);
+        var writes = 0;
+        var form = await testUtils.createAsyncView({
+            View: FormView,
+            model: "agui.chat.test.document",
+            data: testData(),
+            arch: formArch(),
+            res_id: 1,
+            viewOptions: {mode: "edit"},
+            mockRPC: function (route, args) {
+                if (args.method === "write" && args.model === "agui.chat.test.document") {
+                    writes += 1;
+                }
+                return this._super.apply(this, arguments);
+            },
+        });
+        var context = commandContext(form);
+        var patch = {
+            name: "批量后单据",
+            detail_item_ids: {
+                operations: [
+                    {operation: "create", values: {
+                        name: "新增明细", quantity: 5, domain_key: "standard",
+                    }},
+                    {operation: "update", id: 100, values: {quantity: 4}},
+                    {operation: "delete", id: 101},
+                ],
+            },
+        };
+        var preview = Adapter.buildPatchPreview(form, context.getSnapshot(), {patch: patch});
+        assert.deepEqual(preview.rejected, [], "mixed One2many patch passes preview validation");
+        var result = await executePatch(form, context, patch);
+        var state = snapshot(form);
+        var rows = state.record.values.detail_item_ids.records;
+        var updated = _.findWhere(rows, {id: 100});
+        var created = _.find(rows, function (row) { return row.values.name === "新增明细"; });
+
+        assert.ok(result.saved);
+        assert.strictEqual(writes, 1, "the parent form is written exactly once");
+        assert.deepEqual(result.applied, ["name", "detail_item_ids"]);
+        assert.strictEqual(state.record.values.name, "批量后单据");
+        assert.strictEqual(state.record.values.detail_item_ids.count, 2);
+        assert.ok(updated);
+        assert.strictEqual(updated.values.quantity, 4);
+        assert.ok(created && created.id, "the created row is persisted by the parent save");
+        assert.notOk(_.findWhere(rows, {id: 101}));
+        assert.strictEqual(result.undo_payload, false, "one2many patches never authorize undo");
+        form.destroy();
+    });
+
+    QUnit.test("one2many relation search uses current native row tokens", async function (assert) {
+        assert.expect(10);
+        var writes = 0;
+        var tokens = {};
+        var form = await testUtils.createAsyncView({
+            View: FormView,
+            model: "agui.chat.test.document",
+            data: testData(),
+            arch: formArch(),
+            res_id: 1,
+            viewOptions: {mode: "edit"},
+            mockRPC: function (route, args) {
+                if (args.method === "write") {
+                    writes += 1;
+                }
+                return this._super.apply(this, arguments);
+            },
+        });
+        var context = commandContext(form, tokens);
+        var state = context.getSnapshot();
+        var x2many = _.findWhere(state.capabilities.x2many, {field: "detail_item_ids"});
+        var existingRow = x2many.rows[0];
+        var existing = await Commands.execute(context, {
+            tool: "odoo.search_relation",
+            arguments: {field: "candidate_id", rowToken: existingRow.token,
+                query: "标准唯一候选", operation: "set"},
+        });
+
+        assert.deepEqual(_.pluck(existing.candidates, "id"), [10]);
+        assert.strictEqual(existing.rowToken, existingRow.token);
+
+        var create = _.findWhere(x2many.controls, {type: "create"});
+        assert.ok(create && create.token);
+        await Commands.execute(context, {
+            tool: "odoo.activate_view_control",
+            authorizationId: "qunit-create-detail-authorization",
+            arguments: {controlToken: create.token},
+        });
+        state = context.getSnapshot();
+        x2many = _.findWhere(state.capabilities.x2many, {field: "detail_item_ids"});
+        var newRow = x2many.rows[x2many.rows.length - 1];
+        assert.strictEqual(x2many.rows.length, 3);
+
+        var stagedDomain = await executeStage(context, {domain_key: "special"}, newRow.token);
+        assert.ok(stagedDomain.staged);
+        state = context.getSnapshot();
+        x2many = _.findWhere(state.capabilities.x2many, {field: "detail_item_ids"});
+        newRow = x2many.rows[x2many.rows.length - 1];
+        var special = await Commands.execute(context, {
+            tool: "odoo.search_relation",
+            arguments: {field: "candidate_id", rowToken: newRow.token,
+                query: "特殊唯一候选", operation: "set"},
+        });
+        assert.deepEqual(_.pluck(special.candidates, "id"), [20]);
+        assert.strictEqual(special.rowToken, newRow.token);
+
+        var stagedCandidate = await executeStage(
+            context, {candidate_id: {id: 20, displayName: "特殊唯一候选"}}, special.rowToken
+        );
+        assert.ok(stagedCandidate.staged);
+        assert.strictEqual(writes, 0);
+        var saved = await Commands.execute(context, {
+            tool: "odoo.save_current_form",
+            authorizationId: "qunit-save-detail-authorization",
+            arguments: {},
+        });
+        assert.ok(saved.saved && writes === 1);
         form.destroy();
     });
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import {
   AtSign, CheckCircle2, ChevronRight, CircleAlert, Clock3, Database, FileText,
-  Filter as FilterIcon, Hammer, Loader2, Menu, RotateCcw, SlidersHorizontal, Sparkles, Workflow, X
+  Filter as FilterIcon, Folder, Hammer, Loader2, Menu, RotateCcw, SlidersHorizontal, Sparkles, Workflow, X
 } from 'lucide-react'
 import type {
   AssistantMessageProps, AttachmentRef, ChatComponents, ChatFeedback, ChatIcons,
@@ -403,6 +403,11 @@ export function DefaultUserMessage({ message, labels, onPreviewAttachment, onRem
           <span className="shrink-0 opacity-70">{actionLabels[reference.action]}</span>
           {!reference.valid ? <span className="shrink-0">（已失效）</span> : null}
           {onRemoveMention ? <button type="button" className="grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-current opacity-65 hover:bg-background hover:opacity-100" aria-label={`移除引用 ${reference.label}`} title="移除引用" onClick={() => onRemoveMention(reference.id)}><X className="size-3" /></button> : null}
+        </span>)}
+      </div> : null}
+      {message.workspaceReferences?.length ? <div className="mb-2 flex flex-wrap justify-end gap-1.5" aria-label="消息工作区引用">
+        {message.workspaceReferences.map((reference) => <span key={reference.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-background-panel px-2 py-1 text-xs text-primary" title={reference.path}>
+          {reference.isDirectory ? <Folder className="size-3.5 shrink-0" /> : <FileText className="size-3.5 shrink-0" />}<span className="truncate">{reference.name}</span>
         </span>)}
       </div> : null}
       {message.skills?.length ? <div className="mb-2 flex flex-wrap justify-end gap-1.5" aria-label="消息技能">

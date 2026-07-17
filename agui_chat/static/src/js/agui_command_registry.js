@@ -114,14 +114,14 @@ odoo.define("agui_chat.command_registry", function (require) {
         },
         {
             name: "odoo.activate_view_control",
-            description: "激活当前 Kanban 快照中的可见控件 token；对象按钮始终需要用户确认。",
+            description: "激活当前 Form、List 或 Kanban 快照中的可见控件 token；对象、删除和状态按钮始终需要用户确认。",
             parameters: schema({
                 controlToken: {type: "string", minLength: 1, maxLength: 160},
             }, ["controlToken"]),
         },
         {
             name: "odoo.search_relation",
-            description: "使用当前表单的域和上下文搜索可写关系字段。",
+            description: "使用当前表单或当前快照 One2many 行 token 的实时域和上下文搜索可写关系字段。",
             parameters: schema({
                 field: {type: "string", minLength: 1, maxLength: 128},
                 rowToken: {type: "string", minLength: 1, maxLength: 160},
@@ -333,7 +333,7 @@ odoo.define("agui_chat.command_registry", function (require) {
             }
             var controller = context.getController();
             if (!controller || !(snapshot.capabilities && snapshot.capabilities.create)) {
-                throw commandError("create_not_allowed", "当前菜单不允许新建记录。");
+                throw commandError("create_not_allowed", "当前 action 不支持新建");
             }
             return $.when(context.openCreate(controller)).then(function () {
                 return context.waitForSnapshotChange(snapshot.snapshotId);
@@ -717,7 +717,8 @@ odoo.define("agui_chat.command_registry", function (require) {
         if (!COMMANDS[tool]) {
             return $.Deferred().reject(commandError("unsupported_command", "不支持此页面命令。")).promise();
         }
-        if ((WRITE_COMMANDS[tool] || BOUND_MENTION_COMMANDS[tool] || control && control.type === "object") &&
+        if ((WRITE_COMMANDS[tool] || BOUND_MENTION_COMMANDS[tool] || control &&
+                ["object", "create", "delete", "state"].indexOf(control.type) !== -1) &&
                 !(call && call.authorizationId)) {
             return $.Deferred().reject(commandError("authorization_required", "此命令需要服务端授权。")).promise();
         }

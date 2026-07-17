@@ -142,6 +142,23 @@ describe('production transport contract', () => {
     expect(JSON.stringify(input)).not.toContain('机密菜单')
   })
 
+  it('adds exact workspace paths and tools to Agent context', () => {
+    const input = buildRunInput([{
+      id: 'workspace', role: 'user', content: '检查这些内容', workspaceReferences: [
+        { id: 'file', path: '合同/甲.txt', name: '甲.txt', isDirectory: false },
+        { id: 'dir', path: '报表', name: '报表', isDirectory: true }
+      ]
+    }], v2Props(), 'thread-1', null, {})
+    expect(input.context).toContainEqual({
+      description: 'Selected workspace references',
+      value: JSON.stringify([
+        { path: '合同/甲.txt', type: 'file', tool: 'workspace_read_file' },
+        { path: '报表', type: 'directory', tool: 'workspace_list_files' }
+      ])
+    })
+    expect(input.messages[0]).not.toHaveProperty('workspaceReferences')
+  })
+
   it('maps authentication, permission, and rate-limit failures', () => {
     expect(transportError(401).message).toMatch(/Authentication/)
     expect(transportError(403).message).toMatch(/permission/)

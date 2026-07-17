@@ -36,6 +36,12 @@
   text-transform: none;
 }
 
+.agui-chat-react .agui-picker [role="option"] {
+  border-bottom: 0;
+  border-right: 0;
+  border-top: 0;
+}
+
 .agui-chat-react pre,
 .agui-chat-react code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;

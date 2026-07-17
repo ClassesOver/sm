@@ -142,6 +142,20 @@ class TestRelationToolPolicy(TransactionCase):
         self.assertFalse(allowed["requires_confirmation"])
         self.assertFalse(denied["allowed"])
 
+    def test_dotted_relation_path_is_authorized_by_parent_field(self):
+        self.policy.write({"field_names": "order_line"})
+        decision = self.env["agui.chat.tool.policy"].evaluate(
+            "odoo.search_relation",
+            {
+                "target": {"model": "sale.order"},
+                "field": "order_line.product_id",
+                "rowId": 42,
+                "query": "Product",
+                "operation": "set",
+            },
+        )
+        self.assertTrue(decision["allowed"])
+
     def test_patch_saves_without_confirmation(self):
         self.env["agui.chat.tool.policy"].create({
             "name": "修改联系人",
@@ -181,7 +195,7 @@ class TestRelationToolPolicy(TransactionCase):
             "tool_name": "odoo.patch_current_form",
             "access_level": "write",
             "model_name": "res.partner",
-            "field_names": "name,comment,parent_id,phone",
+            "field_names": "name,comment,parent_id,child_ids,phone",
             "high_risk_field_names": "phone",
         })
         policy = self.env["agui.chat.tool.policy"]
@@ -195,15 +209,20 @@ class TestRelationToolPolicy(TransactionCase):
         relation = policy.evaluate("odoo.patch_current_form", {
             "target": {"model": "res.partner"}, "patch": {"parent_id": 1},
         })
+        one2many = policy.evaluate("odoo.patch_current_form", {
+            "target": {"model": "res.partner"}, "patch": {"child_ids": {"operations": []}},
+        })
         marked = policy.evaluate("odoo.patch_current_form", {
             "target": {"model": "res.partner"}, "patch": {"phone": "10086"},
         })
         self.assertFalse(scalar["requires_confirmation"])
         self.assertIn("multiple_fields", multiple["risk_reasons"])
         self.assertIn("relation_field", relation["risk_reasons"])
+        self.assertIn("relation_field", one2many["risk_reasons"])
         self.assertIn("policy_high_risk_field", marked["risk_reasons"])
         self.assertTrue(multiple["requires_confirmation"])
         self.assertTrue(relation["requires_confirmation"])
+        self.assertTrue(one2many["requires_confirmation"])
         self.assertTrue(marked["requires_confirmation"])
 
         risk_policy.write({"confirmation_mode": "never"})
@@ -224,6 +243,48 @@ class TestRelationToolPolicy(TransactionCase):
             "model": "res.partner",
             "resId": self.env.user.partner_id.id,
         }
+
+    def test_nested_preview_uses_server_side_sensitive_fields(self):
+        target = self._patch_target()
+        arguments = {
+            "target": target,
+            "patch": {"child_ids": {"operations": [{
+                "operation": "update", "id": 7,
+                "values": {"phone": "10086", "name": "Visible"},
+            }]}},
+        }
+        preview = {
+            "target": target,
+            "changes": [{
+                "field": "child_ids",
+                "label": "联系人",
+                "fieldType": "one2many",
+                "oldValue": {"ids": [7], "count": 1},
+                "newValue": [
+                    {
+                        "operation": "update", "rowId": 7,
+                        "childField": "phone", "oldValue": "old",
+                        "newValue": "10086", "sensitive": False,
+                    },
+                    {
+                        "operation": "update", "rowId": 7,
+                        "childField": "name", "oldValue": "Before",
+                        "newValue": "Visible", "sensitive": True,
+                    },
+                ],
+                "sensitive": False,
+            }],
+        }
+        normalized = self.env[
+            "agui.chat.tool.authorization"
+        ]._normalize_preview(preview, arguments)
+        phone, name = normalized["changes"][0]["newValue"]
+
+        self.assertEqual(phone["oldValue"], "[redacted]")
+        self.assertEqual(phone["newValue"], "[redacted]")
+        self.assertTrue(phone["sensitive"])
+        self.assertEqual(name["newValue"], "Visible")
+        self.assertFalse(name["sensitive"])
 
     def _prepare_risky_patch(self, call_id="risky-patch"):
         target = self._patch_target()

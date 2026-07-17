@@ -28,8 +28,8 @@ def odoo_contract():
 
 def test_agentos_contract_matches_odoo_source():
     values, digest = odoo_contract()
-    assert values["COMMAND_CATALOG_REVISION"] == 5
-    assert digest == "03dc60812aad2fa725f65bbbf70bb2ae892ed5d0312319ae114fba6909d3cbea"
+    assert values["COMMAND_CATALOG_REVISION"] == 6
+    assert digest == "53c315d2ff38112adfd76577259f46247767e2b7414f0ce7045535b780ffa94d"
     assert app.PROTOCOL == values["PROTOCOL"]
     assert app.BUNDLE_VERSION == values["MODULE_VERSION"]
     assert app.COMMAND_CATALOG_HASH == digest

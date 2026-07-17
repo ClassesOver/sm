@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
-import type { AguiChatProps, AttachmentRef, ErrorMessageProps, RuntimeSnapshot } from '../types'
+import React, { useEffect, useRef, useState } from 'react'
+import type { AguiChatProps, AttachmentRef, ErrorMessageProps, RuntimeSnapshot, WorkspaceEntry, WorkspaceReference } from '../types'
 import { ChatRuntime } from '../runtime/ChatRuntime'
 import { asText } from '../runtime/utils'
 import { mergeIcons, mergeLabels, observeInteraction } from '../customization'
-import { ChatInput } from './ChatInput'
+import { ChatInput, type ChatInputProps } from './ChatInput'
 import { Messages } from './Messages'
 import { FilePreviewPanel } from './FilePreviewPanel'
 import { Sidebar } from './Sidebar'
@@ -22,6 +22,8 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot>(() => runtime.getSnapshot())
   const [previewAttachment, setPreviewAttachment] = useState<AttachmentRef | null>(null)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const [workspaceReferences, setWorkspaceReferences] = useState<WorkspaceReference[]>([])
+  const [composerMentionCount, setComposerMentionCount] = useState(0)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const followsStream = useRef(true)
   const previousThread = useRef(snapshot.threadId)
@@ -36,20 +38,12 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
   useEffect(() => runtime.subscribe(() => setSnapshot(runtime.getSnapshot())), [runtime])
 
   useEffect(() => {
+    setWorkspaceReferences([])
+    setComposerMentionCount(0)
     setPreviewAttachment(null)
     setWorkspaceOpen(false)
   }, [snapshot.threadId])
 
-  const recentMentions = useMemo(() => {
-    const seen = new Set<string>()
-    return [...snapshot.messages].reverse().flatMap((message) =>
-      message.role === 'user' ? [...(message.mentions || [])].reverse() : []
-    ).filter((mention) => {
-      if (!mention.valid || seen.has(mention.resourceKey)) return false
-      seen.add(mention.resourceKey)
-      return true
-    }).slice(0, 8)
-  }, [snapshot.messages])
 
   useEffect(() => {
     const element = scrollRef.current
@@ -74,6 +68,23 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
     previousThread.current = snapshot.threadId
     previousUserCount.current = userCount
   }, [snapshot.threadId, scrollVersion])
+
+  const handleSend: ChatInputProps['onSend'] = function (
+    content, attachments, selection, skills, references
+  ) {
+    return runtime.send(content, attachments, selection, undefined, skills, references).then(function (sent) {
+      if (!sent) return false
+      setWorkspaceReferences([])
+      const mentions = Array.isArray(selection) ? selection : undefined
+      const menuMention = selection && !Array.isArray(selection) ? selection : undefined
+      observeInteraction(function () {
+        props.onInteraction?.({
+          type: 'send', content, attachments, mentions, menuMention, skills, workspaceReferences: references
+        })
+      })
+      return true
+    })
+  }
 
   return (
     <div className="agui-chat-react relative">
@@ -155,26 +166,19 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
           {snapshot.error
             ? React.createElement(props.components?.ErrorMessage || DefaultErrorMessage, { error: snapshot.error })
             : null}
-          <ChatInput
+          <ChatInput key={snapshot.threadId}
             running={snapshot.running}
             disabled={snapshot.loadingSessions}
             attachments={props.attachments}
             menuOptions={props.menuOptions || []}
             agentSkills={props.agentSkills || []}
-            recentMentions={recentMentions}
             hostBridge={props.hostBridge}
+            workspaceReferences={workspaceReferences}
+            onRemoveWorkspaceReference={(id) => setWorkspaceReferences((current) => current.filter((item) => item.id !== id))}
+            onMentionsChange={setComposerMentionCount}
             labels={labels}
             icons={icons}
-            onSend={async (content, attachments, selection, skills) => {
-              const sent = await runtime.send(content, attachments, selection, undefined, skills)
-              if (!sent) return false
-              const mentions = Array.isArray(selection) ? selection : undefined
-              const menuMention = selection && !Array.isArray(selection) ? selection : undefined
-              observeInteraction(() => props.onInteraction?.({
-                type: 'send', content, attachments, mentions, menuMention, skills
-              }))
-              return true
-            }}
+            onSend={handleSend}
             onStop={() => {
               runtime.stop()
               observeInteraction(() => props.onInteraction?.({ type: 'stop' }))
@@ -198,6 +202,10 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
           ? <WorkspacePanel
               runtime={runtime}
               threadId={snapshot.threadId}
+              references={workspaceReferences}
+              mentionCount={composerMentionCount}
+              onToggleReference={(entry: WorkspaceEntry) => setWorkspaceReferences((current) => { const selected = current.some((item) => item.path === entry.path); if (selected) return current.filter((item) => item.path !== entry.path); if (current.length + composerMentionCount >= 5) return current; return [...current, { id: `workspace:${entry.path}`, path: entry.path, name: entry.name, isDirectory: entry.isDirectory }] })}
+              onDeleted={(entry: WorkspaceEntry) => setWorkspaceReferences((current) => current.filter((item) => item.path !== entry.path && !(entry.isDirectory && item.path.startsWith(`${entry.path}/`))))}
               onClose={() => setWorkspaceOpen(false)}
             />
           : null}

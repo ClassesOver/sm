@@ -29,6 +29,13 @@ export type ToolStatus =
   | 'error'
   | 'cancelled'
 
+export interface OdooChildField {
+  type: string
+  relation: string | false
+  string: string
+  redacted: boolean
+}
+
 export interface OdooViewField {
   name: string
   string: string
@@ -39,6 +46,12 @@ export interface OdooViewField {
   required: boolean
   invisible: boolean
   redacted: boolean
+  operations?: {
+    create: boolean
+    update: boolean
+    delete: boolean
+  }
+  childFields?: Record<string, OdooChildField>
 }
 
 export interface MenuMentionOption {
@@ -153,6 +166,13 @@ export interface WorkspaceEntry {
   size: number
   mimeType: string | false
   modifiedAt: string
+}
+
+export interface WorkspaceReference {
+  id: string
+  path: string
+  name: string
+  isDirectory: boolean
 }
 
 export interface WorkspaceCapability {
@@ -302,6 +322,7 @@ export interface RelationSearchResult {
   fieldLabel?: string
   fieldType: 'many2one' | 'many2many'
   relation: string
+  rowToken?: string | false
   query: string
   relationOperation: 'set' | 'link' | 'unlink'
   resolution: 'none' | 'unique_exact' | 'ambiguous'
@@ -353,6 +374,7 @@ export interface ChatMessage {
   attachments?: AttachmentRef[]
   mentions?: MentionReference[]
   skills?: SelectedAgentSkill[]
+  workspaceReferences?: WorkspaceReference[]
   menuMention?: MenuMention
   recordSelection?: RecordSelection
 }
@@ -432,6 +454,7 @@ export type ChatInteractionEvent =
       attachments: AttachmentRef[]
       mentions?: MentionReference[]
       skills?: SelectedAgentSkill[]
+      workspaceReferences?: WorkspaceReference[]
       menuMention?: MenuMention
       recordSelection?: RecordSelection
     }

@@ -8,7 +8,7 @@ from datetime import timedelta
 
 from lxml import etree
 
-from odoo import api, fields, models
+from odoo import api, fields, models, tools
 from odoo.exceptions import AccessError
 from odoo.tools.mail import html2plaintext
 
@@ -136,7 +136,7 @@ class AguiChatMentionToken(models.Model):
                     continue
                 actions = ["open"] if "open" in enabled_actions else []
                 model = item.get("model")
-                if "create" in enabled_actions and model and self._can(model, "create"):
+                if "create" in enabled_actions and item.get("can_create"):
                     actions.append("create")
                 if not actions:
                     continue
@@ -178,7 +178,7 @@ class AguiChatMentionToken(models.Model):
                         payload, session_key,
                     ))
 
-        if scope in ("all", "saved_filter"):
+        if scope == "saved_filter":
             filter_entries = []
             for model_entry in model_entries:
                 for menu_entry in catalog:
@@ -216,7 +216,7 @@ class AguiChatMentionToken(models.Model):
                     if len(buckets["saved_filter"]) >= MAX_SEARCH_RESULTS:
                         break
 
-        if scope in ("all", "current_filter"):
+        if scope == "current_filter":
             payload = self._normalize_current_filter(current_filter, catalog)
             if payload and "apply" in enabled_actions and (
                     not query or query.lower() in payload["label"].lower()):
@@ -555,6 +555,7 @@ class AguiChatMentionToken(models.Model):
         return actions
 
     @api.model
+    @tools.ormcache("self.env.uid", "self.env.user.company_id.id")
     def _menu_catalog(self):
         root = self.env["ir.ui.menu"].load_menus(False)
         catalog = []
@@ -576,6 +577,7 @@ class AguiChatMentionToken(models.Model):
                         "menu_id": menu_id,
                         "action_id": action_id,
                         "model": window.res_model,
+                        "can_create": self._can(window.res_model, "create"),
                         "label": name,
                         "path": next_path,
                         "fullPath": " / ".join(next_path),
@@ -614,6 +616,11 @@ class AguiChatMentionToken(models.Model):
                 "menu_id": item["menu_id"],
                 "action_id": item["action_id"],
             })
+        allowed_models = set(
+            self.env["agui.chat.config"].sudo().get_active_config().mention_model_names()
+        )
+        if allowed_models:
+            entries = [item for item in entries if item["model"] in allowed_models]
         if model_scope:
             entries = [item for item in entries if item["model"] == model_scope]
         return entries

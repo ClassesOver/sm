@@ -764,7 +764,11 @@ odoo.define("agui_chat.host_service", function (require) {
                     }
                 }
                 $element = binding.$element || binding.widget.$el;
-                if (!$element.length || !$.contains(binding.widget.$el[0], $element[0]) &&
+                if (!$element.length || $element[0].hidden ||
+                        $element.attr("aria-hidden") === "true" ||
+                        $element.hasClass("o_hidden") || $element.css("display") === "none" ||
+                        $element.css("visibility") === "hidden" ||
+                        !$.contains(binding.widget.$el[0], $element[0]) &&
                         binding.widget.$el[0] !== $element[0]) {
                     return false;
                 }

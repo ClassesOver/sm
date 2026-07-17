@@ -22,17 +22,17 @@ function main() {
     const runtime = read("react_widget/src/runtime/ChatRuntime.ts");
     const transport = read("react_widget/src/runtime/transport.ts");
     const types = read("react_widget/src/types.ts");
-    const bundlePath = path.join(__dirname, "../static/lib/agui-chat-react/agui_chat_widget.12.0.8.1.0.js");
-    const cssPath = path.join(__dirname, "../static/lib/agui-chat-react/agui_chat_widget.12.0.8.1.0.css");
+    const bundlePath = path.join(__dirname, "../static/lib/agui-chat-react/agui_chat_widget.12.0.8.2.0.js");
+    const cssPath = path.join(__dirname, "../static/lib/agui-chat-react/agui_chat_widget.12.0.8.2.0.css");
 
-    assert(manifest.includes('"version": "12.0.8.1.0"'));
+    assert(manifest.includes('"version": "12.0.8.2.0"'));
     assert(assets.includes("agui_model_adapter.js"));
     assert(assets.includes("agui_command_registry.js"));
     assert(assets.includes("agui_host_service.js"));
     assert(!assets.includes("view_state_bridge.js"));
     assert(!assets.includes("odoo_tools.js"));
     assert(!assets.includes("agui_chat_action.js"));
-    assert(!assets.includes("agui_chat_widget.12.0.8.1.0.css"));
+    assert(!assets.includes("agui_chat_widget.12.0.8.2.0.css"));
 
     assert(!adapter.includes("localData"));
     assert(adapter.includes("controller._rpc"));
@@ -61,7 +61,7 @@ function main() {
     assert(bridge.includes('"/agui_chat/host_command"'));
     assert.strictEqual((surfaces.match(/this\.chatHandle = window\.AguiChat\.mount/g) || []).length, 1);
     assert(surfaces.includes("attachShadow"));
-    assert(surfaces.includes("agui_chat_widget.12.0.8.1.0.css"));
+    assert(surfaces.includes("agui_chat_widget.12.0.8.2.0.css"));
     assert(surfaces.includes("this.webClient.action_manager.getCurrentAction()"));
     assert(!surfaces.includes("Dialog"));
     assert(!surfaces.includes("popup"));

@@ -14,8 +14,8 @@ configured AgentOS protocol endpoint must agree on:
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.1.0",
-  "bundle_version": "12.0.8.1.0",
+  "module_version": "12.0.8.2.0",
+  "bundle_version": "12.0.8.2.0",
   "command_catalog_hash": "sha256"
 }
 ```
@@ -53,7 +53,8 @@ Every `RunAgentInput.state` has exactly this envelope:
   restores `hostState`.
 
 Snapshots omit binary fields, redact sensitive fields, bound text and relation
-sizes, and export x2many values as persisted IDs/count only.
+sizes, and keep x2many IDs/count bounded. Standard one2many subviews additionally
+export operation capabilities, child field metadata, and up to 40 loaded rows.
 
 ## Client Tools
 
@@ -111,7 +112,12 @@ form; dirty forms still reject navigation.
 Relation search rules:
 
 - `odoo.search_relation` only accepts fields from the current native form and
-  supports writable many2one/many2many fields.
+  supports writable many2one/many2many fields. A loaded one2many row is bound
+  by its current `rowToken`; the relation field name remains the child field
+  name from that row snapshot.
+- A new row must first be created through its visible native create control.
+  After staging scalar dependencies with the issued row token, relation search
+  evaluates the resulting live child data point and its onchange state.
 - The browser evaluates `record.getDomain({fieldName})` and
   `record.getContext({fieldName})` against the live BasicModel data point,
   including unsaved onchange/dirty state, then calls `name_search` as the
@@ -130,13 +136,18 @@ Patch rules:
   Odoo-style `[ID, displayName]` pair, or a snapshot-style `{id, displayName}`
   object.
 - many2many supports only `link`, `unlink`, and `replace` of existing IDs.
-- Generic one2many create/update/delete is rejected.
-- Changes use `FormController._applyChanges`; there is no RPC fallback.
+- one2many accepts at most 40 total `create`, `update`, and `delete`
+  operations across the patch. Update/delete IDs must be persisted rows loaded
+  in the bound snapshot. Batch create accepts visible scalar child values;
+  relational child values require a native row token. Loaded-row updates
+  support the existing scalar, many2one, and many2many forms.
+- Patches containing one2many use native BasicModel `CREATE`, `UPDATE`, and
+  `DELETE` and save the parent form once. There is no generic RPC fallback.
 
 Patch policies expose `confirmation_mode` with `risk` (default), `always`, and
 `never`, plus an optional high-risk field allowlist. In `risk` mode the server,
 not the Agent, requires confirmation for multi-field patches, many2one or
-many2many fields, and policy-marked fields. A high-risk prepare must include a
+many2many/one2many fields, and policy-marked fields. A high-risk prepare must include a
 preview built from the live BasicModel. Each preview change contains the field
 name and label, field type, old value, new value, and risk reasons. Sensitive
 values are shown only as `[redacted]`.

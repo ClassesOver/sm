@@ -113,6 +113,32 @@ const props: AguiChatProps = {
   agentState: {},
   tools: [],
   menuOptions: [],
+  agentSkills: [
+    { id: 'contract-audit', name: '合同审计', description: '核对合同条款、金额和关键日期' },
+    { id: 'sales-analysis', name: '销售分析', description: '分析销售机会与客户跟进优先级' },
+    { id: 'data-quality', name: '数据质量检查', description: '识别缺失字段和异常业务数据' }
+  ],
+  hostBridge: {
+    searchMentions: async (request) => ({
+      candidates: request.scope === 'menu' ? [
+        { candidateToken: 'menu-sales', resourceKey: 'menu:1', kind: 'menu', label: '销售订单', detail: '销售 / 订单 / 销售订单', model: 'sale.order', actions: ['open', 'create'], expiresAt: '2099-01-01 00:00:00' },
+        { candidateToken: 'menu-contracts', resourceKey: 'menu:2', kind: 'menu', label: '客户合同', detail: '销售 / 合同 / 客户合同', model: 'contract.contract', actions: ['open'], expiresAt: '2099-01-01 00:00:00' }
+      ] : [],
+      modelScopes: [
+        { model: 'res.partner', label: '客户' },
+        { model: 'sale.order', label: '销售订单' },
+        { model: 'contract.contract', label: '合同' },
+        { model: 'crm.lead', label: '销售机会' }
+      ]
+    }),
+    bindMention: async (request) => {
+      const action: 'open' | 'create' = request.action === 'create' ? 'create' : 'open'
+      const candidate = request.candidateToken === 'menu-contracts'
+        ? { resourceKey: 'menu:2', label: '客户合同', detail: '销售 / 合同 / 客户合同', model: 'contract.contract' }
+        : { resourceKey: 'menu:1', label: '销售订单', detail: '销售 / 订单 / 销售订单', model: 'sale.order' }
+      return { ok: true, reference: { id: `visual-${request.candidateToken}-${action}`, token: `visual-${request.candidateToken}-${action}`, kind: 'menu', action, expiresAt: '2099-01-01 00:00:00', valid: true, pageAction: true, ...candidate } }
+    }
+  },
   surface: 'dock',
   attachments: { enabled: true, maxFiles: 5, maxFileSize: 10 * 1024 * 1024 },
   threadId: 'visual-thread-001',

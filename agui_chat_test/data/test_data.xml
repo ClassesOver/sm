@@ -24,7 +24,7 @@
             <field name="tool_name">odoo.search_relation</field>
             <field name="access_level">read</field>
             <field name="model_name">agui.chat.test.document</field>
-            <field name="field_names">candidate_id,tag_ids</field>
+            <field name="field_names">candidate_id,tag_ids,detail_item_ids</field>
         </record>
         <record id="policy_test_patch" model="agui.chat.tool.policy">
             <field name="name">测试单据表单修改</field>
@@ -32,7 +32,7 @@
             <field name="tool_name">odoo.patch_current_form</field>
             <field name="access_level">write</field>
             <field name="model_name">agui.chat.test.document</field>
-            <field name="field_names">name,required_code,description,enabled,quantity,amount,currency_id,document_date,priority,document_type,domain_key,candidate_id,tag_ids,line_ids,show_extra,dynamic_note,locked_note,state,secret_token</field>
+            <field name="field_names">name,required_code,description,enabled,quantity,amount,currency_id,document_date,priority,document_type,domain_key,candidate_id,tag_ids,line_ids,detail_item_ids,show_extra,dynamic_note,locked_note,state,secret_token</field>
             <field name="confirmation_mode">never</field>
         </record>
         <record id="policy_test_validate" model="agui.chat.tool.policy">

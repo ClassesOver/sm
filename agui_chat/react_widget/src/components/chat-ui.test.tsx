@@ -10,6 +10,7 @@ import { ChatInput, menuQueryAtCursor } from './ChatInput'
 import { skillQueryAtCursor } from './SkillPicker'
 import { FilePreviewPanel } from './FilePreviewPanel'
 import { Messages } from './Messages'
+import { WorkspacePanel } from './WorkspacePanel'
 
 vi.mock('@file-viewer/react-full', () => ({
   FileViewer: ({ url, filename, type, options }: {
@@ -161,7 +162,7 @@ describe('chat customization', () => {
     expect(screen.queryByText('销售 / 客户')).toBeNull()
     expect(screen.getByText('销售 / 线索')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: labels.sendMessage }))
-    expect(onSend).toHaveBeenCalledWith('', [], expect.objectContaining({ menuId: 2, actionId: 12, valid: true }))
+    expect(onSend).toHaveBeenCalledWith('', [], expect.objectContaining({ menuId: 2, actionId: 12, valid: true }), undefined, [])
 
     fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -169,7 +170,7 @@ describe('chat customization', () => {
     expect(screen.queryByText('销售 / 客户')).toBeNull()
   })
 
-  it('binds multiple record references only after an explicit action choice', async () => {
+  it('binds record references with read as the default action', async () => {
     const onSend = vi.fn()
     const expiresAt = '2099-01-01 00:00:00'
     const candidates = {
@@ -208,20 +209,17 @@ describe('chat customization', () => {
     fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
     expect(await screen.findByText('客户甲')).toBeTruthy()
     fireEvent.click(screen.getByText('客户甲'))
-    expect(bindMention).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('option', { name: '引用数据' }))
     await waitFor(() => expect(bindMention).toHaveBeenCalledTimes(1))
 
     fireEvent.change(input, { target: { value: '@线索', selectionStart: 3 } })
     expect(await screen.findByText('线索乙')).toBeTruthy()
     fireEvent.click(screen.getByText('线索乙'))
-    fireEvent.click(screen.getByRole('option', { name: '引用数据' }))
     await waitFor(() => expect(bindMention).toHaveBeenCalledTimes(2))
     fireEvent.click(screen.getByRole('button', { name: labels.sendMessage }))
     expect(onSend).toHaveBeenCalledWith('', [], [
       expect.objectContaining({ resourceKey: 'customer', action: 'read' }),
       expect.objectContaining({ resourceKey: 'lead', action: 'read' })
-    ])
+    ], undefined, [])
   })
 
   it('rejects a second page-changing reference before binding it', async () => {
@@ -339,18 +337,40 @@ describe('chat customization', () => {
       onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
     const input = screen.getByPlaceholderText(labels.inputPlaceholder)
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
-    fireEvent.click(screen.getByRole('option', { name: /记录\s+引用、查看或编辑记录/ }))
+    fireEvent.click(screen.getByRole('option', { name: /业务记录\s+查找客户、订单、合同等具体业务记录/ }))
 
-    const modelSearch = await screen.findByLabelText('搜索记录模型')
+    const modelSearch = await screen.findByLabelText('搜索业务类型')
+    const modelList = screen.getByRole('listbox')
+    fireEvent.keyDown(modelSearch, { key: 'End' })
+    expect(modelList.getAttribute('aria-activedescendant')).toContain('crm.lead')
+    fireEvent.keyDown(modelSearch, { key: 'ArrowDown' })
+    expect(modelList.getAttribute('aria-activedescendant')).toContain('res.partner')
+    fireEvent.keyDown(modelSearch, { key: 'Home' })
+    expect(modelList.getAttribute('aria-activedescendant')).toContain('res.partner')
+    expect(fireEvent.keyDown(modelSearch, { key: 'Tab' })).toBe(true)
     fireEvent.change(modelSearch, { target: { value: '线索' } })
     fireEvent.keyDown(modelSearch, { key: 'Enter' })
-    expect(await screen.findByText('记录搜索至少需要 2 个字符')).toBeTruthy()
+    expect(await screen.findByText('输入至少 2 个字符开始搜索')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: '返回' }))
-    fireEvent.click(screen.getByRole('option', { name: /记录\s+引用、查看或编辑记录/ }))
-    const reopenedSearch = await screen.findByLabelText('搜索记录模型')
+    fireEvent.click(screen.getByRole('option', { name: /业务记录\s+查找客户、订单、合同等具体业务记录/ }))
+    const reopenedSearch = await screen.findByLabelText('搜索业务类型')
     fireEvent.keyDown(reopenedSearch, { key: 'Escape' })
-    expect(await screen.findByRole('option', { name: /菜单\s+打开菜单或新建记录/ })).toBeTruthy()
+    expect(await screen.findByRole('option', { name: /菜单\s+按完整路径打开菜单，或直接进入新建/ })).toBeTruthy()
+  })
+
+  it('shares skill selection between @ and toolbar entry points', () => {
+    const agentSkills = [{ id: 'audit', name: '合同审计', description: '核对合同字段' }]
+    render(<ChatInput running={false} attachments={false} menuOptions={[]} agentSkills={agentSkills}
+      hostBridge={{ searchMentions: vi.fn() as any, bindMention: vi.fn() as any }}
+      labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    fireEvent.click(screen.getByRole('option', { name: /技能 选择适合当前任务的专业能力/ }))
+    fireEvent.click(screen.getByRole('option', { name: /合同审计/ }))
+    expect(screen.getByLabelText('已选技能')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '选择技能' }))
+    expect(screen.getByRole('option', { name: /合同审计/ }).getAttribute('aria-selected')).toBe('true')
   })
 
   it('opens skills from the toolbar and first-line slash, then clears only after success', async () => {
@@ -369,7 +389,7 @@ describe('chat customization', () => {
     fireEvent.change(input, { target: { value: '检查合同', selectionStart: 4 } })
     fireEvent.click(screen.getByRole('button', { name: labels.sendMessage }))
     await waitFor(() => expect(onSend).toHaveBeenCalledWith(
-      '检查合同', [], undefined, [expect.objectContaining({ id: 'audit', valid: true })]
+      '检查合同', [], undefined, [expect.objectContaining({ id: 'audit', valid: true })], []
     ))
     await waitFor(() => expect(screen.queryByLabelText('已选技能')).toBeNull())
 
@@ -544,7 +564,7 @@ describe('chat customization', () => {
     />)
     const file = new File(['clipboard'], 'clipboard.txt', { type: 'text/plain' })
     fireEvent.paste(screen.getByPlaceholderText(labels.inputPlaceholder), {
-      clipboardData: { files: [file] }
+      clipboardData: { files: [], items: [{ kind: 'file', getAsFile: () => file }] }
     })
     await waitFor(() => expect(onUpload).toHaveBeenCalledWith(file, expect.any(Function)))
     await waitFor(() => expect(screen.getByText('文本文件 · 1 KB')).toBeTruthy())
@@ -570,9 +590,9 @@ describe('chat customization', () => {
       /></main></div>)
     const form = container.querySelector('form')!
     const file = new File(['drop'], 'dropped.txt', { type: 'text/plain' })
-    fireEvent.dragEnter(form, { dataTransfer: { types: ['Files'], files: [file] } })
+    fireEvent.dragEnter(form, { dataTransfer: { types: ['Files'], files: [], items: [{ kind: 'file', getAsFile: () => file }] } })
     expect(screen.getByLabelText('拖放附件')).toBeTruthy()
-    fireEvent.drop(form, { dataTransfer: { types: ['Files'], files: [file] } })
+    fireEvent.drop(form, { dataTransfer: { types: ['Files'], files: [], items: [{ kind: 'file', getAsFile: () => file }] } })
     expect(screen.queryByLabelText('拖放附件')).toBeNull()
     await waitFor(() => expect(onUpload).toHaveBeenCalledWith(file, expect.any(Function)))
   })
@@ -598,6 +618,23 @@ class FakeRuntime {
   uploadAttachment = vi.fn()
   deleteAttachment = vi.fn()
 }
+
+describe('workspace references', () => {
+  it('adds, removes, and synchronizes deleted entries', async () => {
+    const entry = { path: '合同/甲.txt', name: '甲.txt', isDirectory: false, size: 12, mimeType: 'text/plain', modifiedAt: '' }
+    const runtime = { listWorkspace: vi.fn(async () => [entry]), deleteWorkspaceEntry: vi.fn(async () => undefined) }
+    const onToggleReference = vi.fn()
+    const onDeleted = vi.fn()
+    const { rerender } = render(<WorkspacePanel runtime={runtime as unknown as ChatRuntime} threadId='thread-1' references={[]} mentionCount={0} onToggleReference={onToggleReference} onDeleted={onDeleted} onClose={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: '加入对话 甲.txt' }))
+    expect(onToggleReference).toHaveBeenCalledWith(entry)
+    rerender(<WorkspacePanel runtime={runtime as unknown as ChatRuntime} threadId='thread-1' references={[{ id: 'file', path: entry.path, name: entry.name, isDirectory: false }]} mentionCount={0} onToggleReference={onToggleReference} onDeleted={onDeleted} onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: '移除对话 甲.txt' }))
+    fireEvent.click(screen.getByRole('button', { name: '删除 甲.txt' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认' }))
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledWith(entry))
+  })
+})
 
 describe('stream following', () => {
   it('protects user scroll and resumes for a new user message and thread', async () => {

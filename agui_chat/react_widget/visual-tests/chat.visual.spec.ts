@@ -94,7 +94,7 @@ test('light scenarios', async ({ page }) => {
       })
       await expect(page.getByLabel('拖放附件')).toBeHidden()
 
-      await page.getByPlaceholder('输入消息，开始提问').evaluate((element) => {
+      await page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能').evaluate((element) => {
         const transfer = new DataTransfer()
         transfer.items.add(new File(['paste'], 'paste-check.txt', { type: 'text/plain' }))
         transfer.items.add(new File(['region,amount'], 'sales-report.csv', { type: 'text/csv' }))
@@ -104,6 +104,22 @@ test('light scenarios', async ({ page }) => {
       await expect(page.getByText('sales-report.csv')).toBeVisible()
       await expect(page.getByText('文本文件 · 1 KB')).toBeVisible()
       await expect(page).toHaveScreenshot('composer-attachments.png', { fullPage: true })
+      await page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能').fill('@')
+      await expect(page.getByRole('dialog', { name: '添加到对话' })).toBeVisible()
+      await expect(page).toHaveScreenshot('mention-picker.png', { fullPage: true })
+      await page.getByRole('option', { name: /菜单/ }).click()
+      await expect(page.getByLabel('搜索菜单')).toBeVisible()
+      await expect(page).toHaveScreenshot('menu-picker.png', { fullPage: true })
+      await page.getByRole('button', { name: '返回' }).click()
+      await page.getByRole('option', { name: /业务记录/ }).click()
+      await expect(page.getByLabel('搜索业务类型')).toBeVisible()
+      await expect(page).toHaveScreenshot('record-types-picker.png', { fullPage: true })
+      await page.getByRole('button', { name: '返回' }).click()
+      await page.getByRole('option', { name: /技能/ }).click()
+      await page.getByRole('option', { name: /合同审计/ }).click()
+      await page.getByRole('button', { name: '选择技能' }).click()
+      await expect(page.getByText('已选 1/1')).toBeVisible()
+      await expect(page).toHaveScreenshot('skill-picker.png', { fullPage: true })
     }
   }
 })

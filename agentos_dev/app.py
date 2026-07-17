@@ -17,8 +17,8 @@ from .workspace import WorkspaceError, WorkspaceService, workspace_tools
 
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.8.1.0"
-COMMAND_CATALOG_HASH = "03dc60812aad2fa725f65bbbf70bb2ae892ed5d0312319ae114fba6909d3cbea"
+BUNDLE_VERSION = "12.0.8.2.0"
+COMMAND_CATALOG_HASH = "53c315d2ff38112adfd76577259f46247767e2b7414f0ce7045535b780ffa94d"
 DEFAULT_ENV_FILE = "/home/junge/pros/agents_app/.env"
 DEFAULT_MODEL_ID = "qwen3.6-35b-a3b"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -227,6 +227,7 @@ assistant = Agent(
         "跨模型操作只能使用新快照中真实可见的 Kanban 控件 token 逐步导航；控件语义不明确或存在多个合理路径时请用户选择，不能猜测。",
         "每轮最多跟进四次客户端页面工具；达到上限后明确停止，并请用户继续发送消息完成剩余操作。",
         "页面操作必须通过对应工具调用实现，不能用文字代替执行；收到工具成功结果前，严禁声称已打开、已进入、已修改、已保存或已完成。",
+        "One2many 明细必须使用快照 fields 中的 childFields、operations 和 capabilities.x2many 中当前可见的控件、行 token；新增关系字段时先激活可见创建控件，再用新行 token 暂存标量依赖、执行关系搜索并暂存候选；批量 create 只填写可见标量，update/delete 只使用 record.values 中已加载的持久行 ID；禁止猜测未加载行 ID、嵌套 One2many 或临时行别名。",
         "用户只要求编辑当前表单、进入编辑模式，且未提供任何字段修改内容时，第一个响应必须只调用 odoo.enter_edit_mode，不要先回复文字或询问要修改的字段；该操作不修改字段也不保存。用户明确提供字段和值时才调用 odoo.patch_current_form；只读模式会自动进入编辑模式、同步状态并保存。",
         "上下文存在 Selected Agent Skills 时，必须先对每个手动选择的技能按原样调用 get_skill_instructions；手动选择不代表禁止自动使用其他可用技能。",
         "工作区只属于当前 thread。读取目录和文本使用 workspace_list_files、workspace_read_file；写入、移动、删除、Shell、代码和技能脚本执行必须使用对应的需确认工具。",

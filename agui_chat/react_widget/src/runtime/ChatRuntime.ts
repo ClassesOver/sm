@@ -15,7 +15,8 @@ import type {
   ToolCall,
   TransportState,
   WorkspaceCapability,
-  WorkspaceEntry
+  WorkspaceEntry,
+  WorkspaceReference
 } from '../types'
 import { AGUI_ODOO_PROTOCOL } from '../types'
 import { applyJsonPatch, deepMerge } from './jsonPatch'
@@ -369,10 +370,12 @@ export class ChatRuntime {
     attachments: AttachmentRef[] = [],
     selection?: MentionReference[] | MenuMention,
     recordSelection?: RecordSelection,
-    skills: SelectedAgentSkill[] = []
+    skills: SelectedAgentSkill[] = [],
+    workspaceReferences: WorkspaceReference[] = []
   ): Promise<boolean> {
     const text = content.trim()
     const mentions = Array.isArray(selection) ? selection.map((item) => clone(item)) : []
+    const workspace = workspaceReferences.map((item) => clone(item))
     const menuMention = selection && !Array.isArray(selection) ? selection : undefined
     const currentMenu = menuMention ? this.resolveMenuMention(menuMention) : undefined
     if (menuMention && !currentMenu) {
@@ -385,6 +388,13 @@ export class ChatRuntime {
     const mentionError = this.validateMentions(mentions)
     if (mentionError) {
       const error = new Error(mentionError)
+      this.error = error.message
+      this.props.onError?.(error)
+      this.emit()
+      return false
+    }
+    if (mentions.length + workspace.length > 5) {
+      const error = new Error('Odoo 引用与工作区引用合计最多 5 个。')
       this.error = error.message
       this.props.onError?.(error)
       this.emit()
@@ -405,7 +415,7 @@ export class ChatRuntime {
       this.emit()
       return false
     }
-    if ((!text && !attachments.length && !currentMenu && !mentions.length && !recordSelection) || this.running || this.loadingSessions) {
+    if ((!text && !attachments.length && !currentMenu && !mentions.length && !workspace.length && !recordSelection) || this.running || this.loadingSessions) {
       return false
     }
     try {
@@ -437,6 +447,7 @@ export class ChatRuntime {
       content: text,
       attachments: clone(syncedAttachments),
       mentions: mentions.length ? mentions : undefined,
+      workspaceReferences: workspace.length ? workspace : undefined,
       skills: skills.length ? skills.map((skill) => ({ ...skill, valid: true })) : undefined,
       menuMention: currentMenu,
       recordSelection: recordSelection ? clone(recordSelection) : undefined,
@@ -659,6 +670,7 @@ export class ChatRuntime {
     if (incompatible) return null
     const selection = {
       field: String(result.field || ''),
+      rowToken: typeof result.rowToken === 'string' ? result.rowToken : false,
       operation,
       records: unique.map((candidate) => ({ id: candidate.id, displayName: candidate.displayName })),
       snapshotId: String(result.snapshotId || '')
@@ -1865,6 +1877,9 @@ export class ChatRuntime {
     if (previous.mentions?.length && !message.mentions?.length) {
       message.mentions = previous.mentions
     }
+    if (previous.workspaceReferences?.length && !message.workspaceReferences?.length) {
+      message.workspaceReferences = previous.workspaceReferences
+    }
     if (previous.skills?.length && !message.skills?.length) {
       message.skills = previous.skills
     }
@@ -1923,12 +1938,12 @@ export class ChatRuntime {
   }
 
   private validateSkills(skills: SelectedAgentSkill[]): string | null {
-    if (skills.length > 3) return '每条消息最多选择 3 个技能。'
+    if (skills.length > 1) return '每条消息只能选择 1 个技能。'
     if (new Set(skills.map((skill) => skill.id)).size !== skills.length) {
       return '不能重复选择同一技能。'
     }
     if (skills.some((skill) => !this.isSkillCurrent(skill))) {
-      return '所选技能已移除，请重新选择。'
+      return '所选技能已不可用，请移除后重试。'
     }
     return null
   }

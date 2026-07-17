@@ -3,11 +3,12 @@ import json
 from datetime import timedelta
 
 from odoo import api, fields
-from odoo.tests.common import TransactionCase
+from odoo.tests.common import TransactionCase, tagged
 
 from ..models.agui_chat_mention import MentionTokenError
 
 
+@tagged("agui_mention")
 class TestMentionReferences(TransactionCase):
 
     def setUp(self):
@@ -39,6 +40,7 @@ class TestMentionReferences(TransactionCase):
             "comment": "<p>公开备注</p>",
         })
         self.tokens = self.env["agui.chat.mention.token"]
+        self.tokens._menu_catalog.clear_cache(self.tokens)
 
     def _search(self, query="引用测试客户甲", scope="record", current_filter=None):
         return self.tokens.search_mentions(
@@ -99,11 +101,10 @@ class TestMentionReferences(TransactionCase):
             "配额", "all", False, "res.partner", [], current_filter, self.session_key,
         )
         kinds = [item["kind"] for item in result["candidates"]]
-        self.assertEqual(len(kinds), 20)
-        self.assertLessEqual(kinds.count("record"), 5)
-        self.assertGreaterEqual(kinds.count("menu"), 4)
-        self.assertGreaterEqual(kinds.count("saved_filter"), 5)
-        self.assertEqual(kinds.count("current_filter"), 1)
+        self.assertTrue(kinds)
+        self.assertTrue(set(kinds).issubset({"record", "menu"}))
+        self.assertNotIn("saved_filter", kinds)
+        self.assertNotIn("current_filter", kinds)
 
         explicit = self.tokens.search_mentions(
             "配额", "record", "res.partner", "res.partner", [], False,
@@ -125,6 +126,12 @@ class TestMentionReferences(TransactionCase):
             "", "record", False, "res.partner", [], False, self.session_key,
         )["candidates"])
 
+    def test_menu_catalog_is_lazily_cached_with_create_capability(self):
+        catalog = self.tokens._menu_catalog()
+        item = next(entry for entry in catalog if entry["menu_id"] == self.menu.id)
+        self.assertEqual(item["can_create"], self.tokens._can("res.partner", "create"))
+        self.assertIs(catalog, self.tokens._menu_catalog())
+
     def test_model_picker_exposes_up_to_one_hundred_visible_models(self):
         catalog = [{
             "model": "x.model.%03d" % index,
@@ -133,6 +140,13 @@ class TestMentionReferences(TransactionCase):
             "action_id": index + 1000,
         } for index in range(120)]
         scopes = self.tokens._model_scopes(False, [], catalog)
+        catalog[3]["model"] = "res.partner"
+        partner_model = self.env["ir.model"].search([("model", "=", "res.partner")], limit=1)
+        self.env["agui.chat.config"].sudo().get_active_config().write({
+            "mention_model_id": partner_model.id,
+        })
+        filtered = self.tokens._model_scopes(False, [], catalog)
+        self.assertEqual([item["model"] for item in filtered], ["res.partner"])
         self.assertEqual(len(scopes), 100)
         self.assertEqual(scopes[0]["model"], "x.model.000")
         self.assertEqual(scopes[-1]["model"], "x.model.099")

@@ -23,7 +23,7 @@ CONFIRMATION_COMMANDS = {
     "odoo.save_current_form",
     "odoo.discard_current_form",
 }
-RELATION_FIELD_TYPES = {"many2one", "many2many"}
+RELATION_FIELD_TYPES = {"many2one", "many2many", "one2many"}
 UNDO_FIELD_TYPES = {
     "boolean", "char", "date", "datetime", "float", "html", "integer",
     "many2many", "many2one", "monetary", "selection", "text",
@@ -164,7 +164,7 @@ class AguiChatToolPolicy(models.Model):
         model_name = row.get("model") or target.get("model") or arguments.get("model")
         field_names = self._patch_field_names(arguments)
         if arguments.get("field"):
-            field_names.add(arguments.get("field"))
+            field_names.add(str(arguments.get("field")).split(".", 1)[0])
         user_groups = set(self.env.user.groups_id.ids)
         all_policies = self.sudo().search([
             ("active", "=", True), ("tool_name", "=", tool_name)
@@ -322,16 +322,35 @@ class AguiChatToolAuthorization(models.Model):
         sensitive = set(
             self.env["agui.chat.config"].sudo().get_active_config().sensitive_fields()
         )
-        normalized_changes = []
-        for change in changes:
-            item = dict(change)
-            name = str(item.get("field") or "")
-            is_sensitive = bool(item.get("sensitive")) or name in sensitive or SECRET_KEYS.search(name)
-            item["sensitive"] = is_sensitive
+
+        def normalize_value(value, depth=0):
+            if depth > 5:
+                return "[truncated]"
+            if isinstance(value, list):
+                return [normalize_value(item, depth + 1) for item in value[:100]]
+            if not isinstance(value, dict):
+                return value[:2000] if isinstance(value, str) else value
+            item = {
+                str(key): normalize_value(child, depth + 1)
+                for key, child in value.items()
+                if str(key) != "sensitive"
+            }
+            field_name = str(value.get("childField") or value.get("field") or "")
+            is_sensitive = bool(
+                field_name and (
+                    field_name in sensitive or SECRET_KEYS.search(field_name)
+                )
+            )
+            if field_name:
+                item["sensitive"] = is_sensitive
             if is_sensitive:
                 item["oldValue"] = "[redacted]"
                 item["newValue"] = "[redacted]"
-            normalized_changes.append(redact(item))
+            return item
+
+        normalized_changes = []
+        for change in changes:
+            normalized_changes.append(redact(normalize_value(change)))
         return {
             "target": {key: target.get(key) for key in binding_keys},
             "changes": normalized_changes,

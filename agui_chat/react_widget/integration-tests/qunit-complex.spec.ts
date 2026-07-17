@@ -38,5 +38,5 @@ test('通用单据真实 BasicModel/FormController QUnit', async ({ page }) => {
   expect(result.failed).toBe(0)
   expect(result.passed).toBeGreaterThan(0)
   expect(result.total).toBe(result.passed)
-  expect(result.executedTests).toBe(8)
+  expect(result.executedTests).toBe(13)
 })

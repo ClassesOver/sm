@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.1.0')
+    expect(AguiChat.version).toBe('12.0.8.2.0')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 

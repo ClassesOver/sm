@@ -977,6 +977,62 @@ odoo.define("agui_chat.tests.host", function (require) {
         });
     });
 
+    QUnit.test("mentioned menu create checks the opened action snapshot", function (assert) {
+        assert.expect(3);
+        var done = assert.async();
+        var created = false;
+        var waits = 0;
+        Commands.execute({
+            getSnapshot: function () { return {snapshotId: "before"}; },
+            hasUnsavedChanges: function () { return false; },
+            openMenu: function () { return $.when(); },
+            waitForSnapshotChange: function () {
+                waits += 1;
+                return $.when(waits === 1 ? {snapshotId: "menu", capabilities: {create: true}} : {snapshotId: "create"});
+            },
+            getController: function () { return {}; },
+            openCreate: function () { created = true; return $.when(); },
+        }, {
+            tool: "odoo.open_mentioned_menu", authorizationId: "authorization-1",
+            arguments: {token: "menu", __mention: [{kind: "menu", action: "create", menu_id: 8, label: "客户"}]},
+        }).then(function (result) {
+            assert.ok(created, "create executes after opening the menu");
+            assert.strictEqual(waits, 2);
+            assert.strictEqual(result.mode, "create");
+            done();
+        }, function (error) {
+            assert.ok(false, error && error.message);
+            done();
+        });
+    });
+
+    QUnit.test("mentioned menu create stops when the opened action rejects create", function (assert) {
+        assert.expect(4);
+        var done = assert.async();
+        var opened = false;
+        var created = false;
+        Commands.execute({
+            getSnapshot: function () { return {snapshotId: "before"}; },
+            hasUnsavedChanges: function () { return false; },
+            openMenu: function () { opened = true; return $.when(); },
+            waitForSnapshotChange: function () { return $.when({snapshotId: "menu", capabilities: {create: false}}); },
+            getController: function () { return {}; },
+            openCreate: function () { created = true; return $.when(); },
+        }, {
+            tool: "odoo.open_mentioned_menu", authorizationId: "authorization-1",
+            arguments: {token: "menu", __mention: [{kind: "menu", action: "create", menu_id: 8, label: "客户"}]},
+        }).then(function () {
+            assert.ok(false, "unsupported create must fail");
+            done();
+        }, function (error) {
+            assert.ok(opened, "the menu remains opened");
+            assert.notOk(created, "openCreate is not called");
+            assert.strictEqual(error.code, "create_not_allowed");
+            assert.strictEqual(error.message, "当前 action 不支持新建");
+            done();
+        });
+    });
+
     QUnit.test("mentioned record keeps the bound view mode across menu navigation", function (assert) {
         assert.expect(4);
         var done = assert.async();

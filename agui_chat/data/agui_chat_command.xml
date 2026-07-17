@@ -77,6 +77,13 @@
         <field name="description">使用当前表单的域和上下文搜索可写关系字段。</field>
         <field name="sequence">70</field>
     </record>
+    <record id="command_stage_current_form" model="agui.chat.command">
+        <field name="name">暂存当前表单</field>
+        <field name="code">odoo.stage_current_form</field>
+        <field name="command_type">page</field>
+        <field name="description">调用原生 onchange 暂存当前表单或可见 One2many 行字段，不保存。</field>
+        <field name="sequence">75</field>
+    </record>
     <record id="command_patch_current_form" model="agui.chat.command">
         <field name="name">修改当前表单</field>
         <field name="code">odoo.patch_current_form</field>

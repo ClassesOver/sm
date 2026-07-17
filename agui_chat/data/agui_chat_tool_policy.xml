@@ -22,4 +22,39 @@
         <field name="confirmation_mode">never</field>
         <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
     </record>
+    <record id="policy_stage_current_form" model="agui.chat.tool.policy">
+        <field name="name">暂存当前可见表单字段</field>
+        <field name="tool_name">odoo.stage_current_form</field>
+        <field name="access_level">write</field>
+        <field name="confirmation_mode">never</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="policy_patch_current_form" model="agui.chat.tool.policy">
+        <field name="name">修改并保存当前可见表单字段</field>
+        <field name="tool_name">odoo.patch_current_form</field>
+        <field name="access_level">write</field>
+        <field name="confirmation_mode">risk</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="policy_save_current_form" model="agui.chat.tool.policy">
+        <field name="name">保存当前表单</field>
+        <field name="tool_name">odoo.save_current_form</field>
+        <field name="access_level">write</field>
+        <field name="confirmation_mode">always</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="policy_discard_current_form" model="agui.chat.tool.policy">
+        <field name="name">放弃当前表单更改</field>
+        <field name="tool_name">odoo.discard_current_form</field>
+        <field name="access_level">write</field>
+        <field name="confirmation_mode">always</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="policy_activate_visible_control" model="agui.chat.tool.policy">
+        <field name="name">激活当前可见页面控件</field>
+        <field name="tool_name">odoo.activate_view_control</field>
+        <field name="access_level">write</field>
+        <field name="confirmation_mode">risk</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
 </odoo>

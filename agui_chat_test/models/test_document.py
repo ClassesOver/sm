@@ -67,6 +67,9 @@ class AguiChatTestDocument(models.Model):
     line_ids = fields.One2many(
         "agui.chat.test.line", "document_id", string="明细"
     )
+    detail_item_ids = fields.One2many(
+        "agui.chat.test.line", "document_id", string="通用明细"
+    )
     show_extra = fields.Boolean(string="显示附加字段")
     dynamic_note = fields.Char(string="动态附加字段")
     locked_note = fields.Char(string="状态锁定字段")
@@ -77,11 +80,19 @@ class AguiChatTestDocument(models.Model):
         default="draft",
     )
     secret_token = fields.Char(string="敏感令牌", default="e2e-secret-token")
+    phone_number = fields.Char(string="手机号", default="13800138000")
+    bank_account = fields.Char(string="银行卡号", default="6222020000000000")
+    tax_id = fields.Char(string="税号", default="91310000TEST")
+    identity_number = fields.Char(string="身份证号", default="310101199001010000")
 
     @api.onchange("document_type")
     def _onchange_document_type(self):
         for record in self:
             record.domain_key = record.document_type
+
+    def action_confirm(self):
+        self.write({"state": "confirmed"})
+        return True
 
     @api.constrains("amount")
     def _check_amount(self):
@@ -159,6 +170,18 @@ class AguiChatTestLine(models.Model):
     )
     name = fields.Char(string="明细名称", required=True)
     quantity = fields.Integer(string="数量", default=1)
+    domain_key = fields.Selection(
+        DOMAIN_KEYS, string="关系域键", required=True, default="standard"
+    )
+    candidate_id = fields.Many2one(
+        "agui.chat.test.option", string="明细候选", ondelete="restrict"
+    )
+    tag_ids = fields.Many2many(
+        "agui.chat.test.option",
+        "agui_chat_test_line_option_rel",
+        "line_id", "option_id", string="明细标签",
+    )
+    secret_token = fields.Char(string="明细敏感令牌")
 
 
 class AguiChatTestConfig(models.Model):

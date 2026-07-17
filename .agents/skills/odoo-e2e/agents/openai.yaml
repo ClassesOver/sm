@@ -1,0 +1,4 @@
+interface:
+  display_name: "Odoo 12 端到端测试"
+  short_description: "隔离数据库并运行 Odoo 12 Playwright 端测"
+  default_prompt: "使用 $odoo-e2e 创建隔离数据库并运行 Odoo 12 端到端测试。"

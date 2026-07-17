@@ -19,6 +19,7 @@ PAGE_COMMAND_XML_IDS = {
     "odoo.enter_edit_mode": "command_enter_edit_mode",
     "odoo.activate_view_control": "command_activate_view_control",
     "odoo.search_relation": "command_search_relation",
+    "odoo.stage_current_form": "command_stage_current_form",
     "odoo.patch_current_form": "command_patch_current_form",
     "odoo.validate_current_form": "command_validate_current_form",
     "odoo.save_current_form": "command_save_current_form",

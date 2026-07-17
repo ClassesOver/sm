@@ -4,7 +4,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
     var ajax = require("web.ajax");
 
     var PROTOCOL = "agui.odoo.v2";
-    var MODULE_VERSION = "12.0.8.1.0";
+    var MODULE_VERSION = "12.0.8.2.0";
     var WRITE_COMMANDS = {
         "odoo.patch_current_form": true,
         "odoo.save_current_form": true,
