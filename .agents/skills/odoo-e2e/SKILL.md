@@ -37,6 +37,14 @@ bash .agents/skills/odoo-e2e/scripts/run_odoo_e2e.sh integration-tests/qunit-hos
 ODOO_E2E_DRY_RUN=1 bash .agents/skills/odoo-e2e/scripts/run_odoo_e2e.sh
 ```
 
+## 端测问题排查经验
+
+- Odoo 12 的 --test-tags 支持模块、类和方法选择器，例如 /agui_chat:TestMentionReferences；如果只使用自定义标签，需要在测试类上加 @tagged("agui_mention")，再传 --test-tags=agui_mention。
+- Odoo 12 只有在模块加载了 demo 数据时才会执行安装期 Python 测试。使用 --without-demo=all 时日志可能显示 0 个测试；要验证 Python 测试，应在全新库中省略该参数，并检查日志中的 running tests、Ran N tests 和 OK。
+- QUnit 页面长时间没有 #qunit-testresult 的 completed 状态时，先检查 Playwright trace 的 pageError 和 Odoo 日志中的静态资源请求。浏览器脚本语法错误会表现为大量 Missing dependencies，通常不是 QUnit 断言失败。
+- Odoo 12 会使用 rjsmin 二次压缩后端资产。Vite 已压缩的现代 IIFE 可能被二次压缩破坏；对 widget 构建使用 minify: false，让 Odoo 只负责一次压缩，并用 Odoo 自身的 odoo.addons.base.models.assetsbundle.rjsmin 加 node --check 做本地预检。
+- 端测失败后保留本次隔离数据库和日志目录。重点记录 ODOO_E2E_DB、ODOO_E2E_WORK_DIR、odoo.log、Playwright error-context.md 和 trace；确认脚本已终止本次启动的 Odoo、Playwright、浏览器进程，不要杀掉测试前已有的服务。
+
 ## 配置
 
 | 环境变量 | 默认值 | 用途 |
