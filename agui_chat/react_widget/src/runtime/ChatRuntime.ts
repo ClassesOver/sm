@@ -33,6 +33,21 @@ import {
 
 type Listener = () => void
 
+type RunContext = {
+  threadId: string
+  controller: AbortController
+  cancelled: boolean
+  finalized: boolean
+  savePromise: Promise<void> | null
+  currentRunId: string
+  currentRequestId: string
+  activeClientTools: Set<string>
+  receivedTerminalEvent: boolean
+  upstreamError: string
+  pendingHostBridgePromises: Promise<unknown>[]
+  hostBridgeFollowupNeeded: boolean
+}
+
 function eventText(event: Record<string, unknown>): string {
   return String(event.delta || event.content || event.text || '')
 }
@@ -161,11 +176,7 @@ export class ChatRuntime {
 
   private currentRequestId = ""
 
-  private activeClientTools = new Set<string>()
-
-  private receivedTerminalEvent = false
-
-  private upstreamError = ""
+  private activeRunContext: RunContext | null = null
 
   private loadingSessions = false
 
@@ -179,10 +190,6 @@ export class ChatRuntime {
 
   private toolsByKey: Record<string, ToolCall> = {}
 
-  private pendingHostBridgePromises: Promise<unknown>[] = []
-
-  private hostBridgeFollowupNeeded = false
-
   private executedHostBridgeTools: Record<string, boolean> = {}
 
   private confirmingHostBridgeTools: Record<string, boolean> = {}
@@ -190,8 +197,6 @@ export class ChatRuntime {
   private resumedToolResults: Record<string, boolean> = {}
 
   private undoInFlight: Record<string, boolean> = {}
-
-  private abortController: AbortController | null = null
 
   private saveTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -258,10 +263,8 @@ export class ChatRuntime {
   }
 
   cancel(): void {
-    if (this.abortController && !this.abortController.signal.aborted) {
-      this.abortController.abort()
-      this.setTransportState('cancelled')
-    }
+    const context = this.activeRunContext
+    if (context) this.cancelRun(context)
   }
 
   unmount(): void {
@@ -387,31 +390,8 @@ export class ChatRuntime {
     this.confirmingHostBridgeTools = {}
     this.resumedToolResults = {}
     this.undoInFlight = {}
-    this.running = true
-    this.error = ''
-    this.props.onRunningChange?.(true)
-    this.notifyMessages()
-    this.emit()
-
-    try {
-      await this.run(0)
-    } catch (error) {
-      if ((error as Error)?.name === 'AbortError') {
-        this.setTransportState('cancelled')
-      } else {
-        this.setTransportState('error')
-        this.error = (error as Error)?.message || 'AG-UI run failed.'
-        this.recordRunError(this.error)
-        this.props.onError?.(error)
-      }
-    } finally {
-      this.pendingAssistantId = null
-      this.running = false
-      this.props.onRunningChange?.(false)
-      this.notifyMessages()
-      await this.queueSave()
-      this.emit()
-    }
+    const context = this.createRunContext()
+    await this.executeRunLifecycle(context, () => this.run(context, 0))
   }
 
   stop(): void {
@@ -435,71 +415,51 @@ export class ChatRuntime {
       context: { requestId: this.currentRequestId, runId: this.currentRunId, threadId: this.threadId }
     }
     this.confirmingHostBridgeTools[key] = true
-    this.running = true
-    this.error = ''
-    this.props.onRunningChange?.(true)
-    this.notifyMessages()
-    this.emit()
-    let finalResult: Record<string, unknown>
-    try {
-      const value = await bridge.confirmTool(call, authorizationId, approved)
-      finalResult = this.normalizeHostBridgeSuccess(current, value)
-    } catch (error) {
-      finalResult = {
-        ok: false, operation: toolName(current),
-        error: (error as Error)?.message || 'Tool confirmation failed.'
-      }
-    }
-    if (finalResult.needs_confirmation) {
-      const currentArgs = isRecord(toolArgs(current)) ? toolArgs(current) as Record<string, unknown> : {}
-      const nextArgs = {
-        ...currentArgs,
-        ...(finalResult.target ? { target: finalResult.target } : {}),
-        ...(finalResult.patch ? { patch: finalResult.patch } : {})
-      }
-      this.mergeTool({
-        id: toolCallId(current), name: toolName(current),
-        args: nextArgs, tool_args: nextArgs, result: finalResult,
-        status: 'needs_confirmation', needs_confirmation: true, error: false
+    const context = this.createRunContext()
+    await this.executeRunLifecycle(context, async () => {
+      const resultPromise = Promise.resolve()
+        .then(() => bridge.confirmTool!(call, authorizationId, approved))
+        .then(
+          (value) => this.normalizeHostBridgeSuccess(current, value),
+          (error): Record<string, unknown> => ({
+            ok: false,
+            operation: toolName(current),
+            error: (error as Error)?.message || 'Tool confirmation failed.'
+          })
+        )
+        .then((finalResult) => {
+          if (finalResult.needs_confirmation) {
+            const args = isRecord(toolArgs(current))
+              ? toolArgs(current) as Record<string, unknown> : {}
+            const nextArgs = {
+              ...args,
+              ...(finalResult.target ? { target: finalResult.target } : {}),
+              ...(finalResult.patch ? { patch: finalResult.patch } : {})
+            }
+            this.mergeTool({
+              id: toolCallId(current), name: toolName(current),
+              args: nextArgs, tool_args: nextArgs, result: finalResult,
+              status: 'needs_confirmation', needs_confirmation: true, error: false
+            })
+            this.notifyMessages()
+            this.emit()
+          } else {
+            this.recordHostBridgeResult(current, finalResult, context)
+          }
+          return finalResult
+        })
+      const persistedResult = resultPromise.then(async (finalResult) => {
+        await this.persistImmediately()
+        return finalResult
       })
+      const finalResult = await this.awaitWithRunCancellation(context, persistedResult)
+      this.throwIfRunCancelled(context)
+      if (finalResult.needs_confirmation || this.resumedToolResults[key]) return
+      this.resumedToolResults[key] = true
+      await this.run(context, 0)
+    }, () => {
       delete this.confirmingHostBridgeTools[key]
-      this.running = false
-      this.props.onRunningChange?.(false)
-      this.notifyMessages()
-      await this.persistImmediately()
-      this.emit()
-      return
-    }
-    this.recordHostBridgeResult(current, finalResult)
-    await this.persistImmediately()
-    if (this.resumedToolResults[key]) {
-      delete this.confirmingHostBridgeTools[key]
-      this.running = false
-      this.props.onRunningChange?.(false)
-      this.notifyMessages()
-      this.emit()
-      return
-    }
-    this.resumedToolResults[key] = true
-    try {
-      await this.run(0)
-    } catch (error) {
-      if ((error as Error)?.name === 'AbortError') {
-        this.setTransportState('cancelled')
-      } else {
-        this.setTransportState('error')
-        this.error = (error as Error)?.message || 'AG-UI run failed.'
-        this.recordRunError(this.error)
-        this.props.onError?.(error)
-      }
-    } finally {
-      delete this.confirmingHostBridgeTools[key]
-      this.running = false
-      this.props.onRunningChange?.(false)
-      this.notifyMessages()
-      await this.queueSave()
-      this.emit()
-    }
+    })
   }
 
   async undoTool(tool: ToolCall): Promise<void> {
@@ -659,30 +619,8 @@ export class ChatRuntime {
     this.confirmingHostBridgeTools = {}
     this.resumedToolResults = {}
     this.undoInFlight = {}
-    this.running = true
-    this.error = ''
-    this.props.onRunningChange?.(true)
-    this.notifyMessages()
-    this.emit()
-    try {
-      await this.run(0)
-    } catch (error) {
-      if ((error as Error)?.name === 'AbortError') {
-        this.setTransportState('cancelled')
-      } else {
-        this.setTransportState('error')
-        this.error = (error as Error)?.message || 'AG-UI run failed.'
-        this.recordRunError(this.error)
-        this.props.onError?.(error)
-      }
-    } finally {
-      this.pendingAssistantId = null
-      this.running = false
-      this.props.onRunningChange?.(false)
-      this.notifyMessages()
-      await this.queueSave()
-      this.emit()
-    }
+    const context = this.createRunContext()
+    await this.executeRunLifecycle(context, () => this.run(context, 0))
   }
 
   async uploadAttachment(file: File, onProgress?: (progress: number) => void): Promise<AttachmentRef> {
@@ -739,14 +677,21 @@ export class ChatRuntime {
   }
 
   applyEvent(rawEvent: unknown): void {
+    this.applyEventForContext(rawEvent, this.activeRunContext)
+  }
+
+  private applyEventForContext(rawEvent: unknown, context: RunContext | null): void {
     if (!rawEvent || typeof rawEvent !== 'object') {
       return
     }
+    if (context?.cancelled) return
     const event = rawEvent as Record<string, unknown>
     const eventRunId = String(event.runId || event.run_id || "")
     const eventThreadId = String(event.threadId || event.thread_id || "")
-    if ((eventRunId && eventRunId !== this.currentRunId) ||
-        (eventThreadId && eventThreadId !== this.threadId)) {
+    const expectedRunId = context?.currentRunId || this.currentRunId
+    const expectedThreadId = context?.threadId || this.threadId
+    if ((eventRunId && eventRunId !== expectedRunId) ||
+        (eventThreadId && eventThreadId !== expectedThreadId)) {
       return
     }
     const type = eventType(event)
@@ -787,14 +732,18 @@ export class ChatRuntime {
         status: 'pending'
       })
       this.activeToolCallId = null
-      this.executeHostBridgeTool(tool)
+      this.executeHostBridgeTool(tool, context)
     } else if (type === 'TOOL_CALL_RESULT') {
       this.applyToolResult(event)
     } else if (type === 'RUN_ERROR') {
-      this.upstreamError = String(data.message || data.content || event.message || 'AG-UI run failed.')
-      this.recordRunError(this.upstreamError)
+      const message = String(data.message || data.content || event.message || 'AG-UI run failed.')
+      if (context) {
+        context.upstreamError = message
+        context.receivedTerminalEvent = true
+      }
+      this.recordRunError(message)
     } else if (type === 'RUN_FINISHED') {
-      this.receivedTerminalEvent = true
+      if (context) context.receivedTerminalEvent = true
       this.applyRunFinished(event)
     } else if (type === 'REASONING_START' || type === 'REASONING_MESSAGE_START') {
       this.ensureAssistant()
@@ -871,9 +820,7 @@ export class ChatRuntime {
   }
 
   private resetThread(threadId: string, messages: ChatMessage[]): void {
-    if (this.abortController) {
-      this.abortController.abort()
-    }
+    this.cancel()
     this.threadId = threadId
     this.messages = this.normalizeStoredMessages(messages)
     this.agentState = normalizeAgentState(this.props.agentState || {})
@@ -889,19 +836,142 @@ export class ChatRuntime {
     this.notifyMessages()
   }
 
-  private async run(depth: number): Promise<void> {
-    this.pendingHostBridgePromises = []
-    this.hostBridgeFollowupNeeded = false
-    this.abortController = new AbortController()
+  private createRunContext(): RunContext {
+    const context: RunContext = {
+      threadId: this.threadId,
+      controller: new AbortController(),
+      cancelled: false,
+      finalized: false,
+      savePromise: null,
+      currentRunId: '',
+      currentRequestId: '',
+      activeClientTools: new Set(),
+      receivedTerminalEvent: false,
+      upstreamError: '',
+      pendingHostBridgePromises: [],
+      hostBridgeFollowupNeeded: false
+    }
+    this.activeRunContext = context
+    this.running = true
+    this.error = ''
+    return context
+  }
+
+  private async executeRunLifecycle(
+    context: RunContext,
+    action: () => Promise<void>,
+    cleanup?: () => void
+  ): Promise<void> {
+    try {
+      this.props.onRunningChange?.(true)
+      this.notifyMessages()
+      this.emit()
+      await action()
+    } catch (error) {
+      this.handleRunFailure(context, error)
+    } finally {
+      try {
+        cleanup?.()
+      } finally {
+        const savePromise = this.finalizeRun(context)
+        if (savePromise) await savePromise
+      }
+    }
+  }
+
+  private handleRunFailure(context: RunContext, error: unknown): void {
+    if (this.activeRunContext !== context) return
+    if (context.cancelled || (error as Error)?.name === 'AbortError') {
+      context.cancelled = true
+      this.transportState = 'cancelled'
+      return
+    }
+    this.error = context.upstreamError || (error as Error)?.message || 'AG-UI run failed.'
+    this.recordRunError(this.error)
+    try {
+      this.setTransportState('error')
+    } catch (_callbackError) {
+      // State is already updated; finalization must still restore the input.
+    }
+    try {
+      this.props.onError?.(error)
+    } catch (_callbackError) {
+      // Consumer callbacks must not keep the runtime in a running state.
+    }
+  }
+
+  private cancelRun(context: RunContext): void {
+    if (context.cancelled) return
+    context.cancelled = true
+    if (!context.controller.signal.aborted) context.controller.abort()
+    this.finalizeRun(context, 'cancelled')
+  }
+
+  private finalizeRun(context: RunContext, state?: TransportState): Promise<void> | null {
+    if (context.finalized) return context.savePromise
+    context.finalized = true
+    if (this.activeRunContext !== context) return context.savePromise
+
+    if (state) this.transportState = state
+    this.activeRunContext = null
+    this.pendingAssistantId = null
+    this.running = false
+
+    const callbacks: Array<() => void> = []
+    if (state) callbacks.push(() => this.props.onTransportStateChange?.(state))
+    callbacks.push(
+      () => this.props.onRunningChange?.(false),
+      () => this.notifyMessages(),
+      () => this.emit()
+    )
+    callbacks.forEach((callback) => {
+      try {
+        callback()
+      } catch (_callbackError) {
+        // Runtime state is authoritative even when a consumer callback fails.
+      }
+    })
+    context.savePromise = this.persistImmediately()
+    return context.savePromise
+  }
+
+  private throwIfRunCancelled(context: RunContext): void {
+    if (context.cancelled || context.controller.signal.aborted ||
+        this.activeRunContext !== context) {
+      throw new DOMException('Aborted', 'AbortError')
+    }
+  }
+
+  private async awaitWithRunCancellation<T>(context: RunContext, promise: Promise<T>): Promise<T> {
+    this.throwIfRunCancelled(context)
+    let rejectCancelled: ((reason: DOMException) => void) | null = null
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      rejectCancelled = reject
+    })
+    const onAbort = () => rejectCancelled?.(new DOMException('Aborted', 'AbortError'))
+    context.controller.signal.addEventListener('abort', onAbort, { once: true })
+    try {
+      return await Promise.race([promise, cancelled])
+    } finally {
+      context.controller.signal.removeEventListener('abort', onAbort)
+    }
+  }
+
+  private async run(context: RunContext, depth: number): Promise<void> {
+    this.throwIfRunCancelled(context)
+    context.pendingHostBridgePromises = []
+    context.hostBridgeFollowupNeeded = false
     const input = buildRunInput(
-      this.messages, this.props, this.threadId, this.pendingAssistantId, this.agentState
+      this.messages, this.props, context.threadId, this.pendingAssistantId, this.agentState
     )
     validateRunInput(input, this.props)
+    context.currentRunId = input.runId
+    context.currentRequestId = input.requestId
+    context.activeClientTools = new Set(input.tools.map((tool) => tool.name))
+    context.receivedTerminalEvent = false
+    context.upstreamError = ''
     this.currentRunId = input.runId
     this.currentRequestId = input.requestId
-    this.activeClientTools = new Set(input.tools.map((tool) => tool.name))
-    this.receivedTerminalEvent = false
-    this.upstreamError = ''
     this.setTransportState('connecting')
     const response = await fetch(endpoint(this.props), {
       method: 'POST',
@@ -914,7 +984,7 @@ export class ChatRuntime {
         ...(this.props.headers || {})
       },
       body: JSON.stringify(input),
-      signal: this.abortController.signal
+      signal: context.controller.signal
     })
     if (!response.ok) {
       throw transportError(response.status)
@@ -926,18 +996,20 @@ export class ChatRuntime {
       throw new Error("AG-UI SSE response has no body.")
     }
     this.setTransportState("streaming")
-    await this.readSse(response.body)
-    if (!this.receivedTerminalEvent) {
+    await this.readSse(response.body, context)
+    this.throwIfRunCancelled(context)
+    if (!context.receivedTerminalEvent) {
       throw new Error("AG-UI stream ended before RUN_FINISHED.")
     }
-    if (this.upstreamError) {
-      throw new Error(this.upstreamError)
+    if (context.upstreamError) {
+      throw new Error(context.upstreamError)
     }
-    await this.waitForHostBridge(depth)
+    await this.waitForHostBridge(context, depth)
+    this.throwIfRunCancelled(context)
     this.setTransportState('completed')
   }
 
-  private async readSse(body: ReadableStream<Uint8Array>): Promise<void> {
+  private async readSse(body: ReadableStream<Uint8Array>, context: RunContext): Promise<void> {
     const reader = body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -947,26 +1019,31 @@ export class ChatRuntime {
         const result = await reader.read()
         if (result.done) {
           buffer += decoder.decode()
-          if (buffer.trim()) this.consumeSseBlock(buffer)
+          if (buffer.trim()) this.consumeSseBlock(buffer, context)
           return
         }
         buffer += decoder.decode(result.value, { stream: true })
         if (new TextEncoder().encode(buffer).byteLength > limit && !/\r?\n\r?\n/.test(buffer)) {
           throw new Error('SSE event exceeds the configured size limit.')
         }
-        buffer = this.flushSse(buffer, limit)
+        buffer = this.flushSse(buffer, limit, context)
+        if (context.receivedTerminalEvent) {
+          return
+        }
+        this.throwIfRunCancelled(context)
       }
     } finally {
+      if (context.receivedTerminalEvent) void reader.cancel().catch(() => undefined)
       reader.releaseLock()
     }
   }
 
-  private flushSse(buffer: string, limit: number): string {
+  private flushSse(buffer: string, limit: number, context: RunContext): string {
     let match = buffer.match(/\r?\n\r?\n/)
-    while (match) {
+    while (match && !context.receivedTerminalEvent && !context.cancelled) {
       const block = buffer.slice(0, match.index)
       if (new TextEncoder().encode(block).byteLength <= limit) {
-        this.consumeSseBlock(block)
+        this.consumeSseBlock(block, context)
       }
       buffer = buffer.slice((match.index || 0) + match[0].length)
       match = buffer.match(/\r?\n\r?\n/)
@@ -974,36 +1051,41 @@ export class ChatRuntime {
     return buffer
   }
 
-  private consumeSseBlock(block: string): void {
+  private consumeSseBlock(block: string, context: RunContext): void {
     const data = block
       .split(/\r?\n/)
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).replace(/^ /, ''))
       .join('\n')
     if (!data || data === '[DONE]') return
+    let event: unknown
     try {
-      this.applyEvent(JSON.parse(data))
+      event = JSON.parse(data)
     } catch {
       this.props.onError?.(new Error('Ignored malformed SSE event.'))
+      return
     }
+    this.applyEventForContext(event, context)
   }
 
-  private async waitForHostBridge(depth: number): Promise<void> {
-    const pending = this.pendingHostBridgePromises
+  private async waitForHostBridge(context: RunContext, depth: number): Promise<void> {
+    this.throwIfRunCancelled(context)
+    const pending = context.pendingHostBridgePromises
     const maxDepth = this.props.maxToolFollowups ?? 4
-    this.pendingHostBridgePromises = []
+    context.pendingHostBridgePromises = []
     if (!pending.length) {
       return
     }
-    await Promise.all(pending)
-    if (this.pendingHostBridgePromises.length) {
-      await this.waitForHostBridge(depth)
+    await this.awaitWithRunCancellation(context, Promise.all(pending))
+    if (context.pendingHostBridgePromises.length) {
+      await this.waitForHostBridge(context, depth)
     }
-    if (this.hostBridgeFollowupNeeded && depth < maxDepth) {
-      this.hostBridgeFollowupNeeded = false
-      await this.run(depth + 1)
-    } else if (this.hostBridgeFollowupNeeded) {
-      this.hostBridgeFollowupNeeded = false
+    this.throwIfRunCancelled(context)
+    if (context.hostBridgeFollowupNeeded && depth < maxDepth) {
+      context.hostBridgeFollowupNeeded = false
+      await this.run(context, depth + 1)
+    } else if (context.hostBridgeFollowupNeeded) {
+      context.hostBridgeFollowupNeeded = false
       this.appendAssistantContent(`\n\n已达到本轮 ${maxDepth} 次页面操作上限。请继续发送消息以完成剩余操作。`)
     }
   }
@@ -1106,8 +1188,8 @@ export class ChatRuntime {
     })
   }
 
-  private executeHostBridgeTool(tool: ToolCall): void {
-    if (!this.activeClientTools.has(toolName(tool))) {
+  private executeHostBridgeTool(tool: ToolCall, context: RunContext | null): void {
+    if (!context || !context.activeClientTools.has(toolName(tool))) {
       return
     }
     const key = tool.key || toolKey(tool)
@@ -1116,7 +1198,7 @@ export class ChatRuntime {
     }
     let promise: Promise<unknown> | null = null
     try {
-      promise = this.callHostBridge(tool)
+      promise = this.callHostBridge(tool, context)
     } catch (error) {
       promise = Promise.reject(error)
     }
@@ -1131,20 +1213,24 @@ export class ChatRuntime {
     })
     const handled = promise.then(
       (value) => {
-        this.recordHostBridgeResult(tool, this.normalizeHostBridgeSuccess(tool, value))
+        this.recordHostBridgeResult(tool, this.normalizeHostBridgeSuccess(tool, value), context)
       },
       (error) => {
         this.recordHostBridgeResult(tool, {
           ok: false,
           operation: toolName(tool),
           error: (error as Error)?.message || String(error || 'Host bridge failed.')
-        })
+        }, context)
       }
-    )
-    this.pendingHostBridgePromises.push(handled)
+    ).finally(() => {
+      if (context.cancelled || this.activeRunContext !== context) {
+        void this.persistImmediately()
+      }
+    })
+    context.pendingHostBridgePromises.push(handled)
   }
 
-  private callHostBridge(tool: ToolCall): Promise<unknown> | null {
+  private callHostBridge(tool: ToolCall, context: RunContext): Promise<unknown> | null {
     const bridge = this.props.hostBridge || {}
     const args = toolArgs(tool)
     const call: HostBridgeToolCall = {
@@ -1152,7 +1238,11 @@ export class ChatRuntime {
       tool: toolName(tool),
       arguments: args,
       message_id: tool.message_id || false,
-      context: { requestId: this.currentRequestId, runId: this.currentRunId, threadId: this.threadId }
+      context: {
+        requestId: context.currentRequestId,
+        runId: context.currentRunId,
+        threadId: context.threadId
+      }
     }
     return bridge.executeTool ? Promise.resolve(bridge.executeTool(call)) : null
   }
@@ -1172,7 +1262,11 @@ export class ChatRuntime {
     }
   }
 
-  private recordHostBridgeResult(tool: ToolCall, result: Record<string, unknown>): void {
+  private recordHostBridgeResult(
+    tool: ToolCall,
+    result: Record<string, unknown>,
+    context: RunContext | null = this.activeRunContext
+  ): void {
     const id = toolCallId(tool)
     if (result.needs_confirmation) {
       this.mergeTool({
@@ -1215,7 +1309,9 @@ export class ChatRuntime {
     if (source) {
       source.content = ''
     }
-    this.hostBridgeFollowupNeeded = true
+    if (context && !context.cancelled && this.activeRunContext === context) {
+      context.hostBridgeFollowupNeeded = true
+    }
     this.notifyMessages()
     this.emit()
   }
@@ -1223,8 +1319,21 @@ export class ChatRuntime {
   private async persistImmediately(): Promise<void> {
     try {
       await this.queueSave()
-    } catch (_error) {
-      // saveSession reports conflicts; the in-memory result remains intact.
+    } catch (error) {
+      const failure = error instanceof Error
+        ? error : new Error(String(error || 'Session save failed.'))
+      if (this.error === failure.message) return
+      this.error = failure.message
+      try {
+        this.props.onError?.(failure)
+      } catch (_callbackError) {
+        // Persistence failures must not reactivate or block the input.
+      }
+      try {
+        this.emit()
+      } catch (_callbackError) {
+        // In-memory state remains usable even when a subscriber fails.
+      }
     }
   }
 

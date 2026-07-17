@@ -27,6 +27,16 @@ function sseResponse(events: unknown[]) {
   )
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 describe('AguiChat public API', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -447,6 +457,191 @@ describe('ChatRuntime protocol handling', () => {
     expect(runtime.getSnapshot().error).toBe('')
     expect(runtime.getSnapshot().transportState).toBe('cancelled')
     expect(runtime.getSnapshot().messages[1].content).toBe('partial')
+  })
+
+  it('ends immediately on RUN_ERROR even when the SSE connection stays open', async () => {
+    const cancelStream = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(() => {
+      const encoder = new TextEncoder()
+      return Promise.resolve(new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(
+            'data: {"type":"RUN_ERROR","message":"upstream unavailable"}\n\n'
+          ))
+        },
+        cancel: cancelStream
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } }))
+    }))
+    const runtime = createRuntime({ runtimeUrl: '/runtime/run', attachments: false })
+
+    await runtime.send('start')
+
+    expect(cancelStream).toHaveBeenCalledTimes(1)
+    expect(runtime.getSnapshot()).toMatchObject({
+      running: false,
+      transportState: 'error',
+      error: 'upstream unavailable'
+    })
+    expect(runtime.getSnapshot().messages[1].streaming_error).toBe('upstream unavailable')
+  })
+
+  it('ends completed and cancels the reader on RUN_FINISHED without waiting for EOF', async () => {
+    const cancelStream = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(() => {
+      const encoder = new TextEncoder()
+      return Promise.resolve(new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"type":"RUN_FINISHED"}\n\n'))
+        },
+        cancel: cancelStream
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } }))
+    }))
+    const runtime = createRuntime({ runtimeUrl: '/runtime/run', attachments: false })
+
+    await runtime.send('start')
+
+    expect(cancelStream).toHaveBeenCalledTimes(1)
+    expect(runtime.getSnapshot()).toMatchObject({
+      running: false,
+      transportState: 'completed',
+      error: ''
+    })
+  })
+
+  it('notifies subscribers before a pending session save and reports a rejected save', async () => {
+    const save = deferred<void>()
+    const saveSession = vi.fn(() => save.promise)
+    const onError = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(sseResponse([
+      { type: 'RUN_FINISHED' }
+    ]))))
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      attachments: false,
+      session: {
+        id: 9,
+        name: 'Pending save',
+        protocol: 'agui.odoo.v2',
+        thread_id: 'thread-pending-save',
+        sessionRevision: 1,
+        messages: []
+      },
+      hostBridge: { saveSession },
+      onError
+    })
+    const observedRunning: boolean[] = []
+    runtime.subscribe(() => observedRunning.push(runtime.getSnapshot().running))
+
+    const pending = runtime.send('save later')
+    await vi.waitFor(() => expect(saveSession).toHaveBeenCalledTimes(1))
+
+    expect(runtime.getSnapshot().running).toBe(false)
+    expect(observedRunning.at(-1)).toBe(false)
+
+    save.reject(new Error('session storage offline'))
+    await pending
+    expect(runtime.getSnapshot().error).toBe('session storage offline')
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'session storage offline'
+    }))
+  })
+
+  it('stops while waiting for Odoo and keeps a late result out of the next run', async () => {
+    const hostResult = deferred<Record<string, unknown>>()
+    let requestCount = 0
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+      requestCount += 1
+      if (requestCount === 1) {
+        return Promise.resolve(sseResponse([
+          {
+            type: 'TOOL_CALL_START',
+            toolCallId: 'late-tool',
+            toolCallName: 'odoo.patch_current_form'
+          },
+          { type: 'TOOL_CALL_ARGS', toolCallId: 'late-tool', delta: '{}' },
+          { type: 'TOOL_CALL_END', toolCallId: 'late-tool' },
+          { type: 'RUN_FINISHED' }
+        ]))
+      }
+      const encoder = new TextEncoder()
+      return Promise.resolve(new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(
+            'data: {"type":"TEXT_MESSAGE_CONTENT","delta":"new run"}\n\n'
+          ))
+          init.signal?.addEventListener('abort', () => {
+            controller.error(new DOMException('Aborted', 'AbortError'))
+          })
+        }
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } }))
+    }))
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      attachments: false,
+      hostBridge: { executeTool: () => hostResult.promise }
+    })
+
+    const first = runtime.send('first run')
+    await vi.waitFor(() => {
+      const tool = runtime.getSnapshot().messages
+        .flatMap((message) => message.tool_calls || [])
+        .find((item) => item.id === 'late-tool')
+      expect(tool?.status).toBe('running')
+    })
+
+    runtime.stop()
+    expect(runtime.getSnapshot()).toMatchObject({ running: false, transportState: 'cancelled' })
+
+    const second = runtime.send('second run')
+    await vi.waitFor(() => expect(requestCount).toBe(2))
+    expect(runtime.getSnapshot().running).toBe(true)
+
+    hostResult.resolve({ ok: true, operation: 'odoo.patch_current_form', applied: ['name'] })
+    await vi.waitFor(() => {
+      const tool = runtime.getSnapshot().messages
+        .flatMap((message) => message.tool_calls || [])
+        .find((item) => item.id === 'late-tool')
+      expect(tool?.result).toEqual(expect.objectContaining({ ok: true, applied: ['name'] }))
+    })
+
+    expect(runtime.getSnapshot().running).toBe(true)
+    expect(requestCount).toBe(2)
+    runtime.stop()
+    await Promise.all([first, second])
+    expect(requestCount).toBe(2)
+  })
+
+  it('finalizes after a running lifecycle callback throws and can send again', async () => {
+    let throwOnStart = true
+    const onRunningChange = vi.fn((running: boolean) => {
+      if (running && throwOnStart) {
+        throwOnStart = false
+        throw new Error('running callback failed')
+      }
+    })
+    const fetchMock = vi.fn(() => Promise.resolve(sseResponse([
+      { type: 'TEXT_MESSAGE_CONTENT', delta: 'recovered' },
+      { type: 'RUN_FINISHED' }
+    ])))
+    vi.stubGlobal('fetch', fetchMock)
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run', attachments: false, onRunningChange
+    })
+
+    await runtime.send('first')
+    expect(runtime.getSnapshot()).toMatchObject({
+      running: false,
+      transportState: 'error',
+      error: 'running callback failed'
+    })
+
+    await runtime.send('second')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(runtime.getSnapshot()).toMatchObject({
+      running: false,
+      transportState: 'completed',
+      error: ''
+    })
   })
 
   it('regenerates from the preceding user message and retains its attachments', async () => {
