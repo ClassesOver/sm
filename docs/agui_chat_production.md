@@ -21,7 +21,10 @@ limits for at least 200 concurrent streams.
 
 ## Rollout Controls
 
-New installs and upgrades start with Chat disabled. Enable in this order:
+New configuration records start with Chat disabled, no runtime addresses, and
+cross-origin development disabled. Existing records are not rewritten during
+an upgrade. Configure the shared HMAC secret and both runtime addresses before
+enabling Chat, then enable in this order:
 
 1. `chat_enabled`
 2. `host_tools_enabled`
@@ -49,6 +52,11 @@ restrictions are required.
 Deploy the Python module and versioned React bundle together, then purge old
 asset caches. A module/bundle mismatch fails the handshake and keeps Chat
 disabled.
+
+AgentOS keeps its built-in `/health` endpoint for liveness. Use `/ready` for
+traffic readiness: it returns success only when PostgreSQL is reachable, the
+sandbox registry is initialized, and the HMAC secret is at least 32 bytes.
+Compose uses `/ready` and restarts the Agent service automatically.
 
 ## Isolated Workspaces
 
@@ -120,6 +128,17 @@ In Odoo, set the same HMAC secret as a server-only system parameter and set
 `AgentOS 内部服务地址` to the address Odoo can reach, for example
 `http://127.0.0.1:7777`. This internal address is never returned by
 `/agui_chat/config`.
+
+Archiving or deleting a Chat session commits a sandbox-cleanup task in the same
+database transaction. A cron processes up to 50 tasks every five minutes;
+failures retry with exponential backoff capped at 24 hours. HTTP 200, 204, and
+404 are successful idempotent outcomes.
+
+Historical sandboxes whose original thread IDs were deleted before this task
+model existed cannot be reconstructed automatically. Audit Daytona sandboxes
+by the `agui-thread` label and compare them with the AgentOS registry and Odoo
+cleanup tasks. Preserve an export before manually deleting an unmatched
+sandbox, and record the sandbox ID, label hash, review time, and operator.
 
 ### First Start
 

@@ -2,6 +2,7 @@ import json
 import mimetypes
 import os
 import shlex
+import threading
 from contextlib import contextmanager
 from pathlib import PurePosixPath
 from typing import Any
@@ -40,22 +41,34 @@ class WorkspaceError(ValueError):
 class SandboxRegistry:
     def __init__(self, db_url: str | None = None):
         self.db_url = db_url or psycopg_db_url()
-        self._initialize()
+        self._initialized = False
+        self._initialize_lock = threading.Lock()
 
     def _connect(self):
         return psycopg.connect(self.db_url)
 
-    def _initialize(self):
-        with self._connect() as connection:
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS agui_workspace_sandbox ("
-                "thread_hash TEXT PRIMARY KEY, sandbox_id TEXT NOT NULL, "
-                "updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"
-                ")"
-            )
+    def ensure_initialized(self):
+        if self._initialized:
+            return
+        with self._initialize_lock:
+            if self._initialized:
+                return
+            with self._connect() as connection:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    ("agui-workspace:initialize",),
+                )
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS agui_workspace_sandbox ("
+                    "thread_hash TEXT PRIMARY KEY, sandbox_id TEXT NOT NULL, "
+                    "updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"
+                    ")"
+                )
+            self._initialized = True
 
     @contextmanager
     def locked(self, value: str):
+        self.ensure_initialized()
         with self._connect() as connection:
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (value,)
@@ -153,12 +166,25 @@ class WorkspaceService:
     def destroy(self, thread: str) -> bool:
         value = self._hash(thread)
         with self.registry.locked(value) as registry:
-            sandbox = self._find_existing(value, registry)
-            if sandbox is None:
-                return False
-            self.client.delete(sandbox)
+            sandboxes = {}
+            sandbox_id = registry.get(value)
+            if sandbox_id:
+                try:
+                    sandbox = self.client.get(sandbox_id)
+                    sandboxes[sandbox.id] = sandbox
+                except DaytonaNotFoundError:
+                    pass
+            for sandbox in self.client.list(ListSandboxesQuery(
+                labels={"agui-thread": value},
+            )):
+                sandboxes[sandbox.id] = sandbox
+            for sandbox in sandboxes.values():
+                try:
+                    self.client.delete(sandbox)
+                except DaytonaNotFoundError:
+                    pass
             registry.delete(value)
-            return True
+            return bool(sandboxes)
 
     @staticmethod
     def normalize_path(path: str | None, allow_root: bool = True) -> tuple[str, str]:

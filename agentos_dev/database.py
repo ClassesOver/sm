@@ -21,6 +21,11 @@ def psycopg_db_url(db_url: str | None = None) -> str:
     )
 
 
+def check_database(db_url: str | None = None) -> None:
+    with psycopg.connect(psycopg_db_url(db_url), connect_timeout=3) as connection:
+        connection.execute("SELECT 1").fetchone()
+
+
 class SerializedPostgresDb(PostgresDb):
     def _create_all_tables(self):
         with psycopg.connect(psycopg_db_url(self.db_url)) as connection:

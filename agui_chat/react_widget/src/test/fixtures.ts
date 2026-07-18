@@ -39,10 +39,10 @@ export const testHostState: OdooHostSnapshot = {
 
 export const testHandshake: ProtocolHandshake = {
   protocol: 'agui.odoo.v2',
-  moduleVersion: '12.0.8.3.0',
-  bundleVersion: '12.0.8.3.0',
+  moduleVersion: '12.0.8.4.0',
+  bundleVersion: '12.0.8.4.0',
   agentProtocol: 'agui.odoo.v2',
-  agentBundleVersion: '12.0.8.3.0',
+  agentBundleVersion: '12.0.8.4.0',
   commandCatalogHash: 'a'.repeat(64),
   agentCommandCatalogHash: 'a'.repeat(64)
 }

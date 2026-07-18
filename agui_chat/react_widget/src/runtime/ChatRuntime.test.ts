@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.3.0')
+    expect(AguiChat.version).toBe('12.0.8.4.0')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -67,6 +67,33 @@ describe('AguiChat public API', () => {
 describe('ChatRuntime protocol handling', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('reports session create, load, and refresh failures without rejecting UI actions', async () => {
+    const onError = vi.fn()
+    const runtime = createRuntime({
+      session: {
+        id: 9,
+        name: 'Current',
+        protocol: 'agui.odoo.v2',
+        thread_id: 'thread-current',
+        messages: []
+      },
+      hostBridge: {
+        createSession: vi.fn(async () => { throw new Error('create offline') }),
+        loadSession: vi.fn(async () => { throw new Error('load offline') }),
+        listSessions: vi.fn(async () => { throw new Error('list offline') })
+      },
+      onError
+    })
+
+    await expect(runtime.newSession()).resolves.toBeUndefined()
+    expect(runtime.getSnapshot()).toMatchObject({ loadingSessions: false, error: 'create offline' })
+    await expect(runtime.loadSession(10)).resolves.toBeUndefined()
+    expect(runtime.getSnapshot().error).toBe('load offline')
+    await expect(runtime.refreshSessions()).resolves.toBe(false)
+    expect(runtime.getSnapshot().error).toBe('list offline')
+    expect(onError).toHaveBeenCalledTimes(3)
   })
 
   it('streams text, executes host tools, and sends a follow-up with hidden tool messages', async () => {
@@ -1188,6 +1215,42 @@ describe('ChatRuntime protocol handling', () => {
       expect(saveSession).toHaveBeenCalledWith(9, expect.objectContaining({
         agentState: expected,
         expectedSessionRevision: 7
+      }))
+      runtime.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports a rejected delayed session save without an unhandled rejection', async () => {
+    vi.useFakeTimers()
+    try {
+      const onError = vi.fn()
+      const runtime = createRuntime({
+        session: {
+          id: 9,
+          name: 'Legacy failure',
+          thread_id: 'legacy-failure-thread',
+          sessionRevision: 7,
+          agentState: {
+            snapshot: {
+              protocol: 'agui.odoo.v2',
+              host: { snapshotId: 'old' },
+              agent: { revision: 4 }
+            }
+          }
+        },
+        hostBridge: {
+          saveSession: vi.fn(async () => { throw new Error('delayed save offline') })
+        },
+        onError
+      })
+
+      await vi.advanceTimersByTimeAsync(600)
+
+      expect(runtime.getSnapshot().error).toBe('delayed save offline')
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+        message: 'delayed save offline'
       }))
       runtime.unmount()
     } finally {

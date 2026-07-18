@@ -192,6 +192,31 @@ def test_paths_sizes_symlinks_and_destroy_are_enforced(tmp_path):
     assert current.destroy("thread") is False
 
 
+def test_destroy_removes_duplicate_labeled_sandboxes_and_clears_registry(tmp_path):
+    client = FakeClient()
+    current = service(tmp_path, client)
+    value = current._hash("thread")
+    first = FakeSandbox("sandbox-1", {"agui-thread": value})
+    second = FakeSandbox("sandbox-2", {"agui-thread": value})
+    client.sandboxes = {first.id: first, second.id: second}
+    current.registry.set(value, first.id)
+
+    assert current.destroy("thread") is True
+    assert set(client.deleted) == {first.id, second.id}
+    assert current.registry.get(value) is None
+    assert current.destroy("thread") is False
+
+
+def test_registry_initialization_is_deferred_until_first_use(monkeypatch):
+    registry = SandboxRegistry("postgresql://unavailable/example")
+    monkeypatch.setattr(
+        registry, "_connect", lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    with pytest.raises(RuntimeError, match="offline"):
+        registry.ensure_initialized()
+
+
 def test_mutating_and_execution_tools_all_require_confirmation(tmp_path):
     tools = {tool.name: tool for tool in workspace_tools(service(tmp_path), SecureSkills([]))}
     assert tools["workspace_list_files"].requires_confirmation is not True

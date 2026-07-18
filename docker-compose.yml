@@ -16,6 +16,13 @@ services:
     depends_on:
       agent-db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.getenv('AGENT_OS_PORT', '7777') + '/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
   agent-db:
     image: postgres:18.0-alpine
     environment:

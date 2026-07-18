@@ -4,8 +4,6 @@ import json
 import logging
 import hashlib
 
-import requests
-
 from odoo import http
 from odoo.exceptions import AccessError, ValidationError
 from odoo.http import content_disposition, request
@@ -30,7 +28,6 @@ ALLOWED_ATTACHMENT_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "document",
 }
 MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
-WORKSPACE_CLEANUP_TIMEOUT = 8
 
 
 class ChatSessionNotFound(ValueError):
@@ -166,33 +163,8 @@ class AguiChatController(http.Controller):
     @http.route("/agui_chat/session/archive", type="json", auth="user")
     def session_archive(self, session_id):
         session = self._load_session(session_id)
-        config = request.env["agui.chat.config"].sudo().get_active_config()
-        try:
-            capability, _claims = issue_workspace_capability(
-                request.env, session, getattr(request.session, "sid", ""),
-            )
-            response = requests.delete(
-                "%s/workspace/sandbox" % config.internal_agentos_url(),
-                json={"threadId": session.thread_id},
-                headers={
-                    "X-AGUI-Capability": capability,
-                    "X-AGUI-Thread": session.thread_id,
-                },
-                timeout=WORKSPACE_CLEANUP_TIMEOUT,
-            )
-        except (requests.RequestException, ValidationError) as error:
-            _logger.warning("AG-UI workspace cleanup failed: %s", error)
-            return {"ok": False, "code": "workspace_cleanup_failed", "error": str(error)}
-        if response.status_code not in (200, 204, 404):
-            _logger.warning(
-                "AG-UI workspace cleanup returned HTTP %s", response.status_code,
-            )
-            return {
-                "ok": False,
-                "code": "workspace_cleanup_failed",
-                "error": "AgentOS 工作区清理失败（HTTP %s）。" % response.status_code,
-            }
         session.write({"active": False})
+        request.env["agui.chat.sandbox.cleanup"].sudo().enqueue([session.thread_id])
         return {"ok": True}
 
     @http.route("/agui_chat/workspace/capability", type="json", auth="user")

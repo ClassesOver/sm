@@ -11,14 +11,17 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .security import CapabilityError, verify_capability
-from .database import SerializedPostgresDb, agent_db_url
+from .database import SerializedPostgresDb, agent_db_url, check_database
 from .skills import load_skills
 from .workspace import WorkspaceError, WorkspaceService, workspace_tools
 
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.8.3.0"
+BUNDLE_VERSION = "12.0.8.4.0"
 COMMAND_CATALOG_HASH = "b198faa202457040a5d1549837c2f9128cc3cbaea8788d4bc6b04046faf22245"
+MAX_RUN_REQUEST_BYTES = 2 * 1024 * 1024
+MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 12 * 1024 * 1024
+MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
 DEFAULT_ENV_FILE = "/home/junge/pros/agents_app/.env"
 DEFAULT_MODEL_ID = "qwen3.6-35b-a3b"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -66,6 +69,35 @@ def _request_thread(request: Request) -> str:
     return str(request.headers.get("X-AGUI-Thread", "")).strip()
 
 
+def _request_limit(path: str, method: str) -> int | None:
+    if path == "/agui":
+        return MAX_RUN_REQUEST_BYTES
+    if path == "/workspace/upload":
+        return MAX_WORKSPACE_UPLOAD_REQUEST_BYTES
+    if path.startswith("/workspace/") and method in {"POST", "PUT", "PATCH", "DELETE"}:
+        return MAX_JSON_MUTATION_REQUEST_BYTES
+    return None
+
+
+async def _read_limited_body(request: Request, limit: int) -> bytes | None:
+    content_length = request.headers.get("content-length")
+    try:
+        if content_length is not None and int(content_length) > limit:
+            return None
+    except ValueError:
+        pass
+    chunks = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    body = b"".join(chunks)
+    request._body = body
+    return body
+
+
 @base_app.middleware("http")
 async def require_workspace_capability(request: Request, call_next):
     path = request.url.path.rstrip("/") or "/"
@@ -73,22 +105,26 @@ async def require_workspace_capability(request: Request, call_next):
     if not protected:
         return await call_next(request)
     thread = _request_thread(request)
-    if path == "/agui":
-        try:
-            payload = json.loads((await request.body()).decode("utf-8") or "{}")
-            body_thread = str(payload.get("threadId") or "")
-        except (UnicodeDecodeError, ValueError):
-            return JSONResponse({"error": "invalid_run_payload"}, status_code=400)
-        if not thread:
-            thread = body_thread
-        if body_thread != thread:
-            return JSONResponse({"error": "capability_thread_mismatch"}, status_code=403)
+    if not thread:
+        return JSONResponse({"error": "thread_header_required"}, status_code=400)
     try:
         request.state.capability = verify_capability(
             request.headers.get("X-AGUI-Capability", ""), workspace_secret, thread,
         )
     except CapabilityError as error:
         return JSONResponse({"error": str(error)}, status_code=401)
+    limit = _request_limit(path, request.method)
+    body = await _read_limited_body(request, limit) if limit else b""
+    if body is None:
+        return JSONResponse({"error": "request_too_large"}, status_code=413)
+    if path == "/agui":
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+            body_thread = str(payload.get("threadId") or "")
+        except (AttributeError, UnicodeDecodeError, ValueError):
+            return JSONResponse({"error": "invalid_run_payload"}, status_code=400)
+        if body_thread != thread:
+            return JSONResponse({"error": "capability_thread_mismatch"}, status_code=403)
     return await call_next(request)
 
 
@@ -99,7 +135,41 @@ async def integration_config():
         "bundle_version": BUNDLE_VERSION,
         "command_catalog_hash": COMMAND_CATALOG_HASH,
         "skills": agent_skills.public_metadata(),
+        "limits": {
+            "run_request_bytes": MAX_RUN_REQUEST_BYTES,
+            "workspace_upload_request_bytes": MAX_WORKSPACE_UPLOAD_REQUEST_BYTES,
+            "json_mutation_request_bytes": MAX_JSON_MUTATION_REQUEST_BYTES,
+        },
     }
+
+
+def _readiness_checks():
+    checks = {
+        "postgresql": False,
+        "sandbox_registry": False,
+        "hmac": len(workspace_secret.encode("utf-8")) >= 32,
+    }
+    try:
+        check_database()
+        checks["postgresql"] = True
+    except Exception:
+        return checks
+    try:
+        workspace_service.registry.ensure_initialized()
+        checks["sandbox_registry"] = True
+    except Exception:
+        pass
+    return checks
+
+
+@base_app.get("/ready", include_in_schema=False)
+async def readiness():
+    checks = await run_in_threadpool(_readiness_checks)
+    ready = all(checks.values())
+    return JSONResponse(
+        {"status": "ready" if ready else "not_ready", "checks": checks},
+        status_code=200 if ready else 503,
+    )
 
 
 def _check_thread(request: Request, thread_id: str):

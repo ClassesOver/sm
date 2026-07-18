@@ -14,7 +14,7 @@ Odoo 提供 `/agui_chat/config`、v2 界面会话、浏览器宿主命令策略�
 同步业务命令端点。Odoo 不代理 SSE，也不开放通用 RPC 或 CRUD。
 
 配置 `runtime_url` 后，Odoo 会根据其中的 `/agui` 路径推导对应的 `/config` 握手地址。
-部署匹配的 `12.0.8.1.0` 声明后，再启用灰度开关。详情参见
+部署匹配的 `12.0.8.4.0` 声明后，再启用灰度开关。详情参见
 [协议说明](docs/agui_odoo_protocol.md)和[生产部署指南](docs/agui_chat_production.md)。
 
 前端验证：
@@ -38,8 +38,8 @@ uv pip install --python .venv-agent/bin/python -r agentos_dev/requirements.txt
 OPENAI_API_KEY=sk-... .venv-agent/bin/python -m agentos_dev.app
 ```
 
-Odoo 默认使用 `http://127.0.0.1:7777/agui`，并自动从该地址推导
-`http://127.0.0.1:7777/config` 完成 v2 握手。开发智能体默认复用
+新配置默认关闭聊天且不预填运行地址。配置 `/agui` 地址后，Odoo 会自动推导
+同路径下的 `/config` 完成 v2 握手。开发智能体默认复用
 `/home/junge/pros/agents_app/.env` 中的模型配置。
 
 目前仅支持停靠面板和 WebClient 内浮动窗口两种界面形态。两者移动的是同一个 React DOM

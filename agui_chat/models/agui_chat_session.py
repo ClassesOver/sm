@@ -93,6 +93,7 @@ class AguiChatSession(models.Model):
         return result
 
     def unlink(self):
+        self.env["agui.chat.sandbox.cleanup"].sudo().enqueue(self.mapped("thread_id"))
         attachments = self.env["ir.attachment"].sudo().search([
             ("res_model", "=", self._name),
             ("res_id", "in", self.ids),

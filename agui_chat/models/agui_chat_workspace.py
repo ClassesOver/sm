@@ -36,8 +36,10 @@ def workspace_secret(env):
     return secret
 
 
-def issue_workspace_capability(env, session, odoo_session, now=None):
-    session.ensure_one()
+def issue_thread_capability(env, thread_id, odoo_session, now=None):
+    thread_id = str(thread_id or "").strip()
+    if not thread_id:
+        raise ValidationError("工作区线程 ID 不能为空。")
     issued_at = int(time.time() if now is None else now)
     expires_at = issued_at + CAPABILITY_TTL_SECONDS
     claims = {
@@ -48,7 +50,7 @@ def issue_workspace_capability(env, session, odoo_session, now=None):
         "odoo_session": hashlib.sha256(
             str(odoo_session or "").encode("utf-8")
         ).hexdigest(),
-        "thread": session.thread_id,
+        "thread": thread_id,
         "iat": issued_at,
         "exp": expires_at,
         "jti": str(uuid.uuid4()),
@@ -61,6 +63,11 @@ def issue_workspace_capability(env, session, odoo_session, now=None):
         hashlib.sha256,
     ).digest()
     return "%s.%s" % (signing_input, _b64encode(signature)), claims
+
+
+def issue_workspace_capability(env, session, odoo_session, now=None):
+    session.ensure_one()
+    return issue_thread_capability(env, session.thread_id, odoo_session, now=now)
 
 
 def decode_workspace_capability(token, secret, now=None):

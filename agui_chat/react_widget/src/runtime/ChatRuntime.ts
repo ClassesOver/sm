@@ -307,7 +307,10 @@ export class ChatRuntime {
       })
       const session = sessionFromResult(result)
       this.applyLoadedSession(session)
+      this.error = ''
       await this.refreshSessions()
+    } catch (reason) {
+      this.reportError(reason, '创建会话失败。')
     } finally {
       this.loadingSessions = false
       this.emit()
@@ -325,21 +328,30 @@ export class ChatRuntime {
     try {
       const session = sessionFromResult(await bridge.loadSession(sessionId))
       this.applyLoadedSession(session)
+      this.error = ''
+    } catch (reason) {
+      this.reportError(reason, '加载会话失败。')
     } finally {
       this.loadingSessions = false
       this.emit()
     }
   }
 
-  async refreshSessions(): Promise<void> {
+  async refreshSessions(): Promise<boolean> {
     const bridge = this.props.hostBridge || {}
     if (!bridge.listSessions) {
-      return
+      return true
     }
     this.loadingSessions = true
     this.emit()
     try {
-      this.sessions = sessionListFromResult(await bridge.listSessions())
+      const result = await bridge.listSessions()
+      this.sessions = sessionListFromResult(result)
+      this.error = ''
+      return true
+    } catch (reason) {
+      this.reportError(reason, '刷新会话列表失败。')
+      return false
     } finally {
       this.loadingSessions = false
       this.emit()
@@ -426,7 +438,7 @@ export class ChatRuntime {
       this.emit()
       return false
     }
-    await this.ensureSession()
+    if (!await this.ensureSession()) return false
 
     const messageId = uuid()
     let syncedAttachments: AttachmentRef[]
@@ -1109,7 +1121,7 @@ export class ChatRuntime {
       return
     }
     try {
-      await this.refreshSessions()
+      if (!await this.refreshSessions()) return
       if (this.sessions.length && this.props.hostBridge?.loadSession) {
         await this.loadSession(this.sessions[0].id)
       } else if (!this.sessions.length && this.props.hostBridge?.createSession) {
@@ -1120,11 +1132,12 @@ export class ChatRuntime {
     }
   }
 
-  private async ensureSession(): Promise<void> {
+  private async ensureSession(): Promise<boolean> {
     if (this.session || !this.props.hostBridge?.createSession) {
-      return
+      return true
     }
     await this.newSession()
+    return Boolean(this.session)
   }
 
   private applyLoadedSession(session: LoadedSession): void {
@@ -2051,7 +2064,7 @@ export class ChatRuntime {
     }
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null
-      void this.queueSave()
+      void this.persistImmediately()
     }, 600)
   }
 
@@ -2128,6 +2141,18 @@ export class ChatRuntime {
 
   private notifyMessages(): void {
     this.props.onMessagesChange?.(this.messages)
+  }
+
+  private reportError(reason: unknown, fallback: string): void {
+    const error = reason instanceof Error && reason.message
+      ? reason : new Error(String(reason || fallback))
+    this.error = error.message || fallback
+    try {
+      this.props.onError?.(error)
+    } catch (_callbackError) {
+      // Runtime state remains usable even when an error callback fails.
+    }
+    this.emit()
   }
 
   private emit(): void {

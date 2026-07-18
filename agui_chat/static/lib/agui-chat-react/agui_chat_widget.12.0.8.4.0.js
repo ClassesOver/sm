@@ -25067,7 +25067,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ] })
     ] });
   }
-  const SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.3.0.js";
+  const SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.4.0.js";
   let viewerModulePromise;
   function loadProductionBundle() {
     var _a;
@@ -26251,7 +26251,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         });
         const session = sessionFromResult(result);
         this.applyLoadedSession(session);
+        this.error = "";
         await this.refreshSessions();
+      } catch (reason) {
+        this.reportError(reason, "创建会话失败。");
       } finally {
         this.loadingSessions = false;
         this.emit();
@@ -26268,6 +26271,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       try {
         const session = sessionFromResult(await bridge.loadSession(sessionId));
         this.applyLoadedSession(session);
+        this.error = "";
+      } catch (reason) {
+        this.reportError(reason, "加载会话失败。");
       } finally {
         this.loadingSessions = false;
         this.emit();
@@ -26276,12 +26282,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     async refreshSessions() {
       const bridge = this.props.hostBridge || {};
       if (!bridge.listSessions) {
-        return;
+        return true;
       }
       this.loadingSessions = true;
       this.emit();
       try {
-        this.sessions = sessionListFromResult(await bridge.listSessions());
+        const result = await bridge.listSessions();
+        this.sessions = sessionListFromResult(result);
+        this.error = "";
+        return true;
+      } catch (reason) {
+        this.reportError(reason, "刷新会话列表失败。");
+        return false;
       } finally {
         this.loadingSessions = false;
         this.emit();
@@ -26361,7 +26373,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         this.emit();
         return false;
       }
-      await this.ensureSession();
+      if (!await this.ensureSession()) return false;
       const messageId = uuid();
       let syncedAttachments;
       try {
@@ -27004,7 +27016,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         return;
       }
       try {
-        await this.refreshSessions();
+        if (!await this.refreshSessions()) return;
         if (this.sessions.length && ((_b = this.props.hostBridge) == null ? void 0 : _b.loadSession)) {
           await this.loadSession(this.sessions[0].id);
         } else if (!this.sessions.length && ((_c = this.props.hostBridge) == null ? void 0 : _c.createSession)) {
@@ -27017,9 +27029,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     async ensureSession() {
       var _a;
       if (this.session || !((_a = this.props.hostBridge) == null ? void 0 : _a.createSession)) {
-        return;
+        return true;
       }
       await this.newSession();
+      return Boolean(this.session);
     }
     applyLoadedSession(session) {
       var _a, _b, _c, _d;
@@ -27881,7 +27894,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       this.saveTimer = setTimeout(() => {
         this.saveTimer = null;
-        void this.queueSave();
+        void this.persistImmediately();
       }, 600);
     }
     queueSave() {
@@ -27954,11 +27967,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       var _a, _b;
       (_b = (_a = this.props).onMessagesChange) == null ? void 0 : _b.call(_a, this.messages);
     }
+    reportError(reason, fallback) {
+      var _a, _b;
+      const error = reason instanceof Error && reason.message ? reason : new Error(String(reason || fallback));
+      this.error = error.message || fallback;
+      try {
+        (_b = (_a = this.props).onError) == null ? void 0 : _b.call(_a, error);
+      } catch (_callbackError) {
+      }
+      this.emit();
+    }
     emit() {
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.3.0";
+  const VERSION = "12.0.8.4.0";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

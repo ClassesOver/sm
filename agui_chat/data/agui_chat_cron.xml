@@ -11,5 +11,15 @@
             <field name="numbercall">-1</field>
             <field name="active">True</field>
         </record>
+        <record id="ir_cron_agui_chat_sandbox_cleanup" model="ir.cron">
+            <field name="name">智能助手沙箱清理</field>
+            <field name="model_id" ref="model_agui_chat_sandbox_cleanup"/>
+            <field name="state">code</field>
+            <field name="code">model.process_pending(limit=50)</field>
+            <field name="interval_number">5</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="active">True</field>
+        </record>
     </data>
 </odoo>

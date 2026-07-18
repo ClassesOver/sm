@@ -7,7 +7,7 @@ from odoo.exceptions import ValidationError
 
 
 PROTOCOL = "agui.odoo.v2"
-MODULE_VERSION = "12.0.8.3.0"
+MODULE_VERSION = "12.0.8.4.0"
 COMMAND_CATALOG_REVISION = 7
 DEFAULT_SENSITIVE_FIELD_NAMES = (
     "phone", "mobile", "phone_number", "mobile_number",
@@ -50,7 +50,7 @@ class AguiChatConfig(models.Model):
 
     name = fields.Char(string="配置名称", required=True, default="默认配置")
     active = fields.Boolean(string="启用", default=True)
-    chat_enabled = fields.Boolean(string="启用聊天", default=True)
+    chat_enabled = fields.Boolean(string="启用聊天", default=False)
     host_tools_enabled = fields.Boolean(string="启用页面工具", default=False)
     write_tools_enabled = fields.Boolean(string="启用写入工具", default=False)
     enabled_commands = fields.Char(
@@ -77,18 +77,18 @@ class AguiChatConfig(models.Model):
     )
     runtime_url = fields.Char(
         string="AG-UI 运行服务地址",
-        default="http://127.0.0.1:7777/agui",
+        default="",
         help="开发环境可直接填写 AgentOS 的 /agui 地址；协议配置地址会自动推导为同路径下的 /config。",
     )
     agentos_internal_url = fields.Char(
         string="AgentOS 内部服务地址",
-        default="http://127.0.0.1:7777",
+        default="",
         help="仅供 Odoo 服务端销毁工作区使用，不会发送到浏览器。",
     )
     allow_cross_origin_dev = fields.Boolean(
         string="允许跨域开发服务",
         help="仅限开发环境。允许携带凭据访问 HTTP(S) 绝对地址。",
-        default=True,
+        default=False,
     )
     default_agent_id = fields.Char(string="默认智能体 ID", default="odoo-assistant")
     mention_model_id = fields.Many2one(
@@ -107,7 +107,9 @@ class AguiChatConfig(models.Model):
     session_retention_days = fields.Integer(string="会话保留天数", default=180)
     audit_retention_days = fields.Integer(string="审计保留天数", default=180)
 
-    @api.constrains("runtime_url", "allow_cross_origin_dev", "agentos_internal_url")
+    @api.constrains(
+        "chat_enabled", "runtime_url", "allow_cross_origin_dev", "agentos_internal_url",
+    )
     def _check_runtime_urls(self):
         for record in self:
             value = (record.runtime_url or "").strip()
@@ -124,6 +126,13 @@ class AguiChatConfig(models.Model):
                 raise ValidationError("AgentOS 内部服务地址必须是 HTTP(S) 绝对地址。")
             if "@" in internal.split("://", 1)[-1].split("/", 1)[0]:
                 raise ValidationError("AgentOS 内部服务地址不能包含认证信息。")
+            if record.chat_enabled:
+                if not value or not internal:
+                    raise ValidationError(
+                        "启用聊天前必须配置 AG-UI 运行服务地址和 AgentOS 内部服务地址。"
+                    )
+                from .agui_chat_workspace import workspace_secret
+                workspace_secret(record.env)
 
     @api.constrains("enabled_commands")
     def _check_enabled_commands(self):
@@ -175,10 +184,7 @@ class AguiChatConfig(models.Model):
 
     def public_runtime_url(self):
         self.ensure_one()
-        value = (self.runtime_url or "").strip()
-        if not value and self.default_agent_id:
-            value = "/%s/agui" % self.default_agent_id.strip("/")
-        return value
+        return (self.runtime_url or "").strip()
 
     def public_runtime_config_url(self):
         self.ensure_one()

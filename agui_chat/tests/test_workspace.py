@@ -49,33 +49,25 @@ class TestWorkspaceCapability(TransactionCase):
             session=SimpleNamespace(sid="odoo-session"),
         )
 
-    def test_archive_destroys_workspace_before_deactivation(self):
-        response = SimpleNamespace(status_code=204)
+    def test_archive_deactivates_session_and_enqueues_cleanup(self):
         controller = controller_main.AguiChatController()
         with patch(
             "odoo.addons.agui_chat.controllers.main.request", new=self._request(),
-        ), patch(
-            "odoo.addons.agui_chat.controllers.main.requests.delete", return_value=response,
-        ) as delete:
+        ):
             result = controller.session_archive(self.session.id)
 
         self.assertEqual(result, {"ok": True})
         self.assertFalse(self.session.active)
-        self.assertEqual(delete.call_args[0][0], "http://agentos:7777/workspace/sandbox")
-        self.assertEqual(
-            delete.call_args[1]["json"], {"threadId": self.session.thread_id},
-        )
+        task = self.env["agui.chat.sandbox.cleanup"].sudo().search([
+            ("thread_id", "=", self.session.thread_id),
+        ])
+        self.assertTrue(task)
 
-    def test_archive_fails_closed_when_cleanup_fails(self):
-        response = SimpleNamespace(status_code=503)
-        controller = controller_main.AguiChatController()
-        with patch(
-            "odoo.addons.agui_chat.controllers.main.request", new=self._request(),
-        ), patch(
-            "odoo.addons.agui_chat.controllers.main.requests.delete", return_value=response,
-        ):
-            result = controller.session_archive(self.session.id)
+    def test_direct_session_unlink_enqueues_cleanup(self):
+        thread_id = self.session.thread_id
+        self.session.unlink()
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["code"], "workspace_cleanup_failed")
-        self.assertTrue(self.session.active)
+        task = self.env["agui.chat.sandbox.cleanup"].sudo().search([
+            ("thread_id", "=", thread_id),
+        ])
+        self.assertTrue(task)
