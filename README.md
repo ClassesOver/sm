@@ -27,18 +27,49 @@ npm run build
 ```
 
 按对话隔离的附件、工作区文件和经确认的代码执行，使用
-`docker-compose.daytona.yml` 中锁定版本的 Daytona 部署。有关初始化、密钥、API 密钥创建、
-备份和许可证要求，请参见[生产部署指南](docs/agui_chat_production.md#isolated-workspaces)。
-首次启动前需预创建 `AGUI_SHARED_NETWORK` 指定的外部网络；默认名称为 `hrp_network`。
+`docker-compose.yml` 中锁定版本的 Daytona 部署。默认 Compose 服务是 AgentOS 和专用
+PostgreSQL；增加 `--profile daytona` 可启动完整 Daytona 基础设施。首次配置按以下顺序执行。
+
+1. 通过一次性 Compose 服务生成 `.env`：
+
+```bash
+HOST_UID=$(id -u) HOST_GID=$(id -g) \
+  docker compose --env-file .env.example --profile setup run --rm env-init
+```
+
+`HOST_UID` 和 `HOST_GID` 让生成文件归当前宿主用户所有，`--rm` 在脚本退出后删除这次临时
+容器，不会删除生成的 `.env`。
+
+2. 编辑 `.env`，至少填写真实的 `OPENAI_API_KEY`、`DEX_ADMIN_EMAIL` 和
+   `DEX_STATIC_PASSWORD_HASH`。生成 Dex bcrypt hash 时保留 `.env` 中的单引号：
+
+```bash
+htpasswd -BinC 10 admin | cut -d: -f2
+```
+
+3. 创建外部网络并检查配置。`.env` 不会自动导出为当前 Shell 变量；若修改了
+   `AGUI_SHARED_NETWORK`，请把命令中的 `hrp_network` 换成相同值：
+
+```bash
+docker network create hrp_network
+docker compose --profile daytona config
+```
+
+4. 仅运行 AgentOS 与 PostgreSQL 时执行 `docker compose up -d`。首次启用 Daytona 时，
+   先按[生产部署指南](docs/agui_chat_production.md#first-start)启动 Daytona、在 Dashboard
+   创建 `DAYTONA_API_KEY` 并回填 `.env`，再启动 AgentOS。备份和许可证要求也见该指南。
+
 收藏筛选和当前筛选可在管理员启用 `odoo.business.report.filters` 并配置逐模型读取策略后，
 导出到同一对话工作区，再由受控 Pandas 工具分析和生成图表。
 
 集成开发环境可直接启动仓库内的最小 AgentOS 应用：
 
 ```bash
+# 先完成上面的 .env 初始化和 hrp_network 创建
+docker compose up -d agent-db
 uv venv .venv-agent
 uv pip install --python .venv-agent/bin/python -r agentos_dev/requirements.txt
-OPENAI_API_KEY=sk-... .venv-agent/bin/python -m agentos_dev.app
+AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app
 ```
 
 新配置默认关闭聊天且不预填运行地址。配置 `/agui` 地址后，Odoo 会自动推导

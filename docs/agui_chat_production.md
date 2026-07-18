@@ -84,11 +84,25 @@ not install these packages interactively in a running production container.
 
 ## Isolated Workspaces
 
-The repository includes `docker-compose.daytona.yml`, based on the official
-Daytona OSS Compose topology at `v0.189.0`. This is the last upstream version
+The repository includes the complete AgentOS, PostgreSQL, and Daytona topology
+in `docker-compose.yml`, based on the official Daytona OSS Compose baseline at
+`v0.189.0`. This is the last upstream version
 that includes the supported OSS Compose baseline used by this project. Upstream
 has since ended on-premises support, so treat this pinned stack as software the
 operator must maintain and security-patch independently.
+
+The default Compose project name remains `agui-daytona`, matching the former
+two-file production deployment and preserving its named volumes. A deployment
+that previously ran only the base file under another project name must set
+`COMPOSE_PROJECT_NAME` to that existing name or migrate `agent_db_data` before
+the first unified-stack start.
+
+Both PostgreSQL 18 services mount their named volumes at `/var/lib/postgresql`,
+which is the parent data path required by the PostgreSQL 18 image layout. The
+former files used the pre-18 `/var/lib/postgresql/data` target. Before replacing
+a running deployment created from those files, take logical dumps from both
+databases and verify a restore; do not assume that the old named volumes contain
+the PostgreSQL 18 cluster.
 
 Daytona is licensed under AGPL-3.0. If a modified Daytona service is made
 available over a network, provide the corresponding source, including those
@@ -103,7 +117,8 @@ The project deploys only these Daytona services:
 - `proxy`, as a localhost-only sandbox port-preview endpoint
 - the existing `agent` service, which contains AgentOS and Agno
 - `agent-db`, the dedicated PostgreSQL backend for Agno sessions and workspace
-  sandbox registrations; Daytona's `db` remains private to Daytona
+  sandbox registrations; it is also published on localhost port `55432` for
+  the host-side `agentos_dev`, while Daytona's `db` remains private to Daytona
 
 SSH Gateway, PgAdmin, Jaeger, and the OpenTelemetry collector are intentionally
 not deployed. AgentOS Toolbox traffic uses `PROXY_TOOLBOX_BASE_URL=http://api:3000/api`;
@@ -128,6 +143,8 @@ sample or default passwords in production. Required values include:
 - `AGENT_SKILLS_DIR` when administrator-managed skills are installed; the
   default empty directory is mounted read-only
 - `AGENT_POSTGRES_PASSWORD` for the dedicated AgentOS PostgreSQL service
+- `AGENT_POSTGRES_BIND` and `AGENT_POSTGRES_PORT` for the localhost-only
+  development connection; defaults are `127.0.0.1:55432`
 - `AGUI_SHARED_NETWORK`, the pre-created external Docker network used by all
   AgentOS and Daytona services; it defaults to `hrp_network`
 
@@ -137,18 +154,43 @@ Initialize or update the file interactively with:
 bash scripts/configure_daytona_env.sh
 ```
 
+The same script can run through the one-shot Compose setup profile before
+`.env` exists. Pass the host identity so the generated mode-`600` file remains
+owned by the operator:
+
+```bash
+HOST_UID=$(id -u) HOST_GID=$(id -g) \
+  docker compose --env-file .env.example --profile setup run --rm env-init
+```
+
+The setup container has no runtime network and mounts only the project working
+directory. Compose uses `.env.example` solely to resolve the stack before the
+script writes the real `.env`; placeholder values are not started as services.
+`HOST_UID` and `HOST_GID` make the generated file belong to the invoking host
+user. `--rm` removes only the stopped one-shot container; it does not remove
+`.env` or any runtime volume.
+
 The script writes atomically with mode `600` and saves an existing file under
 the ignored `.env.backups/` directory. On an existing deployment it separates
 runtime-key rotation from encryption, Runner, and storage credentials; the
 latter must not be changed without migrating the corresponding services or
 rebuilding the Daytona data volumes.
 
-Generate independent secrets, for example with `openssl rand -hex 32`. Generate
+For a new `.env`, the script generates the runtime and persistent random
+secrets, but it does not choose operator credentials. Existing files rotate
+secrets only after the corresponding confirmation. Replace `OPENAI_API_KEY`,
+`DEX_ADMIN_EMAIL`, and `DEX_STATIC_PASSWORD_HASH` before validation. Generate
 the Dex hash without placing the clear-text password in a project file:
 
 ```bash
 htpasswd -BinC 10 admin | cut -d: -f2
 ```
+
+Keep the hash single-quoted in `.env`, for example
+`DEX_STATIC_PASSWORD_HASH='$2y$...'`, so Compose treats its dollar signs
+literally. `DAYTONA_API_KEY` remains empty only until the first Dashboard
+bootstrap described below. Generate any additional independent secret with,
+for example, `openssl rand -hex 32`.
 
 In Odoo, set the same HMAC secret as a server-only system parameter and set
 `AgentOS 内部服务地址` to the address Odoo can reach, for example
@@ -171,10 +213,14 @@ sandbox, and record the sandbox ID, label hash, review time, and operator.
 Create the shared external network before validating or starting the stack:
 
 ```bash
-docker network create "${AGUI_SHARED_NETWORK:-hrp_network}"
+docker network create hrp_network
 ```
 
-The Compose files intentionally attach AgentOS, both PostgreSQL services, and
+Compose reads `.env`, but the current shell does not automatically export it.
+If `AGUI_SHARED_NETWORK` was changed in `.env`, replace `hrp_network` above with
+that exact value.
+
+The Compose file intentionally attaches AgentOS, both PostgreSQL services, and
 all Daytona infrastructure services to this one network. Any other container
 attached to it can attempt direct connections to those internal services. Use a
 dedicated deployment-specific network name, do not attach untrusted workloads,
@@ -185,8 +231,7 @@ separate stacks and separate shared networks.
 Validate interpolation before startup:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.daytona.yml \
-  --profile daytona config
+docker compose --profile daytona config
 ```
 
 If the network was not created, `docker compose up` fails with an external
@@ -197,8 +242,8 @@ Start Daytona without AgentOS first. `DAYTONA_API_KEY` may be empty only during
 this bootstrap step:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.daytona.yml \
-  --profile daytona up -d api runner db redis minio registry dex proxy dashboard
+docker compose --profile daytona up -d \
+  api runner db redis minio registry dex proxy dashboard
 ```
 
 Open `http://127.0.0.1:13000/dashboard`, sign in with the configured Dex user,
@@ -206,8 +251,7 @@ activate the default snapshot, and create an API key with sandbox write and
 delete permissions. Store it as `DAYTONA_API_KEY`, then start AgentOS:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.daytona.yml \
-  --profile daytona up -d agent
+docker compose --profile daytona up -d agent
 ```
 
 The Dashboard binds to `127.0.0.1:13000` and Proxy to `127.0.0.1:14000` by
