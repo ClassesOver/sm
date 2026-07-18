@@ -7,6 +7,7 @@ odoo.define("agui_chat.host_service", function (require) {
     var KanbanController = require("web.KanbanController");
     var ListController = require("web.ListController");
     var WebClient = require("web.WebClient");
+    var viewDialogs = require("web.view_dialogs");
     var Adapter = require("agui_chat.model_adapter");
     var Commands = require("agui_chat.command_registry");
 
@@ -131,6 +132,10 @@ odoo.define("agui_chat.host_service", function (require) {
             this._action = false;
             this._menu = false;
             this._controller = null;
+            this._rootController = null;
+            this._modalDialog = null;
+            this._modalController = null;
+            this._modalOpenDeferred = null;
             this._controllerId = "";
             this._controllerGeneration = 0;
             this._actionManager = null;
@@ -154,6 +159,7 @@ odoo.define("agui_chat.host_service", function (require) {
             bus.on("agui_host:controller_changed", this, this._onControllerChanged);
             bus.on("agui_host:controller_destroyed", this, this._onControllerDestroyed);
             bus.on("agui_host:configure", this, this._onConfigure);
+            bus.on("agui_host:form_view_transition", this, this._onFormViewTransition);
             return this._super.apply(this, arguments);
         },
 
@@ -161,6 +167,7 @@ odoo.define("agui_chat.host_service", function (require) {
             bus.off("agui_host:controller_changed", this, this._onControllerChanged);
             bus.off("agui_host:controller_destroyed", this, this._onControllerDestroyed);
             bus.off("agui_host:configure", this, this._onConfigure);
+            bus.off("agui_host:form_view_transition", this, this._onFormViewTransition);
             if (this._refreshTimer) {
                 clearTimeout(this._refreshTimer);
                 this._refreshTimer = null;
@@ -247,6 +254,9 @@ odoo.define("agui_chat.host_service", function (require) {
                 this._controller = null;
                 this._controllerId = "";
                 this._controllerGeneration += 1;
+                this._rootController = null;
+                this._modalController = null;
+                this._modalDialog = null;
                 return this._setUnavailable("host_unavailable");
             } catch (error) {
                 return this._setUnavailable("host_unavailable");
@@ -368,6 +378,36 @@ odoo.define("agui_chat.host_service", function (require) {
                         recordLabel: control.recordLabel,
                     };
                 }
+                if (cleanCall.tool === "odoo.open_x2many_record") {
+                    var row = self._resolveToken(
+                        cleanCall.arguments && cleanCall.arguments.rowToken, "x2many_row"
+                    );
+                    if (!row || !self._validateToken(row, "x2many_row")) {
+                        return self._commandResult(
+                            false, cleanCall, "stale_x2many_row_token", {}, nextSnapshot
+                        );
+                    }
+                }
+                if (cleanCall.tool === "odoo.open_x2many_create") {
+                    var x2manyField = self._resolveToken(
+                        cleanCall.arguments && cleanCall.arguments.fieldToken, "x2many_field"
+                    );
+                    if (!x2manyField || !self._validateToken(x2manyField, "x2many_field")) {
+                        return self._commandResult(
+                            false, cleanCall, "stale_x2many_field_token", {}, nextSnapshot
+                        );
+                    }
+                }
+                if (cleanCall.tool === "odoo.prepare_x2many_import") {
+                    var importField = self._resolveToken(
+                        cleanCall.arguments && cleanCall.arguments.fieldToken, "x2many_field"
+                    );
+                    if (!importField || !self._validateToken(importField, "x2many_field")) {
+                        return self._commandResult(
+                            false, cleanCall, "stale_x2many_field_token", {}, nextSnapshot
+                        );
+                    }
+                }
                 if (cleanCall.tool === "odoo.open_record" && !self._resolveToken(
                     cleanCall.arguments && cleanCall.arguments.recordToken, "record"
                 )) {
@@ -448,6 +488,15 @@ odoo.define("agui_chat.host_service", function (require) {
         },
 
         _resolveCurrentController: function () {
+            if (this._modalDialog && this._controller === this._modalController) {
+                if (!(this._controller instanceof FormController) || !this._controller.model ||
+                        !this._controller.handle || this._controller.isDestroyed &&
+                        this._controller.isDestroyed() ||
+                        this._controller.__aguiHostGeneration !== this._controllerGeneration) {
+                    return null;
+                }
+                return this._controller;
+            }
             var current = this._currentControllerFromManager();
             if (!current || current !== this._controller || current.__aguiHostGeneration !== this._controllerGeneration) {
                 return null;
@@ -477,6 +526,13 @@ odoo.define("agui_chat.host_service", function (require) {
             if (!controller.model || !controller.handle) {
                 return this._setUnavailable("host_unavailable");
             }
+            this._rootController = controller;
+            this._modalDialog = null;
+            this._modalController = null;
+            return this._activateController(controller, viewType);
+        },
+
+        _activateController: function (controller, viewType) {
             nextControllerId += 1;
             this._controllerGeneration += 1;
             this._controller = controller;
@@ -580,8 +636,65 @@ odoo.define("agui_chat.host_service", function (require) {
 
         _onControllerDestroyed: function (event) {
             try {
+                if (event.controller === this._modalController) {
+                    return;
+                }
+                if (event.controller === this._rootController) {
+                    this._rootController = null;
+                }
                 if (event.controller === this._controller && event.generation === this._controllerGeneration) {
                     this.clearCurrentController({controllerId: this._controllerId});
+                }
+            } catch (error) {
+                this._setUnavailable("host_unavailable");
+            }
+        },
+
+        _onFormViewTransition: function (event) {
+            try {
+                if (!this._enabled || !event || !event.dialog) {
+                    return;
+                }
+                if (event.phase === "begin") {
+                    if (this._modalDialog && this._modalDialog !== event.dialog) {
+                        return;
+                    }
+                    this._rootController = this._currentControllerFromManager() ||
+                        this._rootController;
+                    this._modalDialog = event.dialog;
+                    this._tokens = {};
+                    this._setUnavailable("form_view_transition");
+                    return;
+                }
+                if (event.phase === "ready" && this._modalDialog === event.dialog &&
+                        event.controller instanceof FormController) {
+                    this._modalController = event.controller;
+                    event.controller.__aguiHostModalDialog = event.dialog;
+                    this._activateController(event.controller, "form");
+                    if (this._modalOpenDeferred) {
+                        clearTimeout(this._modalOpenDeferred.timer);
+                        this._modalOpenDeferred.resolve(Adapter.clone(this._snapshot));
+                        this._modalOpenDeferred = null;
+                    }
+                    return;
+                }
+                if (event.phase === "end" && this._modalDialog === event.dialog) {
+                    if (this._modalOpenDeferred) {
+                        clearTimeout(this._modalOpenDeferred.timer);
+                        this._modalOpenDeferred.reject(new Error("明细表单在就绪前已关闭。"));
+                        this._modalOpenDeferred = null;
+                    }
+                    this._modalDialog = null;
+                    this._modalController = null;
+                    var root = this._currentControllerFromManager();
+                    var viewType = root instanceof FormController ? "form" :
+                        root instanceof ListController ? "list" :
+                        root instanceof KanbanController ? "kanban" : false;
+                    if (root && root === this._rootController && viewType && root.model && root.handle) {
+                        this._activateController(root, viewType);
+                    } else {
+                        this._setUnavailable("host_unavailable");
+                    }
                 }
             } catch (error) {
                 this._setUnavailable("host_unavailable");
@@ -681,6 +794,23 @@ odoo.define("agui_chat.host_service", function (require) {
                 },
                 openCreate: function (controller) { return self._openCreate(controller); },
                 activateControl: function (binding) { return self._activateControl(binding); },
+                openX2Many: function (binding, create, mode) {
+                    return self._openX2Many(binding, create, mode);
+                },
+                isModalForm: function () {
+                    return !!self._modalDialog && self._modalController === self._controller;
+                },
+                saveForm: function (controller) { return self._saveForm(controller); },
+                discardForm: function (controller) { return self._discardForm(controller); },
+                prepareX2ManyImport: function (values) {
+                    return self._rpc({route: "/agui_chat_import/prepare", params: values});
+                },
+                getX2ManyImportStatus: function (token) {
+                    return self._rpc({
+                        route: "/agui_chat_import/status", params: {job_token: token},
+                    });
+                },
+                reloadForm: function (controller) { return self._reloadForm(controller); },
                 applyMentionFilter: function (binding) { return self._applyMentionFilter(binding); },
                 readMentions: function (tokens, authorizationId) {
                     return self._rpc({
@@ -747,21 +877,38 @@ odoo.define("agui_chat.host_service", function (require) {
             if (!binding || !controller) {
                 return false;
             }
-            if (binding.widget && (binding.x2manyAction ||
-                    kind === "x2many_row" || kind === "x2many_field")) {
+            if (kind === "x2many_row" || kind === "x2many_field") {
+                var parent = controller.model.get(controller.handle);
+                var list = parent && parent.data && parent.data[binding.fieldName];
+                if (!list || list.model !== binding.model ||
+                        kind === "x2many_field" && list.id !== binding.localId) {
+                    return false;
+                }
+                if (kind === "x2many_row") {
+                    state = controller.model.get(binding.localId, {raw: true});
+                    if (!state || state.model !== binding.model ||
+                            (state.res_id || false) !== binding.resId) {
+                        return false;
+                    }
+                    return _.some(list.data || [], function (item) {
+                        return item && item.id === binding.localId;
+                    });
+                }
+                return true;
+            }
+            if (binding.widget && binding.x2manyAction) {
                 if (!binding.widget.$el || !binding.widget.$el.length ||
                         binding.widget.isDestroyed && binding.widget.isDestroyed() ||
                         binding.widget.name !== binding.fieldName ||
                         binding.widget.field.relation !== binding.model) {
                     return false;
                 }
-                if (kind === "x2many_row" || binding.x2manyAction === "open") {
-                    state = controller.model.localData &&
-                        controller.model.localData[binding.localId];
-                    if (!state || state.model !== binding.model ||
-                            (state.res_id || false) !== binding.resId) {
-                        return false;
-                    }
+                state = binding.x2manyAction === "open" &&
+                    controller.model.get(binding.localId, {raw: true});
+                if (binding.x2manyAction === "open" && (!state ||
+                        state.model !== binding.model ||
+                        (state.res_id || false) !== binding.resId)) {
+                    return false;
                 }
                 $element = binding.$element || binding.widget.$el;
                 if (!$element.length || $element[0].hidden ||
@@ -786,7 +933,7 @@ odoo.define("agui_chat.host_service", function (require) {
                     return false;
                 }
             } else {
-                state = controller.model.localData && controller.model.localData[binding.localId];
+                state = controller.model.get(binding.localId, {raw: true});
                 if (!state || state.res_id !== binding.resId) {
                     return false;
                 }
@@ -896,6 +1043,88 @@ odoo.define("agui_chat.host_service", function (require) {
             return $.when();
         },
 
+        _openX2Many: function (binding, create, mode) {
+            var self = this;
+            var widget = binding && binding.widget;
+            if (this._modalDialog) {
+                var busy = new Error("当前已有明细弹窗，请先保存或放弃。");
+                busy.code = "x2many_dialog_busy";
+                throw busy;
+            }
+            if (!widget || !_.isFunction(widget._openFormDialog) ||
+                    widget.isDestroyed && widget.isDestroyed()) {
+                var unavailable = new Error("当前明细字段尚未激活，无法打开原生表单。");
+                unavailable.code = "requires_form_activation";
+                throw unavailable;
+            }
+            var ready = $.Deferred();
+            this._modalOpenDeferred = ready;
+            ready.timer = setTimeout(function () {
+                if (self._modalOpenDeferred === ready) {
+                    self._modalOpenDeferred = null;
+                    ready.reject(new Error("明细表单装载超时。"));
+                }
+            }, 5000);
+            if (create) {
+                widget._openFormDialog({
+                    on_saved: function (record) {
+                        return widget._setValue({operation: "ADD", id: record.id});
+                    },
+                });
+                return ready.promise();
+            }
+            var id = binding.localId;
+            widget._openFormDialog({
+                id: id,
+                on_saved: function (record) {
+                    var exists = _.some(widget.value && widget.value.data || [], {id: record.id});
+                    return widget._setValue({operation: exists ? "UPDATE" : "ADD", id: record.id});
+                },
+                on_remove: function () {
+                    return widget._setValue({operation: "DELETE", ids: [id]});
+                },
+                deletable: widget.activeActions && widget.activeActions.delete,
+                readonly: mode === "readonly",
+            });
+            return ready.promise();
+        },
+
+        _saveForm: function (controller) {
+            var dialog = this._modalDialog;
+            if (dialog && controller === this._modalController && _.isFunction(dialog._save)) {
+                return $.when(dialog._save()).then(function () {
+                    return dialog.__aguiHostOnSaved || $.when();
+                }).then(function () {
+                    dialog.close();
+                    return {changedFields: [], persistence: "parent_pending"};
+                });
+            }
+            return $.when(controller.saveRecord()).then(function (fields) {
+                return {changedFields: fields || [], persistence: "database"};
+            });
+        },
+
+        _discardForm: function (controller) {
+            var dialog = this._modalDialog;
+            if (!dialog || controller !== this._modalController ||
+                    !controller.model || !_.isFunction(controller.model.discardChanges)) {
+                return $.Deferred().reject(new Error("原生明细放弃流程不可用。")).promise();
+            }
+            controller.model.discardChanges(controller.handle, {rollback: true});
+            dialog.close();
+            return $.when();
+        },
+
+        _reloadForm: function (controller) {
+            if (!controller || !_.isFunction(controller.reload)) {
+                return $.Deferred().reject(new Error("当前表单不支持重新载入。")).promise();
+            }
+            var self = this;
+            return $.when(controller.reload()).then(function () {
+                return self._refreshNow(controller);
+            });
+        },
+
         _activateControl: function (binding) {
             if (binding.global) {
                 binding.widget.trigger_up("open_record", {
@@ -953,6 +1182,51 @@ odoo.define("agui_chat.host_service", function (require) {
             return rejected.promise();
         });
     }
+
+    viewDialogs.FormViewDialog.include({
+        init: function (parent, options) {
+            var self = this;
+            options = _.extend({}, options || {});
+            var onSaved = options.on_saved;
+            if (options.shouldSaveLocally && _.isFunction(onSaved)) {
+                options.on_saved = function () {
+                    self.__aguiHostOnSaved = $.when(onSaved.apply(this, arguments));
+                    return self.__aguiHostOnSaved;
+                };
+            }
+            return this._super(parent, options);
+        },
+        open: function () {
+            var self = this;
+            var localX2Many = !!(this.shouldSaveLocally && this.model && this.parentID);
+            if (localX2Many) {
+                this.__aguiHostX2ManyDialog = true;
+                bus.trigger("agui_host:form_view_transition", {
+                    phase: "begin", dialog: this,
+                });
+            }
+            var result = this._super.apply(this, arguments);
+            if (localX2Many) {
+                this.opened().then(function () {
+                    if (!self.isDestroyed() && self.form_view) {
+                        bus.trigger("agui_host:form_view_transition", {
+                            phase: "ready", dialog: self, controller: self.form_view,
+                        });
+                    }
+                });
+            }
+            return result;
+        },
+        destroy: function () {
+            if (this.__aguiHostX2ManyDialog && !this.__aguiHostEndPublished) {
+                this.__aguiHostEndPublished = true;
+                bus.trigger("agui_host:form_view_transition", {
+                    phase: "end", dialog: this,
+                });
+            }
+            return this._super.apply(this, arguments);
+        },
+    });
 
     FormController.include({
         _confirmChange: function () {

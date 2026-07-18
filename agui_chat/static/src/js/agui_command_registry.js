@@ -108,6 +108,41 @@ odoo.define("agui_chat.command_registry", function (require) {
             parameters: schema(),
         },
         {
+            name: "odoo.open_x2many_record",
+            description: "使用当前快照的 One2many 行 token 打开原生明细表单。",
+            parameters: schema({
+                rowToken: {type: "string", minLength: 1, maxLength: 160},
+                mode: {type: "string", enum: ["readonly", "edit"]},
+            }, ["rowToken", "mode"]),
+        },
+        {
+            name: "odoo.open_x2many_create",
+            description: "使用当前快照的 One2many 字段 token 打开原生明细新建表单。",
+            parameters: schema({
+                fieldToken: {type: "string", minLength: 1, maxLength: 160},
+            }, ["fieldToken"]),
+        },
+        {
+            name: "odoo.prepare_x2many_import",
+            description: "为当前已保存父表单的 One2many 字段准备并异步校验 CSV/XLSX 导入任务。",
+            parameters: schema({
+                fieldToken: {type: "string", minLength: 1, maxLength: 160},
+                attachmentId: {type: "string", minLength: 1, maxLength: 40},
+            }, ["fieldToken", "attachmentId"]),
+        },
+        {
+            name: "odoo.get_x2many_import_status",
+            description: "查询当前用户 One2many 导入任务的校验或执行状态。",
+            parameters: schema({
+                jobToken: {type: "string", minLength: 1, maxLength: 160},
+            }, ["jobToken"]),
+        },
+        {
+            name: "odoo.reload_current_form",
+            description: "在当前父表单没有未保存更改时调用原生 reload 获取导入结果。",
+            parameters: schema(),
+        },
+        {
             name: "odoo.enter_edit_mode",
             description: "让当前原生表单进入编辑模式；不修改字段，也不保存。",
             parameters: schema(),
@@ -175,6 +210,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         "odoo.undo_current_form": true,
         "odoo.save_current_form": true,
         "odoo.discard_current_form": true,
+        "odoo.prepare_x2many_import": true,
     };
     var BOUND_MENTION_COMMANDS = {
         "odoo.read_mentioned_records": true,
@@ -195,7 +231,11 @@ odoo.define("agui_chat.command_registry", function (require) {
     }
 
     function saveRecord(context, controller) {
-        return $.when(controller.saveRecord()).then(null, function () {
+        var saving = _.isFunction(context.saveForm) ?
+            context.saveForm(controller) : $.when(controller.saveRecord()).then(function (fields) {
+                return {changedFields: fields || [], persistence: "database"};
+            });
+        return $.when(saving).then(null, function () {
             return context.refresh(controller, true).then(function () {
                 throw commandError("save_failed", "表单保存失败，请修正后重试或放弃更改。");
             });
@@ -476,6 +516,107 @@ odoo.define("agui_chat.command_registry", function (require) {
         });
     };
 
+    COMMANDS["odoo.open_x2many_record"] = function (context, args) {
+        var before = context.getSnapshot();
+        var row = context.resolveToken(args.rowToken, "x2many_row");
+        if (!row || !context.validateToken(row, "x2many_row")) {
+            throw commandError("stale_x2many_row_token", "明细行令牌已过期，请刷新后重试。");
+        }
+        var field = before.fields && before.fields[row.fieldName];
+        if (args.mode === "edit" && !(field && field.operations && field.operations.update)) {
+            throw commandError("one2many_operation_not_allowed", "当前明细不允许编辑。");
+        }
+        return $.when(context.openX2Many(row, false, args.mode)).then(function () {
+            return context.waitForSnapshotChange(before.snapshotId);
+        }).then(function (snapshot) {
+            if (!snapshot.record || snapshot.record.model !== row.model) {
+                throw commandError("x2many_form_open_failed", "客户端未进入明细表单。");
+            }
+            return {opened: true, mode: args.mode, persistence: "parent_pending"};
+        });
+    };
+
+    COMMANDS["odoo.open_x2many_create"] = function (context, args) {
+        var before = context.getSnapshot();
+        var fieldBinding = context.resolveToken(args.fieldToken, "x2many_field");
+        if (!fieldBinding || !context.validateToken(fieldBinding, "x2many_field")) {
+            throw commandError("stale_x2many_field_token", "明细字段令牌已过期，请刷新后重试。");
+        }
+        var field = before.fields && before.fields[fieldBinding.fieldName];
+        if (!(field && field.operations && field.operations.create)) {
+            throw commandError("one2many_operation_not_allowed", "当前明细不允许新建。");
+        }
+        return $.when(context.openX2Many(fieldBinding, true, "edit")).then(function () {
+            return context.waitForSnapshotChange(before.snapshotId);
+        }).then(function (snapshot) {
+            if (!snapshot.record || snapshot.record.model !== fieldBinding.model) {
+                throw commandError("x2many_form_open_failed", "客户端未进入明细新建表单。");
+            }
+            return {opened: true, mode: "create", persistence: "parent_pending"};
+        });
+    };
+
+    COMMANDS["odoo.prepare_x2many_import"] = function (context, args) {
+        var controller = requireForm(context);
+        var snapshot = context.getSnapshot();
+        var fieldBinding = context.resolveToken(args.fieldToken, "x2many_field");
+        if (!snapshot.record || !snapshot.record.resId) {
+            throw commandError("parent_must_be_saved", "父单必须先保存后才能准备批量导入。");
+        }
+        if (context.hasUnsavedChanges()) {
+            throw commandError("parent_form_dirty", "父表单存在未保存更改，不能准备批量导入。");
+        }
+        if (!fieldBinding || !context.validateToken(fieldBinding, "x2many_field")) {
+            throw commandError("stale_x2many_field_token", "明细字段令牌已过期，请刷新后重试。");
+        }
+        var meta = snapshot.fields && snapshot.fields[fieldBinding.fieldName];
+        if (!meta || !meta.schemaHash || !(meta.operations && meta.operations.create)) {
+            throw commandError("one2many_operation_not_allowed", "当前明细字段不可导入。");
+        }
+        return context.prepareX2ManyImport({
+            parent_model: snapshot.record.model,
+            parent_id: snapshot.record.resId,
+            field_name: fieldBinding.fieldName,
+            attachment_id: args.attachmentId,
+            schema_hash: meta.schemaHash,
+        }).then(function (result) {
+            if (!result || !result.ok) {
+                throw commandError(
+                    result && result.code || "x2many_import_failed",
+                    result && result.error || "批量导入任务准备失败。"
+                );
+            }
+            return result;
+        });
+    };
+
+    COMMANDS["odoo.get_x2many_import_status"] = function (context, args) {
+        requireView(context, ["form"]);
+        return context.getX2ManyImportStatus(args.jobToken).then(function (result) {
+            if (!result || !result.ok) {
+                throw commandError(
+                    result && result.code || "x2many_import_failed",
+                    result && result.error || "导入任务状态查询失败。"
+                );
+            }
+            return result;
+        });
+    };
+
+    COMMANDS["odoo.reload_current_form"] = function (context) {
+        var controller = requireForm(context);
+        if (context.hasUnsavedChanges()) {
+            throw commandError("parent_form_dirty", "当前表单存在未保存更改，不能重新载入。");
+        }
+        return context.reloadForm(controller).then(function (snapshot) {
+            return {
+                reloaded: true,
+                snapshotId: snapshot.snapshotId,
+                hostRevision: snapshot.hostRevision,
+            };
+        });
+    };
+
     COMMANDS["odoo.enter_edit_mode"] = function (context) {
         return ensureFormEditMode(context, requireForm(context)).then(function (editable) {
             return {
@@ -600,15 +741,18 @@ odoo.define("agui_chat.command_registry", function (require) {
                     throw validationError(invalidFields);
                 }
                 return saveRecord(context, controller);
-            }).then(function () {
+            }).then(function (saved) {
+                prepared.persistence = saved.persistence;
                 return context.refresh(controller, true);
             }).then(function () {
                 var completedSnapshot = context.getSnapshot();
-                var undoPayload = Adapter.buildUndoPayload(controller, completedSnapshot, prepared);
+                var undoPayload = prepared.persistence === "parent_pending" ? false :
+                    Adapter.buildUndoPayload(controller, completedSnapshot, prepared);
                 return {
                     applied: prepared.applied,
                     rejected: [],
                     saved: true,
+                    persistence: prepared.persistence,
                     enteredEditMode: prepared.enteredEditMode,
                     preview: prepared.preview,
                     receipt: {
@@ -676,11 +820,12 @@ odoo.define("agui_chat.command_registry", function (require) {
             if (invalidFields.length) {
                 throw validationError(invalidFields);
             }
-            return saveRecord(context, controller).then(function (changedFields) {
+            return saveRecord(context, controller).then(function (saved) {
                 return context.refresh(controller, true).then(function () {
                     return {
                         saved: true,
-                        applied: changedFields || [],
+                        applied: saved.changedFields || [],
+                        persistence: saved.persistence,
                         enteredEditMode: editable.enteredEditMode,
                     };
                 });
@@ -691,6 +836,11 @@ odoo.define("agui_chat.command_registry", function (require) {
     COMMANDS["odoo.discard_current_form"] = function (context) {
         var controller = requireForm(context);
         var ready;
+        if (_.isFunction(context.discardForm) && context.isModalForm()) {
+            return context.discardForm(controller).then(function () {
+                return {discarded: true, persistence: "parent_pending"};
+            });
+        }
         if (!controller.model || !_.isFunction(controller.model.discardChanges) ||
                 !_.isFunction(controller._confirmSave)) {
             throw commandError("discard_unavailable", "原生放弃更改流程不可用。")

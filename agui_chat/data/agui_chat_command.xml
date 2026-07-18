@@ -56,6 +56,41 @@
         <field name="description">使用当前 action 上下文进入原生完整新建表单；不填写也不保存。</field>
         <field name="sequence">40</field>
     </record>
+    <record id="command_open_x2many_record" model="agui.chat.command">
+        <field name="name">打开明细表单</field>
+        <field name="code">odoo.open_x2many_record</field>
+        <field name="command_type">page</field>
+        <field name="description">使用当前快照的明细行令牌打开原生 One2many 表单。</field>
+        <field name="sequence">41</field>
+    </record>
+    <record id="command_open_x2many_create" model="agui.chat.command">
+        <field name="name">新建明细表单</field>
+        <field name="code">odoo.open_x2many_create</field>
+        <field name="command_type">page</field>
+        <field name="description">使用当前快照的明细字段令牌打开原生 One2many 新建表单。</field>
+        <field name="sequence">42</field>
+    </record>
+    <record id="command_prepare_x2many_import" model="agui.chat.command">
+        <field name="name">准备明细批量导入</field>
+        <field name="code">odoo.prepare_x2many_import</field>
+        <field name="command_type">page</field>
+        <field name="description">复制并异步校验当前 One2many 字段的 CSV/XLSX 导入文件。</field>
+        <field name="sequence">43</field>
+    </record>
+    <record id="command_get_x2many_import_status" model="agui.chat.command">
+        <field name="name">查询明细导入状态</field>
+        <field name="code">odoo.get_x2many_import_status</field>
+        <field name="command_type">page</field>
+        <field name="description">使用不透明任务令牌查询明细导入校验和执行状态。</field>
+        <field name="sequence">44</field>
+    </record>
+    <record id="command_reload_current_form" model="agui.chat.command">
+        <field name="name">重新载入当前表单</field>
+        <field name="code">odoo.reload_current_form</field>
+        <field name="command_type">page</field>
+        <field name="description">在没有未保存更改时重新载入当前原生表单。</field>
+        <field name="sequence">45</field>
+    </record>
     <record id="command_enter_edit_mode" model="agui.chat.command">
         <field name="name">进入编辑模式</field>
         <field name="code">odoo.enter_edit_mode</field>

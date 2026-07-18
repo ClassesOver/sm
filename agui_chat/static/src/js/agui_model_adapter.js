@@ -199,14 +199,29 @@ odoo.define("agui_chat.model_adapter", function (require) {
         }
     }
 
+    function x2manyWidget(controller, rawRecord, name) {
+        var renderer = controller && controller.renderer;
+        var widgets = renderer && renderer.allFieldWidgets &&
+            renderer.allFieldWidgets[rawRecord && rawRecord.id] || [];
+        return _.find(widgets, function (widget) {
+            return widget && widget.name === name && widget.field &&
+                widget.field.type === "one2many";
+        }) || false;
+    }
+
     function one2manyStructure(controller, rawRecord, name, list) {
         var info = fieldInfo(rawRecord, "form")[name];
         var field = rawRecord && rawRecord.fields && rawRecord.fields[name];
-        var view = info && info.views && info.views[info.mode];
+        var views = info && info.views || {};
+        var schemaView = views.form || views.list || views.tree;
+        var operationView = views.list || views.tree;
+        var source = views.form ? "form" : schemaView ? "tree" : false;
         var listId = list && list.id;
-        var childInfos = view && view.fieldsInfo && view.fieldsInfo[view.type];
-        if (!field || field.type !== "one2many" || !info || !view || !view.arch ||
-                !view.fields || !childInfos || !list || list.type !== "list" ||
+        var childInfos = schemaView && schemaView.fieldsInfo &&
+            schemaView.fieldsInfo[schemaView.type];
+        if (!field || field.type !== "one2many" || !info || !schemaView ||
+                !schemaView.arch || !schemaView.fields || !childInfos ||
+                !list || list.type !== "list" ||
                 list.model !== field.relation || !_.isArray(list.data) ||
                 !_.isArray(list.res_ids)) {
             return false;
@@ -214,44 +229,117 @@ odoo.define("agui_chat.model_adapter", function (require) {
         return {
             field: field,
             info: info,
-            view: view,
+            view: schemaView,
+            schemaView: schemaView,
+            operationView: operationView,
+            schemaSource: source,
             list: list,
             listId: listId,
-            childFields: view.fields,
+            childFields: schemaView.fields,
             childInfos: childInfos,
-            viewType: view.type,
+            viewType: schemaView.type,
+            widget: x2manyWidget(controller, rawRecord, name),
         };
     }
 
-    function childFieldMetadata(structure, sensitiveFields) {
+    function hasDynamicModifiers(info) {
+        return _.some(info && info.modifiers || {}, function (value) {
+            return _.isArray(value) || _.isObject(value);
+        });
+    }
+
+    function staticModifiers(info) {
+        return _.pick(info && info.modifiers || {}, function (value) {
+            return _.isBoolean(value) || _.isNumber(value) || _.isString(value);
+        });
+    }
+
+    function childFieldLoaded(controller, structure, name) {
+        var operationInfos = structure.operationView && structure.operationView.fieldsInfo &&
+            structure.operationView.fieldsInfo[structure.operationView.type] || {};
+        if (operationInfos[name]) {
+            return true;
+        }
+        if (!structure.list.data.length) {
+            return false;
+        }
+        return _.every(structure.list.data, function (item) {
+            var record = item && controller.model.get(item.id);
+            return record && record.data && _.has(record.data, name);
+        });
+    }
+
+    function canonicalSchemaHash(schema) {
+        var input = JSON.stringify(_.map(_.keys(schema).sort(), function (name) {
+            var meta = schema[name];
+            return [
+                name, meta.type, meta.relation || false, meta.selection || false,
+                meta.widget || false, meta.modifiers || {}, meta.redacted,
+            ];
+        }));
+        var seeds = [2166136261, 2246822519, 3266489917, 668265263];
+        return _.map(seeds, function (seed) {
+            var hash = seed >>> 0;
+            var index;
+            for (index = 0; index < input.length; index += 1) {
+                hash ^= input.charCodeAt(index);
+                hash = Math.imul(hash, 16777619) >>> 0;
+                hash ^= hash >>> 13;
+            }
+            var left = (hash >>> 0).toString(16);
+            var right = (Math.imul(hash ^ seed, 2246822519) >>> 0).toString(16);
+            return ("00000000" + left).slice(-8) + ("00000000" + right).slice(-8);
+        }).join("");
+    }
+
+    function childFieldMetadata(controller, structure, sensitiveFields) {
         var result = {};
         _.each(_.keys(structure.childInfos).slice(0, MAX_FIELDS), function (name) {
             var field = structure.childFields[name];
             var info = structure.childInfos[name] || {};
+            var loaded;
+            var dynamic;
+            var redacted;
             if (!field || field.type === "binary") {
                 return;
             }
+            loaded = childFieldLoaded(controller, structure, name);
+            dynamic = hasDynamicModifiers(info);
+            redacted = SECRET_FIELD.test(name) || sensitiveFields.indexOf(name) !== -1;
             result[name] = {
                 type: field.type,
                 relation: field.relation || false,
+                selection: bounded(field.selection || false),
                 string: info.string || field.string || name,
-                redacted: SECRET_FIELD.test(name) || sensitiveFields.indexOf(name) !== -1,
+                widget: info.widget || info.attrs && info.attrs.widget || false,
+                modifiers: bounded(staticModifiers(info)),
+                dynamicModifiers: dynamic,
+                redacted: redacted,
+                loaded: loaded,
+                batchWritable: loaded && !dynamic && !redacted &&
+                    !info.widget && !(info.attrs && info.attrs.widget) &&
+                    ["binary", "one2many"].indexOf(field.type) === -1,
             };
         });
         return result;
     }
 
     function one2manyOperations(meta, structure) {
-        var attrs = structure.view.arch.attrs || {};
+        var attrs = structure.operationView && structure.operationView.arch &&
+            structure.operationView.arch.attrs || {};
         var options = structure.info.options || {};
         var fieldAttrs = structure.info.attrs || {};
+        var active = structure.widget && structure.widget.activeActions || {};
         var writable = !meta.readonly && !meta.invisible && !meta.redacted;
         return {
-            create: writable && parsedArchFlag(attrs.create, true) &&
+            create: writable && !!structure.operationView && active.create !== false &&
+                parsedArchFlag(attrs.create, true) &&
                 parsedArchFlag(fieldAttrs.can_create, true) && !options.no_create,
-            update: writable && parsedArchFlag(attrs.edit, true) &&
+            update: writable && !!structure.operationView && active.write !== false &&
+                active.edit !== false && parsedArchFlag(attrs.edit, true) &&
                 parsedArchFlag(fieldAttrs.can_write, true),
-            delete: writable && parsedArchFlag(attrs.delete, true),
+            delete: writable && !!structure.operationView && active.delete !== false &&
+                parsedArchFlag(attrs.delete, true),
         };
     }
 
@@ -268,8 +356,17 @@ odoo.define("agui_chat.model_adapter", function (require) {
             if (!structure) {
                 return;
             }
-            meta.childFields = childFieldMetadata(structure, sensitiveFields);
+            meta.childFields = childFieldMetadata(controller, structure, sensitiveFields);
+            meta.schemaSource = structure.schemaSource;
+            meta.schemaHash = canonicalSchemaHash(meta.childFields);
             meta.operations = one2manyOperations(meta, structure);
+            meta.collection = {
+                dataPointId: structure.listId,
+                loadedCount: structure.list.data.length,
+                totalCount: _.isNumber(structure.list.count) ?
+                    structure.list.count : structure.list.res_ids.length,
+                hasMore: structure.list.count > structure.list.data.length,
+            };
         });
     }
 
@@ -285,7 +382,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
             var field = rawRecord.fields && rawRecord.fields[name];
             var info = structure.childInfos[name] || {};
             var value;
-            if (!field) {
+            if (!field || !meta.loaded) {
                 return;
             }
             if (meta.redacted) {
@@ -563,56 +660,49 @@ odoo.define("agui_chat.model_adapter", function (require) {
     }
 
     function x2ManyCapabilities(controller, snapshot, registerToken, sensitiveFields) {
-        var renderer = controller && controller.renderer;
         var parent = getRecord(controller, false);
-        var widgets = renderer && renderer.allFieldWidgets &&
-            renderer.allFieldWidgets[parent && parent.id] || [];
+        var rawParent = getRecord(controller, true);
         var result = [];
-        _.each(widgets, function (widget) {
+        _.each(snapshot.fields || {}, function (fieldMeta, fieldName) {
             var rows = [];
             var controls = [];
-            var fieldMeta = snapshot.fields && snapshot.fields[widget.name];
-            var viewType;
+            var list = parent && parent.data && parent.data[fieldName];
+            var structure = one2manyStructure(controller, rawParent, fieldName, list);
+            var widget = structure && structure.widget;
             var $create;
-            if (!widget || !widget.field || widget.field.type !== "one2many" ||
-                    !fieldMeta || fieldMeta.invisible || !visibleElement(widget.$el) ||
-                    !widget.value || !_.isArray(widget.value.data)) {
+            if (!structure || fieldMeta.type !== "one2many") {
                 return;
             }
-            viewType = widget.view && widget.view.arch && widget.view.arch.tag === "kanban" ?
-                "kanban" : "list";
-            _.each(widget.value.data.slice(0, MAX_VIEW_RECORDS), function (item) {
+            _.each(structure.list.data.slice(0, MAX_VIEW_RECORDS), function (item) {
                 var record = controller.model.get(item.id);
                 var rawRecord = controller.model.get(item.id, {raw: true});
-                var fields;
                 var rowToken;
                 var $row;
                 var controlToken;
-                if (!record || !rawRecord || record.model !== widget.field.relation) {
+                if (!record || !rawRecord || record.model !== structure.field.relation) {
                     return;
                 }
-                fields = buildFields(record, rawRecord, viewType, sensitiveFields || []);
                 rowToken = registerToken("x2many_row", {
                     widget: widget,
-                    fieldName: widget.name,
+                    fieldName: fieldName,
                     localId: record.id,
                     resId: record.res_id || false,
                     model: record.model,
-                    fields: fields,
-                    viewType: viewType,
+                    fields: fieldMeta.childFields || {},
+                    viewType: structure.viewType,
                 });
-                $row = widget.renderer && widget.renderer.$ ?
+                $row = widget && widget.renderer && widget.renderer.$ ?
                     widget.renderer.$(".o_data_row").filter(function () {
                         return $(this).data("id") === record.id;
                     }).first() : $();
                 if ($row.length && visibleElement($row)) {
                     controlToken = registerToken("control", {
                         type: widget.isReadonly ? "open" : "edit",
-                        name: widget.name,
+                        name: fieldName,
                         x2manyAction: "open",
                         widget: widget,
                         $element: $row,
-                        fieldName: widget.name,
+                        fieldName: fieldName,
                         localId: record.id,
                         resId: record.res_id || false,
                         model: record.model,
@@ -629,22 +719,23 @@ odoo.define("agui_chat.model_adapter", function (require) {
                 rows.push({
                     token: rowToken,
                     displayName: recordDisplayName(record),
-                    values: serializeX2ManyRow(record, rawRecord, fields),
-                    fields: fields,
+                    values: serializeX2ManyRow(record, rawRecord, fieldMeta.childFields || {}),
+                    fields: fieldMeta.childFields || {},
                     openControlToken: controlToken || false,
                 });
             });
-            if (!widget.isReadonly && widget.activeActions && widget.activeActions.create) {
+            if (widget && !widget.isReadonly && widget.activeActions &&
+                    widget.activeActions.create) {
                 $create = widget.$(".o_field_x2many_list_row_add a:visible, button.o-kanban-button-new:visible").first();
                 if ($create.length && visibleElement($create)) {
                     controls.push({
                         token: registerToken("control", {
                             type: "create",
-                            name: widget.name,
+                            name: fieldName,
                             x2manyAction: "create",
                             widget: widget,
                             $element: $create,
-                            fieldName: widget.name,
+                            fieldName: fieldName,
                             localId: widget.value.id,
                             resId: false,
                             model: widget.field.relation,
@@ -660,13 +751,20 @@ odoo.define("agui_chat.model_adapter", function (require) {
             result.push({
                 token: registerToken("x2many_field", {
                     widget: widget,
-                    fieldName: widget.name,
-                    model: widget.field.relation,
+                    fieldName: fieldName,
+                    localId: structure.listId,
+                    model: structure.field.relation,
+                    schemaHash: fieldMeta.schemaHash,
                 }),
-                field: widget.name,
+                field: fieldName,
                 label: fieldMeta.string,
-                relation: widget.field.relation,
-                editable: !widget.isReadonly,
+                relation: structure.field.relation,
+                editable: fieldMeta.operations.create || fieldMeta.operations.update,
+                operations: clone(fieldMeta.operations),
+                schemaSource: fieldMeta.schemaSource,
+                schemaHash: fieldMeta.schemaHash,
+                fields: clone(fieldMeta.childFields || {}),
+                collection: clone(fieldMeta.collection || {}),
                 rows: rows,
                 controls: controls,
             });
@@ -1475,6 +1573,19 @@ odoo.define("agui_chat.model_adapter", function (require) {
                 childField: name,
             });
         }
+        if (!meta.loaded) {
+            throw one2manyError(
+                "requires_form_activation",
+                "该子字段仅在明细表单中声明，不能由父表单批量流程隐式装载。",
+                {childField: name}
+            );
+        }
+        if (!meta.batchWritable) {
+            throw one2manyError(
+                "batch_requires_interactive", "该子字段必须通过明细表单交互修改。",
+                {childField: name}
+            );
+        }
         if (field.type === "binary" || field.type === "one2many") {
             throw one2manyError(
                 "one2many_operation_not_allowed", "该子字段类型不支持批量修改。",
@@ -1504,8 +1615,8 @@ odoo.define("agui_chat.model_adapter", function (require) {
             var field = childFieldForWrite(structure, row, name, childFields);
             if (creating && (field.type === "many2one" || field.type === "many2many")) {
                 throw one2manyError(
-                    "one2many_relation_requires_row_token",
-                    "新增明细的关系字段必须先通过可见创建控件生成行令牌。",
+                    "batch_requires_interactive",
+                    "新增明细的关系字段必须通过明细表单交互选择。",
                     {childField: name}
                 );
             }

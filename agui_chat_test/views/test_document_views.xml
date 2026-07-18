@@ -70,6 +70,17 @@
                                     <field name="tag_ids"/>
                                     <field name="secret_token" invisible="1"/>
                                 </tree>
+                                <form string="通用明细">
+                                    <group>
+                                        <field name="name"/>
+                                        <field name="quantity"/>
+                                        <field name="domain_key"/>
+                                        <field name="candidate_id"/>
+                                        <field name="tag_ids"/>
+                                        <field name="secret_token" invisible="1"/>
+                                        <field name="form_note"/>
+                                    </group>
+                                </form>
                             </field>
                         </page>
                     </notebook>

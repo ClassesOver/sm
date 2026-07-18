@@ -24686,6 +24686,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       "odoo.patch_current_form": "修改当前表单",
       "odoo.validate_current_form": "校验当前表单",
       "odoo.save_current_form": "保存当前表单",
+      "odoo.open_x2many_record": "打开明细表单",
+      "odoo.open_x2many_create": "新建明细表单",
+      "odoo.prepare_x2many_import": "准备明细导入",
+      "odoo.get_x2many_import_status": "查询导入状态",
+      "odoo.reload_current_form": "重新载入表单",
       "odoo.discard_current_form": "放弃表单更改"
     };
     const displayName = names[toolName(tool)] || toolName(tool);
@@ -25067,7 +25072,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ] })
     ] });
   }
-  const SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.5.0.js";
+  const SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.6.0.js";
   let viewerModulePromise;
   function loadProductionBundle() {
     var _a;
@@ -28006,7 +28011,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.5.0";
+  const VERSION = "12.0.8.6.0";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

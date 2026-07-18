@@ -18,6 +18,7 @@ WRITE_COMMANDS = {
     "odoo.patch_current_form",
     "odoo.save_current_form",
     "odoo.discard_current_form",
+    "odoo.prepare_x2many_import",
 }
 CONFIRMATION_COMMANDS = {
     "odoo.save_current_form",
@@ -89,7 +90,7 @@ def redact(value, depth=0, sensitive_keys=None):
     return value
 
 
-def register_business_command(name, schema, handler, description=None):
+def register_business_command(name, schema, handler, description=None, prepare=None):
     if (
         not re.match(r"^odoo\.business\.[a-z0-9_]+\.[a-z0-9_]+$", name or "") or
         not callable(handler)
@@ -97,11 +98,14 @@ def register_business_command(name, schema, handler, description=None):
         raise ValueError("业务命令必须使用 odoo.business.* 名称并提供可调用处理器。")
     if not isinstance(schema, dict):
         raise ValueError("业务命令 schema 必须是 JSON 对象。")
+    if prepare is not None and not callable(prepare):
+        raise ValueError("业务命令 prepare 必须是可调用对象。")
     if name in BUSINESS_COMMANDS:
         raise ValueError("业务命令名称已注册：%s" % name)
     BUSINESS_COMMANDS[name] = {
         "schema": schema or {},
         "handler": handler,
+        "prepare": prepare,
         "description": description or "",
     }
 
@@ -440,6 +444,30 @@ class AguiChatToolAuthorization(models.Model):
                 "code": "schema_validation_failed",
                 "error": validation,
             }
+        prepared = {}
+        if spec.get("prepare"):
+            try:
+                prepared = spec["prepare"](self.env, payload) or {}
+            except Exception as error:
+                return {
+                    "ok": False,
+                    "code": getattr(error, "code", False) or "business_prepare_failed",
+                    "error": str(error),
+                }
+            if not isinstance(prepared, dict) or not isinstance(
+                prepared.get("payload"), dict
+            ):
+                return {"ok": False, "code": "business_prepare_invalid"}
+            payload = prepared["payload"]
+            validation = self.env["agui.chat.command.execution"]._validate_schema(
+                payload, spec.get("schema") or {}, "payload"
+            )
+            if validation:
+                return {
+                    "ok": False,
+                    "code": "schema_validation_failed",
+                    "error": validation,
+                }
         context = call.get("context") if isinstance(call.get("context"), dict) else {}
         key = self._host_idempotency_key(call)
         if not key:
@@ -462,7 +490,13 @@ class AguiChatToolAuthorization(models.Model):
         ], limit=1)
         if existing:
             return existing._existing_decision(binding_hash)
-        decision = self.env["agui.chat.tool.policy"].evaluate(tool_name, payload)
+        policy_arguments = dict(payload)
+        policy_context = prepared.get("policy_context") or {}
+        if isinstance(policy_context, dict):
+            policy_arguments.update(policy_context)
+        decision = self.env["agui.chat.tool.policy"].evaluate(
+            tool_name, policy_arguments
+        )
         if not decision.get("allowed"):
             self.env["agui.chat.tool.audit"]._log(
                 tool_name,
@@ -475,6 +509,13 @@ class AguiChatToolAuthorization(models.Model):
             )
             return {"ok": False, "code": decision.get("reason") or "policy_denied"}
         requires_confirmation = bool(decision.get("requires_confirmation"))
+        risk_reasons = sorted(set(
+            list(decision.get("risk_reasons") or []) +
+            list(prepared.get("risk_reasons") or ["business_command"])
+        ))
+        trusted_preview = prepared.get("preview")
+        if not isinstance(trusted_preview, dict):
+            trusted_preview = {"payload": redact(payload, sensitive_keys=sensitive)}
         expires_at = fields.Datetime.to_string(
             fields.Datetime.from_string(fields.Datetime.now()) + timedelta(minutes=5)
         )
@@ -487,10 +528,10 @@ class AguiChatToolAuthorization(models.Model):
             "tool_name": tool_name,
             "arguments_json": canonical_json(payload),
             "context_json": canonical_json(context),
-            "preview_json": canonical_json({"payload": redact(payload, sensitive_keys=sensitive)}),
-            "risk_reasons_json": canonical_json(
-                decision.get("risk_reasons") or ["business_command"]
-            ),
+            "preview_json": canonical_json(redact(
+                trusted_preview, sensitive_keys=sensitive
+            )),
+            "risk_reasons_json": canonical_json(risk_reasons),
             "policy_id": decision.get("policy_id") or False,
             "authorization_kind": "business",
             "confirmation_required": requires_confirmation,

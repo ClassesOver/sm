@@ -4,12 +4,13 @@ odoo.define("agui_chat.host_bridge", function (require) {
     var ajax = require("web.ajax");
 
     var PROTOCOL = "agui.odoo.v2";
-    var MODULE_VERSION = "12.0.8.5.0";
+    var MODULE_VERSION = "12.0.8.6.0";
     var WRITE_COMMANDS = {
         "odoo.stage_current_form": true,
         "odoo.patch_current_form": true,
         "odoo.save_current_form": true,
         "odoo.discard_current_form": true,
+        "odoo.prepare_x2many_import": true,
     };
 
     function clone(value) {

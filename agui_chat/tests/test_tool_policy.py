@@ -589,6 +589,9 @@ class TestHostCommandAuthorization(TransactionCase):
         new_commands = {
             "odoo.open_menu", "odoo.apply_filter", "odoo.open_record",
             "odoo.open_create", "odoo.enter_edit_mode", "odoo.activate_view_control",
+            "odoo.open_x2many_record", "odoo.open_x2many_create",
+            "odoo.prepare_x2many_import", "odoo.get_x2many_import_status",
+            "odoo.reload_current_form",
         }
         self.assertTrue(new_commands.issubset(set(HOST_COMMAND_NAMES)))
         self.assertFalse(new_commands.intersection(self.config.enabled_command_names()))

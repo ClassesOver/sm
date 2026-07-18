@@ -207,6 +207,47 @@ export interface ViewControlCapability {
   recordLabel: string
 }
 
+export interface X2ManyFieldCapability {
+  type: string
+  relation: string | false
+  selection: unknown
+  string: string
+  widget: string | false
+  modifiers: Record<string, unknown>
+  dynamicModifiers: boolean
+  redacted: boolean
+  loaded: boolean
+  batchWritable: boolean
+}
+
+export interface X2ManyRowCapability {
+  token: string
+  displayName: string
+  values: Record<string, unknown>
+  fields: Record<string, X2ManyFieldCapability>
+  openControlToken: string | false
+}
+
+export interface X2ManyCapability {
+  token: string
+  field: string
+  label: string
+  relation: string
+  editable: boolean
+  operations: {create: boolean; update: boolean; delete: boolean}
+  schemaSource: 'form' | 'tree'
+  schemaHash: string
+  fields: Record<string, X2ManyFieldCapability>
+  collection: {
+    dataPointId: string | false
+    loadedCount: number
+    totalCount: number
+    hasMore: boolean
+  }
+  rows: X2ManyRowCapability[]
+  controls: ViewControlCapability[]
+}
+
 export interface ViewCapabilities {
   create: boolean
   open: boolean
@@ -216,6 +257,7 @@ export interface ViewCapabilities {
   filterFields: Record<string, FilterFieldCapability>
   records: RecordCandidate[]
   controls: ViewControlCapability[]
+  x2many: X2ManyCapability[]
 }
 
 export interface OdooHostSnapshot {

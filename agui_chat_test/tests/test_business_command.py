@@ -14,7 +14,10 @@ class TestBusinessCommand(TransactionCase):
     def setUp(self):
         super(TestBusinessCommand, self).setUp()
         self.config = self.env["agui.chat.config"].sudo().get_active_config()
-        self.config.write({"sensitive_field_names": "configured_secret"})
+        self.config.write({
+            "enabled_business_commands": COMMAND_NAME,
+            "sensitive_field_names": "configured_secret",
+        })
         self.document = self.env[MODEL_NAME].create({
             "name": "业务命令测试",
             "required_code": "BUSINESS-1",

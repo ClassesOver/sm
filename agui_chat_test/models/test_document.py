@@ -4,6 +4,9 @@ from odoo.exceptions import ValidationError
 
 from odoo.addons.agui_chat.models.agui_chat_config import HOST_COMMAND_NAMES
 from odoo.addons.agui_chat.models.agui_chat_workspace import WORKSPACE_SECRET_PARAM
+from odoo.addons.agui_chat_import.models.import_job import (
+    register_x2many_import_profile,
+)
 
 
 DOMAIN_KEYS = [
@@ -11,6 +14,19 @@ DOMAIN_KEYS = [
     ("special", "特殊"),
 ]
 TEST_WORKSPACE_SECRET = "0123456789abcdef0123456789abcdef"
+
+
+register_x2many_import_profile(
+    "agui.chat.test.document",
+    "detail_item_ids",
+    {
+        "明细名称": {"field": "name", "required": True},
+        "数量": {"field": "quantity", "type": "integer"},
+        "关系域键": {"field": "domain_key", "type": "selection", "required": True},
+    },
+    version="1",
+    parent_check=lambda parent: "parent_state_conflict" if parent.state != "draft" else False,
+)
 
 
 class AguiChatTestOption(models.Model):
@@ -187,6 +203,8 @@ class AguiChatTestLine(models.Model):
         "line_id", "option_id", string="明细标签",
     )
     secret_token = fields.Char(string="明细敏感令牌")
+    form_note = fields.Char(string="表单专用备注")
+    tree_note = fields.Char(string="列表专用备注")
 
 
 class AguiChatTestConfig(models.Model):

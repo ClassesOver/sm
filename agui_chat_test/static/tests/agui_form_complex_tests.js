@@ -3,6 +3,7 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
 
     var Adapter = require("agui_chat.model_adapter");
     var Commands = require("agui_chat.command_registry");
+    var HostService = require("agui_chat.host_service");
     var FormView = require("web.FormView");
     var concurrency = require("web.concurrency");
     var testUtils = require("web.test_utils");
@@ -96,13 +97,15 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
                         string: "明细标签", type: "many2many", relation: "agui.chat.test.option",
                     },
                     secret_token: {string: "明细敏感令牌", type: "char"},
+                    form_note: {string: "表单专用备注", type: "char"},
+                    tree_note: {string: "列表专用备注", type: "char"},
                     document_id: {
                         string: "单据", type: "many2one", relation: "agui.chat.test.document",
                     },
                 },
                 records: [
-                    {id: 100, name: "原明细 A", quantity: 1, domain_key: "standard", candidate_id: 10, tag_ids: [10], secret_token: "child-secret", document_id: 1},
-                    {id: 101, name: "原明细 B", quantity: 2, domain_key: "special", candidate_id: 20, tag_ids: [20], secret_token: "child-secret", document_id: 1},
+                    {id: 100, name: "原明细 A", quantity: 1, domain_key: "standard", candidate_id: 10, tag_ids: [10], secret_token: "child-secret", form_note: "表单值", tree_note: "列表值", document_id: 1},
+                    {id: 101, name: "原明细 B", quantity: 2, domain_key: "special", candidate_id: 20, tag_ids: [20], secret_token: "child-secret", form_note: "表单值", tree_note: "列表值", document_id: 1},
                 ],
             },
         };
@@ -132,7 +135,13 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
                 '<field name="domain_key"/>' +
                 '<field name="candidate_id" domain="[(\'domain_key\', \'=\', domain_key)]"/>' +
                 '<field name="tag_ids"/><field name="secret_token" invisible="1"/>' +
-            '</tree></field>' +
+                '<field name="tree_note"/>' +
+            '</tree><form string="明细表单">' +
+                '<field name="name"/><field name="quantity"/>' +
+                '<field name="domain_key"/><field name="candidate_id"/>' +
+                '<field name="tag_ids"/><field name="secret_token" invisible="1"/>' +
+                '<field name="form_note"/>' +
+            '</form></field>' +
         '</form>';
     }
 
@@ -567,13 +576,13 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
             }}]}},
         });
         assert.strictEqual(line.rejected[0].code, "invalid_one2many_patch");
-        assert.strictEqual(unsafeCreate.rejected[0].code, "one2many_relation_requires_row_token");
+        assert.strictEqual(unsafeCreate.rejected[0].code, "batch_requires_interactive");
         assert.strictEqual(snapshot(form).record.values.line_ids.count, 1, "no child row is created");
         form.destroy();
     });
 
     QUnit.test("generic one2many snapshot is metadata driven and bounded", async function (assert) {
-        assert.expect(11);
+        assert.expect(16);
         var form = await testUtils.createAsyncView({
             View: FormView,
             model: "agui.chat.test.document",
@@ -587,9 +596,14 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
         var value = state.record.values.detail_item_ids;
 
         assert.strictEqual(meta.type, "one2many");
+        assert.strictEqual(meta.schemaSource, "form");
+        assert.ok(/^[a-f0-9]{64}$/.test(meta.schemaHash));
         assert.deepEqual(meta.operations, {create: true, update: true, delete: true});
         assert.strictEqual(meta.childFields.candidate_id.relation, "agui.chat.test.option");
         assert.ok(meta.childFields.secret_token.redacted);
+        assert.ok(meta.childFields.form_note);
+        assert.notOk(meta.childFields.tree_note, "Form schema 不与 Tree schema 合并");
+        assert.notOk(meta.childFields.form_note.loaded, "Form-only 字段未隐式装载");
         assert.deepEqual(value.ids, [100, 101]);
         assert.strictEqual(value.count, 2);
         assert.strictEqual(value.loadedCount, 2);
@@ -597,6 +611,28 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
         assert.strictEqual(value.records.length, 2);
         assert.strictEqual(value.records[0].values.secret_token, "[redacted]");
         assert.strictEqual(value.records[0].modifiers.name.required, true);
+        form.destroy();
+    });
+
+    QUnit.test("form-only one2many fields require native form activation", async function (assert) {
+        assert.expect(3);
+        var form = await testUtils.createAsyncView({
+            View: FormView,
+            model: "agui.chat.test.document",
+            data: testData(),
+            arch: formArch(),
+            res_id: 1,
+            viewOptions: {mode: "edit"},
+        });
+        var state = snapshot(form);
+        var result = await Adapter.applyPatch(form, state, {patch: {
+            detail_item_ids: {operations: [{
+                operation: "update", id: 100, values: {form_note: "禁止隐式装载"},
+            }]},
+        }});
+        assert.strictEqual(state.fields.line_ids.schemaSource, "tree");
+        assert.strictEqual(result.rejected[0].code, "requires_form_activation");
+        assert.strictEqual(result.rejected[0].childField, "form_note");
         form.destroy();
     });
 
@@ -747,5 +783,87 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
         await actionManager.doAction(2, {clear_breadcrumbs: true});
         assert.ok(first.isDestroyed(), "navigation destroys the stale controller");
         actionManager.destroy();
+    });
+
+    QUnit.test("host switches to One2many modal and saves back to parent", async function (assert) {
+        assert.expect(10);
+        var form = await testUtils.createAsyncView({
+            View: FormView,
+            model: "agui.chat.test.document",
+            data: testData(),
+            arch: formArch(),
+            archs: {
+                "agui.chat.test.option,false,list":
+                    '<tree><field name="name"/><field name="domain_key"/></tree>',
+                "agui.chat.test.option,false,form":
+                    '<form><field name="name"/><field name="domain_key"/></form>',
+            },
+            res_id: 1,
+            viewOptions: {mode: "edit"},
+        });
+        var service = new HostService();
+        service._enabled = true;
+        service._actionManager = {
+            getCurrentController: function () { return {widget: form}; },
+        };
+        service.start();
+        await service._activateCurrentController();
+        var parent = service.getSnapshot();
+        var detail = _.findWhere(parent.capabilities.x2many, {field: "detail_item_ids"});
+        assert.ok(parent.interactive, "root snapshot is interactive");
+        assert.ok(detail, "root snapshot exposes detail_item_ids");
+        if (!detail) {
+            service.destroy();
+            form.destroy();
+            return;
+        }
+        var row = detail.rows[0];
+        assert.ok(row && row.token, "root snapshot exposes a row token");
+
+        var opened;
+        try {
+            opened = await service.executeHostCommand({
+                tool: "odoo.open_x2many_record",
+                arguments: {
+                    target: Adapter.targetFromSnapshot(parent),
+                    rowToken: row.token,
+                    mode: "edit",
+                },
+            });
+        } catch (error) {
+            assert.ok(false, "open rejected: " + JSON.stringify({
+                code: error && error.code,
+                message: error && error.message,
+                error: error && error.error,
+                rejected: error && error.rejected,
+                snapshot: error && error.snapshot,
+                stack: error && error.stack,
+            }));
+            service.destroy();
+            form.destroy();
+            return;
+        }
+        var modal = service.getSnapshot();
+        assert.ok(opened.ok);
+        assert.strictEqual(modal.record.model, "agui.chat.test.line");
+        assert.notStrictEqual(modal.controller.controllerId, parent.controller.controllerId);
+
+        var patched = await service.executeHostCommand({
+            tool: "odoo.patch_current_form",
+            authorizationId: "qunit-modal-patch",
+            arguments: {
+                target: Adapter.targetFromSnapshot(modal),
+                patch: {quantity: 9},
+            },
+        });
+        var restored = service.getSnapshot();
+        var restoredRows = restored.record.values.detail_item_ids.records;
+        assert.ok(patched.ok && patched.saved);
+        assert.strictEqual(patched.persistence, "parent_pending");
+        assert.strictEqual(restored.controller.controllerId !== modal.controller.controllerId, true);
+        assert.strictEqual(_.findWhere(restoredRows, {id: 100}).values.quantity, 9);
+
+        service.destroy();
+        form.destroy();
     });
 });

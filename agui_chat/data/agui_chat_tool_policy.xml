@@ -14,6 +14,41 @@
         <field name="confirmation_mode">never</field>
         <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
     </record>
+    <record id="policy_open_x2many_record" model="agui.chat.tool.policy">
+        <field name="name">打开当前 One2many 明细表单</field>
+        <field name="tool_name">odoo.open_x2many_record</field>
+        <field name="access_level">navigation</field>
+        <field name="confirmation_mode">never</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="policy_open_x2many_create" model="agui.chat.tool.policy">
+        <field name="name">打开当前 One2many 新建表单</field>
+        <field name="tool_name">odoo.open_x2many_create</field>
+        <field name="access_level">navigation</field>
+        <field name="confirmation_mode">never</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="policy_prepare_x2many_import" model="agui.chat.tool.policy">
+        <field name="name">准备 One2many 批量导入任务</field>
+        <field name="tool_name">odoo.prepare_x2many_import</field>
+        <field name="access_level">write</field>
+        <field name="confirmation_mode">never</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="policy_get_x2many_import_status" model="agui.chat.tool.policy">
+        <field name="name">查询 One2many 导入任务</field>
+        <field name="tool_name">odoo.get_x2many_import_status</field>
+        <field name="access_level">read</field>
+        <field name="confirmation_mode">never</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="policy_reload_current_form" model="agui.chat.tool.policy">
+        <field name="name">重新载入当前表单</field>
+        <field name="tool_name">odoo.reload_current_form</field>
+        <field name="access_level">navigation</field>
+        <field name="confirmation_mode">never</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
     <record id="policy_filter_employee" model="agui.chat.tool.policy">
         <field name="name">筛选当前员工视图</field>
         <field name="tool_name">odoo.apply_filter</field>

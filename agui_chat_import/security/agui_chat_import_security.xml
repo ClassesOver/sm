@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="rule_x2many_import_job_owner" model="ir.rule">
+        <field name="name">仅访问自己的 One2many 导入任务</field>
+        <field name="model_id" ref="model_agui_chat_x2many_import_job"/>
+        <field name="domain_force">[('user_id', '=', user.id), ('company_id', '=', user.company_id.id)]</field>
+        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+</odoo>

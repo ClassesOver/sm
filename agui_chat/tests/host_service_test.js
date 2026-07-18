@@ -36,6 +36,10 @@ function main() {
     };
     const WebClient = function () {};
     WebClient.include = function () {};
+    const FormViewDialog = function () {};
+    FormViewDialog.include = function (prototype) {
+        Object.assign(FormViewDialog.prototype, prototype);
+    };
     const Adapter = {
         clone(value) {
             return JSON.parse(JSON.stringify(value));
@@ -77,6 +81,7 @@ function main() {
                     if (name === "web.FormController" || name === "web.ListController" ||
                             name === "web.KanbanController") return Controller;
                     if (name === "web.WebClient") return WebClient;
+                    if (name === "web.view_dialogs") return {FormViewDialog};
                     if (name === "agui_chat.model_adapter") return Adapter;
                     if (name === "agui_chat.command_registry") return {getCatalog() { return []; }};
                     throw new Error("Unexpected module: " + name);
