@@ -5,6 +5,10 @@ ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY agentos_dev/requirements.txt ./agentos_dev/requirements.txt
 RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r agentos_dev/requirements.txt
 

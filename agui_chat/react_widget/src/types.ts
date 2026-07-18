@@ -96,13 +96,13 @@ export interface RecordReference extends MentionReferenceBase {
 
 export interface SavedFilterReference extends MentionReferenceBase {
   kind: 'saved_filter'
-  action: 'apply'
+  action: 'read' | 'apply'
   model: string
 }
 
 export interface CurrentFilterReference extends MentionReferenceBase {
   kind: 'current_filter'
-  action: 'apply'
+  action: 'read' | 'apply'
   model: string
 }
 

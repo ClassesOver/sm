@@ -16,6 +16,10 @@ OPENAI_API_KEY=sk-... .venv-agent/bin/python -m agentos_dev.app
 默认监听 `127.0.0.1:7777`。Odoo 只需配置
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
 
+应用还注册五个受控 Pandas 报表工具，支持当前 thread 工作区内的 CSV、XLSX、JSON 和
+JSONL。它们不暴露任意 DataFrame operation；图表自动写入 `reports/` 下的 UUID PNG 与
+独立 HTML，其他工作区写入仍要求确认。
+
 应用默认读取 `/home/junge/pros/agents_app/.env`，复用其中的 `MODEL`、
 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。可通过 `AGENT_ENV_FILE` 指向其他
 环境文件；已存在的进程环境变量优先于文件内容。

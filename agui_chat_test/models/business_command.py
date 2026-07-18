@@ -3,6 +3,7 @@ from odoo.addons.agui_chat.models.agui_chat_tool import register_business_comman
 
 
 COMMAND_NAME = "odoo.business.test_document.confirm"
+READ_COMMAND_NAME = "odoo.business.test_document.read"
 MODEL_NAME = "agui.chat.test.document"
 
 
@@ -29,6 +30,13 @@ def confirm_test_document(env, payload):
     }
 
 
+def read_test_document(env, payload):
+    document = env[MODEL_NAME].browse(payload["document_id"]).exists()
+    document.check_access_rights("read")
+    document.check_access_rule("read")
+    return {"document_id": document.id, "name": document.name}
+
+
 register_business_command(
     COMMAND_NAME,
     {
@@ -52,4 +60,20 @@ register_business_command(
     },
     confirm_test_document,
     description="确认当前用户可写且仍为草稿的通用测试单据。",
+)
+
+register_business_command(
+    READ_COMMAND_NAME,
+    {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["model", "document_id"],
+        "properties": {
+            "model": {"type": "string", "enum": [MODEL_NAME]},
+            "document_id": {"type": "integer", "minimum": 1},
+        },
+    },
+    read_test_document,
+    description="读取当前用户可见的测试单据。",
+    access_level="read",
 )

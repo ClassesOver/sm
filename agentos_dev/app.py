@@ -14,6 +14,7 @@ from .security import CapabilityError, verify_capability
 from .database import SerializedPostgresDb, agent_db_url, check_database
 from .skills import load_skills
 from .workspace import WorkspaceError, WorkspaceService, workspace_tools
+from .report import report_tools
 
 
 PROTOCOL = "agui.odoo.v2"
@@ -289,6 +290,10 @@ assistant = Agent(
         "调用 odoo.open_menu 时，target 必须原样复制“Odoo 宿主快照”中的 pageTarget；调用其他 Odoo 页面工具时，target 必须原样复制其中的 viewTarget。不得从 action.resId 推导当前表单记录。",
         "上下文存在“已选 Odoo 菜单”时，先用其中的 menuId 和当前 PageTarget 调用 odoo.open_menu；只能使用该菜单，不能改选或猜测其他菜单。导航后必须等待客户端返回新快照再决定下一步。",
         "上下文存在“已选 Odoo 引用”时，只能使用其中原样提供的 token 和绑定动作，不得改选对象、猜测对象或把 read/view 动作升级为 edit。多个 read 记录必须先用当前 PageTarget 一次调用 odoo.read_mentioned_records 批量读取；唯一的页面动作随后执行，并使用当前 PageTarget。菜单 open/create 分别调用 odoo.open_mentioned_menu，记录 view/edit 调用 odoo.open_mentioned_record，收藏或临时筛选 apply 调用 odoo.apply_mentioned_filter。",
+        "收藏筛选和当前筛选绑定为 read 时必须调用 odoo.business.report.filters，绑定为 apply 时仍调用 odoo.apply_mentioned_filter；两者不得互相降级。菜单、记录和当前页面记录候选不能作为 Pandas 报表数据源。",
+        "筛选报表必须先调用 describe。总行数不超过 5000 时才可调用 detail；超过后必须明确调用 aggregate。优先采用 describe 返回的原有 groupBy，调整维度或指标时只能选择返回的字段和聚合白名单。",
+        "多个筛选默认分别分析。只有用户明确要求且字段结构兼容时才调用 pandas_concat_datasets 纵向合并；禁止自动 join。报表工具只接受 Odoo 报表命令生成的数据路径或用户明确加入当前 thread 工作区的 CSV、XLSX、JSON、JSONL 文件。",
+        "报表回答必须注明筛选标签、行数、明细或聚合口径、用户时区、币种规则和生成时间。",
         "对象引用工具返回 mention_token_expired、mention_permission_revoked、mention_resource_unavailable 或 policy_denied 时，必须准确报告令牌过期、权限撤销、资源不可用或策略拒绝，不得改用其他对象或旧页面工具绕过。",
         "上下文不存在“已选 Odoo 菜单”时，只能操作当前 action；当前 action 无法满足意图时，请用户用 @ 选择菜单，不要从其他菜单中猜目标。",
         "筛选只能使用当前快照 capabilities.filterFields 中的字段和运算符，提交 JSON domain 与简短可见标签；即使只有一个条件也必须使用条件列表，例如 [[\"id\", \"=\", 1]]；禁止字符串 domain、点号字段和表达式。",
@@ -303,10 +308,10 @@ assistant = Agent(
         "用户只要求进入编辑模式且未提供字段修改内容时，第一个响应只调用 odoo.enter_edit_mode。odoo.patch_current_form 保留“修改并立即保存”语义，只用于用户明确要求立即保存且不存在待 onchange/domain 依赖的独立修改；复杂或已暂存表单不得改用 patch_current_form。",
         "odoo.business.* 只有在本次 Run 动态声明且用户意图匹配其精确 schema 时才能调用；不得构造未声明业务命令，不得把业务命令降级为通用 RPC、CRUD 或任意模型方法，提交和审批类命令必须等待独立确认结果。",
         "上下文存在“已选智能体技能”时，必须先对每个手动选择的技能按原样调用 get_skill_instructions；手动选择不代表禁止自动使用其他可用技能。",
-        "工作区只属于当前 thread。读取目录和文本使用 workspace_list_files、workspace_read_file；写入、移动、删除、Shell、代码和技能脚本执行必须使用对应的需确认工具。",
+        "工作区只属于当前 thread。读取目录和文本使用 workspace_list_files、workspace_read_file；普通写入、移动、删除、Shell、代码和技能脚本执行必须使用对应的需确认工具。报表工具可自动在当前 thread 的 reports/ UUID 路径生成数据集和图表。",
     ],
     skills=agent_skills,
-    tools=workspace_tools(workspace_service, agent_skills),
+    tools=workspace_tools(workspace_service, agent_skills) + report_tools(workspace_service),
     db=SerializedPostgresDb(db_url=agent_db_url()),
     add_history_to_context=True,
     num_history_runs=10,

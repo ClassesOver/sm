@@ -104,6 +104,13 @@ models exposed by visible window-action menus. Saved filters come from
 the native host before tokenization. Execution repeats menu, ACL, record-rule,
 company, filter-visibility, expiry, and exact-action checks.
 
+Saved and current filters support separate `read` and `apply` bindings. `read`
+is available only when `odoo.business.report.filters` is enabled and the
+current user matches an exact-model report policy. It is not a page action and
+up to five filters may coexist. `apply` remains a page action. Record `read`
+authorization never authorizes filter data access because validation includes
+both resource kind and action.
+
 `odoo.read_mentioned_records` accepts one to five tokens bound to `read`. An
 exact-model policy `field_names` allowlist wins; otherwise fields are derived
 from the default form view. Secret-like, configured-sensitive, and binary
@@ -216,6 +223,13 @@ Synchronous server-side commands use exact names under
 registry and `enabled_business_commands` are published as client tools for the
 current Run; their registered JSON schema is the tool's `parameters`.
 
+Registered commands default to `write`. A command explicitly registered as
+`read` remains published and executable while `write_tools_enabled` is off.
+Both access levels still require an exact matching policy. A binding resolver
+may bind current-message opaque tokens and emit per-model policy inputs; it is
+run again during execution so token visibility, ACL, record rules, company,
+browser session, expiry, and policy revocation fail the whole batch atomically.
+
 The browser calls `/agui_chat/business/prepare`, reuses the normal confirmation
 UI when required, and then calls `/agui_chat/business/execute` with the
 server-bound payload and authorization token. Business commands require an
@@ -225,6 +239,41 @@ server-side schema validation, user/company/run/tool-call payload binding,
 authorization expiry, idempotency locking, a database savepoint, stored result
 replay, default sensitive-key redaction, and redacted audit. There is no generic
 business handler, RPC, CRUD, or arbitrary model-method fallback.
+
+### Filter Reports
+
+`odoo.business.report.filters` is a read-only command and is not enabled by
+default. Every request contains one to five filter tokens selected in the
+current message. It supports:
+
+- `describe`: row count, allowed fields/types, original grouping, and allowed
+  aggregations;
+- `detail`: up to 30 fields and at most 5000 rows per filter, with no silent
+  truncation;
+- `aggregate`: up to two dimensions, five `count/sum/avg/min/max` metrics, and
+  5000 result groups.
+
+Saved filter expressions are parsed in Odoo's restricted evaluation
+environment. Temporary filters use their bound structured values. Domain,
+sort, original grouping, requested dimensions, and metrics must use policy
+fields. Sensitive, binary, one2many, and many2many fields are always rejected.
+Date grouping uses the Odoo user's timezone. Monetary metrics require their
+currency field as a dimension; no implicit conversion is performed.
+
+Detail and aggregate output is uploaded as `reports/data/<uuid>.jsonl` plus a
+`.meta.json` file through the existing thread capability. Metadata contains the
+filter label, model, fields, row count, aggregation basis, timezone, currency
+rule, generation time, and a domain fingerprint, but no token or full domain.
+An upload failure removes files created by that call.
+
+AgentOS registers five model-facing adapters: `pandas_profile_dataset`,
+`pandas_group_dataset`, `pandas_pivot_dataset`, `pandas_concat_datasets`, and
+`pandas_generate_chart`. Each call downloads only from the current thread,
+creates a fresh Agno `PandasTools` instance over temporary local files, and
+releases all frames immediately. Native arbitrary Pandas functions are not
+published. Inputs are limited to 100000 rows, 100 columns, 128 MiB expanded
+memory, and model-visible results to 32 KiB. Chart outputs use UUID paths under
+`reports/`; PNG is inline-previewable and standalone Plotly HTML is downloaded.
 
 ## Sessions And Surfaces
 

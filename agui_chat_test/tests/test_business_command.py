@@ -3,9 +3,11 @@
 from odoo.tests.common import TransactionCase
 
 from odoo.addons.agui_chat.models.agui_chat_tool import business_tool_catalog
+from odoo.addons.agui_chat.models.agui_chat_report import ReportError, _currency_rules
 from odoo.addons.agui_chat_test.models.business_command import (
     COMMAND_NAME,
     MODEL_NAME,
+    READ_COMMAND_NAME,
 )
 
 
@@ -63,6 +65,60 @@ class TestBusinessCommand(TransactionCase):
             "agui.chat.tool.authorization"
         ]._prepare_business_command(self._call("business-write-disabled"))
         self.assertEqual(write_disabled["code"], "write_tools_disabled")
+
+    def test_read_business_command_works_while_write_tools_are_disabled(self):
+        self.env["agui.chat.command"].create({
+            "name": "读取测试单据",
+            "code": READ_COMMAND_NAME,
+            "command_type": "business",
+        })
+        self.env["agui.chat.tool.policy"].create({
+            "name": "读取测试单据",
+            "tool_name": READ_COMMAND_NAME,
+            "access_level": "read",
+            "model_name": MODEL_NAME,
+            "field_names": "name",
+            "confirmation_mode": "never",
+        })
+        self.config.write({
+            "enabled_business_commands": "%s,%s" % (COMMAND_NAME, READ_COMMAND_NAME),
+            "write_tools_enabled": False,
+        })
+        catalog = business_tool_catalog(self.env, self.config)
+        by_name = {item["name"]: item for item in catalog}
+        self.assertEqual(by_name[READ_COMMAND_NAME]["accessLevel"], "read")
+        self.assertEqual(by_name[COMMAND_NAME]["accessLevel"], "write")
+
+        payload = {"model": MODEL_NAME, "document_id": self.document.id}
+        call = self._call("business-read-without-write", payload)
+        call["tool"] = READ_COMMAND_NAME
+        decision = self.env["agui.chat.tool.authorization"]._prepare_business_command(call)
+        self.assertTrue(decision["ok"])
+        result = self.env["agui.chat.command.execution"]._execute_named(
+            READ_COMMAND_NAME, payload, decision["authorization_id"],
+            decision["authorization_id"],
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result"]["document_id"], self.document.id)
+
+        denied = self.env["agui.chat.tool.authorization"]._prepare_business_command(
+            self._call("business-write-still-disabled")
+        )
+        self.assertEqual(denied["code"], "write_tools_disabled")
+
+    def test_report_monetary_aggregation_requires_currency_dimension(self):
+        binding = {"model": MODEL_NAME}
+        with self.assertRaises(ReportError) as caught:
+            _currency_rules(self.env, binding, {
+                "dimensions": [],
+                "metrics": [{"field": "amount", "aggregation": "sum"}],
+            })
+        self.assertEqual(caught.exception.code, "currency_dimension_required")
+        rules = _currency_rules(self.env, binding, {
+            "dimensions": ["currency_id"],
+            "metrics": [{"field": "amount", "aggregation": "sum"}],
+        })
+        self.assertEqual(rules[0]["currencyField"], "currency_id")
 
     def test_inactive_business_command_blocks_catalog_prepare_and_execute(self):
         command = self.env.ref("agui_chat_test.command_test_document_confirm")

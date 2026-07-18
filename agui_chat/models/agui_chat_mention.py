@@ -38,8 +38,8 @@ PAGE_ACTIONS = {"open", "create", "view", "edit", "apply"}
 ALLOWED_ACTIONS = {
     "menu": {"open", "create"},
     "record": {"read", "view", "edit"},
-    "saved_filter": {"apply"},
-    "current_filter": {"apply"},
+    "saved_filter": {"read", "apply"},
+    "current_filter": {"read", "apply"},
 }
 TOOL_BINDINGS = {
     "odoo.open_mentioned_menu": {"menu": {"open", "create"}},
@@ -206,25 +206,27 @@ class AguiChatMentionToken(models.Model):
                         continue
                     if query.lower() not in str(item.get("name") or "").lower():
                         continue
-                    if "apply" not in enabled_actions:
+                    actions = self._filter_actions(entry["model"], enabled_actions)
+                    if not actions:
                         continue
                     seen_filters.add(item["id"])
                     owner = "个人收藏" if item.get("user_id") else "共享收藏"
                     payload = dict(entry, filter_id=item["id"])
                     buckets["saved_filter"].append(self._create_candidate(
                         "saved_filter", item["name"], "%s · %s" % (entry["label"], owner),
-                        entry["model"], ["apply"], payload, session_key,
+                        entry["model"], actions, payload, session_key,
                     ))
                     if len(buckets["saved_filter"]) >= MAX_SEARCH_RESULTS:
                         break
 
         if scope == "current_filter":
             payload = self._normalize_current_filter(current_filter, catalog)
-            if payload and "apply" in enabled_actions and (
+            actions = self._filter_actions(payload.get("model"), enabled_actions) if payload else []
+            if payload and actions and (
                     not query or query.lower() in payload["label"].lower()):
                 buckets["current_filter"].append(self._create_candidate(
                     "current_filter", payload["label"], payload["menu_label"],
-                    payload["model"], ["apply"], payload, session_key,
+                    payload["model"], actions, payload, session_key,
                 ))
 
         if scope == "all":
@@ -264,7 +266,8 @@ class AguiChatMentionToken(models.Model):
         allowed = set(payload.get("allowed_actions") or [])
         if action not in allowed or action not in ALLOWED_ACTIONS[candidate.resource_kind]:
             raise MentionTokenError("mention_action_not_allowed", "该候选不支持所选动作。")
-        if action not in self._enabled_reference_actions():
+        if not self._reference_action_enabled(
+                candidate.resource_kind, action, candidate.model_name):
             raise MentionTokenError("mention_permission_revoked", "该对象引用动作已停用。")
         self._revalidate_payload(candidate.resource_kind, payload, action)
         expires = _now() + timedelta(hours=BOUND_TTL_HOURS)
@@ -454,7 +457,7 @@ class AguiChatMentionToken(models.Model):
         record = self._load_token(token, "bound", session_key)
         if record.resource_kind != kind or record.bound_action != action:
             raise MentionTokenError("mention_action_mismatch", "对象引用动作不匹配。")
-        if action not in self._enabled_reference_actions():
+        if not self._reference_action_enabled(kind, action, record.model_name):
             raise MentionTokenError("mention_permission_revoked", "该对象引用动作已停用。")
         payload = json.loads(record.payload_json or "{}")
         try:
@@ -515,11 +518,17 @@ class AguiChatMentionToken(models.Model):
             )
             if not any(item.get("id") == payload.get("filter_id") for item in filters):
                 raise MentionTokenError("mention_resource_unavailable", "收藏筛选已删除或无权访问。")
-            if not self._catalog_item(payload.get("menu_id")):
+            menu = self._catalog_item(payload.get("menu_id"))
+            if not menu or (
+                    menu.get("model") != payload.get("model") or
+                    menu.get("action_id") != payload.get("action_id")):
                 raise MentionTokenError("mention_resource_unavailable", "筛选所属菜单已不可用。")
             return
         if kind == "current_filter":
-            if not self._catalog_item(payload.get("menu_id")):
+            menu = self._catalog_item(payload.get("menu_id"))
+            if not menu or (
+                    menu.get("model") != payload.get("model") or
+                    menu.get("action_id") != payload.get("action_id")):
                 raise MentionTokenError("mention_resource_unavailable", "筛选所属菜单已不可用。")
 
     @api.model
@@ -570,6 +579,34 @@ class AguiChatMentionToken(models.Model):
         if "odoo.apply_mentioned_filter" in commands:
             actions.add("apply")
         return actions
+
+    @api.model
+    def _filter_actions(self, model_name, enabled_actions=None):
+        actions = []
+        if self._report_filter_read_enabled(model_name):
+            actions.append("read")
+        if "apply" in (enabled_actions or self._enabled_reference_actions()):
+            actions.append("apply")
+        return actions
+
+    @api.model
+    def _report_filter_read_enabled(self, model_name):
+        config = self.env["agui.chat.config"].sudo().get_active_config()
+        command = "odoo.business.report.filters"
+        if (
+            not config.chat_enabled or not config.host_tools_enabled or
+            command not in config.enabled_business_command_names()
+        ):
+            return False
+        return bool(self.env["agui.chat.tool.policy"].evaluate(
+            command, {"model": model_name, "field_names": []},
+        ).get("allowed"))
+
+    @api.model
+    def _reference_action_enabled(self, kind, action, model_name):
+        if kind in ("saved_filter", "current_filter") and action == "read":
+            return self._report_filter_read_enabled(model_name)
+        return action in self._enabled_reference_actions()
 
     @api.model
     def _menu_catalog(self):

@@ -7299,12 +7299,34 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$F = [
+  const __iconNode$H = [
     ["rect", { width: "20", height: "5", x: "2", y: "3", rx: "1", key: "1wp1u1" }],
     ["path", { d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8", key: "1s80jp" }],
     ["path", { d: "M10 12h4", key: "a56b0p" }]
   ];
-  const Archive = createLucideIcon("Archive", __iconNode$F);
+  const Archive = createLucideIcon("Archive", __iconNode$H);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$G = [
+    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
+    ["path", { d: "M19 12H5", key: "x3x0zl" }]
+  ];
+  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$G);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$F = [
+    ["circle", { cx: "12", cy: "12", r: "4", key: "4exip2" }],
+    ["path", { d: "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8", key: "7n84p3" }]
+  ];
+  const AtSign = createLucideIcon("AtSign", __iconNode$F);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7312,37 +7334,36 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$E = [
-    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
-    ["path", { d: "M19 12H5", key: "x3x0zl" }]
+    ["path", { d: "m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z", key: "1fy3hk" }]
   ];
-  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$E);
+  const Bookmark = createLucideIcon("Bookmark", __iconNode$E);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$D = [
-    ["circle", { cx: "12", cy: "12", r: "4", key: "4exip2" }],
-    ["path", { d: "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8", key: "7n84p3" }]
+  const __iconNode$D = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
+  const Check = createLucideIcon("Check", __iconNode$D);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$C = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
+  const ChevronRight = createLucideIcon("ChevronRight", __iconNode$C);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$B = [
+    ["path", { d: "m11 17-5-5 5-5", key: "13zhaf" }],
+    ["path", { d: "m18 17-5-5 5-5", key: "h8a8et" }]
   ];
-  const AtSign = createLucideIcon("AtSign", __iconNode$D);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$C = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
-  const Check = createLucideIcon("Check", __iconNode$C);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$B = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
-  const ChevronRight = createLucideIcon("ChevronRight", __iconNode$B);
+  const ChevronsLeft = createLucideIcon("ChevronsLeft", __iconNode$B);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7350,10 +7371,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$A = [
-    ["path", { d: "m11 17-5-5 5-5", key: "13zhaf" }],
-    ["path", { d: "m18 17-5-5 5-5", key: "h8a8et" }]
+    ["path", { d: "m6 17 5-5-5-5", key: "xnjwq" }],
+    ["path", { d: "m13 17 5-5-5-5", key: "17xmmf" }]
   ];
-  const ChevronsLeft = createLucideIcon("ChevronsLeft", __iconNode$A);
+  const ChevronsRight = createLucideIcon("ChevronsRight", __iconNode$A);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7361,10 +7382,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$z = [
-    ["path", { d: "m6 17 5-5-5-5", key: "xnjwq" }],
-    ["path", { d: "m13 17 5-5-5-5", key: "17xmmf" }]
+    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
+    ["line", { x1: "12", x2: "12", y1: "8", y2: "12", key: "1pkeuh" }],
+    ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16", key: "4dfq90" }]
   ];
-  const ChevronsRight = createLucideIcon("ChevronsRight", __iconNode$z);
+  const CircleAlert = createLucideIcon("CircleAlert", __iconNode$z);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7373,10 +7395,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    */
   const __iconNode$y = [
     ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["line", { x1: "12", x2: "12", y1: "8", y2: "12", key: "1pkeuh" }],
-    ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16", key: "4dfq90" }]
+    ["path", { d: "m9 12 2 2 4-4", key: "dzmm74" }]
   ];
-  const CircleAlert = createLucideIcon("CircleAlert", __iconNode$y);
+  const CircleCheck = createLucideIcon("CircleCheck", __iconNode$y);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7385,9 +7406,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    */
   const __iconNode$x = [
     ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["path", { d: "m9 12 2 2 4-4", key: "dzmm74" }]
+    ["polyline", { points: "12 6 12 12 16.5 12", key: "1aq6pp" }]
   ];
-  const CircleCheck = createLucideIcon("CircleCheck", __iconNode$x);
+  const Clock3 = createLucideIcon("Clock3", __iconNode$x);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7395,10 +7416,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$w = [
-    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["polyline", { points: "12 6 12 12 16.5 12", key: "1aq6pp" }]
+    ["path", { d: "M12 13v8", key: "1l5pq0" }],
+    ["path", { d: "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", key: "1pljnt" }],
+    ["path", { d: "m8 17 4-4 4 4", key: "1quai1" }]
   ];
-  const Clock3 = createLucideIcon("Clock3", __iconNode$w);
+  const CloudUpload = createLucideIcon("CloudUpload", __iconNode$w);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7406,11 +7428,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$v = [
-    ["path", { d: "M12 13v8", key: "1l5pq0" }],
-    ["path", { d: "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", key: "1pljnt" }],
-    ["path", { d: "m8 17 4-4 4 4", key: "1quai1" }]
+    ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
+    ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
   ];
-  const CloudUpload = createLucideIcon("CloudUpload", __iconNode$v);
+  const Copy = createLucideIcon("Copy", __iconNode$v);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7418,10 +7439,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$u = [
-    ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
-    ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
+    ["ellipse", { cx: "12", cy: "5", rx: "9", ry: "3", key: "msslwz" }],
+    ["path", { d: "M3 5V19A9 3 0 0 0 21 19V5", key: "1wlel7" }],
+    ["path", { d: "M3 12A9 3 0 0 0 21 12", key: "mv7ke4" }]
   ];
-  const Copy = createLucideIcon("Copy", __iconNode$u);
+  const Database = createLucideIcon("Database", __iconNode$u);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7429,11 +7451,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$t = [
-    ["ellipse", { cx: "12", cy: "5", rx: "9", ry: "3", key: "msslwz" }],
-    ["path", { d: "M3 5V19A9 3 0 0 0 21 19V5", key: "1wlel7" }],
-    ["path", { d: "M3 12A9 3 0 0 0 21 12", key: "mv7ke4" }]
+    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
+    ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
+    ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
   ];
-  const Database = createLucideIcon("Database", __iconNode$t);
+  const Download = createLucideIcon("Download", __iconNode$t);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7441,11 +7463,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$s = [
-    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
-    ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
-    ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
+    ["path", { d: "M15 3h6v6", key: "1q9fwt" }],
+    ["path", { d: "M10 14 21 3", key: "gplh6r" }],
+    ["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6", key: "a6xqqp" }]
   ];
-  const Download = createLucideIcon("Download", __iconNode$s);
+  const ExternalLink = createLucideIcon("ExternalLink", __iconNode$s);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7453,18 +7475,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$r = [
-    ["path", { d: "M15 3h6v6", key: "1q9fwt" }],
-    ["path", { d: "M10 14 21 3", key: "gplh6r" }],
-    ["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6", key: "a6xqqp" }]
-  ];
-  const ExternalLink = createLucideIcon("ExternalLink", __iconNode$r);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$q = [
     [
       "path",
       {
@@ -7474,7 +7484,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ],
     ["circle", { cx: "12", cy: "12", r: "3", key: "1v7zrd" }]
   ];
-  const Eye = createLucideIcon("Eye", __iconNode$q);
+  const Eye = createLucideIcon("Eye", __iconNode$r);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$q = [
+    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
+    ["path", { d: "M10 9H8", key: "b1mrlr" }],
+    ["path", { d: "M16 13H8", key: "t4e002" }],
+    ["path", { d: "M16 17H8", key: "z1uh3a" }]
+  ];
+  const FileText = createLucideIcon("FileText", __iconNode$q);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7483,12 +7507,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    */
   const __iconNode$p = [
     ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
-    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
-    ["path", { d: "M10 9H8", key: "b1mrlr" }],
-    ["path", { d: "M16 13H8", key: "t4e002" }],
-    ["path", { d: "M16 17H8", key: "z1uh3a" }]
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }]
   ];
-  const FileText = createLucideIcon("FileText", __iconNode$p);
+  const File = createLucideIcon("File", __iconNode$p);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7496,10 +7517,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$o = [
-    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
-    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }]
+    ["polygon", { points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3", key: "1yg77f" }]
   ];
-  const File = createLucideIcon("File", __iconNode$o);
+  const Filter = createLucideIcon("Filter", __iconNode$o);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7507,16 +7527,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$n = [
-    ["polygon", { points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3", key: "1yg77f" }]
-  ];
-  const Filter = createLucideIcon("Filter", __iconNode$n);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$m = [
     [
       "path",
       {
@@ -7525,14 +7535,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     ]
   ];
-  const FolderOpen = createLucideIcon("FolderOpen", __iconNode$m);
+  const FolderOpen = createLucideIcon("FolderOpen", __iconNode$n);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$l = [
+  const __iconNode$m = [
     [
       "path",
       {
@@ -7550,14 +7560,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ["path", { d: "M3 5a2 2 0 0 0 2 2h3", key: "f2jnh7" }],
     ["path", { d: "M3 3v13a2 2 0 0 0 2 2h3", key: "k8epm1" }]
   ];
-  const FolderTree = createLucideIcon("FolderTree", __iconNode$l);
+  const FolderTree = createLucideIcon("FolderTree", __iconNode$m);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$k = [
+  const __iconNode$l = [
     [
       "path",
       {
@@ -7566,14 +7576,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     ]
   ];
-  const Folder = createLucideIcon("Folder", __iconNode$k);
+  const Folder = createLucideIcon("Folder", __iconNode$l);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$j = [
+  const __iconNode$k = [
     ["circle", { cx: "9", cy: "12", r: "1", key: "1vctgf" }],
     ["circle", { cx: "9", cy: "5", r: "1", key: "hp0tcf" }],
     ["circle", { cx: "9", cy: "19", r: "1", key: "fkjjf6" }],
@@ -7581,14 +7591,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ["circle", { cx: "15", cy: "5", r: "1", key: "19l28e" }],
     ["circle", { cx: "15", cy: "19", r: "1", key: "f4zoj3" }]
   ];
-  const GripVertical = createLucideIcon("GripVertical", __iconNode$j);
+  const GripVertical = createLucideIcon("GripVertical", __iconNode$k);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$i = [
+  const __iconNode$j = [
     ["path", { d: "m15 12-8.373 8.373a1 1 0 1 1-3-3L12 9", key: "eefl8a" }],
     ["path", { d: "m18 15 4-4", key: "16gjal" }],
     [
@@ -7599,7 +7609,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     ]
   ];
-  const Hammer = createLucideIcon("Hammer", __iconNode$i);
+  const Hammer = createLucideIcon("Hammer", __iconNode$j);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$i = [
+    ["path", { d: "M3 6h18", key: "d0wm0j" }],
+    ["path", { d: "M7 12h10", key: "b7w52i" }],
+    ["path", { d: "M10 18h4", key: "1ulq68" }]
+  ];
+  const ListFilter = createLucideIcon("ListFilter", __iconNode$i);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -11228,10 +11250,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const CATEGORIES = [
     { scope: "menu", label: "菜单", detail: "按完整路径打开菜单，或直接进入新建" },
     { scope: "record", label: "业务记录", detail: "查找客户、订单、合同等具体业务记录" },
+    { scope: "saved_filter", label: "收藏筛选", detail: "引用或应用个人与共享的收藏筛选" },
+    { scope: "current_filter", label: "当前筛选", detail: "引用或应用当前页面的临时筛选" },
     { scope: "skill", label: "技能", detail: "选择适合当前任务的专业能力" }
   ];
   function MentionIcon({ kind }) {
-    return kind === "menu" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Menu, { size: 15 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Database, { size: 15 });
+    if (kind === "menu") return /* @__PURE__ */ jsxRuntimeExports.jsx(Menu, { size: 15 });
+    if (kind === "saved_filter") return /* @__PURE__ */ jsxRuntimeExports.jsx(Bookmark, { size: 15 });
+    if (kind === "current_filter") return /* @__PURE__ */ jsxRuntimeExports.jsx(ListFilter, { size: 15 });
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(Database, { size: 15 });
   }
   function CategoryIcon({ scope }) {
     return scope === "skill" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Sparkles, { size: 15 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(MentionIcon, { kind: scope });
@@ -11307,7 +11334,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       setActiveIndex(0);
     }, [normalizedQuery]);
     reactExports.useEffect(() => {
-      const canBrowseEmpty = scope === "menu";
+      const canBrowseEmpty = scope === "menu" || scope === "saved_filter" || scope === "current_filter";
       const shouldSearch = open && (view === "models" || view === "results" && (normalizedQuery.length >= 2 || canBrowseEmpty));
       const currentRequest = ++requestNumber.current;
       setCandidates([]);
@@ -11330,7 +11357,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             setError(result.error || result.code || "对象搜索失败");
             return;
           }
-          setCandidates(((result == null ? void 0 : result.candidates) || []).filter((item) => item.kind === "record" || item.kind === "menu"));
+          setCandidates(((result == null ? void 0 : result.candidates) || []).filter((item) => item.kind === "record" || item.kind === "menu" || item.kind === "saved_filter" || item.kind === "current_filter"));
           setModels(((result == null ? void 0 : result.modelScopes) || []).slice(0, 100));
         }, (reason) => {
           if (currentRequest !== requestNumber.current) return;
@@ -11374,7 +11401,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const selectCandidate = (candidate) => {
       const allBlocked = candidate.actions.every((action) => conflictReason(candidate, action, selected, workspaceReferenceCount));
       if (allBlocked) return;
-      const defaultAction = candidate.kind === "record" ? "read" : "open";
+      const defaultAction = candidate.kind === "menu" ? "open" : "read";
       if (candidate.actions.includes(defaultAction)) {
         void bind(candidate, defaultAction);
         return;
@@ -11474,7 +11501,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-9 items-center gap-2 border-b border-border px-2", children: [
             view !== "home" ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center rounded-md border-0 bg-background-secondary text-secondary shadow-none transition-colors hover:bg-accent hover:text-primary", "aria-label": "返回", onPointerDown: (event) => event.preventDefault(), onClick: goBack, children: /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowLeft, { size: 15 }) }) : /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { size: 15, className: "mx-1 text-muted" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate text-xs font-medium", children: view === "home" ? "添加到对话" : view === "actions" ? pending == null ? void 0 : pending.label : view === "models" ? "选择业务类型" : scope === "menu" ? "选择菜单" : scope === "record" ? "搜索业务记录" : "搜索结果" })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate text-xs font-medium", children: view === "home" ? "添加到对话" : view === "actions" ? pending == null ? void 0 : pending.label : view === "models" ? "选择业务类型" : scope === "menu" ? "选择菜单" : scope === "record" ? "搜索业务记录" : scope === "saved_filter" ? "选择收藏筛选" : scope === "current_filter" ? "选择当前筛选" : "搜索结果" })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { id: "agui-mention-options", className: "max-h-72 overflow-y-auto p-1", role: "listbox", "aria-busy": loading, "aria-activedescendant": activeOptionId, children: [
             view === "home" ? CATEGORIES.map((category, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { id: `agui-mention-category-${category.scope}`, type: "button", role: "option", "aria-selected": index2 === activeIndex, className: cn("flex h-12 w-full items-center gap-2 border-l-2 border-l-transparent bg-white px-2 text-left transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary", index2 === activeIndex && "border-l-primary bg-background-secondary text-primary"), onPointerDown: (event) => event.preventDefault(), onClick: () => activate(index2), children: [
@@ -11503,7 +11530,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
               /* @__PURE__ */ jsxRuntimeExports.jsx(PickerSearch, { autoFocus: true, value: searchText, onChange: (event) => {
                 setSearchText(event.target.value);
                 setActiveIndex(0);
-              }, placeholder: scope === "menu" ? "搜索菜单名称或完整路径" : scope === "record" ? "搜索记录名称" : "搜索记录或菜单", "aria-label": scope === "menu" ? "搜索菜单" : scope === "record" ? "搜索业务记录" : "搜索记录或菜单" }),
+              }, placeholder: scope === "menu" ? "搜索菜单名称或完整路径" : scope === "record" ? "搜索记录名称" : scope === "saved_filter" ? "搜索收藏筛选" : scope === "current_filter" ? "搜索当前筛选" : "搜索记录或菜单", "aria-label": scope === "menu" ? "搜索菜单" : scope === "record" ? "搜索业务记录" : scope === "saved_filter" ? "搜索收藏筛选" : scope === "current_filter" ? "搜索当前筛选" : "搜索记录或菜单" }),
               loading ? Array.from({ length: 4 }).map((_, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-11 animate-pulse items-center gap-2 px-2", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "size-6 bg-accent" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "h-3 flex-1 bg-accent" })
@@ -11629,11 +11656,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     "application/pdf": "document",
     "text/plain": "document",
     "text/csv": "document",
+    "application/csv": "document",
     "application/json": "document",
+    "application/jsonl": "document",
+    "application/x-ndjson": "document",
     "application/vnd.ms-excel": "document",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "document",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "document"
   };
+  const REPORT_EXTENSIONS = /* @__PURE__ */ new Set(["csv", "xlsx", "json", "jsonl"]);
+  const ACCEPTED_FILE_SELECTOR = [...Object.keys(ACCEPTED_TYPES), ...[...REPORT_EXTENSIONS].map((value) => `.${value}`)].join(",");
   const MB = 1024 * 1024;
   const MENTION_BOUNDARY = /[\s，。！？；：、（）【】《》“”‘’]/u;
   const MENTION_TERMINATOR = /[\s@，。！？；：、（）【】《》“”‘’]/u;
@@ -11657,6 +11689,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function uploadedLabel(template, count) {
     return template.replace("{count}", String(count));
+  }
+  function acceptedModality(file) {
+    var _a;
+    const extension2 = ((_a = file.name.split(".").pop()) == null ? void 0 : _a.toLocaleLowerCase()) || "";
+    return ACCEPTED_TYPES[file.type] || (REPORT_EXTENSIONS.has(extension2) ? "document" : void 0);
   }
   function fileKind(file) {
     if (file.type === "application/pdf") return "PDF 文档";
@@ -11754,7 +11791,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       let totalSize = items.reduce((sum, item) => sum + item.file.size, 0);
       files.forEach((file) => {
         let error = "";
-        if (!ACCEPTED_TYPES[file.type]) error = "不支持的文件类型";
+        const modality = acceptedModality(file);
+        if (!modality) error = "不支持的文件类型";
         else if (file.size > maxFileSize) error = `文件超过 ${formatSize(maxFileSize)}`;
         else if (count >= maxFiles) error = `最多添加 ${maxFiles} 个文件`;
         else if (totalSize + file.size > maxTotalSize) error = `附件总大小超过 ${formatSize(maxTotalSize)}`;
@@ -11765,7 +11803,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           progress: 0,
           status: error ? "error" : "uploading",
           error: error || void 0,
-          previewUrl: ACCEPTED_TYPES[file.type] === "image" ? URL.createObjectURL(file) : void 0
+          previewUrl: modality === "image" ? URL.createObjectURL(file) : void 0
         });
         count += 1;
         totalSize += file.size;
@@ -12085,7 +12123,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 flex min-h-8 items-center justify-between gap-2", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1", children: [
                 enabled ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("input", { ref: inputRef, className: "hidden", type: "file", disabled, multiple: true, accept: Object.keys(ACCEPTED_TYPES).join(","), onChange: (event) => {
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("input", { ref: inputRef, className: "hidden", type: "file", disabled, multiple: true, accept: ACCEPTED_FILE_SELECTOR, onChange: (event) => {
                     addFiles(Array.from(event.target.files || []));
                     event.target.value = "";
                   } }),

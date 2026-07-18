@@ -29,8 +29,8 @@ enabling Chat, then enable in this order:
 1. `chat_enabled`
 2. `host_tools_enabled`
 3. exact entries in `enabled_commands`
-4. `write_tools_enabled`
-5. exact entries in `enabled_business_commands`
+4. exact entries in `enabled_business_commands`
+5. `write_tools_enabled` when write commands are required
 
 An empty command list enables no commands. A matching tool policy restricts the
 exact command, user group, model, field, and visible button allowlist. Missing
@@ -47,6 +47,26 @@ List or Kanban view; Odoo access controls, record rules, and the snapshot
 filtered. Add model-specific policies where additional user-group or field
 restrictions are required.
 
+### Report Administration
+
+The filter report command is installed as command master data but does not
+enter `enabled_business_commands` automatically. To enable reporting:
+
+1. Add `odoo.business.report.filters` to the existing enabled business command
+   selection.
+2. Create one `agui.chat.tool.policy` per allowed model and user-group scope.
+3. Set access level to `read`, fill an exact `model_name`, and provide a
+   non-empty comma-separated `field_names` allowlist.
+4. Keep sensitive, binary, one2many, and many2many fields out of the allowlist;
+   saving such a policy is rejected.
+5. Include the currency field, normally `currency_id`, whenever a monetary
+   field may be aggregated.
+
+The command remains available when `write_tools_enabled` is off. Existing
+business commands default to `write` and remain unavailable in that state.
+Test each policy with a non-administrator account because Odoo ACL, record
+rules, current company, filter visibility, and menu visibility still apply.
+
 ## Deployment
 
 Deploy the Python module and versioned React bundle together, then purge old
@@ -57,6 +77,10 @@ AgentOS keeps its built-in `/health` endpoint for liveness. Use `/ready` for
 traffic readiness: it returns success only when PostgreSQL is reachable, the
 sandbox registry is initialized, and the HMAC secret is at least 32 bytes.
 Compose uses `/ready` and restarts the Agent service automatically.
+
+The Agent image installs pandas, openpyxl, matplotlib, Plotly, and Noto CJK
+fonts. Rebuild the image whenever `agentos_dev/requirements.txt` changes; do
+not install these packages interactively in a running production container.
 
 ## Isolated Workspaces
 

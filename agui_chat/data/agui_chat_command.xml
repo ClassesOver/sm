@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo noupdate="1">
+    <record id="command_business_report_filters" model="agui.chat.command">
+        <field name="name">筛选数据报表</field>
+        <field name="code">odoo.business.report.filters</field>
+        <field name="command_type">business</field>
+        <field name="description">按管理员字段策略描述、导出或聚合用户明确引用的筛选数据。</field>
+        <field name="sequence">1</field>
+    </record>
     <record id="command_read_mentioned_records" model="agui.chat.command">
         <field name="name">读取引用记录</field>
         <field name="code">odoo.read_mentioned_records</field>

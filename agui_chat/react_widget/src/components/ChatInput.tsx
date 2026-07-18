@@ -21,11 +21,16 @@ const ACCEPTED_TYPES: Record<string, 'image' | 'document'> = {
   'application/pdf': 'document',
   'text/plain': 'document',
   'text/csv': 'document',
+  'application/csv': 'document',
   'application/json': 'document',
+  'application/jsonl': 'document',
+  'application/x-ndjson': 'document',
   'application/vnd.ms-excel': 'document',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'document',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'document'
 }
+const REPORT_EXTENSIONS = new Set(['csv', 'xlsx', 'json', 'jsonl'])
+const ACCEPTED_FILE_SELECTOR = [...Object.keys(ACCEPTED_TYPES), ...[...REPORT_EXTENSIONS].map((value) => `.${value}`)].join(',')
 const MB = 1024 * 1024
 
 interface UploadItem {
@@ -88,6 +93,11 @@ function fileBadge(file: File): string {
 
 function uploadedLabel(template: string, count: number): string {
   return template.replace('{count}', String(count))
+}
+
+function acceptedModality(file: File): 'image' | 'document' | undefined {
+  const extension = file.name.split('.').pop()?.toLocaleLowerCase() || ''
+  return ACCEPTED_TYPES[file.type] || (REPORT_EXTENSIONS.has(extension) ? 'document' : undefined)
 }
 
 function fileKind(file: File): string {
@@ -177,7 +187,8 @@ export function ChatInput({
     let totalSize = items.reduce((sum, item) => sum + item.file.size, 0)
     files.forEach((file) => {
       let error = ''
-      if (!ACCEPTED_TYPES[file.type]) error = '不支持的文件类型'
+      const modality = acceptedModality(file)
+      if (!modality) error = '不支持的文件类型'
       else if (file.size > maxFileSize) error = `文件超过 ${formatSize(maxFileSize)}`
       else if (count >= maxFiles) error = `最多添加 ${maxFiles} 个文件`
       else if (totalSize + file.size > maxTotalSize) error = `附件总大小超过 ${formatSize(maxTotalSize)}`
@@ -188,7 +199,7 @@ export function ChatInput({
         progress: 0,
         status: error ? 'error' : 'uploading',
         error: error || undefined,
-        previewUrl: ACCEPTED_TYPES[file.type] === 'image' ? URL.createObjectURL(file) : undefined
+        previewUrl: modality === 'image' ? URL.createObjectURL(file) : undefined
       })
       count += 1
       totalSize += file.size
@@ -524,7 +535,7 @@ export function ChatInput({
         <div className="mt-2 flex min-h-8 items-center justify-between gap-2">
           <div className="flex items-center gap-1">
             {enabled ? <>
-            <input ref={inputRef} className="hidden" type="file" disabled={disabled} multiple accept={Object.keys(ACCEPTED_TYPES).join(',')} onChange={(event) => {
+            <input ref={inputRef} className="hidden" type="file" disabled={disabled} multiple accept={ACCEPTED_FILE_SELECTOR} onChange={(event) => {
               addFiles(Array.from(event.target.files || []))
               event.target.value = ''
             }} />

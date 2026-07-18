@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import hashlib
+import os
 
 from odoo import http
 from odoo.exceptions import AccessError, ValidationError
@@ -23,11 +24,32 @@ ALLOWED_ATTACHMENT_TYPES = {
     "application/pdf": "document",
     "text/plain": "document",
     "text/csv": "document",
+    "application/csv": "document",
+    "application/vnd.ms-excel": "document",
     "application/json": "document",
+    "application/jsonl": "document",
+    "application/x-ndjson": "document",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "document",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "document",
 }
+REPORT_ATTACHMENT_SUFFIXES = {
+    ".csv": "text/csv",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".json": "application/json",
+    ".jsonl": "application/x-ndjson",
+}
 MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
+
+
+def _attachment_type(mime_type, filename):
+    mime_type = str(mime_type or "application/octet-stream").lower()
+    modality = ALLOWED_ATTACHMENT_TYPES.get(mime_type)
+    if modality:
+        return mime_type, modality
+    suffix = os.path.splitext(str(filename or ""))[1].lower()
+    if mime_type == "application/octet-stream" and suffix in REPORT_ATTACHMENT_SUFFIXES:
+        return REPORT_ATTACHMENT_SUFFIXES[suffix], "document"
+    return mime_type, False
 
 
 class ChatSessionNotFound(ValueError):
@@ -48,7 +70,7 @@ class AguiChatController(http.Controller):
             "write_tools_enabled": bool(config.write_tools_enabled),
             "enabled_commands": config.enabled_command_names(),
             "business_tools": business_tool_catalog(request.env, config) if (
-                config.host_tools_enabled and config.write_tools_enabled
+                config.host_tools_enabled
             ) else [],
             "sensitive_fields": config.sensitive_fields(),
             "runtime_url": config.public_runtime_url(),
@@ -74,8 +96,7 @@ class AguiChatController(http.Controller):
             upload = request.httprequest.files.get("file")
             if not upload:
                 raise ValueError("未提供附件。")
-            mime_type = upload.mimetype or "application/octet-stream"
-            modality = ALLOWED_ATTACHMENT_TYPES.get(mime_type)
+            mime_type, modality = _attachment_type(upload.mimetype, upload.filename)
             if not modality:
                 raise ValueError("不支持此附件类型。")
             content = upload.read(MAX_ATTACHMENT_SIZE + 1)
@@ -279,7 +300,10 @@ class AguiChatController(http.Controller):
     @http.route("/agui_chat/business/execute", type="json", auth="user")
     def business_execute(self, command_name, payload, authorization_token, idempotency_key):
         try:
-            return request.env["agui.chat.command.execution"]._execute_named(
+            return request.env["agui.chat.command.execution"].with_context(
+                agui_session_key=self._session_key(),
+                agui_odoo_session=str(getattr(request.session, "sid", "") or ""),
+            )._execute_named(
                 command_name,
                 payload,
                 authorization_token,

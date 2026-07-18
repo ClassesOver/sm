@@ -1,5 +1,6 @@
 import {
-  ArrowLeft, AtSign, Database, Eye, FolderTree, Menu, Pencil, Plus, Sparkles
+  ArrowLeft, AtSign, Bookmark, Database, Eye, FolderTree, ListFilter, Menu,
+  Pencil, Plus, Sparkles
 } from 'lucide-react'
 import {
   forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState
@@ -42,11 +43,16 @@ type PickerView = 'home' | 'results' | 'models' | 'actions'
 const CATEGORIES = [
   { scope: 'menu', label: '菜单', detail: '按完整路径打开菜单，或直接进入新建' },
   { scope: 'record', label: '业务记录', detail: '查找客户、订单、合同等具体业务记录' },
+  { scope: 'saved_filter', label: '收藏筛选', detail: '引用或应用个人与共享的收藏筛选' },
+  { scope: 'current_filter', label: '当前筛选', detail: '引用或应用当前页面的临时筛选' },
   { scope: 'skill', label: '技能', detail: '选择适合当前任务的专业能力' }
 ] as const
 
 function MentionIcon({ kind }: { kind: MentionKind }) {
-  return kind === 'menu' ? <Menu size={15} /> : <Database size={15} />
+  if (kind === 'menu') return <Menu size={15} />
+  if (kind === 'saved_filter') return <Bookmark size={15} />
+  if (kind === 'current_filter') return <ListFilter size={15} />
+  return <Database size={15} />
 }
 
 function CategoryIcon({ scope }: { scope: typeof CATEGORIES[number]['scope' ] }) {
@@ -126,7 +132,7 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
   }, [normalizedQuery])
 
   useEffect(() => {
-    const canBrowseEmpty = scope === 'menu'
+    const canBrowseEmpty = scope === 'menu' || scope === 'saved_filter' || scope === 'current_filter'
     const shouldSearch = open && (
       view === 'models' || view === 'results' && (normalizedQuery.length >= 2 || canBrowseEmpty)
     )
@@ -151,7 +157,10 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
           setError(result.error || result.code || '对象搜索失败')
           return
         }
-        setCandidates((result?.candidates || []).filter((item) => item.kind === 'record' || item.kind === 'menu'))
+        setCandidates((result?.candidates || []).filter((item) => (
+          item.kind === 'record' || item.kind === 'menu' ||
+          item.kind === 'saved_filter' || item.kind === 'current_filter'
+        )))
         setModels((result?.modelScopes || []).slice(0, 100))
       }, (reason) => {
         if (currentRequest !== requestNumber.current) return
@@ -198,7 +207,7 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
   const selectCandidate = (candidate: MentionCandidate) => {
     const allBlocked = candidate.actions.every((action) => conflictReason(candidate, action, selected, workspaceReferenceCount))
     if (allBlocked) return
-    const defaultAction = candidate.kind === 'record' ? 'read' : 'open'
+    const defaultAction = candidate.kind === 'menu' ? 'open' : 'read'
     if (candidate.actions.includes(defaultAction)) {
       void bind(candidate, defaultAction)
       return
@@ -308,7 +317,7 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
   >
     <div className="flex h-9 items-center gap-2 border-b border-border px-2">
       {view !== 'home' ? <button type="button" className="grid size-7 place-items-center rounded-md border-0 bg-background-secondary text-secondary shadow-none transition-colors hover:bg-accent hover:text-primary" aria-label="返回" onPointerDown={(event) => event.preventDefault()} onClick={goBack}><ArrowLeft size={15} /></button> : <AtSign size={15} className="mx-1 text-muted" />}
-      <span className="min-w-0 flex-1 truncate text-xs font-medium">{view === 'home' ? '添加到对话' : view === 'actions' ? pending?.label : view === 'models' ? '选择业务类型' : scope === 'menu' ? '选择菜单' : scope === 'record' ? '搜索业务记录' : '搜索结果'}</span>
+      <span className="min-w-0 flex-1 truncate text-xs font-medium">{view === 'home' ? '添加到对话' : view === 'actions' ? pending?.label : view === 'models' ? '选择业务类型' : scope === 'menu' ? '选择菜单' : scope === 'record' ? '搜索业务记录' : scope === 'saved_filter' ? '选择收藏筛选' : scope === 'current_filter' ? '选择当前筛选' : '搜索结果'}</span>
     </div>
     <div id="agui-mention-options" className="max-h-72 overflow-y-auto p-1" role="listbox" aria-busy={loading} aria-activedescendant={activeOptionId}>
       {view === 'home' ? CATEGORIES.map((category, index) => <button id={`agui-mention-category-${category.scope}`} key={category.scope} type="button" role="option" aria-selected={index === activeIndex} className={cn('flex h-12 w-full items-center gap-2 border-l-2 border-l-transparent bg-white px-2 text-left transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary', index === activeIndex && 'border-l-primary bg-background-secondary text-primary')} onPointerDown={(event) => event.preventDefault()} onClick={() => activate(index)}>
@@ -325,7 +334,7 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
         {!filteredModels.length && !loading ? <div className="grid min-h-28 place-items-center px-4 text-center text-xs text-muted">没有匹配的业务类型</div> : null}
       </> : null}
       {view === 'results' ? <>
-        <PickerSearch autoFocus value={searchText} onChange={(event) => { setSearchText(event.target.value); setActiveIndex(0) }} placeholder={scope === 'menu' ? '搜索菜单名称或完整路径' : scope === 'record' ? '搜索记录名称' : '搜索记录或菜单'} aria-label={scope === 'menu' ? '搜索菜单' : scope === 'record' ? '搜索业务记录' : '搜索记录或菜单'} />
+        <PickerSearch autoFocus value={searchText} onChange={(event) => { setSearchText(event.target.value); setActiveIndex(0) }} placeholder={scope === 'menu' ? '搜索菜单名称或完整路径' : scope === 'record' ? '搜索记录名称' : scope === 'saved_filter' ? '搜索收藏筛选' : scope === 'current_filter' ? '搜索当前筛选' : '搜索记录或菜单'} aria-label={scope === 'menu' ? '搜索菜单' : scope === 'record' ? '搜索业务记录' : scope === 'saved_filter' ? '搜索收藏筛选' : scope === 'current_filter' ? '搜索当前筛选' : '搜索记录或菜单'} />
         {loading ? Array.from({ length: 4 }).map((_, index) => <div key={index} className="flex h-11 animate-pulse items-center gap-2 px-2"><span className="size-6 bg-accent"/><span className="h-3 flex-1 bg-accent"/></div>) : null}
         {!loading && candidates.map((candidate, index) => {
           const reasons = candidate.actions.map((action) => conflictReason(candidate, action, selected, workspaceReferenceCount)).filter(Boolean)

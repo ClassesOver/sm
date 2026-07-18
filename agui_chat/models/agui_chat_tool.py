@@ -8,6 +8,7 @@ from datetime import timedelta
 from psycopg2 import IntegrityError
 
 from odoo import api, fields, models
+from odoo.exceptions import ValidationError
 
 from .agui_chat_config import HOST_COMMAND_NAMES, PROTOCOL
 from .agui_chat_mention import MentionTokenError
@@ -90,7 +91,9 @@ def redact(value, depth=0, sensitive_keys=None):
     return value
 
 
-def register_business_command(name, schema, handler, description=None, prepare=None):
+def register_business_command(
+        name, schema, handler, description=None, prepare=None,
+        access_level="write", binding_resolver=None):
     if (
         not re.match(r"^odoo\.business\.[a-z0-9_]+\.[a-z0-9_]+$", name or "") or
         not callable(handler)
@@ -100,12 +103,18 @@ def register_business_command(name, schema, handler, description=None, prepare=N
         raise ValueError("业务命令 schema 必须是 JSON 对象。")
     if prepare is not None and not callable(prepare):
         raise ValueError("业务命令 prepare 必须是可调用对象。")
+    if access_level not in ("read", "write"):
+        raise ValueError("业务命令 access_level 必须是 read 或 write。")
+    if binding_resolver is not None and not callable(binding_resolver):
+        raise ValueError("业务命令 binding_resolver 必须是可调用对象。")
     if name in BUSINESS_COMMANDS:
         raise ValueError("业务命令名称已注册：%s" % name)
     BUSINESS_COMMANDS[name] = {
         "schema": schema or {},
         "handler": handler,
         "prepare": prepare,
+        "access_level": access_level,
+        "binding_resolver": binding_resolver,
         "description": description or "",
     }
 
@@ -123,6 +132,7 @@ def business_tool_catalog(env, config):
             "name": name,
             "description": spec.get("description") or by_code[name].name,
             "parameters": spec.get("schema") or {},
+            "accessLevel": spec.get("access_level") or "write",
         }
         for name, spec in sorted(BUSINESS_COMMANDS.items())
         if name in enabled and name in by_code
@@ -154,6 +164,39 @@ class AguiChatToolPolicy(models.Model):
         string="允许的按钮",
         help="仅用于页面控件命令；填写以逗号分隔的原生按钮 name 白名单。",
     )
+
+    @api.constrains("tool_name", "access_level", "model_name", "field_names")
+    def _check_report_policy(self):
+        forbidden_types = {"binary", "many2many", "one2many"}
+        sensitive = set(
+            self.env["agui.chat.config"].sudo().get_active_config().sensitive_fields()
+        )
+        for policy in self:
+            if policy.tool_name != "odoo.business.report.filters":
+                continue
+            if policy.access_level != "read" or not policy.model_name:
+                raise ValidationError("筛选报表策略必须选择读取级别并填写业务模型。")
+            names = {
+                item.strip() for item in (policy.field_names or "").split(",")
+                if item.strip()
+            }
+            if not names:
+                raise ValidationError("筛选报表策略必须配置非空字段白名单。")
+            if policy.model_name not in self.env:
+                raise ValidationError("筛选报表策略的业务模型不存在。")
+            model = self.env[policy.model_name]
+            unknown = names - set(model._fields)
+            forbidden = {
+                name for name in names
+                if name in model._fields and (
+                    model._fields[name].type in forbidden_types or
+                    name in sensitive or SECRET_KEYS.search(name)
+                )
+            }
+            if unknown:
+                raise ValidationError("筛选报表策略包含不存在的字段：%s" % ", ".join(sorted(unknown)))
+            if forbidden:
+                raise ValidationError("筛选报表策略包含禁止字段：%s" % ", ".join(sorted(forbidden)))
 
     @api.model
     def _patch_field_names(self, arguments):
@@ -200,6 +243,10 @@ class AguiChatToolPolicy(models.Model):
         control = arguments.get("__control") if isinstance(arguments.get("__control"), dict) else {}
         model_name = row.get("model") or target.get("model") or arguments.get("model")
         field_names = self._patch_field_names(arguments)
+        if isinstance(arguments.get("field_names"), list):
+            field_names.update(
+                str(name) for name in arguments["field_names"] if isinstance(name, str)
+            )
         if arguments.get("field"):
             field_names.add(str(arguments.get("field")).split(".", 1)[0])
         user_groups = set(self.env.user.groups_id.ids)
@@ -226,6 +273,10 @@ class AguiChatToolPolicy(models.Model):
             }
         mismatches = set()
         for policy in policies:
+            spec = BUSINESS_COMMANDS.get(tool_name)
+            if spec and policy.access_level != (spec.get("access_level") or "write"):
+                mismatches.add("access_level_mismatch")
+                continue
             if policy.group_ids and not user_groups.intersection(policy.group_ids.ids):
                 mismatches.add("group_mismatch")
                 continue
@@ -431,7 +482,7 @@ class AguiChatToolAuthorization(models.Model):
         sensitive = set(config.sensitive_fields())
         if not config.chat_enabled or not config.host_tools_enabled:
             return {"ok": False, "code": "host_tools_disabled"}
-        if not config.write_tools_enabled:
+        if spec and spec.get("access_level", "write") == "write" and not config.write_tools_enabled:
             return {"ok": False, "code": "write_tools_disabled"}
         if not spec or tool_name not in config.enabled_business_command_names():
             return {"ok": False, "code": "unsupported_business_command"}
@@ -469,6 +520,25 @@ class AguiChatToolAuthorization(models.Model):
                     "error": validation,
                 }
         context = call.get("context") if isinstance(call.get("context"), dict) else {}
+        resolved = {}
+        if spec.get("binding_resolver"):
+            try:
+                resolved = spec["binding_resolver"](self.env, payload, context) or {}
+            except Exception as error:
+                code = getattr(error, "code", False) or "business_binding_failed"
+                self.env["agui.chat.tool.audit"]._log(
+                    tool_name,
+                    "denied",
+                    details={"reason": code},
+                    **self._audit_values(call)
+                )
+                return {
+                    "ok": False,
+                    "code": code,
+                    "error": str(error),
+                }
+            if not isinstance(resolved, dict):
+                return {"ok": False, "code": "business_binding_invalid"}
         key = self._host_idempotency_key(call)
         if not key:
             return {"ok": False, "code": "missing_idempotency_context"}
@@ -494,9 +564,17 @@ class AguiChatToolAuthorization(models.Model):
         policy_context = prepared.get("policy_context") or {}
         if isinstance(policy_context, dict):
             policy_arguments.update(policy_context)
-        decision = self.env["agui.chat.tool.policy"].evaluate(
-            tool_name, policy_arguments
-        )
+        policy_bindings = resolved.get("policy_bindings") or [policy_arguments]
+        if not isinstance(policy_bindings, list) or not policy_bindings:
+            return {"ok": False, "code": "business_binding_invalid"}
+        decisions = [
+            self.env["agui.chat.tool.policy"].evaluate(tool_name, binding)
+            for binding in policy_bindings if isinstance(binding, dict)
+        ]
+        if len(decisions) != len(policy_bindings):
+            return {"ok": False, "code": "business_binding_invalid"}
+        denied = next((item for item in decisions if not item.get("allowed")), False)
+        decision = denied or decisions[0]
         if not decision.get("allowed"):
             self.env["agui.chat.tool.audit"]._log(
                 tool_name,
@@ -504,13 +582,16 @@ class AguiChatToolAuthorization(models.Model):
                 details={
                     "reason": decision.get("reason"),
                     "policy_mismatches": decision.get("policy_mismatches") or [],
+                    "binding": resolved.get("audit_details") or {},
                 },
                 **self._audit_values(call)
             )
             return {"ok": False, "code": decision.get("reason") or "policy_denied"}
-        requires_confirmation = bool(decision.get("requires_confirmation"))
+        requires_confirmation = any(
+            bool(item.get("requires_confirmation")) for item in decisions
+        )
         risk_reasons = sorted(set(
-            list(decision.get("risk_reasons") or []) +
+            [reason for item in decisions for reason in item.get("risk_reasons") or []] +
             list(prepared.get("risk_reasons") or ["business_command"])
         ))
         trusted_preview = prepared.get("preview")
@@ -551,7 +632,10 @@ class AguiChatToolAuthorization(models.Model):
         self.env["agui.chat.tool.audit"]._log(
             tool_name,
             "allowed",
-            details={"payload": redact(payload, sensitive_keys=sensitive)},
+            details={
+                "payload": redact(payload, sensitive_keys=sensitive),
+                "binding": resolved.get("audit_details") or {},
+            },
             authorization_id=authorization.id,
             **self._audit_values(call)
         )
@@ -1039,7 +1123,7 @@ class AguiChatCommandExecution(models.Model):
         config = self.env["agui.chat.config"].sudo().get_active_config()
         if not config.chat_enabled or not config.host_tools_enabled:
             return {"ok": False, "code": "host_tools_disabled"}
-        if not config.write_tools_enabled:
+        if spec and spec.get("access_level", "write") == "write" and not config.write_tools_enabled:
             return {"ok": False, "code": "write_tools_disabled"}
         if not spec or command_name not in config.enabled_business_command_names():
             return {"ok": False, "code": "unsupported_business_command"}
@@ -1061,6 +1145,54 @@ class AguiChatCommandExecution(models.Model):
         ], limit=1)
         if not authorization or authorization.payload_hash != value_hash:
             return {"ok": False, "code": "authorization_invalid"}
+        context = json.loads(authorization.context_json or "{}")
+        resolved = {}
+        if spec.get("binding_resolver"):
+            try:
+                resolved = spec["binding_resolver"](self.env, payload, context) or {}
+            except Exception as error:
+                code = getattr(error, "code", False) or "business_binding_failed"
+                self.env["agui.chat.tool.audit"]._log(
+                    command_name,
+                    "denied",
+                    details={"reason": code},
+                    request_id=context.get("requestId"),
+                    run_id=context.get("runId"),
+                    thread_id=context.get("threadId"),
+                    tool_call_id=authorization.tool_call_id,
+                    authorization_id=authorization.id,
+                )
+                return {
+                    "ok": False,
+                    "code": code,
+                }
+            policy_bindings = resolved.get("policy_bindings") or []
+            decisions = [
+                self.env["agui.chat.tool.policy"].evaluate(command_name, binding)
+                for binding in policy_bindings if isinstance(binding, dict)
+            ]
+            if (
+                not policy_bindings or len(decisions) != len(policy_bindings) or
+                any(not item.get("allowed") for item in decisions)
+            ):
+                denied = next(
+                    (item for item in decisions if not item.get("allowed")), {}
+                )
+                self.env["agui.chat.tool.audit"]._log(
+                    command_name,
+                    "denied",
+                    details={
+                        "reason": denied.get("reason") or "policy_denied",
+                        "policy_mismatches": denied.get("policy_mismatches") or [],
+                        "binding": resolved.get("audit_details") or {},
+                    },
+                    request_id=context.get("requestId"),
+                    run_id=context.get("runId"),
+                    thread_id=context.get("threadId"),
+                    tool_call_id=authorization.tool_call_id,
+                    authorization_id=authorization.id,
+                )
+                return {"ok": False, "code": "policy_denied"}
         existing = self.search([
             ("user_id", "=", self.env.user.id),
             ("company_id", "=", self.env.user.company_id.id),
@@ -1109,8 +1241,15 @@ class AguiChatCommandExecution(models.Model):
         authorization.sudo().write({"state": "executing"})
         try:
             with self.env.cr.savepoint():
+                handler_context = dict(resolved.get("handler_context") or {})
+                handler_context.update({
+                    "thread_id": context.get("threadId"),
+                    "session_key": self.env.context.get("agui_session_key") or "",
+                    "odoo_session": self.env.context.get("agui_odoo_session") or "",
+                })
                 result = redact(
-                    spec["handler"](self.env, payload),
+                    spec["handler"](self.env, payload, handler_context)
+                    if spec.get("binding_resolver") else spec["handler"](self.env, payload),
                     sensitive_keys=set(config.sensitive_fields()),
                 )
                 result_json = canonical_json(result if result is not None else {})

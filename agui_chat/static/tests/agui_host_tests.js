@@ -222,6 +222,13 @@ odoo.define("agui_chat.tests.host", function (require) {
             name: command,
             description: "确认测试单据",
             parameters: {type: "object"},
+            accessLevel: "write",
+        };
+        var readBusinessTool = {
+            name: "odoo.business.test_document.read",
+            description: "读取测试单据",
+            parameters: {type: "object"},
+            accessLevel: "read",
         };
         var stageTool = {
             name: "odoo.stage_current_form",
@@ -237,16 +244,20 @@ odoo.define("agui_chat.tests.host", function (require) {
             host_tools_enabled: true,
             write_tools_enabled: false,
             enabled_commands: ["odoo.stage_current_form"],
-            business_tools: [businessTool],
+            business_tools: [businessTool, readBusinessTool],
         };
-        assert.deepEqual(bridge.setCatalog([stageTool]), []);
+        assert.deepEqual(
+            _.pluck(bridge.setCatalog([stageTool]), "name"),
+            [readBusinessTool.name]
+        );
         assert.notOk(bridge.allowedTools[command]);
+        assert.strictEqual(bridge.allowedTools[readBusinessTool.name], "business");
         assert.notOk(bridge.allowedTools["odoo.stage_current_form"]);
 
         bridge.config.write_tools_enabled = true;
         assert.deepEqual(
             _.pluck(bridge.setCatalog([stageTool]), "name"),
-            ["odoo.stage_current_form", command]
+            ["odoo.stage_current_form", command, readBusinessTool.name]
         );
         assert.strictEqual(bridge.allowedTools[command], "business");
         assert.strictEqual(bridge.allowedTools["odoo.stage_current_form"], "host");

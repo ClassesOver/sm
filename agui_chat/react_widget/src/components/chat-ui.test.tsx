@@ -222,6 +222,70 @@ describe('chat customization', () => {
     ], undefined, [])
   })
 
+  it('browses saved and current filters with read by default and apply in the action menu', async () => {
+    const expiresAt = '2099-01-01 00:00:00'
+    const onSend = vi.fn(async () => true)
+    const candidates = {
+      saved_filter: {
+        candidateToken: 'saved-candidate', resourceKey: 'saved-key', kind: 'saved_filter' as const,
+        label: '本月订单', detail: '销售 / 订单 · 个人收藏', model: 'sale.order',
+        actions: ['read', 'apply'] as const, expiresAt
+      },
+      current_filter: {
+        candidateToken: 'current-candidate', resourceKey: 'current-key', kind: 'current_filter' as const,
+        label: '当前筛选', detail: '销售 / 订单', model: 'sale.order',
+        actions: ['read', 'apply'] as const, expiresAt
+      }
+    }
+    const searchMentions = vi.fn(async ({ scope }: { scope: keyof typeof candidates }) => ({
+      candidates: candidates[scope] ? [candidates[scope]] : [],
+      modelScopes: []
+    }))
+    const bindMention = vi.fn(async ({ candidateToken, action }: { candidateToken: string; action: 'read' | 'apply' }) => {
+      const candidate = candidateToken === 'saved-candidate' ? candidates.saved_filter : candidates.current_filter
+      return {
+        ok: true,
+        reference: {
+          id: `${candidateToken}-${action}`, token: `${candidateToken}-${action}`,
+          resourceKey: candidate.resourceKey, kind: candidate.kind, action,
+          label: candidate.label, detail: candidate.detail, model: candidate.model,
+          expiresAt, valid: true, pageAction: action === 'apply'
+        }
+      }
+    })
+    const { container } = render(<ChatInput running={false} attachments={false} menuOptions={[]}
+      labels={labels} icons={icons}
+      hostBridge={{ searchMentions: searchMentions as any, bindMention: bindMention as any }}
+      onSend={onSend} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
+
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    fireEvent.click(screen.getByRole('option', { name: /收藏筛选/ }))
+    const saved = await screen.findByRole('option', { name: /本月订单/ })
+    expect(saved.querySelector('.lucide-bookmark')).toBeTruthy()
+    fireEvent.click(saved)
+    await waitFor(() => expect(bindMention).toHaveBeenLastCalledWith({
+      candidateToken: 'saved-candidate', action: 'read'
+    }))
+
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    fireEvent.click(screen.getByRole('option', { name: /当前筛选/ }))
+    const current = await screen.findByRole('option', { name: /当前筛选/ })
+    expect(current.querySelector('.lucide-list-filter')).toBeTruthy()
+    fireEvent.keyDown(input, { key: 'ArrowRight' })
+    fireEvent.click(screen.getByRole('option', { name: '应用' }))
+    await waitFor(() => expect(bindMention).toHaveBeenLastCalledWith({
+      candidateToken: 'current-candidate', action: 'apply'
+    }))
+
+    fireEvent.click(screen.getByRole('button', { name: labels.sendMessage }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('', [], [
+      expect.objectContaining({ kind: 'saved_filter', action: 'read', pageAction: false }),
+      expect.objectContaining({ kind: 'current_filter', action: 'apply', pageAction: true })
+    ], undefined, []))
+    expect(container.querySelectorAll('.lucide-bookmark')).toHaveLength(0)
+  })
+
   it('rejects a second page-changing reference before binding it', async () => {
     const expiresAt = '2099-01-01 00:00:00'
     const searchMentions = vi.fn(async ({ query }: { query: string }) => ({
@@ -606,6 +670,29 @@ describe('chat customization', () => {
     fireEvent.click(screen.getByRole('button', { name: labels.clearAttachments }))
     expect(screen.queryByText(file.name)).toBeNull()
     expect(onRemove).toHaveBeenCalledWith('pasted-1')
+  })
+
+  it('accepts a JSONL report file when the browser omits its MIME type', async () => {
+    const onUpload = vi.fn(async (file: File) => ({
+      id: 'jsonl-1', name: file.name, mimeType: file.type, size: file.size, modality: 'document' as const
+    }))
+    render(<ChatInput
+      running={false}
+      attachments
+      menuOptions={[]}
+      labels={labels}
+      icons={icons}
+      onSend={vi.fn()}
+      onStop={vi.fn()}
+      onUpload={onUpload}
+      onRemove={vi.fn()}
+    />)
+    const file = new File(['{"value":1}\n'], 'report.jsonl')
+    fireEvent.paste(screen.getByPlaceholderText(labels.inputPlaceholder), {
+      clipboardData: { files: [file], items: [] }
+    })
+    await waitFor(() => expect(onUpload).toHaveBeenCalledWith(file, expect.any(Function)))
+    expect(screen.queryByText('不支持的文件类型')).toBeNull()
   })
 
   it('shows a stable drop target and uploads dropped files', async () => {

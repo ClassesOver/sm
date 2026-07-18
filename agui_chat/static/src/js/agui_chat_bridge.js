@@ -153,11 +153,13 @@ odoo.define("agui_chat.host_bridge", function (require) {
             self.catalog.push(clone(tool));
             self.allowedTools[tool.name] = "host";
         });
-        if (this.config.write_tools_enabled) {
-            _.each(business, function (tool) {
+        _.each(business, function (tool) {
+                if (!tool || (!self.config.write_tools_enabled && tool.accessLevel !== "read")) {
+                    return;
+                }
                 var name = tool && String(tool.name || "");
                 if (
-                    !tool || !/^odoo\.business\.[a-z0-9_]+\.[a-z0-9_]+$/.test(name) ||
+                    !/^odoo\.business\.[a-z0-9_]+\.[a-z0-9_]+$/.test(name) ||
                     !_.isObject(tool.parameters)
                 ) {
                     return;
@@ -165,7 +167,6 @@ odoo.define("agui_chat.host_bridge", function (require) {
                 self.catalog.push(clone(tool));
                 self.allowedTools[name] = "business";
             });
-        }
         return clone(this.catalog);
     };
 
