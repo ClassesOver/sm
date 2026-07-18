@@ -7890,7 +7890,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     try {
       callback();
     } catch (error) {
-      console.error("AG-UI interaction observer failed", error);
+      console.error("AG-UI 交互监听器执行失败", error);
     }
   }
   var reactDomExports = requireReactDom();
@@ -11653,7 +11653,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function fileBadge(file) {
     var _a;
     const extension2 = (_a = file.name.split(".").pop()) == null ? void 0 : _a.toUpperCase();
-    return extension2 && extension2.length <= 4 ? extension2 : "FILE";
+    return extension2 && extension2.length <= 4 ? extension2 : "文件";
   }
   function uploadedLabel(template, count) {
     return template.replace("{count}", String(count));
@@ -24800,9 +24800,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function attachmentMeta(attachment) {
     var _a;
-    const type = attachment.mimeType.includes("pdf") ? "PDF" : ((_a = attachment.mimeType.split("/").pop()) == null ? void 0 : _a.toUpperCase()) || "FILE";
+    const type = attachment.mimeType.includes("pdf") ? "PDF" : ((_a = attachment.mimeType.split("/").pop()) == null ? void 0 : _a.toUpperCase()) || "文件";
     const size = attachment.size < 1024 * 1024 ? `${Math.max(1, Math.round(attachment.size / 1024))} KB` : `${(attachment.size / (1024 * 1024)).toFixed(2)} MB`;
-    return `${type} Document · ${size}`;
+    return `${type} 文档 · ${size}`;
   }
   function Attachments({ attachments, labels, onPreview }) {
     if (!(attachments == null ? void 0 : attachments.length)) return null;
@@ -25077,9 +25077,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const script = existing || document.createElement("script");
       const handleLoad = () => {
         var _a2;
-        return ((_a2 = window.AguiFileViewerBundle) == null ? void 0 : _a2.FileViewer) ? resolve(window.AguiFileViewerBundle) : reject(new Error("File viewer bundle did not register"));
+        return ((_a2 = window.AguiFileViewerBundle) == null ? void 0 : _a2.FileViewer) ? resolve(window.AguiFileViewerBundle) : reject(new Error("文件查看器资源未正确注册"));
       };
-      const handleError = () => reject(new Error("Unable to load file viewer bundle"));
+      const handleError = () => reject(new Error("无法加载文件查看器资源"));
       script.addEventListener("load", handleLoad, { once: true });
       script.addEventListener("error", handleError, { once: true });
       if (!existing) {
@@ -25779,7 +25779,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function endpoint(props) {
     const value = String(props.runtimeUrl || "").trim();
     if (!value) {
-      throw new Error("AG-UI runtime is not configured.");
+      throw new Error("尚未配置 AG-UI 运行服务。");
     }
     if (value.startsWith("/") && !value.startsWith("//") && !value.includes("://")) {
       return value;
@@ -25787,32 +25787,32 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (props.allowCrossOriginDev && /^https?:\/\//i.test(value)) {
       return value;
     }
-    throw new Error("AG-UI runtime URL is not allowed.");
+    throw new Error("不允许使用此 AG-UI 运行服务地址。");
   }
   function transportError(status) {
     const messages = {
-      401: "Authentication expired. Sign in again.",
-      403: "You do not have permission to run this agent.",
-      429: "Too many requests. Try again later."
+      401: "登录状态已过期，请重新登录。",
+      403: "您没有运行此智能体的权限。",
+      429: "请求过于频繁，请稍后重试。"
     };
-    return new Error(messages[status] || `AG-UI request failed (HTTP ${status}).`);
+    return new Error(messages[status] || `AG-UI 请求失败（HTTP ${status}）。`);
   }
   function validateHandshake(props) {
     const handshake = props.handshake;
     if (!handshake || handshake.protocol !== AGUI_ODOO_PROTOCOL) {
-      throw new Error("Odoo AG-UI protocol handshake failed.");
+      throw new Error("Odoo AG-UI 协议握手失败。");
     }
     if (handshake.agentProtocol !== AGUI_ODOO_PROTOCOL) {
-      throw new Error("AgentOS AG-UI protocol handshake failed.");
+      throw new Error("AgentOS AG-UI 协议握手失败。");
     }
     if (!handshake.moduleVersion || handshake.moduleVersion !== handshake.bundleVersion || handshake.bundleVersion !== handshake.agentBundleVersion) {
-      throw new Error("AG-UI module, bundle, and AgentOS versions do not match.");
+      throw new Error("AG-UI 模块、前端资源与 AgentOS 版本不匹配。");
     }
     if (!/^[a-f0-9]{64}$/.test(handshake.commandCatalogHash || "") || handshake.commandCatalogHash !== handshake.agentCommandCatalogHash) {
-      throw new Error("AG-UI command catalogs do not match.");
+      throw new Error("AG-UI 命令目录不匹配。");
     }
     if (!props.hostState || props.hostState.protocol !== AGUI_ODOO_PROTOCOL) {
-      throw new Error("Odoo host snapshot protocol does not match the runtime.");
+      throw new Error("Odoo 宿主快照协议与运行服务不匹配。");
     }
   }
   function normalizeToolCalls(toolCalls) {
@@ -25911,7 +25911,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function normalizeRunContext(props, messages) {
     var _a;
     const context = [{
-      description: "Odoo host snapshot",
+      description: "Odoo 宿主快照",
       value: contextValue(agentHostContext(props.hostState))
     }];
     if (Array.isArray(props.context)) {
@@ -25919,7 +25919,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (item && typeof item === "object" && typeof item.description === "string" && typeof item.value === "string") {
           context.push(clone(item));
         } else {
-          context.push({ description: `Context ${index2 + 1}`, value: contextValue(item) });
+          context.push({ description: `上下文 ${index2 + 1}`, value: contextValue(item) });
         }
       });
     } else if (props.context && typeof props.context === "object") {
@@ -25928,16 +25928,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       });
     }
     if (props.user !== void 0) {
-      context.push({ description: "Odoo user", value: contextValue(props.user) });
+      context.push({ description: "Odoo 用户", value: contextValue(props.user) });
     }
     if (props.agentId !== void 0) {
-      context.push({ description: "Agent ID", value: props.agentId });
+      context.push({ description: "智能体 ID", value: props.agentId });
     }
     const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
     const selectedSkills = ((latestUserMessage == null ? void 0 : latestUserMessage.skills) || []).filter((skill) => skill.valid);
     if (selectedSkills.length) {
       context.push({
-        description: "Selected Agent Skills",
+        description: "已选智能体技能",
         value: contextValue(selectedSkills.map((skill) => ({
           id: skill.id,
           name: skill.name,
@@ -25948,7 +25948,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const workspaceReferences = (latestUserMessage == null ? void 0 : latestUserMessage.workspaceReferences) || [];
     if (workspaceReferences.length) {
       context.push({
-        description: "Selected workspace references",
+        description: "已选工作区引用",
         value: contextValue(workspaceReferences.map((reference) => ({
           path: reference.path,
           type: reference.isDirectory ? "directory" : "file",
@@ -25959,7 +25959,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const mentions = ((latestUserMessage == null ? void 0 : latestUserMessage.mentions) || []).filter((mention) => mention.valid);
     if (mentions.length) {
       context.push({
-        description: "Selected Odoo references",
+        description: "已选 Odoo 引用",
         value: contextValue(mentions.map((mention) => ({
           kind: mention.kind,
           action: mention.action,
@@ -25974,7 +25974,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if ((_a = latestUserMessage == null ? void 0 : latestUserMessage.menuMention) == null ? void 0 : _a.valid) {
       const mention = latestUserMessage.menuMention;
       context.push({
-        description: "Selected Odoo menu",
+        description: "已选 Odoo 菜单",
         value: contextValue({
           menuId: mention.menuId,
           actionId: mention.actionId,
@@ -25986,7 +25986,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     if ((latestUserMessage == null ? void 0 : latestUserMessage.recordSelection) && latestUserMessage.recordSelection.snapshotId === props.hostState.snapshotId && latestUserMessage.recordSelection.hostRevision === props.hostState.hostRevision) {
       context.push({
-        description: "Selected Odoo record candidate",
+        description: "已选 Odoo 记录候选项",
         value: contextValue(latestUserMessage.recordSelection)
       });
     }
@@ -26020,10 +26020,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const maxMessages = ((_a = props.limits) == null ? void 0 : _a.messages) ?? 200;
     const maxBytes = ((_b = props.limits) == null ? void 0 : _b.requestBytes) ?? 2 * 1024 * 1024;
     if (input.messages.length > maxMessages) {
-      throw new Error(`Message limit exceeded (${maxMessages}).`);
+      throw new Error(`消息数量超过限制（${maxMessages}）。`);
     }
     if (new TextEncoder().encode(JSON.stringify(input)).byteLength > maxBytes) {
-      throw new Error("Request is larger than the configured limit.");
+      throw new Error("请求大小超过配置限制。");
     }
   }
   function toolCallFromTransport(toolCall, messageId) {
@@ -26093,14 +26093,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return source.map((step) => {
       if (typeof step === "string") {
         return {
-          title: textSummary(step, 80) || "Reasoning",
+          title: textSummary(step, 80) || "推理过程",
           content: step
         };
       }
       const raw = step && typeof step === "object" ? step : {};
       const content2 = raw.content || raw.reasoning || raw.text || raw.action || "";
       return {
-        title: String(raw.title || textSummary(content2 || raw, 80) || "Reasoning"),
+        title: String(raw.title || textSummary(content2 || raw, 80) || "推理过程"),
         content: typeof content2 === "string" ? content2 : textSummary(content2, 240),
         action: raw.action ? String(raw.action) : void 0,
         result: raw.result ? String(raw.result) : void 0,
@@ -26440,7 +26440,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           (error) => ({
             ok: false,
             operation: toolName(current),
-            error: (error == null ? void 0 : error.message) || "Tool confirmation failed."
+            error: (error == null ? void 0 : error.message) || "工具确认失败。"
           })
         ).then((finalResult2) => {
           if (finalResult2.needs_confirmation) {
@@ -26713,7 +26713,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     async uploadAttachment(file, onProgress) {
       await this.ensureSession();
       if (!this.session) {
-        throw new Error("A chat session is required to upload attachments.");
+        throw new Error("上传附件前需要先创建聊天会话。");
       }
       const sessionId = String(this.session.id || "");
       if (!/^\d+$/.test(sessionId)) {
@@ -26731,17 +26731,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             onProgress == null ? void 0 : onProgress(Math.round(event.loaded / event.total * 100));
           }
         };
-        xhr.onerror = () => reject(new Error("Attachment upload failed."));
+        xhr.onerror = () => reject(new Error("附件上传失败。"));
         xhr.onload = () => {
           let payload = {};
           try {
             payload = JSON.parse(xhr.responseText || "{}");
           } catch (_error) {
-            reject(new Error("Invalid attachment upload response."));
+            reject(new Error("附件上传响应无效。"));
             return;
           }
           if (xhr.status < 200 || xhr.status >= 300 || !payload.attachment) {
-            reject(new Error(payload.error || "Attachment upload failed."));
+            reject(new Error(payload.error || "附件上传失败。"));
             return;
           }
           onProgress == null ? void 0 : onProgress(100);
@@ -26758,7 +26758,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         body: JSON.stringify({ attachment_id: attachmentId })
       });
       if (!response.ok) {
-        throw new Error("Attachment deletion failed.");
+        throw new Error("附件删除失败。");
       }
     }
     async listWorkspace(path2 = "") {
@@ -26964,7 +26964,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else if (type === "TOOL_CALL_RESULT") {
         this.applyToolResult(event);
       } else if (type === "RUN_ERROR") {
-        const message = String(data.message || data.content || event.message || "AG-UI run failed.");
+        const message = String(data.message || data.content || event.message || "AG-UI 运行失败。");
         if (context) {
           context.upstreamError = message;
           context.receivedTerminalEvent = true;
@@ -27024,7 +27024,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     applyLoadedSession(session) {
       var _a, _b, _c, _d;
       if (session.protocol !== AGUI_ODOO_PROTOCOL) {
-        throw new Error("Unsupported chat session protocol.");
+        throw new Error("不支持此聊天会话协议。");
       }
       this.session = session;
       this.threadId = session.thread_id || this.props.threadId || uuid();
@@ -27112,7 +27112,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         this.transportState = "cancelled";
         return;
       }
-      this.error = context.upstreamError || (error == null ? void 0 : error.message) || "AG-UI run failed.";
+      this.error = context.upstreamError || (error == null ? void 0 : error.message) || "AG-UI 运行失败。";
       this.recordRunError(this.error);
       try {
         this.setTransportState("error");
@@ -27216,16 +27216,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         throw transportError(response.status);
       }
       if (!(response.headers.get("content-type") || "").includes("text/event-stream")) {
-        throw new Error("AG-UI runtime must return text/event-stream.");
+        throw new Error("AG-UI 运行服务必须返回 text/event-stream。");
       }
       if (!response.body) {
-        throw new Error("AG-UI SSE response has no body.");
+        throw new Error("AG-UI SSE 响应没有正文。");
       }
       this.setTransportState("streaming");
       await this.readSse(response.body, context);
       this.throwIfRunCancelled(context);
       if (!context.receivedTerminalEvent) {
-        throw new Error("AG-UI stream ended before RUN_FINISHED.");
+        throw new Error("AG-UI 数据流在 RUN_FINISHED 事件之前结束。");
       }
       if (context.upstreamError) {
         throw new Error(context.upstreamError);
@@ -27250,7 +27250,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           }
           buffer += decoder.decode(result.value, { stream: true });
           if (new TextEncoder().encode(buffer).byteLength > limit && !/\r?\n\r?\n/.test(buffer)) {
-            throw new Error("SSE event exceeds the configured size limit.");
+            throw new Error("SSE 事件超过配置的大小限制。");
           }
           buffer = this.flushSse(buffer, limit, context);
           if (context.receivedTerminalEvent) {
@@ -27283,7 +27283,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       try {
         event = JSON.parse(data);
       } catch {
-        (_b = (_a = this.props).onError) == null ? void 0 : _b.call(_a, new Error("Ignored malformed SSE event."));
+        (_b = (_a = this.props).onError) == null ? void 0 : _b.call(_a, new Error("已忽略格式错误的 SSE 事件。"));
         return;
       }
       this.applyEventForContext(event, context);
@@ -27347,7 +27347,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       message.content = `${asText(message.content)}${delta || ""}`;
     }
     recordRunError(message) {
-      this.ensureAssistant().streaming_error = message || "AG-UI run failed.";
+      this.ensureAssistant().streaming_error = message || "AG-UI 运行失败。";
     }
     mergeTool(tool) {
       const key = toolKey(tool);
@@ -27423,7 +27423,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           this.recordHostBridgeResult(tool, {
             ok: false,
             operation: toolName(tool),
-            error: (error == null ? void 0 : error.message) || String(error || "Host bridge failed.")
+            error: (error == null ? void 0 : error.message) || String(error || "宿主桥接调用失败。")
           }, context);
         }
       ).finally(() => {
@@ -27514,7 +27514,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       try {
         await this.queueSave();
       } catch (error) {
-        const failure = error instanceof Error ? error : new Error(String(error || "Session save failed."));
+        const failure = error instanceof Error ? error : new Error(String(error || "会话保存失败。"));
         if (this.error === failure.message) return;
         this.error = failure.message;
         try {
@@ -27560,13 +27560,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       message.extra_data = message.extra_data || {};
       message.extra_data.reasoning_steps = message.extra_data.reasoning_steps || [];
       message.extra_data.reasoning_steps.push({
-        title: "Reasoning",
+        title: "推理过程",
         content: content2
       });
     }
     reportHostStateMutation() {
       var _a, _b;
-      (_b = (_a = this.props).onError) == null ? void 0 : _b.call(_a, new Error("Ignored an agent attempt to mutate Odoo hostState."));
+      (_b = (_a = this.props).onError) == null ? void 0 : _b.call(_a, new Error("已忽略智能体修改 Odoo 宿主状态的尝试。"));
     }
     extractAgentState(value) {
       if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -27650,7 +27650,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }));
       }
       if (result.streamingError && !result.streaming_error) {
-        result.streaming_error = "AG-UI run failed.";
+        result.streaming_error = "AG-UI 运行失败。";
       }
       if (result.references) {
         result.extra_data = {
@@ -27894,7 +27894,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         return;
       }
       const result = await this.props.hostBridge.saveSession(this.session.id, {
-        name: this.session.name || "New chat",
+        name: this.session.name || "新对话",
         surface: this.props.surface || this.session.surface || "dock",
         messages: this.messages,
         agentState: normalizeAgentState(this.agentState),
@@ -27906,7 +27906,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (failure.error === "session_not_found" && attempt === 0 && this.props.hostBridge.createSession) {
           const previous2 = this.session;
           const replacement = sessionFromResult(await this.props.hostBridge.createSession({
-            name: previous2.name || "New chat",
+            name: previous2.name || "新对话",
             surface: this.props.surface || previous2.surface || "dock",
             agent_id: previous2.agent_id || this.props.agentId || false
           }));
@@ -27934,7 +27934,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           return this.saveSession(1);
         }
         const error = new Error(
-          failure.error === "session_revision_conflict" ? "会话保存连续发生版本冲突，确认结果仍保留在当前页面。" : failure.error || "Session save failed."
+          failure.error === "session_revision_conflict" ? "会话保存连续发生版本冲突，确认结果仍保留在当前页面。" : failure.error || "会话保存失败。"
         );
         this.error = error.message;
         (_e = (_d = this.props).onError) == null ? void 0 : _e.call(_d, error);

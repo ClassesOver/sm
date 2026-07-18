@@ -2,7 +2,6 @@ import os
 import json
 
 from agno.agent import Agent
-from agno.db.sqlite import SqliteDb
 from agno.models.openai import OpenAIChat
 from agno.os import AgentOS
 from agno.os.interfaces.agui import AGUI
@@ -12,6 +11,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .security import CapabilityError, verify_capability
+from .database import SerializedPostgresDb, agent_db_url
 from .skills import load_skills
 from .workspace import WorkspaceError, WorkspaceService, workspace_tools
 
@@ -22,7 +22,6 @@ COMMAND_CATALOG_HASH = "b198faa202457040a5d1549837c2f9128cc3cbaea8788d4bc6b04046
 DEFAULT_ENV_FILE = "/home/junge/pros/agents_app/.env"
 DEFAULT_MODEL_ID = "qwen3.6-35b-a3b"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_DB_FILE = "/tmp/agui_agentos_dev.db"
 OPENAI_COMPATIBLE_ROLE_MAP = {
     "system": "user",
     "user": "user",
@@ -237,7 +236,7 @@ assistant = Agent(
     ],
     skills=agent_skills,
     tools=workspace_tools(workspace_service, agent_skills),
-    db=SqliteDb(db_file=os.getenv("AGENT_DB_FILE", DEFAULT_DB_FILE)),
+    db=SerializedPostgresDb(db_url=agent_db_url()),
     add_history_to_context=True,
     num_history_runs=10,
     debug_mode=env_flag("AGENT_DEBUG"),

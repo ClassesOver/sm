@@ -309,6 +309,10 @@ cython_debug/
 /agno.db-journal
 /agno.db-shm
 /agno.db-wal
+/*.db
+/*.db-journal
+/*.db-shm
+/*.db-wal
 
 # Playwright 测试产物（视觉回归基准图应保留）
 /agui_chat/react_widget/test-results/

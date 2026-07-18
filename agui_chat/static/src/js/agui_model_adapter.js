@@ -1898,6 +1898,82 @@ odoo.define("agui_chat.model_adapter", function (require) {
         return {ok: !conflict, code: conflict ? "undo_conflict" : "ok"};
     }
 
+    function cloneModelValue(value) {
+        var result;
+        if (_.isArray(value)) {
+            return _.map(value, cloneModelValue);
+        }
+        if (value && value._isAMomentObject) {
+            return value.clone ? value.clone() : value;
+        }
+        if ($.isPlainObject(value)) {
+            result = {};
+            _.each(value, function (item, key) {
+                result[key] = cloneModelValue(item);
+            });
+            return result;
+        }
+        return value;
+    }
+
+    function modelSubtreeIds(model, rootId) {
+        var ids = {};
+        var changed = true;
+        ids[rootId] = true;
+        while (changed) {
+            changed = false;
+            _.each(model.localData || {}, function (dataPoint, id) {
+                if (!ids[id] && dataPoint && ids[dataPoint.parentID]) {
+                    ids[id] = true;
+                    changed = true;
+                }
+            });
+        }
+        return _.keys(ids);
+    }
+
+    function captureModelCheckpoint(controller, rootId) {
+        var model = controller.model;
+        var states = {};
+        if (!model || !model.localData || !model.localData[rootId]) {
+            return false;
+        }
+        _.each(modelSubtreeIds(model, rootId), function (id) {
+            var original = model.localData[id];
+            var state = _.clone(original);
+            _.each([
+                "data", "_changes", "_savePoint", "_cache", "res_ids",
+                "orderedResIDs", "fields", "fieldsInfo",
+            ], function (name) {
+                if (_.has(original, name)) {
+                    state[name] = cloneModelValue(original[name]);
+                }
+            });
+            states[id] = state;
+        });
+        return {
+            rootId: rootId,
+            states: states,
+            stagedFields: cloneModelValue(controller.__aguiHostStagedFields || {}),
+            dirtyFields: (controller.__aguiHostDirtyFields || []).slice(0),
+        };
+    }
+
+    function restoreModelCheckpoint(controller, checkpoint) {
+        if (!checkpoint) {
+            return;
+        }
+        var model = controller.model;
+        _.each(modelSubtreeIds(model, checkpoint.rootId), function (id) {
+            delete model.localData[id];
+        });
+        _.each(checkpoint.states, function (state, id) {
+            model.localData[id] = state;
+        });
+        controller.__aguiHostStagedFields = checkpoint.stagedFields;
+        controller.__aguiHostDirtyFields = checkpoint.dirtyFields;
+    }
+
     function applyPatch(controller, snapshot, args, options) {
         options = options || {};
         var target = patchRecord(controller, snapshot, options.rowBinding);
@@ -1923,6 +1999,8 @@ odoo.define("agui_chat.model_adapter", function (require) {
                 },
                 stopPropagation: function () {},
             };
+            var checkpoint = prepared.one2manyFields && prepared.one2manyFields.length ?
+                captureModelCheckpoint(controller, target.localId) : false;
             var applied = _.keys(prepared.changes).length ?
                 $.when(controller._applyChanges(target.localId, prepared.changes, event)) : $.when();
             _.each(prepared.one2manyFields || [], function (field) {
@@ -1948,6 +2026,12 @@ odoo.define("agui_chat.model_adapter", function (require) {
             });
             return applied.then(function () {
                 return prepared;
+            }, function (error) {
+                restoreModelCheckpoint(controller, checkpoint);
+                if (checkpoint && error) {
+                    error.aguiModelRestored = true;
+                }
+                return $.Deferred().reject(error).promise();
             });
         });
     }

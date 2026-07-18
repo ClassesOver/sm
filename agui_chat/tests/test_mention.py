@@ -151,6 +151,67 @@ class TestMentionReferences(TransactionCase):
         self.assertEqual(scopes[0]["model"], "x.model.000")
         self.assertEqual(scopes[-1]["model"], "x.model.099")
 
+    def test_model_whitelist_filters_all_kinds_and_revokes_old_tokens(self):
+        personal = self.env["ir.filters"].create({
+            "name": "白名单收藏筛选",
+            "model_id": "res.partner",
+            "user_id": self.env.user.id,
+            "action_id": self.action.id,
+            "domain": "[]",
+            "context": "{}",
+            "sort": "[]",
+        })
+        current_filter = {
+            "label": "白名单当前筛选",
+            "model": "res.partner",
+            "menuId": self.menu.id,
+            "domain": [],
+            "context": {},
+            "groupBy": [],
+            "sort": [],
+        }
+        candidates = {
+            "menu": self._candidate(self._search("联系人", "menu"), "menu"),
+            "record": self._candidate(self._search(), "record"),
+            "saved_filter": self._candidate(
+                self._search(personal.name, "saved_filter"), "saved_filter"
+            ),
+            "current_filter": self._candidate(
+                self._search("白名单", "current_filter", current_filter), "current_filter"
+            ),
+        }
+        actions = {"menu": "open", "record": "read", "saved_filter": "apply", "current_filter": "apply"}
+        bound = {
+            kind: self.tokens.bind_mention(item["candidateToken"], actions[kind], self.session_key)
+            for kind, item in candidates.items()
+        }
+
+        disallowed_model = self.env["ir.model"].search([
+            ("model", "=", "res.users"),
+        ], limit=1)
+        self.env["agui.chat.config"].sudo().get_active_config().write({
+            "mention_model_id": disallowed_model.id,
+        })
+
+        for scope in ("menu", "record", "saved_filter", "current_filter"):
+            result = self._search(
+                "白名单" if scope == "current_filter" else "联系人",
+                scope, current_filter if scope == "current_filter" else None,
+            )
+            self.assertFalse(result["candidates"])
+        for kind, item in candidates.items():
+            with self.assertRaises(MentionTokenError) as caught:
+                self.tokens.bind_mention(
+                    item["candidateToken"], actions[kind], self.session_key,
+                )
+            self.assertEqual(caught.exception.code, "mention_permission_revoked")
+        for kind, reference in bound.items():
+            with self.assertRaises(MentionTokenError) as caught:
+                self.tokens._resolved_binding(
+                    reference["token"], kind, actions[kind], self.session_key,
+                )
+            self.assertEqual(caught.exception.code, "mention_permission_revoked")
+
     def test_token_is_bound_to_user_company_session_and_exact_action(self):
         candidate = self._candidate(self._search(), "record")
         reference = self.tokens.bind_mention(

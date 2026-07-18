@@ -544,12 +544,16 @@ odoo.define("agui_chat.command_registry", function (require) {
                     };
                 });
             }, function (error) {
-                if (error && error.code) {
-                    throw error;
-                }
-                throw commandError(
-                    "onchange_failed", error && error.message || "表单 onchange 执行失败。"
-                );
+                var refreshed = error && error.aguiModelRestored ?
+                    context.refresh(controller, true) : $.when();
+                return refreshed.then(function () {
+                    if (error && error.code) {
+                        throw error;
+                    }
+                    throw commandError(
+                        "onchange_failed", error && error.message || "表单 onchange 执行失败。"
+                    );
+                });
             });
         });
     };
@@ -567,10 +571,16 @@ odoo.define("agui_chat.command_registry", function (require) {
                 prepared.preview = preview;
                 return prepared;
             }, function (error) {
-                if (error && error.code) {
-                    throw error;
-                }
-                throw commandError("onchange_failed", error && error.message || "表单 onchange 执行失败。");
+                var refreshed = error && error.aguiModelRestored ?
+                    context.refresh(controller, true) : $.when();
+                return refreshed.then(function () {
+                    if (error && error.code) {
+                        throw error;
+                    }
+                    throw commandError(
+                        "onchange_failed", error && error.message || "表单 onchange 执行失败。"
+                    );
+                });
             });
         }).then(function (prepared) {
             if (prepared.rejected.length) {

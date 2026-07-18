@@ -2,8 +2,7 @@ import json
 import mimetypes
 import os
 import shlex
-import sqlite3
-import threading
+from contextlib import contextmanager
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -15,8 +14,10 @@ from daytona import (
     ListSandboxesQuery,
 )
 from daytona.common.errors import DaytonaNotFoundError
+import psycopg
 
 from .security import thread_label
+from .database import psycopg_db_url
 from .skills import SecureSkills
 
 
@@ -26,6 +27,10 @@ MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 MAX_READ_BYTES = 1024 * 1024
 MAX_TOOL_OUTPUT_BYTES = 64 * 1024
 MAX_LIST_ENTRIES = 500
+MAX_SHELL_BYTES = 8 * 1024
+MAX_CODE_BYTES = 256 * 1024
+MAX_SCRIPT_ARGS = 20
+MAX_SCRIPT_ARG_BYTES = 1024
 
 
 class WorkspaceError(ValueError):
@@ -33,53 +38,55 @@ class WorkspaceError(ValueError):
 
 
 class SandboxRegistry:
-    def __init__(self, path: str):
-        self.path = path
-        self._lock = threading.Lock()
+    def __init__(self, db_url: str | None = None):
+        self.db_url = db_url or psycopg_db_url()
         self._initialize()
 
     def _connect(self):
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+        return psycopg.connect(self.db_url)
 
     def _initialize(self):
-        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         with self._connect() as connection:
             connection.execute(
-                "CREATE TABLE IF NOT EXISTS workspace_sandbox ("
-                "thread_hash TEXT PRIMARY KEY, sandbox_id TEXT NOT NULL, updated_at INTEGER NOT NULL"
+                "CREATE TABLE IF NOT EXISTS agui_workspace_sandbox ("
+                "thread_hash TEXT PRIMARY KEY, sandbox_id TEXT NOT NULL, "
+                "updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"
                 ")"
             )
 
+    @contextmanager
+    def locked(self, value: str):
+        with self._connect() as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (value,)
+            )
+            yield SandboxRegistryTransaction(connection)
+
+
+class SandboxRegistryTransaction:
+    def __init__(self, connection):
+        self.connection = connection
+
     def get(self, value: str) -> str | None:
-        with self._lock, self._connect() as connection:
-            row = connection.execute(
-                "SELECT sandbox_id FROM workspace_sandbox WHERE thread_hash = ?", (value,)
-            ).fetchone()
+        row = self.connection.execute(
+            "SELECT sandbox_id FROM agui_workspace_sandbox WHERE thread_hash = %s",
+            (value,),
+        ).fetchone()
         return row[0] if row else None
 
     def set(self, value: str, sandbox_id: str):
-        with self._lock, self._connect() as connection:
-            connection.execute(
-                "INSERT OR REPLACE INTO workspace_sandbox "
-                "(thread_hash, sandbox_id, updated_at) VALUES (?, ?, strftime('%s','now'))",
-                (value, sandbox_id),
-            )
+        self.connection.execute(
+            "INSERT INTO agui_workspace_sandbox (thread_hash, sandbox_id, updated_at) "
+            "VALUES (%s, %s, CURRENT_TIMESTAMP) "
+            "ON CONFLICT (thread_hash) DO UPDATE SET "
+            "sandbox_id = EXCLUDED.sandbox_id, updated_at = CURRENT_TIMESTAMP",
+            (value, sandbox_id),
+        )
 
     def delete(self, value: str):
-        with self._lock, self._connect() as connection:
-            connection.execute(
-                "DELETE FROM workspace_sandbox WHERE thread_hash = ?", (value,)
-            )
-
-
-def default_registry_path() -> str:
-    configured = os.getenv("AGENT_WORKSPACE_DB_FILE")
-    if configured:
-        return configured
-    agent_db = os.getenv("AGENT_DB_FILE", "/tmp/agui_agentos_dev.db")
-    return os.path.join(os.path.dirname(agent_db), "agui_workspaces.db")
+        self.connection.execute(
+            "DELETE FROM agui_workspace_sandbox WHERE thread_hash = %s", (value,)
+        )
 
 
 class WorkspaceService:
@@ -91,8 +98,7 @@ class WorkspaceService:
     ):
         self.secret = secret
         self._client = client
-        self.registry = registry or SandboxRegistry(default_registry_path())
-        self._lock = threading.Lock()
+        self.registry = registry or SandboxRegistry()
 
     @property
     def client(self):
@@ -103,27 +109,27 @@ class WorkspaceService:
     def _hash(self, thread: str) -> str:
         return thread_label(thread, self.secret)
 
-    def _find_existing(self, value: str):
-        sandbox_id = self.registry.get(value)
+    def _find_existing(self, value: str, registry):
+        sandbox_id = registry.get(value)
         if sandbox_id:
             try:
                 return self.client.get(sandbox_id)
             except DaytonaNotFoundError:
-                self.registry.delete(value)
+                registry.delete(value)
         matches = list(self.client.list(ListSandboxesQuery(
             labels={"agui-thread": value}, limit=2,
         )))
         if len(matches) > 1:
             raise WorkspaceError("一个对话绑定了多个沙箱")
         if matches:
-            self.registry.set(value, matches[0].id)
+            registry.set(value, matches[0].id)
             return matches[0]
         return None
 
     def sandbox_for(self, thread: str, create: bool = True):
         value = self._hash(thread)
-        with self._lock:
-            sandbox = self._find_existing(value)
+        with self.registry.locked(value) as registry:
+            sandbox = self._find_existing(value, registry)
             if sandbox is None and create:
                 sandbox = self.client.create(CreateSandboxFromSnapshotParams(
                     name=f"agui-{value[:20]}",
@@ -135,7 +141,7 @@ class WorkspaceService:
                     auto_archive_interval=0,
                     auto_delete_interval=-1,
                 ))
-                self.registry.set(value, sandbox.id)
+                registry.set(value, sandbox.id)
             if sandbox is None:
                 return None
             state = str(getattr(sandbox, "state", "")).lower()
@@ -146,12 +152,12 @@ class WorkspaceService:
 
     def destroy(self, thread: str) -> bool:
         value = self._hash(thread)
-        with self._lock:
-            sandbox = self._find_existing(value)
+        with self.registry.locked(value) as registry:
+            sandbox = self._find_existing(value, registry)
             if sandbox is None:
                 return False
             self.client.delete(sandbox)
-            self.registry.delete(value)
+            registry.delete(value)
             return True
 
     @staticmethod
@@ -308,16 +314,20 @@ class WorkspaceService:
         }
 
     def shell(self, thread: str, command: str, timeout: int = 30):
+        if len(str(command).encode("utf-8")) > MAX_SHELL_BYTES:
+            raise WorkspaceError("Shell 命令超过 8 KiB")
         sandbox = self.sandbox_for(thread)
         value = sandbox.process.exec(
-            command[:8000], cwd=WORKSPACE_ROOT, timeout=max(1, min(int(timeout), 60)),
+            command, cwd=WORKSPACE_ROOT, timeout=max(1, min(int(timeout), 60)),
         )
         return self._bounded_output(value)
 
     def run_code(self, thread: str, code: str, timeout: int = 30):
+        if len(str(code).encode("utf-8")) > MAX_CODE_BYTES:
+            raise WorkspaceError("代码超过 256 KiB")
         sandbox = self.sandbox_for(thread)
         value = sandbox.process.code_run(
-            code[:256 * 1024], timeout=max(1, min(int(timeout), 60)),
+            code, timeout=max(1, min(int(timeout), 60)),
         )
         return self._bounded_output(value)
 
@@ -330,22 +340,28 @@ class WorkspaceService:
         args: list[str] | None = None,
         timeout: int = 30,
     ):
+        arguments = args or []
+        if len(arguments) > MAX_SCRIPT_ARGS:
+            raise WorkspaceError("技能脚本最多接受 20 个参数")
+        if any(len(str(value).encode("utf-8")) > MAX_SCRIPT_ARG_BYTES for value in arguments):
+            raise WorkspaceError("技能脚本参数超过 1 KiB")
         content = skills.script_bytes(skill_name, script_path)
         safe_name = PurePosixPath(script_path).name
-        skill_key = SecureSkills.skill_id(skill_name)
-        relative = f"skills/{skill_key}/{safe_name}"
-        self.upload(thread, relative, content)
-        remote = f"{WORKSPACE_ROOT}/{relative}"
-        arguments = " ".join(shlex.quote(str(value)[:1024]) for value in (args or [])[:20])
         extension = PurePosixPath(safe_name).suffix.lower()
         interpreter = {".py": "python", ".js": "node", ".sh": "sh"}.get(extension)
         if not interpreter:
             raise WorkspaceError("技能脚本类型不可执行")
-        return self.shell(
-            thread,
+        skill_key = SecureSkills.skill_id(skill_name)
+        relative = f"skills/{skill_key}/{safe_name}"
+        self.upload(thread, relative, content)
+        remote = f"{WORKSPACE_ROOT}/{relative}"
+        arguments = " ".join(shlex.quote(str(value)) for value in arguments)
+        value = self.sandbox_for(thread).process.exec(
             f"{interpreter} {shlex.quote(remote)} {arguments}".rstrip(),
-            timeout,
+            cwd=WORKSPACE_ROOT,
+            timeout=max(1, min(int(timeout), 60)),
         )
+        return self._bounded_output(value)
 
 
 def _thread(run_context: RunContext) -> str:

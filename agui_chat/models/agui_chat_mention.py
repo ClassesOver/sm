@@ -132,6 +132,8 @@ class AguiChatMentionToken(models.Model):
 
         if scope in ("all", "menu"):
             for item in catalog:
+                if not self._model_allowed(item.get("model")):
+                    continue
                 if query and query.lower() not in item["fullPath"].lower():
                     continue
                 actions = ["open"] if "open" in enabled_actions else []
@@ -485,6 +487,10 @@ class AguiChatMentionToken(models.Model):
 
     @api.model
     def _revalidate_payload(self, kind, payload, action):
+        if not self._model_allowed(payload.get("model")):
+            raise MentionTokenError(
+                "mention_permission_revoked", "该业务模型已不在对象引用白名单中。"
+            )
         if kind == "menu":
             menu = self._catalog_item(payload.get("menu_id"))
             if not menu or menu.get("action_id") != payload.get("action_id"):
@@ -536,6 +542,13 @@ class AguiChatMentionToken(models.Model):
             model_name in self.env and
             self.env[model_name].check_access_rights(operation, raise_exception=False)
         )
+
+    @api.model
+    def _model_allowed(self, model_name):
+        allowed_models = set(
+            self.env["agui.chat.config"].sudo().get_active_config().mention_model_names()
+        )
+        return bool(model_name and (not allowed_models or model_name in allowed_models))
 
     @api.model
     def _enabled_reference_actions(self):
@@ -616,11 +629,7 @@ class AguiChatMentionToken(models.Model):
                 "menu_id": item["menu_id"],
                 "action_id": item["action_id"],
             })
-        allowed_models = set(
-            self.env["agui.chat.config"].sudo().get_active_config().mention_model_names()
-        )
-        if allowed_models:
-            entries = [item for item in entries if item["model"] in allowed_models]
+        entries = [item for item in entries if self._model_allowed(item["model"])]
         if model_scope:
             entries = [item for item in entries if item["model"] == model_scope]
         return entries
@@ -645,7 +654,7 @@ class AguiChatMentionToken(models.Model):
         except (TypeError, ValueError):
             return False
         menu = next((item for item in catalog if item["menu_id"] == menu_id), False)
-        if not menu or menu["model"] != model_name:
+        if not menu or menu["model"] != model_name or not self._model_allowed(model_name):
             return False
         domain = value.get("domain")
         context = value.get("context")

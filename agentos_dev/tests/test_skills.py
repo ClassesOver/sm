@@ -2,6 +2,7 @@ import json
 import os
 
 import pytest
+import agentos_dev.skills as skills_module
 
 from agentos_dev.skills import (
     SecureSkills,
@@ -20,6 +21,13 @@ def create_skill(root, name="review"):
     )
     (folder / "scripts" / "check.py").write_text("print('ok')", encoding="utf-8")
     (folder / "references" / "guide.md").write_text("guide", encoding="utf-8")
+    root.chmod(0o755)
+    folder.chmod(0o755)
+    (folder / "scripts").chmod(0o755)
+    (folder / "references").chmod(0o755)
+    (folder / "SKILL.md").chmod(0o644)
+    (folder / "scripts" / "check.py").chmod(0o644)
+    (folder / "references" / "guide.md").chmod(0o644)
     return folder
 
 
@@ -59,3 +67,31 @@ def test_rejects_untrusted_root_and_escaping_symlink(tmp_path):
     (folder / "scripts" / "check.py").symlink_to(outside)
     with pytest.raises(UntrustedSkillsDirectory):
         SecureSkills(loaders=[TrustedLocalSkills(str(trusted))])
+
+
+def test_revalidates_replaced_resources_and_group_writable_paths(tmp_path):
+    folder = create_skill(tmp_path)
+    skills = SecureSkills(loaders=[TrustedLocalSkills(str(tmp_path))])
+
+    script = folder / "scripts" / "check.py"
+    script.chmod(0o664)
+    with pytest.raises(UntrustedSkillsDirectory):
+        skills.script_bytes("review", "check.py")
+
+    script.unlink()
+    script.symlink_to(folder / "SKILL.md")
+    with pytest.raises(UntrustedSkillsDirectory):
+        skills.script_bytes("review", "check.py")
+
+
+def test_accepts_explicit_trusted_uid(monkeypatch, tmp_path):
+    create_skill(tmp_path)
+    monkeypatch.setenv("AGENT_SKILLS_TRUSTED_UID", str(os.getuid()))
+    assert SecureSkills(loaders=[TrustedLocalSkills(str(tmp_path))]).get_skill("review")
+
+
+def test_rejects_wrong_owner(monkeypatch, tmp_path):
+    create_skill(tmp_path)
+    monkeypatch.setattr(skills_module, "_trusted_uids", lambda: {os.getuid() + 1})
+    with pytest.raises(UntrustedSkillsDirectory):
+        TrustedLocalSkills(str(tmp_path))

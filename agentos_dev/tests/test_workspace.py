@@ -1,9 +1,16 @@
 from pathlib import PurePosixPath
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+import threading
+import uuid
 
 import pytest
 
 from agentos_dev.workspace import (
     MAX_UPLOAD_BYTES,
+    MAX_CODE_BYTES,
+    MAX_SCRIPT_ARG_BYTES,
+    MAX_SHELL_BYTES,
     SandboxRegistry,
     WorkspaceError,
     WorkspaceService,
@@ -109,11 +116,31 @@ class FakeClient:
         del self.sandboxes[sandbox.id]
 
 
+class MemoryRegistry:
+    def __init__(self):
+        self.values = {}
+        self.lock = threading.RLock()
+
+    @contextmanager
+    def locked(self, _value):
+        with self.lock:
+            yield self
+
+    def get(self, value):
+        return self.values.get(value)
+
+    def set(self, value, sandbox_id):
+        self.values[value] = sandbox_id
+
+    def delete(self, value):
+        self.values.pop(value, None)
+
+
 def service(tmp_path, client=None):
     return WorkspaceService(
         SECRET,
         client=client or FakeClient(),
-        registry=SandboxRegistry(str(tmp_path / "registry.sqlite")),
+        registry=MemoryRegistry(),
     )
 
 
@@ -132,7 +159,7 @@ def test_each_thread_gets_private_persistent_sandbox_and_registry_survives_resta
     assert list(params.labels) == ["agui-thread"]
     assert "thread-one" not in str(params.labels)
 
-    restarted = service(tmp_path, client)
+    restarted = WorkspaceService(SECRET, client=client, registry=first.registry)
     assert restarted.sandbox_for("thread-one").id == one.id
     assert len(client.created) == 2
 
@@ -174,3 +201,47 @@ def test_mutating_and_execution_tools_all_require_confirmation(tmp_path):
         "workspace_shell", "workspace_run_code", "run_skill_script",
     ):
         assert tools[name].requires_confirmation is True
+
+
+def test_execution_inputs_are_rejected_before_sandbox_creation(tmp_path):
+    current = service(tmp_path)
+    with pytest.raises(WorkspaceError, match="8 KiB"):
+        current.shell("thread", "界" * (MAX_SHELL_BYTES // 3 + 1))
+    with pytest.raises(WorkspaceError, match="256 KiB"):
+        current.run_code("thread", "界" * (MAX_CODE_BYTES // 3 + 1))
+    fake_skills = type("Skills", (), {"script_bytes": lambda *_args: b"print('ok')"})()
+    with pytest.raises(WorkspaceError, match="最多接受 20"):
+        current.run_skill_script("thread", fake_skills, "review", "check.py", ["x"] * 21)
+    with pytest.raises(WorkspaceError, match="1 KiB"):
+        current.run_skill_script(
+            "thread", fake_skills, "review", "check.py",
+            ["界" * (MAX_SCRIPT_ARG_BYTES // 3 + 1)],
+        )
+    assert not current.client.created
+
+
+def test_execution_input_boundaries_are_accepted(tmp_path):
+    current = service(tmp_path)
+    fake_skills = type("Skills", (), {"script_bytes": lambda *_args: b"print('ok')"})()
+
+    assert current.shell("thread", "x" * MAX_SHELL_BYTES)["exitCode"] == 0
+    assert current.run_code("thread", "x" * MAX_CODE_BYTES)["exitCode"] == 0
+    result = current.run_skill_script(
+        "thread", fake_skills, "review", "check.py",
+        ["x" * MAX_SCRIPT_ARG_BYTES] * 20,
+    )
+    assert result["exitCode"] == 0
+
+
+def test_postgres_registry_serializes_two_workspace_services():
+    client = FakeClient()
+    thread = "concurrent-" + uuid.uuid4().hex
+    first = WorkspaceService(SECRET, client=client, registry=SandboxRegistry())
+    second = WorkspaceService(SECRET, client=client, registry=SandboxRegistry())
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            sandboxes = list(pool.map(lambda service: service.sandbox_for(thread), [first, second]))
+        assert sandboxes[0].id == sandboxes[1].id
+        assert len(client.created) == 1
+    finally:
+        first.destroy(thread)

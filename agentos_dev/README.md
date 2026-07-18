@@ -20,5 +20,8 @@ OPENAI_API_KEY=sk-... .venv-agent/bin/python -m agentos_dev.app
 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。可通过 `AGENT_ENV_FILE` 指向其他
 环境文件；已存在的进程环境变量优先于文件内容。
 
-开发会话默认保存在 `/tmp/agui_agentos_dev.db`，以支持同一对话的多轮上下文；
-可通过 `AGENT_DB_FILE` 修改路径。
+开发会话和 workspace 注册表统一保存在 PostgreSQL。连接配置优先读取
+`AGENT_DB_URL`，其次读取 `DATABASE_URL`，默认连接
+`postgresql+psycopg://odoo@127.0.0.1:55432/dev`。首次启动前可运行
+`bash scripts/init_agent_db.sh` 安全创建 `dev` 数据库；认证沿用 libpq 环境变量或
+`.pgpass`。

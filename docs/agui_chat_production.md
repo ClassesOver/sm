@@ -70,6 +70,8 @@ The project deploys only these Daytona services:
 - `dashboard`, as a localhost-only Nginx entry to the API UI and Dex
 - `proxy`, as a localhost-only sandbox port-preview endpoint
 - the existing `agent` service, which contains AgentOS and Agno
+- `agent-db`, the dedicated PostgreSQL backend for Agno sessions and workspace
+  sandbox registrations; Daytona's `db` remains private to Daytona
 
 SSH Gateway, PgAdmin, Jaeger, and the OpenTelemetry collector are intentionally
 not deployed. AgentOS Toolbox traffic uses `PROXY_TOOLBOX_BASE_URL=http://api:3000/api`;
@@ -93,6 +95,7 @@ sample or default passwords in production. Required values include:
 - Dex administrator email and a bcrypt password hash
 - `AGENT_SKILLS_DIR` when administrator-managed skills are installed; the
   default empty directory is mounted read-only
+- `AGENT_POSTGRES_PASSWORD` for the dedicated AgentOS PostgreSQL service
 
 Initialize or update the file interactively with:
 
@@ -151,8 +154,9 @@ behind TLS with a wildcard DNS record and certificate for the Proxy domain.
 
 ### Backup and Recovery
 
-Back up the PostgreSQL database and the `daytona_db_data`, MinIO, Registry,
-Runner, Dex, and AgentOS data volumes. PostgreSQL and object/registry data must
+Back up `agent_db_data`, the Daytona `daytona_db_data` volume, MinIO, Registry,
+Runner, and Dex data. The dedicated AgentOS PostgreSQL database contains both
+Agno sessions and workspace registrations. PostgreSQL and object/registry data must
 come from the same recovery point. Protect the HMAC, encryption, API, Runner,
 and Proxy secrets separately; losing or rotating them without a migration can
 make existing data or capabilities unusable. Test restores with the same pinned

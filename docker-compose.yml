@@ -12,9 +12,24 @@ services:
     ports:
       - "${AGENT_OS_PORT:-7777}:${AGENT_OS_PORT:-7777}"
     environment:
-      AGENT_DB_FILE: /data/agui_agentos.db
+      AGENT_DB_URL: postgresql+psycopg://${AGENT_POSTGRES_USER:-odoo}:${AGENT_POSTGRES_PASSWORD:?Required}@agent-db:5432/${AGENT_POSTGRES_DB:-dev}
+    depends_on:
+      agent-db:
+        condition: service_healthy
+  agent-db:
+    image: postgres:18.0-alpine
+    environment:
+      POSTGRES_DB: ${AGENT_POSTGRES_DB:-dev}
+      POSTGRES_USER: ${AGENT_POSTGRES_USER:-odoo}
+      POSTGRES_PASSWORD: ${AGENT_POSTGRES_PASSWORD:?Required}
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     volumes:
-      - agent_data:/data
+      - agent_db_data:/var/lib/postgresql/data
+    restart: unless-stopped
 
 volumes:
-  agent_data:
+  agent_db_data:

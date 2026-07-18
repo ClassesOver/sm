@@ -12,8 +12,7 @@ COPY agentos_dev ./agentos_dev
 
 ENV AGENT_OS_HOST=0.0.0.0 \
     AGENT_OS_PORT=7777 \
-    AGENT_OS_RELOAD=false \
-    AGENT_DB_FILE=/data/agui_agentos.db
+    AGENT_OS_RELOAD=false
 
 EXPOSE 7777
 

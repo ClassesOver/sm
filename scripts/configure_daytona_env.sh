@@ -14,6 +14,7 @@ die() {
 
 command -v openssl >/dev/null 2>&1 || die "缺少 openssl。"
 command -v awk >/dev/null 2>&1 || die "缺少 awk。"
+command -v stat >/dev/null 2>&1 || die "缺少 stat。"
 [[ -f "$TEMPLATE_FILE" ]] || die "未找到 $TEMPLATE_FILE。"
 
 ask_yes_no() {
@@ -90,6 +91,7 @@ if [[ "$rotate_runtime" == true ]]; then
 fi
 
 if [[ "$rotate_persistent" == true ]]; then
+    set_env AGENT_POSTGRES_PASSWORD "$(random_secret)"
     set_env DAYTONA_ENCRYPTION_KEY "$(random_secret)"
     set_env DAYTONA_ENCRYPTION_SALT "$(random_secret)"
     set_env DAYTONA_RUNNER_TOKEN "$(random_secret)"
@@ -98,6 +100,15 @@ if [[ "$rotate_persistent" == true ]]; then
     set_env DAYTONA_REGISTRY_PASSWORD "$(random_secret)"
     set_env DAYTONA_MINIO_PASSWORD "$(random_secret)"
     printf '%s\n' '已更新 Daytona 持久化服务密钥和口令。'
+fi
+
+skills_dir=$(awk -F= '$1 == "AGENT_SKILLS_DIR" {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")
+skills_dir=${skills_dir:-./deploy/daytona/skills}
+[[ "$skills_dir" = /* ]] || skills_dir="$ROOT_DIR/$skills_dir"
+if [[ -d "$skills_dir" ]]; then
+    chmod -R go-w "$skills_dir"
+    set_env AGENT_SKILLS_TRUSTED_UID "$(stat -c %u "$skills_dir")"
+    printf '已记录技能目录宿主 UID。\n'
 fi
 
 if ask_yes_no '现在写入已创建的 Daytona API Key？' n; then

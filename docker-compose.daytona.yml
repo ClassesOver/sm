@@ -8,12 +8,16 @@ services:
       DAYTONA_API_KEY: ${DAYTONA_API_KEY:-}
       AGUI_WORKSPACE_HMAC_SECRET: ${AGUI_WORKSPACE_HMAC_SECRET:?Must match Odoo agui_chat.workspace_hmac_secret}
       AGENT_SKILLS_DIR: /opt/agent-skills
+      AGENT_SKILLS_TRUSTED_UID: ${AGENT_SKILLS_TRUSTED_UID:-1000}
     volumes:
       - ${AGENT_SKILLS_DIR:-./deploy/daytona/skills}:/opt/agent-skills:ro
-    networks: [daytona-network]
+    networks: [default]
     depends_on:
       api:
         condition: service_started
+
+  agent-db:
+    networks: [default]
 
   api:
     image: daytonaio/daytona-api:0.189.0
@@ -87,7 +91,7 @@ services:
       SKIP_USER_EMAIL_VERIFICATION: "true"
       RUN_MIGRATIONS: "true"
       HEALTH_CHECK_API_KEY: ${DAYTONA_HEALTH_API_KEY:?Required}
-    networks: [daytona-network]
+    networks: [default]
     restart: unless-stopped
     privileged: true
     depends_on: [db, runner, redis, dex, registry, minio]
@@ -111,7 +115,7 @@ services:
       PREVIEW_WARNING_ENABLED: "true"
     ports:
       - 127.0.0.1:${DAYTONA_PROXY_PORT:-14000}:4000
-    networks: [daytona-network]
+    networks: [default]
     restart: unless-stopped
     depends_on: [api, dex, redis]
 
@@ -136,7 +140,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - daytona_runner_data:/home/daytona/runner
-    networks: [daytona-network]
+    networks: [default]
     privileged: true
     restart: unless-stopped
 
@@ -156,7 +160,7 @@ services:
       - sh
       - -ec
       - sed -e "s|__DEX_ISSUER__|$$DEX_ISSUER|g" -e "s|__DEX_DASHBOARD_BASE_URL__|$$DEX_DASHBOARD_BASE_URL|g" -e "s|__DEX_PROXY_CALLBACK_URL__|$$DEX_PROXY_CALLBACK_URL|g" -e "s|__DEX_ADMIN_EMAIL__|$$DEX_ADMIN_EMAIL|g" -e "s|__DEX_STATIC_PASSWORD_HASH__|$$DEX_STATIC_PASSWORD_HASH|g" /etc/dex/config.yaml.template > /tmp/dex.yaml && touch /var/dex/dex.db && exec dex serve /tmp/dex.yaml
-    networks: [daytona-network]
+    networks: [default]
     restart: unless-stopped
 
   db:
@@ -168,7 +172,7 @@ services:
       POSTGRES_DB: ${DAYTONA_POSTGRES_DB:-daytona}
     volumes:
       - daytona_db_data:/var/lib/postgresql/data
-    networks: [daytona-network]
+    networks: [default]
     restart: unless-stopped
 
   redis:
@@ -177,7 +181,7 @@ services:
     command: [redis-server, --appendonly, "yes", --requirepass, "${DAYTONA_REDIS_PASSWORD:?Required}"]
     volumes:
       - daytona_redis_data:/data
-    networks: [daytona-network]
+    networks: [default]
     restart: unless-stopped
 
   registry:
@@ -188,7 +192,7 @@ services:
       REGISTRY_HTTP_ADDR: registry:6000
     volumes:
       - daytona_registry_data:/var/lib/registry
-    networks: [daytona-network]
+    networks: [default]
     restart: unless-stopped
 
   minio:
@@ -201,7 +205,7 @@ services:
     command: server /data
     volumes:
       - daytona_minio_data:/data
-    networks: [daytona-network]
+    networks: [default]
     restart: unless-stopped
 
   dashboard:
@@ -211,7 +215,7 @@ services:
       - 127.0.0.1:${DAYTONA_DASHBOARD_PORT:-13000}:80
     volumes:
       - ./deploy/daytona/dashboard.nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    networks: [daytona-network]
+    networks: [default]
     depends_on: [api, dex]
     restart: unless-stopped
 
@@ -224,5 +228,6 @@ volumes:
   dex_data: {}
 
 networks:
-  daytona-network:
-    driver: bridge
+  default:
+    external: true
+    name: hrp_network

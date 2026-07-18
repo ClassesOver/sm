@@ -407,6 +407,58 @@ odoo.define("agui_chat_test.form_complex_tests", function (require) {
         form.destroy();
     });
 
+    QUnit.test("failed one2many batch restores rows and existing staged state", async function (assert) {
+        assert.expect(7);
+        var writes = 0;
+        var form = await testUtils.createAsyncView({
+            View: FormView,
+            model: "agui.chat.test.document",
+            data: testData(),
+            arch: formArch(),
+            res_id: 1,
+            viewOptions: {mode: "edit"},
+            mockRPC: function (route, args) {
+                if (args.method === "write") {
+                    writes += 1;
+                }
+                return this._super.apply(this, arguments);
+            },
+        });
+        var context = commandContext(form);
+        await executeStage(context, {name: "已有暂存值"});
+        var originalApply = form._applyChanges.bind(form);
+        var relationCalls = 0;
+        form._applyChanges = function (localId, changes, event) {
+            if (changes.detail_item_ids) {
+                relationCalls += 1;
+                if (relationCalls === 2) {
+                    return $.Deferred().reject(new Error("第二条明细操作失败")).promise();
+                }
+            }
+            return originalApply(localId, changes, event);
+        };
+
+        var error = await rejected(executeStage(context, {detail_item_ids: {
+            operations: [
+                {operation: "update", id: 100, values: {quantity: 9}},
+                {operation: "create", values: {name: "不应残留", quantity: 3}},
+            ],
+        }}));
+        var state = context.getSnapshot();
+        var rows = state.record.values.detail_item_ids.records;
+
+        assert.strictEqual(error.code, "onchange_failed");
+        assert.strictEqual(writes, 0, "失败批次没有数据库写入");
+        assert.strictEqual(state.record.values.name, "已有暂存值", "已有 staged 值保留");
+        assert.ok(state.record.dirtyFields.indexOf("name") !== -1, "已有 staged 标记保留");
+        assert.strictEqual(state.record.values.detail_item_ids.count, 2, "没有新增行残留");
+        assert.strictEqual(_.findWhere(rows, {id: 100}).values.quantity, 1, "已修改行恢复原值");
+        assert.notOk(_.find(rows, function (row) {
+            return row.values.name === "不应残留";
+        }), "失败创建没有残留");
+        form.destroy();
+    });
+
     QUnit.test("visible One2many tokens create and stage a native child row", async function (assert) {
         assert.expect(10);
         var writes = 0;
