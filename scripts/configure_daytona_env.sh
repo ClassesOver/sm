@@ -13,6 +13,7 @@ die() {
 }
 
 command -v openssl >/dev/null 2>&1 || die "缺少 openssl。"
+command -v htpasswd >/dev/null 2>&1 || die "缺少 htpasswd。"
 command -v awk >/dev/null 2>&1 || die "缺少 awk。"
 command -v stat >/dev/null 2>&1 || die "缺少 stat。"
 [[ -f "$TEMPLATE_FILE" ]] || die "未找到 $TEMPLATE_FILE。"
@@ -28,8 +29,8 @@ ask_yes_no() {
     [[ "$answer" =~ ^[Yy]$ ]]
 }
 
-random_secret() {
-    openssl rand -hex 32
+bcrypt_password() {
+    printf '%s\n' "$1" | htpasswd -niBC 10 admin | awk -F: 'NR == 1 { print $2 }'
 }
 
 set_env() {
@@ -53,6 +54,21 @@ set_env() {
     mv "$temporary" "$ENV_FILE"
 }
 
+set_random_env() {
+    local key=$1
+    local bytes=$2
+    local value
+    value=$(openssl rand -hex "$bytes")
+    set_env "$key" "$value"
+}
+
+set_random_password_env() {
+    local key=$1
+    local value
+    value=$(openssl rand -base64 9 | tr '/+' '_-')
+    set_env "$key" "$value"
+}
+
 is_new=false
 if [[ ! -f "$ENV_FILE" ]]; then
     mkdir -p "$ENV_DIR"
@@ -71,12 +87,13 @@ fi
 
 rotate_runtime=$is_new
 rotate_persistent=$is_new
+dex_admin_password=''
 
 if [[ "$is_new" == false ]]; then
     if ask_yes_no '重新生成工作区 HMAC、Proxy 和健康检查密钥？' n; then
         rotate_runtime=true
     fi
-    printf '%s\n' '警告：下组值包含 Daytona 加密密钥、Runner Token 和持久化服务口令。'
+    printf '%s\n' '警告：下组值包含 Daytona 加密密钥、Runner Token、Dex 登录密码和持久化服务口令。'
     printf '%s\n' '已运行的部署不能只修改 .env；还必须迁移数据库/服务凭据，或重建 Daytona 数据卷。'
     if ask_yes_no '确认这是首次部署或已安排完整凭据迁移，并重新生成这些值？' n; then
         rotate_persistent=true
@@ -84,22 +101,27 @@ if [[ "$is_new" == false ]]; then
 fi
 
 if [[ "$rotate_runtime" == true ]]; then
-    set_env AGUI_WORKSPACE_HMAC_SECRET "$(random_secret)"
-    set_env DAYTONA_PROXY_API_KEY "$(random_secret)"
-    set_env DAYTONA_HEALTH_API_KEY "$(random_secret)"
+    set_random_env AGUI_WORKSPACE_HMAC_SECRET 32
+    set_random_env DAYTONA_PROXY_API_KEY 32
+    set_random_env DAYTONA_HEALTH_API_KEY 32
     printf '%s\n' '已更新工作区和无状态服务密钥。'
 fi
 
 if [[ "$rotate_persistent" == true ]]; then
-    set_env AGENT_POSTGRES_PASSWORD "$(random_secret)"
-    set_env DAYTONA_ENCRYPTION_KEY "$(random_secret)"
-    set_env DAYTONA_ENCRYPTION_SALT "$(random_secret)"
-    set_env DAYTONA_RUNNER_TOKEN "$(random_secret)"
-    set_env DAYTONA_POSTGRES_PASSWORD "$(random_secret)"
-    set_env DAYTONA_REDIS_PASSWORD "$(random_secret)"
-    set_env DAYTONA_REGISTRY_PASSWORD "$(random_secret)"
-    set_env DAYTONA_MINIO_PASSWORD "$(random_secret)"
-    printf '%s\n' '已更新 Daytona 持久化服务密钥和口令。'
+    set_random_password_env AGENT_POSTGRES_PASSWORD
+    set_random_env DAYTONA_ENCRYPTION_KEY 32
+    set_random_env DAYTONA_ENCRYPTION_SALT 32
+    set_random_env DAYTONA_RUNNER_TOKEN 32
+    set_random_password_env DAYTONA_POSTGRES_PASSWORD
+    set_random_password_env DAYTONA_REDIS_PASSWORD
+    set_random_password_env DAYTONA_REGISTRY_PASSWORD
+    set_random_password_env DAYTONA_MINIO_PASSWORD
+    dex_admin_password=$(openssl rand -base64 9 | tr '/+' '_-')
+    dex_password_hash=$(bcrypt_password "$dex_admin_password")
+    set_env DEX_STATIC_PASSWORD_HASH "'$dex_password_hash'"
+    unset dex_password_hash
+    printf '%s\n' '已更新 Daytona 持久化服务密钥、口令和 Dex 登录密码。'
+    printf 'Dex 登录密码（账号见 DEX_ADMIN_EMAIL）：%s\n' "$dex_admin_password"
 fi
 
 skills_dir=$(awk -F= '$1 == "AGENT_SKILLS_DIR" {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")

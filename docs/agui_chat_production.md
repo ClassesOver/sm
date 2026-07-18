@@ -154,6 +154,9 @@ Initialize or update the file interactively with:
 bash scripts/configure_daytona_env.sh
 ```
 
+Direct host execution requires `openssl` and `htpasswd`. The Compose setup image
+below includes both tools.
+
 The same script can run through the one-shot Compose setup profile before
 `.env` exists. Pass the host identity so the generated mode-`600` file remains
 owned by the operator:
@@ -177,20 +180,19 @@ latter must not be changed without migrating the corresponding services or
 rebuilding the Daytona data volumes.
 
 For a new `.env`, the script generates the runtime and persistent random
-secrets, but it does not choose operator credentials. Existing files rotate
-secrets only after the corresponding confirmation. Replace `OPENAI_API_KEY`,
-`DEX_ADMIN_EMAIL`, and `DEX_STATIC_PASSWORD_HASH` before validation. Generate
-the Dex hash without placing the clear-text password in a project file:
+secrets, 12-character Base64URL service passwords, and a 12-character Dex login password.
+It writes the Dex bcrypt hash to `.env` and prints the clear-text login password
+once; record it immediately. Existing files rotate secrets only after the
+corresponding confirmation. Only `OPENAI_API_KEY` must be replaced before
+validation; `OPENAI_BASE_URL`, `MODEL`, and the default `DEX_ADMIN_EMAIL` may be
+changed when required.
 
-```bash
-htpasswd -BinC 10 admin | cut -d: -f2
-```
-
-Keep the hash single-quoted in `.env`, for example
-`DEX_STATIC_PASSWORD_HASH='$2y$...'`, so Compose treats its dollar signs
-literally. `DAYTONA_API_KEY` remains empty only until the first Dashboard
-bootstrap described below. Generate any additional independent secret with,
-for example, `openssl rand -hex 32`.
+Cryptographic HMAC, encryption, Proxy, health, and Runner values remain
+32-byte random secrets and are intentionally longer than service passwords.
+`DAYTONA_API_KEY` remains empty only until the first Dashboard bootstrap
+described below: Daytona does not allow an unauthenticated client to create the
+first API Key. Generate any additional independent secret with, for example,
+`openssl rand -hex 32`.
 
 In Odoo, set the same HMAC secret as a server-only system parameter and set
 `AgentOS 内部服务地址` to the address Odoo can reach, for example

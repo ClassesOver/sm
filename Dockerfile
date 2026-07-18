@@ -4,10 +4,10 @@ FROM ${PYTHON_IMAGE} AS env-init
 WORKDIR /workspace
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash coreutils mawk openssl \
+    && apt-get install -y --no-install-recommends apache2-utils bash coreutils mawk openssl \
     && rm -rf /var/lib/apt/lists/*
 
-FROM env-init AS runtime
+FROM ${PYTHON_IMAGE} AS runtime
 
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 

@@ -38,13 +38,14 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
 ```
 
 `HOST_UID` 和 `HOST_GID` 让生成文件归当前宿主用户所有，`--rm` 在脚本退出后删除这次临时
-容器，不会删除生成的 `.env`。
+容器，不会删除生成的 `.env`。脚本会生成全部服务密码、加密密钥和 Dex 登录密码；请立即
+记录终端中只显示一次的 Dex 密码，登录账号默认为 `.env` 中的 `admin@example.com`。
 
-2. 编辑 `.env`，至少填写真实的 `OPENAI_API_KEY`、`DEX_ADMIN_EMAIL` 和
-   `DEX_STATIC_PASSWORD_HASH`。生成 Dex bcrypt hash 时保留 `.env` 中的单引号：
+2. 编辑 `.env`，只需把 `OPENAI_API_KEY` 改为真实的模型 API Key。需要时可同时修改
+   `OPENAI_BASE_URL`、`MODEL` 和 `DEX_ADMIN_EMAIL`：
 
 ```bash
-htpasswd -BinC 10 admin | cut -d: -f2
+vi .env
 ```
 
 3. 创建外部网络并检查配置。`.env` 不会自动导出为当前 Shell 变量；若修改了
@@ -57,7 +58,8 @@ docker compose --profile daytona config
 
 4. 仅运行 AgentOS 与 PostgreSQL 时执行 `docker compose up -d`。首次启用 Daytona 时，
    先按[生产部署指南](docs/agui_chat_production.md#first-start)启动 Daytona、在 Dashboard
-   创建 `DAYTONA_API_KEY` 并回填 `.env`，再启动 AgentOS。备份和许可证要求也见该指南。
+   创建 `DAYTONA_API_KEY` 并回填 `.env`，再启动 AgentOS。Daytona 不支持在未认证状态下
+   自动创建首个 API Key，这是模型 API Key 之外唯一需要回填的凭据。备份和许可证要求也见该指南。
 
 收藏筛选和当前筛选可在管理员启用 `odoo.business.report.filters` 并配置逐模型读取策略后，
 导出到同一对话工作区，再由受控 Pandas 工具分析和生成图表。
