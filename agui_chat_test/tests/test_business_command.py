@@ -49,7 +49,7 @@ class TestBusinessCommand(TransactionCase):
         self.assertEqual(business_tool_catalog(self.env, self.config), [])
         disabled = self.env[
             "agui.chat.tool.authorization"
-        ].prepare_business_command(self._call("business-disabled"))
+        ]._prepare_business_command(self._call("business-disabled"))
         self.assertEqual(disabled["code"], "unsupported_business_command")
 
         self.config.write({
@@ -58,21 +58,52 @@ class TestBusinessCommand(TransactionCase):
         })
         write_disabled = self.env[
             "agui.chat.tool.authorization"
-        ].prepare_business_command(self._call("business-write-disabled"))
+        ]._prepare_business_command(self._call("business-write-disabled"))
         self.assertEqual(write_disabled["code"], "write_tools_disabled")
+
+    def test_inactive_business_command_blocks_catalog_prepare_and_execute(self):
+        command = self.env.ref("agui_chat_test.command_test_document_confirm")
+        authorizations = self.env["agui.chat.tool.authorization"]
+        decision = authorizations._prepare_business_command(
+            self._call("business-active-before-disable")
+        )
+        authorization = authorizations.search([
+            ("token", "=", decision["authorization_id"]),
+        ])
+        authorization._transition(True)
+
+        command.write({"active": False})
+        self.assertEqual(business_tool_catalog(self.env, self.config), [])
+        disabled = authorizations._prepare_business_command(
+            self._call("business-inactive")
+        )
+        self.assertEqual(disabled["code"], "unsupported_business_command")
+        execution = self.env["agui.chat.command.execution"]._execute_named(
+            COMMAND_NAME,
+            self._payload(),
+            authorization.token,
+            authorization.token,
+        )
+        self.assertEqual(execution["code"], "unsupported_business_command")
+
+        command.write({"active": True})
+        self.assertEqual(
+            [tool["name"] for tool in business_tool_catalog(self.env, self.config)],
+            [COMMAND_NAME],
+        )
 
     def test_schema_and_missing_policy_fail_closed(self):
         authorization = self.env["agui.chat.tool.authorization"]
         wrong_model = self._payload()
         wrong_model["model"] = "res.partner"
-        invalid = authorization.prepare_business_command(
+        invalid = authorization._prepare_business_command(
             self._call("business-invalid-model", wrong_model)
         )
         self.assertEqual(invalid["code"], "schema_validation_failed")
 
         extra = self._payload()
         extra["unexpected"] = True
-        invalid = authorization.prepare_business_command(
+        invalid = authorization._prepare_business_command(
             self._call("business-extra-field", extra)
         )
         self.assertEqual(invalid["code"], "schema_validation_failed")
@@ -80,14 +111,14 @@ class TestBusinessCommand(TransactionCase):
         self.env.ref("agui_chat_test.policy_test_document_confirm").write({
             "active": False,
         })
-        denied = authorization.prepare_business_command(
+        denied = authorization._prepare_business_command(
             self._call("business-policy-missing")
         )
         self.assertEqual(denied["code"], "policy_missing")
 
     def test_confirmation_payload_binding_and_idempotent_execution(self):
         authorizations = self.env["agui.chat.tool.authorization"]
-        decision = authorizations.prepare_business_command(
+        decision = authorizations._prepare_business_command(
             self._call("business-confirm")
         )
         self.assertTrue(decision["needs_confirmation"])
@@ -103,19 +134,19 @@ class TestBusinessCommand(TransactionCase):
             "name": "篡改目标",
             "required_code": "BUSINESS-2",
         })
-        tampered = authorizations.prepare_business_command(
+        tampered = authorizations._prepare_business_command(
             self._call("business-confirm", self._payload(other))
         )
         self.assertEqual(tampered["code"], "idempotency_payload_mismatch")
 
-        approved = authorization.transition(True)
+        approved = authorization._transition(True)
         self.assertTrue(approved["ok"])
         self.assertEqual(approved["bound_call"]["arguments"], self._payload())
         authorization.invalidate_cache(["state"])
         self.assertEqual(authorization.state, "approved")
 
         executions = self.env["agui.chat.command.execution"]
-        result = executions.execute_named(
+        result = executions._execute_named(
             COMMAND_NAME,
             self._payload(),
             authorization.token,
@@ -128,7 +159,7 @@ class TestBusinessCommand(TransactionCase):
         self.document.invalidate_cache(["state"])
         self.assertEqual(self.document.state, "confirmed")
 
-        replay = executions.execute_named(
+        replay = executions._execute_named(
             COMMAND_NAME,
             self._payload(),
             authorization.token,
@@ -153,16 +184,16 @@ class TestBusinessCommand(TransactionCase):
     def test_state_conflict_rolls_back_and_is_replayed(self):
         self.document.action_confirm()
         authorizations = self.env["agui.chat.tool.authorization"]
-        decision = authorizations.prepare_business_command(
+        decision = authorizations._prepare_business_command(
             self._call("business-state-conflict")
         )
         authorization = authorizations.search([
             ("token", "=", decision["authorization_id"]),
         ])
-        authorization.transition(True)
+        authorization._transition(True)
 
         executions = self.env["agui.chat.command.execution"]
-        failed = executions.execute_named(
+        failed = executions._execute_named(
             COMMAND_NAME,
             self._payload(),
             authorization.token,
@@ -171,7 +202,7 @@ class TestBusinessCommand(TransactionCase):
         self.assertFalse(failed["ok"])
         self.assertEqual(failed["code"], "state_conflict")
 
-        replay = executions.execute_named(
+        replay = executions._execute_named(
             COMMAND_NAME,
             self._payload(),
             authorization.token,

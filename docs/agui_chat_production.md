@@ -104,6 +104,8 @@ sample or default passwords in production. Required values include:
 - `AGENT_SKILLS_DIR` when administrator-managed skills are installed; the
   default empty directory is mounted read-only
 - `AGENT_POSTGRES_PASSWORD` for the dedicated AgentOS PostgreSQL service
+- `AGUI_SHARED_NETWORK`, the pre-created external Docker network used by all
+  AgentOS and Daytona services; it defaults to `hrp_network`
 
 Initialize or update the file interactively with:
 
@@ -142,12 +144,30 @@ sandbox, and record the sandbox ID, label hash, review time, and operator.
 
 ### First Start
 
+Create the shared external network before validating or starting the stack:
+
+```bash
+docker network create "${AGUI_SHARED_NETWORK:-hrp_network}"
+```
+
+The Compose files intentionally attach AgentOS, both PostgreSQL services, and
+all Daytona infrastructure services to this one network. Any other container
+attached to it can attempt direct connections to those internal services. Use a
+dedicated deployment-specific network name, do not attach untrusted workloads,
+keep internal service ports unpublished, and enforce host/network policy around
+the Docker daemon. Deployments requiring stronger tenant isolation should use
+separate stacks and separate shared networks.
+
 Validate interpolation before startup:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.daytona.yml \
   --profile daytona config
 ```
+
+If the network was not created, `docker compose up` fails with an external
+network-not-found error by design. Create the configured network and retry; do
+not change the Compose file to an implicitly created network.
 
 Start Daytona without AgentOS first. `DAYTONA_API_KEY` may be empty only during
 this bootstrap step:

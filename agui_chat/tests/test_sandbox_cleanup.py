@@ -25,7 +25,7 @@ class TestSandboxCleanup(TransactionCase):
         self.config.write({"agentos_internal_url": "http://agentos:7777"})
 
     def _task(self, thread_id="cleanup-thread"):
-        return self.env["agui.chat.sandbox.cleanup"].sudo().enqueue([thread_id])
+        return self.env["agui.chat.sandbox.cleanup"]._enqueue([thread_id])
 
     def test_failure_is_retained_with_backoff_then_retried(self):
         task = self._task()
@@ -79,7 +79,7 @@ class TestSandboxCleanup(TransactionCase):
         )
 
     def test_retention_unlink_enqueues_cleanup(self):
-        session = self.env["agui.chat.session"].create_session()
+        session = self.env["agui.chat.session"]._create_session()
         thread_id = session.thread_id
         self.config.write({"session_retention_days": 1})
         self.env.cr.execute(
@@ -87,7 +87,7 @@ class TestSandboxCleanup(TransactionCase):
             ("2000-01-01 00:00:00", session.id),
         )
 
-        self.env["agui.chat.tool.audit"].cleanup_expired()
+        self.env["agui.chat.tool.audit"]._cleanup_expired()
 
         self.assertFalse(session.exists())
         self.assertTrue(self.env["agui.chat.sandbox.cleanup"].sudo().search([

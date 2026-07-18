@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.4.0')
+    expect(AguiChat.version).toBe('12.0.8.5.0')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -94,6 +94,43 @@ describe('ChatRuntime protocol handling', () => {
     await expect(runtime.refreshSessions()).resolves.toBe(false)
     expect(runtime.getSnapshot().error).toBe('list offline')
     expect(onError).toHaveBeenCalledTimes(3)
+  })
+
+  it('clears an archived current session when replacement creation fails', async () => {
+    const createSession = vi.fn(async () => { throw new Error('replacement offline') })
+    const getWorkspaceCapability = vi.fn()
+    const onSessionChange = vi.fn()
+    const runtime = createRuntime({
+      session: {
+        id: 9,
+        name: 'Current',
+        protocol: 'agui.odoo.v2',
+        thread_id: 'thread-archived',
+        messages: [{ id: 'message-1', role: 'user', content: '待归档内容' }]
+      },
+      hostBridge: {
+        archiveSession: vi.fn(async () => ({ ok: true })),
+        createSession,
+        getWorkspaceCapability
+      },
+      onSessionChange
+    })
+    ;(runtime as any).workspaceCapability = {
+      capability: 'stale-capability',
+      threadId: 'thread-archived',
+      expiresAt: Date.now() / 1000 + 600
+    }
+
+    expect(await runtime.archiveSession(9)).toBe(false)
+    expect(runtime.getSnapshot().session).toBeNull()
+    expect(runtime.getSnapshot().messages).toEqual([])
+    expect(runtime.getSnapshot().threadId).not.toBe('thread-archived')
+    expect((runtime as any).workspaceCapability).toBeNull()
+    expect(onSessionChange).toHaveBeenCalledWith(null)
+    await expect((runtime as any).ensureWorkspaceCapability(true)).rejects.toThrow(
+      '当前聊天会话不可用。'
+    )
+    expect(getWorkspaceCapability).not.toHaveBeenCalled()
   })
 
   it('streams text, executes host tools, and sends a follow-up with hidden tool messages', async () => {

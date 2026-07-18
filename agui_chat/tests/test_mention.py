@@ -6,6 +6,7 @@ from odoo import api, fields
 from odoo.tests.common import TransactionCase, tagged
 
 from ..models.agui_chat_mention import MentionTokenError
+from .common import configure_test_runtime
 
 
 @tagged("agui_mention")
@@ -14,7 +15,7 @@ class TestMentionReferences(TransactionCase):
     def setUp(self):
         super(TestMentionReferences, self).setUp()
         self.session_key = "test-session"
-        self.env["agui.chat.config"].sudo().get_active_config().write({
+        configure_test_runtime(self.env).write({
             "chat_enabled": True,
             "host_tools_enabled": True,
             "enabled_commands": ",".join([
@@ -40,10 +41,9 @@ class TestMentionReferences(TransactionCase):
             "comment": "<p>公开备注</p>",
         })
         self.tokens = self.env["agui.chat.mention.token"]
-        self.tokens._menu_catalog.clear_cache(self.tokens)
 
     def _search(self, query="引用测试客户甲", scope="record", current_filter=None):
-        return self.tokens.search_mentions(
+        return self.tokens._search_mentions(
             query, scope, False, "res.partner", [], current_filter, self.session_key,
         )
 
@@ -97,7 +97,7 @@ class TestMentionReferences(TransactionCase):
             "sort": [],
         }
 
-        result = self.tokens.search_mentions(
+        result = self.tokens._search_mentions(
             "配额", "all", False, "res.partner", [], current_filter, self.session_key,
         )
         kinds = [item["kind"] for item in result["candidates"]]
@@ -106,31 +106,31 @@ class TestMentionReferences(TransactionCase):
         self.assertNotIn("saved_filter", kinds)
         self.assertNotIn("current_filter", kinds)
 
-        explicit = self.tokens.search_mentions(
+        explicit = self.tokens._search_mentions(
             "配额", "record", "res.partner", "res.partner", [], False,
             self.session_key,
         )
         self.assertGreater(len(explicit["candidates"]), 5)
         self.assertLessEqual(len(explicit["candidates"]), 20)
-        self.assertTrue(self.tokens.search_mentions(
+        self.assertTrue(self.tokens._search_mentions(
             "", "menu", False, "res.partner", [], False, self.session_key,
         )["candidates"])
-        self.assertTrue(self.tokens.search_mentions(
+        self.assertTrue(self.tokens._search_mentions(
             "", "saved_filter", False, "res.partner", [], False, self.session_key,
         )["candidates"])
-        self.assertTrue(self.tokens.search_mentions(
+        self.assertTrue(self.tokens._search_mentions(
             "", "current_filter", False, "res.partner", [], current_filter,
             self.session_key,
         )["candidates"])
-        self.assertFalse(self.tokens.search_mentions(
+        self.assertFalse(self.tokens._search_mentions(
             "", "record", False, "res.partner", [], False, self.session_key,
         )["candidates"])
 
-    def test_menu_catalog_is_lazily_cached_with_create_capability(self):
+    def test_menu_catalog_rebuilds_with_create_capability(self):
         catalog = self.tokens._menu_catalog()
         item = next(entry for entry in catalog if entry["menu_id"] == self.menu.id)
         self.assertEqual(item["can_create"], self.tokens._can("res.partner", "create"))
-        self.assertIs(catalog, self.tokens._menu_catalog())
+        self.assertIsNot(catalog, self.tokens._menu_catalog())
 
     def test_model_picker_exposes_up_to_one_hundred_visible_models(self):
         catalog = [{
@@ -182,7 +182,7 @@ class TestMentionReferences(TransactionCase):
         }
         actions = {"menu": "open", "record": "read", "saved_filter": "apply", "current_filter": "apply"}
         bound = {
-            kind: self.tokens.bind_mention(item["candidateToken"], actions[kind], self.session_key)
+            kind: self.tokens._bind_mention(item["candidateToken"], actions[kind], self.session_key)
             for kind, item in candidates.items()
         }
 
@@ -201,7 +201,7 @@ class TestMentionReferences(TransactionCase):
             self.assertFalse(result["candidates"])
         for kind, item in candidates.items():
             with self.assertRaises(MentionTokenError) as caught:
-                self.tokens.bind_mention(
+                self.tokens._bind_mention(
                     item["candidateToken"], actions[kind], self.session_key,
                 )
             self.assertEqual(caught.exception.code, "mention_permission_revoked")
@@ -212,24 +212,102 @@ class TestMentionReferences(TransactionCase):
                 )
             self.assertEqual(caught.exception.code, "mention_permission_revoked")
 
-    def test_token_is_bound_to_user_company_session_and_exact_action(self):
+    def test_menu_group_revocation_invalidates_candidates_and_bound_tokens(self):
+        group = self.env["res.groups"].create({"name": "引用菜单临时权限"})
+        user = self.env["res.users"].with_context(no_reset_password=True).create({
+            "name": "引用撤权用户",
+            "login": "mention-revoked-user",
+            "email": "mention-revoked-user@example.com",
+            "groups_id": [(6, 0, [
+                self.env.ref("base.group_user").id, group.id,
+            ])],
+            "company_id": self.env.user.company_id.id,
+            "company_ids": [(6, 0, [self.env.user.company_id.id])],
+        })
+        self.menu.write({"groups_id": [(6, 0, [group.id])]})
+        self.env["ir.ui.menu"].clear_caches()
+        user_env = api.Environment(self.env.cr, user.id, dict(self.env.context))
+        tokens = user_env["agui.chat.mention.token"]
+
+        search = tokens._search_mentions(
+            "联系人", "menu", False, "res.partner", [], False, self.session_key,
+        )
+        candidate = self._candidate(search, "menu")
+        reference = tokens._bind_mention(
+            candidate["candidateToken"], "open", self.session_key,
+        )
+
+        user.write({"groups_id": [(3, group.id)]})
+        self.env["ir.ui.menu"].clear_caches()
+        user_env.user.invalidate_cache(["groups_id"])
+
+        refreshed = tokens._search_mentions(
+            "联系人", "menu", False, "res.partner", [], False, self.session_key,
+        )
+        self.assertFalse(any(
+            item["resourceKey"] == candidate["resourceKey"]
+            for item in refreshed["candidates"]
+        ))
+        with self.assertRaises(MentionTokenError) as candidate_error:
+            tokens._bind_mention(
+                candidate["candidateToken"], "open", self.session_key,
+            )
+        self.assertEqual(
+            candidate_error.exception.code, "mention_resource_unavailable"
+        )
+        with self.assertRaises(MentionTokenError) as bound_error:
+            tokens._resolved_binding(
+                reference["token"], "menu", "open", self.session_key,
+            )
+        self.assertEqual(
+            bound_error.exception.code, "mention_resource_unavailable"
+        )
+
+    def test_inactive_reference_command_revokes_old_actions(self):
         candidate = self._candidate(self._search(), "record")
-        reference = self.tokens.bind_mention(
+        reference = self.tokens._bind_mention(
             candidate["candidateToken"], "read", self.session_key,
         )
-        arguments, _audit = self.tokens.resolve_tool_arguments(
+        command = self.env.ref("agui_chat.command_read_mentioned_records")
+        command.write({"active": False})
+
+        refreshed = self._candidate(self._search(), "record")
+        self.assertNotIn("read", refreshed["actions"])
+        with self.assertRaises(MentionTokenError) as candidate_error:
+            self.tokens._bind_mention(
+                candidate["candidateToken"], "read", self.session_key,
+            )
+        self.assertEqual(
+            candidate_error.exception.code, "mention_permission_revoked"
+        )
+        with self.assertRaises(MentionTokenError) as bound_error:
+            self.tokens._resolved_binding(
+                reference["token"], "record", "read", self.session_key,
+            )
+        self.assertEqual(bound_error.exception.code, "mention_permission_revoked")
+
+        command.write({"active": True})
+        restored = self._candidate(self._search(), "record")
+        self.assertIn("read", restored["actions"])
+
+    def test_token_is_bound_to_user_company_session_and_exact_action(self):
+        candidate = self._candidate(self._search(), "record")
+        reference = self.tokens._bind_mention(
+            candidate["candidateToken"], "read", self.session_key,
+        )
+        arguments, _audit = self.tokens._resolve_tool_arguments(
             "odoo.read_mentioned_records", {"tokens": [reference["token"]]},
             self.session_key,
         )
         self.assertEqual(arguments["__mention"][0]["record_id"], self.partner.id)
 
         with self.assertRaises(MentionTokenError):
-            self.tokens.resolve_tool_arguments(
+            self.tokens._resolve_tool_arguments(
                 "odoo.open_mentioned_record", {"token": reference["token"]},
                 self.session_key,
             )
         with self.assertRaises(MentionTokenError):
-            self.tokens.resolve_tool_arguments(
+            self.tokens._resolve_tool_arguments(
                 "odoo.read_mentioned_records", {"tokens": [reference["token"]]},
                 "other-session",
             )
@@ -244,7 +322,7 @@ class TestMentionReferences(TransactionCase):
         })
         other_env = api.Environment(self.env.cr, other.id, dict(self.env.context))
         with self.assertRaises(MentionTokenError):
-            other_env["agui.chat.mention.token"].resolve_tool_arguments(
+            other_env["agui.chat.mention.token"]._resolve_tool_arguments(
                 "odoo.read_mentioned_records", {"tokens": [reference["token"]]},
                 self.session_key,
             )
@@ -258,12 +336,12 @@ class TestMentionReferences(TransactionCase):
             )
         })
         with self.assertRaises(MentionTokenError) as caught:
-            self.tokens.bind_mention(candidate["candidateToken"], "read", self.session_key)
+            self.tokens._bind_mention(candidate["candidateToken"], "read", self.session_key)
         self.assertEqual(caught.exception.code, "mention_token_expired")
 
     def test_authorization_accepts_only_tokens_selected_in_the_current_run(self):
         candidate = self._candidate(self._search(), "record")
-        reference = self.tokens.bind_mention(
+        reference = self.tokens._bind_mention(
             candidate["candidateToken"], "read", self.session_key,
         )
         authorizations = self.env["agui.chat.tool.authorization"].with_context(
@@ -283,7 +361,7 @@ class TestMentionReferences(TransactionCase):
                 "selectedMentionTokens": [reference["token"]],
             },
         }
-        allowed = authorizations.prepare_host_command(call)
+        allowed = authorizations._prepare_host_command(call)
         self.assertTrue(allowed["ok"])
         self.assertEqual(
             allowed["bound_call"]["arguments"]["__mention"][0]["record_id"],
@@ -292,7 +370,7 @@ class TestMentionReferences(TransactionCase):
 
         rejected = dict(call, id="mention-read-not-selected")
         rejected["context"] = dict(call["context"], runId="run-not-selected", selectedMentionTokens=[])
-        denied = authorizations.prepare_host_command(rejected)
+        denied = authorizations._prepare_host_command(rejected)
         self.assertFalse(denied["ok"])
         self.assertEqual(denied["code"], "mention_not_selected")
 
@@ -309,10 +387,10 @@ class TestMentionReferences(TransactionCase):
             "sensitive_field_names": "email",
         })
         candidate = self._candidate(self._search(), "record")
-        reference = self.tokens.bind_mention(
+        reference = self.tokens._bind_mention(
             candidate["candidateToken"], "read", self.session_key,
         )
-        result = self.tokens.read_tokens([reference["token"]], self.session_key)
+        result = self.tokens._read_tokens([reference["token"]], self.session_key)
         fields_by_name = {
             item["name"]: item for item in result["records"][0]["fields"]
         }
@@ -352,10 +430,10 @@ class TestMentionReferences(TransactionCase):
         personal_candidate = next(
             item for item in saved["candidates"] if item["label"] == personal.name
         )
-        reference = self.tokens.bind_mention(
+        reference = self.tokens._bind_mention(
             personal_candidate["candidateToken"], "apply", self.session_key,
         )
-        arguments, _audit = self.tokens.resolve_tool_arguments(
+        arguments, _audit = self.tokens._resolve_tool_arguments(
             "odoo.apply_mentioned_filter", {"token": reference["token"]},
             self.session_key,
         )
@@ -372,10 +450,10 @@ class TestMentionReferences(TransactionCase):
         })
         candidate = self._candidate(current, "current_filter")
         self.assertNotIn("引用测试\"]]", json.dumps(candidate))
-        current_ref = self.tokens.bind_mention(
+        current_ref = self.tokens._bind_mention(
             candidate["candidateToken"], "apply", self.session_key,
         )
-        current_args, _audit = self.tokens.resolve_tool_arguments(
+        current_args, _audit = self.tokens._resolve_tool_arguments(
             "odoo.apply_mentioned_filter", {"token": current_ref["token"]},
             self.session_key,
         )

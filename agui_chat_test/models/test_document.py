@@ -3,12 +3,14 @@ from odoo import api, fields, models
 from odoo.exceptions import ValidationError
 
 from odoo.addons.agui_chat.models.agui_chat_config import HOST_COMMAND_NAMES
+from odoo.addons.agui_chat.models.agui_chat_workspace import WORKSPACE_SECRET_PARAM
 
 
 DOMAIN_KEYS = [
     ("standard", "标准"),
     ("special", "特殊"),
 ]
+TEST_WORKSPACE_SECRET = "0123456789abcdef0123456789abcdef"
 
 
 class AguiChatTestOption(models.Model):
@@ -192,8 +194,13 @@ class AguiChatTestConfig(models.Model):
 
     @api.model
     def configure_test_environment(self):
+        self.env["ir.config_parameter"].sudo().set_param(
+            WORKSPACE_SECRET_PARAM, TEST_WORKSPACE_SECRET,
+        )
         config = self.sudo().get_active_config()
         config.write({
+            "runtime_url": "/agent/agui",
+            "agentos_internal_url": "http://agentos:7777",
             "chat_enabled": True,
             "host_tools_enabled": True,
             "write_tools_enabled": True,

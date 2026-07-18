@@ -2,10 +2,10 @@ id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_agui_chat_config_system,agui.chat.config system,model_agui_chat_config,base.group_system,1,1,1,1
 access_agui_chat_sandbox_cleanup_system,agui.chat.sandbox.cleanup system,model_agui_chat_sandbox_cleanup,base.group_system,1,1,1,1
 access_agui_chat_command_system,agui.chat.command system,model_agui_chat_command,base.group_system,1,1,1,1
-access_agui_chat_session_user,agui.chat.session user,model_agui_chat_session,base.group_user,1,1,1,1
+access_agui_chat_session_user,agui.chat.session user,model_agui_chat_session,base.group_user,1,0,0,0
 access_agui_chat_tool_policy_system,agui.chat.tool.policy system,model_agui_chat_tool_policy,base.group_system,1,1,1,1
-access_agui_chat_tool_authorization_user,agui.chat.tool.authorization user,model_agui_chat_tool_authorization,base.group_user,1,1,1,0
-access_agui_chat_tool_audit_user,agui.chat.tool.audit user,model_agui_chat_tool_audit,base.group_user,1,0,1,0
+access_agui_chat_tool_authorization_user,agui.chat.tool.authorization user,model_agui_chat_tool_authorization,base.group_user,1,0,0,0
+access_agui_chat_tool_audit_user,agui.chat.tool.audit user,model_agui_chat_tool_audit,base.group_user,1,0,0,0
 access_agui_chat_tool_audit_system,agui.chat.tool.audit system,model_agui_chat_tool_audit,base.group_system,1,1,1,1
-access_agui_chat_command_execution_user,agui.chat.command.execution user,model_agui_chat_command_execution,base.group_user,1,1,1,0
-access_agui_chat_mention_token_user,agui.chat.mention.token user,model_agui_chat_mention_token,base.group_user,1,1,1,0
+access_agui_chat_command_execution_user,agui.chat.command.execution user,model_agui_chat_command_execution,base.group_user,1,0,0,0
+access_agui_chat_mention_token_user,agui.chat.mention.token user,model_agui_chat_mention_token,base.group_user,1,0,0,0

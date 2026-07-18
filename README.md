@@ -14,7 +14,7 @@ Odoo 提供 `/agui_chat/config`、v2 界面会话、浏览器宿主命令策略�
 同步业务命令端点。Odoo 不代理 SSE，也不开放通用 RPC 或 CRUD。
 
 配置 `runtime_url` 后，Odoo 会根据其中的 `/agui` 路径推导对应的 `/config` 握手地址。
-部署匹配的 `12.0.8.4.0` 声明后，再启用灰度开关。详情参见
+部署匹配的 `12.0.8.5.0` 声明后，再启用灰度开关。详情参见
 [协议说明](docs/agui_odoo_protocol.md)和[生产部署指南](docs/agui_chat_production.md)。
 
 前端验证：
@@ -29,6 +29,7 @@ npm run build
 按对话隔离的附件、工作区文件和经确认的代码执行，使用
 `docker-compose.daytona.yml` 中锁定版本的 Daytona 部署。有关初始化、密钥、API 密钥创建、
 备份和许可证要求，请参见[生产部署指南](docs/agui_chat_production.md#isolated-workspaces)。
+首次启动前需预创建 `AGUI_SHARED_NETWORK` 指定的外部网络；默认名称为 `hrp_network`。
 
 集成开发环境可直接启动仓库内的最小 AgentOS 应用：
 

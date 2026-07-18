@@ -67,6 +67,8 @@ def issue_thread_capability(env, thread_id, odoo_session, now=None):
 
 def issue_workspace_capability(env, session, odoo_session, now=None):
     session.ensure_one()
+    if not session.active:
+        raise ValidationError("已归档的会话不能访问工作区。")
     return issue_thread_capability(env, session.thread_id, odoo_session, now=now)
 
 

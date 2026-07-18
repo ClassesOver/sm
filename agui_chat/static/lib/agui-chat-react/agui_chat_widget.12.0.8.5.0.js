@@ -25067,7 +25067,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ] })
     ] });
   }
-  const SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.4.0.js";
+  const SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.5.0.js";
   let viewerModulePromise;
   function loadProductionBundle() {
     var _a;
@@ -26232,29 +26232,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.clear();
     }
     async newSession() {
-      var _a, _b;
       this.cancel();
-      const bridge = this.props.hostBridge || {};
-      if (!bridge.createSession) {
-        this.resetThread(uuid(), []);
-        this.session = null;
-        (_b = (_a = this.props).onSessionChange) == null ? void 0 : _b.call(_a, null);
-        this.emit();
-        return;
-      }
       this.loadingSessions = true;
       this.emit();
       try {
-        const result = await bridge.createSession({
-          surface: this.props.surface || "dock",
-          agent_id: this.props.agentId || false
-        });
-        const session = sessionFromResult(result);
-        this.applyLoadedSession(session);
-        this.error = "";
-        await this.refreshSessions();
-      } catch (reason) {
-        this.reportError(reason, "创建会话失败。");
+        if (await this.createSession()) await this.refreshSessions();
       } finally {
         this.loadingSessions = false;
         this.emit();
@@ -26307,7 +26289,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (isRecord(result) && result.ok === false) {
           throw new Error(String(result.error || result.code || "归档失败。"));
         }
-        if (((_b = this.session) == null ? void 0 : _b.id) === sessionId) await this.newSession();
+        this.sessions = this.sessions.filter((entry) => entry.id !== sessionId);
+        if (((_b = this.session) == null ? void 0 : _b.id) === sessionId) {
+          this.clearCurrentSession();
+          this.loadingSessions = true;
+          this.emit();
+          let created = false;
+          try {
+            created = await this.createSession();
+          } finally {
+            this.loadingSessions = false;
+            this.emit();
+          }
+          if (!created) return false;
+        }
         await this.refreshSessions();
         return true;
       } catch (reason) {
@@ -27026,6 +27021,25 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         (_e = (_d = this.props).onError) == null ? void 0 : _e.call(_d, error);
       }
     }
+    async createSession() {
+      const bridge = this.props.hostBridge || {};
+      if (!bridge.createSession) {
+        this.clearCurrentSession();
+        return true;
+      }
+      try {
+        const result = await bridge.createSession({
+          surface: this.props.surface || "dock",
+          agent_id: this.props.agentId || false
+        });
+        this.applyLoadedSession(sessionFromResult(result));
+        this.error = "";
+        return true;
+      } catch (reason) {
+        this.reportError(reason, "创建会话失败。");
+        return false;
+      }
+    }
     async ensureSession() {
       var _a;
       if (this.session || !((_a = this.props.hostBridge) == null ? void 0 : _a.createSession)) {
@@ -27060,6 +27074,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (needsAgentStateCleanup(storedAgentState)) {
         this.scheduleSave();
       }
+    }
+    clearCurrentSession() {
+      var _a, _b;
+      if (this.saveTimer) {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = null;
+      }
+      this.session = null;
+      this.resetThread(uuid(), []);
+      (_b = (_a = this.props).onSessionChange) == null ? void 0 : _b.call(_a, null);
+      this.emit();
     }
     resetThread(threadId, messages) {
       this.cancel();
@@ -27981,7 +28006,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.4.0";
+  const VERSION = "12.0.8.5.0";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

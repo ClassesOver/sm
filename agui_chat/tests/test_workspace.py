@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from odoo.tests.common import TransactionCase
+from odoo.exceptions import ValidationError
 
 from odoo.addons.agui_chat.controllers import main as controller_main
 from ..models.agui_chat_workspace import (
@@ -24,7 +25,7 @@ class TestWorkspaceCapability(TransactionCase):
         )
         self.config = self.env["agui.chat.config"].sudo().get_active_config()
         self.config.write({"agentos_internal_url": "http://agentos:7777"})
-        self.session = self.env["agui.chat.session"].create_session()
+        self.session = self.env["agui.chat.session"]._create_session()
 
     def test_capability_claims_and_tamper_expiry(self):
         token, issued = issue_workspace_capability(
@@ -71,3 +72,25 @@ class TestWorkspaceCapability(TransactionCase):
             ("thread_id", "=", thread_id),
         ])
         self.assertTrue(task)
+
+    def test_archived_session_cannot_be_loaded_saved_or_issued_capability(self):
+        self.session.sudo().write({"active": False})
+        controller = controller_main.AguiChatController()
+        with self.assertRaises(ValidationError):
+            issue_workspace_capability(self.env, self.session, "odoo-session")
+
+        with patch(
+            "odoo.addons.agui_chat.controllers.main.request", new=self._request(),
+        ):
+            with self.assertRaises(controller_main.ChatSessionNotFound):
+                controller.session_get(self.session.id)
+            saved = controller.session_save(
+                session_id=self.session.id,
+                values={"messages": []},
+                expected_session_revision=0,
+            )
+            capability = controller.workspace_capability(self.session.id)
+
+        self.assertEqual(saved, {"ok": False, "error": "session_not_found"})
+        self.assertFalse(capability["ok"])
+        self.assertEqual(capability["code"], "workspace_capability_rejected")

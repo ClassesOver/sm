@@ -17,7 +17,7 @@ from .workspace import WorkspaceError, WorkspaceService, workspace_tools
 
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.8.4.0"
+BUNDLE_VERSION = "12.0.8.5.0"
 COMMAND_CATALOG_HASH = "b198faa202457040a5d1549837c2f9128cc3cbaea8788d4bc6b04046faf22245"
 MAX_RUN_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 12 * 1024 * 1024

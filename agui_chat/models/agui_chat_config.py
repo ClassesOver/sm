@@ -7,7 +7,7 @@ from odoo.exceptions import ValidationError
 
 
 PROTOCOL = "agui.odoo.v2"
-MODULE_VERSION = "12.0.8.4.0"
+MODULE_VERSION = "12.0.8.5.0"
 COMMAND_CATALOG_REVISION = 7
 DEFAULT_SENSITIVE_FIELD_NAMES = (
     "phone", "mobile", "phone_number", "mobile_number",
@@ -138,7 +138,7 @@ class AguiChatConfig(models.Model):
     def _check_enabled_commands(self):
         allowed = set(HOST_COMMAND_NAMES)
         for record in self:
-            unknown = set(record.enabled_command_names()) - allowed
+            unknown = set(record._configured_command_names("enabled_commands")) - allowed
             if unknown:
                 raise ValidationError("存在未知的 AG-UI 页面命令：%s" % ", ".join(sorted(unknown)))
 
@@ -197,17 +197,32 @@ class AguiChatConfig(models.Model):
 
     def enabled_command_names(self):
         self.ensure_one()
-        return [
-            item.strip() for item in (self.enabled_commands or "").split(",") if item.strip()
-        ]
+        return self._effective_command_names("enabled_commands", "page")
 
     def enabled_business_command_names(self):
         self.ensure_one()
+        return self._effective_command_names(
+            "enabled_business_commands", "business"
+        )
+
+    def _configured_command_names(self, field_name):
+        self.ensure_one()
         return [
             item.strip()
-            for item in (self.enabled_business_commands or "").split(",")
+            for item in (self[field_name] or "").split(",")
             if item.strip()
         ]
+
+    def _effective_command_names(self, field_name, command_type):
+        configured = self._configured_command_names(field_name)
+        if not configured:
+            return []
+        active = set(self.env["agui.chat.command"].sudo().search([
+            ("active", "=", True),
+            ("command_type", "=", command_type),
+            ("code", "in", configured),
+        ]).mapped("code"))
+        return [name for name in configured if name in active]
 
     def mention_model_names(self):
         self.ensure_one()

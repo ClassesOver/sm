@@ -8,7 +8,7 @@ from datetime import timedelta
 
 from lxml import etree
 
-from odoo import api, fields, models, tools
+from odoo import api, fields, models
 from odoo.exceptions import AccessError
 from odoo.tools.mail import html2plaintext
 
@@ -106,8 +106,8 @@ class AguiChatMentionToken(models.Model):
     ]
 
     @api.model
-    def search_mentions(self, query, scope, model_scope, current_model,
-                        recent_models, current_filter, session_key):
+    def _search_mentions(self, query, scope, model_scope, current_model,
+                         recent_models, current_filter, session_key):
         query = str(query or "").strip()[:120]
         scope = scope if scope in (
             "all", "menu", "record", "saved_filter", "current_filter"
@@ -258,12 +258,14 @@ class AguiChatMentionToken(models.Model):
         }
 
     @api.model
-    def bind_mention(self, candidate_token, action, session_key):
+    def _bind_mention(self, candidate_token, action, session_key):
         candidate = self._load_token(candidate_token, "candidate", session_key)
         payload = json.loads(candidate.payload_json or "{}")
         allowed = set(payload.get("allowed_actions") or [])
         if action not in allowed or action not in ALLOWED_ACTIONS[candidate.resource_kind]:
             raise MentionTokenError("mention_action_not_allowed", "该候选不支持所选动作。")
+        if action not in self._enabled_reference_actions():
+            raise MentionTokenError("mention_permission_revoked", "该对象引用动作已停用。")
         self._revalidate_payload(candidate.resource_kind, payload, action)
         expires = _now() + timedelta(hours=BOUND_TTL_HOURS)
         bound = self.sudo().create({
@@ -284,7 +286,7 @@ class AguiChatMentionToken(models.Model):
         return self._public_reference(bound)
 
     @api.model
-    def resolve_tool_arguments(self, tool_name, arguments, session_key):
+    def _resolve_tool_arguments(self, tool_name, arguments, session_key):
         arguments = dict(arguments or {})
         arguments.pop("__mention", None)
         if tool_name == "odoo.read_mentioned_records":
@@ -311,11 +313,11 @@ class AguiChatMentionToken(models.Model):
         else:
             return arguments, False
         arguments["__mention"] = bindings
-        return arguments, self.audit_details(tool_name, arguments)
+        return arguments, self._audit_details(tool_name, arguments)
 
     @api.model
-    def read_tokens(self, tokens, session_key):
-        arguments, _audit = self.resolve_tool_arguments(
+    def _read_tokens(self, tokens, session_key):
+        arguments, _audit = self._resolve_tool_arguments(
             "odoo.read_mentioned_records", {"tokens": tokens}, session_key,
         )
         records = []
@@ -362,7 +364,7 @@ class AguiChatMentionToken(models.Model):
         return result
 
     @api.model
-    def audit_details(self, tool_name, arguments, result=None):
+    def _audit_details(self, tool_name, arguments, result=None):
         bindings = arguments.get("__mention") if isinstance(arguments, dict) else []
         bindings = bindings if isinstance(bindings, list) else []
         details = {
@@ -452,6 +454,8 @@ class AguiChatMentionToken(models.Model):
         record = self._load_token(token, "bound", session_key)
         if record.resource_kind != kind or record.bound_action != action:
             raise MentionTokenError("mention_action_mismatch", "对象引用动作不匹配。")
+        if action not in self._enabled_reference_actions():
+            raise MentionTokenError("mention_permission_revoked", "该对象引用动作已停用。")
         payload = json.loads(record.payload_json or "{}")
         try:
             self._revalidate_payload(kind, payload, action)
@@ -568,10 +572,10 @@ class AguiChatMentionToken(models.Model):
         return actions
 
     @api.model
-    @tools.ormcache("self.env.uid", "self.env.user.company_id.id")
     def _menu_catalog(self):
         root = self.env["ir.ui.menu"].load_menus(False)
         catalog = []
+        create_access = {}
 
         def visit(node, path):
             name = str(node.get("name") or "").strip()
@@ -586,11 +590,15 @@ class AguiChatMentionToken(models.Model):
                     action_id = menu_id = 0
                 window = self.env["ir.actions.act_window"].sudo().browse(action_id).exists()
                 if menu_id and window and window.res_model:
+                    if window.res_model not in create_access:
+                        create_access[window.res_model] = self._can(
+                            window.res_model, "create"
+                        )
                     catalog.append({
                         "menu_id": menu_id,
                         "action_id": action_id,
                         "model": window.res_model,
-                        "can_create": self._can(window.res_model, "create"),
+                        "can_create": create_access[window.res_model],
                         "label": name,
                         "path": next_path,
                         "fullPath": " / ".join(next_path),

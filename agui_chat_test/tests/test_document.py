@@ -76,7 +76,7 @@ class TestAguiChatDocument(TransactionCase):
             "write_tools_enabled": True,
             "enabled_commands": "odoo.patch_current_form",
         })
-        session = self.env["agui.chat.session"].create_session()
+        session = self.env["agui.chat.session"]._create_session()
         session.write({"active": False})
         attachment = self.env["ir.attachment"].create({
             "name": "agui-upload-test.txt",
@@ -84,7 +84,7 @@ class TestAguiChatDocument(TransactionCase):
             "res_model": "agui.chat.session",
             "res_id": session.id,
         })
-        decision = self.env["agui.chat.tool.authorization"].prepare_host_command({
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "e2e-cleanup-call",
             "tool": "odoo.patch_current_form",
             "arguments": {

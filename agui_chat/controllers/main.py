@@ -132,7 +132,7 @@ class AguiChatController(http.Controller):
 
     @http.route("/agui_chat/session/create", type="json", auth="user")
     def session_create(self, name=None, surface=None, agent_id=None):
-        session = request.env["agui.chat.session"].create_session(
+        session = request.env["agui.chat.session"]._create_session(
             name=name, surface=surface, agent_id=agent_id,
         )
         return {"ok": True, "session": session.to_client()}
@@ -151,20 +151,20 @@ class AguiChatController(http.Controller):
             except ChatSessionNotFound:
                 return {"ok": False, "error": "session_not_found"}
         else:
-            session = request.env["agui.chat.session"].create_session(
+            session = request.env["agui.chat.session"]._create_session(
                 name=values.get("name"),
                 surface=values.get("surface"),
                 agent_id=values.get("agent_id"),
             )
             if expected_session_revision is None:
                 expected_session_revision = 0
-        return session.save_from_client(values, expected_session_revision)
+        return session._save_from_client(values, expected_session_revision)
 
     @http.route("/agui_chat/session/archive", type="json", auth="user")
     def session_archive(self, session_id):
         session = self._load_session(session_id)
-        session.write({"active": False})
-        request.env["agui.chat.sandbox.cleanup"].sudo().enqueue([session.thread_id])
+        session.sudo().write({"active": False})
+        request.env["agui.chat.sandbox.cleanup"]._enqueue([session.thread_id])
         return {"ok": True}
 
     @http.route("/agui_chat/workspace/capability", type="json", auth="user")
@@ -191,7 +191,7 @@ class AguiChatController(http.Controller):
     def mention_search(self, query="", scope="all", model_scope=None,
                        current_model=None, recent_models=None, current_filter=None):
         try:
-            return request.env["agui.chat.mention.token"].search_mentions(
+            return request.env["agui.chat.mention.token"]._search_mentions(
                 query, scope, model_scope, current_model,
                 recent_models if isinstance(recent_models, list) else [],
                 current_filter, self._session_key(),
@@ -206,7 +206,7 @@ class AguiChatController(http.Controller):
     @http.route("/agui_chat/mention/bind", type="json", auth="user")
     def mention_bind(self, candidate_token, action):
         try:
-            reference = request.env["agui.chat.mention.token"].bind_mention(
+            reference = request.env["agui.chat.mention.token"]._bind_mention(
                 candidate_token, action, self._session_key(),
             )
             return {"ok": True, "reference": reference}
@@ -226,7 +226,7 @@ class AguiChatController(http.Controller):
             stored = json.loads(authorization.arguments_json or "{}")
             if stored.get("tokens") != tokens:
                 raise MentionTokenError("authorization_payload_mismatch", "读取授权与引用不匹配。")
-            return request.env["agui.chat.mention.token"].read_tokens(
+            return request.env["agui.chat.mention.token"]._read_tokens(
                 tokens, self._session_key(),
             )
         except (AccessError, MentionTokenError, ValueError) as error:
@@ -243,16 +243,16 @@ class AguiChatController(http.Controller):
                 agui_session_key=self._session_key()
             )
             if phase == "prepare":
-                return authorizations.prepare_host_command(call)
+                return authorizations._prepare_host_command(call)
             authorization = self._load_authorization(authorization_id)
             if phase == "confirm":
-                return authorization.transition(bool(approved))
+                return authorization._transition(bool(approved))
             if phase == "complete":
-                return authorization.complete(result if isinstance(result, dict) else {})
+                return authorization._complete(result if isinstance(result, dict) else {})
             if phase == "undo_prepare":
-                return authorization.prepare_undo()
+                return authorization._prepare_undo()
             if phase == "undo_execute":
-                return authorization.begin_undo_execution()
+                return authorization._begin_undo_execution()
             return {"ok": False, "code": "unsupported_phase"}
         except (ValueError, AccessError, ValidationError) as error:
             return {"ok": False, "code": "host_command_rejected", "error": str(error)}
@@ -265,7 +265,7 @@ class AguiChatController(http.Controller):
         try:
             return request.env["agui.chat.tool.authorization"].with_context(
                 agui_session_key=self._session_key()
-            ).prepare_business_command(call)
+            )._prepare_business_command(call)
         except (ValueError, AccessError, ValidationError) as error:
             return {
                 "ok": False,
@@ -279,7 +279,7 @@ class AguiChatController(http.Controller):
     @http.route("/agui_chat/business/execute", type="json", auth="user")
     def business_execute(self, command_name, payload, authorization_token, idempotency_key):
         try:
-            return request.env["agui.chat.command.execution"].execute_named(
+            return request.env["agui.chat.command.execution"]._execute_named(
                 command_name,
                 payload,
                 authorization_token,
@@ -336,6 +336,7 @@ class AguiChatController(http.Controller):
             raise ValueError("对话会话 ID 无效。")
         session = request.env["agui.chat.session"].search([
             ("id", "=", session_id), ("protocol", "=", PROTOCOL),
+            ("active", "=", True),
         ], limit=1)
         if not session:
             raise ChatSessionNotFound("未找到对话会话。")

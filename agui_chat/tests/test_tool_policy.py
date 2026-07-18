@@ -8,6 +8,7 @@ from odoo.tests.common import TransactionCase
 
 from ..models.agui_chat_config import HOST_COMMAND_NAMES
 from ..models.agui_chat_tool import normalize_host_arguments
+from .common import configure_test_runtime
 
 
 class TestDefaultReadPolicies(TransactionCase):
@@ -40,13 +41,13 @@ class TestDefaultReadPolicies(TransactionCase):
             "model_name": "res.partner",
             "confirmation_mode": "never",
         })
-        self.env["agui.chat.config"].sudo().get_active_config().write({
+        configure_test_runtime(self.env).write({
             "chat_enabled": True,
             "host_tools_enabled": True,
             "enabled_commands": "odoo.apply_filter",
         })
 
-        decision = self.env["agui.chat.tool.authorization"].prepare_host_command({
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "unconfigured-employee-filter",
             "tool": "odoo.apply_filter",
             "arguments": {
@@ -104,6 +105,7 @@ class TestRelationToolPolicy(TransactionCase):
 
     def setUp(self):
         super(TestRelationToolPolicy, self).setUp()
+        configure_test_runtime(self.env)
         self.env["agui.chat.tool.policy"].search([]).write({"active": False})
         self.policy = self.env["agui.chat.tool.policy"].create({
             "name": "Partner relation lookup",
@@ -288,7 +290,7 @@ class TestRelationToolPolicy(TransactionCase):
 
     def _prepare_risky_patch(self, call_id="risky-patch"):
         target = self._patch_target()
-        return self.env["agui.chat.tool.authorization"].prepare_host_command({
+        return self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": call_id,
             "tool": "odoo.patch_current_form",
             "arguments": {"target": target, "patch": {"phone": "10086"}},
@@ -330,9 +332,9 @@ class TestRelationToolPolicy(TransactionCase):
         authorization = self.env["agui.chat.tool.authorization"].search([
             ("token", "=", decision["authorization_id"]),
         ])
-        self.assertTrue(authorization.transition(True)["ok"])
-        authorization.complete({"ok": True, "saved": True})
-        replay = authorization.transition(True)
+        self.assertTrue(authorization._transition(True)["ok"])
+        authorization._complete({"ok": True, "saved": True})
+        replay = authorization._transition(True)
         self.assertTrue(replay["ok"])
         self.assertEqual(replay["authorization_id"], authorization.token)
         self.assertEqual(replay["replay_result"]["saved"], True)
@@ -343,7 +345,7 @@ class TestRelationToolPolicy(TransactionCase):
         ])
         expired_authorization.write({"expires_at": "2000-01-01 00:00:00"})
         self.assertEqual(
-            expired_authorization.transition(True)["code"], "authorization_expired"
+            expired_authorization._transition(True)["code"], "authorization_expired"
         )
 
     def test_undo_authorization_is_one_time_and_replayable(self):
@@ -365,25 +367,25 @@ class TestRelationToolPolicy(TransactionCase):
                 "requestId": "request-undo", "runId": "run-undo", "threadId": "thread-undo",
             },
         }
-        decision = self.env["agui.chat.tool.authorization"].prepare_host_command(call)
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command(call)
         source = self.env["agui.chat.tool.authorization"].search([
             ("token", "=", decision["authorization_id"]),
         ])
-        source.complete({
+        source._complete({
             "ok": True,
             "undo_payload": {
                 "target": target, "patch": {"name": "Before"}, "expected": {"name": "After"},
             },
         })
-        undo_decision = source.prepare_undo()
+        undo_decision = source._prepare_undo()
         self.assertTrue(undo_decision["ok"])
         undo = self.env["agui.chat.tool.authorization"].search([
             ("token", "=", undo_decision["undo_authorization_id"]),
         ])
         self.assertEqual(undo.authorization_kind, "undo")
-        self.assertTrue(undo.begin_undo_execution()["ok"])
-        undo.complete({"ok": True, "undone": True})
-        replay = undo.begin_undo_execution()
+        self.assertTrue(undo._begin_undo_execution()["ok"])
+        undo._complete({"ok": True, "undone": True})
+        replay = undo._begin_undo_execution()
         self.assertTrue(replay["replay_result"]["undone"])
 
         self.assertTrue(fields.Datetime.from_string(undo.expires_at) > fields.Datetime.from_string(source.create_date))
@@ -404,7 +406,7 @@ class TestRelationToolPolicy(TransactionCase):
             "field_names": "work_location",
             "confirmation_mode": "never",
         })
-        decision = self.env["agui.chat.tool.authorization"].prepare_host_command({
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "string-patch-call",
             "tool": "odoo.patch_current_form",
             "arguments": {
@@ -435,6 +437,7 @@ class TestHostCommandAuthorization(TransactionCase):
 
     def setUp(self):
         super(TestHostCommandAuthorization, self).setUp()
+        configure_test_runtime(self.env)
         self.env["agui.chat.tool.policy"].search([]).write({"active": False})
         self.config = self.env["agui.chat.config"].sudo().get_active_config()
         self.config.write({
@@ -485,14 +488,14 @@ class TestHostCommandAuthorization(TransactionCase):
             "odoo.patch_current_form", "replay-call", {"patch": {"name": "第一次"}}
         )
         authorizations = self.env["agui.chat.tool.authorization"]
-        first = authorizations.prepare_host_command(call)
+        first = authorizations._prepare_host_command(call)
         self.assertTrue(first["ok"])
         authorization = authorizations.search([
             ("token", "=", first["authorization_id"]),
         ])
-        authorization.complete({"ok": True, "saved": True})
+        authorization._complete({"ok": True, "saved": True})
 
-        replay = authorizations.prepare_host_command(call)
+        replay = authorizations._prepare_host_command(call)
         self.assertEqual(replay["authorization_id"], authorization.token)
         self.assertEqual(replay["replay_result"], {"ok": True, "saved": True})
         self.assertEqual(authorizations.search_count([
@@ -501,7 +504,7 @@ class TestHostCommandAuthorization(TransactionCase):
 
         tampered = deepcopy(call)
         tampered["arguments"]["patch"]["name"] = "篡改值"
-        mismatch = authorizations.prepare_host_command(tampered)
+        mismatch = authorizations._prepare_host_command(tampered)
         self.assertFalse(mismatch["ok"])
         self.assertEqual(mismatch["code"], "idempotency_payload_mismatch")
 
@@ -515,29 +518,29 @@ class TestHostCommandAuthorization(TransactionCase):
         stored_call = self._call(
             "odoo.patch_current_form", "large-host-result", {"patch": {"name": "新名称"}}
         )
-        stored_decision = authorizations.prepare_host_command(stored_call)
+        stored_decision = authorizations._prepare_host_command(stored_call)
         stored = authorizations.search([
             ("token", "=", stored_decision["authorization_id"]),
         ])
         large_snapshot = "x" * (200 * 1024)
-        self.assertTrue(stored.complete({"ok": True, "snapshot": large_snapshot})["ok"])
+        self.assertTrue(stored._complete({"ok": True, "snapshot": large_snapshot})["ok"])
         self.assertEqual(stored._json_result()["snapshot"], large_snapshot)
 
         oversized_call = self._call(
             "odoo.patch_current_form", "oversized-host-result", {"patch": {"name": "超限"}}
         )
-        oversized_decision = authorizations.prepare_host_command(oversized_call)
+        oversized_decision = authorizations._prepare_host_command(oversized_call)
         oversized = authorizations.search([
             ("token", "=", oversized_decision["authorization_id"]),
         ])
-        failure = oversized.complete({"ok": True, "snapshot": "x" * (512 * 1024)})
+        failure = oversized._complete({"ok": True, "snapshot": "x" * (512 * 1024)})
         self.assertFalse(failure["ok"])
         self.assertEqual(failure["code"], "result_too_large")
         self.assertEqual(oversized._json_result(), {"ok": False, "code": "result_too_large"})
-        self.assertEqual(oversized.complete({"ok": True})["code"], "result_too_large")
+        self.assertEqual(oversized._complete({"ok": True})["code"], "result_too_large")
 
     def test_confirmation_rejection_is_terminal(self):
-        decision = self.env["agui.chat.tool.authorization"].prepare_host_command(
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command(
             self._call("odoo.save_current_form", "reject-call")
         )
         self.assertTrue(decision["needs_confirmation"])
@@ -545,14 +548,14 @@ class TestHostCommandAuthorization(TransactionCase):
             ("token", "=", decision["authorization_id"]),
         ])
 
-        rejected = authorization.transition(False)
+        rejected = authorization._transition(False)
         self.assertEqual(rejected["code"], "authorization_rejected")
         self.assertEqual(authorization.state, "rejected")
-        second = authorization.transition(True)
+        second = authorization._transition(True)
         self.assertEqual(second["code"], "authorization_not_pending")
 
     def test_expired_confirmation_never_executes(self):
-        decision = self.env["agui.chat.tool.authorization"].prepare_host_command(
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command(
             self._call("odoo.save_current_form", "expired-call")
         )
         authorization = self.env["agui.chat.tool.authorization"].search([
@@ -562,12 +565,12 @@ class TestHostCommandAuthorization(TransactionCase):
             "expires_at": fields.Datetime.to_string(datetime.utcnow() - timedelta(minutes=1)),
         })
 
-        expired = authorization.transition(True)
+        expired = authorization._transition(True)
         self.assertEqual(expired["code"], "authorization_expired")
         self.assertEqual(authorization.state, "expired")
 
     def test_server_policy_denies_hidden_or_unlisted_fields(self):
-        denied = self.env["agui.chat.tool.authorization"].prepare_host_command(
+        denied = self.env["agui.chat.tool.authorization"]._prepare_host_command(
             self._call(
                 "odoo.patch_current_form",
                 "hidden-field-call",
@@ -589,7 +592,7 @@ class TestHostCommandAuthorization(TransactionCase):
         }
         self.assertTrue(new_commands.issubset(set(HOST_COMMAND_NAMES)))
         self.assertFalse(new_commands.intersection(self.config.enabled_command_names()))
-        decision = self.env["agui.chat.tool.authorization"].prepare_host_command({
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "disabled-open-menu",
             "tool": "odoo.open_menu",
             "arguments": {"target": {"snapshotId": "page-1", "hostRevision": 1}, "menuId": 8},
@@ -609,7 +612,7 @@ class TestHostCommandAuthorization(TransactionCase):
             "access_level": "navigation",
             "confirmation_mode": "never",
         })
-        decision = self.env["agui.chat.tool.authorization"].prepare_host_command({
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "open-selected-menu",
             "tool": "odoo.open_menu",
             "arguments": {"target": {"snapshotId": "page-2", "hostRevision": 2}, "menuId": 8},
@@ -626,6 +629,43 @@ class TestHostCommandAuthorization(TransactionCase):
             {"snapshotId", "hostRevision"},
         )
 
+    def test_inactive_page_command_is_not_published_or_prepared(self):
+        self.config.write({"enabled_commands": "odoo.open_menu"})
+        command = self.env.ref("agui_chat.command_open_menu")
+        command.write({"active": False})
+
+        self.assertNotIn("odoo.open_menu", self.config.enabled_command_names())
+        disabled = self.env["agui.chat.tool.authorization"]._prepare_host_command({
+            "id": "inactive-open-menu",
+            "tool": "odoo.open_menu",
+            "arguments": {
+                "target": {"snapshotId": "page-disabled", "hostRevision": 1},
+                "menuId": 8,
+            },
+            "context": {
+                "requestId": "request-inactive-menu",
+                "runId": "run-inactive-menu",
+                "threadId": "thread-inactive-menu",
+            },
+        })
+        self.assertEqual(disabled["code"], "command_disabled")
+
+        command.write({"active": True})
+        enabled = self.env["agui.chat.tool.authorization"]._prepare_host_command({
+            "id": "active-open-menu",
+            "tool": "odoo.open_menu",
+            "arguments": {
+                "target": {"snapshotId": "page-enabled", "hostRevision": 2},
+                "menuId": 8,
+            },
+            "context": {
+                "requestId": "request-active-menu",
+                "runId": "run-active-menu",
+                "threadId": "thread-active-menu",
+            },
+        })
+        self.assertTrue(enabled["ok"])
+
     def test_enter_edit_mode_is_navigation_not_write(self):
         self.config.write({
             "enabled_commands": "odoo.enter_edit_mode",
@@ -638,7 +678,7 @@ class TestHostCommandAuthorization(TransactionCase):
             "model_name": "res.partner",
             "confirmation_mode": "never",
         })
-        decision = self.env["agui.chat.tool.authorization"].prepare_host_command(
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command(
             self._call("odoo.enter_edit_mode", "enter-edit-mode")
         )
         self.assertTrue(decision["ok"])
@@ -662,11 +702,11 @@ class TestHostCommandAuthorization(TransactionCase):
                 "type": "object", "label": "确认订单", "recordLabel": "Acme",
             },
         })
-        disabled = self.env["agui.chat.tool.authorization"].prepare_host_command(call)
+        disabled = self.env["agui.chat.tool.authorization"]._prepare_host_command(call)
         self.assertEqual(disabled["code"], "write_tools_disabled")
 
         self.config.write({"write_tools_enabled": True})
-        decision = self.env["agui.chat.tool.authorization"].prepare_host_command(call)
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command(call)
         self.assertTrue(decision["needs_confirmation"])
         self.assertIn("object_button", decision["risk_reasons"])
         self.assertEqual(decision["preview"]["control"], {
@@ -680,6 +720,6 @@ class TestHostCommandAuthorization(TransactionCase):
                 "type": "action", "label": "查看明细", "recordLabel": "Acme",
             },
         })
-        action_decision = self.env["agui.chat.tool.authorization"].prepare_host_command(action_call)
+        action_decision = self.env["agui.chat.tool.authorization"]._prepare_host_command(action_call)
         self.assertTrue(action_decision["ok"])
         self.assertFalse(action_decision.get("needs_confirmation"))

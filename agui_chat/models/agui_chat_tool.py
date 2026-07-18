@@ -418,7 +418,7 @@ class AguiChatToolAuthorization(models.Model):
         return preview
 
     @api.model
-    def prepare_business_command(self, call):
+    def _prepare_business_command(self, call):
         call = call if isinstance(call, dict) else {}
         tool_name = str(call.get("tool") or "")
         payload = call.get("arguments")
@@ -464,7 +464,7 @@ class AguiChatToolAuthorization(models.Model):
             return existing._existing_decision(binding_hash)
         decision = self.env["agui.chat.tool.policy"].evaluate(tool_name, payload)
         if not decision.get("allowed"):
-            self.env["agui.chat.tool.audit"].log(
+            self.env["agui.chat.tool.audit"]._log(
                 tool_name,
                 "denied",
                 details={
@@ -479,6 +479,8 @@ class AguiChatToolAuthorization(models.Model):
             fields.Datetime.from_string(fields.Datetime.now()) + timedelta(minutes=5)
         )
         values = {
+            "user_id": self.env.user.id,
+            "company_id": self.env.user.company_id.id,
             "idempotency_key": key,
             "payload_hash": binding_hash,
             "tool_call_id": binding["id"],
@@ -497,7 +499,7 @@ class AguiChatToolAuthorization(models.Model):
         }
         try:
             with self.env.cr.savepoint():
-                authorization = self.create(values)
+                authorization = self.sudo().create(values)
         except IntegrityError:
             authorization = self.search([
                 ("idempotency_key", "=", key),
@@ -505,7 +507,7 @@ class AguiChatToolAuthorization(models.Model):
                 ("company_id", "=", self.env.user.company_id.id),
             ], limit=1)
             return authorization._existing_decision(binding_hash)
-        self.env["agui.chat.tool.audit"].log(
+        self.env["agui.chat.tool.audit"]._log(
             tool_name,
             "allowed",
             details={"payload": redact(payload, sensitive_keys=sensitive)},
@@ -517,7 +519,7 @@ class AguiChatToolAuthorization(models.Model):
         return authorization._business_decision()
 
     @api.model
-    def prepare_host_command(self, call):
+    def _prepare_host_command(self, call):
         call = call if isinstance(call, dict) else {}
         tool_name = call.get("tool")
         try:
@@ -540,18 +542,18 @@ class AguiChatToolAuthorization(models.Model):
                 not requested or len(requested) > 5 or
                 any(not isinstance(token, str) or token not in selected for token in requested)
             ):
-                self.env["agui.chat.tool.audit"].log(
+                self.env["agui.chat.tool.audit"]._log(
                     tool_name, "denied", details={"reason": "mention_not_selected"},
                     **self._audit_values(call)
                 )
                 return {"ok": False, "code": "mention_not_selected"}
         mention_audit = False
         try:
-            arguments, mention_audit = self.env["agui.chat.mention.token"].resolve_tool_arguments(
+            arguments, mention_audit = self.env["agui.chat.mention.token"]._resolve_tool_arguments(
                 tool_name, arguments, self.env.context.get("agui_session_key") or "",
             )
         except MentionTokenError as error:
-            self.env["agui.chat.tool.audit"].log(
+            self.env["agui.chat.tool.audit"]._log(
                 tool_name or "unknown", "denied",
                 details=dict(error.audit_details, reason=error.code),
                 **self._audit_values(call)
@@ -637,7 +639,7 @@ class AguiChatToolAuthorization(models.Model):
                 )),
             }
         if not decision.get("allowed"):
-            self.env["agui.chat.tool.audit"].log(
+            self.env["agui.chat.tool.audit"]._log(
                 tool_name, "denied", details={
                     "reason": decision.get("reason"),
                     "policy_mismatches": decision.get("policy_mismatches") or [],
@@ -660,6 +662,8 @@ class AguiChatToolAuthorization(models.Model):
             fields.Datetime.from_string(fields.Datetime.now()) + timedelta(minutes=5)
         )
         values = {
+            "user_id": self.env.user.id,
+            "company_id": self.env.user.company_id.id,
             "idempotency_key": key,
             "payload_hash": binding_hash,
             "tool_call_id": str(call.get("id")),
@@ -675,7 +679,7 @@ class AguiChatToolAuthorization(models.Model):
         }
         try:
             with self.env.cr.savepoint():
-                authorization = self.create(values)
+                authorization = self.sudo().create(values)
         except IntegrityError:
             authorization = self.search([
                 ("idempotency_key", "=", key),
@@ -683,13 +687,13 @@ class AguiChatToolAuthorization(models.Model):
                 ("company_id", "=", self.env.user.company_id.id),
             ], limit=1)
             return authorization._existing_decision(binding_hash)
-        self.env["agui.chat.tool.audit"].log(
+        self.env["agui.chat.tool.audit"]._log(
             tool_name, "allowed", details=(mention_audit or {"arguments": arguments}),
             authorization_id=authorization.id, **self._audit_values(call)
         )
         if decision.get("requires_confirmation"):
             return authorization._confirmation_decision()
-        return authorization.begin_execution()
+        return authorization._begin_execution()
 
     def _business_decision(self):
         self.ensure_one()
@@ -726,7 +730,7 @@ class AguiChatToolAuthorization(models.Model):
         if self.state == "pending":
             return self._confirmation_decision()
         if self.state == "approved":
-            return self.begin_execution()
+            return self._begin_execution()
         if self.state == "executing":
             return {"ok": False, "code": "command_in_progress"}
         return {"ok": False, "code": "authorization_%s" % self.state}
@@ -747,7 +751,7 @@ class AguiChatToolAuthorization(models.Model):
             "code": "confirmation_required",
         }
 
-    def transition(self, approved):
+    def _transition(self, approved):
         self.ensure_one()
         self.env.cr.execute(
             "SELECT state, expires_at FROM agui_chat_tool_authorization WHERE id = %s FOR UPDATE",
@@ -771,18 +775,18 @@ class AguiChatToolAuthorization(models.Model):
             else fields.Datetime.from_string(expires_at)
         )
         if expires_at <= fields.Datetime.from_string(fields.Datetime.now()):
-            self.write({"state": "expired"})
+            self.sudo().write({"state": "expired"})
             return {"ok": False, "code": "authorization_expired"}
         if not approved:
-            self.write({"state": "rejected"})
+            self.sudo().write({"state": "rejected"})
             return {"ok": False, "code": "authorization_rejected"}
-        self.write({"state": "approved"})
+        self.sudo().write({"state": "approved"})
         return (
             self._business_decision()
-            if self.authorization_kind == "business" else self.begin_execution()
+            if self.authorization_kind == "business" else self._begin_execution()
         )
 
-    def begin_execution(self):
+    def _begin_execution(self):
         self.ensure_one()
         self.env.cr.execute(
             "SELECT state, expires_at FROM agui_chat_tool_authorization WHERE id = %s FOR UPDATE",
@@ -796,9 +800,9 @@ class AguiChatToolAuthorization(models.Model):
             else fields.Datetime.from_string(expires_at)
         )
         if expires_at <= fields.Datetime.from_string(fields.Datetime.now()):
-            self.write({"state": "expired"})
+            self.sudo().write({"state": "expired"})
             return {"ok": False, "code": "authorization_expired"}
-        self.write({"state": "executing"})
+        self.sudo().write({"state": "executing"})
         return {
             "ok": True,
             "authorization_id": self.token,
@@ -812,7 +816,7 @@ class AguiChatToolAuthorization(models.Model):
             },
         }
 
-    def complete(self, result):
+    def _complete(self, result):
         self.ensure_one()
         self.env.cr.execute(
             "SELECT state FROM agui_chat_tool_authorization WHERE id = %s FOR UPDATE",
@@ -830,16 +834,16 @@ class AguiChatToolAuthorization(models.Model):
         result_too_large = len(result_json.encode("utf-8")) > MAX_HOST_RESULT_BYTES
         if result_too_large:
             result_json = canonical_json({"ok": False, "code": "result_too_large"})
-        self.write({"state": "consumed", "result_json": result_json})
+        self.sudo().write({"state": "consumed", "result_json": result_json})
         context = json.loads(self.context_json or "{}")
         arguments = json.loads(self.arguments_json or "{}")
         call = {"id": self.tool_call_id, "context": context, "arguments": arguments}
         audit_details = (
-            self.env["agui.chat.mention.token"].audit_details(
+            self.env["agui.chat.mention.token"]._audit_details(
                 self.tool_name, arguments, result,
             ) if arguments.get("__mention") else result
         )
-        self.env["agui.chat.tool.audit"].log(
+        self.env["agui.chat.tool.audit"]._log(
             self.tool_name,
             "ok" if isinstance(result, dict) and result.get("ok") else "error",
             details=audit_details,
@@ -850,7 +854,7 @@ class AguiChatToolAuthorization(models.Model):
             return {"ok": False, "code": "result_too_large"}
         return {"ok": True}
 
-    def prepare_undo(self):
+    def _prepare_undo(self):
         self.ensure_one()
         if self.authorization_kind != "command" or self.tool_name != "odoo.patch_current_form" or self.state != "consumed":
             return {"ok": False, "code": "undo_unavailable"}
@@ -894,7 +898,9 @@ class AguiChatToolAuthorization(models.Model):
         expires_at = fields.Datetime.to_string(
             fields.Datetime.from_string(fields.Datetime.now()) + timedelta(minutes=10)
         )
-        authorization = self.create({
+        authorization = self.sudo().create({
+            "user_id": self.env.user.id,
+            "company_id": self.env.user.company_id.id,
             "idempotency_key": key,
             "payload_hash": payload_hash(arguments),
             "tool_call_id": "%s:undo" % self.tool_call_id,
@@ -925,13 +931,13 @@ class AguiChatToolAuthorization(models.Model):
             "expires_at": self.expires_at,
         }
 
-    def begin_undo_execution(self):
+    def _begin_undo_execution(self):
         self.ensure_one()
         if self.authorization_kind != "undo":
             return {"ok": False, "code": "undo_unavailable"}
         if self.state == "consumed":
             return {"ok": True, "replay_result": self._json_result()}
-        return self.begin_execution()
+        return self._begin_execution()
 
     def _json_result(self):
         self.ensure_one()
@@ -987,7 +993,7 @@ class AguiChatCommandExecution(models.Model):
     ]
 
     @api.model
-    def execute_named(self, command_name, payload, authorization_token, idempotency_key):
+    def _execute_named(self, command_name, payload, authorization_token, idempotency_key):
         spec = BUSINESS_COMMANDS.get(command_name)
         config = self.env["agui.chat.config"].sudo().get_active_config()
         if not config.chat_enabled or not config.host_tools_enabled:
@@ -1026,7 +1032,9 @@ class AguiChatCommandExecution(models.Model):
             return existing._stored_result()
         try:
             with self.env.cr.savepoint():
-                execution = self.create({
+                execution = self.sudo().create({
+                    "user_id": self.env.user.id,
+                    "company_id": self.env.user.company_id.id,
                     "command_name": command_name,
                     "idempotency_key": idempotency_key,
                     "payload_hash": value_hash,
@@ -1054,10 +1062,10 @@ class AguiChatCommandExecution(models.Model):
             expires_at <= fields.Datetime.from_string(fields.Datetime.now())
         ):
             if state == "approved":
-                authorization.write({"state": "expired"})
-            execution.write({"state": "error", "error_code": "authorization_invalid"})
+                authorization.sudo().write({"state": "expired"})
+            execution.sudo().write({"state": "error", "error_code": "authorization_invalid"})
             return execution._stored_result()
-        authorization.write({"state": "executing"})
+        authorization.sudo().write({"state": "executing"})
         try:
             with self.env.cr.savepoint():
                 result = redact(
@@ -1067,17 +1075,17 @@ class AguiChatCommandExecution(models.Model):
                 result_json = canonical_json(result if result is not None else {})
                 if len(result_json.encode("utf-8")) > MAX_RESULT_BYTES:
                     raise ValueError("result_too_large")
-            execution.write({"state": "success", "result_json": result_json})
-            authorization.write({"state": "consumed", "result_json": result_json})
+            execution.sudo().write({"state": "success", "result_json": result_json})
+            authorization.sudo().write({"state": "consumed", "result_json": result_json})
         except Exception as error:
             code = getattr(error, "code", False) or "business_command_failed"
-            execution.write({
+            execution.sudo().write({
                 "state": "error",
                 "error_code": code,
                 "result_json": canonical_json({"ok": False, "code": code}),
             })
-            authorization.write({"state": "consumed"})
-        self.env["agui.chat.tool.audit"].log(
+            authorization.sudo().write({"state": "consumed"})
+        self.env["agui.chat.tool.audit"]._log(
             command_name,
             "ok" if execution.state == "success" else "error",
             details=execution._stored_result(),
@@ -1185,7 +1193,7 @@ class AguiChatToolAudit(models.Model):
     details_json = fields.Text(string="详情", default="{}")
 
     @api.model
-    def log(self, tool_name, result, details=None, **values):
+    def _log(self, tool_name, result, details=None, **values):
         values.update({
             "user_id": self.env.user.id,
             "company_id": self.env.user.company_id.id,
@@ -1196,7 +1204,7 @@ class AguiChatToolAudit(models.Model):
         return self.sudo().create(values)
 
     @api.model
-    def cleanup_expired(self):
+    def _cleanup_expired(self):
         config = self.env["agui.chat.config"].sudo().get_active_config()
         now = fields.Datetime.from_string(fields.Datetime.now())
         session_cutoff = fields.Datetime.to_string(

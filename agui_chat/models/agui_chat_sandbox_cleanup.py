@@ -31,7 +31,7 @@ class AguiChatSandboxCleanup(models.Model):
     ]
 
     @api.model
-    def enqueue(self, thread_ids):
+    def _enqueue(self, thread_ids):
         threads = sorted({str(value or "").strip() for value in thread_ids if value})
         if not threads:
             return self.browse()
@@ -51,7 +51,7 @@ class AguiChatSandboxCleanup(models.Model):
         return created
 
     @api.model
-    def process_pending(self, limit=50, now=None):
+    def _process_pending(self, limit=50, now=None):
         now_value = fields.Datetime.from_string(now or fields.Datetime.now())
         tasks = self.sudo().search([
             ("next_attempt_at", "<=", fields.Datetime.to_string(now_value)),

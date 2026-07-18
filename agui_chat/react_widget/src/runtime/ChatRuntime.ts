@@ -290,27 +290,10 @@ export class ChatRuntime {
 
   async newSession(): Promise<void> {
     this.cancel()
-    const bridge = this.props.hostBridge || {}
-    if (!bridge.createSession) {
-      this.resetThread(uuid(), [])
-      this.session = null
-      this.props.onSessionChange?.(null)
-      this.emit()
-      return
-    }
     this.loadingSessions = true
     this.emit()
     try {
-      const result = await bridge.createSession({
-        surface: this.props.surface || 'dock',
-        agent_id: this.props.agentId || false
-      })
-      const session = sessionFromResult(result)
-      this.applyLoadedSession(session)
-      this.error = ''
-      await this.refreshSessions()
-    } catch (reason) {
-      this.reportError(reason, '创建会话失败。')
+      if (await this.createSession()) await this.refreshSessions()
     } finally {
       this.loadingSessions = false
       this.emit()
@@ -365,7 +348,20 @@ export class ChatRuntime {
       if (isRecord(result) && result.ok === false) {
         throw new Error(String(result.error || result.code || '归档失败。'))
       }
-      if (this.session?.id === sessionId) await this.newSession()
+      this.sessions = this.sessions.filter((entry) => entry.id !== sessionId)
+      if (this.session?.id === sessionId) {
+        this.clearCurrentSession()
+        this.loadingSessions = true
+        this.emit()
+        let created = false
+        try {
+          created = await this.createSession()
+        } finally {
+          this.loadingSessions = false
+          this.emit()
+        }
+        if (!created) return false
+      }
       await this.refreshSessions()
       return true
     } catch (reason) {
@@ -1132,6 +1128,26 @@ export class ChatRuntime {
     }
   }
 
+  private async createSession(): Promise<boolean> {
+    const bridge = this.props.hostBridge || {}
+    if (!bridge.createSession) {
+      this.clearCurrentSession()
+      return true
+    }
+    try {
+      const result = await bridge.createSession({
+        surface: this.props.surface || 'dock',
+        agent_id: this.props.agentId || false
+      })
+      this.applyLoadedSession(sessionFromResult(result))
+      this.error = ''
+      return true
+    } catch (reason) {
+      this.reportError(reason, '创建会话失败。')
+      return false
+    }
+  }
+
   private async ensureSession(): Promise<boolean> {
     if (this.session || !this.props.hostBridge?.createSession) {
       return true
@@ -1165,6 +1181,17 @@ export class ChatRuntime {
     if (needsAgentStateCleanup(storedAgentState)) {
       this.scheduleSave()
     }
+  }
+
+  private clearCurrentSession(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
+    this.session = null
+    this.resetThread(uuid(), [])
+    this.props.onSessionChange?.(null)
+    this.emit()
   }
 
   private resetThread(threadId: string, messages: ChatMessage[]): void {

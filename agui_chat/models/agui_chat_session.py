@@ -62,14 +62,15 @@ class AguiChatSession(models.Model):
         return payload
 
     @api.model
-    def create_session(self, name=None, surface=None, agent_id=None):
-        return self.create({
+    def _create_session(self, name=None, surface=None, agent_id=None):
+        session = self.sudo().create({
             "name": (name or "新对话")[:256],
             "surface": surface if surface in ("dock", "standalone") else "dock",
             "agent_id": agent_id or False,
             "user_id": self.env.user.id,
             "protocol": PROTOCOL,
         })
+        return self.browse(session.id)
 
     def to_client(self, include_payload=True):
         self.ensure_one()
@@ -93,7 +94,9 @@ class AguiChatSession(models.Model):
         return result
 
     def unlink(self):
-        self.env["agui.chat.sandbox.cleanup"].sudo().enqueue(self.mapped("thread_id"))
+        self.check_access_rights("unlink")
+        self.check_access_rule("unlink")
+        self.env["agui.chat.sandbox.cleanup"]._enqueue(self.mapped("thread_id"))
         attachments = self.env["ir.attachment"].sudo().search([
             ("res_model", "=", self._name),
             ("res_id", "in", self.ids),
@@ -102,13 +105,16 @@ class AguiChatSession(models.Model):
         attachments.unlink()
         return result
 
-    def save_from_client(self, values, expected_session_revision):
+    def _save_from_client(self, values, expected_session_revision):
         self.ensure_one()
         self.env.cr.execute(
-            "SELECT session_revision FROM agui_chat_session WHERE id = %s FOR UPDATE",
+            "SELECT session_revision, active FROM agui_chat_session WHERE id = %s FOR UPDATE",
             (self.id,),
         )
-        current_revision = self.env.cr.fetchone()[0]
+        row = self.env.cr.fetchone()
+        if not row or not row[1]:
+            return {"ok": False, "error": "session_not_found"}
+        current_revision = row[0]
         try:
             expected = int(expected_session_revision)
         except (TypeError, ValueError):
@@ -141,5 +147,5 @@ class AguiChatSession(models.Model):
             vals["ui_preferences_json"] = self._json_dumps(
                 values.get("uiPreferences"), MAX_UI_PREFERENCES_BYTES, {}
             )
-        self.write(vals)
+        self.sudo().write(vals)
         return {"ok": True, "session": self.to_client()}
