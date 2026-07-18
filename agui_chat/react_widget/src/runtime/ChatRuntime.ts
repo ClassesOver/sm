@@ -461,21 +461,7 @@ export class ChatRuntime {
       recordSelection: recordSelection ? clone(recordSelection) : undefined,
       created_at: Date.now()
     })
-    this.pendingAssistantId = uuid()
-    this.messages.push({
-      id: this.pendingAssistantId,
-      role: 'assistant',
-      content: '',
-      tool_calls: [],
-      created_at: Date.now()
-    })
-    this.executedHostBridgeTools = {}
-    this.confirmingHostBridgeTools = {}
-    this.resumedToolResults = {}
-    this.serverConfirmationDecisions = {}
-    this.undoInFlight = {}
-    const context = this.createRunContext()
-    await this.executeRunLifecycle(context, () => this.run(context, 0))
+    await this.executeNewTurn()
     if (this.transportState === 'error') {
       return false
     }
@@ -787,20 +773,7 @@ export class ChatRuntime {
       return
     }
     this.messages = this.messages.slice(0, userIndex + 1)
-    this.pendingAssistantId = uuid()
-    this.messages.push({
-      id: this.pendingAssistantId,
-      role: 'assistant',
-      content: '',
-      tool_calls: [],
-      created_at: Date.now()
-    })
-    this.executedHostBridgeTools = {}
-    this.confirmingHostBridgeTools = {}
-    this.resumedToolResults = {}
-    this.undoInFlight = {}
-    const context = this.createRunContext()
-    await this.executeRunLifecycle(context, () => this.run(context, 0))
+    await this.executeNewTurn()
   }
 
   async uploadAttachment(file: File, onProgress?: (progress: number) => void): Promise<AttachmentRef> {
@@ -1211,6 +1184,24 @@ export class ChatRuntime {
     this.serverConfirmationDecisions = {}
     this.undoInFlight = {}
     this.notifyMessages()
+  }
+
+  private async executeNewTurn(): Promise<void> {
+    this.pendingAssistantId = uuid()
+    this.messages.push({
+      id: this.pendingAssistantId,
+      role: 'assistant',
+      content: '',
+      tool_calls: [],
+      created_at: Date.now()
+    })
+    this.executedHostBridgeTools = {}
+    this.confirmingHostBridgeTools = {}
+    this.resumedToolResults = {}
+    this.serverConfirmationDecisions = {}
+    this.undoInFlight = {}
+    const context = this.createRunContext()
+    await this.executeRunLifecycle(context, () => this.run(context, 0))
   }
 
   private createRunContext(): RunContext {

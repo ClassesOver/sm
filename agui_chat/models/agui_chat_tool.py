@@ -383,6 +383,27 @@ class AguiChatToolAuthorization(models.Model):
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     @api.model
+    def _find_idempotent_authorization(self, key):
+        return self.search([
+            ("idempotency_key", "=", key),
+            ("user_id", "=", self.env.user.id),
+            ("company_id", "=", self.env.user.company_id.id),
+        ], limit=1)
+
+    @api.model
+    def _create_idempotent_authorization(self, values):
+        try:
+            with self.env.cr.savepoint():
+                return self.sudo().create(values), False
+        except IntegrityError:
+            authorization = self._find_idempotent_authorization(
+                values.get("idempotency_key")
+            )
+            if not authorization:
+                raise
+            return authorization, True
+
+    @api.model
     def _normalize_preview(self, preview, arguments):
         control = arguments.get("__control") if isinstance(arguments.get("__control"), dict) else {}
         if control:
@@ -553,11 +574,7 @@ class AguiChatToolAuthorization(models.Model):
         if len(binding_json.encode("utf-8")) > MAX_ARGUMENT_BYTES:
             return {"ok": False, "code": "arguments_too_large"}
         binding_hash = payload_hash(payload)
-        existing = self.search([
-            ("idempotency_key", "=", key),
-            ("user_id", "=", self.env.user.id),
-            ("company_id", "=", self.env.user.company_id.id),
-        ], limit=1)
+        existing = self._find_idempotent_authorization(key)
         if existing:
             return existing._existing_decision(binding_hash)
         policy_arguments = dict(payload)
@@ -619,15 +636,8 @@ class AguiChatToolAuthorization(models.Model):
             "state": "pending" if requires_confirmation else "approved",
             "expires_at": expires_at,
         }
-        try:
-            with self.env.cr.savepoint():
-                authorization = self.sudo().create(values)
-        except IntegrityError:
-            authorization = self.search([
-                ("idempotency_key", "=", key),
-                ("user_id", "=", self.env.user.id),
-                ("company_id", "=", self.env.user.company_id.id),
-            ], limit=1)
+        authorization, replayed = self._create_idempotent_authorization(values)
+        if replayed:
             return authorization._existing_decision(binding_hash)
         self.env["agui.chat.tool.audit"]._log(
             tool_name,
@@ -737,11 +747,7 @@ class AguiChatToolAuthorization(models.Model):
         binding_hash = payload_hash({
             "tool": tool_name, "arguments": arguments, "preview": preview,
         })
-        existing = self.search([
-            ("idempotency_key", "=", key),
-            ("user_id", "=", self.env.user.id),
-            ("company_id", "=", self.env.user.company_id.id),
-        ], limit=1)
+        existing = self._find_idempotent_authorization(key)
         if existing:
             return existing._existing_decision(binding_hash)
         mention_bindings = arguments.get("__mention") if mention_audit else []
@@ -802,15 +808,8 @@ class AguiChatToolAuthorization(models.Model):
             "state": "pending" if decision.get("requires_confirmation") else "approved",
             "expires_at": expires_at,
         }
-        try:
-            with self.env.cr.savepoint():
-                authorization = self.sudo().create(values)
-        except IntegrityError:
-            authorization = self.search([
-                ("idempotency_key", "=", key),
-                ("user_id", "=", self.env.user.id),
-                ("company_id", "=", self.env.user.company_id.id),
-            ], limit=1)
+        authorization, replayed = self._create_idempotent_authorization(values)
+        if replayed:
             return authorization._existing_decision(binding_hash)
         self.env["agui.chat.tool.audit"]._log(
             tool_name, "allowed", details=(mention_audit or {"arguments": arguments}),

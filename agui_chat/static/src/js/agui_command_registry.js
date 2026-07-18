@@ -224,6 +224,19 @@ odoo.define("agui_chat.command_registry", function (require) {
         return error;
     }
 
+    function recoverPatchError(context, controller, error) {
+        var refreshed = error && error.aguiModelRestored ?
+            context.refresh(controller, true) : $.when();
+        return refreshed.then(function () {
+            if (error && error.code) {
+                throw error;
+            }
+            throw commandError(
+                "onchange_failed", error && error.message || "表单 onchange 执行失败。"
+            );
+        });
+    }
+
     function validationError(invalidFields) {
         return _.extend(commandError("validation_failed", "表单原生校验未通过。"), {
             invalidFields: invalidFields,
@@ -685,16 +698,7 @@ odoo.define("agui_chat.command_registry", function (require) {
                     };
                 });
             }, function (error) {
-                var refreshed = error && error.aguiModelRestored ?
-                    context.refresh(controller, true) : $.when();
-                return refreshed.then(function () {
-                    if (error && error.code) {
-                        throw error;
-                    }
-                    throw commandError(
-                        "onchange_failed", error && error.message || "表单 onchange 执行失败。"
-                    );
-                });
+                return recoverPatchError(context, controller, error);
             });
         });
     };
@@ -712,16 +716,7 @@ odoo.define("agui_chat.command_registry", function (require) {
                 prepared.preview = preview;
                 return prepared;
             }, function (error) {
-                var refreshed = error && error.aguiModelRestored ?
-                    context.refresh(controller, true) : $.when();
-                return refreshed.then(function () {
-                    if (error && error.code) {
-                        throw error;
-                    }
-                    throw commandError(
-                        "onchange_failed", error && error.message || "表单 onchange 执行失败。"
-                    );
-                });
+                return recoverPatchError(context, controller, error);
             });
         }).then(function (prepared) {
             if (prepared.rejected.length) {

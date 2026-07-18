@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import base64
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -8,12 +10,18 @@ from odoo.exceptions import ValidationError
 from odoo.addons.agui_chat.controllers import main as controller_main
 from ..models.agui_chat_workspace import (
     WORKSPACE_SECRET_PARAM,
-    decode_workspace_capability,
     issue_workspace_capability,
 )
 
 
 SECRET = "0123456789abcdef0123456789abcdef"
+
+
+def _token_claims(token):
+    payload = str(token).split(".")[1].encode("ascii")
+    return json.loads(base64.urlsafe_b64decode(
+        payload + b"=" * (-len(payload) % 4)
+    ).decode("utf-8"))
 
 
 class TestWorkspaceCapability(TransactionCase):
@@ -27,11 +35,11 @@ class TestWorkspaceCapability(TransactionCase):
         self.config.write({"agentos_internal_url": "http://agentos:7777"})
         self.session = self.env["agui.chat.session"]._create_session()
 
-    def test_capability_claims_and_tamper_expiry(self):
+    def test_capability_claims(self):
         token, issued = issue_workspace_capability(
             self.env, self.session, "odoo-session", now=1000,
         )
-        claims = decode_workspace_capability(token, SECRET, now=1200)
+        claims = _token_claims(token)
 
         self.assertEqual(claims["database"], self.env.cr.dbname)
         self.assertEqual(claims["user"], self.env.user.id)
@@ -39,10 +47,6 @@ class TestWorkspaceCapability(TransactionCase):
         self.assertEqual(claims["thread"], self.session.thread_id)
         self.assertEqual(claims["exp"] - claims["iat"], 600)
         self.assertEqual(issued, claims)
-        with self.assertRaisesRegex(ValueError, "capability_invalid"):
-            decode_workspace_capability(token[:-1] + "A", SECRET, now=1200)
-        with self.assertRaisesRegex(ValueError, "capability_expired"):
-            decode_workspace_capability(token, SECRET, now=1600)
 
     def _request(self):
         return SimpleNamespace(

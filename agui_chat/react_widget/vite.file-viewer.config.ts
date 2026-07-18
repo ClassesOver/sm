@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
 
 export default defineConfig({
+  publicDir: false,
   define: {
     'process.env.NODE_ENV': JSON.stringify('production')
   },

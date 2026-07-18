@@ -858,6 +858,40 @@ describe('ChatRuntime protocol handling', () => {
     ])
   })
 
+  it('accepts the same server confirmation again after regeneration', async () => {
+    const interrupt = {
+      type: 'RUN_FINISHED',
+      outcome: {
+        type: 'interrupt',
+        interrupts: [{ id: 'repeat-confirmation', reason: 'needs approval' }]
+      }
+    }
+    const fetchMock = vi.fn(() => Promise.resolve(sseResponse(
+      fetchMock.mock.calls.length % 2 === 1
+        ? [interrupt]
+        : [{ type: 'TEXT_MESSAGE_CONTENT', delta: 'confirmed' }, { type: 'RUN_FINISHED' }]
+    )))
+    vi.stubGlobal('fetch', fetchMock)
+    const runtime = createRuntime({ runtimeUrl: '/runtime/run', attachments: false })
+
+    await runtime.send('confirm twice')
+    let pending = runtime.getSnapshot().messages
+      .flatMap((message) => message.tool_calls || [])
+      .find((tool) => tool.status === 'needs_confirmation')
+    expect(pending).toBeTruthy()
+    await runtime.confirmTool(pending!, true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    const assistants = runtime.getSnapshot().messages.filter((message) => message.role === 'assistant')
+    await runtime.regenerate(assistants[assistants.length - 1].id)
+    pending = runtime.getSnapshot().messages
+      .flatMap((message) => message.tool_calls || [])
+      .find((tool) => tool.status === 'needs_confirmation')
+    expect(pending).toBeTruthy()
+    await runtime.confirmTool(pending!, true)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
   it('records run errors and interrupt confirmations', () => {
     const runtime = createRuntime({ threadId: 'thread-1' })
 

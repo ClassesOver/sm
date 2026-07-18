@@ -151,9 +151,6 @@ eggs/
 lib/
 !/agui_chat/static/lib/
 !/agui_chat/static/lib/agui-chat-react/
-!/agui_chat/static/lib/agui-chat-react/agui_chat_widget.12.0.8.4.0.css
-!/agui_chat/static/lib/agui-chat-react/agui_chat_widget.12.0.8.4.0.js
-!/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.4.0.js
 lib64/
 parts/
 sdist/

@@ -18,11 +18,6 @@ def _b64encode(value):
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
 
-def _b64decode(value):
-    value = value.encode("ascii")
-    return base64.urlsafe_b64decode(value + b"=" * (-len(value) % 4))
-
-
 def _json(value):
     return json.dumps(
         value, ensure_ascii=True, separators=(",", ":"), sort_keys=True,
@@ -70,26 +65,3 @@ def issue_workspace_capability(env, session, odoo_session, now=None):
     if not session.active:
         raise ValidationError("已归档的会话不能访问工作区。")
     return issue_thread_capability(env, session.thread_id, odoo_session, now=now)
-
-
-def decode_workspace_capability(token, secret, now=None):
-    try:
-        header_value, claims_value, signature_value = str(token or "").split(".")
-        signing_input = "%s.%s" % (header_value, claims_value)
-        expected = hmac.new(
-            secret.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256,
-        ).digest()
-        if not hmac.compare_digest(expected, _b64decode(signature_value)):
-            raise ValueError("capability_signature_invalid")
-        header = json.loads(_b64decode(header_value).decode("utf-8"))
-        claims = json.loads(_b64decode(claims_value).decode("utf-8"))
-    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
-        raise ValueError("capability_invalid")
-    current = int(time.time() if now is None else now)
-    if header != {"alg": "HS256", "typ": "AGUI-CAP"}:
-        raise ValueError("capability_header_invalid")
-    if claims.get("aud") != CAPABILITY_AUDIENCE:
-        raise ValueError("capability_audience_invalid")
-    if not isinstance(claims.get("exp"), int) or claims["exp"] <= current:
-        raise ValueError("capability_expired")
-    return claims
