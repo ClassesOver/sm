@@ -206,7 +206,7 @@ services:
     restart: unless-stopped
 
   dex:
-    image: ${DOCKER_REGISTRY_MIRROR:-docker.m.daocloud.io}/dexidp/dex:v2.42.0
+    image: ${DEX_IMAGE:-docker.io/dexidp/dex:v2.42.0}
     profiles: [daytona]
     environment:
       DEX_ISSUER: ${DAYTONA_PUBLIC_OIDC_DOMAIN:-http://127.0.0.1:13000/dex}

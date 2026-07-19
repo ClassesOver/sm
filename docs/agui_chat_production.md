@@ -130,6 +130,8 @@ Docker Socket 并以特权模式运行，实际上具有宿主机级权限；应
 - Daytona 镜像仓库 `DAYTONA_IMAGE_REGISTRY`，默认值为 `docker.io`；当前国内源不提供
   所需的 Daytona 标签，因此不强制使用国内源
 - Daytona 镜像架构 `DAYTONA_IMAGE_ARCH`，默认值为 `amd64`；ARM64 宿主机设置为 `arm64`
+- Dex 镜像 `DEX_IMAGE`，默认使用官方 `docker.io/dexidp/dex:v2.42.0`；当前国内源对该
+  镜像返回 403，因此不使用国内代理
 - 构建 AgentOS 时使用的 Debian 软件源 `APT_MIRROR_HOST`，默认值为
   `mirrors.aliyun.com`
 - 构建 AgentOS 时使用的 Python 软件源 `PIP_INDEX_URL`，默认使用阿里云 PyPI 镜像
