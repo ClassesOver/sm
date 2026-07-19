@@ -9,7 +9,7 @@
 
 ```bash
 HOST_UID=$(id -u) HOST_GID=$(id -g) \
-  docker compose --env-file .env.example --profile setup run --rm env-init
+  docker compose --env-file .env.example --profile setup run --build --rm env-init
 # 脚本自动生成服务密码；只需将 .env 中的 OPENAI_API_KEY 改为真实值
 # 自定义网络名时同步修改下一条命令
 docker network create hrp_network

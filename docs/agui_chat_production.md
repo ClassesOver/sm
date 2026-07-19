@@ -1,304 +1,263 @@
-# AG-UI Chat v2 Production Deployment
+# AG-UI Chat v2 生产部署
 
-## Topology
+## 拓扑
 
-The browser posts standard AG-UI input directly to the same-origin AgentOS
-proxy and consumes SSE. Odoo serves configuration, UI sessions, host-command
-policy, and named synchronous business commands. Odoo never proxies SSE.
+浏览器将标准 AG-UI 输入直接提交到同源 AgentOS 代理并消费 SSE。Odoo 提供配置、
+界面会话、宿主命令策略和具名同步业务命令，但不代理 SSE。
 
-Configure one public runtime path:
+只配置一个公开运行地址：
 
-- `runtime_url`: AgentOS AG-UI POST endpoint, for example
-  `/contract-review/agui`.
+- `runtime_url`：AgentOS AG-UI POST 端点，例如 `/contract-review/agui`。
 
-Odoo derives `/contract-review/config` from that value for the protocol
-handshake. AgentOS must expose the derived JSON declaration endpoint.
+Odoo 根据该值推导协议握手地址 `/contract-review/config`。AgentOS 必须公开推导出的
+JSON 声明端点。
 
-The declaration must contain the deployed `agui.odoo.v2` protocol, bundle
-version, and Odoo command catalog hash. Nginx must not retry the AG-UI POST.
-Disable proxy buffering, caching, and compression for SSE, and size connection
-limits for at least 200 concurrent streams.
+声明必须包含已部署的 `agui.odoo.v2` 协议、前端包版本和 Odoo 命令目录哈希。Nginx
+不得重试 AG-UI POST。SSE 必须关闭代理缓冲、缓存和压缩，并按至少 200 条并发流配置
+连接上限。
 
-## Rollout Controls
+## 灰度控制
 
-New configuration records start with Chat disabled, no runtime addresses, and
-cross-origin development disabled. Existing records are not rewritten during
-an upgrade. Configure the shared HMAC secret and both runtime addresses before
-enabling Chat, then enable in this order:
+新配置记录默认关闭聊天，不设置运行地址，并关闭跨域开发。升级不会改写现有记录。
+先配置共享 HMAC 密钥和两个运行地址，再按以下顺序启用：
 
 1. `chat_enabled`
 2. `host_tools_enabled`
-3. exact entries in `enabled_commands`
-4. exact entries in `enabled_business_commands`
-5. `write_tools_enabled` when write commands are required
+3. `enabled_commands` 中的精确条目
+4. `enabled_business_commands` 中的精确条目
+5. 需要写命令时启用 `write_tools_enabled`
 
-An empty command list enables no commands. A matching tool policy restricts the
-exact command, user group, model, field, and visible button allowlist. Missing
-policies fail closed for stage/patch/save/discard, protected object/create/
-delete/state controls, and every `odoo.business.*` command. Read-only and
-navigation page commands without a policy receive no additional model
-restriction but remain bound to the current visible snapshot. Kill switches disable the
-affected feature without RPC, CRUD, or simulated-state fallback.
+命令列表为空时不启用任何命令。匹配的工具策略会限制精确命令、用户组、模型、字段和
+可见按钮白名单。暂存、修改、保存、丢弃，受保护对象的创建、删除、状态控件，以及所有
+`odoo.business.*` 命令在缺少策略时均默认拒绝。没有策略的只读和导航页面命令不附加
+模型限制，但仍绑定当前可见快照。紧急开关只禁用对应功能，不允许回退到 RPC、CRUD 或
+模拟状态。
 
-The module includes a read-only `odoo.apply_filter` policy that restricts
-`hr.employee` filtering to internal users. It only applies on the current bound
-List or Kanban view; Odoo access controls, record rules, and the snapshot
-`filterFields` allowlist still determine which records and fields can be
-filtered. Add model-specific policies where additional user-group or field
-restrictions are required.
+模块内置一个只读 `odoo.apply_filter` 策略，将 `hr.employee` 筛选限制为内部用户。
+该策略只作用于当前绑定的列表或看板视图；Odoo 访问权限、记录规则和快照中的
+`filterFields` 白名单仍决定可筛选的记录与字段。需要额外用户组或字段限制时，应增加
+逐模型策略。
 
-### Report Administration
+### 报表管理
 
-The filter report command is installed as command master data but does not
-enter `enabled_business_commands` automatically. To enable reporting:
+筛选报表命令会作为命令主数据安装，但不会自动加入 `enabled_business_commands`。
+启用报表时：
 
-1. Add `odoo.business.report.filters` to the existing enabled business command
-   selection.
-2. Create one `agui.chat.tool.policy` per allowed model and user-group scope.
-3. Set access level to `read`, fill an exact `model_name`, and provide a
-   non-empty comma-separated `field_names` allowlist.
-4. Keep sensitive, binary, one2many, and many2many fields out of the allowlist;
-   saving such a policy is rejected.
-5. Include the currency field, normally `currency_id`, whenever a monetary
-   field may be aggregated.
+1. 将 `odoo.business.report.filters` 加入现有的已启用业务命令选择。
+2. 按允许的模型和用户组范围分别创建 `agui.chat.tool.policy`。
+3. 将访问级别设为 `read`，填写精确的 `model_name`，并提供非空的逗号分隔
+   `field_names` 白名单。
+4. 不要将敏感字段、二进制字段、one2many 或 many2many 字段加入白名单；保存此类
+   策略会被拒绝。
+5. 货币字段可能参与聚合时，同时加入对应币种字段，通常为 `currency_id`。
 
-The command remains available when `write_tools_enabled` is off. Existing
-business commands default to `write` and remain unavailable in that state.
-Test each policy with a non-administrator account because Odoo ACL, record
-rules, current company, filter visibility, and menu visibility still apply.
+关闭 `write_tools_enabled` 时，该命令仍然可用。现有业务命令默认访问级别为 `write`，
+在该状态下不可用。必须使用非管理员账号测试每条策略，因为 Odoo ACL、记录规则、当前
+公司、筛选可见性和菜单可见性仍然生效。
 
-## Deployment
+## 部署
 
-Deploy the Python module and versioned React bundle together, then purge old
-asset caches. A module/bundle mismatch fails the handshake and keeps Chat
-disabled.
+Python 模块和带版本的 React 前端包必须一起部署，随后清理旧资源缓存。模块与前端包
+版本不匹配时，握手失败并保持聊天关闭。
 
-AgentOS keeps its built-in `/health` endpoint for liveness. Use `/ready` for
-traffic readiness: it returns success only when PostgreSQL is reachable, the
-sandbox registry is initialized, and the HMAC secret is at least 32 bytes.
-Compose uses `/ready` and restarts the Agent service automatically.
+AgentOS 保留内置 `/health` 存活端点。流量就绪检查使用 `/ready`，只有 PostgreSQL
+可访问、沙箱注册表初始化完成且 HMAC 密钥至少为 32 字节时才返回成功。Compose 使用
+`/ready`，并自动重启 Agent 服务。
 
-The Agent image installs pandas, openpyxl, matplotlib, Plotly, and Noto CJK
-fonts. Rebuild the image whenever `agentos_dev/requirements.txt` changes; do
-not install these packages interactively in a running production container.
+Agent 镜像安装 pandas、openpyxl、matplotlib、Plotly 和 Noto CJK 字体。
+`agentos_dev/requirements.txt` 变化后必须重建镜像，不要在运行中的生产容器内交互安装
+这些依赖。
 
-## Isolated Workspaces
+<a id="isolated-workspaces"></a>
 
-The repository includes the complete AgentOS, PostgreSQL, and Daytona topology
-in `docker-compose.yml`, based on the official Daytona OSS Compose baseline at
-`v0.189.0`. This is the last upstream version
-that includes the supported OSS Compose baseline used by this project. Upstream
-has since ended on-premises support, so treat this pinned stack as software the
-operator must maintain and security-patch independently.
+## 隔离工作区
 
-The default Compose project name remains `agui-daytona`, matching the former
-two-file production deployment and preserving its named volumes. A deployment
-that previously ran only the base file under another project name must set
-`COMPOSE_PROJECT_NAME` to that existing name or migrate `agent_db_data` before
-the first unified-stack start.
+仓库在 `docker-compose.yml` 中提供完整的 AgentOS、PostgreSQL 和 Daytona 拓扑，
+基于 Daytona OSS `v0.189.0` 官方 Compose 基线。这是本项目所用且仍包含受支持 OSS
+Compose 基线的最后一个上游版本。上游此后已停止本地部署支持，因此运维方需要自行维护
+并修补这套锁定版本的软件。
 
-Both PostgreSQL 18 services mount their named volumes at `/var/lib/postgresql`,
-which is the parent data path required by the PostgreSQL 18 image layout. The
-former files used the pre-18 `/var/lib/postgresql/data` target. Before replacing
-a running deployment created from those files, take logical dumps from both
-databases and verify a restore; do not assume that the old named volumes contain
-the PostgreSQL 18 cluster.
+默认 Compose 项目名保持为 `agui-daytona`，与原双文件生产部署一致，并保留其具名卷。
+如果旧部署只运行基础文件且使用其他项目名，首次启动统一栈前必须将
+`COMPOSE_PROJECT_NAME` 设为原项目名，或迁移 `agent_db_data`。
 
-Daytona is licensed under AGPL-3.0. If a modified Daytona service is made
-available over a network, provide the corresponding source, including those
-modifications, to its users under AGPL-3.0. Keep the exact source revision and
-container provenance with deployment records; this section is operational
-guidance, not legal advice.
+两个 PostgreSQL 18 服务都将具名卷挂载到 `/var/lib/postgresql`，这是 PostgreSQL 18
+镜像布局要求的父数据路径。旧文件使用 PostgreSQL 18 之前的
+`/var/lib/postgresql/data` 挂载目标。替换由旧文件创建的运行中部署前，必须对两个数据库
+执行逻辑备份并验证恢复；不要假定旧具名卷中一定包含 PostgreSQL 18 数据集群。
 
-The project deploys only these Daytona services:
+Daytona 使用 AGPL-3.0 许可证。通过网络向用户提供修改后的 Daytona 服务时，需要按
+AGPL-3.0 向这些用户提供包含修改内容的对应源代码。部署记录应保存精确的源码修订版本和
+容器来源。本段仅为运维说明，不构成法律意见。
 
-- `api`, `runner`, `db`, `redis`, `minio`, `registry`, and `dex`
-- `dashboard`, as a localhost-only Nginx entry to the API UI and Dex
-- `proxy`, as a localhost-only sandbox port-preview endpoint
-- the existing `agent` service, which contains AgentOS and Agno
-- `agent-db`, the dedicated PostgreSQL backend for Agno sessions and workspace
-  sandbox registrations; it is also published on localhost port `55432` for
-  the host-side `agentos_dev`, while Daytona's `db` remains private to Daytona
+项目只部署以下 Daytona 服务：
 
-SSH Gateway, PgAdmin, Jaeger, and the OpenTelemetry collector are intentionally
-not deployed. AgentOS Toolbox traffic uses `PROXY_TOOLBOX_BASE_URL=http://api:3000/api`;
-the Proxy remains available only for sandbox HTTP previews.
+- `api`、`runner`、`db`、`redis`、`minio`、`registry` 和 `dex`
+- `dashboard`，仅监听本机，作为 API 界面和 Dex 的 Nginx 入口
+- `proxy`，仅监听本机，提供沙箱端口预览
+- 现有的 `agent` 服务，包含 AgentOS 和 Agno
+- `agent-db`，作为 Agno 会话和工作区沙箱注册表的专用 PostgreSQL 后端；同时发布到
+  本机 `55432` 端口，供宿主机上的 `agentos_dev` 使用；Daytona 的 `db` 仍仅供
+  Daytona 内部使用
 
-### Requirements and Secrets
+部署有意不包含 SSH Gateway、PgAdmin、Jaeger 和 OpenTelemetry Collector。AgentOS
+Toolbox 流量使用 `PROXY_TOOLBOX_BASE_URL=http://api:3000/api`；Proxy 只用于沙箱
+HTTP 预览。
 
-Allocate at least 4 GB RAM; 8 GB is recommended before running real sandbox
-lifecycles. Concurrent code execution may require more. Docker and the Daytona
-Runner require a Linux host with cgroup support. The Runner mounts the host
-Docker socket and runs privileged, which is effectively host-level authority;
-place it on a dedicated host or VM and restrict administrator access.
+### 要求与密钥
 
-Set all required Compose variables in a protected environment file. Do not use
-sample or default passwords in production. Required values include:
+至少分配 4 GB 内存，实际运行沙箱生命周期前建议使用 8 GB。并发代码执行可能需要更多
+资源。Docker 和 Daytona Runner 要求支持 cgroup 的 Linux 宿主机。Runner 挂载宿主机
+Docker Socket 并以特权模式运行，实际上具有宿主机级权限；应部署在专用宿主机或虚拟机
+上，并限制管理员访问。
 
-- `AGUI_WORKSPACE_HMAC_SECRET`, at least 32 random bytes, identical to the Odoo
-  system parameter `agui_chat.workspace_hmac_secret`
-- Daytona encryption key/salt, Runner token, Proxy key, and health-check key
-- PostgreSQL, Redis, Registry, and MinIO credentials
-- Dex administrator email and a bcrypt password hash
-- `AGENT_SKILLS_DIR` when administrator-managed skills are installed; the
-  default empty directory is mounted read-only
-- `AGENT_POSTGRES_PASSWORD` for the dedicated AgentOS PostgreSQL service
-- `AGENT_POSTGRES_BIND` and `AGENT_POSTGRES_PORT` for the localhost-only
-  development connection; defaults are `127.0.0.1:55432`
-- `AGUI_SHARED_NETWORK`, the pre-created external Docker network used by all
-  AgentOS and Daytona services; it defaults to `hrp_network`
+将所有 Compose 必需变量写入受保护的环境文件。生产环境不得使用示例密码或默认密码。
+必要配置包括：
 
-Initialize or update the file interactively with:
+- `AGUI_WORKSPACE_HMAC_SECRET`，至少 32 个随机字节，并与 Odoo 系统参数
+  `agui_chat.workspace_hmac_secret` 完全一致
+- Daytona 加密密钥和盐、Runner Token、Proxy Key 与健康检查 Key
+- PostgreSQL、Redis、Registry 和 MinIO 凭据
+- Dex 管理员邮箱和 bcrypt 密码哈希
+- 安装管理员维护的技能时设置 `AGENT_SKILLS_DIR`；默认空目录以只读方式挂载
+- AgentOS 专用 PostgreSQL 服务使用的 `AGENT_POSTGRES_PASSWORD`
+- 本机开发连接使用的 `AGENT_POSTGRES_BIND` 和 `AGENT_POSTGRES_PORT`，默认值为
+  `127.0.0.1:55432`
+- 所有 AgentOS 和 Daytona 服务使用的预创建外部 Docker 网络
+  `AGUI_SHARED_NETWORK`，默认值为 `hrp_network`
+- 容器仓库前缀 `DOCKER_REGISTRY_MIRROR`，默认值为 `docker.m.daocloud.io`，也可设为
+  `docker.io` 或内部镜像仓库
+- 构建 AgentOS 时使用的 Debian 软件源 `APT_MIRROR_HOST`，默认值为
+  `mirrors.aliyun.com`
+- 构建 AgentOS 时使用的 Python 软件源 `PIP_INDEX_URL`，默认使用阿里云 PyPI 镜像
+
+可在宿主机交互初始化或更新配置：
 
 ```bash
 bash scripts/configure_daytona_env.sh
 ```
 
-Direct host execution requires `openssl` and `htpasswd`. The Compose setup image
-below includes both tools.
+直接在宿主机执行需要 `openssl` 和 `htpasswd`。下面的 Compose 初始化镜像已包含这两个
+工具。
 
-The same script can run through the one-shot Compose setup profile before
-`.env` exists. Pass the host identity so the generated mode-`600` file remains
-owned by the operator:
+在 `.env` 不存在时，也可以通过一次性 Compose setup profile 运行同一脚本。传入宿主机
+用户标识，使生成的权限为 `600` 的文件仍归当前操作员所有：
 
 ```bash
 HOST_UID=$(id -u) HOST_GID=$(id -g) \
-  docker compose --env-file .env.example --profile setup run --rm env-init
+  docker compose --env-file .env.example --profile setup run --build --rm env-init
 ```
 
-The setup container has no runtime network and mounts only the project working
-directory. Compose uses `.env.example` solely to resolve the stack before the
-script writes the real `.env`; placeholder values are not started as services.
-`HOST_UID` and `HOST_GID` make the generated file belong to the invoking host
-user. `--rm` removes only the stopped one-shot container; it does not remove
-`.env` or any runtime volume.
+初始化容器没有运行时网络，只挂载项目工作目录。Compose 仅使用 `.env.example` 解析服务
+配置，随后由脚本写入真实 `.env`；不会使用占位值启动其他服务。`HOST_UID` 和
+`HOST_GID` 使生成文件归调用命令的宿主用户所有。`--rm` 只删除已经停止的一次性容器，
+不会删除 `.env` 或任何运行时数据卷。
 
-The script writes atomically with mode `600` and saves an existing file under
-the ignored `.env.backups/` directory. On an existing deployment it separates
-runtime-key rotation from encryption, Runner, and storage credentials; the
-latter must not be changed without migrating the corresponding services or
-rebuilding the Daytona data volumes.
+脚本以原子方式写入文件并设置权限为 `600`。已有文件会备份到被忽略的
+`.env.backups/` 目录。对于现有部署，脚本将运行时密钥轮换与加密密钥、Runner 凭据和
+存储凭据轮换分开处理；后者不能在未迁移对应服务或重建 Daytona 数据卷的情况下修改。
 
-For a new `.env`, the script generates the runtime and persistent random
-secrets, 12-character Base64URL service passwords, and a 12-character Dex login password.
-It writes the Dex bcrypt hash to `.env` and prints the clear-text login password
-once; record it immediately. Existing files rotate secrets only after the
-corresponding confirmation. Only `OPENAI_API_KEY` must be replaced before
-validation; `OPENAI_BASE_URL`, `MODEL`, and the default `DEX_ADMIN_EMAIL` may be
-changed when required.
+新建 `.env` 时，脚本会生成运行时和持久化随机密钥、12 位 Base64URL 服务密码和
+12 位 Dex 登录密码。Dex bcrypt 哈希写入 `.env`，明文登录密码只显示一次，必须立即
+记录。已有文件只有在确认对应提示后才轮换密钥。验证前只需替换 `OPENAI_API_KEY`；
+`OPENAI_BASE_URL`、`MODEL` 和默认 `DEX_ADMIN_EMAIL` 可按需修改。
 
-Cryptographic HMAC, encryption, Proxy, health, and Runner values remain
-32-byte random secrets and are intentionally longer than service passwords.
-`DAYTONA_API_KEY` remains empty only until the first Dashboard bootstrap
-described below: Daytona does not allow an unauthenticated client to create the
-first API Key. Generate any additional independent secret with, for example,
-`openssl rand -hex 32`.
+HMAC、加密、Proxy、健康检查和 Runner 使用 32 字节随机值，编码为约 43 位 Base64URL
+字符串。它们有意长于服务密码，同时避免旧的 64 位十六进制表示。
+`DAYTONA_API_KEY` 仅允许在首次 Dashboard 引导期间为空；Daytona 不允许未认证客户端
+创建首个 API Key。如需生成其他独立密钥，可使用 `openssl rand -hex 32`。
 
-In Odoo, set the same HMAC secret as a server-only system parameter and set
-`AgentOS 内部服务地址` to the address Odoo can reach, for example
-`http://127.0.0.1:7777`. This internal address is never returned by
-`/agui_chat/config`.
+在 Odoo 中，将同一 HMAC 密钥配置为仅服务端可见的系统参数，并将
+`AgentOS 内部服务地址` 设为 Odoo 可访问的地址，例如 `http://127.0.0.1:7777`。
+该内部地址绝不会由 `/agui_chat/config` 返回。
 
-Archiving or deleting a Chat session commits a sandbox-cleanup task in the same
-database transaction. A cron processes up to 50 tasks every five minutes;
-failures retry with exponential backoff capped at 24 hours. HTTP 200, 204, and
-404 are successful idempotent outcomes.
+归档或删除聊天会话时，会在同一数据库事务中提交沙箱清理任务。定时任务每五分钟最多
+处理 50 个任务；失败任务按指数退避重试，上限为 24 小时。HTTP 200、204 和 404 都视为
+幂等成功。
 
-Historical sandboxes whose original thread IDs were deleted before this task
-model existed cannot be reconstructed automatically. Audit Daytona sandboxes
-by the `agui-thread` label and compare them with the AgentOS registry and Odoo
-cleanup tasks. Preserve an export before manually deleting an unmatched
-sandbox, and record the sandbox ID, label hash, review time, and operator.
+在清理任务模型创建前已删除原始 thread ID 的历史沙箱无法自动重建关联。应按
+`agui-thread` 标签审计 Daytona 沙箱，并与 AgentOS 注册表和 Odoo 清理任务对比。
+手工删除不匹配的沙箱前先保留导出，并记录沙箱 ID、标签哈希、复核时间和操作员。
 
-### First Start
+<a id="first-start"></a>
 
-Create the shared external network before validating or starting the stack:
+### 首次启动
+
+验证或启动服务前，先创建共享外部网络：
 
 ```bash
 docker network create hrp_network
 ```
 
-Compose reads `.env`, but the current shell does not automatically export it.
-If `AGUI_SHARED_NETWORK` was changed in `.env`, replace `hrp_network` above with
-that exact value.
+Compose 会读取 `.env`，但当前 Shell 不会自动导出其中的变量。如果 `.env` 修改了
+`AGUI_SHARED_NETWORK`，请将上方的 `hrp_network` 换成完全相同的值。
 
-The Compose file intentionally attaches AgentOS, both PostgreSQL services, and
-all Daytona infrastructure services to this one network. Any other container
-attached to it can attempt direct connections to those internal services. Use a
-dedicated deployment-specific network name, do not attach untrusted workloads,
-keep internal service ports unpublished, and enforce host/network policy around
-the Docker daemon. Deployments requiring stronger tenant isolation should use
-separate stacks and separate shared networks.
+Compose 文件有意将 AgentOS、两个 PostgreSQL 服务和所有 Daytona 基础设施连接到同一
+网络。连接到该网络的其他容器都可以尝试直接访问内部服务。应使用部署专用网络，不要连接
+不受信任的工作负载，不要发布内部服务端口，并在 Docker 守护进程周围实施宿主机和网络
+策略。需要更强租户隔离时，应使用独立栈和独立共享网络。
 
-Validate interpolation before startup:
+启动前验证变量插值：
 
 ```bash
 docker compose --profile daytona config
 ```
 
-If the network was not created, `docker compose up` fails with an external
-network-not-found error by design. Create the configured network and retry; do
-not change the Compose file to an implicitly created network.
+外部网络不存在时，`docker compose up` 会按设计返回网络不存在错误。创建配置的网络后
+重试，不要将 Compose 文件改为自动创建网络。
 
-Start Daytona without AgentOS first. `DAYTONA_API_KEY` may be empty only during
-this bootstrap step:
+首次启动先运行 Daytona，不启动 AgentOS。只有在本次引导期间，`DAYTONA_API_KEY` 可以
+为空：
 
 ```bash
 docker compose --profile daytona up -d \
   api runner db redis minio registry dex proxy dashboard
 ```
 
-Open `http://127.0.0.1:13000/dashboard`, sign in with the configured Dex user,
-activate the default snapshot, and create an API key with sandbox write and
-delete permissions. Store it as `DAYTONA_API_KEY`, then start AgentOS:
+打开 `http://127.0.0.1:13000/dashboard`，使用配置的 Dex 用户登录，激活默认 Snapshot，
+并创建具有沙箱写入和删除权限的 API Key。将其保存为 `DAYTONA_API_KEY`，再启动 AgentOS：
 
 ```bash
 docker compose --profile daytona up -d agent
 ```
 
-The Dashboard binds to `127.0.0.1:13000` and Proxy to `127.0.0.1:14000` by
-default. Local previews use `*.proxy.localhost`. A remote deployment must set
-the public Dashboard/OIDC/Proxy variables consistently and place both endpoints
-behind TLS with a wildcard DNS record and certificate for the Proxy domain.
+Dashboard 默认监听 `127.0.0.1:13000`，Proxy 默认监听 `127.0.0.1:14000`。本地预览使用
+`*.proxy.localhost`。远程部署必须一致配置公开 Dashboard、OIDC 和 Proxy 变量，并将两个
+端点置于 TLS 后方，同时为 Proxy 域名配置通配 DNS 记录和证书。
 
-### Backup and Recovery
+### 备份与恢复
 
-Back up `agent_db_data`, the Daytona `daytona_db_data` volume, MinIO, Registry,
-Runner, and Dex data. The dedicated AgentOS PostgreSQL database contains both
-Agno sessions and workspace registrations. PostgreSQL and object/registry data must
-come from the same recovery point. Protect the HMAC, encryption, API, Runner,
-and Proxy secrets separately; losing or rotating them without a migration can
-make existing data or capabilities unusable. Test restores with the same pinned
-`v0.189.0` images before relying on a backup.
+备份 `agent_db_data`、Daytona 的 `daytona_db_data` 卷、MinIO、Registry、Runner 和 Dex
+数据。AgentOS 专用 PostgreSQL 数据库同时包含 Agno 会话和工作区注册表。PostgreSQL 与
+对象存储、镜像仓库数据必须来自同一恢复点。HMAC、加密密钥、API Key、Runner 和 Proxy
+密钥应单独保护；未执行迁移就丢失或轮换这些密钥，可能导致现有数据或能力不可用。依赖备份
+前，应使用相同的锁定版 `v0.189.0` 镜像验证恢复。
 
-## Security
+## 安全
 
-- Production runtime URLs are same-origin. Absolute URLs require the explicit
-  development flag and exact credentialed CORS origin.
-- Every modifying browser command uses one payload-bound authorization and an
-  idempotency key derived from user/company/thread/run/tool call.
-- Business command handlers run with the current Odoo user, never `sudo`, and
-  execute inside a savepoint. Failed handlers roll back their business writes.
-- Binary fields and secrets are not sent in host snapshots. Audit details are
-  recursively redacted and bounded.
-- Session saves use `expectedSessionRevision` plus `SELECT ... FOR UPDATE`.
+- 生产运行地址必须同源。绝对地址仅允许在显式开启开发标志且凭据化 CORS Origin 精确匹配
+  时使用。
+- 每个修改型浏览器命令都使用绑定载荷的授权，以及由用户、公司、thread、run 和工具调用
+  派生的幂等键。
+- 业务命令处理器始终使用当前 Odoo 用户，不使用 `sudo`，并在保存点内执行。处理失败时
+  回滚业务写入。
+- 宿主快照不发送二进制字段和密钥。审计详情会递归脱敏并限制大小。
+- 会话保存使用 `expectedSessionRevision` 和 `SELECT ... FOR UPDATE`。
 
-## Failure Acceptance
+## 故障验收
 
-Inject AgentOS 401/403/429/500, non-SSE responses, malformed/oversized events,
-disconnects, and timeouts. Also test missing bundles, handshake mismatches,
-onchange/save failures, stale controllers, duplicated tool events, replayed
-tokens, and multi-tab session conflicts.
+注入 AgentOS 401、403、429、500、非 SSE 响应、异常或超大事件、连接中断和超时。
+同时测试前端包缺失、握手不匹配、onchange 或保存失败、过期控制器、重复工具事件、重放
+令牌和多标签页会话冲突。
 
-In every case Odoo navigation, form editing, onchange, validation, save, and
-discard must remain available. WebClient startup never waits for Chat. There
-must be one React root, one active run, and one session save queue.
+所有情况下，Odoo 导航、表单编辑、onchange、校验、保存和丢弃都必须保持可用。
+WebClient 启动不得等待聊天。系统必须始终只有一个 React 根节点、一个活动 run 和一个
+会话保存队列。
 
-Run the load baseline with:
+使用以下命令运行负载基线：
 
 ```bash
 node scripts/agui_sse_load.js https://odoo.example.com/contract-review/agui 200
 ```
 
-The production target is below 1% transport errors, with aborted browser runs
-releasing upstream connections promptly.
+生产目标是传输错误率低于 1%，且浏览器中止的 run 能及时释放上游连接。

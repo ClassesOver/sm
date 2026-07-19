@@ -29,12 +29,15 @@ npm run build
 按对话隔离的附件、工作区文件和经确认的代码执行，使用
 `docker-compose.yml` 中锁定版本的 Daytona 部署。默认 Compose 服务是 AgentOS 和专用
 PostgreSQL；增加 `--profile daytona` 可启动完整 Daytona 基础设施。首次配置按以下顺序执行。
+容器镜像默认使用 `docker.m.daocloud.io` 国内源，可通过 `.env` 中的
+`DOCKER_REGISTRY_MIRROR`、`PYTHON_IMAGE` 和 `DAYTONA_DEFAULT_SNAPSHOT` 覆盖；镜像内
+APT 和 Python 包默认分别使用阿里云 Debian、PyPI 镜像。
 
 1. 通过一次性 Compose 服务生成 `.env`：
 
 ```bash
 HOST_UID=$(id -u) HOST_GID=$(id -g) \
-  docker compose --env-file .env.example --profile setup run --rm env-init
+  docker compose --env-file .env.example --profile setup run --build --rm env-init
 ```
 
 `HOST_UID` 和 `HOST_GID` 让生成文件归当前宿主用户所有，`--rm` 在脚本退出后删除这次临时

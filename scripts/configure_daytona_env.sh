@@ -58,7 +58,7 @@ set_random_env() {
     local key=$1
     local bytes=$2
     local value
-    value=$(openssl rand -hex "$bytes")
+    value=$(openssl rand -base64 "$bytes" | tr '/+' '_-' | tr -d '=')
     set_env "$key" "$value"
 }
 
