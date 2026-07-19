@@ -53,11 +53,9 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
 vi .env
 ```
 
-3. 创建外部网络并检查配置。`.env` 不会自动导出为当前 Shell 变量；若修改了
-   `AGUI_SHARED_NETWORK`，请把命令中的 `hrp_network` 换成相同值：
+3. 检查 Compose 配置。运行服务时，Compose 会自动创建项目默认网络：
 
 ```bash
-docker network create hrp_network
 docker compose --profile daytona config
 ```
 
@@ -66,13 +64,18 @@ docker compose --profile daytona config
    创建 `DAYTONA_API_KEY` 并回填 `.env`，再启动 AgentOS。Daytona 不支持在未认证状态下
    自动创建首个 API Key，这是模型 API Key 之外唯一需要回填的凭据。备份和许可证要求也见该指南。
 
+   Daytona 集成直接参考锁定版本的官方
+   [部署教程](https://github.com/daytonaio/daytona/blob/v0.189.0/apps/docs/src/content/docs/en/oss-deployment.mdx)
+   和 [Compose](https://github.com/daytonaio/daytona/blob/v0.189.0/docker/docker-compose.yaml)。Runner 使用镜像内置
+   Docker，不挂载宿主机 Docker Socket；相关差异和安全说明见生产部署指南。
+
 收藏筛选和当前筛选可在管理员启用 `odoo.business.report.filters` 并配置逐模型读取策略后，
 导出到同一对话工作区，再由受控 Pandas 工具分析和生成图表。
 
 集成开发环境可直接启动仓库内的最小 AgentOS 应用：
 
 ```bash
-# 先完成上面的 .env 初始化和 hrp_network 创建
+# 先完成上面的 .env 初始化
 docker compose up -d agent-db
 uv venv .venv-agent
 uv pip install --python .venv-agent/bin/python -r agentos_dev/requirements.txt

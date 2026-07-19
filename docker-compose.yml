@@ -143,6 +143,7 @@ services:
       SKIP_USER_EMAIL_VERIFICATION: "true"
       RUN_MIGRATIONS: "true"
       HEALTH_CHECK_API_KEY: ${DAYTONA_HEALTH_API_KEY:?必须设置}
+      SSH_GATEWAY_API_KEY: ${DAYTONA_SSH_GATEWAY_API_KEY:?必须设置}
     restart: unless-stopped
     privileged: true
     depends_on:
@@ -189,7 +190,7 @@ services:
       API_PORT: "3003"
       DAYTONA_RUNNER_TOKEN: ${DAYTONA_RUNNER_TOKEN:?必须设置}
       LOG_FILE_PATH: /home/daytona/runner/runner.log
-      RESOURCE_LIMITS_DISABLED: "false"
+      RESOURCE_LIMITS_DISABLED: "true"
       AWS_ENDPOINT_URL: http://minio:9000
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: ${DAYTONA_MINIO_USER:-daytona}
@@ -199,8 +200,11 @@ services:
       RUNNER_DOMAIN: runner
       SSH_GATEWAY_ENABLE: "false"
       INTER_SANDBOX_NETWORK_ENABLED: "false"
+      DAEMON_START_TIMEOUT_SEC: "60"
+      SANDBOX_START_TIMEOUT_SEC: "30"
+      ANDROID_BOOT_TIMEOUT_SEC: "300"
+    # 官方 Runner 镜像内置 DinD；挂载宿主 Docker Socket 会污染宿主网络地址池。
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - daytona_runner_data:/home/daytona/runner
     privileged: true
     restart: unless-stopped
@@ -294,8 +298,3 @@ volumes:
   daytona_registry_data:
   daytona_minio_data:
   dex_data:
-
-networks:
-  default:
-    external: true
-    name: ${AGUI_SHARED_NETWORK:-hrp_network}

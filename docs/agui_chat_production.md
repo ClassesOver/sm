@@ -107,9 +107,9 @@ HTTP 预览。
 ### 要求与密钥
 
 至少分配 4 GB 内存，实际运行沙箱生命周期前建议使用 8 GB。并发代码执行可能需要更多
-资源。Docker 和 Daytona Runner 要求支持 cgroup 的 Linux 宿主机。Runner 挂载宿主机
-Docker Socket 并以特权模式运行，实际上具有宿主机级权限；应部署在专用宿主机或虚拟机
-上，并限制管理员访问。
+资源。Docker 和 Daytona Runner 要求支持 cgroup 的 Linux 宿主机。Runner 以特权模式运行
+镜像内置 Docker（DinD），仍具有较高的宿主机权限；应部署在专用宿主机或虚拟机上，并限制
+管理员访问。
 
 将所有 Compose 必需变量写入受保护的环境文件。生产环境不得使用示例密码或默认密码。
 必要配置包括：
@@ -123,8 +123,6 @@ Docker Socket 并以特权模式运行，实际上具有宿主机级权限；应
 - AgentOS 专用 PostgreSQL 服务使用的 `AGENT_POSTGRES_PASSWORD`
 - 本机开发连接使用的 `AGENT_POSTGRES_BIND` 和 `AGENT_POSTGRES_PORT`，默认值为
   `127.0.0.1:55432`
-- 所有 AgentOS 和 Daytona 服务使用的预创建外部 Docker 网络
-  `AGUI_SHARED_NETWORK`，默认值为 `hrp_network`
 - Dashboard 和 Dex 对外使用的 `DAYTONA_PUBLIC_HOST`；默认值为 `127.0.0.1`，从其他
   机器访问时必须改为宿主机 IP 或域名。协议默认使用 `http`，TLS 部署可增加
   `DAYTONA_PUBLIC_SCHEME=https`
@@ -191,28 +189,15 @@ HMAC、加密、Proxy、健康检查和 Runner 使用 32 字节随机值，编�
 
 ### 首次启动
 
-验证或启动服务前，先创建共享外部网络：
-
-```bash
-docker network create hrp_network
-```
-
-Compose 会读取 `.env`，但当前 Shell 不会自动导出其中的变量。如果 `.env` 修改了
-`AGUI_SHARED_NETWORK`，请将上方的 `hrp_network` 换成完全相同的值。
-
-Compose 文件有意将 AgentOS、两个 PostgreSQL 服务和所有 Daytona 基础设施连接到同一
-网络。连接到该网络的其他容器都可以尝试直接访问内部服务。应使用部署专用网络，不要连接
-不受信任的工作负载，不要发布内部服务端口，并在 Docker 守护进程周围实施宿主机和网络
-策略。需要更强租户隔离时，应使用独立栈和独立共享网络。
-
 启动前验证变量插值：
 
 ```bash
 docker compose --profile daytona config
 ```
 
-外部网络不存在时，`docker compose up` 会按设计返回网络不存在错误。创建配置的网络后
-重试，不要将 Compose 文件改为自动创建网络。
+启动时 Compose 会自动创建项目默认 bridge 网络，并将 AgentOS、两个 PostgreSQL 服务和
+Daytona 基础设施连接到该网络。不要把不受信任的工作负载加入此网络；需要更强租户隔离时，
+应使用独立 Compose 项目。
 
 首次启动先运行 Daytona，不启动 AgentOS。只有在本次引导期间，`DAYTONA_API_KEY` 可以
 为空：
@@ -233,6 +218,15 @@ Dashboard 默认在宿主机监听 `0.0.0.0:33043`，Proxy 默认监听 `0.0.0.0
 使用 `*.proxy.localhost`。远程部署必须设置 `DAYTONA_PUBLIC_HOST`；如需远程沙箱预览，
 还要设置 `DAYTONA_PROXY_DOMAIN`，并为该域名配置通配 DNS 记录和证书。公开部署应将两个
 端点置于 TLS 后方，并设置 `DAYTONA_PUBLIC_SCHEME=https`。
+
+Runner 按 Daytona 官方 Compose 使用镜像内置 Docker（DinD），不要向 Runner 挂载宿主机
+`/var/run/docker.sock`。镜像会在内部 Docker 中创建 `172.20.0.0/16` 的 `runner-bridge`；
+该网络与 Compose 自动创建的项目网络相互独立。
+
+本部署以 Daytona `v0.189.0` 的官方
+[Open Source Deployment](https://github.com/daytonaio/daytona/blob/v0.189.0/apps/docs/src/content/docs/en/oss-deployment.mdx)
+和 [Docker Compose](https://github.com/daytonaio/daytona/blob/v0.189.0/docker/docker-compose.yaml)
+为基线，省略 PgAdmin、MailDev、Jaeger、OpenTelemetry 和 SSH Gateway 等当前集成不需要的服务。
 
 ### 备份与恢复
 

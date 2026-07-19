@@ -104,8 +104,16 @@ if [[ "$rotate_runtime" == true ]]; then
     set_random_env AGUI_WORKSPACE_HMAC_SECRET 32
     set_random_env DAYTONA_PROXY_API_KEY 32
     set_random_env DAYTONA_HEALTH_API_KEY 32
+    set_random_env DAYTONA_SSH_GATEWAY_API_KEY 32
     printf '%s\n' '已更新工作区和无状态服务密钥。'
 fi
+
+ssh_gateway_api_key=$(awk -F= '$1 == "DAYTONA_SSH_GATEWAY_API_KEY" {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")
+if [[ -z "$ssh_gateway_api_key" || "$ssh_gateway_api_key" == 'generated-by-env-init' ]]; then
+    set_random_env DAYTONA_SSH_GATEWAY_API_KEY 32
+    printf '%s\n' '已补充 Daytona SSH Gateway API Key。'
+fi
+unset ssh_gateway_api_key
 
 if [[ "$rotate_persistent" == true ]]; then
     set_random_password_env AGENT_POSTGRES_PASSWORD

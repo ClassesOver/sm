@@ -11,8 +11,6 @@
 HOST_UID=$(id -u) HOST_GID=$(id -g) \
   docker compose --env-file .env.example --profile setup run --build --rm env-init
 # 脚本自动生成服务密码；只需将 .env 中的 OPENAI_API_KEY 改为真实值
-# 自定义网络名时同步修改下一条命令
-docker network create hrp_network
 docker compose up -d agent-db
 uv venv .venv-agent
 uv pip install --python .venv-agent/bin/python -r agentos_dev/requirements.txt
@@ -20,7 +18,7 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app
 ```
 
 初始化命令中的 `HOST_UID`/`HOST_GID` 用于保持 `.env` 的宿主文件所有权，`--rm` 只在
-脚本结束后删除临时初始化容器。已存在的网络再次创建会报错，可直接继续启动数据库。
+脚本结束后删除临时初始化容器。Compose 会在启动数据库时自动创建项目默认网络。
 
 默认监听 `127.0.0.1:7777`。Odoo 只需配置
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
