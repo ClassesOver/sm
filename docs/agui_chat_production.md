@@ -125,6 +125,9 @@ Docker Socket 并以特权模式运行，实际上具有宿主机级权限；应
   `127.0.0.1:55432`
 - 所有 AgentOS 和 Daytona 服务使用的预创建外部 Docker 网络
   `AGUI_SHARED_NETWORK`，默认值为 `hrp_network`
+- Dashboard 和 Dex 对外使用的 `DAYTONA_PUBLIC_HOST`；默认值为 `127.0.0.1`，从其他
+  机器访问时必须改为宿主机 IP 或域名。协议默认使用 `http`，TLS 部署可增加
+  `DAYTONA_PUBLIC_SCHEME=https`
 - 通用容器仓库前缀 `DOCKER_REGISTRY_MIRROR`，默认值为 `docker.m.daocloud.io`，也可设为
   `docker.io` 或内部镜像仓库
 - Daytona 镜像仓库 `DAYTONA_IMAGE_REGISTRY`，默认值为 `docker.io`；当前国内源不提供
@@ -219,16 +222,17 @@ docker compose --profile daytona up -d \
   api runner db redis minio registry dex proxy dashboard
 ```
 
-打开 `http://127.0.0.1:13000/dashboard`，使用配置的 Dex 用户登录，激活默认 Snapshot，
+打开 `http://127.0.0.1:33043/dashboard`，使用配置的 Dex 用户登录，激活默认 Snapshot，
 并创建具有沙箱写入和删除权限的 API Key。将其保存为 `DAYTONA_API_KEY`，再启动 AgentOS：
 
 ```bash
 docker compose --profile daytona up -d agent
 ```
 
-Dashboard 默认监听 `127.0.0.1:13000`，Proxy 默认监听 `127.0.0.1:14000`。本地预览使用
-`*.proxy.localhost`。远程部署必须一致配置公开 Dashboard、OIDC 和 Proxy 变量，并将两个
-端点置于 TLS 后方，同时为 Proxy 域名配置通配 DNS 记录和证书。
+Dashboard 默认在宿主机监听 `0.0.0.0:33043`，Proxy 默认监听 `0.0.0.0:33044`。本地预览
+使用 `*.proxy.localhost`。远程部署必须设置 `DAYTONA_PUBLIC_HOST`；如需远程沙箱预览，
+还要设置 `DAYTONA_PROXY_DOMAIN`，并为该域名配置通配 DNS 记录和证书。公开部署应将两个
+端点置于 TLS 后方，并设置 `DAYTONA_PUBLIC_SCHEME=https`。
 
 ### 备份与恢复
 
