@@ -36,6 +36,7 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
   const [searchText, setSearchText] = useState(query.query)
   const [activeIndex, setActiveIndex] = useState(0)
   const pickerRef = useRef<HTMLDivElement | null>(null)
+  const previousViewRef = useRef(view)
 
   useEffect(() => {
     setSearchText(query.query)
@@ -43,7 +44,10 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
   }, [query.query])
 
   useEffect(() => {
-    if (open && view === 'home') pickerRef.current?.focus({ preventScroll: true })
+    if (open && view === 'home' && previousViewRef.current === 'menus') {
+      pickerRef.current?.focus({ preventScroll: true })
+    }
+    previousViewRef.current = view
   }, [open, view])
 
   const filteredMenus = useMemo(() => {

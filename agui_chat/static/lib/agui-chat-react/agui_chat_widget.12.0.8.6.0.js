@@ -11179,13 +11179,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const [searchText, setSearchText] = reactExports.useState(query.query);
     const [activeIndex, setActiveIndex] = reactExports.useState(0);
     const pickerRef = reactExports.useRef(null);
+    const previousViewRef = reactExports.useRef(view);
     reactExports.useEffect(() => {
       setSearchText(query.query);
       setActiveIndex(0);
     }, [query.query]);
     reactExports.useEffect(() => {
       var _a2;
-      if (open && view === "home") (_a2 = pickerRef.current) == null ? void 0 : _a2.focus({ preventScroll: true });
+      if (open && view === "home" && previousViewRef.current === "menus") {
+        (_a2 = pickerRef.current) == null ? void 0 : _a2.focus({ preventScroll: true });
+      }
+      previousViewRef.current = view;
     }, [open, view]);
     const filteredMenus = reactExports.useMemo(() => {
       const needle = searchText.trim().toLocaleLowerCase();

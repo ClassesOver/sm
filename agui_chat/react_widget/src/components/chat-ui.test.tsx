@@ -199,6 +199,20 @@ describe('chat customization', () => {
     expect(screen.queryByRole('dialog', { name: '添加到对话' })).toBeNull()
   })
 
+  it('keeps the textarea focused so Backspace can remove the mention trigger', () => {
+    render(<ChatInput running={false} attachments={false} menuOptions={[]}
+      labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
+    input.focus()
+
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    expect(document.activeElement).toBe(input)
+
+    fireEvent.change(input, { target: { value: '', selectionStart: 0 } })
+    expect(input.value).toBe('')
+    expect(screen.queryByRole('dialog', { name: '添加到对话' })).toBeNull()
+  })
+
   it('removes the query, selects a menu, and sends the legacy menu mention', async () => {
     const onSend = vi.fn()
     const option = { menuId: 1, actionId: 11, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户' }
