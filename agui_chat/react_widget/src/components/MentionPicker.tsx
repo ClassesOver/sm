@@ -20,7 +20,8 @@ interface MentionPickerProps {
   query: MentionQuery
   menuOptions: MenuMentionOption[]
   onSelectMenu: (option: MenuMentionOption) => void
-  onOpenSkills: () => void
+  onOpenSkills: (query?: MentionQuery) => void
+  onFocusInput: () => void
   onClose: () => void
 }
 
@@ -30,13 +31,15 @@ const CATEGORIES = [
 ] as const
 
 export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>(function MentionPicker({
-  open, query, menuOptions, onSelectMenu, onOpenSkills, onClose
+  open, query, menuOptions, onSelectMenu, onOpenSkills, onFocusInput, onClose
 }, ref) {
   const [view, setView] = useState<'home' | 'menus'>('home')
   const [searchText, setSearchText] = useState(query.query)
   const [activeIndex, setActiveIndex] = useState(0)
+  const [typedNavigation, setTypedNavigation] = useState(false)
   const pickerRef = useRef<HTMLDivElement | null>(null)
   const previousViewRef = useRef(view)
+  const previousQueryRef = useRef('')
 
   useEffect(() => {
     setSearchText(query.query)
@@ -44,11 +47,28 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
   }, [query.query])
 
   useEffect(() => {
+    const queryChanged = previousQueryRef.current !== query.query
+    previousQueryRef.current = query.query
+    if (!queryChanged) return
+    if (query.query && view === 'home') {
+      if (CATEGORIES[activeIndex]?.id === 'skill') {
+        onOpenSkills({ ...query })
+        return
+      }
+      setTypedNavigation(true)
+      setView('menus')
+    } else if (!query.query && typedNavigation && view === 'menus') {
+      setView('home')
+    }
+  }, [activeIndex, onOpenSkills, query, typedNavigation, view])
+
+  useEffect(() => {
     if (open && view === 'home' && previousViewRef.current === 'menus') {
-      pickerRef.current?.focus({ preventScroll: true })
+      if (typedNavigation) onFocusInput()
+      else pickerRef.current?.focus({ preventScroll: true })
     }
     previousViewRef.current = view
-  }, [open, view])
+  }, [onFocusInput, open, typedNavigation, view])
 
   const filteredMenus = useMemo(() => {
     const needle = searchText.trim().toLocaleLowerCase()
@@ -76,6 +96,7 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
     }
     const category = CATEGORIES[index]
     if (category?.id === 'menu') {
+      setTypedNavigation(false)
       setView('menus')
       setActiveIndex(0)
     } else if (category?.id === 'skill') {
@@ -116,7 +137,7 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
     onKeyDown={handleKey}
   >
     <div className="flex h-9 items-center gap-2 border-b border-border px-2">
-      {view === 'menus' ? <button type="button" className="grid size-7 place-items-center rounded-md border-0 bg-background-secondary text-secondary shadow-none transition-colors hover:bg-accent hover:text-primary" aria-label="返回" onPointerDown={(event) => event.preventDefault()} onClick={goBack}><ArrowLeft size={15} /></button> : <AtSign size={15} className="mx-1 text-muted" />}
+      {view === 'menus' ? <button type="button" className="grid size-7 place-items-center rounded-md border-0 bg-background-secondary text-secondary shadow-none transition-colors hover:bg-accent hover:text-primary" aria-label="返回" onClick={goBack}><ArrowLeft size={15} /></button> : <AtSign size={15} className="mx-1 text-muted" />}
       <span className="min-w-0 flex-1 truncate text-xs font-medium">{view === 'home' ? '添加到对话' : '选择菜单'}</span>
     </div>
     <div id="agui-mention-options" className="max-h-72 overflow-y-auto p-1" role="listbox" aria-activedescendant={activeOptionId}>
@@ -127,13 +148,12 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
         role="option"
         aria-selected={index === activeIndex}
         className={cn('flex h-12 w-full items-center gap-2 border-l-2 border-l-transparent bg-white px-2 text-left transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary', index === activeIndex && 'border-l-primary bg-background-secondary text-primary')}
-        onPointerDown={(event) => event.preventDefault()}
         onClick={() => activate(index)}
       >
         <span className="grid size-7 shrink-0 place-items-center text-muted">{category.id === 'menu' ? <Menu size={15} /> : <Sparkles size={15} />}</span>
         <span className="min-w-0 flex-1"><span className="block text-xs text-primary">{category.label}</span><span className="block truncate text-[10px] text-muted">{category.detail}</span></span>
       </button>) : <>
-        <PickerSearch autoFocus value={searchText} onChange={(event) => { setSearchText(event.target.value); setActiveIndex(0) }} placeholder="搜索菜单名称或完整路径" aria-label="搜索菜单" />
+        {!typedNavigation ? <PickerSearch autoFocus value={searchText} onChange={(event) => { setSearchText(event.target.value); setActiveIndex(0) }} placeholder="搜索菜单名称或完整路径" aria-label="搜索菜单" /> : null}
         {filteredMenus.map((option, index) => <button
           id={`agui-mention-menu-${option.menuId}`}
           key={option.menuId}
@@ -141,7 +161,6 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
           role="option"
           aria-selected={index === activeIndex}
           className={cn('flex min-h-10 w-full items-center gap-2 border-l-2 border-l-transparent bg-white px-2.5 py-2 text-left text-xs text-secondary transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary', index === activeIndex && 'border-l-primary bg-background-secondary text-primary')}
-          onPointerDown={(event) => event.preventDefault()}
           onClick={() => onSelectMenu(option)}
         >
           <AtSign className="size-3.5 shrink-0 text-muted" />

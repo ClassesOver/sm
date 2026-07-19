@@ -20,6 +20,7 @@ interface SkillPickerProps {
   query: string
   skills: AgentSkillOption[]
   selected: SelectedAgentSkill[]
+  inlineQuery?: boolean
   onQueryChange: (query: string) => void
   onToggle: (skill: AgentSkillOption) => void
   onClose: () => void
@@ -38,7 +39,7 @@ export function skillQueryAtCursor(value: string, cursor: number): SkillQuery | 
 }
 
 export const SkillPicker = forwardRef<SkillPickerHandle, SkillPickerProps>(function SkillPicker({
-  open, query, skills, selected, onQueryChange, onToggle, onClose
+  open, query, skills, selected, inlineQuery = false, onQueryChange, onToggle, onClose
 }, ref) {
   const [activeIndex, setActiveIndex] = useState(0)
   const filtered = useMemo(() => {
@@ -85,7 +86,7 @@ export const SkillPicker = forwardRef<SkillPickerHandle, SkillPickerProps>(funct
 
   if (!open) return null
   return <div className="agui-picker absolute bottom-full left-0 z-40 mb-2 w-full max-w-md overflow-hidden rounded-md border border-border/70 bg-white text-primary shadow-[0_12px_32px_rgba(15,23,42,0.14)]" role="dialog" aria-label="选择技能" onKeyDown={(event) => handleKey(event)}>
-    <PickerSearch autoFocus aria-controls="agui-skill-options" aria-expanded={open} value={query} onChange={(event) => { onQueryChange(event.target.value); setActiveIndex(0) }} placeholder="搜索技能名称或用途" aria-label="搜索技能" trailing={<>已选 {selected.length}/1</>} />
+    {!inlineQuery ? <PickerSearch autoFocus aria-controls="agui-skill-options" aria-expanded={open} value={query} onChange={(event) => { onQueryChange(event.target.value); setActiveIndex(0) }} placeholder="搜索技能名称或用途" aria-label="搜索技能" trailing={<>已选 {selected.length}/1</>} /> : null}
     <div id="agui-skill-options" className="max-h-60 overflow-y-auto p-1" role="listbox" aria-label="技能列表" aria-activedescendant={filtered[activeIndex] ? `agui-skill-${filtered[activeIndex].id}` : undefined}>
       {filtered.map((skill, index) => {
         const checked = selected.some((item) => item.id === skill.id)

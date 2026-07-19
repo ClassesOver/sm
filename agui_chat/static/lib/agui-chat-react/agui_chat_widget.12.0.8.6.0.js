@@ -11172,25 +11172,45 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     menuOptions,
     onSelectMenu,
     onOpenSkills,
+    onFocusInput,
     onClose
   }, ref) {
     var _a, _b;
     const [view, setView] = reactExports.useState("home");
     const [searchText, setSearchText] = reactExports.useState(query.query);
     const [activeIndex, setActiveIndex] = reactExports.useState(0);
+    const [typedNavigation, setTypedNavigation] = reactExports.useState(false);
     const pickerRef = reactExports.useRef(null);
     const previousViewRef = reactExports.useRef(view);
+    const previousQueryRef = reactExports.useRef("");
     reactExports.useEffect(() => {
       setSearchText(query.query);
       setActiveIndex(0);
     }, [query.query]);
     reactExports.useEffect(() => {
       var _a2;
+      const queryChanged = previousQueryRef.current !== query.query;
+      previousQueryRef.current = query.query;
+      if (!queryChanged) return;
+      if (query.query && view === "home") {
+        if (((_a2 = CATEGORIES[activeIndex]) == null ? void 0 : _a2.id) === "skill") {
+          onOpenSkills({ ...query });
+          return;
+        }
+        setTypedNavigation(true);
+        setView("menus");
+      } else if (!query.query && typedNavigation && view === "menus") {
+        setView("home");
+      }
+    }, [activeIndex, onOpenSkills, query, typedNavigation, view]);
+    reactExports.useEffect(() => {
+      var _a2;
       if (open && view === "home" && previousViewRef.current === "menus") {
-        (_a2 = pickerRef.current) == null ? void 0 : _a2.focus({ preventScroll: true });
+        if (typedNavigation) onFocusInput();
+        else (_a2 = pickerRef.current) == null ? void 0 : _a2.focus({ preventScroll: true });
       }
       previousViewRef.current = view;
-    }, [open, view]);
+    }, [onFocusInput, open, typedNavigation, view]);
     const filteredMenus = reactExports.useMemo(() => {
       const needle = searchText.trim().toLocaleLowerCase();
       return menuOptions.filter((option) => !needle || option.fullPath.toLocaleLowerCase().includes(needle)).slice(0, 8);
@@ -11210,6 +11230,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       const category = CATEGORIES[index2];
       if ((category == null ? void 0 : category.id) === "menu") {
+        setTypedNavigation(false);
         setView("menus");
         setActiveIndex(0);
       } else if ((category == null ? void 0 : category.id) === "skill") {
@@ -11249,7 +11270,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         onKeyDown: handleKey,
         children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-9 items-center gap-2 border-b border-border px-2", children: [
-            view === "menus" ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center rounded-md border-0 bg-background-secondary text-secondary shadow-none transition-colors hover:bg-accent hover:text-primary", "aria-label": "返回", onPointerDown: (event) => event.preventDefault(), onClick: goBack, children: /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowLeft, { size: 15 }) }) : /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { size: 15, className: "mx-1 text-muted" }),
+            view === "menus" ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center rounded-md border-0 bg-background-secondary text-secondary shadow-none transition-colors hover:bg-accent hover:text-primary", "aria-label": "返回", onClick: goBack, children: /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowLeft, { size: 15 }) }) : /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { size: 15, className: "mx-1 text-muted" }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate text-xs font-medium", children: view === "home" ? "添加到对话" : "选择菜单" })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { id: "agui-mention-options", className: "max-h-72 overflow-y-auto p-1", role: "listbox", "aria-activedescendant": activeOptionId, children: view === "home" ? CATEGORIES.map((category, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
@@ -11260,7 +11281,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
               role: "option",
               "aria-selected": index2 === activeIndex,
               className: cn("flex h-12 w-full items-center gap-2 border-l-2 border-l-transparent bg-white px-2 text-left transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary", index2 === activeIndex && "border-l-primary bg-background-secondary text-primary"),
-              onPointerDown: (event) => event.preventDefault(),
               onClick: () => activate(index2),
               children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center text-muted", children: category.id === "menu" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Menu, { size: 15 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Sparkles, { size: 15 }) }),
@@ -11272,10 +11292,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             },
             category.id
           )) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx(PickerSearch, { autoFocus: true, value: searchText, onChange: (event) => {
+            !typedNavigation ? /* @__PURE__ */ jsxRuntimeExports.jsx(PickerSearch, { autoFocus: true, value: searchText, onChange: (event) => {
               setSearchText(event.target.value);
               setActiveIndex(0);
-            }, placeholder: "搜索菜单名称或完整路径", "aria-label": "搜索菜单" }),
+            }, placeholder: "搜索菜单名称或完整路径", "aria-label": "搜索菜单" }) : null,
             filteredMenus.map((option, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
               "button",
               {
@@ -11284,7 +11304,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                 role: "option",
                 "aria-selected": index2 === activeIndex,
                 className: cn("flex min-h-10 w-full items-center gap-2 border-l-2 border-l-transparent bg-white px-2.5 py-2 text-left text-xs text-secondary transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary", index2 === activeIndex && "border-l-primary bg-background-secondary text-primary"),
-                onPointerDown: (event) => event.preventDefault(),
                 onClick: () => onSelectMenu(option),
                 children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { className: "size-3.5 shrink-0 text-muted" }),
@@ -11315,6 +11334,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     query,
     skills,
     selected,
+    inlineQuery = false,
     onQueryChange,
     onToggle,
     onClose
@@ -11357,14 +11377,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }));
     if (!open) return null;
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "agui-picker absolute bottom-full left-0 z-40 mb-2 w-full max-w-md overflow-hidden rounded-md border border-border/70 bg-white text-primary shadow-[0_12px_32px_rgba(15,23,42,0.14)]", role: "dialog", "aria-label": "选择技能", onKeyDown: (event) => handleKey(event), children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx(PickerSearch, { autoFocus: true, "aria-controls": "agui-skill-options", "aria-expanded": open, value: query, onChange: (event) => {
+      !inlineQuery ? /* @__PURE__ */ jsxRuntimeExports.jsx(PickerSearch, { autoFocus: true, "aria-controls": "agui-skill-options", "aria-expanded": open, value: query, onChange: (event) => {
         onQueryChange(event.target.value);
         setActiveIndex(0);
       }, placeholder: "搜索技能名称或用途", "aria-label": "搜索技能", trailing: /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
         "已选 ",
         selected.length,
         "/1"
-      ] }) }),
+      ] }) }) : null,
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { id: "agui-skill-options", className: "max-h-60 overflow-y-auto p-1", role: "listbox", "aria-label": "技能列表", "aria-activedescendant": filtered[activeIndex] ? `agui-skill-${filtered[activeIndex].id}` : void 0, children: [
         filtered.map((skill, index2) => {
           const checked = selected.some((item) => item.id === skill.id);
@@ -11398,8 +11418,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const REPORT_EXTENSIONS = /* @__PURE__ */ new Set(["csv", "xlsx", "json", "jsonl"]);
   const ACCEPTED_FILE_SELECTOR = [...Object.keys(ACCEPTED_TYPES), ...[...REPORT_EXTENSIONS].map((value) => `.${value}`)].join(",");
   const MB = 1024 * 1024;
-  const MENTION_BOUNDARY = /[\s，。！？；：、（）【】《》“”‘’]/u;
-  const MENTION_TERMINATOR = /[\s@，。！？；：、（）【】《》“”‘’]/u;
+  const MENTION_BOUNDARY = /[\s,，.。!！?？;；:：、()\[\]{}【】<>《》"'“”‘’]/u;
+  const MENTION_TERMINATOR = /[\s@,，.。!！?？;；:：、()\[\]{}【】<>《》"'“”‘’]/u;
   function menuQueryAtCursor(value, cursor) {
     const safeCursor = Math.max(0, Math.min(cursor, value.length));
     let at = safeCursor - 1;
@@ -11474,8 +11494,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const maxTotalSize = config.maxTotalSize || 25 * MB;
     reactExports.useEffect(() => {
       const closeOutside = (event) => {
-        var _a2;
-        if (!((_a2 = formRef.current) == null ? void 0 : _a2.contains(event.target))) {
+        const form = formRef.current;
+        const insideForm = Boolean(form && (form.contains(event.target) || event.composedPath().includes(form)));
+        if (!insideForm) {
           setMenuQuery(null);
           setSkillOpen(false);
         }
@@ -11599,6 +11620,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const readyAttachments = items.flatMap((item) => item.attachment ? [item.attachment] : []);
     const canSend = !running && !sending && !disabled && !items.some((item) => item.status !== "ready") && (!!value.trim() || readyAttachments.length > 0 || !!menuMention || selectedSkills.length > 0 || workspaceReferences.length > 0);
+    const mentionSkillQuery = skillOpen && skillQuery && value[skillQuery.start] === "@" ? skillQuery : null;
     const selectMenu = (option) => {
       if (!menuQuery) return;
       const cursor = menuQuery.start;
@@ -11748,15 +11770,26 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                 const nextValue = event.target.value;
                 const cursor = event.target.selectionStart ?? nextValue.length;
                 const nextSkillQuery = skillQueryAtCursor(nextValue, cursor);
+                const nextMention = menuQueryAtCursor(nextValue, cursor);
                 setValue(nextValue);
-                if (nextSkillQuery && agentSkills.length) {
+                if (mentionSkillQuery) {
+                  if (nextMention == null ? void 0 : nextMention.query) {
+                    setSkillQuery(nextMention);
+                    setSkillSearch(nextMention.query);
+                    setMenuQuery(null);
+                  } else {
+                    setSkillQuery(null);
+                    setSkillSearch("");
+                    setSkillOpen(false);
+                    setMenuQuery(nextMention);
+                  }
+                } else if (nextSkillQuery && agentSkills.length) {
                   setSkillQuery(nextSkillQuery);
                   setSkillSearch(nextSkillQuery.query);
                   setSkillOpen(true);
                   setMenuQuery(null);
                 } else {
                   setSkillQuery(null);
-                  const nextMention = menuQueryAtCursor(nextValue, cursor);
                   setMenuQuery(nextMention);
                   if (nextMention) setSkillOpen(false);
                 }
@@ -11769,12 +11802,26 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                   setSkillOpen(true);
                   setMenuQuery(null);
                 } else {
-                  setMenuQuery(menuQueryAtCursor(value, cursor));
+                  const nextMention = menuQueryAtCursor(value, cursor);
+                  setMenuQuery(nextMention);
+                  if (nextMention) {
+                    setSkillOpen(false);
+                    setSkillQuery(null);
+                    setSkillSearch("");
+                  }
                 }
               }, onKeyDown, onPasteCapture: onPaste, "aria-autocomplete": "list", "aria-expanded": Boolean(menuQuery || skillOpen), "aria-controls": skillOpen ? "agui-skill-options" : menuQuery ? "agui-mention-options" : void 0 }),
-              menuQuery ? /* @__PURE__ */ jsxRuntimeExports.jsx(MentionPicker, { ref: mentionPickerRef, open: true, query: menuQuery, menuOptions, onSelectMenu: selectMenu, onOpenSkills: () => {
-                const cursor = menuQuery.start;
-                setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end));
+              menuQuery ? /* @__PURE__ */ jsxRuntimeExports.jsx(MentionPicker, { ref: mentionPickerRef, open: true, query: menuQuery, menuOptions, onSelectMenu: selectMenu, onOpenSkills: (typedQuery) => {
+                const currentQuery = typedQuery || menuQuery;
+                if (typedQuery) {
+                  setSkillQuery(currentQuery);
+                  setSkillSearch(currentQuery.query);
+                  setSkillOpen(true);
+                  setMenuQuery(null);
+                  return;
+                }
+                const cursor = currentQuery.start;
+                setValue((current) => current.slice(0, currentQuery.start) + current.slice(currentQuery.end));
                 setMenuQuery(null);
                 setSkillQuery(null);
                 setSkillSearch("");
@@ -11783,8 +11830,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                   var _a2;
                   return (_a2 = textareaRef.current) == null ? void 0 : _a2.setSelectionRange(cursor, cursor);
                 }, 0);
+              }, onFocusInput: () => {
+                var _a2;
+                return (_a2 = textareaRef.current) == null ? void 0 : _a2.focus({ preventScroll: true });
               }, onClose: () => setMenuQuery(null) }) : null,
-              /* @__PURE__ */ jsxRuntimeExports.jsx(SkillPicker, { ref: skillPickerRef, open: skillOpen, query: skillSearch, skills: agentSkills, selected: selectedSkills, onQueryChange: setSkillSearch, onToggle: toggleSkill, onClose: () => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx(SkillPicker, { ref: skillPickerRef, open: skillOpen, query: skillSearch, skills: agentSkills, selected: selectedSkills, inlineQuery: Boolean(mentionSkillQuery), onQueryChange: setSkillSearch, onToggle: toggleSkill, onClose: () => {
                 setSkillOpen(false);
                 setSkillQuery(null);
               } })

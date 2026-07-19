@@ -265,6 +265,56 @@ async function rpcLoadingEvents(page: Page, operation: () => Promise<unknown>) {
   }
 }
 
+test.describe('@ 前端交互', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route('**/agent/config', async (route) => {
+      const declaration = await page.evaluate(() => {
+        const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
+        return manager.bridge.config
+      })
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          protocol: declaration.protocol,
+          bundle_version: declaration.bundle_version,
+          command_catalog_hash: declaration.command_catalog_hash,
+          skills: [{ id: 'audit', name: '合同审计', description: '核对合同字段' }]
+        })
+      })
+    })
+    await loginToOdoo(page)
+  })
+
+  test.afterEach(async ({ page }) => {
+    if (!page.isClosed()) await cleanupE2e(page)
+  })
+
+  test('@ 菜单选择器支持真实鼠标点击', async ({ page }) => {
+    await openPartnerList(page)
+    await openAssistant(page)
+    await page.getByRole('button', { name: '新建对话' }).click()
+    const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
+    await input.fill('@')
+
+    const picker = page.getByRole('dialog', { name: '添加到对话' })
+    await picker.getByRole('option', { name: /菜单/ }).click()
+    await expect(page.getByLabel('搜索菜单')).toBeVisible()
+
+    await picker.getByRole('button', { name: '返回' }).click()
+    await expect(picker.getByRole('option', { name: /技能/ })).toBeVisible()
+
+    await picker.getByRole('option', { name: /菜单/ }).click()
+    const menu = picker.getByRole('option').first()
+    await expect(menu).toBeVisible()
+    await menu.click()
+
+    await expect(picker).toBeHidden()
+    await expect(input).toHaveValue('')
+    await expect(page.getByRole('button', { name: '发送消息' })).toBeEnabled()
+  })
+})
+
 test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
   test.beforeEach(async ({ page }) => {
     await loginToOdoo(page)

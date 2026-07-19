@@ -130,6 +130,8 @@ describe('chat customization', () => {
     expect(menuQueryAtCursor('@客户', 3)).toEqual({ start: 0, end: 3, query: '客户' })
     expect(menuQueryAtCursor('打开 @客户', 6)).toEqual({ start: 3, end: 6, query: '客户' })
     expect(menuQueryAtCursor('打开，@客户。', 6)).toEqual({ start: 3, end: 6, query: '客户' })
+    expect(menuQueryAtCursor('打开 (@客户)', 7)).toEqual({ start: 4, end: 7, query: '客户' })
+    expect(menuQueryAtCursor('打开 @客户,', 6)).toEqual({ start: 3, end: 6, query: '客户' })
     expect(menuQueryAtCursor('打开 @客户资料', 5)).toEqual({ start: 3, end: 8, query: '客户资料' })
     expect(menuQueryAtCursor('打开@客户', 5)).toBeNull()
     expect(menuQueryAtCursor('user@example.com', 8)).toBeNull()
@@ -162,16 +164,41 @@ describe('chat customization', () => {
     expect(screen.queryByText('收藏筛选')).toBeNull()
     expect(screen.queryByText('当前筛选')).toBeNull()
 
-    fireEvent.click(screen.getByRole('option', { name: /菜单\s+按名称或完整路径查找菜单/ }))
+    const menuCategory = screen.getByRole('option', { name: /菜单\s+按名称或完整路径查找菜单/ })
+    expect(fireEvent.pointerDown(menuCategory)).toBe(true)
+    fireEvent.click(menuCategory)
     const search = screen.getByLabelText('搜索菜单')
     expect(screen.getAllByRole('option')).toHaveLength(8)
     fireEvent.change(search, { target: { value: '客户' } })
     expect(screen.getByRole('option', { name: '销售 / 客户' })).toBeTruthy()
     expect(screen.queryByRole('option', { name: '服务 / 工单' })).toBeNull()
     fireEvent.change(search, { target: { value: '服务 / 工单' } })
-    expect(screen.getByRole('option', { name: '服务 / 工单' })).toBeTruthy()
+    const workOrder = screen.getByRole('option', { name: '服务 / 工单' })
+    expect(fireEvent.pointerDown(workOrder)).toBe(true)
+    fireEvent.click(workOrder)
+    expect(screen.getByText('服务 / 工单')).toBeTruthy()
     expect(searchMentions).not.toHaveBeenCalled()
     expect(bindMention).not.toHaveBeenCalled()
+  })
+
+  it('keeps the picker open when Shadow DOM retargets an internal pointer event', () => {
+    render(<ChatInput running={false} attachments={false} menuOptions={[]}
+      labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    const option = screen.getByRole('option', { name: /菜单\s+按名称或完整路径查找菜单/ })
+    const form = option.closest('form') as HTMLFormElement
+    const shadowHost = document.createElement('div')
+    document.body.appendChild(shadowHost)
+    const pointerDown = new Event('pointerdown', { bubbles: true, composed: true })
+    Object.defineProperty(pointerDown, 'composedPath', {
+      value: () => [option, form, shadowHost, document, window]
+    })
+
+    shadowHost.dispatchEvent(pointerDown)
+
+    expect(screen.getByRole('dialog', { name: '添加到对话' })).toBeTruthy()
+    shadowHost.remove()
   })
 
   it('supports keyboard navigation and Escape across both mention levels', async () => {
@@ -199,18 +226,81 @@ describe('chat customization', () => {
     expect(screen.queryByRole('dialog', { name: '添加到对话' })).toBeNull()
   })
 
-  it('keeps the textarea focused so Backspace can remove the mention trigger', () => {
-    render(<ChatInput running={false} attachments={false} menuOptions={[]}
+  it('enters menu search while typing and returns to categories with Backspace', () => {
+    render(<ChatInput running={false} attachments={false} menuOptions={[
+      { menuId: 1, actionId: 11, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户' }
+    ]}
       labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
     const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
     input.focus()
 
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
     expect(document.activeElement).toBe(input)
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+
+    fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
+    expect(document.activeElement).toBe(input)
+    expect(screen.queryByLabelText('搜索菜单')).toBeNull()
+    expect(screen.getByRole('option', { name: '销售 / 客户' })).toBeTruthy()
+
+    const back = screen.getByRole('button', { name: '返回' })
+    back.focus()
+    fireEvent.click(back)
+    expect(document.activeElement).toBe(input)
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+
+    fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    expect(document.activeElement).toBe(input)
+    expect(screen.getAllByRole('option')).toHaveLength(2)
 
     fireEvent.change(input, { target: { value: '', selectionStart: 0 } })
     expect(input.value).toBe('')
     expect(screen.queryByRole('dialog', { name: '添加到对话' })).toBeNull()
+  })
+
+  it('enters skill search when typing with the skill category highlighted', () => {
+    render(<ChatInput running={false} attachments={false} menuOptions={[]}
+      agentSkills={[{ id: 'audit', name: '合同审计', description: '核对合同字段' }]}
+      labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
+    input.focus()
+
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(screen.getByRole('listbox').getAttribute('aria-activedescendant')).toContain('skill')
+
+    fireEvent.change(input, { target: { value: '@审计', selectionStart: 3 } })
+    expect(document.activeElement).toBe(input)
+    expect(screen.queryByRole('dialog', { name: '添加到对话' })).toBeNull()
+    expect(screen.getByRole('dialog', { name: '选择技能' })).toBeTruthy()
+    expect(screen.queryByLabelText('搜索技能')).toBeNull()
+    expect(screen.getByRole('option', { name: /合同审计/ })).toBeTruthy()
+
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    expect(document.activeElement).toBe(input)
+    expect(screen.queryByRole('dialog', { name: '选择技能' })).toBeNull()
+    expect(screen.getByRole('dialog', { name: '添加到对话' })).toBeTruthy()
+  })
+
+  it('keeps the mention and skill pickers mutually exclusive', () => {
+    render(<ChatInput running={false} attachments={false} menuOptions={[
+      { menuId: 1, actionId: 11, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户' }
+    ]} agentSkills={[{ id: 'audit', name: '合同审计', description: '核对合同字段' }]}
+      labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
+    input.focus()
+    fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
+    expect(screen.getByRole('dialog', { name: '添加到对话' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '选择技能' }))
+    expect(screen.getByRole('dialog', { name: '选择技能' })).toBeTruthy()
+    expect(screen.queryByRole('dialog', { name: '添加到对话' })).toBeNull()
+
+    input.setSelectionRange(3, 3)
+    fireEvent.click(input)
+    expect(screen.queryByRole('dialog', { name: '选择技能' })).toBeNull()
+    expect(screen.getByRole('dialog', { name: '添加到对话' })).toBeTruthy()
   })
 
   it('removes the query, selects a menu, and sends the legacy menu mention', async () => {
@@ -219,9 +309,10 @@ describe('chat customization', () => {
     render(<ChatInput running={false} attachments={false} menuOptions={[option]}
       labels={labels} icons={icons} onSend={onSend} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
     const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
+    input.focus()
     fireEvent.change(input, { target: { value: '请打开 @客户', selectionStart: 7 } })
-    fireEvent.keyDown(screen.getByRole('dialog', { name: '添加到对话' }), { key: 'Enter' })
-    fireEvent.keyDown(screen.getByLabelText('搜索菜单'), { key: 'Enter' })
+    expect(document.activeElement).toBe(input)
+    fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(input.value).toBe('请打开 ')
     expect(screen.getByText('销售 / 客户')).toBeTruthy()
@@ -237,7 +328,9 @@ describe('chat customization', () => {
       labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
     const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
-    fireEvent.click(screen.getByRole('option', { name: /技能 选择适合当前任务的专业能力/ }))
+    const skillCategory = screen.getByRole('option', { name: /技能 选择适合当前任务的专业能力/ })
+    expect(fireEvent.pointerDown(skillCategory)).toBe(true)
+    fireEvent.click(skillCategory)
     expect(input.value).toBe('')
     fireEvent.click(screen.getByRole('option', { name: /合同审计/ }))
     expect(screen.getByLabelText('已选技能')).toBeTruthy()

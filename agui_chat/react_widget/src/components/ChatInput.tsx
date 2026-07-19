@@ -65,8 +65,8 @@ export interface ChatInputProps {
   onOpenWorkspace?: () => void
 }
 
-const MENTION_BOUNDARY = /[\s，。！？；：、（）【】《》“”‘’]/u
-const MENTION_TERMINATOR = /[\s@，。！？；：、（）【】《》“”‘’]/u
+const MENTION_BOUNDARY = /[\s,，.。!！?？;；:：、()\[\]{}【】<>《》"'“”‘’]/u
+const MENTION_TERMINATOR = /[\s@,，.。!！?？;；:：、()\[\]{}【】<>《》"'“”‘’]/u
 
 export function menuQueryAtCursor(value: string, cursor: number): MentionQuery | null {
   const safeCursor = Math.max(0, Math.min(cursor, value.length))
@@ -133,7 +133,11 @@ export function ChatInput({
   const maxTotalSize = config.maxTotalSize || 25 * MB
   useEffect(() => {
     const closeOutside = (event: PointerEvent | FocusEvent) => {
-      if (!formRef.current?.contains(event.target as Node)) {
+      const form = formRef.current
+      const insideForm = Boolean(form && (
+        form.contains(event.target as Node) || event.composedPath().includes(form)
+      ))
+      if (!insideForm) {
         setMenuQuery(null)
         setSkillOpen(false)
       }
@@ -267,6 +271,7 @@ export function ChatInput({
   const readyAttachments = items.flatMap((item) => item.attachment ? [item.attachment] : [])
   const canSend = !running && !sending && !disabled && !items.some((item) => item.status !== 'ready') &&
     (!!value.trim() || readyAttachments.length > 0 || !!menuMention || selectedSkills.length > 0 || workspaceReferences.length > 0)
+  const mentionSkillQuery = skillOpen && skillQuery && value[skillQuery.start] === '@' ? skillQuery : null
 
   const selectMenu = (option: MenuMentionOption) => {
     if (!menuQuery) return
@@ -434,15 +439,26 @@ export function ChatInput({
             const nextValue = event.target.value
             const cursor = event.target.selectionStart ?? nextValue.length
             const nextSkillQuery = skillQueryAtCursor(nextValue, cursor)
+            const nextMention = menuQueryAtCursor(nextValue, cursor)
             setValue(nextValue)
-            if (nextSkillQuery && agentSkills.length) {
+            if (mentionSkillQuery) {
+              if (nextMention?.query) {
+                setSkillQuery(nextMention)
+                setSkillSearch(nextMention.query)
+                setMenuQuery(null)
+              } else {
+                setSkillQuery(null)
+                setSkillSearch('')
+                setSkillOpen(false)
+                setMenuQuery(nextMention)
+              }
+            } else if (nextSkillQuery && agentSkills.length) {
               setSkillQuery(nextSkillQuery)
               setSkillSearch(nextSkillQuery.query)
               setSkillOpen(true)
               setMenuQuery(null)
             } else {
               setSkillQuery(null)
-              const nextMention = menuQueryAtCursor(nextValue, cursor)
               setMenuQuery(nextMention)
               if (nextMention) setSkillOpen(false)
             }
@@ -455,11 +471,17 @@ export function ChatInput({
               setSkillOpen(true)
               setMenuQuery(null)
             } else {
-              setMenuQuery(menuQueryAtCursor(value, cursor))
+              const nextMention = menuQueryAtCursor(value, cursor)
+              setMenuQuery(nextMention)
+              if (nextMention) {
+                setSkillOpen(false)
+                setSkillQuery(null)
+                setSkillSearch('')
+              }
             }
           }} onKeyDown={onKeyDown} onPasteCapture={onPaste} aria-autocomplete="list" aria-expanded={Boolean(menuQuery || skillOpen)} aria-controls={skillOpen ? 'agui-skill-options' : menuQuery ? 'agui-mention-options' : undefined} />
-          {menuQuery ? <MentionPicker ref={mentionPickerRef} open query={menuQuery} menuOptions={menuOptions} onSelectMenu={selectMenu} onOpenSkills={() => { const cursor = menuQuery.start; setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end)); setMenuQuery(null); setSkillQuery(null); setSkillSearch(''); setSkillOpen(true); window.setTimeout(() => textareaRef.current?.setSelectionRange(cursor, cursor), 0) }} onClose={() => setMenuQuery(null)} /> : null}
-          <SkillPicker ref={skillPickerRef} open={skillOpen} query={skillSearch} skills={agentSkills} selected={selectedSkills} onQueryChange={setSkillSearch} onToggle={toggleSkill} onClose={() => { setSkillOpen(false); setSkillQuery(null) }} />
+          {menuQuery ? <MentionPicker ref={mentionPickerRef} open query={menuQuery} menuOptions={menuOptions} onSelectMenu={selectMenu} onOpenSkills={(typedQuery) => { const currentQuery = typedQuery || menuQuery; if (typedQuery) { setSkillQuery(currentQuery); setSkillSearch(currentQuery.query); setSkillOpen(true); setMenuQuery(null); return } const cursor = currentQuery.start; setValue((current) => current.slice(0, currentQuery.start) + current.slice(currentQuery.end)); setMenuQuery(null); setSkillQuery(null); setSkillSearch(''); setSkillOpen(true); window.setTimeout(() => textareaRef.current?.setSelectionRange(cursor, cursor), 0) }} onFocusInput={() => textareaRef.current?.focus({ preventScroll: true })} onClose={() => setMenuQuery(null)} /> : null}
+          <SkillPicker ref={skillPickerRef} open={skillOpen} query={skillSearch} skills={agentSkills} selected={selectedSkills} inlineQuery={Boolean(mentionSkillQuery)} onQueryChange={setSkillSearch} onToggle={toggleSkill} onClose={() => { setSkillOpen(false); setSkillQuery(null) }} />
         </div>
         <div className="mt-2 flex min-h-8 items-center justify-between gap-2">
           <div className="flex items-center gap-1">
