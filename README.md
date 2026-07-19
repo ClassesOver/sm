@@ -26,48 +26,74 @@ npm run test
 npm run build
 ```
 
-按对话隔离的附件、工作区文件和经确认的代码执行使用 Daytona。部署已拆成两个独立项目：
+## Docker 首次部署
+
+按对话隔离的附件、工作区文件和经确认的代码执行使用 Daytona。部署分为两个独立项目：
 
 - 根目录 `docker-compose.yml`：AgentOS 和专用 PostgreSQL。
 - `docker/docker-compose.yaml`：基于 Daytona OSS `v0.189.0` 官方配置的完整 Daytona 栈。
 
-两套 Compose 不共享容器网络和数据卷。AgentOS 通过 Daytona 发布到宿主机的 `33043`
-端口调用 API。
+两套 Compose 不共享容器网络、项目名或数据卷。请按下面的顺序分别初始化和启动。
 
-1. 通过一次性 Compose 服务生成 `.env`：
+1. 生成根目录 `.env`：
 
 ```bash
 HOST_UID=$(id -u) HOST_GID=$(id -g) \
-  docker compose --env-file .env.example --profile setup run --build --rm env-init
+  docker compose --env-file .env.example \
+  --profile setup run --build --rm env-init
 ```
 
-`HOST_UID` 和 `HOST_GID` 让生成文件归当前宿主用户所有。该脚本只生成 AgentOS 数据库密码
-和工作区 HMAC，不生成 Daytona 服务端凭据。
+该脚本生成 AgentOS PostgreSQL 密码和工作区 HMAC。编辑 `.env`，只需手工填写模型
+`OPENAI_API_KEY`；需要时可增加 `OPENAI_BASE_URL` 和 `MODEL`。
 
-2. 编辑 `.env`，只需把 `OPENAI_API_KEY` 改为真实的模型 API Key。需要时可同时修改
-   `OPENAI_BASE_URL` 和 `MODEL`；Daytona 登录邮箱在 `docker/.env` 的
-   `DEX_ADMIN_EMAIL` 中修改：
+2. 生成独立的 Daytona `docker/.env`：
 
 ```bash
-vi .env
+HOST_UID=$(id -u) HOST_GID=$(id -g) \
+  docker compose --env-file docker/.env.example \
+  -f docker/docker-compose.yaml --profile setup \
+  run --build --rm env-init
 ```
 
-3. 按 [Daytona 完整部署说明](docker/README.md)生成 `docker/.env` 并启动 Daytona，在
-   Dashboard 创建 API Key 后写入根目录 `.env`：
+脚本会生成 Daytona 服务密钥、12 位服务密码、Dex 密码哈希和 SSH 密钥。Dex 明文密码只在
+终端显示一次，默认登录邮箱为 `admin@example.com`，应立即保存。
+
+3. 检查并启动 Daytona：
+
+```bash
+docker compose --env-file docker/.env \
+  -f docker/docker-compose.yaml config
+
+docker compose --env-file docker/.env \
+  -f docker/docker-compose.yaml up -d
+```
+
+打开 `http://127.0.0.1:33043/dashboard`，使用 Dex 账号登录，激活默认 Snapshot，并创建具有
+沙箱创建、写入和删除权限的 API Key。运行下面的脚本，在提示时保留现有 HMAC，并写入该
+API Key：
 
 ```bash
 bash scripts/configure_agentos_env.sh .env
 ```
 
-4. 单独启动 AgentOS：
+4. 启动 AgentOS：
 
 ```bash
 docker compose config
 docker compose up -d --build
 ```
 
-Daytona 不支持未认证客户端自动创建首个 API Key，因此这是模型 API Key 之外唯一需要在
-首次引导后回填的值。完整命令、端口和备份要求见
+Daytona 基础 Compose 默认只向宿主机发布以下必要端口：
+
+| 端口 | 服务 | 用途 |
+| --- | --- | --- |
+| `33043` | API / Dashboard | Daytona API 和管理界面 |
+| `33044` | Proxy | 沙箱 HTTP 预览和 Toolbox |
+| `33047` | Dex | OIDC 登录 |
+
+Runner、SSH Gateway、PostgreSQL、Redis、Registry、MinIO、MailDev、Jaeger、PgAdmin 和
+OpenTelemetry Collector 只在 Daytona 内部网络提供。SSH 入口按需通过独立 override 开放。
+完整命令、远程 HTTPS、端口和备份要求见 [Daytona 部署说明](docker/README.md)与
 [生产部署指南](docs/agui_chat_production.md#first-start)。
 
 收藏筛选和当前筛选可在管理员启用 `odoo.business.report.filters` 并配置逐模型读取策略后，

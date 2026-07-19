@@ -298,6 +298,10 @@ cython_debug/
 #.idea/
 
 ### 项目专用
+# 本地 Agent 配置和 Odoo 测试模块
+/.agents/
+/agui_chat_test/
+
 # JetBrains IDE 本地配置
 /.idea/
 

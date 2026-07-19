@@ -1,5 +1,0 @@
-id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
-access_agui_chat_test_document_user,agui.chat.test.document user,model_agui_chat_test_document,base.group_user,1,1,1,1
-access_agui_chat_test_option_user,agui.chat.test.option user,model_agui_chat_test_option,base.group_user,1,1,1,1
-access_agui_chat_test_line_user,agui.chat.test.line user,model_agui_chat_test_line,base.group_user,1,1,1,1
-
