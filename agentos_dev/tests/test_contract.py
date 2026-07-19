@@ -44,6 +44,15 @@ def test_agent_instructions_enforce_staged_odoo_workflow():
     assert "独立确认后 odoo.save_current_form" in instructions
 
 
+def test_agent_instructions_prioritize_selected_menu_navigation():
+    instructions = "\n".join(app.assistant.instructions)
+
+    assert "第一个且唯一可调用的页面工具是 odoo.open_menu" in instructions
+    assert "菜单名称只用于定位" in instructions
+    assert "用户消息明确要求创建" in instructions
+    assert "不得从菜单名称中的“新建”或“创建”推断创建意图" in instructions
+
+
 def test_智能体说明明确工作区确认边界():
     instructions = "\n".join(app.assistant.instructions)
 

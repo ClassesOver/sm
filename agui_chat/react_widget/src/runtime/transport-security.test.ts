@@ -133,13 +133,74 @@ describe('production transport contract', () => {
     expect(input.context).toContainEqual({
       description: '已选 Odoo 菜单',
       value: JSON.stringify({
-        menuId: 8, actionId: 42, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户'
+        menuId: 8, actionId: 42, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户',
+        navigationRequired: true, requiredFirstTool: 'odoo.open_menu'
       })
     })
     expect(input.context).toContainEqual({
       description: '已选 Odoo 记录候选项', value: JSON.stringify(recordSelection)
     })
     expect(JSON.stringify(input)).not.toContain('机密菜单')
+  })
+
+  it('only exposes menu navigation until the selected menu opens successfully', () => {
+    const menuMention = {
+      menuId: 1448, actionId: 42, name: '费用申请单创建',
+      path: ['费用', '费用申请单创建'], fullPath: '费用 / 费用申请单创建', valid: true
+    }
+    const tools = [
+      { name: 'odoo.open_menu', parameters: { type: 'object' } },
+      { name: 'odoo.open_create', parameters: { type: 'object' } }
+    ]
+    const userMessage = {
+      id: 'selected-menu', role: 'user' as const, content: '', menuMention
+    }
+    const initial = buildRunInput(
+      [userMessage], v2Props({ menuOptions: [menuMention], tools }),
+      'thread-1', null, {}
+    )
+
+    expect(initial.tools.map((tool) => tool.name)).toEqual(['odoo.open_menu'])
+
+    const navigationMessages = [
+      userMessage,
+      {
+        id: 'assistant-menu', role: 'assistant' as const, content: '', tool_calls: [{
+          id: 'menu-call', name: 'odoo.open_menu', args: { menuId: 1448 }
+        }]
+      },
+      {
+        id: 'tool-menu', role: 'tool' as const, name: 'odoo.open_menu',
+        toolCallId: 'menu-call', content: JSON.stringify({
+          ok: true, operation: 'odoo.open_menu', navigated: true
+        })
+      }
+    ]
+    const wrongMenu = buildRunInput([
+      navigationMessages[0],
+      {
+        ...navigationMessages[1],
+        tool_calls: [{ id: 'menu-call', name: 'odoo.open_menu', args: { menuId: 1447 } }]
+      },
+      navigationMessages[2]
+    ], v2Props({ menuOptions: [menuMention], tools }), 'thread-1', null, {})
+    expect(wrongMenu.tools.map((tool) => tool.name)).toEqual(['odoo.open_menu'])
+
+    const afterNavigation = buildRunInput(
+      navigationMessages, v2Props({ menuOptions: [menuMention], tools }),
+      'thread-1', null, {}
+    )
+
+    expect(afterNavigation.tools.map((tool) => tool.name)).toEqual([
+      'odoo.open_menu', 'odoo.open_create'
+    ])
+    const selectedMenu = afterNavigation.context.find(
+      (item) => item.description === '已选 Odoo 菜单'
+    )
+    expect(JSON.parse(selectedMenu?.value || '{}')).toMatchObject({
+      navigationRequired: false,
+      requiredFirstTool: false
+    })
   })
 
   it('adds exact workspace paths and tools to Agent context', () => {

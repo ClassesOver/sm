@@ -25574,6 +25574,39 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function contextValue(value) {
     return typeof value === "string" ? value : JSON.stringify(value);
   }
+  function menuNavigationPending(messages) {
+    let userIndex = -1;
+    for (let index2 = messages.length - 1; index2 >= 0; index2 -= 1) {
+      if (messages[index2].role === "user") {
+        userIndex = index2;
+        break;
+      }
+    }
+    const mention = userIndex >= 0 ? messages[userIndex].menuMention : void 0;
+    if (!(mention == null ? void 0 : mention.valid)) return false;
+    const matchingCalls = /* @__PURE__ */ new Set();
+    for (const message of messages.slice(userIndex + 1)) {
+      const calls = [
+        ...(message.toolCalls || []).map((call) => toolCallFromTransport(call, message.id)).filter((call) => Boolean(call)),
+        ...message.tool_calls || []
+      ];
+      calls.forEach((call) => {
+        const args = toolArgs(call);
+        const callId = toolCallId(call);
+        if (callId && toolName(call) === "odoo.open_menu" && args && typeof args === "object" && !Array.isArray(args) && Number(args.menuId) === mention.menuId) {
+          matchingCalls.add(callId);
+        }
+      });
+      if (message.role !== "tool" || !matchingCalls.has(String(
+        message.toolCallId || message.tool_call_id || ""
+      ))) {
+        continue;
+      }
+      const result = parseJson(message.content);
+      if (result && typeof result === "object" && !Array.isArray(result) && result.ok === true) return false;
+    }
+    return true;
+  }
   function agentHostContext(host) {
     const action = host.action && typeof host.action === "object" ? host.action : null;
     const record = host.record && typeof host.record === "object" ? host.record : null;
@@ -25618,6 +25651,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function normalizeRunContext(props, messages) {
     var _a;
+    const navigationPending = menuNavigationPending(messages);
     const context = [{
       description: "Odoo 宿主快照",
       value: contextValue(agentHostContext(props.hostState))
@@ -25688,7 +25722,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           actionId: mention.actionId,
           name: mention.name,
           path: mention.path,
-          fullPath: mention.fullPath
+          fullPath: mention.fullPath,
+          navigationRequired: navigationPending,
+          requiredFirstTool: navigationPending ? "odoo.open_menu" : false
         })
       });
     }
@@ -25702,6 +25738,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function buildRunInput(messages, props, threadId, pendingAssistantId, agentState) {
     const runId = uuid();
+    const navigationPending = menuNavigationPending(messages);
+    const tools = clone(props.tools || []).filter((tool) => !navigationPending || tool.name === "odoo.open_menu");
     return {
       threadId,
       runId,
@@ -25710,7 +25748,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const isPendingEmpty = message.id === pendingAssistantId && !message.content && !message.streaming_error && !(message.tool_calls && message.tool_calls.length);
         return !isPendingEmpty;
       }).map(transportMessage),
-      tools: clone(props.tools || []),
+      tools,
       context: normalizeRunContext(props, messages),
       forwardedProps: {},
       state: {
