@@ -31,7 +31,9 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
 ```
 
 脚本会生成 Daytona 服务密钥、12 位服务密码、Dex 密码哈希及 SSH Gateway 密钥。Dex
-明文登录密码只显示一次，默认账号为 `admin@example.com`，应立即保存。
+明文登录密码只显示一次，默认账号为 `admin@example.com`，应立即保存。初始化容器以 root
+运行 `ssh-keygen`，完成后根据 `HOST_UID`、`HOST_GID` 恢复环境文件的宿主所有权；配置只有在
+全部密钥生成成功后才会一次性替换。
 
 启动完整 Daytona 栈：
 

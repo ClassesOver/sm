@@ -6,16 +6,39 @@ TEMPLATE_FILE="$ROOT_DIR/docker/.env.example"
 ENV_FILE=${1:-"$ROOT_DIR/docker/.env"}
 ENV_DIR=$(dirname "$ENV_FILE")
 BACKUP_DIR="$ENV_DIR/.env.backups"
+WORK_FILE=
+SSH_TEMP_DIR=
 
 die() {
     printf '错误：%s\n' "$*" >&2
     exit 1
 }
 
+restore_host_ownership() {
+    [[ $(id -u) -eq 0 && -n ${HOST_UID:-} && -n ${HOST_GID:-} ]] || return 0
+    if [[ -e "$ENV_FILE" ]]; then
+        chown "$HOST_UID:$HOST_GID" "$ENV_FILE" || printf '警告：无法恢复 %s 的宿主所有权。\n' "$ENV_FILE" >&2
+    fi
+    if [[ -d "$BACKUP_DIR" ]]; then
+        chown -R "$HOST_UID:$HOST_GID" "$BACKUP_DIR" || printf '警告：无法恢复 %s 的宿主所有权。\n' "$BACKUP_DIR" >&2
+    fi
+}
+
+cleanup() {
+    [[ -z "$WORK_FILE" || ! -e "$WORK_FILE" ]] || rm -f "$WORK_FILE"
+    [[ -z "$SSH_TEMP_DIR" || ! -d "$SSH_TEMP_DIR" ]] || rm -rf "$SSH_TEMP_DIR"
+    restore_host_ownership
+}
+
+trap cleanup EXIT
+
 for command in openssl ssh-keygen htpasswd awk; do
     command -v "$command" >/dev/null 2>&1 || die "缺少 $command。"
 done
 [[ -f "$TEMPLATE_FILE" ]] || die "未找到 $TEMPLATE_FILE。"
+if [[ -n ${HOST_UID:-} || -n ${HOST_GID:-} ]]; then
+    [[ ${HOST_UID:-} =~ ^[0-9]+$ && ${HOST_GID:-} =~ ^[0-9]+$ ]] || die "HOST_UID 和 HOST_GID 必须同时为数字。"
+fi
 
 ask_yes_no() {
     local prompt=$1
@@ -40,13 +63,13 @@ set_env() {
         }
         { print }
         END { if (!found) print key "=" ENVIRON["ENV_UPDATE_VALUE"] }
-    ' "$ENV_FILE" > "$temporary"
+    ' "$WORK_FILE" > "$temporary"
     chmod 600 "$temporary"
-    mv "$temporary" "$ENV_FILE"
+    mv "$temporary" "$WORK_FILE"
 }
 
 env_value() {
-    awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+    awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$WORK_FILE"
 }
 
 needs_value() {
@@ -70,35 +93,38 @@ bcrypt_password() {
 }
 
 generate_ssh_material() {
-    local temporary private_key public_key host_key
-    temporary=$(mktemp -d "$ENV_DIR/.ssh-keys.XXXXXX")
-    ssh-keygen -q -t ed25519 -N '' -C daytona-gateway -f "$temporary/gateway"
-    ssh-keygen -q -t ed25519 -N '' -C daytona-host -f "$temporary/host"
-    private_key=$(base64 < "$temporary/gateway" | tr -d '\n')
-    public_key=$(base64 < "$temporary/gateway.pub" | tr -d '\n')
-    host_key=$(base64 < "$temporary/host" | tr -d '\n')
+    local private_key public_key host_key
+    SSH_TEMP_DIR=$(mktemp -d "$ENV_DIR/.ssh-keys.XXXXXX")
+    ssh-keygen -q -t ed25519 -N '' -C daytona-gateway -f "$SSH_TEMP_DIR/gateway"
+    ssh-keygen -q -t ed25519 -N '' -C daytona-host -f "$SSH_TEMP_DIR/host"
+    private_key=$(base64 < "$SSH_TEMP_DIR/gateway" | tr -d '\n')
+    public_key=$(base64 < "$SSH_TEMP_DIR/gateway.pub" | tr -d '\n')
+    host_key=$(base64 < "$SSH_TEMP_DIR/host" | tr -d '\n')
     set_env DAYTONA_SSH_PRIVATE_KEY "$private_key"
     set_env DAYTONA_SSH_PUBLIC_KEY "$public_key"
     set_env DAYTONA_SSH_HOST_KEY "$host_key"
-    rm -rf "$temporary"
+    rm -rf "$SSH_TEMP_DIR"
+    SSH_TEMP_DIR=
     unset private_key public_key host_key
 }
 
 is_new=false
+mkdir -p "$ENV_DIR"
+WORK_FILE=$(mktemp "$ENV_DIR/.env.pending.XXXXXX")
 if [[ ! -f "$ENV_FILE" ]]; then
-    mkdir -p "$ENV_DIR"
-    cp "$TEMPLATE_FILE" "$ENV_FILE"
-    chmod 600 "$ENV_FILE"
+    cp "$TEMPLATE_FILE" "$WORK_FILE"
     is_new=true
-    printf '已从 %s 创建 %s。\n' "$TEMPLATE_FILE" "$ENV_FILE"
+    printf '将从 %s 创建 %s。\n' "$TEMPLATE_FILE" "$ENV_FILE"
 else
     mkdir -p "$BACKUP_DIR"
     chmod 700 "$BACKUP_DIR"
     backup="$BACKUP_DIR/$(basename "$ENV_FILE").$(date +%Y%m%d%H%M%S)"
     cp "$ENV_FILE" "$backup"
+    cp "$ENV_FILE" "$WORK_FILE"
     chmod 600 "$backup"
     printf '已备份现有配置到 %s。\n' "$backup"
 fi
+chmod 600 "$WORK_FILE"
 
 rotate_runtime=$is_new
 rotate_persistent=$is_new
@@ -137,11 +163,15 @@ if [[ "$rotate_persistent" == true ]]; then
     set_random_password_env DAYTONA_PGADMIN_PASSWORD
     generate_ssh_material
     dex_admin_password=$(openssl rand -base64 9 | tr '/+' '_-')
-    set_env DEX_STATIC_PASSWORD_HASH "'$(bcrypt_password "$dex_admin_password")'"
+    dex_password_hash=$(bcrypt_password "$dex_admin_password")
+    [[ ${#dex_password_hash} -eq 60 && "$dex_password_hash" == '$2'* ]] || die "生成的 Dex bcrypt 哈希无效。"
+    set_env DEX_STATIC_PASSWORD_HASH "'$dex_password_hash'"
     printf '%s\n' '已更新 Daytona 持久化服务密钥、SSH 密钥、口令和 Dex 登录密码。'
-    printf 'Dex 登录密码（默认账号 admin@example.com）：%s\n' "$dex_admin_password"
-    unset dex_admin_password
+    unset dex_password_hash
 else
+    for key in DAYTONA_ENCRYPTION_KEY DAYTONA_ENCRYPTION_SALT DAYTONA_RUNNER_TOKEN DAYTONA_POSTGRES_PASSWORD DAYTONA_REDIS_PASSWORD DAYTONA_REGISTRY_PASSWORD DAYTONA_MINIO_PASSWORD DEX_STATIC_PASSWORD_HASH; do
+        needs_value "$key" && die "配置 $key 尚未初始化，请重新运行并确认生成持久化凭据。"
+    done
     needs_value DAYTONA_PGADMIN_PASSWORD && set_random_password_env DAYTONA_PGADMIN_PASSWORD
     if needs_value DAYTONA_SSH_PRIVATE_KEY || needs_value DAYTONA_SSH_PUBLIC_KEY || needs_value DAYTONA_SSH_HOST_KEY; then
         generate_ssh_material
@@ -149,5 +179,12 @@ else
     fi
 fi
 
-chmod 600 "$ENV_FILE"
+chmod 600 "$WORK_FILE"
+mv "$WORK_FILE" "$ENV_FILE"
+WORK_FILE=
+restore_host_ownership
+if [[ -n ${dex_admin_password:-} ]]; then
+    printf 'Dex 登录密码（默认账号 admin@example.com）：%s\n' "$dex_admin_password"
+    unset dex_admin_password
+fi
 printf '完成：%s（权限 600）。重启 Daytona 后新值才会生效。\n' "$ENV_FILE"

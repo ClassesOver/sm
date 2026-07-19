@@ -11,7 +11,10 @@ services:
         APT_MIRROR_HOST: ${APT_MIRROR_HOST:-mirrors.aliyun.com}
     profiles: [setup]
     working_dir: /workspace
-    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    user: "0:0"
+    environment:
+      HOST_UID: "${HOST_UID:-1000}"
+      HOST_GID: "${HOST_GID:-1000}"
     volumes:
       - ..:/workspace
     network_mode: none
