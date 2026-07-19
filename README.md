@@ -26,14 +26,13 @@ npm run test
 npm run build
 ```
 
-按对话隔离的附件、工作区文件和经确认的代码执行，使用
-`docker-compose.yml` 中锁定版本的 Daytona 部署。默认 Compose 服务是 AgentOS 和专用
-PostgreSQL；增加 `--profile daytona` 可启动完整 Daytona 基础设施。首次配置按以下顺序执行。
-通用容器镜像默认使用 `docker.m.daocloud.io` 国内源；Daytona 和 Dex 镜像使用官方
-Docker Hub，因为当前国内源不提供所需标签。可通过 `.env` 中的
-`DOCKER_REGISTRY_MIRROR`、`DAYTONA_IMAGE_REGISTRY`、`DAYTONA_IMAGE_ARCH`、
-`DAYTONA_DEFAULT_SNAPSHOT`、`DEX_IMAGE` 和 `PYTHON_IMAGE` 覆盖；镜像内 APT 和
-Python 包默认分别使用阿里云 Debian、PyPI 镜像。
+按对话隔离的附件、工作区文件和经确认的代码执行使用 Daytona。部署已拆成两个独立项目：
+
+- 根目录 `docker-compose.yml`：AgentOS 和专用 PostgreSQL。
+- `docker/docker-compose.yaml`：基于 Daytona OSS `v0.189.0` 官方配置的完整 Daytona 栈。
+
+两套 Compose 不共享容器网络和数据卷。AgentOS 通过 Daytona 发布到宿主机的 `33043`
+端口调用 API。
 
 1. 通过一次性 Compose 服务生成 `.env`：
 
@@ -42,32 +41,34 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
   docker compose --env-file .env.example --profile setup run --build --rm env-init
 ```
 
-`HOST_UID` 和 `HOST_GID` 让生成文件归当前宿主用户所有，`--rm` 在脚本退出后删除这次临时
-容器，不会删除生成的 `.env`。脚本会生成全部服务密码、加密密钥和 Dex 登录密码；请立即
-记录终端中只显示一次的 Dex 密码，登录账号默认为 `.env` 中的 `admin@example.com`。
+`HOST_UID` 和 `HOST_GID` 让生成文件归当前宿主用户所有。该脚本只生成 AgentOS 数据库密码
+和工作区 HMAC，不生成 Daytona 服务端凭据。
 
 2. 编辑 `.env`，只需把 `OPENAI_API_KEY` 改为真实的模型 API Key。需要时可同时修改
-   `OPENAI_BASE_URL`、`MODEL` 和 `DEX_ADMIN_EMAIL`：
+   `OPENAI_BASE_URL` 和 `MODEL`；Daytona 登录邮箱在 `docker/.env` 的
+   `DEX_ADMIN_EMAIL` 中修改：
 
 ```bash
 vi .env
 ```
 
-3. 检查 Compose 配置。运行服务时，Compose 会自动创建项目默认网络：
+3. 按 [Daytona 完整部署说明](docker/README.md)生成 `docker/.env` 并启动 Daytona，在
+   Dashboard 创建 API Key 后写入根目录 `.env`：
 
 ```bash
-docker compose --profile daytona config
+bash scripts/configure_agentos_env.sh .env
 ```
 
-4. 仅运行 AgentOS 与 PostgreSQL 时执行 `docker compose up -d`。首次启用 Daytona 时，
-   先按[生产部署指南](docs/agui_chat_production.md#first-start)启动 Daytona、在 Dashboard
-   创建 `DAYTONA_API_KEY` 并回填 `.env`，再启动 AgentOS。Daytona 不支持在未认证状态下
-   自动创建首个 API Key，这是模型 API Key 之外唯一需要回填的凭据。备份和许可证要求也见该指南。
+4. 单独启动 AgentOS：
 
-   Daytona 集成直接参考锁定版本的官方
-   [部署教程](https://github.com/daytonaio/daytona/blob/v0.189.0/apps/docs/src/content/docs/en/oss-deployment.mdx)
-   和 [Compose](https://github.com/daytonaio/daytona/blob/v0.189.0/docker/docker-compose.yaml)。Runner 使用镜像内置
-   Docker，不挂载宿主机 Docker Socket；相关差异和安全说明见生产部署指南。
+```bash
+docker compose config
+docker compose up -d --build
+```
+
+Daytona 不支持未认证客户端自动创建首个 API Key，因此这是模型 API Key 之外唯一需要在
+首次引导后回填的值。完整命令、端口和备份要求见
+[生产部署指南](docs/agui_chat_production.md#first-start)。
 
 收藏筛选和当前筛选可在管理员启用 `odoo.business.report.filters` 并配置逐模型读取策略后，
 导出到同一对话工作区，再由受控 Pandas 工具分析和生成图表。

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-TEMPLATE_FILE="$ROOT_DIR/.env.example"
-ENV_FILE=${1:-"$ROOT_DIR/.env"}
+TEMPLATE_FILE="$ROOT_DIR/docker/.env.example"
+ENV_FILE=${1:-"$ROOT_DIR/docker/.env"}
 ENV_DIR=$(dirname "$ENV_FILE")
 BACKUP_DIR="$ENV_DIR/.env.backups"
 
@@ -12,25 +12,18 @@ die() {
     exit 1
 }
 
-command -v openssl >/dev/null 2>&1 || die "缺少 openssl。"
-command -v htpasswd >/dev/null 2>&1 || die "缺少 htpasswd。"
-command -v awk >/dev/null 2>&1 || die "缺少 awk。"
-command -v stat >/dev/null 2>&1 || die "缺少 stat。"
+for command in openssl ssh-keygen htpasswd awk; do
+    command -v "$command" >/dev/null 2>&1 || die "缺少 $command。"
+done
 [[ -f "$TEMPLATE_FILE" ]] || die "未找到 $TEMPLATE_FILE。"
 
 ask_yes_no() {
     local prompt=$1
     local default=${2:-n}
-    local suffix='[y/N]'
     local answer
-    [[ "$default" == 'y' ]] && suffix='[Y/n]'
-    read -r -p "$prompt $suffix " answer
+    read -r -p "$prompt [y/N] " answer
     answer=${answer:-$default}
     [[ "$answer" =~ ^[Yy]$ ]]
-}
-
-bcrypt_password() {
-    printf '%s\n' "$1" | htpasswd -niBC 10 admin | awk -F: 'NR == 1 { print $2 }'
 }
 
 set_env() {
@@ -46,27 +39,49 @@ set_env() {
             next
         }
         { print }
-        END {
-            if (!found) print key "=" ENVIRON["ENV_UPDATE_VALUE"]
-        }
+        END { if (!found) print key "=" ENVIRON["ENV_UPDATE_VALUE"] }
     ' "$ENV_FILE" > "$temporary"
     chmod 600 "$temporary"
     mv "$temporary" "$ENV_FILE"
 }
 
+env_value() {
+    awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+}
+
+needs_value() {
+    local value
+    value=$(env_value "$1")
+    [[ -z "$value" || "$value" == 'generated-by-env-init' || "$value" == "'generated-by-env-init'" ]]
+}
+
 set_random_env() {
     local key=$1
     local bytes=$2
-    local value
-    value=$(openssl rand -base64 "$bytes" | tr '/+' '_-' | tr -d '=')
-    set_env "$key" "$value"
+    set_env "$key" "$(openssl rand -base64 "$bytes" | tr '/+' '_-' | tr -d '=')"
 }
 
 set_random_password_env() {
-    local key=$1
-    local value
-    value=$(openssl rand -base64 9 | tr '/+' '_-')
-    set_env "$key" "$value"
+    set_random_env "$1" 9
+}
+
+bcrypt_password() {
+    printf '%s\n' "$1" | htpasswd -niBC 10 admin | awk -F: 'NR == 1 { print $2 }'
+}
+
+generate_ssh_material() {
+    local temporary private_key public_key host_key
+    temporary=$(mktemp -d "$ENV_DIR/.ssh-keys.XXXXXX")
+    ssh-keygen -q -t ed25519 -N '' -C daytona-gateway -f "$temporary/gateway"
+    ssh-keygen -q -t ed25519 -N '' -C daytona-host -f "$temporary/host"
+    private_key=$(base64 < "$temporary/gateway" | tr -d '\n')
+    public_key=$(base64 < "$temporary/gateway.pub" | tr -d '\n')
+    host_key=$(base64 < "$temporary/host" | tr -d '\n')
+    set_env DAYTONA_SSH_PRIVATE_KEY "$private_key"
+    set_env DAYTONA_SSH_PUBLIC_KEY "$public_key"
+    set_env DAYTONA_SSH_HOST_KEY "$host_key"
+    rm -rf "$temporary"
+    unset private_key public_key host_key
 }
 
 is_new=false
@@ -87,36 +102,31 @@ fi
 
 rotate_runtime=$is_new
 rotate_persistent=$is_new
-dex_admin_password=''
 
 if [[ "$is_new" == false ]]; then
-    if ask_yes_no '重新生成工作区 HMAC、Proxy 和健康检查密钥？' n; then
+    if ask_yes_no '重新生成 Proxy、健康检查、SSH Gateway 和 OTel 服务密钥？' n; then
         rotate_runtime=true
     fi
-    printf '%s\n' '警告：下组值包含 Daytona 加密密钥、Runner Token、Dex 登录密码和持久化服务口令。'
-    printf '%s\n' '已运行的部署不能只修改 .env；还必须迁移数据库/服务凭据，或重建 Daytona 数据卷。'
+    printf '%s\n' '警告：下组值包含 Daytona 加密密钥、Runner Token、SSH 密钥、Dex 登录密码和持久化服务口令。'
+    printf '%s\n' '已运行的部署不能只修改环境文件；还必须迁移对应凭据，或重建 Daytona 数据卷。'
     if ask_yes_no '确认这是首次部署或已安排完整凭据迁移，并重新生成这些值？' n; then
         rotate_persistent=true
     fi
 fi
 
 if [[ "$rotate_runtime" == true ]]; then
-    set_random_env AGUI_WORKSPACE_HMAC_SECRET 32
     set_random_env DAYTONA_PROXY_API_KEY 32
     set_random_env DAYTONA_HEALTH_API_KEY 32
     set_random_env DAYTONA_SSH_GATEWAY_API_KEY 32
-    printf '%s\n' '已更新工作区和无状态服务密钥。'
+    set_random_env DAYTONA_OTEL_COLLECTOR_API_KEY 32
+    printf '%s\n' '已更新 Daytona 无状态服务密钥。'
+else
+    for key in DAYTONA_PROXY_API_KEY DAYTONA_HEALTH_API_KEY DAYTONA_SSH_GATEWAY_API_KEY DAYTONA_OTEL_COLLECTOR_API_KEY; do
+        needs_value "$key" && set_random_env "$key" 32
+    done
 fi
-
-ssh_gateway_api_key=$(awk -F= '$1 == "DAYTONA_SSH_GATEWAY_API_KEY" {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")
-if [[ -z "$ssh_gateway_api_key" || "$ssh_gateway_api_key" == 'generated-by-env-init' ]]; then
-    set_random_env DAYTONA_SSH_GATEWAY_API_KEY 32
-    printf '%s\n' '已补充 Daytona SSH Gateway API Key。'
-fi
-unset ssh_gateway_api_key
 
 if [[ "$rotate_persistent" == true ]]; then
-    set_random_password_env AGENT_POSTGRES_PASSWORD
     set_random_env DAYTONA_ENCRYPTION_KEY 32
     set_random_env DAYTONA_ENCRYPTION_SALT 32
     set_random_env DAYTONA_RUNNER_TOKEN 32
@@ -124,34 +134,20 @@ if [[ "$rotate_persistent" == true ]]; then
     set_random_password_env DAYTONA_REDIS_PASSWORD
     set_random_password_env DAYTONA_REGISTRY_PASSWORD
     set_random_password_env DAYTONA_MINIO_PASSWORD
+    set_random_password_env DAYTONA_PGADMIN_PASSWORD
+    generate_ssh_material
     dex_admin_password=$(openssl rand -base64 9 | tr '/+' '_-')
-    dex_password_hash=$(bcrypt_password "$dex_admin_password")
-    set_env DEX_STATIC_PASSWORD_HASH "'$dex_password_hash'"
-    unset dex_password_hash
-    printf '%s\n' '已更新 Daytona 持久化服务密钥、口令和 Dex 登录密码。'
+    set_env DEX_STATIC_PASSWORD_HASH "'$(bcrypt_password "$dex_admin_password")'"
+    printf '%s\n' '已更新 Daytona 持久化服务密钥、SSH 密钥、口令和 Dex 登录密码。'
     printf 'Dex 登录密码（默认账号 admin@example.com）：%s\n' "$dex_admin_password"
-fi
-
-skills_dir=$(awk -F= '$1 == "AGENT_SKILLS_DIR" {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")
-skills_dir=${skills_dir:-./deploy/daytona/skills}
-[[ "$skills_dir" = /* ]] || skills_dir="$ROOT_DIR/$skills_dir"
-if [[ -d "$skills_dir" ]]; then
-    chmod -R go-w "$skills_dir"
-    skills_uid=$(stat -c %u "$skills_dir")
-    if [[ "$skills_uid" != 1000 ]]; then
-        set_env AGENT_SKILLS_TRUSTED_UID "$skills_uid"
-        printf '已记录非默认技能目录宿主 UID。\n'
+    unset dex_admin_password
+else
+    needs_value DAYTONA_PGADMIN_PASSWORD && set_random_password_env DAYTONA_PGADMIN_PASSWORD
+    if needs_value DAYTONA_SSH_PRIVATE_KEY || needs_value DAYTONA_SSH_PUBLIC_KEY || needs_value DAYTONA_SSH_HOST_KEY; then
+        generate_ssh_material
+        printf '%s\n' '已补充 Daytona SSH Gateway 密钥。'
     fi
 fi
 
-if ask_yes_no '现在写入已创建的 Daytona API Key？' n; then
-    read -r -s -p 'Daytona API Key: ' daytona_api_key
-    printf '\n'
-    [[ -n "$daytona_api_key" ]] || die "Daytona API Key 不能为空。"
-    set_env DAYTONA_API_KEY "$daytona_api_key"
-    unset daytona_api_key
-    printf '%s\n' '已更新 Daytona API Key。'
-fi
-
 chmod 600 "$ENV_FILE"
-printf '完成：%s（权限 600）。重启相关服务后新值才会生效。\n' "$ENV_FILE"
+printf '完成：%s（权限 600）。重启 Daytona 后新值才会生效。\n' "$ENV_FILE"

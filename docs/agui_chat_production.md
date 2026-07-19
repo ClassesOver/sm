@@ -70,163 +70,80 @@ Agent 镜像安装 pandas、openpyxl、matplotlib、Plotly 和 Noto CJK 字体�
 
 <a id="isolated-workspaces"></a>
 
-## 隔离工作区
+## 隔离部署
 
-仓库在 `docker-compose.yml` 中提供完整的 AgentOS、PostgreSQL 和 Daytona 拓扑，
-基于 Daytona OSS `v0.189.0` 官方 Compose 基线。这是本项目所用且仍包含受支持 OSS
-Compose 基线的最后一个上游版本。上游此后已停止本地部署支持，因此运维方需要自行维护
-并修补这套锁定版本的软件。
+AgentOS 与 Daytona 现在是两个独立 Compose 项目，不共享容器网络、项目名或数据卷：
 
-默认 Compose 项目名保持为 `agui-daytona`，与原双文件生产部署一致，并保留其具名卷。
-如果旧部署只运行基础文件且使用其他项目名，首次启动统一栈前必须将
-`COMPOSE_PROJECT_NAME` 设为原项目名，或迁移 `agent_db_data`。
-
-两个 PostgreSQL 18 服务都将具名卷挂载到 `/var/lib/postgresql`，这是 PostgreSQL 18
-镜像布局要求的父数据路径。旧文件使用 PostgreSQL 18 之前的
-`/var/lib/postgresql/data` 挂载目标。替换由旧文件创建的运行中部署前，必须对两个数据库
-执行逻辑备份并验证恢复；不要假定旧具名卷中一定包含 PostgreSQL 18 数据集群。
+- 根目录 `docker-compose.yml` 只运行 AgentOS 和 `agent-db`。
+- `docker/docker-compose.yaml` 按 Daytona OSS `v0.189.0` 官方 Compose 运行完整 Daytona
+  服务，包括 SSH Gateway、PgAdmin、Registry UI、MailDev、Jaeger 和 OTel Collector。
 
 Daytona 使用 AGPL-3.0 许可证。通过网络向用户提供修改后的 Daytona 服务时，需要按
-AGPL-3.0 向这些用户提供包含修改内容的对应源代码。部署记录应保存精确的源码修订版本和
-容器来源。本段仅为运维说明，不构成法律意见。
-
-项目只部署以下 Daytona 服务：
-
-- `api`、`runner`、`db`、`redis`、`minio`、`registry` 和 `dex`
-- `dashboard`，仅监听本机，作为 API 界面和 Dex 的 Nginx 入口
-- `proxy`，仅监听本机，提供沙箱端口预览
-- 现有的 `agent` 服务，包含 AgentOS 和 Agno
-- `agent-db`，作为 Agno 会话和工作区沙箱注册表的专用 PostgreSQL 后端；同时发布到
-  本机 `55432` 端口，供宿主机上的 `agentos_dev` 使用；Daytona 的 `db` 仍仅供
-  Daytona 内部使用
-
-部署有意不包含 SSH Gateway、PgAdmin、Jaeger 和 OpenTelemetry Collector。AgentOS
-Toolbox 流量使用 `PROXY_TOOLBOX_BASE_URL=http://api:3000/api`；Proxy 只用于沙箱
-HTTP 预览。
+AGPL-3.0 向这些用户提供对应源代码，并保存源码修订版本和容器来源。
 
 ### 要求与密钥
 
-至少分配 4 GB 内存，实际运行沙箱生命周期前建议使用 8 GB。并发代码执行可能需要更多
-资源。Docker 和 Daytona Runner 要求支持 cgroup 的 Linux 宿主机。Runner 以特权模式运行
-镜像内置 Docker（DinD），仍具有较高的宿主机权限；应部署在专用宿主机或虚拟机上，并限制
-管理员访问。
+至少分配 4 GB 内存，运行沙箱生命周期前建议使用 8 GB。Runner 使用特权 DinD，仍具有较高
+宿主机权限，应部署在专用主机或虚拟机上。默认只把 API/Dashboard、Proxy 和 Dex 发布到
+宿主机；已发布端口监听 `0.0.0.0`，公网部署必须增加防火墙、TLS 和访问控制。
 
-将所有 Compose 必需变量写入受保护的环境文件。生产环境不得使用示例密码或默认密码。
-必要配置包括：
+AgentOS 根目录 `.env` 只包含模型 API Key、AgentOS PostgreSQL 密码、工作区 HMAC、Daytona
+API 地址和 Dashboard 创建的 `DAYTONA_API_KEY`。Daytona 的独立凭据全部位于 `docker/.env`。
+HMAC、加密、Proxy、健康检查、Runner 和 SSH Gateway API Key 使用 32 字节随机值，服务密码
+使用 12 位 Base64URL 值；SSH 密钥长度由算法决定。
 
-- `AGUI_WORKSPACE_HMAC_SECRET`，至少 32 个随机字节，并与 Odoo 系统参数
-  `agui_chat.workspace_hmac_secret` 完全一致
-- Daytona 加密密钥和盐、Runner Token、Proxy Key 与健康检查 Key
-- PostgreSQL、Redis、Registry 和 MinIO 凭据
-- Dex 管理员邮箱和 bcrypt 密码哈希
-- 安装管理员维护的技能时设置 `AGENT_SKILLS_DIR`；默认空目录以只读方式挂载
-- AgentOS 专用 PostgreSQL 服务使用的 `AGENT_POSTGRES_PASSWORD`
-- 本机开发连接使用的 `AGENT_POSTGRES_BIND` 和 `AGENT_POSTGRES_PORT`，默认值为
-  `127.0.0.1:55432`
-- Dashboard 和 Dex 对外使用的 `DAYTONA_PUBLIC_HOST`；默认值为 `127.0.0.1`，从其他
-  机器访问时必须改为宿主机 IP 或域名。协议默认使用 `http`，TLS 部署可增加
-  `DAYTONA_PUBLIC_SCHEME=https`
-- 通用容器仓库前缀 `DOCKER_REGISTRY_MIRROR`，默认值为 `docker.m.daocloud.io`，也可设为
-  `docker.io` 或内部镜像仓库
-- Daytona 镜像仓库 `DAYTONA_IMAGE_REGISTRY`，默认值为 `docker.io`；当前国内源不提供
-  所需的 Daytona 标签，因此不强制使用国内源
-- Daytona 镜像架构 `DAYTONA_IMAGE_ARCH`，默认值为 `amd64`；ARM64 宿主机设置为 `arm64`
-- Dex 镜像 `DEX_IMAGE`，默认使用官方 `docker.io/dexidp/dex:v2.42.0`；当前国内源对该
-  镜像返回 403，因此不使用国内代理
-- 构建 AgentOS 时使用的 Debian 软件源 `APT_MIRROR_HOST`，默认值为
-  `mirrors.aliyun.com`
-- 构建 AgentOS 时使用的 Python 软件源 `PIP_INDEX_URL`，默认使用阿里云 PyPI 镜像
-
-可在宿主机交互初始化或更新配置：
-
-```bash
-bash scripts/configure_daytona_env.sh
-```
-
-直接在宿主机执行需要 `openssl` 和 `htpasswd`。下面的 Compose 初始化镜像已包含这两个
-工具。
-
-在 `.env` 不存在时，也可以通过一次性 Compose setup profile 运行同一脚本。传入宿主机
-用户标识，使生成的权限为 `600` 的文件仍归当前操作员所有：
+两套环境分别初始化：
 
 ```bash
 HOST_UID=$(id -u) HOST_GID=$(id -g) \
-  docker compose --env-file .env.example --profile setup run --build --rm env-init
+  docker compose --env-file .env.example --profile setup \
+  run --build --rm env-init
+
+HOST_UID=$(id -u) HOST_GID=$(id -g) \
+  docker compose --env-file docker/.env.example \
+  -f docker/docker-compose.yaml --profile setup \
+  run --build --rm env-init
 ```
 
-初始化容器没有运行时网络，只挂载项目工作目录。Compose 仅使用 `.env.example` 解析服务
-配置，随后由脚本写入真实 `.env`；不会使用占位值启动其他服务。`HOST_UID` 和
-`HOST_GID` 使生成文件归调用命令的宿主用户所有。`--rm` 只删除已经停止的一次性容器，
-不会删除 `.env` 或任何运行时数据卷。
+两个 setup 容器均只挂载项目目录并使用 `network_mode: none`；`--rm` 只删除临时容器，不
+删除环境文件或数据卷。已有环境文件会备份到各自的 `.env.backups/` 目录；不要在已有数据卷
+运行时盲目轮换 Daytona 加密密钥、Runner Token 或数据库密码。
 
-脚本以原子方式写入文件并设置权限为 `600`。已有文件会备份到被忽略的
-`.env.backups/` 目录。对于现有部署，脚本将运行时密钥轮换与加密密钥、Runner 凭据和
-存储凭据轮换分开处理；后者不能在未迁移对应服务或重建 Daytona 数据卷的情况下修改。
-
-新建 `.env` 时，脚本会生成运行时和持久化随机密钥、12 位 Base64URL 服务密码和
-12 位 Dex 登录密码。Dex bcrypt 哈希写入 `.env`，明文登录密码只显示一次，必须立即
-记录。已有文件只有在确认对应提示后才轮换密钥。验证前只需替换 `OPENAI_API_KEY`；
-`OPENAI_BASE_URL`、`MODEL` 和默认 `DEX_ADMIN_EMAIL` 可按需修改。
-
-HMAC、加密、Proxy、健康检查和 Runner 使用 32 字节随机值，编码为约 43 位 Base64URL
-字符串。它们有意长于服务密码，同时避免旧的 64 位十六进制表示。
-`DAYTONA_API_KEY` 仅允许在首次 Dashboard 引导期间为空；Daytona 不允许未认证客户端
-创建首个 API Key。如需生成其他独立密钥，可使用 `openssl rand -hex 32`。
-
-在 Odoo 中，将同一 HMAC 密钥配置为仅服务端可见的系统参数，并将
-`AgentOS 内部服务地址` 设为 Odoo 可访问的地址，例如 `http://127.0.0.1:7777`。
-该内部地址绝不会由 `/agui_chat/config` 返回。
-
-归档或删除聊天会话时，会在同一数据库事务中提交沙箱清理任务。定时任务每五分钟最多
-处理 50 个任务；失败任务按指数退避重试，上限为 24 小时。HTTP 200、204 和 404 都视为
-幂等成功。
-
-在清理任务模型创建前已删除原始 thread ID 的历史沙箱无法自动重建关联。应按
-`agui-thread` 标签审计 Daytona 沙箱，并与 AgentOS 注册表和 Odoo 清理任务对比。
-手工删除不匹配的沙箱前先保留导出，并记录沙箱 ID、标签哈希、复核时间和操作员。
+在 Odoo 中，将 AgentOS HMAC 配置为仅服务端可见的系统参数，并将 AgentOS 地址设置为
+`http://127.0.0.1:7777` 或宿主机可访问的实际地址。
 
 <a id="first-start"></a>
 
 ### 首次启动
 
-启动前验证变量插值：
+先验证并启动 Daytona：
 
 ```bash
-docker compose --profile daytona config
-```
-
-启动时 Compose 会自动创建项目默认 bridge 网络，并将 AgentOS、两个 PostgreSQL 服务和
-Daytona 基础设施连接到该网络。不要把不受信任的工作负载加入此网络；需要更强租户隔离时，
-应使用独立 Compose 项目。
-
-首次启动先运行 Daytona，不启动 AgentOS。只有在本次引导期间，`DAYTONA_API_KEY` 可以
-为空：
-
-```bash
-docker compose --profile daytona up -d \
-  api runner db redis minio registry dex proxy dashboard
+docker compose --env-file docker/.env \
+  -f docker/docker-compose.yaml config
+docker compose --env-file docker/.env \
+  -f docker/docker-compose.yaml up -d
 ```
 
 打开 `http://127.0.0.1:33043/dashboard`，使用配置的 Dex 用户登录，激活默认 Snapshot，
-并创建具有沙箱写入和删除权限的 API Key。将其保存为 `DAYTONA_API_KEY`，再启动 AgentOS：
+创建具有沙箱创建、写入和删除权限的 API Key，将它写入根目录 `.env` 的 `DAYTONA_API_KEY`。
+
+然后启动独立 AgentOS：
 
 ```bash
-docker compose --profile daytona up -d agent
+docker compose config
+docker compose up -d --build
 ```
 
-Dashboard 默认在宿主机监听 `0.0.0.0:33043`，Proxy 默认监听 `0.0.0.0:33044`。本地预览
-使用 `*.proxy.localhost`。远程部署必须设置 `DAYTONA_PUBLIC_HOST`；如需远程沙箱预览，
-还要设置 `DAYTONA_PROXY_DOMAIN`，并为该域名配置通配 DNS 记录和证书。公开部署应将两个
-端点置于 TLS 后方，并设置 `DAYTONA_PUBLIC_SCHEME=https`。
+AgentOS 容器通过 `host.docker.internal:33043` 访问 Daytona API，根目录宿主 Python 进程则
+使用 `.env` 中的 `http://127.0.0.1:33043/api`。AgentOS Compose 会将 `host.docker.internal`
+和 `proxy.localhost` 映射到宿主机网关，因此不需要加入 Daytona 网络。
 
-Runner 按 Daytona 官方 Compose 使用镜像内置 Docker（DinD），不要向 Runner 挂载宿主机
-`/var/run/docker.sock`。镜像会在内部 Docker 中创建 `172.20.0.0/16` 的 `runner-bridge`；
-该网络与 Compose 自动创建的项目网络相互独立。
+远程部署必须在 `docker/.env` 设置 `DAYTONA_PUBLIC_HOST`；跨机器访问还需设置
+`DAYTONA_PUBLIC_SCHEME=https`、`DAYTONA_PROXY_DOMAIN`，并为 Proxy 配置通配 DNS 和证书。
+普通远程 HTTP 页面无法使用 `Crypto.subtle`，不能把关闭 TLS 当作生产方案。
 
-本部署以 Daytona `v0.189.0` 的官方
-[Open Source Deployment](https://github.com/daytonaio/daytona/blob/v0.189.0/apps/docs/src/content/docs/en/oss-deployment.mdx)
-和 [Docker Compose](https://github.com/daytonaio/daytona/blob/v0.189.0/docker/docker-compose.yaml)
-为基线，省略 PgAdmin、MailDev、Jaeger、OpenTelemetry 和 SSH Gateway 等当前集成不需要的服务。
+端口、辅助服务和运维命令见 [Daytona 完整部署说明](../docker/README.md)。
 
 ### 备份与恢复
 

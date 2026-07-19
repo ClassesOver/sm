@@ -1,0 +1,9 @@
+services:
+  api:
+    environment:
+      SSH_GATEWAY_COMMAND: ssh -p ${DAYTONA_SSH_GATEWAY_PORT:-33046} {{TOKEN}}@${DAYTONA_PUBLIC_HOST:-127.0.0.1}
+      SSH_GATEWAY_URL: ${DAYTONA_PUBLIC_HOST:-127.0.0.1}:${DAYTONA_SSH_GATEWAY_PORT:-33046}
+
+  ssh-gateway:
+    ports:
+      - "0.0.0.0:${DAYTONA_SSH_GATEWAY_PORT:-33046}:2222"

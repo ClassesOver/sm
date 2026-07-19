@@ -19,6 +19,8 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app
 
 初始化命令中的 `HOST_UID`/`HOST_GID` 用于保持 `.env` 的宿主文件所有权，`--rm` 只在
 脚本结束后删除临时初始化容器。Compose 会在启动数据库时自动创建项目默认网络。
+Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本应用时默认通过
+`http://127.0.0.1:33043/api` 访问 Daytona。
 
 默认监听 `127.0.0.1:7777`。Odoo 只需配置
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
