@@ -135,327 +135,85 @@ describe('chat customization', () => {
     expect(menuQueryAtCursor('user@example.com', 8)).toBeNull()
   })
 
-  it('searches, selects, replaces, removes, and sends one menu mention', () => {
-    const onSend = vi.fn()
-    render(<ChatInput
-      running={false}
-      attachments={false}
-      menuOptions={[
-        { menuId: 1, actionId: 11, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户' },
-        { menuId: 2, actionId: 12, name: '线索', path: ['销售', '线索'], fullPath: '销售 / 线索' }
-      ]}
-      labels={labels}
-      icons={icons}
-      onSend={onSend}
-      onStop={vi.fn()}
-      onUpload={vi.fn()}
-      onRemove={vi.fn()}
-    />)
-    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
-    fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(screen.getByText('销售 / 客户')).toBeTruthy()
-    expect((input as HTMLTextAreaElement).value).toBe('')
-
-    fireEvent.change(input, { target: { value: '@线索', selectionStart: 3 } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(screen.queryByText('销售 / 客户')).toBeNull()
-    expect(screen.getByText('销售 / 线索')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: labels.sendMessage }))
-    expect(onSend).toHaveBeenCalledWith('', [], expect.objectContaining({ menuId: 2, actionId: 12, valid: true }), undefined, [])
-
-    fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    fireEvent.click(screen.getByRole('button', { name: '移除菜单' }))
-    expect(screen.queryByText('销售 / 客户')).toBeNull()
-  })
-
-  it('binds record references with read as the default action', async () => {
-    const onSend = vi.fn()
-    const expiresAt = '2099-01-01 00:00:00'
-    const candidates = {
-      客户: {
-        candidateToken: 'candidate-customer', resourceKey: 'customer', kind: 'record' as const,
-        label: '客户甲', detail: '销售 / 客户', model: 'res.partner',
-        actions: ['read', 'view'] as const, expiresAt
-      },
-      线索: {
-        candidateToken: 'candidate-lead', resourceKey: 'lead', kind: 'record' as const,
-        label: '线索乙', detail: '销售 / 线索', model: 'crm.lead',
-        actions: ['read', 'view'] as const, expiresAt
-      }
-    }
-    const searchMentions = vi.fn(async ({ query }: { query: string }) => ({
-      candidates: query.includes('线索') ? [candidates.线索] : [candidates.客户],
-      modelScopes: []
-    }))
-    const bindMention = vi.fn(async ({ candidateToken, action }: { candidateToken: string; action: string }) => {
-      const candidate = candidateToken === candidates.线索.candidateToken ? candidates.线索 : candidates.客户
-      return {
-        ok: true,
-        reference: {
-          id: `bound-${candidate.resourceKey}`, token: `bound-${candidate.resourceKey}`,
-          resourceKey: candidate.resourceKey, kind: candidate.kind, action: action as 'read',
-          label: candidate.label, detail: candidate.detail, model: candidate.model,
-          expiresAt, valid: true, pageAction: false
-        }
-      }
-    })
-    render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
+  it('shows only menu and skill categories and filters up to eight local menus', () => {
+    const searchMentions = vi.fn()
+    const bindMention = vi.fn()
+    const menuOptions = [
+      { menuId: 1, actionId: 11, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户' },
+      { menuId: 2, actionId: 12, name: '工单', path: ['服务', '工单'], fullPath: '服务 / 工单' },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        menuId: index + 3,
+        actionId: index + 13,
+        name: `菜单 ${index + 1}`,
+        path: ['其他', `菜单 ${index + 1}`],
+        fullPath: `其他 / 菜单 ${index + 1}`
+      }))
+    ]
+    render(<ChatInput running={false} attachments={false} menuOptions={menuOptions}
       hostBridge={{ searchMentions: searchMentions as any, bindMention: bindMention as any }}
-      onSend={onSend} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
-    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
-
-    fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
-    expect(await screen.findByText('客户甲')).toBeTruthy()
-    fireEvent.click(screen.getByText('客户甲'))
-    await waitFor(() => expect(bindMention).toHaveBeenCalledTimes(1))
-
-    fireEvent.change(input, { target: { value: '@线索', selectionStart: 3 } })
-    expect(await screen.findByText('线索乙')).toBeTruthy()
-    fireEvent.click(screen.getByText('线索乙'))
-    await waitFor(() => expect(bindMention).toHaveBeenCalledTimes(2))
-    fireEvent.click(screen.getByRole('button', { name: labels.sendMessage }))
-    expect(onSend).toHaveBeenCalledWith('', [], [
-      expect.objectContaining({ resourceKey: 'customer', action: 'read' }),
-      expect.objectContaining({ resourceKey: 'lead', action: 'read' })
-    ], undefined, [])
-  })
-
-  it('browses saved and current filters with read by default and apply in the action menu', async () => {
-    const expiresAt = '2099-01-01 00:00:00'
-    const onSend = vi.fn(async () => true)
-    const candidates = {
-      saved_filter: {
-        candidateToken: 'saved-candidate', resourceKey: 'saved-key', kind: 'saved_filter' as const,
-        label: '本月订单', detail: '销售 / 订单 · 个人收藏', model: 'sale.order',
-        actions: ['read', 'apply'] as const, expiresAt
-      },
-      current_filter: {
-        candidateToken: 'current-candidate', resourceKey: 'current-key', kind: 'current_filter' as const,
-        label: '当前筛选', detail: '销售 / 订单', model: 'sale.order',
-        actions: ['read', 'apply'] as const, expiresAt
-      }
-    }
-    const searchMentions = vi.fn(async ({ scope }: { scope: keyof typeof candidates }) => ({
-      candidates: candidates[scope] ? [candidates[scope]] : [],
-      modelScopes: []
-    }))
-    const bindMention = vi.fn(async ({ candidateToken, action }: { candidateToken: string; action: 'read' | 'apply' }) => {
-      const candidate = candidateToken === 'saved-candidate' ? candidates.saved_filter : candidates.current_filter
-      return {
-        ok: true,
-        reference: {
-          id: `${candidateToken}-${action}`, token: `${candidateToken}-${action}`,
-          resourceKey: candidate.resourceKey, kind: candidate.kind, action,
-          label: candidate.label, detail: candidate.detail, model: candidate.model,
-          expiresAt, valid: true, pageAction: action === 'apply'
-        }
-      }
-    })
-    const { container } = render(<ChatInput running={false} attachments={false} menuOptions={[]}
-      labels={labels} icons={icons}
-      hostBridge={{ searchMentions: searchMentions as any, bindMention: bindMention as any }}
-      onSend={onSend} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+      labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
     const input = screen.getByPlaceholderText(labels.inputPlaceholder)
 
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
-    fireEvent.click(screen.getByRole('option', { name: /收藏筛选/ }))
-    const saved = await screen.findByRole('option', { name: /本月订单/ })
-    expect(saved.querySelector('.lucide-bookmark')).toBeTruthy()
-    fireEvent.click(saved)
-    await waitFor(() => expect(bindMention).toHaveBeenLastCalledWith({
-      candidateToken: 'saved-candidate', action: 'read'
-    }))
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+    expect(screen.getByRole('option', { name: /菜单\s+按名称或完整路径查找菜单/ })).toBeTruthy()
+    expect(screen.getByRole('option', { name: /技能\s+选择适合当前任务的专业能力/ })).toBeTruthy()
+    expect(screen.queryByText('业务记录')).toBeNull()
+    expect(screen.queryByText('收藏筛选')).toBeNull()
+    expect(screen.queryByText('当前筛选')).toBeNull()
 
-    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
-    fireEvent.click(screen.getByRole('option', { name: /当前筛选/ }))
-    const current = await screen.findByRole('option', { name: /当前筛选/ })
-    expect(current.querySelector('.lucide-list-filter')).toBeTruthy()
-    fireEvent.keyDown(input, { key: 'ArrowRight' })
-    fireEvent.click(screen.getByRole('option', { name: '应用' }))
-    await waitFor(() => expect(bindMention).toHaveBeenLastCalledWith({
-      candidateToken: 'current-candidate', action: 'apply'
-    }))
-
-    fireEvent.click(screen.getByRole('button', { name: labels.sendMessage }))
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('', [], [
-      expect.objectContaining({ kind: 'saved_filter', action: 'read', pageAction: false }),
-      expect.objectContaining({ kind: 'current_filter', action: 'apply', pageAction: true })
-    ], undefined, []))
-    expect(container.querySelectorAll('.lucide-bookmark')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('option', { name: /菜单\s+按名称或完整路径查找菜单/ }))
+    const search = screen.getByLabelText('搜索菜单')
+    expect(screen.getAllByRole('option')).toHaveLength(8)
+    fireEvent.change(search, { target: { value: '客户' } })
+    expect(screen.getByRole('option', { name: '销售 / 客户' })).toBeTruthy()
+    expect(screen.queryByRole('option', { name: '服务 / 工单' })).toBeNull()
+    fireEvent.change(search, { target: { value: '服务 / 工单' } })
+    expect(screen.getByRole('option', { name: '服务 / 工单' })).toBeTruthy()
+    expect(searchMentions).not.toHaveBeenCalled()
+    expect(bindMention).not.toHaveBeenCalled()
   })
 
-  it('rejects a second page-changing reference before binding it', async () => {
-    const expiresAt = '2099-01-01 00:00:00'
-    const searchMentions = vi.fn(async ({ query }: { query: string }) => ({
-      candidates: [{
-        candidateToken: query.includes('客户') ? 'record' : 'menu',
-        resourceKey: query.includes('客户') ? 'record-key' : 'menu-key',
-        kind: query.includes('客户') ? 'record' : 'menu',
-        label: query.includes('客户') ? '客户甲' : '客户菜单', detail: '销售 / 客户',
-        model: 'res.partner', actions: query.includes('客户') ? ['view'] : ['open'], expiresAt
-      }],
-      modelScopes: []
-    }))
-    const bindMention = vi.fn(async ({ candidateToken, action }: { candidateToken: string; action: string }) => ({
-      ok: true,
-      reference: {
-        id: candidateToken, token: candidateToken, resourceKey: `${candidateToken}-key`,
-        kind: candidateToken === 'record' ? 'record' : 'menu', action,
-        label: candidateToken === 'record' ? '客户甲' : '客户菜单', detail: '销售 / 客户',
-        model: 'res.partner', expiresAt, valid: true, pageAction: true
-      }
-    }))
-    render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
-      hostBridge={{ searchMentions: searchMentions as any, bindMention: bindMention as any }}
-      onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
-    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
-    fireEvent.change(input, { target: { value: '@菜单', selectionStart: 3 } })
-    fireEvent.click(await screen.findByText('客户菜单'))
-    await waitFor(() => expect(bindMention).toHaveBeenCalledTimes(1))
-
-    fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
-    const candidate = await screen.findByRole('option', { name: /客户甲/ })
-    expect((candidate as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByText('本条消息已有页面动作')).toBeTruthy()
-    expect(bindMention).toHaveBeenCalledTimes(1)
-  })
-
-  it('keeps only the newest asynchronous mention search result', async () => {
-    vi.useFakeTimers()
-    try {
-      let resolveOld!: (value: any) => void
-      let resolveNew!: (value: any) => void
-      const oldResult = new Promise((resolve) => { resolveOld = resolve })
-      const newResult = new Promise((resolve) => { resolveNew = resolve })
-      const searchMentions = vi.fn(({ query }: { query: string }) =>
-        query.includes('新') ? newResult : oldResult
-      )
-      render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
-        hostBridge={{ searchMentions: searchMentions as any, bindMention: vi.fn() as any }}
-        onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
-      const input = screen.getByPlaceholderText(labels.inputPlaceholder)
-      fireEvent.change(input, { target: { value: '@旧查询', selectionStart: 4 } })
-      await act(async () => { vi.advanceTimersByTime(300) })
-      fireEvent.change(input, { target: { value: '@新查询', selectionStart: 4 } })
-      await act(async () => { vi.advanceTimersByTime(300) })
-
-      resolveNew({
-        candidates: [{
-          candidateToken: 'new', resourceKey: 'new-key', kind: 'record', label: '新结果',
-          detail: '客户', model: 'res.partner', actions: ['read'], expiresAt: '2099-01-01 00:00:00'
-        }],
-        modelScopes: []
-      })
-      await act(async () => { await Promise.resolve() })
-      expect(screen.getByText('新结果')).toBeTruthy()
-
-      resolveOld({
-        candidates: [{
-          candidateToken: 'old', resourceKey: 'old-key', kind: 'record', label: '旧结果',
-          detail: '客户', model: 'res.partner', actions: ['read'], expiresAt: '2099-01-01 00:00:00'
-        }],
-        modelScopes: []
-      })
-      await act(async () => { await Promise.resolve() })
-      expect(screen.queryByText('旧结果')).toBeNull()
-      expect(screen.getByText('新结果')).toBeTruthy()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('normalizes jQuery-style Deferred mention searches through Promise.resolve', async () => {
-    const result = {
-      candidates: [{
-        candidateToken: 'deferred', resourceKey: 'deferred-key', kind: 'record' as const,
-        label: 'Deferred 客户', detail: '销售 / 客户', model: 'res.partner',
-        actions: ['read' as const], expiresAt: '2099-01-01 00:00:00'
-      }],
-      modelScopes: []
-    }
-    const deferred = {
-      then(resolve: (value: typeof result) => void) {
-        resolve(result)
-      }
-    }
-    render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
-      hostBridge={{ searchMentions: vi.fn(() => deferred as any), bindMention: vi.fn() as any }}
-      onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
-    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
-    fireEvent.change(input, { target: { value: '@客户', selectionStart: 3 } })
-    expect(await screen.findByText('Deferred 客户')).toBeTruthy()
-  })
-
-  it('supports keyboard navigation inside the record model picker', async () => {
-    const searchMentions = vi.fn(async () => ({
-      candidates: [],
-      modelScopes: [
-        { model: 'res.partner', label: '联系人' },
-        { model: 'crm.lead', label: '线索' }
-      ]
-    }))
-    render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
-      hostBridge={{ searchMentions: searchMentions as any, bindMention: vi.fn() as any }}
-      onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+  it('supports keyboard navigation and Escape across both mention levels', async () => {
+    render(<ChatInput running={false} attachments={false} menuOptions={[
+      { menuId: 1, actionId: 11, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户' },
+      { menuId: 2, actionId: 12, name: '线索', path: ['销售', '线索'], fullPath: '销售 / 线索' }
+    ]} labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
     const input = screen.getByPlaceholderText(labels.inputPlaceholder)
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
-    fireEvent.click(screen.getByRole('option', { name: /业务记录\s+查找客户、订单、合同等具体业务记录/ }))
-
-    const modelSearch = await screen.findByLabelText('搜索业务类型')
-    const modelList = screen.getByRole('listbox')
-    fireEvent.keyDown(modelSearch, { key: 'End' })
-    expect(modelList.getAttribute('aria-activedescendant')).toContain('crm.lead')
-    fireEvent.keyDown(modelSearch, { key: 'ArrowDown' })
-    expect(modelList.getAttribute('aria-activedescendant')).toContain('res.partner')
-    fireEvent.keyDown(modelSearch, { key: 'Home' })
-    expect(modelList.getAttribute('aria-activedescendant')).toContain('res.partner')
-    expect(fireEvent.keyDown(modelSearch, { key: 'Tab' })).toBe(true)
-    fireEvent.change(modelSearch, { target: { value: '线索' } })
-    fireEvent.keyDown(modelSearch, { key: 'Enter' })
-    expect(await screen.findByText('输入至少 2 个字符开始搜索')).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: '返回' }))
-    fireEvent.click(screen.getByRole('option', { name: /业务记录\s+查找客户、订单、合同等具体业务记录/ }))
-    const reopenedSearch = await screen.findByLabelText('搜索业务类型')
-    fireEvent.keyDown(reopenedSearch, { key: 'Escape' })
-    expect(await screen.findByRole('option', { name: /菜单\s+按完整路径打开菜单，或直接进入新建/ })).toBeTruthy()
-    const picker = screen.getByRole("dialog", { name: "添加到对话" })
-    await waitFor(() => expect(document.activeElement).toBe(picker))
-    fireEvent.keyDown(picker, { key: "Enter" })
-    expect(await screen.findByLabelText("搜索菜单")).toBeTruthy()
-  })
-
-  it('keeps Enter and ArrowLeft active across the menu action view', async () => {
-    const candidate = {
-      candidateToken: 'menu-sales', resourceKey: 'menu-sales', kind: 'menu' as const,
-      label: '销售订单', detail: '销售 / 订单', model: 'sale.order',
-      actions: ['open', 'create'] as const, expiresAt: '2099-01-01 00:00:00'
-    }
-    const searchMentions = vi.fn(async () => ({ candidates: [candidate], modelScopes: [] }))
-    const bindMention = vi.fn(async () => ({ ok: false, error: '测试绑定停止' }))
-    render(<ChatInput running={false} attachments={false} menuOptions={[]} labels={labels} icons={icons}
-      hostBridge={{ searchMentions: searchMentions as any, bindMention: bindMention as any }}
-      onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
-    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
-    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
-    fireEvent.click(screen.getByRole('option', { name: /菜单\s+按完整路径打开菜单，或直接进入新建/ }))
-    const search = await screen.findByLabelText('搜索菜单')
-    expect(await screen.findByRole('option', { name: /销售订单/ })).toBeTruthy()
-
-    fireEvent.keyDown(search, { key: 'ArrowRight' })
     const picker = screen.getByRole('dialog', { name: '添加到对话' })
-    await waitFor(() => expect(document.activeElement).toBe(picker))
-    fireEvent.keyDown(picker, { key: 'ArrowLeft' })
-    const restoredSearch = await screen.findByLabelText('搜索菜单')
+    const list = screen.getByRole('listbox')
 
-    fireEvent.keyDown(restoredSearch, { key: 'ArrowRight' })
-    await waitFor(() => expect(document.activeElement).toBe(picker))
+    fireEvent.keyDown(picker, { key: 'ArrowDown' })
+    expect(list.getAttribute('aria-activedescendant')).toContain('skill')
+    fireEvent.keyDown(picker, { key: 'ArrowUp' })
+    expect(list.getAttribute('aria-activedescendant')).toContain('menu')
     fireEvent.keyDown(picker, { key: 'Enter' })
-    await waitFor(() => expect(bindMention).toHaveBeenCalledWith({
-      candidateToken: 'menu-sales', action: 'open'
-    }))
+    const menuSearch = screen.getByLabelText('搜索菜单')
+    fireEvent.keyDown(menuSearch, { key: 'ArrowDown' })
+    expect(list.getAttribute('aria-activedescendant')).toContain('menu-2')
+    fireEvent.keyDown(menuSearch, { key: 'Escape' })
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+    await waitFor(() => expect(document.activeElement).toBe(picker))
+    fireEvent.keyDown(picker, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: '添加到对话' })).toBeNull()
+  })
+
+  it('removes the query, selects a menu, and sends the legacy menu mention', async () => {
+    const onSend = vi.fn()
+    const option = { menuId: 1, actionId: 11, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户' }
+    render(<ChatInput running={false} attachments={false} menuOptions={[option]}
+      labels={labels} icons={icons} onSend={onSend} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: '请打开 @客户', selectionStart: 7 } })
+    fireEvent.keyDown(screen.getByRole('dialog', { name: '添加到对话' }), { key: 'Enter' })
+    fireEvent.keyDown(screen.getByLabelText('搜索菜单'), { key: 'Enter' })
+
+    expect(input.value).toBe('请打开 ')
+    expect(screen.getByText('销售 / 客户')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: labels.sendMessage }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('请打开', [], { ...option, path: [...option.path], valid: true }, undefined, []))
+    await waitFor(() => expect(screen.queryByText('销售 / 客户')).toBeNull())
   })
 
   it('shares skill selection between @ and toolbar entry points', () => {
@@ -463,13 +221,27 @@ describe('chat customization', () => {
     render(<ChatInput running={false} attachments={false} menuOptions={[]} agentSkills={agentSkills}
       hostBridge={{ searchMentions: vi.fn() as any, bindMention: vi.fn() as any }}
       labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
-    const input = screen.getByPlaceholderText(labels.inputPlaceholder)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
     fireEvent.click(screen.getByRole('option', { name: /技能 选择适合当前任务的专业能力/ }))
+    expect(input.value).toBe('')
     fireEvent.click(screen.getByRole('option', { name: /合同审计/ }))
     expect(screen.getByLabelText('已选技能')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '选择技能' }))
     expect(screen.getByRole('option', { name: /合同审计/ }).getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('shows an empty skill picker when @ skills are unavailable', () => {
+    render(<ChatInput running={false} attachments={false} menuOptions={[]}
+      labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
+
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    fireEvent.click(screen.getByRole('option', { name: /技能 选择适合当前任务的专业能力/ }))
+
+    expect(input.value).toBe('')
+    expect(screen.getByRole('dialog', { name: '选择技能' })).toBeTruthy()
+    expect(screen.getByText('没有匹配的技能')).toBeTruthy()
   })
 
   it('opens skills from the toolbar and first-line slash, then clears only after success', async () => {
@@ -493,7 +265,9 @@ describe('chat customization', () => {
     await waitFor(() => expect(screen.queryByLabelText('已选技能')).toBeNull())
 
     fireEvent.change(input, { target: { value: '/审计', selectionStart: 3 } })
-    expect(await screen.findByRole('option', { name: /合同审计/ })).toBeTruthy()
+    fireEvent.click(await screen.findByRole('option', { name: /合同审计/ }))
+    expect((input as HTMLTextAreaElement).value).toBe('')
+    expect(screen.getByLabelText('已选技能')).toBeTruthy()
   })
 
   it('retains the draft and manual skills when sending fails', async () => {
@@ -747,10 +521,10 @@ describe('workspace references', () => {
     const runtime = { listWorkspace: vi.fn(async () => [entry]), deleteWorkspaceEntry: vi.fn(async () => undefined) }
     const onToggleReference = vi.fn()
     const onDeleted = vi.fn()
-    const { rerender } = render(<WorkspacePanel runtime={runtime as unknown as ChatRuntime} threadId='thread-1' references={[]} mentionCount={0} onToggleReference={onToggleReference} onDeleted={onDeleted} onClose={vi.fn()} />)
+    const { rerender } = render(<WorkspacePanel runtime={runtime as unknown as ChatRuntime} threadId='thread-1' references={[]} onToggleReference={onToggleReference} onDeleted={onDeleted} onClose={vi.fn()} />)
     fireEvent.click(await screen.findByRole('button', { name: '加入对话 甲.txt' }))
     expect(onToggleReference).toHaveBeenCalledWith(entry)
-    rerender(<WorkspacePanel runtime={runtime as unknown as ChatRuntime} threadId='thread-1' references={[{ id: 'file', path: entry.path, name: entry.name, isDirectory: false }]} mentionCount={0} onToggleReference={onToggleReference} onDeleted={onDeleted} onClose={vi.fn()} />)
+    rerender(<WorkspacePanel runtime={runtime as unknown as ChatRuntime} threadId='thread-1' references={[{ id: 'file', path: entry.path, name: entry.name, isDirectory: false }]} onToggleReference={onToggleReference} onDeleted={onDeleted} onClose={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: '移除对话 甲.txt' }))
     fireEvent.click(screen.getByRole('button', { name: '删除 甲.txt' }))
     fireEvent.click(screen.getByRole('button', { name: '确认' }))

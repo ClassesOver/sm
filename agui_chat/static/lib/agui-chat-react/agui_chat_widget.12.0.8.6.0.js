@@ -7299,60 +7299,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$H = [
+  const __iconNode$C = [
     ["rect", { width: "20", height: "5", x: "2", y: "3", rx: "1", key: "1wp1u1" }],
     ["path", { d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8", key: "1s80jp" }],
     ["path", { d: "M10 12h4", key: "a56b0p" }]
   ];
-  const Archive = createLucideIcon("Archive", __iconNode$H);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$G = [
-    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
-    ["path", { d: "M19 12H5", key: "x3x0zl" }]
-  ];
-  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$G);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$F = [
-    ["circle", { cx: "12", cy: "12", r: "4", key: "4exip2" }],
-    ["path", { d: "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8", key: "7n84p3" }]
-  ];
-  const AtSign = createLucideIcon("AtSign", __iconNode$F);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$E = [
-    ["path", { d: "m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z", key: "1fy3hk" }]
-  ];
-  const Bookmark = createLucideIcon("Bookmark", __iconNode$E);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$D = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
-  const Check = createLucideIcon("Check", __iconNode$D);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$C = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
-  const ChevronRight = createLucideIcon("ChevronRight", __iconNode$C);
+  const Archive = createLucideIcon("Archive", __iconNode$C);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7360,10 +7312,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$B = [
-    ["path", { d: "m11 17-5-5 5-5", key: "13zhaf" }],
-    ["path", { d: "m18 17-5-5 5-5", key: "h8a8et" }]
+    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
+    ["path", { d: "M19 12H5", key: "x3x0zl" }]
   ];
-  const ChevronsLeft = createLucideIcon("ChevronsLeft", __iconNode$B);
+  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$B);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7371,33 +7323,26 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$A = [
-    ["path", { d: "m6 17 5-5-5-5", key: "xnjwq" }],
-    ["path", { d: "m13 17 5-5-5-5", key: "17xmmf" }]
+    ["circle", { cx: "12", cy: "12", r: "4", key: "4exip2" }],
+    ["path", { d: "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8", key: "7n84p3" }]
   ];
-  const ChevronsRight = createLucideIcon("ChevronsRight", __iconNode$A);
+  const AtSign = createLucideIcon("AtSign", __iconNode$A);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$z = [
-    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["line", { x1: "12", x2: "12", y1: "8", y2: "12", key: "1pkeuh" }],
-    ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16", key: "4dfq90" }]
-  ];
-  const CircleAlert = createLucideIcon("CircleAlert", __iconNode$z);
+  const __iconNode$z = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
+  const Check = createLucideIcon("Check", __iconNode$z);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$y = [
-    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["path", { d: "m9 12 2 2 4-4", key: "dzmm74" }]
-  ];
-  const CircleCheck = createLucideIcon("CircleCheck", __iconNode$y);
+  const __iconNode$y = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
+  const ChevronRight = createLucideIcon("ChevronRight", __iconNode$y);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7405,10 +7350,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$x = [
-    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["polyline", { points: "12 6 12 12 16.5 12", key: "1aq6pp" }]
+    ["path", { d: "m11 17-5-5 5-5", key: "13zhaf" }],
+    ["path", { d: "m18 17-5-5 5-5", key: "h8a8et" }]
   ];
-  const Clock3 = createLucideIcon("Clock3", __iconNode$x);
+  const ChevronsLeft = createLucideIcon("ChevronsLeft", __iconNode$x);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7416,11 +7361,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$w = [
-    ["path", { d: "M12 13v8", key: "1l5pq0" }],
-    ["path", { d: "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", key: "1pljnt" }],
-    ["path", { d: "m8 17 4-4 4 4", key: "1quai1" }]
+    ["path", { d: "m6 17 5-5-5-5", key: "xnjwq" }],
+    ["path", { d: "m13 17 5-5-5-5", key: "17xmmf" }]
   ];
-  const CloudUpload = createLucideIcon("CloudUpload", __iconNode$w);
+  const ChevronsRight = createLucideIcon("ChevronsRight", __iconNode$w);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7428,10 +7372,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$v = [
-    ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
-    ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
+    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
+    ["line", { x1: "12", x2: "12", y1: "8", y2: "12", key: "1pkeuh" }],
+    ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16", key: "4dfq90" }]
   ];
-  const Copy = createLucideIcon("Copy", __iconNode$v);
+  const CircleAlert = createLucideIcon("CircleAlert", __iconNode$v);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7439,11 +7384,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$u = [
-    ["ellipse", { cx: "12", cy: "5", rx: "9", ry: "3", key: "msslwz" }],
-    ["path", { d: "M3 5V19A9 3 0 0 0 21 19V5", key: "1wlel7" }],
-    ["path", { d: "M3 12A9 3 0 0 0 21 12", key: "mv7ke4" }]
+    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
+    ["path", { d: "m9 12 2 2 4-4", key: "dzmm74" }]
   ];
-  const Database = createLucideIcon("Database", __iconNode$u);
+  const CircleCheck = createLucideIcon("CircleCheck", __iconNode$u);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7451,11 +7395,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$t = [
-    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
-    ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
-    ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
+    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
+    ["polyline", { points: "12 6 12 12 16.5 12", key: "1aq6pp" }]
   ];
-  const Download = createLucideIcon("Download", __iconNode$t);
+  const Clock3 = createLucideIcon("Clock3", __iconNode$t);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7463,11 +7406,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$s = [
-    ["path", { d: "M15 3h6v6", key: "1q9fwt" }],
-    ["path", { d: "M10 14 21 3", key: "gplh6r" }],
-    ["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6", key: "a6xqqp" }]
+    ["path", { d: "M12 13v8", key: "1l5pq0" }],
+    ["path", { d: "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", key: "1pljnt" }],
+    ["path", { d: "m8 17 4-4 4 4", key: "1quai1" }]
   ];
-  const ExternalLink = createLucideIcon("ExternalLink", __iconNode$s);
+  const CloudUpload = createLucideIcon("CloudUpload", __iconNode$s);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7475,16 +7418,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$r = [
-    [
-      "path",
-      {
-        d: "M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0",
-        key: "1nclc0"
-      }
-    ],
-    ["circle", { cx: "12", cy: "12", r: "3", key: "1v7zrd" }]
+    ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
+    ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
   ];
-  const Eye = createLucideIcon("Eye", __iconNode$r);
+  const Copy = createLucideIcon("Copy", __iconNode$r);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7492,13 +7429,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$q = [
-    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
-    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
-    ["path", { d: "M10 9H8", key: "b1mrlr" }],
-    ["path", { d: "M16 13H8", key: "t4e002" }],
-    ["path", { d: "M16 17H8", key: "z1uh3a" }]
+    ["ellipse", { cx: "12", cy: "5", rx: "9", ry: "3", key: "msslwz" }],
+    ["path", { d: "M3 5V19A9 3 0 0 0 21 19V5", key: "1wlel7" }],
+    ["path", { d: "M3 12A9 3 0 0 0 21 12", key: "mv7ke4" }]
   ];
-  const FileText = createLucideIcon("FileText", __iconNode$q);
+  const Database = createLucideIcon("Database", __iconNode$q);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7506,10 +7441,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$p = [
-    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
-    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }]
+    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
+    ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
+    ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
   ];
-  const File = createLucideIcon("File", __iconNode$p);
+  const Download = createLucideIcon("Download", __iconNode$p);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7517,9 +7453,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$o = [
-    ["polygon", { points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3", key: "1yg77f" }]
+    ["path", { d: "M15 3h6v6", key: "1q9fwt" }],
+    ["path", { d: "M10 14 21 3", key: "gplh6r" }],
+    ["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6", key: "a6xqqp" }]
   ];
-  const Filter = createLucideIcon("Filter", __iconNode$o);
+  const ExternalLink = createLucideIcon("ExternalLink", __iconNode$o);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7530,12 +7468,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     [
       "path",
       {
-        d: "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
-        key: "usdka0"
+        d: "M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0",
+        key: "1nclc0"
       }
-    ]
+    ],
+    ["circle", { cx: "12", cy: "12", r: "3", key: "1v7zrd" }]
   ];
-  const FolderOpen = createLucideIcon("FolderOpen", __iconNode$n);
+  const Eye = createLucideIcon("Eye", __iconNode$n);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7543,24 +7482,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$m = [
-    [
-      "path",
-      {
-        d: "M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z",
-        key: "hod4my"
-      }
-    ],
-    [
-      "path",
-      {
-        d: "M20 21a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-2.9a1 1 0 0 1-.88-.55l-.42-.85a1 1 0 0 0-.92-.6H13a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z",
-        key: "w4yl2u"
-      }
-    ],
-    ["path", { d: "M3 5a2 2 0 0 0 2 2h3", key: "f2jnh7" }],
-    ["path", { d: "M3 3v13a2 2 0 0 0 2 2h3", key: "k8epm1" }]
+    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
+    ["path", { d: "M10 9H8", key: "b1mrlr" }],
+    ["path", { d: "M16 13H8", key: "t4e002" }],
+    ["path", { d: "M16 17H8", key: "z1uh3a" }]
   ];
-  const FolderTree = createLucideIcon("FolderTree", __iconNode$m);
+  const FileText = createLucideIcon("FileText", __iconNode$m);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7568,6 +7496,43 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$l = [
+    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }]
+  ];
+  const File = createLucideIcon("File", __iconNode$l);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$k = [
+    ["polygon", { points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3", key: "1yg77f" }]
+  ];
+  const Filter = createLucideIcon("Filter", __iconNode$k);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$j = [
+    [
+      "path",
+      {
+        d: "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
+        key: "usdka0"
+      }
+    ]
+  ];
+  const FolderOpen = createLucideIcon("FolderOpen", __iconNode$j);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$i = [
     [
       "path",
       {
@@ -7576,14 +7541,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     ]
   ];
-  const Folder = createLucideIcon("Folder", __iconNode$l);
+  const Folder = createLucideIcon("Folder", __iconNode$i);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$k = [
+  const __iconNode$h = [
     ["circle", { cx: "9", cy: "12", r: "1", key: "1vctgf" }],
     ["circle", { cx: "9", cy: "5", r: "1", key: "hp0tcf" }],
     ["circle", { cx: "9", cy: "19", r: "1", key: "fkjjf6" }],
@@ -7591,14 +7556,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ["circle", { cx: "15", cy: "5", r: "1", key: "19l28e" }],
     ["circle", { cx: "15", cy: "19", r: "1", key: "f4zoj3" }]
   ];
-  const GripVertical = createLucideIcon("GripVertical", __iconNode$k);
+  const GripVertical = createLucideIcon("GripVertical", __iconNode$h);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$j = [
+  const __iconNode$g = [
     ["path", { d: "m15 12-8.373 8.373a1 1 0 1 1-3-3L12 9", key: "eefl8a" }],
     ["path", { d: "m18 15 4-4", key: "16gjal" }],
     [
@@ -7609,51 +7574,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     ]
   ];
-  const Hammer = createLucideIcon("Hammer", __iconNode$j);
+  const Hammer = createLucideIcon("Hammer", __iconNode$g);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$i = [
-    ["path", { d: "M3 6h18", key: "d0wm0j" }],
-    ["path", { d: "M7 12h10", key: "b7w52i" }],
-    ["path", { d: "M10 18h4", key: "1ulq68" }]
-  ];
-  const ListFilter = createLucideIcon("ListFilter", __iconNode$i);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$h = [["path", { d: "M21 12a9 9 0 1 1-6.219-8.56", key: "13zald" }]];
-  const LoaderCircle = createLucideIcon("LoaderCircle", __iconNode$h);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$g = [
-    ["line", { x1: "4", x2: "20", y1: "12", y2: "12", key: "1e0a9i" }],
-    ["line", { x1: "4", x2: "20", y1: "6", y2: "6", key: "1owob3" }],
-    ["line", { x1: "4", x2: "20", y1: "18", y2: "18", key: "yk5zj1" }]
-  ];
-  const Menu = createLucideIcon("Menu", __iconNode$g);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$f = [
-    ["path", { d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z", key: "1lielz" }],
-    ["path", { d: "M12 7v6", key: "lw1j43" }],
-    ["path", { d: "M9 10h6", key: "9gxzsh" }]
-  ];
-  const MessageSquarePlus = createLucideIcon("MessageSquarePlus", __iconNode$f);
+  const __iconNode$f = [["path", { d: "M21 12a9 9 0 1 1-6.219-8.56", key: "13zald" }]];
+  const LoaderCircle = createLucideIcon("LoaderCircle", __iconNode$f);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7661,6 +7590,30 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$e = [
+    ["line", { x1: "4", x2: "20", y1: "12", y2: "12", key: "1e0a9i" }],
+    ["line", { x1: "4", x2: "20", y1: "6", y2: "6", key: "1owob3" }],
+    ["line", { x1: "4", x2: "20", y1: "18", y2: "18", key: "yk5zj1" }]
+  ];
+  const Menu = createLucideIcon("Menu", __iconNode$e);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$d = [
+    ["path", { d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z", key: "1lielz" }],
+    ["path", { d: "M12 7v6", key: "lw1j43" }],
+    ["path", { d: "M9 10h6", key: "9gxzsh" }]
+  ];
+  const MessageSquarePlus = createLucideIcon("MessageSquarePlus", __iconNode$d);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$c = [
     ["path", { d: "M13.234 20.252 21 12.3", key: "1cbrk9" }],
     [
       "path",
@@ -7670,35 +7623,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     ]
   ];
-  const Paperclip = createLucideIcon("Paperclip", __iconNode$e);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$d = [
-    [
-      "path",
-      {
-        d: "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z",
-        key: "1a8usu"
-      }
-    ],
-    ["path", { d: "m15 5 4 4", key: "1mk7zo" }]
-  ];
-  const Pencil = createLucideIcon("Pencil", __iconNode$d);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$c = [
-    ["path", { d: "M5 12h14", key: "1ays0h" }],
-    ["path", { d: "M12 5v14", key: "s699le" }]
-  ];
-  const Plus = createLucideIcon("Plus", __iconNode$c);
+  const Paperclip = createLucideIcon("Paperclip", __iconNode$c);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -11237,245 +11162,67 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       trailing ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "shrink-0 text-[10px] text-muted", children: trailing }) : null
     ] });
   }
-  const MAX_MENTIONS = 5;
-  const PAGE_ACTIONS = /* @__PURE__ */ new Set(["open", "create", "view", "edit", "apply"]);
-  const ACTION_LABELS = {
-    read: "引用数据",
-    open: "打开",
-    create: "新建",
-    view: "打开查看",
-    edit: "打开编辑",
-    apply: "应用"
-  };
   const CATEGORIES = [
-    { scope: "menu", label: "菜单", detail: "按完整路径打开菜单，或直接进入新建" },
-    { scope: "record", label: "业务记录", detail: "查找客户、订单、合同等具体业务记录" },
-    { scope: "saved_filter", label: "收藏筛选", detail: "引用或应用个人与共享的收藏筛选" },
-    { scope: "current_filter", label: "当前筛选", detail: "引用或应用当前页面的临时筛选" },
-    { scope: "skill", label: "技能", detail: "选择适合当前任务的专业能力" }
+    { id: "menu", label: "菜单", detail: "按名称或完整路径查找菜单" },
+    { id: "skill", label: "技能", detail: "选择适合当前任务的专业能力" }
   ];
-  function MentionIcon({ kind }) {
-    if (kind === "menu") return /* @__PURE__ */ jsxRuntimeExports.jsx(Menu, { size: 15 });
-    if (kind === "saved_filter") return /* @__PURE__ */ jsxRuntimeExports.jsx(Bookmark, { size: 15 });
-    if (kind === "current_filter") return /* @__PURE__ */ jsxRuntimeExports.jsx(ListFilter, { size: 15 });
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(Database, { size: 15 });
-  }
-  function CategoryIcon({ scope }) {
-    return scope === "skill" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Sparkles, { size: 15 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(MentionIcon, { kind: scope });
-  }
-  function ActionIcon({ action }) {
-    if (action === "create") return /* @__PURE__ */ jsxRuntimeExports.jsx(Plus, { size: 14 });
-    if (action === "view") return /* @__PURE__ */ jsxRuntimeExports.jsx(Eye, { size: 14 });
-    if (action === "edit") return /* @__PURE__ */ jsxRuntimeExports.jsx(Pencil, { size: 14 });
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { size: 14 });
-  }
-  function conflictReason(candidate, action, selected, workspaceReferenceCount = 0) {
-    if (selected.length + workspaceReferenceCount >= MAX_MENTIONS) return "已达到 5 个引用上限";
-    if (selected.some((item) => item.resourceKey === candidate.resourceKey)) return "已引用此对象";
-    if (action && PAGE_ACTIONS.has(action) && selected.some((item) => item.pageAction)) {
-      return "本条消息已有页面动作";
-    }
-    return "";
-  }
   const MentionPicker = reactExports.forwardRef(function MentionPicker2({
     open,
     query,
-    selected,
-    workspaceReferenceCount,
-    hostBridge,
-    onSelect,
+    menuOptions,
+    onSelectMenu,
     onOpenSkills,
     onClose
   }, ref) {
-    var _a, _b, _c;
+    var _a, _b;
     const [view, setView] = reactExports.useState("home");
-    const [scope, setScope] = reactExports.useState("all");
-    const [modelScope, setModelScope] = reactExports.useState("");
-    const [modelQuery, setModelQuery] = reactExports.useState("");
     const [searchText, setSearchText] = reactExports.useState(query.query);
-    const [models, setModels] = reactExports.useState([]);
-    const [candidates, setCandidates] = reactExports.useState([]);
-    const [pending, setPending] = reactExports.useState(null);
     const [activeIndex, setActiveIndex] = reactExports.useState(0);
-    const [loading, setLoading] = reactExports.useState(false);
-    const [binding, setBinding] = reactExports.useState(false);
-    const [error, setError] = reactExports.useState("");
     const pickerRef = reactExports.useRef(null);
-    const requestNumber = reactExports.useRef(0);
-    const normalizedQuery = searchText.trim();
-    reactExports.useEffect(() => setSearchText(query.query), [query.query]);
+    reactExports.useEffect(() => {
+      setSearchText(query.query);
+      setActiveIndex(0);
+    }, [query.query]);
     reactExports.useEffect(() => {
       var _a2;
-      if (open && (view === "home" || view === "actions")) {
-        (_a2 = pickerRef.current) == null ? void 0 : _a2.focus({ preventScroll: true });
-      }
+      if (open && view === "home") (_a2 = pickerRef.current) == null ? void 0 : _a2.focus({ preventScroll: true });
     }, [open, view]);
-    reactExports.useEffect(() => {
-      if (!open) {
-        requestNumber.current += 1;
-        return;
-      }
-      setView(normalizedQuery ? "results" : "home");
-      setScope("all");
-      setModelScope("");
-      setPending(null);
-      setCandidates([]);
-      setError("");
-      setActiveIndex(0);
-    }, [open]);
-    reactExports.useEffect(() => {
-      if (!open) return;
-      if (normalizedQuery && view === "home") {
-        setView("results");
-        setScope("all");
-      } else if (!normalizedQuery && view === "results" && scope === "all") {
-        setView("home");
-      }
-      setActiveIndex(0);
-    }, [normalizedQuery]);
-    reactExports.useEffect(() => {
-      const canBrowseEmpty = scope === "menu" || scope === "saved_filter" || scope === "current_filter";
-      const shouldSearch = open && (view === "models" || view === "results" && (normalizedQuery.length >= 2 || canBrowseEmpty));
-      const currentRequest = ++requestNumber.current;
-      setCandidates([]);
-      setError("");
-      setActiveIndex(0);
-      if (!shouldSearch || !hostBridge.searchMentions) {
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      const timer = window.setTimeout(() => {
-        const search2 = hostBridge.searchMentions({
-          query: view === "models" ? "" : normalizedQuery,
-          scope: view === "models" ? "record" : scope,
-          modelScope: modelScope || void 0
-        });
-        Promise.resolve(search2).then((result) => {
-          if (currentRequest !== requestNumber.current) return;
-          if ((result == null ? void 0 : result.ok) === false) {
-            setError(result.error || result.code || "对象搜索失败");
-            return;
-          }
-          setCandidates(((result == null ? void 0 : result.candidates) || []).filter((item) => item.kind === "record" || item.kind === "menu" || item.kind === "saved_filter" || item.kind === "current_filter"));
-          setModels(((result == null ? void 0 : result.modelScopes) || []).slice(0, 100));
-        }, (reason) => {
-          if (currentRequest !== requestNumber.current) return;
-          setError((reason == null ? void 0 : reason.message) || "对象搜索失败");
-        }).finally(() => {
-          if (currentRequest === requestNumber.current) setLoading(false);
-        });
-      }, view === "models" || !normalizedQuery ? 0 : 300);
-      return () => window.clearTimeout(timer);
-    }, [hostBridge, modelScope, normalizedQuery, open, scope, view]);
-    const filteredModels = reactExports.useMemo(() => {
-      const needle = modelQuery.trim().toLocaleLowerCase();
-      return models.filter(
-        (item) => !needle || item.label.toLocaleLowerCase().includes(needle) || item.model.includes(needle)
-      );
-    }, [modelQuery, models]);
-    const bind = async (candidate, action) => {
-      const reason = conflictReason(candidate, action, selected, workspaceReferenceCount);
-      if (reason || binding || !hostBridge.bindMention) {
-        if (reason) setError(reason);
-        return;
-      }
-      setBinding(true);
-      setError("");
-      try {
-        const result = await Promise.resolve(hostBridge.bindMention({
-          candidateToken: candidate.candidateToken,
-          action
-        }));
-        if (!(result == null ? void 0 : result.ok) || !result.reference) {
-          setError((result == null ? void 0 : result.error) || (result == null ? void 0 : result.code) || "对象绑定失败");
-          return;
-        }
-        onSelect(result.reference);
-      } catch (reason2) {
-        setError((reason2 == null ? void 0 : reason2.message) || "对象绑定失败");
-      } finally {
-        setBinding(false);
-      }
-    };
-    const selectCandidate = (candidate) => {
-      const allBlocked = candidate.actions.every((action) => conflictReason(candidate, action, selected, workspaceReferenceCount));
-      if (allBlocked) return;
-      const defaultAction = candidate.kind === "menu" ? "open" : "read";
-      if (candidate.actions.includes(defaultAction)) {
-        void bind(candidate, defaultAction);
-        return;
-      }
-      void bind(candidate, candidate.actions[0]);
-    };
+    const filteredMenus = reactExports.useMemo(() => {
+      const needle = searchText.trim().toLocaleLowerCase();
+      return menuOptions.filter((option) => !needle || option.fullPath.toLocaleLowerCase().includes(needle)).slice(0, 8);
+    }, [menuOptions, searchText]);
+    const optionCount = view === "home" ? CATEGORIES.length : filteredMenus.length;
+    const activeOptionId = view === "home" ? `agui-mention-category-${((_a = CATEGORIES[activeIndex]) == null ? void 0 : _a.id) || "none"}` : `agui-mention-menu-${((_b = filteredMenus[activeIndex]) == null ? void 0 : _b.menuId) || "none"}`;
     const goBack = () => {
-      setError("");
       setActiveIndex(0);
-      if (view === "actions") {
-        setPending(null);
-        setView("results");
-      } else if (view === "models" || scope !== "all") {
-        setScope("all");
-        setModelScope("");
-        setView(normalizedQuery ? "results" : "home");
-      } else {
-        onClose();
-      }
+      if (view === "menus") setView("home");
+      else onClose();
     };
-    const optionCount = view === "actions" ? (pending == null ? void 0 : pending.actions.length) || 0 : view === "models" ? filteredModels.length : view === "results" ? candidates.length : CATEGORIES.length;
     const activate = (index2) => {
-      if (view === "actions" && (pending == null ? void 0 : pending.actions[index2])) {
-        void bind(pending, pending.actions[index2]);
-      } else if (view === "models" && filteredModels[index2]) {
-        setModelScope(filteredModels[index2].model);
-        setScope("record");
-        setView("results");
+      if (view === "menus") {
+        const option = filteredMenus[index2];
+        if (option) onSelectMenu(option);
+        return;
+      }
+      const category = CATEGORIES[index2];
+      if ((category == null ? void 0 : category.id) === "menu") {
+        setView("menus");
         setActiveIndex(0);
-      } else if (view === "results" && candidates[index2]) {
-        selectCandidate(candidates[index2]);
-      } else if (view === "home") {
-        const category = CATEGORIES[index2];
-        if (!category) return;
-        if (category.scope === "skill") {
-          onOpenSkills();
-          return;
-        }
-        setSearchText("");
-        setScope(category.scope);
-        setActiveIndex(0);
-        setView(category.scope === "record" ? "models" : "results");
+      } else if ((category == null ? void 0 : category.id) === "skill") {
+        onOpenSkills();
       }
     };
-    const activeOptionId = view === "home" ? `agui-mention-category-${((_a = CATEGORIES[activeIndex]) == null ? void 0 : _a.scope) || "none"}` : view === "models" ? `agui-mention-model-${((_b = filteredModels[activeIndex]) == null ? void 0 : _b.model) || "none"}` : view === "results" ? `agui-mention-candidate-${((_c = candidates[activeIndex]) == null ? void 0 : _c.candidateToken) || "none"}` : `agui-mention-action-${(pending == null ? void 0 : pending.actions[activeIndex]) || "none"}`;
     const handleKey = (event) => {
-      var _a2;
       if (!open || event.nativeEvent.isComposing) return false;
       if (event.key === "Escape") {
         event.preventDefault();
         goBack();
         return true;
       }
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        goBack();
-        return true;
-      }
-      if (event.key === "ArrowRight" && view === "results" && ((_a2 = candidates[activeIndex]) == null ? void 0 : _a2.actions.length) > 1) {
-        event.preventDefault();
-        setPending(candidates[activeIndex]);
-        setView("actions");
-        setActiveIndex(0);
-        return true;
-      }
-      if (event.key === "Home" || event.key === "End") {
-        event.preventDefault();
-        setActiveIndex(event.key === "Home" ? 0 : Math.max(0, optionCount - 1));
-        return true;
-      }
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         const delta = event.key === "ArrowDown" ? 1 : -1;
-        setActiveIndex((value) => optionCount ? (value + delta + optionCount) % optionCount : 0);
+        setActiveIndex((current) => optionCount ? (current + delta + optionCount) % optionCount : 0);
         return true;
       }
       if (event.key === "Enter") {
@@ -11485,89 +11232,69 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       return false;
     };
-    reactExports.useImperativeHandle(ref, () => ({
-      handleKey: (event) => handleKey(event)
-    }));
+    reactExports.useImperativeHandle(ref, () => ({ handleKey: (event) => handleKey(event) }));
     if (!open) return null;
     return /* @__PURE__ */ jsxRuntimeExports.jsxs(
       "div",
       {
         ref: pickerRef,
         tabIndex: -1,
-        className: "agui-picker absolute outline-none bottom-full left-0 z-40 mb-2 w-full max-w-md overflow-hidden rounded-md border border-border/70 bg-white text-secondary shadow-[0_12px_32px_rgba(15,23,42,0.14)]",
+        className: "agui-picker absolute bottom-full left-0 z-40 mb-2 w-full max-w-md overflow-hidden rounded-md border border-border/70 bg-white text-secondary shadow-[0_12px_32px_rgba(15,23,42,0.14)] outline-none",
         role: "dialog",
-        onKeyDown: (event) => handleKey(event),
         "aria-label": "添加到对话",
+        onKeyDown: handleKey,
         children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-9 items-center gap-2 border-b border-border px-2", children: [
-            view !== "home" ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center rounded-md border-0 bg-background-secondary text-secondary shadow-none transition-colors hover:bg-accent hover:text-primary", "aria-label": "返回", onPointerDown: (event) => event.preventDefault(), onClick: goBack, children: /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowLeft, { size: 15 }) }) : /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { size: 15, className: "mx-1 text-muted" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate text-xs font-medium", children: view === "home" ? "添加到对话" : view === "actions" ? pending == null ? void 0 : pending.label : view === "models" ? "选择业务类型" : scope === "menu" ? "选择菜单" : scope === "record" ? "搜索业务记录" : scope === "saved_filter" ? "选择收藏筛选" : scope === "current_filter" ? "选择当前筛选" : "搜索结果" })
+            view === "menus" ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center rounded-md border-0 bg-background-secondary text-secondary shadow-none transition-colors hover:bg-accent hover:text-primary", "aria-label": "返回", onPointerDown: (event) => event.preventDefault(), onClick: goBack, children: /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowLeft, { size: 15 }) }) : /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { size: 15, className: "mx-1 text-muted" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate text-xs font-medium", children: view === "home" ? "添加到对话" : "选择菜单" })
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { id: "agui-mention-options", className: "max-h-72 overflow-y-auto p-1", role: "listbox", "aria-busy": loading, "aria-activedescendant": activeOptionId, children: [
-            view === "home" ? CATEGORIES.map((category, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { id: `agui-mention-category-${category.scope}`, type: "button", role: "option", "aria-selected": index2 === activeIndex, className: cn("flex h-12 w-full items-center gap-2 border-l-2 border-l-transparent bg-white px-2 text-left transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary", index2 === activeIndex && "border-l-primary bg-background-secondary text-primary"), onPointerDown: (event) => event.preventDefault(), onClick: () => activate(index2), children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center text-muted", children: /* @__PURE__ */ jsxRuntimeExports.jsx(CategoryIcon, { scope: category.scope }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "min-w-0 flex-1", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block text-xs text-primary", children: category.label }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block truncate text-[10px] text-muted", children: category.detail })
-              ] })
-            ] }, category.scope)) : null,
-            view === "models" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(PickerSearch, { autoFocus: true, value: modelQuery, onChange: (event) => {
-                setModelQuery(event.target.value);
-                setActiveIndex(0);
-              }, placeholder: "搜索业务类型", "aria-label": "搜索业务类型" }),
-              filteredModels.map((model, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { id: `agui-mention-model-${model.model}`, type: "button", role: "option", "aria-selected": index2 === activeIndex, className: cn("group flex min-h-12 w-full items-center gap-2.5 border-l-2 border-l-transparent bg-white px-2.5 py-1.5 text-left transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary", index2 === activeIndex && "border-l-primary bg-background-secondary text-primary"), onClick: () => activate(index2), children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center rounded-md bg-background-secondary text-muted transition-colors group-hover:bg-white group-hover:text-primary", children: /* @__PURE__ */ jsxRuntimeExports.jsx(FolderTree, { size: 15 }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { id: "agui-mention-options", className: "max-h-72 overflow-y-auto p-1", role: "listbox", "aria-activedescendant": activeOptionId, children: view === "home" ? CATEGORIES.map((category, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "button",
+            {
+              id: `agui-mention-category-${category.id}`,
+              type: "button",
+              role: "option",
+              "aria-selected": index2 === activeIndex,
+              className: cn("flex h-12 w-full items-center gap-2 border-l-2 border-l-transparent bg-white px-2 text-left transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary", index2 === activeIndex && "border-l-primary bg-background-secondary text-primary"),
+              onPointerDown: (event) => event.preventDefault(),
+              onClick: () => activate(index2),
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center text-muted", children: category.id === "menu" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Menu, { size: 15 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Sparkles, { size: 15 }) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "min-w-0 flex-1", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block truncate text-xs font-medium text-primary", children: model.label }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mt-0.5 block truncate text-[10px] text-muted", children: model.model })
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowLeft, { size: 13, className: "shrink-0 rotate-180 text-muted/60 transition-transform group-hover:translate-x-0.5 group-hover:text-primary" })
-              ] }, model.model)),
-              !filteredModels.length && !loading ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid min-h-28 place-items-center px-4 text-center text-xs text-muted", children: "没有匹配的业务类型" }) : null
-            ] }) : null,
-            view === "results" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(PickerSearch, { autoFocus: true, value: searchText, onChange: (event) => {
-                setSearchText(event.target.value);
-                setActiveIndex(0);
-              }, placeholder: scope === "menu" ? "搜索菜单名称或完整路径" : scope === "record" ? "搜索记录名称" : scope === "saved_filter" ? "搜索收藏筛选" : scope === "current_filter" ? "搜索当前筛选" : "搜索记录或菜单", "aria-label": scope === "menu" ? "搜索菜单" : scope === "record" ? "搜索业务记录" : scope === "saved_filter" ? "搜索收藏筛选" : scope === "current_filter" ? "搜索当前筛选" : "搜索记录或菜单" }),
-              loading ? Array.from({ length: 4 }).map((_, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-11 animate-pulse items-center gap-2 px-2", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "size-6 bg-accent" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "h-3 flex-1 bg-accent" })
-              ] }, index2)) : null,
-              !loading && candidates.map((candidate, index2) => {
-                const reasons = candidate.actions.map((action) => conflictReason(candidate, action, selected, workspaceReferenceCount)).filter(Boolean);
-                const disabled = reasons.length === candidate.actions.length;
-                return /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { id: `agui-mention-candidate-${candidate.candidateToken}`, type: "button", role: "option", "aria-selected": index2 === activeIndex, disabled: disabled || binding, className: cn("group flex min-h-12 w-full items-center gap-2.5 border-l-2 border-l-transparent bg-white px-2.5 py-1.5 text-left transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary disabled:opacity-40", index2 === activeIndex && "border-l-primary bg-background-secondary text-primary"), onPointerDown: (event) => event.preventDefault(), onClick: () => selectCandidate(candidate), title: disabled ? reasons[0] : candidate.detail, children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center rounded-md bg-background-secondary text-muted transition-colors group-hover:bg-white group-hover:text-primary", children: /* @__PURE__ */ jsxRuntimeExports.jsx(MentionIcon, { kind: candidate.kind }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "min-w-0 flex-1", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block truncate text-xs font-medium text-primary", children: candidate.label }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mt-0.5 block truncate text-[10px] text-muted", children: disabled ? reasons[0] : candidate.detail })
-                  ] }),
-                  candidate.kind === "menu" && candidate.actions.includes("create") ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-6 shrink-0 place-items-center rounded-md bg-background-secondary text-muted transition-colors group-hover:bg-white group-hover:text-primary", title: "支持新建", children: /* @__PURE__ */ jsxRuntimeExports.jsx(Plus, { size: 13 }) }) : candidate.actions.length > 1 ? /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowLeft, { size: 13, className: "shrink-0 rotate-180 text-muted/60 transition-transform group-hover:translate-x-0.5 group-hover:text-primary" }) : null
-                ] }, candidate.candidateToken);
-              }),
-              !loading && !candidates.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "px-3 py-5 text-center text-xs text-muted", children: error || (scope === "record" && normalizedQuery.length < 2 ? "输入至少 2 个字符开始搜索" : "没有匹配的对象") }) : null
-            ] }) : null,
-            view === "actions" && pending ? pending.actions.map((action, index2) => {
-              const reason = conflictReason(pending, action, selected, workspaceReferenceCount);
-              return /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { id: `agui-mention-action-${action}`, type: "button", role: "option", "aria-selected": index2 === activeIndex, disabled: !!reason || binding, className: cn("flex h-10 w-full items-center justify-between border-l-2 border-l-transparent bg-white px-3 text-left text-xs transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary disabled:opacity-40", index2 === activeIndex && "border-l-primary bg-background-secondary text-primary"), onPointerDown: (event) => event.preventDefault(), onClick: () => void bind(pending, action), children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "inline-flex items-center gap-2", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(ActionIcon, { action }),
-                  ACTION_LABELS[action]
-                ] }),
-                reason ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[10px] text-muted", children: reason }) : null
-              ] }, action);
-            }) : null
-          ] }),
-          error && (candidates.length || view === "actions") ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { role: "alert", className: "border-t border-border px-3 py-2 text-[11px] text-destructive", children: error }) : null
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block text-xs text-primary", children: category.label }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block truncate text-[10px] text-muted", children: category.detail })
+                ] })
+              ]
+            },
+            category.id
+          )) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(PickerSearch, { autoFocus: true, value: searchText, onChange: (event) => {
+              setSearchText(event.target.value);
+              setActiveIndex(0);
+            }, placeholder: "搜索菜单名称或完整路径", "aria-label": "搜索菜单" }),
+            filteredMenus.map((option, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "button",
+              {
+                id: `agui-mention-menu-${option.menuId}`,
+                type: "button",
+                role: "option",
+                "aria-selected": index2 === activeIndex,
+                className: cn("flex min-h-10 w-full items-center gap-2 border-l-2 border-l-transparent bg-white px-2.5 py-2 text-left text-xs text-secondary transition-colors duration-150 hover:border-l-primary hover:bg-background-secondary hover:text-primary", index2 === activeIndex && "border-l-primary bg-background-secondary text-primary"),
+                onPointerDown: (event) => event.preventDefault(),
+                onClick: () => onSelectMenu(option),
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { className: "size-3.5 shrink-0 text-muted" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate", title: option.fullPath, children: option.fullPath })
+                ]
+              },
+              option.menuId
+            )),
+            !filteredMenus.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "px-3 py-5 text-center text-xs text-muted", children: "没有匹配的菜单" }) : null
+          ] }) })
         ]
       }
     );
   });
-  function mentionIcon(kind) {
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(MentionIcon, { kind });
-  }
   function skillQueryAtCursor(value, cursor) {
     if (!value.startsWith("/")) return null;
     const lineEnd = value.indexOf("\n");
@@ -11709,7 +11436,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     attachments,
     menuOptions,
     agentSkills = [],
-    hostBridge,
     onSend,
     onStop,
     onUpload,
@@ -11718,20 +11444,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     icons,
     onOpenWorkspace,
     workspaceReferences = [],
-    onRemoveWorkspaceReference,
-    onMentionsChange
+    onRemoveWorkspaceReference
   }) {
     var _a;
     const [value, setValue] = reactExports.useState("");
     const [menuMention, setMenuMention] = reactExports.useState();
-    const [mentions, setMentions] = reactExports.useState([]);
     const [menuQuery, setMenuQuery] = reactExports.useState(null);
     const [selectedSkills, setSelectedSkills] = reactExports.useState([]);
     const [skillQuery, setSkillQuery] = reactExports.useState(null);
     const [skillSearch, setSkillSearch] = reactExports.useState("");
     const [skillOpen, setSkillOpen] = reactExports.useState(false);
     const [sending, setSending] = reactExports.useState(false);
-    const [activeMenuIndex, setActiveMenuIndex] = reactExports.useState(0);
     const [items, setItems] = reactExports.useState([]);
     const [dragging, setDragging] = reactExports.useState(false);
     const textareaRef = reactExports.useRef(null);
@@ -11740,16 +11463,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const skillPickerRef = reactExports.useRef(null);
     const inputRef = reactExports.useRef(null);
     const dragDepth = reactExports.useRef(0);
-    const unifiedMentions = Boolean((hostBridge == null ? void 0 : hostBridge.searchMentions) && (hostBridge == null ? void 0 : hostBridge.bindMention));
     const config = typeof attachments === "object" ? attachments : {};
     const enabled = attachments !== false && config.enabled !== false;
     const maxFileSize = config.maxFileSize || 10 * MB;
     const maxFiles = config.maxFiles || 5;
     const maxTotalSize = config.maxTotalSize || 25 * MB;
-    const normalizedMenuQuery = (menuQuery == null ? void 0 : menuQuery.query.trim().toLocaleLowerCase()) || "";
-    const filteredMenus = menuQuery ? menuOptions.filter(
-      (option) => !normalizedMenuQuery || option.fullPath.toLocaleLowerCase().includes(normalizedMenuQuery)
-    ).slice(0, 8) : [];
     reactExports.useEffect(() => {
       const closeOutside = (event) => {
         var _a2;
@@ -11876,29 +11594,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (item.attachment) void onRemove(item.attachment.id);
     };
     const readyAttachments = items.flatMap((item) => item.attachment ? [item.attachment] : []);
-    const canSend = !running && !sending && !disabled && !items.some((item) => item.status !== "ready") && (!!value.trim() || readyAttachments.length > 0 || !!menuMention || mentions.length > 0 || selectedSkills.length > 0 || workspaceReferences.length > 0);
+    const canSend = !running && !sending && !disabled && !items.some((item) => item.status !== "ready") && (!!value.trim() || readyAttachments.length > 0 || !!menuMention || selectedSkills.length > 0 || workspaceReferences.length > 0);
     const selectMenu = (option) => {
       if (!menuQuery) return;
       const cursor = menuQuery.start;
       setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end));
       setMenuMention({ ...option, path: [...option.path], valid: true });
-      setMenuQuery(null);
-      setActiveMenuIndex(0);
-      window.setTimeout(() => {
-        var _a2, _b;
-        (_a2 = textareaRef.current) == null ? void 0 : _a2.focus();
-        (_b = textareaRef.current) == null ? void 0 : _b.setSelectionRange(cursor, cursor);
-      }, 0);
-    };
-    const selectMention = (reference) => {
-      if (!menuQuery) return;
-      const cursor = menuQuery.start;
-      setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end));
-      setMentions((current) => {
-        const next = [...current, { ...reference }];
-        onMentionsChange == null ? void 0 : onMentionsChange(next.length);
-        return next;
-      });
       setMenuQuery(null);
       window.setTimeout(() => {
         var _a2, _b;
@@ -11923,17 +11624,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const submit = async () => {
       if (!canSend) return;
       const content2 = value.trim();
-      const selectedMentions = unifiedMentions ? mentions : menuMention;
       setSending(true);
       let sent = false;
       try {
         sent = await Promise.resolve(selectedSkills.length ? onSend(
           content2,
           readyAttachments,
-          selectedMentions || void 0,
+          menuMention,
           selectedSkills.map((skill) => ({ ...skill })),
           workspaceReferences.map((reference) => ({ ...reference }))
-        ) : onSend(content2, readyAttachments, selectedMentions || void 0, void 0, workspaceReferences.map((reference) => ({ ...reference }))));
+        ) : onSend(content2, readyAttachments, menuMention, void 0, workspaceReferences.map((reference) => ({ ...reference }))));
       } catch (_error) {
         sent = false;
       } finally {
@@ -11942,8 +11642,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (sent === false) return;
       setValue("");
       setMenuMention(void 0);
-      setMentions([]);
-      onMentionsChange == null ? void 0 : onMentionsChange(0);
       setSelectedSkills([]);
       setMenuQuery(null);
       setSkillOpen(false);
@@ -11957,26 +11655,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const onKeyDown = (event) => {
       var _a2, _b;
       if (skillOpen && ((_a2 = skillPickerRef.current) == null ? void 0 : _a2.handleKey(event))) return;
-      if (unifiedMentions && menuQuery && ((_b = mentionPickerRef.current) == null ? void 0 : _b.handleKey(event))) return;
-      if (menuQuery) {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          setMenuQuery(null);
-          return;
-        }
-        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-          event.preventDefault();
-          const direction = event.key === "ArrowDown" ? 1 : -1;
-          const length = filteredMenus.length;
-          setActiveMenuIndex((current) => length ? (current + direction + length) % length : 0);
-          return;
-        }
-        if (event.key === "Enter" && filteredMenus[activeMenuIndex]) {
-          event.preventDefault();
-          selectMenu(filteredMenus[activeMenuIndex]);
-          return;
-        }
-      }
+      if (menuQuery && ((_b = mentionPickerRef.current) == null ? void 0 : _b.handleKey(event))) return;
       if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
         event.preventDefault();
         void submit();
@@ -12044,15 +11723,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             ] }, item.localId)) })
           ] }) : null,
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-            mentions.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mb-2 flex flex-wrap gap-1.5", "aria-label": "已选对象引用", children: mentions.map((mention) => /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-primary/20 bg-accent px-2 py-1 text-xs text-primary", title: `${mention.detail} · ${ACTION_LABELS[mention.action]}`, children: [
-              mentionIcon(mention.kind),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "truncate", children: mention.label }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-background hover:text-primary", "aria-label": `移除引用 ${mention.label}`, title: "移除引用", onClick: () => setMentions((current) => {
-                const next = current.filter((item) => item.id !== mention.id);
-                onMentionsChange == null ? void 0 : onMentionsChange(next.length);
-                return next;
-              }), children: /* @__PURE__ */ jsxRuntimeExports.jsx(X, { className: "size-3" }) })
-            ] }, mention.id)) }) : null,
             workspaceReferences.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mb-2 flex flex-wrap gap-1.5", "aria-label": "已选工作区引用", children: workspaceReferences.map((reference) => /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-background-panel px-2 py-1 text-xs text-primary", title: reference.path, children: [
               reference.isDirectory ? /* @__PURE__ */ jsxRuntimeExports.jsx(Folder, { className: "size-3.5 shrink-0" }) : /* @__PURE__ */ jsxRuntimeExports.jsx(FileText, { className: "size-3.5 shrink-0" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "truncate", children: reference.name }),
@@ -12075,7 +11745,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                 const cursor = event.target.selectionStart ?? nextValue.length;
                 const nextSkillQuery = skillQueryAtCursor(nextValue, cursor);
                 setValue(nextValue);
-                setActiveMenuIndex(0);
                 if (nextSkillQuery && agentSkills.length) {
                   setSkillQuery(nextSkillQuery);
                   setSkillSearch(nextSkillQuery.query);
@@ -12099,23 +11768,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                   setMenuQuery(menuQueryAtCursor(value, cursor));
                 }
               }, onKeyDown, onPasteCapture: onPaste, "aria-autocomplete": "list", "aria-expanded": Boolean(menuQuery || skillOpen), "aria-controls": skillOpen ? "agui-skill-options" : menuQuery ? "agui-mention-options" : void 0 }),
-              unifiedMentions && menuQuery && hostBridge ? /* @__PURE__ */ jsxRuntimeExports.jsx(MentionPicker, { ref: mentionPickerRef, open: true, query: menuQuery, selected: mentions, workspaceReferenceCount: workspaceReferences.length, hostBridge, onSelect: selectMention, onOpenSkills: () => {
+              menuQuery ? /* @__PURE__ */ jsxRuntimeExports.jsx(MentionPicker, { ref: mentionPickerRef, open: true, query: menuQuery, menuOptions, onSelectMenu: selectMenu, onOpenSkills: () => {
                 const cursor = menuQuery.start;
                 setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end));
                 setMenuQuery(null);
                 setSkillQuery(null);
-                setSkillSearch(String());
+                setSkillSearch("");
                 setSkillOpen(true);
                 window.setTimeout(() => {
                   var _a2;
                   return (_a2 = textareaRef.current) == null ? void 0 : _a2.setSelectionRange(cursor, cursor);
                 }, 0);
               }, onClose: () => setMenuQuery(null) }) : null,
-              !unifiedMentions && menuQuery ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { role: "listbox", className: "absolute bottom-full left-0 right-0 z-40 mb-1 max-h-72 overflow-y-auto rounded-md border border-border bg-background-panel p-1 shadow-lg", children: filteredMenus.length ? filteredMenus.map((option, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { type: "button", role: "option", "aria-selected": index2 === activeMenuIndex, className: cn("flex w-full items-center gap-2 rounded border-0 bg-transparent px-2.5 py-2 text-left text-xs text-secondary hover:bg-accent", index2 === activeMenuIndex && "bg-accent text-primary"), onPointerDown: (event) => event.preventDefault(), onClick: () => selectMenu(option), children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { className: "size-3.5 shrink-0 text-muted" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate", title: option.fullPath, children: option.fullPath })
-              ] }, option.menuId)) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "px-2.5 py-2 text-xs text-muted", children: "没有匹配的菜单" }) }) : null,
-              /* @__PURE__ */ jsxRuntimeExports.jsx(SkillPicker, { ref: skillPickerRef, open: skillOpen && agentSkills.length > 0, query: skillSearch, skills: agentSkills, selected: selectedSkills, onQueryChange: setSkillSearch, onToggle: toggleSkill, onClose: () => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx(SkillPicker, { ref: skillPickerRef, open: skillOpen, query: skillSearch, skills: agentSkills, selected: selectedSkills, onQueryChange: setSkillSearch, onToggle: toggleSkill, onClose: () => {
                 setSkillOpen(false);
                 setSkillQuery(null);
               } })
@@ -24914,7 +24579,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       edit: "编辑",
       apply: "应用"
     };
-    const mentionIcon2 = (kind) => {
+    const mentionIcon = (kind) => {
       if (kind === "menu") return /* @__PURE__ */ jsxRuntimeExports.jsx(Menu, { className: "size-3.5 shrink-0" });
       if (kind === "record") return /* @__PURE__ */ jsxRuntimeExports.jsx(Database, { className: "size-3.5 shrink-0" });
       if (kind === "saved_filter") return /* @__PURE__ */ jsxRuntimeExports.jsx(Filter, { className: "size-3.5 shrink-0" });
@@ -24926,7 +24591,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
         reference.valid ? "border-primary/20 bg-accent text-primary" : "border-warning/35 bg-warning/10 text-warning"
       ), title: reference.detail, children: [
-        mentionIcon2(reference.kind),
+        mentionIcon(reference.kind),
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "truncate", children: reference.label }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "shrink-0 opacity-70", children: actionLabels[reference.action] }),
         !reference.valid ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "shrink-0", children: "（已失效）" }) : null,
@@ -25389,7 +25054,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
     return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   }
-  function WorkspacePanel({ runtime, threadId, references, mentionCount, onToggleReference, onDeleted, onClose }) {
+  function WorkspacePanel({ runtime, threadId, references, onToggleReference, onDeleted, onClose }) {
     const [path2, setPath] = reactExports.useState("");
     const [entries, setEntries] = reactExports.useState([]);
     const [loading, setLoading] = reactExports.useState(false);
@@ -25485,8 +25150,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             !loading && entries.map((entry) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex min-h-12 items-center gap-2 border-b border-border/60 px-3 py-1.5 hover:bg-background-secondary/60", children: [
               (() => {
                 const selected = references.some((item) => item.path === entry.path);
-                const disabled = !selected && references.length + mentionCount >= 5;
-                return /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center border-0 bg-transparent text-muted hover:bg-accent hover:text-primary disabled:opacity-40", disabled, "aria-label": `${selected ? "移除" : "加入"}对话 ${entry.name}`, title: disabled ? "Odoo 引用与工作区引用合计最多 5 个" : "加入对话", onClick: () => onToggleReference(entry), children: selected ? /* @__PURE__ */ jsxRuntimeExports.jsx(Check, { size: 14 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(MessageSquarePlus, { size: 14 }) });
+                const disabled = !selected && references.length >= 5;
+                return /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center border-0 bg-transparent text-muted hover:bg-accent hover:text-primary disabled:opacity-40", disabled, "aria-label": `${selected ? "移除" : "加入"}对话 ${entry.name}`, title: disabled ? "工作区引用最多 5 个" : "加入对话", onClick: () => onToggleReference(entry), children: selected ? /* @__PURE__ */ jsxRuntimeExports.jsx(Check, { size: 14 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(MessageSquarePlus, { size: 14 }) });
               })(),
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center text-muted", children: entry.isDirectory ? /* @__PURE__ */ jsxRuntimeExports.jsx(Folder, { size: 16 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(File, { size: 15 }) }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { type: "button", className: "min-w-0 flex-1 border-0 bg-transparent p-0 text-left", onClick: () => entry.isDirectory ? setPath(entry.path) : void openPreview(entry), children: [
@@ -25523,7 +25188,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const [previewAttachment, setPreviewAttachment] = reactExports.useState(null);
     const [workspaceOpen, setWorkspaceOpen] = reactExports.useState(false);
     const [workspaceReferences, setWorkspaceReferences] = reactExports.useState([]);
-    const [composerMentionCount, setComposerMentionCount] = reactExports.useState(0);
     const scrollRef = reactExports.useRef(null);
     const followsStream = reactExports.useRef(true);
     const previousThread = reactExports.useRef(snapshot.threadId);
@@ -25539,7 +25203,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     reactExports.useEffect(() => runtime.subscribe(() => setSnapshot(runtime.getSnapshot())), [runtime]);
     reactExports.useEffect(() => {
       setWorkspaceReferences([]);
-      setComposerMentionCount(0);
       setPreviewAttachment(null);
       setWorkspaceOpen(false);
     }, [snapshot.threadId]);
@@ -25707,7 +25370,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             hostBridge: props.hostBridge,
             workspaceReferences,
             onRemoveWorkspaceReference: (id) => setWorkspaceReferences((current) => current.filter((item) => item.id !== id)),
-            onMentionsChange: setComposerMentionCount,
             labels,
             icons,
             onSend: handleSend,
@@ -25742,11 +25404,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           runtime,
           threadId: snapshot.threadId,
           references: workspaceReferences,
-          mentionCount: composerMentionCount,
           onToggleReference: (entry) => setWorkspaceReferences((current) => {
             const selected = current.some((item) => item.path === entry.path);
             if (selected) return current.filter((item) => item.path !== entry.path);
-            if (current.length + composerMentionCount >= 5) return current;
+            if (current.length >= 5) return current;
             return [...current, { id: `workspace:${entry.path}`, path: entry.path, name: entry.name, isDirectory: entry.isDirectory }];
           }),
           onDeleted: (entry) => setWorkspaceReferences((current) => current.filter((item) => item.path !== entry.path && !(entry.isDirectory && item.path.startsWith(`${entry.path}/`)))),

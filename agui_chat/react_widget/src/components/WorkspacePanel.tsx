@@ -11,7 +11,6 @@ interface WorkspacePanelProps {
   runtime: ChatRuntime
   threadId: string
   references: WorkspaceReference[]
-  mentionCount: number
   onToggleReference: (entry: WorkspaceEntry) => void
   onDeleted: (entry: WorkspaceEntry) => void
   onClose: () => void
@@ -23,7 +22,7 @@ function sizeLabel(size: number): string {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function WorkspacePanel({ runtime, threadId, references, mentionCount, onToggleReference, onDeleted, onClose }: WorkspacePanelProps) {
+export function WorkspacePanel({ runtime, threadId, references, onToggleReference, onDeleted, onClose }: WorkspacePanelProps) {
   const [path, setPath] = useState('')
   const [entries, setEntries] = useState<WorkspaceEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -121,7 +120,7 @@ export function WorkspacePanel({ runtime, threadId, references, mentionCount, on
       </section> : <div className="min-h-0 flex-1 overflow-y-auto">
         {loading ? Array.from({ length: 5 }).map((_, index) => <div key={index} className="flex h-12 animate-pulse items-center gap-3 border-b border-border/60 px-3"><span className="size-6 bg-background-secondary"/><span className="h-3 flex-1 bg-background-secondary"/></div>) : null}
         {!loading && entries.map((entry) => <div key={entry.path} className="flex min-h-12 items-center gap-2 border-b border-border/60 px-3 py-1.5 hover:bg-background-secondary/60">
-          {(() => { const selected = references.some((item) => item.path === entry.path); const disabled = !selected && references.length + mentionCount >= 5; return <button type="button" className="grid size-7 place-items-center border-0 bg-transparent text-muted hover:bg-accent hover:text-primary disabled:opacity-40" disabled={disabled} aria-label={`${selected ? '移除' : '加入'}对话 ${entry.name}`} title={disabled ? 'Odoo 引用与工作区引用合计最多 5 个' : '加入对话'} onClick={() => onToggleReference(entry)}>{selected ? <Check size={14} /> : <MessageSquarePlus size={14} />}</button> })()}
+          {(() => { const selected = references.some((item) => item.path === entry.path); const disabled = !selected && references.length >= 5; return <button type="button" className="grid size-7 place-items-center border-0 bg-transparent text-muted hover:bg-accent hover:text-primary disabled:opacity-40" disabled={disabled} aria-label={`${selected ? '移除' : '加入'}对话 ${entry.name}`} title={disabled ? '工作区引用最多 5 个' : '加入对话'} onClick={() => onToggleReference(entry)}>{selected ? <Check size={14} /> : <MessageSquarePlus size={14} />}</button> })()}
           <span className="grid size-7 shrink-0 place-items-center text-muted">{entry.isDirectory ? <Folder size={16} /> : <File size={15} />}</span>
           <button type="button" className="min-w-0 flex-1 border-0 bg-transparent p-0 text-left" onClick={() => entry.isDirectory ? setPath(entry.path) : void openPreview(entry)}>
             <span className="block truncate text-xs text-primary" title={entry.name}>{entry.name}</span>

@@ -7,9 +7,7 @@ import type {
 } from '../types'
 import { cn } from '../lib'
 import { Button } from './Button'
-import {
-  ACTION_LABELS, MentionPicker, type MentionPickerHandle, type MentionQuery, mentionIcon
-} from './MentionPicker'
+import { MentionPicker, type MentionPickerHandle, type MentionQuery } from './MentionPicker'
 import {
   SkillPicker, type SkillPickerHandle, type SkillQuery, skillQueryAtCursor
 } from './SkillPicker'
@@ -52,7 +50,6 @@ export interface ChatInputProps {
   hostBridge?: HostBridge
   workspaceReferences?: WorkspaceReference[]
   onRemoveWorkspaceReference?: (id: string) => void
-  onMentionsChange?: (count: number) => void
   onSend: (
     content: string,
     attachments: AttachmentRef[],
@@ -110,19 +107,17 @@ function fileKind(file: File): string {
 }
 
 export function ChatInput({
-  running, disabled = false, attachments, menuOptions, agentSkills = [], hostBridge,
-  onSend, onStop, onUpload, onRemove, labels, icons, onOpenWorkspace, workspaceReferences = [], onRemoveWorkspaceReference, onMentionsChange
+  running, disabled = false, attachments, menuOptions, agentSkills = [],
+  onSend, onStop, onUpload, onRemove, labels, icons, onOpenWorkspace, workspaceReferences = [], onRemoveWorkspaceReference
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [menuMention, setMenuMention] = useState<MenuMention | undefined>()
-  const [mentions, setMentions] = useState<MentionReference[]>([])
   const [menuQuery, setMenuQuery] = useState<MentionQuery | null>(null)
   const [selectedSkills, setSelectedSkills] = useState<SelectedAgentSkill[]>([])
   const [skillQuery, setSkillQuery] = useState<SkillQuery | null>(null)
   const [skillSearch, setSkillSearch] = useState('')
   const [skillOpen, setSkillOpen] = useState(false)
   const [sending, setSending] = useState(false)
-  const [activeMenuIndex, setActiveMenuIndex] = useState(0)
   const [items, setItems] = useState<UploadItem[]>([])
   const [dragging, setDragging] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -131,19 +126,11 @@ export function ChatInput({
   const skillPickerRef = useRef<SkillPickerHandle | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const dragDepth = useRef(0)
-  const unifiedMentions = Boolean(hostBridge?.searchMentions && hostBridge?.bindMention)
   const config = typeof attachments === 'object' ? attachments : {}
   const enabled = attachments !== false && config.enabled !== false
   const maxFileSize = config.maxFileSize || 10 * MB
   const maxFiles = config.maxFiles || 5
   const maxTotalSize = config.maxTotalSize || 25 * MB
-  const normalizedMenuQuery = menuQuery?.query.trim().toLocaleLowerCase() || ''
-  const filteredMenus = menuQuery
-    ? menuOptions.filter((option) =>
-        !normalizedMenuQuery || option.fullPath.toLocaleLowerCase().includes(normalizedMenuQuery)
-      ).slice(0, 8)
-    : []
-
   useEffect(() => {
     const closeOutside = (event: PointerEvent | FocusEvent) => {
       if (!formRef.current?.contains(event.target as Node)) {
@@ -279,30 +266,13 @@ export function ChatInput({
 
   const readyAttachments = items.flatMap((item) => item.attachment ? [item.attachment] : [])
   const canSend = !running && !sending && !disabled && !items.some((item) => item.status !== 'ready') &&
-    (!!value.trim() || readyAttachments.length > 0 || !!menuMention || mentions.length > 0 || selectedSkills.length > 0 || workspaceReferences.length > 0)
+    (!!value.trim() || readyAttachments.length > 0 || !!menuMention || selectedSkills.length > 0 || workspaceReferences.length > 0)
 
   const selectMenu = (option: MenuMentionOption) => {
     if (!menuQuery) return
     const cursor = menuQuery.start
     setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end))
     setMenuMention({ ...option, path: [...option.path], valid: true })
-    setMenuQuery(null)
-    setActiveMenuIndex(0)
-    window.setTimeout(() => {
-      textareaRef.current?.focus()
-      textareaRef.current?.setSelectionRange(cursor, cursor)
-    }, 0)
-  }
-
-  const selectMention = (reference: MentionReference) => {
-    if (!menuQuery) return
-    const cursor = menuQuery.start
-    setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end))
-    setMentions((current) => {
-      const next = [...current, { ...reference }]
-      onMentionsChange?.(next.length)
-      return next
-    })
     setMenuQuery(null)
     window.setTimeout(() => {
       textareaRef.current?.focus()
@@ -328,7 +298,6 @@ export function ChatInput({
   const submit = async () => {
     if (!canSend) return
     const content = value.trim()
-    const selectedMentions = unifiedMentions ? mentions : menuMention
     setSending(true)
     let sent: boolean | void = false
     try {
@@ -336,11 +305,11 @@ export function ChatInput({
         ? onSend(
             content,
             readyAttachments,
-            selectedMentions || undefined,
+            menuMention,
             selectedSkills.map((skill) => ({ ...skill })),
             workspaceReferences.map((reference) => ({ ...reference }))
           )
-        : onSend(content, readyAttachments, selectedMentions || undefined, undefined, workspaceReferences.map((reference) => ({ ...reference }))))
+        : onSend(content, readyAttachments, menuMention, undefined, workspaceReferences.map((reference) => ({ ...reference }))))
     } catch (_error) {
       sent = false
     } finally {
@@ -349,8 +318,6 @@ export function ChatInput({
     if (sent === false) return
     setValue('')
     setMenuMention(undefined)
-    setMentions([])
-    onMentionsChange?.(0)
     setSelectedSkills([])
     setMenuQuery(null)
     setSkillOpen(false)
@@ -361,28 +328,7 @@ export function ChatInput({
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (skillOpen && skillPickerRef.current?.handleKey(event)) return
-    if (unifiedMentions && menuQuery && mentionPickerRef.current?.handleKey(event)) return
-    if (menuQuery) {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        setMenuQuery(null)
-        return
-      }
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault()
-        const direction = event.key === 'ArrowDown' ? 1 : -1
-        const length = filteredMenus.length
-        setActiveMenuIndex((current) => length
-          ? (current + direction + length) % length
-          : 0)
-        return
-      }
-      if (event.key === 'Enter' && filteredMenus[activeMenuIndex]) {
-        event.preventDefault()
-        selectMenu(filteredMenus[activeMenuIndex])
-        return
-      }
-    }
+    if (menuQuery && mentionPickerRef.current?.handleKey(event)) return
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
       void submit()
@@ -461,16 +407,6 @@ export function ChatInput({
         </div>
       ) : null}
       <div>
-        {mentions.length ? <div className="mb-2 flex flex-wrap gap-1.5" aria-label="已选对象引用">
-          {mentions.map((mention) => <span key={mention.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-primary/20 bg-accent px-2 py-1 text-xs text-primary" title={`${mention.detail} · ${ACTION_LABELS[mention.action]}`}>
-            {mentionIcon(mention.kind)}
-            <span className="truncate">{mention.label}</span>
-
-            <button type="button" className="grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-background hover:text-primary" aria-label={`移除引用 ${mention.label}`} title="移除引用" onClick={() => setMentions((current) => { const next = current.filter((item) => item.id !== mention.id); onMentionsChange?.(next.length); return next })}>
-              <X className="size-3" />
-            </button>
-          </span>)}
-        </div> : null}
         {workspaceReferences.length ? <div className="mb-2 flex flex-wrap gap-1.5" aria-label="已选工作区引用">
           {workspaceReferences.map((reference) => <span key={reference.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-background-panel px-2 py-1 text-xs text-primary" title={reference.path}>
             {reference.isDirectory ? <Folder className="size-3.5 shrink-0" /> : <FileText className="size-3.5 shrink-0" />}<span className="truncate">{reference.name}</span>
@@ -499,7 +435,6 @@ export function ChatInput({
             const cursor = event.target.selectionStart ?? nextValue.length
             const nextSkillQuery = skillQueryAtCursor(nextValue, cursor)
             setValue(nextValue)
-            setActiveMenuIndex(0)
             if (nextSkillQuery && agentSkills.length) {
               setSkillQuery(nextSkillQuery)
               setSkillSearch(nextSkillQuery.query)
@@ -523,14 +458,8 @@ export function ChatInput({
               setMenuQuery(menuQueryAtCursor(value, cursor))
             }
           }} onKeyDown={onKeyDown} onPasteCapture={onPaste} aria-autocomplete="list" aria-expanded={Boolean(menuQuery || skillOpen)} aria-controls={skillOpen ? 'agui-skill-options' : menuQuery ? 'agui-mention-options' : undefined} />
-          {unifiedMentions && menuQuery && hostBridge ? <MentionPicker ref={mentionPickerRef} open query={menuQuery} selected={mentions} workspaceReferenceCount={workspaceReferences.length} hostBridge={hostBridge} onSelect={selectMention} onOpenSkills={() => { const cursor = menuQuery.start; setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end)); setMenuQuery(null); setSkillQuery(null); setSkillSearch(String()); setSkillOpen(true); window.setTimeout(() => textareaRef.current?.setSelectionRange(cursor, cursor), 0) }} onClose={() => setMenuQuery(null)} /> : null}
-          {!unifiedMentions && menuQuery ? <div role="listbox" className="absolute bottom-full left-0 right-0 z-40 mb-1 max-h-72 overflow-y-auto rounded-md border border-border bg-background-panel p-1 shadow-lg">
-            {filteredMenus.length ? filteredMenus.map((option, index) => <button key={option.menuId} type="button" role="option" aria-selected={index === activeMenuIndex} className={cn('flex w-full items-center gap-2 rounded border-0 bg-transparent px-2.5 py-2 text-left text-xs text-secondary hover:bg-accent', index === activeMenuIndex && 'bg-accent text-primary')} onPointerDown={(event) => event.preventDefault()} onClick={() => selectMenu(option)}>
-              <AtSign className="size-3.5 shrink-0 text-muted" />
-              <span className="min-w-0 flex-1 truncate" title={option.fullPath}>{option.fullPath}</span>
-            </button>) : <div className="px-2.5 py-2 text-xs text-muted">没有匹配的菜单</div>}
-          </div> : null}
-          <SkillPicker ref={skillPickerRef} open={skillOpen && agentSkills.length > 0} query={skillSearch} skills={agentSkills} selected={selectedSkills} onQueryChange={setSkillSearch} onToggle={toggleSkill} onClose={() => { setSkillOpen(false); setSkillQuery(null) }} />
+          {menuQuery ? <MentionPicker ref={mentionPickerRef} open query={menuQuery} menuOptions={menuOptions} onSelectMenu={selectMenu} onOpenSkills={() => { const cursor = menuQuery.start; setValue((current) => current.slice(0, menuQuery.start) + current.slice(menuQuery.end)); setMenuQuery(null); setSkillQuery(null); setSkillSearch(''); setSkillOpen(true); window.setTimeout(() => textareaRef.current?.setSelectionRange(cursor, cursor), 0) }} onClose={() => setMenuQuery(null)} /> : null}
+          <SkillPicker ref={skillPickerRef} open={skillOpen} query={skillSearch} skills={agentSkills} selected={selectedSkills} onQueryChange={setSkillSearch} onToggle={toggleSkill} onClose={() => { setSkillOpen(false); setSkillQuery(null) }} />
         </div>
         <div className="mt-2 flex min-h-8 items-center justify-between gap-2">
           <div className="flex items-center gap-1">

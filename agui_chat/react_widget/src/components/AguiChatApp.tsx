@@ -23,7 +23,6 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
   const [previewAttachment, setPreviewAttachment] = useState<AttachmentRef | null>(null)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [workspaceReferences, setWorkspaceReferences] = useState<WorkspaceReference[]>([])
-  const [composerMentionCount, setComposerMentionCount] = useState(0)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const followsStream = useRef(true)
   const previousThread = useRef(snapshot.threadId)
@@ -39,7 +38,6 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
 
   useEffect(() => {
     setWorkspaceReferences([])
-    setComposerMentionCount(0)
     setPreviewAttachment(null)
     setWorkspaceOpen(false)
   }, [snapshot.threadId])
@@ -175,7 +173,6 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
             hostBridge={props.hostBridge}
             workspaceReferences={workspaceReferences}
             onRemoveWorkspaceReference={(id) => setWorkspaceReferences((current) => current.filter((item) => item.id !== id))}
-            onMentionsChange={setComposerMentionCount}
             labels={labels}
             icons={icons}
             onSend={handleSend}
@@ -203,8 +200,7 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
               runtime={runtime}
               threadId={snapshot.threadId}
               references={workspaceReferences}
-              mentionCount={composerMentionCount}
-              onToggleReference={(entry: WorkspaceEntry) => setWorkspaceReferences((current) => { const selected = current.some((item) => item.path === entry.path); if (selected) return current.filter((item) => item.path !== entry.path); if (current.length + composerMentionCount >= 5) return current; return [...current, { id: `workspace:${entry.path}`, path: entry.path, name: entry.name, isDirectory: entry.isDirectory }] })}
+              onToggleReference={(entry: WorkspaceEntry) => setWorkspaceReferences((current) => { const selected = current.some((item) => item.path === entry.path); if (selected) return current.filter((item) => item.path !== entry.path); if (current.length >= 5) return current; return [...current, { id: `workspace:${entry.path}`, path: entry.path, name: entry.name, isDirectory: entry.isDirectory }] })}
               onDeleted={(entry: WorkspaceEntry) => setWorkspaceReferences((current) => current.filter((item) => item.path !== entry.path && !(entry.isDirectory && item.path.startsWith(`${entry.path}/`))))}
               onClose={() => setWorkspaceOpen(false)}
             />
