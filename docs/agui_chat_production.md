@@ -125,8 +125,11 @@ Docker Socket 并以特权模式运行，实际上具有宿主机级权限；应
   `127.0.0.1:55432`
 - 所有 AgentOS 和 Daytona 服务使用的预创建外部 Docker 网络
   `AGUI_SHARED_NETWORK`，默认值为 `hrp_network`
-- 容器仓库前缀 `DOCKER_REGISTRY_MIRROR`，默认值为 `docker.m.daocloud.io`，也可设为
+- 通用容器仓库前缀 `DOCKER_REGISTRY_MIRROR`，默认值为 `docker.m.daocloud.io`，也可设为
   `docker.io` 或内部镜像仓库
+- Daytona 镜像仓库 `DAYTONA_IMAGE_REGISTRY`，默认值为 `docker.io`；当前国内源不提供
+  所需的 Daytona 标签，因此不强制使用国内源
+- Daytona 镜像架构 `DAYTONA_IMAGE_ARCH`，默认值为 `amd64`；ARM64 宿主机设置为 `arm64`
 - 构建 AgentOS 时使用的 Debian 软件源 `APT_MIRROR_HOST`，默认值为
   `mirrors.aliyun.com`
 - 构建 AgentOS 时使用的 Python 软件源 `PIP_INDEX_URL`，默认使用阿里云 PyPI 镜像

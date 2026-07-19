@@ -72,11 +72,11 @@ services:
     restart: unless-stopped
 
   api:
-    image: ${DOCKER_REGISTRY_MIRROR:-docker.m.daocloud.io}/daytonaio/daytona-api:0.189.0
+    image: ${DAYTONA_IMAGE_REGISTRY:-docker.io}/daytonaio/daytona-api:v0.189.0-${DAYTONA_IMAGE_ARCH:-amd64}
     profiles: [daytona]
     environment:
       OTEL_ENABLED: "false"
-      DEFAULT_SNAPSHOT: ${DAYTONA_DEFAULT_SNAPSHOT:-docker.m.daocloud.io/daytonaio/sandbox:0.5.0-slim}
+      DEFAULT_SNAPSHOT: ${DAYTONA_DEFAULT_SNAPSHOT:-docker.io/daytonaio/sandbox:0.5.0-slim}
       ENCRYPTION_KEY: ${DAYTONA_ENCRYPTION_KEY:?必须设置}
       ENCRYPTION_SALT: ${DAYTONA_ENCRYPTION_SALT:?必须设置}
       NODE_ENV: production
@@ -160,7 +160,7 @@ services:
         condition: service_started
 
   proxy:
-    image: ${DOCKER_REGISTRY_MIRROR:-docker.m.daocloud.io}/daytonaio/daytona-proxy:0.189.0
+    image: ${DAYTONA_IMAGE_REGISTRY:-docker.io}/daytonaio/daytona-proxy:v0.189.0-${DAYTONA_IMAGE_ARCH:-amd64}
     profiles: [daytona]
     environment:
       DAYTONA_API_URL: http://api:3000/api
@@ -182,7 +182,7 @@ services:
     depends_on: [api, dex, redis]
 
   runner:
-    image: ${DOCKER_REGISTRY_MIRROR:-docker.m.daocloud.io}/daytonaio/daytona-runner:0.189.0
+    image: ${DAYTONA_IMAGE_REGISTRY:-docker.io}/daytonaio/daytona-runner:v0.189.0-${DAYTONA_IMAGE_ARCH:-amd64}
     profiles: [daytona]
     environment:
       ENVIRONMENT: production
