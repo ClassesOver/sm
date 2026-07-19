@@ -29,29 +29,29 @@ export type ToolStatus =
   | 'error'
   | 'cancelled'
 
-export interface OdooChildField {
-  type: string
-  relation: string | false
-  string: string
-  redacted: boolean
-}
-
 export interface OdooViewField {
   name: string
   string: string
   type: string
   relation: string | false
+  relationField: string | false
   selection: unknown
+  widget: string | false
   readonly: boolean
   required: boolean
   invisible: boolean
   redacted: boolean
+  unsupportedReason: string | false
   operations?: {
     create: boolean
     update: boolean
     delete: boolean
   }
-  childFields?: Record<string, OdooChildField>
+  hasTreeView?: boolean
+  hasFormView?: boolean
+  schemaSource?: 'form' | 'tree' | false
+  childFieldCount?: number
+  schemaHash?: string | false
 }
 
 export interface MenuMentionOption {
@@ -207,45 +207,37 @@ export interface ViewControlCapability {
   recordLabel: string
 }
 
-export interface X2ManyFieldCapability {
-  type: string
-  relation: string | false
-  selection: unknown
-  string: string
-  widget: string | false
-  modifiers: Record<string, unknown>
-  dynamicModifiers: boolean
-  redacted: boolean
-  loaded: boolean
-  batchWritable: boolean
-}
-
 export interface X2ManyRowCapability {
+  id: number | false
   token: string
-  displayName: string
-  values: Record<string, unknown>
-  fields: Record<string, X2ManyFieldCapability>
+  displayName?: string
   openControlToken: string | false
 }
 
 export interface X2ManyCapability {
-  token: string
   field: string
   label: string
-  relation: string
-  editable: boolean
+  relation: string | false
+  relationField: string | false
+  widget: string | false
+  readonly: boolean
+  invisible: boolean
+  hasTreeView: boolean
+  hasFormView: boolean
   operations: {create: boolean; update: boolean; delete: boolean}
-  schemaSource: 'form' | 'tree'
-  schemaHash: string
-  fields: Record<string, X2ManyFieldCapability>
+  schemaSource: 'form' | 'tree' | false
+  childFieldCount: number
+  schemaHash: string | false
   collection: {
     dataPointId: string | false
     loadedCount: number
     totalCount: number
     hasMore: boolean
   }
+  fieldToken: string | false
   rows: X2ManyRowCapability[]
   controls: ViewControlCapability[]
+  unsupportedReason: string | false
 }
 
 export interface ViewCapabilities {
@@ -291,6 +283,7 @@ export interface OdooHostSnapshot {
   } | false
   fields: Record<string, OdooViewField>
   capabilities: ViewCapabilities
+  error?: {code: string; message: string}
 }
 
 export interface AguiClientTool {

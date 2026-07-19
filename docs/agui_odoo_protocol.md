@@ -52,9 +52,18 @@ Every `RunAgentInput.state` has exactly this envelope:
 - Session restore loads messages, `agentState`, and UI preferences. It never
   restores `hostState`.
 
-Snapshots omit binary fields, redact sensitive fields, bound text and relation
-sizes, and keep x2many IDs/count bounded. Standard one2many subviews additionally
-export operation capabilities, child field metadata, and up to 40 loaded rows.
+Snapshots preserve metadata for every field in the final native view, including
+binary and unsupported widget fields, while binary values remain omitted and
+sensitive values remain redacted. `capabilities.x2many` discovers every
+one2many directly from the complete Form `fieldsInfo`; it exports schema source,
+schema hash/count, collection counts, operation state, a field token, and light
+loaded-row tokens without child values or duplicated child-field maps.
+
+The snapshot budget is 256 KiB. When necessary, the host removes non-dirty
+record values, one2many values, and nonessential row display text in that order.
+It never removes field metadata, dirty values, or required operation tokens. If
+the remaining metadata and required state still exceed the budget, the host
+returns `snapshot_too_large` instead of silently dropping fields.
 
 ## Client Tools
 
@@ -159,10 +168,10 @@ Patch rules:
   object.
 - many2many supports only `link`, `unlink`, and `replace` of existing IDs.
 - one2many accepts at most 40 total `create`, `update`, and `delete`
-  operations across the patch. Update/delete IDs must be persisted rows loaded
-  in the bound snapshot. Batch create accepts visible scalar child values;
-  relational child values require a native row token. Loaded-row updates
-  support the existing scalar, many2one, and many2many forms.
+  operations across the patch. Parent-form batch operations are rejected with
+  `requires_form_activation` unless the complete child schema is already loaded.
+  Normal create/open/edit flows use `odoo.open_x2many_create` and
+  `odoo.open_x2many_record`; large imports use the registered schema hash flow.
 - Patches containing one2many use native BasicModel `CREATE`, `UPDATE`, and
   `DELETE`. Patch saves the parent once; stage keeps the parent dirty for a
   later explicit validate/save. There is no generic RPC fallback.

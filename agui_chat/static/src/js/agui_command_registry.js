@@ -535,8 +535,10 @@ odoo.define("agui_chat.command_registry", function (require) {
         if (!row || !context.validateToken(row, "x2many_row")) {
             throw commandError("stale_x2many_row_token", "明细行令牌已过期，请刷新后重试。");
         }
-        var field = before.fields && before.fields[row.fieldName];
-        if (args.mode === "edit" && !(field && field.operations && field.operations.update)) {
+        var capability = _.findWhere(
+            before.capabilities && before.capabilities.x2many || [], {field: row.fieldName}
+        );
+        if (args.mode === "edit" && !(capability && capability.operations.update)) {
             throw commandError("one2many_operation_not_allowed", "当前明细不允许编辑。");
         }
         return $.when(context.openX2Many(row, false, args.mode)).then(function () {
@@ -555,8 +557,11 @@ odoo.define("agui_chat.command_registry", function (require) {
         if (!fieldBinding || !context.validateToken(fieldBinding, "x2many_field")) {
             throw commandError("stale_x2many_field_token", "明细字段令牌已过期，请刷新后重试。");
         }
-        var field = before.fields && before.fields[fieldBinding.fieldName];
-        if (!(field && field.operations && field.operations.create)) {
+        var capability = _.findWhere(
+            before.capabilities && before.capabilities.x2many || [],
+            {field: fieldBinding.fieldName}
+        );
+        if (!(capability && capability.operations.create)) {
             throw commandError("one2many_operation_not_allowed", "当前明细不允许新建。");
         }
         return $.when(context.openX2Many(fieldBinding, true, "edit")).then(function () {
@@ -582,7 +587,10 @@ odoo.define("agui_chat.command_registry", function (require) {
         if (!fieldBinding || !context.validateToken(fieldBinding, "x2many_field")) {
             throw commandError("stale_x2many_field_token", "明细字段令牌已过期，请刷新后重试。");
         }
-        var meta = snapshot.fields && snapshot.fields[fieldBinding.fieldName];
+        var meta = _.findWhere(
+            snapshot.capabilities && snapshot.capabilities.x2many || [],
+            {field: fieldBinding.fieldName}
+        );
         if (!meta || !meta.schemaHash || !(meta.operations && meta.operations.create)) {
             throw commandError("one2many_operation_not_allowed", "当前明细字段不可导入。");
         }

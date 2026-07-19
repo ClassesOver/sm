@@ -126,7 +126,7 @@ odoo.define("agui_chat.tests.host", function (require) {
     });
 
     QUnit.test("snapshot is bounded to view fields and redacts secrets", function (assert) {
-        assert.expect(11);
+        assert.expect(12);
         var state = snapshot(fakeController());
         assert.strictEqual(state.protocol, "agui.odoo.v2");
         assert.strictEqual(state.fields.partner_id.string, "Current View Partner");
@@ -138,7 +138,162 @@ odoo.define("agui_chat.tests.host", function (require) {
         assert.ok(state.fields.line_ids.invisible, "evaluated invisible is exported");
         assert.strictEqual(state.record.values.secret_token, "[redacted]");
         assert.deepEqual(state.record.values.tag_ids, {ids: [2, 3], count: 2});
-        assert.notOk(state.fields.image, "binary fields are omitted");
+        assert.strictEqual(state.fields.image.type, "binary", "binary field metadata is preserved");
+        assert.notOk(_.has(state.record.values, "image"), "binary field values are omitted");
+    });
+
+    QUnit.test("form fields and one2many capabilities have no field count limit", function (assert) {
+        assert.expect(10);
+        var controller = fakeController();
+        var record = controller.model.get("data-1");
+        var raw = controller.model.get("data-1", {raw: true});
+        _.each(_.range(135), function (index) {
+            var name = "extra_field_" + index;
+            record.data[name] = "value-" + index;
+            raw.fields[name] = {type: "char", string: "扩展字段 " + index};
+            raw.fieldsInfo.form[name] = {modifiers: {}};
+        });
+        _.each(["expense_report_lines", "summary_line_ids"], function (name) {
+            record.data[name] = false;
+            raw.fields[name] = {
+                type: "one2many", string: name, relation: "res.partner",
+                relation_field: "parent_id",
+            };
+            raw.fieldsInfo.form[name] = {modifiers: {}};
+        });
+
+        var state = snapshot(controller);
+        var expense = _.findWhere(state.capabilities.x2many, {field: "expense_report_lines"});
+        var summary = _.findWhere(state.capabilities.x2many, {field: "summary_line_ids"});
+        assert.strictEqual(_.keys(state.fields).length, 143);
+        assert.ok(state.fields.extra_field_134, "原上限后的普通字段仍可发现");
+        assert.ok(state.fields.expense_report_lines, "原上限后的 One2many 元信息仍可发现");
+        assert.ok(expense, "expense_report_lines 进入统一 One2many 能力");
+        assert.ok(summary, "summary_line_ids 进入统一 One2many 能力");
+        assert.strictEqual(expense.relationField, "parent_id");
+        assert.strictEqual(expense.childFieldCount, 0);
+        assert.strictEqual(expense.fieldToken, false);
+        assert.strictEqual(expense.unsupportedReason, "child_schema_unavailable");
+        assert.notOk(state.capabilities.x2manyFields, "不新增 x2manyFields 能力");
+    });
+
+    QUnit.test("one2many child schema metadata has no field count limit", function (assert) {
+        assert.expect(6);
+        var controller = fakeController();
+        var record = controller.model.get("data-1");
+        var raw = controller.model.get("data-1", {raw: true});
+        var childFields = {};
+        var formInfos = {};
+        var listInfos = {};
+        _.each(_.range(135), function (index) {
+            var name = "child_field_" + index;
+            childFields[name] = {type: "char", string: "子字段 " + index};
+            formInfos[name] = {modifiers: {}};
+            listInfos[name] = {modifiers: {}};
+        });
+        var formView = {
+            type: "form", arch: {attrs: {}}, fields: childFields,
+            fieldsInfo: {form: formInfos},
+        };
+        var listView = {
+            type: "list", arch: {attrs: {}}, fields: childFields,
+            fieldsInfo: {list: listInfos},
+        };
+        record.data.expense_report_lines = {
+            id: "expense-list", type: "list", model: "res.partner.line",
+            data: [], res_ids: [], count: 0,
+        };
+        raw.fields.expense_report_lines = {
+            type: "one2many", string: "报销明细", relation: "res.partner.line",
+            relation_field: "parent_id",
+        };
+        raw.fieldsInfo.form.expense_report_lines = {
+            modifiers: {}, views: {form: formView, list: listView},
+        };
+        controller.renderer.allFieldWidgets = {"data-1": [{
+            name: "expense_report_lines",
+            field: raw.fields.expense_report_lines,
+        }]};
+
+        var state = snapshot(controller);
+        var capability = _.findWhere(state.capabilities.x2many, {
+            field: "expense_report_lines",
+        });
+        assert.strictEqual(state.fields.expense_report_lines.childFieldCount, 135);
+        assert.strictEqual(capability.childFieldCount, 135);
+        assert.ok(/^[a-f0-9]{64}$/.test(capability.schemaHash));
+        assert.notOk(state.fields.expense_report_lines.childFields,
+            "父快照不重复发送完整子字段映射");
+        assert.strictEqual(capability.unsupportedReason, "unsupported_widget");
+        assert.deepEqual(capability.operations, {create: false, update: false, delete: false});
+    });
+
+    QUnit.test("one2many import uses the unified capability schema hash", function (assert) {
+        assert.expect(3);
+        var done = assert.async();
+        var binding = {fieldName: "expense_report_lines"};
+        var state = {
+            interactive: true,
+            controller: {viewType: "form"},
+            record: {model: "expense.report", resId: 9},
+            capabilities: {x2many: [{
+                field: "expense_report_lines",
+                schemaHash: "schema-hash-135",
+                operations: {create: true, update: true, delete: true},
+            }]},
+        };
+        var context = {
+            getSnapshot: function () { return state; },
+            getController: function () { return {}; },
+            hasUnsavedChanges: function () { return false; },
+            resolveToken: function (token, kind) {
+                assert.strictEqual(token + ":" + kind, "field-token:x2many_field");
+                return binding;
+            },
+            validateToken: function (candidate) { return candidate === binding; },
+            prepareX2ManyImport: function (payload) {
+                assert.deepEqual(payload, {
+                    parent_model: "expense.report",
+                    parent_id: 9,
+                    field_name: "expense_report_lines",
+                    attachment_id: "attachment-7",
+                    schema_hash: "schema-hash-135",
+                });
+                return $.when({ok: true, jobToken: "job-token"});
+            },
+        };
+        Commands.execute(context, {
+            tool: "odoo.prepare_x2many_import",
+            authorizationId: "import-authorization",
+            arguments: {fieldToken: "field-token", attachmentId: "attachment-7"},
+        }).then(function (result) {
+            assert.strictEqual(result.jobToken, "job-token");
+            done();
+        });
+    });
+
+    QUnit.test("one field modifier failure does not invalidate the snapshot", function (assert) {
+        assert.expect(4);
+        var controller = fakeController();
+        var record = controller.model.get("data-1");
+        var raw = controller.model.get("data-1", {raw: true});
+        record.data.broken_field = "仍需可见";
+        raw.fields.broken_field = {type: "char", string: "异常字段"};
+        raw.fieldsInfo.form.broken_field = {modifiers: {explode: true}};
+        record.evalModifiers = function (modifiers) {
+            if (modifiers && modifiers.explode) {
+                throw new Error("modifier parse failed");
+            }
+            return modifiers || {};
+        };
+
+        var state = snapshot(controller);
+        assert.strictEqual(state.fields.broken_field.string, "异常字段");
+        assert.strictEqual(state.fields.broken_field.type, "char");
+        assert.strictEqual(
+            state.fields.broken_field.unsupportedReason, "modifier_evaluation_failed"
+        );
+        assert.strictEqual(state.record.values.broken_field, "仍需可见");
     });
 
     QUnit.test("patch preview uses live labels, relation display values, and redaction", function (assert) {
@@ -201,7 +356,7 @@ odoo.define("agui_chat.tests.host", function (require) {
     });
 
     QUnit.test("business tools use the explicit write gate and server-bound execution", function (assert) {
-        assert.expect(19);
+        assert.expect(20);
         var done = assert.async();
         var command = "odoo.business.test_document.confirm";
         var call = {
@@ -826,9 +981,9 @@ odoo.define("agui_chat.tests.host", function (require) {
         });
     });
 
-    QUnit.test("snapshot limit counts UTF-8 bytes", function (assert) {
-        assert.expect(1);
-        var controller = fakeController();
+    QUnit.test("snapshot compression removes values but preserves complete field metadata", function (assert) {
+        assert.expect(4);
+        var controller = fakeController({changes: {name: "Changed"}});
         var record = controller.model.get("data-1");
         var raw = controller.model.get("data-1", {raw: true});
         _.each(_.range(22), function (index) {
@@ -837,7 +992,29 @@ odoo.define("agui_chat.tests.host", function (require) {
             raw.fields[name] = {type: "text", string: name};
             raw.fieldsInfo.form[name] = {modifiers: {}};
         });
-        assert.throws(function () { snapshot(controller); }, /大小限制/);
+        var state = snapshot(controller);
+        assert.strictEqual(_.keys(state.fields).length, 28);
+        assert.ok(state.fields.text_21, "字段元信息没有随 values 压缩删除");
+        assert.notOk(_.has(state.record.values, "text_21"), "非脏普通值被压缩");
+        assert.strictEqual(state.record.values.name, "Acme", "脏字段值始终保留");
+    });
+
+    QUnit.test("oversized field metadata returns an explicit snapshot error", function (assert) {
+        assert.expect(1);
+        var controller = fakeController();
+        var record = controller.model.get("data-1");
+        var raw = controller.model.get("data-1", {raw: true});
+        _.each(_.range(70), function (index) {
+            var name = "wide_meta_" + index;
+            record.data[name] = false;
+            raw.fields[name] = {type: "char", string: Array(4097).join("中")};
+            raw.fieldsInfo.form[name] = {modifiers: {}};
+        });
+        assert.throws(function () {
+            snapshot(controller);
+        }, function (error) {
+            return error.code === "snapshot_too_large" && /字段元信息/.test(error.message);
+        });
     });
 
     QUnit.test("filter domain validates field types, logic arity, and nesting", function (assert) {

@@ -19,8 +19,8 @@ odoo.define("agui_chat.host_service", function (require) {
         return "agui-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
     }
 
-    function unavailableSnapshot(revision, surface, snapshotId) {
-        return {
+    function unavailableSnapshot(revision, surface, snapshotId, error) {
+        var snapshot = {
             protocol: PROTOCOL,
             snapshotId: snapshotId || uuid(),
             hostRevision: revision,
@@ -44,6 +44,13 @@ odoo.define("agui_chat.host_service", function (require) {
                 totalCount: 0, filterFields: {}, records: [], controls: [], x2many: [],
             },
         };
+        if (error && error.code) {
+            snapshot.error = {
+                code: error.code,
+                message: error.message || "页面快照不可用。",
+            };
+        }
+        return snapshot;
     }
 
     function menuAction(node) {
@@ -585,7 +592,9 @@ odoo.define("agui_chat.host_service", function (require) {
                 this._publish();
                 return $.when(Adapter.clone(this._snapshot));
             } catch (error) {
-                return $.when(this._setUnavailable("host_unavailable"));
+                return $.when(this._setUnavailable(
+                    error && error.code === "snapshot_too_large" ? error : false
+                ));
             }
         },
 
@@ -701,10 +710,12 @@ odoo.define("agui_chat.host_service", function (require) {
             }
         },
 
-        _setUnavailable: function () {
+        _setUnavailable: function (error) {
             if (!this._snapshot || this._snapshot.interactive || this._snapshot.surface !== this._surface) {
                 this._hostRevision += 1;
-                this._snapshot = unavailableSnapshot(this._hostRevision, this._surface);
+                this._snapshot = unavailableSnapshot(
+                    this._hostRevision, this._surface, false, error
+                );
                 this._tokens = {};
                 this._publish();
             }

@@ -3,8 +3,8 @@ odoo.define("agui_chat.model_adapter", function (require) {
 
     var fieldUtils = require("web.field_utils");
 
-    var MAX_FIELDS = 120;
     var MAX_TEXT_CHARS = 4096;
+    var MAX_VALUE_OBJECT_KEYS = 120;
     var MAX_RELATION_IDS = 200;
     var MAX_RELATION_SEARCH_LIMIT = 20;
     var DEFAULT_RELATION_SEARCH_LIMIT = 8;
@@ -82,7 +82,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
         }
         if (_.isObject(value)) {
             result = {};
-            _.each(_.keys(value).slice(0, MAX_FIELDS), function (key) {
+            _.each(_.keys(value).slice(0, MAX_VALUE_OBJECT_KEYS), function (key) {
                 result[key] = bounded(value[key], depth + 1);
             });
             return result;
@@ -162,27 +162,39 @@ odoo.define("agui_chat.model_adapter", function (require) {
         return record.evalModifiers(info.modifiers) || {};
     }
 
+    function fieldWidget(info) {
+        return info && (info.widget || info.attrs && info.attrs.widget) || false;
+    }
+
     function buildFields(record, rawRecord, viewType, sensitiveFields) {
         var result = {};
         var infos = fieldInfo(rawRecord, viewType);
-        _.each(_.keys(infos).slice(0, MAX_FIELDS), function (name) {
+        _.each(_.keys(infos), function (name) {
             var field = rawRecord.fields && rawRecord.fields[name];
             var info = infos[name] || {};
-            var modifiers;
-            if (!field || field.type === "binary") {
+            var modifiers = {};
+            var unsupportedReason = false;
+            if (!field) {
                 return;
             }
-            modifiers = evaluateModifiers(record, info);
+            try {
+                modifiers = evaluateModifiers(record, info);
+            } catch (error) {
+                unsupportedReason = "modifier_evaluation_failed";
+            }
             result[name] = {
                 name: name,
                 string: info.string || field.string || name,
                 type: field.type,
                 relation: field.relation || false,
+                relationField: field.relation_field || false,
                 selection: bounded(field.selection || false),
+                widget: fieldWidget(info),
                 readonly: !!modifiers.readonly,
                 required: !!modifiers.required,
                 invisible: !!modifiers.invisible,
                 redacted: SECRET_FIELD.test(name) || sensitiveFields.indexOf(name) !== -1,
+                unsupportedReason: unsupportedReason,
             };
         });
         return result;
@@ -209,21 +221,17 @@ odoo.define("agui_chat.model_adapter", function (require) {
         }) || false;
     }
 
-    function one2manyStructure(controller, rawRecord, name, list) {
+    function one2manySchema(rawRecord, name) {
         var info = fieldInfo(rawRecord, "form")[name];
         var field = rawRecord && rawRecord.fields && rawRecord.fields[name];
         var views = info && info.views || {};
         var schemaView = views.form || views.list || views.tree;
         var operationView = views.list || views.tree;
         var source = views.form ? "form" : schemaView ? "tree" : false;
-        var listId = list && list.id;
         var childInfos = schemaView && schemaView.fieldsInfo &&
             schemaView.fieldsInfo[schemaView.type];
         if (!field || field.type !== "one2many" || !info || !schemaView ||
-                !schemaView.arch || !schemaView.fields || !childInfos ||
-                !list || list.type !== "list" ||
-                list.model !== field.relation || !_.isArray(list.data) ||
-                !_.isArray(list.res_ids)) {
+                !schemaView.fields || !childInfos) {
             return false;
         }
         return {
@@ -233,12 +241,43 @@ odoo.define("agui_chat.model_adapter", function (require) {
             schemaView: schemaView,
             operationView: operationView,
             schemaSource: source,
-            list: list,
-            listId: listId,
             childFields: schemaView.fields,
             childInfos: childInfos,
             viewType: schemaView.type,
+        };
+    }
+
+    function one2manyStructure(controller, rawRecord, name, list) {
+        var schema = one2manySchema(rawRecord, name);
+        if (!schema || !list || list.type !== "list" ||
+                list.model !== schema.field.relation || !_.isArray(list.data) ||
+                !_.isArray(list.res_ids)) {
+            return false;
+        }
+        return _.extend({}, schema, {
+            list: list,
+            listId: list.id,
             widget: x2manyWidget(controller, rawRecord, name),
+        });
+    }
+
+    function one2manyCollection(list) {
+        var totalCount;
+        if (!list || list.type !== "list" || !_.isArray(list.data) ||
+                !_.isArray(list.res_ids)) {
+            return {
+                dataPointId: false,
+                loadedCount: 0,
+                totalCount: 0,
+                hasMore: false,
+            };
+        }
+        totalCount = _.isNumber(list.count) ? list.count : list.res_ids.length;
+        return {
+            dataPointId: list.id || false,
+            loadedCount: list.data.length,
+            totalCount: totalCount,
+            hasMore: totalCount > list.data.length,
         };
     }
 
@@ -294,17 +333,22 @@ odoo.define("agui_chat.model_adapter", function (require) {
 
     function childFieldMetadata(controller, structure, sensitiveFields) {
         var result = {};
-        _.each(_.keys(structure.childInfos).slice(0, MAX_FIELDS), function (name) {
+        _.each(_.keys(structure.childInfos), function (name) {
             var field = structure.childFields[name];
             var info = structure.childInfos[name] || {};
-            var loaded;
-            var dynamic;
+            var loaded = false;
+            var dynamic = false;
             var redacted;
-            if (!field || field.type === "binary") {
+            var unsupportedReason = false;
+            if (!field) {
                 return;
             }
-            loaded = childFieldLoaded(controller, structure, name);
-            dynamic = hasDynamicModifiers(info);
+            try {
+                loaded = childFieldLoaded(controller, structure, name);
+                dynamic = hasDynamicModifiers(info);
+            } catch (error) {
+                unsupportedReason = "child_field_metadata_failed";
+            }
             redacted = SECRET_FIELD.test(name) || sensitiveFields.indexOf(name) !== -1;
             result[name] = {
                 type: field.type,
@@ -316,9 +360,10 @@ odoo.define("agui_chat.model_adapter", function (require) {
                 dynamicModifiers: dynamic,
                 redacted: redacted,
                 loaded: loaded,
-                batchWritable: loaded && !dynamic && !redacted &&
-                    !info.widget && !(info.attrs && info.attrs.widget) &&
+                batchWritable: !unsupportedReason && loaded && !dynamic && !redacted &&
+                    !fieldWidget(info) &&
                     ["binary", "one2many"].indexOf(field.type) === -1,
+                unsupportedReason: unsupportedReason,
             };
         });
         return result;
@@ -330,7 +375,8 @@ odoo.define("agui_chat.model_adapter", function (require) {
         var options = structure.info.options || {};
         var fieldAttrs = structure.info.attrs || {};
         var active = structure.widget && structure.widget.activeActions || {};
-        var writable = !meta.readonly && !meta.invisible && !meta.redacted;
+        var writable = !meta.readonly && !meta.invisible && !meta.redacted &&
+            !meta.unsupportedReason;
         return {
             create: writable && !!structure.operationView && active.create !== false &&
                 parsedArchFlag(attrs.create, true) &&
@@ -346,88 +392,57 @@ odoo.define("agui_chat.model_adapter", function (require) {
     function decorateOne2manyFields(controller, record, rawRecord, fields, sensitiveFields) {
         _.each(fields, function (meta, name) {
             var structure;
+            var info;
+            var views;
+            var childFields;
+            var schema;
+            var list;
             if (meta.type !== "one2many") {
                 return;
             }
+            info = fieldInfo(rawRecord, "form")[name] || {};
+            views = info.views || {};
             meta.operations = {create: false, update: false, delete: false};
-            meta.childFields = {};
-            structure = one2manyStructure(
-                controller, rawRecord, name, record.data && record.data[name]);
+            meta.hasTreeView = !!(views.list || views.tree);
+            meta.hasFormView = !!views.form;
+            meta.schemaSource = views.form ? "form" : meta.hasTreeView ? "tree" : false;
+            meta.childFieldCount = 0;
+            meta.schemaHash = false;
+            list = record.data && record.data[name];
+            meta.collection = one2manyCollection(list);
+            schema = one2manySchema(rawRecord, name);
+            if (!schema) {
+                meta.unsupportedReason = meta.unsupportedReason || "child_schema_unavailable";
+                return;
+            }
+            structure = one2manyStructure(controller, rawRecord, name, list);
+            childFields = childFieldMetadata(controller, structure || _.extend({}, schema, {
+                list: {data: []},
+            }), sensitiveFields);
+            meta.schemaSource = schema.schemaSource;
+            meta.childFieldCount = _.keys(childFields).length;
+            meta.schemaHash = canonicalSchemaHash(childFields);
             if (!structure) {
+                meta.unsupportedReason = meta.unsupportedReason || "x2many_collection_unavailable";
                 return;
             }
-            meta.childFields = childFieldMetadata(controller, structure, sensitiveFields);
-            meta.schemaSource = structure.schemaSource;
-            meta.schemaHash = canonicalSchemaHash(meta.childFields);
             meta.operations = one2manyOperations(meta, structure);
-            meta.collection = {
-                dataPointId: structure.listId,
-                loadedCount: structure.list.data.length,
-                totalCount: _.isNumber(structure.list.count) ?
-                    structure.list.count : structure.list.res_ids.length,
-                hasMore: structure.list.count > structure.list.data.length,
-            };
-        });
-    }
-
-    function serializeChildRecord(controller, structure, localId, childFields) {
-        var record = controller.model.get(localId);
-        var rawRecord = controller.model.get(localId, {raw: true});
-        var values = {};
-        var modifiers = {};
-        if (!record || !rawRecord || record.type !== "record" || rawRecord.type !== "record") {
-            return false;
-        }
-        _.each(childFields, function (meta, name) {
-            var field = rawRecord.fields && rawRecord.fields[name];
-            var info = structure.childInfos[name] || {};
-            var value;
-            if (!field || !meta.loaded) {
-                return;
+            if (structure.widget && !_.isFunction(structure.widget._openFormDialog)) {
+                meta.unsupportedReason = "unsupported_widget";
+                meta.operations = {create: false, update: false, delete: false};
+            } else if (!structure.widget) {
+                meta.unsupportedReason = meta.unsupportedReason || "requires_form_activation";
             }
-            if (meta.redacted) {
-                values[name] = "[redacted]";
-            } else {
-                value = serializeValue(record.data && record.data[name], field);
-                if (value !== undefined) {
-                    values[name] = value;
-                }
-            }
-            var evaluated = evaluateModifiers(record, info);
-            modifiers[name] = {
-                readonly: !!evaluated.readonly,
-                required: !!evaluated.required,
-                invisible: !!evaluated.invisible,
-            };
         });
-        return {
-            id: _.isNumber(rawRecord.res_id) ? rawRecord.res_id : false,
-            displayName: recordDisplayName(record),
-            values: values,
-            modifiers: modifiers,
-        };
     }
 
     function serializeOne2many(controller, rawRecord, name, meta, value) {
-        var base = serializeValue(value, rawRecord.fields[name]);
-        var structure = one2manyStructure(controller, rawRecord, name, value);
-        var state;
-        var records;
-        if (!structure) {
-            return base;
-        }
-        state = structure.list;
-        if (!state || state.type !== "list" || !_.isArray(state.data)) {
-            return base;
-        }
-        records = _.chain(state.data).first(MAX_VIEW_RECORDS).map(function (record) {
-            return serializeChildRecord(controller, structure, record.id, meta.childFields || {});
-        }).compact().value();
-        return _.extend({}, base, {
-            loadedCount: state.data.length,
-            hasMore: state.count > state.data.length,
-            records: records,
-        });
+        var collection = one2manyCollection(value);
+        return {
+            count: collection.totalCount,
+            loadedCount: collection.loadedCount,
+            hasMore: collection.hasMore,
+        };
     }
 
     function one2manyIsDirty(controller, rawRecord, name) {
@@ -642,44 +657,55 @@ odoo.define("agui_chat.model_adapter", function (require) {
         return controls;
     }
 
-    function serializeX2ManyRow(record, rawRecord, fields) {
-        var values = {};
-        _.each(fields, function (meta, name) {
-            var field = rawRecord.fields && rawRecord.fields[name];
-            var value;
-            if (meta.redacted) {
-                values[name] = "[redacted]";
-                return;
-            }
-            value = serializeValue(record.data && record.data[name], field);
-            if (value !== undefined) {
-                values[name] = value;
-            }
-        });
-        return values;
-    }
-
     function x2ManyCapabilities(controller, snapshot, registerToken, sensitiveFields) {
         var parent = getRecord(controller, false);
         var rawParent = getRecord(controller, true);
         var result = [];
-        _.each(snapshot.fields || {}, function (fieldMeta, fieldName) {
+        var infos = fieldInfo(rawParent, "form");
+        _.each(_.keys(infos), function (fieldName) {
             var rows = [];
             var controls = [];
+            var field = rawParent && rawParent.fields && rawParent.fields[fieldName];
+            var fieldMeta = snapshot.fields && snapshot.fields[fieldName] || {};
             var list = parent && parent.data && parent.data[fieldName];
+            var schema = one2manySchema(rawParent, fieldName);
             var structure = one2manyStructure(controller, rawParent, fieldName, list);
-            var widget = structure && structure.widget;
+            var widget = x2manyWidget(controller, rawParent, fieldName);
+            var childFields = {};
+            var fieldToken = false;
+            var unsupportedReason = fieldMeta.unsupportedReason || false;
+            var validList;
             var $create;
-            if (!structure || fieldMeta.type !== "one2many") {
+            if (!field || field.type !== "one2many") {
                 return;
             }
-            _.each(structure.list.data.slice(0, MAX_VIEW_RECORDS), function (item) {
+            validList = !!(list && list.type === "list" && list.model === field.relation &&
+                _.isArray(list.data) && _.isArray(list.res_ids));
+            if (schema) {
+                try {
+                    childFields = childFieldMetadata(controller, structure || _.extend({}, schema, {
+                        list: {data: []},
+                    }), sensitiveFields);
+                } catch (error) {
+                    unsupportedReason = unsupportedReason || "child_schema_unavailable";
+                }
+            }
+            if (validList) {
+                fieldToken = registerToken("x2many_field", {
+                    widget: widget,
+                    fieldName: fieldName,
+                    localId: list.id,
+                    model: field.relation,
+                    schemaHash: fieldMeta.schemaHash,
+                });
+            }
+            _.each(validList ? list.data : [], function (item) {
                 var record = controller.model.get(item.id);
                 var rawRecord = controller.model.get(item.id, {raw: true});
                 var rowToken;
                 var $row;
                 var controlToken;
-                if (!record || !rawRecord || record.model !== structure.field.relation) {
+                if (!record || !rawRecord || record.model !== field.relation) {
                     return;
                 }
                 rowToken = registerToken("x2many_row", {
@@ -688,8 +714,8 @@ odoo.define("agui_chat.model_adapter", function (require) {
                     localId: record.id,
                     resId: record.res_id || false,
                     model: record.model,
-                    fields: fieldMeta.childFields || {},
-                    viewType: structure.viewType,
+                    fields: childFields,
+                    viewType: schema && schema.viewType || false,
                 });
                 $row = widget && widget.renderer && widget.renderer.$ ?
                     widget.renderer.$(".o_data_row").filter(function () {
@@ -717,10 +743,9 @@ odoo.define("agui_chat.model_adapter", function (require) {
                     });
                 }
                 rows.push({
+                    id: _.isNumber(rawRecord.res_id) ? rawRecord.res_id : false,
                     token: rowToken,
                     displayName: recordDisplayName(record),
-                    values: serializeX2ManyRow(record, rawRecord, fieldMeta.childFields || {}),
-                    fields: fieldMeta.childFields || {},
                     openControlToken: controlToken || false,
                 });
             });
@@ -749,24 +774,26 @@ odoo.define("agui_chat.model_adapter", function (require) {
                 }
             }
             result.push({
-                token: registerToken("x2many_field", {
-                    widget: widget,
-                    fieldName: fieldName,
-                    localId: structure.listId,
-                    model: structure.field.relation,
-                    schemaHash: fieldMeta.schemaHash,
-                }),
                 field: fieldName,
-                label: fieldMeta.string,
-                relation: structure.field.relation,
-                editable: fieldMeta.operations.create || fieldMeta.operations.update,
-                operations: clone(fieldMeta.operations),
-                schemaSource: fieldMeta.schemaSource,
-                schemaHash: fieldMeta.schemaHash,
-                fields: clone(fieldMeta.childFields || {}),
+                label: fieldMeta.string || field.string || fieldName,
+                relation: field.relation || false,
+                relationField: field.relation_field || false,
+                widget: fieldMeta.widget || false,
+                readonly: !!fieldMeta.readonly,
+                invisible: !!fieldMeta.invisible,
+                hasTreeView: !!fieldMeta.hasTreeView,
+                hasFormView: !!fieldMeta.hasFormView,
+                schemaSource: fieldMeta.schemaSource || false,
+                childFieldCount: fieldMeta.childFieldCount || 0,
+                schemaHash: fieldMeta.schemaHash || false,
                 collection: clone(fieldMeta.collection || {}),
+                operations: clone(fieldMeta.operations || {
+                    create: false, update: false, delete: false,
+                }),
+                fieldToken: fieldToken,
                 rows: rows,
                 controls: controls,
+                unsupportedReason: unsupportedReason,
             });
         });
         return result;
@@ -1049,6 +1076,65 @@ odoo.define("agui_chat.model_adapter", function (require) {
         });
     }
 
+    function snapshotByteLength(snapshot) {
+        return utf8ByteLength(JSON.stringify(snapshot));
+    }
+
+    function snapshotMetadataByteLength(snapshot) {
+        return snapshotByteLength({
+            fields: snapshot.fields,
+            x2many: _.map(snapshot.capabilities && snapshot.capabilities.x2many || [], function (item) {
+                return _.omit(item, "rows", "controls");
+            }),
+        });
+    }
+
+    function compactSnapshot(snapshot) {
+        if (snapshotByteLength(snapshot) <= MAX_SNAPSHOT_BYTES) {
+            return snapshot;
+        }
+        var values = snapshot.record && snapshot.record.values || {};
+        var dirtyFields = snapshot.record && snapshot.record.dirtyFields || [];
+        _.each(_.keys(values), function (name) {
+            var meta = snapshot.fields && snapshot.fields[name];
+            if (dirtyFields.indexOf(name) === -1 && (!meta || meta.type !== "one2many")) {
+                delete values[name];
+            }
+        });
+        if (snapshotByteLength(snapshot) <= MAX_SNAPSHOT_BYTES) {
+            return snapshot;
+        }
+        _.each(_.keys(values), function (name) {
+            var meta = snapshot.fields && snapshot.fields[name];
+            if (dirtyFields.indexOf(name) === -1 && meta && meta.type === "one2many") {
+                delete values[name];
+            }
+        });
+        if (snapshotByteLength(snapshot) <= MAX_SNAPSHOT_BYTES) {
+            return snapshot;
+        }
+        _.each(snapshot.capabilities && snapshot.capabilities.x2many || [], function (item) {
+            _.each(item.rows || [], function (row) {
+                delete row.displayName;
+            });
+            _.each(item.controls || [], function (control) {
+                delete control.label;
+                delete control.recordLabel;
+            });
+        });
+        if (snapshotByteLength(snapshot) <= MAX_SNAPSHOT_BYTES) {
+            return snapshot;
+        }
+        var metadataTooLarge = snapshotMetadataByteLength(snapshot) > MAX_SNAPSHOT_BYTES;
+        var error = new Error(metadataTooLarge ?
+            "当前 Odoo 页面字段元信息超过 256 KiB 快照大小限制。" :
+            "当前 Odoo 页面必要字段元信息、脏字段值和操作令牌超过 256 KiB 快照大小限制。");
+        error.code = "snapshot_too_large";
+        error.maxBytes = MAX_SNAPSHOT_BYTES;
+        error.actualBytes = snapshotByteLength(snapshot);
+        throw error;
+    }
+
     function buildSnapshot(options) {
         var controller = options.controller;
         var record = getRecord(controller, false);
@@ -1059,6 +1145,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
         if (!record || !rawRecord || ["form", "list", "kanban"].indexOf(viewType) === -1) {
             throw new Error("当前 BasicModel 数据点不可用。")
         }
+        controller.__aguiHostSensitiveFields = (options.sensitiveFields || []).slice(0);
         fields = buildFields(record, rawRecord, viewType, options.sensitiveFields || []);
         if (viewType === "form") {
             decorateOne2manyFields(
@@ -1094,10 +1181,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
             controller, snapshot, options.registerToken || function () { return false; },
             options.sensitiveFields || []
         );
-        if (utf8ByteLength(JSON.stringify(snapshot)) > MAX_SNAPSHOT_BYTES) {
-            throw new Error("当前 Odoo 页面快照超过大小限制。")
-        }
-        return snapshot;
+        return compactSnapshot(snapshot);
     }
 
     function parseIds(value) {
@@ -1552,8 +1636,10 @@ odoo.define("agui_chat.model_adapter", function (require) {
     }
 
     function snapshotHasOne2manyRow(snapshot, name, rowId) {
-        var value = snapshot.record && snapshot.record.values && snapshot.record.values[name];
-        return _.some(value && value.records || [], function (row) {
+        var capability = _.findWhere(
+            snapshot.capabilities && snapshot.capabilities.x2many || [], {field: name}
+        );
+        return _.some(capability && capability.rows || [], function (row) {
             return row && row.id === rowId;
         });
     }
@@ -1660,11 +1746,25 @@ odoo.define("agui_chat.model_adapter", function (require) {
         var structure = one2manyStructure(
             controller, rawRecord, name, record.data && record.data[name]);
         var operations = value && value.operations;
+        var childFields;
         var seen = {};
         var result = [];
         if (!structure || !meta.operations || !_.isObject(value) || _.isArray(value) ||
                 !_.isArray(operations) || !operations.length) {
             throw one2manyError("invalid_one2many_patch", "One2many patch 结构无效。");
+        }
+        childFields = childFieldMetadata(
+            controller, structure, controller.__aguiHostSensitiveFields || []
+        );
+        var unloadedChild = _.find(_.keys(childFields), function (childName) {
+            return !childFields[childName].loaded;
+        });
+        if (unloadedChild) {
+            throw one2manyError(
+                "requires_form_activation",
+                "该 One2many 的完整子字段尚未装载，必须进入原生明细表单操作。",
+                {childField: unloadedChild}
+            );
         }
         _.each(operations, function (item) {
             var operation = String(item && item.operation || "").toLowerCase();
@@ -1686,7 +1786,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
                     throw one2manyError("invalid_one2many_patch", "create 不接受明细 ID。");
                 }
                 parsed = parseOne2manyValues(
-                    structure, false, item.values, meta.childFields || {}, true
+                    structure, false, item.values, childFields, true
                 );
             } else {
                 if (!_.isNumber(rowId) || !isFinite(rowId) ||
@@ -1705,19 +1805,21 @@ odoo.define("agui_chat.model_adapter", function (require) {
                 row = loadedOne2manyRow(controller, structure, rowId);
                 if (!row || !snapshotHasOne2manyRow(snapshot, name, rowId)) {
                     var listState = structure.list;
-                    var snapshotValue = snapshot.record && snapshot.record.values &&
-                        snapshot.record.values[name];
                     throw one2manyError(
                         "one2many_row_not_loaded", "明细行不属于当前有效快照。",
                         {
                             rowId: rowId,
                             liveRowIds: _.pluck(listState && listState.data || [], "res_id"),
-                            snapshotRowIds: _.pluck(snapshotValue && snapshotValue.records || [], "id"),
+                            snapshotRowIds: _.pluck(
+                                (_.findWhere(snapshot.capabilities &&
+                                    snapshot.capabilities.x2many || [], {field: name}) || {}).rows || [],
+                                "id"
+                            ),
                         }
                     );
                 }
                 parsed = operation === "update" ? parseOne2manyValues(
-                    structure, row, item.values, meta.childFields || {}, false
+                    structure, row, item.values, childFields, false
                 ) : {changes: {}, relationChecks: []};
                 _.each(parsed.relationChecks, function (check) {
                     check.localId = row.localId;
@@ -1740,7 +1842,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
                 relationChecks: parsed.relationChecks,
             });
         });
-        return {name: name, operations: result};
+        return {name: name, operations: result, childFields: childFields};
     }
 
     function preparePatch(controller, snapshot, args, options) {
@@ -1878,8 +1980,8 @@ odoo.define("agui_chat.model_adapter", function (require) {
         };
     }
 
-    function one2manyPreview(preparedField, meta) {
-        var childFields = meta.childFields || {};
+    function one2manyPreview(preparedField) {
+        var childFields = preparedField.childFields || {};
         var result = [];
         _.each(preparedField.operations, function (operation) {
             if (operation.operation === "delete") {
@@ -1941,7 +2043,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
                 newValue = proposedValue(prepared.changes[name], field);
             } else if (field.type === "one2many") {
                 var preparedField = _.findWhere(prepared.one2manyFields || [], {name: name});
-                newValue = preparedField ? one2manyPreview(preparedField, meta) : "[invalid]";
+                newValue = preparedField ? one2manyPreview(preparedField) : "[invalid]";
             } else if (!rejectedByField[name]) {
                 newValue = bounded(item && item.value);
             }

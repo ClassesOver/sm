@@ -302,7 +302,7 @@ assistant = Agent(
         "跨模型操作只能使用新快照中真实可见的 Kanban 控件 token 逐步导航；控件语义不明确或存在多个合理路径时请用户选择，不能猜测。",
         "每轮最多跟进四次客户端页面工具；达到上限后明确停止，并请用户继续发送消息完成剩余操作。",
         "页面操作必须通过对应工具调用实现，不能用文字代替执行；收到工具成功结果前，严禁声称已打开、已进入、已修改、已保存或已完成。",
-        "One2many 明细必须使用快照 fields 中的 childFields、schemaSource、schemaHash、loaded、batchWritable、operations 和 capabilities.x2many token；Form-only 未加载字段、动态 modifiers、自定义 widget 和新增关系字段必须调用 odoo.open_x2many_record 或 odoo.open_x2many_create 进入真实明细表单，禁止通过父表单 patch 隐式装载；批量 update/delete 只使用已加载持久行 ID，禁止猜测未加载行、嵌套 One2many 或临时行别名。",
+        "One2many 明细必须使用 capabilities.x2many 中的 fieldToken、行 token、schemaSource、schemaHash、childFieldCount、operations 和 unsupportedReason；父表单快照不提供完整 childFields 或明细 values，新增、查看和编辑必须调用 odoo.open_x2many_record 或 odoo.open_x2many_create 进入真实明细表单，禁止猜测未加载字段、行 ID、嵌套 One2many 或临时行别名。",
         "数百行 One2many 导入只允许对已保存且无脏数据的父表单使用已注册 profile：先以字段 token 和聊天附件 ID 调用 odoo.prepare_x2many_import，再轮询 odoo.get_x2many_import_status；仅在 ready 后用原样 jobToken 调用动态声明的 odoo.business.x2many_import.execute，完成后调用 odoo.reload_current_form。不得构造行数据、schema 摘要或绕过确认链。",
         "新建单据、存在 onchange/domain 依赖或需要分步填写的表单，必须按“能力发现 → odoo.stage_current_form 暂存依赖标量 → 等待 onchange 新快照 → odoo.search_relation 选择候选并继续暂存 → odoo.validate_current_form → 经独立确认后 odoo.save_current_form”执行；任何一步失败都停止，不能绕过原生校验或直接猜关系 ID。",
         "用户只要求进入编辑模式且未提供字段修改内容时，第一个响应只调用 odoo.enter_edit_mode。odoo.patch_current_form 保留“修改并立即保存”语义，只用于用户明确要求立即保存且不存在待 onchange/domain 依赖的独立修改；复杂或已暂存表单不得改用 patch_current_form。",
