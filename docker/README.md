@@ -18,6 +18,12 @@ Daytona 使用 AGPL-3.0 许可证。官方将这套 Compose 定位为本地部�
 
 Runner、SSH Gateway、PostgreSQL、Redis、Registry、MinIO、MailDev、Jaeger、PgAdmin 和
 OpenTelemetry Collector 仅在 Daytona 项目网络内提供。宿主机默认只暴露 API、Proxy 和 Dex。
+默认 Sandbox 镜像使用 `docker.m.daocloud.io/daytonaio/sandbox:0.5.0-slim`，仅为解决
+Docker Hub 在受限网络中的拉取超时；Daytona API、Runner 和 Proxy 仍使用官方 Docker Hub
+镜像。可在 `docker/.env` 中将 `DAYTONA_DEFAULT_SNAPSHOT` 改回其他可访问的完整镜像地址。
+
+从旧统一 Compose 升级时，必须在首次启动前复用旧卷和匹配的旧凭据，具体见
+[生产部署指南](../docs/agui_chat_production.md#compose-volume-migration)。
 
 ## 首次启动
 
@@ -60,6 +66,75 @@ docker compose --env-file docker/.env \
 bash scripts/configure_agentos_env.sh .env
 docker compose up -d --build
 ```
+
+## 导入 Sandbox 镜像
+
+Runner 使用独立的内置 Docker，宿主机已经拉取或导入的镜像不会自动共享给 Runner。网络较慢时，
+可先在宿主机准备镜像，再导入 Runner 并推送到 Daytona 内置 Registry。内置 Registry 数据保存在
+`daytona_registry_data` 卷中。
+
+宿主机已有镜像时直接导入：
+
+```bash
+docker save docker.m.daocloud.io/daytonaio/sandbox:0.5.0-slim | \
+  docker compose --env-file docker/.env \
+    -f docker/docker-compose.yaml \
+    exec -T runner docker load
+```
+
+如果镜像来自其他机器，先按 Runner 的架构拉取并导出。当前默认架构为 `linux/amd64`：
+
+```bash
+docker pull --platform linux/amd64 \
+  docker.m.daocloud.io/daytonaio/sandbox:0.5.0-slim
+
+docker save \
+  -o daytona-sandbox-0.5.0-slim-amd64.tar \
+  docker.m.daocloud.io/daytonaio/sandbox:0.5.0-slim
+```
+
+将 tar 文件传到 Daytona 宿主机后导入 Runner。`-T` 用于关闭伪终端，避免破坏镜像数据流：
+
+```bash
+docker compose --env-file docker/.env \
+  -f docker/docker-compose.yaml \
+  exec -T runner docker load < daytona-sandbox-0.5.0-slim-amd64.tar
+```
+
+为导入的镜像增加内部地址并推送到内置 Registry：
+
+```bash
+docker compose --env-file docker/.env \
+  -f docker/docker-compose.yaml exec runner \
+  docker tag \
+  docker.m.daocloud.io/daytonaio/sandbox:0.5.0-slim \
+  registry:6000/daytona/sandbox:0.5.0-slim
+
+docker compose --env-file docker/.env \
+  -f docker/docker-compose.yaml exec runner \
+  docker push registry:6000/daytona/sandbox:0.5.0-slim
+```
+
+将 `docker/.env` 中的默认 Snapshot 改为内部地址：
+
+```dotenv
+DAYTONA_DEFAULT_SNAPSHOT=registry:6000/daytona/sandbox:0.5.0-slim
+```
+
+重新创建 API 和 Runner，并验证内部镜像可以直接拉取：
+
+```bash
+docker compose --env-file docker/.env \
+  -f docker/docker-compose.yaml \
+  up -d --force-recreate api runner
+
+docker compose --env-file docker/.env \
+  -f docker/docker-compose.yaml exec runner \
+  docker pull registry:6000/daytona/sandbox:0.5.0-slim
+```
+
+`registry:6000` 是 Daytona Compose 内部服务地址，不要替换为 `localhost:6000`。Registry 默认
+不发布到宿主机，只能由 Daytona 项目网络中的容器访问。
 
 ## 远程访问
 

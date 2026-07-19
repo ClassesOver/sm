@@ -78,6 +78,30 @@ AgentOS 与 Daytona 现在是两个独立 Compose 项目，不共享容器网络
 - `docker/docker-compose.yaml` 按 Daytona OSS `v0.189.0` 官方 Compose 运行完整 Daytona
   服务，包括 SSH Gateway、PgAdmin、Registry UI、MailDev、Jaeger 和 OTel Collector。
 
+<a id="compose-volume-migration"></a>
+
+### 旧 Compose 数据卷
+
+两套 Compose 为数据卷设置了稳定前缀，默认分别为 `agentos_` 和 `daytona_`。从默认项目名为
+`agui-daytona` 的旧统一 Compose 升级时，在首次启动拆分后的服务前设置：
+
+```dotenv
+# 根目录 .env
+AGENTOS_VOLUME_PREFIX=agui-daytona_
+
+# docker/.env
+DAYTONA_VOLUME_PREFIX=agui-daytona_
+```
+
+这样 AgentOS 和 Daytona 会直接复用旧具名卷，而不是创建空数据库。旧部署使用自定义
+`COMPOSE_PROJECT_NAME` 时，将 `agui-daytona_` 替换为原项目名加下划线。确认备份和卷内容后
+再启动；PgAdmin 是新增服务，没有旧卷时会正常创建自己的卷。
+
+复用旧卷时还必须从旧 `.env` 保留相匹配的 AgentOS 数据库密码，以及全部 Daytona 加密密钥、
+Runner Token、数据库/Redis/Registry/MinIO 密码、Dex 哈希和服务密钥。将 Daytona 变量复制到
+新的 `docker/.env`，不要对已有卷运行持久化凭据轮换；只改环境文件不会更新卷内数据库用户或
+已加密数据。凭据不完整时应先恢复旧环境备份，不能用新生成的密码尝试启动旧卷。
+
 Daytona 使用 AGPL-3.0 许可证。通过网络向用户提供修改后的 Daytona 服务时，需要按
 AGPL-3.0 向这些用户提供对应源代码，并保存源码修订版本和容器来源。
 
@@ -87,8 +111,9 @@ AGPL-3.0 向这些用户提供对应源代码，并保存源码修订版本和�
 宿主机权限，应部署在专用主机或虚拟机上。默认只把 API/Dashboard、Proxy 和 Dex 发布到
 宿主机；已发布端口监听 `0.0.0.0`，公网部署必须增加防火墙、TLS 和访问控制。
 
-AgentOS 根目录 `.env` 只包含模型 API Key、AgentOS PostgreSQL 密码、工作区 HMAC、Daytona
-API 地址和 Dashboard 创建的 `DAYTONA_API_KEY`。Daytona 的独立凭据全部位于 `docker/.env`。
+AgentOS 根目录 `.env` 包含模型 API Key、AgentOS PostgreSQL 密码、工作区 HMAC、宿主与
+容器使用的 Daytona API 地址、技能目录可信 UID 和 Dashboard 创建的 `DAYTONA_API_KEY`。
+Daytona 的独立凭据全部位于 `docker/.env`。
 HMAC、加密、Proxy、健康检查、Runner 和 SSH Gateway API Key 使用 32 字节随机值，服务密码
 使用 12 位 Base64URL 值；SSH 密钥长度由算法决定。
 
@@ -108,6 +133,10 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
 两个 setup 容器均只挂载项目目录并使用 `network_mode: none`；`--rm` 只删除临时容器，不
 删除环境文件或数据卷。已有环境文件会备份到各自的 `.env.backups/` 目录；不要在已有数据卷
 运行时盲目轮换 Daytona 加密密钥、Runner Token 或数据库密码。
+
+AgentOS setup 会移除默认技能目录的组写和其他用户写权限，并把目录所有者写入
+`AGENT_SKILLS_TRUSTED_UID`。自定义技能目录必须由运维方执行同等权限约束，并显式配置其
+所有者 UID；校验失败时 AgentOS 会拒绝启动。
 
 在 Odoo 中，将 AgentOS HMAC 配置为仅服务端可见的系统参数，并将 AgentOS 地址设置为
 `http://127.0.0.1:7777` 或宿主机可访问的实际地址。

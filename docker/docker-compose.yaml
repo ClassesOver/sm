@@ -28,7 +28,7 @@ services:
     environment:
       OTEL_ENABLED: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      DEFAULT_SNAPSHOT: ${DAYTONA_DEFAULT_SNAPSHOT:-docker.io/daytonaio/sandbox:0.5.0-slim}
+      DEFAULT_SNAPSHOT: ${DAYTONA_DEFAULT_SNAPSHOT:-docker.m.daocloud.io/daytonaio/sandbox:0.5.0-slim}
       ENCRYPTION_KEY: ${DAYTONA_ENCRYPTION_KEY:?必须设置}
       ENCRYPTION_SALT: ${DAYTONA_ENCRYPTION_SALT:?必须设置}
       NODE_ENV: production
@@ -73,10 +73,10 @@ services:
       MAX_AUTO_ARCHIVE_INTERVAL: "43200"
       MAINTENANCE_MODE: "false"
       PROXY_DOMAIN: ${DAYTONA_PROXY_DOMAIN:-proxy.localhost:33044}
-      PROXY_PROTOCOL: http
+      PROXY_PROTOCOL: ${DAYTONA_PUBLIC_SCHEME:-http}
       PROXY_API_KEY: ${DAYTONA_PROXY_API_KEY:?必须设置}
-      PROXY_TEMPLATE_URL: http://{{PORT}}-{{sandboxId}}.${DAYTONA_PROXY_DOMAIN:-proxy.localhost:33044}
-      PROXY_TOOLBOX_BASE_URL: http://${DAYTONA_PROXY_DOMAIN:-proxy.localhost:33044}
+      PROXY_TEMPLATE_URL: ${DAYTONA_PUBLIC_SCHEME:-http}://{{PORT}}-{{sandboxId}}.${DAYTONA_PROXY_DOMAIN:-proxy.localhost:33044}
+      PROXY_TOOLBOX_BASE_URL: ${DAYTONA_PUBLIC_SCHEME:-http}://${DAYTONA_PROXY_DOMAIN:-proxy.localhost:33044}
       DEFAULT_RUNNER_DOMAIN: runner:3003
       DEFAULT_RUNNER_API_URL: http://runner:3003
       DEFAULT_RUNNER_PROXY_URL: http://runner:3003
@@ -135,7 +135,7 @@ services:
       DAYTONA_API_URL: http://api:3000/api
       PROXY_PORT: "4000"
       PROXY_API_KEY: ${DAYTONA_PROXY_API_KEY:?必须设置}
-      PROXY_PROTOCOL: http
+      PROXY_PROTOCOL: ${DAYTONA_PUBLIC_SCHEME:-http}
       OIDC_CLIENT_ID: daytona
       OIDC_DOMAIN: http://dex:5556/dex
       OIDC_PUBLIC_DOMAIN: ${DAYTONA_PUBLIC_SCHEME:-http}://${DAYTONA_PUBLIC_HOST:-127.0.0.1}:${DAYTONA_DEX_PORT:-33047}/dex
@@ -195,7 +195,7 @@ services:
     environment:
       DEX_ISSUER: ${DAYTONA_PUBLIC_SCHEME:-http}://${DAYTONA_PUBLIC_HOST:-127.0.0.1}:${DAYTONA_DEX_PORT:-33047}/dex
       DEX_DASHBOARD_BASE_URL: ${DAYTONA_PUBLIC_SCHEME:-http}://${DAYTONA_PUBLIC_HOST:-127.0.0.1}:${DAYTONA_API_PORT:-33043}
-      DEX_PROXY_CALLBACK_URL: http://${DAYTONA_PROXY_DOMAIN:-proxy.localhost:33044}/callback
+      DEX_PROXY_CALLBACK_URL: ${DAYTONA_PUBLIC_SCHEME:-http}://${DAYTONA_PROXY_DOMAIN:-proxy.localhost:33044}/callback
       DEX_STATIC_PASSWORD_HASH: ${DEX_STATIC_PASSWORD_HASH:?必须设置}
       DEX_ADMIN_EMAIL: ${DEX_ADMIN_EMAIL:-admin@example.com}
     volumes:
@@ -317,12 +317,19 @@ services:
 
 volumes:
   daytona_runner_data:
+    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}daytona_runner_data"
   daytona_db_data:
+    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}daytona_db_data"
   daytona_redis_data:
+    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}daytona_redis_data"
   daytona_registry_data:
+    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}daytona_registry_data"
   daytona_minio_data:
+    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}daytona_minio_data"
   dex_data:
+    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}dex_data"
   pgadmin_data:
+    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}pgadmin_data"
 
 networks:
   daytona-network:

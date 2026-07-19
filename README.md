@@ -26,6 +26,10 @@ npm run test
 npm run build
 ```
 
+`agui_chat_test/` 是不纳入 Git 的本地 Odoo 测试夹具。运行 `npm run test:e2e:odoo` 时，
+Playwright 仅在该目录存在时加载依赖它的用例；远端 Odoo 已安装同一夹具时，可设置
+`ODOO_E2E_WITH_AGUI_CHAT_TEST=1` 显式启用。其余 QUnit 宿主集成测试仍会正常运行。
+
 ## Docker 首次部署
 
 按对话隔离的附件、工作区文件和经确认的代码执行使用 Daytona。部署分为两个独立项目：
@@ -34,6 +38,8 @@ npm run build
 - `docker/docker-compose.yaml`：基于 Daytona OSS `v0.189.0` 官方配置的完整 Daytona 栈。
 
 两套 Compose 不共享容器网络、项目名或数据卷。请按下面的顺序分别初始化和启动。
+从旧统一 Compose 升级时，必须先按[生产部署指南](docs/agui_chat_production.md#compose-volume-migration)
+配置旧数据卷前缀，避免新项目创建空数据卷。
 
 1. 生成根目录 `.env`：
 
@@ -43,8 +49,9 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
   --profile setup run --build --rm env-init
 ```
 
-该脚本生成 AgentOS PostgreSQL 密码和工作区 HMAC。编辑 `.env`，只需手工填写模型
-`OPENAI_API_KEY`；需要时可增加 `OPENAI_BASE_URL` 和 `MODEL`。
+该脚本生成 AgentOS PostgreSQL 密码和工作区 HMAC，同时移除默认技能目录的组写权限并记录
+其宿主 UID。编辑 `.env`，只需手工填写模型 `OPENAI_API_KEY`；需要时可增加
+`OPENAI_BASE_URL` 和 `MODEL`。
 
 2. 生成独立的 Daytona `docker/.env`：
 

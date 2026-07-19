@@ -18,7 +18,8 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app
 ```
 
 初始化命令中的 `HOST_UID`/`HOST_GID` 用于保持 `.env` 的宿主文件所有权，`--rm` 只在
-脚本结束后删除临时初始化容器。Compose 会在启动数据库时自动创建项目默认网络。
+脚本结束后删除临时初始化容器。初始化还会修正默认技能目录权限，并将实际所有者 UID 写入
+`.env`。Compose 会在启动数据库时自动创建项目默认网络。
 Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本应用时默认通过
 `http://127.0.0.1:33043/api` 访问 Daytona。
 
@@ -40,3 +41,6 @@ JSONL。它们不暴露任意 DataFrame operation；图表自动写入 `reports/
 PostgreSQL 绑定到 `127.0.0.1:55432`，容器内 AgentOS 则通过 `agent-db:5432` 连接。
 外部 PostgreSQL 首次使用时仍可运行 `bash scripts/init_agent_db.sh` 安全创建数据库；
 认证沿用环境变量或 `.pgpass`。
+
+使用自定义 `AGENT_SKILLS_DIR` 时，目录和资源不得允许组或其他用户写入，并需将目录所有者
+UID 写入 `AGENT_SKILLS_TRUSTED_UID`。
