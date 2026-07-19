@@ -121,7 +121,7 @@ if [[ "$rotate_persistent" == true ]]; then
     set_env DEX_STATIC_PASSWORD_HASH "'$dex_password_hash'"
     unset dex_password_hash
     printf '%s\n' '已更新 Daytona 持久化服务密钥、口令和 Dex 登录密码。'
-    printf 'Dex 登录密码（账号见 DEX_ADMIN_EMAIL）：%s\n' "$dex_admin_password"
+    printf 'Dex 登录密码（默认账号 admin@example.com）：%s\n' "$dex_admin_password"
 fi
 
 skills_dir=$(awk -F= '$1 == "AGENT_SKILLS_DIR" {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")
@@ -129,8 +129,11 @@ skills_dir=${skills_dir:-./deploy/daytona/skills}
 [[ "$skills_dir" = /* ]] || skills_dir="$ROOT_DIR/$skills_dir"
 if [[ -d "$skills_dir" ]]; then
     chmod -R go-w "$skills_dir"
-    set_env AGENT_SKILLS_TRUSTED_UID "$(stat -c %u "$skills_dir")"
-    printf '已记录技能目录宿主 UID。\n'
+    skills_uid=$(stat -c %u "$skills_dir")
+    if [[ "$skills_uid" != 1000 ]]; then
+        set_env AGENT_SKILLS_TRUSTED_UID "$skills_uid"
+        printf '已记录非默认技能目录宿主 UID。\n'
+    fi
 fi
 
 if ask_yes_no '现在写入已创建的 Daytona API Key？' n; then

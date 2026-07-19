@@ -83,7 +83,7 @@ services:
       PORT: "3000"
       DB_HOST: db
       DB_PORT: "5432"
-      DB_USERNAME: ${DAYTONA_POSTGRES_USER:?必须设置}
+      DB_USERNAME: ${DAYTONA_POSTGRES_USER:-daytona}
       DB_PASSWORD: ${DAYTONA_POSTGRES_PASSWORD:?必须设置}
       DB_DATABASE: ${DAYTONA_POSTGRES_DB:-daytona}
       REDIS_HOST: redis
@@ -96,17 +96,17 @@ services:
       DASHBOARD_URL: ${DAYTONA_PUBLIC_SCHEME:-http}://${DAYTONA_PUBLIC_HOST:-127.0.0.1}:${DAYTONA_DASHBOARD_PORT:-33043}/dashboard
       DASHBOARD_BASE_API_URL: ${DAYTONA_PUBLIC_SCHEME:-http}://${DAYTONA_PUBLIC_HOST:-127.0.0.1}:${DAYTONA_DASHBOARD_PORT:-33043}
       TRANSIENT_REGISTRY_URL: http://registry:6000
-      TRANSIENT_REGISTRY_ADMIN: ${DAYTONA_REGISTRY_USER:?必须设置}
+      TRANSIENT_REGISTRY_ADMIN: ${DAYTONA_REGISTRY_USER:-daytona}
       TRANSIENT_REGISTRY_PASSWORD: ${DAYTONA_REGISTRY_PASSWORD:?必须设置}
       TRANSIENT_REGISTRY_PROJECT_ID: daytona
       INTERNAL_REGISTRY_URL: http://registry:6000
-      INTERNAL_REGISTRY_ADMIN: ${DAYTONA_REGISTRY_USER:?必须设置}
+      INTERNAL_REGISTRY_ADMIN: ${DAYTONA_REGISTRY_USER:-daytona}
       INTERNAL_REGISTRY_PASSWORD: ${DAYTONA_REGISTRY_PASSWORD:?必须设置}
       INTERNAL_REGISTRY_PROJECT_ID: daytona
       S3_ENDPOINT: http://minio:9000
       S3_STS_ENDPOINT: http://minio:9000/minio/v1/assume-role
       S3_REGION: us-east-1
-      S3_ACCESS_KEY: ${DAYTONA_MINIO_USER:?必须设置}
+      S3_ACCESS_KEY: ${DAYTONA_MINIO_USER:-daytona}
       S3_SECRET_KEY: ${DAYTONA_MINIO_PASSWORD:?必须设置}
       S3_DEFAULT_BUCKET: daytona
       S3_ACCOUNT_ID: /
@@ -192,7 +192,7 @@ services:
       RESOURCE_LIMITS_DISABLED: "false"
       AWS_ENDPOINT_URL: http://minio:9000
       AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: ${DAYTONA_MINIO_USER:?必须设置}
+      AWS_ACCESS_KEY_ID: ${DAYTONA_MINIO_USER:-daytona}
       AWS_SECRET_ACCESS_KEY: ${DAYTONA_MINIO_PASSWORD:?必须设置}
       AWS_DEFAULT_BUCKET: daytona
       DAYTONA_API_URL: http://api:3000/api
@@ -213,7 +213,7 @@ services:
       DEX_DASHBOARD_BASE_URL: ${DAYTONA_PUBLIC_SCHEME:-http}://${DAYTONA_PUBLIC_HOST:-127.0.0.1}:${DAYTONA_DASHBOARD_PORT:-33043}
       DEX_PROXY_CALLBACK_URL: http://${DAYTONA_PROXY_DOMAIN:-proxy.localhost:33044}/callback
       DEX_STATIC_PASSWORD_HASH: ${DEX_STATIC_PASSWORD_HASH:?必须由 env-init 生成 bcrypt 哈希}
-      DEX_ADMIN_EMAIL: ${DEX_ADMIN_EMAIL:?必须设置}
+      DEX_ADMIN_EMAIL: ${DEX_ADMIN_EMAIL:-admin@example.com}
     volumes:
       - ./deploy/daytona/dex/config.yaml.template:/etc/dex/config.yaml.template:ro
       - dex_data:/var/dex
@@ -228,7 +228,7 @@ services:
     profiles: [daytona]
     environment:
       POSTGRES_PASSWORD: ${DAYTONA_POSTGRES_PASSWORD:?必须设置}
-      POSTGRES_USER: ${DAYTONA_POSTGRES_USER:?必须设置}
+      POSTGRES_USER: ${DAYTONA_POSTGRES_USER:-daytona}
       POSTGRES_DB: ${DAYTONA_POSTGRES_DB:-daytona}
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -268,7 +268,7 @@ services:
     image: ${DOCKER_REGISTRY_MIRROR:-docker.m.daocloud.io}/minio/minio:RELEASE.2025-02-28T09-55-16Z
     profiles: [daytona]
     environment:
-      MINIO_ROOT_USER: ${DAYTONA_MINIO_USER:?必须设置}
+      MINIO_ROOT_USER: ${DAYTONA_MINIO_USER:-daytona}
       MINIO_ROOT_PASSWORD: ${DAYTONA_MINIO_PASSWORD:?必须设置}
       MINIO_IDENTITY_STS_EXPIRY: 24h
     command: server /data
