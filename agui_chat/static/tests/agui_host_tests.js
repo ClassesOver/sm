@@ -97,6 +97,25 @@ odoo.define("agui_chat.tests.host", function (require) {
 
     QUnit.module("agui_chat v2 host adapter");
 
+    QUnit.test("chat dock stays interactive above modal backdrops", function (assert) {
+        assert.expect(2);
+        var $manager = $(
+            "<div class='o_agui_chat_surface_manager o_agui_chat_enabled " +
+            "o_agui_chat_dock_open o_agui_chat_dock_right'>" +
+            "<button class='o_agui_chat_dock_toggle'></button>" +
+            "<div class='o_agui_chat_dock'></div></div>"
+        ).appendTo(document.body);
+        var $backdrop = $("<div class='modal-backdrop show'></div>").appendTo(document.body);
+        var backdropLevel = parseInt(window.getComputedStyle($backdrop[0]).zIndex, 10);
+        var dockLevel = parseInt(window.getComputedStyle($manager.find(".o_agui_chat_dock")[0]).zIndex, 10);
+        var toggleLevel = parseInt(window.getComputedStyle($manager.find(".o_agui_chat_dock_toggle")[0]).zIndex, 10);
+
+        assert.ok(dockLevel > backdropLevel, "打开的聊天面板位于 modal backdrop 之上");
+        assert.ok(toggleLevel > backdropLevel, "聊天入口位于 modal backdrop 之上");
+        $backdrop.remove();
+        $manager.remove();
+    });
+
     QUnit.test("menu options refresh when WebClient menu data arrives late", function (assert) {
         assert.expect(2);
         var webClient = {menu_data: null};

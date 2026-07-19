@@ -31,7 +31,7 @@
         transition: background-color 160ms ease, border-color 160ms ease,
             box-shadow 160ms ease, transform 160ms ease;
         width: 44px;
-        z-index: 1050;
+        z-index: 1055;
     }
     .o_agui_chat_dock_toggle:hover {
         background: var(--main-hover-color);
@@ -86,7 +86,7 @@
         box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
         display: none;
         position: fixed;
-        z-index: 1040;
+        z-index: 1055;
     }
 
     &.o_agui_chat_dock_open .o_agui_chat_dock,

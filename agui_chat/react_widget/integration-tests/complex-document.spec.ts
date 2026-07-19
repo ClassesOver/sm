@@ -144,7 +144,7 @@ test.describe.serial('真实 AgentOS 通用单据业务场景', () => {
         modal.innerHTML = '<div class="modal-dialog"><div class="modal-content">' +
           '<input aria-label="明细弹窗输入" /></div></div>'
         document.body.appendChild(modal)
-        ;(globalThis as any).$(modal).modal({ backdrop: false, keyboard: false, show: true })
+        ;(globalThis as any).$(modal).modal({ backdrop: true, keyboard: false, show: true })
       })
       await expect(page.locator('[data-agui-focus-test].in')).toBeVisible()
 
