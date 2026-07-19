@@ -119,6 +119,46 @@ async def test_limited_json_body_is_replayed_to_workspace_route(monkeypatch, cli
 
 
 @pytest.mark.anyio
+async def test_http_上传保持覆盖路径的兼容调用语义(monkeypatch, client):
+    async def inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    calls = []
+
+    def upload(thread, path, content):
+        calls.append((thread, path, content))
+        return {"path": path, "size": len(content), "status": "synced"}
+
+    monkeypatch.setattr(app_module, "workspace_secret", SECRET)
+    monkeypatch.setattr(app_module, "run_in_threadpool", inline)
+    monkeypatch.setattr(app_module.workspace_service, "upload", upload)
+    headers = {
+        "X-AGUI-Thread": "thread-1",
+        "X-AGUI-Capability": capability(),
+    }
+
+    first = await client.post(
+        "/workspace/upload",
+        data={"threadId": "thread-1", "path": "报告.txt"},
+        files={"file": ("报告.txt", b"first", "text/plain")},
+        headers=headers,
+    )
+    second = await client.post(
+        "/workspace/upload",
+        data={"threadId": "thread-1", "path": "报告.txt"},
+        files={"file": ("报告.txt", b"second", "text/plain")},
+        headers=headers,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls == [
+        ("thread-1", "报告.txt", b"first"),
+        ("thread-1", "报告.txt", b"second"),
+    ]
+
+
+@pytest.mark.anyio
 async def test_invalid_capability_is_rejected_before_large_run_body(monkeypatch, client):
     monkeypatch.setattr(app_module, "workspace_secret", SECRET)
 

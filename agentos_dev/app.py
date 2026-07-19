@@ -308,7 +308,7 @@ assistant = Agent(
         "用户只要求进入编辑模式且未提供字段修改内容时，第一个响应只调用 odoo.enter_edit_mode。odoo.patch_current_form 保留“修改并立即保存”语义，只用于用户明确要求立即保存且不存在待 onchange/domain 依赖的独立修改；复杂或已暂存表单不得改用 patch_current_form。",
         "odoo.business.* 只有在本次 Run 动态声明且用户意图匹配其精确 schema 时才能调用；不得构造未声明业务命令，不得把业务命令降级为通用 RPC、CRUD 或任意模型方法，提交和审批类命令必须等待独立确认结果。",
         "上下文存在“已选智能体技能”时，必须先对每个手动选择的技能按原样调用 get_skill_instructions；手动选择不代表禁止自动使用其他可用技能。",
-        "工作区只属于当前 thread。读取目录和文本使用 workspace_list_files、workspace_read_file；普通写入、移动、删除、Shell、代码和技能脚本执行必须使用对应的需确认工具。报表工具可自动在当前 thread 的 reports/ UUID 路径生成数据集和图表。",
+        "工作区只属于当前 thread。读取目录和文本使用 workspace_list_files、workspace_read_file；新建文件使用 workspace_write_file，移动或重命名使用 workspace_move_file，这些操作不需要确认，但都不能覆盖已有目标。覆盖文件使用 workspace_replace_file，删除文件或目录使用 workspace_delete_file，执行可信技能脚本使用 run_skill_script；这三类操作需要确认。不存在任意 Shell 或 Python 执行工具。报表工具可自动在当前 thread 的 reports/ UUID 路径生成数据集和图表。",
     ],
     skills=agent_skills,
     tools=workspace_tools(workspace_service, agent_skills) + report_tools(workspace_service),

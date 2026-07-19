@@ -42,3 +42,14 @@ def test_agent_instructions_enforce_staged_odoo_workflow():
     assert "等待 onchange 新快照 → odoo.search_relation" in instructions
     assert "odoo.validate_current_form" in instructions
     assert "独立确认后 odoo.save_current_form" in instructions
+
+
+def test_智能体说明明确工作区确认边界():
+    instructions = "\n".join(app.assistant.instructions)
+
+    assert "新建文件使用 workspace_write_file" in instructions
+    assert "移动或重命名使用 workspace_move_file" in instructions
+    assert "覆盖文件使用 workspace_replace_file" in instructions
+    assert "删除文件或目录使用 workspace_delete_file" in instructions
+    assert "执行可信技能脚本使用 run_skill_script" in instructions
+    assert "不存在任意 Shell 或 Python 执行工具" in instructions
