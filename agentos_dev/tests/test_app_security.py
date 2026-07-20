@@ -3,9 +3,19 @@ import hashlib
 import hmac
 import json
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from ag_ui.core import (
+    EventType,
+    RunAgentInput,
+    RunFinishedEvent,
+    RunStartedEvent,
+    StateSnapshotEvent,
+    TextMessageStartEvent,
+    ToolCallStartEvent,
+)
 
 from agentos_dev import app as app_module
 
@@ -52,6 +62,61 @@ def capability(thread="thread-1", **overrides):
         SECRET.encode(), signing_input.encode(), hashlib.sha256,
     ).digest()).rstrip(b"=").decode()
     return "%s.%s" % (signing_input, signature)
+
+
+def run_input(
+    message="编辑", *, tools=(app_module.EDIT_MODE_TOOL,), context=(), messages=None,
+):
+    return RunAgentInput.model_validate({
+        "threadId": "thread-1",
+        "runId": "run-1",
+        "state": {},
+        "messages": messages or [{"id": "user-1", "role": "user", "content": message}],
+        "tools": [
+            {"name": name, "description": "页面工具", "parameters": {"type": "object"}}
+            for name in tools
+        ],
+        "context": list(context),
+        "forwardedProps": {},
+    })
+
+
+def direct_request(branch=None):
+    claims = SimpleNamespace(
+        database="odoo",
+        user=7,
+        company=3,
+        odoo_session="a" * 64,
+    )
+    return SimpleNamespace(
+        state=SimpleNamespace(capability=claims, branch=branch),
+        headers={},
+    )
+
+
+async def response_body(response):
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk.encode() if isinstance(chunk, str) else chunk)
+    return b"".join(chunks).decode()
+
+
+class ClosingEventStream:
+    def __init__(self, events):
+        self.events = iter(events)
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self.events)
+        except StopIteration:
+            raise StopAsyncIteration
+
+    async def aclose(self):
+        self.closed = True
 
 
 @pytest.mark.anyio
@@ -276,3 +341,180 @@ async def test_ready_reports_all_required_checks(monkeypatch, client):
     unavailable = await client.get("/ready")
     assert unavailable.status_code == 503
     assert unavailable.json()["status"] == "not_ready"
+
+
+@pytest.mark.parametrize("message", [
+    "编辑",
+    "修改",
+    "进入编辑模式",
+    "编辑当前表单",
+    "编辑当前单据",
+    "修改当前表单",
+    "修改当前单据",
+    "  编辑。！  ",
+])
+def test_explicit_edit_mode_intent_matches_only_complete_short_commands(message):
+    assert app_module._is_explicit_edit_mode_request(run_input(message))
+
+
+@pytest.mark.parametrize("message", [
+    "修改电话为 13800000000",
+    "如何编辑",
+    "编辑张三的单据",
+    "请编辑",
+    "进入编辑模式后修改名称",
+])
+def test_explicit_edit_mode_intent_rejects_extended_requests(message):
+    assert not app_module._is_explicit_edit_mode_request(run_input(message))
+
+
+def test_edit_mode_agent_has_isolated_tool_choice_and_shared_resources():
+    assert app_module.assistant.tool_choice == "auto"
+    assert app_module.edit_mode_assistant.tool_choice == {
+        "type": "function",
+        "function": {"name": "odoo.enter_edit_mode"},
+    }
+    assert app_module.edit_mode_assistant is not app_module.assistant
+    assert app_module.edit_mode_assistant.model is app_module.assistant.model
+    assert app_module.edit_mode_assistant.db is app_module.assistant.db
+
+
+@pytest.mark.anyio
+async def test_explicit_edit_request_routes_to_forced_agent(monkeypatch):
+    calls = []
+
+    async def fake_run(entity, _run_input, user_id=None):
+        calls.append((entity, user_id))
+        yield RunStartedEvent(thread_id="thread-1", run_id="run-1")
+        yield ToolCallStartEvent(
+            tool_call_id="call-1", tool_call_name=app_module.EDIT_MODE_TOOL,
+        )
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    response = await app_module.run_agui(direct_request(), run_input())
+
+    body = await response_body(response)
+
+    assert len(calls) == 1
+    assert calls[0][0] is app_module.edit_mode_assistant
+    assert "odoo.enter_edit_mode" in body
+    assert "required_tool_violation" not in body
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("value", [
+    run_input("普通问答"),
+    run_input(messages=[
+        {"id": "user-1", "role": "user", "content": "编辑"},
+        {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
+    ]),
+    run_input(context=[{
+        "description": "已选 Odoo 菜单",
+        "value": json.dumps({"navigationRequired": True}),
+    }]),
+])
+async def test_normal_resume_and_menu_navigation_requests_keep_main_agent(monkeypatch, value):
+    calls = []
+
+    async def fake_run(entity, _run_input, user_id=None):
+        calls.append(entity)
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    response = await app_module.run_agui(direct_request(), value)
+
+    await response_body(response)
+
+    assert calls == [app_module.assistant]
+
+
+@pytest.mark.anyio
+async def test_branch_request_keeps_original_branch_path(monkeypatch):
+    branch = object()
+    calls = []
+
+    async def fake_branch(entity, workspace, value, spec, user_id):
+        calls.append((entity, workspace, value, spec, user_id))
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    async def unexpected_run(*_args, **_kwargs):
+        raise AssertionError("分支请求不应进入普通运行路径")
+        yield
+
+    monkeypatch.setattr(app_module, "run_branch", fake_branch)
+    monkeypatch.setattr(app_module, "run_entity", unexpected_run)
+    value = run_input()
+    response = await app_module.run_agui(direct_request(branch), value)
+
+    await response_body(response)
+
+    assert calls[0][:4] == (
+        app_module.assistant, app_module.workspace_service, value, branch,
+    )
+
+
+@pytest.mark.anyio
+async def test_edit_request_without_declared_tool_fails_closed(monkeypatch):
+    async def unexpected_run(*_args, **_kwargs):
+        raise AssertionError("缺少必需工具时不应调用模型")
+        yield
+
+    monkeypatch.setattr(app_module, "run_entity", unexpected_run)
+    response = await app_module.run_agui(
+        direct_request(), run_input(tools=("odoo.open_menu",)),
+    )
+
+    body = await response_body(response)
+
+    assert "required_tool_unavailable" in body
+    assert "odoo.enter_edit_mode" in body
+
+
+@pytest.mark.anyio
+async def test_required_tool_guard_accepts_status_and_expected_tool():
+    stream = ClosingEventStream([
+        RunStartedEvent(thread_id="thread-1", run_id="run-1"),
+        StateSnapshotEvent(snapshot={}),
+        ToolCallStartEvent(
+            tool_call_id="call-1", tool_call_name=app_module.EDIT_MODE_TOOL,
+        ),
+        RunFinishedEvent(thread_id="thread-1", run_id="run-1"),
+    ])
+
+    events = [
+        event async for event in app_module._guard_required_tool(
+            stream, app_module.EDIT_MODE_TOOL,
+        )
+    ]
+
+    assert [event.type for event in events] == [
+        EventType.RUN_STARTED,
+        EventType.STATE_SNAPSHOT,
+        EventType.TOOL_CALL_START,
+        EventType.RUN_FINISHED,
+    ]
+    assert not stream.closed
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first_executable", [
+    TextMessageStartEvent(message_id="message-1"),
+    ToolCallStartEvent(tool_call_id="call-1", tool_call_name="odoo.open_menu"),
+    None,
+])
+async def test_required_tool_guard_replaces_violations_and_closes_source(first_executable):
+    source_events = [RunStartedEvent(thread_id="thread-1", run_id="run-1")]
+    if first_executable is not None:
+        source_events.append(first_executable)
+    stream = ClosingEventStream(source_events)
+
+    events = [
+        event async for event in app_module._guard_required_tool(
+            stream, app_module.EDIT_MODE_TOOL,
+        )
+    ]
+
+    assert [event.type for event in events] == [EventType.RUN_STARTED, EventType.RUN_ERROR]
+    assert events[-1].code == "required_tool_violation"
+    assert stream.closed

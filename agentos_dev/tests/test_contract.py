@@ -53,6 +53,17 @@ def test_agent_instructions_prioritize_selected_menu_navigation():
     assert "不得从菜单名称中的“新建”或“创建”推断创建意图" in instructions
 
 
+def test_agent_instructions_enforce_tool_result_truthfulness():
+    instructions = "\n".join(app.assistant.instructions)
+
+    assert "所有工具操作都必须先执行、后回答" in instructions
+    assert "查询结论只能来自工具结果" in instructions
+    assert "确认中、排队中或准备完成不等于执行成功" in instructions
+    assert "失败或部分成功时必须准确说明" in instructions
+    assert "第一个响应只能调用 odoo.enter_edit_mode" in instructions
+    assert "不得先输出文字或询问字段" in instructions
+
+
 def test_智能体说明明确工作区确认边界():
     instructions = "\n".join(app.assistant.instructions)
 

@@ -1,12 +1,15 @@
 import os
 import json
+import logging
+import unicodedata
 
-from ag_ui.core import RunAgentInput
+from ag_ui.core import EventType, RunAgentInput, RunErrorEvent
 from ag_ui.encoder import EventEncoder
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from agno.os import AgentOS
 from agno.os.interfaces.agui import AGUI
+from agno.os.interfaces.agui.input import extract_tool_messages, extract_user_input
 from agno.os.interfaces.agui.router import run_entity
 from dotenv import dotenv_values
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -43,6 +46,36 @@ OPENAI_COMPATIBLE_ROLE_MAP = {
     "tool": "tool",
     "model": "assistant",
 }
+EDIT_MODE_TOOL = "odoo.enter_edit_mode"
+EDIT_MODE_COMMANDS = frozenset({
+    "编辑",
+    "修改",
+    "进入编辑模式",
+    "编辑当前表单",
+    "编辑当前单据",
+    "修改当前表单",
+    "修改当前单据",
+})
+EDIT_MODE_TOOL_CHOICE = {
+    "type": "function",
+    "function": {"name": EDIT_MODE_TOOL},
+}
+REQUIRED_TOOL_PREAMBLE_EVENTS = frozenset({
+    EventType.RUN_STARTED,
+    EventType.STATE_SNAPSHOT,
+    EventType.THINKING_START,
+    EventType.THINKING_END,
+    EventType.THINKING_TEXT_MESSAGE_START,
+    EventType.THINKING_TEXT_MESSAGE_CONTENT,
+    EventType.THINKING_TEXT_MESSAGE_END,
+    EventType.REASONING_START,
+    EventType.REASONING_MESSAGE_START,
+    EventType.REASONING_MESSAGE_CONTENT,
+    EventType.REASONING_MESSAGE_END,
+    EventType.REASONING_END,
+    EventType.REASONING_ENCRYPTED_VALUE,
+})
+logger = logging.getLogger(__name__)
 
 
 def load_environment():
@@ -74,6 +107,109 @@ base_app = FastAPI(title="Odoo AG-UI 开发智能体")
 workspace_secret = os.getenv("AGUI_WORKSPACE_HMAC_SECRET", "")
 agent_skills = load_skills()
 workspace_service = WorkspaceService(secret=workspace_secret)
+
+
+def _strip_trailing_punctuation(value: str) -> str:
+    value = value.strip()
+    while value and unicodedata.category(value[-1]).startswith("P"):
+        value = value[:-1].rstrip()
+    return value
+
+
+def _is_explicit_edit_mode_request(run_input: RunAgentInput) -> bool:
+    return _strip_trailing_punctuation(
+        extract_user_input(run_input.messages or []),
+    ) in EDIT_MODE_COMMANDS
+
+
+def _is_fresh_user_request(run_input: RunAgentInput) -> bool:
+    messages = run_input.messages or []
+    return bool(
+        messages
+        and messages[-1].role == "user"
+        and not run_input.resume
+        and not extract_tool_messages(messages)
+    )
+
+
+def _requires_menu_navigation(run_input: RunAgentInput) -> bool:
+    for item in run_input.context or []:
+        if item.description != "已选 Odoo 菜单":
+            continue
+        try:
+            value = json.loads(item.value)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict) and value.get("navigationRequired") is True:
+            return True
+    return False
+
+
+def _declares_tool(run_input: RunAgentInput, tool_name: str) -> bool:
+    return any(tool.name == tool_name for tool in (run_input.tools or []))
+
+
+def _audit_tool_route(request: Request, run_input: RunAgentInput, **values) -> None:
+    request_id = request.headers.get("X-Request-ID", "") or run_input.run_id
+    payload = {
+        "event": "agui_tool_route",
+        "run_id": run_input.run_id,
+        "request_id": request_id[:256],
+        **values,
+    }
+    logger.info("%s", json.dumps(payload, ensure_ascii=True, separators=(",", ":")))
+
+
+async def _run_error(message: str, code: str):
+    yield RunErrorEvent(type=EventType.RUN_ERROR, message=message, code=code)
+
+
+async def _guard_required_tool(source, tool_name: str, audit=None):
+    accepted = False
+    violation = False
+    try:
+        async for event in source:
+            if accepted:
+                yield event
+                continue
+            if event.type == EventType.TOOL_CALL_START:
+                if event.tool_call_name == tool_name:
+                    accepted = True
+                    if audit:
+                        audit("accepted")
+                    yield event
+                    continue
+                violation = True
+                break
+            if event.type in REQUIRED_TOOL_PREAMBLE_EVENTS:
+                yield event
+                continue
+            violation = True
+            break
+        if not accepted:
+            violation = True
+    except Exception:
+        if accepted:
+            raise
+        violation = True
+    finally:
+        if violation:
+            close = getattr(source, "aclose", None)
+            if close:
+                try:
+                    await close()
+                except Exception:
+                    # 关闭失败不能覆盖面向客户端的协议错误。
+                    pass
+
+    if violation:
+        if audit:
+            audit("required_tool_violation")
+        yield RunErrorEvent(
+            type=EventType.RUN_ERROR,
+            message=f"模型未按要求首先调用 {tool_name}，已终止本次运行。",
+            code="required_tool_violation",
+        )
 
 
 def _request_thread(request: Request) -> str:
@@ -311,6 +447,9 @@ assistant = Agent(
         "使用中文简洁回答。",
         "对话历史由 AgentOS PostgreSQL 自动加载最近 10 次运行；本次请求只携带当前用户消息或连续工具结果。",
         "涉及 Odoo 业务数据时仅使用请求中的 Odoo 页面状态和本次请求明确选择的菜单或记录候选；页面状态无法确认的数据不要猜测。",
+        "所有工具操作都必须先执行、后回答；收到工具成功结果前，不得声称操作已完成。查询结论只能来自工具结果，不得根据预期结果猜测。",
+        "工具返回确认中、排队中或准备完成不等于执行成功，必须准确说明当前状态。",
+        "多步骤操作必须等待全部必要步骤完成后才能声称完成；失败或部分成功时必须准确说明已完成、未完成和失败部分。",
         "每次页面工具返回新快照后，必须重新发现当前 viewType、可见字段、动态 modifiers、capabilities 和本次 Run 声明的工具；旧快照字段、记录、候选和控件 token 一律不得复用。",
         "调用 odoo.open_menu 时，target 必须原样复制“Odoo 宿主快照”中的 pageTarget；调用其他 Odoo 页面工具时，target 必须原样复制其中的 viewTarget。不得从 action.resId 推导当前表单记录。",
         "上下文存在“已选 Odoo 菜单”且 navigationRequired 为 true 时，本轮第一个且唯一可调用的页面工具是 odoo.open_menu：用其中的 menuId 和当前 PageTarget 调用；只能使用该菜单，不能改选或猜测其他菜单。菜单名称只用于定位，即使包含“新建”或“创建”也不代表用户要求创建。导航后必须等待客户端返回新快照再决定下一步；用户只选择菜单而未输入其他要求时，打开菜单后停止。",
@@ -330,7 +469,7 @@ assistant = Agent(
         "One2many 明细必须使用 capabilities.x2many 中的 fieldToken、行 token、schemaSource、schemaHash、childFieldCount、operations 和 unsupportedReason；父表单快照不提供完整 childFields 或明细 values，新增、查看和编辑必须调用 odoo.open_x2many_record 或 odoo.open_x2many_create 进入真实明细表单，禁止猜测未加载字段、行 ID、嵌套 One2many 或临时行别名。",
         "数百行 One2many 导入只允许对已保存且无脏数据的父表单使用已注册 profile：先以字段 token 和聊天附件 ID 调用 odoo.prepare_x2many_import，再轮询 odoo.get_x2many_import_status；仅在 ready 后用原样 jobToken 调用动态声明的 odoo.business.x2many_import.execute，完成后调用 odoo.reload_current_form。不得构造行数据、schema 摘要或绕过确认链。",
         "新建单据、存在 onchange/domain 依赖或需要分步填写的表单，必须按“能力发现 → odoo.stage_current_form 暂存依赖标量 → 等待 onchange 新快照 → odoo.search_relation 选择候选并继续暂存 → odoo.validate_current_form → 经独立确认后 odoo.save_current_form”执行；任何一步失败都停止，不能绕过原生校验或直接猜关系 ID。",
-        "用户只要求进入编辑模式且未提供字段修改内容时，第一个响应只调用 odoo.enter_edit_mode。odoo.patch_current_form 保留“修改并立即保存”语义，只用于用户明确要求立即保存且不存在待 onchange/domain 依赖的独立修改；复杂或已暂存表单不得改用 patch_current_form。",
+        "用户只要求进入编辑模式且未提供字段和值时，第一个响应只能调用 odoo.enter_edit_mode，不得先输出文字或询问字段。odoo.patch_current_form 保留“修改并立即保存”语义，只用于用户明确要求立即保存且不存在待 onchange/domain 依赖的独立修改；复杂或已暂存表单不得改用 patch_current_form。",
         "odoo.business.* 只有在本次 Run 动态声明且用户意图匹配其精确 schema 时才能调用；不得构造未声明业务命令，不得把业务命令降级为通用 RPC、CRUD 或任意模型方法，提交和审批类命令必须等待独立确认结果。",
         "上下文存在“已选智能体技能”时，必须先对每个手动选择的技能按原样调用 get_skill_instructions；手动选择不代表禁止自动使用其他可用技能。",
         "工作区只属于当前 thread。读取目录和文本使用 workspace_list_files、workspace_read_file；新建文件使用 workspace_write_file，移动或重命名使用 workspace_move_file，这些操作不需要确认，但都不能覆盖已有目标。覆盖文件使用 workspace_replace_file，删除文件或目录使用 workspace_delete_file，执行可信技能脚本使用 run_skill_script；这三类操作需要确认。不存在任意 Shell 或 Python 执行工具。报表工具可自动在当前 thread 的 reports/ UUID 路径生成数据集和图表。",
@@ -342,7 +481,9 @@ assistant = Agent(
     num_history_runs=10,
     debug_mode=env_flag("AGENT_DEBUG"),
     markdown=True,
+    tool_choice="auto",
 )
+edit_mode_assistant = assistant.deep_copy(update={"tool_choice": EDIT_MODE_TOOL_CHOICE})
 
 
 @base_app.post("/agui", include_in_schema=False)
@@ -353,9 +494,54 @@ async def run_agui(request: Request, run_input: RunAgentInput):
     encoder = EventEncoder()
 
     async def events():
-        source = run_branch(
-            assistant, workspace_service, run_input, branch, user_id,
-        ) if branch else run_entity(assistant, run_input, user_id=user_id)
+        edit_intent = _is_explicit_edit_mode_request(run_input)
+        fresh_request = _is_fresh_user_request(run_input)
+        navigation_required = _requires_menu_navigation(run_input)
+        force_edit_tool = bool(
+            edit_intent and fresh_request and not branch and not navigation_required
+        )
+        tool_declared = _declares_tool(run_input, EDIT_MODE_TOOL)
+        audit_values = {
+            "forced_tool": EDIT_MODE_TOOL if force_edit_tool else None,
+            "edit_route_matched": edit_intent,
+            "forced_route_selected": force_edit_tool,
+            "menu_navigation_required": navigation_required,
+        }
+        _audit_tool_route(
+            request, run_input, guard_result="pending" if force_edit_tool else "not_applicable",
+            error_code=None, **audit_values,
+        )
+
+        if branch:
+            source = run_branch(
+                assistant, workspace_service, run_input, branch, user_id,
+            )
+        elif not force_edit_tool:
+            source = run_entity(assistant, run_input, user_id=user_id)
+        elif not tool_declared:
+            _audit_tool_route(
+                request, run_input, guard_result="required_tool_unavailable",
+                error_code="required_tool_unavailable", **audit_values,
+            )
+            source = _run_error(
+                f"当前页面未声明 {EDIT_MODE_TOOL}，无法执行明确的编辑命令。",
+                "required_tool_unavailable",
+            )
+        else:
+            guarded_source = run_entity(
+                edit_mode_assistant, run_input, user_id=user_id,
+            )
+
+            def audit_guard(result):
+                _audit_tool_route(
+                    request, run_input, guard_result=result,
+                    error_code=result if result == "required_tool_violation" else None,
+                    **audit_values,
+                )
+
+            source = _guard_required_tool(
+                guarded_source, EDIT_MODE_TOOL, audit=audit_guard,
+            )
         async for event in source:
             yield encoder.encode(event)
 
