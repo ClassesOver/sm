@@ -30,12 +30,15 @@ from .skills import load_skills
 from .workspace import WorkspaceError, WorkspaceService
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.8.8.0"
+BUNDLE_VERSION = "12.0.8.8.1"
 COMMAND_CATALOG_HASH = "45b3b79f39f02b93936c7f5ab8b28c2c158b40d6edb8ebc3950b54f32b18d7b0"
 MAX_RUN_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 12 * 1024 * 1024
 MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
 EDIT_MODE_TOOL = "odoo.enter_edit_mode"
+SEARCH_MENU_TOOL = "odoo.search_menu"
+OPEN_MENU_TOOL = "odoo.open_menu"
+MENU_NAVIGATION_CONTEXT = "HRP 菜单导航请求"
 EDIT_MODE_COMMANDS = frozenset(
     {
         "编辑",
@@ -50,6 +53,14 @@ EDIT_MODE_COMMANDS = frozenset(
 EDIT_MODE_TOOL_CHOICE = {
     "type": "function",
     "function": {"name": EDIT_MODE_TOOL},
+}
+SEARCH_MENU_TOOL_CHOICE = {
+    "type": "function",
+    "function": {"name": SEARCH_MENU_TOOL},
+}
+OPEN_MENU_TOOL_CHOICE = {
+    "type": "function",
+    "function": {"name": OPEN_MENU_TOOL},
 }
 REQUIRED_TOOL_PREAMBLE_EVENTS = frozenset(
     {
@@ -128,6 +139,25 @@ def _requires_menu_navigation(run_input: RunAgentInput) -> bool:
         if isinstance(value, dict) and value.get("navigationRequired") is True:
             return True
     return False
+
+
+def _required_menu_tool(run_input: RunAgentInput) -> str | None:
+    for item in run_input.context or []:
+        if item.description != MENU_NAVIGATION_CONTEXT:
+            continue
+        try:
+            value = json.loads(item.value)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        tool_name = value.get("requiredFirstTool")
+        phase = value.get("phase")
+        if phase == "search" and tool_name == SEARCH_MENU_TOOL:
+            return SEARCH_MENU_TOOL
+        if phase == "open" and tool_name == OPEN_MENU_TOOL:
+            return OPEN_MENU_TOOL
+    return None
 
 
 def _declares_tool(run_input: RunAgentInput, tool_name: str) -> bool:
@@ -454,12 +484,14 @@ async def workspace_destroy(request: Request, payload: dict = Body(...)):
     return {"ok": True, "deleted": True}
 
 
-assistant, edit_mode_assistant = create_assistants(
+assistant, edit_mode_assistant, search_menu_assistant, open_menu_assistant = create_assistants(
     settings,
     agent_skills,
     workspace_service,
     AGENT_INSTRUCTIONS,
     EDIT_MODE_TOOL_CHOICE,
+    SEARCH_MENU_TOOL_CHOICE,
+    OPEN_MENU_TOOL_CHOICE,
 )
 
 
@@ -475,20 +507,39 @@ async def run_agui(request: Request, run_input: RunAgentInput):
         edit_intent = _is_explicit_edit_mode_request(run_input)
         fresh_request = _is_fresh_user_request(run_input)
         navigation_required = _requires_menu_navigation(run_input)
-        force_edit_tool = bool(
-            edit_intent and fresh_request and not branch and not navigation_required
-        )
-        tool_declared = _declares_tool(run_input, EDIT_MODE_TOOL)
+        context_menu_tool = _required_menu_tool(run_input)
+        forced_tool = None
+        forced_agent = None
+        route_name = None
+        if not branch and navigation_required:
+            forced_tool = OPEN_MENU_TOOL
+            forced_agent = context.open_menu_assistant
+            route_name = "selected_menu_open"
+        elif not branch and context_menu_tool:
+            forced_tool = context_menu_tool
+            forced_agent = (
+                context.search_menu_assistant
+                if context_menu_tool == SEARCH_MENU_TOOL
+                else context.open_menu_assistant
+            )
+            route_name = "menu_search" if context_menu_tool == SEARCH_MENU_TOOL else "menu_open"
+        elif not branch and edit_intent and fresh_request:
+            forced_tool = EDIT_MODE_TOOL
+            forced_agent = context.edit_mode_assistant
+            route_name = "edit_mode"
+        tool_declared = bool(forced_tool and _declares_tool(run_input, forced_tool))
         audit_values = {
-            "forced_tool": EDIT_MODE_TOOL if force_edit_tool else None,
+            "forced_tool": forced_tool,
+            "forced_route": route_name,
             "edit_route_matched": edit_intent,
-            "forced_route_selected": force_edit_tool,
+            "menu_context_tool": context_menu_tool,
+            "forced_route_selected": bool(forced_tool),
             "menu_navigation_required": navigation_required,
         }
         _audit_tool_route(
             request,
             run_input,
-            guard_result="pending" if force_edit_tool else "not_applicable",
+            guard_result="pending" if forced_tool else "not_applicable",
             error_code=None,
             **audit_values,
         )
@@ -501,7 +552,7 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                 branch,
                 user_id,
             )
-        elif not force_edit_tool:
+        elif not forced_tool:
             source = run_entity(context.assistant, run_input, user_id=user_id)
         elif not tool_declared:
             _audit_tool_route(
@@ -512,12 +563,13 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                 **audit_values,
             )
             source = _run_error(
-                f"当前页面未声明 {EDIT_MODE_TOOL}，无法执行明确的编辑命令。",
+                f"当前运行未声明必需工具 {forced_tool}，无法执行该操作。",
                 "required_tool_unavailable",
             )
         else:
+            assert forced_agent is not None
             guarded_source = run_entity(
-                context.edit_mode_assistant,
+                forced_agent,
                 run_input,
                 user_id=user_id,
             )
@@ -533,7 +585,7 @@ async def run_agui(request: Request, run_input: RunAgentInput):
 
             source = _guard_required_tool(
                 guarded_source,
-                EDIT_MODE_TOOL,
+                forced_tool,
                 audit=audit_guard,
             )
         async for event in source:
@@ -563,6 +615,8 @@ application_context = ApplicationContext(
     agent_skills,
     assistant,
     edit_mode_assistant,
+    search_menu_assistant,
+    open_menu_assistant,
 )
 base_app = create_base_app(application_context)
 agent_os, app = create_agentos_app(application_context, base_app)

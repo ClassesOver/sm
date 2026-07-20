@@ -495,6 +495,21 @@ def test_edit_mode_agent_has_isolated_tool_choice_and_shared_resources():
     assert app_module.edit_mode_assistant.db is app_module.assistant.db
 
 
+def test_menu_agents_have_isolated_tool_choices_and_shared_resources():
+    assert app_module.search_menu_assistant.tool_choice == {
+        "type": "function",
+        "function": {"name": "odoo.search_menu"},
+    }
+    assert app_module.open_menu_assistant.tool_choice == {
+        "type": "function",
+        "function": {"name": "odoo.open_menu"},
+    }
+    assert app_module.search_menu_assistant is not app_module.assistant
+    assert app_module.open_menu_assistant is not app_module.assistant
+    assert app_module.search_menu_assistant.model is app_module.assistant.model
+    assert app_module.open_menu_assistant.db is app_module.assistant.db
+
+
 @pytest.mark.anyio
 async def test_explicit_edit_request_routes_to_forced_agent(monkeypatch):
     calls = []
@@ -530,17 +545,9 @@ async def test_explicit_edit_request_routes_to_forced_agent(monkeypatch):
                 {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
             ]
         ),
-        run_input(
-            context=[
-                {
-                    "description": "已选 HRP 菜单",
-                    "value": json.dumps({"navigationRequired": True}),
-                }
-            ]
-        ),
     ],
 )
-async def test_normal_resume_and_menu_navigation_requests_keep_main_agent(monkeypatch, value):
+async def test_normal_and_unmarked_resume_requests_keep_main_agent(monkeypatch, value):
     calls = []
 
     async def fake_run(entity, _run_input, user_id=None):
@@ -553,6 +560,95 @@ async def test_normal_resume_and_menu_navigation_requests_keep_main_agent(monkey
     await response_body(response)
 
     assert calls == [app_module.assistant]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool_name", "context", "expected_agent"),
+    [
+        (
+            "odoo.search_menu",
+            {
+                "description": "HRP 菜单导航请求",
+                "value": json.dumps({"phase": "search", "requiredFirstTool": "odoo.search_menu"}),
+            },
+            "search_menu_assistant",
+        ),
+        (
+            "odoo.open_menu",
+            {
+                "description": "HRP 菜单导航请求",
+                "value": json.dumps({"phase": "open", "requiredFirstTool": "odoo.open_menu"}),
+            },
+            "open_menu_assistant",
+        ),
+        (
+            "odoo.open_menu",
+            {
+                "description": "已选 HRP 菜单",
+                "value": json.dumps({"navigationRequired": True}),
+            },
+            "open_menu_assistant",
+        ),
+    ],
+)
+async def test_menu_navigation_routes_to_forced_agent(
+    monkeypatch, tool_name, context, expected_agent
+):
+    calls = []
+
+    async def fake_run(entity, _run_input, user_id=None):
+        calls.append(entity)
+        yield RunStartedEvent(thread_id="thread-1", run_id="run-1")
+        yield ToolCallStartEvent(tool_call_id="call-1", tool_call_name=tool_name)
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    messages = None
+    if tool_name == "odoo.open_menu" and context["description"] == "HRP 菜单导航请求":
+        messages = [{"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-0"}]
+    value = run_input(
+        "打开报销单查询",
+        tools=(tool_name,),
+        context=[context],
+        messages=messages,
+    )
+    response = await app_module.run_agui(direct_request(), value)
+
+    body = await response_body(response)
+
+    assert calls == [getattr(app_module, expected_agent)]
+    assert tool_name in body
+    assert "required_tool_violation" not in body
+
+
+@pytest.mark.anyio
+async def test_menu_navigation_without_required_tool_fails_closed(monkeypatch):
+    async def unexpected_run(*_args, **_kwargs):
+        raise AssertionError("缺少必需菜单工具时不应调用模型")
+        yield
+
+    monkeypatch.setattr(app_module, "run_entity", unexpected_run)
+    response = await app_module.run_agui(
+        direct_request(),
+        run_input(
+            "打开报销单查询",
+            tools=("odoo.open_menu",),
+            context=[
+                {
+                    "description": "HRP 菜单导航请求",
+                    "value": json.dumps(
+                        {"phase": "search", "requiredFirstTool": "odoo.search_menu"}
+                    ),
+                }
+            ],
+        ),
+    )
+
+    body = await response_body(response)
+
+    assert "required_tool_unavailable" in body
+    assert "odoo.search_menu" in body
 
 
 @pytest.mark.anyio

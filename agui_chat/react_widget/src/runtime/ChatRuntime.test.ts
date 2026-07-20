@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.8.0')
+    expect(AguiChat.version).toBe('12.0.8.8.1')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -1571,7 +1571,14 @@ describe('ChatRuntime protocol handling', () => {
       path: ['费用报销', '单据查询', '报销单查询'],
       fullPath: '费用报销 / 单据查询 / 报销单查询'
     }
-    const runtime = createRuntime({ runtimeUrl: '/runtime/run', menuCatalog: menuCatalog([option]) })
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      tools: [
+        { name: 'odoo.search_menu', parameters: { type: 'object' } },
+        { name: 'odoo.open_menu', parameters: { type: 'object' } }
+      ],
+      menuCatalog: menuCatalog([option])
+    })
     await runtime.send('打开费用报销 / 单据查询 / 报销单查询菜单')
 
     expect(runtime.getSnapshot().messages[0].menuMention).toBeUndefined()
@@ -1579,6 +1586,16 @@ describe('ChatRuntime protocol handling', () => {
     expect(body.context).not.toContainEqual(expect.objectContaining({
       description: '当前用户可见 HRP 菜单'
     }))
+    expect(body.context).toContainEqual({
+      description: 'HRP 菜单导航请求',
+      value: JSON.stringify({
+        phase: 'search',
+        query: '费用报销 / 单据查询 / 报销单查询',
+        requiredFirstTool: 'odoo.search_menu',
+        catalogId: 'catalog-test-1',
+        catalogRevision: 1
+      })
+    })
   })
 
   it('does not guess a duplicate leaf menu name', async () => {

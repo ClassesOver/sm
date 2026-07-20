@@ -14,8 +14,8 @@ configured AgentOS protocol endpoint must agree on:
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.8.0",
-  "bundle_version": "12.0.8.8.0",
+  "module_version": "12.0.8.8.1",
+  "bundle_version": "12.0.8.8.1",
   "command_catalog_hash": "sha256"
 }
 ```
@@ -108,6 +108,17 @@ case, then prefers exact full-path or leaf-name matches and uses contains matche
 only when no exact result exists. Results include `matchType`, `matchCount`,
 `truncated`, catalog metadata, and at most eight candidates. Any ambiguous result
 stops for user selection.
+
+For an explicit `打开`, `进入`, `导航到`, or `跳转到` request whose target exactly
+matches a visible leaf name or full path, React adds `HRP 菜单导航请求` without
+menu/action IDs. The initial phase requires `odoo.search_menu`; a same-catalog,
+non-truncated unique result advances the next continuation to a required
+`odoo.open_menu` only when its echoed query normalizes to the original request;
+otherwise the continuation remains in the required search phase. AgentOS uses a
+forced tool choice for each phase and rejects
+plain text or a different first executable event with `required_tool_violation`.
+Questions, unknown targets, ambiguous results, stale catalogs, and completed
+opens do not receive this forced-navigation context.
 
 The full visible directory is not sent on the first Run. Only after a same-catalog
 `matchType=none` result does the immediately following client-tool continuation

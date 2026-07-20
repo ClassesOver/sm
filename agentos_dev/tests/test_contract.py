@@ -68,6 +68,9 @@ def test_agent_instructions_prioritize_selected_menu_navigation():
     instructions = "\n".join(app.assistant.instructions)
 
     assert "第一个且唯一可调用的页面工具是 odoo.open_menu" in instructions
+    assert "上下文存在“HRP 菜单导航请求”时" in instructions
+    assert "phase=search 时只先调用 odoo.search_menu" in instructions
+    assert "phase=open 时只先调用 odoo.open_menu" in instructions
     assert "本轮第一个页面工具必须是 odoo.search_menu" in instructions
     assert "返回多个候选时立即停止" in instructions
     assert "首次 query 必须使用用户请求中的原始菜单名称或路径" in instructions

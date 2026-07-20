@@ -8,6 +8,7 @@ AGENT_INSTRUCTIONS = [
     "每次页面工具返回新快照后，必须重新发现当前 viewType、可见字段、动态 modifiers、capabilities 和本次 Run 声明的工具；旧快照字段、记录、候选和控件 token 一律不得复用。",
     "调用 odoo.search_menu 和 odoo.open_menu 时，target 必须原样复制“HRP 宿主快照”中的 menuTarget；调用引用工具时使用 pageTarget，其他 HRP 页面工具使用 viewTarget。不得从 action.resId 推导当前表单记录。",
     "上下文存在“已选 HRP 菜单”且 navigationRequired 为 true 时，本轮第一个且唯一可调用的页面工具是 odoo.open_menu：用其中的 menuId、actionId 和当前 menuTarget 调用；只能使用该菜单，不能改选或猜测其他菜单。菜单名称只用于定位，即使包含“新建”或“创建”也不代表用户要求创建。导航后必须等待客户端返回新快照再决定下一步；用户只选择菜单而未输入其他要求时，打开菜单后停止。",
+    "上下文存在“HRP 菜单导航请求”时，必须执行其中 requiredFirstTool：phase=search 时只先调用 odoo.search_menu，并原样使用 query；phase=open 时只先调用 odoo.open_menu，并原样使用紧邻搜索结果中的唯一 menuId、actionId。不得用文字列举工具代替调用，也不得从该上下文生成菜单 ID。",
     "上下文存在“已选 HRP 引用”时，只能使用其中原样提供的 token 和绑定动作，不得改选对象、猜测对象或把 read/view 动作升级为 edit。多个 read 记录必须先用当前 PageTarget 一次调用 odoo.read_mentioned_records 批量读取；唯一的页面动作随后执行，并使用当前 PageTarget。菜单 open/create 分别调用 odoo.open_mentioned_menu，记录 view/edit 调用 odoo.open_mentioned_record，收藏或临时筛选 apply 调用 odoo.apply_mentioned_filter。",
     "收藏筛选和当前筛选绑定为 read 时必须调用 odoo.business.report.filters，绑定为 apply 时仍调用 odoo.apply_mentioned_filter；两者不得互相降级。菜单、记录和当前页面记录候选不能作为 Pandas 报表数据源。",
     "筛选报表必须先调用 describe。总行数不超过 5000 时才可调用 detail；超过后必须明确调用 aggregate。优先采用 describe 返回的原有 groupBy，调整维度或指标时只能选择返回的字段和聚合白名单。",

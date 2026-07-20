@@ -26129,7 +26129,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function canPreviewFile(type) {
     return PREVIEWABLE_TYPES.has(type.toLowerCase());
   }
-  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.0.js";
+  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.1.js";
   const FILE_VIEWER_LOAD_TIMEOUT_MS = 15e3;
   const STATUS_ATTRIBUTE = "data-agui-file-viewer-status";
   let viewerModulePromise;
@@ -27351,6 +27351,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return next;
   }
   const MAX_MENU_SEMANTIC_CONTEXT_BYTES = 128 * 1024;
+  const MENU_NAVIGATION_CONTEXT = "HRP 菜单导航请求";
+  const MENU_NAVIGATION_TOOLS = ["odoo.search_menu", "odoo.open_menu"];
   function endpoint(props) {
     const value = String(props.runtimeUrl || "").trim();
     if (!value) {
@@ -27540,6 +27542,77 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return null;
   }
+  function normalizeMenuLookup(value) {
+    return value.normalize("NFKC").trim().replace(/\s*(?:\/|>|→)\s*/g, " / ").replace(/\s+/g, " ").toLocaleLowerCase();
+  }
+  function explicitMenuNavigationQuery(props, messages) {
+    var _a;
+    if (!MENU_NAVIGATION_TOOLS.every((name2) => props.tools.some((tool) => tool.name === name2))) {
+      return null;
+    }
+    const latestUser = [...messages].reverse().find((message) => message.role === "user");
+    if (!latestUser || ((_a = latestUser.menuMention) == null ? void 0 : _a.valid) || typeof latestUser.content !== "string") return null;
+    const text2 = latestUser.content.trim().replace(/[。！？!?；;，,：:]+$/g, "").trim();
+    const matched = /^(?:(?:请|麻烦)(?:帮我)?|帮我)?\s*(?:打开|进入|导航到|跳转到)\s*(.+)$/.exec(text2);
+    if (!matched) return null;
+    const requested = matched[1].trim();
+    const queries = requested.endsWith("菜单") ? [requested, requested.slice(0, -2).trim()] : [requested];
+    for (const query of queries) {
+      if (!query) continue;
+      const normalized = normalizeMenuLookup(query);
+      if (props.menuCatalog.ready && props.menuCatalog.entries.some(
+        (entry) => normalizeMenuLookup(entry.name) === normalized || normalizeMenuLookup(entry.fullPath) === normalized
+      )) return query;
+    }
+    return null;
+  }
+  function latestMenuToolResult(messages) {
+    let userIndex = -1;
+    for (let index2 = messages.length - 1; index2 >= 0; index2 -= 1) {
+      if (messages[index2].role === "user") {
+        userIndex = index2;
+        break;
+      }
+    }
+    for (let index2 = messages.length - 1; index2 > userIndex; index2 -= 1) {
+      const message = messages[index2];
+      if (message.role !== "tool" || !MENU_NAVIGATION_TOOLS.includes(message.name)) continue;
+      const result = parseJson(message.content);
+      return {
+        name: String(message.name),
+        result: result && typeof result === "object" && !Array.isArray(result) ? result : null
+      };
+    }
+    return null;
+  }
+  function menuNavigationContext(props, messages) {
+    const query = explicitMenuNavigationQuery(props, messages);
+    if (!query) return null;
+    const latestResult = latestMenuToolResult(messages);
+    let phase = "search";
+    let requiredFirstTool = "odoo.search_menu";
+    if (latestResult) {
+      if (latestResult.name === "odoo.open_menu") return null;
+      const result = latestResult.result;
+      const candidates = Array.isArray(result == null ? void 0 : result.candidates) ? result.candidates : [];
+      if ((result == null ? void 0 : result.catalogId) !== props.menuCatalog.catalogId || result.catalogRevision !== props.menuCatalog.catalogRevision) return null;
+      if (typeof result.query === "string" && normalizeMenuLookup(result.query) === normalizeMenuLookup(query)) {
+        if (result.truncated === true || Number(result.matchCount) !== 1 || candidates.length !== 1) return null;
+        phase = "open";
+        requiredFirstTool = "odoo.open_menu";
+      }
+    }
+    return {
+      description: MENU_NAVIGATION_CONTEXT,
+      value: contextValue({
+        phase,
+        query,
+        requiredFirstTool,
+        catalogId: props.menuCatalog.catalogId,
+        catalogRevision: props.menuCatalog.catalogRevision
+      })
+    };
+  }
   function menuSemanticContext(props, messages) {
     const menuToolsEnabled = ["odoo.search_menu", "odoo.open_menu"].every(
       (name2) => props.tools.some((tool) => tool.name === name2)
@@ -27608,6 +27681,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     const semanticMenuContext = menuSemanticContext(props, messages);
     if (semanticMenuContext) context.push(semanticMenuContext);
+    const requiredMenuNavigation = menuNavigationContext(props, messages);
+    if (requiredMenuNavigation) context.push(requiredMenuNavigation);
     const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
     const selectedSkills = ((latestUserMessage == null ? void 0 : latestUserMessage.skills) || []).filter((skill) => skill.valid);
     if (selectedSkills.length) {
@@ -29971,7 +30046,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.8.0";
+  const VERSION = "12.0.8.8.1";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

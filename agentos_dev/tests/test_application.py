@@ -52,10 +52,22 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     first_base = FastAPI()
     second_base = FastAPI()
     first_context = ApplicationContext(
-        settings, object(), FakeSkills("first"), FakeAssistant(), FakeAssistant()
+        settings,
+        object(),
+        FakeSkills("first"),
+        FakeAssistant(),
+        FakeAssistant(),
+        FakeAssistant(),
+        FakeAssistant(),
     )
     second_context = ApplicationContext(
-        settings, object(), FakeSkills("second"), FakeAssistant(), FakeAssistant()
+        settings,
+        object(),
+        FakeSkills("second"),
+        FakeAssistant(),
+        FakeAssistant(),
+        FakeAssistant(),
+        FakeAssistant(),
     )
 
     first_os, first_app = create_agentos_app(first_context, first_base)
@@ -77,6 +89,8 @@ def test_default_application_exposes_explicit_context():
     assert context.skills is app_module.agent_skills
     assert context.assistant is app_module.assistant
     assert context.edit_mode_assistant is app_module.edit_mode_assistant
+    assert context.search_menu_assistant is app_module.search_menu_assistant
+    assert context.open_menu_assistant is app_module.open_menu_assistant
 
 
 @pytest.mark.anyio
@@ -97,6 +111,8 @@ async def test_base_application_routes_use_their_own_context(monkeypatch):
         skills=FakeSkills("first"),
         assistant=FakeAssistant(),
         edit_mode_assistant=FakeAssistant(),
+        search_menu_assistant=FakeAssistant(),
+        open_menu_assistant=FakeAssistant(),
     )
     second_context = ApplicationContext(
         settings=replace(settings, workspace_hmac_secret="second-secret"),
@@ -104,6 +120,8 @@ async def test_base_application_routes_use_their_own_context(monkeypatch):
         skills=FakeSkills("second"),
         assistant=FakeAssistant(),
         edit_mode_assistant=FakeAssistant(),
+        search_menu_assistant=FakeAssistant(),
+        open_menu_assistant=FakeAssistant(),
     )
     first_app = app_module.create_base_app(first_context)
     second_app = app_module.create_base_app(second_context)

@@ -259,6 +259,139 @@ describe('production transport contract', () => {
     expect(menuContext?.value).not.toContain('actionId')
   })
 
+  it('marks exact menu navigation for required search and unique-result open stages', () => {
+    const entry = {
+      menuId: 9,
+      actionId: 42,
+      name: '报销单查询',
+      path: ['费用报销', '单据查询', '报销单查询'],
+      fullPath: '费用报销 / 单据查询 / 报销单查询'
+    }
+    const props = v2Props({
+      tools: [
+        { name: 'odoo.search_menu', parameters: { type: 'object' } },
+        { name: 'odoo.open_menu', parameters: { type: 'object' } },
+        { name: 'odoo.apply_filter', parameters: { type: 'object' } }
+      ],
+      menuCatalog: menuCatalog([entry])
+    })
+    const user = { id: 'menu-user', role: 'user' as const, content: '打开报销单查询' }
+
+    const initial = buildRunInput([user], props, 'thread-1', null, {})
+    expect(initial.context).toContainEqual({
+      description: 'HRP 菜单导航请求',
+      value: JSON.stringify({
+        phase: 'search',
+        query: '报销单查询',
+        requiredFirstTool: 'odoo.search_menu',
+        catalogId: 'catalog-test-1',
+        catalogRevision: 1
+      })
+    })
+
+    const wrongQuery = buildRunInput([
+      user,
+      {
+        id: 'menu-search', role: 'tool' as const, name: 'odoo.search_menu',
+        toolCallId: 'search-1', content: JSON.stringify({
+          query: '付款单查询', matchType: 'exact', matchCount: 1, truncated: false,
+          candidates: [entry], catalogId: 'catalog-test-1', catalogRevision: 1
+        })
+      }
+    ], props, 'thread-1', null, {})
+    expect(wrongQuery.context).toContainEqual({
+      description: 'HRP 菜单导航请求',
+      value: JSON.stringify({
+        phase: 'search',
+        query: '报销单查询',
+        requiredFirstTool: 'odoo.search_menu',
+        catalogId: 'catalog-test-1',
+        catalogRevision: 1
+      })
+    })
+
+    const searched = buildRunInput([
+      user,
+      {
+        id: 'menu-search', role: 'tool' as const, name: 'odoo.search_menu',
+        toolCallId: 'search-1', content: JSON.stringify({
+          query: '报销单查询', matchType: 'exact', matchCount: 1, truncated: false,
+          candidates: [entry],
+          catalogId: 'catalog-test-1', catalogRevision: 1
+        })
+      }
+    ], props, 'thread-1', null, {})
+    expect(searched.context).toContainEqual({
+      description: 'HRP 菜单导航请求',
+      value: JSON.stringify({
+        phase: 'open',
+        query: '报销单查询',
+        requiredFirstTool: 'odoo.open_menu',
+        catalogId: 'catalog-test-1',
+        catalogRevision: 1
+      })
+    })
+    const navigationContext = searched.context.find(
+      (item) => item.description === 'HRP 菜单导航请求'
+    )
+    expect(navigationContext?.value).not.toContain('menuId')
+    expect(navigationContext?.value).not.toContain('actionId')
+
+    const opened = buildRunInput([
+      user,
+      {
+        id: 'menu-search', role: 'tool' as const, name: 'odoo.search_menu',
+        toolCallId: 'search-1', content: JSON.stringify({
+          query: '报销单查询', matchType: 'exact', matchCount: 1, truncated: false,
+          candidates: [entry],
+          catalogId: 'catalog-test-1', catalogRevision: 1
+        })
+      },
+      {
+        id: 'menu-open', role: 'tool' as const, name: 'odoo.open_menu',
+        toolCallId: 'open-1', content: JSON.stringify({ ok: true, navigated: true })
+      }
+    ], props, 'thread-1', null, {})
+    expect(opened.context.some((item) => item.description === 'HRP 菜单导航请求')).toBe(false)
+  })
+
+  it('does not force navigation for questions, unknown targets, or ambiguous results', () => {
+    const entry = {
+      menuId: 9,
+      actionId: 42,
+      name: '报销单查询',
+      path: ['费用报销', '报销单查询'],
+      fullPath: '费用报销 / 报销单查询'
+    }
+    const props = v2Props({
+      tools: [
+        { name: 'odoo.search_menu', parameters: { type: 'object' } },
+        { name: 'odoo.open_menu', parameters: { type: 'object' } }
+      ],
+      menuCatalog: menuCatalog([entry])
+    })
+
+    for (const content of ['如何打开报销单查询', '打开不存在的菜单']) {
+      const input = buildRunInput([
+        { id: content, role: 'user', content }
+      ], props, 'thread-1', null, {})
+      expect(input.context.some((item) => item.description === 'HRP 菜单导航请求')).toBe(false)
+    }
+
+    const ambiguous = buildRunInput([
+      { id: 'menu-user', role: 'user', content: '打开报销单查询' },
+      {
+        id: 'menu-search', role: 'tool', name: 'odoo.search_menu', toolCallId: 'search-1',
+        content: JSON.stringify({
+          query: '报销单查询', matchType: 'exact', matchCount: 2, truncated: false,
+          candidates: [entry, { ...entry, menuId: 10, actionId: 43 }],
+          catalogId: 'catalog-test-1', catalogRevision: 1
+        })
+      }
+    ], props, 'thread-1', null, {})
+    expect(ambiguous.context.some((item) => item.description === 'HRP 菜单导航请求')).toBe(false)
+  })
+
   it('does not add semantic menu context unless both menu tools are enabled', () => {
     const messages = [
       { id: 'menu-user', role: 'user' as const, content: '打开差旅入口' },

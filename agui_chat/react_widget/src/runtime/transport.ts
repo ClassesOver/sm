@@ -9,6 +9,8 @@ import { AGUI_ODOO_PROTOCOL } from '../types'
 import { asText, clone, parseJson, toolArgs, toolCallId, toolName, uuid } from './utils'
 
 const MAX_MENU_SEMANTIC_CONTEXT_BYTES = 128 * 1024
+const MENU_NAVIGATION_CONTEXT = 'HRP 菜单导航请求'
+const MENU_NAVIGATION_TOOLS = ['odoo.search_menu', 'odoo.open_menu'] as const
 
 export interface RunStateEnvelope {
   protocol: typeof AGUI_ODOO_PROTOCOL
@@ -267,6 +269,110 @@ function latestMenuSearchResult(messages: ChatMessage[]): Record<string, unknown
   return null
 }
 
+function normalizeMenuLookup(value: string): string {
+  return value
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s*(?:\/|>|→)\s*/g, ' / ')
+    .replace(/\s+/g, ' ')
+    .toLocaleLowerCase()
+}
+
+function explicitMenuNavigationQuery(
+  props: AguiChatProps,
+  messages: ChatMessage[]
+): string | null {
+  if (!MENU_NAVIGATION_TOOLS.every((name) => props.tools.some((tool) => tool.name === name))) {
+    return null
+  }
+  const latestUser = [...messages].reverse().find((message) => message.role === 'user')
+  if (!latestUser || latestUser.menuMention?.valid || typeof latestUser.content !== 'string') return null
+  const text = latestUser.content.trim().replace(/[。！？!?；;，,：:]+$/g, '').trim()
+  const matched = /^(?:(?:请|麻烦)(?:帮我)?|帮我)?\s*(?:打开|进入|导航到|跳转到)\s*(.+)$/.exec(text)
+  if (!matched) return null
+
+  const requested = matched[1].trim()
+  const queries = requested.endsWith('菜单')
+    ? [requested, requested.slice(0, -2).trim()]
+    : [requested]
+  for (const query of queries) {
+    if (!query) continue
+    const normalized = normalizeMenuLookup(query)
+    if (props.menuCatalog.ready && props.menuCatalog.entries.some((entry) =>
+      normalizeMenuLookup(entry.name) === normalized ||
+      normalizeMenuLookup(entry.fullPath) === normalized
+    )) return query
+  }
+  return null
+}
+
+function latestMenuToolResult(
+  messages: ChatMessage[]
+): { name: string; result: Record<string, unknown> | null } | null {
+  let userIndex = -1
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'user') {
+      userIndex = index
+      break
+    }
+  }
+  for (let index = messages.length - 1; index > userIndex; index -= 1) {
+    const message = messages[index]
+    if (
+      message.role !== 'tool' ||
+      !MENU_NAVIGATION_TOOLS.includes(message.name as typeof MENU_NAVIGATION_TOOLS[number])
+    ) continue
+    const result = parseJson(message.content)
+    return {
+      name: String(message.name),
+      result: result && typeof result === 'object' && !Array.isArray(result)
+        ? result as Record<string, unknown>
+        : null
+    }
+  }
+  return null
+}
+
+function menuNavigationContext(
+  props: AguiChatProps,
+  messages: ChatMessage[]
+): { description: string; value: string } | null {
+  const query = explicitMenuNavigationQuery(props, messages)
+  if (!query) return null
+  const latestResult = latestMenuToolResult(messages)
+  let phase = 'search'
+  let requiredFirstTool = 'odoo.search_menu'
+  if (latestResult) {
+    if (latestResult.name === 'odoo.open_menu') return null
+    const result = latestResult.result
+    const candidates = Array.isArray(result?.candidates) ? result.candidates : []
+    if (
+      result?.catalogId !== props.menuCatalog.catalogId ||
+      result.catalogRevision !== props.menuCatalog.catalogRevision
+    ) return null
+    if (
+      typeof result.query === 'string' &&
+      normalizeMenuLookup(result.query) === normalizeMenuLookup(query)
+    ) {
+      if (
+        result.truncated === true || Number(result.matchCount) !== 1 || candidates.length !== 1
+      ) return null
+      phase = 'open'
+      requiredFirstTool = 'odoo.open_menu'
+    }
+  }
+  return {
+    description: MENU_NAVIGATION_CONTEXT,
+    value: contextValue({
+      phase,
+      query,
+      requiredFirstTool,
+      catalogId: props.menuCatalog.catalogId,
+      catalogRevision: props.menuCatalog.catalogRevision
+    })
+  }
+}
+
 function menuSemanticContext(
   props: AguiChatProps,
   messages: ChatMessage[]
@@ -350,6 +456,8 @@ function normalizeRunContext(
   }
   const semanticMenuContext = menuSemanticContext(props, messages)
   if (semanticMenuContext) context.push(semanticMenuContext)
+  const requiredMenuNavigation = menuNavigationContext(props, messages)
+  if (requiredMenuNavigation) context.push(requiredMenuNavigation)
   const latestUserMessage = [...messages].reverse().find((message) => message.role === 'user')
   const selectedSkills = (latestUserMessage?.skills || []).filter((skill) => skill.valid)
   if (selectedSkills.length) {
