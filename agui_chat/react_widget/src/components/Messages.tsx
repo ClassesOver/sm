@@ -356,6 +356,15 @@ export function DefaultAssistantMessage({
   const content = asText(message.content)
   const reasoning = message.extra_data?.reasoning_steps || []
   const references = message.extra_data?.references || []
+  const canRegenerate = Boolean(
+    message.content && !message.streaming_error &&
+    typeof message.extra_data?.agent_run_id === 'string' &&
+    message.extra_data.agent_run_id &&
+    message.extra_data.agent_run_final === true &&
+    !(message.tool_calls || []).some((tool) =>
+      ['pending', 'running', 'needs_confirmation'].includes(tool.status || 'pending')
+    )
+  )
   const copy = async () => {
     await onCopy()
     setCopied(true)
@@ -377,7 +386,7 @@ export function DefaultAssistantMessage({
           isCurrent && 'opacity-100'
         )}>
           <button type="button" className="grid size-7 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-accent hover:text-primary" aria-label={copied ? labels.copied : labels.copyResponse} title={labels.copyResponse} onClick={() => void copy()}>{copied ? icons.complete : icons.copy}</button>
-          <button type="button" className="grid size-7 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-accent hover:text-primary disabled:opacity-40" disabled={running} aria-label={labels.regenerateResponse} title={labels.regenerateResponse} onClick={onRegenerate}>{icons.regenerate}</button>
+          <button type="button" className="grid size-7 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-accent hover:text-primary disabled:opacity-40" disabled={running || !canRegenerate} aria-label={labels.regenerateResponse} title={labels.regenerateResponse} onClick={onRegenerate}>{icons.regenerate}</button>
         </div>
       </div>
     </div> : null}

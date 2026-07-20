@@ -1,13 +1,16 @@
 import os
 import json
 
+from ag_ui.core import RunAgentInput
+from ag_ui.encoder import EventEncoder
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from agno.os import AgentOS
 from agno.os.interfaces.agui import AGUI
+from agno.os.interfaces.agui.router import run_entity
 from dotenv import dotenv_values
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from .security import CapabilityError, verify_capability
@@ -15,10 +18,17 @@ from .database import SerializedPostgresDb, agent_db_url, check_database
 from .skills import load_skills
 from .workspace import WorkspaceError, WorkspaceService, workspace_tools
 from .report import report_tools
+from .branch import (
+    BranchError,
+    capability_user_id,
+    parse_forwarded_props,
+    run_branch,
+    validate_branch_identity,
+)
 
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.8.6.0"
+BUNDLE_VERSION = "12.0.8.7.0"
 COMMAND_CATALOG_HASH = "66999dc4e1f22d94cf04b9fda3463c99538f00f86150204d4d0dea5d73c8cb60"
 MAX_RUN_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 12 * 1024 * 1024
@@ -126,6 +136,21 @@ async def require_workspace_capability(request: Request, call_next):
             return JSONResponse({"error": "invalid_run_payload"}, status_code=400)
         if body_thread != thread:
             return JSONResponse({"error": "capability_thread_mismatch"}, status_code=403)
+        try:
+            branch = parse_forwarded_props(payload)
+            request.state.branch = branch
+            if branch:
+                source_claims = verify_capability(
+                    request.headers.get("X-AGUI-Source-Capability", ""),
+                    workspace_secret,
+                    branch.source_thread_id,
+                )
+                validate_branch_identity(request.state.capability, source_claims)
+                request.state.source_capability = source_claims
+        except CapabilityError as error:
+            return JSONResponse({"error": str(error)}, status_code=401)
+        except BranchError as error:
+            return JSONResponse({"error": str(error)}, status_code=403)
     return await call_next(request)
 
 
@@ -284,7 +309,7 @@ assistant = Agent(
     ),
     instructions=[
         "使用中文简洁回答。",
-        "可以使用本次请求携带的完整对话历史。",
+        "对话历史由 AgentOS PostgreSQL 自动加载最近 10 次运行；本次请求只携带当前用户消息或连续工具结果。",
         "涉及 Odoo 业务数据时仅使用请求中的 Odoo 页面状态和本次请求明确选择的菜单或记录候选；页面状态无法确认的数据不要猜测。",
         "每次页面工具返回新快照后，必须重新发现当前 viewType、可见字段、动态 modifiers、capabilities 和本次 Run 声明的工具；旧快照字段、记录、候选和控件 token 一律不得复用。",
         "调用 odoo.open_menu 时，target 必须原样复制“Odoo 宿主快照”中的 pageTarget；调用其他 Odoo 页面工具时，target 必须原样复制其中的 viewTarget。不得从 action.resId 推导当前表单记录。",
@@ -318,6 +343,30 @@ assistant = Agent(
     debug_mode=env_flag("AGENT_DEBUG"),
     markdown=True,
 )
+
+
+@base_app.post("/agui", include_in_schema=False)
+async def run_agui(request: Request, run_input: RunAgentInput):
+    claims = request.state.capability
+    user_id = capability_user_id(claims)
+    branch = getattr(request.state, "branch", None)
+    encoder = EventEncoder()
+
+    async def events():
+        source = run_branch(
+            assistant, workspace_service, run_input, branch, user_id,
+        ) if branch else run_entity(assistant, run_input, user_id=user_id)
+        async for event in source:
+            yield encoder.encode(event)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
 
 agent_os = AgentOS(
     name="Odoo AG-UI 开发服务",

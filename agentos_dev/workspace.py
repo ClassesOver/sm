@@ -36,6 +36,9 @@ MAX_SCRIPT_BYTES = 256 * 1024
 MAX_SCRIPT_ARGS = 20
 MAX_SCRIPT_ARG_BYTES = 1024
 MAX_EXECUTION_TIMEOUT = 60
+MAX_BRANCH_FILES = 2000
+MAX_BRANCH_TOTAL_BYTES = 256 * 1024 * 1024
+MAX_BRANCH_FILE_BYTES = 25 * 1024 * 1024
 
 
 class WorkspaceError(ValueError):
@@ -204,6 +207,82 @@ class WorkspaceService:
                     pass
             registry.delete(value)
             return bool(sandboxes)
+
+    def _branch_inventory(self, thread: str):
+        sandbox = self.sandbox_for(thread, create=False)
+        if sandbox is None:
+            return None, [], []
+        root = self._info(sandbox, WORKSPACE_ROOT)
+        if self._is_symlink(root) or not root.is_dir:
+            raise WorkspaceError("源工作区根路径不是安全目录，无法创建分支。")
+
+        directories = []
+        files = []
+        total_bytes = 0
+        seen = set()
+        pending = [("", WORKSPACE_ROOT)]
+        while pending:
+            relative_parent, remote_parent = pending.pop()
+            for entry in sandbox.fs.list_files(remote_parent):
+                name = str(getattr(entry, "name", "") or "")
+                if name in ("", ".", "..") or "/" in name or "\\" in name:
+                    raise WorkspaceError("源工作区包含无效路径，无法创建分支。")
+                relative = f"{relative_parent}/{name}".strip("/")
+                normalized, remote = self.normalize_path(relative, allow_root=False)
+                if normalized != relative or relative in seen:
+                    raise WorkspaceError("源工作区包含重复或越界路径，无法创建分支。")
+                seen.add(relative)
+                if self._is_symlink(entry):
+                    raise WorkspaceError("源工作区包含符号链接，无法创建分支。")
+                if entry.is_dir:
+                    directories.append(relative)
+                    pending.append((relative, remote))
+                    continue
+                if not self._is_regular_file(entry):
+                    raise WorkspaceError("源工作区包含非普通文件，无法创建分支。")
+                size = int(entry.size or 0)
+                if size < 0 or size > MAX_BRANCH_FILE_BYTES:
+                    raise WorkspaceError("源工作区存在超过 25 MiB 的文件，无法创建分支。")
+                files.append((relative, remote, size))
+                if len(files) > MAX_BRANCH_FILES:
+                    raise WorkspaceError("源工作区文件数超过 2000 个，无法创建分支。")
+                total_bytes += size
+                if total_bytes > MAX_BRANCH_TOTAL_BYTES:
+                    raise WorkspaceError("源工作区总大小超过 256 MiB，无法创建分支。")
+        return sandbox, directories, files
+
+    def copy_branch(self, source_thread: str, target_thread: str) -> dict[str, int]:
+        if not source_thread or not target_thread or source_thread == target_thread:
+            raise WorkspaceError("分支工作区线程无效。")
+        source, directories, files = self._branch_inventory(source_thread)
+        if source is None:
+            return {"files": 0, "bytes": 0}
+        if self.sandbox_for(target_thread, create=False) is not None:
+            raise WorkspaceError("目标分支工作区已经存在。")
+
+        target = None
+        copied_bytes = 0
+        try:
+            target = self.sandbox_for(target_thread, create=True)
+            for relative in sorted(directories, key=lambda value: (value.count("/"), value)):
+                _relative, remote = self.normalize_path(relative, allow_root=False)
+                self._ensure_directory(target, remote)
+            for relative, remote, expected_size in files:
+                content = source.fs.download_file(remote)
+                if not isinstance(content, bytes) or len(content) != expected_size:
+                    raise WorkspaceError("源工作区在分支复制期间发生变化，请重试。")
+                _relative, target_remote = self.normalize_path(relative, allow_root=False)
+                self._ensure_directory(target, target_remote.rsplit("/", 1)[0])
+                target.fs.upload_file(content, target_remote)
+                copied_bytes += len(content)
+            return {"files": len(files), "bytes": copied_bytes}
+        except Exception:
+            if target is not None:
+                try:
+                    self.destroy(target_thread)
+                except Exception:
+                    pass
+            raise
 
     @staticmethod
     def normalize_path(path: str | None, allow_root: bool = True) -> tuple[str, str]:

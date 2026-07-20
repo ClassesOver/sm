@@ -7,6 +7,7 @@ import uuid
 
 from agno.run import RunContext
 import pytest
+import agentos_dev.workspace as workspace_module
 
 from agentos_dev.workspace import (
     MAX_EXECUTION_TIMEOUT,
@@ -387,6 +388,57 @@ def test_沙箱启动异常多实例与后端故障均明确处理(tmp_path):
     broken.fs.get_file_info = lambda _path: (_ for _ in ()).throw(RuntimeError("backend failed"))
     with pytest.raises(RuntimeError, match="backend failed"):
         current._ensure_directory(broken, WORKSPACE_ROOT)
+
+
+def test_分支工作区完整复制目录和文件(tmp_path):
+    current = service(tmp_path)
+    current.create_file("source", "资料/报告.txt", "内容".encode())
+    current.create_file("source", "根文件.bin", b"binary")
+
+    result = current.copy_branch("source", "target")
+
+    assert result == {"files": 2, "bytes": len("内容".encode()) + 6}
+    assert current.file_bytes("target", "资料/报告.txt")[0] == "内容".encode()
+    assert current.file_bytes("target", "根文件.bin")[0] == b"binary"
+    assert current.file_bytes("source", "根文件.bin")[0] == b"binary"
+
+
+def test_分支工作区先校验限制和符号链接再创建目标(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    current.create_file("source", "一.txt", b"1")
+    current.create_file("source", "二.txt", b"22")
+    monkeypatch.setattr(workspace_module, "MAX_BRANCH_FILES", 1)
+
+    with pytest.raises(WorkspaceError, match="文件数超过"):
+        current.copy_branch("source", "too-many")
+    assert current.sandbox_for("too-many", create=False) is None
+
+    monkeypatch.setattr(workspace_module, "MAX_BRANCH_FILES", 2000)
+    monkeypatch.setattr(workspace_module, "MAX_BRANCH_TOTAL_BYTES", 2)
+    with pytest.raises(WorkspaceError, match="总大小超过"):
+        current.copy_branch("source", "too-large")
+    assert current.sandbox_for("too-large", create=False) is None
+
+    monkeypatch.setattr(workspace_module, "MAX_BRANCH_TOTAL_BYTES", 256 * 1024 * 1024)
+    source = current.sandbox_for("source")
+    source.fs.entries[f"{WORKSPACE_ROOT}/link"] = (
+        Info("link", mode="lrwxrwxrwx"), b"",
+    )
+    with pytest.raises(WorkspaceError, match="符号链接"):
+        current.copy_branch("source", "linked")
+    assert current.sandbox_for("linked", create=False) is None
+
+
+def test_分支工作区复制失败会清理目标(tmp_path):
+    current = service(tmp_path)
+    current.create_file("source", "报告.txt", b"content")
+    source = current.sandbox_for("source")
+    source.fs.download_file = lambda _path: (_ for _ in ()).throw(RuntimeError("offline"))
+
+    with pytest.raises(RuntimeError, match="offline"):
+        current.copy_branch("source", "target")
+
+    assert current.sandbox_for("target", create=False) is None
 
 
 def test_技能执行输入在创建沙箱前被拒绝(tmp_path):

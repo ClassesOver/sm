@@ -24592,11 +24592,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     onSelectRelation,
     onSelectRecord
   }) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     const [copied, setCopied] = reactExports.useState(false);
     const content2 = asText(message.content);
     const reasoning = ((_a = message.extra_data) == null ? void 0 : _a.reasoning_steps) || [];
     const references = ((_b = message.extra_data) == null ? void 0 : _b.references) || [];
+    const canRegenerate = Boolean(
+      message.content && !message.streaming_error && typeof ((_c = message.extra_data) == null ? void 0 : _c.agent_run_id) === "string" && message.extra_data.agent_run_id && message.extra_data.agent_run_final === true && !(message.tool_calls || []).some(
+        (tool) => ["pending", "running", "needs_confirmation"].includes(tool.status || "pending")
+      )
+    );
     const copy = async () => {
       await onCopy();
       setCopied(true);
@@ -24605,7 +24610,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-5", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx(Reasoning, { steps: reasoning }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(References, { references }),
-      ((_c = message.tool_calls) == null ? void 0 : _c.length) ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-col gap-2", children: message.tool_calls.map((tool, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx(RenderTool, { tool, renderers: toolRenderers, labels, hostState, running, onSelectRelation, onSelectRecord, onConfirm: (approved) => onConfirmTool(tool, approved), onUndo: () => onUndoTool(tool) }, tool.key || toolCallId(tool) || `${toolName(tool)}-${index2}`)) }) : null,
+      ((_d = message.tool_calls) == null ? void 0 : _d.length) ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-col gap-2", children: message.tool_calls.map((tool, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx(RenderTool, { tool, renderers: toolRenderers, labels, hostState, running, onSelectRelation, onSelectRecord, onConfirm: (approved) => onConfirmTool(tool, approved), onUndo: () => onUndoTool(tool) }, tool.key || toolCallId(tool) || `${toolName(tool)}-${index2}`)) }) : null,
       content2 || message.streaming_error ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "group flex items-start gap-3", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid size-6 shrink-0 place-items-center rounded bg-primary text-primaryAccent", children: icons.assistant }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 flex-1", children: [
@@ -24616,7 +24621,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             isCurrent && "opacity-100"
           ), children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-accent hover:text-primary", "aria-label": copied ? labels.copied : labels.copyResponse, title: labels.copyResponse, onClick: () => void copy(), children: copied ? icons.complete : icons.copy }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-accent hover:text-primary disabled:opacity-40", disabled: running, "aria-label": labels.regenerateResponse, title: labels.regenerateResponse, onClick: onRegenerate, children: icons.regenerate })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-accent hover:text-primary disabled:opacity-40", disabled: running || !canRegenerate, "aria-label": labels.regenerateResponse, title: labels.regenerateResponse, onClick: onRegenerate, children: icons.regenerate })
           ] })
         ] })
       ] }) : null
@@ -24829,7 +24834,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ] })
     ] });
   }
-  const SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.6.0.js";
+  const SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.7.0.js";
   let viewerModulePromise;
   function loadProductionBundle() {
     var _a;
@@ -25786,21 +25791,32 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return context;
   }
-  function buildRunInput(messages, props, threadId, pendingAssistantId, agentState) {
-    const runId = uuid();
+  function buildRunInput(messages, props, threadId, pendingAssistantId, agentState, options = {}) {
+    var _a;
+    const runId = options.runId || uuid();
     const navigationPending = menuNavigationPending(messages);
     const tools = clone(props.tools || []).filter((tool) => !navigationPending || tool.name === "odoo.open_menu");
+    const transportMessages = messages.filter((message) => {
+      const isPendingEmpty = message.id === pendingAssistantId && !message.content && !message.streaming_error && !(message.tool_calls && message.tool_calls.length);
+      return !isPendingEmpty;
+    });
+    let runMessages = [];
+    if (((_a = transportMessages[transportMessages.length - 1]) == null ? void 0 : _a.role) === "tool") {
+      let firstTool = transportMessages.length - 1;
+      while (firstTool > 0 && transportMessages[firstTool - 1].role === "tool") firstTool -= 1;
+      runMessages = transportMessages.slice(firstTool);
+    } else {
+      const latestUser = [...transportMessages].reverse().find((message) => message.role === "user");
+      if (latestUser) runMessages = [latestUser];
+    }
     return {
       threadId,
       runId,
       requestId: uuid(),
-      messages: messages.filter((message) => {
-        const isPendingEmpty = message.id === pendingAssistantId && !message.content && !message.streaming_error && !(message.tool_calls && message.tool_calls.length);
-        return !isPendingEmpty;
-      }).map(transportMessage),
+      messages: runMessages.map(transportMessage),
       tools,
       context: normalizeRunContext(props, messages),
-      forwardedProps: {},
+      forwardedProps: options.branch ? { branch: clone(options.branch) } : {},
       state: {
         protocol: AGUI_ODOO_PROTOCOL,
         host: clone(props.hostState),
@@ -25963,6 +25979,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.threadId = props.threadId || (initialSession == null ? void 0 : initialSession.thread_id) || uuid();
       this.agentState = normalizeAgentState(storedAgentState);
       this.messages = this.normalizeStoredMessages(props.initialMessages || (initialSession == null ? void 0 : initialSession.messages) || []);
+      this.restoreCurrentRunId();
       this.sessions = props.sessions || [];
       this.session = initialSession;
       try {
@@ -26222,7 +26239,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
       };
       this.confirmingHostBridgeTools[key] = true;
-      const context = this.createRunContext();
+      const context = this.createRunContext(this.currentRunId);
       await this.executeRunLifecycle(context, async () => {
         const resultPromise = Promise.resolve().then(() => bridge.confirmTool(call, authorizationId, approved)).then(
           (value) => this.normalizeHostBridgeSuccess(current, value),
@@ -26315,7 +26332,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         tool_calls: [],
         created_at: Date.now()
       });
-      const context = this.createRunContext();
+      const context = this.createRunContext(this.currentRunId);
       await this.executeRunLifecycle(context, () => this.run(context, 0));
     }
     async undoTool(tool) {
@@ -26435,56 +26452,71 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.emit();
     }
     async regenerate(messageId) {
-      var _a, _b, _c, _d, _e, _f, _g, _h;
-      if (this.running) {
-        return;
+      var _a, _b, _c, _d;
+      if (this.running || !this.session || !((_a = this.props.hostBridge) == null ? void 0 : _a.forkSession)) return;
+      const target = this.messages.find((message) => message.id === messageId);
+      const sourceRunId = String(((_b = target == null ? void 0 : target.extra_data) == null ? void 0 : _b.agent_run_id) || "");
+      if (!target || !this.isRegenerationTarget(target) || !sourceRunId) return;
+      let sourceSession = null;
+      let branchSession = null;
+      try {
+        await this.queueSave();
+        if (!this.session) throw new Error("当前聊天会话不可用。");
+        const sourceCapability = await this.ensureWorkspaceCapability(true);
+        if (!sourceCapability) throw new Error("分支会话授权不可用。");
+        sourceSession = {
+          ...clone(this.session),
+          messages: clone(this.messages),
+          agentState: clone(this.agentState)
+        };
+        const result = await this.props.hostBridge.forkSession(this.session.id, {
+          targetMessageId: target.id,
+          sourceRunId,
+          expectedSessionRevision: this.session.sessionRevision ?? 0
+        });
+        if (isRecord(result) && result.ok === false) {
+          const messages = {
+            session_revision_conflict: "会话已在其他页面更新，请刷新后重试。",
+            branch_target_not_found: "该回答缺少可用的运行记录，无法创建分支。",
+            branch_target_not_final: "该回答仍有待处理工具，无法创建分支。"
+          };
+          throw new Error(messages[String(result.error)] || "创建分支会话失败。");
+        }
+        branchSession = sessionFromResult(result);
+        const metadata = isRecord(result) && isRecord(result.branch) ? result.branch : {};
+        if (!branchSession.id || branchSession.protocol !== AGUI_ODOO_PROTOCOL || metadata.sourceThreadId !== sourceSession.thread_id || metadata.sourceRunId !== sourceRunId || metadata.targetMessageId !== target.id) {
+          throw new Error("分支会话元数据无效。");
+        }
+        this.applyLoadedSession(branchSession);
+        this.pendingAssistantId = uuid();
+        this.messages.push({
+          id: this.pendingAssistantId,
+          role: "assistant",
+          content: "",
+          tool_calls: [],
+          created_at: Date.now()
+        });
+        const context = this.createRunContext();
+        context.branch = {
+          sourceSession,
+          sourceCapability,
+          branchSessionId: branchSession.id,
+          sourceThreadId: sourceSession.thread_id,
+          sourceRunId,
+          targetMessageId: target.id
+        };
+        await this.executeRunLifecycle(context, () => this.run(context, 0));
+        await this.refreshSessions();
+      } catch (reason) {
+        if (branchSession == null ? void 0 : branchSession.id) {
+          try {
+            await Promise.resolve((_d = (_c = this.props.hostBridge).archiveSession) == null ? void 0 : _d.call(_c, branchSession.id));
+          } catch (_archiveError) {
+          }
+        }
+        if (sourceSession) this.applyLoadedSession(sourceSession);
+        this.reportError(reason, "重新生成回答失败。");
       }
-      const assistantIndex = this.messages.findIndex(
-        (message) => message.id === messageId && (message.role === "assistant" || message.role === "agent")
-      );
-      if (assistantIndex < 0) {
-        return;
-      }
-      let userIndex = assistantIndex - 1;
-      while (userIndex >= 0 && this.messages[userIndex].role !== "user") {
-        userIndex -= 1;
-      }
-      if (userIndex < 0) {
-        return;
-      }
-      const userMessage = this.messages[userIndex];
-      const mentionError = this.validateMentions(userMessage.mentions || []);
-      if (mentionError) {
-        const error = new Error(`消息中的对象引用无效，无法重新执行：${mentionError}`);
-        this.error = error.message;
-        (_b = (_a = this.props).onError) == null ? void 0 : _b.call(_a, error);
-        this.emit();
-        return;
-      }
-      const skillError = this.validateSkills(userMessage.skills || []);
-      if (skillError) {
-        const error = new Error(`消息中的技能无效，无法重新执行：${skillError}`);
-        this.error = error.message;
-        (_d = (_c = this.props).onError) == null ? void 0 : _d.call(_c, error);
-        this.emit();
-        return;
-      }
-      if (userMessage.menuMention && !this.resolveMenuMention(userMessage.menuMention)) {
-        const error = new Error("消息中的菜单已失效，无法重新执行。");
-        this.error = error.message;
-        (_f = (_e = this.props).onError) == null ? void 0 : _f.call(_e, error);
-        this.emit();
-        return;
-      }
-      if (userMessage.recordSelection && !this.isCurrentRecordSelection(userMessage.recordSelection)) {
-        const error = new Error("消息中的记录候选已过期，请重新筛选。");
-        this.error = error.message;
-        (_h = (_g = this.props).onError) == null ? void 0 : _h.call(_g, error);
-        this.emit();
-        return;
-      }
-      this.messages = this.messages.slice(0, userIndex + 1);
-      await this.executeNewTurn();
     }
     async uploadAttachment(file, onProgress) {
       await this.ensureSession();
@@ -26686,12 +26718,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.applyEventForContext(rawEvent, this.activeRunContext);
     }
     applyEventForContext(rawEvent, context) {
-      var _a, _b;
+      var _a, _b, _c, _d;
       if (!rawEvent || typeof rawEvent !== "object") {
         return;
       }
       if (context == null ? void 0 : context.cancelled) return;
       const event = rawEvent;
+      const type = eventType(event);
+      if (type === "CUSTOM" && event.name === "AGUI_BRANCH_PREPARED") {
+        (_b = (_a = this.props).onEvent) == null ? void 0 : _b.call(_a, event);
+        this.applyBranchPrepared(event.value, context);
+        this.notifyMessages();
+        this.emit();
+        return;
+      }
       const eventRunId = String(event.runId || event.run_id || "");
       const eventThreadId = String(event.threadId || event.thread_id || "");
       const expectedRunId = (context == null ? void 0 : context.currentRunId) || this.currentRunId;
@@ -26699,11 +26739,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (eventRunId && eventRunId !== expectedRunId || eventThreadId && eventThreadId !== expectedThreadId) {
         return;
       }
-      const type = eventType(event);
       const data = eventData(event);
       let tool;
-      (_b = (_a = this.props).onEvent) == null ? void 0 : _b.call(_a, event);
-      if (type === "TEXT_MESSAGE_START") {
+      (_d = (_c = this.props).onEvent) == null ? void 0 : _d.call(_c, event);
+      if (type === "RUN_STARTED") {
+        if (context) {
+          context.receivedRunStarted = true;
+          if (eventRunId) {
+            context.currentRunId = eventRunId;
+            context.agentRunId = eventRunId;
+            this.currentRunId = eventRunId;
+          }
+        }
+        this.assignAgentRunId(this.ensureAssistant(), eventRunId || (context == null ? void 0 : context.currentRunId) || "");
+      } else if (type === "TEXT_MESSAGE_START") {
         this.activeTextMessageId = String(event.messageId || event.message_id || "");
         this.ensureAssistant(this.activeTextMessageId || void 0);
       } else if (type === "TEXT_MESSAGE_CONTENT" || type === "TEXT_MESSAGE_CHUNK") {
@@ -26774,6 +26823,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.notifyMessages();
       this.emit();
     }
+    applyBranchPrepared(value, context) {
+      if (!(context == null ? void 0 : context.branch) || !isRecord(value)) return;
+      const targetThreadId = String(value.targetThreadId || "");
+      const sourceThreadId = String(value.sourceThreadId || "");
+      const generatedRunId = String(value.runId || "");
+      const rawMap = isRecord(value.runIdMap) ? value.runIdMap : {};
+      if (targetThreadId !== context.threadId || sourceThreadId !== context.branch.sourceThreadId || value.targetMessageId !== context.branch.targetMessageId || !generatedRunId) return;
+      const runIdMap = {};
+      Object.entries(rawMap).forEach(([source, target]) => {
+        if (source && typeof target === "string" && target) runIdMap[source] = target;
+      });
+      this.messages.forEach((message) => {
+        var _a;
+        const oldRunId = String(((_a = message.extra_data) == null ? void 0 : _a.agent_run_id) || "");
+        if (oldRunId && runIdMap[oldRunId]) {
+          this.assignAgentRunId(message, runIdMap[oldRunId]);
+        }
+      });
+      context.currentRunId = generatedRunId;
+      context.agentRunId = generatedRunId;
+      this.currentRunId = generatedRunId;
+    }
     async initSessions() {
       var _a, _b, _c, _d, _e;
       if (this.session || !((_a = this.props.hostBridge) == null ? void 0 : _a.listSessions)) {
@@ -26828,6 +26899,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const storedAgentState = session.agentState || this.props.agentState || {};
       this.agentState = normalizeAgentState(storedAgentState);
       this.messages = this.normalizeStoredMessages(session.messages || []);
+      this.restoreCurrentRunId();
+      this.currentRequestId = "";
       this.toolsByKey = {};
       this.pendingAssistantId = null;
       this.activeTextMessageId = null;
@@ -26859,6 +26932,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.cancel();
       this.threadId = threadId;
       this.workspaceCapability = null;
+      this.currentRunId = "";
+      this.currentRequestId = "";
       this.messages = this.normalizeStoredMessages(messages);
       this.agentState = normalizeAgentState(this.props.agentState || {});
       this.running = false;
@@ -26872,6 +26947,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.serverConfirmationDecisions = {};
       this.undoInFlight = {};
       this.notifyMessages();
+    }
+    restoreCurrentRunId() {
+      var _a;
+      this.currentRunId = "";
+      for (let index2 = this.messages.length - 1; index2 >= 0; index2 -= 1) {
+        const runId = (_a = this.messages[index2].extra_data) == null ? void 0 : _a.agent_run_id;
+        if (typeof runId === "string" && runId) {
+          this.currentRunId = runId;
+          return;
+        }
+      }
     }
     async executeNewTurn() {
       this.pendingAssistantId = uuid();
@@ -26890,17 +26976,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const context = this.createRunContext();
       await this.executeRunLifecycle(context, () => this.run(context, 0));
     }
-    createRunContext() {
+    createRunContext(agentRunId = uuid()) {
       const context = {
         threadId: this.threadId,
         controller: new AbortController(),
         cancelled: false,
         finalized: false,
         savePromise: null,
-        currentRunId: "",
+        currentRunId: agentRunId,
+        agentRunId,
         currentRequestId: "",
         activeClientTools: /* @__PURE__ */ new Set(),
         receivedTerminalEvent: false,
+        receivedRunStarted: false,
         upstreamError: "",
         pendingHostBridgePromises: [],
         hostBridgeFollowupNeeded: false
@@ -26918,7 +27006,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         this.emit();
         await action();
       } catch (error) {
-        this.handleRunFailure(context, error);
+        if (context.branch && !context.receivedRunStarted) {
+          await this.recoverBranchPreparation(context, error);
+        } else {
+          this.handleRunFailure(context, error);
+        }
       } finally {
         try {
           cleanup == null ? void 0 : cleanup();
@@ -26944,6 +27036,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       try {
         (_b = (_a = this.props).onError) == null ? void 0 : _b.call(_a, error);
+      } catch (_callbackError) {
+      }
+    }
+    async recoverBranchPreparation(context, error) {
+      var _a, _b, _c, _d, _e, _f;
+      const branch = context.branch;
+      if (!branch || this.activeRunContext !== context) return;
+      try {
+        await Promise.resolve((_b = (_a = this.props.hostBridge) == null ? void 0 : _a.archiveSession) == null ? void 0 : _b.call(_a, branch.branchSessionId));
+      } catch (_archiveError) {
+      }
+      this.applyLoadedSession(branch.sourceSession);
+      const failure = error instanceof Error ? error : new Error(String(error || "分支准备失败。"));
+      this.error = failure.message;
+      this.transportState = "error";
+      try {
+        (_d = (_c = this.props).onTransportStateChange) == null ? void 0 : _d.call(_c, "error");
+        (_f = (_e = this.props).onError) == null ? void 0 : _f.call(_e, failure);
       } catch (_callbackError) {
       }
     }
@@ -27012,7 +27122,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         this.props,
         context.threadId,
         this.pendingAssistantId,
-        this.agentState
+        this.agentState,
+        {
+          runId: context.agentRunId,
+          branch: context.branch && !context.receivedRunStarted ? {
+            sourceThreadId: context.branch.sourceThreadId,
+            sourceRunId: context.branch.sourceRunId,
+            targetMessageId: context.branch.targetMessageId
+          } : void 0
+        }
       );
       validateRunInput(input, this.props);
       context.currentRunId = input.runId;
@@ -27031,7 +27149,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           Accept: "text/event-stream",
           "Content-Type": "application/json",
           "X-Request-ID": input.requestId,
-          ...capability ? this.workspaceHeaders(capability) : {}
+          ...capability ? this.workspaceHeaders(capability) : {},
+          ...context.branch && !context.receivedRunStarted ? {
+            "X-AGUI-Source-Capability": context.branch.sourceCapability.capability
+          } : {}
         },
         body: JSON.stringify(input),
         signal: context.controller.signal
@@ -27136,6 +27257,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     }
     ensureAssistant(messageId) {
+      var _a;
       let message = messageId ? this.messages.find((item) => item.id === messageId) : null;
       const pending = this.pendingAssistantId ? this.messages.find((item) => item.id === this.pendingAssistantId) : null;
       if (!message && messageId && pending && !pending.content && !(pending.tool_calls && pending.tool_calls.length)) {
@@ -27155,7 +27277,37 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         };
         this.messages.push(message);
       }
+      this.assignAgentRunId(message, ((_a = this.activeRunContext) == null ? void 0 : _a.currentRunId) || "");
       return message;
+    }
+    assignAgentRunId(message, runId) {
+      if (!runId || message.role !== "assistant" && message.role !== "agent") return;
+      this.messages.forEach((candidate) => {
+        var _a;
+        if (candidate !== message && (candidate.role === "assistant" || candidate.role === "agent") && ((_a = candidate.extra_data) == null ? void 0 : _a.agent_run_id) === runId) {
+          candidate.extra_data = { ...candidate.extra_data, agent_run_final: false };
+        }
+      });
+      message.extra_data = {
+        ...message.extra_data || {},
+        agent_run_id: runId,
+        agent_run_final: true
+      };
+    }
+    isRegenerationTarget(message) {
+      var _a;
+      if (message.role !== "assistant" && message.role !== "agent" || !message.content || message.streaming_error || typeof ((_a = message.extra_data) == null ? void 0 : _a.agent_run_id) !== "string" || !message.extra_data.agent_run_id) return false;
+      const runId = message.extra_data.agent_run_id;
+      const index2 = this.messages.indexOf(message);
+      const laterSameRun = index2 >= 0 && this.messages.slice(index2 + 1).some(
+        (candidate) => {
+          var _a2;
+          return (candidate.role === "assistant" || candidate.role === "agent") && ((_a2 = candidate.extra_data) == null ? void 0 : _a2.agent_run_id) === runId;
+        }
+      );
+      return !laterSameRun && !(message.tool_calls || []).some(
+        (tool) => ["pending", "running", "needs_confirmation"].includes(tool.status || "pending")
+      );
     }
     lastAssistant() {
       for (let index2 = this.messages.length - 1; index2 >= 0; index2 -= 1) {
@@ -27792,7 +27944,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.6.0";
+  const VERSION = "12.0.8.7.0";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

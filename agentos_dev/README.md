@@ -43,5 +43,11 @@ PostgreSQL 绑定到 `127.0.0.1:55432`，容器内 AgentOS 则通过 `agent-db:5
 外部 PostgreSQL 首次使用时仍可运行 `bash scripts/init_agent_db.sh` 安全创建数据库；
 认证沿用环境变量或 `.pgpass`。
 
+普通 `/agui` 请求只接收当前用户消息，页面工具续跑只接收末尾连续工具结果；最近 10 次
+运行的对话历史由 AgentOS PostgreSQL 加载。历史回答重生成使用受控 branch 元数据和源、
+目标 thread 双 capability，在新 thread 中复制截至目标 run 的历史并调用 Agno 原生
+`regenerate=True, replace_original=True`。分支工作区复制源会话当前文件，限制为 2000 个
+普通文件、总计 256 MiB、单文件 25 MiB，符号链接或任一超限会整体拒绝。
+
 使用自定义 `AGENT_SKILLS_DIR` 时，目录和资源不得允许组或其他用户写入，并需将目录所有者
 UID 写入 `AGENT_SKILLS_TRUSTED_UID`。

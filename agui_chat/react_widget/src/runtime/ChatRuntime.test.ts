@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.6.0')
+    expect(AguiChat.version).toBe('12.0.8.7.0')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -198,17 +198,15 @@ describe('ChatRuntime protocol handling', () => {
     })
     expect(requests[0].body.tools.map((tool: any) => tool.name)).toEqual(['odoo.patch_current_form'])
     expect(requests[0].body.messages[0].content).toBe('Change customer name')
-    expect(requests[1].body.messages.some((message: any) => message.role === 'tool')).toBe(true)
-    expect(requests[1].body.messages.find((message: any) => message.role === 'assistant').toolCalls).toEqual([
-      {
-        id: 'tool-1',
-        type: 'function',
-        function: {
-          name: 'odoo.patch_current_form',
-          arguments: JSON.stringify({ field: 'name', value: 'Acme' })
-        }
-      }
-    ])
+    expect(requests[1].body.messages).toEqual([{
+      id: 'tool-tool-1',
+      role: 'tool',
+      toolCallId: 'tool-1',
+      content: JSON.stringify({
+        ok: true, operation: 'odoo.patch_current_form', applied: ['name'], rejected: []
+      })
+    }])
+    expect(requests[1].body.runId).toBe(requests[0].body.runId)
     expect(runtime.getSnapshot().messages.some((message) => message.role === 'tool' && message.hidden)).toBe(true)
     const assistantMessages = runtime.getSnapshot().messages.filter((message) => message.role === 'assistant')
     expect(assistantMessages).toHaveLength(2)
@@ -323,6 +321,47 @@ describe('ChatRuntime protocol handling', () => {
     await runtime.confirmTool(pending, approved)
     expect(confirmTool).toHaveBeenCalledTimes(1)
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('restores the AgentOS run ID before confirming a persisted tool', async () => {
+    let body: any
+    const confirmTool = vi.fn(() => ({
+      ok: true, operation: 'odoo.patch_current_form', applied: ['name']
+    }))
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body))
+      return Promise.resolve(sseResponse([{ type: 'RUN_FINISHED', runId: 'persisted-run' }]))
+    }))
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run', attachments: false,
+      session: {
+        id: 7, protocol: 'agui.odoo.v2', thread_id: 'persisted-thread',
+        messages: [{
+          id: 'assistant-persisted', role: 'assistant', content: '',
+          extra_data: { agent_run_id: 'persisted-run', agent_run_final: true },
+          tool_calls: [{
+            id: 'persisted-tool', name: 'odoo.patch_current_form',
+            status: 'needs_confirmation',
+            result: {
+              needs_confirmation: true,
+              authorization_id: 'persisted-authorization'
+            }
+          }]
+        }]
+      },
+      hostBridge: { confirmTool }
+    })
+    const tool = runtime.getSnapshot().messages[0].tool_calls![0]
+
+    await runtime.confirmTool(tool, true)
+
+    expect(confirmTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({ runId: 'persisted-run' })
+      }),
+      'persisted-authorization', true
+    )
+    expect(body.runId).toBe('persisted-run')
   })
 
   it('persists confirmation results, merges one revision conflict, then resumes', async () => {
@@ -827,13 +866,22 @@ describe('ChatRuntime protocol handling', () => {
     })
   })
 
-  it('regenerates from the preceding user message and retains its attachments', async () => {
+  it('forks a historical answer and adopts the regenerated AgentOS run ID', async () => {
     let body: any
+    let headers: Headers
     vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
       body = JSON.parse(String(init.body))
+      headers = new Headers(init.headers)
       return Promise.resolve(sseResponse([
+        {
+          type: 'CUSTOM', name: 'AGUI_BRANCH_PREPARED', value: {
+            sourceThreadId: 'source-thread', targetThreadId: 'branch-thread',
+            targetMessageId: 'assistant-1', runIdMap: {}, runId: 'regenerated-run'
+          }
+        },
+        { type: 'RUN_STARTED', threadId: 'branch-thread', runId: 'regenerated-run' },
         { type: 'TEXT_MESSAGE_CONTENT', delta: 'new answer' },
-        { type: 'RUN_FINISHED' }
+        { type: 'RUN_FINISHED', threadId: 'branch-thread', runId: 'regenerated-run' }
       ]))
     }))
     const attachment = {
@@ -842,54 +890,167 @@ describe('ChatRuntime protocol handling', () => {
     }
     const runtime = createRuntime({
       runtimeUrl: '/runtime/run',
-      initialMessages: [
-        { id: 'user-1', role: 'user', content: 'analyze', attachments: [attachment] },
-        { id: 'assistant-1', role: 'assistant', content: 'old answer' },
-        { id: 'user-2', role: 'user', content: 'later question' },
-        { id: 'assistant-2', role: 'assistant', content: 'later answer' }
-      ]
+      session: {
+        id: 1, name: '源会话', protocol: 'agui.odoo.v2', thread_id: 'source-thread',
+        sessionRevision: 4, messages: [
+          { id: 'user-1', role: 'user', content: 'analyze', attachments: [attachment] },
+          {
+            id: 'assistant-1', role: 'assistant', content: 'old answer',
+            extra_data: { agent_run_id: 'source-run' }
+          },
+          { id: 'user-2', role: 'user', content: 'later question' },
+          {
+            id: 'assistant-2', role: 'assistant', content: 'later answer',
+            extra_data: { agent_run_id: 'later-run' }
+          }
+        ]
+      },
+      hostBridge: {
+        saveSession: vi.fn(async (id, values) => ({ session: {
+          id, name: id === 1 ? '源会话' : '源会话（分支）',
+          protocol: 'agui.odoo.v2' as const,
+          thread_id: id === 1 ? 'source-thread' : 'branch-thread',
+          ...(id === 2 ? { parent_session_id: 1 } : {}),
+          sessionRevision: id === 1 ? 5 : 1, messages: values.messages as any[]
+        } })),
+        forkSession: vi.fn(async () => ({
+          ok: true,
+          branch: {
+            sourceThreadId: 'source-thread', sourceRunId: 'source-run',
+            targetMessageId: 'assistant-1'
+          },
+          session: {
+            id: 2, name: '源会话（分支）', protocol: 'agui.odoo.v2' as const,
+            thread_id: 'branch-thread', parent_session_id: 1, sessionRevision: 0,
+            messages: [{
+              id: 'user-1', role: 'user' as const, content: 'analyze', attachments: [attachment]
+            }]
+          }
+        })),
+        getWorkspaceCapability: vi.fn(async (sessionId) => ({
+          ok: true,
+          capability: sessionId === 1 ? 'source-capability' : 'target-capability',
+          threadId: sessionId === 1 ? 'source-thread' : 'branch-thread',
+          expiresAt: Date.now() / 1000 + 600
+        })),
+        listSessions: vi.fn(async () => ({ sessions: [] })),
+        archiveSession: vi.fn()
+      }
     })
     await runtime.regenerate('assistant-1')
     expect(body.messages).toHaveLength(1)
     expect(body.messages[0].id).toBe('user-1')
     expect(body.messages[0].attachments).toEqual([attachment])
+    expect(body.forwardedProps.branch).toEqual({
+      sourceThreadId: 'source-thread', sourceRunId: 'source-run', targetMessageId: 'assistant-1'
+    })
+    expect(headers!.get('X-AGUI-Source-Capability')).toBe('source-capability')
     expect(runtime.getSnapshot().messages.map((message) => message.content)).toEqual([
       'analyze', 'new answer'
     ])
+    expect(runtime.getSnapshot().messages[1].extra_data?.agent_run_id).toBe('regenerated-run')
+    expect(runtime.getSnapshot().session).toMatchObject({ id: 2, parent_session_id: 1 })
   })
 
-  it('accepts the same server confirmation again after regeneration', async () => {
-    const interrupt = {
-      type: 'RUN_FINISHED',
-      outcome: {
-        type: 'interrupt',
-        interrupts: [{ id: 'repeat-confirmation', reason: 'needs approval' }]
+  it('archives a branch and restores the source session when preparation fails', async () => {
+    const archiveSession = vi.fn(async () => ({ ok: true }))
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(sseResponse([
+      { type: 'RUN_ERROR', message: 'branch preparation failed' }
+    ]))))
+    const sourceMessages = [
+      { id: 'user', role: 'user' as const, content: 'question' },
+      {
+        id: 'answer', role: 'assistant' as const, content: 'answer',
+        extra_data: { agent_run_id: 'source-run' }
       }
-    }
-    const fetchMock = vi.fn(() => Promise.resolve(sseResponse(
-      fetchMock.mock.calls.length % 2 === 1
-        ? [interrupt]
-        : [{ type: 'TEXT_MESSAGE_CONTENT', delta: 'confirmed' }, { type: 'RUN_FINISHED' }]
-    )))
-    vi.stubGlobal('fetch', fetchMock)
-    const runtime = createRuntime({ runtimeUrl: '/runtime/run', attachments: false })
+    ]
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      session: {
+        id: 1, name: '源会话', protocol: 'agui.odoo.v2', thread_id: 'source-thread',
+        sessionRevision: 0, messages: sourceMessages
+      },
+      hostBridge: {
+        forkSession: vi.fn(async () => ({
+          ok: true,
+          branch: {
+            sourceThreadId: 'source-thread', sourceRunId: 'source-run', targetMessageId: 'answer'
+          },
+          session: {
+            id: 2, name: '分支', protocol: 'agui.odoo.v2' as const, thread_id: 'branch-thread',
+            messages: [sourceMessages[0]], sessionRevision: 0
+          }
+        })),
+        getWorkspaceCapability: vi.fn(async (id) => ({
+          ok: true, capability: `cap-${id}`,
+          threadId: id === 1 ? 'source-thread' : 'branch-thread',
+          expiresAt: Date.now() / 1000 + 600
+        })),
+        archiveSession
+      }
+    })
 
-    await runtime.send('confirm twice')
-    let pending = runtime.getSnapshot().messages
-      .flatMap((message) => message.tool_calls || [])
-      .find((tool) => tool.status === 'needs_confirmation')
-    expect(pending).toBeTruthy()
-    await runtime.confirmTool(pending!, true)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await runtime.regenerate('answer')
 
-    const assistants = runtime.getSnapshot().messages.filter((message) => message.role === 'assistant')
-    await runtime.regenerate(assistants[assistants.length - 1].id)
-    pending = runtime.getSnapshot().messages
-      .flatMap((message) => message.tool_calls || [])
-      .find((tool) => tool.status === 'needs_confirmation')
-    expect(pending).toBeTruthy()
-    await runtime.confirmTool(pending!, true)
-    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(archiveSession).toHaveBeenCalledWith(2)
+    expect(runtime.getSnapshot().session?.id).toBe(1)
+    expect(runtime.getSnapshot().messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'answer', content: 'answer' })
+    ]))
+    expect(runtime.getSnapshot().error).toBe('branch preparation failed')
+  })
+
+  it('keeps a branch when the model fails after RUN_STARTED', async () => {
+    const archiveSession = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(sseResponse([
+      {
+        type: 'CUSTOM', name: 'AGUI_BRANCH_PREPARED', value: {
+          sourceThreadId: 'source-thread', targetThreadId: 'branch-thread',
+          targetMessageId: 'answer', runIdMap: {}, runId: 'generated-run'
+        }
+      },
+      { type: 'RUN_STARTED', threadId: 'branch-thread', runId: 'generated-run' },
+      { type: 'RUN_ERROR', runId: 'generated-run', message: 'model failed' }
+    ]))))
+    const sourceMessages = [
+      { id: 'user', role: 'user' as const, content: 'question' },
+      {
+        id: 'answer', role: 'assistant' as const, content: 'answer',
+        extra_data: { agent_run_id: 'source-run' }
+      }
+    ]
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      session: {
+        id: 1, name: '源会话', protocol: 'agui.odoo.v2', thread_id: 'source-thread',
+        sessionRevision: 0, messages: sourceMessages
+      },
+      hostBridge: {
+        forkSession: vi.fn(async () => ({
+          ok: true,
+          branch: {
+            sourceThreadId: 'source-thread', sourceRunId: 'source-run', targetMessageId: 'answer'
+          },
+          session: {
+            id: 2, name: '分支', protocol: 'agui.odoo.v2' as const, thread_id: 'branch-thread',
+            messages: [sourceMessages[0]], sessionRevision: 0
+          }
+        })),
+        getWorkspaceCapability: vi.fn(async (id) => ({
+          ok: true, capability: `cap-${id}`,
+          threadId: id === 1 ? 'source-thread' : 'branch-thread',
+          expiresAt: Date.now() / 1000 + 600
+        })),
+        archiveSession
+      }
+    })
+
+    await runtime.regenerate('answer')
+
+    expect(archiveSession).not.toHaveBeenCalled()
+    expect(runtime.getSnapshot().session?.id).toBe(2)
+    expect(runtime.getSnapshot().messages.at(-1)?.streaming_error).toBe('model failed')
+    expect(runtime.getSnapshot().messages.at(-1)?.extra_data?.agent_run_id).toBe('generated-run')
   })
 
   it('records run errors and interrupt confirmations', () => {
@@ -1033,7 +1194,7 @@ describe('ChatRuntime protocol handling', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('stores a valid menu mention and rejects it after access is lost', async () => {
+  it('stores a valid menu mention and marks it invalid after access is lost', async () => {
     let body: any
     const fetchMock = vi.fn((_url: string, init: RequestInit) => {
       body = JSON.parse(String(init.body))
@@ -1052,8 +1213,6 @@ describe('ChatRuntime protocol handling', () => {
 
     runtime.update({ menuOptions: [] })
     expect(runtime.getSnapshot().messages[0].menuMention?.valid).toBe(false)
-    await runtime.regenerate(runtime.getSnapshot().messages[1].id)
-    expect(runtime.getSnapshot().error).toContain('菜单已失效')
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     runtime.removeMenuMention(runtime.getSnapshot().messages[0].id)
@@ -1099,7 +1258,7 @@ describe('ChatRuntime protocol handling', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('marks expired stored references invalid and blocks regeneration', async () => {
+  it('marks expired stored references invalid without changing the stored answer', async () => {
     const onError = vi.fn()
     const runtime = createRuntime({
       runtimeUrl: '/runtime/run', onError,
@@ -1112,10 +1271,8 @@ describe('ChatRuntime protocol handling', () => {
       }, { id: 'assistant-expired', role: 'assistant', content: '旧回答' }]
     })
     expect(runtime.getSnapshot().messages[0].mentions?.[0].valid).toBe(false)
-    await runtime.regenerate('assistant-expired')
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
-      message: expect.stringContaining('对象引用无效')
-    }))
+    expect(runtime.getSnapshot().messages[1].content).toBe('旧回答')
+    expect(onError).not.toHaveBeenCalled()
   })
 
   it('sends record choices as structured context and rejects stale candidates', async () => {

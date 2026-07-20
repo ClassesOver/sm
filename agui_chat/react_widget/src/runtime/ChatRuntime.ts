@@ -45,12 +45,22 @@ type RunContext = {
   finalized: boolean
   savePromise: Promise<void> | null
   currentRunId: string
+  agentRunId: string
   currentRequestId: string
   activeClientTools: Set<string>
   receivedTerminalEvent: boolean
+  receivedRunStarted: boolean
   upstreamError: string
   pendingHostBridgePromises: Promise<unknown>[]
   hostBridgeFollowupNeeded: boolean
+  branch?: {
+    sourceSession: LoadedSession
+    sourceCapability: WorkspaceCapability
+    branchSessionId: string | number
+    sourceThreadId: string
+    sourceRunId: string
+    targetMessageId: string
+  }
 }
 
 function eventText(event: Record<string, unknown>): string {
@@ -218,6 +228,7 @@ export class ChatRuntime {
     this.threadId = props.threadId || initialSession?.thread_id || uuid()
     this.agentState = normalizeAgentState(storedAgentState)
     this.messages = this.normalizeStoredMessages(props.initialMessages || initialSession?.messages || [])
+    this.restoreCurrentRunId()
     this.sessions = props.sessions || []
     this.session = initialSession
     try {
@@ -498,7 +509,7 @@ export class ChatRuntime {
       }
     }
     this.confirmingHostBridgeTools[key] = true
-    const context = this.createRunContext()
+    const context = this.createRunContext(this.currentRunId)
     await this.executeRunLifecycle(context, async () => {
       const resultPromise = Promise.resolve()
         .then(() => bridge.confirmTool!(call, authorizationId, approved))
@@ -596,7 +607,7 @@ export class ChatRuntime {
       tool_calls: [],
       created_at: Date.now()
     })
-    const context = this.createRunContext()
+    const context = this.createRunContext(this.currentRunId)
     await this.executeRunLifecycle(context, () => this.run(context, 0))
   }
 
@@ -724,56 +735,77 @@ export class ChatRuntime {
   }
 
   async regenerate(messageId: string): Promise<void> {
-    if (this.running) {
-      return
+    if (this.running || !this.session || !this.props.hostBridge?.forkSession) return
+    const target = this.messages.find((message) => message.id === messageId)
+    const sourceRunId = String(target?.extra_data?.agent_run_id || '')
+    if (!target || !this.isRegenerationTarget(target) || !sourceRunId) return
+
+    let sourceSession: LoadedSession | null = null
+    let branchSession: LoadedSession | null = null
+    try {
+      await this.queueSave()
+      if (!this.session) throw new Error('当前聊天会话不可用。')
+      const sourceCapability = await this.ensureWorkspaceCapability(true)
+      if (!sourceCapability) throw new Error('分支会话授权不可用。')
+      sourceSession = {
+        ...clone(this.session),
+        messages: clone(this.messages),
+        agentState: clone(this.agentState)
+      }
+      const result = await this.props.hostBridge.forkSession(this.session.id, {
+        targetMessageId: target.id,
+        sourceRunId,
+        expectedSessionRevision: this.session.sessionRevision ?? 0
+      })
+      if (isRecord(result) && result.ok === false) {
+        const messages: Record<string, string> = {
+          session_revision_conflict: '会话已在其他页面更新，请刷新后重试。',
+          branch_target_not_found: '该回答缺少可用的运行记录，无法创建分支。',
+          branch_target_not_final: '该回答仍有待处理工具，无法创建分支。'
+        }
+        throw new Error(messages[String(result.error)] || '创建分支会话失败。')
+      }
+      branchSession = sessionFromResult(result)
+      const metadata: Record<string, unknown> =
+        isRecord(result) && isRecord(result.branch) ? result.branch : {}
+      if (
+        !branchSession.id || branchSession.protocol !== AGUI_ODOO_PROTOCOL ||
+        metadata.sourceThreadId !== sourceSession.thread_id ||
+        metadata.sourceRunId !== sourceRunId || metadata.targetMessageId !== target.id
+      ) {
+        throw new Error('分支会话元数据无效。')
+      }
+      this.applyLoadedSession(branchSession)
+      this.pendingAssistantId = uuid()
+      this.messages.push({
+        id: this.pendingAssistantId,
+        role: 'assistant',
+        content: '',
+        tool_calls: [],
+        created_at: Date.now()
+      })
+      const context = this.createRunContext()
+      context.branch = {
+        sourceSession,
+        sourceCapability,
+        branchSessionId: branchSession.id,
+        sourceThreadId: sourceSession.thread_id,
+        sourceRunId,
+        targetMessageId: target.id
+      }
+      await this.executeRunLifecycle(context, () => this.run(context, 0))
+      await this.refreshSessions()
+    } catch (reason) {
+      if (branchSession?.id) {
+        try {
+          await Promise.resolve(this.props.hostBridge.archiveSession?.(branchSession.id))
+        } catch (_archiveError) {
+          // The server cleanup queue remains the authority for an already archived branch.
+        }
+      }
+      if (sourceSession) this.applyLoadedSession(sourceSession)
+      this.reportError(reason, '重新生成回答失败。')
     }
-    const assistantIndex = this.messages.findIndex(
-      (message) =>
-        message.id === messageId && (message.role === 'assistant' || message.role === 'agent')
-    )
-    if (assistantIndex < 0) {
-      return
-    }
-    let userIndex = assistantIndex - 1
-    while (userIndex >= 0 && this.messages[userIndex].role !== 'user') {
-      userIndex -= 1
-    }
-    if (userIndex < 0) {
-      return
-    }
-    const userMessage = this.messages[userIndex]
-    const mentionError = this.validateMentions(userMessage.mentions || [])
-    if (mentionError) {
-      const error = new Error(`消息中的对象引用无效，无法重新执行：${mentionError}`)
-      this.error = error.message
-      this.props.onError?.(error)
-      this.emit()
-      return
-    }
-    const skillError = this.validateSkills(userMessage.skills || [])
-    if (skillError) {
-      const error = new Error(`消息中的技能无效，无法重新执行：${skillError}`)
-      this.error = error.message
-      this.props.onError?.(error)
-      this.emit()
-      return
-    }
-    if (userMessage.menuMention && !this.resolveMenuMention(userMessage.menuMention)) {
-      const error = new Error('消息中的菜单已失效，无法重新执行。')
-      this.error = error.message
-      this.props.onError?.(error)
-      this.emit()
-      return
-    }
-    if (userMessage.recordSelection && !this.isCurrentRecordSelection(userMessage.recordSelection)) {
-      const error = new Error('消息中的记录候选已过期，请重新筛选。')
-      this.error = error.message
-      this.props.onError?.(error)
-      this.emit()
-      return
-    }
-    this.messages = this.messages.slice(0, userIndex + 1)
-    await this.executeNewTurn()
   }
 
   async uploadAttachment(file: File, onProgress?: (progress: number) => void): Promise<AttachmentRef> {
@@ -1000,6 +1032,14 @@ export class ChatRuntime {
     }
     if (context?.cancelled) return
     const event = rawEvent as Record<string, unknown>
+    const type = eventType(event)
+    if (type === 'CUSTOM' && event.name === 'AGUI_BRANCH_PREPARED') {
+      this.props.onEvent?.(event)
+      this.applyBranchPrepared(event.value, context)
+      this.notifyMessages()
+      this.emit()
+      return
+    }
     const eventRunId = String(event.runId || event.run_id || "")
     const eventThreadId = String(event.threadId || event.thread_id || "")
     const expectedRunId = context?.currentRunId || this.currentRunId
@@ -1008,12 +1048,21 @@ export class ChatRuntime {
         (eventThreadId && eventThreadId !== expectedThreadId)) {
       return
     }
-    const type = eventType(event)
     const data = eventData(event)
     let tool: ToolCall | null
     this.props.onEvent?.(event)
 
-    if (type === 'TEXT_MESSAGE_START') {
+    if (type === 'RUN_STARTED') {
+      if (context) {
+        context.receivedRunStarted = true
+        if (eventRunId) {
+          context.currentRunId = eventRunId
+          context.agentRunId = eventRunId
+          this.currentRunId = eventRunId
+        }
+      }
+      this.assignAgentRunId(this.ensureAssistant(), eventRunId || context?.currentRunId || '')
+    } else if (type === 'TEXT_MESSAGE_START') {
       this.activeTextMessageId = String(event.messageId || event.message_id || '')
       this.ensureAssistant(this.activeTextMessageId || undefined)
     } else if (type === 'TEXT_MESSAGE_CONTENT' || type === 'TEXT_MESSAGE_CHUNK') {
@@ -1085,6 +1134,33 @@ export class ChatRuntime {
     this.emit()
   }
 
+  private applyBranchPrepared(value: unknown, context: RunContext | null): void {
+    if (!context?.branch || !isRecord(value)) return
+    const targetThreadId = String(value.targetThreadId || '')
+    const sourceThreadId = String(value.sourceThreadId || '')
+    const generatedRunId = String(value.runId || '')
+    const rawMap = isRecord(value.runIdMap) ? value.runIdMap : {}
+    if (
+      targetThreadId !== context.threadId ||
+      sourceThreadId !== context.branch.sourceThreadId ||
+      value.targetMessageId !== context.branch.targetMessageId ||
+      !generatedRunId
+    ) return
+    const runIdMap: Record<string, string> = {}
+    Object.entries(rawMap).forEach(([source, target]) => {
+      if (source && typeof target === 'string' && target) runIdMap[source] = target
+    })
+    this.messages.forEach((message) => {
+      const oldRunId = String(message.extra_data?.agent_run_id || '')
+      if (oldRunId && runIdMap[oldRunId]) {
+        this.assignAgentRunId(message, runIdMap[oldRunId])
+      }
+    })
+    context.currentRunId = generatedRunId
+    context.agentRunId = generatedRunId
+    this.currentRunId = generatedRunId
+  }
+
   private async initSessions(): Promise<void> {
     if (this.session || !this.props.hostBridge?.listSessions) {
       return
@@ -1139,6 +1215,8 @@ export class ChatRuntime {
     const storedAgentState = session.agentState || this.props.agentState || {}
     this.agentState = normalizeAgentState(storedAgentState)
     this.messages = this.normalizeStoredMessages(session.messages || [])
+    this.restoreCurrentRunId()
+    this.currentRequestId = ''
     this.toolsByKey = {}
     this.pendingAssistantId = null
     this.activeTextMessageId = null
@@ -1171,6 +1249,8 @@ export class ChatRuntime {
     this.cancel()
     this.threadId = threadId
     this.workspaceCapability = null
+    this.currentRunId = ''
+    this.currentRequestId = ''
     this.messages = this.normalizeStoredMessages(messages)
     this.agentState = normalizeAgentState(this.props.agentState || {})
     this.running = false
@@ -1184,6 +1264,17 @@ export class ChatRuntime {
     this.serverConfirmationDecisions = {}
     this.undoInFlight = {}
     this.notifyMessages()
+  }
+
+  private restoreCurrentRunId(): void {
+    this.currentRunId = ''
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const runId = this.messages[index].extra_data?.agent_run_id
+      if (typeof runId === 'string' && runId) {
+        this.currentRunId = runId
+        return
+      }
+    }
   }
 
   private async executeNewTurn(): Promise<void> {
@@ -1204,17 +1295,19 @@ export class ChatRuntime {
     await this.executeRunLifecycle(context, () => this.run(context, 0))
   }
 
-  private createRunContext(): RunContext {
+  private createRunContext(agentRunId = uuid()): RunContext {
     const context: RunContext = {
       threadId: this.threadId,
       controller: new AbortController(),
       cancelled: false,
       finalized: false,
       savePromise: null,
-      currentRunId: '',
+      currentRunId: agentRunId,
+      agentRunId,
       currentRequestId: '',
       activeClientTools: new Set(),
       receivedTerminalEvent: false,
+      receivedRunStarted: false,
       upstreamError: '',
       pendingHostBridgePromises: [],
       hostBridgeFollowupNeeded: false
@@ -1236,7 +1329,11 @@ export class ChatRuntime {
       this.emit()
       await action()
     } catch (error) {
-      this.handleRunFailure(context, error)
+      if (context.branch && !context.receivedRunStarted) {
+        await this.recoverBranchPreparation(context, error)
+      } else {
+        this.handleRunFailure(context, error)
+      }
     } finally {
       try {
         cleanup?.()
@@ -1265,6 +1362,26 @@ export class ChatRuntime {
       this.props.onError?.(error)
     } catch (_callbackError) {
       // Consumer callbacks must not keep the runtime in a running state.
+    }
+  }
+
+  private async recoverBranchPreparation(context: RunContext, error: unknown): Promise<void> {
+    const branch = context.branch
+    if (!branch || this.activeRunContext !== context) return
+    try {
+      await Promise.resolve(this.props.hostBridge?.archiveSession?.(branch.branchSessionId))
+    } catch (_archiveError) {
+      // AgentOS also removes partially prepared branch state before RUN_STARTED.
+    }
+    this.applyLoadedSession(branch.sourceSession)
+    const failure = error instanceof Error ? error : new Error(String(error || '分支准备失败。'))
+    this.error = failure.message
+    this.transportState = 'error'
+    try {
+      this.props.onTransportStateChange?.('error')
+      this.props.onError?.(failure)
+    } catch (_callbackError) {
+      // Recovery state must remain authoritative when a consumer callback fails.
     }
   }
 
@@ -1331,7 +1448,14 @@ export class ChatRuntime {
     context.pendingHostBridgePromises = []
     context.hostBridgeFollowupNeeded = false
     const input = buildRunInput(
-      this.messages, this.props, context.threadId, this.pendingAssistantId, this.agentState
+      this.messages, this.props, context.threadId, this.pendingAssistantId, this.agentState, {
+        runId: context.agentRunId,
+        branch: context.branch && !context.receivedRunStarted ? {
+          sourceThreadId: context.branch.sourceThreadId,
+          sourceRunId: context.branch.sourceRunId,
+          targetMessageId: context.branch.targetMessageId
+        } : undefined
+      }
     )
     validateRunInput(input, this.props)
     context.currentRunId = input.runId
@@ -1351,7 +1475,10 @@ export class ChatRuntime {
         Accept: 'text/event-stream',
         'Content-Type': 'application/json',
         'X-Request-ID': input.requestId,
-        ...(capability ? this.workspaceHeaders(capability) : {})
+        ...(capability ? this.workspaceHeaders(capability) : {}),
+        ...(context.branch && !context.receivedRunStarted ? {
+          'X-AGUI-Source-Capability': context.branch.sourceCapability.capability
+        } : {})
       },
       body: JSON.stringify(input),
       signal: context.controller.signal
@@ -1488,7 +1615,42 @@ export class ChatRuntime {
       }
       this.messages.push(message)
     }
+    this.assignAgentRunId(message, this.activeRunContext?.currentRunId || '')
     return message
+  }
+
+  private assignAgentRunId(message: ChatMessage, runId: string): void {
+    if (!runId || (message.role !== 'assistant' && message.role !== 'agent')) return
+    this.messages.forEach((candidate) => {
+      if (
+        candidate !== message &&
+        (candidate.role === 'assistant' || candidate.role === 'agent') &&
+        candidate.extra_data?.agent_run_id === runId
+      ) {
+        candidate.extra_data = { ...candidate.extra_data, agent_run_final: false }
+      }
+    })
+    message.extra_data = {
+      ...(message.extra_data || {}), agent_run_id: runId, agent_run_final: true
+    }
+  }
+
+  private isRegenerationTarget(message: ChatMessage): boolean {
+    if (
+      (message.role !== 'assistant' && message.role !== 'agent') ||
+      !message.content || message.streaming_error ||
+      typeof message.extra_data?.agent_run_id !== 'string' ||
+      !message.extra_data.agent_run_id
+    ) return false
+    const runId = message.extra_data.agent_run_id
+    const index = this.messages.indexOf(message)
+    const laterSameRun = index >= 0 && this.messages.slice(index + 1).some((candidate) =>
+      (candidate.role === 'assistant' || candidate.role === 'agent') &&
+      candidate.extra_data?.agent_run_id === runId
+    )
+    return !laterSameRun && !(message.tool_calls || []).some((tool) =>
+      ['pending', 'running', 'needs_confirmation'].includes(tool.status || 'pending')
+    )
   }
 
   private lastAssistant(): ChatMessage | null {

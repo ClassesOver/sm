@@ -181,6 +181,23 @@ class AguiChatController(http.Controller):
                 expected_session_revision = 0
         return session._save_from_client(values, expected_session_revision)
 
+    @http.route("/agui_chat/session/fork", type="json", auth="user")
+    def session_fork(self, session_id, target_message_id, source_run_id,
+                     expected_session_revision):
+        try:
+            session = self._load_session(session_id)
+            return session._fork_from_client(
+                str(target_message_id or ""),
+                str(source_run_id or ""),
+                expected_session_revision,
+            )
+        except (AccessError, ValidationError, ValueError) as error:
+            return {
+                "ok": False,
+                "error": "branch_rejected",
+                "message": str(error),
+            }
+
     @http.route("/agui_chat/session/archive", type="json", auth="user")
     def session_archive(self, session_id):
         session = self._load_session(session_id)

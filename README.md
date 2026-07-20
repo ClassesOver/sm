@@ -14,7 +14,7 @@ Odoo 提供 `/agui_chat/config`、v2 界面会话、浏览器宿主命令策略�
 同步业务命令端点。Odoo 不代理 SSE，也不开放通用 RPC 或 CRUD。
 
 配置 `runtime_url` 后，Odoo 会根据其中的 `/agui` 路径推导对应的 `/config` 握手地址。
-部署匹配的 `12.0.8.6.0` 声明后，再启用灰度开关。详情参见
+部署匹配的 `12.0.8.7.0` 声明后，再启用灰度开关。详情参见
 [协议说明](docs/agui_odoo_protocol.md)和[生产部署指南](docs/agui_chat_production.md)。
 
 前端验证：

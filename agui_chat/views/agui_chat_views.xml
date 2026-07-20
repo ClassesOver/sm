@@ -148,6 +148,7 @@
             <tree create="false" edit="false">
                 <field name="name"/>
                 <field name="thread_id"/>
+                <field name="parent_session_id"/>
                 <field name="protocol"/>
                 <field name="surface"/>
                 <field name="session_revision"/>
@@ -166,6 +167,7 @@
                     <group>
                         <field name="name"/>
                         <field name="thread_id"/>
+                        <field name="parent_session_id"/>
                         <field name="protocol"/>
                         <field name="agent_id"/>
                         <field name="surface"/>

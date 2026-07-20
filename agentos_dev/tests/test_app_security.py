@@ -27,7 +27,7 @@ async def client():
         yield value
 
 
-def capability(thread="thread-1"):
+def capability(thread="thread-1", **overrides):
     now = int(time.time())
     header = {"alg": "HS256", "typ": "AGUI-CAP"}
     claims = {
@@ -40,6 +40,7 @@ def capability(thread="thread-1"):
         "iat": now,
         "exp": now + 600,
     }
+    claims.update(overrides)
 
     def segment(value):
         return base64.urlsafe_b64encode(
@@ -93,6 +94,51 @@ async def test_public_config_and_protected_routes(monkeypatch, client):
     )
     assert missing_thread.status_code == 400
     assert missing_thread.json() == {"error": "thread_header_required"}
+
+
+@pytest.mark.anyio
+async def test_branch_requires_controlled_props_and_matching_source_capability(monkeypatch, client):
+    monkeypatch.setattr(app_module, "workspace_secret", SECRET)
+    base_payload = {
+        "threadId": "target-thread",
+        "runId": "request-run",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {},
+    }
+    headers = {
+        "X-AGUI-Thread": "target-thread",
+        "X-AGUI-Capability": capability("target-thread"),
+    }
+
+    arbitrary = await client.post(
+        "/agui",
+        json={**base_payload, "forwardedProps": {"user_id": "admin"}},
+        headers=headers,
+    )
+    assert arbitrary.status_code == 403
+    assert arbitrary.json() == {"error": "forwarded_props_invalid"}
+
+    branch_payload = {**base_payload, "forwardedProps": {"branch": {
+        "sourceThreadId": "source-thread",
+        "sourceRunId": "source-run",
+        "targetMessageId": "answer-1",
+    }}}
+    missing_source = await client.post("/agui", json=branch_payload, headers=headers)
+    assert missing_source.status_code == 401
+
+    mismatched = await client.post(
+        "/agui",
+        json=branch_payload,
+        headers={
+            **headers,
+            "X-AGUI-Source-Capability": capability("source-thread", user=8),
+        },
+    )
+    assert mismatched.status_code == 403
+    assert mismatched.json() == {"error": "branch_identity_mismatch"}
 
 
 @pytest.mark.anyio

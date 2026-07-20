@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import uuid
+from copy import deepcopy
 
 from odoo import api, fields, models
 from odoo.exceptions import ValidationError
@@ -26,6 +27,10 @@ class AguiChatSession(models.Model):
         index=True, ondelete="cascade",
     )
     thread_id = fields.Char(string="线程 ID", required=True, index=True, default=lambda self: str(uuid.uuid4()))
+    parent_session_id = fields.Many2one(
+        "agui.chat.session", string="父会话", readonly=True, index=True,
+        ondelete="set null",
+    )
     agent_id = fields.Char(string="智能体 ID")
     surface = fields.Selection(
         [("dock", "停靠窗口"), ("standalone", "浮动窗口")],
@@ -78,6 +83,7 @@ class AguiChatSession(models.Model):
             "id": self.id,
             "name": self.name,
             "thread_id": self.thread_id,
+            "parent_session_id": self.parent_session_id.id or False,
             "agent_id": self.agent_id or False,
             "surface": self.surface,
             "active": self.active,
@@ -114,6 +120,11 @@ class AguiChatSession(models.Model):
         row = self.env.cr.fetchone()
         if not row or not row[1]:
             return {"ok": False, "error": "session_not_found"}
+        self.invalidate_cache([
+            "name", "thread_id", "agent_id", "surface", "user_id",
+            "messages_json", "agent_state_json", "ui_preferences_json",
+            "session_revision",
+        ])
         current_revision = row[0]
         try:
             expected = int(expected_session_revision)
@@ -149,3 +160,158 @@ class AguiChatSession(models.Model):
             )
         self.sudo().write(vals)
         return {"ok": True, "session": self.to_client()}
+
+    @api.model
+    def _attachment_ids_in_messages(self, messages):
+        result = set()
+        for message in messages if isinstance(messages, list) else []:
+            if not isinstance(message, dict):
+                continue
+            for attachment in message.get("attachments") or []:
+                if not isinstance(attachment, dict):
+                    continue
+                try:
+                    result.add(int(attachment.get("id")))
+                except (TypeError, ValueError):
+                    continue
+        return result
+
+    @api.model
+    def _rewrite_attachment_ids(self, messages, attachment_ids):
+        result = deepcopy(messages)
+        for message in result:
+            if not isinstance(message, dict):
+                continue
+            for attachment in message.get("attachments") or []:
+                if not isinstance(attachment, dict):
+                    continue
+                try:
+                    source_id = int(attachment.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if source_id in attachment_ids:
+                    attachment["id"] = str(attachment_ids[source_id])
+        return result
+
+    def _fork_from_client(self, target_message_id, source_run_id,
+                          expected_session_revision):
+        self.ensure_one()
+        self.env.cr.execute(
+            "SELECT session_revision, active FROM agui_chat_session "
+            "WHERE id = %s FOR UPDATE",
+            (self.id,),
+        )
+        row = self.env.cr.fetchone()
+        if not row or not row[1]:
+            return {"ok": False, "error": "session_not_found"}
+        self.invalidate_cache([
+            "name", "thread_id", "agent_id", "surface", "user_id",
+            "messages_json", "agent_state_json", "ui_preferences_json",
+            "session_revision",
+        ])
+        try:
+            expected = int(expected_session_revision)
+        except (TypeError, ValueError):
+            expected = -1
+        if expected != row[0]:
+            return {
+                "ok": False,
+                "error": "session_revision_conflict",
+                "sessionRevision": row[0],
+                "session": self.to_client(include_payload=False),
+            }
+
+        messages = self._json_loads(self.messages_json, [])
+        target_index = -1
+        for index, message in enumerate(messages):
+            extra_data = message.get("extra_data") if isinstance(message, dict) else None
+            if (
+                isinstance(message, dict)
+                and message.get("id") == target_message_id
+                and message.get("role") in ("assistant", "agent")
+                and isinstance(extra_data, dict)
+                and extra_data.get("agent_run_id") == source_run_id
+            ):
+                target_index = index
+                break
+        if target_index < 0:
+            return {"ok": False, "error": "branch_target_not_found"}
+
+        target = messages[target_index]
+        pending_statuses = {"pending", "running", "needs_confirmation"}
+        pending_tools = any(
+            isinstance(tool, dict) and tool.get("status") in pending_statuses
+            for tool in target.get("tool_calls") or []
+        )
+        later_same_run = any(
+            isinstance(message, dict)
+            and message.get("role") in ("assistant", "agent")
+            and isinstance(message.get("extra_data"), dict)
+            and message["extra_data"].get("agent_run_id") == source_run_id
+            for message in messages[target_index + 1:]
+        )
+        if (
+            not target.get("content") or target.get("streaming_error")
+            or pending_tools or later_same_run
+        ):
+            return {"ok": False, "error": "branch_target_not_final"}
+
+        retained_messages = messages[:target_index]
+        branch = self.sudo().create({
+            "name": ("%s（分支）" % self.name)[:256],
+            "parent_session_id": self.id,
+            "agent_id": self.agent_id or False,
+            "surface": self.surface,
+            "user_id": self.user_id.id,
+            "protocol": PROTOCOL,
+            "agent_state_json": self.agent_state_json or "{}",
+            "ui_preferences_json": self.ui_preferences_json or "{}",
+        })
+
+        try:
+            referenced_ids = self._attachment_ids_in_messages(retained_messages)
+            attachment_map = {}
+            if referenced_ids:
+                attachments = self.env["ir.attachment"].sudo().search([
+                    ("id", "in", list(referenced_ids)),
+                    ("res_model", "=", self._name),
+                    ("res_id", "=", self.id),
+                ])
+                if set(attachments.ids) != referenced_ids:
+                    branch.unlink()
+                    return {"ok": False, "error": "branch_attachment_invalid"}
+                for attachment in attachments:
+                    copied = attachment.copy({"res_id": branch.id})
+                    attachment_map[attachment.id] = copied.id
+
+            retained_messages = self._rewrite_attachment_ids(
+                retained_messages, attachment_map,
+            )
+            branch.sudo().write({
+                "messages_json": self._json_dumps(
+                    retained_messages, MAX_MESSAGES_BYTES, [],
+                ),
+            })
+        except Exception:
+            if branch.exists():
+                branch.unlink()
+            raise
+        return {
+            "ok": True,
+            "session": branch.to_client(),
+            "branch": {
+                "sourceThreadId": self.thread_id,
+                "sourceRunId": source_run_id,
+                "targetMessageId": target_message_id,
+            },
+        }
+
+    @api.model
+    def _archive_for_protocol_upgrade(self):
+        sessions = self.sudo().search([("active", "=", True)])
+        if sessions:
+            sessions.write({"active": False})
+            self.env["agui.chat.sandbox.cleanup"]._enqueue(
+                sessions.mapped("thread_id"),
+            )
+        return sessions.ids

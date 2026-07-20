@@ -21,7 +21,13 @@ export interface RunInput {
   messages: unknown[]
   tools: AguiClientTool[]
   context: Array<{ description: string; value: string }>
-  forwardedProps: Record<string, never>
+  forwardedProps: {
+    branch?: {
+      sourceThreadId: string
+      sourceRunId: string
+      targetMessageId: string
+    }
+  }
   state: RunStateEnvelope
   resume: unknown[]
   agentId?: string
@@ -334,30 +340,42 @@ export function buildRunInput(
   props: AguiChatProps,
   threadId: string,
   pendingAssistantId: string | null,
-  agentState: Record<string, unknown>
+  agentState: Record<string, unknown>,
+  options: {
+    runId?: string
+    branch?: RunInput['forwardedProps']['branch']
+  } = {}
 ): RunInput {
-  const runId = uuid()
+  const runId = options.runId || uuid()
   const navigationPending = menuNavigationPending(messages)
   const tools = clone(props.tools || []).filter((tool) => (
     !navigationPending || tool.name === 'odoo.open_menu'
   ))
+  const transportMessages = messages.filter((message) => {
+    const isPendingEmpty =
+      message.id === pendingAssistantId &&
+      !message.content &&
+      !message.streaming_error &&
+      !(message.tool_calls && message.tool_calls.length)
+    return !isPendingEmpty
+  })
+  let runMessages: ChatMessage[] = []
+  if (transportMessages[transportMessages.length - 1]?.role === 'tool') {
+    let firstTool = transportMessages.length - 1
+    while (firstTool > 0 && transportMessages[firstTool - 1].role === 'tool') firstTool -= 1
+    runMessages = transportMessages.slice(firstTool)
+  } else {
+    const latestUser = [...transportMessages].reverse().find((message) => message.role === 'user')
+    if (latestUser) runMessages = [latestUser]
+  }
   return {
     threadId,
     runId,
     requestId: uuid(),
-    messages: messages
-      .filter((message) => {
-        const isPendingEmpty =
-          message.id === pendingAssistantId &&
-          !message.content &&
-          !message.streaming_error &&
-          !(message.tool_calls && message.tool_calls.length)
-        return !isPendingEmpty
-      })
-      .map(transportMessage),
+    messages: runMessages.map(transportMessage),
     tools,
     context: normalizeRunContext(props, messages),
-    forwardedProps: {},
+    forwardedProps: options.branch ? { branch: clone(options.branch) } : {},
     state: {
       protocol: AGUI_ODOO_PROTOCOL,
       host: clone(props.hostState),

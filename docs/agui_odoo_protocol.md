@@ -14,8 +14,8 @@ configured AgentOS protocol endpoint must agree on:
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.6.0",
-  "bundle_version": "12.0.8.6.0",
+  "module_version": "12.0.8.7.0",
+  "bundle_version": "12.0.8.7.0",
   "command_catalog_hash": "sha256"
 }
 ```
@@ -289,6 +289,43 @@ memory, and model-visible results to 32 KiB. Chart outputs use UUID paths under
 Session JSON endpoints remain under `/agui_chat/session/*`. Payload fields are
 `messages`, `agentState`, `uiPreferences`, and `sessionRevision`.
 
+`POST /agui` uses incremental run messages. A normal run sends only the latest
+user message. A client-tool continuation sends only the consecutive trailing
+`tool` result messages, in their original order. Tool declarations, the current
+Odoo context and the state envelope are still sent in full on every request.
+AgentOS PostgreSQL is the conversation-history authority and loads the latest
+10 runs. Odoo `session/save` continues to persist the complete UI message
+snapshot for restoration and revision merging.
+
+Every final assistant message stores its AgentOS run identifier in
+`extra_data.agent_run_id`. All client-tool continuations belonging to one turn
+reuse that identifier. `forwardedProps` is empty for ordinary runs; branch runs
+allow only `branch.sourceThreadId`, `branch.sourceRunId`, and
+`branch.targetMessageId`. Identity and arbitrary backend parameters are never
+forwarded there.
+
+`session/fork` locks and refreshes the source session, creates a new session
+named `原名称（分支）`, records `parent_session_id`, and copies only messages
+before the selected final answer. Referenced Odoo attachments are copied to the
+new session and their IDs are rewritten. The branch inherits UI preferences,
+agent state, surface and agent selection, but receives a fresh `thread_id`.
+
+AgentOS verifies capabilities for both source and target threads and requires
+the same database, user, company and browser-session identity. It copies source
+runs only through the selected run, assigns every copied run a fresh ID, emits
+the old-to-new mapping, and calls Agno regeneration with `regenerate=true` and
+`replace_original=true`. The selected run's completed tool exchanges remain in
+history and are not executed again. The source session is never modified.
+
+Branch workspaces copy the source session's current files, not a historical
+snapshot at the selected run. Inventory is validated before the target sandbox
+is created: at most 2000 regular files, 256 MiB total and 25 MiB per file are
+allowed. Symbolic links, non-regular files, invalid paths and all over-limit
+workspaces reject the whole operation. A failure before `RUN_STARTED` removes
+prepared AgentOS/workspace state; React archives the Odoo branch and stays in
+the source session. A model error after `RUN_STARTED` remains visible in the
+branch.
+
 Every save supplies `expectedSessionRevision`. On the first revision conflict,
 React reloads the session, merges local and remote messages by message ID, and
 retries once. A second conflict leaves the in-memory messages and confirmation
@@ -299,3 +336,8 @@ resizable floating window inside the WebClient; the protocol value is retained
 for compatibility with existing sessions.
 Switching surfaces moves the one stable React host node; it does not unmount,
 reload a session, or cancel the active SSE run.
+
+Upgrading to `12.0.8.7.0` archives every previously active Odoo chat session and
+enqueues its workspace for the existing cleanup worker. Odoo and AgentOS audit
+data are retained, but old threads are never reused. The first chat entry after
+upgrade creates a new run-ID-capable session automatically.

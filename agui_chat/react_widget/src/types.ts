@@ -551,6 +551,7 @@ export interface SessionEntry {
   id: string | number
   name?: string
   thread_id: string
+  parent_session_id?: string | number | false
   agent_id?: string | false
   surface?: ChatSurface
   write_date?: string | false
@@ -586,6 +587,23 @@ export interface SessionApi {
     values: Record<string, unknown>
   ) => Promise<{ session?: LoadedSession } | LoadedSession | void>
   archive?: (sessionId: string | number) => Promise<unknown>
+  fork?: (
+    sessionId: string | number,
+    values: {
+      targetMessageId: string
+      sourceRunId: string
+      expectedSessionRevision: number
+    }
+  ) => Promise<{
+    ok?: boolean
+    error?: string
+    session?: LoadedSession
+    branch?: {
+      sourceThreadId: string
+      sourceRunId: string
+      targetMessageId: string
+    }
+  } | LoadedSession>
 }
 
 export interface HostBridge {
@@ -604,6 +622,7 @@ export interface HostBridge {
   loadSession?: SessionApi['load']
   saveSession?: SessionApi['save']
   archiveSession?: SessionApi['archive']
+  forkSession?: SessionApi['fork']
   openSurface?: (surface: ChatSurface) => Promise<unknown> | unknown
 }
 

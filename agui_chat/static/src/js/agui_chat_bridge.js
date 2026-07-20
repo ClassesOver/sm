@@ -4,7 +4,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
     var ajax = require("web.ajax");
 
     var PROTOCOL = "agui.odoo.v2";
-    var MODULE_VERSION = "12.0.8.6.0";
+    var MODULE_VERSION = "12.0.8.7.0";
     var WRITE_COMMANDS = {
         "odoo.stage_current_form": true,
         "odoo.patch_current_form": true,
@@ -223,6 +223,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
             loadSession: function (sessionId) { return self.loadSession(sessionId); },
             saveSession: function (sessionId, values) { return self.saveSession(sessionId, values); },
             archiveSession: function (sessionId) { return self.archiveSession(sessionId); },
+            forkSession: function (sessionId, values) { return self.forkSession(sessionId, values); },
             openSurface: function (surface) { return self.openSurface(surface); },
         };
     };
@@ -255,6 +256,16 @@ odoo.define("agui_chat.host_bridge", function (require) {
 
     HostBridge.prototype.archiveSession = function (sessionId) {
         return this._rpc("/agui_chat/session/archive", {session_id: sessionId});
+    };
+
+    HostBridge.prototype.forkSession = function (sessionId, values) {
+        values = values || {};
+        return this._rpc("/agui_chat/session/fork", {
+            session_id: sessionId,
+            target_message_id: values.targetMessageId || "",
+            source_run_id: values.sourceRunId || "",
+            expected_session_revision: values.expectedSessionRevision,
+        });
     };
 
     HostBridge.prototype.openSurface = function (surface) {

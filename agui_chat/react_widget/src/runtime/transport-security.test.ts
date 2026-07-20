@@ -23,11 +23,76 @@ describe('production transport contract', () => {
 
   it('enforces message and encoded request limits', () => {
     const input = buildRunInput([
-      { id: '1', role: 'user', content: 'one' },
-      { id: '2', role: 'user', content: 'two' }
+      { id: '1', role: 'tool', toolCallId: 'call-1', content: 'one' },
+      { id: '2', role: 'tool', toolCallId: 'call-2', content: 'two' }
     ], v2Props(), 'thread-1', null, {})
     expect(() => validateRunInput(input, v2Props({ limits: { messages: 1 } }))).toThrow(/消息数量超过限制/)
     expect(() => validateRunInput(input, v2Props({ limits: { requestBytes: 10 } }))).toThrow(/请求大小超过配置限制/)
+  })
+
+  it('sends only the latest user message while preserving its attachments and current context', () => {
+    const input = buildRunInput([
+      { id: 'old-user', role: 'user', content: '第一轮' },
+      { id: 'old-assistant', role: 'assistant', content: '旧回答' },
+      {
+        id: 'latest-user', role: 'user', content: '第三轮',
+        attachments: [{
+          id: '12', name: '数据.csv', mimeType: 'text/csv', size: 10,
+          modality: 'document', workspacePath: 'attachments/latest-user/数据.csv'
+        }],
+        skills: [{ id: 'review', name: '审查', description: '检查数据', valid: true }]
+      },
+      { id: 'pending', role: 'assistant', content: '' }
+    ], v2Props(), 'thread-1', 'pending', {})
+
+    expect(input.messages).toEqual([{
+      id: 'latest-user', role: 'user', content: '第三轮',
+      attachments: [{
+        id: '12', name: '数据.csv', mimeType: 'text/csv', size: 10,
+        modality: 'document', workspacePath: 'attachments/latest-user/数据.csv'
+      }]
+    }])
+    expect(input.context).toContainEqual({
+      description: '已选智能体技能',
+      value: JSON.stringify([{ id: 'review', name: '审查', description: '检查数据' }])
+    })
+    expect(input.context.some((item) => item.description === 'Odoo 宿主快照')).toBe(true)
+  })
+
+  it('sends every consecutive trailing tool result in order', () => {
+    const input = buildRunInput([
+      { id: 'user', role: 'user', content: '处理页面' },
+      { id: 'assistant', role: 'assistant', content: '', tool_calls: [] },
+      { id: 'tool-1', role: 'tool', toolCallId: 'call-1', content: '{"ok":true}' },
+      { id: 'tool-2', role: 'tool', toolCallId: 'call-2', content: '{"ok":false}' },
+      { id: 'pending', role: 'assistant', content: '' }
+    ], v2Props(), 'thread-1', 'pending', {})
+
+    expect(input.messages).toEqual([
+      { id: 'tool-1', role: 'tool', toolCallId: 'call-1', content: '{"ok":true}' },
+      { id: 'tool-2', role: 'tool', toolCallId: 'call-2', content: '{"ok":false}' }
+    ])
+  })
+
+  it('only forwards the controlled branch fields and accepts a stable run ID', () => {
+    const input = buildRunInput(
+      [{ id: 'user', role: 'user', content: '重新回答' }],
+      v2Props(), 'target-thread', null, {}, {
+        runId: 'stable-run',
+        branch: {
+          sourceThreadId: 'source-thread',
+          sourceRunId: 'source-run',
+          targetMessageId: 'assistant-1'
+        }
+      }
+    )
+
+    expect(input.runId).toBe('stable-run')
+    expect(input.forwardedProps).toEqual({ branch: {
+      sourceThreadId: 'source-thread',
+      sourceRunId: 'source-run',
+      targetMessageId: 'assistant-1'
+    } })
   })
 
   it('emits the AgentOS RunAgentInput context contract', () => {

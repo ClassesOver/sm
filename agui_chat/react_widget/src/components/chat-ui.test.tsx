@@ -85,6 +85,21 @@ describe('chat customization', () => {
     expect(onFeedback).not.toHaveBeenCalled()
   })
 
+  it('only enables regeneration for a persisted final AgentOS answer', () => {
+    renderMessages({
+      messages: [
+        { id: 'legacy', role: 'assistant', content: '旧回答' },
+        {
+          id: 'final', role: 'assistant', content: '最终回答',
+          extra_data: { agent_run_id: 'run-1', agent_run_final: true }
+        }
+      ]
+    })
+    const buttons = screen.getAllByRole('button', { name: labels.regenerateResponse })
+    expect((buttons[0] as HTMLButtonElement).disabled).toBe(true)
+    expect((buttons[1] as HTMLButtonElement).disabled).toBe(false)
+  })
+
   it('uses Chinese labels for Odoo form tools', () => {
     renderMessages({
       messages: [{
