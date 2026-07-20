@@ -20,6 +20,7 @@ from daytona import (
 )
 from daytona.common.errors import DaytonaNotFoundError
 
+from .async_utils import complete_cleanup
 from .database import psycopg_db_url
 from .security import thread_label
 from .skills import MAX_SKILL_SCRIPT_BYTES, SecureSkills
@@ -466,10 +467,10 @@ class WorkspaceService:
                     await target.fs.upload_file(content, target_remote)
                     copied_bytes += len(content)
                 return {"files": len(files), "bytes": copied_bytes}
-            except Exception:
+            except BaseException:
                 if target is not None:
                     try:
-                        await self._adestroy(client, target_thread)
+                        await complete_cleanup(self._adestroy(client, target_thread))
                     except Exception:
                         pass
                 raise

@@ -22,6 +22,7 @@ from agno.os.interfaces.agui.stream import async_stream_agno_response_as_agui_ev
 from agno.run.base import RunContext, RunStatus
 from agno.session.agent import AgentSession
 
+from .async_utils import complete_cleanup
 from .security import CapabilityClaims
 from .workspace import WorkspaceService
 
@@ -180,8 +181,11 @@ async def prepare_branch(
     workspace_result = await workspace.acopy_branch(spec.source_thread_id, target_thread_id)
     try:
         await agent.asave_session(target)
-    except Exception:
-        await workspace.adestroy(target_thread_id)
+    except BaseException:
+        try:
+            await complete_cleanup(cleanup_branch(agent, workspace, target_thread_id, user_id))
+        except Exception as error:
+            logger.error("branch_prepare_cleanup_failed error_type=%s", type(error).__name__)
         raise
     return run_id_map, copied_target_run_id, workspace_result
 
@@ -309,7 +313,9 @@ async def run_branch(
     except BaseException:
         if prepared and not started:
             try:
-                await cleanup_branch(agent, workspace, run_input.thread_id, user_id)
+                await complete_cleanup(
+                    cleanup_branch(agent, workspace, run_input.thread_id, user_id)
+                )
             except Exception:
                 pass
         raise

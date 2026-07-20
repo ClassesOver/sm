@@ -22,6 +22,8 @@ MAX_XLSX_MEMBERS = 1000
 MAX_RESULT_BYTES = 32 * 1024
 MAX_CHART_POINTS = 1000
 MAX_PIE_CATEGORIES = 20
+PREFLIGHT_CHUNK_ROWS = 1000
+OBJECT_CELL_ESTIMATE_BYTES = 64
 SUPPORTED_SUFFIXES = {".csv", ".xlsx", ".json", ".jsonl"}
 AGGREGATIONS = {"count", "sum", "avg", "min", "max"}
 CHART_TYPES = {"bar", "line", "scatter", "pie", "histogram", "box"}
@@ -33,10 +35,15 @@ def _thread(run_context: RunContext | None) -> str:
     return run_context.session_id
 
 
-def _ensure_columns(frame: pd.DataFrame) -> pd.DataFrame:
+def _column_names(frame: pd.DataFrame) -> list[str]:
     columns = [str(value) for value in frame.columns]
     if len(set(columns)) != len(columns):
         raise WorkspaceError("数据集字段名称转为文本后存在重复")
+    return columns
+
+
+def _ensure_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    columns = _column_names(frame)
     frame.columns = columns
     _check_shape(len(frame.index), len(frame.columns))
     expanded = int(frame.memory_usage(index=True, deep=True).sum())
@@ -52,6 +59,60 @@ def _check_shape(row_count: int, column_count: int) -> None:
         raise WorkspaceError(f"数据集超过 {MAX_DATASET_COLUMNS} 列")
 
 
+def _storage_kind(series: pd.Series) -> str:
+    if pd.api.types.is_bool_dtype(series.dtype):
+        return "bool"
+    if pd.api.types.is_numeric_dtype(series.dtype):
+        return "numeric"
+    if pd.api.types.is_datetime64_any_dtype(series.dtype):
+        return "datetime"
+    if pd.api.types.is_timedelta64_dtype(series.dtype):
+        return "timedelta"
+    return "object"
+
+
+class _FramePreflight:
+    def __init__(self):
+        self.rows = 0
+        self.column_bytes: dict[str, int] = {}
+        self.column_kinds: dict[str, str] = {}
+
+    def add(self, frame: pd.DataFrame) -> None:
+        columns = _column_names(frame)
+        frame.columns = columns
+        row_count = len(frame.index)
+        present = set(columns)
+        previous_columns = set(self.column_bytes)
+
+        for name in previous_columns - present:
+            self.column_bytes[name] += row_count * 8
+        for name in present - previous_columns:
+            self.column_bytes[name] = self.rows * 8
+
+        for name in columns:
+            series = frame[name]
+            kind = _storage_kind(series)
+            previous_kind = self.column_kinds.get(name)
+            size = int(series.memory_usage(index=False, deep=True))
+            if previous_kind is None:
+                self.column_kinds[name] = kind
+            elif previous_kind == "object":
+                size = max(size, row_count * OBJECT_CELL_ESTIMATE_BYTES)
+            elif kind == "object" or kind != previous_kind:
+                self.column_bytes[name] = max(
+                    self.column_bytes[name],
+                    self.rows * OBJECT_CELL_ESTIMATE_BYTES,
+                )
+                self.column_kinds[name] = "object"
+            self.column_bytes[name] += size
+
+        self.rows += row_count
+        _check_shape(self.rows, len(self.column_bytes))
+        expanded = sum(self.column_bytes.values()) + self.rows * 8
+        if expanded > MAX_EXPANDED_BYTES:
+            raise WorkspaceError("数据集展开内存超过 128 MiB")
+
+
 def _skip_json_whitespace(value: str, index: int) -> int:
     while index < len(value) and value[index] in " \t\r\n":
         index += 1
@@ -65,26 +126,21 @@ def _preflight_json(content: bytes) -> None:
         raise WorkspaceError("JSON 数据集不是有效的 UTF-8 文件") from error
     index = _skip_json_whitespace(value, 0)
     if index >= len(value) or value[index] != "[":
-        return
+        raise WorkspaceError("JSON 数据集仅支持顶层数组")
     index = _skip_json_whitespace(value, index + 1)
     if index < len(value) and value[index] == "]":
         return
 
     decoder = JSONDecoder()
-    row_count = 0
-    columns: set[str] = set()
-    max_sequence_columns = 0
+    budget = _FramePreflight()
+    batch: list[Any] = []
     try:
         while True:
             item, index = decoder.raw_decode(value, index)
-            row_count += 1
-            if isinstance(item, dict):
-                columns.update(item)
-            elif isinstance(item, list):
-                max_sequence_columns = max(max_sequence_columns, len(item))
-            else:
-                max_sequence_columns = max(max_sequence_columns, 1)
-            _check_shape(row_count, max(len(columns), max_sequence_columns))
+            batch.append(item)
+            if len(batch) >= PREFLIGHT_CHUNK_ROWS:
+                budget.add(pd.DataFrame(batch))
+                batch.clear()
 
             index = _skip_json_whitespace(value, index)
             if index >= len(value):
@@ -93,6 +149,8 @@ def _preflight_json(content: bytes) -> None:
                 index = _skip_json_whitespace(value, index + 1)
                 if index != len(value):
                     raise JSONDecodeError("trailing data", value, index)
+                if batch:
+                    budget.add(pd.DataFrame(batch))
                 return
             if value[index] != ",":
                 raise JSONDecodeError("missing comma", value, index)
@@ -101,6 +159,26 @@ def _preflight_json(content: bytes) -> None:
                 raise JSONDecodeError("missing array item", value, index)
     except JSONDecodeError as error:
         raise WorkspaceError("JSON 数据集格式无效") from error
+
+
+def _preflight_delimited(path: str, suffix: str) -> None:
+    budget = _FramePreflight()
+    reader: Any
+    if suffix == ".csv":
+        reader = pd.read_csv(
+            path,
+            nrows=MAX_DATASET_ROWS + 1,
+            chunksize=PREFLIGHT_CHUNK_ROWS,
+        )
+    else:
+        reader = pd.read_json(
+            path,
+            lines=True,
+            nrows=MAX_DATASET_ROWS + 1,
+            chunksize=PREFLIGHT_CHUNK_ROWS,
+        )
+    for frame in reader:
+        budget.add(frame)
 
 
 def _preflight_xlsx(path: str, sheet: str | int | None) -> None:
@@ -125,6 +203,17 @@ def _preflight_xlsx(path: str, sheet: str | int | None) -> None:
         else:
             worksheet = workbook.worksheets[sheet or 0]
         _check_shape(max(0, worksheet.max_row - 1), worksheet.max_column)
+        rows = iter(worksheet.iter_rows(values_only=True))
+        next(rows, None)
+        budget = _FramePreflight()
+        batch = []
+        for row in rows:
+            batch.append(row)
+            if len(batch) >= PREFLIGHT_CHUNK_ROWS:
+                budget.add(pd.DataFrame(batch))
+                batch.clear()
+        if batch:
+            budget.add(pd.DataFrame(batch))
     except WorkspaceError:
         raise
     except Exception as error:
@@ -156,7 +245,9 @@ def _load_frames(
                 local_path = PurePosixPath(directory) / (f"dataset-{index}{suffix}")
                 with open(str(local_path), "wb") as output:
                     output.write(content)
-                if suffix == ".json":
+                if suffix in {".csv", ".jsonl"}:
+                    _preflight_delimited(str(local_path), suffix)
+                elif suffix == ".json":
                     _preflight_json(content)
                 elif suffix == ".xlsx":
                     _preflight_xlsx(str(local_path), sheet)

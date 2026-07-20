@@ -212,6 +212,53 @@ def test_delimited_loaders_bound_rows_before_creating_dataframes(tmp_path, monke
     assert calls["read_json_lines"]["nrows"] == report.MAX_DATASET_ROWS + 1
 
 
+@pytest.mark.parametrize(
+    ("path", "content"),
+    [
+        ("data/memory.csv", b"value\nexpanded text\nexpanded text\n"),
+        (
+            "data/memory.jsonl",
+            b'{"value":"expanded text"}\n{"value":"expanded text"}\n',
+        ),
+        (
+            "data/memory.json",
+            b'[{"value":"expanded text"},{"value":"expanded text"}]',
+        ),
+    ],
+)
+def test_memory_is_rejected_before_pandas_materializes_dataset(
+    tmp_path, monkeypatch, path, content
+):
+    current = service(tmp_path)
+    current.upload("report-thread", path, content)
+    monkeypatch.setattr(report, "MAX_EXPANDED_BYTES", 1)
+    monkeypatch.setattr(
+        report.PandasTools,
+        "create_pandas_dataframe",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("pandas loader called")),
+    )
+
+    with pytest.raises(WorkspaceError, match="数据集展开内存超过"):
+        call(tools(current)["pandas_profile_dataset"], path=path, run_context=context())
+
+
+def test_json_requires_a_top_level_array_before_pandas_loads_it(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    current.upload("report-thread", "data/columns.json", b'{"value":{"0":"one"}}')
+    monkeypatch.setattr(
+        report.PandasTools,
+        "create_pandas_dataframe",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("pandas loader called")),
+    )
+
+    with pytest.raises(WorkspaceError, match="JSON 数据集仅支持顶层数组"):
+        call(
+            tools(current)["pandas_profile_dataset"],
+            path="data/columns.json",
+            run_context=context(),
+        )
+
+
 def test_json_shape_is_rejected_before_pandas_materializes_the_dataset(tmp_path, monkeypatch):
     current = service(tmp_path)
     current.upload(

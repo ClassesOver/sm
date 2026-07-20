@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from agentos_dev.branch import (
     BranchSpec,
     _copy_session_through_run,
     parse_forwarded_props,
+    prepare_branch,
     run_branch,
     validate_branch_identity,
 )
@@ -254,6 +256,37 @@ async def test_failure_before_run_started_removes_agent_session_and_workspace(mo
     assert events[0].code == "branch_failed"
     assert events[0].message == "分支创建失败，请稍后重试。"
     assert "model unavailable" not in events[0].message
+    assert agent.deleted == [("target-thread", "owner")]
+    assert workspace.destroyed == ["target-thread"]
+
+
+@pytest.mark.anyio
+async def test_cancelling_session_save_removes_target_session_and_workspace(monkeypatch):
+    agent = FakeAgent()
+    workspace = FakeWorkspace()
+    save_started = asyncio.Event()
+    never_complete = asyncio.Event()
+
+    async def blocking_save(_session):
+        save_started.set()
+        await never_complete.wait()
+
+    monkeypatch.setattr(agent, "asave_session", blocking_save)
+    prepare_task = asyncio.create_task(
+        prepare_branch(
+            agent,
+            workspace,
+            BranchSpec("source-thread", "run-1", "answer-1"),
+            "target-thread",
+            "owner",
+        )
+    )
+    await save_started.wait()
+    prepare_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await prepare_task
+
     assert agent.deleted == [("target-thread", "owner")]
     assert workspace.destroyed == ["target-thread"]
 

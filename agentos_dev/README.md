@@ -36,8 +36,8 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 默认监听 `127.0.0.1:7777`。Odoo 只需配置
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
 
-应用还注册五个受控 Pandas 报表工具，支持当前 thread 工作区内的 CSV、XLSX、JSON 和
-JSONL。它们不暴露任意 DataFrame operation；图表自动写入 `reports/` 下的 UUID PNG 与
+应用还注册五个受控 Pandas 报表工具，支持当前 thread 工作区内的 CSV、XLSX、顶层数组 JSON
+和 JSONL。它们不暴露任意 DataFrame operation；图表自动写入 `reports/` 下的 UUID PNG 与
 独立 HTML。读取、新建文件和移动到空闲路径不需要确认；覆盖、删除和执行可信技能脚本
 仍要求确认，且不提供任意 Shell 或 Python 执行工具。
 

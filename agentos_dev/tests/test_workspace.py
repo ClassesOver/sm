@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +11,7 @@ from agentos_dev.skills import SecureSkills
 from agentos_dev.tests.workspace_fakes import (
     SECRET,
     AsyncFakeClient,
+    AsyncFakeFs,
     AsyncMemoryRegistry,
     FakeClient,
     FakeSandbox,
@@ -356,6 +358,36 @@ async def test_异步分支工作区复制失败会清理目标(tmp_path):
 
     with pytest.raises(RuntimeError, match="offline"):
         await async_service.acopy_branch("source", "target")
+
+    assert current.sandbox_for("target", create=False) is None
+
+
+@pytest.mark.anyio
+async def test_异步分支工作区复制被取消也会清理目标(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    current.create_file("source", "报告.txt", b"content")
+    download_started = asyncio.Event()
+    never_complete = asyncio.Event()
+
+    async def blocking_download(_self, _path):
+        download_started.set()
+        await never_complete.wait()
+
+    monkeypatch.setattr(AsyncFakeFs, "download_file", blocking_download)
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+
+    copy_task = asyncio.create_task(async_service.acopy_branch("source", "target"))
+    await download_started.wait()
+    copy_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await copy_task
 
     assert current.sandbox_for("target", create=False) is None
 
