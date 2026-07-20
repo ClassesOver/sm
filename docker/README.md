@@ -67,6 +67,27 @@ bash scripts/configure_agentos_env.sh .env
 docker compose up -d --build
 ```
 
+## 构建工具镜像
+
+`sandbox-tools` 在默认镜像上增加文档转 Markdown、PDF/Office/HTML、图表、Parquet、结构化数据和
+压缩处理能力，依赖清单见 `docker/sandbox-tools/requirements.in`。它保留 requests 和 HTTPX，
+不增加 OCR、数据库客户端或 ORM。
+
+```bash
+docker build \
+  --platform linux/amd64 \
+  -f docker/sandbox-tools/Dockerfile \
+  -t daytona/sandbox:0.5.0-tools \
+  .
+```
+
+按下节流程导入并推送镜像时，将示例中的基础镜像标签替换为 `daytona/sandbox:0.5.0-tools`，
+然后设置：
+
+```dotenv
+DAYTONA_DEFAULT_SNAPSHOT=registry:6000/daytona/sandbox:0.5.0-tools
+```
+
 ## 导入 Sandbox 镜像
 
 Runner 使用独立的内置 Docker，宿主机已经拉取或导入的镜像不会自动共享给 Runner。网络较慢时，

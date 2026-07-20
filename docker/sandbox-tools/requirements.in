@@ -1,0 +1,60 @@
+# PDF
+pdfplumber
+pikepdf
+pymupdf
+pypdf
+reportlab
+weasyprint
+
+# Excel 与表格
+odfpy
+openpyxl
+pyxlsb
+xlrd
+xlsxwriter
+
+# Word、HTML 与格式转换
+beautifulsoup4
+docx2txt
+html5lib
+jinja2
+lxml
+mammoth
+markdown
+markitdown[docx,outlook,pdf,pptx,xls,xlsx]
+pypandoc
+python-docx
+python-magic
+python-pptx
+
+# 图表、统计与报告
+pillow
+plotly
+scikit-learn
+scipy
+seaborn
+statsmodels
+sympy
+tabulate
+
+# 常用数据、HTTP 与工具
+babel
+cairosvg
+dateparser
+deepdiff
+httpx
+jmespath
+json-repair
+jsonschema
+networkx
+orjson
+polars
+py7zr
+pyarrow
+python-frontmatter
+pyyaml
+rapidfuzz
+requests
+rich
+tomli-w
+tqdm
