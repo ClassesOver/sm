@@ -713,6 +713,35 @@ describe('ChatRuntime protocol handling', () => {
     expect(JSON.stringify(request?.body)).not.toContain('base64')
   })
 
+  it('submits the session CSRF token when deleting an attachment', async () => {
+    const fetchMock = vi.fn((_url: string, _init: RequestInit) => (
+      Promise.resolve(new Response('{}', { status: 200 }))
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    const runtime = createRuntime({ csrfToken: 'csrf-session-token' })
+
+    await runtime.deleteAttachment('42')
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/agui_chat/attachment/delete')
+    expect(init.method).toBe('POST')
+    expect(init.credentials).toBe('same-origin')
+    const body = init.body as URLSearchParams
+    expect(body).toBeInstanceOf(URLSearchParams)
+    expect(body.get('attachment_id')).toBe('42')
+    expect(body.get('csrf_token')).toBe('csrf-session-token')
+  })
+
+  it('rejects attachment deletion before sending when the CSRF token is missing', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const runtime = createRuntime()
+
+    await expect(runtime.deleteAttachment('42')).rejects.toThrow('CSRF')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('syncs actual attachments before sending and keeps workspacePath in the message', async () => {
     const requests: Array<{ url: string; init: RequestInit }> = []
     vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {

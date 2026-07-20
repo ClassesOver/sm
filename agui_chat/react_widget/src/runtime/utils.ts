@@ -142,6 +142,30 @@ export function toolKey(tool: ToolCall): string {
   return `sig:${name}:${shortHash(args)}`
 }
 
+export function safeReferenceUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  const url = value.trim()
+  if (!url || url.startsWith('//')) {
+    return undefined
+  }
+  if (url.startsWith('/')) {
+    try {
+      const base = 'https://reference.invalid'
+      return new URL(url, base).origin === base ? url : undefined
+    } catch {
+      return undefined
+    }
+  }
+  try {
+    const protocol = new URL(url).protocol
+    return protocol === 'https:' || protocol === 'http:' ? url : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function normalizeReferenceGroups(value: unknown): ReferenceGroup[] {
   if (!Array.isArray(value)) {
     return []
@@ -159,8 +183,9 @@ export function normalizeReferenceGroups(value: unknown): ReferenceGroup[] {
           const content =
             reference.content || reference.text || reference.summary || reference.description || ''
           const name = reference.name || reference.title || reference.url || ''
-          const url = reference.url || reference.link || ''
-          if (!content && !name && !url) {
+          const rawUrl = reference.url || reference.link || ''
+          const url = safeReferenceUrl(rawUrl)
+          if (!content && !name && !rawUrl) {
             return null
           }
           return {

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import type { AguiChatProps, AttachmentRef, ErrorMessageProps, RuntimeSnapshot, WorkspaceEntry, WorkspaceReference } from '../types'
 import { ChatRuntime } from '../runtime/ChatRuntime'
 import { asText } from '../runtime/utils'
@@ -8,6 +8,7 @@ import { Messages } from './Messages'
 import { FilePreviewPanel } from './FilePreviewPanel'
 import { Sidebar } from './Sidebar'
 import { WorkspacePanel } from './WorkspacePanel'
+import { useChatAutoScroll } from './useChatAutoScroll'
 
 interface AguiChatAppProps {
   runtime: ChatRuntime
@@ -23,17 +24,10 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
   const [previewAttachment, setPreviewAttachment] = useState<AttachmentRef | null>(null)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [workspaceReferences, setWorkspaceReferences] = useState<WorkspaceReference[]>([])
-  const scrollRef = useRef<HTMLDivElement | null>(null)
-  const followsStream = useRef(true)
-  const previousThread = useRef(snapshot.threadId)
-  const previousUserCount = useRef(0)
   const labels = mergeLabels(props.labels)
   const icons = mergeIcons(props.icons)
+  const chatScroll = useChatAutoScroll(snapshot.threadId, snapshot.messages)
 
-  const scrollVersion = snapshot.messages
-    .map((message) =>
-      `${message.id}:${String(message.content || '').length}:${message.tool_calls?.length || 0}`
-    ).join('|')
   useEffect(() => runtime.subscribe(() => setSnapshot(runtime.getSnapshot())), [runtime])
 
   useEffect(() => {
@@ -41,32 +35,6 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
     setPreviewAttachment(null)
     setWorkspaceOpen(false)
   }, [snapshot.threadId])
-
-
-  useEffect(() => {
-    const element = scrollRef.current
-    if (!element) return
-    const observer = new MutationObserver(() => {
-      if (followsStream.current) element.scrollTop = element.scrollHeight
-    })
-    observer.observe(element, { childList: true, characterData: true, subtree: true })
-    return () => observer.disconnect()
-  }, [])
-
-  useEffect(() => {
-    const element = scrollRef.current
-    if (!element) return
-    const userCount = snapshot.messages.filter((message) => message.role === 'user').length
-    const threadChanged = previousThread.current !== snapshot.threadId
-    const userAdded = userCount > previousUserCount.current
-    if (threadChanged || userAdded || followsStream.current) {
-      element.scrollTop = element.scrollHeight
-      followsStream.current = true
-    }
-    previousThread.current = snapshot.threadId
-    previousUserCount.current = userCount
-  }, [snapshot.threadId, scrollVersion])
-
   const handleSend: ChatInputProps['onSend'] = function (
     content, attachments, selection, skills, references
   ) {
@@ -98,13 +66,9 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
         />
         <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background-panel">
           <div
-            ref={scrollRef}
+            ref={chatScroll.scrollRef}
             className="min-h-0 flex-1 overflow-y-auto"
-            onScroll={(event) => {
-              const element = event.currentTarget
-              followsStream.current =
-                element.scrollHeight - element.scrollTop - element.clientHeight <= 24
-            }}
+            onScroll={chatScroll.handleScroll}
           >
             <Messages
               messages={snapshot.messages}

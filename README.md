@@ -21,12 +21,12 @@ Odoo 提供 `/agui_chat/config`、v2 界面会话、浏览器宿主命令策略�
 
 ```bash
 cd agui_chat/react_widget
-npm run typecheck
-npm run test
-npm run build
+pnpm typecheck
+pnpm test
+pnpm build
 ```
 
-`agui_chat_test/` 是不纳入 Git 的本地 Odoo 测试夹具。运行 `npm run test:e2e:odoo` 时，
+`agui_chat_test/` 是不纳入 Git 的本地 Odoo 测试夹具。运行 `pnpm test:e2e:odoo` 时，
 Playwright 仅在该目录存在时加载依赖它的用例；远端 Odoo 已安装同一夹具时，可设置
 `ODOO_E2E_WITH_AGUI_CHAT_TEST=1` 显式启用。其余 QUnit 宿主集成测试仍会正常运行。
 

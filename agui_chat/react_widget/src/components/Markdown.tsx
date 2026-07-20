@@ -2,6 +2,7 @@ import { Check, Copy } from 'lucide-react'
 import { Children, isValidElement, ReactNode, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { IconButton } from './IconButton'
 
 function CodeBlock({ children }: { children?: ReactNode }) {
   const [copied, setCopied] = useState(false)
@@ -20,9 +21,9 @@ function CodeBlock({ children }: { children?: ReactNode }) {
     <div className="agui-code-block">
       <div className="agui-code-toolbar">
         <span>{language || 'text'}</span>
-        <button type="button" className="grid size-7 place-items-center rounded border-0 bg-transparent p-0 hover:bg-white/10" onClick={() => void copy()} aria-label="复制代码" title="复制代码">
+        <IconButton label="复制代码" className="rounded border-0 text-inherit hover:bg-white/10 hover:text-inherit" onClick={() => void copy()}>
           {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-        </button>
+        </IconButton>
       </div>
       <pre>{child}</pre>
     </div>

@@ -8,6 +8,7 @@ import {
   useRef,
   useState
 } from 'react'
+import { IconButton } from './IconButton'
 
 const DEFAULT_WIDTH = 620
 const MIN_WIDTH = 360
@@ -119,9 +120,9 @@ export function AsidePanel({
         </div>
         <div className="agui-aside-actions">
           {actions}
-          <button type="button" aria-label={closeLabel} title={closeLabel} onClick={onClose}>
+          <IconButton label={closeLabel} size="md" variant="outline" onClick={onClose}>
             <X size={16} />
-          </button>
+          </IconButton>
         </div>
       </header>
       <div className="agui-aside-body">{children}</div>

@@ -1,8 +1,9 @@
-import { Archive, Check, ChevronsLeft, ChevronsRight, MessageSquarePlus, RefreshCw, X } from 'lucide-react'
+import { ChevronsLeft, ChevronsRight, MessageSquarePlus, RefreshCw } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { ChatLabels, RuntimeSnapshot } from '../types'
 import { cn } from '../lib'
 import { Button } from './Button'
+import { SessionItem } from './SessionItem'
 
 interface SidebarProps {
   snapshot: RuntimeSnapshot
@@ -12,20 +13,6 @@ interface SidebarProps {
   onLoadSession: (sessionId: string | number) => void
   onArchiveSession: (sessionId: string | number) => void
   labels: ChatLabels
-}
-
-function formatSessionDate(value?: string | false): string {
-  if (!value) {
-    return ''
-  }
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return ''
-  }
-  return date.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric'
-  })
 }
 
 export function Sidebar({
@@ -130,31 +117,16 @@ export function Sidebar({
               <div className="flex flex-col gap-1">
                 {sortedSessions.map((session) => {
                   const selected = session.id === currentSessionId
-                  return (
-                    <div key={session.id} className={cn(
-                      'group flex h-11 w-full items-center rounded-lg border border-solid transition-colors',
-                      selected ? 'border-primary/25 bg-accent' : 'border-transparent hover:bg-accent'
-                    )}>
-                    <button type="button"
-                      className={cn(
-                        'flex h-full min-w-0 flex-1 items-center justify-between gap-2 border-0 bg-transparent px-3 text-left text-sm',
-                        selected
-                          ? 'text-primary'
-                          : 'text-muted hover:text-primary'
-                      )}
-                      onClick={() => onLoadSession(session.id)}
-                    >
-                      <span className="min-w-0 truncate">{session.name || session.thread_id}</span>
-                      <span className="shrink-0 text-[11px] text-muted">
-                        {formatSessionDate(session.write_date)}
-                      </span>
-                    </button>
-                    {confirmArchive === session.id ? <>
-                      <button type="button" className="grid size-7 shrink-0 place-items-center border-0 bg-transparent text-destructive" aria-label={`确认归档 ${session.name || session.thread_id}`} title="确认归档" onClick={() => { onArchiveSession(session.id); setConfirmArchive(null) }}><Check className="size-3.5" /></button>
-                      <button type="button" className="mr-1 grid size-7 shrink-0 place-items-center border-0 bg-transparent text-muted" aria-label="取消归档" title="取消归档" onClick={() => setConfirmArchive(null)}><X className="size-3.5" /></button>
-                    </> : <button type="button" className="mr-1 grid size-7 shrink-0 place-items-center border-0 bg-transparent text-muted opacity-0 hover:text-destructive group-hover:opacity-100 focus:opacity-100" aria-label={`归档 ${session.name || session.thread_id}`} title="归档" onClick={() => setConfirmArchive(session.id)}><Archive className="size-3.5" /></button>}
-                    </div>
-                  )
+                  return <SessionItem
+                    key={session.id}
+                    session={session}
+                    selected={selected}
+                    confirmingArchive={confirmArchive === session.id}
+                    onLoad={onLoadSession}
+                    onRequestArchive={setConfirmArchive}
+                    onConfirmArchive={(sessionId) => { onArchiveSession(sessionId); setConfirmArchive(null) }}
+                    onCancelArchive={() => setConfirmArchive(null)}
+                  />
                 })}
               </div>
             ) : (

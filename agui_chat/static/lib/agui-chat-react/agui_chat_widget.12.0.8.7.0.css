@@ -256,6 +256,10 @@
   height: 36px;
 }
 
+.agui-chat-react .h-auto {
+  height: auto;
+}
+
 .agui-chat-react .h-full {
   height: 100%;
 }
@@ -627,16 +631,8 @@
   border-color: rgb(216 222 232 / 0.7);
 }
 
-.agui-chat-react .border-destructive\/20 {
-  border-color: rgb(220 38 38 / 0.2);
-}
-
 .agui-chat-react .border-destructive\/25 {
   border-color: rgb(220 38 38 / 0.25);
-}
-
-.agui-chat-react .border-destructive\/30 {
-  border-color: rgb(220 38 38 / 0.3);
 }
 
 .agui-chat-react .border-destructive\/35 {
@@ -647,13 +643,13 @@
   border-color: rgb(220 38 38 / 0.4);
 }
 
-.agui-chat-react .border-emerald-700\/20 {
-  border-color: rgb(4 120 87 / 0.2);
-}
-
 .agui-chat-react .border-positive {
   --tw-border-opacity: 1;
   border-color: rgb(21 128 61 / var(--tw-border-opacity, 1));
+}
+
+.agui-chat-react .border-positive\/25 {
+  border-color: rgb(21 128 61 / 0.25);
 }
 
 .agui-chat-react .border-positive\/30 {
@@ -685,6 +681,11 @@
   border-color: transparent;
 }
 
+.agui-chat-react .border-warning {
+  --tw-border-opacity: 1;
+  border-color: rgb(180 83 9 / var(--tw-border-opacity, 1));
+}
+
 .agui-chat-react .border-warning\/20 {
   border-color: rgb(180 83 9 / 0.2);
 }
@@ -699,10 +700,6 @@
 
 .agui-chat-react .border-warning\/35 {
   border-color: rgb(180 83 9 / 0.35);
-}
-
-.agui-chat-react .border-warning\/40 {
-  border-color: rgb(180 83 9 / 0.4);
 }
 
 .agui-chat-react .border-l-primary {
@@ -758,15 +755,6 @@
 
 .agui-chat-react .bg-destructive\/10 {
   background-color: rgb(220 38 38 / 0.1);
-}
-
-.agui-chat-react .bg-destructive\/5 {
-  background-color: rgb(220 38 38 / 0.05);
-}
-
-.agui-chat-react .bg-emerald-50 {
-  --tw-bg-opacity: 1;
-  background-color: rgb(236 253 245 / var(--tw-bg-opacity, 1));
 }
 
 .agui-chat-react .bg-muted {
@@ -1009,9 +997,8 @@
   color: rgb(220 38 38 / var(--tw-text-opacity, 1));
 }
 
-.agui-chat-react .text-emerald-900 {
-  --tw-text-opacity: 1;
-  color: rgb(6 78 59 / var(--tw-text-opacity, 1));
+.agui-chat-react .text-inherit {
+  color: inherit;
 }
 
 .agui-chat-react .text-muted {
@@ -1694,9 +1681,22 @@
   background-color: rgb(255 255 255 / 0.1);
 }
 
+.agui-chat-react .hover\:text-background-panel:hover {
+  --tw-text-opacity: 1;
+  color: rgb(255 255 255 / var(--tw-text-opacity, 1));
+}
+
+.agui-chat-react .hover\:text-current:hover {
+  color: currentColor;
+}
+
 .agui-chat-react .hover\:text-destructive:hover {
   --tw-text-opacity: 1;
   color: rgb(220 38 38 / var(--tw-text-opacity, 1));
+}
+
+.agui-chat-react .hover\:text-inherit:hover {
+  color: inherit;
 }
 
 .agui-chat-react .hover\:text-primary:hover {
@@ -1774,10 +1774,6 @@
 
 .agui-chat-react .disabled\:opacity-45:disabled {
   opacity: 0.45;
-}
-
-.agui-chat-react .disabled\:opacity-50:disabled {
-  opacity: 0.5;
 }
 
 .agui-chat-react :is(.group:hover .group-hover\:opacity-100) {

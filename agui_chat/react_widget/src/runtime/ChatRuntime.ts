@@ -830,10 +830,12 @@ export class ChatRuntime {
     if (!/^\d+$/.test(sessionId)) {
       throw new Error('当前聊天会话不可用。')
     }
+    const csrfToken = this.attachmentCsrfToken()
     return new Promise((resolve, reject) => {
       const form = new FormData()
       form.append('chat_session_id', sessionId)
       form.append('file', file)
+      form.append('csrf_token', csrfToken)
       const xhr = new XMLHttpRequest()
       xhr.open('POST', '/agui_chat/attachment/upload')
       xhr.withCredentials = true
@@ -863,15 +865,26 @@ export class ChatRuntime {
   }
 
   async deleteAttachment(attachmentId: string): Promise<void> {
+    const body = new URLSearchParams({
+      attachment_id: attachmentId,
+      csrf_token: this.attachmentCsrfToken()
+    })
     const response = await fetch('/agui_chat/attachment/delete', {
       method: 'POST',
       credentials: this.props.credentials || 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ attachment_id: attachmentId })
+      body
     })
     if (!response.ok) {
       throw new Error('附件删除失败。')
     }
+  }
+
+  private attachmentCsrfToken(): string {
+    const token = String(this.props.csrfToken || '').trim()
+    if (!token) {
+      throw new Error('附件请求缺少 CSRF 令牌。')
+    }
+    return token
   }
 
   async listWorkspace(path = ''): Promise<WorkspaceEntry[]> {

@@ -6,6 +6,7 @@ import { CandidateOption, CandidatePanel } from './CandidatePanel'
 import { ContextChip } from './ContextChip'
 import { IconButton } from './IconButton'
 import { InlineNotice } from './InlineNotice'
+import { PickerOption } from './PickerOption'
 import { PickerSurface } from './PickerSurface'
 
 describe('UI 基础组件', () => {
@@ -66,5 +67,13 @@ describe('UI 基础组件', () => {
     const notice = screen.getByRole('alert')
     expect(notice.className).toContain('border-b')
     expect(notice.className).toContain('text-destructive')
+  })
+
+  it('选择器选项区分激活态和选中态', () => {
+    render(<PickerOption active selected={false} density="compact">合同审计</PickerOption>)
+    const option = screen.getByRole('option', { name: '合同审计' })
+    expect(option.getAttribute('aria-selected')).toBe('false')
+    expect(option.className).toContain('border-l-primary')
+    expect(option.className).toContain('min-h-10')
   })
 })

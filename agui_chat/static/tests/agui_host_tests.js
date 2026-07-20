@@ -1,6 +1,7 @@
 odoo.define("agui_chat.tests.host", function (require) {
     "use strict";
 
+    var core = require("web.core");
     var Adapter = require("agui_chat.model_adapter");
     var ChatBridge = require("agui_chat.host_bridge");
     var Commands = require("agui_chat.command_registry");
@@ -96,6 +97,22 @@ odoo.define("agui_chat.tests.host", function (require) {
     }
 
     QUnit.module("agui_chat v2 host adapter");
+
+    QUnit.test("host bridge forwards the Odoo session CSRF token", function (assert) {
+        var bridge = new ChatBridge.HostBridge({
+            call: function (_service, method) {
+                if (method === "getMenuOptions") {
+                    return [];
+                }
+                throw new Error("Unexpected host call: " + method);
+            },
+        });
+        bridge.config = {limits: {}, agent: {}};
+
+        var props = bridge.mountProps({protocol: "agui.odoo.v2"}, "dock");
+
+        assert.strictEqual(props.csrfToken, core.csrf_token);
+    });
 
     QUnit.test("chat dock stays interactive above modal backdrops", function (assert) {
         assert.expect(2);

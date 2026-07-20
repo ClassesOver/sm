@@ -89,7 +89,7 @@ class AguiChatController(http.Controller):
             "database": request.session.db,
         }
 
-    @http.route("/agui_chat/attachment/upload", type="http", auth="user", methods=["POST"], csrf=False)
+    @http.route("/agui_chat/attachment/upload", type="http", auth="user", methods=["POST"])
     def attachment_upload(self, **kwargs):
         try:
             session = self._load_session(kwargs.get("chat_session_id"))
@@ -131,11 +131,10 @@ class AguiChatController(http.Controller):
             ("X-Content-Type-Options", "nosniff"),
         ])
 
-    @http.route("/agui_chat/attachment/delete", type="http", auth="user", methods=["POST"], csrf=False)
+    @http.route("/agui_chat/attachment/delete", type="http", auth="user", methods=["POST"])
     def attachment_delete(self, **kwargs):
         try:
-            payload = json.loads(request.httprequest.data.decode("utf-8") or "{}")
-            attachment = self._load_attachment(payload.get("attachment_id"))
+            attachment = self._load_attachment(kwargs.get("attachment_id"))
             attachment.sudo().unlink()
             return self._json_response({"ok": True})
         except (ValueError, AccessError) as error:

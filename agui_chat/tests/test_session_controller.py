@@ -12,6 +12,13 @@ from odoo.addons.agui_chat.controllers import main as controller_main
 
 class TestAguiChatSessionController(TransactionCase):
 
+    def test_attachment_routes_use_odoo_csrf_validation(self):
+        upload_routing = controller_main.AguiChatController.attachment_upload.routing
+        delete_routing = controller_main.AguiChatController.attachment_delete.routing
+
+        self.assertTrue(upload_routing.get("csrf", True))
+        self.assertTrue(delete_routing.get("csrf", True))
+
     def test_save_returns_structured_result_when_session_was_deleted(self):
         session = self.env["agui.chat.session"]._create_session()
         session_id = session.id

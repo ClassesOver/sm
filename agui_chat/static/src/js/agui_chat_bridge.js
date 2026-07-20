@@ -2,6 +2,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
     "use strict";
 
     var ajax = require("web.ajax");
+    var core = require("web.core");
 
     var PROTOCOL = "agui.odoo.v2";
     var MODULE_VERSION = "12.0.8.7.0";
@@ -181,6 +182,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
                 name: config.user_name,
             },
             credentials: config.credentials || "same-origin",
+            csrfToken: core.csrf_token || "",
             limits: {
                 requestBytes: config.limits && config.limits.request_bytes,
                 messages: config.limits && config.limits.messages,

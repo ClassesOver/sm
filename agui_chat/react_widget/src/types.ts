@@ -635,6 +635,7 @@ export interface AguiChatProps {
   context?: unknown
   headers?: HeadersInit
   credentials?: RequestCredentials
+  csrfToken?: string
   limits?: {
     requestBytes?: number
     messages?: number
