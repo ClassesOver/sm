@@ -6,12 +6,12 @@ from ag_ui.core import EventType, RunAgentInput, RunErrorEvent
 from ag_ui.encoder import EventEncoder
 from agno.os.interfaces.agui.input import extract_tool_messages, extract_user_input
 from agno.os.interfaces.agui.router import run_entity
-from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from .agents import create_assistants
-from .application import create_agentos_app
+from .application import ApplicationContext, create_agentos_app
 from .branch import (
     BranchError,
     capability_user_id,
@@ -20,6 +20,7 @@ from .branch import (
     validate_branch_identity,
 )
 from .database import check_database
+from .instructions import AGENT_INSTRUCTIONS
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
 from .skills import load_skills
@@ -69,11 +70,14 @@ logger = logging.getLogger(__name__)
 
 settings = AgentSettings.from_environment()
 
-
-base_app = FastAPI(title="Odoo AG-UI 开发智能体")
 workspace_secret = settings.workspace_hmac_secret
 agent_skills = load_skills()
 workspace_service = WorkspaceService(secret=workspace_secret)
+router = APIRouter()
+
+
+def _application_context(request: Request) -> ApplicationContext:
+    return request.app.state.agentos_context
 
 
 def _strip_trailing_punctuation(value: str) -> str:
@@ -215,8 +219,8 @@ async def _read_limited_body(request: Request, limit: int) -> bytes | None:
     return body
 
 
-@base_app.middleware("http")
 async def require_workspace_capability(request: Request, call_next):
+    context = _application_context(request)
     path = request.url.path.rstrip("/") or "/"
     protected = path == "/agui" or path.startswith("/workspace")
     if not protected:
@@ -227,7 +231,7 @@ async def require_workspace_capability(request: Request, call_next):
     try:
         request.state.capability = verify_capability(
             request.headers.get("X-AGUI-Capability", ""),
-            workspace_secret,
+            context.settings.workspace_hmac_secret,
             thread,
         )
     except CapabilityError as error:
@@ -250,7 +254,7 @@ async def require_workspace_capability(request: Request, call_next):
             if branch:
                 source_claims = verify_capability(
                     request.headers.get("X-AGUI-Source-Capability", ""),
-                    workspace_secret,
+                    context.settings.workspace_hmac_secret,
                     branch.source_thread_id,
                 )
                 validate_branch_identity(request.state.capability, source_claims)
@@ -262,13 +266,14 @@ async def require_workspace_capability(request: Request, call_next):
     return await call_next(request)
 
 
-@base_app.get("/config", include_in_schema=False)
-async def integration_config():
+@router.get("/config", include_in_schema=False)
+async def integration_config(request: Request):
+    context = _application_context(request)
     return {
         "protocol": PROTOCOL,
         "bundle_version": BUNDLE_VERSION,
         "command_catalog_hash": COMMAND_CATALOG_HASH,
-        "skills": agent_skills.public_metadata(),
+        "skills": context.skills.public_metadata(),
         "limits": {
             "run_request_bytes": MAX_RUN_REQUEST_BYTES,
             "workspace_upload_request_bytes": MAX_WORKSPACE_UPLOAD_REQUEST_BYTES,
@@ -277,28 +282,28 @@ async def integration_config():
     }
 
 
-def _readiness_checks():
+def _readiness_checks(context: ApplicationContext):
     checks = {
         "postgresql": False,
         "sandbox_registry": False,
-        "hmac": len(workspace_secret.encode("utf-8")) >= 32,
+        "hmac": len(context.settings.workspace_hmac_secret.encode("utf-8")) >= 32,
     }
     try:
-        check_database()
+        check_database(context.settings.database_url)
         checks["postgresql"] = True
     except Exception:
         return checks
     try:
-        workspace_service.registry.ensure_initialized()
+        context.workspace_service.registry.ensure_initialized()
         checks["sandbox_registry"] = True
     except Exception:
         pass
     return checks
 
 
-@base_app.get("/ready", include_in_schema=False)
-async def readiness():
-    checks = await run_in_threadpool(_readiness_checks)
+@router.get("/ready", include_in_schema=False)
+async def readiness(request: Request):
+    checks = await run_in_threadpool(_readiness_checks, _application_context(request))
     ready = all(checks.values())
     return JSONResponse(
         {"status": "ready" if ready else "not_ready", "checks": checks},
@@ -318,43 +323,46 @@ def _workspace_error(error: Exception):
     raise HTTPException(status_code=502, detail="workspace_backend_failed") from error
 
 
-@base_app.get("/workspace/files", include_in_schema=False)
+@router.get("/workspace/files", include_in_schema=False)
 async def workspace_files(request: Request, threadId: str, path: str = ""):
+    context = _application_context(request)
     _check_thread(request, threadId)
     try:
-        entries = await run_in_threadpool(workspace_service.list_files, threadId, path)
+        entries = await run_in_threadpool(context.workspace_service.list_files, threadId, path)
         return {"ok": True, "path": path, "entries": entries}
     except Exception as error:
         _workspace_error(error)
 
 
-@base_app.post("/workspace/upload", include_in_schema=False)
+@router.post("/workspace/upload", include_in_schema=False)
 async def workspace_upload(
     request: Request,
     threadId: str = Form(...),
     path: str = Form(...),
     file: UploadFile = File(...),
 ):
+    context = _application_context(request)
     _check_thread(request, threadId)
     content = await file.read(10 * 1024 * 1024 + 1)
     try:
-        entry = await run_in_threadpool(workspace_service.upload, threadId, path, content)
+        entry = await run_in_threadpool(context.workspace_service.upload, threadId, path, content)
         return {"ok": True, "entry": entry}
     except Exception as error:
         _workspace_error(error)
 
 
-@base_app.get("/workspace/file", include_in_schema=False)
+@router.get("/workspace/file", include_in_schema=False)
 async def workspace_file(
     request: Request,
     threadId: str,
     path: str,
     download: bool = False,
 ):
+    context = _application_context(request)
     _check_thread(request, threadId)
     try:
         content, mime_type = await run_in_threadpool(
-            workspace_service.file_bytes,
+            context.workspace_service.file_bytes,
             threadId,
             path,
         )
@@ -391,13 +399,14 @@ async def workspace_file(
     )
 
 
-@base_app.delete("/workspace/file", include_in_schema=False)
+@router.delete("/workspace/file", include_in_schema=False)
 async def workspace_delete_file(request: Request, payload: dict = Body(...)):
+    context = _application_context(request)
     thread_id = str(payload.get("threadId") or "")
     _check_thread(request, thread_id)
     try:
         await run_in_threadpool(
-            workspace_service.delete_file,
+            context.workspace_service.delete_file,
             thread_id,
             str(payload.get("path") or ""),
             bool(payload.get("recursive")),
@@ -407,12 +416,13 @@ async def workspace_delete_file(request: Request, payload: dict = Body(...)):
         _workspace_error(error)
 
 
-@base_app.delete("/workspace/sandbox", include_in_schema=False)
+@router.delete("/workspace/sandbox", include_in_schema=False)
 async def workspace_destroy(request: Request, payload: dict = Body(...)):
+    context = _application_context(request)
     thread_id = str(payload.get("threadId") or "")
     _check_thread(request, thread_id)
     try:
-        deleted = await run_in_threadpool(workspace_service.destroy, thread_id)
+        deleted = await run_in_threadpool(context.workspace_service.destroy, thread_id)
     except Exception as error:
         _workspace_error(error)
     if not deleted:
@@ -420,37 +430,6 @@ async def workspace_destroy(request: Request, payload: dict = Body(...)):
     return {"ok": True, "deleted": True}
 
 
-AGENT_INSTRUCTIONS = [
-    "使用中文简洁回答。",
-    "对话历史由 AgentOS PostgreSQL 自动加载最近 10 次运行；本次请求只携带当前用户消息或连续工具结果。",
-    "涉及 Odoo 业务数据时仅使用请求中的 Odoo 页面状态和本次请求明确选择的菜单或记录候选；页面状态无法确认的数据不要猜测。",
-    "所有工具操作都必须先执行、后回答；收到工具成功结果前，不得声称操作已完成。查询结论只能来自工具结果，不得根据预期结果猜测。",
-    "工具返回确认中、排队中或准备完成不等于执行成功，必须准确说明当前状态。",
-    "多步骤操作必须等待全部必要步骤完成后才能声称完成；失败或部分成功时必须准确说明已完成、未完成和失败部分。",
-    "每次页面工具返回新快照后，必须重新发现当前 viewType、可见字段、动态 modifiers、capabilities 和本次 Run 声明的工具；旧快照字段、记录、候选和控件 token 一律不得复用。",
-    "调用 odoo.open_menu 时，target 必须原样复制“Odoo 宿主快照”中的 pageTarget；调用其他 Odoo 页面工具时，target 必须原样复制其中的 viewTarget。不得从 action.resId 推导当前表单记录。",
-    "上下文存在“已选 Odoo 菜单”且 navigationRequired 为 true 时，本轮第一个且唯一可调用的页面工具是 odoo.open_menu：用其中的 menuId 和当前 PageTarget 调用；只能使用该菜单，不能改选或猜测其他菜单。菜单名称只用于定位，即使包含“新建”或“创建”也不代表用户要求创建。导航后必须等待客户端返回新快照再决定下一步；用户只选择菜单而未输入其他要求时，打开菜单后停止。",
-    "上下文存在“已选 Odoo 引用”时，只能使用其中原样提供的 token 和绑定动作，不得改选对象、猜测对象或把 read/view 动作升级为 edit。多个 read 记录必须先用当前 PageTarget 一次调用 odoo.read_mentioned_records 批量读取；唯一的页面动作随后执行，并使用当前 PageTarget。菜单 open/create 分别调用 odoo.open_mentioned_menu，记录 view/edit 调用 odoo.open_mentioned_record，收藏或临时筛选 apply 调用 odoo.apply_mentioned_filter。",
-    "收藏筛选和当前筛选绑定为 read 时必须调用 odoo.business.report.filters，绑定为 apply 时仍调用 odoo.apply_mentioned_filter；两者不得互相降级。菜单、记录和当前页面记录候选不能作为 Pandas 报表数据源。",
-    "筛选报表必须先调用 describe。总行数不超过 5000 时才可调用 detail；超过后必须明确调用 aggregate。优先采用 describe 返回的原有 groupBy，调整维度或指标时只能选择返回的字段和聚合白名单。",
-    "多个筛选默认分别分析。只有用户明确要求且字段结构兼容时才调用 pandas_concat_datasets 纵向合并；禁止自动 join。报表工具只接受 Odoo 报表命令生成的数据路径或用户明确加入当前 thread 工作区的 CSV、XLSX、JSON、JSONL 文件。",
-    "报表回答必须注明筛选标签、行数、明细或聚合口径、用户时区、币种规则和生成时间。",
-    "对象引用工具返回 mention_token_expired、mention_permission_revoked、mention_resource_unavailable 或 policy_denied 时，必须准确报告令牌过期、权限撤销、资源不可用或策略拒绝，不得改用其他对象或旧页面工具绕过。",
-    "上下文不存在“已选 Odoo 菜单”时，只能操作当前 action；当前 action 无法满足意图时，请用户用 @ 选择菜单，不要从其他菜单中猜目标。",
-    '筛选只能使用当前快照 capabilities.filterFields 中的字段和运算符，提交 JSON domain 与简短可见标签；即使只有一个条件也必须使用条件列表，例如 [["id", "=", 1]]；禁止字符串 domain、点号字段和表达式。',
-    "严格区分搜索、查看和编辑记录。用户仅要求搜索、筛选或查找记录时，只调用 odoo.apply_filter；无论命中数量多少都必须停止，不得调用 odoo.open_record。只有用户明确要求打开、查看或编辑记录时，才先按名称调用 odoo.apply_filter：唯一命中后立即使用返回的记录 token 调用 odoo.open_record，多条命中时停止并等待用户选择。打开或查看必须使用 readonly 模式；只有用户明确要求编辑或修改时才使用 edit 模式，不得因唯一命中自行升级用户意图。“已选 Odoo 记录候选项”只能在其 snapshotId 和 hostRevision 仍匹配时使用。若工具返回 policy_denied，应准确说明服务器策略拒绝了操作，不得归因于视图或 token。",
-    "仅当用户消息明确要求创建，且已完成已选菜单导航（如有）后，才调用 odoo.open_create 进入空白原生新建表单并等待新快照；不得从菜单名称中的“新建”或“创建”推断创建意图。随后只能按新快照真实可见可写字段和控件继续暂存、校验与保存，不得假设固定 action、view、模型或字段。",
-    "跨模型操作只能使用新快照中真实可见的 Kanban 控件 token 逐步导航；控件语义不明确或存在多个合理路径时请用户选择，不能猜测。",
-    "每轮最多跟进四次客户端页面工具；达到上限后明确停止，并请用户继续发送消息完成剩余操作。",
-    "页面操作必须通过对应工具调用实现，不能用文字代替执行；收到工具成功结果前，严禁声称已打开、已进入、已修改、已保存或已完成。",
-    "One2many 明细必须使用 capabilities.x2many 中的 fieldToken、行 token、schemaSource、schemaHash、childFieldCount、operations 和 unsupportedReason；父表单快照不提供完整 childFields 或明细 values，新增、查看和编辑必须调用 odoo.open_x2many_record 或 odoo.open_x2many_create 进入真实明细表单，禁止猜测未加载字段、行 ID、嵌套 One2many 或临时行别名。",
-    "数百行 One2many 导入只允许对已保存且无脏数据的父表单使用已注册 profile：先以字段 token 和聊天附件 ID 调用 odoo.prepare_x2many_import，再轮询 odoo.get_x2many_import_status；仅在 ready 后用原样 jobToken 调用动态声明的 odoo.business.x2many_import.execute，完成后调用 odoo.reload_current_form。不得构造行数据、schema 摘要或绕过确认链。",
-    "新建单据、存在 onchange/domain 依赖或需要分步填写的表单，必须按“能力发现 → odoo.stage_current_form 暂存依赖标量 → 等待 onchange 新快照 → odoo.search_relation 选择候选并继续暂存 → odoo.validate_current_form → 经独立确认后 odoo.save_current_form”执行；任何一步失败都停止，不能绕过原生校验或直接猜关系 ID。",
-    "用户只要求进入编辑模式且未提供字段和值时，第一个响应只能调用 odoo.enter_edit_mode，不得先输出文字或询问字段。odoo.patch_current_form 保留“修改并立即保存”语义，只用于用户明确要求立即保存且不存在待 onchange/domain 依赖的独立修改；复杂或已暂存表单不得改用 patch_current_form。",
-    "odoo.business.* 只有在本次 Run 动态声明且用户意图匹配其精确 schema 时才能调用；不得构造未声明业务命令，不得把业务命令降级为通用 RPC、CRUD 或任意模型方法，提交和审批类命令必须等待独立确认结果。",
-    "上下文存在“已选智能体技能”时，必须先对每个手动选择的技能按原样调用 get_skill_instructions；手动选择不代表禁止自动使用其他可用技能。",
-    "工作区只属于当前 thread。读取目录和文本使用 workspace_list_files、workspace_read_file；新建文件使用 workspace_write_file，移动或重命名使用 workspace_move_file，这些操作不需要确认，但都不能覆盖已有目标。覆盖文件使用 workspace_replace_file，删除文件或目录使用 workspace_delete_file，执行可信技能脚本使用 run_skill_script；这三类操作需要确认。不存在任意 Shell 或 Python 执行工具。报表工具可自动在当前 thread 的 reports/ UUID 路径生成数据集和图表。",
-]
 assistant, edit_mode_assistant = create_assistants(
     settings,
     agent_skills,
@@ -460,8 +439,9 @@ assistant, edit_mode_assistant = create_assistants(
 )
 
 
-@base_app.post("/agui", include_in_schema=False)
+@router.post("/agui", include_in_schema=False)
 async def run_agui(request: Request, run_input: RunAgentInput):
+    context = _application_context(request)
     claims = request.state.capability
     user_id = capability_user_id(claims)
     branch = getattr(request.state, "branch", None)
@@ -491,14 +471,14 @@ async def run_agui(request: Request, run_input: RunAgentInput):
 
         if branch:
             source = run_branch(
-                assistant,
-                workspace_service,
+                context.assistant,
+                context.workspace_service,
                 run_input,
                 branch,
                 user_id,
             )
         elif not force_edit_tool:
-            source = run_entity(assistant, run_input, user_id=user_id)
+            source = run_entity(context.assistant, run_input, user_id=user_id)
         elif not tool_declared:
             _audit_tool_route(
                 request,
@@ -513,7 +493,7 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             )
         else:
             guarded_source = run_entity(
-                edit_mode_assistant,
+                context.edit_mode_assistant,
                 run_input,
                 user_id=user_id,
             )
@@ -545,14 +525,23 @@ async def run_agui(request: Request, run_input: RunAgentInput):
     )
 
 
-agent_os, app = create_agentos_app(
+def create_base_app(context: ApplicationContext) -> FastAPI:
+    application = FastAPI(title="Odoo AG-UI 开发智能体")
+    application.state.agentos_context = context
+    application.middleware("http")(require_workspace_capability)
+    application.include_router(router)
+    return application
+
+
+application_context = ApplicationContext(
     settings,
-    base_app,
+    workspace_service,
+    agent_skills,
     assistant,
-    workspace_service=workspace_service,
-    skills=agent_skills,
-    edit_mode_assistant=edit_mode_assistant,
+    edit_mode_assistant,
 )
+base_app = create_base_app(application_context)
+agent_os, app = create_agentos_app(application_context, base_app)
 
 
 if __name__ == "__main__":

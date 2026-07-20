@@ -39,3 +39,10 @@ def test_database_url_uses_postgres_environment(monkeypatch):
         "postgresql+psycopg://agent%20user:p%40ss%3A%2Fword@127.0.0.1:55432/agent%20data"
     )
     assert psycopg_db_url(url).startswith("postgresql://")
+
+
+def test_database_url_does_not_validate_unrelated_agentos_settings(monkeypatch):
+    clear_database_env(monkeypatch)
+    monkeypatch.setenv("AGENT_OS_PORT", "invalid")
+
+    assert agent_db_url() == DEFAULT_AGENT_DB_URL

@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 import httpx
@@ -28,7 +29,13 @@ def anyio_backend():
 
 
 @pytest.fixture
-async def client():
+async def client(monkeypatch):
+    context = app_module.base_app.state.agentos_context
+    test_context = replace(
+        context,
+        settings=replace(context.settings, workspace_hmac_secret=SECRET),
+    )
+    monkeypatch.setattr(app_module.base_app.state, "agentos_context", test_context)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app_module.app),
         base_url="http://testserver",
@@ -108,6 +115,9 @@ def direct_request(branch=None):
     return SimpleNamespace(
         state=SimpleNamespace(capability=claims, branch=branch),
         headers={},
+        app=SimpleNamespace(
+            state=SimpleNamespace(agentos_context=app_module.application_context),
+        ),
     )
 
 
@@ -137,9 +147,7 @@ class ClosingEventStream:
 
 
 @pytest.mark.anyio
-async def test_public_config_and_protected_routes(monkeypatch, client):
-    monkeypatch.setattr(app_module, "workspace_secret", SECRET)
-
+async def test_public_config_and_protected_routes(client):
     config = await client.get("/config")
     assert config.status_code == 200
     assert set(config.json()) == {
@@ -183,8 +191,7 @@ async def test_public_config_and_protected_routes(monkeypatch, client):
 
 
 @pytest.mark.anyio
-async def test_branch_requires_controlled_props_and_matching_source_capability(monkeypatch, client):
-    monkeypatch.setattr(app_module, "workspace_secret", SECRET)
+async def test_branch_requires_controlled_props_and_matching_source_capability(client):
     base_payload = {
         "threadId": "target-thread",
         "runId": "request-run",
@@ -237,7 +244,6 @@ async def test_limited_json_body_is_replayed_to_workspace_route(monkeypatch, cli
     async def inline(function, *args, **kwargs):
         return function(*args, **kwargs)
 
-    monkeypatch.setattr(app_module, "workspace_secret", SECRET)
     monkeypatch.setattr(app_module, "run_in_threadpool", inline)
     monkeypatch.setattr(app_module.workspace_service, "destroy", lambda _thread: False)
 
@@ -266,7 +272,6 @@ async def test_http_上传保持覆盖路径的兼容调用语义(monkeypatch, c
         calls.append((thread, path, content))
         return {"path": path, "size": len(content), "status": "synced"}
 
-    monkeypatch.setattr(app_module, "workspace_secret", SECRET)
     monkeypatch.setattr(app_module, "run_in_threadpool", inline)
     monkeypatch.setattr(app_module.workspace_service, "upload", upload)
     headers = {
@@ -296,8 +301,7 @@ async def test_http_上传保持覆盖路径的兼容调用语义(monkeypatch, c
 
 
 @pytest.mark.anyio
-async def test_invalid_capability_is_rejected_before_large_run_body(monkeypatch, client):
-    monkeypatch.setattr(app_module, "workspace_secret", SECRET)
+async def test_invalid_capability_is_rejected_before_large_run_body(client):
 
     response = await client.post(
         "/agui",
@@ -309,8 +313,7 @@ async def test_invalid_capability_is_rejected_before_large_run_body(monkeypatch,
 
 
 @pytest.mark.anyio
-async def test_chunked_request_limits_return_413(monkeypatch, client):
-    monkeypatch.setattr(app_module, "workspace_secret", SECRET)
+async def test_chunked_request_limits_return_413(client):
     headers = {
         "X-AGUI-Thread": "thread-1",
         "X-AGUI-Capability": capability(),
@@ -357,7 +360,7 @@ async def test_ready_reports_all_required_checks(monkeypatch, client):
     monkeypatch.setattr(
         app_module,
         "_readiness_checks",
-        lambda: {
+        lambda _context: {
             "postgresql": True,
             "sandbox_registry": True,
             "hmac": True,
@@ -370,7 +373,7 @@ async def test_ready_reports_all_required_checks(monkeypatch, client):
     monkeypatch.setattr(
         app_module,
         "_readiness_checks",
-        lambda: {
+        lambda _context: {
             "postgresql": True,
             "sandbox_registry": False,
             "hmac": True,

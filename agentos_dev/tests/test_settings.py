@@ -33,7 +33,13 @@ def test_environment_precedes_file_and_file_populates_missing_values(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "name,value", [("AGENT_OS_PORT", "x"), ("AGENT_OS_PORT", "0"), ("AGENT_OS_WORKERS", "-1")]
+    "name,value",
+    [
+        ("AGENT_OS_PORT", "x"),
+        ("AGENT_OS_PORT", "0"),
+        ("AGENT_OS_PORT", "65536"),
+        ("AGENT_OS_WORKERS", "-1"),
+    ],
 )
 def test_invalid_port_and_workers(name, value):
     with pytest.raises(ValueError, match=name):

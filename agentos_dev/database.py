@@ -2,13 +2,13 @@ import psycopg
 from agno.db.postgres import PostgresDb
 
 from .settings import DEFAULT_AGENT_DB_URL as SETTINGS_DEFAULT_AGENT_DB_URL
-from .settings import AgentSettings
+from .settings import database_url_from_environment
 
 DEFAULT_AGENT_DB_URL = SETTINGS_DEFAULT_AGENT_DB_URL
 
 
 def agent_db_url() -> str:
-    return AgentSettings.from_environment(load_env_file=False).database_url
+    return database_url_from_environment()
 
 
 def psycopg_db_url(db_url: str | None = None) -> str:

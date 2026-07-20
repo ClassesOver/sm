@@ -21,7 +21,13 @@ def _flag(value: str | None, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _positive_int(values: MutableMapping[str, str], name: str, default: int) -> int:
+def _positive_int(
+    values: MutableMapping[str, str],
+    name: str,
+    default: int,
+    *,
+    maximum: int | None = None,
+) -> int:
     raw = values.get(name, str(default)).strip()
     try:
         value = int(raw)
@@ -29,6 +35,8 @@ def _positive_int(values: MutableMapping[str, str], name: str, default: int) -> 
         raise ValueError(f"{name} 必须是整数") from error
     if value < 1:
         raise ValueError(f"{name} 必须大于 0")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} 必须小于或等于 {maximum}")
     return value
 
 
@@ -52,6 +60,13 @@ def _database_url(values: MutableMapping[str, str]) -> str:
     port = (values.get("AGENT_POSTGRES_PORT") or "55432").strip()
     database = quote((values.get("AGENT_POSTGRES_DB") or "dev").strip(), safe="")
     return f"postgresql+psycopg://{credentials}@{host}:{port}/{database}"
+
+
+def database_url_from_environment(
+    environ: MutableMapping[str, str] | None = None,
+) -> str:
+    values = os.environ if environ is None else environ
+    return _database_url(values)
 
 
 @dataclass(frozen=True)
@@ -98,13 +113,13 @@ class AgentSettings:
             openai_base_url=values.get("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL),
             openai_api_key=values.get("OPENAI_API_KEY"),
             host=values.get("AGENT_OS_HOST", "127.0.0.1"),
-            port=_positive_int(values, "AGENT_OS_PORT", 7777),
+            port=_positive_int(values, "AGENT_OS_PORT", 7777, maximum=65535),
             workers=_positive_int(values, "AGENT_OS_WORKERS", 4),
             reload=_flag(values.get("AGENT_OS_RELOAD")),
             access_log=_flag(values.get("AGENT_OS_ACCESS_LOG")),
             debug=_flag(values.get("AGENT_DEBUG")),
             cors_allowed_origins=origins,
-            database_url=_database_url(values),
+            database_url=database_url_from_environment(values),
             skills_dir=values.get("AGENT_SKILLS_DIR"),
             skills_trusted_uid=values.get("AGENT_SKILLS_TRUSTED_UID"),
             workspace_hmac_secret=values.get("AGUI_WORKSPACE_HMAC_SECRET", ""),
