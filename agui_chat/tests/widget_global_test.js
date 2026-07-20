@@ -80,15 +80,20 @@ function main() {
         surfaceStyles.indexOf("    .o_agui_chat_dock_toggle {"),
         surfaceStyles.indexOf("    .o_agui_chat_dock,")
     );
-    assert(surfaceStyles.includes("--main-color: #7C7BAD;"));
-    assert(surfaceStyles.includes("--main-hover-color: #5f5e97;"));
-    assert(toggleStyles.includes("background: var(--main-color);"));
-    assert(toggleStyles.includes("background: var(--main-hover-color);"));
+    assert(!surfaceStyles.includes("    --main-color: #7C7BAD;"));
+    assert(!surfaceStyles.includes("    --main-hover-color: #5f5e97;"));
+    assert(toggleStyles.includes("background: var(--main-color, #7C7BAD);"));
+    assert(toggleStyles.includes("background: var(--main-hover-color, #5f5e97);"));
+    assert(toggleStyles.includes("border: 1px solid var(--font-main-color, #7C7BAD);"));
+    assert(toggleStyles.includes("border-color: var(--font-main-hover-color, #5f5e97);"));
+    assert(!toggleStyles.includes("background-image: none;"));
     assert(toggleStyles.includes(".o_agui_chat_toggle_icon"));
     assert(toggleStyles.includes('content: "\\f27b";'));
     assert(!toggleStyles.includes(".o_agui_chat_dock_toggle::after"));
     const toggleVariables = Array.from(new Set(toggleStyles.match(/--[\w-]+/g) || [])).sort();
-    assert.deepStrictEqual(toggleVariables, ["--main-color", "--main-hover-color"]);
+    assert.deepStrictEqual(toggleVariables, [
+        "--font-main-color", "--font-main-hover-color", "--main-color", "--main-hover-color",
+    ]);
     assert(!surfaceStyles.includes(".o_agui_chat_standalone_overlay {\n        border:"));
 
     assert(controller.includes('"/agui_chat/host_command"'));

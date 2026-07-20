@@ -4,14 +4,10 @@
     --agui-float-left: 16px;
     --agui-float-top: 16px;
     --agui-float-width: 720px;
-    --main-color: #7C7BAD;
-    --main-hover-color: #5f5e97;
-
     .o_agui_chat_dock_toggle {
         align-items: center;
-        background: var(--main-color);
-        background-image: none;
-        border: 1px solid var(--main-color);
+        background: var(--main-color, #7C7BAD);
+        border: 1px solid var(--font-main-color, #7C7BAD);
         border-radius: 50%;
         bottom: 20px;
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08),
@@ -34,24 +30,24 @@
         z-index: 1055;
     }
     .o_agui_chat_dock_toggle:hover {
-        background: var(--main-hover-color);
-        border-color: var(--main-hover-color);
+        background: var(--main-hover-color, #5f5e97);
+        border-color: var(--font-main-hover-color, #5f5e97);
         box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06),
             0 6px 18px rgba(15, 23, 42, 0.16);
         color: #ffffff;
         transform: translateY(-1px);
     }
     .o_agui_chat_dock_toggle:focus {
-        background: var(--main-color);
-        border-color: var(--main-color);
-        box-shadow: 0 0 0 3px var(--main-color),
+        background: var(--main-color, #7C7BAD);
+        border-color: var(--font-main-color, #7C7BAD);
+        box-shadow: 0 0 0 3px var(--font-main-color, #7C7BAD),
             0 4px 14px rgba(15, 23, 42, 0.14);
         color: #ffffff;
         outline: none;
     }
     .o_agui_chat_dock_toggle:active {
-        background: var(--main-hover-color);
-        border-color: var(--main-hover-color);
+        background: var(--main-hover-color, #5f5e97);
+        border-color: var(--font-main-hover-color, #5f5e97);
         box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.06),
             0 2px 8px rgba(15, 23, 42, 0.14);
         color: #ffffff;
