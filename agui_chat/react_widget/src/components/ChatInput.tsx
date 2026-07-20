@@ -117,6 +117,7 @@ export function ChatInput({
   const [skillQuery, setSkillQuery] = useState<SkillQuery | null>(null)
   const [skillSearch, setSkillSearch] = useState('')
   const [skillOpen, setSkillOpen] = useState(false)
+  const [skillReturnQuery, setSkillReturnQuery] = useState<MentionQuery | null>(null)
   const [sending, setSending] = useState(false)
   const [items, setItems] = useState<UploadItem[]>([])
   const [dragging, setDragging] = useState(false)
@@ -140,6 +141,7 @@ export function ChatInput({
       if (!insideForm) {
         setMenuQuery(null)
         setSkillOpen(false)
+        setSkillReturnQuery(null)
       }
     }
     document.addEventListener('pointerdown', closeOutside)
@@ -272,6 +274,25 @@ export function ChatInput({
   const canSend = !running && !sending && !disabled && !items.some((item) => item.status !== 'ready') &&
     (!!value.trim() || readyAttachments.length > 0 || !!menuMention || selectedSkills.length > 0 || workspaceReferences.length > 0)
   const mentionSkillQuery = skillOpen && skillQuery && value[skillQuery.start] === '@' ? skillQuery : null
+  const mentionPickerQuery = menuQuery || skillReturnQuery
+
+  const returnToMentionCategories = () => {
+    if (!skillReturnQuery) return
+    const query = { ...skillReturnQuery }
+    const mentionText = `@${query.query}`
+    setValue((current) => current.slice(query.start, query.end) === mentionText
+      ? current
+      : current.slice(0, query.start) + mentionText + current.slice(query.start))
+    setSkillOpen(false)
+    setSkillQuery(null)
+    setSkillSearch('')
+    setMenuQuery(query)
+    setSkillReturnQuery(null)
+    window.setTimeout(() => {
+      textareaRef.current?.focus({ preventScroll: true })
+      textareaRef.current?.setSelectionRange(query.end, query.end)
+    }, 0)
+  }
 
   const selectMenu = (option: MenuMentionOption) => {
     if (!menuQuery) return
@@ -293,6 +314,7 @@ export function ChatInput({
       return [{ ...skill, valid: true }]
     })
     setSkillOpen(false)
+    setSkillReturnQuery(null)
     if (skillQuery) {
       setValue((current) => current.slice(0, skillQuery.start) + current.slice(skillQuery.end))
       setSkillQuery(null)
@@ -326,6 +348,7 @@ export function ChatInput({
     setSelectedSkills([])
     setMenuQuery(null)
     setSkillOpen(false)
+    setSkillReturnQuery(null)
     items.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl))
     setItems([])
     window.setTimeout(() => textareaRef.current?.focus(), 0)
@@ -445,22 +468,28 @@ export function ChatInput({
               if (nextMention?.query) {
                 setSkillQuery(nextMention)
                 setSkillSearch(nextMention.query)
+                setSkillReturnQuery(nextMention)
                 setMenuQuery(null)
               } else {
                 setSkillQuery(null)
                 setSkillSearch('')
                 setSkillOpen(false)
+                setSkillReturnQuery(null)
                 setMenuQuery(nextMention)
               }
             } else if (nextSkillQuery && agentSkills.length) {
               setSkillQuery(nextSkillQuery)
               setSkillSearch(nextSkillQuery.query)
               setSkillOpen(true)
+              setSkillReturnQuery(null)
               setMenuQuery(null)
             } else {
               setSkillQuery(null)
               setMenuQuery(nextMention)
-              if (nextMention) setSkillOpen(false)
+              if (nextMention) {
+                setSkillOpen(false)
+                setSkillReturnQuery(null)
+              }
             }
           }} onClick={(event) => {
             const cursor = event.currentTarget.selectionStart ?? value.length
@@ -469,6 +498,7 @@ export function ChatInput({
               setSkillQuery(nextSkill)
               setSkillSearch(nextSkill.query)
               setSkillOpen(true)
+              setSkillReturnQuery(null)
               setMenuQuery(null)
             } else {
               const nextMention = menuQueryAtCursor(value, cursor)
@@ -477,11 +507,12 @@ export function ChatInput({
                 setSkillOpen(false)
                 setSkillQuery(null)
                 setSkillSearch('')
+                setSkillReturnQuery(null)
               }
             }
           }} onKeyDown={onKeyDown} onPasteCapture={onPaste} aria-autocomplete="list" aria-expanded={Boolean(menuQuery || skillOpen)} aria-controls={skillOpen ? 'agui-skill-options' : menuQuery ? 'agui-mention-options' : undefined} />
-          {menuQuery ? <MentionPicker ref={mentionPickerRef} open query={menuQuery} menuOptions={menuOptions} onSelectMenu={selectMenu} onOpenSkills={(typedQuery) => { const currentQuery = typedQuery || menuQuery; if (typedQuery) { setSkillQuery(currentQuery); setSkillSearch(currentQuery.query); setSkillOpen(true); setMenuQuery(null); return } const cursor = currentQuery.start; setValue((current) => current.slice(0, currentQuery.start) + current.slice(currentQuery.end)); setMenuQuery(null); setSkillQuery(null); setSkillSearch(''); setSkillOpen(true); window.setTimeout(() => textareaRef.current?.setSelectionRange(cursor, cursor), 0) }} onFocusInput={() => textareaRef.current?.focus({ preventScroll: true })} onClose={() => setMenuQuery(null)} /> : null}
-          <SkillPicker ref={skillPickerRef} open={skillOpen} query={skillSearch} skills={agentSkills} selected={selectedSkills} inlineQuery={Boolean(mentionSkillQuery)} onQueryChange={setSkillSearch} onToggle={toggleSkill} onClose={() => { setSkillOpen(false); setSkillQuery(null) }} />
+          {mentionPickerQuery ? <MentionPicker ref={mentionPickerRef} open={Boolean(menuQuery)} query={mentionPickerQuery} menuOptions={menuOptions} onSelectMenu={selectMenu} onOpenSkills={(typedQuery) => { const currentQuery = typedQuery || menuQuery || skillReturnQuery; if (!currentQuery) return; setSkillReturnQuery(currentQuery); if (typedQuery) { setSkillQuery(currentQuery); setSkillSearch(currentQuery.query); setSkillOpen(true); setMenuQuery(null); return } const cursor = currentQuery.start; setValue((current) => current.slice(0, currentQuery.start) + current.slice(currentQuery.end)); setMenuQuery(null); setSkillQuery(null); setSkillSearch(''); setSkillOpen(true); window.setTimeout(() => textareaRef.current?.setSelectionRange(cursor, cursor), 0) }} onFocusInput={() => textareaRef.current?.focus({ preventScroll: true })} onClose={() => { setMenuQuery(null); setSkillReturnQuery(null) }} /> : null}
+          <SkillPicker ref={skillPickerRef} open={skillOpen} query={skillSearch} skills={agentSkills} selected={selectedSkills} inlineQuery={Boolean(mentionSkillQuery)} onQueryChange={setSkillSearch} onToggle={toggleSkill} onBack={skillReturnQuery ? returnToMentionCategories : undefined} onClose={() => { setSkillOpen(false); setSkillQuery(null); setSkillReturnQuery(null) }} />
         </div>
         <div className="mt-2 flex min-h-8 items-center justify-between gap-2">
           <div className="flex items-center gap-1">
@@ -494,7 +525,7 @@ export function ChatInput({
               {icons.upload}
             </Button>
             </> : null}
-            {agentSkills.length ? <Button type="button" variant="ghost" size="icon" disabled={disabled || sending} className={cn('size-8 shrink-0 rounded-md border-border bg-background-panel text-secondary shadow-none hover:bg-accent', skillOpen && 'bg-accent text-primary')} aria-label="选择技能" title="选择技能" aria-pressed={skillOpen} onClick={() => { setSkillOpen((current) => !current); setSkillQuery(null); setSkillSearch(''); setMenuQuery(null) }}>
+            {agentSkills.length ? <Button type="button" variant="ghost" size="icon" disabled={disabled || sending} className={cn('size-8 shrink-0 rounded-md border-border bg-background-panel text-secondary shadow-none hover:bg-accent', skillOpen && 'bg-accent text-primary')} aria-label="选择技能" title="选择技能" aria-pressed={skillOpen} onClick={() => { setSkillOpen((current) => !current); setSkillQuery(null); setSkillSearch(''); setSkillReturnQuery(null); setMenuQuery(null) }}>
               <Sparkles className="size-4" />
             </Button> : null}
             {onOpenWorkspace ? <Button type="button" variant="ghost" size="icon" disabled={disabled} className="size-8 shrink-0 rounded-md border-border bg-background-panel text-secondary shadow-none hover:bg-accent" aria-label="打开工作区" title="打开工作区" onClick={onOpenWorkspace}>

@@ -298,6 +298,24 @@ describe('chat customization', () => {
     expect(screen.getByRole('dialog', { name: '添加到对话' })).toBeTruthy()
   })
 
+  it('returns from mention skills to the mention categories', () => {
+    render(<ChatInput running={false} attachments={false} menuOptions={[]}
+      agentSkills={[{ id: 'audit', name: '合同审计', description: '核对合同字段' }]}
+      labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
+    const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
+
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })
+    fireEvent.click(screen.getByRole('option', { name: /技能 选择适合当前任务的专业能力/ }))
+    expect(input.value).toBe('')
+
+    expect(screen.getByRole('dialog', { name: '选择技能' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '返回' }))
+
+    expect(input.value).toBe('@')
+    expect(screen.getByRole('dialog', { name: '添加到对话' })).toBeTruthy()
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+  })
+
   it('keeps the mention and skill pickers mutually exclusive', () => {
     render(<ChatInput running={false} attachments={false} menuOptions={[
       { menuId: 1, actionId: 11, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户' }

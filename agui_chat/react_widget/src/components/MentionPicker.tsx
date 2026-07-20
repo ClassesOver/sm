@@ -1,8 +1,9 @@
-import { ArrowLeft, AtSign, Menu, Sparkles } from 'lucide-react'
+import { AtSign, Menu, Sparkles } from 'lucide-react'
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import type { MenuMentionOption } from '../types'
 import { cn } from '../lib'
+import { PickerHeader } from './PickerHeader'
 import { PickerSearch } from './PickerSearch'
 
 export interface MentionQuery {
@@ -49,7 +50,7 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
   useEffect(() => {
     const queryChanged = previousQueryRef.current !== query.query
     previousQueryRef.current = query.query
-    if (!queryChanged) return
+    if (!open || !queryChanged) return
     if (query.query && view === 'home') {
       if (CATEGORIES[activeIndex]?.id === 'skill') {
         onOpenSkills({ ...query })
@@ -60,7 +61,7 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
     } else if (!query.query && typedNavigation && view === 'menus') {
       setView('home')
     }
-  }, [activeIndex, onOpenSkills, query, typedNavigation, view])
+  }, [activeIndex, onOpenSkills, open, query, typedNavigation, view])
 
   useEffect(() => {
     if (open && view === 'home' && previousViewRef.current === 'menus') {
@@ -136,10 +137,7 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
     aria-label="添加到对话"
     onKeyDown={handleKey}
   >
-    <div className="flex h-9 items-center gap-2 border-b border-border px-2">
-      {view === 'menus' ? <button type="button" className="grid size-7 place-items-center rounded-md border-0 bg-background-secondary text-secondary shadow-none transition-colors hover:bg-accent hover:text-primary" aria-label="返回" onClick={goBack}><ArrowLeft size={15} /></button> : <AtSign size={15} className="mx-1 text-muted" />}
-      <span className="min-w-0 flex-1 truncate text-xs font-medium">{view === 'home' ? '添加到对话' : '选择菜单'}</span>
-    </div>
+    <PickerHeader title={view === 'home' ? '添加到对话' : '选择菜单'} leading={<AtSign size={15} />} onBack={view === 'menus' ? goBack : undefined} />
     <div id="agui-mention-options" className="max-h-72 overflow-y-auto p-1" role="listbox" aria-activedescendant={activeOptionId}>
       {view === 'home' ? CATEGORIES.map((category, index) => <button
         id={`agui-mention-category-${category.id}`}
