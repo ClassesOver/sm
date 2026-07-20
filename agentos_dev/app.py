@@ -545,7 +545,14 @@ async def run_agui(request: Request, run_input: RunAgentInput):
     )
 
 
-agent_os, app = create_agentos_app(settings, base_app, assistant)
+agent_os, app = create_agentos_app(
+    settings,
+    base_app,
+    assistant,
+    workspace_service=workspace_service,
+    skills=agent_skills,
+    edit_mode_assistant=edit_mode_assistant,
+)
 
 
 if __name__ == "__main__":

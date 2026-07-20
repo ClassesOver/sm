@@ -34,3 +34,14 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert second_app is second_base
     assert created[0].values["on_route_conflict"] == "preserve_base_app"
     assert created[0].values["cors_allowed_origins"] == list(settings.cors_allowed_origins)
+
+
+def test_default_application_exposes_explicit_context():
+    from agentos_dev import app as app_module
+
+    context = app_module.base_app.state.agentos_context
+    assert context.settings is app_module.settings
+    assert context.workspace_service is app_module.workspace_service
+    assert context.skills is app_module.agent_skills
+    assert context.assistant is app_module.assistant
+    assert context.edit_mode_assistant is app_module.edit_mode_assistant

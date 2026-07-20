@@ -7,7 +7,7 @@ from agno.run import RunContext
 
 from agentos_dev import report
 from agentos_dev.report import report_tools
-from agentos_dev.tests.test_workspace import service
+from agentos_dev.tests.workspace_fakes import service
 from agentos_dev.workspace import WORKSPACE_ROOT, WorkspaceError
 
 
