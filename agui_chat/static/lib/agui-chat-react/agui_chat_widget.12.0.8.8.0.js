@@ -25229,6 +25229,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     );
     const [submitting, setSubmitting] = reactExports.useState(false);
     const [requestError, setRequestError] = reactExports.useState("");
+    const appliedParseOptions = parseOptionsFrom(data.parseOptions);
+    const parseOptionsChanged = parseOptions.encoding !== appliedParseOptions.encoding || parseOptions.separator !== appliedParseOptions.separator || parseOptions.quoting !== appliedParseOptions.quoting;
     const columns = columnsFrom(data.columns);
     const schema = asRecord(data.schema);
     const fields = fieldsFrom(schema.fields);
@@ -25255,7 +25257,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           jobToken: String(data.jobToken || ""),
           expectedRevision: Number(data.revision || 0),
           parseOptions,
-          mapping,
+          mapping: parseOptionsChanged ? {} : mapping,
           finalize
         });
         if (!response.ok) {

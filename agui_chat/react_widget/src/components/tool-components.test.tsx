@@ -67,7 +67,7 @@ describe('工具展示组件', () => {
     expect(container.firstElementChild?.className).toContain('text-destructive')
   })
 
-  it('展示规范化导入表格并提交格式选项和映射', async () => {
+  it('展示规范化导入表格并提交映射', async () => {
     const onSubmit = vi.fn(async (request) => ({
       ok: true,
       jobToken: 'job-1',
@@ -87,7 +87,6 @@ describe('工具展示组件', () => {
     expect(nameMapping.value).toBe('name')
     expect(quantityMapping.querySelector('option[value="name"]')?.hasAttribute('disabled')).toBe(true)
 
-    fireEvent.change(screen.getByLabelText('分隔符'), { target: { value: ';' } })
     fireEvent.change(quantityMapping, { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: '测试导入' }))
 
@@ -95,12 +94,52 @@ describe('工具展示组件', () => {
     expect(onSubmit.mock.calls[0][0]).toEqual({
       jobToken: 'job-1',
       expectedRevision: 1,
-      parseOptions: { encoding: 'utf-8', separator: ';', quoting: '"' },
+      parseOptions: { encoding: 'utf-8', separator: ',', quoting: '"' },
       mapping: { 产品: 'name', 数量: false },
       finalize: true
     })
     await waitFor(() => expect(screen.getByText('已通过测试')).toBeTruthy())
     expect((screen.getByLabelText('映射 产品') as HTMLSelectElement).disabled).toBe(true)
+  })
+
+  it('格式选项改变时不提交旧表头映射', async () => {
+    const original = importPreview()
+    const stalePreview = {
+      ...original,
+      import: {
+        ...original.import,
+        headers: ['产品;数量'],
+        columns: [
+          { index: 0, header: '产品;数量', mappedField: false, mappable: false }
+        ],
+        rows: [['很长的产品名称;2']],
+        parseOptions: { encoding: 'utf-8', separator: false, quoting: '"' }
+      }
+    }
+    const onSubmit = vi.fn(async (_request) => ({
+      ok: true,
+      jobToken: 'job-1',
+      state: 'preview',
+      revision: 2,
+      preview: importPreview('preview', 2)
+    }))
+    render(<ToolConfirmationPreview
+      result={{ preview: stalePreview }}
+      onPreviewX2ManyImport={onSubmit}
+    />)
+
+    fireEvent.change(screen.getByLabelText('分隔符'), { target: { value: ';' } })
+    fireEvent.click(screen.getByRole('button', { name: '更新预览' }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce())
+    expect(onSubmit.mock.calls[0][0]).toEqual({
+      jobToken: 'job-1',
+      expectedRevision: 1,
+      parseOptions: { encoding: 'utf-8', separator: ';', quoting: '"' },
+      mapping: {},
+      finalize: false
+    })
+    await waitFor(() => expect(screen.getByLabelText('映射 产品')).toBeTruthy())
   })
 
   it('缺少必填映射时阻止测试并展示分行错误', () => {
