@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { OdooHostSnapshot, RelationCandidate, RelationSearchResult } from '../types'
 
 interface CandidateSnapshot {
@@ -59,6 +59,13 @@ export function useRelationCandidateSelection(result: RelationSearchResult) {
     selectedIds: []
   }))
   const selectedIds = selection.scope === scope ? selection.selectedIds : EMPTY_SELECTED_IDS
+
+  useEffect(() => {
+    setSelection((current) => current.scope === scope
+      ? current
+      : { scope, selectedIds: [] })
+  }, [scope])
+
   const isCompatible = useCallback((candidate: RelationCandidate) => {
     return isRelationCandidateCompatible(result.relationOperation, candidate)
   }, [result.relationOperation])

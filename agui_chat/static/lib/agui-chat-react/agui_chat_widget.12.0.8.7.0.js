@@ -25278,6 +25278,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       selectedIds: []
     }));
     const selectedIds = selection.scope === scope ? selection.selectedIds : EMPTY_SELECTED_IDS;
+    reactExports.useEffect(() => {
+      setSelection((current) => current.scope === scope ? current : { scope, selectedIds: [] });
+    }, [scope]);
     const isCompatible = reactExports.useCallback((candidate) => {
       return isRelationCandidateCompatible(result.relationOperation, candidate);
     }, [result.relationOperation]);

@@ -56,8 +56,12 @@ describe('关系候选选择', () => {
     expect(result.current.selectedIds).toEqual([])
     expect(result.current.selectedCandidates).toEqual([])
 
-    act(() => result.current.toggleCandidate(next.candidates[0]))
-    expect(result.current.selectedIds).toEqual([8])
+    rerender({ value: first })
+    expect(result.current.selectedIds).toEqual([])
+    expect(result.current.selectedCandidates).toEqual([])
+
+    act(() => result.current.toggleCandidate(first.candidates[0]))
+    expect(result.current.selectedIds).toEqual([7])
   })
 
   it('忽略与 link 操作不兼容的已关联候选', () => {
