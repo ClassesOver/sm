@@ -7048,194 +7048,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return client;
   }
   var clientExports = requireClient();
-  function uuid() {
-    const cryptoValue = globalThis.crypto;
-    if (cryptoValue == null ? void 0 : cryptoValue.randomUUID) {
-      return cryptoValue.randomUUID();
-    }
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
-      const value = Math.random() * 16 | 0;
-      const next = char === "x" ? value : value & 3 | 8;
-      return next.toString(16);
-    });
-  }
-  function clone(value) {
-    if (value === void 0 || value === null) {
-      return value;
-    }
-    return JSON.parse(JSON.stringify(value));
-  }
-  function asText(value) {
-    if (typeof value === "string") {
-      return value;
-    }
-    if (Array.isArray(value)) {
-      return value.map((part) => {
-        if (typeof part === "string") {
-          return part;
-        }
-        if (part && typeof part === "object") {
-          const item = part;
-          return item.text ?? item.content ?? item.value ?? "";
-        }
-        return "";
-      }).join("");
-    }
-    if (value && typeof value === "object") {
-      return JSON.stringify(value, null, 2);
-    }
-    return value === void 0 || value === null ? "" : String(value);
-  }
-  function textSummary(value, limit = 80) {
-    const text2 = asText(value).replace(/\s+/g, " ").trim();
-    if (!limit || text2.length <= limit) {
-      return text2;
-    }
-    return `${text2.slice(0, limit - 1)}...`;
-  }
-  function parseJson(value) {
-    if (!value || typeof value !== "string") {
-      return value || {};
-    }
-    try {
-      return JSON.parse(value);
-    } catch {
-      return value;
-    }
-  }
-  function shortHash(value) {
-    let text2 = "";
-    let result = 0;
-    try {
-      text2 = JSON.stringify(value);
-    } catch {
-      text2 = String(value || "");
-    }
-    for (let index2 = 0; index2 < text2.length; index2 += 1) {
-      result = (result << 5) - result + text2.charCodeAt(index2);
-      result &= result;
-    }
-    return (result >>> 0).toString(36);
-  }
-  function statusFromResult(result, fallback = "pending") {
-    const value = result && typeof result === "object" ? result : {};
-    if (value.cancelled) {
-      return "cancelled";
-    }
-    if (value.needs_confirmation) {
-      return "needs_confirmation";
-    }
-    if (value.ok === false || value.error) {
-      return "error";
-    }
-    if (value.ok === true) {
-      return "ok";
-    }
-    return fallback;
-  }
-  function statusRank(status) {
-    return {
-      pending: 1,
-      running: 2,
-      needs_confirmation: 3,
-      ok: 4,
-      error: 4,
-      cancelled: 4
-    }[status || "pending"] || 1;
-  }
-  function mergeStatus(existing, incoming) {
-    if (!existing) {
-      return incoming || "pending";
-    }
-    return statusRank(incoming) >= statusRank(existing) ? incoming : existing;
-  }
-  function toolCallId(tool) {
-    return String(tool.id || tool.tool_call_id || tool.toolCallId || "");
-  }
-  function toolName(tool) {
-    return String(tool.name || tool.tool_name || tool.tool || "unknown");
-  }
-  function toolArgs(tool) {
-    return tool.args ?? tool.tool_args ?? parseJson(tool.argsText || "{}");
-  }
-  function toolKey(tool) {
-    const id = toolCallId(tool);
-    const name2 = toolName(tool);
-    const args = toolArgs(tool);
-    if (id) {
-      return `id:${id}`;
-    }
-    if (tool.createdAt || tool.created_at) {
-      return `created:${name2}:${tool.createdAt || tool.created_at}`;
-    }
-    return `sig:${name2}:${shortHash(args)}`;
-  }
-  function safeReferenceUrl(value) {
-    if (typeof value !== "string") {
-      return void 0;
-    }
-    const url = value.trim();
-    if (!url || url.startsWith("//")) {
-      return void 0;
-    }
-    if (url.startsWith("/")) {
-      try {
-        const base = "https://reference.invalid";
-        return new URL(url, base).origin === base ? url : void 0;
-      } catch {
-        return void 0;
-      }
-    }
-    try {
-      const protocol = new URL(url).protocol;
-      return protocol === "https:" || protocol === "http:" ? url : void 0;
-    } catch {
-      return void 0;
-    }
-  }
-  function normalizeReferenceGroups(value) {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-    return value.map((rawGroup) => {
-      const group = rawGroup && typeof rawGroup === "object" ? rawGroup : {};
-      const source = Array.isArray(group.references) ? group.references : [group];
-      const references = source.map((rawReference) => {
-        const reference = rawReference && typeof rawReference === "object" ? rawReference : {};
-        const content2 = reference.content || reference.text || reference.summary || reference.description || "";
-        const name2 = reference.name || reference.title || reference.url || "";
-        const rawUrl = reference.url || reference.link || "";
-        const url = safeReferenceUrl(rawUrl);
-        if (!content2 && !name2 && !rawUrl) {
-          return null;
-        }
-        return {
-          name: String(name2 || textSummary(content2, 60)),
-          url: url ? String(url) : void 0,
-          content: textSummary(content2, 180),
-          meta_data: reference.meta_data && typeof reference.meta_data === "object" ? reference.meta_data : void 0
-        };
-      }).filter(Boolean);
-      if (!references.length) {
-        return null;
-      }
-      return {
-        query: group.query ? String(group.query) : "",
-        references
-      };
-    }).filter(Boolean);
-  }
-  function visibleMessages(messages) {
-    return messages.filter((message) => {
-      if (message.hidden) {
-        return false;
-      }
-      if (message.role === "tool" && (message.toolCallId || message.tool_call_id)) {
-        return false;
-      }
-      return true;
-    });
-  }
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -11460,6 +11272,25 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     );
   });
+  function createMentionPickerState(query) {
+    return { view: "home", searchText: query, navigationSource: "explicit" };
+  }
+  function mentionPickerReducer(state, action) {
+    switch (action.type) {
+      case "query_synced":
+        return state.searchText === action.query ? state : { ...state, searchText: action.query };
+      case "typed_query_started":
+        return { view: "menus", searchText: action.query, navigationSource: "typed" };
+      case "typed_query_cleared":
+        return state.view === "menus" && state.navigationSource === "typed" ? { ...state, view: "home", searchText: "" } : state;
+      case "menus_opened":
+        return { ...state, view: "menus", navigationSource: "explicit" };
+      case "home_returned":
+        return state.view === "menus" ? { ...state, view: "home" } : state;
+      case "search_changed":
+        return state.searchText === action.searchText ? state : { ...state, searchText: action.searchText };
+    }
+  }
   function usePickerNavigation({
     open,
     optionCount,
@@ -11497,11 +11328,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }, [activeIndex, allowHomeEnd, allowSpace, captureEmptyActivation, open, optionCount]);
     return { activeIndex, resetActiveIndex, handleKey };
   }
-  const CATEGORIES = [
+  const MENTION_PICKER_CATEGORIES = [
     { id: "menu", label: "菜单", detail: "按名称或完整路径查找菜单" },
     { id: "skill", label: "技能", detail: "选择适合当前任务的专业能力" }
   ];
-  const MentionPicker = reactExports.forwardRef(function MentionPicker2({
+  function useMentionPickerState({
     open,
     query,
     menuOptions,
@@ -11509,11 +11340,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     onOpenSkills,
     onFocusInput,
     onClose
-  }, ref) {
+  }) {
     var _a, _b;
-    const [view, setView] = reactExports.useState("home");
-    const [searchText, setSearchText] = reactExports.useState(query.query);
-    const [typedNavigation, setTypedNavigation] = reactExports.useState(false);
+    const [state, dispatch] = reactExports.useReducer(mentionPickerReducer, query.query, createMentionPickerState);
+    const { view, searchText } = state;
+    const typedNavigation = state.navigationSource === "typed";
     const pickerRef = reactExports.useRef(null);
     const previousViewRef = reactExports.useRef(view);
     const previousQueryRef = reactExports.useRef("");
@@ -11521,10 +11352,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const needle = searchText.trim().toLocaleLowerCase();
       return menuOptions.filter((option) => !needle || option.fullPath.toLocaleLowerCase().includes(needle)).slice(0, 8);
     }, [menuOptions, searchText]);
-    const optionCount = view === "home" ? CATEGORIES.length : filteredMenus.length;
+    const optionCount = view === "home" ? MENTION_PICKER_CATEGORIES.length : filteredMenus.length;
     const navigation = usePickerNavigation({ open, optionCount, captureEmptyActivation: true });
     reactExports.useEffect(() => {
-      setSearchText(query.query);
+      dispatch({ type: "query_synced", query: query.query });
       navigation.resetActiveIndex();
     }, [navigation.resetActiveIndex, query.query]);
     reactExports.useEffect(() => {
@@ -11533,14 +11364,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       previousQueryRef.current = query.query;
       if (!open || !queryChanged) return;
       if (query.query && view === "home") {
-        if (((_a2 = CATEGORIES[navigation.activeIndex]) == null ? void 0 : _a2.id) === "skill") {
+        if (((_a2 = MENTION_PICKER_CATEGORIES[navigation.activeIndex]) == null ? void 0 : _a2.id) === "skill") {
           onOpenSkills({ ...query });
           return;
         }
-        setTypedNavigation(true);
-        setView("menus");
+        dispatch({ type: "typed_query_started", query: query.query });
       } else if (!query.query && typedNavigation && view === "menus") {
-        setView("home");
+        dispatch({ type: "typed_query_cleared" });
       }
     }, [navigation.activeIndex, onOpenSkills, open, query, typedNavigation, view]);
     reactExports.useEffect(() => {
@@ -11551,10 +11381,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       previousViewRef.current = view;
     }, [onFocusInput, open, typedNavigation, view]);
-    const activeOptionId = view === "home" ? `agui-mention-category-${((_a = CATEGORIES[navigation.activeIndex]) == null ? void 0 : _a.id) || "none"}` : `agui-mention-menu-${((_b = filteredMenus[navigation.activeIndex]) == null ? void 0 : _b.menuId) || "none"}`;
     const goBack = () => {
       navigation.resetActiveIndex();
-      if (view === "menus") setView("home");
+      if (view === "menus") dispatch({ type: "home_returned" });
       else onClose();
     };
     const activate = (index2) => {
@@ -11563,10 +11392,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (option) onSelectMenu(option);
         return;
       }
-      const category = CATEGORIES[index2];
+      const category = MENTION_PICKER_CATEGORIES[index2];
       if ((category == null ? void 0 : category.id) === "menu") {
-        setTypedNavigation(false);
-        setView("menus");
+        dispatch({ type: "menus_opened" });
         navigation.resetActiveIndex();
       } else if ((category == null ? void 0 : category.id) === "skill") {
         onOpenSkills();
@@ -11575,25 +11403,62 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const handleKey = (event) => {
       return navigation.handleKey(event, activate, goBack);
     };
-    reactExports.useImperativeHandle(ref, () => ({ handleKey: (event) => handleKey(event) }));
+    const changeSearchText = (value) => {
+      dispatch({ type: "search_changed", searchText: value });
+      navigation.resetActiveIndex();
+    };
+    const activeOptionId = view === "home" ? `agui-mention-category-${((_a = MENTION_PICKER_CATEGORIES[navigation.activeIndex]) == null ? void 0 : _a.id) || "none"}` : `agui-mention-menu-${((_b = filteredMenus[navigation.activeIndex]) == null ? void 0 : _b.menuId) || "none"}`;
+    return {
+      view,
+      searchText,
+      typedNavigation,
+      pickerRef,
+      filteredMenus,
+      activeIndex: navigation.activeIndex,
+      activeOptionId,
+      activate,
+      goBack,
+      handleKey,
+      changeSearchText
+    };
+  }
+  const MentionPicker = reactExports.forwardRef(function MentionPicker2({
+    open,
+    query,
+    menuOptions,
+    onSelectMenu,
+    onOpenSkills,
+    onFocusInput,
+    onClose
+  }, ref) {
+    const picker = useMentionPickerState({
+      open,
+      query,
+      menuOptions,
+      onSelectMenu,
+      onOpenSkills,
+      onFocusInput,
+      onClose
+    });
+    reactExports.useImperativeHandle(ref, () => ({ handleKey: (event) => picker.handleKey(event) }));
     if (!open) return null;
     return /* @__PURE__ */ jsxRuntimeExports.jsxs(
       PickerSurface,
       {
-        ref: pickerRef,
+        ref: picker.pickerRef,
         tabIndex: -1,
         className: "text-secondary outline-none",
         ariaLabel: "添加到对话",
-        onKeyDown: handleKey,
+        onKeyDown: picker.handleKey,
         children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(PickerHeader, { title: view === "home" ? "添加到对话" : "选择菜单", leading: /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { size: 15 }), onBack: view === "menus" ? goBack : void 0 }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { id: "agui-mention-options", className: "max-h-72 overflow-y-auto p-1", role: "listbox", "aria-activedescendant": activeOptionId, children: view === "home" ? CATEGORIES.map((category, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+          /* @__PURE__ */ jsxRuntimeExports.jsx(PickerHeader, { title: picker.view === "home" ? "添加到对话" : "选择菜单", leading: /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { size: 15 }), onBack: picker.view === "menus" ? picker.goBack : void 0 }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { id: "agui-mention-options", className: "max-h-72 overflow-y-auto p-1", role: "listbox", "aria-activedescendant": picker.activeOptionId, children: picker.view === "home" ? MENTION_PICKER_CATEGORIES.map((category, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
             PickerOption,
             {
               id: `agui-mention-category-${category.id}`,
-              active: index2 === navigation.activeIndex,
+              active: index2 === picker.activeIndex,
               density: "roomy",
-              onClick: () => activate(index2),
+              onClick: () => picker.activate(index2),
               children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center text-muted", children: category.id === "menu" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Menu, { size: 15 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Sparkles, { size: 15 }) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "min-w-0 flex-1", children: [
@@ -11604,18 +11469,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             },
             category.id
           )) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-            !typedNavigation ? /* @__PURE__ */ jsxRuntimeExports.jsx(PickerSearch, { autoFocus: true, value: searchText, onChange: (event) => {
-              setSearchText(event.target.value);
-              navigation.resetActiveIndex();
-            }, placeholder: "搜索菜单名称或完整路径", "aria-label": "搜索菜单" }) : null,
-            filteredMenus.map((option, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            !picker.typedNavigation ? /* @__PURE__ */ jsxRuntimeExports.jsx(PickerSearch, { autoFocus: true, value: picker.searchText, onChange: (event) => picker.changeSearchText(event.target.value), placeholder: "搜索菜单名称或完整路径", "aria-label": "搜索菜单" }) : null,
+            picker.filteredMenus.map((option, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
               PickerOption,
               {
                 id: `agui-mention-menu-${option.menuId}`,
-                active: index2 === navigation.activeIndex,
+                active: index2 === picker.activeIndex,
                 density: "compact",
                 className: "text-xs text-secondary",
-                onClick: () => onSelectMenu(option),
+                onClick: () => picker.activate(index2),
                 children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { className: "size-3.5 shrink-0 text-muted" }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate", title: option.fullPath, children: option.fullPath })
@@ -11623,7 +11485,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
               },
               option.menuId
             )),
-            !filteredMenus.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "px-3 py-5 text-center text-xs text-muted", children: "没有匹配的菜单" }) : null
+            !picker.filteredMenus.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "px-3 py-5 text-center text-xs text-muted", children: "没有匹配的菜单" }) : null
           ] }) })
         ]
       }
@@ -11716,17 +11578,44 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "document"
   };
   const REPORT_EXTENSIONS = /* @__PURE__ */ new Set(["csv", "xlsx", "json", "jsonl"]);
-  const ACCEPTED_FILE_SELECTOR = [...Object.keys(ACCEPTED_TYPES), ...[...REPORT_EXTENSIONS].map((value) => `.${value}`)].join(",");
   const MB = 1024 * 1024;
+  const ACCEPTED_ATTACHMENT_SELECTOR = [
+    ...Object.keys(ACCEPTED_TYPES),
+    ...[...REPORT_EXTENSIONS].map((value) => `.${value}`)
+  ].join(",");
   function formatSize(size) {
     return size < MB ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / MB).toFixed(1)} MB`;
   }
-  function acceptedModality(file) {
+  function getAttachmentPolicy(attachments) {
+    const config = typeof attachments === "object" ? attachments : {};
+    return {
+      enabled: attachments !== false && config.enabled !== false,
+      maxFileSize: config.maxFileSize || 10 * MB,
+      maxFiles: config.maxFiles || 5,
+      maxTotalSize: config.maxTotalSize || 25 * MB
+    };
+  }
+  function getAttachmentModality(file) {
     var _a;
     const extension2 = ((_a = file.name.split(".").pop()) == null ? void 0 : _a.toLocaleLowerCase()) || "";
     return ACCEPTED_TYPES[file.type] || (REPORT_EXTENSIONS.has(extension2) ? "document" : void 0);
   }
-  function filesFrom(transfer) {
+  function validateAttachmentFiles(files, currentFiles, policy) {
+    let count = currentFiles.length;
+    let totalSize = currentFiles.reduce((sum, file) => sum + file.size, 0);
+    return files.map((file) => {
+      let error = "";
+      const modality = getAttachmentModality(file);
+      if (!modality) error = "不支持的文件类型";
+      else if (file.size > policy.maxFileSize) error = `文件超过 ${formatSize(policy.maxFileSize)}`;
+      else if (count >= policy.maxFiles) error = `最多添加 ${policy.maxFiles} 个文件`;
+      else if (totalSize + file.size > policy.maxTotalSize) error = `附件总大小超过 ${formatSize(policy.maxTotalSize)}`;
+      count += 1;
+      totalSize += file.size;
+      return { file, modality, error: error || void 0 };
+    });
+  }
+  function filesFromDataTransfer(transfer) {
     if (!transfer) return [];
     const files = Array.from(transfer.files || []);
     Array.from(transfer.items || []).forEach((item) => {
@@ -11739,93 +11628,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function hasFiles(transfer) {
     return Boolean(transfer && (transfer.files.length || Array.from(transfer.types || []).some((type) => String(type).toLocaleLowerCase() === "files") || Array.from(transfer.items || []).some((item) => item.kind === "file")));
   }
-  function useComposerAttachments({
-    attachments,
+  function useFileDropTarget({
+    enabled,
     disabled,
-    textareaRef,
-    onUpload,
-    onRemove
+    anchorRef,
+    onFiles
   }) {
-    const config = typeof attachments === "object" ? attachments : {};
-    const enabled = attachments !== false && config.enabled !== false;
-    const maxFileSize = config.maxFileSize || 10 * MB;
-    const maxFiles = config.maxFiles || 5;
-    const maxTotalSize = config.maxTotalSize || 25 * MB;
-    const [items, setItems] = reactExports.useState([]);
     const [dragging, setDragging] = reactExports.useState(false);
-    const itemsRef = reactExports.useRef([]);
     const dragDepth = reactExports.useRef(0);
-    const onUploadRef = reactExports.useRef(onUpload);
-    const onRemoveRef = reactExports.useRef(onRemove);
-    itemsRef.current = items;
-    onUploadRef.current = onUpload;
-    onRemoveRef.current = onRemove;
-    const updateItem = reactExports.useCallback((localId, values) => {
-      setItems((current) => {
-        return current.map((item) => item.localId === localId ? { ...item, ...values } : item);
-      });
-    }, []);
-    const addFiles = reactExports.useCallback((files) => {
-      if (!enabled || disabled || !files.length) return;
-      const current = itemsRef.current;
-      const next = [];
-      let count = current.length;
-      let totalSize = current.reduce((sum, item) => sum + item.file.size, 0);
-      files.forEach((file) => {
-        let error = "";
-        const modality = acceptedModality(file);
-        if (!modality) error = "不支持的文件类型";
-        else if (file.size > maxFileSize) error = `文件超过 ${formatSize(maxFileSize)}`;
-        else if (count >= maxFiles) error = `最多添加 ${maxFiles} 个文件`;
-        else if (totalSize + file.size > maxTotalSize) error = `附件总大小超过 ${formatSize(maxTotalSize)}`;
-        const localId = `${Date.now()}-${Math.random()}`;
-        next.push({
-          localId,
-          file,
-          progress: 0,
-          status: error ? "error" : "uploading",
-          error: error || void 0,
-          previewUrl: modality === "image" ? URL.createObjectURL(file) : void 0
-        });
-        count += 1;
-        totalSize += file.size;
-      });
-      const updated = [...current, ...next];
-      itemsRef.current = updated;
-      setItems(updated);
-      next.filter((item) => item.status === "uploading").forEach((item) => {
-        void onUploadRef.current(item.file, (progress) => updateItem(item.localId, { progress })).then(
-          (attachment) => updateItem(item.localId, { attachment, progress: 100, status: "ready" }),
-          (error) => updateItem(item.localId, { error: (error == null ? void 0 : error.message) || "上传失败", status: "error" })
-        );
-      });
-    }, [disabled, enabled, maxFileSize, maxFiles, maxTotalSize, updateItem]);
-    const removeItem = reactExports.useCallback((item) => {
-      const next = itemsRef.current.filter((candidate) => candidate.localId !== item.localId);
-      itemsRef.current = next;
-      setItems(next);
-      if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
-      if (item.attachment) void onRemoveRef.current(item.attachment.id);
-    }, []);
-    const clearItems = reactExports.useCallback(() => {
-      itemsRef.current.forEach(removeItem);
-    }, [removeItem]);
-    const resetItems = reactExports.useCallback(() => {
-      itemsRef.current.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
-      itemsRef.current = [];
-      setItems([]);
-    }, []);
-    const handlePaste = reactExports.useCallback((event) => {
-      if (!enabled) return;
-      const files = filesFrom(event.clipboardData);
-      if (!files.length) return;
-      event.preventDefault();
-      addFiles(files);
-    }, [addFiles, enabled]);
+    const onFilesRef = reactExports.useRef(onFiles);
+    onFilesRef.current = onFiles;
     reactExports.useEffect(() => {
       var _a;
-      if (!enabled || disabled) return;
-      const dropRegion = (_a = textareaRef.current) == null ? void 0 : _a.closest("main");
+      if (!enabled || disabled) {
+        dragDepth.current = 0;
+        setDragging(false);
+        return;
+      }
+      const dropRegion = (_a = anchorRef.current) == null ? void 0 : _a.closest("main");
       if (!dropRegion) return;
       const dragEnter = (rawEvent) => {
         const event = rawEvent;
@@ -11847,24 +11667,101 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       };
       const drop = (rawEvent) => {
         const event = rawEvent;
-        const files = filesFrom(event.dataTransfer);
+        const files = filesFromDataTransfer(event.dataTransfer);
         dragDepth.current = 0;
         setDragging(false);
         if (!files.length) return;
         event.preventDefault();
-        addFiles(files);
+        onFilesRef.current(files);
       };
       dropRegion.addEventListener("dragenter", dragEnter);
       dropRegion.addEventListener("dragover", dragOver);
       dropRegion.addEventListener("dragleave", dragLeave);
       dropRegion.addEventListener("drop", drop);
       return () => {
+        dragDepth.current = 0;
         dropRegion.removeEventListener("dragenter", dragEnter);
         dropRegion.removeEventListener("dragover", dragOver);
         dropRegion.removeEventListener("dragleave", dragLeave);
         dropRegion.removeEventListener("drop", drop);
       };
-    }, [addFiles, disabled, enabled, textareaRef]);
+    }, [anchorRef, disabled, enabled]);
+    return { dragging };
+  }
+  function useComposerAttachments({
+    attachments,
+    disabled,
+    textareaRef,
+    onUpload,
+    onRemove
+  }) {
+    const policy = getAttachmentPolicy(attachments);
+    const { enabled, maxFileSize, maxFiles, maxTotalSize } = policy;
+    const [items, setItems] = reactExports.useState([]);
+    const itemsRef = reactExports.useRef([]);
+    const onUploadRef = reactExports.useRef(onUpload);
+    const onRemoveRef = reactExports.useRef(onRemove);
+    itemsRef.current = items;
+    onUploadRef.current = onUpload;
+    onRemoveRef.current = onRemove;
+    const updateItem = reactExports.useCallback((localId, values) => {
+      setItems((current) => {
+        return current.map((item) => item.localId === localId ? { ...item, ...values } : item);
+      });
+    }, []);
+    const addFiles = reactExports.useCallback((files) => {
+      if (!enabled || disabled || !files.length) return;
+      const current = itemsRef.current;
+      const next = validateAttachmentFiles(
+        files,
+        current.map((item) => item.file),
+        { maxFileSize, maxFiles, maxTotalSize }
+      ).map(({ file, modality, error }) => ({
+        localId: `${Date.now()}-${Math.random()}`,
+        file,
+        progress: 0,
+        status: error ? "error" : "uploading",
+        error,
+        previewUrl: modality === "image" ? URL.createObjectURL(file) : void 0
+      }));
+      const updated = [...current, ...next];
+      itemsRef.current = updated;
+      setItems(updated);
+      next.filter((item) => item.status === "uploading").forEach((item) => {
+        void onUploadRef.current(item.file, (progress) => updateItem(item.localId, { progress })).then(
+          (attachment) => updateItem(item.localId, { attachment, progress: 100, status: "ready" }),
+          (error) => updateItem(item.localId, { error: (error == null ? void 0 : error.message) || "上传失败", status: "error" })
+        );
+      });
+    }, [disabled, enabled, maxFileSize, maxFiles, maxTotalSize, updateItem]);
+    const { dragging } = useFileDropTarget({
+      enabled,
+      disabled,
+      anchorRef: textareaRef,
+      onFiles: addFiles
+    });
+    const removeItem = reactExports.useCallback((item) => {
+      const next = itemsRef.current.filter((candidate) => candidate.localId !== item.localId);
+      itemsRef.current = next;
+      setItems(next);
+      if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      if (item.attachment) void onRemoveRef.current(item.attachment.id);
+    }, []);
+    const clearItems = reactExports.useCallback(() => {
+      itemsRef.current.forEach(removeItem);
+    }, [removeItem]);
+    const resetItems = reactExports.useCallback(() => {
+      itemsRef.current.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
+      itemsRef.current = [];
+      setItems([]);
+    }, []);
+    const handlePaste = reactExports.useCallback((event) => {
+      if (!enabled) return;
+      const files = filesFromDataTransfer(event.clipboardData);
+      if (!files.length) return;
+      event.preventDefault();
+      addFiles(files);
+    }, [addFiles, enabled]);
     reactExports.useEffect(() => () => {
       itemsRef.current.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
     }, []);
@@ -11872,7 +11769,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       items,
       dragging,
       enabled,
-      acceptedFileSelector: ACCEPTED_FILE_SELECTOR,
+      acceptedFileSelector: ACCEPTED_ATTACHMENT_SELECTOR,
       readyAttachments: items.flatMap((item) => item.attachment ? [item.attachment] : []),
       addFiles,
       removeItem,
@@ -11880,6 +11777,52 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       resetItems,
       handlePaste
     };
+  }
+  const INITIAL_COMPOSER_QUERY_STATE = { mode: "idle" };
+  function skillsState(query, search2, returnQuery = null) {
+    return { mode: "skills", query, search: search2, returnQuery };
+  }
+  function composerQueryReducer(state, action) {
+    var _a;
+    switch (action.type) {
+      case "value_changed": {
+        if (action.editingMentionSkill) {
+          if ((_a = action.mentionQuery) == null ? void 0 : _a.query) {
+            return skillsState(action.mentionQuery, action.mentionQuery.query, action.mentionQuery);
+          }
+          return action.mentionQuery ? { mode: "menu", query: action.mentionQuery } : INITIAL_COMPOSER_QUERY_STATE;
+        }
+        if (action.skillQuery && action.hasSkills) {
+          return skillsState(action.skillQuery, action.skillQuery.query);
+        }
+        if (action.mentionQuery) return { mode: "menu", query: action.mentionQuery };
+        return state.mode === "skills" ? { ...state, query: null } : INITIAL_COMPOSER_QUERY_STATE;
+      }
+      case "cursor_changed":
+        if (action.skillQuery && action.hasSkills) {
+          return skillsState(action.skillQuery, action.skillQuery.query);
+        }
+        if (action.mentionQuery) return { mode: "menu", query: action.mentionQuery };
+        return state.mode === "menu" ? INITIAL_COMPOSER_QUERY_STATE : state;
+      case "open_skills_from_mention":
+        return action.inline ? skillsState(action.query, action.query.query, action.query) : skillsState(null, "", action.query);
+      case "return_to_mentions":
+        return state.mode === "skills" && state.returnQuery ? { mode: "menu", query: state.returnQuery } : state;
+      case "consume_menu":
+        return state.mode === "menu" ? INITIAL_COMPOSER_QUERY_STATE : state;
+      case "complete_skill":
+      case "close_skills":
+        return state.mode === "skills" ? INITIAL_COMPOSER_QUERY_STATE : state;
+      case "close_menu":
+        if (state.mode === "menu") return INITIAL_COMPOSER_QUERY_STATE;
+        return state.mode === "skills" ? { ...state, returnQuery: null } : state;
+      case "toggle_skills":
+        return state.mode === "skills" ? INITIAL_COMPOSER_QUERY_STATE : skillsState(null, "");
+      case "dismiss":
+        return INITIAL_COMPOSER_QUERY_STATE;
+      case "skill_search_changed":
+        return state.mode === "skills" ? { ...state, search: action.search } : state;
+    }
   }
   const MENTION_BOUNDARY = /[\s,，.。!！?？;；:：、()\[\]{}【】<>《》"'“”‘’]/u;
   const MENTION_TERMINATOR = /[\s@,，.。!！?？;；:：、()\[\]{}【】<>《》"'“”‘’]/u;
@@ -11899,79 +11842,47 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     hasSkills,
     textareaRef
   }) {
-    const [menuQuery, setMenuQuery] = reactExports.useState(null);
-    const [skillQuery, setSkillQuery] = reactExports.useState(null);
-    const [skillSearch, setSkillSearch] = reactExports.useState("");
-    const [skillOpen, setSkillOpen] = reactExports.useState(false);
-    const [skillReturnQuery, setSkillReturnQuery] = reactExports.useState(null);
-    const mentionSkillQuery = skillOpen && skillQuery && value[skillQuery.start] === "@" ? skillQuery : null;
+    const [queryState, dispatch] = reactExports.useReducer(composerQueryReducer, INITIAL_COMPOSER_QUERY_STATE);
+    const menuQuery = queryState.mode === "menu" ? queryState.query : null;
+    const skillQuery = queryState.mode === "skills" ? queryState.query : null;
+    const skillSearch = queryState.mode === "skills" ? queryState.search : "";
+    const skillOpen = queryState.mode === "skills";
+    const skillReturnQuery = queryState.mode === "skills" ? queryState.returnQuery : null;
+    const mentionSkillQuery = skillQuery && value[skillQuery.start] === "@" ? skillQuery : null;
     const mentionPickerQuery = menuQuery || skillReturnQuery;
     const dismissPickers = reactExports.useCallback(() => {
-      setMenuQuery(null);
-      setSkillOpen(false);
-      setSkillReturnQuery(null);
+      dispatch({ type: "dismiss" });
+    }, []);
+    const setSkillSearch = reactExports.useCallback((search2) => {
+      dispatch({ type: "skill_search_changed", search: search2 });
     }, []);
     const handleValueChange = (nextValue, cursor) => {
       const nextSkillQuery = skillQueryAtCursor(nextValue, cursor);
       const nextMention = menuQueryAtCursor(nextValue, cursor);
       setValue(nextValue);
-      if (mentionSkillQuery) {
-        if (nextMention == null ? void 0 : nextMention.query) {
-          setSkillQuery(nextMention);
-          setSkillSearch(nextMention.query);
-          setSkillReturnQuery(nextMention);
-          setMenuQuery(null);
-        } else {
-          setSkillQuery(null);
-          setSkillSearch("");
-          setSkillOpen(false);
-          setSkillReturnQuery(null);
-          setMenuQuery(nextMention);
-        }
-      } else if (nextSkillQuery && hasSkills) {
-        setSkillQuery(nextSkillQuery);
-        setSkillSearch(nextSkillQuery.query);
-        setSkillOpen(true);
-        setSkillReturnQuery(null);
-        setMenuQuery(null);
-      } else {
-        setSkillQuery(null);
-        setMenuQuery(nextMention);
-        if (nextMention) {
-          setSkillOpen(false);
-          setSkillReturnQuery(null);
-        }
-      }
+      dispatch({
+        type: "value_changed",
+        mentionQuery: nextMention,
+        skillQuery: nextSkillQuery,
+        hasSkills,
+        editingMentionSkill: Boolean(mentionSkillQuery)
+      });
     };
     const handleCursorChange = (cursor) => {
       const nextSkillQuery = skillQueryAtCursor(value, cursor);
-      if (nextSkillQuery && hasSkills) {
-        setSkillQuery(nextSkillQuery);
-        setSkillSearch(nextSkillQuery.query);
-        setSkillOpen(true);
-        setSkillReturnQuery(null);
-        setMenuQuery(null);
-      } else {
-        const nextMention = menuQueryAtCursor(value, cursor);
-        setMenuQuery(nextMention);
-        if (nextMention) {
-          setSkillOpen(false);
-          setSkillQuery(null);
-          setSkillSearch("");
-          setSkillReturnQuery(null);
-        }
-      }
+      dispatch({
+        type: "cursor_changed",
+        mentionQuery: menuQueryAtCursor(value, cursor),
+        skillQuery: nextSkillQuery,
+        hasSkills
+      });
     };
     const returnToMentionCategories = () => {
       if (!skillReturnQuery) return;
       const query = { ...skillReturnQuery };
       const mentionText = `@${query.query}`;
       setValue((current) => current.slice(query.start, query.end) === mentionText ? current : current.slice(0, query.start) + mentionText + current.slice(query.start));
-      setSkillOpen(false);
-      setSkillQuery(null);
-      setSkillSearch("");
-      setMenuQuery(query);
-      setSkillReturnQuery(null);
+      dispatch({ type: "return_to_mentions" });
       window.setTimeout(() => {
         var _a, _b;
         (_a = textareaRef.current) == null ? void 0 : _a.focus({ preventScroll: true });
@@ -11983,7 +11894,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const query = { ...menuQuery };
       const cursor = query.start;
       setValue((current) => current.slice(0, query.start) + current.slice(query.end));
-      setMenuQuery(null);
+      dispatch({ type: "consume_menu" });
       window.setTimeout(() => {
         var _a, _b;
         (_a = textareaRef.current) == null ? void 0 : _a.focus();
@@ -11992,51 +11903,34 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return query;
     };
     const completeSkillSelection = () => {
-      setSkillOpen(false);
-      setSkillReturnQuery(null);
       if (skillQuery) {
         setValue((current) => current.slice(0, skillQuery.start) + current.slice(skillQuery.end));
-        setSkillQuery(null);
-        setSkillSearch("");
       }
+      dispatch({ type: "complete_skill" });
     };
     const openSkillsFromMention = (typedQuery) => {
       const currentQuery = typedQuery || menuQuery || skillReturnQuery;
       if (!currentQuery) return;
-      setSkillReturnQuery(currentQuery);
       if (typedQuery) {
-        setSkillQuery(currentQuery);
-        setSkillSearch(currentQuery.query);
-        setSkillOpen(true);
-        setMenuQuery(null);
+        dispatch({ type: "open_skills_from_mention", query: currentQuery, inline: true });
         return;
       }
       const cursor = currentQuery.start;
       setValue((current) => current.slice(0, currentQuery.start) + current.slice(currentQuery.end));
-      setMenuQuery(null);
-      setSkillQuery(null);
-      setSkillSearch("");
-      setSkillOpen(true);
+      dispatch({ type: "open_skills_from_mention", query: currentQuery, inline: false });
       window.setTimeout(() => {
         var _a;
         return (_a = textareaRef.current) == null ? void 0 : _a.setSelectionRange(cursor, cursor);
       }, 0);
     };
     const closeMenuPicker = () => {
-      setMenuQuery(null);
-      setSkillReturnQuery(null);
+      dispatch({ type: "close_menu" });
     };
     const closeSkillPicker = () => {
-      setSkillOpen(false);
-      setSkillQuery(null);
-      setSkillReturnQuery(null);
+      dispatch({ type: "close_skills" });
     };
     const toggleSkillPicker = () => {
-      setSkillOpen((current) => !current);
-      setSkillQuery(null);
-      setSkillSearch("");
-      setSkillReturnQuery(null);
-      setMenuQuery(null);
+      dispatch({ type: "toggle_skills" });
     };
     return {
       menuQuery,
@@ -12058,12 +11952,109 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       toggleSkillPicker
     };
   }
+  function useComposerSelectionState({ agentSkills }) {
+    const [menuMention, setMenuMention] = reactExports.useState();
+    const [selectedSkills, setSelectedSkills] = reactExports.useState([]);
+    reactExports.useEffect(() => {
+      setSelectedSkills((current) => {
+        const next = current.map((skill) => ({
+          ...skill,
+          valid: agentSkills.some((option) => option.id === skill.id && option.name === skill.name)
+        }));
+        return next.every((skill, index2) => skill.valid === current[index2].valid) ? current : next;
+      });
+    }, [agentSkills]);
+    const selectMenu = (option) => {
+      setMenuMention({ ...option, path: [...option.path], valid: true });
+    };
+    const toggleSkill = (skill) => {
+      setSelectedSkills((current) => {
+        if (current.some((item) => item.id === skill.id)) {
+          return current.filter((item) => item.id !== skill.id);
+        }
+        return [{ ...skill, valid: true }];
+      });
+    };
+    const removeSkill = (id) => {
+      setSelectedSkills((current) => current.filter((item) => item.id !== id));
+    };
+    const removeMenuMention = () => setMenuMention(void 0);
+    const resetSelections = () => {
+      setMenuMention(void 0);
+      setSelectedSkills([]);
+    };
+    return {
+      menuMention,
+      selectedSkills,
+      selectMenu,
+      toggleSkill,
+      removeSkill,
+      removeMenuMention,
+      resetSelections
+    };
+  }
+  function useComposerSubmit({
+    running,
+    disabled,
+    value,
+    setValue,
+    attachmentItems,
+    readyAttachments,
+    menuMention,
+    selectedSkills,
+    workspaceReferences,
+    onSend,
+    resetSelections,
+    dismissPickers,
+    resetAttachments,
+    textareaRef
+  }) {
+    const [sending, setSending] = reactExports.useState(false);
+    const canSend = !running && !sending && !disabled && !attachmentItems.some((item) => item.status !== "ready") && (!!value.trim() || readyAttachments.length > 0 || !!menuMention || selectedSkills.length > 0 || workspaceReferences.length > 0);
+    const submit = async () => {
+      if (!canSend) return;
+      const content2 = value.trim();
+      setSending(true);
+      let sent = false;
+      try {
+        sent = await Promise.resolve(selectedSkills.length ? onSend(
+          content2,
+          readyAttachments,
+          menuMention,
+          selectedSkills.map((skill) => ({ ...skill })),
+          workspaceReferences.map((reference) => ({ ...reference }))
+        ) : onSend(
+          content2,
+          readyAttachments,
+          menuMention,
+          void 0,
+          workspaceReferences.map((reference) => ({ ...reference }))
+        ));
+      } catch (_error) {
+        sent = false;
+      } finally {
+        setSending(false);
+      }
+      if (sent === false) return;
+      setValue("");
+      resetSelections();
+      dismissPickers();
+      resetAttachments();
+      window.setTimeout(() => {
+        var _a;
+        return (_a = textareaRef.current) == null ? void 0 : _a.focus();
+      }, 0);
+    };
+    return { sending, canSend, submit };
+  }
+  const EMPTY_AGENT_SKILLS = [];
+  const EMPTY_WORKSPACE_REFERENCES = [];
   function ChatInput({
     running,
     disabled = false,
     attachments,
     menuOptions,
-    agentSkills = [],
+    agentSkills = EMPTY_AGENT_SKILLS,
     onSend,
     onStop,
     onUpload,
@@ -12071,14 +12062,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     labels,
     icons,
     onOpenWorkspace,
-    workspaceReferences = [],
+    workspaceReferences = EMPTY_WORKSPACE_REFERENCES,
     onRemoveWorkspaceReference
   }) {
     var _a;
     const [value, setValue] = reactExports.useState("");
-    const [menuMention, setMenuMention] = reactExports.useState();
-    const [selectedSkills, setSelectedSkills] = reactExports.useState([]);
-    const [sending, setSending] = reactExports.useState(false);
     const textareaRef = reactExports.useRef(null);
     const formRef = reactExports.useRef(null);
     const mentionPickerRef = reactExports.useRef(null);
@@ -12097,6 +12085,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       onUpload,
       onRemove
     });
+    const selection = useComposerSelectionState({ agentSkills });
+    const submission = useComposerSubmit({
+      running,
+      disabled,
+      value,
+      setValue,
+      attachmentItems: attachmentState.items,
+      readyAttachments: attachmentState.readyAttachments,
+      menuMention: selection.menuMention,
+      selectedSkills: selection.selectedSkills,
+      workspaceReferences,
+      onSend,
+      resetSelections: selection.resetSelections,
+      dismissPickers: picker.dismissPickers,
+      resetAttachments: attachmentState.resetItems,
+      textareaRef
+    });
     reactExports.useEffect(() => {
       const closeOutside = (event) => {
         const form = formRef.current;
@@ -12112,12 +12117,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         document.removeEventListener("focusin", closeOutside);
       };
     }, [picker.dismissPickers]);
-    reactExports.useEffect(() => {
-      setSelectedSkills((current) => {
-        const next = current.map((skill) => ({ ...skill, valid: agentSkills.some((option) => option.id === skill.id && option.name === skill.name) }));
-        return next.every((skill, index2) => skill.valid === current[index2].valid) ? current : next;
-      });
-    }, [agentSkills]);
     reactExports.useLayoutEffect(() => {
       const textarea = textareaRef.current;
       if (!textarea) return;
@@ -12128,49 +12127,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
       textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
     }, [value]);
-    const canSend = !running && !sending && !disabled && !attachmentState.items.some((item) => item.status !== "ready") && (!!value.trim() || attachmentState.readyAttachments.length > 0 || !!menuMention || selectedSkills.length > 0 || workspaceReferences.length > 0);
     const selectMenu = (option) => {
       const query = picker.consumeMenuQuery();
       if (!query) return;
-      setMenuMention({ ...option, path: [...option.path], valid: true });
+      selection.selectMenu(option);
     };
     const toggleSkill = (skill) => {
-      setSelectedSkills((current) => {
-        if (current.some((item) => item.id === skill.id)) {
-          return current.filter((item) => item.id !== skill.id);
-        }
-        return [{ ...skill, valid: true }];
-      });
+      selection.toggleSkill(skill);
       picker.completeSkillSelection();
-    };
-    const submit = async () => {
-      if (!canSend) return;
-      const content2 = value.trim();
-      setSending(true);
-      let sent = false;
-      try {
-        sent = await Promise.resolve(selectedSkills.length ? onSend(
-          content2,
-          attachmentState.readyAttachments,
-          menuMention,
-          selectedSkills.map((skill) => ({ ...skill })),
-          workspaceReferences.map((reference) => ({ ...reference }))
-        ) : onSend(content2, attachmentState.readyAttachments, menuMention, void 0, workspaceReferences.map((reference) => ({ ...reference }))));
-      } catch (_error) {
-        sent = false;
-      } finally {
-        setSending(false);
-      }
-      if (sent === false) return;
-      setValue("");
-      setMenuMention(void 0);
-      setSelectedSkills([]);
-      picker.dismissPickers();
-      attachmentState.resetItems();
-      window.setTimeout(() => {
-        var _a2;
-        return (_a2 = textareaRef.current) == null ? void 0 : _a2.focus();
-      }, 0);
     };
     const onKeyDown = (event) => {
       var _a2, _b;
@@ -12178,7 +12142,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (picker.menuQuery && ((_b = mentionPickerRef.current) == null ? void 0 : _b.handleKey(event))) return;
       if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
         event.preventDefault();
-        void submit();
+        void submission.submit();
       }
     };
     return /* @__PURE__ */ jsxRuntimeExports.jsxs(
@@ -12193,7 +12157,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         },
         onSubmit: (event) => {
           event.preventDefault();
-          void submit();
+          void submission.submit();
         },
         children: [
           attachmentState.dragging && ((_a = textareaRef.current) == null ? void 0 : _a.closest("main")) ? reactDomExports.createPortal(
@@ -12214,15 +12178,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
               ComposerContextBar,
               {
                 workspaceReferences,
-                selectedSkills,
-                menuMention,
+                selectedSkills: selection.selectedSkills,
+                menuMention: selection.menuMention,
                 onRemoveWorkspaceReference,
-                onRemoveSkill: (id) => setSelectedSkills((current) => current.filter((item) => item.id !== id)),
-                onRemoveMenuMention: () => setMenuMention(void 0)
+                onRemoveSkill: selection.removeSkill,
+                onRemoveMenuMention: selection.removeMenuMention
               }
             ),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "relative", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("textarea", { ref: textareaRef, rows: 1, disabled: disabled || sending, className: "block min-h-11 w-full resize-none rounded-lg border-0 bg-background-secondary px-3 py-3 text-sm leading-5 text-primary outline outline-1 outline-transparent transition-[border-color,background-color,outline-color,box-shadow] placeholder:text-muted/90 focus:bg-background focus:outline-primary/15 focus:shadow-[0_0_0_3px_rgba(59,130,246,0.06)] disabled:cursor-not-allowed disabled:opacity-45", placeholder: labels.inputPlaceholder, value, onChange: (event) => {
+              /* @__PURE__ */ jsxRuntimeExports.jsx("textarea", { ref: textareaRef, rows: 1, disabled: disabled || submission.sending, className: "block min-h-11 w-full resize-none rounded-lg border-0 bg-background-secondary px-3 py-3 text-sm leading-5 text-primary outline outline-1 outline-transparent transition-[border-color,background-color,outline-color,box-shadow] placeholder:text-muted/90 focus:bg-background focus:outline-primary/15 focus:shadow-[0_0_0_3px_rgba(59,130,246,0.06)] disabled:cursor-not-allowed disabled:opacity-45", placeholder: labels.inputPlaceholder, value, onChange: (event) => {
                 const nextValue = event.target.value;
                 const cursor = event.target.selectionStart ?? nextValue.length;
                 picker.handleValueChange(nextValue, cursor);
@@ -12234,7 +12198,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                 var _a2;
                 return (_a2 = textareaRef.current) == null ? void 0 : _a2.focus({ preventScroll: true });
               }, onClose: picker.closeMenuPicker }) : null,
-              /* @__PURE__ */ jsxRuntimeExports.jsx(SkillPicker, { ref: skillPickerRef, open: picker.skillOpen, query: picker.skillSearch, skills: agentSkills, selected: selectedSkills, inlineQuery: Boolean(picker.mentionSkillQuery), onQueryChange: picker.setSkillSearch, onToggle: toggleSkill, onBack: picker.skillReturnQuery ? picker.returnToMentionCategories : void 0, onClose: picker.closeSkillPicker })
+              /* @__PURE__ */ jsxRuntimeExports.jsx(SkillPicker, { ref: skillPickerRef, open: picker.skillOpen, query: picker.skillSearch, skills: agentSkills, selected: selection.selectedSkills, inlineQuery: Boolean(picker.mentionSkillQuery), onQueryChange: picker.setSkillSearch, onToggle: toggleSkill, onBack: picker.skillReturnQuery ? picker.returnToMentionCategories : void 0, onClose: picker.closeSkillPicker })
             ] }),
             attachmentState.enabled ? /* @__PURE__ */ jsxRuntimeExports.jsx("input", { ref: inputRef, className: "hidden", type: "file", disabled, multiple: true, accept: attachmentState.acceptedFileSelector, onChange: (event) => {
               attachmentState.addFiles(Array.from(event.target.files || []));
@@ -12246,9 +12210,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                 attachmentsEnabled: attachmentState.enabled,
                 skillsEnabled: agentSkills.length > 0,
                 disabled,
-                sending,
+                sending: submission.sending,
                 running,
-                canSend,
+                canSend: submission.canSend,
                 skillOpen: picker.skillOpen,
                 labels,
                 icons,
@@ -12266,6 +12230,37 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     );
   }
+  const DEFAULT_DURATION = 1400;
+  function useCopyFeedback(copyAction, duration = DEFAULT_DURATION) {
+    const [copied, setCopied] = reactExports.useState(false);
+    const timer = reactExports.useRef(null);
+    const mounted = reactExports.useRef(true);
+    const actionRef = reactExports.useRef(copyAction);
+    actionRef.current = copyAction;
+    const clearTimer = reactExports.useCallback(() => {
+      if (timer.current === null) return;
+      window.clearTimeout(timer.current);
+      timer.current = null;
+    }, []);
+    const copy = reactExports.useCallback(async () => {
+      await actionRef.current();
+      if (!mounted.current) return;
+      clearTimer();
+      setCopied(true);
+      timer.current = window.setTimeout(() => {
+        timer.current = null;
+        setCopied(false);
+      }, duration);
+    }, [clearTimer, duration]);
+    reactExports.useEffect(() => {
+      mounted.current = true;
+      return () => {
+        mounted.current = false;
+        clearTimer();
+      };
+    }, [clearTimer]);
+    return { copied, copy };
+  }
   function AssistantMessageControls({
     isCurrent,
     running,
@@ -12275,12 +12270,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     onCopy,
     onRegenerate
   }) {
-    const [copied, setCopied] = reactExports.useState(false);
-    const copy = async () => {
-      await onCopy();
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-    };
+    const { copied, copy } = useCopyFeedback(onCopy);
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: cn(
       "agui-message-controls mt-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100",
       isCurrent && "opacity-100"
@@ -24687,25 +24677,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function CodeBlock({ children }) {
     var _a, _b;
-    const [copied, setCopied] = reactExports.useState(false);
     const child = reactExports.Children.only(children);
-    if (!reactExports.isValidElement(child)) {
+    const validChild = reactExports.isValidElement(child) ? child : null;
+    const code2 = validChild ? String(validChild.props.children || "").replace(/\n$/, "") : "";
+    const { copied, copy } = useCopyFeedback(() => {
+      var _a2;
+      return (_a2 = navigator.clipboard) == null ? void 0 : _a2.writeText(code2);
+    });
+    if (!validChild) {
       return /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { children });
     }
-    const language = (_b = (_a = child.props.className) == null ? void 0 : _a.match(/language-([\w-]+)/)) == null ? void 0 : _b[1];
-    const code2 = String(child.props.children || "").replace(/\n$/, "");
-    const copy = async () => {
-      var _a2;
-      await ((_a2 = navigator.clipboard) == null ? void 0 : _a2.writeText(code2));
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-    };
+    const language = (_b = (_a = validChild.props.className) == null ? void 0 : _a.match(/language-([\w-]+)/)) == null ? void 0 : _b[1];
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "agui-code-block", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "agui-code-toolbar", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: language || "text" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: "复制代码", className: "rounded border-0 text-inherit hover:bg-white/10 hover:text-inherit", onClick: () => void copy(), children: copied ? /* @__PURE__ */ jsxRuntimeExports.jsx(Check, { className: "size-3.5" }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Copy, { className: "size-3.5" }) })
       ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { children: child })
+      /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { children: validChild })
     ] });
   }
   function Markdown({ children }) {
@@ -24851,6 +24839,194 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ] })
     ] });
   }
+  function uuid() {
+    const cryptoValue = globalThis.crypto;
+    if (cryptoValue == null ? void 0 : cryptoValue.randomUUID) {
+      return cryptoValue.randomUUID();
+    }
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+      const value = Math.random() * 16 | 0;
+      const next = char === "x" ? value : value & 3 | 8;
+      return next.toString(16);
+    });
+  }
+  function clone(value) {
+    if (value === void 0 || value === null) {
+      return value;
+    }
+    return JSON.parse(JSON.stringify(value));
+  }
+  function asText(value) {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value.map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+        if (part && typeof part === "object") {
+          const item = part;
+          return item.text ?? item.content ?? item.value ?? "";
+        }
+        return "";
+      }).join("");
+    }
+    if (value && typeof value === "object") {
+      return JSON.stringify(value, null, 2);
+    }
+    return value === void 0 || value === null ? "" : String(value);
+  }
+  function textSummary(value, limit = 80) {
+    const text2 = asText(value).replace(/\s+/g, " ").trim();
+    if (!limit || text2.length <= limit) {
+      return text2;
+    }
+    return `${text2.slice(0, limit - 1)}...`;
+  }
+  function parseJson(value) {
+    if (!value || typeof value !== "string") {
+      return value || {};
+    }
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+  function shortHash(value) {
+    let text2 = "";
+    let result = 0;
+    try {
+      text2 = JSON.stringify(value);
+    } catch {
+      text2 = String(value || "");
+    }
+    for (let index2 = 0; index2 < text2.length; index2 += 1) {
+      result = (result << 5) - result + text2.charCodeAt(index2);
+      result &= result;
+    }
+    return (result >>> 0).toString(36);
+  }
+  function statusFromResult(result, fallback = "pending") {
+    const value = result && typeof result === "object" ? result : {};
+    if (value.cancelled) {
+      return "cancelled";
+    }
+    if (value.needs_confirmation) {
+      return "needs_confirmation";
+    }
+    if (value.ok === false || value.error) {
+      return "error";
+    }
+    if (value.ok === true) {
+      return "ok";
+    }
+    return fallback;
+  }
+  function statusRank(status) {
+    return {
+      pending: 1,
+      running: 2,
+      needs_confirmation: 3,
+      ok: 4,
+      error: 4,
+      cancelled: 4
+    }[status || "pending"] || 1;
+  }
+  function mergeStatus(existing, incoming) {
+    if (!existing) {
+      return incoming || "pending";
+    }
+    return statusRank(incoming) >= statusRank(existing) ? incoming : existing;
+  }
+  function toolCallId(tool) {
+    return String(tool.id || tool.tool_call_id || tool.toolCallId || "");
+  }
+  function toolName(tool) {
+    return String(tool.name || tool.tool_name || tool.tool || "unknown");
+  }
+  function toolArgs(tool) {
+    return tool.args ?? tool.tool_args ?? parseJson(tool.argsText || "{}");
+  }
+  function toolKey(tool) {
+    const id = toolCallId(tool);
+    const name2 = toolName(tool);
+    const args = toolArgs(tool);
+    if (id) {
+      return `id:${id}`;
+    }
+    if (tool.createdAt || tool.created_at) {
+      return `created:${name2}:${tool.createdAt || tool.created_at}`;
+    }
+    return `sig:${name2}:${shortHash(args)}`;
+  }
+  function safeReferenceUrl(value) {
+    if (typeof value !== "string") {
+      return void 0;
+    }
+    const url = value.trim();
+    if (!url || url.startsWith("//")) {
+      return void 0;
+    }
+    if (url.startsWith("/")) {
+      try {
+        const base = "https://reference.invalid";
+        return new URL(url, base).origin === base ? url : void 0;
+      } catch {
+        return void 0;
+      }
+    }
+    try {
+      const protocol = new URL(url).protocol;
+      return protocol === "https:" || protocol === "http:" ? url : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function normalizeReferenceGroups(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value.map((rawGroup) => {
+      const group = rawGroup && typeof rawGroup === "object" ? rawGroup : {};
+      const source = Array.isArray(group.references) ? group.references : [group];
+      const references = source.map((rawReference) => {
+        const reference = rawReference && typeof rawReference === "object" ? rawReference : {};
+        const content2 = reference.content || reference.text || reference.summary || reference.description || "";
+        const name2 = reference.name || reference.title || reference.url || "";
+        const rawUrl = reference.url || reference.link || "";
+        const url = safeReferenceUrl(rawUrl);
+        if (!content2 && !name2 && !rawUrl) {
+          return null;
+        }
+        return {
+          name: String(name2 || textSummary(content2, 60)),
+          url: url ? String(url) : void 0,
+          content: textSummary(content2, 180),
+          meta_data: reference.meta_data && typeof reference.meta_data === "object" ? reference.meta_data : void 0
+        };
+      }).filter(Boolean);
+      if (!references.length) {
+        return null;
+      }
+      return {
+        query: group.query ? String(group.query) : "",
+        references
+      };
+    }).filter(Boolean);
+  }
+  function visibleMessages(messages) {
+    return messages.filter((message) => {
+      if (message.hidden) {
+        return false;
+      }
+      if (message.role === "tool" && (message.toolCallId || message.tool_call_id)) {
+        return false;
+      }
+      return true;
+    });
+  }
   function MessageReferences({ references }) {
     const groups = normalizeReferenceGroups(references);
     if (!groups.length) return null;
@@ -24920,6 +25096,29 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     );
   }
+  const EMPTY_RESET_KEYS = [];
+  function resetKeysChanged(previous2, next) {
+    return previous2.length !== next.length || previous2.some((value, index2) => !Object.is(value, next[index2]));
+  }
+  class RenderErrorBoundary extends reactExports.Component {
+    constructor() {
+      super(...arguments);
+      __publicField(this, "state", {
+        failed: false,
+        resetKeys: this.props.resetKeys || EMPTY_RESET_KEYS
+      });
+    }
+    static getDerivedStateFromProps(props, state) {
+      const resetKeys = props.resetKeys || EMPTY_RESET_KEYS;
+      return resetKeysChanged(state.resetKeys, resetKeys) ? { failed: false, resetKeys } : null;
+    }
+    static getDerivedStateFromError() {
+      return { failed: true };
+    }
+    render() {
+      return this.state.failed ? this.props.fallback : this.props.children;
+    }
+  }
   function displayDiffValue(value) {
     if (value === false || value === null || value === void 0 || value === "") return "空";
     if (typeof value === "string") return value;
@@ -24988,6 +25187,116 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       statusLabel(status)
     ] });
   }
+  function isRecord$1(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+  }
+  function isRelationSearchResult(value) {
+    if (!isRecord$1(value) || value.ok !== true || !Array.isArray(value.candidates)) return false;
+    return value.operation === "odoo.search_relation" && typeof value.field === "string" && (value.fieldLabel === void 0 || typeof value.fieldLabel === "string") && (value.fieldType === "many2one" || value.fieldType === "many2many") && typeof value.relation === "string" && (value.rowToken === void 0 || value.rowToken === false || typeof value.rowToken === "string") && typeof value.query === "string" && ["set", "link", "unlink"].includes(String(value.relationOperation)) && ["none", "unique_exact", "ambiguous"].includes(String(value.resolution)) && typeof value.snapshotId === "string" && typeof value.hostRevision === "number" && value.candidates.every((candidate) => isRecord$1(candidate) && typeof candidate.id === "number" && typeof candidate.displayName === "string" && typeof candidate.selected === "boolean");
+  }
+  function isFilterResult(value) {
+    if (!isRecord$1(value) || value.ok !== true || !Array.isArray(value.candidates)) return false;
+    return value.operation === "odoo.apply_filter" && typeof value.label === "string" && Array.isArray(value.domain) && typeof value.count === "number" && typeof value.snapshotId === "string" && typeof value.hostRevision === "number" && value.candidates.every((candidate) => isRecord$1(candidate) && typeof candidate.token === "string" && typeof candidate.displayName === "string");
+  }
+  function getBuiltInToolPresentation(tool) {
+    const name2 = toolName(tool);
+    if (name2 === "odoo.search_relation" && isRelationSearchResult(tool.result)) {
+      return { kind: "relation_search", result: tool.result };
+    }
+    if (name2 === "odoo.apply_filter" && isFilterResult(tool.result)) {
+      return { kind: "record_candidates", result: tool.result };
+    }
+    return { kind: "default" };
+  }
+  const TOOL_DISPLAY_NAMES = {
+    "odoo.open_menu": "打开菜单",
+    "odoo.apply_filter": "筛选当前视图",
+    "odoo.open_record": "打开记录",
+    "odoo.open_create": "新建记录",
+    "odoo.enter_edit_mode": "进入编辑模式",
+    "odoo.activate_view_control": "激活页面控件",
+    "odoo.search_relation": "查询关系记录",
+    "odoo.stage_current_form": "暂存当前表单",
+    "odoo.patch_current_form": "修改当前表单",
+    "odoo.validate_current_form": "校验当前表单",
+    "odoo.save_current_form": "保存当前表单",
+    "odoo.open_x2many_record": "打开明细表单",
+    "odoo.open_x2many_create": "新建明细表单",
+    "odoo.prepare_x2many_import": "准备明细导入",
+    "odoo.get_x2many_import_status": "查询导入状态",
+    "odoo.reload_current_form": "重新载入表单",
+    "odoo.discard_current_form": "放弃表单更改"
+  };
+  function getToolCallPresentation(tool) {
+    const name2 = toolName(tool);
+    const result = tool.result && typeof tool.result === "object" ? tool.result : {};
+    const receipt = result.receipt && typeof result.receipt === "object" ? result.receipt : {};
+    const undo = receipt.undo && typeof receipt.undo === "object" ? receipt.undo : {};
+    const status = tool.status || "pending";
+    return {
+      displayName: TOOL_DISPLAY_NAMES[name2] || name2,
+      result,
+      applied: Array.isArray(result.applied) ? result.applied.length : 0,
+      rejected: Array.isArray(result.rejected) ? result.rejected.length : 0,
+      status,
+      error: tool.error || result.error,
+      needsConfirmation: status === "needs_confirmation" || !!tool.needs_confirmation,
+      undo,
+      call: { id: toolCallId(tool), args: toolArgs(tool) }
+    };
+  }
+  const EMPTY_SELECTED_IDS = [];
+  function isCandidateSnapshotStale(result, hostState) {
+    return result.snapshotId !== hostState.snapshotId || result.hostRevision !== hostState.hostRevision;
+  }
+  function isRelationCandidateCompatible(operation, candidate) {
+    if (operation === "link") return !candidate.selected;
+    if (operation === "unlink") return candidate.selected;
+    return true;
+  }
+  function getRelationSelectionScope(result) {
+    const candidates = result.candidates.map((candidate) => [candidate.id, candidate.selected]).sort(([left], [right]) => left - right);
+    return JSON.stringify([
+      result.snapshotId,
+      result.hostRevision,
+      result.field,
+      result.fieldType,
+      result.relation,
+      result.rowToken || "",
+      result.query,
+      result.relationOperation,
+      candidates
+    ]);
+  }
+  function toggleRelationCandidateId(selectedIds, candidateId) {
+    return selectedIds.includes(candidateId) ? selectedIds.filter((id) => id !== candidateId) : [...selectedIds, candidateId];
+  }
+  function useRelationCandidateSelection(result) {
+    const scope = getRelationSelectionScope(result);
+    const [selection, setSelection] = reactExports.useState(() => ({
+      scope,
+      selectedIds: []
+    }));
+    const selectedIds = selection.scope === scope ? selection.selectedIds : EMPTY_SELECTED_IDS;
+    const isCompatible = reactExports.useCallback((candidate) => {
+      return isRelationCandidateCompatible(result.relationOperation, candidate);
+    }, [result.relationOperation]);
+    const selectedCandidates = reactExports.useMemo(() => {
+      const ids = new Set(selectedIds);
+      return result.candidates.filter((candidate) => ids.has(candidate.id) && isCompatible(candidate));
+    }, [isCompatible, result.candidates, selectedIds]);
+    const toggleCandidate = reactExports.useCallback((candidate) => {
+      if (!isRelationCandidateCompatible(result.relationOperation, candidate)) return;
+      setSelection((current) => ({
+        scope,
+        selectedIds: toggleRelationCandidateId(
+          current.scope === scope ? current.selectedIds : EMPTY_SELECTED_IDS,
+          candidate.id
+        )
+      }));
+    }, [result.relationOperation, scope]);
+    return { selectedIds, selectedCandidates, isCompatible, toggleCandidate };
+  }
   function RelationSearchCard({
     tool,
     result,
@@ -24996,15 +25305,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     running,
     onSelect
   }) {
-    const [selectedIds, setSelectedIds] = reactExports.useState([]);
-    const stale = result.snapshotId !== hostState.snapshotId || result.hostRevision !== hostState.hostRevision;
+    const selection = useRelationCandidateSelection(result);
+    const stale = isCandidateSnapshotStale(result, hostState);
     const multiple = result.fieldType === "many2many";
-    const compatible = (candidate) => result.relationOperation === "link" ? !candidate.selected : result.relationOperation === "unlink" ? candidate.selected : true;
-    reactExports.useEffect(() => setSelectedIds([]), [result.snapshotId, result.hostRevision, result.query]);
-    const toggle = (candidate) => {
-      setSelectedIds((current) => current.includes(candidate.id) ? current.filter((id) => id !== candidate.id) : [...current, candidate.id]);
-    };
-    const selected = result.candidates.filter((candidate) => selectedIds.includes(candidate.id));
     return /* @__PURE__ */ jsxRuntimeExports.jsx(
       CandidatePanel,
       {
@@ -25014,13 +25317,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         emptyMessage: labels.relationNoResults,
         notice: stale ? /* @__PURE__ */ jsxRuntimeExports.jsx(InlineNotice, { className: "mt-3", tone: "warning", children: labels.relationSelectionExpired }) : null,
         footer: multiple && result.candidates.length ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-3 flex items-center justify-between gap-3", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] text-muted", children: labels.selectedRelationCount.replace("{count}", String(selected.length)) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { size: "sm", variant: "primary", className: "h-8 rounded-md", disabled: stale || running || !selected.length, onClick: () => onSelect(tool, selected), children: labels.confirmRelationSelection })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] text-muted", children: labels.selectedRelationCount.replace("{count}", String(selection.selectedCandidates.length)) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { size: "sm", variant: "primary", className: "h-8 rounded-md", disabled: stale || running || !selection.selectedCandidates.length, onClick: () => onSelect(tool, selection.selectedCandidates), children: labels.confirmRelationSelection })
         ] }) : null,
         children: result.candidates.map((candidate) => {
-          const disabled = stale || running || !compatible(candidate);
+          const disabled = stale || running || !selection.isCompatible(candidate);
           return multiple ? /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "flex min-h-9 items-center gap-2 rounded border border-border bg-background px-2.5 py-1.5 text-xs text-primary has-[:disabled]:opacity-45", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", className: "size-4", disabled, checked: selectedIds.includes(candidate.id), onChange: () => toggle(candidate) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", className: "size-4", disabled, checked: selection.selectedIds.includes(candidate.id), onChange: () => selection.toggleCandidate(candidate) }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate", children: candidate.displayName }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "shrink-0 text-[10px] text-muted", children: [
               "#",
@@ -25041,7 +25344,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     running,
     onSelect
   }) {
-    const stale = result.snapshotId !== hostState.snapshotId || result.hostRevision !== hostState.hostRevision;
+    const stale = isCandidateSnapshotStale(result, hostState);
     return /* @__PURE__ */ jsxRuntimeExports.jsx(
       CandidatePanel,
       {
@@ -25055,33 +25358,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     );
   }
   function DefaultToolCallCard({ tool, onConfirm, onUndo, labels, running }) {
-    const names = {
-      "odoo.open_menu": "打开菜单",
-      "odoo.apply_filter": "筛选当前视图",
-      "odoo.open_record": "打开记录",
-      "odoo.open_create": "新建记录",
-      "odoo.enter_edit_mode": "进入编辑模式",
-      "odoo.activate_view_control": "激活页面控件",
-      "odoo.search_relation": "查询关系记录",
-      "odoo.stage_current_form": "暂存当前表单",
-      "odoo.patch_current_form": "修改当前表单",
-      "odoo.validate_current_form": "校验当前表单",
-      "odoo.save_current_form": "保存当前表单",
-      "odoo.open_x2many_record": "打开明细表单",
-      "odoo.open_x2many_create": "新建明细表单",
-      "odoo.prepare_x2many_import": "准备明细导入",
-      "odoo.get_x2many_import_status": "查询导入状态",
-      "odoo.reload_current_form": "重新载入表单",
-      "odoo.discard_current_form": "放弃表单更改"
-    };
-    const displayName = names[toolName(tool)] || toolName(tool);
-    const result = tool.result && typeof tool.result === "object" ? tool.result : {};
-    const applied = Array.isArray(result.applied) ? result.applied.length : 0;
-    const rejected = Array.isArray(result.rejected) ? result.rejected.length : 0;
-    const status = tool.status || "pending";
-    const receipt = result.receipt && typeof result.receipt === "object" ? result.receipt : {};
-    const undo = receipt.undo && typeof receipt.undo === "object" ? receipt.undo : {};
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { open: status === "needs_confirmation" || !!tool.needs_confirmation || void 0, className: "rounded-lg border border-border bg-background-secondary/80 p-2", children: [
+    const {
+      displayName,
+      result,
+      applied,
+      rejected,
+      status,
+      error,
+      needsConfirmation,
+      undo,
+      call
+    } = getToolCallPresentation(tool);
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { open: needsConfirmation || void 0, className: "rounded-lg border border-border bg-background-secondary/80 p-2", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("summary", { className: "flex cursor-pointer list-none flex-wrap items-center gap-2", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "inline-flex items-center gap-1.5 rounded-md bg-background px-2 py-1 font-mono text-[11px] text-primary", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(Hammer, { className: "size-3" }),
@@ -25096,8 +25384,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           " 项"
         ] }) : null
       ] }),
-      tool.error || result.error ? /* @__PURE__ */ jsxRuntimeExports.jsx(InlineNotice, { className: "mt-2", tone: "error", children: String(tool.error || result.error) }) : null,
-      status === "needs_confirmation" || tool.needs_confirmation ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 rounded-md border border-solid border-warning/25 bg-warning/10 p-2 text-xs text-warning", children: [
+      error ? /* @__PURE__ */ jsxRuntimeExports.jsx(InlineNotice, { className: "mt-2", tone: "error", children: String(error) }) : null,
+      needsConfirmation ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 rounded-md border border-solid border-warning/25 bg-warning/10 p-2 text-xs text-warning", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
           "需要确认：",
           displayName
@@ -25118,23 +25406,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { className: "mt-2 border-t border-border pt-2", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("summary", { className: "cursor-pointer text-xs text-muted", children: "查看详情" }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 grid gap-2 md:grid-cols-2", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { className: "max-h-52 overflow-auto rounded-md bg-background p-2 text-[11px] text-muted", children: JSON.stringify({ id: toolCallId(tool), args: toolArgs(tool) }, null, 2) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { className: "max-h-52 overflow-auto rounded-md bg-background p-2 text-[11px] text-muted", children: JSON.stringify(call, null, 2) }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { className: "max-h-52 overflow-auto rounded-md bg-background p-2 text-[11px] text-muted", children: JSON.stringify(tool.result || null, null, 2) })
         ] })
       ] })
     ] });
-  }
-  class ToolRendererBoundary extends React.Component {
-    constructor() {
-      super(...arguments);
-      __publicField(this, "state", { failed: false });
-    }
-    static getDerivedStateFromError() {
-      return { failed: true };
-    }
-    render() {
-      return this.state.failed ? this.props.fallback : this.props.children;
-    }
   }
   function ToolCallCard({
     tool,
@@ -25149,15 +25425,76 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }) {
     const Renderer = renderers == null ? void 0 : renderers[toolName(tool)];
     const fallback = /* @__PURE__ */ jsxRuntimeExports.jsx(DefaultToolCallCard, { tool, onConfirm, onUndo, labels, running });
-    if (Renderer) return /* @__PURE__ */ jsxRuntimeExports.jsx(ToolRendererBoundary, { fallback, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Renderer, { tool }) });
-    const result = tool.result && typeof tool.result === "object" ? tool.result : null;
-    if (toolName(tool) === "odoo.search_relation" && (result == null ? void 0 : result.ok) && Array.isArray(result.candidates)) {
-      return /* @__PURE__ */ jsxRuntimeExports.jsx(RelationSearchCard, { tool, result, labels, hostState, running, onSelect: onSelectRelation });
+    if (Renderer) return /* @__PURE__ */ jsxRuntimeExports.jsx(
+      RenderErrorBoundary,
+      {
+        fallback,
+        resetKeys: [
+          Renderer,
+          tool.id,
+          tool.key,
+          tool.status,
+          tool.result,
+          tool.error,
+          tool.args,
+          tool.tool_args,
+          tool.argsText
+        ],
+        children: /* @__PURE__ */ jsxRuntimeExports.jsx(Renderer, { tool })
+      }
+    );
+    const builtIn = getBuiltInToolPresentation(tool);
+    if (builtIn.kind === "relation_search") {
+      return /* @__PURE__ */ jsxRuntimeExports.jsx(RelationSearchCard, { tool, result: builtIn.result, labels, hostState, running, onSelect: onSelectRelation });
     }
-    if (toolName(tool) === "odoo.apply_filter" && (result == null ? void 0 : result.ok) && Array.isArray(result.candidates)) {
-      return /* @__PURE__ */ jsxRuntimeExports.jsx(RecordCandidatesCard, { tool, result, hostState, running, onSelect: onSelectRecord });
+    if (builtIn.kind === "record_candidates") {
+      return /* @__PURE__ */ jsxRuntimeExports.jsx(RecordCandidatesCard, { tool, result: builtIn.result, hostState, running, onSelect: onSelectRecord });
     }
     return fallback;
+  }
+  const ACTIVE_TOOL_STATUSES = /* @__PURE__ */ new Set(["pending", "running", "needs_confirmation"]);
+  function getAssistantMessagePresentation(message) {
+    const extra = message.extra_data;
+    return {
+      content: asText(message.content),
+      reasoning: (extra == null ? void 0 : extra.reasoning_steps) || [],
+      references: (extra == null ? void 0 : extra.references) || [],
+      canRegenerate: Boolean(
+        message.content && !message.streaming_error && typeof (extra == null ? void 0 : extra.agent_run_id) === "string" && extra.agent_run_id && extra.agent_run_final === true && !(message.tool_calls || []).some((tool) => ACTIVE_TOOL_STATUSES.has(tool.status || "pending"))
+      )
+    };
+  }
+  function getUserMessageContent(message) {
+    return asText(message.content);
+  }
+  function normalizeMessageRole(role) {
+    return role === "agent" ? "assistant" : role;
+  }
+  function getMessageListPresentation(messages) {
+    const displayMessages = visibleMessages(messages);
+    const lastAssistantIndex = displayMessages.reduce(
+      (last, message, index2) => normalizeMessageRole(message.role) === "assistant" ? index2 : last,
+      -1
+    );
+    return { displayMessages, lastAssistantIndex };
+  }
+  function getToolCallRenderKey(tool, index2) {
+    return tool.key || toolCallId(tool) || `${toolName(tool)}-${index2}`;
+  }
+  function useMessageFeedback(onFeedback) {
+    const [feedback, setFeedback] = reactExports.useState({});
+    const feedbackRef = reactExports.useRef(feedback);
+    const onFeedbackRef = reactExports.useRef(onFeedback);
+    feedbackRef.current = feedback;
+    onFeedbackRef.current = onFeedback;
+    const toggleFeedback = reactExports.useCallback((message, choice) => {
+      const value = feedbackRef.current[message.id] === choice ? null : choice;
+      const next = { ...feedbackRef.current, [message.id]: value };
+      feedbackRef.current = next;
+      setFeedback(next);
+      onFeedbackRef.current(message, value);
+    }, []);
+    return { feedback, toggleFeedback };
   }
   function DefaultAssistantMessage({
     message,
@@ -25174,19 +25511,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     onSelectRelation,
     onSelectRecord
   }) {
-    var _a, _b, _c, _d;
-    const content2 = asText(message.content);
-    const reasoning = ((_a = message.extra_data) == null ? void 0 : _a.reasoning_steps) || [];
-    const references = ((_b = message.extra_data) == null ? void 0 : _b.references) || [];
-    const canRegenerate = Boolean(
-      message.content && !message.streaming_error && typeof ((_c = message.extra_data) == null ? void 0 : _c.agent_run_id) === "string" && message.extra_data.agent_run_id && message.extra_data.agent_run_final === true && !(message.tool_calls || []).some(
-        (tool) => ["pending", "running", "needs_confirmation"].includes(tool.status || "pending")
-      )
-    );
+    var _a;
+    const { content: content2, reasoning, references, canRegenerate } = getAssistantMessagePresentation(message);
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-5", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx(MessageReasoning, { steps: reasoning }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(MessageReferences, { references }),
-      ((_d = message.tool_calls) == null ? void 0 : _d.length) ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-col gap-2", children: message.tool_calls.map((tool, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx(ToolCallCard, { tool, renderers: toolRenderers, labels, hostState, running, onSelectRelation, onSelectRecord, onConfirm: (approved) => onConfirmTool(tool, approved), onUndo: () => onUndoTool(tool) }, tool.key || toolCallId(tool) || `${toolName(tool)}-${index2}`)) }) : null,
+      ((_a = message.tool_calls) == null ? void 0 : _a.length) ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-col gap-2", children: message.tool_calls.map((tool, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx(ToolCallCard, { tool, renderers: toolRenderers, labels, hostState, running, onSelectRelation, onSelectRecord, onConfirm: (approved) => onConfirmTool(tool, approved), onUndo: () => onUndoTool(tool) }, getToolCallRenderKey(tool, index2))) }) : null,
       content2 || message.streaming_error ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "group flex items-start gap-3", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid size-6 shrink-0 place-items-center rounded bg-primary text-primaryAccent", children: icons.assistant }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 flex-1", children: [
@@ -25209,6 +25539,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ] });
   }
   function DefaultUserMessage({ message, labels, onPreviewAttachment, onRemoveMenuMention, onRemoveMention }) {
+    const content2 = getUserMessageContent(message);
     return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex w-full justify-end", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 max-w-[82%]", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx(MessageAttachments, { attachments: message.attachments, labels, onPreview: onPreviewAttachment }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -25222,7 +25553,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           onRemoveMenuMention
         }
       ),
-      asText(message.content) ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ml-auto w-fit rounded-lg bg-background-secondary px-3.5 py-2 text-sm leading-6 text-secondary", children: asText(message.content) }) : null
+      content2 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "ml-auto w-fit rounded-lg bg-background-secondary px-3.5 py-2 text-sm leading-6 text-secondary", children: content2 }) : null
     ] }) });
   }
   function Messages({
@@ -25246,12 +25577,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     onRemoveMenuMention,
     onRemoveMention
   }) {
-    const [feedback, setFeedback] = reactExports.useState({});
-    const displayMessages = visibleMessages(messages);
-    const lastAssistantIndex = displayMessages.reduce(
-      (last, message, index2) => message.role === "assistant" || message.role === "agent" ? index2 : last,
-      -1
-    );
+    const messageFeedback = useMessageFeedback(onFeedback);
+    const { displayMessages, lastAssistantIndex } = getMessageListPresentation(messages);
     const AssistantMessage = (components == null ? void 0 : components.AssistantMessage) || DefaultAssistantMessage;
     const UserMessage = (components == null ? void 0 : components.UserMessage) || DefaultUserMessage;
     if (!displayMessages.length) return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex min-h-[320px] flex-col items-center justify-center px-4 text-center", children: [
@@ -25263,23 +25590,81 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mx-auto flex w-full max-w-3xl flex-col gap-12 px-4 py-8", children: [
       displayMessages.map((message, index2) => {
         var _a;
-        const role = message.role === "agent" ? "assistant" : message.role;
-        if (role === "assistant") return /* @__PURE__ */ jsxRuntimeExports.jsx(AssistantMessage, { message, running, isCurrent: index2 === lastAssistantIndex, toolRenderers, labels, icons, feedback: feedback[message.id] || null, hostState, onSelectRelation: (tool, candidates) => onSelectRelation(tool, candidates), onSelectRecord: (tool, candidate) => onSelectRecord(tool, candidate), onCopy: () => onCopy(message), onRegenerate: () => onRegenerate(message.id), onFeedback: (next) => {
-          const value = feedback[message.id] === next ? null : next;
-          setFeedback((current) => ({ ...current, [message.id]: value }));
-          onFeedback(message, value);
-        }, onConfirmTool, onUndoTool: (tool) => onUndoTool == null ? void 0 : onUndoTool(tool) }, message.id || `assistant-${index2}`);
+        const role = normalizeMessageRole(message.role);
+        if (role === "assistant") return /* @__PURE__ */ jsxRuntimeExports.jsx(AssistantMessage, { message, running, isCurrent: index2 === lastAssistantIndex, toolRenderers, labels, icons, feedback: messageFeedback.feedback[message.id] || null, hostState, onSelectRelation: (tool, candidates) => onSelectRelation(tool, candidates), onSelectRecord: (tool, candidate) => onSelectRecord(tool, candidate), onCopy: () => onCopy(message), onRegenerate: () => onRegenerate(message.id), onFeedback: (next) => messageFeedback.toggleFeedback(message, next), onConfirmTool, onUndoTool: (tool) => onUndoTool == null ? void 0 : onUndoTool(tool) }, message.id || `assistant-${index2}`);
         if (role === "user") return /* @__PURE__ */ jsxRuntimeExports.jsx(UserMessage, { message, icons, labels, onPreviewAttachment, onRemoveMenuMention: message.menuMention && onRemoveMenuMention ? () => onRemoveMenuMention(message.id) : void 0, onRemoveMention: ((_a = message.mentions) == null ? void 0 : _a.length) && onRemoveMention ? (referenceId) => onRemoveMention(message.id, referenceId) : void 0 }, message.id || `user-${index2}`);
         return null;
       }),
       running ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "agui-activity flex items-center gap-1.5 py-1", "aria-label": labels.generatingResponse, children: [0, 1, 2].map((index2) => /* @__PURE__ */ jsxRuntimeExports.jsx(React.Fragment, { children: icons.activity }, index2)) }) : /* @__PURE__ */ jsxRuntimeExports.jsx(SuggestionList, { suggestions, disabled: false, onSelect: onSuggestion })
     ] });
   }
+  const KEYBOARD_STEP = 24;
+  function useAsideResize({
+    defaultWidth,
+    minWidth,
+    maxWidth,
+    minMainWidth
+  }) {
+    const panelRef = reactExports.useRef(null);
+    const activeResizeCleanup = reactExports.useRef(null);
+    const [width, setWidth] = reactExports.useState(defaultWidth);
+    const clampWidth = reactExports.useCallback((nextWidth) => {
+      const panel = panelRef.current;
+      let main = panel == null ? void 0 : panel.previousElementSibling;
+      while (main == null ? void 0 : main.classList.contains("agui-aside-backdrop")) main = main.previousElementSibling;
+      const available = main instanceof HTMLElement && panel ? main.getBoundingClientRect().width + panel.getBoundingClientRect().width : Number.POSITIVE_INFINITY;
+      const availableMax = Math.max(minWidth, available - minMainWidth);
+      return Math.min(Math.max(nextWidth, minWidth), maxWidth, availableMax);
+    }, [maxWidth, minMainWidth, minWidth]);
+    const stopActiveResize = reactExports.useCallback(() => {
+      var _a;
+      (_a = activeResizeCleanup.current) == null ? void 0 : _a.call(activeResizeCleanup);
+    }, []);
+    reactExports.useEffect(() => stopActiveResize, [stopActiveResize]);
+    const handleResizeStart = reactExports.useCallback((event) => {
+      var _a;
+      event.preventDefault();
+      stopActiveResize();
+      const startX = event.clientX;
+      const startWidth = ((_a = panelRef.current) == null ? void 0 : _a.getBoundingClientRect().width) || width;
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      const handlePointerMove = (moveEvent) => {
+        setWidth(clampWidth(startWidth + startX - moveEvent.clientX));
+      };
+      const cleanup = () => {
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", cleanup);
+        if (activeResizeCleanup.current === cleanup) activeResizeCleanup.current = null;
+      };
+      activeResizeCleanup.current = cleanup;
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", cleanup, { once: true });
+    }, [clampWidth, stopActiveResize, width]);
+    const handleResizeKeyDown = reactExports.useCallback((event) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setWidth((current) => clampWidth(current + KEYBOARD_STEP));
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        setWidth((current) => clampWidth(current - KEYBOARD_STEP));
+      }
+    }, [clampWidth]);
+    return {
+      panelRef,
+      style: { "--agui-aside-width": `${width}px` },
+      handleResizeStart,
+      handleResizeKeyDown
+    };
+  }
   const DEFAULT_WIDTH = 620;
   const MIN_WIDTH = 360;
   const MAX_WIDTH = 920;
   const MIN_MAIN_WIDTH = 420;
-  const KEYBOARD_STEP = 24;
   function AsidePanel({
     ariaLabel,
     eyebrow,
@@ -25296,16 +25681,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     maxWidth = MAX_WIDTH,
     minMainWidth = MIN_MAIN_WIDTH
   }) {
-    const panelRef = reactExports.useRef(null);
-    const [width, setWidth] = reactExports.useState(defaultWidth);
-    const clampWidth = reactExports.useCallback((nextWidth) => {
-      const panel = panelRef.current;
-      let main = panel == null ? void 0 : panel.previousElementSibling;
-      while (main == null ? void 0 : main.classList.contains("agui-aside-backdrop")) main = main.previousElementSibling;
-      const available = main instanceof HTMLElement && panel ? main.getBoundingClientRect().width + panel.getBoundingClientRect().width : Number.POSITIVE_INFINITY;
-      const availableMax = Math.max(minWidth, available - minMainWidth);
-      return Math.min(Math.max(nextWidth, minWidth), maxWidth, availableMax);
-    }, [maxWidth, minMainWidth, minWidth]);
+    const resize = useAsideResize({ defaultWidth, minWidth, maxWidth, minMainWidth });
     reactExports.useEffect(() => {
       const closeOnEscape = (event) => {
         if (event.key === "Escape") onClose();
@@ -25313,45 +25689,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       window.addEventListener("keydown", closeOnEscape);
       return () => window.removeEventListener("keydown", closeOnEscape);
     }, [onClose]);
-    const handleResizeStart = reactExports.useCallback((event) => {
-      var _a;
-      event.preventDefault();
-      const startX = event.clientX;
-      const startWidth = ((_a = panelRef.current) == null ? void 0 : _a.getBoundingClientRect().width) || width;
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-      const handlePointerMove = (moveEvent) => {
-        setWidth(clampWidth(startWidth + startX - moveEvent.clientX));
-      };
-      const handlePointerUp = () => {
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        window.removeEventListener("pointermove", handlePointerMove);
-        window.removeEventListener("pointerup", handlePointerUp);
-      };
-      window.addEventListener("pointermove", handlePointerMove);
-      window.addEventListener("pointerup", handlePointerUp, { once: true });
-    }, [clampWidth, width]);
-    const style = { "--agui-aside-width": `${width}px` };
     return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "agui-aside-backdrop", "aria-label": closeLabel, onClick: onClose }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("aside", { ref: panelRef, className: `agui-aside ${className}`.trim(), style, "aria-label": ariaLabel, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("aside", { ref: resize.panelRef, className: `agui-aside ${className}`.trim(), style: resize.style, "aria-label": ariaLabel, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx(
           "button",
           {
             type: "button",
             className: "agui-aside-resize",
             "aria-label": resizeLabel,
-            onPointerDown: handleResizeStart,
-            onKeyDown: (event) => {
-              if (event.key === "ArrowLeft") {
-                event.preventDefault();
-                setWidth((current) => clampWidth(current + KEYBOARD_STEP));
-              } else if (event.key === "ArrowRight") {
-                event.preventDefault();
-                setWidth((current) => clampWidth(current - KEYBOARD_STEP));
-              }
-            },
+            onPointerDown: resize.handleResizeStart,
+            onKeyDown: resize.handleResizeKeyDown,
             children: /* @__PURE__ */ jsxRuntimeExports.jsx(GripVertical, { size: 16, strokeWidth: 1.8 })
           }
         ),
@@ -25492,23 +25840,53 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function canPreviewFile(type) {
     return PREVIEWABLE_TYPES.has(type.toLowerCase());
   }
-  const SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.7.0.js";
+  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.7.0.js";
+  const FILE_VIEWER_LOAD_TIMEOUT_MS = 15e3;
+  const STATUS_ATTRIBUTE = "data-agui-file-viewer-status";
   let viewerModulePromise;
-  function loadProductionBundle() {
+  function loadProductionFileViewerBundle() {
     var _a;
     if ((_a = window.AguiFileViewerBundle) == null ? void 0 : _a.FileViewer) return Promise.resolve(window.AguiFileViewerBundle);
+    let existing = document.querySelector(`script[src="${FILE_VIEWER_SCRIPT_URL}"]`);
+    if (existing && ["error", "loaded"].includes(existing.getAttribute(STATUS_ATTRIBUTE) || "")) {
+      existing.remove();
+      existing = null;
+    }
+    const script = existing || document.createElement("script");
     return new Promise((resolve, reject) => {
-      const existing = document.querySelector(`script[src="${SCRIPT_URL}"]`);
-      const script = existing || document.createElement("script");
-      const handleLoad = () => {
-        var _a2;
-        return ((_a2 = window.AguiFileViewerBundle) == null ? void 0 : _a2.FileViewer) ? resolve(window.AguiFileViewerBundle) : reject(new Error("文件查看器资源未正确注册"));
+      let settled = false;
+      let timeout = 0;
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        script.removeEventListener("load", handleLoad);
+        script.removeEventListener("error", handleError);
       };
-      const handleError = () => reject(new Error("无法加载文件查看器资源"));
-      script.addEventListener("load", handleLoad, { once: true });
-      script.addEventListener("error", handleError, { once: true });
+      const succeed = (module) => {
+        if (settled) return;
+        settled = true;
+        script.setAttribute(STATUS_ATTRIBUTE, "loaded");
+        cleanup();
+        resolve(module);
+      };
+      const fail = (message) => {
+        if (settled) return;
+        settled = true;
+        script.setAttribute(STATUS_ATTRIBUTE, "error");
+        cleanup();
+        reject(new Error(message));
+      };
+      const handleLoad = () => {
+        const module = window.AguiFileViewerBundle;
+        if (module == null ? void 0 : module.FileViewer) succeed(module);
+        else fail("文件查看器资源未正确注册");
+      };
+      const handleError = () => fail("无法加载文件查看器资源");
+      script.addEventListener("load", handleLoad);
+      script.addEventListener("error", handleError);
+      timeout = window.setTimeout(() => fail("加载文件查看器资源超时"), FILE_VIEWER_LOAD_TIMEOUT_MS);
       if (!existing) {
-        script.src = SCRIPT_URL;
+        script.setAttribute(STATUS_ATTRIBUTE, "loading");
+        script.src = FILE_VIEWER_SCRIPT_URL;
         script.async = true;
         document.head.appendChild(script);
       }
@@ -25517,55 +25895,40 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function loadFileViewer() {
     var _a;
     if (!viewerModulePromise) {
-      viewerModulePromise = ((_a = window.AguiFileViewerBundle) == null ? void 0 : _a.FileViewer) ? Promise.resolve(window.AguiFileViewerBundle) : loadProductionBundle();
-      viewerModulePromise.catch(() => {
+      viewerModulePromise = ((_a = window.AguiFileViewerBundle) == null ? void 0 : _a.FileViewer) ? Promise.resolve(window.AguiFileViewerBundle) : loadProductionFileViewerBundle();
+      void viewerModulePromise.catch(() => {
         viewerModulePromise = void 0;
       });
     }
     return viewerModulePromise;
   }
-  class ViewerErrorBoundary extends reactExports.Component {
-    constructor() {
-      super(...arguments);
-      __publicField(this, "state", { failed: false });
-    }
-    static getDerivedStateFromError() {
-      return { failed: true };
-    }
-    componentDidCatch(_error, _errorInfo) {
-    }
-    render() {
-      return this.state.failed ? this.props.fallback : this.props.children;
-    }
-  }
   function LazyFileViewer({ errorLabel, fallback, ...props }) {
-    const [Viewer, setViewer] = reactExports.useState(null);
-    const [failed, setFailed] = reactExports.useState(false);
+    const [loadState, setLoadState] = reactExports.useState({ status: "loading" });
+    const errorFallback = fallback || /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "agui-file-viewer-state text-sm text-muted", role: "alert", children: errorLabel });
     reactExports.useEffect(() => {
       let active = true;
       loadFileViewer().then(
         (module) => {
-          if (active) setViewer(() => module.FileViewer);
+          if (active) setLoadState({ status: "ready", Viewer: module.FileViewer });
         },
         () => {
-          if (active) setFailed(true);
+          if (active) setLoadState({ status: "error" });
         }
       );
       return () => {
         active = false;
       };
     }, []);
-    if (failed) {
-      return fallback || /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "agui-file-viewer-state text-sm text-muted", role: "alert", children: errorLabel });
-    }
-    if (!Viewer) {
+    if (loadState.status === "error") return errorFallback;
+    if (loadState.status === "loading") {
       return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "agui-file-viewer-state", "aria-label": "正在加载文件预览", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "agui-activity flex gap-1", "aria-hidden": "true", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "agui-activity-dot" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "agui-activity-dot" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "agui-activity-dot" })
       ] }) });
     }
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(ViewerErrorBoundary, { fallback: fallback || /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "agui-file-viewer-state text-sm text-muted", role: "alert", children: errorLabel }), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Viewer, { ...props }) });
+    const Viewer = loadState.Viewer;
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(RenderErrorBoundary, { fallback: errorFallback, resetKeys: [Viewer, props.url], children: /* @__PURE__ */ jsxRuntimeExports.jsx(Viewer, { ...props }) });
   }
   function attachmentUrl(attachment) {
     return `/agui_chat/attachment/${encodeURIComponent(attachment.id)}`;
@@ -25953,6 +26316,39 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ] });
   }
   const MAX_WORKSPACE_REFERENCES = 5;
+  function useWorkspaceReferences(threadId) {
+    const [references, setReferences] = reactExports.useState([]);
+    reactExports.useEffect(() => setReferences([]), [threadId]);
+    const clearReferences = reactExports.useCallback(() => setReferences([]), []);
+    const removeReference = reactExports.useCallback((id) => {
+      setReferences((current) => current.filter((item) => item.id !== id));
+    }, []);
+    const toggleReference = reactExports.useCallback((entry) => {
+      setReferences((current) => {
+        const selected = current.some((item) => item.path === entry.path);
+        if (selected) return current.filter((item) => item.path !== entry.path);
+        if (current.length >= MAX_WORKSPACE_REFERENCES) return current;
+        return [...current, {
+          id: `workspace:${entry.path}`,
+          path: entry.path,
+          name: entry.name,
+          isDirectory: entry.isDirectory
+        }];
+      });
+    }, []);
+    const removeDeleted = reactExports.useCallback((entry) => {
+      setReferences((current) => current.filter(
+        (item) => item.path !== entry.path && !(entry.isDirectory && item.path.startsWith(`${entry.path}/`))
+      ));
+    }, []);
+    return {
+      references,
+      clearReferences,
+      removeReference,
+      toggleReference,
+      removeDeleted
+    };
+  }
   const collator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
   function compareEntries(left, right, key, direction) {
     if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
@@ -25974,14 +26370,174 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (result === 0) result = collator.compare(left.name, right.name);
     return direction === "asc" ? result : -result;
   }
-  function sortEntries(entries, key, direction) {
-    return [...entries].sort((left, right) => compareEntries(left, right, key, direction));
+  function getVisibleWorkspaceEntries(entries, search2, sortKey, sortDirection) {
+    const query = search2.trim().toLocaleLowerCase("zh-CN");
+    const filtered = query ? entries.filter((entry) => entry.name.toLocaleLowerCase("zh-CN").includes(query)) : entries;
+    return [...filtered].sort((left, right) => compareEntries(left, right, sortKey, sortDirection));
   }
-  function errorMessage(reason, fallback) {
+  function workspaceErrorMessage(reason, fallback) {
     return reason instanceof Error && reason.message ? reason.message : fallback;
   }
-  function isInside(entry, path2) {
+  function workspaceEntryContains(entry, path2) {
     return entry.path === path2 || entry.isDirectory && path2.startsWith(`${entry.path}/`);
+  }
+  const INITIAL_WORKSPACE_DIRECTORY_STATE = {
+    entries: [],
+    loading: false,
+    listError: "",
+    actionError: "",
+    notice: "",
+    confirmDelete: null,
+    deletingPath: ""
+  };
+  function workspaceDirectoryReducer(state, action) {
+    switch (action.type) {
+      case "load_started":
+        return {
+          ...state,
+          entries: action.preserve ? state.entries : [],
+          loading: true,
+          listError: ""
+        };
+      case "load_succeeded":
+        return { ...state, entries: action.entries, loading: false };
+      case "load_failed":
+        return { ...state, loading: false, listError: action.error };
+      case "navigated":
+        return { ...state, actionError: "", notice: "", confirmDelete: null };
+      case "messages_cleared":
+        return { ...state, actionError: "", notice: "" };
+      case "action_error_cleared":
+        return { ...state, actionError: "" };
+      case "action_failed":
+        return { ...state, actionError: action.error };
+      case "notice_changed":
+        return { ...state, notice: action.notice };
+      case "delete_requested":
+        return { ...state, confirmDelete: action.entry, actionError: "" };
+      case "delete_cancelled":
+        return { ...state, confirmDelete: null };
+      case "delete_started":
+        return { ...state, deletingPath: action.path, actionError: "" };
+      case "delete_succeeded":
+        return {
+          ...state,
+          entries: state.entries.filter((entry) => entry.path !== action.path),
+          confirmDelete: null,
+          deletingPath: ""
+        };
+      case "delete_failed":
+        return { ...state, deletingPath: "", actionError: action.error };
+    }
+  }
+  function useWorkspaceDirectory({
+    runtime,
+    threadId,
+    references,
+    onToggleReference,
+    onDeleted
+  }) {
+    const [path2, setPath] = reactExports.useState("");
+    const [search2, setSearch] = reactExports.useState("");
+    const [sortKey, setSortKey] = reactExports.useState("name");
+    const [sortDirection, setSortDirection] = reactExports.useState("asc");
+    const [state, dispatch] = reactExports.useReducer(workspaceDirectoryReducer, INITIAL_WORKSPACE_DIRECTORY_STATE);
+    const listRequest = reactExports.useRef(0);
+    const load = reactExports.useCallback(async (preserve = false) => {
+      const request = ++listRequest.current;
+      dispatch({ type: "load_started", preserve });
+      try {
+        const entries = await runtime.listWorkspace(path2);
+        if (request === listRequest.current) dispatch({ type: "load_succeeded", entries });
+      } catch (reason) {
+        if (request === listRequest.current) {
+          dispatch({ type: "load_failed", error: workspaceErrorMessage(reason, "工作区加载失败，请重试。") });
+        }
+      }
+    }, [path2, runtime]);
+    reactExports.useEffect(() => {
+      void load();
+    }, [load, threadId]);
+    reactExports.useEffect(() => () => {
+      listRequest.current += 1;
+    }, []);
+    const navigate = reactExports.useCallback((nextPath) => {
+      setPath(nextPath);
+      setSearch("");
+      dispatch({ type: "navigated" });
+    }, []);
+    const visibleEntries = reactExports.useMemo(() => {
+      return getVisibleWorkspaceEntries(state.entries, search2, sortKey, sortDirection);
+    }, [search2, sortDirection, sortKey, state.entries]);
+    const clearMessages = reactExports.useCallback(() => {
+      dispatch({ type: "messages_cleared" });
+    }, []);
+    const download = reactExports.useCallback((entry) => {
+      dispatch({ type: "action_error_cleared" });
+      void runtime.downloadWorkspaceFile(entry.path).catch((reason) => {
+        dispatch({ type: "action_failed", error: workspaceErrorMessage(reason, "文件下载失败，请重试。") });
+      });
+    }, [runtime]);
+    const requestDelete = reactExports.useCallback((entry) => {
+      dispatch({ type: "delete_requested", entry });
+    }, []);
+    const cancelDelete = reactExports.useCallback(() => {
+      dispatch({ type: "delete_cancelled" });
+    }, []);
+    const remove = reactExports.useCallback(async () => {
+      const entry = state.confirmDelete;
+      if (!entry || state.deletingPath) return;
+      dispatch({ type: "delete_started", path: entry.path });
+      try {
+        await runtime.deleteWorkspaceEntry(entry.path, entry.isDirectory);
+        onDeleted(entry);
+        dispatch({ type: "delete_succeeded", path: entry.path });
+        void load(true);
+      } catch (reason) {
+        dispatch({ type: "delete_failed", error: workspaceErrorMessage(reason, "删除失败，请重试。") });
+      }
+    }, [load, onDeleted, runtime, state.confirmDelete, state.deletingPath]);
+    const toggleReference = reactExports.useCallback((entry) => {
+      const selected = references.some((item) => item.path === entry.path);
+      if (!selected && references.length >= MAX_WORKSPACE_REFERENCES) {
+        dispatch({
+          type: "notice_changed",
+          notice: `工作区引用最多 ${MAX_WORKSPACE_REFERENCES} 个，请先移除一个已选引用。`
+        });
+        return;
+      }
+      dispatch({ type: "notice_changed", notice: "" });
+      onToggleReference(entry);
+    }, [onToggleReference, references]);
+    const toggleSortDirection = reactExports.useCallback(() => {
+      setSortDirection((current) => current === "asc" ? "desc" : "asc");
+    }, []);
+    return {
+      path: path2,
+      entries: state.entries,
+      visibleEntries,
+      loading: state.loading,
+      listError: state.listError,
+      actionError: state.actionError,
+      notice: state.notice,
+      search: search2,
+      sortKey,
+      sortDirection,
+      confirmDelete: state.confirmDelete,
+      deletingPath: state.deletingPath,
+      referenceLimit: MAX_WORKSPACE_REFERENCES,
+      setSearch,
+      setSortKey,
+      load,
+      navigate,
+      clearMessages,
+      download,
+      requestDelete,
+      remove,
+      cancelDelete,
+      toggleReference,
+      toggleSortDirection
+    };
   }
   function useWorkspacePreview(runtime) {
     const [preview, setPreview] = reactExports.useState(null);
@@ -25994,7 +26550,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }, []);
     const closeRelatedPreview = reactExports.useCallback((entry) => {
       const current = previewRef.current;
-      if (!current || !isInside(entry, current.entry.path)) return;
+      if (!current || !workspaceEntryContains(entry, current.entry.path)) return;
       previewRequest.current += 1;
       setPreview(null);
     }, []);
@@ -26017,7 +26573,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         setPreview({ entry, status: "ready", type, url });
       } catch (reason) {
         if (request === previewRequest.current) {
-          setPreview({ entry, status: "error", error: errorMessage(reason, "文件读取失败，请下载后查看。") });
+          setPreview({ entry, status: "error", error: workspaceErrorMessage(reason, "文件读取失败，请下载后查看。") });
         }
       }
     }, [runtime]);
@@ -26031,130 +26587,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       };
     }, [preview == null ? void 0 : preview.url]);
     return { preview, openPreview, closePreview, closeRelatedPreview };
-  }
-  function useWorkspaceDirectory({
-    runtime,
-    threadId,
-    references,
-    onToggleReference,
-    onDeleted
-  }) {
-    const [path2, setPath] = reactExports.useState("");
-    const [entries, setEntries] = reactExports.useState([]);
-    const [loading, setLoading] = reactExports.useState(false);
-    const [listError, setListError] = reactExports.useState("");
-    const [actionError, setActionError] = reactExports.useState("");
-    const [notice, setNotice] = reactExports.useState("");
-    const [search2, setSearch] = reactExports.useState("");
-    const [sortKey, setSortKey] = reactExports.useState("name");
-    const [sortDirection, setSortDirection] = reactExports.useState("asc");
-    const [confirmDelete, setConfirmDelete] = reactExports.useState(null);
-    const [deletingPath, setDeletingPath] = reactExports.useState("");
-    const listRequest = reactExports.useRef(0);
-    const load = reactExports.useCallback(async (preserve = false) => {
-      const request = ++listRequest.current;
-      setLoading(true);
-      setListError("");
-      if (!preserve) setEntries([]);
-      try {
-        const nextEntries = await runtime.listWorkspace(path2);
-        if (request === listRequest.current) setEntries(nextEntries);
-      } catch (reason) {
-        if (request === listRequest.current) setListError(errorMessage(reason, "工作区加载失败，请重试。"));
-      } finally {
-        if (request === listRequest.current) setLoading(false);
-      }
-    }, [path2, runtime]);
-    reactExports.useEffect(() => {
-      void load();
-    }, [load, threadId]);
-    reactExports.useEffect(() => () => {
-      listRequest.current += 1;
-    }, []);
-    const navigate = reactExports.useCallback((nextPath) => {
-      setPath(nextPath);
-      setSearch("");
-      setConfirmDelete(null);
-      setActionError("");
-      setNotice("");
-    }, []);
-    const visibleEntries = reactExports.useMemo(() => {
-      const query = search2.trim().toLocaleLowerCase("zh-CN");
-      const filtered = query ? entries.filter((entry) => entry.name.toLocaleLowerCase("zh-CN").includes(query)) : entries;
-      return sortEntries(filtered, sortKey, sortDirection);
-    }, [entries, search2, sortDirection, sortKey]);
-    const clearMessages = reactExports.useCallback(() => {
-      setActionError("");
-      setNotice("");
-    }, []);
-    const download = reactExports.useCallback((entry) => {
-      setActionError("");
-      void runtime.downloadWorkspaceFile(entry.path).catch((reason) => {
-        setActionError(errorMessage(reason, "文件下载失败，请重试。"));
-      });
-    }, [runtime]);
-    const requestDelete = reactExports.useCallback((entry) => {
-      setConfirmDelete(entry);
-      setActionError("");
-    }, []);
-    const cancelDelete = reactExports.useCallback(() => {
-      setConfirmDelete(null);
-    }, []);
-    const remove = reactExports.useCallback(async () => {
-      const entry = confirmDelete;
-      if (!entry || deletingPath) return;
-      setDeletingPath(entry.path);
-      setActionError("");
-      try {
-        await runtime.deleteWorkspaceEntry(entry.path, entry.isDirectory);
-        setEntries((current) => current.filter((candidate) => candidate.path !== entry.path));
-        onDeleted(entry);
-        setConfirmDelete(null);
-        void load(true);
-      } catch (reason) {
-        setActionError(errorMessage(reason, "删除失败，请重试。"));
-      } finally {
-        setDeletingPath("");
-      }
-    }, [confirmDelete, deletingPath, load, onDeleted, runtime]);
-    const toggleReference = reactExports.useCallback((entry) => {
-      const selected = references.some((item) => item.path === entry.path);
-      if (!selected && references.length >= MAX_WORKSPACE_REFERENCES) {
-        setNotice(`工作区引用最多 ${MAX_WORKSPACE_REFERENCES} 个，请先移除一个已选引用。`);
-        return;
-      }
-      setNotice("");
-      onToggleReference(entry);
-    }, [onToggleReference, references]);
-    const toggleSortDirection = reactExports.useCallback(() => {
-      setSortDirection((current) => current === "asc" ? "desc" : "asc");
-    }, []);
-    return {
-      path: path2,
-      entries,
-      visibleEntries,
-      loading,
-      listError,
-      actionError,
-      notice,
-      search: search2,
-      sortKey,
-      sortDirection,
-      confirmDelete,
-      deletingPath,
-      referenceLimit: MAX_WORKSPACE_REFERENCES,
-      setSearch,
-      setSortKey,
-      load,
-      navigate,
-      clearMessages,
-      download,
-      requestDelete,
-      remove,
-      cancelDelete,
-      toggleReference,
-      toggleSortDirection
-    };
   }
   function WorkspacePanel({ runtime, threadId, references, onToggleReference, onDeleted, onClose }) {
     const preview = useWorkspacePreview(runtime);
@@ -26286,55 +26718,197 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }, []);
     return { scrollRef, handleScroll };
   }
+  function useChatActions(options) {
+    const latest = reactExports.useRef(options);
+    latest.current = options;
+    return reactExports.useMemo(() => {
+      const send = (content2, attachments, selection, skills, references) => {
+        const { runtime, props, clearWorkspaceReferences } = latest.current;
+        return runtime.send(content2, attachments, selection, void 0, skills, references).then((sent) => {
+          if (!sent) return false;
+          clearWorkspaceReferences();
+          const mentions = Array.isArray(selection) ? selection : void 0;
+          const menuMention = selection && !Array.isArray(selection) ? selection : void 0;
+          observeInteraction(() => {
+            var _a;
+            return (_a = props.onInteraction) == null ? void 0 : _a.call(props, {
+              type: "send",
+              content: content2,
+              attachments,
+              mentions,
+              menuMention,
+              skills,
+              workspaceReferences: references
+            });
+          });
+          return true;
+        });
+      };
+      return {
+        send,
+        newSession: () => {
+          void latest.current.runtime.newSession();
+        },
+        refreshSessions: () => {
+          void latest.current.runtime.refreshSessions();
+        },
+        loadSession: (sessionId) => {
+          void latest.current.runtime.loadSession(sessionId);
+        },
+        archiveSession: (sessionId) => {
+          void latest.current.runtime.archiveSession(sessionId);
+        },
+        selectRelation: (tool, candidates) => {
+          const { runtime, props } = latest.current;
+          void runtime.selectRelationCandidates(tool, candidates).then((content2) => {
+            if (content2) observeInteraction(() => {
+              var _a;
+              return (_a = props.onInteraction) == null ? void 0 : _a.call(props, { type: "send", content: content2, attachments: [] });
+            });
+          });
+        },
+        selectRecord: (tool, candidate) => {
+          const { runtime, props, hostState } = latest.current;
+          void runtime.selectRecordCandidate(tool, candidate).then((content2) => {
+            if (content2) observeInteraction(() => {
+              var _a;
+              return (_a = props.onInteraction) == null ? void 0 : _a.call(props, {
+                type: "send",
+                content: content2,
+                attachments: [],
+                recordSelection: {
+                  ...candidate,
+                  snapshotId: hostState.snapshotId,
+                  hostRevision: hostState.hostRevision
+                }
+              });
+            });
+          });
+        },
+        removeMenuMention: (messageId) => latest.current.runtime.removeMenuMention(messageId),
+        removeMention: (messageId, referenceId) => {
+          latest.current.runtime.removeMention(messageId, referenceId);
+        },
+        copy: (message) => {
+          var _a;
+          const { props } = latest.current;
+          const write = (_a = navigator.clipboard) == null ? void 0 : _a.writeText(asText(message.content));
+          if (write) void write.catch(() => void 0);
+          observeInteraction(() => {
+            var _a2;
+            return (_a2 = props.onInteraction) == null ? void 0 : _a2.call(props, { type: "copy", message });
+          });
+        },
+        feedback: (message, feedback) => {
+          const { props } = latest.current;
+          observeInteraction(() => {
+            var _a;
+            return (_a = props.onFeedback) == null ? void 0 : _a.call(props, message, feedback);
+          });
+          observeInteraction(() => {
+            var _a;
+            return (_a = props.onInteraction) == null ? void 0 : _a.call(props, { type: "feedback", message, feedback });
+          });
+        },
+        regenerate: (messageId) => {
+          const { runtime, props, messages } = latest.current;
+          const message = messages.find((candidate) => candidate.id === messageId);
+          void runtime.regenerate(messageId);
+          if (message) observeInteraction(() => {
+            var _a;
+            return (_a = props.onInteraction) == null ? void 0 : _a.call(props, { type: "regenerate", message });
+          });
+        },
+        suggestion: (suggestion) => {
+          const { runtime, props } = latest.current;
+          void runtime.send(suggestion.message);
+          observeInteraction(() => {
+            var _a;
+            return (_a = props.onInteraction) == null ? void 0 : _a.call(props, { type: "suggestion", suggestion });
+          });
+          observeInteraction(() => {
+            var _a;
+            return (_a = props.onInteraction) == null ? void 0 : _a.call(props, {
+              type: "send",
+              content: suggestion.message,
+              attachments: []
+            });
+          });
+        },
+        confirmTool: (tool, approved) => {
+          void latest.current.runtime.confirmTool(tool, approved);
+        },
+        undoTool: (tool) => {
+          void latest.current.runtime.undoTool(tool);
+        },
+        stop: () => {
+          const { runtime, props } = latest.current;
+          runtime.stop();
+          observeInteraction(() => {
+            var _a;
+            return (_a = props.onInteraction) == null ? void 0 : _a.call(props, { type: "stop" });
+          });
+        },
+        uploadAttachment: (file, onProgress) => latest.current.runtime.uploadAttachment(file, onProgress),
+        removeAttachment: (attachmentId) => latest.current.runtime.deleteAttachment(attachmentId)
+      };
+    }, []);
+  }
+  const CLOSED_PANEL = { type: "closed" };
+  function useChatSidePanel(threadId) {
+    const [panel, setPanel] = reactExports.useState(CLOSED_PANEL);
+    reactExports.useEffect(() => setPanel(CLOSED_PANEL), [threadId]);
+    const openFile = reactExports.useCallback((attachment) => {
+      setPanel({ type: "file", attachment });
+    }, []);
+    const openWorkspace = reactExports.useCallback(() => {
+      setPanel({ type: "workspace" });
+    }, []);
+    const closePanel = reactExports.useCallback(() => {
+      setPanel(CLOSED_PANEL);
+    }, []);
+    return { panel, openFile, openWorkspace, closePanel };
+  }
+  function useRuntimeSnapshot(runtime) {
+    const [snapshot, setSnapshot] = reactExports.useState(() => runtime.getSnapshot());
+    const activeRuntime = reactExports.useRef(runtime);
+    reactExports.useEffect(() => {
+      const runtimeChanged = activeRuntime.current !== runtime;
+      activeRuntime.current = runtime;
+      const unsubscribe = runtime.subscribe(() => setSnapshot(runtime.getSnapshot()));
+      if (runtimeChanged) setSnapshot(runtime.getSnapshot());
+      return unsubscribe;
+    }, [runtime]);
+    return snapshot;
+  }
   function DefaultErrorMessage({ error }) {
     return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mx-auto mb-2 w-full max-w-3xl px-4 text-sm text-destructive", children: error });
   }
   function AguiChatApp({ runtime, props }) {
     var _a, _b;
-    const [snapshot, setSnapshot] = reactExports.useState(() => runtime.getSnapshot());
-    const [previewAttachment, setPreviewAttachment] = reactExports.useState(null);
-    const [workspaceOpen, setWorkspaceOpen] = reactExports.useState(false);
-    const [workspaceReferences, setWorkspaceReferences] = reactExports.useState([]);
+    const snapshot = useRuntimeSnapshot(runtime);
     const labels = mergeLabels(props.labels);
     const icons = mergeIcons(props.icons);
     const chatScroll = useChatAutoScroll(snapshot.threadId, snapshot.messages);
-    reactExports.useEffect(() => runtime.subscribe(() => setSnapshot(runtime.getSnapshot())), [runtime]);
-    reactExports.useEffect(() => {
-      setWorkspaceReferences([]);
-      setPreviewAttachment(null);
-      setWorkspaceOpen(false);
-    }, [snapshot.threadId]);
-    const handleSend = function(content2, attachments, selection, skills, references) {
-      return runtime.send(content2, attachments, selection, void 0, skills, references).then(function(sent) {
-        if (!sent) return false;
-        setWorkspaceReferences([]);
-        const mentions = Array.isArray(selection) ? selection : void 0;
-        const menuMention = selection && !Array.isArray(selection) ? selection : void 0;
-        observeInteraction(function() {
-          var _a2;
-          (_a2 = props.onInteraction) == null ? void 0 : _a2.call(props, {
-            type: "send",
-            content: content2,
-            attachments,
-            mentions,
-            menuMention,
-            skills,
-            workspaceReferences: references
-          });
-        });
-        return true;
-      });
-    };
+    const sidePanel = useChatSidePanel(snapshot.threadId);
+    const workspace = useWorkspaceReferences(snapshot.threadId);
+    const actions = useChatActions({
+      runtime,
+      props,
+      messages: snapshot.messages,
+      hostState: snapshot.hostState,
+      clearWorkspaceReferences: workspace.clearReferences
+    });
     return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "agui-chat-react relative", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-full min-h-0 overflow-hidden bg-background/90 text-secondary", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx(
         Sidebar,
         {
           snapshot,
           initialCollapsed: (_a = props.ui) == null ? void 0 : _a.initialSidebarCollapsed,
-          onNewSession: () => void runtime.newSession(),
-          onRefreshSessions: () => void runtime.refreshSessions(),
-          onLoadSession: (sessionId) => void runtime.loadSession(sessionId),
-          onArchiveSession: (sessionId) => void runtime.archiveSession(sessionId),
+          onNewSession: actions.newSession,
+          onRefreshSessions: actions.refreshSessions,
+          onLoadSession: actions.loadSession,
+          onArchiveSession: actions.archiveSession,
           labels
         }
       ),
@@ -26356,77 +26930,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                 icons,
                 components: props.components,
                 hostState: snapshot.hostState,
-                onSelectRelation: (tool, candidates) => {
-                  void runtime.selectRelationCandidates(tool, candidates).then((content2) => {
-                    if (content2) observeInteraction(() => {
-                      var _a2;
-                      return (_a2 = props.onInteraction) == null ? void 0 : _a2.call(props, { type: "send", content: content2, attachments: [] });
-                    });
-                  });
-                },
-                onSelectRecord: (tool, candidate) => {
-                  void runtime.selectRecordCandidate(tool, candidate).then((content2) => {
-                    if (content2) observeInteraction(() => {
-                      var _a2;
-                      return (_a2 = props.onInteraction) == null ? void 0 : _a2.call(props, {
-                        type: "send",
-                        content: content2,
-                        attachments: [],
-                        recordSelection: {
-                          ...candidate,
-                          snapshotId: snapshot.hostState.snapshotId,
-                          hostRevision: snapshot.hostState.hostRevision
-                        }
-                      });
-                    });
-                  });
-                },
-                onRemoveMenuMention: (messageId) => runtime.removeMenuMention(messageId),
-                onRemoveMention: (messageId, referenceId) => runtime.removeMention(messageId, referenceId),
-                onCopy: (message) => {
-                  var _a2;
-                  const write = (_a2 = navigator.clipboard) == null ? void 0 : _a2.writeText(asText(message.content));
-                  if (write) void write.catch(() => void 0);
-                  observeInteraction(() => {
-                    var _a3;
-                    return (_a3 = props.onInteraction) == null ? void 0 : _a3.call(props, { type: "copy", message });
-                  });
-                },
-                onFeedback: (message, feedback) => {
-                  observeInteraction(() => {
-                    var _a2;
-                    return (_a2 = props.onFeedback) == null ? void 0 : _a2.call(props, message, feedback);
-                  });
-                  observeInteraction(() => {
-                    var _a2;
-                    return (_a2 = props.onInteraction) == null ? void 0 : _a2.call(props, { type: "feedback", message, feedback });
-                  });
-                },
-                onPreviewAttachment: (attachment) => {
-                  setWorkspaceOpen(false);
-                  setPreviewAttachment(attachment);
-                },
-                onRegenerate: (messageId) => {
-                  const message = snapshot.messages.find((candidate) => candidate.id === messageId);
-                  void runtime.regenerate(messageId);
-                  if (message) observeInteraction(() => {
-                    var _a2;
-                    return (_a2 = props.onInteraction) == null ? void 0 : _a2.call(props, { type: "regenerate", message });
-                  });
-                },
-                onSuggestion: (suggestion) => {
-                  void runtime.send(suggestion.message);
-                  observeInteraction(() => {
-                    var _a2;
-                    return (_a2 = props.onInteraction) == null ? void 0 : _a2.call(props, { type: "suggestion", suggestion });
-                  });
-                  observeInteraction(() => {
-                    var _a2;
-                    return (_a2 = props.onInteraction) == null ? void 0 : _a2.call(props, { type: "send", content: suggestion.message, attachments: [] });
-                  });
-                },
-                onConfirmTool: (tool, approved) => void runtime.confirmTool(tool, approved),
-                onUndoTool: (tool) => void runtime.undoTool(tool)
+                onSelectRelation: actions.selectRelation,
+                onSelectRecord: actions.selectRecord,
+                onRemoveMenuMention: actions.removeMenuMention,
+                onRemoveMention: actions.removeMention,
+                onCopy: actions.copy,
+                onFeedback: actions.feedback,
+                onPreviewAttachment: sidePanel.openFile,
+                onRegenerate: actions.regenerate,
+                onSuggestion: actions.suggestion,
+                onConfirmTool: actions.confirmTool,
+                onUndoTool: actions.undoTool
               }
             )
           }
@@ -26438,53 +26952,39 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             running: snapshot.running,
             disabled: snapshot.loadingSessions,
             attachments: props.attachments,
-            menuOptions: props.menuOptions || [],
-            agentSkills: props.agentSkills || [],
+            menuOptions: props.menuOptions,
+            agentSkills: props.agentSkills,
             hostBridge: props.hostBridge,
-            workspaceReferences,
-            onRemoveWorkspaceReference: (id) => setWorkspaceReferences((current) => current.filter((item) => item.id !== id)),
+            workspaceReferences: workspace.references,
+            onRemoveWorkspaceReference: workspace.removeReference,
             labels,
             icons,
-            onSend: handleSend,
-            onStop: () => {
-              runtime.stop();
-              observeInteraction(() => {
-                var _a2;
-                return (_a2 = props.onInteraction) == null ? void 0 : _a2.call(props, { type: "stop" });
-              });
-            },
-            onUpload: (file, onProgress) => runtime.uploadAttachment(file, onProgress),
-            onRemove: (attachmentId) => runtime.deleteAttachment(attachmentId),
-            onOpenWorkspace: () => {
-              setPreviewAttachment(null);
-              setWorkspaceOpen(true);
-            }
+            onSend: actions.send,
+            onStop: actions.stop,
+            onUpload: actions.uploadAttachment,
+            onRemove: actions.removeAttachment,
+            onOpenWorkspace: sidePanel.openWorkspace
           },
           snapshot.threadId
         )
       ] }),
-      previewAttachment ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+      sidePanel.panel.type === "file" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
         FilePreviewPanel,
         {
-          attachment: previewAttachment,
+          attachment: sidePanel.panel.attachment,
           labels,
-          onClose: () => setPreviewAttachment(null)
+          onClose: sidePanel.closePanel
         }
       ) : null,
-      workspaceOpen ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+      sidePanel.panel.type === "workspace" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
         WorkspacePanel,
         {
           runtime,
           threadId: snapshot.threadId,
-          references: workspaceReferences,
-          onToggleReference: (entry) => setWorkspaceReferences((current) => {
-            const selected = current.some((item) => item.path === entry.path);
-            if (selected) return current.filter((item) => item.path !== entry.path);
-            if (current.length >= 5) return current;
-            return [...current, { id: `workspace:${entry.path}`, path: entry.path, name: entry.name, isDirectory: entry.isDirectory }];
-          }),
-          onDeleted: (entry) => setWorkspaceReferences((current) => current.filter((item) => item.path !== entry.path && !(entry.isDirectory && item.path.startsWith(`${entry.path}/`)))),
-          onClose: () => setWorkspaceOpen(false)
+          references: workspace.references,
+          onToggleReference: workspace.toggleReference,
+          onDeleted: workspace.removeDeleted,
+          onClose: sidePanel.closePanel
         }
       ) : null
     ] }) });

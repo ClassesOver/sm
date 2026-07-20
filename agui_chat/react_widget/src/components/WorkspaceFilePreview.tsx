@@ -3,9 +3,9 @@ import type { WorkspaceEntry } from '../types'
 import { Button } from './Button'
 import { IconButton } from './IconButton'
 import { LazyFileViewer } from './LazyFileViewer'
-import type { WorkspacePreviewState } from './useWorkspaceState'
+import type { WorkspacePreviewState } from './useWorkspacePreview'
 
-export type { WorkspacePreviewState } from './useWorkspaceState'
+export type { WorkspacePreviewState } from './useWorkspacePreview'
 
 interface WorkspaceFilePreviewProps {
   preview: WorkspacePreviewState

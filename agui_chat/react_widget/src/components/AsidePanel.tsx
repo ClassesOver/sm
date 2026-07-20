@@ -1,20 +1,12 @@
 import { GripVertical, X } from 'lucide-react'
-import {
-  type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useRef,
-  useState
-} from 'react'
+import { type ReactNode, useEffect } from 'react'
 import { IconButton } from './IconButton'
+import { useAsideResize } from './useAsideResize'
 
 const DEFAULT_WIDTH = 620
 const MIN_WIDTH = 360
 const MAX_WIDTH = 920
 const MIN_MAIN_WIDTH = 420
-const KEYBOARD_STEP = 24
 
 export interface AsidePanelProps {
   ariaLabel: string
@@ -49,19 +41,7 @@ export function AsidePanel({
   maxWidth = MAX_WIDTH,
   minMainWidth = MIN_MAIN_WIDTH
 }: AsidePanelProps) {
-  const panelRef = useRef<HTMLElement | null>(null)
-  const [width, setWidth] = useState(defaultWidth)
-
-  const clampWidth = useCallback((nextWidth: number) => {
-    const panel = panelRef.current
-    let main = panel?.previousElementSibling
-    while (main?.classList.contains('agui-aside-backdrop')) main = main.previousElementSibling
-    const available = main instanceof HTMLElement && panel
-      ? main.getBoundingClientRect().width + panel.getBoundingClientRect().width
-      : Number.POSITIVE_INFINITY
-    const availableMax = Math.max(minWidth, available - minMainWidth)
-    return Math.min(Math.max(nextWidth, minWidth), maxWidth, availableMax)
-  }, [maxWidth, minMainWidth, minWidth])
+  const resize = useAsideResize({ defaultWidth, minWidth, maxWidth, minMainWidth })
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -71,45 +51,15 @@ export function AsidePanel({
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [onClose])
 
-  const handleResizeStart = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
-    event.preventDefault()
-    const startX = event.clientX
-    const startWidth = panelRef.current?.getBoundingClientRect().width || width
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      setWidth(clampWidth(startWidth + startX - moveEvent.clientX))
-    }
-    const handlePointerUp = () => {
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      window.removeEventListener('pointermove', handlePointerMove)
-      window.removeEventListener('pointerup', handlePointerUp)
-    }
-    window.addEventListener('pointermove', handlePointerMove)
-    window.addEventListener('pointerup', handlePointerUp, { once: true })
-  }, [clampWidth, width])
-
-  const style = { '--agui-aside-width': `${width}px` } as CSSProperties
-
   return <>
     <button type="button" className="agui-aside-backdrop" aria-label={closeLabel} onClick={onClose} />
-    <aside ref={panelRef} className={`agui-aside ${className}`.trim()} style={style} aria-label={ariaLabel}>
+    <aside ref={resize.panelRef} className={`agui-aside ${className}`.trim()} style={resize.style} aria-label={ariaLabel}>
       <button
         type="button"
         className="agui-aside-resize"
         aria-label={resizeLabel}
-        onPointerDown={handleResizeStart}
-        onKeyDown={(event) => {
-          if (event.key === 'ArrowLeft') {
-            event.preventDefault()
-            setWidth((current) => clampWidth(current + KEYBOARD_STEP))
-          } else if (event.key === 'ArrowRight') {
-            event.preventDefault()
-            setWidth((current) => clampWidth(current - KEYBOARD_STEP))
-          }
-        }}
+        onPointerDown={resize.handleResizeStart}
+        onKeyDown={resize.handleResizeKeyDown}
       >
         <GripVertical size={16} strokeWidth={1.8} />
       </button>

@@ -1,7 +1,8 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useReducer } from 'react'
 import type { Dispatch, RefObject, SetStateAction } from 'react'
-import type { MentionQuery } from './MentionPicker'
-import { skillQueryAtCursor, type SkillQuery } from './SkillPicker'
+import type { MentionQuery } from './useMentionPickerState'
+import { skillQueryAtCursor } from './SkillPicker'
+import { composerQueryReducer, INITIAL_COMPOSER_QUERY_STATE } from './composerQueryState'
 
 interface UseComposerQueryStateOptions {
   value: string
@@ -27,71 +28,44 @@ export function menuQueryAtCursor(value: string, cursor: number): MentionQuery |
 export function useComposerQueryState({
   value, setValue, hasSkills, textareaRef
 }: UseComposerQueryStateOptions) {
-  const [menuQuery, setMenuQuery] = useState<MentionQuery | null>(null)
-  const [skillQuery, setSkillQuery] = useState<SkillQuery | null>(null)
-  const [skillSearch, setSkillSearch] = useState('')
-  const [skillOpen, setSkillOpen] = useState(false)
-  const [skillReturnQuery, setSkillReturnQuery] = useState<MentionQuery | null>(null)
-  const mentionSkillQuery = skillOpen && skillQuery && value[skillQuery.start] === '@' ? skillQuery : null
+  const [queryState, dispatch] = useReducer(composerQueryReducer, INITIAL_COMPOSER_QUERY_STATE)
+  const menuQuery = queryState.mode === 'menu' ? queryState.query : null
+  const skillQuery = queryState.mode === 'skills' ? queryState.query : null
+  const skillSearch = queryState.mode === 'skills' ? queryState.search : ''
+  const skillOpen = queryState.mode === 'skills'
+  const skillReturnQuery = queryState.mode === 'skills' ? queryState.returnQuery : null
+  const mentionSkillQuery = skillQuery && value[skillQuery.start] === '@' ? skillQuery : null
   const mentionPickerQuery = menuQuery || skillReturnQuery
 
   const dismissPickers = useCallback(() => {
-    setMenuQuery(null)
-    setSkillOpen(false)
-    setSkillReturnQuery(null)
+    dispatch({ type: 'dismiss' })
+  }, [])
+
+  const setSkillSearch = useCallback((search: string) => {
+    dispatch({ type: 'skill_search_changed', search })
   }, [])
 
   const handleValueChange = (nextValue: string, cursor: number) => {
     const nextSkillQuery = skillQueryAtCursor(nextValue, cursor)
     const nextMention = menuQueryAtCursor(nextValue, cursor)
     setValue(nextValue)
-    if (mentionSkillQuery) {
-      if (nextMention?.query) {
-        setSkillQuery(nextMention)
-        setSkillSearch(nextMention.query)
-        setSkillReturnQuery(nextMention)
-        setMenuQuery(null)
-      } else {
-        setSkillQuery(null)
-        setSkillSearch('')
-        setSkillOpen(false)
-        setSkillReturnQuery(null)
-        setMenuQuery(nextMention)
-      }
-    } else if (nextSkillQuery && hasSkills) {
-      setSkillQuery(nextSkillQuery)
-      setSkillSearch(nextSkillQuery.query)
-      setSkillOpen(true)
-      setSkillReturnQuery(null)
-      setMenuQuery(null)
-    } else {
-      setSkillQuery(null)
-      setMenuQuery(nextMention)
-      if (nextMention) {
-        setSkillOpen(false)
-        setSkillReturnQuery(null)
-      }
-    }
+    dispatch({
+      type: 'value_changed',
+      mentionQuery: nextMention,
+      skillQuery: nextSkillQuery,
+      hasSkills,
+      editingMentionSkill: Boolean(mentionSkillQuery)
+    })
   }
 
   const handleCursorChange = (cursor: number) => {
     const nextSkillQuery = skillQueryAtCursor(value, cursor)
-    if (nextSkillQuery && hasSkills) {
-      setSkillQuery(nextSkillQuery)
-      setSkillSearch(nextSkillQuery.query)
-      setSkillOpen(true)
-      setSkillReturnQuery(null)
-      setMenuQuery(null)
-    } else {
-      const nextMention = menuQueryAtCursor(value, cursor)
-      setMenuQuery(nextMention)
-      if (nextMention) {
-        setSkillOpen(false)
-        setSkillQuery(null)
-        setSkillSearch('')
-        setSkillReturnQuery(null)
-      }
-    }
+    dispatch({
+      type: 'cursor_changed',
+      mentionQuery: menuQueryAtCursor(value, cursor),
+      skillQuery: nextSkillQuery,
+      hasSkills
+    })
   }
 
   const returnToMentionCategories = () => {
@@ -101,11 +75,7 @@ export function useComposerQueryState({
     setValue((current) => current.slice(query.start, query.end) === mentionText
       ? current
       : current.slice(0, query.start) + mentionText + current.slice(query.start))
-    setSkillOpen(false)
-    setSkillQuery(null)
-    setSkillSearch('')
-    setMenuQuery(query)
-    setSkillReturnQuery(null)
+    dispatch({ type: 'return_to_mentions' })
     window.setTimeout(() => {
       textareaRef.current?.focus({ preventScroll: true })
       textareaRef.current?.setSelectionRange(query.end, query.end)
@@ -117,7 +87,7 @@ export function useComposerQueryState({
     const query = { ...menuQuery }
     const cursor = query.start
     setValue((current) => current.slice(0, query.start) + current.slice(query.end))
-    setMenuQuery(null)
+    dispatch({ type: 'consume_menu' })
     window.setTimeout(() => {
       textareaRef.current?.focus()
       textareaRef.current?.setSelectionRange(cursor, cursor)
@@ -126,52 +96,35 @@ export function useComposerQueryState({
   }
 
   const completeSkillSelection = () => {
-    setSkillOpen(false)
-    setSkillReturnQuery(null)
     if (skillQuery) {
       setValue((current) => current.slice(0, skillQuery.start) + current.slice(skillQuery.end))
-      setSkillQuery(null)
-      setSkillSearch('')
     }
+    dispatch({ type: 'complete_skill' })
   }
 
   const openSkillsFromMention = (typedQuery?: MentionQuery) => {
     const currentQuery = typedQuery || menuQuery || skillReturnQuery
     if (!currentQuery) return
-    setSkillReturnQuery(currentQuery)
     if (typedQuery) {
-      setSkillQuery(currentQuery)
-      setSkillSearch(currentQuery.query)
-      setSkillOpen(true)
-      setMenuQuery(null)
+      dispatch({ type: 'open_skills_from_mention', query: currentQuery, inline: true })
       return
     }
     const cursor = currentQuery.start
     setValue((current) => current.slice(0, currentQuery.start) + current.slice(currentQuery.end))
-    setMenuQuery(null)
-    setSkillQuery(null)
-    setSkillSearch('')
-    setSkillOpen(true)
+    dispatch({ type: 'open_skills_from_mention', query: currentQuery, inline: false })
     window.setTimeout(() => textareaRef.current?.setSelectionRange(cursor, cursor), 0)
   }
 
   const closeMenuPicker = () => {
-    setMenuQuery(null)
-    setSkillReturnQuery(null)
+    dispatch({ type: 'close_menu' })
   }
 
   const closeSkillPicker = () => {
-    setSkillOpen(false)
-    setSkillQuery(null)
-    setSkillReturnQuery(null)
+    dispatch({ type: 'close_skills' })
   }
 
   const toggleSkillPicker = () => {
-    setSkillOpen((current) => !current)
-    setSkillQuery(null)
-    setSkillSearch('')
-    setSkillReturnQuery(null)
-    setMenuQuery(null)
+    dispatch({ type: 'toggle_skills' })
   }
 
   return {

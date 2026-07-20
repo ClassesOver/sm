@@ -3,7 +3,7 @@ import { FormEvent, KeyboardEvent, useEffect, useLayoutEffect, useRef, useState 
 import { createPortal } from 'react-dom'
 import type {
   AgentSkillOption, AttachmentOptions, AttachmentRef, ChatIcons, ChatLabels, HostBridge,
-  MenuMention, MenuMentionOption, MentionReference, SelectedAgentSkill, WorkspaceReference
+  MenuMentionOption, WorkspaceReference
 } from '../types'
 import { AttachmentQueue } from './AttachmentQueue'
 import { ComposerContextBar } from './ComposerContextBar'
@@ -12,8 +12,13 @@ import { MentionPicker, type MentionPickerHandle } from './MentionPicker'
 import { SkillPicker, type SkillPickerHandle } from './SkillPicker'
 import { useComposerAttachments } from './useComposerAttachments'
 import { useComposerQueryState } from './useComposerQueryState'
+import { useComposerSelectionState } from './useComposerSelectionState'
+import { useComposerSubmit, type ComposerSend } from './useComposerSubmit'
 
 export { menuQueryAtCursor } from './useComposerQueryState'
+
+const EMPTY_AGENT_SKILLS: AgentSkillOption[] = []
+const EMPTY_WORKSPACE_REFERENCES: WorkspaceReference[] = []
 
 export interface ChatInputProps {
   running: boolean
@@ -24,13 +29,7 @@ export interface ChatInputProps {
   hostBridge?: HostBridge
   workspaceReferences?: WorkspaceReference[]
   onRemoveWorkspaceReference?: (id: string) => void
-  onSend: (
-    content: string,
-    attachments: AttachmentRef[],
-    mentions?: MentionReference[] | MenuMention,
-    skills?: SelectedAgentSkill[],
-    workspaceReferences?: WorkspaceReference[]
-  ) => Promise<boolean | void> | boolean | void
+  onSend: ComposerSend
   onStop: () => void
   onUpload: (file: File, onProgress: (progress: number) => void) => Promise<AttachmentRef>
   onRemove: (attachmentId: string) => Promise<void>
@@ -40,13 +39,11 @@ export interface ChatInputProps {
 }
 
 export function ChatInput({
-  running, disabled = false, attachments, menuOptions, agentSkills = [],
-  onSend, onStop, onUpload, onRemove, labels, icons, onOpenWorkspace, workspaceReferences = [], onRemoveWorkspaceReference
+  running, disabled = false, attachments, menuOptions, agentSkills = EMPTY_AGENT_SKILLS,
+  onSend, onStop, onUpload, onRemove, labels, icons, onOpenWorkspace,
+  workspaceReferences = EMPTY_WORKSPACE_REFERENCES, onRemoveWorkspaceReference
 }: ChatInputProps) {
   const [value, setValue] = useState('')
-  const [menuMention, setMenuMention] = useState<MenuMention | undefined>()
-  const [selectedSkills, setSelectedSkills] = useState<SelectedAgentSkill[]>([])
-  const [sending, setSending] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const formRef = useRef<HTMLFormElement | null>(null)
   const mentionPickerRef = useRef<MentionPickerHandle | null>(null)
@@ -64,6 +61,23 @@ export function ChatInput({
     textareaRef,
     onUpload,
     onRemove
+  })
+  const selection = useComposerSelectionState({ agentSkills })
+  const submission = useComposerSubmit({
+    running,
+    disabled,
+    value,
+    setValue,
+    attachmentItems: attachmentState.items,
+    readyAttachments: attachmentState.readyAttachments,
+    menuMention: selection.menuMention,
+    selectedSkills: selection.selectedSkills,
+    workspaceReferences,
+    onSend,
+    resetSelections: selection.resetSelections,
+    dismissPickers: picker.dismissPickers,
+    resetAttachments: attachmentState.resetItems,
+    textareaRef
   })
   useEffect(() => {
     const closeOutside = (event: PointerEvent | FocusEvent) => {
@@ -83,12 +97,6 @@ export function ChatInput({
     }
   }, [picker.dismissPickers])
 
-  useEffect(() => {
-    setSelectedSkills((current) => {
-      const next = current.map((skill) => ({ ...skill, valid: agentSkills.some((option) => option.id === skill.id && option.name === skill.name) }))
-      return next.every((skill, index) => skill.valid === current[index].valid) ? current : next
-    })
-  }, [agentSkills])
   useLayoutEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) return
@@ -100,52 +108,15 @@ export function ChatInput({
     textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden'
   }, [value])
 
-  const canSend = !running && !sending && !disabled && !attachmentState.items.some((item) => item.status !== 'ready') &&
-    (!!value.trim() || attachmentState.readyAttachments.length > 0 || !!menuMention || selectedSkills.length > 0 || workspaceReferences.length > 0)
-
   const selectMenu = (option: MenuMentionOption) => {
     const query = picker.consumeMenuQuery()
     if (!query) return
-    setMenuMention({ ...option, path: [...option.path], valid: true })
+    selection.selectMenu(option)
   }
 
   const toggleSkill = (skill: AgentSkillOption) => {
-    setSelectedSkills((current) => {
-      if (current.some((item) => item.id === skill.id)) {
-        return current.filter((item) => item.id !== skill.id)
-      }
-      return [{ ...skill, valid: true }]
-    })
+    selection.toggleSkill(skill)
     picker.completeSkillSelection()
-  }
-
-  const submit = async () => {
-    if (!canSend) return
-    const content = value.trim()
-    setSending(true)
-    let sent: boolean | void = false
-    try {
-      sent = await Promise.resolve(selectedSkills.length
-        ? onSend(
-            content,
-            attachmentState.readyAttachments,
-            menuMention,
-            selectedSkills.map((skill) => ({ ...skill })),
-            workspaceReferences.map((reference) => ({ ...reference }))
-          )
-        : onSend(content, attachmentState.readyAttachments, menuMention, undefined, workspaceReferences.map((reference) => ({ ...reference }))))
-    } catch (_error) {
-      sent = false
-    } finally {
-      setSending(false)
-    }
-    if (sent === false) return
-    setValue('')
-    setMenuMention(undefined)
-    setSelectedSkills([])
-    picker.dismissPickers()
-    attachmentState.resetItems()
-    window.setTimeout(() => textareaRef.current?.focus(), 0)
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -153,7 +124,7 @@ export function ChatInput({
     if (picker.menuQuery && mentionPickerRef.current?.handleKey(event)) return
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
-      void submit()
+      void submission.submit()
     }
   }
 
@@ -164,7 +135,7 @@ export function ChatInput({
         const target = event.target as HTMLElement
         if (!target.closest('button, a, input, textarea')) textareaRef.current?.focus()
       }}
-      onSubmit={(event: FormEvent) => { event.preventDefault(); void submit() }}
+      onSubmit={(event: FormEvent) => { event.preventDefault(); void submission.submit() }}
     >
       {attachmentState.dragging && textareaRef.current?.closest('main') ? createPortal(
         <div className="pointer-events-none absolute inset-0 z-50 grid place-items-center border-2 border-dashed border-primary/30 bg-background-panel/95 text-secondary backdrop-blur-[1px]" aria-label="拖放附件">
@@ -181,14 +152,14 @@ export function ChatInput({
       <div>
         <ComposerContextBar
           workspaceReferences={workspaceReferences}
-          selectedSkills={selectedSkills}
-          menuMention={menuMention}
+          selectedSkills={selection.selectedSkills}
+          menuMention={selection.menuMention}
           onRemoveWorkspaceReference={onRemoveWorkspaceReference}
-          onRemoveSkill={(id) => setSelectedSkills((current) => current.filter((item) => item.id !== id))}
-          onRemoveMenuMention={() => setMenuMention(undefined)}
+          onRemoveSkill={selection.removeSkill}
+          onRemoveMenuMention={selection.removeMenuMention}
         />
         <div className="relative">
-          <textarea ref={textareaRef} rows={1} disabled={disabled || sending} className="block min-h-11 w-full resize-none rounded-lg border-0 bg-background-secondary px-3 py-3 text-sm leading-5 text-primary outline outline-1 outline-transparent transition-[border-color,background-color,outline-color,box-shadow] placeholder:text-muted/90 focus:bg-background focus:outline-primary/15 focus:shadow-[0_0_0_3px_rgba(59,130,246,0.06)] disabled:cursor-not-allowed disabled:opacity-45" placeholder={labels.inputPlaceholder} value={value} onChange={(event) => {
+          <textarea ref={textareaRef} rows={1} disabled={disabled || submission.sending} className="block min-h-11 w-full resize-none rounded-lg border-0 bg-background-secondary px-3 py-3 text-sm leading-5 text-primary outline outline-1 outline-transparent transition-[border-color,background-color,outline-color,box-shadow] placeholder:text-muted/90 focus:bg-background focus:outline-primary/15 focus:shadow-[0_0_0_3px_rgba(59,130,246,0.06)] disabled:cursor-not-allowed disabled:opacity-45" placeholder={labels.inputPlaceholder} value={value} onChange={(event) => {
             const nextValue = event.target.value
             const cursor = event.target.selectionStart ?? nextValue.length
             picker.handleValueChange(nextValue, cursor)
@@ -197,7 +168,7 @@ export function ChatInput({
             picker.handleCursorChange(cursor)
           }} onKeyDown={onKeyDown} onPasteCapture={attachmentState.handlePaste} aria-autocomplete="list" aria-expanded={Boolean(picker.menuQuery || picker.skillOpen)} aria-controls={picker.skillOpen ? 'agui-skill-options' : picker.menuQuery ? 'agui-mention-options' : undefined} />
           {picker.mentionPickerQuery ? <MentionPicker ref={mentionPickerRef} open={Boolean(picker.menuQuery)} query={picker.mentionPickerQuery} menuOptions={menuOptions} onSelectMenu={selectMenu} onOpenSkills={picker.openSkillsFromMention} onFocusInput={() => textareaRef.current?.focus({ preventScroll: true })} onClose={picker.closeMenuPicker} /> : null}
-          <SkillPicker ref={skillPickerRef} open={picker.skillOpen} query={picker.skillSearch} skills={agentSkills} selected={selectedSkills} inlineQuery={Boolean(picker.mentionSkillQuery)} onQueryChange={picker.setSkillSearch} onToggle={toggleSkill} onBack={picker.skillReturnQuery ? picker.returnToMentionCategories : undefined} onClose={picker.closeSkillPicker} />
+          <SkillPicker ref={skillPickerRef} open={picker.skillOpen} query={picker.skillSearch} skills={agentSkills} selected={selection.selectedSkills} inlineQuery={Boolean(picker.mentionSkillQuery)} onQueryChange={picker.setSkillSearch} onToggle={toggleSkill} onBack={picker.skillReturnQuery ? picker.returnToMentionCategories : undefined} onClose={picker.closeSkillPicker} />
         </div>
         {attachmentState.enabled ? <input ref={inputRef} className="hidden" type="file" disabled={disabled} multiple accept={attachmentState.acceptedFileSelector} onChange={(event) => {
           attachmentState.addFiles(Array.from(event.target.files || []))
@@ -207,9 +178,9 @@ export function ChatInput({
           attachmentsEnabled={attachmentState.enabled}
           skillsEnabled={agentSkills.length > 0}
           disabled={disabled}
-          sending={sending}
+          sending={submission.sending}
           running={running}
-          canSend={canSend}
+          canSend={submission.canSend}
           skillOpen={picker.skillOpen}
           labels={labels}
           icons={icons}

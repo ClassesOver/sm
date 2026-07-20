@@ -1,14 +1,17 @@
-import React, { useEffect, useState } from 'react'
-import type { AguiChatProps, AttachmentRef, ErrorMessageProps, RuntimeSnapshot, WorkspaceEntry, WorkspaceReference } from '../types'
+import React from 'react'
+import type { AguiChatProps, ErrorMessageProps } from '../types'
 import { ChatRuntime } from '../runtime/ChatRuntime'
-import { asText } from '../runtime/utils'
-import { mergeIcons, mergeLabels, observeInteraction } from '../customization'
-import { ChatInput, type ChatInputProps } from './ChatInput'
+import { mergeIcons, mergeLabels } from '../customization'
+import { ChatInput } from './ChatInput'
 import { Messages } from './Messages'
 import { FilePreviewPanel } from './FilePreviewPanel'
 import { Sidebar } from './Sidebar'
 import { WorkspacePanel } from './WorkspacePanel'
 import { useChatAutoScroll } from './useChatAutoScroll'
+import { useChatActions } from './useChatActions'
+import { useChatSidePanel } from './useChatSidePanel'
+import { useRuntimeSnapshot } from './useRuntimeSnapshot'
+import { useWorkspaceReferences } from './useWorkspaceReferences'
 
 interface AguiChatAppProps {
   runtime: ChatRuntime
@@ -20,37 +23,19 @@ export function DefaultErrorMessage({ error }: ErrorMessageProps) {
 }
 
 export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
-  const [snapshot, setSnapshot] = useState<RuntimeSnapshot>(() => runtime.getSnapshot())
-  const [previewAttachment, setPreviewAttachment] = useState<AttachmentRef | null>(null)
-  const [workspaceOpen, setWorkspaceOpen] = useState(false)
-  const [workspaceReferences, setWorkspaceReferences] = useState<WorkspaceReference[]>([])
+  const snapshot = useRuntimeSnapshot(runtime)
   const labels = mergeLabels(props.labels)
   const icons = mergeIcons(props.icons)
   const chatScroll = useChatAutoScroll(snapshot.threadId, snapshot.messages)
-
-  useEffect(() => runtime.subscribe(() => setSnapshot(runtime.getSnapshot())), [runtime])
-
-  useEffect(() => {
-    setWorkspaceReferences([])
-    setPreviewAttachment(null)
-    setWorkspaceOpen(false)
-  }, [snapshot.threadId])
-  const handleSend: ChatInputProps['onSend'] = function (
-    content, attachments, selection, skills, references
-  ) {
-    return runtime.send(content, attachments, selection, undefined, skills, references).then(function (sent) {
-      if (!sent) return false
-      setWorkspaceReferences([])
-      const mentions = Array.isArray(selection) ? selection : undefined
-      const menuMention = selection && !Array.isArray(selection) ? selection : undefined
-      observeInteraction(function () {
-        props.onInteraction?.({
-          type: 'send', content, attachments, mentions, menuMention, skills, workspaceReferences: references
-        })
-      })
-      return true
-    })
-  }
+  const sidePanel = useChatSidePanel(snapshot.threadId)
+  const workspace = useWorkspaceReferences(snapshot.threadId)
+  const actions = useChatActions({
+    runtime,
+    props,
+    messages: snapshot.messages,
+    hostState: snapshot.hostState,
+    clearWorkspaceReferences: workspace.clearReferences
+  })
 
   return (
     <div className="agui-chat-react relative">
@@ -58,10 +43,10 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
         <Sidebar
           snapshot={snapshot}
           initialCollapsed={props.ui?.initialSidebarCollapsed}
-          onNewSession={() => void runtime.newSession()}
-          onRefreshSessions={() => void runtime.refreshSessions()}
-          onLoadSession={(sessionId) => void runtime.loadSession(sessionId)}
-          onArchiveSession={(sessionId) => void runtime.archiveSession(sessionId)}
+          onNewSession={actions.newSession}
+          onRefreshSessions={actions.refreshSessions}
+          onLoadSession={actions.loadSession}
+          onArchiveSession={actions.archiveSession}
           labels={labels}
         />
         <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background-panel">
@@ -79,50 +64,17 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
               icons={icons}
               components={props.components}
               hostState={snapshot.hostState}
-              onSelectRelation={(tool, candidates) => {
-                void runtime.selectRelationCandidates(tool, candidates).then((content) => {
-                  if (content) observeInteraction(() => props.onInteraction?.({ type: 'send', content, attachments: [] }))
-                })
-              }}
-              onSelectRecord={(tool, candidate) => {
-                void runtime.selectRecordCandidate(tool, candidate).then((content) => {
-                  if (content) observeInteraction(() => props.onInteraction?.({
-                    type: 'send', content, attachments: [],
-                    recordSelection: {
-                      ...candidate,
-                      snapshotId: snapshot.hostState.snapshotId,
-                      hostRevision: snapshot.hostState.hostRevision
-                    }
-                  }))
-                })
-              }}
-              onRemoveMenuMention={(messageId) => runtime.removeMenuMention(messageId)}
-              onRemoveMention={(messageId, referenceId) => runtime.removeMention(messageId, referenceId)}
-              onCopy={(message) => {
-                const write = navigator.clipboard?.writeText(asText(message.content))
-                if (write) void write.catch(() => undefined)
-                observeInteraction(() => props.onInteraction?.({ type: 'copy', message }))
-              }}
-              onFeedback={(message, feedback) => {
-                observeInteraction(() => props.onFeedback?.(message, feedback))
-                observeInteraction(() => props.onInteraction?.({ type: 'feedback', message, feedback }))
-              }}
-              onPreviewAttachment={(attachment) => {
-                setWorkspaceOpen(false)
-                setPreviewAttachment(attachment)
-              }}
-              onRegenerate={(messageId) => {
-                const message = snapshot.messages.find((candidate) => candidate.id === messageId)
-                void runtime.regenerate(messageId)
-                if (message) observeInteraction(() => props.onInteraction?.({ type: 'regenerate', message }))
-              }}
-              onSuggestion={(suggestion) => {
-                void runtime.send(suggestion.message)
-                observeInteraction(() => props.onInteraction?.({ type: 'suggestion', suggestion }))
-                observeInteraction(() => props.onInteraction?.({ type: 'send', content: suggestion.message, attachments: [] }))
-              }}
-              onConfirmTool={(tool, approved) => void runtime.confirmTool(tool, approved)}
-              onUndoTool={(tool) => void runtime.undoTool(tool)}
+              onSelectRelation={actions.selectRelation}
+              onSelectRecord={actions.selectRecord}
+              onRemoveMenuMention={actions.removeMenuMention}
+              onRemoveMention={actions.removeMention}
+              onCopy={actions.copy}
+              onFeedback={actions.feedback}
+              onPreviewAttachment={sidePanel.openFile}
+              onRegenerate={actions.regenerate}
+              onSuggestion={actions.suggestion}
+              onConfirmTool={actions.confirmTool}
+              onUndoTool={actions.undoTool}
             />
           </div>
           {snapshot.error
@@ -132,41 +84,35 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
             running={snapshot.running}
             disabled={snapshot.loadingSessions}
             attachments={props.attachments}
-            menuOptions={props.menuOptions || []}
-            agentSkills={props.agentSkills || []}
+            menuOptions={props.menuOptions}
+            agentSkills={props.agentSkills}
             hostBridge={props.hostBridge}
-            workspaceReferences={workspaceReferences}
-            onRemoveWorkspaceReference={(id) => setWorkspaceReferences((current) => current.filter((item) => item.id !== id))}
+            workspaceReferences={workspace.references}
+            onRemoveWorkspaceReference={workspace.removeReference}
             labels={labels}
             icons={icons}
-            onSend={handleSend}
-            onStop={() => {
-              runtime.stop()
-              observeInteraction(() => props.onInteraction?.({ type: 'stop' }))
-            }}
-            onUpload={(file, onProgress) => runtime.uploadAttachment(file, onProgress)}
-            onRemove={(attachmentId) => runtime.deleteAttachment(attachmentId)}
-            onOpenWorkspace={() => {
-              setPreviewAttachment(null)
-              setWorkspaceOpen(true)
-            }}
+            onSend={actions.send}
+            onStop={actions.stop}
+            onUpload={actions.uploadAttachment}
+            onRemove={actions.removeAttachment}
+            onOpenWorkspace={sidePanel.openWorkspace}
           />
         </main>
-        {previewAttachment
+        {sidePanel.panel.type === 'file'
           ? <FilePreviewPanel
-              attachment={previewAttachment}
+              attachment={sidePanel.panel.attachment}
               labels={labels}
-              onClose={() => setPreviewAttachment(null)}
+              onClose={sidePanel.closePanel}
             />
           : null}
-        {workspaceOpen
+        {sidePanel.panel.type === 'workspace'
           ? <WorkspacePanel
               runtime={runtime}
               threadId={snapshot.threadId}
-              references={workspaceReferences}
-              onToggleReference={(entry: WorkspaceEntry) => setWorkspaceReferences((current) => { const selected = current.some((item) => item.path === entry.path); if (selected) return current.filter((item) => item.path !== entry.path); if (current.length >= 5) return current; return [...current, { id: `workspace:${entry.path}`, path: entry.path, name: entry.name, isDirectory: entry.isDirectory }] })}
-              onDeleted={(entry: WorkspaceEntry) => setWorkspaceReferences((current) => current.filter((item) => item.path !== entry.path && !(entry.isDirectory && item.path.startsWith(`${entry.path}/`))))}
-              onClose={() => setWorkspaceOpen(false)}
+              references={workspace.references}
+              onToggleReference={workspace.toggleReference}
+              onDeleted={workspace.removeDeleted}
+              onClose={sidePanel.closePanel}
             />
           : null}
       </div>

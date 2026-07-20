@@ -1,7 +1,7 @@
-import { useState } from 'react'
 import type { ChatIcons, ChatLabels } from '../types'
 import { cn } from '../lib'
 import { IconButton } from './IconButton'
+import { useCopyFeedback } from './useCopyFeedback'
 
 interface AssistantMessageControlsProps {
   isCurrent: boolean
@@ -16,12 +16,7 @@ interface AssistantMessageControlsProps {
 export function AssistantMessageControls({
   isCurrent, running, canRegenerate, labels, icons, onCopy, onRegenerate
 }: AssistantMessageControlsProps) {
-  const [copied, setCopied] = useState(false)
-  const copy = async () => {
-    await onCopy()
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1400)
-  }
+  const { copied, copy } = useCopyFeedback(onCopy)
 
   return <div className={cn(
     'agui-message-controls mt-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100',

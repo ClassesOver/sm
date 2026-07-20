@@ -2,7 +2,12 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatRuntime } from '../runtime/ChatRuntime'
 import type { WorkspaceEntry, WorkspaceReference } from '../types'
-import { useWorkspaceDirectory, useWorkspacePreview } from './useWorkspaceState'
+import {
+  INITIAL_WORKSPACE_DIRECTORY_STATE,
+  useWorkspaceDirectory,
+  workspaceDirectoryReducer
+} from './useWorkspaceDirectory'
+import { useWorkspacePreview } from './useWorkspacePreview'
 
 function entry(path: string, overrides: Partial<WorkspaceEntry> = {}): WorkspaceEntry {
   const name = path.split('/').pop() || path
@@ -50,6 +55,28 @@ afterEach(() => {
 })
 
 describe('工作区状态', () => {
+  it('目录 reducer 原子更新加载和删除状态', () => {
+    const target = entry('待删.txt')
+    const loading = workspaceDirectoryReducer(INITIAL_WORKSPACE_DIRECTORY_STATE, {
+      type: 'load_started',
+      preserve: false
+    })
+    expect(loading).toMatchObject({ entries: [], loading: true, listError: '' })
+
+    const loaded = workspaceDirectoryReducer(loading, {
+      type: 'load_succeeded',
+      entries: [target]
+    })
+    const requested = workspaceDirectoryReducer(loaded, { type: 'delete_requested', entry: target })
+    const deleting = workspaceDirectoryReducer(requested, { type: 'delete_started', path: target.path })
+    expect(deleting).toMatchObject({ confirmDelete: target, deletingPath: target.path })
+
+    expect(workspaceDirectoryReducer(deleting, {
+      type: 'delete_succeeded',
+      path: target.path
+    })).toMatchObject({ entries: [], confirmDelete: null, deletingPath: '' })
+  })
+
   it('预览只采用最后一次读取结果，并可按目录关闭', async () => {
     const first = deferred<{ blob: Blob; mimeType: string }>()
     const second = deferred<{ blob: Blob; mimeType: string }>()

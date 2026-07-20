@@ -1,90 +1,33 @@
-import { Component, type ErrorInfo, type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import type { FileViewerProps } from '@file-viewer/react-full'
-
-const SCRIPT_URL = '/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.7.0.js'
-
-type FileViewerComponent = typeof import('@file-viewer/react-full')['FileViewer']
-type FileViewerModule = { FileViewer: FileViewerComponent }
-
-declare global {
-  interface Window {
-    AguiFileViewerBundle?: FileViewerModule
-  }
-}
-
-let viewerModulePromise: Promise<FileViewerModule> | undefined
-
-function loadProductionBundle(): Promise<FileViewerModule> {
-  if (window.AguiFileViewerBundle?.FileViewer) return Promise.resolve(window.AguiFileViewerBundle)
-
-  return new Promise((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>(`script[src="${SCRIPT_URL}"]`)
-    const script = existing || document.createElement('script')
-    const handleLoad = () => window.AguiFileViewerBundle?.FileViewer
-      ? resolve(window.AguiFileViewerBundle)
-      : reject(new Error('文件查看器资源未正确注册'))
-    const handleError = () => reject(new Error('无法加载文件查看器资源'))
-
-    script.addEventListener('load', handleLoad, { once: true })
-    script.addEventListener('error', handleError, { once: true })
-    if (!existing) {
-      script.src = SCRIPT_URL
-      script.async = true
-      document.head.appendChild(script)
-    }
-  })
-}
-
-function loadFileViewer(): Promise<FileViewerModule> {
-  if (!viewerModulePromise) {
-    viewerModulePromise = window.AguiFileViewerBundle?.FileViewer
-      ? Promise.resolve(window.AguiFileViewerBundle)
-      : import.meta.env.DEV
-      ? import('@file-viewer/react-full')
-      : loadProductionBundle()
-    viewerModulePromise.catch(() => { viewerModulePromise = undefined })
-  }
-  return viewerModulePromise
-}
-
-class ViewerErrorBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
-  state = { failed: false }
-
-  static getDerivedStateFromError() {
-    return { failed: true }
-  }
-
-  componentDidCatch(_error: Error, _errorInfo: ErrorInfo) {
-    // The caller supplies the user-facing fallback.
-  }
-
-  render() {
-    return this.state.failed ? this.props.fallback : this.props.children
-  }
-}
+import { loadFileViewer, type FileViewerComponent } from './fileViewerLoader'
+import { RenderErrorBoundary } from './RenderErrorBoundary'
 
 interface LazyFileViewerProps extends FileViewerProps {
   errorLabel: string
   fallback?: ReactNode
 }
 
+type FileViewerLoadState =
+  | { status: 'loading' }
+  | { status: 'ready'; Viewer: FileViewerComponent }
+  | { status: 'error' }
+
 export function LazyFileViewer({ errorLabel, fallback, ...props }: LazyFileViewerProps) {
-  const [Viewer, setViewer] = useState<FileViewerComponent | null>(null)
-  const [failed, setFailed] = useState(false)
+  const [loadState, setLoadState] = useState<FileViewerLoadState>({ status: 'loading' })
+  const errorFallback = fallback || <div className="agui-file-viewer-state text-sm text-muted" role="alert">{errorLabel}</div>
 
   useEffect(() => {
     let active = true
     loadFileViewer().then(
-      (module) => { if (active) setViewer(() => module.FileViewer) },
-      () => { if (active) setFailed(true) }
+      (module) => { if (active) setLoadState({ status: 'ready', Viewer: module.FileViewer }) },
+      () => { if (active) setLoadState({ status: 'error' }) }
     )
     return () => { active = false }
   }, [])
 
-  if (failed) {
-    return fallback || <div className="agui-file-viewer-state text-sm text-muted" role="alert">{errorLabel}</div>
-  }
-  if (!Viewer) {
+  if (loadState.status === 'error') return errorFallback
+  if (loadState.status === 'loading') {
     return <div className="agui-file-viewer-state" aria-label="正在加载文件预览">
       <span className="agui-activity flex gap-1" aria-hidden="true">
         <span className="agui-activity-dot" />
@@ -93,7 +36,8 @@ export function LazyFileViewer({ errorLabel, fallback, ...props }: LazyFileViewe
       </span>
     </div>
   }
-  return <ViewerErrorBoundary fallback={fallback || <div className="agui-file-viewer-state text-sm text-muted" role="alert">{errorLabel}</div>}>
+  const Viewer = loadState.Viewer
+  return <RenderErrorBoundary fallback={errorFallback} resetKeys={[Viewer, props.url]}>
     <Viewer {...props} />
-  </ViewerErrorBoundary>
+  </RenderErrorBoundary>
 }

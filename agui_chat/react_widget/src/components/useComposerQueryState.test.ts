@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
+import { composerQueryReducer, INITIAL_COMPOSER_QUERY_STATE } from './composerQueryState'
 import { useComposerQueryState } from './useComposerQueryState'
 
 afterEach(cleanup)
@@ -13,6 +14,31 @@ function useQueryHarness(hasSkills = true) {
 }
 
 describe('消息输入查询状态', () => {
+  it('reducer 用互斥模式表达菜单和技能状态', () => {
+    const menuQuery = { start: 0, end: 3, query: '客户' }
+    const menuState = composerQueryReducer(INITIAL_COMPOSER_QUERY_STATE, {
+      type: 'value_changed',
+      mentionQuery: menuQuery,
+      skillQuery: null,
+      hasSkills: true,
+      editingMentionSkill: false
+    })
+    expect(menuState).toEqual({ mode: 'menu', query: menuQuery })
+
+    const skillState = composerQueryReducer(menuState, {
+      type: 'open_skills_from_mention',
+      query: menuQuery,
+      inline: true
+    })
+    expect(skillState).toEqual({
+      mode: 'skills',
+      query: menuQuery,
+      search: '客户',
+      returnQuery: menuQuery
+    })
+    expect(composerQueryReducer(skillState, { type: 'return_to_mentions' })).toEqual(menuState)
+  })
+
   it('保持菜单和技能选择器互斥', () => {
     const { result } = renderHook(() => useQueryHarness())
 

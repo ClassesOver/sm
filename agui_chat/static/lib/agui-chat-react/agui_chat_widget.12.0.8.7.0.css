@@ -143,6 +143,10 @@
   display: block;
 }
 
+.agui-chat-react .inline {
+  display: inline;
+}
+
 .agui-chat-react .flex {
   display: flex;
 }

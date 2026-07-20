@@ -1,8 +1,8 @@
 import { ArrowDown, ArrowUp, Search, X } from 'lucide-react'
 import { IconButton } from './IconButton'
+import type { WorkspaceSortDirection, WorkspaceSortKey } from './workspaceEntryModel'
 
-export type WorkspaceSortKey = 'name' | 'modifiedAt' | 'size'
-export type WorkspaceSortDirection = 'asc' | 'desc'
+export type { WorkspaceSortDirection, WorkspaceSortKey } from './workspaceEntryModel'
 
 interface WorkspaceToolbarProps {
   search: string

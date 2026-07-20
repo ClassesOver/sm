@@ -13,7 +13,8 @@ import { WorkspaceDeleteBar } from './WorkspaceDeleteBar'
 import { WorkspaceFilePreview } from './WorkspaceFilePreview'
 import { WorkspaceListState } from './WorkspaceListState'
 import { WorkspaceToolbar } from './WorkspaceToolbar'
-import { useWorkspaceDirectory, useWorkspacePreview } from './useWorkspaceState'
+import { useWorkspaceDirectory } from './useWorkspaceDirectory'
+import { useWorkspacePreview } from './useWorkspacePreview'
 
 interface WorkspacePanelProps {
   runtime: ChatRuntime
