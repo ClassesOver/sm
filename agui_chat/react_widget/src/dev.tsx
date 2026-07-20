@@ -2,10 +2,10 @@ import type { AguiChatProps, ChatMessage } from './types'
 import { AguiChat, ChatRuntime } from './index'
 import { devHandshake, devHostState } from './dev-v2'
 
-type Scenario = 'empty' | 'complete' | 'streaming' | 'markdown' | 'tool' | 'relation' | 'attachments' | 'error' | 'panels'
+type Scenario = 'empty' | 'complete' | 'streaming' | 'markdown' | 'tool' | 'relation' | 'attachments' | 'error' | 'panels' | 'workspace'
 
 const requested = new URLSearchParams(window.location.search).get('scenario')
-const scenario: Scenario = ['empty', 'complete', 'streaming', 'markdown', 'tool', 'relation', 'attachments', 'error', 'panels'].includes(requested || '')
+const scenario: Scenario = ['empty', 'complete', 'streaming', 'markdown', 'tool', 'relation', 'attachments', 'error', 'panels', 'workspace'].includes(requested || '')
   ? requested as Scenario
   : 'complete'
 
@@ -76,7 +76,8 @@ const scenarios: Record<Scenario, ChatMessage[]> = {
     { ...assistant, content: '图片中的管道分布清晰，文档附件也已成功关联到当前消息。' }
   ],
   error: [user, { ...assistant, streaming_error: '上游服务暂时不可用，请稍后重试。' }],
-  panels: [user, assistant]
+  panels: [user, assistant],
+  workspace: [user, assistant]
 }
 
 const originalFetch = window.fetch.bind(window)
@@ -174,6 +175,22 @@ devRuntime.uploadAttachment = async (file, onProgress) => {
   }
 }
 devRuntime.deleteAttachment = async () => undefined
+if (scenario === 'workspace') {
+  devRuntime.listWorkspace = async () => [
+    { path: '报表归档', name: '报表归档', isDirectory: true, size: 0, mimeType: false, modifiedAt: '2026-07-20T08:30:00+08:00' },
+    { path: '季度工作区摘要.txt', name: '季度工作区摘要.txt', isDirectory: false, size: 1860, mimeType: 'text/plain', modifiedAt: '2026-07-20T09:42:00+08:00' },
+    { path: '客户合同汇总.pdf', name: '客户合同汇总.pdf', isDirectory: false, size: 328400, mimeType: 'application/pdf', modifiedAt: '2026-07-19T16:20:00+08:00' },
+    { path: '华东销售数据.xlsx', name: '华东销售数据.xlsx', isDirectory: false, size: 84520, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', modifiedAt: '2026-07-19T14:10:00+08:00' },
+    { path: '跟进事项.csv', name: '跟进事项.csv', isDirectory: false, size: 12140, mimeType: 'text/csv', modifiedAt: '2026-07-18T18:05:00+08:00' },
+    { path: '产品演示.pptx', name: '产品演示.pptx', isDirectory: false, size: 1248200, mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', modifiedAt: '2026-07-18T10:12:00+08:00' }
+  ]
+  devRuntime.readWorkspaceFile = async () => ({
+    blob: new Blob(['季度工作区摘要\n\n华东区销售额保持增长，重点跟进三项高价值商机。'], { type: 'text/plain' }),
+    mimeType: 'text/plain'
+  })
+  devRuntime.downloadWorkspaceFile = async () => undefined
+  devRuntime.deleteWorkspaceEntry = async () => undefined
+}
 if (scenario === 'streaming') {
   window.setTimeout(() => void devRuntime.send('开始生成销售摘要'), 0)
 }

@@ -1,6 +1,7 @@
 import { ExternalLink, FileText } from 'lucide-react'
 import type { AttachmentRef, ChatLabels } from '../types'
 import { AsidePanel } from './AsidePanel'
+import { getFilePreviewType } from './filePreviewType'
 import { LazyFileViewer } from './LazyFileViewer'
 
 interface FilePreviewPanelProps {
@@ -13,32 +14,8 @@ function attachmentUrl(attachment: AttachmentRef): string {
   return `/agui_chat/attachment/${encodeURIComponent(attachment.id)}`
 }
 
-function extensionFromName(name: string): string {
-  const cleanName = name.split(/[?#]/)[0]
-  const dotIndex = cleanName.lastIndexOf('.')
-  return dotIndex >= 0 && dotIndex < cleanName.length - 1
-    ? cleanName.slice(dotIndex + 1).toLowerCase()
-    : ''
-}
-
-function extensionFromMime(mimeType: string): string {
-  if (mimeType.includes('pdf')) return 'pdf'
-  if (mimeType.includes('wordprocessingml')) return 'docx'
-  if (mimeType.includes('msword')) return 'doc'
-  if (mimeType.includes('spreadsheetml')) return 'xlsx'
-  if (mimeType.includes('vnd.ms-excel')) return 'xls'
-  if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return 'pptx'
-  if (mimeType.includes('ofd')) return 'ofd'
-  if (mimeType.startsWith('image/') || mimeType.startsWith('audio/') || mimeType.startsWith('video/')) {
-    return mimeType.split('/')[1] || ''
-  }
-  if (mimeType.includes('json')) return 'json'
-  if (mimeType.startsWith('text/')) return mimeType.includes('markdown') ? 'md' : 'txt'
-  return ''
-}
-
 export function getAttachmentPreviewType(attachment: AttachmentRef): string {
-  return extensionFromName(attachment.name) || extensionFromMime(attachment.mimeType) || attachment.mimeType
+  return getFilePreviewType(attachment.name, attachment.mimeType)
 }
 
 export function FilePreviewPanel({ attachment, labels, onClose }: FilePreviewPanelProps) {

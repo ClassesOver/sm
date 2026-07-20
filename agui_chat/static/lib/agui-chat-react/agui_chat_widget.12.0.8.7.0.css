@@ -87,11 +87,6 @@
   margin: 0px;
 }
 
-.agui-chat-react .mx-1 {
-  margin-left: 4px;
-  margin-right: 4px;
-}
-
 .agui-chat-react .mx-auto {
   margin-left: auto;
   margin-right: auto;
@@ -213,10 +208,6 @@
   height: 4px;
 }
 
-.agui-chat-react .h-10 {
-  height: 40px;
-}
-
 .agui-chat-react .h-11 {
   height: 44px;
 }
@@ -285,10 +276,6 @@
   max-height: calc(100vh - 235px);
 }
 
-.agui-chat-react .max-h-full {
-  max-height: 100%;
-}
-
 .agui-chat-react .min-h-0 {
   min-height: 0px;
 }
@@ -305,6 +292,10 @@
   min-height: 48px;
 }
 
+.agui-chat-react .min-h-14 {
+  min-height: 56px;
+}
+
 .agui-chat-react .min-h-32 {
   min-height: 128px;
 }
@@ -317,10 +308,6 @@
   min-height: 36px;
 }
 
-.agui-chat-react .min-h-96 {
-  min-height: 384px;
-}
-
 .agui-chat-react .min-h-\[320px\] {
   min-height: 320px;
 }
@@ -331,6 +318,10 @@
 
 .agui-chat-react .w-1 {
   width: 4px;
+}
+
+.agui-chat-react .w-24 {
+  width: 96px;
 }
 
 .agui-chat-react .w-40 {
@@ -460,6 +451,10 @@
   place-items: center;
 }
 
+.agui-chat-react .content-center {
+  align-content: center;
+}
+
 .agui-chat-react .items-start {
   align-items: flex-start;
 }
@@ -478,6 +473,10 @@
 
 .agui-chat-react .justify-between {
   justify-content: space-between;
+}
+
+.agui-chat-react .justify-items-center {
+  justify-items: center;
 }
 
 .agui-chat-react .gap-1 {
@@ -504,6 +503,26 @@
   gap: 20px;
 }
 
+.agui-chat-react .gap-x-2 {
+  -moz-column-gap: 8px;
+       column-gap: 8px;
+}
+
+.agui-chat-react .gap-x-3 {
+  -moz-column-gap: 12px;
+       column-gap: 12px;
+}
+
+.agui-chat-react .gap-y-1 {
+  row-gap: 4px;
+}
+
+.agui-chat-react :is(.space-y-2 > :not([hidden]) ~ :not([hidden])) {
+  --tw-space-y-reverse: 0;
+  margin-top: calc(8px * calc(1 - var(--tw-space-y-reverse)));
+  margin-bottom: calc(8px * var(--tw-space-y-reverse));
+}
+
 .agui-chat-react .overflow-auto {
   overflow: auto;
 }
@@ -522,12 +541,12 @@
   white-space: nowrap;
 }
 
-.agui-chat-react .whitespace-pre-wrap {
-  white-space: pre-wrap;
-}
-
 .agui-chat-react .break-words {
   overflow-wrap: break-word;
+}
+
+.agui-chat-react .break-all {
+  word-break: break-all;
 }
 
 .agui-chat-react .rounded {
@@ -790,11 +809,6 @@
   fill: currentColor;
 }
 
-.agui-chat-react .object-contain {
-  -o-object-fit: contain;
-     object-fit: contain;
-}
-
 .agui-chat-react .object-cover {
   -o-object-fit: cover;
      object-fit: cover;
@@ -814,6 +828,10 @@
 
 .agui-chat-react .p-3 {
   padding: 12px;
+}
+
+.agui-chat-react .p-6 {
+  padding: 24px;
 }
 
 .agui-chat-react .px-1 {
@@ -849,6 +867,11 @@
 .agui-chat-react .px-4 {
   padding-left: 16px;
   padding-right: 16px;
+}
+
+.agui-chat-react .px-6 {
+  padding-left: 24px;
+  padding-right: 24px;
 }
 
 .agui-chat-react .py-0\.5 {
@@ -1024,6 +1047,10 @@
 .agui-chat-react .text-white {
   --tw-text-opacity: 1;
   color: rgb(255 255 255 / var(--tw-text-opacity, 1));
+}
+
+.agui-chat-react .underline {
+  text-decoration-line: underline;
 }
 
 .agui-chat-react .opacity-0 {
@@ -1659,6 +1686,10 @@
   background-color: rgb(24 24 27 / 0.85);
 }
 
+.agui-chat-react .hover\:bg-transparent:hover {
+  background-color: transparent;
+}
+
 .agui-chat-react .hover\:bg-white\/10:hover {
   background-color: rgb(255 255 255 / 0.1);
 }
@@ -1696,6 +1727,18 @@
   outline-color: rgb(24 24 27 / 0.15);
 }
 
+.agui-chat-react .focus-visible\:outline:focus-visible {
+  outline-style: solid;
+}
+
+.agui-chat-react .focus-visible\:outline-2:focus-visible {
+  outline-width: 2px;
+}
+
+.agui-chat-react .focus-visible\:outline-primary\/35:focus-visible {
+  outline-color: rgb(24 24 27 / 0.35);
+}
+
 .agui-chat-react .focus-visible\:ring-2:focus-visible {
   --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);
   --tw-ring-shadow: var(--tw-ring-inset) 0 0 0 calc(2px + var(--tw-ring-offset-width)) var(--tw-ring-color);
@@ -1731,6 +1774,10 @@
 
 .agui-chat-react .disabled\:opacity-45:disabled {
   opacity: 0.45;
+}
+
+.agui-chat-react .disabled\:opacity-50:disabled {
+  opacity: 0.5;
 }
 
 .agui-chat-react :is(.group:hover .group-hover\:opacity-100) {

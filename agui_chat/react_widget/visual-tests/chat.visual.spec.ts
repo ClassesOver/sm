@@ -119,3 +119,43 @@ test('light scenarios', async ({ page }) => {
     }
   }
 })
+
+test('workspace list, search, and preview', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text())
+  })
+
+  await page.goto('/?scenario=workspace')
+  await page.getByRole('button', { name: '打开工作区' }).click()
+  const panel = page.getByRole('complementary', { name: '聊天工作区' })
+  await expect(panel).toBeVisible()
+  await expect(panel.getByText('当前结果 6 项')).toBeVisible()
+  await page.addStyleTag({ content: '*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }' })
+  await expect(page).toHaveScreenshot('workspace-filled.png', { fullPage: true })
+
+  await panel.getByRole('textbox', { name: '搜索当前目录' }).fill('没有这个文件')
+  await expect(panel.getByText('没有匹配结果，请尝试其他名称。')).toBeVisible()
+  await expect(page).toHaveScreenshot('workspace-no-results.png', { fullPage: true })
+
+  await panel.getByRole('button', { name: '清空搜索' }).click()
+  await panel.getByRole('button', { name: '预览 季度工作区摘要.txt' }).click()
+  await expect(panel.getByText(/华东区销售额保持增长/)).toBeVisible()
+  await expect(page).toHaveScreenshot('workspace-preview.png', { fullPage: true })
+
+  const layout = await page.evaluate(() => {
+    const documentOverflow = document.documentElement.scrollWidth - document.documentElement.clientWidth
+    const clipped = Array.from(document.querySelectorAll('#root button, #root input, #root select'))
+      .filter((element) => {
+        const html = element as HTMLElement
+        const rect = html.getBoundingClientRect()
+        return rect.width > 0 && rect.height > 0 && (html.scrollWidth > html.clientWidth + 1 || html.scrollHeight > html.clientHeight + 1)
+      })
+      .map((element) => (element.getAttribute('aria-label') || element.textContent || element.tagName).trim())
+    return { documentOverflow, clipped }
+  })
+  expect(layout.documentOverflow).toBeLessThanOrEqual(1)
+  expect(layout.clipped).toEqual([])
+  expect(errors).toEqual([])
+})

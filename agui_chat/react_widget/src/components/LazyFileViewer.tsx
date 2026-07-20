@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Component, type ErrorInfo, type ReactNode, useEffect, useState } from 'react'
 import type { FileViewerProps } from '@file-viewer/react-full'
 
 const SCRIPT_URL = '/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.7.0.js'
@@ -47,7 +47,28 @@ function loadFileViewer(): Promise<FileViewerModule> {
   return viewerModulePromise
 }
 
-export function LazyFileViewer({ errorLabel, ...props }: FileViewerProps & { errorLabel: string }) {
+class ViewerErrorBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  componentDidCatch(_error: Error, _errorInfo: ErrorInfo) {
+    // The caller supplies the user-facing fallback.
+  }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children
+  }
+}
+
+interface LazyFileViewerProps extends FileViewerProps {
+  errorLabel: string
+  fallback?: ReactNode
+}
+
+export function LazyFileViewer({ errorLabel, fallback, ...props }: LazyFileViewerProps) {
   const [Viewer, setViewer] = useState<FileViewerComponent | null>(null)
   const [failed, setFailed] = useState(false)
 
@@ -61,7 +82,7 @@ export function LazyFileViewer({ errorLabel, ...props }: FileViewerProps & { err
   }, [])
 
   if (failed) {
-    return <div className="agui-file-viewer-state text-sm text-muted" role="alert">{errorLabel}</div>
+    return fallback || <div className="agui-file-viewer-state text-sm text-muted" role="alert">{errorLabel}</div>
   }
   if (!Viewer) {
     return <div className="agui-file-viewer-state" aria-label="正在加载文件预览">
@@ -72,5 +93,7 @@ export function LazyFileViewer({ errorLabel, ...props }: FileViewerProps & { err
       </span>
     </div>
   }
-  return <Viewer {...props} />
+  return <ViewerErrorBoundary fallback={fallback || <div className="agui-file-viewer-state text-sm text-muted" role="alert">{errorLabel}</div>}>
+    <Viewer {...props} />
+  </ViewerErrorBoundary>
 }

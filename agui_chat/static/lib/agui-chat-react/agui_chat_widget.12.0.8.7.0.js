@@ -7299,12 +7299,34 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$C = [
+  const __iconNode$E = [
     ["rect", { width: "20", height: "5", x: "2", y: "3", rx: "1", key: "1wp1u1" }],
     ["path", { d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8", key: "1s80jp" }],
     ["path", { d: "M10 12h4", key: "a56b0p" }]
   ];
-  const Archive = createLucideIcon("Archive", __iconNode$C);
+  const Archive = createLucideIcon("Archive", __iconNode$E);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$D = [
+    ["path", { d: "M12 5v14", key: "s699le" }],
+    ["path", { d: "m19 12-7 7-7-7", key: "1idqje" }]
+  ];
+  const ArrowDown = createLucideIcon("ArrowDown", __iconNode$D);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$C = [
+    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
+    ["path", { d: "M19 12H5", key: "x3x0zl" }]
+  ];
+  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$C);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7312,10 +7334,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$B = [
-    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
-    ["path", { d: "M19 12H5", key: "x3x0zl" }]
+    ["path", { d: "m5 12 7-7 7 7", key: "hav0vg" }],
+    ["path", { d: "M12 19V5", key: "x0mq9r" }]
   ];
-  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$B);
+  const ArrowUp = createLucideIcon("ArrowUp", __iconNode$B);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -11136,6 +11158,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     );
   }
+  function PickerHeader({ title, leading, onBack }) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-9 items-center gap-2 border-b border-border px-2", children: [
+      onBack ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          type: "button",
+          className: "grid size-7 place-items-center rounded-md border-0 bg-background-secondary text-secondary shadow-none transition-colors hover:bg-accent hover:text-primary",
+          "aria-label": "返回",
+          onClick: onBack,
+          children: /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowLeft, { size: 15 })
+        }
+      ) : leading ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center text-muted", children: leading }) : null,
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate text-xs font-medium", children: title })
+    ] });
+  }
   function PickerSearch({
     trailing,
     containerClassName,
@@ -11191,7 +11228,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       var _a2;
       const queryChanged = previousQueryRef.current !== query.query;
       previousQueryRef.current = query.query;
-      if (!queryChanged) return;
+      if (!open || !queryChanged) return;
       if (query.query && view === "home") {
         if (((_a2 = CATEGORIES[activeIndex]) == null ? void 0 : _a2.id) === "skill") {
           onOpenSkills({ ...query });
@@ -11202,7 +11239,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else if (!query.query && typedNavigation && view === "menus") {
         setView("home");
       }
-    }, [activeIndex, onOpenSkills, query, typedNavigation, view]);
+    }, [activeIndex, onOpenSkills, open, query, typedNavigation, view]);
     reactExports.useEffect(() => {
       var _a2;
       if (open && view === "home" && previousViewRef.current === "menus") {
@@ -11269,10 +11306,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         "aria-label": "添加到对话",
         onKeyDown: handleKey,
         children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-9 items-center gap-2 border-b border-border px-2", children: [
-            view === "menus" ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center rounded-md border-0 bg-background-secondary text-secondary shadow-none transition-colors hover:bg-accent hover:text-primary", "aria-label": "返回", onClick: goBack, children: /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowLeft, { size: 15 }) }) : /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { size: 15, className: "mx-1 text-muted" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate text-xs font-medium", children: view === "home" ? "添加到对话" : "选择菜单" })
-          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(PickerHeader, { title: view === "home" ? "添加到对话" : "选择菜单", leading: /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { size: 15 }), onBack: view === "menus" ? goBack : void 0 }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { id: "agui-mention-options", className: "max-h-72 overflow-y-auto p-1", role: "listbox", "aria-activedescendant": activeOptionId, children: view === "home" ? CATEGORIES.map((category, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
             "button",
             {
@@ -11337,6 +11371,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     inlineQuery = false,
     onQueryChange,
     onToggle,
+    onBack,
     onClose
   }, ref) {
     const [activeIndex, setActiveIndex] = reactExports.useState(0);
@@ -11351,7 +11386,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (!open || event.nativeEvent.isComposing) return false;
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        const close = onBack || onClose;
+        close();
         return true;
       }
       if (event.key === "Home" || event.key === "End") {
@@ -11377,6 +11413,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }));
     if (!open) return null;
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "agui-picker absolute bottom-full left-0 z-40 mb-2 w-full max-w-md overflow-hidden rounded-md border border-border/70 bg-white text-primary shadow-[0_12px_32px_rgba(15,23,42,0.14)]", role: "dialog", "aria-label": "选择技能", onKeyDown: (event) => handleKey(event), children: [
+      onBack ? /* @__PURE__ */ jsxRuntimeExports.jsx(PickerHeader, { title: "选择技能", onBack }) : null,
       !inlineQuery ? /* @__PURE__ */ jsxRuntimeExports.jsx(PickerSearch, { autoFocus: true, "aria-controls": "agui-skill-options", "aria-expanded": open, value: query, onChange: (event) => {
         onQueryChange(event.target.value);
         setActiveIndex(0);
@@ -11478,6 +11515,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const [skillQuery, setSkillQuery] = reactExports.useState(null);
     const [skillSearch, setSkillSearch] = reactExports.useState("");
     const [skillOpen, setSkillOpen] = reactExports.useState(false);
+    const [skillReturnQuery, setSkillReturnQuery] = reactExports.useState(null);
     const [sending, setSending] = reactExports.useState(false);
     const [items, setItems] = reactExports.useState([]);
     const [dragging, setDragging] = reactExports.useState(false);
@@ -11499,6 +11537,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (!insideForm) {
           setMenuQuery(null);
           setSkillOpen(false);
+          setSkillReturnQuery(null);
         }
       };
       document.addEventListener("pointerdown", closeOutside);
@@ -11621,6 +11660,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const readyAttachments = items.flatMap((item) => item.attachment ? [item.attachment] : []);
     const canSend = !running && !sending && !disabled && !items.some((item) => item.status !== "ready") && (!!value.trim() || readyAttachments.length > 0 || !!menuMention || selectedSkills.length > 0 || workspaceReferences.length > 0);
     const mentionSkillQuery = skillOpen && skillQuery && value[skillQuery.start] === "@" ? skillQuery : null;
+    const mentionPickerQuery = menuQuery || skillReturnQuery;
+    const returnToMentionCategories = () => {
+      if (!skillReturnQuery) return;
+      const query = { ...skillReturnQuery };
+      const mentionText = `@${query.query}`;
+      setValue((current) => current.slice(query.start, query.end) === mentionText ? current : current.slice(0, query.start) + mentionText + current.slice(query.start));
+      setSkillOpen(false);
+      setSkillQuery(null);
+      setSkillSearch("");
+      setMenuQuery(query);
+      setSkillReturnQuery(null);
+      window.setTimeout(() => {
+        var _a2, _b;
+        (_a2 = textareaRef.current) == null ? void 0 : _a2.focus({ preventScroll: true });
+        (_b = textareaRef.current) == null ? void 0 : _b.setSelectionRange(query.end, query.end);
+      }, 0);
+    };
     const selectMenu = (option) => {
       if (!menuQuery) return;
       const cursor = menuQuery.start;
@@ -11641,6 +11697,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         return [{ ...skill, valid: true }];
       });
       setSkillOpen(false);
+      setSkillReturnQuery(null);
       if (skillQuery) {
         setValue((current) => current.slice(0, skillQuery.start) + current.slice(skillQuery.end));
         setSkillQuery(null);
@@ -11671,6 +11728,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       setSelectedSkills([]);
       setMenuQuery(null);
       setSkillOpen(false);
+      setSkillReturnQuery(null);
       items.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
       setItems([]);
       window.setTimeout(() => {
@@ -11776,22 +11834,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                   if (nextMention == null ? void 0 : nextMention.query) {
                     setSkillQuery(nextMention);
                     setSkillSearch(nextMention.query);
+                    setSkillReturnQuery(nextMention);
                     setMenuQuery(null);
                   } else {
                     setSkillQuery(null);
                     setSkillSearch("");
                     setSkillOpen(false);
+                    setSkillReturnQuery(null);
                     setMenuQuery(nextMention);
                   }
                 } else if (nextSkillQuery && agentSkills.length) {
                   setSkillQuery(nextSkillQuery);
                   setSkillSearch(nextSkillQuery.query);
                   setSkillOpen(true);
+                  setSkillReturnQuery(null);
                   setMenuQuery(null);
                 } else {
                   setSkillQuery(null);
                   setMenuQuery(nextMention);
-                  if (nextMention) setSkillOpen(false);
+                  if (nextMention) {
+                    setSkillOpen(false);
+                    setSkillReturnQuery(null);
+                  }
                 }
               }, onClick: (event) => {
                 const cursor = event.currentTarget.selectionStart ?? value.length;
@@ -11800,6 +11864,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                   setSkillQuery(nextSkill);
                   setSkillSearch(nextSkill.query);
                   setSkillOpen(true);
+                  setSkillReturnQuery(null);
                   setMenuQuery(null);
                 } else {
                   const nextMention = menuQueryAtCursor(value, cursor);
@@ -11808,11 +11873,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                     setSkillOpen(false);
                     setSkillQuery(null);
                     setSkillSearch("");
+                    setSkillReturnQuery(null);
                   }
                 }
               }, onKeyDown, onPasteCapture: onPaste, "aria-autocomplete": "list", "aria-expanded": Boolean(menuQuery || skillOpen), "aria-controls": skillOpen ? "agui-skill-options" : menuQuery ? "agui-mention-options" : void 0 }),
-              menuQuery ? /* @__PURE__ */ jsxRuntimeExports.jsx(MentionPicker, { ref: mentionPickerRef, open: true, query: menuQuery, menuOptions, onSelectMenu: selectMenu, onOpenSkills: (typedQuery) => {
-                const currentQuery = typedQuery || menuQuery;
+              mentionPickerQuery ? /* @__PURE__ */ jsxRuntimeExports.jsx(MentionPicker, { ref: mentionPickerRef, open: Boolean(menuQuery), query: mentionPickerQuery, menuOptions, onSelectMenu: selectMenu, onOpenSkills: (typedQuery) => {
+                const currentQuery = typedQuery || menuQuery || skillReturnQuery;
+                if (!currentQuery) return;
+                setSkillReturnQuery(currentQuery);
                 if (typedQuery) {
                   setSkillQuery(currentQuery);
                   setSkillSearch(currentQuery.query);
@@ -11833,10 +11901,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
               }, onFocusInput: () => {
                 var _a2;
                 return (_a2 = textareaRef.current) == null ? void 0 : _a2.focus({ preventScroll: true });
-              }, onClose: () => setMenuQuery(null) }) : null,
-              /* @__PURE__ */ jsxRuntimeExports.jsx(SkillPicker, { ref: skillPickerRef, open: skillOpen, query: skillSearch, skills: agentSkills, selected: selectedSkills, inlineQuery: Boolean(mentionSkillQuery), onQueryChange: setSkillSearch, onToggle: toggleSkill, onClose: () => {
+              }, onClose: () => {
+                setMenuQuery(null);
+                setSkillReturnQuery(null);
+              } }) : null,
+              /* @__PURE__ */ jsxRuntimeExports.jsx(SkillPicker, { ref: skillPickerRef, open: skillOpen, query: skillSearch, skills: agentSkills, selected: selectedSkills, inlineQuery: Boolean(mentionSkillQuery), onQueryChange: setSkillSearch, onToggle: toggleSkill, onBack: skillReturnQuery ? returnToMentionCategories : void 0, onClose: () => {
                 setSkillOpen(false);
                 setSkillQuery(null);
+                setSkillReturnQuery(null);
               } })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 flex min-h-8 items-center justify-between gap-2", children: [
@@ -11855,6 +11927,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                   setSkillOpen((current) => !current);
                   setSkillQuery(null);
                   setSkillSearch("");
+                  setSkillReturnQuery(null);
                   setMenuQuery(null);
                 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Sparkles, { className: "size-4" }) }) : null,
                 onOpenWorkspace ? /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { type: "button", variant: "ghost", size: "icon", disabled, className: "size-8 shrink-0 rounded-md border-border bg-background-panel text-secondary shadow-none hover:bg-accent", "aria-label": "打开工作区", title: "打开工作区", onClick: onOpenWorkspace, children: /* @__PURE__ */ jsxRuntimeExports.jsx(FolderOpen, { className: "size-4" }) }) : null
@@ -24834,6 +24907,126 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ] })
     ] });
   }
+  const PREVIEWABLE_TYPES = /* @__PURE__ */ new Set([
+    "pdf",
+    "ofd",
+    "doc",
+    "docx",
+    "docm",
+    "dot",
+    "dotx",
+    "dotm",
+    "rtf",
+    "odt",
+    "xls",
+    "xlsx",
+    "xlsm",
+    "xlsb",
+    "xlt",
+    "xltx",
+    "xltm",
+    "csv",
+    "ods",
+    "fods",
+    "numbers",
+    "ppt",
+    "pptx",
+    "pptm",
+    "potx",
+    "potm",
+    "ppsx",
+    "ppsm",
+    "odp",
+    "gif",
+    "jpg",
+    "jpeg",
+    "bmp",
+    "tiff",
+    "tif",
+    "png",
+    "svg",
+    "svg+xml",
+    "webp",
+    "avif",
+    "ico",
+    "heic",
+    "heif",
+    "jxl",
+    "txt",
+    "json",
+    "jsonl",
+    "jsonc",
+    "json5",
+    "js",
+    "mjs",
+    "cjs",
+    "css",
+    "java",
+    "py",
+    "html",
+    "htm",
+    "jsx",
+    "ts",
+    "tsx",
+    "xml",
+    "log",
+    "vue",
+    "yaml",
+    "yml",
+    "ini",
+    "sh",
+    "bash",
+    "sql",
+    "go",
+    "rs",
+    "php",
+    "c",
+    "cpp",
+    "cc",
+    "h",
+    "hpp",
+    "cs",
+    "diff",
+    "patch",
+    "toml",
+    "proto",
+    "hcl",
+    "tex",
+    "gv",
+    "http",
+    "rb",
+    "swift",
+    "kt",
+    "md",
+    "markdown"
+  ]);
+  function extensionFromName(name2) {
+    const cleanName = name2.split(/[?#]/)[0];
+    const dotIndex = cleanName.lastIndexOf(".");
+    return dotIndex >= 0 && dotIndex < cleanName.length - 1 ? cleanName.slice(dotIndex + 1).toLowerCase() : "";
+  }
+  function extensionFromMime(mimeType) {
+    if (mimeType.includes("pdf")) return "pdf";
+    if (mimeType.includes("wordprocessingml")) return "docx";
+    if (mimeType.includes("msword")) return "doc";
+    if (mimeType.includes("spreadsheetml")) return "xlsx";
+    if (mimeType.includes("vnd.ms-excel")) return "xls";
+    if (mimeType.includes("presentation") || mimeType.includes("powerpoint")) return "pptx";
+    if (mimeType.includes("ofd")) return "ofd";
+    if (mimeType.startsWith("image/") || mimeType.startsWith("audio/") || mimeType.startsWith("video/")) {
+      return mimeType.split("/")[1] || "";
+    }
+    if (mimeType.includes("json")) return "json";
+    if (mimeType.startsWith("text/")) return mimeType.includes("markdown") ? "md" : "txt";
+    return "";
+  }
+  function getFilePreviewType(name2, mimeType) {
+    const normalizedMime = typeof mimeType === "string" ? mimeType.toLowerCase() : "";
+    return extensionFromName(name2) || extensionFromMime(normalizedMime) || normalizedMime;
+  }
+  function canPreviewFile(type) {
+    return PREVIEWABLE_TYPES.has(type.toLowerCase());
+  }
   const SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.7.0.js";
   let viewerModulePromise;
   function loadProductionBundle() {
@@ -24866,7 +25059,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return viewerModulePromise;
   }
-  function LazyFileViewer({ errorLabel, ...props }) {
+  class ViewerErrorBoundary extends reactExports.Component {
+    constructor() {
+      super(...arguments);
+      __publicField(this, "state", { failed: false });
+    }
+    static getDerivedStateFromError() {
+      return { failed: true };
+    }
+    componentDidCatch(_error, _errorInfo) {
+    }
+    render() {
+      return this.state.failed ? this.props.fallback : this.props.children;
+    }
+  }
+  function LazyFileViewer({ errorLabel, fallback, ...props }) {
     const [Viewer, setViewer] = reactExports.useState(null);
     const [failed, setFailed] = reactExports.useState(false);
     reactExports.useEffect(() => {
@@ -24884,7 +25091,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       };
     }, []);
     if (failed) {
-      return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "agui-file-viewer-state text-sm text-muted", role: "alert", children: errorLabel });
+      return fallback || /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "agui-file-viewer-state text-sm text-muted", role: "alert", children: errorLabel });
     }
     if (!Viewer) {
       return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "agui-file-viewer-state", "aria-label": "正在加载文件预览", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "agui-activity flex gap-1", "aria-hidden": "true", children: [
@@ -24893,33 +25100,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "agui-activity-dot" })
       ] }) });
     }
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(Viewer, { ...props });
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(ViewerErrorBoundary, { fallback: fallback || /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "agui-file-viewer-state text-sm text-muted", role: "alert", children: errorLabel }), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Viewer, { ...props }) });
   }
   function attachmentUrl(attachment) {
     return `/agui_chat/attachment/${encodeURIComponent(attachment.id)}`;
   }
-  function extensionFromName(name2) {
-    const cleanName = name2.split(/[?#]/)[0];
-    const dotIndex = cleanName.lastIndexOf(".");
-    return dotIndex >= 0 && dotIndex < cleanName.length - 1 ? cleanName.slice(dotIndex + 1).toLowerCase() : "";
-  }
-  function extensionFromMime(mimeType) {
-    if (mimeType.includes("pdf")) return "pdf";
-    if (mimeType.includes("wordprocessingml")) return "docx";
-    if (mimeType.includes("msword")) return "doc";
-    if (mimeType.includes("spreadsheetml")) return "xlsx";
-    if (mimeType.includes("vnd.ms-excel")) return "xls";
-    if (mimeType.includes("presentation") || mimeType.includes("powerpoint")) return "pptx";
-    if (mimeType.includes("ofd")) return "ofd";
-    if (mimeType.startsWith("image/") || mimeType.startsWith("audio/") || mimeType.startsWith("video/")) {
-      return mimeType.split("/")[1] || "";
-    }
-    if (mimeType.includes("json")) return "json";
-    if (mimeType.startsWith("text/")) return mimeType.includes("markdown") ? "md" : "txt";
-    return "";
-  }
   function getAttachmentPreviewType(attachment) {
-    return extensionFromName(attachment.name) || extensionFromMime(attachment.mimeType) || attachment.mimeType;
+    return getFilePreviewType(attachment.name, attachment.mimeType);
   }
   function FilePreviewPanel({ attachment, labels, onClose }) {
     const url = attachmentUrl(attachment);
@@ -25108,36 +25295,148 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       )
     ] });
   }
+  function IconButton({
+    label,
+    title = label,
+    size = "sm",
+    variant = "ghost",
+    className,
+    children,
+    ...props
+  }) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(
+      "button",
+      {
+        type: "button",
+        "aria-label": label,
+        title,
+        className: cn(
+          "grid shrink-0 place-items-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/35",
+          size === "xs" && "size-6",
+          size === "sm" && "size-7",
+          size === "md" && "size-8",
+          variant === "ghost" && "border-transparent bg-transparent text-muted hover:bg-accent hover:text-primary",
+          variant === "soft" && "border-transparent bg-background-secondary text-secondary hover:bg-accent hover:text-primary",
+          variant === "outline" && "border-border bg-background-panel text-muted hover:bg-accent hover:text-primary",
+          variant === "danger" && "border-transparent bg-transparent text-muted hover:bg-destructive/10 hover:text-destructive",
+          className
+        ),
+        ...props,
+        children
+      }
+    );
+  }
+  const MAX_REFERENCES = 5;
+  const collator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
+  const modifiedAtFormatter = new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
   function sizeLabel(size) {
+    if (!Number.isFinite(size) || size < 0) return "大小未知";
     if (size < 1024) return `${size} B`;
     if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
-    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+  function formatModifiedAt(value) {
+    const date = new Date(value);
+    if (!value || !Number.isFinite(date.getTime())) return "时间未知";
+    return modifiedAtFormatter.format(date);
+  }
+  function fileTypeLabel(entry) {
+    if (entry.isDirectory) return "目录";
+    const type = getFilePreviewType(entry.name, entry.mimeType);
+    if (!type || type.includes("/")) return "文件";
+    return type.replace("+xml", "").toUpperCase();
+  }
+  function compareEntries(left, right, key, direction) {
+    if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
+    let result = 0;
+    if (key === "name") {
+      result = collator.compare(left.name, right.name);
+    } else if (key === "size") {
+      const leftSize = Number.isFinite(left.size) ? left.size : 0;
+      const rightSize = Number.isFinite(right.size) ? right.size : 0;
+      result = leftSize - rightSize;
+    } else {
+      const leftTime = new Date(left.modifiedAt).getTime();
+      const rightTime = new Date(right.modifiedAt).getTime();
+      const leftValid = Number.isFinite(leftTime);
+      const rightValid = Number.isFinite(rightTime);
+      if (leftValid !== rightValid) return leftValid ? -1 : 1;
+      if (leftValid && rightValid) result = leftTime - rightTime;
+    }
+    if (result === 0) result = collator.compare(left.name, right.name);
+    return direction === "asc" ? result : -result;
+  }
+  function sortWorkspaceEntries(entries, key, direction) {
+    return [...entries].sort((left, right) => compareEntries(left, right, key, direction));
+  }
+  function errorMessage(reason, fallback) {
+    return reason instanceof Error && reason.message ? reason.message : fallback;
+  }
+  function isInside(entry, path2) {
+    return entry.path === path2 || entry.isDirectory && path2.startsWith(`${entry.path}/`);
   }
   function WorkspacePanel({ runtime, threadId, references, onToggleReference, onDeleted, onClose }) {
     const [path2, setPath] = reactExports.useState("");
     const [entries, setEntries] = reactExports.useState([]);
     const [loading, setLoading] = reactExports.useState(false);
-    const [error, setError] = reactExports.useState("");
+    const [listError, setListError] = reactExports.useState("");
+    const [actionError, setActionError] = reactExports.useState("");
+    const [notice, setNotice] = reactExports.useState("");
+    const [search2, setSearch] = reactExports.useState("");
+    const [sortKey, setSortKey] = reactExports.useState("name");
+    const [sortDirection, setSortDirection] = reactExports.useState("asc");
     const [preview, setPreview] = reactExports.useState(null);
     const [confirmDelete, setConfirmDelete] = reactExports.useState(null);
-    const load = reactExports.useCallback(async () => {
+    const [deletingPath, setDeletingPath] = reactExports.useState("");
+    const listRequest = reactExports.useRef(0);
+    const previewRequest = reactExports.useRef(0);
+    const closePreview = reactExports.useCallback(() => {
+      previewRequest.current += 1;
+      setPreview(null);
+    }, []);
+    reactExports.useEffect(() => () => {
+      listRequest.current += 1;
+      previewRequest.current += 1;
+    }, []);
+    reactExports.useEffect(() => {
+      const url = preview == null ? void 0 : preview.url;
+      return () => {
+        if (url) URL.revokeObjectURL(url);
+      };
+    }, [preview == null ? void 0 : preview.url]);
+    const load = reactExports.useCallback(async (preserve = false) => {
+      const request = ++listRequest.current;
       setLoading(true);
-      setError("");
+      setListError("");
+      if (!preserve) setEntries([]);
       try {
-        setEntries(await runtime.listWorkspace(path2));
+        const nextEntries = await runtime.listWorkspace(path2);
+        if (request === listRequest.current) setEntries(nextEntries);
       } catch (reason) {
-        setEntries([]);
-        setError((reason == null ? void 0 : reason.message) || "工作区加载失败。");
+        if (request === listRequest.current) setListError(errorMessage(reason, "工作区加载失败，请重试。"));
       } finally {
-        setLoading(false);
+        if (request === listRequest.current) setLoading(false);
       }
     }, [path2, runtime]);
     reactExports.useEffect(() => {
       void load();
     }, [load, threadId]);
-    reactExports.useEffect(() => () => {
-      if (preview == null ? void 0 : preview.url) URL.revokeObjectURL(preview.url);
-    }, [preview]);
+    const navigate = (nextPath) => {
+      setPath(nextPath);
+      setSearch("");
+      setConfirmDelete(null);
+      setActionError("");
+      setNotice("");
+      closePreview();
+    };
     const breadcrumbs = reactExports.useMemo(() => {
       const parts = path2 ? path2.split("/") : [];
       return [{ label: "工作区", path: "" }, ...parts.map((part, index2) => ({
@@ -25145,35 +25444,76 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         path: parts.slice(0, index2 + 1).join("/")
       }))];
     }, [path2]);
+    const visibleEntries = reactExports.useMemo(() => {
+      const query = search2.trim().toLocaleLowerCase("zh-CN");
+      const filtered = query ? entries.filter((entry) => entry.name.toLocaleLowerCase("zh-CN").includes(query)) : entries;
+      return sortWorkspaceEntries(filtered, sortKey, sortDirection);
+    }, [entries, search2, sortDirection, sortKey]);
     const openPreview = async (entry) => {
-      setError("");
+      const request = ++previewRequest.current;
+      setActionError("");
+      setNotice("");
+      setPreview({ entry, status: "loading" });
       try {
         const file = await runtime.readWorkspaceFile(entry.path);
-        const url = URL.createObjectURL(file.blob);
-        let text2;
-        if (file.mimeType.startsWith("text/") || file.mimeType.includes("json")) {
-          text2 = await file.blob.text();
+        if (request !== previewRequest.current) return;
+        const type = getFilePreviewType(entry.name, file.mimeType || entry.mimeType);
+        if (!canPreviewFile(type)) {
+          setPreview({ entry, status: "unsupported", type });
+          return;
         }
-        setPreview((current) => {
-          if (current == null ? void 0 : current.url) URL.revokeObjectURL(current.url);
-          return { entry, url, text: text2 };
-        });
+        const url = URL.createObjectURL(file.blob);
+        if (request !== previewRequest.current) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        setPreview({ entry, status: "ready", type, url });
       } catch (reason) {
-        setError((reason == null ? void 0 : reason.message) || "文件预览失败。");
+        if (request === previewRequest.current) {
+          setPreview({ entry, status: "error", error: errorMessage(reason, "文件读取失败，请下载后查看。") });
+        }
       }
     };
-    const remove = async (entry) => {
-      setError("");
+    const download = (entry) => {
+      setActionError("");
+      void runtime.downloadWorkspaceFile(entry.path).catch((reason) => {
+        setActionError(errorMessage(reason, "文件下载失败，请重试。"));
+      });
+    };
+    const remove = async () => {
+      const entry = confirmDelete;
+      if (!entry || deletingPath) return;
+      setDeletingPath(entry.path);
+      setActionError("");
       try {
         await runtime.deleteWorkspaceEntry(entry.path, entry.isDirectory);
+        setEntries((current) => current.filter((candidate) => candidate.path !== entry.path));
         onDeleted(entry);
+        if (preview && isInside(entry, preview.entry.path)) closePreview();
         setConfirmDelete(null);
-        if ((preview == null ? void 0 : preview.entry.path) === entry.path) setPreview(null);
-        await load();
+        void load(true);
       } catch (reason) {
-        setError((reason == null ? void 0 : reason.message) || "删除失败。");
+        setActionError(errorMessage(reason, "删除失败，请重试。"));
+      } finally {
+        setDeletingPath("");
       }
     };
+    const toggleReference = (entry) => {
+      const selected = references.some((item) => item.path === entry.path);
+      if (!selected && references.length >= MAX_REFERENCES) {
+        setNotice("工作区引用最多 5 个，请先移除一个已选引用。");
+        return;
+      }
+      setNotice("");
+      onToggleReference(entry);
+    };
+    const fallback = preview ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid h-full content-center justify-items-center gap-3 p-6 text-center text-xs text-muted", role: "alert", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "m-0", children: preview.status === "error" ? preview.error : preview.status === "unsupported" ? "此格式暂不支持在线预览，请下载后查看。" : "文件查看器加载失败，请下载后查看。" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { type: "button", className: "inline-flex h-8 items-center gap-1.5 border border-border bg-background-panel px-3 text-xs text-secondary hover:bg-accent hover:text-primary", onClick: () => download(preview.entry), children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Download, { size: 14 }),
+        "下载文件"
+      ] })
+    ] }) : null;
     return /* @__PURE__ */ jsxRuntimeExports.jsx(
       AsidePanel,
       {
@@ -25183,56 +25523,111 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         icon: /* @__PURE__ */ jsxRuntimeExports.jsx(Folder, { size: 14 }),
         closeLabel: "关闭工作区",
         onClose,
-        actions: /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", "aria-label": "刷新工作区", title: "刷新工作区", disabled: loading, onClick: () => void load(), children: /* @__PURE__ */ jsxRuntimeExports.jsx(RefreshCw, { size: 15, className: cn(loading && "animate-spin") }) }),
+        actions: /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: "刷新工作区", size: "md", variant: "outline", disabled: loading, onClick: () => void load(true), children: /* @__PURE__ */ jsxRuntimeExports.jsx(RefreshCw, { size: 15, className: cn(loading && "animate-spin") }) }),
         className: "agui-workspace-aside",
         children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-full min-h-0 flex-col", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("nav", { className: "flex min-h-10 flex-wrap items-center gap-1 border-b border-border px-3 py-2", "aria-label": "工作区路径", children: breadcrumbs.map((item, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "inline-flex min-w-0 items-center gap-1", children: [
             index2 ? /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronRight, { size: 12, className: "text-muted" }) : null,
-            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "max-w-36 truncate border-0 bg-transparent p-0 text-xs text-secondary hover:text-primary", title: item.label, onClick: () => {
-              setPath(item.path);
-              setPreview(null);
-            }, children: item.label })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "max-w-36 truncate border-0 bg-transparent p-0 text-xs text-secondary hover:text-primary", title: item.label, onClick: () => navigate(item.path), children: item.label })
           ] }, item.path || "root")) }),
-          error ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { role: "alert", className: "border-b border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive", children: error }) : null,
+          listError ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { role: "alert", className: "flex items-center gap-2 border-b border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1", children: listError }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "shrink-0 border-0 bg-transparent p-0 font-medium underline", onClick: () => void load(entries.length > 0), children: "重试" })
+          ] }) : null,
+          actionError ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { role: "alert", className: "border-b border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive", children: actionError }) : null,
+          notice ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { role: "status", className: "border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning", children: notice }) : null,
           preview ? /* @__PURE__ */ jsxRuntimeExports.jsxs("section", { className: "flex min-h-0 flex-1 flex-col", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("header", { className: "flex h-10 shrink-0 items-center gap-2 border-b border-border px-3", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("header", { className: "flex min-h-10 shrink-0 items-center gap-2 border-b border-border px-3", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(File, { size: 14, className: "text-muted" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "min-w-0 flex-1 truncate text-xs", title: preview.entry.name, children: preview.entry.name }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center border-0 bg-transparent text-muted hover:bg-accent hover:text-primary", "aria-label": "关闭预览", onClick: () => setPreview(null), children: /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 14 }) })
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { className: "min-w-0 flex-1 truncate text-xs", title: preview.entry.path, children: preview.entry.name }),
+              !preview.entry.isDirectory ? /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: `下载 ${preview.entry.name}`, title: "下载", onClick: () => download(preview.entry), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Download, { size: 14 }) }) : null,
+              /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: "关闭预览", onClick: closePreview, children: /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 14 }) })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "min-h-0 flex-1 overflow-auto bg-background p-3", children: preview.text !== void 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { className: "m-0 whitespace-pre-wrap break-words text-xs leading-5 text-secondary", children: preview.text }) : preview.entry.mimeType && preview.entry.mimeType.startsWith("image/") ? /* @__PURE__ */ jsxRuntimeExports.jsx("img", { src: preview.url, alt: preview.entry.name, className: "mx-auto block max-h-full max-w-full object-contain" }) : preview.entry.mimeType === "application/pdf" ? /* @__PURE__ */ jsxRuntimeExports.jsx("iframe", { src: preview.url, title: preview.entry.name, className: "h-full min-h-96 w-full border-0" }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid h-full place-items-center text-xs text-muted", children: "此文件可下载，但不支持内嵌预览。" }) })
-          ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-h-0 flex-1 overflow-y-auto", children: [
-            loading ? Array.from({ length: 5 }).map((_, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-12 animate-pulse items-center gap-3 border-b border-border/60 px-3", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "size-6 bg-background-secondary" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "h-3 flex-1 bg-background-secondary" })
-            ] }, index2)) : null,
-            !loading && entries.map((entry) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex min-h-12 items-center gap-2 border-b border-border/60 px-3 py-1.5 hover:bg-background-secondary/60", children: [
-              (() => {
-                const selected = references.some((item) => item.path === entry.path);
-                const disabled = !selected && references.length >= 5;
-                return /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center border-0 bg-transparent text-muted hover:bg-accent hover:text-primary disabled:opacity-40", disabled, "aria-label": `${selected ? "移除" : "加入"}对话 ${entry.name}`, title: disabled ? "工作区引用最多 5 个" : "加入对话", onClick: () => onToggleReference(entry), children: selected ? /* @__PURE__ */ jsxRuntimeExports.jsx(Check, { size: 14 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(MessageSquarePlus, { size: 14 }) });
-              })(),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center text-muted", children: entry.isDirectory ? /* @__PURE__ */ jsxRuntimeExports.jsx(Folder, { size: 16 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(File, { size: 15 }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { type: "button", className: "min-w-0 flex-1 border-0 bg-transparent p-0 text-left", onClick: () => entry.isDirectory ? setPath(entry.path) : void openPreview(entry), children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block truncate text-xs text-primary", title: entry.name, children: entry.name }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block text-[10px] text-muted", children: entry.isDirectory ? "目录" : `${sizeLabel(entry.size)} · 已同步` })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "min-h-0 flex-1 overflow-auto bg-background", children: preview.status === "loading" ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid h-full place-items-center text-xs text-muted", role: "status", children: "正在读取文件预览…" }) : preview.status === "ready" && preview.url && preview.type ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+              LazyFileViewer,
+              {
+                className: "agui-file-viewer",
+                errorLabel: "文件查看器加载失败",
+                fallback,
+                url: preview.url,
+                filename: preview.entry.name,
+                name: preview.entry.name,
+                type: preview.type,
+                options: { theme: "light", styleIsolation: "shadow" }
+              },
+              `${preview.entry.path}:${preview.url}`
+            ) : fallback })
+          ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2 border-b border-border px-3 py-2", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex min-w-0 items-center gap-1.5", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "flex min-w-0 flex-1 items-center gap-1.5 border border-border bg-background-panel px-2", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { size: 14, className: "shrink-0 text-muted" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: search2, onChange: (event) => setSearch(event.target.value), className: "h-8 min-w-0 flex-1 border-0 bg-transparent p-0 text-xs outline-none", placeholder: "搜索当前目录", "aria-label": "搜索当前目录" }),
+                  search2 ? /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: "清空搜索", size: "xs", className: "hover:bg-transparent", onClick: () => setSearch(""), children: /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 13 }) }) : null
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { value: sortKey, onChange: (event) => setSortKey(event.target.value), className: "h-8 w-24 shrink-0 border border-border bg-background-panel px-1.5 text-xs text-secondary", "aria-label": "排序方式", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "name", children: "按名称" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "modifiedAt", children: "按修改时间" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "size", children: "按大小" })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: sortDirection === "asc" ? "切换为降序" : "切换为升序", size: "md", variant: "outline", onClick: () => setSortDirection((current) => current === "asc" ? "desc" : "asc"), children: sortDirection === "asc" ? /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowUp, { size: 14 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowDown, { size: 14 }) })
               ] }),
-              !entry.isDirectory ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center border-0 bg-transparent text-muted hover:bg-accent hover:text-primary", "aria-label": `预览 ${entry.name}`, title: "预览", onClick: () => void openPreview(entry), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Eye, { size: 14 }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center border-0 bg-transparent text-muted hover:bg-accent hover:text-primary", "aria-label": `下载 ${entry.name}`, title: "下载", onClick: () => void runtime.downloadWorkspaceFile(entry.path).catch((reason) => setError(reason.message)), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Download, { size: 14 }) })
-              ] }) : null,
-              /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "grid size-7 place-items-center border-0 bg-transparent text-muted hover:bg-destructive/10 hover:text-destructive", "aria-label": `删除 ${entry.name}`, title: "删除", onClick: () => setConfirmDelete(entry), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Trash2, { size: 14 }) })
-            ] }, entry.path)),
-            !loading && !entries.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid h-40 place-items-center text-xs text-muted", children: "工作区为空" }) : null
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted", "aria-live": "polite", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+                  "当前结果 ",
+                  visibleEntries.length,
+                  " 项"
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+                  "已选引用 ",
+                  references.length,
+                  "/",
+                  MAX_REFERENCES
+                ] }),
+                loading && entries.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "正在刷新…" }) : null
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-h-0 flex-1 overflow-y-auto", role: "list", "aria-label": "工作区文件", "aria-busy": loading, children: [
+              loading && !entries.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { role: "status", "aria-label": "正在加载工作区", children: Array.from({ length: 5 }).map((_, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-14 animate-pulse items-center gap-3 border-b border-border/60 px-3", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "size-6 bg-background-secondary" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "h-3 flex-1 bg-background-secondary" })
+              ] }, index2)) }) : null,
+              !loading && !listError && !visibleEntries.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid h-40 place-items-center px-6 text-center text-xs text-muted", children: search2.trim() ? "没有匹配结果，请尝试其他名称。" : "当前目录为空。" }) : null,
+              visibleEntries.map((entry) => {
+                const selected = references.some((item) => item.path === entry.path);
+                const atLimit = !selected && references.length >= MAX_REFERENCES;
+                const deleting = Boolean(deletingPath);
+                return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { role: "listitem", "data-entry-name": entry.name, className: "flex min-h-14 items-center gap-1.5 border-b border-border/60 px-3 py-1.5 hover:bg-background-secondary/60", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: `${selected ? "移除" : "加入"}对话 ${entry.name}`, title: atLimit ? "工作区引用最多 5 个" : selected ? "移除引用" : "加入对话", className: cn(selected && "bg-accent text-primary"), "aria-pressed": selected, onClick: () => toggleReference(entry), children: selected ? /* @__PURE__ */ jsxRuntimeExports.jsx(Check, { size: 14 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(MessageSquarePlus, { size: 14 }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center text-muted", children: entry.isDirectory ? /* @__PURE__ */ jsxRuntimeExports.jsx(Folder, { size: 16 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(File, { size: 15 }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { type: "button", className: "min-w-0 flex-1 border-0 bg-transparent p-0 text-left", onClick: () => entry.isDirectory ? navigate(entry.path) : void openPreview(entry), children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block truncate text-xs text-primary", title: entry.path, children: entry.name }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "flex min-w-0 flex-wrap gap-x-2 text-[10px] text-muted", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: fileTypeLabel(entry) }),
+                      !entry.isDirectory ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: sizeLabel(entry.size) }) : null,
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("time", { dateTime: entry.modifiedAt, title: entry.modifiedAt || "时间未知", children: formatModifiedAt(entry.modifiedAt) })
+                    ] })
+                  ] }),
+                  !entry.isDirectory ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: `预览 ${entry.name}`, title: "预览", onClick: () => void openPreview(entry), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Eye, { size: 14 }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: `下载 ${entry.name}`, title: "下载", onClick: () => download(entry), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Download, { size: 14 }) })
+                  ] }) : null,
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: `删除 ${entry.name}`, title: "删除", variant: "danger", disabled: deleting, onClick: () => {
+                    setConfirmDelete(entry);
+                    setActionError("");
+                  }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Trash2, { size: 14 }) })
+                ] }, entry.path);
+              })
+            ] })
           ] }),
           confirmDelete ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex min-h-12 items-center gap-2 border-t border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "min-w-0 flex-1 truncate", title: confirmDelete.name, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "min-w-0 flex-1 break-all", title: confirmDelete.path, children: [
               "删除“",
-              confirmDelete.name,
+              confirmDelete.path,
               "”？"
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "h-7 border border-warning/40 bg-background-panel px-2", onClick: () => void remove(confirmDelete), children: "确认" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "h-7 border border-border bg-background-panel px-2", onClick: () => setConfirmDelete(null), children: "取消" })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "h-7 shrink-0 border border-warning/40 bg-background-panel px-2 disabled:cursor-not-allowed disabled:opacity-50", disabled: deletingPath === confirmDelete.path, onClick: () => void remove(), children: deletingPath === confirmDelete.path ? "删除中…" : "确认" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "h-7 shrink-0 border border-border bg-background-panel px-2 disabled:opacity-50", disabled: Boolean(deletingPath), onClick: () => setConfirmDelete(null), children: "取消" })
           ] }) : null
         ] })
       }
