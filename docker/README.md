@@ -81,7 +81,24 @@ docker build \
   .
 ```
 
-按下节流程导入并推送镜像时，将示例中的基础镜像标签替换为 `daytona/sandbox:0.5.0-tools`，
+将工具镜像导入 Runner，标记并推送到内置 Registry：
+
+```bash
+docker save daytona/sandbox:0.5.0-tools | \
+  docker compose --env-file docker/.env \
+    -f docker/docker-compose.yaml \
+    exec -T runner docker load
+
+docker compose --env-file docker/.env \
+  -f docker/docker-compose.yaml exec runner \
+  docker tag daytona/sandbox:0.5.0-tools \
+  registry:6000/daytona/sandbox:0.5.0-tools
+
+docker compose --env-file docker/.env \
+  -f docker/docker-compose.yaml exec runner \
+  docker push registry:6000/daytona/sandbox:0.5.0-tools
+```
+
 然后设置：
 
 ```dotenv
