@@ -26254,6 +26254,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       message_id: messageId
     };
   }
+  const DEFAULT_SESSION_NAME = "新对话";
+  const MAX_SESSION_NAME_LENGTH = 30;
   function eventText(event) {
     return String(event.delta || event.content || event.text || "");
   }
@@ -26338,6 +26340,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (!remoteIds.has(message.id)) merged.push(message);
     });
     return merged;
+  }
+  function normalizeSessionName(value) {
+    if (typeof value !== "string") return "";
+    const normalized = value.replace(/\s+/g, " ").trim();
+    const characters = Array.from(normalized);
+    return characters.length > MAX_SESSION_NAME_LENGTH ? `${characters.slice(0, MAX_SESSION_NAME_LENGTH - 1).join("")}…` : normalized;
   }
   class ChatRuntime {
     constructor(props) {
@@ -26601,6 +26609,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         recordSelection: recordSelection ? clone(recordSelection) : void 0,
         created_at: Date.now()
       });
+      this.nameSessionFromMessage(this.messages[this.messages.length - 1]);
       await this.executeNewTurn();
       if (this.transportState === "error") {
         return false;
@@ -27370,6 +27379,32 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.undoInFlight = {};
       const context = this.createRunContext();
       await this.executeRunLifecycle(context, () => this.run(context, 0));
+    }
+    nameSessionFromMessage(message) {
+      var _a, _b, _c, _d, _e, _f, _g;
+      if (!this.session) return;
+      const currentName = this.session.name || "";
+      if (currentName.trim() && currentName !== DEFAULT_SESSION_NAME) return;
+      const firstMentionLabel = (_a = message.mentions) == null ? void 0 : _a.map((mention) => normalizeSessionName(mention.label)).find(Boolean);
+      const firstWorkspaceName = (_b = message.workspaceReferences) == null ? void 0 : _b.map((reference) => normalizeSessionName(reference.name)).find(Boolean);
+      const firstAttachmentName = (_c = message.attachments) == null ? void 0 : _c.map((attachment) => normalizeSessionName(attachment.name)).find(Boolean);
+      const name2 = [
+        message.content,
+        (_d = message.menuMention) == null ? void 0 : _d.fullPath,
+        (_e = message.recordSelection) == null ? void 0 : _e.displayName,
+        firstMentionLabel,
+        firstWorkspaceName,
+        firstAttachmentName
+      ].map(normalizeSessionName).find(Boolean);
+      if (!name2) return;
+      this.session = { ...this.session, name: name2 };
+      this.sessions = this.sessions.map(
+        (entry) => {
+          var _a2;
+          return entry.id === ((_a2 = this.session) == null ? void 0 : _a2.id) ? { ...entry, name: name2 } : entry;
+        }
+      );
+      (_g = (_f = this.props).onSessionChange) == null ? void 0 : _g.call(_f, this.session);
     }
     createRunContext(agentRunId = uuid()) {
       const context = {
@@ -28265,7 +28300,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         return;
       }
       const result = await this.props.hostBridge.saveSession(this.session.id, {
-        name: this.session.name || "新对话",
+        name: this.session.name || DEFAULT_SESSION_NAME,
         surface: this.props.surface || this.session.surface || "dock",
         messages: this.messages,
         agentState: normalizeAgentState(this.agentState),
@@ -28277,7 +28312,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (failure.error === "session_not_found" && attempt === 0 && this.props.hostBridge.createSession) {
           const previous2 = this.session;
           const replacement = sessionFromResult(await this.props.hostBridge.createSession({
-            name: previous2.name || "新对话",
+            name: previous2.name || DEFAULT_SESSION_NAME,
             surface: this.props.surface || previous2.surface || "dock",
             agent_id: previous2.agent_id || this.props.agentId || false
           }));

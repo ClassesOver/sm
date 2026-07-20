@@ -64,6 +64,181 @@ describe('AguiChat public API', () => {
   })
 })
 
+describe('ChatRuntime session naming', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('updates the current session and sidebar before persisting normalized text', async () => {
+    const response = deferred<Response>()
+    const saveSession = vi.fn(async () => undefined)
+    const onSessionChange = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(() => response.promise))
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      session: {
+        id: 9, name: '新对话', thread_id: 'thread-naming', sessionRevision: 1, messages: []
+      },
+      sessions: [{ id: 9, name: '新对话', thread_id: 'thread-naming' }],
+      hostBridge: { saveSession },
+      onSessionChange
+    })
+
+    const pending = runtime.send('  需要 \n 汇总\t本月  销售数据  ')
+    await vi.waitFor(() => expect(runtime.getSnapshot().session?.name).toBe('需要 汇总 本月 销售数据'))
+
+    expect(runtime.getSnapshot().sessions[0].name).toBe('需要 汇总 本月 销售数据')
+    expect(runtime.getSnapshot().running).toBe(true)
+    expect(saveSession).not.toHaveBeenCalled()
+    expect(onSessionChange).toHaveBeenCalledWith(expect.objectContaining({
+      id: 9, name: '需要 汇总 本月 销售数据'
+    }))
+
+    response.resolve(sseResponse([{ type: 'RUN_FINISHED' }]))
+    await pending
+    expect(saveSession).toHaveBeenCalledWith(9, expect.objectContaining({
+      name: '需要 汇总 本月 销售数据'
+    }))
+  })
+
+  it('limits generated names to 30 characters and preserves them after a run error', async () => {
+    const saveSession = vi.fn(async () => undefined)
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 503 }))))
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      session: {
+        id: 10, name: '新对话', thread_id: 'thread-long-name', sessionRevision: 1, messages: []
+      },
+      sessions: [{ id: 10, name: '新对话', thread_id: 'thread-long-name' }],
+      hostBridge: { saveSession }
+    })
+
+    expect(await runtime.send('甲'.repeat(31))).toBe(false)
+
+    const expected = `${'甲'.repeat(29)}…`
+    expect(Array.from(expected)).toHaveLength(30)
+    expect(runtime.getSnapshot().session?.name).toBe(expected)
+    expect(runtime.getSnapshot().sessions[0].name).toBe(expected)
+    expect(saveSession).toHaveBeenCalledWith(10, expect.objectContaining({ name: expected }))
+  })
+
+  it('uses menu, record, Odoo reference, workspace, and attachment names in order', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(sseResponse([
+      { type: 'RUN_FINISHED' }
+    ]))))
+    const menu = {
+      menuId: 8, actionId: 42, name: '客户', path: ['销售', '客户'],
+      fullPath: '销售 / 客户', valid: true
+    }
+    const record = {
+      token: 'record-token', displayName: '上海某公司',
+      snapshotId: 'snapshot-test-1', hostRevision: 1
+    }
+    const mention = {
+      id: 'mention-1', token: 'mention-token', resourceKey: 'record-a', kind: 'record' as const,
+      action: 'read' as const, label: '客户甲', detail: '销售 / 客户', model: 'res.partner',
+      expiresAt: '2099-01-01 00:00:00', valid: true, pageAction: false
+    }
+    const workspace = {
+      id: 'workspace:报表/本月.csv', path: '报表/本月.csv', name: '本月.csv', isDirectory: false
+    }
+    const attachment = {
+      id: 'attachment-1', name: '合同.pdf', mimeType: 'application/pdf', size: 10,
+      modality: 'document' as const
+    }
+    const cases: Array<{
+      expected: string
+      args: Parameters<ChatRuntime['send']>
+    }> = [
+      { expected: '文字标题', args: ['文字标题', [attachment], menu, record, [], [workspace]] },
+      { expected: '销售 / 客户', args: ['', [attachment], menu, record, [], [workspace]] },
+      { expected: '上海某公司', args: ['', [attachment], [mention], record, [], [workspace]] },
+      { expected: '客户甲', args: ['', [attachment], [mention], undefined, [], [workspace]] },
+      { expected: '本月.csv', args: ['', [attachment], undefined, undefined, [], [workspace]] },
+      { expected: '合同.pdf', args: ['', [attachment]] }
+    ]
+
+    for (const [index, testCase] of cases.entries()) {
+      const saveSession = vi.fn(async () => undefined)
+      const sessionId = index + 20
+      const initialName = index === cases.length - 1 ? '' : '新对话'
+      const runtime = createRuntime({
+        runtimeUrl: '/runtime/run',
+        menuOptions: [menu],
+        hostState: {
+          ...v2Props().hostState,
+          capabilities: {
+            ...v2Props().hostState.capabilities,
+            records: [record]
+          }
+        },
+        session: {
+          id: sessionId, name: initialName, thread_id: `thread-fallback-${index}`,
+          sessionRevision: 1, messages: []
+        },
+        sessions: [{ id: sessionId, name: initialName, thread_id: `thread-fallback-${index}` }],
+        hostBridge: { saveSession }
+      })
+
+      expect(await runtime.send(...testCase.args)).toBe(true)
+      expect(runtime.getSnapshot().session?.name).toBe(testCase.expected)
+      expect(runtime.getSnapshot().sessions[0].name).toBe(testCase.expected)
+      expect(saveSession).toHaveBeenCalledWith(sessionId, expect.objectContaining({
+        name: testCase.expected
+      }))
+    }
+  })
+
+  it('does not overwrite custom names and names an old default session from the next valid input', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(sseResponse([
+      { type: 'RUN_FINISHED' }
+    ]))))
+
+    for (const [index, name] of ['季度复盘', '季度复盘（分支）'].entries()) {
+      const runtime = createRuntime({
+        runtimeUrl: '/runtime/run',
+        session: {
+          id: index + 40, name, thread_id: `thread-custom-${index}`, messages: []
+        }
+      })
+      await runtime.send('不应覆盖')
+      expect(runtime.getSnapshot().session?.name).toBe(name)
+    }
+
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      session: {
+        id: 50, name: '新对话', thread_id: 'thread-old-default',
+        messages: [{ id: 'old-user', role: 'user', content: '历史输入' }]
+      },
+      sessions: [{ id: 50, name: '新对话', thread_id: 'thread-old-default' }]
+    })
+    await runtime.send('下一次有效输入')
+    expect(runtime.getSnapshot().session?.name).toBe('下一次有效输入')
+  })
+
+  it('keeps the default name when client validation rejects the input', async () => {
+    const saveSession = vi.fn(async () => undefined)
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      session: {
+        id: 60, name: '新对话', thread_id: 'thread-invalid-name', messages: []
+      },
+      sessions: [{ id: 60, name: '新对话', thread_id: 'thread-invalid-name' }],
+      hostBridge: { saveSession }
+    })
+
+    expect(await runtime.send('无效输入', [], [{
+      id: 'expired', token: 'expired-token', resourceKey: 'expired-record', kind: 'record',
+      action: 'read', label: '旧记录', detail: '客户', model: 'res.partner',
+      expiresAt: '2000-01-01 00:00:00', valid: true, pageAction: false
+    }])).toBe(false)
+    expect(runtime.getSnapshot().session?.name).toBe('新对话')
+    expect(runtime.getSnapshot().sessions[0].name).toBe('新对话')
+    expect(saveSession).not.toHaveBeenCalled()
+  })
+})
+
 describe('ChatRuntime protocol handling', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -593,6 +768,7 @@ describe('ChatRuntime protocol handling', () => {
 
   it('does not send when attachment workspace synchronization fails', async () => {
     const onError = vi.fn()
+    const saveSession = vi.fn(async () => undefined)
     const fetchMock = vi.fn((url: string) => {
       if (url.startsWith('/agui_chat/attachment/')) return Promise.resolve(new Response('file'))
       return Promise.resolve(new Response(JSON.stringify({ detail: 'sandbox unavailable' }), {
@@ -602,8 +778,12 @@ describe('ChatRuntime protocol handling', () => {
     vi.stubGlobal('fetch', fetchMock)
     const runtime = createRuntime({
       runtimeUrl: '/runtime/agui', onError,
-      session: { id: 9, protocol: 'agui.odoo.v2', thread_id: 'thread-failed-sync' },
+      session: {
+        id: 9, name: '新对话', protocol: 'agui.odoo.v2', thread_id: 'thread-failed-sync'
+      },
+      sessions: [{ id: 9, name: '新对话', thread_id: 'thread-failed-sync' }],
       hostBridge: {
+        saveSession,
         getWorkspaceCapability: async () => ({
           ok: true, capability: 'capability', threadId: 'thread-failed-sync',
           expiresAt: Date.now() / 1000 + 600
@@ -617,6 +797,9 @@ describe('ChatRuntime protocol handling', () => {
     }])
     expect(sent).toBe(false)
     expect(runtime.getSnapshot().messages).toEqual([])
+    expect(runtime.getSnapshot().session?.name).toBe('新对话')
+    expect(runtime.getSnapshot().sessions[0].name).toBe('新对话')
+    expect(saveSession).not.toHaveBeenCalled()
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({
       message: 'sandbox unavailable'
     }))

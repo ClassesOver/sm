@@ -38,6 +38,9 @@ import {
 
 type Listener = () => void
 
+const DEFAULT_SESSION_NAME = '新对话'
+const MAX_SESSION_NAME_LENGTH = 30
+
 type RunContext = {
   threadId: string
   controller: AbortController
@@ -166,6 +169,15 @@ function mergeMessagesById(remote: ChatMessage[], local: ChatMessage[]): ChatMes
     if (!remoteIds.has(message.id)) merged.push(message)
   })
   return merged
+}
+
+function normalizeSessionName(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  const characters = Array.from(normalized)
+  return characters.length > MAX_SESSION_NAME_LENGTH
+    ? `${characters.slice(0, MAX_SESSION_NAME_LENGTH - 1).join('')}…`
+    : normalized
 }
 
 export class ChatRuntime {
@@ -472,6 +484,7 @@ export class ChatRuntime {
       recordSelection: recordSelection ? clone(recordSelection) : undefined,
       created_at: Date.now()
     })
+    this.nameSessionFromMessage(this.messages[this.messages.length - 1])
     await this.executeNewTurn()
     if (this.transportState === 'error') {
       return false
@@ -1293,6 +1306,37 @@ export class ChatRuntime {
     this.undoInFlight = {}
     const context = this.createRunContext()
     await this.executeRunLifecycle(context, () => this.run(context, 0))
+  }
+
+  private nameSessionFromMessage(message: ChatMessage): void {
+    if (!this.session) return
+    const currentName = this.session.name || ''
+    if (currentName.trim() && currentName !== DEFAULT_SESSION_NAME) return
+
+    const firstMentionLabel = message.mentions
+      ?.map((mention) => normalizeSessionName(mention.label))
+      .find(Boolean)
+    const firstWorkspaceName = message.workspaceReferences
+      ?.map((reference) => normalizeSessionName(reference.name))
+      .find(Boolean)
+    const firstAttachmentName = message.attachments
+      ?.map((attachment) => normalizeSessionName(attachment.name))
+      .find(Boolean)
+    const name = [
+      message.content,
+      message.menuMention?.fullPath,
+      message.recordSelection?.displayName,
+      firstMentionLabel,
+      firstWorkspaceName,
+      firstAttachmentName
+    ].map(normalizeSessionName).find(Boolean)
+    if (!name) return
+
+    this.session = { ...this.session, name }
+    this.sessions = this.sessions.map((entry) =>
+      entry.id === this.session?.id ? { ...entry, name } : entry
+    )
+    this.props.onSessionChange?.(this.session)
   }
 
   private createRunContext(agentRunId = uuid()): RunContext {
@@ -2258,7 +2302,7 @@ export class ChatRuntime {
       return
     }
     const result = await this.props.hostBridge.saveSession(this.session.id, {
-      name: this.session.name || '新对话',
+      name: this.session.name || DEFAULT_SESSION_NAME,
       surface: this.props.surface || this.session.surface || 'dock',
       messages: this.messages,
       agentState: normalizeAgentState(this.agentState),
@@ -2271,7 +2315,7 @@ export class ChatRuntime {
           this.props.hostBridge.createSession) {
         const previous = this.session
         const replacement = sessionFromResult(await this.props.hostBridge.createSession({
-          name: previous.name || '新对话',
+          name: previous.name || DEFAULT_SESSION_NAME,
           surface: this.props.surface || previous.surface || 'dock',
           agent_id: previous.agent_id || this.props.agentId || false
         }))
