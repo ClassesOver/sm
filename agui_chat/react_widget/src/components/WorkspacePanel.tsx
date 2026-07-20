@@ -8,6 +8,7 @@ import type { ChatRuntime } from '../runtime/ChatRuntime'
 import { cn } from '../lib'
 import { AsidePanel } from './AsidePanel'
 import { IconButton } from './IconButton'
+import { InlineNotice } from './InlineNotice'
 import { canPreviewFile, getFilePreviewType } from './filePreviewType'
 import { LazyFileViewer } from './LazyFileViewer'
 
@@ -254,9 +255,9 @@ export function WorkspacePanel({ runtime, threadId, references, onToggleReferenc
           <button type="button" className="max-w-36 truncate border-0 bg-transparent p-0 text-xs text-secondary hover:text-primary" title={item.label} onClick={() => navigate(item.path)}>{item.label}</button>
         </span>)}
       </nav>
-      {listError ? <div role="alert" className="flex items-center gap-2 border-b border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive"><span className="min-w-0 flex-1">{listError}</span><button type="button" className="shrink-0 border-0 bg-transparent p-0 font-medium underline" onClick={() => void load(entries.length > 0)}>重试</button></div> : null}
-      {actionError ? <div role="alert" className="border-b border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">{actionError}</div> : null}
-      {notice ? <div role="status" className="border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">{notice}</div> : null}
+      {listError ? <InlineNotice tone="error" variant="band" action={<button type="button" className="shrink-0 border-0 bg-transparent p-0 font-medium underline" onClick={() => void load(entries.length > 0)}>重试</button>}>{listError}</InlineNotice> : null}
+      {actionError ? <InlineNotice tone="error" variant="band">{actionError}</InlineNotice> : null}
+      {notice ? <InlineNotice tone="warning" variant="band">{notice}</InlineNotice> : null}
       {preview ? <section className="flex min-h-0 flex-1 flex-col">
         <header className="flex min-h-10 shrink-0 items-center gap-2 border-b border-border px-3">
           <File size={14} className="text-muted" />

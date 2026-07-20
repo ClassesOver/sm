@@ -5,6 +5,7 @@ import type { AgentSkillOption, SelectedAgentSkill } from '../types'
 import { cn } from '../lib'
 import { PickerHeader } from './PickerHeader'
 import { PickerSearch } from './PickerSearch'
+import { PickerSurface } from './PickerSurface'
 
 export interface SkillQuery {
   start: number
@@ -88,7 +89,7 @@ export const SkillPicker = forwardRef<SkillPickerHandle, SkillPickerProps>(funct
   }))
 
   if (!open) return null
-  return <div className="agui-picker absolute bottom-full left-0 z-40 mb-2 w-full max-w-md overflow-hidden rounded-md border border-border/70 bg-white text-primary shadow-[0_12px_32px_rgba(15,23,42,0.14)]" role="dialog" aria-label="选择技能" onKeyDown={(event) => handleKey(event)}>
+  return <PickerSurface ariaLabel="选择技能" onKeyDown={(event) => handleKey(event)}>
     {onBack ? <PickerHeader title="选择技能" onBack={onBack} /> : null}
     {!inlineQuery ? <PickerSearch autoFocus aria-controls="agui-skill-options" aria-expanded={open} value={query} onChange={(event) => { onQueryChange(event.target.value); setActiveIndex(0) }} placeholder="搜索技能名称或用途" aria-label="搜索技能" trailing={<>已选 {selected.length}/1</>} /> : null}
     <div id="agui-skill-options" className="max-h-60 overflow-y-auto p-1" role="listbox" aria-label="技能列表" aria-activedescendant={filtered[activeIndex] ? `agui-skill-${filtered[activeIndex].id}` : undefined}>
@@ -103,5 +104,5 @@ export const SkillPicker = forwardRef<SkillPickerHandle, SkillPickerProps>(funct
       })}
       {!filtered.length ? <div className="px-3 py-5 text-center text-xs text-muted">没有匹配的技能</div> : null}
     </div>
-  </div>
+  </PickerSurface>
 })

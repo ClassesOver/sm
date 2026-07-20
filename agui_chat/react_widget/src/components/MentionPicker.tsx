@@ -5,6 +5,7 @@ import type { MenuMentionOption } from '../types'
 import { cn } from '../lib'
 import { PickerHeader } from './PickerHeader'
 import { PickerSearch } from './PickerSearch'
+import { PickerSurface } from './PickerSurface'
 
 export interface MentionQuery {
   start: number
@@ -129,12 +130,11 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
   useImperativeHandle(ref, () => ({ handleKey: (event) => handleKey(event) }))
 
   if (!open) return null
-  return <div
+  return <PickerSurface
     ref={pickerRef}
     tabIndex={-1}
-    className="agui-picker absolute bottom-full left-0 z-40 mb-2 w-full max-w-md overflow-hidden rounded-md border border-border/70 bg-white text-secondary shadow-[0_12px_32px_rgba(15,23,42,0.14)] outline-none"
-    role="dialog"
-    aria-label="添加到对话"
+    className="text-secondary outline-none"
+    ariaLabel="添加到对话"
     onKeyDown={handleKey}
   >
     <PickerHeader title={view === 'home' ? '添加到对话' : '选择菜单'} leading={<AtSign size={15} />} onBack={view === 'menus' ? goBack : undefined} />
@@ -167,5 +167,5 @@ export const MentionPicker = forwardRef<MentionPickerHandle, MentionPickerProps>
         {!filteredMenus.length ? <div className="px-3 py-5 text-center text-xs text-muted">没有匹配的菜单</div> : null}
       </>}
     </div>
-  </div>
+  </PickerSurface>
 })

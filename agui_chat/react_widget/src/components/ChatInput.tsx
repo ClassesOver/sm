@@ -7,6 +7,7 @@ import type {
 } from '../types'
 import { cn } from '../lib'
 import { Button } from './Button'
+import { ContextChip } from './ContextChip'
 import { MentionPicker, type MentionPickerHandle, type MentionQuery } from './MentionPicker'
 import {
   SkillPicker, type SkillPickerHandle, type SkillQuery, skillQueryAtCursor
@@ -436,26 +437,36 @@ export function ChatInput({
       ) : null}
       <div>
         {workspaceReferences.length ? <div className="mb-2 flex flex-wrap gap-1.5" aria-label="已选工作区引用">
-          {workspaceReferences.map((reference) => <span key={reference.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-background-panel px-2 py-1 text-xs text-primary" title={reference.path}>
-            {reference.isDirectory ? <Folder className="size-3.5 shrink-0" /> : <FileText className="size-3.5 shrink-0" />}<span className="truncate">{reference.name}</span>
-            <button type="button" className="grid size-5 shrink-0 place-items-center border-0 bg-transparent p-0 text-muted hover:bg-accent hover:text-primary" aria-label={`移除工作区引用 ${reference.name}`} onClick={() => onRemoveWorkspaceReference?.(reference.id)}><X className="size-3" /></button>
-          </span>)}
+          {workspaceReferences.map((reference) => <ContextChip
+            key={reference.id}
+            icon={reference.isDirectory ? <Folder className="size-3.5" /> : <FileText className="size-3.5" />}
+            label={reference.name}
+            title={reference.path}
+            onRemove={() => onRemoveWorkspaceReference?.(reference.id)}
+            removeLabel={`移除工作区引用 ${reference.name}`}
+          />)}
         </div> : null}
         {selectedSkills.length ? <div className="mb-2 flex flex-wrap gap-1.5" aria-label="已选技能">
-          {selectedSkills.map((skill) => <span key={skill.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-background-panel px-2 py-1 text-xs text-primary" title={skill.valid ? skill.description : '技能已不可用，请移除后重试'}>
-            <Sparkles className="size-3.5 shrink-0" />
-            <span className="truncate">{skill.name}</span>{!skill.valid ? <span className="shrink-0 text-destructive">（不可用）</span> : null}
-            <button type="button" className="grid size-5 shrink-0 place-items-center border-0 bg-transparent p-0 text-muted hover:bg-accent" aria-label={`移除技能 ${skill.name}`} onClick={() => setSelectedSkills((current) => current.filter((item) => item.id !== skill.id))}><X className="size-3" /></button>
-          </span>)}
+          {selectedSkills.map((skill) => <ContextChip
+            key={skill.id}
+            icon={<Sparkles className="size-3.5" />}
+            label={skill.name}
+            title={skill.valid ? skill.description : '技能已不可用，请移除后重试'}
+            tone={skill.valid ? 'neutral' : 'warning'}
+            trailing={!skill.valid ? <span className="shrink-0 text-destructive">（不可用）</span> : null}
+            onRemove={() => setSelectedSkills((current) => current.filter((item) => item.id !== skill.id))}
+            removeLabel={`移除技能 ${skill.name}`}
+          />)}
         </div> : null}
         {menuMention ? <div className="mb-2 flex items-center">
-          <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-primary/20 bg-accent px-2 py-1 text-xs text-primary" title={menuMention.fullPath}>
-            <AtSign className="size-3.5 shrink-0" />
-            <span className="truncate">{menuMention.fullPath}</span>
-            <button type="button" className="grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-muted hover:bg-background hover:text-primary" aria-label="移除菜单" title="移除菜单" onClick={() => setMenuMention(undefined)}>
-              <X className="size-3" />
-            </button>
-          </span>
+          <ContextChip
+            icon={<AtSign className="size-3.5" />}
+            label={menuMention.fullPath}
+            title={menuMention.fullPath}
+            tone="accent"
+            onRemove={() => setMenuMention(undefined)}
+            removeLabel="移除菜单"
+          />
         </div> : null}
         <div className="relative">
           <textarea ref={textareaRef} rows={1} disabled={disabled || sending} className="block min-h-11 w-full resize-none rounded-lg border-0 bg-background-secondary px-3 py-3 text-sm leading-5 text-primary outline outline-1 outline-transparent transition-[border-color,background-color,outline-color,box-shadow] placeholder:text-muted/90 focus:bg-background focus:outline-primary/15 focus:shadow-[0_0_0_3px_rgba(59,130,246,0.06)] disabled:cursor-not-allowed disabled:opacity-45" placeholder={labels.inputPlaceholder} value={value} onChange={(event) => {

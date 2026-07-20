@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import {
   AtSign, CheckCircle2, ChevronRight, CircleAlert, Clock3, Database, FileText,
-  Filter as FilterIcon, Folder, Hammer, Loader2, Menu, RotateCcw, SlidersHorizontal, Sparkles, Workflow, X
+  Filter as FilterIcon, Folder, Hammer, Loader2, Menu, RotateCcw, SlidersHorizontal, Sparkles, Workflow
 } from 'lucide-react'
 import type {
   AssistantMessageProps, AttachmentRef, ChatComponents, ChatFeedback, ChatIcons,
@@ -11,6 +11,9 @@ import type {
 } from '../types'
 import { cn } from '../lib'
 import { asText, normalizeReferenceGroups, toolArgs, toolCallId, toolName, visibleMessages } from '../runtime/utils'
+import { CandidateOption, CandidatePanel } from './CandidatePanel'
+import { ContextChip } from './ContextChip'
+import { InlineNotice } from './InlineNotice'
 import { Markdown } from './Markdown'
 
 export interface MessagesProps {
@@ -84,39 +87,32 @@ function RelationSearchCard({
   }
   const selected = result.candidates.filter((candidate) => selectedIds.includes(candidate.id))
 
-  return <div className="rounded-lg border border-border bg-background-secondary/80 p-3">
-    <div className="flex items-center justify-between gap-3">
-      <div className="min-w-0">
-        <div className="truncate text-xs font-semibold text-primary">{result.fieldLabel || result.field}</div>
-        <div className="mt-0.5 truncate text-[11px] text-muted">{labels.relationCandidates} · {result.relation}</div>
-      </div>
-      <span className="shrink-0 rounded border border-border bg-background px-2 py-1 text-[10px] text-muted">{result.query}</span>
-    </div>
-    {stale ? <div className="mt-3 rounded border border-warning/30 bg-warning/10 p-2 text-xs text-warning">{labels.relationSelectionExpired}</div> : null}
-    {!result.candidates.length ? <div className="mt-3 text-xs text-muted">{labels.relationNoResults}</div> : (
-      <div className="mt-3 grid gap-1.5">
-        {result.candidates.map((candidate) => {
-          const disabled = stale || running || !compatible(candidate)
-          return multiple ? (
-            <label key={candidate.id} className="flex min-h-9 items-center gap-2 rounded border border-border bg-background px-2.5 py-1.5 text-xs text-primary has-[:disabled]:opacity-45">
-              <input type="checkbox" className="size-4" disabled={disabled} checked={selectedIds.includes(candidate.id)} onChange={() => toggle(candidate)} />
-              <span className="min-w-0 flex-1 truncate">{candidate.displayName}</span>
-              <span className="shrink-0 text-[10px] text-muted">#{candidate.id}</span>
-            </label>
-          ) : (
-            <button key={candidate.id} type="button" disabled={disabled} className="flex min-h-9 items-center gap-2 rounded border border-solid border-border bg-background px-2.5 py-1.5 text-left text-xs text-primary hover:bg-accent disabled:opacity-45" onClick={() => onSelect(tool, [candidate])}>
-              <span className="min-w-0 flex-1 truncate">{candidate.displayName}</span>
-              <span className="shrink-0 text-[10px] text-muted">#{candidate.id}</span>
-            </button>
-          )
-        })}
-      </div>
-    )}
-    {multiple && result.candidates.length ? <div className="mt-3 flex items-center justify-between gap-3">
+  return <CandidatePanel
+    title={result.fieldLabel || result.field}
+    description={`${labels.relationCandidates} · ${result.relation}`}
+    badge={result.query}
+    emptyMessage={labels.relationNoResults}
+    notice={stale ? <InlineNotice className="mt-3" tone="warning">{labels.relationSelectionExpired}</InlineNotice> : null}
+    footer={multiple && result.candidates.length ? <div className="mt-3 flex items-center justify-between gap-3">
       <span className="text-[11px] text-muted">{labels.selectedRelationCount.replace('{count}', String(selected.length))}</span>
       <button type="button" disabled={stale || running || !selected.length} className="h-8 rounded-md border border-solid border-primary bg-primary px-3 text-xs text-primaryAccent disabled:opacity-40" onClick={() => onSelect(tool, selected)}>{labels.confirmRelationSelection}</button>
     </div> : null}
-  </div>
+  >
+    {result.candidates.map((candidate) => {
+      const disabled = stale || running || !compatible(candidate)
+      return multiple ? (
+        <label key={candidate.id} className="flex min-h-9 items-center gap-2 rounded border border-border bg-background px-2.5 py-1.5 text-xs text-primary has-[:disabled]:opacity-45">
+          <input type="checkbox" className="size-4" disabled={disabled} checked={selectedIds.includes(candidate.id)} onChange={() => toggle(candidate)} />
+          <span className="min-w-0 flex-1 truncate">{candidate.displayName}</span>
+          <span className="shrink-0 text-[10px] text-muted">#{candidate.id}</span>
+        </label>
+      ) : (
+        <CandidateOption key={candidate.id} disabled={disabled} onClick={() => onSelect(tool, [candidate])} trailing={<span className="shrink-0 text-[10px] text-muted">#{candidate.id}</span>}>
+          {candidate.displayName}
+        </CandidateOption>
+      )
+    })}
+  </CandidatePanel>
 }
 
 function RecordCandidatesCard({
@@ -129,22 +125,17 @@ function RecordCandidatesCard({
   onSelect: (tool: ToolCall, candidate: RecordCandidate) => void
 }) {
   const stale = result.snapshotId !== hostState.snapshotId || result.hostRevision !== hostState.hostRevision
-  return <div className="rounded-lg border border-border bg-background-secondary/80 p-3">
-    <div className="flex items-center justify-between gap-3">
-      <div className="min-w-0">
-        <div className="truncate text-xs font-semibold text-primary">{result.label}</div>
-        <div className="mt-0.5 text-[11px] text-muted">匹配 {result.count} 条记录</div>
-      </div>
-      <span className="shrink-0 rounded border border-border bg-background px-2 py-1 text-[10px] text-muted">选择记录</span>
-    </div>
-    {stale ? <div className="mt-3 rounded border border-warning/30 bg-warning/10 p-2 text-xs text-warning">候选快照已过期，请重新筛选。</div> : null}
-    {!result.candidates.length ? <div className="mt-3 text-xs text-muted">没有可选择的可见记录。</div> : <div className="mt-3 grid gap-1.5">
-      {result.candidates.map((candidate) => <button key={candidate.token} type="button" disabled={stale || running} className="flex min-h-9 items-center gap-2 rounded border border-solid border-border bg-background px-2.5 py-1.5 text-left text-xs text-primary hover:bg-accent disabled:opacity-45" onClick={() => onSelect(tool, candidate)}>
-        <span className="min-w-0 flex-1 truncate">{candidate.displayName}</span>
-        <ChevronRight className="size-3.5 shrink-0 text-muted" />
-      </button>)}
-    </div>}
-  </div>
+  return <CandidatePanel
+    title={result.label}
+    description={`匹配 ${result.count} 条记录`}
+    badge="选择记录"
+    emptyMessage="没有可选择的可见记录。"
+    notice={stale ? <InlineNotice className="mt-3" tone="warning">候选快照已过期，请重新筛选。</InlineNotice> : null}
+  >
+    {result.candidates.map((candidate) => <CandidateOption key={candidate.token} disabled={stale || running} onClick={() => onSelect(tool, candidate)} trailing={<ChevronRight className="size-3.5 shrink-0 text-muted" />}>
+      {candidate.displayName}
+    </CandidateOption>)}
+  </CandidatePanel>
 }
 
 function displayDiffValue(value: unknown): string {
@@ -237,7 +228,7 @@ function ToolCard({ tool, onConfirm, onUndo, labels, running }: {
         </span>
       {applied || rejected ? <span className="rounded-md bg-background px-2 py-1 text-[11px] text-muted">已应用 {applied} 项 / 已拒绝 {rejected} 项</span> : null}
       </summary>
-      {tool.error || result.error ? <div className="mt-2 rounded-md border border-destructive/25 bg-destructive/10 p-2 text-xs text-destructive">{String(tool.error || result.error)}</div> : null}
+      {tool.error || result.error ? <InlineNotice className="mt-2" tone="error">{String(tool.error || result.error)}</InlineNotice> : null}
       {status === 'needs_confirmation' || tool.needs_confirmation ? <div className="mt-2 rounded-md border border-solid border-warning/25 bg-warning/10 p-2 text-xs text-warning"><div>需要确认：{displayName}</div><ConfirmationPreview result={result} /><div className="mt-2 flex gap-2"><button type="button" disabled={running} className="rounded-md border border-solid border-primary bg-primary px-2 py-1 text-primaryAccent disabled:opacity-45" onClick={() => onConfirm(true)}>{labels.approve}</button><button type="button" disabled={running} className="rounded-md border border-solid border-border bg-background-panel px-2 py-1 disabled:opacity-45" onClick={() => onConfirm(false)}>{labels.reject}</button></div></div> : null}
       {undo.available ? <div className="mt-2 flex items-center gap-2 border-t border-border pt-2"><button type="button" disabled={running || undo.status === 'running' || undo.status === 'undone'} title="撤销本次修改" className="inline-flex h-8 items-center gap-1.5 rounded-md border border-solid border-border bg-background px-2.5 text-xs text-primary hover:bg-accent disabled:opacity-45" onClick={onUndo}><RotateCcw className="size-3.5" />{undo.status === 'running' ? '撤销中' : undo.status === 'undone' ? '已撤销' : '撤销'}</button>{undo.error ? <span className="text-xs text-destructive">{String(undo.error)}</span> : null}</div> : null}
       <details className="mt-2 border-t border-border pt-2">
@@ -379,7 +370,7 @@ export function DefaultAssistantMessage({
     {content || message.streaming_error ? <div className="group flex items-start gap-3">
       <div className="grid size-6 shrink-0 place-items-center rounded bg-primary text-primaryAccent">{icons.assistant}</div>
       <div className="min-w-0 flex-1">
-        {message.streaming_error ? <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{message.streaming_error}</div> : null}
+        {message.streaming_error ? <InlineNotice className="mb-3 p-3 text-sm" tone="error">{message.streaming_error}</InlineNotice> : null}
         {content ? <Markdown>{content}</Markdown> : null}
         <div className={cn(
           'agui-message-controls mt-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100',
@@ -408,44 +399,49 @@ export function DefaultUserMessage({ message, labels, onPreviewAttachment, onRem
     <div className="min-w-0 max-w-[82%]">
       <Attachments attachments={message.attachments} labels={labels} onPreview={onPreviewAttachment} />
       {message.mentions?.length ? <div className="mb-2 flex flex-wrap justify-end gap-1.5">
-        {message.mentions.map((reference) => <span key={reference.id} className={cn(
-          'inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs',
-          reference.valid ? 'border-primary/20 bg-accent text-primary' : 'border-warning/35 bg-warning/10 text-warning'
-        )} title={reference.detail}>
-          {mentionIcon(reference.kind)}
-          <span className="truncate">{reference.label}</span>
-          <span className="shrink-0 opacity-70">{actionLabels[reference.action]}</span>
-          {!reference.valid ? <span className="shrink-0">（已失效）</span> : null}
-          {onRemoveMention ? <button type="button" className="grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-current opacity-65 hover:bg-background hover:opacity-100" aria-label={`移除引用 ${reference.label}`} title="移除引用" onClick={() => onRemoveMention(reference.id)}><X className="size-3" /></button> : null}
-        </span>)}
+        {message.mentions.map((reference) => <ContextChip
+          key={reference.id}
+          icon={mentionIcon(reference.kind)}
+          label={reference.label}
+          title={reference.detail}
+          tone={reference.valid ? 'accent' : 'warning'}
+          trailing={<>
+            <span className="shrink-0 opacity-70">{actionLabels[reference.action]}</span>
+            {!reference.valid ? <span className="shrink-0">（已失效）</span> : null}
+          </>}
+          onRemove={onRemoveMention ? () => onRemoveMention(reference.id) : undefined}
+          removeLabel={`移除引用 ${reference.label}`}
+          removeTitle="移除引用"
+        />)}
       </div> : null}
       {message.workspaceReferences?.length ? <div className="mb-2 flex flex-wrap justify-end gap-1.5" aria-label="消息工作区引用">
-        {message.workspaceReferences.map((reference) => <span key={reference.id} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-background-panel px-2 py-1 text-xs text-primary" title={reference.path}>
-          {reference.isDirectory ? <Folder className="size-3.5 shrink-0" /> : <FileText className="size-3.5 shrink-0" />}<span className="truncate">{reference.name}</span>
-        </span>)}
+        {message.workspaceReferences.map((reference) => <ContextChip
+          key={reference.id}
+          icon={reference.isDirectory ? <Folder className="size-3.5" /> : <FileText className="size-3.5" />}
+          label={reference.name}
+          title={reference.path}
+        />)}
       </div> : null}
       {message.skills?.length ? <div className="mb-2 flex flex-wrap justify-end gap-1.5" aria-label="消息技能">
-        {message.skills.map((skill) => <span key={skill.id} className={cn(
-          'inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs',
-          skill.valid
-            ? 'border-emerald-700/20 bg-emerald-50 text-emerald-900'
-            : 'border-warning/35 bg-warning/10 text-warning'
-        )} title={skill.description}>
-          <Sparkles className="size-3.5 shrink-0" />
-          <span className="truncate">{skill.name}</span>
-          {!skill.valid ? <span className="shrink-0">（已失效）</span> : null}
-        </span>)}
+        {message.skills.map((skill) => <ContextChip
+          key={skill.id}
+          icon={<Sparkles className="size-3.5" />}
+          label={skill.name}
+          title={skill.description}
+          tone={skill.valid ? 'positive' : 'warning'}
+          trailing={!skill.valid ? <span className="shrink-0">（已失效）</span> : null}
+        />)}
       </div> : null}
       {mention ? <div className="mb-2 flex justify-end">
-        <span className={cn(
-          'inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs',
-          mention.valid ? 'border-primary/20 bg-accent text-primary' : 'border-warning/35 bg-warning/10 text-warning'
-        )} title={mention.fullPath}>
-          <AtSign className="size-3.5 shrink-0" />
-          <span className="truncate">{mention.fullPath}</span>
-          {!mention.valid ? <span className="shrink-0">（已失效）</span> : null}
-          {onRemoveMenuMention ? <button type="button" className="grid size-5 shrink-0 place-items-center rounded border-0 bg-transparent p-0 text-current opacity-65 hover:bg-background hover:opacity-100" aria-label="移除菜单" title="移除菜单" onClick={onRemoveMenuMention}><X className="size-3" /></button> : null}
-        </span>
+        <ContextChip
+          icon={<AtSign className="size-3.5" />}
+          label={mention.fullPath}
+          title={mention.fullPath}
+          tone={mention.valid ? 'accent' : 'warning'}
+          trailing={!mention.valid ? <span className="shrink-0">（已失效）</span> : null}
+          onRemove={onRemoveMenuMention}
+          removeLabel="移除菜单"
+        />
       </div> : null}
       {asText(message.content) ? <div className="ml-auto w-fit rounded-lg bg-background-secondary px-3.5 py-2 text-sm leading-6 text-secondary">{asText(message.content)}</div> : null}
     </div>
