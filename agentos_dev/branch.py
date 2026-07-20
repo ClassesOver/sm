@@ -1,9 +1,9 @@
 import copy
 import hashlib
 import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from time import time
-from typing import AsyncIterator
 from uuid import uuid4
 
 from ag_ui.core import (
@@ -58,10 +58,16 @@ def parse_forwarded_props(payload: dict) -> BranchSpec | None:
 
 def validate_branch_identity(target: CapabilityClaims, source: CapabilityClaims) -> None:
     target_identity = (
-        target.database, target.user, target.company, target.odoo_session,
+        target.database,
+        target.user,
+        target.company,
+        target.odoo_session,
     )
     source_identity = (
-        source.database, source.user, source.company, source.odoo_session,
+        source.database,
+        source.user,
+        source.company,
+        source.odoo_session,
     )
     if target_identity != source_identity:
         raise BranchError("branch_identity_mismatch")
@@ -83,23 +89,27 @@ def _copy_session_through_run(
     user_id: str,
 ) -> tuple[AgentSession, dict[str, str], str]:
     runs = source.runs or []
-    target_index = next((
-        index for index, run in enumerate(runs)
-        if run.run_id == source_run_id and run.parent_run_id is None
-    ), -1)
+    target_index = next(
+        (
+            index
+            for index, run in enumerate(runs)
+            if run.run_id == source_run_id and run.parent_run_id is None
+        ),
+        -1,
+    )
     if target_index < 0:
         raise BranchError("branch_source_run_not_found")
     target_run = runs[target_index]
     if target_run.status != RunStatus.completed:
         raise BranchError("branch_source_run_not_completed")
 
-    copied_runs = copy.deepcopy(runs[:target_index + 1])
+    copied_runs = copy.deepcopy(runs[: target_index + 1])
     source_run_ids = [str(run.run_id or "") for run in copied_runs]
-    if any(not run_id for run_id in source_run_ids) or len(set(source_run_ids)) != len(source_run_ids):
+    if any(not run_id for run_id in source_run_ids) or len(set(source_run_ids)) != len(
+        source_run_ids
+    ):
         raise BranchError("branch_source_runs_invalid")
-    run_id_map = {
-        run_id: str(uuid4()) for run_id in source_run_ids
-    }
+    run_id_map = {run_id: str(uuid4()) for run_id in source_run_ids}
     for run in copied_runs:
         source_id = str(run.run_id or "")
         run.run_id = run_id_map[source_id]
@@ -108,11 +118,13 @@ def _copy_session_through_run(
             run.parent_run_id = run_id_map.get(str(run.parent_run_id), run.parent_run_id)
         if run.forked_from_run_id:
             run.forked_from_run_id = run_id_map.get(
-                str(run.forked_from_run_id), run.forked_from_run_id,
+                str(run.forked_from_run_id),
+                run.forked_from_run_id,
             )
         if run.regenerated_from:
             run.regenerated_from = run_id_map.get(
-                str(run.regenerated_from), run.regenerated_from,
+                str(run.regenerated_from),
+                run.regenerated_from,
             )
         if not run.forked_from_session_id:
             run.forked_from_session_id = source.session_id
@@ -125,7 +137,7 @@ def _copy_session_through_run(
         agent_data=copy.deepcopy(source.agent_data),
         session_data={"forked_from_session_id": source.session_id},
         metadata={
-            **(copy.deepcopy(source.metadata) or {}),
+            **copy.deepcopy(source.metadata or {}),
             "forked_from_session_id": source.session_id,
             "forked_from_run_id": source_run_id,
         },
@@ -147,7 +159,8 @@ async def prepare_branch(
     if target_thread_id == spec.source_thread_id:
         raise BranchError("branch_thread_reused")
     source = await agent.aget_session(
-        session_id=spec.source_thread_id, user_id=user_id,
+        session_id=spec.source_thread_id,
+        user_id=user_id,
     )
     if not isinstance(source, AgentSession):
         raise BranchError("branch_source_session_not_found")
@@ -156,7 +169,10 @@ async def prepare_branch(
         raise BranchError("branch_target_session_exists")
 
     target, run_id_map, copied_target_run_id = _copy_session_through_run(
-        source, target_thread_id, spec.source_run_id, user_id,
+        source,
+        target_thread_id,
+        spec.source_run_id,
+        user_id,
     )
     workspace_result = workspace.copy_branch(spec.source_thread_id, target_thread_id)
     try:
@@ -191,7 +207,11 @@ async def run_branch(
     prepared = False
     try:
         run_id_map, copied_target_run_id, workspace_result = await prepare_branch(
-            agent, workspace, spec, run_input.thread_id, user_id,
+            agent,
+            workspace,
+            spec,
+            run_input.thread_id,
+            user_id,
         )
         prepared = True
         session_state = validate_state(run_input.state, run_input.thread_id)
@@ -206,7 +226,7 @@ async def run_branch(
             session_state=session_state,
         )
         run_kwargs = {"add_dependencies_to_context": True} if ui_dependencies else {}
-        response_stream = agent.acontinue_run(
+        response_stream = agent.acontinue_run(  # type: ignore[call-overload]
             run_id=copied_target_run_id,
             session_id=run_input.thread_id,
             user_id=user_id,

@@ -33,7 +33,10 @@ COPY agentos_dev ./agentos_dev
 
 ENV AGENT_OS_HOST=0.0.0.0 \
     AGENT_OS_PORT=7777 \
-    AGENT_OS_RELOAD=false
+    AGENT_OS_WORKERS=4 \
+    AGENT_OS_RELOAD=false \
+    AGENT_OS_ACCESS_LOG=true \
+    AGENT_DEBUG=false
 
 EXPOSE 7777
 

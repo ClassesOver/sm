@@ -1,9 +1,9 @@
-from io import BytesIO
 import json
+from io import BytesIO
 
-from agno.run import RunContext
 import pandas as pd
 import pytest
+from agno.run import RunContext
 
 from agentos_dev import report
 from agentos_dev.report import report_tools
@@ -24,22 +24,37 @@ def call(tool, **arguments):
 
 
 def upload_datasets(current, thread="report-thread"):
-    current.upload(thread, "data/sales.csv", (
-        "region,category,amount\n华东,A,10\n华东,B,20\n华南,A,30\n"
-    ).encode("utf-8"))
-    current.upload(thread, "data/sales.json", json.dumps([
-        {"region": "华东", "category": "A", "amount": 10},
-        {"region": "华南", "category": "B", "amount": 20},
-    ], ensure_ascii=False).encode("utf-8"))
-    current.upload(thread, "data/sales.jsonl", (
-        '{"region":"华东","category":"A","amount":10}\n'
-        '{"region":"华南","category":"B","amount":20}\n'
-    ).encode("utf-8"))
+    current.upload(
+        thread,
+        "data/sales.csv",
+        ("region,category,amount\n华东,A,10\n华东,B,20\n华南,A,30\n").encode(),
+    )
+    current.upload(
+        thread,
+        "data/sales.json",
+        json.dumps(
+            [
+                {"region": "华东", "category": "A", "amount": 10},
+                {"region": "华南", "category": "B", "amount": 20},
+            ],
+            ensure_ascii=False,
+        ).encode("utf-8"),
+    )
+    current.upload(
+        thread,
+        "data/sales.jsonl",
+        (
+            '{"region":"华东","category":"A","amount":10}\n'
+            '{"region":"华南","category":"B","amount":20}\n'
+        ).encode(),
+    )
     workbook = BytesIO()
-    pd.DataFrame([
-        {"region": "华东", "category": "A", "amount": 10},
-        {"region": "华南", "category": "B", "amount": 20},
-    ]).to_excel(workbook, index=False, sheet_name="销售")
+    pd.DataFrame(
+        [
+            {"region": "华东", "category": "A", "amount": 10},
+            {"region": "华南", "category": "B", "amount": 20},
+        ]
+    ).to_excel(workbook, index=False, sheet_name="销售")
     current.upload(thread, "data/sales.xlsx", workbook.getvalue())
 
 
@@ -49,7 +64,10 @@ def test_profiles_csv_json_jsonl_and_xlsx(tmp_path):
     current_tools = tools(current)
 
     for path in (
-        "data/sales.csv", "data/sales.json", "data/sales.jsonl", "data/sales.xlsx",
+        "data/sales.csv",
+        "data/sales.json",
+        "data/sales.jsonl",
+        "data/sales.xlsx",
     ):
         result = call(
             current_tools["pandas_profile_dataset"],
@@ -78,7 +96,8 @@ def test_each_call_uses_and_releases_a_new_pandas_toolkit(tmp_path, monkeypatch)
     for _index in range(2):
         call(
             current_tools["pandas_profile_dataset"],
-            path="data/sales.csv", run_context=context(),
+            path="data/sales.csv",
+            run_context=context(),
         )
 
     assert len(instances) == 2
@@ -108,15 +127,20 @@ def test_group_pivot_concat_and_thread_isolation(tmp_path):
 
     pivot = call(
         current_tools["pandas_pivot_dataset"],
-        path="data/sales.csv", rows=["region"], columns=["category"],
-        value="amount", aggregation="sum", run_context=context(),
+        path="data/sales.csv",
+        rows=["region"],
+        columns=["category"],
+        value="amount",
+        aggregation="sum",
+        run_context=context(),
     )
     assert pivot["rowCount"] == 2
 
     concatenated = call(
         current_tools["pandas_concat_datasets"],
         paths=["data/sales.json", "data/sales.jsonl"],
-        source_labels=["JSON", "JSONL"], run_context=context(),
+        source_labels=["JSON", "JSONL"],
+        run_context=context(),
     )
     assert concatenated["rowCount"] == 4
     content, _mime = current.file_bytes("report-thread", concatenated["path"])
@@ -124,32 +148,38 @@ def test_group_pivot_concat_and_thread_isolation(tmp_path):
 
     isolated = call(
         current_tools["pandas_profile_dataset"],
-        path="data/sales.csv", run_context=context("other-thread"),
+        path="data/sales.csv",
+        run_context=context("other-thread"),
     )
     assert isolated["rowCount"] == 1
 
 
 def test_dataset_shape_and_memory_limits_are_enforced(tmp_path, monkeypatch):
     current = service(tmp_path)
-    columns = ["c%s" % index for index in range(101)]
-    current.upload("report-thread", "data/wide.csv", (
-        ",".join(columns) + "\n" + ",".join("1" for _item in columns) + "\n"
-    ).encode("utf-8"))
+    columns = [f"c{index}" for index in range(101)]
+    current.upload(
+        "report-thread",
+        "data/wide.csv",
+        (",".join(columns) + "\n" + ",".join("1" for _item in columns) + "\n").encode("utf-8"),
+    )
 
     with pytest.raises(WorkspaceError, match="100 列"):
         call(
             tools(current)["pandas_profile_dataset"],
-            path="data/wide.csv", run_context=context(),
+            path="data/wide.csv",
+            run_context=context(),
         )
 
     current.upload(
-        "report-thread", "data/tall.csv",
+        "report-thread",
+        "data/tall.csv",
         ("value\n" + "1\n" * (report.MAX_DATASET_ROWS + 1)).encode("utf-8"),
     )
     with pytest.raises(WorkspaceError, match="100000 行"):
         call(
             tools(current)["pandas_profile_dataset"],
-            path="data/tall.csv", run_context=context(),
+            path="data/tall.csv",
+            run_context=context(),
         )
 
     current.upload("report-thread", "data/memory.csv", b"value\nexpanded text\n")
@@ -157,7 +187,8 @@ def test_dataset_shape_and_memory_limits_are_enforced(tmp_path, monkeypatch):
     with pytest.raises(WorkspaceError, match="128 MiB"):
         call(
             tools(current)["pandas_profile_dataset"],
-            path="data/memory.csv", run_context=context(),
+            path="data/memory.csv",
+            run_context=context(),
         )
 
 
@@ -170,8 +201,13 @@ def test_chart_outputs_png_and_download_only_html_without_confirmation(tmp_path)
 
     result = call(
         current_tools["pandas_generate_chart"],
-        path="data/sales.csv", chart_type="bar", x="region", y="amount",
-        aggregation="sum", title="区域销售额", run_context=context(),
+        path="data/sales.csv",
+        chart_type="bar",
+        x="region",
+        y="amount",
+        aggregation="sum",
+        title="区域销售额",
+        run_context=context(),
     )
     png, png_mime = current.file_bytes("report-thread", result["pngPath"])
     html, html_mime = current.file_bytes("report-thread", result["htmlPath"])
@@ -185,17 +221,25 @@ def test_chart_outputs_png_and_download_only_html_without_confirmation(tmp_path)
 
     pie = call(
         current_tools["pandas_generate_chart"],
-        path="data/sales.csv", chart_type="pie", x="region",
+        path="data/sales.csv",
+        chart_type="pie",
+        x="region",
         run_context=context(),
     )
     assert pie["pointCount"] == 2
 
-    current.upload("report-thread", "data/duplicates.csv", (
-        "region,category,amount\n华东,A,10\n华东,A,20\n"
-    ).encode("utf-8"))
+    current.upload(
+        "report-thread",
+        "data/duplicates.csv",
+        ("region,category,amount\n华东,A,10\n华东,A,20\n").encode(),
+    )
     with pytest.raises(WorkspaceError, match="指定聚合方式"):
         call(
             current_tools["pandas_generate_chart"],
-            path="data/duplicates.csv", chart_type="bar", x="region",
-            y="amount", group="category", run_context=context(),
+            path="data/duplicates.csv",
+            chart_type="bar",
+            x="region",
+            y="amount",
+            group="category",
+            run_context=context(),
         )

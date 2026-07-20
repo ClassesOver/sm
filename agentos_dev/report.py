@@ -1,17 +1,16 @@
-from contextlib import contextmanager
 import json
-from pathlib import PurePosixPath
 import tempfile
-from typing import Any
 import uuid
+from contextlib import contextmanager
+from pathlib import PurePosixPath
+from typing import Any
 
+import pandas as pd
 from agno.run import RunContext
 from agno.tools.function import Function
 from agno.tools.pandas import PandasTools
-import pandas as pd
 
 from .workspace import WorkspaceError, WorkspaceService
-
 
 MAX_DATASET_ROWS = 100_000
 MAX_DATASET_COLUMNS = 100
@@ -24,7 +23,7 @@ AGGREGATIONS = {"count", "sum", "avg", "min", "max"}
 CHART_TYPES = {"bar", "line", "scatter", "pie", "histogram", "box"}
 
 
-def _thread(run_context: RunContext) -> str:
+def _thread(run_context: RunContext | None) -> str:
     if not run_context or not run_context.session_id:
         raise WorkspaceError("报表工具需要绑定对话的运行上下文")
     return run_context.session_id
@@ -64,7 +63,7 @@ def _load_frames(
                 if suffix not in SUPPORTED_SUFFIXES:
                     raise WorkspaceError("报表仅支持 CSV、XLSX、JSON 和 JSONL 文件")
                 content, _mime_type = service.file_bytes(thread, path)
-                local_path = PurePosixPath(directory) / ("dataset-%s%s" % (index, suffix))
+                local_path = PurePosixPath(directory) / (f"dataset-{index}{suffix}")
                 with open(str(local_path), "wb") as output:
                     output.write(content)
                 function_name = {
@@ -84,7 +83,7 @@ def _load_frames(
                     parameters = {"path_or_buf": str(local_path)}
                     if suffix == ".jsonl":
                         parameters["lines"] = True
-                name = "dataset_%s" % index
+                name = f"dataset_{index}"
                 toolkit.create_pandas_dataframe(name, function_name, parameters)
                 frame = toolkit.dataframes.get(name)
                 if frame is None:
@@ -105,7 +104,10 @@ def _records(frame: pd.DataFrame) -> list[dict[str, Any]]:
 
 def _bounded(payload: dict[str, Any]) -> dict[str, Any]:
     encoded = json.dumps(
-        payload, ensure_ascii=False, separators=(",", ":"), default=str,
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
     ).encode("utf-8")
     if len(encoded) <= MAX_RESULT_BYTES:
         return payload
@@ -116,20 +118,37 @@ def _bounded(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         values = list(values)
         result[key] = values
-        while values and len(json.dumps(
-            result, ensure_ascii=False, separators=(",", ":"), default=str,
-        ).encode("utf-8")) > MAX_RESULT_BYTES:
+        while (
+            values
+            and len(
+                json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            )
+            > MAX_RESULT_BYTES
+        ):
             values.pop()
-    if len(json.dumps(
-        result, ensure_ascii=False, separators=(",", ":"), default=str,
-    ).encode("utf-8")) > MAX_RESULT_BYTES:
+    if (
+        len(
+            json.dumps(
+                result,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        )
+        > MAX_RESULT_BYTES
+    ):
         raise WorkspaceError("报表工具结果超过 32 KiB")
     return result
 
 
 def _column(frame: pd.DataFrame, name: str) -> pd.Series:
     if name not in frame.columns:
-        raise WorkspaceError("数据集不存在字段：%s" % name)
+        raise WorkspaceError(f"数据集不存在字段：{name}")
     return frame[name]
 
 
@@ -154,10 +173,10 @@ def _metric_spec(frame: pd.DataFrame, metrics: list[dict[str, str]]):
         aggregation = metric["aggregation"]
         series = _column(frame, field)
         if aggregation not in AGGREGATIONS:
-            raise WorkspaceError("不支持的聚合方式：%s" % aggregation)
+            raise WorkspaceError(f"不支持的聚合方式：{aggregation}")
         if aggregation in {"sum", "avg"} and not pd.api.types.is_numeric_dtype(series):
-            raise WorkspaceError("字段 %s 不是数值类型" % field)
-        alias = "%s:%s" % (field, aggregation)
+            raise WorkspaceError(f"字段 {field} 不是数值类型")
+        alias = f"{field}:{aggregation}"
         if alias in aliases:
             raise WorkspaceError("聚合指标不能重复")
         aliases.add(alias)
@@ -173,15 +192,11 @@ def _group_frame(
     _validate_dimensions(frame, dimensions)
     specs = _metric_spec(frame, metrics)
     named = {
-        alias: pd.NamedAgg(column=field, aggfunc=aggregation)
-        for alias, field, aggregation in specs
+        alias: pd.NamedAgg(column=field, aggfunc=aggregation) for alias, field, aggregation in specs
     }
     if dimensions:
         return frame.groupby(dimensions, dropna=False, observed=True).agg(**named).reset_index()
-    values = {
-        alias: getattr(frame[field], aggregation)()
-        for alias, field, aggregation in specs
-    }
+    values = {alias: getattr(frame[field], aggregation)() for alias, field, aggregation in specs}
     return pd.DataFrame([values])
 
 
@@ -189,7 +204,7 @@ def report_tools(service: WorkspaceService) -> list[Function]:
     def profile_dataset(
         path: str,
         sheet: str | int | None = None,
-        run_context: RunContext = None,
+        run_context: RunContext | None = None,
     ):
         """概览当前对话工作区中的 CSV、XLSX、JSON 或 JSONL 数据集。"""
         with _load_frames(service, _thread(run_context), [path], sheet=sheet) as frames:
@@ -204,37 +219,43 @@ def report_tools(service: WorkspaceService) -> list[Function]:
                     "uniqueCount": int(series.nunique(dropna=True)),
                 }
                 if pd.api.types.is_numeric_dtype(series):
-                    item.update({
-                        "min": None if series.dropna().empty else float(series.min()),
-                        "max": None if series.dropna().empty else float(series.max()),
-                        "mean": None if series.dropna().empty else float(series.mean()),
-                    })
+                    item.update(
+                        {
+                            "min": None if series.dropna().empty else float(series.min()),
+                            "max": None if series.dropna().empty else float(series.max()),
+                            "mean": None if series.dropna().empty else float(series.mean()),
+                        }
+                    )
                 columns.append(item)
-            return _bounded({
-                "path": path,
-                "rowCount": len(frame.index),
-                "columnCount": len(frame.columns),
-                "memoryBytes": int(frame.memory_usage(index=True, deep=True).sum()),
-                "columns": columns,
-                "sample": _records(frame.head(10)),
-            })
+            return _bounded(
+                {
+                    "path": path,
+                    "rowCount": len(frame.index),
+                    "columnCount": len(frame.columns),
+                    "memoryBytes": int(frame.memory_usage(index=True, deep=True).sum()),
+                    "columns": columns,
+                    "sample": _records(frame.head(10)),
+                }
+            )
 
     def group_dataset(
         path: str,
         dimensions: list[str],
         metrics: list[dict[str, str]],
-        run_context: RunContext = None,
+        run_context: RunContext | None = None,
     ):
         """按最多两个维度和五个语义化指标聚合当前对话的数据集。"""
         with _load_frames(service, _thread(run_context), [path]) as frames:
             result = _group_frame(frames[0], dimensions, metrics)
-            return _bounded({
-                "path": path,
-                "dimensions": dimensions,
-                "metrics": metrics,
-                "rowCount": len(result.index),
-                "rows": _records(result),
-            })
+            return _bounded(
+                {
+                    "path": path,
+                    "dimensions": dimensions,
+                    "metrics": metrics,
+                    "rowCount": len(result.index),
+                    "rows": _records(result),
+                }
+            )
 
     def pivot_dataset(
         path: str,
@@ -242,12 +263,17 @@ def report_tools(service: WorkspaceService) -> list[Function]:
         columns: list[str],
         value: str,
         aggregation: str,
-        run_context: RunContext = None,
+        run_context: RunContext | None = None,
     ):
         """用受控聚合方式创建当前对话数据集的透视结果。"""
         with _load_frames(service, _thread(run_context), [path]) as frames:
             frame = frames[0]
-            if not isinstance(rows, list) or not isinstance(columns, list) or not rows or not columns:
+            if (
+                not isinstance(rows, list)
+                or not isinstance(columns, list)
+                or not rows
+                or not columns
+            ):
                 raise WorkspaceError("透视表必须提供行维度和列维度")
             if len(rows) > 2 or len(columns) > 2:
                 raise WorkspaceError("透视表行维度和列维度各最多 2 个")
@@ -267,19 +293,22 @@ def report_tools(service: WorkspaceService) -> list[Function]:
             ).reset_index()
             result.columns = [
                 " / ".join(str(part) for part in name if str(part))
-                if isinstance(name, tuple) else str(name)
+                if isinstance(name, tuple)
+                else str(name)
                 for name in result.columns
             ]
-            return _bounded({
-                "path": path,
-                "rowCount": len(result.index),
-                "rows": _records(result),
-            })
+            return _bounded(
+                {
+                    "path": path,
+                    "rowCount": len(result.index),
+                    "rows": _records(result),
+                }
+            )
 
     def concat_datasets(
         paths: list[str],
         source_labels: list[str],
-        run_context: RunContext = None,
+        run_context: RunContext | None = None,
     ):
         """显式纵向合并结构完全一致的数据集，并标注各行来源。"""
         if not isinstance(paths, list) or not 2 <= len(paths) <= 5:
@@ -289,7 +318,9 @@ def report_tools(service: WorkspaceService) -> list[Function]:
         thread = _thread(run_context)
         with _load_frames(service, thread, paths) as frames:
             expected = list(frames[0].columns)
-            if "_source" in expected or any(list(frame.columns) != expected for frame in frames[1:]):
+            if "_source" in expected or any(
+                list(frame.columns) != expected for frame in frames[1:]
+            ):
                 raise WorkspaceError("仅支持字段结构和顺序完全一致的数据集纵向合并")
             labeled = []
             for frame, label in zip(frames, source_labels):
@@ -297,15 +328,19 @@ def report_tools(service: WorkspaceService) -> list[Function]:
                 item.insert(0, "_source", str(label)[:120])
                 labeled.append(item)
             result = _ensure_columns(pd.concat(labeled, ignore_index=True))
-            path = "reports/data/%s.jsonl" % uuid.uuid4()
-            content = result.to_json(orient="records", lines=True, force_ascii=False).encode("utf-8")
+            path = f"reports/data/{uuid.uuid4()}.jsonl"
+            content = result.to_json(orient="records", lines=True, force_ascii=False).encode(
+                "utf-8"
+            )
             service.upload(thread, path, content)
-            return _bounded({
-                "path": path,
-                "rowCount": len(result.index),
-                "columnCount": len(result.columns),
-                "sourceLabels": source_labels,
-            })
+            return _bounded(
+                {
+                    "path": path,
+                    "rowCount": len(result.index),
+                    "columnCount": len(result.columns),
+                    "sourceLabels": source_labels,
+                }
+            )
 
     def generate_chart(
         path: str,
@@ -315,7 +350,7 @@ def report_tools(service: WorkspaceService) -> list[Function]:
         group: str | None = None,
         aggregation: str | None = None,
         title: str | None = None,
-        run_context: RunContext = None,
+        run_context: RunContext | None = None,
     ):
         """为当前对话数据集生成 PNG 和独立 HTML 图表产物。"""
         if chart_type not in CHART_TYPES:
@@ -330,13 +365,17 @@ def report_tools(service: WorkspaceService) -> list[Function]:
             if chart_type in {"bar", "line", "scatter"} and not y:
                 raise WorkspaceError("柱状图、折线图和散点图必须提供 y 字段")
             if aggregation:
-                if aggregation not in AGGREGATIONS or not y or chart_type in {"scatter", "histogram", "box"}:
+                if (
+                    aggregation not in AGGREGATIONS
+                    or not y
+                    or chart_type in {"scatter", "histogram", "box"}
+                ):
                     raise WorkspaceError("该图表不支持所选聚合方式")
                 plot_frame = _group_frame(
                     plot_frame,
                     [x] + ([group] if group else []),
                     [{"field": y, "aggregation": aggregation}],
-                ).rename(columns={"%s:%s" % (y, aggregation): y})
+                ).rename(columns={f"{y}:{aggregation}": y})
             if chart_type in {"bar", "line"} and group and not aggregation:
                 if bool(plot_frame.duplicated([x, group]).any()):
                     raise WorkspaceError("分组图存在重复坐标，请指定聚合方式")
@@ -344,13 +383,25 @@ def report_tools(service: WorkspaceService) -> list[Function]:
                 if y:
                     if not pd.api.types.is_numeric_dtype(plot_frame[y]):
                         raise WorkspaceError("饼图数值字段不是数值类型")
-                    plot_frame = plot_frame.groupby(
-                        x, dropna=False, observed=True,
-                    )[y].sum().reset_index()
+                    plot_frame = (
+                        plot_frame.groupby(
+                            x,
+                            dropna=False,
+                            observed=True,
+                        )[y]
+                        .sum()
+                        .reset_index()
+                    )
                 else:
-                    plot_frame = plot_frame.groupby(
-                        x, dropna=False, observed=True,
-                    ).size().reset_index(name="_count")
+                    plot_frame = (
+                        plot_frame.groupby(
+                            x,
+                            dropna=False,
+                            observed=True,
+                        )
+                        .size()
+                        .reset_index(name="_count")
+                    )
                     y = "_count"
                 if len(plot_frame.index) > MAX_PIE_CATEGORIES:
                     raise WorkspaceError("饼图分类超过 20 个")
@@ -358,6 +409,7 @@ def report_tools(service: WorkspaceService) -> list[Function]:
                 raise WorkspaceError("图表绘制点超过 1000 个")
 
             import matplotlib
+
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
             import plotly.express as px
@@ -370,13 +422,15 @@ def report_tools(service: WorkspaceService) -> list[Function]:
                 html_figure = px.pie(plot_frame, names=x, values=y, title=title)
             else:
                 html_factory = {
-                    "bar": px.bar, "line": px.line, "scatter": px.scatter,
+                    "bar": px.bar,
+                    "line": px.line,
+                    "scatter": px.scatter,
                 }[chart_type]
                 html_figure = html_factory(plot_frame, x=x, y=y, color=group, title=title)
 
             identifier = str(uuid.uuid4())
-            png_path = "reports/%s.png" % identifier
-            html_path = "reports/%s.html" % identifier
+            png_path = f"reports/{identifier}.png"
+            html_path = f"reports/{identifier}.html"
             figure, axis = plt.subplots(figsize=(9, 5.5))
             try:
                 if chart_type in {"bar", "line"}:
@@ -401,14 +455,15 @@ def report_tools(service: WorkspaceService) -> list[Function]:
                 axis.set_title((title or "数据图表")[:160])
                 figure.tight_layout()
                 with tempfile.TemporaryDirectory(prefix="agui-chart-") as directory:
-                    local_png = "%s/chart.png" % directory
+                    local_png = f"{directory}/chart.png"
                     figure.savefig(local_png, format="png", dpi=144)
                     with open(local_png, "rb") as source:
                         png = source.read()
             finally:
                 plt.close(figure)
             html = html_figure.to_html(
-                full_html=True, include_plotlyjs=True,
+                full_html=True,
+                include_plotlyjs=True,
             ).encode("utf-8")
             service.upload(thread, png_path, png)
             try:
@@ -416,13 +471,15 @@ def report_tools(service: WorkspaceService) -> list[Function]:
             except Exception:
                 service.delete_file(thread, png_path)
                 raise
-            return _bounded({
-                "sourcePath": path,
-                "chartType": chart_type,
-                "pointCount": len(plot_frame.index),
-                "pngPath": png_path,
-                "htmlPath": html_path,
-            })
+            return _bounded(
+                {
+                    "sourcePath": path,
+                    "chartType": chart_type,
+                    "pointCount": len(plot_frame.index),
+                    "pngPath": png_path,
+                    "htmlPath": html_path,
+                }
+            )
 
     return [
         Function(name="pandas_profile_dataset", entrypoint=profile_dataset),

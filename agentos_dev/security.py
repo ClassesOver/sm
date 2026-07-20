@@ -6,7 +6,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-
 CAPABILITY_AUDIENCE = "agui-agentos-workspace"
 MAX_CAPABILITY_TTL = 10 * 60
 
@@ -98,6 +97,4 @@ def verify_capability(
 
 
 def thread_label(thread: str, secret: str) -> str:
-    return hmac.new(
-        secret.encode("utf-8"), thread.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    return hmac.new(secret.encode("utf-8"), thread.encode("utf-8"), hashlib.sha256).hexdigest()

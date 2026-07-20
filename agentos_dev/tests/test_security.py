@@ -7,7 +7,6 @@ import pytest
 
 from agentos_dev.security import CapabilityError, verify_capability
 
-
 SECRET = "0123456789abcdef0123456789abcdef"
 
 
@@ -15,14 +14,20 @@ def encode(claims, secret=SECRET):
     header = {"alg": "HS256", "typ": "AGUI-CAP"}
 
     def segment(value):
-        return base64.urlsafe_b64encode(
-            json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
-        ).rstrip(b"=").decode()
+        return (
+            base64.urlsafe_b64encode(
+                json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+            )
+            .rstrip(b"=")
+            .decode()
+        )
 
     value = f"{segment(header)}.{segment(claims)}"
-    signature = base64.urlsafe_b64encode(
-        hmac.new(secret.encode(), value.encode(), hashlib.sha256).digest()
-    ).rstrip(b"=").decode()
+    signature = (
+        base64.urlsafe_b64encode(hmac.new(secret.encode(), value.encode(), hashlib.sha256).digest())
+        .rstrip(b"=")
+        .decode()
+    )
     return f"{value}.{signature}"
 
 
@@ -63,5 +68,8 @@ def test_capability_rejects_tampering_expiry_and_invalid_identity():
         verify_capability(token, SECRET, "thread-1", now=1600)
     with pytest.raises(CapabilityError, match="identity_invalid"):
         verify_capability(
-            encode(claims(user="7")), SECRET, "thread-1", now=1200,
+            encode(claims(user="7")),
+            SECRET,
+            "thread-1",
+            now=1200,
         )

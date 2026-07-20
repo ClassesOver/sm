@@ -1,9 +1,13 @@
 from agentos_dev.database import DEFAULT_AGENT_DB_URL, agent_db_url, psycopg_db_url
 
-
 DATABASE_ENV = (
-    "AGENT_DB_URL", "DATABASE_URL", "AGENT_POSTGRES_HOST", "AGENT_POSTGRES_PORT",
-    "AGENT_POSTGRES_DB", "AGENT_POSTGRES_USER", "AGENT_POSTGRES_PASSWORD",
+    "AGENT_DB_URL",
+    "DATABASE_URL",
+    "AGENT_POSTGRES_HOST",
+    "AGENT_POSTGRES_PORT",
+    "AGENT_POSTGRES_DB",
+    "AGENT_POSTGRES_USER",
+    "AGENT_POSTGRES_PASSWORD",
 )
 
 
@@ -32,7 +36,6 @@ def test_database_url_uses_postgres_environment(monkeypatch):
 
     url = agent_db_url()
     assert url == (
-        "postgresql+psycopg://agent%20user:p%40ss%3A%2Fword@"
-        "127.0.0.1:55432/agent%20data"
+        "postgresql+psycopg://agent%20user:p%40ss%3A%2Fword@127.0.0.1:55432/agent%20data"
     )
     assert psycopg_db_url(url).startswith("postgresql://")

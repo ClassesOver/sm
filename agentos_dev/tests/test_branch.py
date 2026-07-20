@@ -20,8 +20,13 @@ from agentos_dev.security import CapabilityClaims
 
 def claims(thread, user=7):
     return CapabilityClaims(
-        database="odoo", user=user, company=3, odoo_session="a" * 64,
-        thread=thread, issued_at=1000, expires_at=1600,
+        database="odoo",
+        user=user,
+        company=3,
+        odoo_session="a" * 64,
+        thread=thread,
+        issued_at=1000,
+        expires_at=1600,
     )
 
 
@@ -32,8 +37,10 @@ def source_session():
         user_id="owner",
         runs=[
             RunOutput(
-                run_id=f"run-{index}", session_id="source-thread",
-                agent_id="odoo-assistant", status=RunStatus.completed,
+                run_id=f"run-{index}",
+                session_id="source-thread",
+                agent_id="odoo-assistant",
+                status=RunStatus.completed,
                 content=f"answer-{index}",
             )
             for index in range(1, 4)
@@ -43,20 +50,34 @@ def source_session():
 
 def test_forwarded_props_only_accepts_controlled_branch_data():
     assert parse_forwarded_props({"forwardedProps": {}}) is None
-    spec = parse_forwarded_props({"forwardedProps": {"branch": {
-        "sourceThreadId": "source-thread",
-        "sourceRunId": "run-1",
-        "targetMessageId": "answer-1",
-    }}})
+    spec = parse_forwarded_props(
+        {
+            "forwardedProps": {
+                "branch": {
+                    "sourceThreadId": "source-thread",
+                    "sourceRunId": "run-1",
+                    "targetMessageId": "answer-1",
+                }
+            }
+        }
+    )
     assert spec == BranchSpec("source-thread", "run-1", "answer-1")
 
     with pytest.raises(BranchError, match="forwarded_props_invalid"):
         parse_forwarded_props({"forwardedProps": {"user_id": "admin"}})
     with pytest.raises(BranchError, match="branch_payload_invalid"):
-        parse_forwarded_props({"forwardedProps": {"branch": {
-            "sourceThreadId": "source-thread", "sourceRunId": "run-1",
-            "targetMessageId": "answer-1", "model": "other",
-        }}})
+        parse_forwarded_props(
+            {
+                "forwardedProps": {
+                    "branch": {
+                        "sourceThreadId": "source-thread",
+                        "sourceRunId": "run-1",
+                        "targetMessageId": "answer-1",
+                        "model": "other",
+                    }
+                }
+            }
+        )
 
 
 def test_branch_capabilities_require_the_same_odoo_identity():
@@ -71,7 +92,10 @@ def test_agent_history_is_truncated_and_every_copied_run_gets_a_new_id():
     source.runs[1].regenerated_from = "run-1"
 
     target, mapping, copied_target = _copy_session_through_run(
-        source, "target-thread", "run-2", "owner",
+        source,
+        "target-thread",
+        "run-2",
+        "owner",
     )
 
     assert [run.run_id for run in source.runs] == ["run-1", "run-2", "run-3"]
@@ -160,12 +184,21 @@ async def test_branch_sse_reports_mapping_and_uses_native_regenerate(monkeypatch
     workspace = FakeWorkspace()
     spec = BranchSpec("source-thread", "run-1", "answer-1")
 
-    events = [event async for event in run_branch(
-        agent, workspace, run_input(), spec, "owner",
-    )]
+    events = [
+        event
+        async for event in run_branch(
+            agent,
+            workspace,
+            run_input(),
+            spec,
+            "owner",
+        )
+    ]
 
     assert [event.type for event in events[:3]] == [
-        EventType.CUSTOM, EventType.RUN_STARTED, EventType.STATE_SNAPSHOT,
+        EventType.CUSTOM,
+        EventType.RUN_STARTED,
+        EventType.STATE_SNAPSHOT,
     ]
     assert events[0].name == "AGUI_BRANCH_PREPARED"
     assert events[0].value["runId"] == "generated-run"
@@ -175,7 +208,9 @@ async def test_branch_sse_reports_mapping_and_uses_native_regenerate(monkeypatch
     assert agent.continue_kwargs["run_id"] == events[0].value["runIdMap"]["run-1"]
     assert agent.continue_kwargs["run_context"].run_id == "generated-run"
     assert events[2].snapshot == {
-        "protocol": "agui.odoo.v2", "host": {}, "agent": {},
+        "protocol": "agui.odoo.v2",
+        "host": {},
+        "agent": {},
     }
     assert [run.run_id for run in agent.source.runs] == ["run-1", "run-2", "run-3"]
     assert not workspace.destroyed
@@ -187,8 +222,11 @@ async def test_closing_after_run_started_keeps_prepared_branch(monkeypatch):
     agent = FakeAgent()
     workspace = FakeWorkspace()
     events = run_branch(
-        agent, workspace, run_input(),
-        BranchSpec("source-thread", "run-1", "answer-1"), "owner",
+        agent,
+        workspace,
+        run_input(),
+        BranchSpec("source-thread", "run-1", "answer-1"),
+        "owner",
     )
 
     assert (await anext(events)).type == EventType.CUSTOM
@@ -205,10 +243,16 @@ async def test_failure_before_run_started_removes_agent_session_and_workspace(mo
     agent = FakeAgent(fail_stream=True)
     workspace = FakeWorkspace()
 
-    events = [event async for event in run_branch(
-        agent, workspace, run_input(),
-        BranchSpec("source-thread", "run-1", "answer-1"), "owner",
-    )]
+    events = [
+        event
+        async for event in run_branch(
+            agent,
+            workspace,
+            run_input(),
+            BranchSpec("source-thread", "run-1", "answer-1"),
+            "owner",
+        )
+    ]
 
     assert [event.type for event in events] == [EventType.RUN_ERROR]
     assert agent.db.deleted == [("target-thread", "owner")]

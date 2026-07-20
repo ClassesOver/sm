@@ -1,14 +1,15 @@
 import hashlib
-from pathlib import PurePosixPath
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from pathlib import PurePosixPath
 
-from agno.run import RunContext
 import pytest
-import agentos_dev.workspace as workspace_module
+from agno.run import RunContext
 
+import agentos_dev.workspace as workspace_module
+from agentos_dev.skills import SecureSkills
 from agentos_dev.workspace import (
     MAX_EXECUTION_TIMEOUT,
     MAX_PATH_BYTES,
@@ -24,8 +25,6 @@ from agentos_dev.workspace import (
     WorkspaceService,
     workspace_tools,
 )
-from agentos_dev.skills import SecureSkills
-
 
 SECRET = "0123456789abcdef0123456789abcdef"
 
@@ -48,6 +47,7 @@ class FakeFs:
     def get_file_info(self, path):
         if path not in self.entries:
             from daytona.common.errors import DaytonaNotFoundError
+
             raise DaytonaNotFoundError("not found")
         return self.entries[path][0]
 
@@ -63,8 +63,9 @@ class FakeFs:
     def list_files(self, path):
         prefix = path.rstrip("/") + "/"
         return [
-            info for child, (info, _content) in self.entries.items()
-            if child.startswith(prefix) and "/" not in child[len(prefix):]
+            info
+            for child, (info, _content) in self.entries.items()
+            if child.startswith(prefix) and "/" not in child[len(prefix) :]
         ]
 
     def delete_file(self, path, recursive=False):
@@ -104,14 +105,20 @@ class FakeClient:
     def get(self, sandbox_id):
         if sandbox_id not in self.sandboxes:
             from daytona.common.errors import DaytonaNotFoundError
+
             raise DaytonaNotFoundError("not found")
         return self.sandboxes[sandbox_id]
 
     def list(self, query):
-        return iter([
-            sandbox for sandbox in self.sandboxes.values()
-            if all(sandbox.labels.get(key) == value for key, value in (query.labels or {}).items())
-        ])
+        return iter(
+            [
+                sandbox
+                for sandbox in self.sandboxes.values()
+                if all(
+                    sandbox.labels.get(key) == value for key, value in (query.labels or {}).items()
+                )
+            ]
+        )
 
     def start(self, sandbox):
         sandbox.state = "started"
@@ -183,7 +190,8 @@ def test_路径大小符号链接和销毁边界均生效(tmp_path):
     assert current.read_text("thread", "docs/readme.txt") == "hello"
     sandbox = current.sandbox_for("thread")
     sandbox.fs.entries["/home/daytona/workspace/link"] = (
-        Info("link", mode="lrwxrwxrwx"), b"outside",
+        Info("link", mode="lrwxrwxrwx"),
+        b"outside",
     )
     with pytest.raises(WorkspaceError, match="符号链接"):
         current.file_bytes("thread", "link")
@@ -216,7 +224,9 @@ def test_销毁会删除重复标签沙箱并清理注册表(tmp_path):
 def test_注册表直到首次使用才初始化(monkeypatch):
     registry = SandboxRegistry("postgresql://unavailable/example")
     monkeypatch.setattr(
-        registry, "_connect", lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+        registry,
+        "_connect",
+        lambda: (_ for _ in ()).throw(RuntimeError("offline")),
     )
 
     with pytest.raises(RuntimeError, match="offline"):
@@ -225,8 +235,7 @@ def test_注册表直到首次使用才初始化(monkeypatch):
 
 def test_工具确认边界与可信技能注册符合策略(tmp_path):
     no_skill_tools = {
-        tool.name: tool
-        for tool in workspace_tools(service(tmp_path), SecureSkills([]))
+        tool.name: tool for tool in workspace_tools(service(tmp_path), SecureSkills([]))
     }
     assert set(no_skill_tools) == {
         "workspace_list_files",
@@ -237,7 +246,9 @@ def test_工具确认边界与可信技能注册符合策略(tmp_path):
         "workspace_delete_file",
     }
     for name in (
-        "workspace_list_files", "workspace_read_file", "workspace_write_file",
+        "workspace_list_files",
+        "workspace_read_file",
+        "workspace_write_file",
         "workspace_move_file",
     ):
         assert no_skill_tools[name].requires_confirmation is not True
@@ -245,13 +256,15 @@ def test_工具确认边界与可信技能注册符合策略(tmp_path):
     for name in ("workspace_replace_file", "workspace_delete_file"):
         assert no_skill_tools[name].requires_confirmation is True
 
-    fake_skills = type("可信技能", (), {
-        "get_all_skills": lambda _self: [object()],
-        "script_bytes": lambda *_args: b"print('ok')",
-    })()
-    skill_tools = {
-        tool.name: tool for tool in workspace_tools(service(tmp_path), fake_skills)
-    }
+    fake_skills = type(
+        "可信技能",
+        (),
+        {
+            "get_all_skills": lambda _self: [object()],
+            "script_bytes": lambda *_args: b"print('ok')",
+        },
+    )()
+    skill_tools = {tool.name: tool for tool in workspace_tools(service(tmp_path), fake_skills)}
     assert skill_tools["run_skill_script"].requires_confirmation is True
     assert "workspace_shell" not in skill_tools
     assert "workspace_run_code" not in skill_tools
@@ -280,7 +293,8 @@ def test_新建覆盖移动和系统上传保持各自语义(tmp_path):
 
     sandbox = current.sandbox_for("thread")
     sandbox.fs.entries[f"{WORKSPACE_ROOT}/管道"] = (
-        Info("管道", mode="prw-------"), b"",
+        Info("管道", mode="prw-------"),
+        b"",
     )
     with pytest.raises(WorkspaceError, match="不是普通文件"):
         current.replace_file("thread", "管道", b"content")
@@ -291,20 +305,23 @@ def test_新建覆盖移动和系统上传保持各自语义(tmp_path):
 
 def test_智能体新建覆盖和安全移动返回中文提示(tmp_path):
     current = service(tmp_path)
-    tools = {
-        tool.name: tool
-        for tool in workspace_tools(current, SecureSkills([]))
-    }
+    tools = {tool.name: tool for tool in workspace_tools(current, SecureSkills([]))}
     context = RunContext(run_id="run", session_id="thread")
 
     created = tools["workspace_write_file"].entrypoint(
-        path="新建.txt", content="内容", run_context=context,
+        path="新建.txt",
+        content="内容",
+        run_context=context,
     )
     replaced = tools["workspace_replace_file"].entrypoint(
-        path="新建.txt", content="新内容", run_context=context,
+        path="新建.txt",
+        content="新内容",
+        run_context=context,
     )
     moved = tools["workspace_move_file"].entrypoint(
-        source="新建.txt", destination="已移动.txt", run_context=context,
+        source="新建.txt",
+        destination="已移动.txt",
+        run_context=context,
     )
 
     assert created["message"] == "文件已新建。"
@@ -422,7 +439,8 @@ def test_分支工作区先校验限制和符号链接再创建目标(tmp_path, 
     monkeypatch.setattr(workspace_module, "MAX_BRANCH_TOTAL_BYTES", 256 * 1024 * 1024)
     source = current.sandbox_for("source")
     source.fs.entries[f"{WORKSPACE_ROOT}/link"] = (
-        Info("link", mode="lrwxrwxrwx"), b"",
+        Info("link", mode="lrwxrwxrwx"),
+        b"",
     )
     with pytest.raises(WorkspaceError, match="符号链接"):
         current.copy_branch("source", "linked")
@@ -448,21 +466,35 @@ def test_技能执行输入在创建沙箱前被拒绝(tmp_path):
         current.run_skill_script("thread", fake_skills, "review", "check.py", ["x"] * 21)
     with pytest.raises(WorkspaceError, match="1 KiB"):
         current.run_skill_script(
-            "thread", fake_skills, "review", "check.py",
+            "thread",
+            fake_skills,
+            "review",
+            "check.py",
             ["界" * (MAX_SCRIPT_ARG_BYTES // 3 + 1)],
         )
     with pytest.raises(WorkspaceError, match="1 至 60 秒"):
         current.run_skill_script(
-            "thread", fake_skills, "review", "check.py",
+            "thread",
+            fake_skills,
+            "review",
+            "check.py",
             timeout=MAX_EXECUTION_TIMEOUT + 1,
         )
     with pytest.raises(WorkspaceError, match="字符串列表"):
         current.run_skill_script(
-            "thread", fake_skills, "review", "check.py", args="bad",
+            "thread",
+            fake_skills,
+            "review",
+            "check.py",
+            args="bad",
         )
-    large_skills = type("Skills", (), {
-        "script_bytes": lambda *_args: b"x" * (MAX_SCRIPT_BYTES + 1),
-    })()
+    large_skills = type(
+        "Skills",
+        (),
+        {
+            "script_bytes": lambda *_args: b"x" * (MAX_SCRIPT_BYTES + 1),
+        },
+    )()
     with pytest.raises(WorkspaceError, match="脚本超过 256 KiB"):
         current.run_skill_script("thread", large_skills, "review", "check.py")
     assert not current.client.created
@@ -474,7 +506,10 @@ def test_技能执行接受参数和超时边界并使用内容摘要路径(tmp_
     fake_skills = type("Skills", (), {"script_bytes": lambda *_args: content})()
 
     result = current.run_skill_script(
-        "thread", fake_skills, "review", "check.py",
+        "thread",
+        fake_skills,
+        "review",
+        "check.py",
         ["x" * MAX_SCRIPT_ARG_BYTES] * 20,
         timeout=MAX_EXECUTION_TIMEOUT,
     )
@@ -483,6 +518,7 @@ def test_技能执行接受参数和超时边界并使用内容摘要路径(tmp_
     assert "检查结果" in result["message"]
 
 
+@pytest.mark.integration
 def test_数据库注册表会串行化两个工作区服务():
     client = FakeClient()
     thread = "concurrent-" + uuid.uuid4().hex

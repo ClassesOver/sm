@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import PurePosixPath
 from typing import Any
 
+import psycopg
 from agno.run import RunContext
 from agno.tools.function import Function
 from daytona import (
@@ -16,12 +17,10 @@ from daytona import (
     ListSandboxesQuery,
 )
 from daytona.common.errors import DaytonaNotFoundError
-import psycopg
 
-from .security import thread_label
 from .database import psycopg_db_url
-from .skills import SecureSkills
-
+from .security import thread_label
+from .skills import MAX_SKILL_SCRIPT_BYTES, SecureSkills
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -32,7 +31,7 @@ MAX_LIST_ENTRIES = 500
 MAX_PATH_BYTES = 1024
 MAX_PATH_COMPONENT_BYTES = 255
 MAX_PATH_DEPTH = 32
-MAX_SCRIPT_BYTES = 256 * 1024
+MAX_SCRIPT_BYTES = MAX_SKILL_SCRIPT_BYTES
 MAX_SCRIPT_ARGS = 20
 MAX_SCRIPT_ARG_BYTES = 1024
 MAX_EXECUTION_TIMEOUT = 60
@@ -77,9 +76,7 @@ class SandboxRegistry:
     def locked(self, value: str):
         self.ensure_initialized()
         with self._connect() as connection:
-            connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (value,)
-            )
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (value,))
             yield SandboxRegistryTransaction(connection)
 
 
@@ -136,13 +133,16 @@ class WorkspaceService:
                 return self.client.get(sandbox_id)
             except DaytonaNotFoundError:
                 registry.delete(value)
-        matches = list(self.client.list(ListSandboxesQuery(
-            labels={"agui-thread": value}, limit=2,
-        )))
-        if len(matches) > 1:
-            raise WorkspaceError(
-                "当前对话关联了多个运行环境，请联系管理员清理后重试。"
+        matches = list(
+            self.client.list(
+                ListSandboxesQuery(
+                    labels={"agui-thread": value},
+                    limit=2,
+                )
             )
+        )
+        if len(matches) > 1:
+            raise WorkspaceError("当前对话关联了多个运行环境，请联系管理员清理后重试。")
         if matches:
             registry.set(value, matches[0].id)
             return matches[0]
@@ -153,17 +153,19 @@ class WorkspaceService:
         with self.registry.locked(value) as registry:
             sandbox = self._find_existing(value, registry)
             if sandbox is None and create:
-                sandbox = self.client.create(CreateSandboxFromSnapshotParams(
-                    name=f"agui-{value[:20]}",
-                    language="python",
-                    labels={"agui-thread": value},
-                    public=False,
-                    ephemeral=False,
-                    auto_stop_interval=60,
-                    auto_archive_interval=0,
-                    auto_delete_interval=-1,
-                    network_block_all=True,
-                ))
+                sandbox = self.client.create(
+                    CreateSandboxFromSnapshotParams(
+                        name=f"agui-{value[:20]}",
+                        language="python",
+                        labels={"agui-thread": value},
+                        public=False,
+                        ephemeral=False,
+                        auto_stop_interval=60,
+                        auto_archive_interval=0,
+                        auto_delete_interval=-1,
+                        network_block_all=True,
+                    )
+                )
                 registry.set(value, sandbox.id)
             if sandbox is None:
                 return None
@@ -174,14 +176,17 @@ class WorkspaceService:
                 raw_state = getattr(sandbox, "state", "")
                 state = str(getattr(raw_state, "value", raw_state) or "").lower()
             if state in {
-                "creating", "restoring", "starting", "pending_build",
-                "building_snapshot", "pulling_snapshot", "resuming",
+                "creating",
+                "restoring",
+                "starting",
+                "pending_build",
+                "building_snapshot",
+                "pulling_snapshot",
+                "resuming",
             }:
                 raise WorkspaceError("当前工作区正在启动，请稍后重试。")
             if state != "started":
-                raise WorkspaceError(
-                    "当前工作区状态异常，请稍后重试；如问题持续，请联系管理员。"
-                )
+                raise WorkspaceError("当前工作区状态异常，请稍后重试；如问题持续，请联系管理员。")
             self._ensure_directory(sandbox, WORKSPACE_ROOT)
             return sandbox
 
@@ -196,9 +201,11 @@ class WorkspaceService:
                     sandboxes[sandbox.id] = sandbox
                 except DaytonaNotFoundError:
                     pass
-            for sandbox in self.client.list(ListSandboxesQuery(
-                labels={"agui-thread": value},
-            )):
+            for sandbox in self.client.list(
+                ListSandboxesQuery(
+                    labels={"agui-thread": value},
+                )
+            ):
                 sandboxes[sandbox.id] = sandbox
             for sandbox in sandboxes.values():
                 try:
@@ -288,25 +295,17 @@ class WorkspaceService:
     def normalize_path(path: str | None, allow_root: bool = True) -> tuple[str, str]:
         raw = str(path or "")
         if any(unicodedata.category(character).startswith("C") for character in raw):
-            raise WorkspaceError(
-                "工作区路径包含控制字符，请删除不可见字符后重试。"
-            )
+            raise WorkspaceError("工作区路径包含控制字符，请删除不可见字符后重试。")
         raw = raw.replace("\\", "/")
         if len(raw.encode("utf-8")) > MAX_PATH_BYTES:
-            raise WorkspaceError(
-                f"工作区路径超过 {MAX_PATH_BYTES} 字节，请缩短路径后重试。"
-            )
+            raise WorkspaceError(f"工作区路径超过 {MAX_PATH_BYTES} 字节，请缩短路径后重试。")
         candidate = PurePosixPath(raw)
         windows_absolute = len(raw) >= 2 and raw[0].isalpha() and raw[1] == ":"
         if candidate.is_absolute() or windows_absolute:
-            raise WorkspaceError(
-                "工作区路径是绝对路径，请改用当前工作区内的相对路径。"
-            )
+            raise WorkspaceError("工作区路径是绝对路径，请改用当前工作区内的相对路径。")
         parts = [part for part in candidate.parts if part not in ("", ".")]
         if any(part == ".." for part in parts):
-            raise WorkspaceError(
-                "工作区路径包含目录穿越“..”，请改用当前工作区内的路径。"
-            )
+            raise WorkspaceError("工作区路径包含目录穿越“..”，请改用当前工作区内的路径。")
         if len(parts) > MAX_PATH_DEPTH:
             raise WorkspaceError(
                 f"工作区路径目录层级超过 {MAX_PATH_DEPTH} 层，请减少目录层级后重试。"
@@ -346,13 +345,9 @@ class WorkspaceService:
             try:
                 info = self._info(sandbox, remote)
             except DaytonaNotFoundError as error:
-                raise WorkspaceError(
-                    "工作区路径不存在，请检查名称后重试。"
-                ) from error
+                raise WorkspaceError("工作区路径不存在，请检查名称后重试。") from error
             if self._is_symlink(info):
-                raise WorkspaceError(
-                    "工作区路径包含符号链接，请改用普通文件或目录。"
-                )
+                raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
 
     def _validate_destination(self, sandbox, relative: str, remote: str):
         self._validate_existing_path(sandbox, relative, include_leaf=False)
@@ -361,9 +356,7 @@ class WorkspaceService:
         except DaytonaNotFoundError:
             return None
         if self._is_symlink(info):
-            raise WorkspaceError(
-                "工作区路径包含符号链接，请改用普通文件或目录。"
-            )
+            raise WorkspaceError("工作区路径包含符号链接，请改用普通文件或目录。")
         return info
 
     def _ensure_directory(self, sandbox, remote: str):
@@ -371,16 +364,14 @@ class WorkspaceService:
             try:
                 info = self._info(sandbox, remote)
                 if self._is_symlink(info) or not info.is_dir:
-                    raise WorkspaceError(
-                        "工作区根路径不是安全目录，请联系管理员检查运行环境。"
-                    )
+                    raise WorkspaceError("工作区根路径不是安全目录，请联系管理员检查运行环境。")
                 return
             except WorkspaceError:
                 raise
             except DaytonaNotFoundError:
                 sandbox.fs.create_folder(remote, "700")
                 return
-        relative = remote[len(WORKSPACE_ROOT):].strip("/")
+        relative = remote[len(WORKSPACE_ROOT) :].strip("/")
         current = WORKSPACE_ROOT
         self._ensure_directory(sandbox, WORKSPACE_ROOT)
         for part in relative.split("/") if relative else []:
@@ -388,9 +379,7 @@ class WorkspaceService:
             try:
                 info = self._info(sandbox, current)
                 if self._is_symlink(info) or not info.is_dir:
-                    raise WorkspaceError(
-                        "工作区父路径不是安全目录，请更换路径后重试。"
-                    )
+                    raise WorkspaceError("工作区父路径不是安全目录，请更换路径后重试。")
             except WorkspaceError:
                 raise
             except DaytonaNotFoundError:
@@ -410,16 +399,18 @@ class WorkspaceService:
             if entry.name in (".", "..") or self._is_symlink(entry):
                 continue
             child = f"{relative}/{entry.name}".strip("/")
-            result.append({
-                "path": child,
-                "name": entry.name,
-                "isDirectory": bool(entry.is_dir),
-                "size": int(entry.size or 0),
-                "mimeType": False if entry.is_dir else (
-                    mimetypes.guess_type(entry.name)[0] or "application/octet-stream"
-                ),
-                "modifiedAt": entry.modified_at or entry.mod_time,
-            })
+            result.append(
+                {
+                    "path": child,
+                    "name": entry.name,
+                    "isDirectory": bool(entry.is_dir),
+                    "size": int(entry.size or 0),
+                    "mimeType": False
+                    if entry.is_dir
+                    else (mimetypes.guess_type(entry.name)[0] or "application/octet-stream"),
+                    "modifiedAt": entry.modified_at or entry.mod_time,
+                }
+            )
         return sorted(result, key=lambda item: (not item["isDirectory"], item["name"].lower()))
 
     @staticmethod
@@ -443,13 +434,9 @@ class WorkspaceService:
         self._ensure_directory(sandbox, parent)
         info = self._validate_destination(sandbox, relative, remote)
         if mode == "create" and info is not None:
-            raise WorkspaceError(
-                f"文件“{relative}”已经存在。如需覆盖，请使用覆盖文件工具并确认。"
-            )
+            raise WorkspaceError(f"文件“{relative}”已经存在。如需覆盖，请使用覆盖文件工具并确认。")
         if mode == "replace" and info is None:
-            raise WorkspaceError(
-                f"文件“{relative}”不存在。如需新建，请使用新建文件工具。"
-            )
+            raise WorkspaceError(f"文件“{relative}”不存在。如需新建，请使用新建文件工具。")
         if info is not None and info.is_dir:
             raise WorkspaceError("目标路径是目录，不能写入文件，请更换文件路径后重试。")
         if info is not None and not self._is_regular_file(info):
@@ -498,9 +485,7 @@ class WorkspaceService:
         try:
             return content.decode("utf-8")
         except UnicodeDecodeError as error:
-            raise WorkspaceError(
-                "该文件不是 UTF-8 文本，请下载后使用对应软件打开。"
-            ) from error
+            raise WorkspaceError("该文件不是 UTF-8 文本，请下载后使用对应软件打开。") from error
 
     def delete_file(self, thread: str, path: str, recursive: bool = False):
         relative, remote = self.normalize_path(path, allow_root=False)
@@ -508,14 +493,14 @@ class WorkspaceService:
         self._validate_existing_path(sandbox, relative)
         info = self._info(sandbox, remote)
         if info.is_dir and not recursive:
-            raise WorkspaceError(
-                "所选项目是目录；如需删除，请启用递归删除并重新确认。"
-            )
+            raise WorkspaceError("所选项目是目录；如需删除，请启用递归删除并重新确认。")
         sandbox.fs.delete_file(remote, recursive=recursive)
 
     def move_file(self, thread: str, source: str, destination: str):
         source_relative, source_remote = self.normalize_path(source, allow_root=False)
-        destination_relative, destination_remote = self.normalize_path(destination, allow_root=False)
+        destination_relative, destination_remote = self.normalize_path(
+            destination, allow_root=False
+        )
         sandbox = self.sandbox_for(thread)
         self._validate_existing_path(sandbox, source_relative)
         source_info = self._info(sandbox, source_remote)
@@ -523,11 +508,12 @@ class WorkspaceService:
             destination_relative == source_relative
             or destination_relative.startswith(f"{source_relative}/")
         ):
-            raise WorkspaceError(
-                "目录不能移动到自身或其子目录，请更换目标路径后重试。"
-            )
+            raise WorkspaceError("目录不能移动到自身或其子目录，请更换目标路径后重试。")
         self._ensure_directory(sandbox, destination_remote.rsplit("/", 1)[0])
-        if self._validate_destination(sandbox, destination_relative, destination_remote) is not None:
+        if (
+            self._validate_destination(sandbox, destination_relative, destination_remote)
+            is not None
+        ):
             raise WorkspaceError("目标路径已经存在，请更换名称后重试。")
         sandbox.fs.move_files(source_remote, destination_remote)
 
@@ -576,9 +562,7 @@ class WorkspaceService:
         try:
             content = skills.script_bytes(skill_name, script_path)
         except (OSError, UnicodeError, ValueError) as error:
-            raise WorkspaceError(
-                f"技能脚本无法读取：{error}。请检查技能声明后重试。"
-            ) from error
+            raise WorkspaceError(f"技能脚本无法读取：{error}。请检查技能声明后重试。") from error
         if not isinstance(content, bytes) or len(content) > MAX_SCRIPT_BYTES:
             raise WorkspaceError("技能脚本超过 256 KiB，请缩小脚本后重试。")
         extension = PurePosixPath(script_path).suffix.lower()
@@ -590,9 +574,9 @@ class WorkspaceService:
         relative = f"skills/{skill_key}/{digest}{extension}"
         self.upload(thread, relative, content)
         remote = f"{WORKSPACE_ROOT}/{relative}"
-        arguments = " ".join(shlex.quote(str(value)) for value in arguments)
+        command_arguments = " ".join(shlex.quote(str(value)) for value in arguments)
         value = self.sandbox_for(thread).process.exec(
-            f"{interpreter} {shlex.quote(remote)} {arguments}".rstrip(),
+            f"{interpreter} {shlex.quote(remote)} {command_arguments}".rstrip(),
             cwd=WORKSPACE_ROOT,
             timeout=execution_timeout,
         )
@@ -601,37 +585,37 @@ class WorkspaceService:
         return result
 
 
-def _thread(run_context: RunContext) -> str:
+def _thread(run_context: RunContext | None) -> str:
     if not run_context or not run_context.session_id:
         raise WorkspaceError("当前操作没有绑定对话，请刷新页面后重试。")
     return run_context.session_id
 
 
 def workspace_tools(service: WorkspaceService, skills: SecureSkills) -> list[Function]:
-    def list_files(path: str = "", run_context: RunContext = None):
+    def list_files(path: str = "", run_context: RunContext | None = None):
         """列出当前对话工作区中的文件。"""
         return json.dumps(service.list_files(_thread(run_context), path), ensure_ascii=False)
 
-    def read_file(path: str, run_context: RunContext = None):
+    def read_file(path: str, run_context: RunContext | None = None):
         """读取当前对话工作区中大小受限的 UTF-8 文本文件。"""
         return service.read_text(_thread(run_context), path)
 
-    def write_file(path: str, content: str, run_context: RunContext = None):
+    def write_file(path: str, content: str, run_context: RunContext | None = None):
         """在当前对话工作区中新建 UTF-8 文件；目标已存在时拒绝写入。"""
         result = service.create_file(_thread(run_context), path, content.encode("utf-8"))
         return {**result, "message": "文件已新建。"}
 
-    def replace_file(path: str, content: str, run_context: RunContext = None):
+    def replace_file(path: str, content: str, run_context: RunContext | None = None):
         """覆盖当前对话工作区中的普通 UTF-8 文件；执行前需要确认。"""
         result = service.replace_file(_thread(run_context), path, content.encode("utf-8"))
         return {**result, "message": "文件已覆盖。"}
 
-    def move_file(source: str, destination: str, run_context: RunContext = None):
+    def move_file(source: str, destination: str, run_context: RunContext | None = None):
         """移动或重命名当前对话工作区中的文件或目录；目标已存在时拒绝操作。"""
         service.move_file(_thread(run_context), source, destination)
         return {"ok": True, "message": "文件或目录已移动。"}
 
-    def delete_file(path: str, recursive: bool = False, run_context: RunContext = None):
+    def delete_file(path: str, recursive: bool = False, run_context: RunContext | None = None):
         """删除当前对话工作区中的文件或目录；执行前需要确认。"""
         service.delete_file(_thread(run_context), path, recursive)
         return {"ok": True, "message": "文件或目录已删除。"}
@@ -641,11 +625,16 @@ def workspace_tools(service: WorkspaceService, skills: SecureSkills) -> list[Fun
         script_path: str,
         args: list[str] | None = None,
         timeout: int = 30,
-        run_context: RunContext = None,
+        run_context: RunContext | None = None,
     ):
         """在当前工作区中复制并执行可信技能声明的脚本；执行前需要确认。"""
         return service.run_skill_script(
-            _thread(run_context), skills, skill_name, script_path, args, timeout,
+            _thread(run_context),
+            skills,
+            skill_name,
+            script_path,
+            args,
+            timeout,
         )
 
     tools = [
@@ -683,10 +672,12 @@ def workspace_tools(service: WorkspaceService, skills: SecureSkills) -> list[Fun
         ),
     ]
     if skills.get_all_skills():
-        tools.append(Function(
-            name="run_skill_script",
-            description="执行可信技能声明的脚本；执行前需要确认。",
-            entrypoint=run_skill_script,
-            requires_confirmation=True,
-        ))
+        tools.append(
+            Function(
+                name="run_skill_script",
+                description="执行可信技能声明的脚本；执行前需要确认。",
+                entrypoint=run_skill_script,
+                requires_confirmation=True,
+            )
+        )
     return tools

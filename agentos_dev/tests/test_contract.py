@@ -5,12 +5,18 @@ from pathlib import Path
 
 from agentos_dev import app
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def odoo_contract():
-    source = Path("agui_chat/models/agui_chat_config.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "agui_chat/models/agui_chat_config.py").read_text(encoding="utf-8")
     values = {}
     for node in ast.parse(source).body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
             try:
                 values[node.targets[0].id] = ast.literal_eval(node.value)
             except (ValueError, TypeError):
@@ -20,9 +26,14 @@ def odoo_contract():
         "commands": values["HOST_COMMAND_NAMES"],
         "revision": values["COMMAND_CATALOG_REVISION"],
     }
-    digest = hashlib.sha256(json.dumps(
-        material, ensure_ascii=True, separators=(",", ":"), sort_keys=True,
-    ).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(
+        json.dumps(
+            material,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
     return values, digest
 
 

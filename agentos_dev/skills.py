@@ -3,10 +3,11 @@ import json
 import os
 import stat
 from pathlib import Path
-from typing import Any
 
 from agno.skills import LocalSkills, Skills
 from agno.tools.function import Function
+
+MAX_SKILL_SCRIPT_BYTES = 256 * 1024
 
 
 class UntrustedSkillsDirectory(ValueError):
@@ -32,7 +33,11 @@ def _trusted_path(path: Path, expected: str) -> None:
 def _trusted_metadata(metadata, path: Path, expected: str) -> None:
     if stat.S_ISLNK(metadata.st_mode):
         raise UntrustedSkillsDirectory(f"技能路径不能是符号链接：{path}")
-    correct_type = stat.S_ISDIR(metadata.st_mode) if expected == "directory" else stat.S_ISREG(metadata.st_mode)
+    correct_type = (
+        stat.S_ISDIR(metadata.st_mode)
+        if expected == "directory"
+        else stat.S_ISREG(metadata.st_mode)
+    )
     if not correct_type:
         expected_name = "目录" if expected == "directory" else "文件"
         raise UntrustedSkillsDirectory(f"技能路径必须是{expected_name}：{path}")
@@ -69,7 +74,8 @@ class TrustedLocalSkills(LocalSkills):
             for child in [folder / "SKILL.md"] + [
                 folder / category / name
                 for category, names in (
-                    ("scripts", skill.scripts), ("references", skill.references),
+                    ("scripts", skill.scripts),
+                    ("references", skill.references),
                 )
                 for name in names
             ]:
@@ -77,9 +83,7 @@ class TrustedLocalSkills(LocalSkills):
                 if category_path != folder:
                     _trusted_path(category_path, "directory")
                 if folder.resolve() not in child.resolve().parents:
-                    raise UntrustedSkillsDirectory(
-                        f"技能资源超出所属目录：{child}"
-                    )
+                    raise UntrustedSkillsDirectory(f"技能资源超出所属目录：{child}")
                 _trusted_path(child, "file")
         return skills
 
@@ -96,8 +100,9 @@ class TrustedLocalSkills(LocalSkills):
                 else:
                     _trusted_metadata(metadata, child, "file")
 
-    def validate_resource(self, skill, category: str | None = None,
-                          resource_path: str | None = None) -> Path:
+    def validate_resource(
+        self, skill, category: str | None = None, resource_path: str | None = None
+    ) -> Path:
         folder = Path(skill.source_path)
         _trusted_path(self.root, "directory")
         _trusted_path(folder, "directory")
@@ -167,10 +172,7 @@ class SecureSkills(Skills):
 
     def skill_by_id(self, skill_id: str):
         return next(
-            (
-                skill for skill in self.get_all_skills()
-                if self.skill_id(skill.name) == skill_id
-            ),
+            (skill for skill in self.get_all_skills() if self.skill_id(skill.name) == skill_id),
             None,
         )
 
@@ -187,11 +189,15 @@ class SecureSkills(Skills):
 
     def _loader_for(self, skill) -> TrustedLocalSkills:
         folder = Path(skill.source_path).resolve()
-        loader = next((
-            item for item in self.loaders
-            if isinstance(item, TrustedLocalSkills) and
-            (folder == item.root or item.root in folder.parents)
-        ), None)
+        loader = next(
+            (
+                item
+                for item in self.loaders
+                if isinstance(item, TrustedLocalSkills)
+                and (folder == item.root or item.root in folder.parents)
+            ),
+            None,
+        )
         if loader is None:
             raise UntrustedSkillsDirectory("技能并非由受信任的本地加载器提供")
         return loader
@@ -213,33 +219,37 @@ class SecureSkills(Skills):
         try:
             target = self._skill_resource(skill_name, "references", reference_path)
             content = _read_trusted_bytes(target).decode("utf-8")
-            return json.dumps({
-                "skill_name": skill_name,
-                "reference_path": reference_path,
-                "content": content,
-            })
+            return json.dumps(
+                {
+                    "skill_name": skill_name,
+                    "reference_path": reference_path,
+                    "content": content,
+                }
+            )
         except (OSError, UnicodeError, ValueError) as error:
             return json.dumps({"error": str(error), "skill_name": skill_name})
 
     def read_skill_script(self, skill_name: str, script_path: str) -> str:
         try:
-            content = _read_trusted_bytes(self._skill_resource(
-                skill_name, "scripts", script_path
-            )).decode("utf-8")
-            if len(content.encode("utf-8")) > 256 * 1024:
+            content = _read_trusted_bytes(
+                self._skill_resource(skill_name, "scripts", script_path)
+            ).decode("utf-8")
+            if len(content.encode("utf-8")) > MAX_SKILL_SCRIPT_BYTES:
                 raise ValueError("技能脚本超过 256 KB")
-            return json.dumps({
-                "skill_name": skill_name,
-                "script_path": script_path,
-                "content": content,
-            })
+            return json.dumps(
+                {
+                    "skill_name": skill_name,
+                    "script_path": script_path,
+                    "content": content,
+                }
+            )
         except (OSError, UnicodeError, ValueError) as error:
             return json.dumps({"error": str(error), "skill_name": skill_name})
 
     def script_bytes(self, skill_name: str, script_path: str) -> bytes:
         target = self._skill_resource(skill_name, "scripts", script_path)
         content = _read_trusted_bytes(target)
-        if len(content) > 256 * 1024:
+        if len(content) > MAX_SKILL_SCRIPT_BYTES:
             raise ValueError("技能脚本超过 256 KB")
         return content
 

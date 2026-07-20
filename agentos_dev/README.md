@@ -12,9 +12,19 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
   docker compose --env-file .env.example --profile setup run --build --rm env-init
 # 脚本自动生成服务密码；只需将 .env 中的 OPENAI_API_KEY 改为真实值
 docker compose up -d agent-db
-uv venv .venv-agent
+uv venv --python 3.12 .venv-agent
 uv pip install --python .venv-agent/bin/python -r agentos_dev/requirements.txt
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app
+```
+
+开发检查与测试：
+
+```bash
+uv pip install --python .venv-agent/bin/python -r agentos_dev/requirements-test.txt
+bash scripts/check_agentos.sh
+
+# 启动 PostgreSQL 后单独运行集成测试
+.venv-agent/bin/python -m pytest -m integration
 ```
 
 初始化命令中的 `HOST_UID`/`HOST_GID` 用于保持 `.env` 的宿主文件所有权，`--rm` 只在

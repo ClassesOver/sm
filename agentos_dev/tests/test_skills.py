@@ -2,8 +2,8 @@ import json
 import os
 
 import pytest
-import agentos_dev.skills as skills_module
 
+import agentos_dev.skills as skills_module
 from agentos_dev.skills import (
     SecureSkills,
     TrustedLocalSkills,
@@ -37,16 +37,20 @@ def test_public_metadata_is_clean_and_host_script_execution_is_absent(tmp_path):
     metadata = skills.public_metadata()
     serialized = json.dumps(metadata)
 
-    assert metadata == [{
-        "id": SecureSkills.skill_id("review"),
-        "name": "review",
-        "description": "Review documents",
-    }]
+    assert metadata == [
+        {
+            "id": SecureSkills.skill_id("review"),
+            "name": "review",
+            "description": "Review documents",
+        }
+    ]
     assert "Secret instructions" not in serialized
     assert str(tmp_path) not in serialized
     tools = {tool.name: tool for tool in skills.get_tools()}
     assert set(tools) == {
-        "get_skill_instructions", "get_skill_reference", "get_skill_script",
+        "get_skill_instructions",
+        "get_skill_reference",
+        "get_skill_script",
     }
     assert "execute" not in tools["get_skill_script"].parameters["properties"]
     assert "print('ok')" in skills.read_skill_script("review", "check.py")

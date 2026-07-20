@@ -19,7 +19,6 @@ from ag_ui.core import (
 
 from agentos_dev import app as app_module
 
-
 SECRET = "0123456789abcdef0123456789abcdef"
 
 
@@ -53,32 +52,50 @@ def capability(thread="thread-1", **overrides):
     claims.update(overrides)
 
     def segment(value):
-        return base64.urlsafe_b64encode(
-            json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
-        ).rstrip(b"=").decode()
+        return (
+            base64.urlsafe_b64encode(
+                json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+            )
+            .rstrip(b"=")
+            .decode()
+        )
 
-    signing_input = "%s.%s" % (segment(header), segment(claims))
-    signature = base64.urlsafe_b64encode(hmac.new(
-        SECRET.encode(), signing_input.encode(), hashlib.sha256,
-    ).digest()).rstrip(b"=").decode()
-    return "%s.%s" % (signing_input, signature)
+    signing_input = f"{segment(header)}.{segment(claims)}"
+    signature = (
+        base64.urlsafe_b64encode(
+            hmac.new(
+                SECRET.encode(),
+                signing_input.encode(),
+                hashlib.sha256,
+            ).digest()
+        )
+        .rstrip(b"=")
+        .decode()
+    )
+    return f"{signing_input}.{signature}"
 
 
 def run_input(
-    message="编辑", *, tools=(app_module.EDIT_MODE_TOOL,), context=(), messages=None,
+    message="编辑",
+    *,
+    tools=(app_module.EDIT_MODE_TOOL,),
+    context=(),
+    messages=None,
 ):
-    return RunAgentInput.model_validate({
-        "threadId": "thread-1",
-        "runId": "run-1",
-        "state": {},
-        "messages": messages or [{"id": "user-1", "role": "user", "content": message}],
-        "tools": [
-            {"name": name, "description": "页面工具", "parameters": {"type": "object"}}
-            for name in tools
-        ],
-        "context": list(context),
-        "forwardedProps": {},
-    })
+    return RunAgentInput.model_validate(
+        {
+            "threadId": "thread-1",
+            "runId": "run-1",
+            "state": {},
+            "messages": messages or [{"id": "user-1", "role": "user", "content": message}],
+            "tools": [
+                {"name": name, "description": "页面工具", "parameters": {"type": "object"}}
+                for name in tools
+            ],
+            "context": list(context),
+            "forwardedProps": {},
+        }
+    )
 
 
 def direct_request(branch=None):
@@ -126,7 +143,11 @@ async def test_public_config_and_protected_routes(monkeypatch, client):
     config = await client.get("/config")
     assert config.status_code == 200
     assert set(config.json()) == {
-        "protocol", "bundle_version", "command_catalog_hash", "skills", "limits",
+        "protocol",
+        "bundle_version",
+        "command_catalog_hash",
+        "skills",
+        "limits",
     }
     assert config.json()["limits"] == {
         "run_request_bytes": 2 * 1024 * 1024,
@@ -186,11 +207,16 @@ async def test_branch_requires_controlled_props_and_matching_source_capability(m
     assert arbitrary.status_code == 403
     assert arbitrary.json() == {"error": "forwarded_props_invalid"}
 
-    branch_payload = {**base_payload, "forwardedProps": {"branch": {
-        "sourceThreadId": "source-thread",
-        "sourceRunId": "source-run",
-        "targetMessageId": "answer-1",
-    }}}
+    branch_payload = {
+        **base_payload,
+        "forwardedProps": {
+            "branch": {
+                "sourceThreadId": "source-thread",
+                "sourceRunId": "source-run",
+                "targetMessageId": "answer-1",
+            }
+        },
+    }
     missing_source = await client.post("/agui", json=branch_payload, headers=headers)
     assert missing_source.status_code == 401
 
@@ -328,42 +354,60 @@ async def test_ready_reports_all_required_checks(monkeypatch, client):
         return function(*args, **kwargs)
 
     monkeypatch.setattr(app_module, "run_in_threadpool", inline)
-    monkeypatch.setattr(app_module, "_readiness_checks", lambda: {
-        "postgresql": True, "sandbox_registry": True, "hmac": True,
-    })
+    monkeypatch.setattr(
+        app_module,
+        "_readiness_checks",
+        lambda: {
+            "postgresql": True,
+            "sandbox_registry": True,
+            "hmac": True,
+        },
+    )
     ready = await client.get("/ready")
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
 
-    monkeypatch.setattr(app_module, "_readiness_checks", lambda: {
-        "postgresql": True, "sandbox_registry": False, "hmac": True,
-    })
+    monkeypatch.setattr(
+        app_module,
+        "_readiness_checks",
+        lambda: {
+            "postgresql": True,
+            "sandbox_registry": False,
+            "hmac": True,
+        },
+    )
     unavailable = await client.get("/ready")
     assert unavailable.status_code == 503
     assert unavailable.json()["status"] == "not_ready"
 
 
-@pytest.mark.parametrize("message", [
-    "编辑",
-    "修改",
-    "进入编辑模式",
-    "编辑当前表单",
-    "编辑当前单据",
-    "修改当前表单",
-    "修改当前单据",
-    "  编辑。！  ",
-])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "编辑",
+        "修改",
+        "进入编辑模式",
+        "编辑当前表单",
+        "编辑当前单据",
+        "修改当前表单",
+        "修改当前单据",
+        "  编辑。！  ",
+    ],
+)
 def test_explicit_edit_mode_intent_matches_only_complete_short_commands(message):
     assert app_module._is_explicit_edit_mode_request(run_input(message))
 
 
-@pytest.mark.parametrize("message", [
-    "修改电话为 13800000000",
-    "如何编辑",
-    "编辑张三的单据",
-    "请编辑",
-    "进入编辑模式后修改名称",
-])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "修改电话为 13800000000",
+        "如何编辑",
+        "编辑张三的单据",
+        "请编辑",
+        "进入编辑模式后修改名称",
+    ],
+)
 def test_explicit_edit_mode_intent_rejects_extended_requests(message):
     assert not app_module._is_explicit_edit_mode_request(run_input(message))
 
@@ -387,7 +431,8 @@ async def test_explicit_edit_request_routes_to_forced_agent(monkeypatch):
         calls.append((entity, user_id))
         yield RunStartedEvent(thread_id="thread-1", run_id="run-1")
         yield ToolCallStartEvent(
-            tool_call_id="call-1", tool_call_name=app_module.EDIT_MODE_TOOL,
+            tool_call_id="call-1",
+            tool_call_name=app_module.EDIT_MODE_TOOL,
         )
         yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
 
@@ -403,17 +448,26 @@ async def test_explicit_edit_request_routes_to_forced_agent(monkeypatch):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("value", [
-    run_input("普通问答"),
-    run_input(messages=[
-        {"id": "user-1", "role": "user", "content": "编辑"},
-        {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
-    ]),
-    run_input(context=[{
-        "description": "已选 Odoo 菜单",
-        "value": json.dumps({"navigationRequired": True}),
-    }]),
-])
+@pytest.mark.parametrize(
+    "value",
+    [
+        run_input("普通问答"),
+        run_input(
+            messages=[
+                {"id": "user-1", "role": "user", "content": "编辑"},
+                {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
+            ]
+        ),
+        run_input(
+            context=[
+                {
+                    "description": "已选 Odoo 菜单",
+                    "value": json.dumps({"navigationRequired": True}),
+                }
+            ]
+        ),
+    ],
+)
 async def test_normal_resume_and_menu_navigation_requests_keep_main_agent(monkeypatch, value):
     calls = []
 
@@ -450,7 +504,10 @@ async def test_branch_request_keeps_original_branch_path(monkeypatch):
     await response_body(response)
 
     assert calls[0][:4] == (
-        app_module.assistant, app_module.workspace_service, value, branch,
+        app_module.assistant,
+        app_module.workspace_service,
+        value,
+        branch,
     )
 
 
@@ -462,7 +519,8 @@ async def test_edit_request_without_declared_tool_fails_closed(monkeypatch):
 
     monkeypatch.setattr(app_module, "run_entity", unexpected_run)
     response = await app_module.run_agui(
-        direct_request(), run_input(tools=("odoo.open_menu",)),
+        direct_request(),
+        run_input(tools=("odoo.open_menu",)),
     )
 
     body = await response_body(response)
@@ -473,18 +531,23 @@ async def test_edit_request_without_declared_tool_fails_closed(monkeypatch):
 
 @pytest.mark.anyio
 async def test_required_tool_guard_accepts_status_and_expected_tool():
-    stream = ClosingEventStream([
-        RunStartedEvent(thread_id="thread-1", run_id="run-1"),
-        StateSnapshotEvent(snapshot={}),
-        ToolCallStartEvent(
-            tool_call_id="call-1", tool_call_name=app_module.EDIT_MODE_TOOL,
-        ),
-        RunFinishedEvent(thread_id="thread-1", run_id="run-1"),
-    ])
+    stream = ClosingEventStream(
+        [
+            RunStartedEvent(thread_id="thread-1", run_id="run-1"),
+            StateSnapshotEvent(snapshot={}),
+            ToolCallStartEvent(
+                tool_call_id="call-1",
+                tool_call_name=app_module.EDIT_MODE_TOOL,
+            ),
+            RunFinishedEvent(thread_id="thread-1", run_id="run-1"),
+        ]
+    )
 
     events = [
-        event async for event in app_module._guard_required_tool(
-            stream, app_module.EDIT_MODE_TOOL,
+        event
+        async for event in app_module._guard_required_tool(
+            stream,
+            app_module.EDIT_MODE_TOOL,
         )
     ]
 
@@ -498,11 +561,14 @@ async def test_required_tool_guard_accepts_status_and_expected_tool():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("first_executable", [
-    TextMessageStartEvent(message_id="message-1"),
-    ToolCallStartEvent(tool_call_id="call-1", tool_call_name="odoo.open_menu"),
-    None,
-])
+@pytest.mark.parametrize(
+    "first_executable",
+    [
+        TextMessageStartEvent(message_id="message-1"),
+        ToolCallStartEvent(tool_call_id="call-1", tool_call_name="odoo.open_menu"),
+        None,
+    ],
+)
 async def test_required_tool_guard_replaces_violations_and_closes_source(first_executable):
     source_events = [RunStartedEvent(thread_id="thread-1", run_id="run-1")]
     if first_executable is not None:
@@ -510,8 +576,10 @@ async def test_required_tool_guard_replaces_violations_and_closes_source(first_e
     stream = ClosingEventStream(source_events)
 
     events = [
-        event async for event in app_module._guard_required_tool(
-            stream, app_module.EDIT_MODE_TOOL,
+        event
+        async for event in app_module._guard_required_tool(
+            stream,
+            app_module.EDIT_MODE_TOOL,
         )
     ]
 

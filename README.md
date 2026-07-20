@@ -111,7 +111,7 @@ OpenTelemetry Collector 只在 Daytona 内部网络提供。SSH 入口按需通�
 ```bash
 # 先完成上面的 .env 初始化
 docker compose up -d agent-db
-uv venv .venv-agent
+uv venv --python 3.12 .venv-agent
 uv pip install --python .venv-agent/bin/python -r agentos_dev/requirements.txt
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app
 ```
