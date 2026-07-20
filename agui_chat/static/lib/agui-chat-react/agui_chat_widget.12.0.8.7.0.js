@@ -7135,12 +7135,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$E = [
+  const __iconNode$F = [
     ["rect", { width: "20", height: "5", x: "2", y: "3", rx: "1", key: "1wp1u1" }],
     ["path", { d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8", key: "1s80jp" }],
     ["path", { d: "M10 12h4", key: "a56b0p" }]
   ];
-  const Archive = createLucideIcon("Archive", __iconNode$E);
+  const Archive = createLucideIcon("Archive", __iconNode$F);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$E = [
+    ["path", { d: "M12 5v14", key: "s699le" }],
+    ["path", { d: "m19 12-7 7-7-7", key: "1idqje" }]
+  ];
+  const ArrowDown = createLucideIcon("ArrowDown", __iconNode$E);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7148,10 +7159,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$D = [
-    ["path", { d: "M12 5v14", key: "s699le" }],
-    ["path", { d: "m19 12-7 7-7-7", key: "1idqje" }]
+    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
+    ["path", { d: "M19 12H5", key: "x3x0zl" }]
   ];
-  const ArrowDown = createLucideIcon("ArrowDown", __iconNode$D);
+  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$D);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7159,10 +7170,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$C = [
-    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
-    ["path", { d: "M19 12H5", key: "x3x0zl" }]
+    ["path", { d: "m5 12 7-7 7 7", key: "hav0vg" }],
+    ["path", { d: "M12 19V5", key: "x0mq9r" }]
   ];
-  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$C);
+  const ArrowUp = createLucideIcon("ArrowUp", __iconNode$C);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7170,29 +7181,26 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$B = [
-    ["path", { d: "m5 12 7-7 7 7", key: "hav0vg" }],
-    ["path", { d: "M12 19V5", key: "x0mq9r" }]
-  ];
-  const ArrowUp = createLucideIcon("ArrowUp", __iconNode$B);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$A = [
     ["circle", { cx: "12", cy: "12", r: "4", key: "4exip2" }],
     ["path", { d: "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8", key: "7n84p3" }]
   ];
-  const AtSign = createLucideIcon("AtSign", __iconNode$A);
+  const AtSign = createLucideIcon("AtSign", __iconNode$B);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$z = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
-  const Check = createLucideIcon("Check", __iconNode$z);
+  const __iconNode$A = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
+  const Check = createLucideIcon("Check", __iconNode$A);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$z = [["path", { d: "m6 9 6 6 6-6", key: "qrunsl" }]];
+  const ChevronDown = createLucideIcon("ChevronDown", __iconNode$z);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -26183,10 +26191,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     onDownload,
     onDelete
   }) {
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { role: "listitem", "data-entry-name": entry.name, className: "flex min-h-14 items-center gap-1.5 border-b border-border/60 px-3 py-1.5 hover:bg-background-secondary/60", children: [
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { role: "listitem", "data-entry-name": entry.name, className: "group flex min-h-14 items-center gap-1.5 border-b border-border/45 px-3 py-1.5 transition-colors hover:bg-background-secondary/70 focus-within:bg-background-secondary/70", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: `${selected ? "移除" : "加入"}对话 ${entry.name}`, title: atReferenceLimit ? "工作区引用最多 5 个" : selected ? "移除引用" : "加入对话", className: cn(selected && "bg-accent text-primary"), "aria-pressed": selected, onClick: () => onToggleReference(entry), children: selected ? /* @__PURE__ */ jsxRuntimeExports.jsx(Check, { size: 14 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(MessageSquarePlus, { size: 14 }) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center text-muted", children: entry.isDirectory ? /* @__PURE__ */ jsxRuntimeExports.jsx(Folder, { size: 16 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(File, { size: 15 }) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { type: "button", className: "min-w-0 flex-1 border-0 bg-transparent p-0 text-left", onClick: () => onOpen(entry), children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grid size-7 shrink-0 place-items-center text-muted/90", children: entry.isDirectory ? /* @__PURE__ */ jsxRuntimeExports.jsx(Folder, { size: 16 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(File, { size: 15 }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { type: "button", className: "min-w-0 flex-1 border-0 bg-transparent p-0 text-left focus-visible:rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/30", onClick: () => onOpen(entry), children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block truncate text-xs text-primary", title: entry.path, children: entry.name }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "flex min-w-0 flex-wrap gap-x-2 text-[10px] text-muted", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: fileTypeLabel(entry) }),
@@ -26207,9 +26215,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       label: part,
       path: parts.slice(0, index2 + 1).join("/")
     }))];
-    return /* @__PURE__ */ jsxRuntimeExports.jsx("nav", { className: "flex min-h-10 flex-wrap items-center gap-1 border-b border-border px-3 py-2", "aria-label": "工作区路径", children: items.map((item, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "inline-flex min-w-0 items-center gap-1", children: [
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("nav", { className: "flex min-h-9 flex-wrap items-center gap-1 border-b border-border bg-background-panel px-3 py-1.5", "aria-label": "工作区路径", children: items.map((item, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "inline-flex min-w-0 items-center gap-1", children: [
       index2 ? /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronRight, { size: 12, className: "text-muted" }) : null,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "max-w-36 truncate border-0 bg-transparent p-0 text-xs text-secondary hover:text-primary", title: item.label, onClick: () => onNavigate(item.path), children: item.label })
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "max-w-36 truncate border-0 bg-transparent p-0 text-xs text-secondary transition-colors hover:text-primary focus-visible:rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/30", title: item.label, onClick: () => onNavigate(item.path), children: item.label })
     ] }, item.path || "root")) });
   }
   function WorkspaceDeleteBar({
@@ -26288,22 +26296,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     onSortKeyChange,
     onToggleSortDirection
   }) {
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2 border-b border-border px-3 py-2", children: [
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2 border-b border-border bg-background px-3 py-2", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex min-w-0 items-center gap-1.5", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "flex min-w-0 flex-1 items-center gap-1.5 border border-border bg-background-panel px-2", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "flex min-w-0 flex-1 items-center gap-1.5 border border-border bg-background-panel px-2 outline outline-1 outline-border/70 transition-colors focus-within:border-primary/30 focus-within:outline-primary/25 focus-within:ring-2 focus-within:ring-primary/5", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { size: 14, className: "shrink-0 text-muted" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: search2, onChange: (event) => onSearchChange(event.target.value), className: "h-8 min-w-0 flex-1 border-0 bg-transparent p-0 text-xs outline-none", placeholder: "搜索当前目录", "aria-label": "搜索当前目录" }),
           search2 ? /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: "清空搜索", size: "xs", className: "hover:bg-transparent", onClick: () => onSearchChange(""), children: /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 13 }) }) : null
         ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { value: sortKey, onChange: (event) => onSortKeyChange(event.target.value), className: "h-8 w-24 shrink-0 border border-border bg-background-panel px-1.5 text-xs text-secondary", "aria-label": "排序方式", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "name", children: "按名称" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "modifiedAt", children: "按修改时间" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "size", children: "按大小" })
-        ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: sortDirection === "asc" ? "切换为降序" : "切换为升序", size: "md", variant: "outline", onClick: onToggleSortDirection, children: sortDirection === "asc" ? /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowUp, { size: 14 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowDown, { size: 14 }) })
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-8 shrink-0 items-center overflow-hidden rounded-md border border-muted/35 bg-background-panel shadow-[0_1px_2px_rgba(15,23,42,0.08)] outline outline-1 outline-border/70 transition-colors hover:border-muted/55 hover:outline-muted/45 has-[:focus-visible]:border-primary/35 has-[:focus-visible]:outline-primary/25 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary/10", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(SlidersHorizontal, { size: 13, className: "ml-2 shrink-0 text-muted", "aria-hidden": "true" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "relative", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { value: sortKey, onChange: (event) => onSortKeyChange(event.target.value), className: "h-8 w-[5.5rem] appearance-none border-0 bg-transparent py-0 pl-1.5 pr-5 text-xs text-secondary outline-none", "aria-label": "排序方式", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "name", children: "按名称" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "modifiedAt", children: "按修改时间" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "size", children: "按大小" })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronDown, { size: 12, className: "pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-muted", "aria-hidden": "true" })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: sortDirection === "asc" ? "切换为降序" : "切换为升序", title: sortDirection === "asc" ? "升序，切换为降序" : "降序，切换为升序", size: "md", variant: "ghost", className: "rounded-none border-0 bg-background-secondary text-primary outline outline-1 outline-border/70 hover:bg-border/70 hover:text-primary focus-visible:-outline-offset-2", onClick: onToggleSortDirection, children: sortDirection === "asc" ? /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowUp, { size: 14 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(ArrowDown, { size: 14 }) })
+        ] })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted", "aria-live": "polite", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-secondary", children: [
           "当前结果 ",
           resultCount,
           " 项"

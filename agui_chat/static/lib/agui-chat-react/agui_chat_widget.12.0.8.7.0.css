@@ -63,6 +63,10 @@
   top: 0px;
 }
 
+.agui-chat-react .top-1\/2 {
+  top: 50%;
+}
+
 .agui-chat-react .top-2 {
   top: 8px;
 }
@@ -102,6 +106,10 @@
 
 .agui-chat-react .mb-5 {
   margin-bottom: 20px;
+}
+
+.agui-chat-react .ml-2 {
+  margin-left: 8px;
 }
 
 .agui-chat-react .ml-auto {
@@ -328,10 +336,6 @@
   width: 4px;
 }
 
-.agui-chat-react .w-24 {
-  width: 96px;
-}
-
 .agui-chat-react .w-40 {
   width: 160px;
 }
@@ -350,6 +354,10 @@
 
 .agui-chat-react .w-64 {
   width: 256px;
+}
+
+.agui-chat-react .w-\[5\.5rem\] {
+  width: 88px;
 }
 
 .agui-chat-react .w-fit {
@@ -405,6 +413,11 @@
   flex-shrink: 0;
 }
 
+.agui-chat-react .-translate-y-1\/2 {
+  --tw-translate-y: -50%;
+  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
+}
+
 @keyframes pulse {
 
   50% {
@@ -441,6 +454,12 @@
 
 .agui-chat-react .list-none {
   list-style-type: none;
+}
+
+.agui-chat-react .appearance-none {
+  -webkit-appearance: none;
+     -moz-appearance: none;
+          appearance: none;
 }
 
 .agui-chat-react .grid-cols-\[minmax\(0\2c 1fr\)_auto_minmax\(0\2c 1fr\)\] {
@@ -573,6 +592,10 @@
   border-radius: 6px;
 }
 
+.agui-chat-react .rounded-none {
+  border-radius: 0px;
+}
+
 .agui-chat-react .rounded-xl {
   border-radius: 10px;
 }
@@ -627,6 +650,10 @@
   border-color: rgb(216 222 232 / var(--tw-border-opacity, 1));
 }
 
+.agui-chat-react .border-border\/45 {
+  border-color: rgb(216 222 232 / 0.45);
+}
+
 .agui-chat-react .border-border\/60 {
   border-color: rgb(216 222 232 / 0.6);
 }
@@ -645,6 +672,10 @@
 
 .agui-chat-react .border-destructive\/40 {
   border-color: rgb(220 38 38 / 0.4);
+}
+
+.agui-chat-react .border-muted\/35 {
+  border-color: rgb(100 116 139 / 0.35);
 }
 
 .agui-chat-react .border-positive {
@@ -866,6 +897,11 @@
   padding-right: 24px;
 }
 
+.agui-chat-react .py-0 {
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
 .agui-chat-react .py-0\.5 {
   padding-top: 2px;
   padding-bottom: 2px;
@@ -905,8 +941,16 @@
   padding-bottom: 12px;
 }
 
+.agui-chat-react .pl-1\.5 {
+  padding-left: 6px;
+}
+
 .agui-chat-react .pr-1 {
   padding-right: 4px;
+}
+
+.agui-chat-react .pr-5 {
+  padding-right: 20px;
 }
 
 .agui-chat-react .pr-7 {
@@ -1010,6 +1054,10 @@
   color: rgb(100 116 139 / var(--tw-text-opacity, 1));
 }
 
+.agui-chat-react .text-muted\/90 {
+  color: rgb(100 116 139 / 0.9);
+}
+
 .agui-chat-react .text-positive {
   --tw-text-opacity: 1;
   color: rgb(21 128 61 / var(--tw-text-opacity, 1));
@@ -1078,6 +1126,12 @@
   box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
 }
 
+.agui-chat-react .shadow-\[0_1px_2px_rgba\(15\2c 23\2c 42\2c 0\.08\)\] {
+  --tw-shadow: 0 1px 2px rgba(15,23,42,0.08);
+  --tw-shadow-colored: 0 1px 2px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+}
+
 .agui-chat-react .shadow-\[1px_0_0_rgba\(15\2c 23\2c 42\2c 0\.04\)\] {
   --tw-shadow: 1px 0 0 rgba(15,23,42,0.04);
   --tw-shadow-colored: 1px 0 0 var(--tw-shadow-color);
@@ -1119,6 +1173,10 @@
 
 .agui-chat-react .outline-1 {
   outline-width: 1px;
+}
+
+.agui-chat-react .outline-border\/70 {
+  outline-color: rgb(216 222 232 / 0.7);
 }
 
 .agui-chat-react .outline-transparent {
@@ -1601,8 +1659,16 @@
   border-bottom-width: 0px;
 }
 
+.agui-chat-react .focus-within\:border-primary\/30:focus-within {
+  border-color: rgb(24 24 27 / 0.3);
+}
+
 .agui-chat-react .focus-within\:border-primary\/35:focus-within {
   border-color: rgb(24 24 27 / 0.35);
+}
+
+.agui-chat-react .focus-within\:bg-background-secondary\/70:focus-within {
+  background-color: rgb(241 245 249 / 0.7);
 }
 
 .agui-chat-react .focus-within\:bg-white:focus-within {
@@ -1626,6 +1692,24 @@
 
 .agui-chat-react .focus-within\:outline-primary\/15:focus-within {
   outline-color: rgb(24 24 27 / 0.15);
+}
+
+.agui-chat-react .focus-within\:outline-primary\/25:focus-within {
+  outline-color: rgb(24 24 27 / 0.25);
+}
+
+.agui-chat-react .focus-within\:ring-2:focus-within {
+  --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);
+  --tw-ring-shadow: var(--tw-ring-inset) 0 0 0 calc(2px + var(--tw-ring-offset-width)) var(--tw-ring-color);
+  box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000);
+}
+
+.agui-chat-react .focus-within\:ring-primary\/5:focus-within {
+  --tw-ring-color: rgb(24 24 27 / 0.05);
+}
+
+.agui-chat-react .hover\:border-muted\/55:hover {
+  border-color: rgb(100 116 139 / 0.55);
 }
 
 .agui-chat-react .hover\:border-primary\/20:hover {
@@ -1656,8 +1740,12 @@
   background-color: rgb(241 245 249 / var(--tw-bg-opacity, 1));
 }
 
-.agui-chat-react .hover\:bg-background-secondary\/60:hover {
-  background-color: rgb(241 245 249 / 0.6);
+.agui-chat-react .hover\:bg-background-secondary\/70:hover {
+  background-color: rgb(241 245 249 / 0.7);
+}
+
+.agui-chat-react .hover\:bg-border\/70:hover {
+  background-color: rgb(216 222 232 / 0.7);
 }
 
 .agui-chat-react .hover\:bg-destructive\/10:hover {
@@ -1712,6 +1800,10 @@
   opacity: 1;
 }
 
+.agui-chat-react .hover\:outline-muted\/45:hover {
+  outline-color: rgb(100 116 139 / 0.45);
+}
+
 .agui-chat-react .focus\:bg-background:focus {
   --tw-bg-opacity: 1;
   background-color: rgb(248 250 252 / var(--tw-bg-opacity, 1));
@@ -1731,12 +1823,24 @@
   outline-color: rgb(24 24 27 / 0.15);
 }
 
+.agui-chat-react .focus-visible\:rounded-sm:focus-visible {
+  border-radius: 2px;
+}
+
 .agui-chat-react .focus-visible\:outline:focus-visible {
   outline-style: solid;
 }
 
 .agui-chat-react .focus-visible\:outline-2:focus-visible {
   outline-width: 2px;
+}
+
+.agui-chat-react .focus-visible\:-outline-offset-2:focus-visible {
+  outline-offset: -2px;
+}
+
+.agui-chat-react .focus-visible\:outline-primary\/30:focus-visible {
+  outline-color: rgb(24 24 27 / 0.3);
 }
 
 .agui-chat-react .focus-visible\:outline-primary\/35:focus-visible {
@@ -1784,8 +1888,26 @@
   opacity: 1;
 }
 
+.agui-chat-react .has-\[\:focus-visible\]\:border-primary\/35:has(:focus-visible) {
+  border-color: rgb(24 24 27 / 0.35);
+}
+
 .agui-chat-react .has-\[\:disabled\]\:opacity-45:has(:disabled) {
   opacity: 0.45;
+}
+
+.agui-chat-react .has-\[\:focus-visible\]\:outline-primary\/25:has(:focus-visible) {
+  outline-color: rgb(24 24 27 / 0.25);
+}
+
+.agui-chat-react .has-\[\:focus-visible\]\:ring-2:has(:focus-visible) {
+  --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);
+  --tw-ring-shadow: var(--tw-ring-inset) 0 0 0 calc(2px + var(--tw-ring-offset-width)) var(--tw-ring-color);
+  box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000);
+}
+
+.agui-chat-react .has-\[\:focus-visible\]\:ring-primary\/10:has(:focus-visible) {
+  --tw-ring-color: rgb(24 24 27 / 0.1);
 }
 
 @media not all and (min-width: 768px) {

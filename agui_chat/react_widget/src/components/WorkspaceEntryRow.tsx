@@ -45,12 +45,12 @@ export function WorkspaceEntryRow({
   entry, selected, atReferenceLimit, deleting,
   onToggleReference, onOpen, onPreview, onDownload, onDelete
 }: WorkspaceEntryRowProps) {
-  return <div role="listitem" data-entry-name={entry.name} className="flex min-h-14 items-center gap-1.5 border-b border-border/60 px-3 py-1.5 hover:bg-background-secondary/60">
+  return <div role="listitem" data-entry-name={entry.name} className="group flex min-h-14 items-center gap-1.5 border-b border-border/45 px-3 py-1.5 transition-colors hover:bg-background-secondary/70 focus-within:bg-background-secondary/70">
     <IconButton label={`${selected ? '移除' : '加入'}对话 ${entry.name}`} title={atReferenceLimit ? '工作区引用最多 5 个' : selected ? '移除引用' : '加入对话'} className={cn(selected && 'bg-accent text-primary')} aria-pressed={selected} onClick={() => onToggleReference(entry)}>
       {selected ? <Check size={14} /> : <MessageSquarePlus size={14} />}
     </IconButton>
-    <span className="grid size-7 shrink-0 place-items-center text-muted">{entry.isDirectory ? <Folder size={16} /> : <File size={15} />}</span>
-    <button type="button" className="min-w-0 flex-1 border-0 bg-transparent p-0 text-left" onClick={() => onOpen(entry)}>
+    <span className="grid size-7 shrink-0 place-items-center text-muted/90">{entry.isDirectory ? <Folder size={16} /> : <File size={15} />}</span>
+    <button type="button" className="min-w-0 flex-1 border-0 bg-transparent p-0 text-left focus-visible:rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/30" onClick={() => onOpen(entry)}>
       <span className="block truncate text-xs text-primary" title={entry.path}>{entry.name}</span>
       <span className="flex min-w-0 flex-wrap gap-x-2 text-[10px] text-muted"><span>{fileTypeLabel(entry)}</span>{!entry.isDirectory ? <span>{sizeLabel(entry.size)}</span> : null}<time dateTime={entry.modifiedAt} title={entry.modifiedAt || '时间未知'}>{formatModifiedAt(entry.modifiedAt)}</time></span>
     </button>
