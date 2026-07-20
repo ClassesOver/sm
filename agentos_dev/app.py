@@ -1,6 +1,8 @@
 import json
 import logging
 import unicodedata
+from pathlib import PurePosixPath
+from urllib.parse import quote
 
 from ag_ui.core import EventType, RunAgentInput, RunErrorEvent
 from ag_ui.encoder import EventEncoder
@@ -8,6 +10,7 @@ from agno.os.interfaces.agui.input import extract_tool_messages, extract_user_in
 from agno.os.interfaces.agui.router import run_entity
 from fastapi import APIRouter, Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.concurrency import run_in_threadpool
 
 from .agents import create_assistants
@@ -66,6 +69,14 @@ REQUIRED_TOOL_PREAMBLE_EVENTS = frozenset(
     }
 )
 logger = logging.getLogger(__name__)
+
+
+class WorkspaceDeleteFilePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    thread_id: str = Field(alias="threadId", min_length=1, max_length=256)
+    path: str
+    recursive: StrictBool = False
 
 
 settings = AgentSettings.from_environment()
@@ -323,6 +334,16 @@ def _workspace_error(error: Exception):
     raise HTTPException(status_code=502, detail="workspace_backend_failed") from error
 
 
+def _content_disposition(disposition: str, filename: str) -> str:
+    ascii_name = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode()
+    if not ascii_name or ascii_name.startswith("."):
+        suffix = PurePosixPath(filename).suffix
+        ascii_suffix = unicodedata.normalize("NFKD", suffix).encode("ascii", "ignore").decode()
+        ascii_name = f"download{ascii_suffix}"
+    encoded_name = quote(filename, safe="")
+    return f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
+
+
 @router.get("/workspace/files", include_in_schema=False)
 async def workspace_files(request: Request, threadId: str, path: str = ""):
     context = _application_context(request)
@@ -393,23 +414,26 @@ async def workspace_file(
         content,
         media_type=mime_type,
         headers={
-            "Content-Disposition": f'{disposition}; filename="{safe_name}"',
+            "Content-Disposition": _content_disposition(disposition, safe_name),
             "X-Content-Type-Options": "nosniff",
         },
     )
 
 
 @router.delete("/workspace/file", include_in_schema=False)
-async def workspace_delete_file(request: Request, payload: dict = Body(...)):
+async def workspace_delete_file(
+    request: Request,
+    payload: WorkspaceDeleteFilePayload = Body(...),
+):
     context = _application_context(request)
-    thread_id = str(payload.get("threadId") or "")
+    thread_id = payload.thread_id
     _check_thread(request, thread_id)
     try:
         await run_in_threadpool(
             context.workspace_service.delete_file,
             thread_id,
-            str(payload.get("path") or ""),
-            bool(payload.get("recursive")),
+            payload.path,
+            payload.recursive,
         )
         return {"ok": True}
     except Exception as error:

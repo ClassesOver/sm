@@ -7,7 +7,15 @@ from agno.run import RunContext
 
 import agentos_dev.workspace as workspace_module
 from agentos_dev.skills import SecureSkills
-from agentos_dev.tests.workspace_fakes import SECRET, FakeClient, FakeSandbox, Info, service
+from agentos_dev.tests.workspace_fakes import (
+    SECRET,
+    AsyncFakeClient,
+    AsyncMemoryRegistry,
+    FakeClient,
+    FakeSandbox,
+    Info,
+    service,
+)
 from agentos_dev.workspace import (
     MAX_EXECUTION_TIMEOUT,
     MAX_PATH_BYTES,
@@ -276,12 +284,20 @@ def test_沙箱启动异常多实例与后端故障均明确处理(tmp_path):
         current._ensure_directory(broken, WORKSPACE_ROOT)
 
 
-def test_分支工作区完整复制目录和文件(tmp_path):
+@pytest.mark.anyio
+async def test_分支工作区使用异步客户端完整复制目录和文件(tmp_path):
     current = service(tmp_path)
     current.create_file("source", "资料/报告.txt", "内容".encode())
     current.create_file("source", "根文件.bin", b"binary")
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
 
-    result = current.copy_branch("source", "target")
+    result = await async_service.acopy_branch("source", "target")
 
     assert result == {"files": 2, "bytes": len("内容".encode()) + 6}
     assert current.file_bytes("target", "资料/报告.txt")[0] == "内容".encode()
@@ -289,20 +305,28 @@ def test_分支工作区完整复制目录和文件(tmp_path):
     assert current.file_bytes("source", "根文件.bin")[0] == b"binary"
 
 
-def test_分支工作区先校验限制和符号链接再创建目标(tmp_path, monkeypatch):
+@pytest.mark.anyio
+async def test_异步分支工作区先校验限制和符号链接再创建目标(tmp_path, monkeypatch):
     current = service(tmp_path)
     current.create_file("source", "一.txt", b"1")
     current.create_file("source", "二.txt", b"22")
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
     monkeypatch.setattr(workspace_module, "MAX_BRANCH_FILES", 1)
 
     with pytest.raises(WorkspaceError, match="文件数超过"):
-        current.copy_branch("source", "too-many")
+        await async_service.acopy_branch("source", "too-many")
     assert current.sandbox_for("too-many", create=False) is None
 
     monkeypatch.setattr(workspace_module, "MAX_BRANCH_FILES", 2000)
     monkeypatch.setattr(workspace_module, "MAX_BRANCH_TOTAL_BYTES", 2)
     with pytest.raises(WorkspaceError, match="总大小超过"):
-        current.copy_branch("source", "too-large")
+        await async_service.acopy_branch("source", "too-large")
     assert current.sandbox_for("too-large", create=False) is None
 
     monkeypatch.setattr(workspace_module, "MAX_BRANCH_TOTAL_BYTES", 256 * 1024 * 1024)
@@ -312,18 +336,26 @@ def test_分支工作区先校验限制和符号链接再创建目标(tmp_path, 
         b"",
     )
     with pytest.raises(WorkspaceError, match="符号链接"):
-        current.copy_branch("source", "linked")
+        await async_service.acopy_branch("source", "linked")
     assert current.sandbox_for("linked", create=False) is None
 
 
-def test_分支工作区复制失败会清理目标(tmp_path):
+@pytest.mark.anyio
+async def test_异步分支工作区复制失败会清理目标(tmp_path):
     current = service(tmp_path)
     current.create_file("source", "报告.txt", b"content")
     source = current.sandbox_for("source")
     source.fs.download_file = lambda _path: (_ for _ in ()).throw(RuntimeError("offline"))
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
 
     with pytest.raises(RuntimeError, match="offline"):
-        current.copy_branch("source", "target")
+        await async_service.acopy_branch("source", "target")
 
     assert current.sandbox_for("target", create=False) is None
 

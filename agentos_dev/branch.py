@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from time import time
@@ -23,6 +24,8 @@ from agno.session.agent import AgentSession
 
 from .security import CapabilityClaims
 from .workspace import WorkspaceService
+
+logger = logging.getLogger(__name__)
 
 
 class BranchError(ValueError):
@@ -174,16 +177,16 @@ async def prepare_branch(
         spec.source_run_id,
         user_id,
     )
-    workspace_result = workspace.copy_branch(spec.source_thread_id, target_thread_id)
+    workspace_result = await workspace.acopy_branch(spec.source_thread_id, target_thread_id)
     try:
-        agent.save_session(target)
+        await agent.asave_session(target)
     except Exception:
-        workspace.destroy(target_thread_id)
+        await workspace.adestroy(target_thread_id)
         raise
     return run_id_map, copied_target_run_id, workspace_result
 
 
-def cleanup_branch(
+async def cleanup_branch(
     agent: Agent,
     workspace: WorkspaceService,
     target_thread_id: str,
@@ -191,9 +194,9 @@ def cleanup_branch(
 ) -> None:
     try:
         if agent.db:
-            agent.db.delete_session(target_thread_id, user_id=user_id)
+            await agent.adelete_session(target_thread_id, user_id=user_id)
     finally:
-        workspace.destroy(target_thread_id)
+        await workspace.adestroy(target_thread_id)
 
 
 async def run_branch(
@@ -280,17 +283,33 @@ async def run_branch(
             run_state=state_snapshot,
         ):
             yield event
-    except Exception as error:
+    except BranchError as error:
         if prepared and not started:
             try:
-                cleanup_branch(agent, workspace, run_input.thread_id, user_id)
+                await cleanup_branch(agent, workspace, run_input.thread_id, user_id)
             except Exception:
                 pass
-        yield RunErrorEvent(type=EventType.RUN_ERROR, message=str(error))
+        yield RunErrorEvent(
+            type=EventType.RUN_ERROR,
+            message="无法基于所选消息创建分支。",
+            code=str(error),
+        )
+    except Exception as error:
+        logger.error("branch_failed error_type=%s", type(error).__name__)
+        if prepared and not started:
+            try:
+                await cleanup_branch(agent, workspace, run_input.thread_id, user_id)
+            except Exception:
+                pass
+        yield RunErrorEvent(
+            type=EventType.RUN_ERROR,
+            message="分支创建失败，请稍后重试。",
+            code="branch_failed",
+        )
     except BaseException:
         if prepared and not started:
             try:
-                cleanup_branch(agent, workspace, run_input.thread_id, user_id)
+                await cleanup_branch(agent, workspace, run_input.thread_id, user_id)
             except Exception:
                 pass
         raise

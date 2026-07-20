@@ -108,19 +108,12 @@ def test_agent_history_is_truncated_and_every_copied_run_gets_a_new_id():
     assert target.summary is None
 
 
-class FakeDb:
-    def __init__(self):
-        self.deleted = []
-
-    def delete_session(self, session_id, user_id=None):
-        self.deleted.append((session_id, user_id))
-
-
 class FakeAgent:
     def __init__(self, first_run_id="generated-run", fail_stream=False):
         self.source = source_session()
         self.saved = []
-        self.db = FakeDb()
+        self.deleted = []
+        self.db = object()
         self.first_run_id = first_run_id
         self.fail_stream = fail_stream
         self.continue_kwargs = None
@@ -130,8 +123,11 @@ class FakeAgent:
             return self.source
         return None
 
-    def save_session(self, session):
+    async def asave_session(self, session):
         self.saved.append(session)
+
+    async def adelete_session(self, session_id, user_id=None):
+        self.deleted.append((session_id, user_id))
 
     def acontinue_run(self, **kwargs):
         self.continue_kwargs = kwargs
@@ -150,11 +146,11 @@ class FakeWorkspace:
         self.copied = []
         self.destroyed = []
 
-    def copy_branch(self, source, target):
+    async def acopy_branch(self, source, target):
         self.copied.append((source, target))
         return {"files": 2, "bytes": 10}
 
-    def destroy(self, thread):
+    async def adestroy(self, thread):
         self.destroyed.append(thread)
 
 
@@ -233,7 +229,7 @@ async def test_closing_after_run_started_keeps_prepared_branch(monkeypatch):
     assert (await anext(events)).type == EventType.RUN_STARTED
     await events.aclose()
 
-    assert agent.db.deleted == []
+    assert agent.deleted == []
     assert workspace.destroyed == []
 
 
@@ -255,5 +251,30 @@ async def test_failure_before_run_started_removes_agent_session_and_workspace(mo
     ]
 
     assert [event.type for event in events] == [EventType.RUN_ERROR]
-    assert agent.db.deleted == [("target-thread", "owner")]
+    assert events[0].code == "branch_failed"
+    assert events[0].message == "分支创建失败，请稍后重试。"
+    assert "model unavailable" not in events[0].message
+    assert agent.deleted == [("target-thread", "owner")]
     assert workspace.destroyed == ["target-thread"]
+
+
+@pytest.mark.anyio
+async def test_controlled_branch_failure_returns_stable_code_without_internal_message():
+    agent = FakeAgent()
+    agent.source.runs[0].status = RunStatus.error
+
+    events = [
+        event
+        async for event in run_branch(
+            agent,
+            FakeWorkspace(),
+            run_input(),
+            BranchSpec("source-thread", "run-1", "answer-1"),
+            "owner",
+        )
+    ]
+
+    assert len(events) == 1
+    assert events[0].type == EventType.RUN_ERROR
+    assert events[0].code == "branch_source_run_not_completed"
+    assert events[0].message == "无法基于所选消息创建分支。"

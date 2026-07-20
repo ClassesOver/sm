@@ -1,5 +1,6 @@
+import asyncio
 import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import PurePosixPath
 
 from agentos_dev.workspace import WorkspaceService
@@ -102,9 +103,68 @@ class FakeClient:
         del self.sandboxes[sandbox.id]
 
 
+class AsyncFakeFs:
+    def __init__(self, fs):
+        self._fs = fs
+
+    async def get_file_info(self, path):
+        return self._fs.get_file_info(path)
+
+    async def create_folder(self, path, mode):
+        return self._fs.create_folder(path, mode)
+
+    async def upload_file(self, content, path):
+        return self._fs.upload_file(content, path)
+
+    async def download_file(self, path):
+        return self._fs.download_file(path)
+
+    async def list_files(self, path):
+        return self._fs.list_files(path)
+
+
+class AsyncFakeSandbox:
+    def __init__(self, sandbox):
+        self._sandbox = sandbox
+        self.fs = AsyncFakeFs(sandbox.fs)
+
+    @property
+    def id(self):
+        return self._sandbox.id
+
+    @property
+    def labels(self):
+        return self._sandbox.labels
+
+    @property
+    def state(self):
+        return self._sandbox.state
+
+
+class AsyncFakeClient:
+    def __init__(self, client):
+        self._client = client
+
+    async def create(self, params):
+        return AsyncFakeSandbox(self._client.create(params))
+
+    async def get(self, sandbox_id):
+        return AsyncFakeSandbox(self._client.get(sandbox_id))
+
+    async def list(self, query):
+        for sandbox in self._client.list(query):
+            yield AsyncFakeSandbox(sandbox)
+
+    async def start(self, sandbox):
+        self._client.start(sandbox._sandbox)
+
+    async def delete(self, sandbox):
+        self._client.delete(sandbox._sandbox)
+
+
 class MemoryRegistry:
-    def __init__(self):
-        self.values = {}
+    def __init__(self, values=None):
+        self.values = values if values is not None else {}
         self.lock = threading.RLock()
 
     @contextmanager
@@ -119,6 +179,26 @@ class MemoryRegistry:
         self.values[value] = sandbox_id
 
     def delete(self, value):
+        self.values.pop(value, None)
+
+
+class AsyncMemoryRegistry:
+    def __init__(self, values):
+        self.values = values
+        self.lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def locked(self, _value):
+        async with self.lock:
+            yield self
+
+    async def get(self, value):
+        return self.values.get(value)
+
+    async def set(self, value, sandbox_id):
+        self.values[value] = sandbox_id
+
+    async def delete(self, value):
         self.values.pop(value, None)
 
 

@@ -4,7 +4,7 @@ from typing import Any
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 
-from .database import SerializedPostgresDb
+from .database import SerializedAsyncPostgresDb
 from .report import report_tools
 from .settings import AgentSettings
 from .workspace import WorkspaceService, workspace_tools
@@ -39,7 +39,7 @@ def create_assistants(
         instructions=list(instructions),
         skills=skills,
         tools=workspace_tools(workspace_service, skills) + report_tools(workspace_service),
-        db=SerializedPostgresDb(db_url=settings.database_url),
+        db=SerializedAsyncPostgresDb(db_url=settings.database_url),
         add_history_to_context=True,
         num_history_runs=10,
         debug_mode=settings.debug,

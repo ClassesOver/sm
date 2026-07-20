@@ -301,6 +301,75 @@ async def test_http_上传保持覆盖路径的兼容调用语义(monkeypatch, c
 
 
 @pytest.mark.anyio
+async def test_workspace_delete_requires_a_strict_recursive_boolean(monkeypatch, client):
+    async def inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    calls = []
+    monkeypatch.setattr(app_module, "run_in_threadpool", inline)
+    monkeypatch.setattr(
+        app_module.workspace_service,
+        "delete_file",
+        lambda thread, path, recursive: calls.append((thread, path, recursive)),
+    )
+    headers = {
+        "X-AGUI-Thread": "thread-1",
+        "X-AGUI-Capability": capability(),
+    }
+
+    invalid = await client.request(
+        "DELETE",
+        "/workspace/file",
+        json={"threadId": "thread-1", "path": "资料", "recursive": "false"},
+        headers=headers,
+    )
+    extra = await client.request(
+        "DELETE",
+        "/workspace/file",
+        json={"threadId": "thread-1", "path": "资料", "recursive": False, "force": True},
+        headers=headers,
+    )
+    valid = await client.request(
+        "DELETE",
+        "/workspace/file",
+        json={"threadId": "thread-1", "path": "资料", "recursive": False},
+        headers=headers,
+    )
+
+    assert invalid.status_code == 422
+    assert extra.status_code == 422
+    assert valid.status_code == 200
+    assert calls == [("thread-1", "资料", False)]
+
+
+@pytest.mark.anyio
+async def test_workspace_download_encodes_a_unicode_filename(monkeypatch, client):
+    async def inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "run_in_threadpool", inline)
+    monkeypatch.setattr(
+        app_module.workspace_service,
+        "file_bytes",
+        lambda _thread, _path: (b"content", "text/plain"),
+    )
+
+    response = await client.get(
+        "/workspace/file",
+        params={"threadId": "thread-1", "path": "资料/报告.txt", "download": "true"},
+        headers={
+            "X-AGUI-Thread": "thread-1",
+            "X-AGUI-Capability": capability(),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Content-Disposition"] == (
+        "attachment; filename=\"download.txt\"; filename*=UTF-8''%E6%8A%A5%E5%91%8A.txt"
+    )
+
+
+@pytest.mark.anyio
 async def test_invalid_capability_is_rejected_before_large_run_body(client):
 
     response = await client.post(

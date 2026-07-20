@@ -1,5 +1,5 @@
 import psycopg
-from agno.db.postgres import PostgresDb
+from agno.db.postgres import AsyncPostgresDb
 
 from .settings import DEFAULT_AGENT_DB_URL as SETTINGS_DEFAULT_AGENT_DB_URL
 from .settings import database_url_from_environment
@@ -20,11 +20,12 @@ def check_database(db_url: str | None = None) -> None:
         connection.execute("SELECT 1").fetchone()
 
 
-class SerializedPostgresDb(PostgresDb):
-    def _create_all_tables(self):
-        with psycopg.connect(psycopg_db_url(self.db_url)) as connection:
-            connection.execute(
+class SerializedAsyncPostgresDb(AsyncPostgresDb):
+    async def _create_all_tables(self):
+        connection = await psycopg.AsyncConnection.connect(psycopg_db_url(self.db_url))
+        async with connection:
+            await connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                 ("agno:create-all-tables",),
             )
-            return super()._create_all_tables()
+            return await super()._create_all_tables()

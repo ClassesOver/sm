@@ -281,8 +281,18 @@ AgentOS registers five model-facing adapters: `pandas_profile_dataset`,
 creates a fresh Agno `PandasTools` instance over temporary local files, and
 releases all frames immediately. Native arbitrary Pandas functions are not
 published. Inputs are limited to 100000 rows, 100 columns, 128 MiB expanded
-memory, and model-visible results to 32 KiB. Chart outputs use UUID paths under
-`reports/`; PNG is inline-previewable and standalone Plotly HTML is downloaded.
+memory, and model-visible results to 32 KiB. CSV and JSONL loaders read at most
+100001 rows before rejecting an over-limit dataset. Top-level JSON arrays are
+shape-scanned before Pandas materializes them; XLSX archives are checked for
+member count, expanded size, and selected-sheet dimensions before loading.
+Chart outputs use UUID paths under `reports/`; PNG is inline-previewable and
+standalone Plotly HTML is downloaded.
+
+`DELETE /workspace/file` accepts only `threadId`, `path`, and the optional JSON
+boolean `recursive`; string or numeric boolean lookalikes and unknown fields are
+rejected. Workspace downloads send an ASCII `filename` fallback plus RFC 5987
+`filename*=UTF-8''...`, so non-ASCII names remain valid without putting Unicode
+directly into the Latin-1 response header.
 
 ## Sessions And Surfaces
 
@@ -324,7 +334,11 @@ allowed. Symbolic links, non-regular files, invalid paths and all over-limit
 workspaces reject the whole operation. A failure before `RUN_STARTED` removes
 prepared AgentOS/workspace state; React archives the Odoo branch and stays in
 the source session. A model error after `RUN_STARTED` remains visible in the
-branch.
+branch. Agent session persistence and branch workspace copy/rollback use the
+native asynchronous PostgreSQL and Daytona clients, so branch preparation does
+not block the AG-UI SSE event loop. Controlled branch failures emit their stable
+`branch_*` value in `RUN_ERROR.code`; unexpected failures use `branch_failed`.
+Client messages never contain raw backend exception text.
 
 Every save supplies `expectedSessionRevision`. On the first revision conflict,
 React reloads the session, merges local and remote messages by message ID, and

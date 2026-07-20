@@ -1,10 +1,11 @@
+import asyncio
 import hashlib
 import json
 import mimetypes
 import shlex
 import threading
 import unicodedata
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -12,6 +13,7 @@ import psycopg
 from agno.run import RunContext
 from agno.tools.function import Function
 from daytona import (
+    AsyncDaytona,
     CreateSandboxFromSnapshotParams,
     Daytona,
     ListSandboxesQuery,
@@ -106,22 +108,103 @@ class SandboxRegistryTransaction:
         )
 
 
+class AsyncSandboxRegistry:
+    def __init__(self, db_url: str | None = None):
+        self.db_url = db_url or psycopg_db_url()
+        self._initialized = False
+        self._initialize_lock = asyncio.Lock()
+
+    async def _connect(self):
+        return await psycopg.AsyncConnection.connect(self.db_url)
+
+    async def ensure_initialized(self):
+        if self._initialized:
+            return
+        async with self._initialize_lock:
+            if self._initialized:
+                return
+            connection = await self._connect()
+            async with connection:
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    ("agui-workspace:initialize",),
+                )
+                await connection.execute(
+                    "CREATE TABLE IF NOT EXISTS agui_workspace_sandbox ("
+                    "thread_hash TEXT PRIMARY KEY, sandbox_id TEXT NOT NULL, "
+                    "updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"
+                    ")"
+                )
+            self._initialized = True
+
+    @asynccontextmanager
+    async def locked(self, value: str):
+        await self.ensure_initialized()
+        connection = await self._connect()
+        async with connection:
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (value,)
+            )
+            yield AsyncSandboxRegistryTransaction(connection)
+
+
+class AsyncSandboxRegistryTransaction:
+    def __init__(self, connection):
+        self.connection = connection
+
+    async def get(self, value: str) -> str | None:
+        cursor = await self.connection.execute(
+            "SELECT sandbox_id FROM agui_workspace_sandbox WHERE thread_hash = %s",
+            (value,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+    async def set(self, value: str, sandbox_id: str):
+        await self.connection.execute(
+            "INSERT INTO agui_workspace_sandbox (thread_hash, sandbox_id, updated_at) "
+            "VALUES (%s, %s, CURRENT_TIMESTAMP) "
+            "ON CONFLICT (thread_hash) DO UPDATE SET "
+            "sandbox_id = EXCLUDED.sandbox_id, updated_at = CURRENT_TIMESTAMP",
+            (value, sandbox_id),
+        )
+
+    async def delete(self, value: str):
+        await self.connection.execute(
+            "DELETE FROM agui_workspace_sandbox WHERE thread_hash = %s", (value,)
+        )
+
+
 class WorkspaceService:
     def __init__(
         self,
         secret: str,
         client: Any | None = None,
         registry: SandboxRegistry | None = None,
+        async_client: Any | None = None,
+        async_registry: Any | None = None,
     ):
         self.secret = secret
         self._client = client
         self.registry = registry or SandboxRegistry()
+        self._async_client_override = async_client
+        self.async_registry = async_registry or AsyncSandboxRegistry(
+            getattr(self.registry, "db_url", None)
+        )
 
     @property
     def client(self):
         if self._client is None:
             self._client = Daytona()
         return self._client
+
+    @asynccontextmanager
+    async def _async_client(self):
+        if self._async_client_override is not None:
+            yield self._async_client_override
+            return
+        async with AsyncDaytona() as client:
+            yield client
 
     def _hash(self, thread: str) -> str:
         return thread_label(thread, self.secret)
@@ -215,11 +298,105 @@ class WorkspaceService:
             registry.delete(value)
             return bool(sandboxes)
 
-    def _branch_inventory(self, thread: str):
-        sandbox = self.sandbox_for(thread, create=False)
+    async def _afind_existing(self, client: Any, value: str, registry: Any):
+        sandbox_id = await registry.get(value)
+        if sandbox_id:
+            try:
+                return await client.get(sandbox_id)
+            except DaytonaNotFoundError:
+                await registry.delete(value)
+        matches = [
+            sandbox
+            async for sandbox in client.list(
+                ListSandboxesQuery(
+                    labels={"agui-thread": value},
+                    limit=2,
+                )
+            )
+        ]
+        if len(matches) > 1:
+            raise WorkspaceError("当前对话关联了多个运行环境，请联系管理员清理后重试。")
+        if matches:
+            await registry.set(value, matches[0].id)
+            return matches[0]
+        return None
+
+    async def _asandbox_for(self, client: Any, thread: str, create: bool = True):
+        value = self._hash(thread)
+        async with self.async_registry.locked(value) as registry:
+            sandbox = await self._afind_existing(client, value, registry)
+            if sandbox is None and create:
+                sandbox = await client.create(
+                    CreateSandboxFromSnapshotParams(
+                        name=f"agui-{value[:20]}",
+                        language="python",
+                        labels={"agui-thread": value},
+                        public=False,
+                        ephemeral=False,
+                        auto_stop_interval=60,
+                        auto_archive_interval=0,
+                        auto_delete_interval=-1,
+                        network_block_all=True,
+                    )
+                )
+                await registry.set(value, sandbox.id)
+            if sandbox is None:
+                return None
+            raw_state = getattr(sandbox, "state", "")
+            state = str(getattr(raw_state, "value", raw_state) or "").lower()
+            if state in {"stopped", "archived"}:
+                await client.start(sandbox)
+                raw_state = getattr(sandbox, "state", "")
+                state = str(getattr(raw_state, "value", raw_state) or "").lower()
+            if state in {
+                "creating",
+                "restoring",
+                "starting",
+                "pending_build",
+                "building_snapshot",
+                "pulling_snapshot",
+                "resuming",
+            }:
+                raise WorkspaceError("当前工作区正在启动，请稍后重试。")
+            if state != "started":
+                raise WorkspaceError("当前工作区状态异常，请稍后重试；如问题持续，请联系管理员。")
+            await self._aensure_directory(sandbox, WORKSPACE_ROOT)
+            return sandbox
+
+    async def _adestroy(self, client: Any, thread: str) -> bool:
+        value = self._hash(thread)
+        async with self.async_registry.locked(value) as registry:
+            sandboxes = {}
+            sandbox_id = await registry.get(value)
+            if sandbox_id:
+                try:
+                    sandbox = await client.get(sandbox_id)
+                    sandboxes[sandbox.id] = sandbox
+                except DaytonaNotFoundError:
+                    pass
+            async for sandbox in client.list(
+                ListSandboxesQuery(
+                    labels={"agui-thread": value},
+                )
+            ):
+                sandboxes[sandbox.id] = sandbox
+            for sandbox in sandboxes.values():
+                try:
+                    await client.delete(sandbox)
+                except DaytonaNotFoundError:
+                    pass
+            await registry.delete(value)
+            return bool(sandboxes)
+
+    async def adestroy(self, thread: str) -> bool:
+        async with self._async_client() as client:
+            return await self._adestroy(client, thread)
+
+    async def _abranch_inventory(self, client: Any, thread: str):
+        sandbox = await self._asandbox_for(client, thread, create=False)
         if sandbox is None:
             return None, [], []
-        root = self._info(sandbox, WORKSPACE_ROOT)
+        root = await self._ainfo(sandbox, WORKSPACE_ROOT)
         if self._is_symlink(root) or not root.is_dir:
             raise WorkspaceError("源工作区根路径不是安全目录，无法创建分支。")
 
@@ -230,7 +407,7 @@ class WorkspaceService:
         pending = [("", WORKSPACE_ROOT)]
         while pending:
             relative_parent, remote_parent = pending.pop()
-            for entry in sandbox.fs.list_files(remote_parent):
+            for entry in await sandbox.fs.list_files(remote_parent):
                 name = str(getattr(entry, "name", "") or "")
                 if name in ("", ".", "..") or "/" in name or "\\" in name:
                     raise WorkspaceError("源工作区包含无效路径，无法创建分支。")
@@ -258,38 +435,44 @@ class WorkspaceService:
                     raise WorkspaceError("源工作区总大小超过 256 MiB，无法创建分支。")
         return sandbox, directories, files
 
-    def copy_branch(self, source_thread: str, target_thread: str) -> dict[str, int]:
+    async def acopy_branch(self, source_thread: str, target_thread: str) -> dict[str, int]:
         if not source_thread or not target_thread or source_thread == target_thread:
             raise WorkspaceError("分支工作区线程无效。")
-        source, directories, files = self._branch_inventory(source_thread)
-        if source is None:
-            return {"files": 0, "bytes": 0}
-        if self.sandbox_for(target_thread, create=False) is not None:
-            raise WorkspaceError("目标分支工作区已经存在。")
+        async with self._async_client() as client:
+            source, directories, files = await self._abranch_inventory(client, source_thread)
+            if source is None:
+                return {"files": 0, "bytes": 0}
+            if await self._asandbox_for(client, target_thread, create=False) is not None:
+                raise WorkspaceError("目标分支工作区已经存在。")
 
-        target = None
-        copied_bytes = 0
-        try:
-            target = self.sandbox_for(target_thread, create=True)
-            for relative in sorted(directories, key=lambda value: (value.count("/"), value)):
-                _relative, remote = self.normalize_path(relative, allow_root=False)
-                self._ensure_directory(target, remote)
-            for relative, remote, expected_size in files:
-                content = source.fs.download_file(remote)
-                if not isinstance(content, bytes) or len(content) != expected_size:
-                    raise WorkspaceError("源工作区在分支复制期间发生变化，请重试。")
-                _relative, target_remote = self.normalize_path(relative, allow_root=False)
-                self._ensure_directory(target, target_remote.rsplit("/", 1)[0])
-                target.fs.upload_file(content, target_remote)
-                copied_bytes += len(content)
-            return {"files": len(files), "bytes": copied_bytes}
-        except Exception:
-            if target is not None:
-                try:
-                    self.destroy(target_thread)
-                except Exception:
-                    pass
-            raise
+            target = None
+            copied_bytes = 0
+            try:
+                target = await self._asandbox_for(client, target_thread, create=True)
+                if target is None:
+                    raise WorkspaceError("目标分支工作区创建失败。")
+                for relative in sorted(
+                    directories,
+                    key=lambda value: (value.count("/"), value),
+                ):
+                    _relative, remote = self.normalize_path(relative, allow_root=False)
+                    await self._aensure_directory(target, remote)
+                for relative, remote, expected_size in files:
+                    content = await source.fs.download_file(remote)
+                    if not isinstance(content, bytes) or len(content) != expected_size:
+                        raise WorkspaceError("源工作区在分支复制期间发生变化，请重试。")
+                    _relative, target_remote = self.normalize_path(relative, allow_root=False)
+                    await self._aensure_directory(target, target_remote.rsplit("/", 1)[0])
+                    await target.fs.upload_file(content, target_remote)
+                    copied_bytes += len(content)
+                return {"files": len(files), "bytes": copied_bytes}
+            except Exception:
+                if target is not None:
+                    try:
+                        await self._adestroy(client, target_thread)
+                    except Exception:
+                        pass
+                raise
 
     @staticmethod
     def normalize_path(path: str | None, allow_root: bool = True) -> tuple[str, str]:
@@ -336,6 +519,9 @@ class WorkspaceService:
 
     def _info(self, sandbox, remote: str):
         return sandbox.fs.get_file_info(remote)
+
+    async def _ainfo(self, sandbox, remote: str):
+        return await sandbox.fs.get_file_info(remote)
 
     def _validate_existing_path(self, sandbox, relative: str, include_leaf: bool = True):
         parts = relative.split("/") if relative else []
@@ -384,6 +570,32 @@ class WorkspaceService:
                 raise
             except DaytonaNotFoundError:
                 sandbox.fs.create_folder(current, "700")
+
+    async def _aensure_directory(self, sandbox, remote: str):
+        if remote == WORKSPACE_ROOT:
+            try:
+                info = await self._ainfo(sandbox, remote)
+                if self._is_symlink(info) or not info.is_dir:
+                    raise WorkspaceError("工作区根路径不是安全目录，请联系管理员检查运行环境。")
+                return
+            except WorkspaceError:
+                raise
+            except DaytonaNotFoundError:
+                await sandbox.fs.create_folder(remote, "700")
+                return
+        relative = remote[len(WORKSPACE_ROOT) :].strip("/")
+        current = WORKSPACE_ROOT
+        await self._aensure_directory(sandbox, WORKSPACE_ROOT)
+        for part in relative.split("/") if relative else []:
+            current = f"{current}/{part}"
+            try:
+                info = await self._ainfo(sandbox, current)
+                if self._is_symlink(info) or not info.is_dir:
+                    raise WorkspaceError("工作区目录路径不是安全目录，请改用普通目录。")
+            except WorkspaceError:
+                raise
+            except DaytonaNotFoundError:
+                await sandbox.fs.create_folder(current, "700")
 
     def list_files(self, thread: str, path: str = "") -> list[dict[str, Any]]:
         relative, remote = self.normalize_path(path)

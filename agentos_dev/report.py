@@ -2,19 +2,23 @@ import json
 import tempfile
 import uuid
 from contextlib import contextmanager
+from json import JSONDecodeError, JSONDecoder
 from pathlib import PurePosixPath
 from typing import Any
+from zipfile import BadZipFile, ZipFile
 
 import pandas as pd
 from agno.run import RunContext
 from agno.tools.function import Function
 from agno.tools.pandas import PandasTools
+from openpyxl import load_workbook
 
 from .workspace import WorkspaceError, WorkspaceService
 
 MAX_DATASET_ROWS = 100_000
 MAX_DATASET_COLUMNS = 100
 MAX_EXPANDED_BYTES = 128 * 1024 * 1024
+MAX_XLSX_MEMBERS = 1000
 MAX_RESULT_BYTES = 32 * 1024
 MAX_CHART_POINTS = 1000
 MAX_PIE_CATEGORIES = 20
@@ -34,14 +38,100 @@ def _ensure_columns(frame: pd.DataFrame) -> pd.DataFrame:
     if len(set(columns)) != len(columns):
         raise WorkspaceError("数据集字段名称转为文本后存在重复")
     frame.columns = columns
-    if len(frame.index) > MAX_DATASET_ROWS:
-        raise WorkspaceError("数据集超过 100000 行")
-    if len(frame.columns) > MAX_DATASET_COLUMNS:
-        raise WorkspaceError("数据集超过 100 列")
+    _check_shape(len(frame.index), len(frame.columns))
     expanded = int(frame.memory_usage(index=True, deep=True).sum())
     if expanded > MAX_EXPANDED_BYTES:
         raise WorkspaceError("数据集展开内存超过 128 MiB")
     return frame
+
+
+def _check_shape(row_count: int, column_count: int) -> None:
+    if row_count > MAX_DATASET_ROWS:
+        raise WorkspaceError(f"数据集超过 {MAX_DATASET_ROWS} 行")
+    if column_count > MAX_DATASET_COLUMNS:
+        raise WorkspaceError(f"数据集超过 {MAX_DATASET_COLUMNS} 列")
+
+
+def _skip_json_whitespace(value: str, index: int) -> int:
+    while index < len(value) and value[index] in " \t\r\n":
+        index += 1
+    return index
+
+
+def _preflight_json(content: bytes) -> None:
+    try:
+        value = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise WorkspaceError("JSON 数据集不是有效的 UTF-8 文件") from error
+    index = _skip_json_whitespace(value, 0)
+    if index >= len(value) or value[index] != "[":
+        return
+    index = _skip_json_whitespace(value, index + 1)
+    if index < len(value) and value[index] == "]":
+        return
+
+    decoder = JSONDecoder()
+    row_count = 0
+    columns: set[str] = set()
+    max_sequence_columns = 0
+    try:
+        while True:
+            item, index = decoder.raw_decode(value, index)
+            row_count += 1
+            if isinstance(item, dict):
+                columns.update(item)
+            elif isinstance(item, list):
+                max_sequence_columns = max(max_sequence_columns, len(item))
+            else:
+                max_sequence_columns = max(max_sequence_columns, 1)
+            _check_shape(row_count, max(len(columns), max_sequence_columns))
+
+            index = _skip_json_whitespace(value, index)
+            if index >= len(value):
+                raise JSONDecodeError("unterminated array", value, index)
+            if value[index] == "]":
+                index = _skip_json_whitespace(value, index + 1)
+                if index != len(value):
+                    raise JSONDecodeError("trailing data", value, index)
+                return
+            if value[index] != ",":
+                raise JSONDecodeError("missing comma", value, index)
+            index = _skip_json_whitespace(value, index + 1)
+            if index >= len(value) or value[index] == "]":
+                raise JSONDecodeError("missing array item", value, index)
+    except JSONDecodeError as error:
+        raise WorkspaceError("JSON 数据集格式无效") from error
+
+
+def _preflight_xlsx(path: str, sheet: str | int | None) -> None:
+    try:
+        with ZipFile(path) as archive:
+            members = archive.infolist()
+            if len(members) > MAX_XLSX_MEMBERS:
+                raise WorkspaceError(f"XLSX 压缩包成员超过 {MAX_XLSX_MEMBERS} 个")
+            expanded = sum(item.file_size for item in members)
+    except WorkspaceError:
+        raise
+    except BadZipFile as error:
+        raise WorkspaceError("XLSX 数据集格式无效") from error
+    if expanded > MAX_EXPANDED_BYTES:
+        raise WorkspaceError(f"XLSX 展开内容超过 {MAX_EXPANDED_BYTES // (1024 * 1024)} MiB")
+
+    workbook = None
+    try:
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        if isinstance(sheet, str):
+            worksheet = workbook[sheet]
+        else:
+            worksheet = workbook.worksheets[sheet or 0]
+        _check_shape(max(0, worksheet.max_row - 1), worksheet.max_column)
+    except WorkspaceError:
+        raise
+    except Exception as error:
+        raise WorkspaceError("XLSX 数据集格式无效或工作表不存在") from error
+    finally:
+        if workbook is not None:
+            workbook.close()
 
 
 @contextmanager
@@ -66,6 +156,10 @@ def _load_frames(
                 local_path = PurePosixPath(directory) / (f"dataset-{index}{suffix}")
                 with open(str(local_path), "wb") as output:
                     output.write(content)
+                if suffix == ".json":
+                    _preflight_json(content)
+                elif suffix == ".xlsx":
+                    _preflight_xlsx(str(local_path), sheet)
                 function_name = {
                     ".csv": "read_csv",
                     ".xlsx": "read_excel",
@@ -74,15 +168,22 @@ def _load_frames(
                 }[suffix]
                 parameters: dict[str, Any]
                 if suffix == ".csv":
-                    parameters = {"filepath_or_buffer": str(local_path)}
+                    parameters = {
+                        "filepath_or_buffer": str(local_path),
+                        "nrows": MAX_DATASET_ROWS + 1,
+                    }
                 elif suffix == ".xlsx":
-                    parameters = {"io": str(local_path)}
+                    parameters = {
+                        "io": str(local_path),
+                        "nrows": MAX_DATASET_ROWS + 1,
+                    }
                     if sheet is not None:
                         parameters["sheet_name"] = sheet
                 else:
                     parameters = {"path_or_buf": str(local_path)}
                     if suffix == ".jsonl":
                         parameters["lines"] = True
+                        parameters["nrows"] = MAX_DATASET_ROWS + 1
                 name = f"dataset_{index}"
                 toolkit.create_pandas_dataframe(name, function_name, parameters)
                 frame = toolkit.dataframes.get(name)

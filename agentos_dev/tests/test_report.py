@@ -192,6 +192,83 @@ def test_dataset_shape_and_memory_limits_are_enforced(tmp_path, monkeypatch):
         )
 
 
+def test_delimited_loaders_bound_rows_before_creating_dataframes(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    upload_datasets(current)
+    calls = {}
+    original = report.PandasTools.create_pandas_dataframe
+
+    def tracking(self, name, function_name, parameters):
+        key = function_name + ("_lines" if parameters.get("lines") else "")
+        calls[key] = dict(parameters)
+        return original(self, name, function_name, parameters)
+
+    monkeypatch.setattr(report.PandasTools, "create_pandas_dataframe", tracking)
+    current_tools = tools(current)
+    call(current_tools["pandas_profile_dataset"], path="data/sales.csv", run_context=context())
+    call(current_tools["pandas_profile_dataset"], path="data/sales.jsonl", run_context=context())
+
+    assert calls["read_csv"]["nrows"] == report.MAX_DATASET_ROWS + 1
+    assert calls["read_json_lines"]["nrows"] == report.MAX_DATASET_ROWS + 1
+
+
+def test_json_shape_is_rejected_before_pandas_materializes_the_dataset(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    current.upload(
+        "report-thread",
+        "data/tall.json",
+        json.dumps([{"value": 1}, {"value": 2}, {"value": 3}]).encode(),
+    )
+    current.upload(
+        "report-thread",
+        "data/wide.json",
+        json.dumps([{"first": 1, "second": 2}]).encode(),
+    )
+    monkeypatch.setattr(
+        report.PandasTools,
+        "create_pandas_dataframe",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("pandas loader called")),
+    )
+
+    monkeypatch.setattr(report, "MAX_DATASET_ROWS", 2)
+    with pytest.raises(WorkspaceError, match="数据集超过.*行"):
+        call(tools(current)["pandas_profile_dataset"], path="data/tall.json", run_context=context())
+
+    monkeypatch.setattr(report, "MAX_DATASET_ROWS", 100_000)
+    monkeypatch.setattr(report, "MAX_DATASET_COLUMNS", 1)
+    with pytest.raises(WorkspaceError, match="数据集超过.*列"):
+        call(tools(current)["pandas_profile_dataset"], path="data/wide.json", run_context=context())
+
+
+def test_xlsx_expanded_size_is_rejected_before_pandas_loads_it(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    upload_datasets(current)
+    monkeypatch.setattr(report, "MAX_EXPANDED_BYTES", 1)
+    monkeypatch.setattr(
+        report.PandasTools,
+        "create_pandas_dataframe",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("pandas loader called")),
+    )
+
+    with pytest.raises(WorkspaceError, match="XLSX 展开内容超过"):
+        call(
+            tools(current)["pandas_profile_dataset"],
+            path="data/sales.xlsx",
+            sheet="销售",
+            run_context=context(),
+        )
+
+    monkeypatch.setattr(report, "MAX_EXPANDED_BYTES", 128 * 1024 * 1024)
+    monkeypatch.setattr(report, "MAX_XLSX_MEMBERS", 1)
+    with pytest.raises(WorkspaceError, match="XLSX 压缩包成员超过"):
+        call(
+            tools(current)["pandas_profile_dataset"],
+            path="data/sales.xlsx",
+            sheet="销售",
+            run_context=context(),
+        )
+
+
 def test_chart_outputs_png_and_download_only_html_without_confirmation(tmp_path):
     current = service(tmp_path)
     upload_datasets(current)
