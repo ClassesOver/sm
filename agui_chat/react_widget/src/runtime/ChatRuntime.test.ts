@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AguiChat } from '../index'
 import { ChatRuntime } from './ChatRuntime'
 import type { AguiChatProps } from '../types'
-import { v2Props } from '../test/fixtures'
+import { menuCatalog, v2Props } from '../test/fixtures'
 
 function createRuntime(props: Partial<AguiChatProps> = {}) {
   return new ChatRuntime(v2Props(props))
@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.7.0')
+    expect(AguiChat.version).toBe('12.0.8.8.0')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -164,7 +164,7 @@ describe('ChatRuntime session naming', () => {
       const initialName = index === cases.length - 1 ? '' : '新对话'
       const runtime = createRuntime({
         runtimeUrl: '/runtime/run',
-        menuOptions: [menu],
+        menuCatalog: menuCatalog([menu]),
         hostState: {
           ...v2Props().hostState,
           capabilities: {
@@ -239,6 +239,91 @@ describe('ChatRuntime session naming', () => {
   })
 })
 
+describe('ChatRuntime One2many import preview', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('resumes AgentOS with a bounded hidden ready message', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(sseResponse([
+      { type: 'RUN_STARTED', runId: 'run-import-ready' },
+      { type: 'RUN_FINISHED', runId: 'run-import-ready' }
+    ])))
+    vi.stubGlobal('fetch', fetchMock)
+    const preview = {
+      kind: 'x2many_import',
+      import: {
+        jobToken: 'job-ready-1', state: 'preview', revision: 1,
+        mappingHash: 'a'.repeat(64)
+      }
+    }
+    const tool = {
+      id: 'prepare-import-1',
+      name: 'odoo.prepare_x2many_import',
+      status: 'ok' as const,
+      result: { ok: true, preview }
+    }
+    const previewX2ManyImport = vi.fn(async () => ({
+      ok: true,
+      jobToken: 'job-ready-1',
+      state: 'ready',
+      revision: 2,
+      preview: {
+        kind: 'x2many_import',
+        import: {
+          jobToken: 'job-ready-1', state: 'ready', revision: 2,
+          mappingHash: 'b'.repeat(64)
+        }
+      }
+    }))
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      session: {
+        id: 71,
+        name: '导入预览',
+        thread_id: 'thread-import-preview',
+        sessionRevision: 1,
+        messages: [{
+          id: 'assistant-import', role: 'assistant', content: '', tool_calls: [tool]
+        }]
+      },
+      hostBridge: {
+        previewX2ManyImport,
+        saveSession: vi.fn(async () => undefined)
+      }
+    })
+
+    const response = await runtime.previewX2ManyImport(tool, {
+      jobToken: 'job-ready-1',
+      expectedRevision: 1,
+      parseOptions: { encoding: 'utf-8', separator: ',', quoting: '"' },
+      mapping: { 产品: 'name' },
+      finalize: true
+    })
+
+    expect(response.state).toBe('ready')
+    expect(previewX2ManyImport).toHaveBeenCalledOnce()
+    const hidden = runtime.getSnapshot().messages.find((message) =>
+      message.role === 'user' && message.hidden
+    )
+    expect(JSON.parse(String(hidden?.content))).toEqual({
+      kind: 'x2many_import_ready',
+      import: {
+        jobToken: 'job-ready-1',
+        revision: 2,
+        mappingHash: 'b'.repeat(64)
+      }
+    })
+    const runInput = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(runInput.messages).toEqual([{
+      id: hidden?.id,
+      role: 'user',
+      content: hidden?.content
+    }])
+    expect(String(hidden?.content)).not.toContain('rows')
+  })
+})
+
 describe('ChatRuntime protocol handling', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -310,6 +395,10 @@ describe('ChatRuntime protocol handling', () => {
 
   it('streams text, executes host tools, and sends a follow-up with hidden tool messages', async () => {
     const requests: Array<{ url: string; body: any }> = []
+    const refreshedCatalog = menuCatalog([], {
+      catalogId: 'catalog-refreshed', catalogRevision: 2
+    })
+    const getMenuCatalog = vi.fn(() => refreshedCatalog)
     vi.stubGlobal(
       'fetch',
       vi.fn((url: string, init: RequestInit) => {
@@ -350,6 +439,7 @@ describe('ChatRuntime protocol handling', () => {
       attachments: false,
       threadId: 'thread-1',
       hostBridge: {
+        getMenuCatalog,
         executeTool(call) {
           return {
             ok: true,
@@ -382,6 +472,13 @@ describe('ChatRuntime protocol handling', () => {
       })
     }])
     expect(requests[1].body.runId).toBe(requests[0].body.runId)
+    expect(getMenuCatalog).toHaveBeenCalledTimes(3)
+    expect(JSON.parse(requests[0].body.context[0].value).menuTarget).toMatchObject({
+      catalogId: 'catalog-refreshed', catalogRevision: 2
+    })
+    expect(JSON.parse(requests[1].body.context[0].value).menuTarget).toMatchObject({
+      catalogId: 'catalog-refreshed', catalogRevision: 2
+    })
     expect(runtime.getSnapshot().messages.some((message) => message.role === 'tool' && message.hidden)).toBe(true)
     const assistantMessages = runtime.getSnapshot().messages.filter((message) => message.role === 'assistant')
     expect(assistantMessages).toHaveLength(2)
@@ -1416,14 +1513,20 @@ describe('ChatRuntime protocol handling', () => {
     const option = {
       menuId: 8, actionId: 42, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户'
     }
-    const runtime = createRuntime({ runtimeUrl: '/runtime/run', menuOptions: [option] })
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      tools: [{ name: 'odoo.search_menu', parameters: { type: 'object' } }],
+      menuCatalog: menuCatalog([option])
+    })
     await runtime.send('打开', [], { ...option, valid: true })
 
-    expect(runtime.getSnapshot().messages[0].menuMention).toEqual({ ...option, valid: true })
+    expect(runtime.getSnapshot().messages[0].menuMention).toEqual({
+      ...option, catalogId: 'catalog-test-1', catalogRevision: 1, valid: true
+    })
     expect(body.messages[0].content).toBe('打开')
     expect(body.context).toContainEqual(expect.objectContaining({ description: '已选 HRP 菜单' }))
 
-    runtime.update({ menuOptions: [] })
+    runtime.update({ menuCatalog: menuCatalog([], { catalogId: 'catalog-test-2', catalogRevision: 2 }) })
     expect(runtime.getSnapshot().messages[0].menuMention?.valid).toBe(false)
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
@@ -1431,7 +1534,33 @@ describe('ChatRuntime protocol handling', () => {
     expect(runtime.getSnapshot().messages[0].menuMention).toBeUndefined()
   })
 
-  it('resolves an exact menu path typed directly in the composer', async () => {
+  it('revalidates an explicit menu against the latest catalog before sending', async () => {
+    const fetchMock = vi.fn()
+    const onError = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const selected = {
+      menuId: 8, actionId: 42, name: '客户', path: ['销售', '客户'],
+      fullPath: '销售 / 客户', valid: true
+    }
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      menuCatalog: menuCatalog([selected]),
+      hostBridge: {
+        getMenuCatalog: () => menuCatalog([{
+          ...selected, actionId: 43
+        }], { catalogId: 'catalog-test-2', catalogRevision: 2 })
+      },
+      onError
+    })
+
+    expect(await runtime.send('打开', [], selected)).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('失效')
+    }))
+  })
+
+  it('does not bind a typed menu without an explicit menu selection', async () => {
     let body: any
     vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
       body = JSON.parse(String(init.body))
@@ -1442,15 +1571,14 @@ describe('ChatRuntime protocol handling', () => {
       path: ['费用报销', '单据查询', '报销单查询'],
       fullPath: '费用报销 / 单据查询 / 报销单查询'
     }
-    for (const content of [
-      '费用报销 / 单据查询 / 报销单查询',
-      '打开费用报销 / 单据查询 / 报销单查询菜单'
-    ]) {
-      const runtime = createRuntime({ runtimeUrl: '/runtime/run', menuOptions: [option] })
-      await runtime.send(content)
-      expect(runtime.getSnapshot().messages[0].menuMention).toEqual({ ...option, valid: true })
-      expect(body.context).toContainEqual(expect.objectContaining({ description: '已选 HRP 菜单' }))
-    }
+    const runtime = createRuntime({ runtimeUrl: '/runtime/run', menuCatalog: menuCatalog([option]) })
+    await runtime.send('打开费用报销 / 单据查询 / 报销单查询菜单')
+
+    expect(runtime.getSnapshot().messages[0].menuMention).toBeUndefined()
+    expect(body.context).not.toContainEqual(expect.objectContaining({ description: '已选 HRP 菜单' }))
+    expect(body.context).not.toContainEqual(expect.objectContaining({
+      description: '当前用户可见 HRP 菜单'
+    }))
   })
 
   it('does not guess a duplicate leaf menu name', async () => {
@@ -1459,7 +1587,7 @@ describe('ChatRuntime protocol handling', () => {
       { menuId: 8, actionId: 42, name: '查询', path: ['费用', '查询'], fullPath: '费用 / 查询' },
       { menuId: 9, actionId: 43, name: '查询', path: ['采购', '查询'], fullPath: '采购 / 查询' }
     ]
-    const runtime = createRuntime({ runtimeUrl: '/runtime/run', menuOptions: options })
+    const runtime = createRuntime({ runtimeUrl: '/runtime/run', menuCatalog: menuCatalog(options) })
 
     await runtime.send('打开查询')
 

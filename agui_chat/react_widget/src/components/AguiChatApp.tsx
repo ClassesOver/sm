@@ -74,6 +74,7 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
               onRegenerate={actions.regenerate}
               onSuggestion={actions.suggestion}
               onConfirmTool={actions.confirmTool}
+              onPreviewX2ManyImport={actions.previewX2ManyImport}
               onUndoTool={actions.undoTool}
             />
           </div>
@@ -84,7 +85,7 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
             running={snapshot.running}
             disabled={snapshot.loadingSessions}
             attachments={props.attachments}
-            menuOptions={props.menuOptions}
+            menuOptions={props.menuCatalog.entries}
             agentSkills={props.agentSkills}
             hostBridge={props.hostBridge}
             workspaceReferences={workspace.references}

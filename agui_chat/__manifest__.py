@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     "name": "AG-UI 智能助手",
-    "version": "12.0.8.7.0",
+    "version": "12.0.8.8.0",
     "category": "生产力",
     "summary": "HRP智能助手",
     "depends": ["web"],

@@ -6,7 +6,7 @@ odoo.define("agui_chat.surfaces", function (require) {
     var core = require("web.core");
     var ChatBridge = require("agui_chat.host_bridge");
     var CHAT_CSS_URL = "/agui_chat/static/lib/agui-chat-react/" +
-        "agui_chat_widget.12.0.8.7.0.css";
+        "agui_chat_widget.12.0.8.8.0.css";
     var DIRECTIONS = ["left", "right", "top", "bottom"];
     var WEBCLIENT_CLASSES = [
         "o_agui_chat_webclient_dock_left", "o_agui_chat_webclient_dock_right",
@@ -63,6 +63,7 @@ odoo.define("agui_chat.surfaces", function (require) {
             this.webClient = parent;
             this.bridge = new ChatBridge.HostBridge(this);
             this.hostState = null;
+            this.menuCatalog = null;
             this.surface = "standalone";
             this.dockDirection = "right";
             this.dockOpen = false;
@@ -78,6 +79,7 @@ odoo.define("agui_chat.surfaces", function (require) {
             this.runtimeMountRequested = false;
             this._chatFocusLease = null;
             this.subscribed = false;
+            this.menuSubscribed = false;
             this.interaction = null;
             this._boundPointerMove = this._onWindowPointerMove.bind(this);
             this._boundPointerUp = this._onWindowPointerUp.bind(this);
@@ -155,6 +157,12 @@ odoo.define("agui_chat.surfaces", function (require) {
                 try { this.call("agui_host", "unsubscribe", this, this._onHostState); } catch (error) {}
                 this.subscribed = false;
             }
+            if (this.menuSubscribed) {
+                try {
+                    this.call("agui_host", "unsubscribeMenuCatalog", this, this._onMenuCatalog);
+                } catch (error) {}
+                this.menuSubscribed = false;
+            }
             if (this.chatHandle) {
                 this.chatHandle.unmount();
                 this.chatHandle = null;
@@ -177,8 +185,11 @@ odoo.define("agui_chat.surfaces", function (require) {
                     }
                 }
                 this.hostState = this.call("agui_host", "getSnapshot");
+                this.menuCatalog = this.call("agui_host", "getMenuCatalog");
                 this.call("agui_host", "subscribe", this, this._onHostState);
                 this.subscribed = true;
+                this.call("agui_host", "subscribeMenuCatalog", this, this._onMenuCatalog);
+                this.menuSubscribed = true;
             } catch (error) {
                 this._showError("聊天页面宿主不可用。");
                 return;
@@ -247,10 +258,14 @@ odoo.define("agui_chat.surfaces", function (require) {
             }
             if (this.chatHandle) this.chatHandle.update({
                 hostState: snapshot,
-                menuOptions: this.call("agui_host", "getMenuOptions"),
                 surface: this.surface,
             });
             if (this._chatFocusLease) this._chatFocusLease.schedule();
+        },
+
+        _onMenuCatalog: function (catalog) {
+            this.menuCatalog = catalog;
+            if (this.chatHandle) this.chatHandle.update({menuCatalog: catalog});
         },
 
         _withChatFocusPreserved: function (task) {
@@ -423,7 +438,7 @@ odoo.define("agui_chat.surfaces", function (require) {
             if (this.chatHandle) this.chatHandle.update({
                 surface: surface,
                 hostState: this.hostState,
-                menuOptions: this.call("agui_host", "getMenuOptions"),
+                menuCatalog: this.menuCatalog,
             });
         },
 

@@ -113,7 +113,14 @@ const props: AguiChatProps = {
   hostState: devHostState,
   agentState: {},
   tools: [],
-  menuOptions: [],
+  menuCatalog: {
+    catalogId: 'catalog-dev-1',
+    catalogRevision: 1,
+    capturedAt: '2026-07-15T00:00:00.000Z',
+    ready: true,
+    totalCount: 0,
+    entries: []
+  },
   agentSkills: [
     { id: 'contract-audit', name: '合同审计', description: '核对合同条款、金额和关键日期' },
     { id: 'sales-analysis', name: '销售分析', description: '分析销售机会与客户跟进优先级' },

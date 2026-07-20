@@ -24,6 +24,11 @@ function main() {
             protocol: "agui.odoo.v2", surface: "dock", interactive: true,
         },
         subscribers: [],
+        menuSubscribers: [],
+        menuCatalog: {
+            catalogId: "catalog", catalogRevision: 1, capturedAt: "now",
+            ready: true, totalCount: 0, entries: [],
+        },
     };
 
     function jqueryNode(name) {
@@ -73,8 +78,8 @@ function main() {
         const args = Array.prototype.slice.call(arguments, 2);
         if (method === "getSnapshot") return service.snapshot;
         if (method === "getToolCatalog") return [];
-        if (method === "getMenuOptions") return [];
-        if (method === "configureNavigation") return [];
+        if (method === "getMenuCatalog") return service.menuCatalog;
+        if (method === "configureNavigation") return service.menuCatalog;
         if (method === "setCurrentController") return service.snapshot;
         if (method === "subscribe") {
             service.subscribers.push({owner: args[0], callback: args[1]});
@@ -82,6 +87,16 @@ function main() {
         }
         if (method === "unsubscribe") {
             service.subscribers = service.subscribers.filter((entry) => entry.owner !== args[0]);
+            return true;
+        }
+        if (method === "subscribeMenuCatalog") {
+            service.menuSubscribers.push({owner: args[0], callback: args[1]});
+            return true;
+        }
+        if (method === "unsubscribeMenuCatalog") {
+            service.menuSubscribers = service.menuSubscribers.filter(
+                (entry) => entry.owner !== args[0]
+            );
             return true;
         }
         if (method === "setSurface") {

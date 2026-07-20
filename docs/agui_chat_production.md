@@ -33,10 +33,33 @@ JSON 声明端点。
 模型限制，但仍绑定当前可见快照。紧急开关只禁用对应功能，不允许回退到 RPC、CRUD 或
 模拟状态。
 
+需要支持用户不使用 `@` 直接要求打开菜单时，必须同时将 `odoo.search_menu` 和
+`odoo.open_menu` 加入 `enabled_commands`。前者只搜索当前用户可见菜单，后者只接受
+本轮同一页面、目录版本和 Run 的唯一搜索结果或用户明确 `@` 选择的菜单；升级不会自动
+扩大现有命令白名单。菜单目录独立于页面快照，普通 Run 不发送完整目录；只有原词搜索无
+结果后的紧邻续跑才按 128 KiB 预算发送不含导航 ID 的完整路径。目录不完整时智能体必须
+停止并要求用户使用 `@`，不能基于残缺路径猜测。
+
 模块内置一个只读 `odoo.apply_filter` 策略，将 `hr.employee` 筛选限制为内部用户。
 该策略只作用于当前绑定的列表或看板视图；HRP 访问权限、记录规则和快照中的
 `filterFields` 白名单仍决定可筛选的记录与字段。需要额外用户组或字段限制时，应增加
 逐模型策略。
+
+### One2many 导入
+
+启用 `agui_chat_import` 时，业务模块必须用
+`register_x2many_import_profile()` 精确注册父模型、One2many 字段、允许的源列和目标字段，
+并在修改 converter 或 `row_prepare` 行为时提升 profile 版本。导入文件限制为 CSV/XLSX、
+10 MB、2,000 行、50 列和 80 字符表头。Chat 预览限制为 96 KiB，通常显示服务端生成的
+前 20 行，宽表或长文本会减少返回行数。不要给 profile 回调增加网络访问、额外写入或
+其他副作用。
+
+导入预览和测试通过同步 JSON 请求完成，最终确认后同步执行，不依赖 queue worker 或导入
+cron。升级到 `agui_chat_import` 12.0.8.8.1 会删除旧的 One2many 导入执行 cron，并把遗留的
+`validating/queued` 任务退回预览状态，要求按新协议重新映射和测试；不会修改 `agui_chat`
+统一审计保留 cron。终态任务会立即删除源文件副本和完整转换行；所有超期任务（包括未完成预览）
+及其源文件、错误报告由现有 `audit_retention_days` 统一清理。升级后应确认旧 XML ID
+`agui_chat_import.ir_cron_process_x2many_import_jobs` 已不存在。
 
 ### 报表管理
 

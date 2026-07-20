@@ -31,7 +31,7 @@ export function WorkspaceToolbar({
       <div className="flex h-8 shrink-0 items-center overflow-hidden rounded-md border border-muted/35 bg-background-panel shadow-[0_1px_2px_rgba(15,23,42,0.08)] outline outline-1 outline-border/70 transition-colors hover:border-muted/55 hover:outline-muted/45 has-[:focus-visible]:border-primary/35 has-[:focus-visible]:outline-primary/25 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary/10">
         <SlidersHorizontal size={13} className="ml-2 shrink-0 text-muted" aria-hidden="true" />
         <div className="relative">
-          <select value={sortKey} onChange={(event) => onSortKeyChange(event.target.value as WorkspaceSortKey)} className="h-8 w-[5.5rem] appearance-none border-0 bg-transparent py-0 pl-1.5 pr-5 text-xs text-secondary outline-none" aria-label="排序方式">
+          <select value={sortKey} onChange={(event) => onSortKeyChange(event.target.value as WorkspaceSortKey)} className="h-8 w-[88px] appearance-none border-0 bg-transparent py-0 pl-1.5 pr-5 text-xs text-secondary outline-none" aria-label="排序方式">
             <option value="name">按名称</option>
             <option value="modifiedAt">按修改时间</option>
             <option value="size">按大小</option>

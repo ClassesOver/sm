@@ -587,7 +587,7 @@ class TestHostCommandAuthorization(TransactionCase):
 
     def test_new_navigation_commands_are_declared_but_default_denied(self):
         new_commands = {
-            "odoo.open_menu", "odoo.apply_filter", "odoo.open_record",
+            "odoo.search_menu", "odoo.open_menu", "odoo.apply_filter", "odoo.open_record",
             "odoo.open_create", "odoo.enter_edit_mode", "odoo.activate_view_control",
             "odoo.open_x2many_record", "odoo.open_x2many_create",
             "odoo.prepare_x2many_import", "odoo.get_x2many_import_status",
@@ -598,7 +598,14 @@ class TestHostCommandAuthorization(TransactionCase):
         decision = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "disabled-open-menu",
             "tool": "odoo.open_menu",
-            "arguments": {"target": {"snapshotId": "page-1", "hostRevision": 1}, "menuId": 8},
+            "arguments": {
+                "target": {
+                    "snapshotId": "page-1", "hostRevision": 1,
+                    "catalogId": "catalog-1", "catalogRevision": 1,
+                },
+                "menuId": 8,
+                "actionId": 42,
+            },
             "context": {
                 "requestId": "request-disabled-menu",
                 "runId": "run-disabled-menu",
@@ -607,18 +614,19 @@ class TestHostCommandAuthorization(TransactionCase):
         })
         self.assertEqual(decision["code"], "command_disabled")
 
-    def test_page_target_is_accepted_for_selected_menu_navigation(self):
+    def test_menu_target_is_accepted_for_selected_menu_navigation(self):
         self.config.write({"enabled_commands": "odoo.open_menu"})
-        self.env["agui.chat.tool.policy"].create({
-            "name": "打开已选菜单",
-            "tool_name": "odoo.open_menu",
-            "access_level": "navigation",
-            "confirmation_mode": "never",
-        })
         decision = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "open-selected-menu",
             "tool": "odoo.open_menu",
-            "arguments": {"target": {"snapshotId": "page-2", "hostRevision": 2}, "menuId": 8},
+            "arguments": {
+                "target": {
+                    "snapshotId": "page-2", "hostRevision": 2,
+                    "catalogId": "catalog-2", "catalogRevision": 3,
+                },
+                "menuId": 8,
+                "actionId": 42,
+            },
             "context": {
                 "requestId": "request-open-menu",
                 "runId": "run-open-menu",
@@ -629,7 +637,77 @@ class TestHostCommandAuthorization(TransactionCase):
         self.assertFalse(decision.get("needs_confirmation"))
         self.assertEqual(
             set(decision["bound_call"]["arguments"]["target"]),
-            {"snapshotId", "hostRevision"},
+            {"snapshotId", "hostRevision", "catalogId", "catalogRevision"},
+        )
+
+    def test_menu_target_is_accepted_for_menu_search(self):
+        self.config.write({"enabled_commands": "odoo.search_menu"})
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command({
+            "id": "search-menu",
+            "tool": "odoo.search_menu",
+            "arguments": {
+                "target": {
+                    "snapshotId": "page-search", "hostRevision": 3,
+                    "catalogId": "catalog-search", "catalogRevision": 4,
+                },
+                "query": "报销单查询",
+            },
+            "context": {
+                "requestId": "request-search-menu",
+                "runId": "run-search-menu",
+                "threadId": "thread-search-menu",
+            },
+        })
+        self.assertTrue(decision["ok"])
+        self.assertFalse(decision.get("needs_confirmation"))
+        self.assertEqual(
+            set(decision["bound_call"]["arguments"]["target"]),
+            {"snapshotId", "hostRevision", "catalogId", "catalogRevision"},
+        )
+
+    def test_menu_target_requires_catalog_binding_and_changes_idempotency_key(self):
+        self.config.write({"enabled_commands": "odoo.search_menu"})
+        model = self.env["agui.chat.tool.authorization"]
+        base = {
+            "id": "search-menu-catalog-binding",
+            "tool": "odoo.search_menu",
+            "arguments": {
+                "target": {"snapshotId": "page-search", "hostRevision": 3},
+                "query": "报销单查询",
+            },
+            "context": {
+                "requestId": "request-search-binding",
+                "runId": "run-search-binding",
+                "threadId": "thread-search-binding",
+            },
+        }
+
+        invalid = model._prepare_host_command(base)
+        self.assertEqual(invalid["code"], "invalid_target")
+
+        first_call = json.loads(json.dumps(base))
+        first_call["arguments"]["target"].update({
+            "catalogId": "catalog-a", "catalogRevision": 1,
+        })
+        second_call = json.loads(json.dumps(first_call))
+        second_call["arguments"]["target"].update({
+            "catalogId": "catalog-b", "catalogRevision": 2,
+        })
+        first = model._prepare_host_command(first_call)
+        second = model._prepare_host_command(second_call)
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertNotEqual(first["authorization_id"], second["authorization_id"])
+
+    def test_default_menu_policies_cover_search_and_open(self):
+        self.assertEqual(
+            self.env.ref("agui_chat.policy_search_visible_menu").tool_name,
+            "odoo.search_menu",
+        )
+        self.assertEqual(
+            self.env.ref("agui_chat.policy_open_visible_menu").tool_name,
+            "odoo.open_menu",
         )
 
     def test_inactive_page_command_is_not_published_or_prepared(self):
@@ -642,8 +720,12 @@ class TestHostCommandAuthorization(TransactionCase):
             "id": "inactive-open-menu",
             "tool": "odoo.open_menu",
             "arguments": {
-                "target": {"snapshotId": "page-disabled", "hostRevision": 1},
+                "target": {
+                    "snapshotId": "page-disabled", "hostRevision": 1,
+                    "catalogId": "catalog-disabled", "catalogRevision": 1,
+                },
                 "menuId": 8,
+                "actionId": 42,
             },
             "context": {
                 "requestId": "request-inactive-menu",
@@ -658,8 +740,12 @@ class TestHostCommandAuthorization(TransactionCase):
             "id": "active-open-menu",
             "tool": "odoo.open_menu",
             "arguments": {
-                "target": {"snapshotId": "page-enabled", "hostRevision": 2},
+                "target": {
+                    "snapshotId": "page-enabled", "hostRevision": 2,
+                    "catalogId": "catalog-enabled", "catalogRevision": 2,
+                },
                 "menuId": 8,
+                "actionId": 42,
             },
             "context": {
                 "requestId": "request-active-menu",

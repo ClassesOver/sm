@@ -100,6 +100,7 @@ async function main() {
             each(values, callback, owner) {
                 (values || []).forEach(function (value) { callback.call(owner, value); });
             },
+            map(values, callback) { return (values || []).map(callback); },
             isFunction(value) { return typeof value === "function"; },
             filter(values, callback) { return values.filter(callback); },
             without(values, removed) { return values.filter((value) => value !== removed); },

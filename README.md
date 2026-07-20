@@ -13,8 +13,12 @@
 HRP 提供 `/agui_chat/config`、v2 界面会话、浏览器宿主命令策略，以及仅允许已注册命令的
 同步业务命令端点。HRP 不代理 SSE，也不开放通用 RPC 或 CRUD。
 
+可选的 `agui_chat_import` 在 Chat 内提供 Odoo ImportView 风格的 CSV/XLSX 预览、profile
+字段映射和测试导入；最终 One2many 写入仍使用具名业务命令的确认、幂等和原子事务链路，
+不开放通用导入执行接口。
+
 配置 `runtime_url` 后，HRP 会根据其中的 `/agui` 路径推导对应的 `/config` 握手地址。
-部署匹配的 `12.0.8.7.0` 声明后，再启用灰度开关。详情参见
+部署匹配的 `12.0.8.8.0` 声明后，再启用灰度开关。详情参见
 [协议说明](docs/agui_odoo_protocol.md)和[生产部署指南](docs/agui_chat_production.md)。
 
 前端验证：

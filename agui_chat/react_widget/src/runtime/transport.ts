@@ -8,6 +8,8 @@ import type {
 import { AGUI_ODOO_PROTOCOL } from '../types'
 import { asText, clone, parseJson, toolArgs, toolCallId, toolName, uuid } from './utils'
 
+const MAX_MENU_SEMANTIC_CONTEXT_BYTES = 128 * 1024
+
 export interface RunStateEnvelope {
   protocol: typeof AGUI_ODOO_PROTOCOL
   host: OdooHostSnapshot
@@ -169,7 +171,8 @@ function menuNavigationPending(messages: ChatMessage[]): boolean {
         callId &&
         toolName(call) === 'odoo.open_menu' &&
         args && typeof args === 'object' && !Array.isArray(args) &&
-        Number((args as Record<string, unknown>).menuId) === mention.menuId
+        Number((args as Record<string, unknown>).menuId) === mention.menuId &&
+        Number((args as Record<string, unknown>).actionId) === mention.actionId
       ) {
         matchingCalls.add(callId)
       }
@@ -188,7 +191,9 @@ function menuNavigationPending(messages: ChatMessage[]): boolean {
   return true
 }
 
-function agentHostContext(host: OdooHostSnapshot): Record<string, unknown> {
+function agentHostContext(props: AguiChatProps): Record<string, unknown> {
+  const host = props.hostState
+  const catalog = props.menuCatalog
   const action = host.action && typeof host.action === 'object'
     ? host.action as Record<string, unknown>
     : null
@@ -207,6 +212,12 @@ function agentHostContext(host: OdooHostSnapshot): Record<string, unknown> {
     pageTarget: {
       snapshotId: host.snapshotId,
       hostRevision: host.hostRevision
+    },
+    menuTarget: {
+      snapshotId: host.snapshotId,
+      hostRevision: host.hostRevision,
+      catalogId: catalog.catalogId,
+      catalogRevision: catalog.catalogRevision
     },
     viewTarget: {
       snapshotId: host.snapshotId,
@@ -237,6 +248,74 @@ function agentHostContext(host: OdooHostSnapshot): Record<string, unknown> {
   }
 }
 
+function latestMenuSearchResult(messages: ChatMessage[]): Record<string, unknown> | null {
+  let userIndex = -1
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'user') {
+      userIndex = index
+      break
+    }
+  }
+  for (let index = messages.length - 1; index > userIndex; index -= 1) {
+    const message = messages[index]
+    if (message.role !== 'tool' || message.name !== 'odoo.search_menu') continue
+    const result = parseJson(message.content)
+    return result && typeof result === 'object' && !Array.isArray(result)
+      ? result as Record<string, unknown>
+      : null
+  }
+  return null
+}
+
+function menuSemanticContext(
+  props: AguiChatProps,
+  messages: ChatMessage[]
+): { description: string; value: string } | null {
+  const menuToolsEnabled = ['odoo.search_menu', 'odoo.open_menu'].every((name) =>
+    props.tools.some((tool) => tool.name === name)
+  )
+  if (!menuToolsEnabled) return null
+  const result = latestMenuSearchResult(messages)
+  const candidates = Array.isArray(result?.candidates) ? result.candidates : []
+  const catalog = props.menuCatalog
+  if (
+    result?.matchType !== 'none' || candidates.length ||
+    result.catalogId !== catalog.catalogId ||
+    result.catalogRevision !== catalog.catalogRevision
+  ) return null
+
+  const paths: string[] = []
+  const encoder = new TextEncoder()
+  const base = {
+    catalogId: catalog.catalogId,
+    catalogRevision: catalog.catalogRevision,
+    totalCount: catalog.totalCount,
+    includedCount: 0,
+    complete: false,
+    navigationAuthorized: false,
+    requiredTool: 'odoo.search_menu',
+    paths
+  }
+  const baseBytes = encoder.encode(JSON.stringify(base)).byteLength
+  const countReserve = Math.max(0, String(catalog.totalCount).length - 1)
+  let pathBytes = 0
+  for (const entry of catalog.entries) {
+    const encoded = encoder.encode(JSON.stringify(entry.fullPath)).byteLength
+    const separator = paths.length ? 1 : 0
+    if (baseBytes + countReserve + pathBytes + separator + encoded > MAX_MENU_SEMANTIC_CONTEXT_BYTES) {
+      break
+    }
+    paths.push(entry.fullPath)
+    pathBytes += separator + encoded
+  }
+  const value = contextValue({
+    ...base,
+    includedCount: paths.length,
+    complete: catalog.ready && paths.length === catalog.totalCount
+  })
+  return { description: '当前用户可见 HRP 菜单', value }
+}
+
 function normalizeRunContext(
   props: AguiChatProps,
   messages: ChatMessage[]
@@ -244,7 +323,7 @@ function normalizeRunContext(
   const navigationPending = menuNavigationPending(messages)
   const context: Array<{ description: string; value: string }> = [{
     description: 'HRP 宿主快照',
-    value: contextValue(agentHostContext(props.hostState))
+    value: contextValue(agentHostContext(props))
   }]
   if (Array.isArray(props.context)) {
     props.context.forEach((item, index) => {
@@ -269,6 +348,8 @@ function normalizeRunContext(
   if (props.agentId !== undefined) {
     context.push({ description: '智能体 ID', value: props.agentId })
   }
+  const semanticMenuContext = menuSemanticContext(props, messages)
+  if (semanticMenuContext) context.push(semanticMenuContext)
   const latestUserMessage = [...messages].reverse().find((message) => message.role === 'user')
   const selectedSkills = (latestUserMessage?.skills || []).filter((skill) => skill.valid)
   if (selectedSkills.length) {
@@ -314,6 +395,8 @@ function normalizeRunContext(
       value: contextValue({
         menuId: mention.menuId,
         actionId: mention.actionId,
+        catalogId: mention.catalogId,
+        catalogRevision: mention.catalogRevision,
         name: mention.name,
         path: mention.path,
         fullPath: mention.fullPath,

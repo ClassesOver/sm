@@ -1,14 +1,15 @@
 import { ChevronRight, Hammer, RotateCcw } from 'lucide-react'
 import type {
   ChatLabels, FilterResult, OdooHostSnapshot, RecordCandidate, RelationCandidate,
-  RelationSearchResult, ToolCall, ToolRenderer
+  RelationSearchResult, ToolCall, ToolRenderer, X2ManyImportPreviewRequest,
+  X2ManyImportPreviewResponse
 } from '../types'
 import { toolName } from '../runtime/utils'
 import { Button } from './Button'
 import { CandidateOption, CandidatePanel } from './CandidatePanel'
 import { InlineNotice } from './InlineNotice'
 import { RenderErrorBoundary } from './RenderErrorBoundary'
-import { ToolConfirmationPreview } from './ToolConfirmationPreview'
+import { structuredPreview, ToolConfirmationPreview } from './ToolConfirmationPreview'
 import { ToolStatusBadge } from './ToolStatusBadge'
 import { getBuiltInToolPresentation } from './builtInToolPresentation'
 import { getToolCallPresentation } from './toolCallPresentation'
@@ -27,6 +28,9 @@ interface ToolCallCardProps {
   running: boolean
   onSelectRelation: (tool: ToolCall, candidates: RelationCandidate[]) => void
   onSelectRecord: (tool: ToolCall, candidate: RecordCandidate) => void
+  onPreviewX2ManyImport?: (
+    request: X2ManyImportPreviewRequest
+  ) => Promise<X2ManyImportPreviewResponse>
 }
 
 function RelationSearchCard({
@@ -94,18 +98,24 @@ function RecordCandidatesCard({
   </CandidatePanel>
 }
 
-function DefaultToolCallCard({ tool, onConfirm, onUndo, labels, running }: {
+function DefaultToolCallCard({
+  tool, onConfirm, onUndo, labels, running, onPreviewX2ManyImport
+}: {
   tool: ToolCall
   onConfirm: (approved: boolean) => void
   onUndo: () => void
   labels: ChatLabels
   running: boolean
+  onPreviewX2ManyImport?: (
+    request: X2ManyImportPreviewRequest
+  ) => Promise<X2ManyImportPreviewResponse>
 }) {
   const {
     displayName, result, applied, rejected, status, error, needsConfirmation, undo, call
   } = getToolCallPresentation(tool)
+  const hasImportPreview = structuredPreview(result).kind === 'x2many_import'
   return (
-    <details open={needsConfirmation || undefined} className="rounded-lg border border-border bg-background-secondary/80 p-2">
+    <details open={needsConfirmation || hasImportPreview || undefined} className="rounded-lg border border-border bg-background-secondary/80 p-2">
       <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1.5 rounded-md bg-background px-2 py-1 font-mono text-[11px] text-primary">
           <Hammer className="size-3" />{displayName}
@@ -116,12 +126,12 @@ function DefaultToolCallCard({ tool, onConfirm, onUndo, labels, running }: {
       {error ? <InlineNotice className="mt-2" tone="error">{String(error)}</InlineNotice> : null}
       {needsConfirmation ? <div className="mt-2 rounded-md border border-solid border-warning/25 bg-warning/10 p-2 text-xs text-warning">
         <div>需要确认：{displayName}</div>
-        <ToolConfirmationPreview result={result} />
+        <ToolConfirmationPreview result={result} running={running} onPreviewX2ManyImport={onPreviewX2ManyImport} />
         <div className="mt-2 flex gap-2">
           <Button size="sm" variant="primary" className="h-7 rounded-md" disabled={running} onClick={() => onConfirm(true)}>{labels.approve}</Button>
           <Button size="sm" className="h-7 rounded-md bg-background-panel" disabled={running} onClick={() => onConfirm(false)}>{labels.reject}</Button>
         </div>
-      </div> : null}
+      </div> : hasImportPreview ? <ToolConfirmationPreview result={result} running={running} onPreviewX2ManyImport={onPreviewX2ManyImport} /> : null}
       {undo.available ? <div className="mt-2 flex items-center gap-2 border-t border-border pt-2"><Button size="sm" className="h-8 rounded-md bg-background" disabled={running || undo.status === 'running' || undo.status === 'undone'} title="撤销本次修改" onClick={onUndo}><RotateCcw className="size-3.5" />{undo.status === 'running' ? '撤销中' : undo.status === 'undone' ? '已撤销' : '撤销'}</Button>{undo.error ? <span className="text-xs text-destructive">{String(undo.error)}</span> : null}</div> : null}
       <details className="mt-2 border-t border-border pt-2">
         <summary className="cursor-pointer text-xs text-muted">查看详情</summary>
@@ -136,10 +146,10 @@ function DefaultToolCallCard({ tool, onConfirm, onUndo, labels, running }: {
 
 export function ToolCallCard({
   tool, renderers, onConfirm, onUndo, labels, hostState, running,
-  onSelectRelation, onSelectRecord
+  onSelectRelation, onSelectRecord, onPreviewX2ManyImport
 }: ToolCallCardProps) {
   const Renderer = renderers?.[toolName(tool)]
-  const fallback = <DefaultToolCallCard tool={tool} onConfirm={onConfirm} onUndo={onUndo} labels={labels} running={running} />
+  const fallback = <DefaultToolCallCard tool={tool} onConfirm={onConfirm} onUndo={onUndo} labels={labels} running={running} onPreviewX2ManyImport={onPreviewX2ManyImport} />
   if (Renderer) return <RenderErrorBoundary
     fallback={fallback}
     resetKeys={[

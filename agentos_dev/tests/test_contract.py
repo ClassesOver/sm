@@ -39,8 +39,8 @@ def odoo_contract():
 
 def test_agentos_contract_matches_odoo_source():
     values, digest = odoo_contract()
-    assert values["COMMAND_CATALOG_REVISION"] == 8
-    assert digest == "66999dc4e1f22d94cf04b9fda3463c99538f00f86150204d4d0dea5d73c8cb60"
+    assert values["COMMAND_CATALOG_REVISION"] == 10
+    assert digest == "45b3b79f39f02b93936c7f5ab8b28c2c158b40d6edb8ebc3950b54f32b18d7b0"
     assert app.PROTOCOL == values["PROTOCOL"]
     assert app.BUNDLE_VERSION == values["MODULE_VERSION"]
     assert app.COMMAND_CATALOG_HASH == digest
@@ -55,10 +55,26 @@ def test_agent_instructions_enforce_staged_odoo_workflow():
     assert "独立确认后 odoo.save_current_form" in instructions
 
 
+def test_agent_instructions_wait_for_chat_import_preview():
+    instructions = "\n".join(app.assistant.instructions)
+
+    assert "等待用户在 Chat 内完成服务端预览、字段映射和测试导入" in instructions
+    assert "kind=x2many_import_ready" in instructions
+    assert "odoo.get_x2many_import_status 只用于恢复或查询" in instructions
+    assert "不得构造行数据、mappingHash、schema 摘要" in instructions
+
+
 def test_agent_instructions_prioritize_selected_menu_navigation():
     instructions = "\n".join(app.assistant.instructions)
 
     assert "第一个且唯一可调用的页面工具是 odoo.open_menu" in instructions
+    assert "本轮第一个页面工具必须是 odoo.search_menu" in instructions
+    assert "返回多个候选时立即停止" in instructions
+    assert "首次 query 必须使用用户请求中的原始菜单名称或路径" in instructions
+    assert "最多尝试两个不同 fullPath" in instructions
+    assert "complete=false、目录缺失或版本不一致时必须停止" in instructions
+    assert "不得从目录生成 menuId 或 actionId" in instructions
+    assert "stale_menu_catalog 时，只能用最新 menuTarget 对原始 query 重试一次" in instructions
     assert "菜单名称只用于定位" in instructions
     assert "用户消息明确要求创建" in instructions
     assert "不得从菜单名称中的“新建”或“创建”推断创建意图" in instructions

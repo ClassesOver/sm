@@ -54,7 +54,7 @@ export interface OdooViewField {
   schemaHash?: string | false
 }
 
-export interface MenuMentionOption {
+export interface MenuCatalogEntry {
   menuId: number
   actionId: number
   name: string
@@ -62,7 +62,20 @@ export interface MenuMentionOption {
   fullPath: string
 }
 
-export interface MenuMention extends MenuMentionOption {
+export interface MenuCatalogSnapshot {
+  catalogId: string
+  catalogRevision: number
+  capturedAt: string
+  ready: boolean
+  totalCount: number
+  entries: MenuCatalogEntry[]
+}
+
+export type MenuMentionOption = MenuCatalogEntry
+
+export interface MenuMention extends MenuCatalogEntry {
+  catalogId?: string
+  catalogRevision?: number
   valid: boolean
 }
 
@@ -344,6 +357,28 @@ export interface ToolCall {
   confirmation_id?: string | false
 }
 
+export interface X2ManyImportPreviewRequest {
+  jobToken: string
+  expectedRevision: number
+  parseOptions: {
+    encoding: string | false
+    separator: string | false
+    quoting: string
+  }
+  mapping: Record<string, string | false>
+  finalize: boolean
+}
+
+export interface X2ManyImportPreviewResponse {
+  ok: boolean
+  code?: string
+  error?: string
+  jobToken?: string
+  state?: string
+  revision?: number
+  preview?: Record<string, unknown>
+}
+
 export interface RelationCandidate {
   id: number
   displayName: string
@@ -512,6 +547,10 @@ export interface AssistantMessageProps {
   onFeedback: (feedback: Exclude<ChatFeedback, null>) => void
   onConfirmTool: (tool: ToolCall, approved: boolean) => void
   onUndoTool?: (tool: ToolCall) => void
+  onPreviewX2ManyImport?: (
+    tool: ToolCall,
+    request: X2ManyImportPreviewRequest
+  ) => Promise<X2ManyImportPreviewResponse>
   hostState: OdooHostSnapshot
   onSelectRelation: (tool: ToolCall, candidates: RelationCandidate[]) => void
   onSelectRecord: (tool: ToolCall, candidate: RecordCandidate) => void
@@ -575,6 +614,12 @@ export interface HostBridgeToolCall {
     runId: string
     threadId: string
     selectedMentionTokens?: string[]
+    selectedMenu?: {
+      menuId: number
+      actionId: number
+      catalogId: string
+      catalogRevision: number
+    }
   }
 }
 
@@ -608,6 +653,7 @@ export interface SessionApi {
 
 export interface HostBridge {
   executeTool?: (call: HostBridgeToolCall) => Promise<unknown> | unknown
+  getMenuCatalog?: () => Promise<MenuCatalogSnapshot> | MenuCatalogSnapshot
   confirmTool?: (
     call: HostBridgeToolCall, authorizationId: string, approved: boolean
   ) => Promise<unknown> | unknown
@@ -617,6 +663,9 @@ export interface HostBridge {
   getWorkspaceCapability?: (
     sessionId: string | number
   ) => Promise<{ ok?: boolean; code?: string; error?: string } & Partial<WorkspaceCapability>>
+  previewX2ManyImport?: (
+    request: X2ManyImportPreviewRequest
+  ) => Promise<X2ManyImportPreviewResponse> | X2ManyImportPreviewResponse
   listSessions?: SessionApi['list']
   createSession?: SessionApi['create']
   loadSession?: SessionApi['load']
@@ -646,7 +695,7 @@ export interface AguiChatProps {
   agentState: Record<string, unknown>
   hostBridge?: HostBridge
   tools: AguiClientTool[]
-  menuOptions: MenuMentionOption[]
+  menuCatalog: MenuCatalogSnapshot
   agentSkills?: AgentSkillOption[]
   resume?: unknown[]
   ui?: {

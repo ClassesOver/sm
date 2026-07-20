@@ -15,6 +15,11 @@ _logger = logging.getLogger(__name__)
 
 class AguiChatImportController(http.Controller):
 
+    def _rejected(self, error):
+        if isinstance(error, X2ManyImportError):
+            return {"ok": False, "code": error.code, "error": str(error)}
+        return {"ok": False, "code": "x2many_import_rejected"}
+
     @http.route("/agui_chat_import/prepare", type="json", auth="user")
     def prepare(self, parent_model, parent_id, field_name, attachment_id,
                 schema_hash):
@@ -23,13 +28,26 @@ class AguiChatImportController(http.Controller):
                 parent_model, parent_id, field_name, attachment_id, schema_hash
             )
         except (X2ManyImportError, AccessError, ValidationError, ValueError) as error:
-            return {
-                "ok": False,
-                "code": getattr(error, "code", False) or "x2many_import_rejected",
-                "error": str(error),
-            }
+            return self._rejected(error)
         except Exception:
             _logger.exception("AG-UI One2many import preparation failed")
+            return {"ok": False, "code": "x2many_import_failed"}
+
+    @http.route("/agui_chat_import/preview", type="json", auth="user")
+    def preview(self, jobToken, expectedRevision, parseOptions=None,
+                mapping=None, finalize=False):
+        try:
+            return request.env["agui.chat.x2many.import.job"]._preview_owned_job(
+                jobToken,
+                expectedRevision,
+                parseOptions if parseOptions is not None else {},
+                mapping if mapping is not None else {},
+                finalize,
+            )
+        except (X2ManyImportError, AccessError, ValidationError, ValueError) as error:
+            return self._rejected(error)
+        except Exception:
+            _logger.exception("AG-UI One2many import preview failed")
             return {"ok": False, "code": "x2many_import_failed"}
 
     @http.route("/agui_chat_import/status", type="json", auth="user")
@@ -37,11 +55,10 @@ class AguiChatImportController(http.Controller):
         try:
             return request.env["agui.chat.x2many.import.job"]._job_status(job_token)
         except (X2ManyImportError, AccessError, ValidationError, ValueError) as error:
-            return {
-                "ok": False,
-                "code": getattr(error, "code", False) or "x2many_import_rejected",
-                "error": str(error),
-            }
+            return self._rejected(error)
+        except Exception:
+            _logger.exception("AG-UI One2many import status failed")
+            return {"ok": False, "code": "x2many_import_failed"}
 
     @http.route(
         "/agui_chat_import/error/<string:job_token>",

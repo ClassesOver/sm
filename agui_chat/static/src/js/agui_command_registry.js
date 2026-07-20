@@ -13,6 +13,18 @@ odoo.define("agui_chat.command_registry", function (require) {
         },
     };
 
+    var MENU_TARGET = {
+        type: "object",
+        additionalProperties: false,
+        required: ["snapshotId", "hostRevision", "catalogId", "catalogRevision"],
+        properties: {
+            snapshotId: {type: "string"},
+            hostRevision: {type: "integer"},
+            catalogId: {type: "string"},
+            catalogRevision: {type: "integer"},
+        },
+    };
+
     var VIEW_TARGET = {
         type: "object",
         additionalProperties: false,
@@ -44,6 +56,15 @@ odoo.define("agui_chat.command_registry", function (require) {
             additionalProperties: false,
             required: ["target"].concat(required || []),
             properties: _.extend({target: PAGE_TARGET}, properties || {}),
+        };
+    }
+
+    function menuSchema(properties, required) {
+        return {
+            type: "object",
+            additionalProperties: false,
+            required: ["target"].concat(required || []),
+            properties: _.extend({target: MENU_TARGET}, properties || {}),
         };
     }
 
@@ -80,11 +101,19 @@ odoo.define("agui_chat.command_registry", function (require) {
             }, ["token"]),
         },
         {
+            name: "odoo.search_menu",
+            description: "搜索当前用户可见的 HRP 窗口菜单；先精确匹配完整路径或叶子名称，无精确结果时再返回包含匹配。",
+            parameters: menuSchema({
+                query: {type: "string", minLength: 1, maxLength: 400},
+            }, ["query"]),
+        },
+        {
             name: "odoo.open_menu",
-            description: "打开用户已明确选择的 HRP 窗口菜单；不要猜测 menuId。",
-            parameters: pageSchema({
+            description: "打开用户已明确选择或由 odoo.search_menu 唯一匹配的 HRP 窗口菜单；menuId 与 actionId 必须原样使用。",
+            parameters: menuSchema({
                 menuId: {type: "integer", minimum: 1},
-            }, ["menuId"]),
+                actionId: {type: "integer", minimum: 1},
+            }, ["menuId", "actionId"]),
         },
         {
             name: "odoo.apply_filter",
@@ -366,7 +395,7 @@ odoo.define("agui_chat.command_registry", function (require) {
     function openMentionMenu(context, binding) {
         var before = context.getSnapshot();
         rejectUnsavedChanges(context);
-        return $.when(context.openMenu(binding.menu_id)).then(function () {
+        return $.when(context.openMenu(binding.menu_id, binding.action_id)).then(function () {
             return context.waitForInteractiveSnapshotChange(before.snapshotId);
         });
     }
@@ -440,10 +469,19 @@ odoo.define("agui_chat.command_registry", function (require) {
         });
     };
 
+    COMMANDS["odoo.search_menu"] = function (context, args, call) {
+        var snapshot = context.getSnapshot();
+        var result = context.searchMenus(args.query, call && call.context);
+        return _.extend({}, result, {
+            snapshotId: snapshot.snapshotId,
+            hostRevision: snapshot.hostRevision,
+        });
+    };
+
     COMMANDS["odoo.open_menu"] = function (context, args) {
         var before = context.getSnapshot();
         rejectUnsavedChanges(context);
-        return $.when(context.openMenu(args.menuId)).then(function (menu) {
+        return $.when(context.openMenu(args.menuId, args.actionId)).then(function (menu) {
             return navigationResult(context, before, {menu: menu});
         });
     };

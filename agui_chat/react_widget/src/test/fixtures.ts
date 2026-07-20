@@ -1,4 +1,7 @@
-import type { AguiChatProps, AguiClientTool, OdooHostSnapshot, ProtocolHandshake } from '../types'
+import type {
+  AguiChatProps, AguiClientTool, MenuCatalogEntry, MenuCatalogSnapshot,
+  OdooHostSnapshot, ProtocolHandshake
+} from '../types'
 
 export const testHostState: OdooHostSnapshot = {
   protocol: 'agui.odoo.v2',
@@ -40,10 +43,10 @@ export const testHostState: OdooHostSnapshot = {
 
 export const testHandshake: ProtocolHandshake = {
   protocol: 'agui.odoo.v2',
-  moduleVersion: '12.0.8.7.0',
-  bundleVersion: '12.0.8.7.0',
+  moduleVersion: '12.0.8.8.0',
+  bundleVersion: '12.0.8.8.0',
   agentProtocol: 'agui.odoo.v2',
-  agentBundleVersion: '12.0.8.7.0',
+  agentBundleVersion: '12.0.8.8.0',
   commandCatalogHash: 'a'.repeat(64),
   agentCommandCatalogHash: 'a'.repeat(64)
 }
@@ -53,13 +56,28 @@ export const patchTool: AguiClientTool = {
   parameters: { type: 'object' }
 }
 
+export function menuCatalog(
+  entries: MenuCatalogEntry[] = [],
+  overrides: Partial<MenuCatalogSnapshot> = {}
+): MenuCatalogSnapshot {
+  return {
+    catalogId: 'catalog-test-1',
+    catalogRevision: 1,
+    capturedAt: '2026-07-15T00:00:00.000Z',
+    ready: true,
+    totalCount: entries.length,
+    entries,
+    ...overrides
+  }
+}
+
 export function v2Props(overrides: Partial<AguiChatProps> = {}): AguiChatProps {
   return {
     handshake: testHandshake,
     hostState: testHostState,
     agentState: {},
     tools: [patchTool],
-    menuOptions: [],
+    menuCatalog: menuCatalog(),
     surface: 'dock',
     ...overrides,
     ...(overrides.session

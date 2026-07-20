@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   HostBridgeToolCall,
   LoadedSession,
+  MenuCatalogSnapshot,
   MenuMention,
   MentionReference,
   RecordCandidate,
@@ -16,7 +17,9 @@ import type {
   TransportState,
   WorkspaceCapability,
   WorkspaceEntry,
-  WorkspaceReference
+  WorkspaceReference,
+  X2ManyImportPreviewRequest,
+  X2ManyImportPreviewResponse
 } from '../types'
 import { AGUI_ODOO_PROTOCOL } from '../types'
 import { applyJsonPatch, deepMerge } from './jsonPatch'
@@ -287,7 +290,7 @@ export class ChatRuntime {
     } else if (nextProps.threadId && nextProps.threadId !== previousThreadId) {
       this.resetThread(nextProps.threadId, nextProps.initialMessages || [])
     }
-    const menuMentionsChanged = Boolean(nextProps.menuOptions && this.revalidateMenuMentions())
+    const menuMentionsChanged = Boolean(nextProps.menuCatalog && this.revalidateMenuMentions())
     const mentionsChanged = this.revalidateMentions()
     const skillsChanged = this.revalidateSkills()
     if (menuMentionsChanged || mentionsChanged || skillsChanged) {
@@ -407,9 +410,9 @@ export class ChatRuntime {
     const text = content.trim()
     const mentions = Array.isArray(selection) ? selection.map((item) => clone(item)) : []
     const workspace = workspaceReferences.map((item) => clone(item))
-    const menuMention = selection && !Array.isArray(selection)
-      ? selection
-      : !selection ? this.resolveTypedMenuMention(text) : undefined
+    const menuMention = selection && !Array.isArray(selection) ? selection : undefined
+    if (this.running || this.loadingSessions) return false
+    await this.refreshMenuCatalog()
     const currentMenu = menuMention ? this.resolveMenuMention(menuMention) : undefined
     if (menuMention && !currentMenu) {
       const error = new Error('所选菜单已失效或无权访问，请重新选择。')
@@ -448,7 +451,7 @@ export class ChatRuntime {
       this.emit()
       return false
     }
-    if ((!text && !attachments.length && !currentMenu && !mentions.length && !workspace.length && !recordSelection) || this.running || this.loadingSessions) {
+    if (!text && !attachments.length && !currentMenu && !mentions.length && !workspace.length && !recordSelection) {
       return false
     }
     try {
@@ -520,7 +523,8 @@ export class ChatRuntime {
         requestId: this.currentRequestId,
         runId: this.currentRunId,
         threadId: this.threadId,
-        selectedMentionTokens: this.latestMentionTokens()
+        selectedMentionTokens: this.latestMentionTokens(),
+        selectedMenu: this.latestMenuSelection()
       }
     }
     this.confirmingHostBridgeTools[key] = true
@@ -624,6 +628,69 @@ export class ChatRuntime {
     })
     const context = this.createRunContext(this.currentRunId)
     await this.executeRunLifecycle(context, () => this.run(context, 0))
+  }
+
+  async previewX2ManyImport(
+    tool: ToolCall,
+    request: X2ManyImportPreviewRequest
+  ): Promise<X2ManyImportPreviewResponse> {
+    const bridge = this.props.hostBridge
+    const current = this.toolsByKey[toolKey(tool)] || tool
+    if (this.running || !bridge?.previewX2ManyImport) {
+      return { ok: false, code: 'import_preview_unavailable', error: '导入预览当前不可用。' }
+    }
+    const currentResult = isRecord(current.result) ? current.result : {}
+    const currentPreview = isRecord(currentResult.preview) ? currentResult.preview : {}
+    const nestedResult = isRecord(currentResult.result) ? currentResult.result : {}
+    const nestedPreview = isRecord(nestedResult.preview) ? nestedResult.preview : {}
+    const preview = currentPreview.kind === 'x2many_import' ? currentPreview : nestedPreview
+    const importData = isRecord(preview.import) ? preview.import : {}
+    if (!request.jobToken || request.jobToken !== String(importData.jobToken || '')) {
+      return { ok: false, code: 'invalid_job_token', error: '导入任务已变化，请重新准备。' }
+    }
+    try {
+      const response = await Promise.resolve(bridge.previewX2ManyImport(request))
+      if (!response || response.ok === false) {
+        return response || { ok: false, code: 'x2many_import_failed' }
+      }
+      const nextResult = {
+        ...response,
+        operation: toolName(current)
+      }
+      this.mergeTool({
+        ...current,
+        result: nextResult,
+        status: 'ok',
+        error: false
+      })
+      this.notifyMessages()
+      this.emit()
+      if (response.state !== 'ready' || !request.finalize) {
+        await this.persistImmediately()
+        return response
+      }
+      const responsePreview = isRecord(response.preview) ? response.preview : {}
+      const responseImport = isRecord(responsePreview.import) ? responsePreview.import : {}
+      this.messages.push({
+        id: uuid(),
+        role: 'user',
+        hidden: true,
+        content: JSON.stringify({
+          kind: 'x2many_import_ready',
+          import: {
+            jobToken: String(response.jobToken || request.jobToken),
+            revision: Number(response.revision || responseImport.revision || 0),
+            mappingHash: String(responseImport.mappingHash || '')
+          }
+        }),
+        created_at: Date.now()
+      })
+      await this.executeNewTurn()
+      return response
+    } catch (reason) {
+      const error = reason instanceof Error ? reason : new Error(String(reason))
+      return { ok: false, code: 'x2many_import_failed', error: error.message }
+    }
   }
 
   async undoTool(tool: ToolCall): Promise<void> {
@@ -1503,6 +1570,8 @@ export class ChatRuntime {
 
   private async run(context: RunContext, depth: number): Promise<void> {
     this.throwIfRunCancelled(context)
+    await this.refreshMenuCatalog()
+    this.throwIfRunCancelled(context)
     const capability = await this.ensureWorkspaceCapability()
     context.pendingHostBridgePromises = []
     context.hostBridgeFollowupNeeded = false
@@ -1833,7 +1902,8 @@ export class ChatRuntime {
         requestId: context.currentRequestId,
         runId: context.currentRunId,
         threadId: context.threadId,
-        selectedMentionTokens: this.latestMentionTokens()
+        selectedMentionTokens: this.latestMentionTokens(),
+        selectedMenu: this.latestMenuSelection()
       }
     }
     return bridge.executeTool ? Promise.resolve(bridge.executeTool(call)) : null
@@ -2155,6 +2225,22 @@ export class ChatRuntime {
     return (message?.mentions || []).filter((mention) => mention.valid).map((mention) => mention.token)
   }
 
+  private latestMenuSelection(): {
+    menuId: number
+    actionId: number
+    catalogId: string
+    catalogRevision: number
+  } | undefined {
+    const message = [...this.messages].reverse().find((item) => item.role === 'user')
+    const mention = message?.menuMention
+    return mention?.valid ? {
+      menuId: mention.menuId,
+      actionId: mention.actionId,
+      catalogId: mention.catalogId || this.props.menuCatalog.catalogId,
+      catalogRevision: mention.catalogRevision ?? this.props.menuCatalog.catalogRevision
+    } : undefined
+  }
+
   private validateMentions(mentions: MentionReference[]): string | null {
     if (mentions.length > 5) return '每条消息最多引用 5 个对象。'
     if (new Set(mentions.map((mention) => mention.resourceKey)).size !== mentions.length) {
@@ -2215,27 +2301,38 @@ export class ChatRuntime {
   }
 
   private resolveMenuMention(mention: MenuMention): MenuMention | undefined {
-    const option = (this.props.menuOptions || []).find((item) =>
+    const catalog = this.props.menuCatalog
+    const option = catalog.entries.find((item) =>
       item.menuId === mention.menuId && item.actionId === mention.actionId
     )
-    return option ? { ...clone(option), valid: true } : undefined
+    return option ? {
+      ...clone(option),
+      catalogId: catalog.catalogId,
+      catalogRevision: catalog.catalogRevision,
+      valid: true
+    } : undefined
   }
 
-  private resolveTypedMenuMention(content: string): MenuMention | undefined {
-    const normalize = (value: string) => value.trim().replace(/\s*\/\s*/g, ' / ').replace(/\s+/g, ' ')
-    const text = normalize(content)
-    const candidates = [text]
-    const openMatch = text.match(/^(?:请)?(?:打开|进入|导航到|跳转到)\s*(.+?)(?:\s*菜单)?[。！？!?]?$/)
-    if (openMatch?.[1]) candidates.unshift(normalize(openMatch[1]))
-
-    const options = this.props.menuOptions || []
-    for (const candidate of candidates) {
-      const fullPath = options.filter((option) => normalize(option.fullPath) === candidate)
-      if (fullPath.length === 1) return { ...clone(fullPath[0]), valid: true }
-      const leaf = options.filter((option) => normalize(option.name) === candidate)
-      if (leaf.length === 1) return { ...clone(leaf[0]), valid: true }
+  private async refreshMenuCatalog(): Promise<void> {
+    const getMenuCatalog = this.props.hostBridge?.getMenuCatalog
+    if (!getMenuCatalog) return
+    let catalog: MenuCatalogSnapshot
+    try {
+      catalog = clone(await Promise.resolve(getMenuCatalog()))
+    } catch {
+      return
     }
-    return undefined
+    if (
+      !catalog || typeof catalog.catalogId !== 'string' ||
+      !Number.isInteger(catalog.catalogRevision) || !Array.isArray(catalog.entries)
+    ) return
+    if (JSON.stringify(catalog) === JSON.stringify(this.props.menuCatalog)) return
+    this.props = { ...this.props, menuCatalog: catalog }
+    if (this.revalidateMenuMentions()) {
+      this.notifyMessages()
+      this.scheduleSave()
+      this.emit()
+    }
   }
 
   private isCurrentRecordSelection(selection: RecordSelection): boolean {

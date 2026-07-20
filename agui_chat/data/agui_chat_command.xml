@@ -39,8 +39,15 @@
         <field name="name">打开菜单</field>
         <field name="code">odoo.open_menu</field>
         <field name="command_type">page</field>
-        <field name="description">打开用户已明确选择的 HRP 窗口菜单；不要猜测 menuId。</field>
+        <field name="description">打开用户已明确选择或同一运行中搜索唯一匹配的 HRP 窗口菜单；必须校验目录版本、menuId 和 actionId。</field>
         <field name="sequence">10</field>
+    </record>
+    <record id="command_search_menu" model="agui.chat.command">
+        <field name="name">搜索菜单</field>
+        <field name="code">odoo.search_menu</field>
+        <field name="command_type">page</field>
+        <field name="description">搜索当前用户可见菜单，精确匹配优先，无精确结果时返回包含候选。</field>
+        <field name="sequence">9</field>
     </record>
     <record id="command_apply_filter" model="agui.chat.command">
         <field name="name">应用筛选</field>

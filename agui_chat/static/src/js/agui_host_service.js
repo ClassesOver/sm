@@ -87,6 +87,47 @@ odoo.define("agui_chat.host_service", function (require) {
         return options;
     }
 
+    function publicMenuEntries(options) {
+        return _.map(options || [], function (option) {
+            return _.omit(option, "primaryMenuId");
+        });
+    }
+
+    function menuCatalogFingerprint(ready, options) {
+        return JSON.stringify({
+            ready: !!ready,
+            entries: _.map(options || [], function (option) {
+                return [
+                    option.menuId, option.actionId, option.name, option.path,
+                    option.fullPath, option.primaryMenuId,
+                ];
+            }),
+        });
+    }
+
+    function emptyMenuCatalog() {
+        return {
+            catalogId: uuid(),
+            catalogRevision: 0,
+            capturedAt: new Date().toISOString(),
+            ready: false,
+            totalCount: 0,
+            entries: [],
+        };
+    }
+
+    function menuSearchQuery(value) {
+        value = String(value || "").trim().slice(0, 400)
+            .replace(/[。！？!?]+$/, "").trim();
+        value = value.replace(/^(?:请)?(?:打开|进入|导航到|跳转到)\s*/, "");
+        return value.replace(/\s*菜单$/, "").trim();
+    }
+
+    function normalizeMenuSearch(value) {
+        return String(value || "").trim().replace(/\s*(?:\/|>|＞|›|→)\s*/g, " / ")
+            .replace(/\s+/g, " ").toLocaleLowerCase();
+    }
+
     function safeTrigger(controller, immediate, generation) {
         try {
             bus.trigger("agui_host:controller_changed", {
@@ -150,6 +191,7 @@ odoo.define("agui_chat.host_service", function (require) {
             this._surface = "dock";
             this._snapshot = unavailableSnapshot(0, this._surface);
             this._subscribers = [];
+            this._menuSubscribers = [];
             this._refreshTimer = null;
             this._commandBusy = false;
             this._sensitiveFields = [];
@@ -157,8 +199,11 @@ odoo.define("agui_chat.host_service", function (require) {
             this._webClient = null;
             this._menuData = null;
             this._menuOptions = [];
+            this._menuCatalog = emptyMenuCatalog();
+            this._menuFingerprint = menuCatalogFingerprint(false, []);
             this._recentModels = [];
             this._tokens = {};
+            this._menuSearch = false;
             this._snapshotWaiters = [];
         },
 
@@ -180,6 +225,7 @@ odoo.define("agui_chat.host_service", function (require) {
                 this._refreshTimer = null;
             }
             this._subscribers = [];
+            this._menuSubscribers = [];
             _.each(this._snapshotWaiters, function (waiter) { waiter.resolve(this._snapshot); }, this);
             this._snapshotWaiters = [];
             return this._super.apply(this, arguments);
@@ -188,22 +234,82 @@ odoo.define("agui_chat.host_service", function (require) {
         configureNavigation: function (webClient, menuData) {
             this._webClient = webClient || null;
             this._menuData = menuData || webClient && webClient.menu_data || null;
-            this._menuOptions = buildMenuOptions(this._menuData);
-            return this.getMenuOptions();
+            this._refreshMenuCatalog();
+            return this.getMenuCatalog();
         },
 
-        getMenuOptions: function () {
-            var menuData = this._webClient && this._webClient.menu_data || this._menuData;
-            if (menuData && (menuData !== this._menuData || !this._menuOptions.length)) {
-                this._menuData = menuData;
-                this._menuOptions = buildMenuOptions(menuData);
+        getMenuCatalog: function () {
+            this._refreshMenuCatalog();
+            return Adapter.clone(this._menuCatalog);
+        },
+
+        _refreshMenuCatalog: function () {
+            var menuData = this._webClient && _.has(this._webClient, "menu_data") ?
+                this._webClient.menu_data : this._menuData;
+            var ready = !!(menuData && _.isArray(menuData.children));
+            var options = ready ? buildMenuOptions(menuData) : [];
+            var fingerprint = menuCatalogFingerprint(ready, options);
+            this._menuData = menuData || null;
+            this._menuOptions = options;
+            if (fingerprint === this._menuFingerprint) {
+                return false;
             }
-            return Adapter.clone(_.map(this._menuOptions, function (option) {
-                return _.omit(option, "primaryMenuId");
-            }));
+            this._menuFingerprint = fingerprint;
+            this._menuCatalog = {
+                catalogId: uuid(),
+                catalogRevision: (this._menuCatalog && this._menuCatalog.catalogRevision || 0) + 1,
+                capturedAt: new Date().toISOString(),
+                ready: ready,
+                totalCount: options.length,
+                entries: publicMenuEntries(options),
+            };
+            this._menuSearch = false;
+            this._publishMenuCatalog();
+            return true;
+        },
+
+        searchMenus: function (value, callContext) {
+            var query = menuSearchQuery(value);
+            var needle = normalizeMenuSearch(query);
+            var options;
+            var exact;
+            var matches;
+            var snapshot = this._snapshot || {snapshotId: false, hostRevision: 0};
+            var catalog = this.getMenuCatalog();
+            options = this._menuOptions;
+            exact = needle ? _.filter(options, function (option) {
+                return normalizeMenuSearch(option.fullPath) === needle ||
+                    normalizeMenuSearch(option.name) === needle;
+            }) : [];
+            matches = exact.length ? exact : needle ? _.filter(options, function (option) {
+                return normalizeMenuSearch(option.fullPath).indexOf(needle) !== -1 ||
+                    normalizeMenuSearch(option.name).indexOf(needle) !== -1;
+            }) : [];
+            this._menuSearch = matches.length === 1 ? {
+                snapshotId: snapshot.snapshotId,
+                hostRevision: snapshot.hostRevision,
+                catalogId: catalog.catalogId,
+                catalogRevision: catalog.catalogRevision,
+                threadId: callContext && callContext.threadId || "",
+                runId: callContext && callContext.runId || "",
+                menuId: matches[0].menuId,
+                actionId: matches[0].actionId,
+            } : false;
+            return {
+                query: query,
+                matchType: exact.length ? "exact" : matches.length ? "contains" : "none",
+                matchCount: matches.length,
+                truncated: matches.length > 8,
+                catalogId: catalog.catalogId,
+                catalogRevision: catalog.catalogRevision,
+                catalogReady: catalog.ready,
+                catalogTotalCount: catalog.totalCount,
+                candidates: Adapter.clone(publicMenuEntries(matches.slice(0, 8))),
+            };
         },
 
         getMentionSearchContext: function () {
+            this._refreshMenuCatalog();
             var snapshot = this.getSnapshot();
             var model = snapshot.record && snapshot.record.model ||
                 snapshot.selection && snapshot.selection.model || false;
@@ -298,9 +404,33 @@ odoo.define("agui_chat.host_service", function (require) {
             }
         },
 
+        subscribeMenuCatalog: function (owner, callback) {
+            try {
+                if (!owner || !_.isFunction(callback)) {
+                    return false;
+                }
+                this.unsubscribeMenuCatalog(owner, callback);
+                this._menuSubscribers.push({owner: owner, callback: callback});
+                return true;
+            } catch (error) {
+                return false;
+            }
+        },
+
         unsubscribe: function (owner, callback) {
             try {
                 this._subscribers = _.filter(this._subscribers, function (entry) {
+                    return entry.owner !== owner || callback && entry.callback !== callback;
+                });
+                return true;
+            } catch (error) {
+                return false;
+            }
+        },
+
+        unsubscribeMenuCatalog: function (owner, callback) {
+            try {
+                this._menuSubscribers = _.filter(this._menuSubscribers, function (entry) {
                     return entry.owner !== owner || callback && entry.callback !== callback;
                 });
                 return true;
@@ -320,6 +450,7 @@ odoo.define("agui_chat.host_service", function (require) {
         prepareHostCommand: function (call, allowStaleRetry) {
             var self = this;
             var cleanCall = Adapter.clone(call || {});
+            this._refreshMenuCatalog();
             if (cleanCall.arguments) {
                 delete cleanCall.arguments.__mention;
                 delete cleanCall.arguments.__control;
@@ -420,10 +551,44 @@ odoo.define("agui_chat.host_service", function (require) {
                 )) {
                     return self._commandResult(false, cleanCall, "stale_record_token", {}, nextSnapshot);
                 }
-                if (cleanCall.tool === "odoo.open_menu" && !self._menuOption(
-                    cleanCall.arguments && cleanCall.arguments.menuId
-                )) {
-                    return self._commandResult(false, cleanCall, "menu_unavailable", {}, nextSnapshot);
+                if (cleanCall.tool === "odoo.open_menu") {
+                    var selectedMenu = self._menuOption(
+                        cleanCall.arguments && cleanCall.arguments.menuId
+                    );
+                    if (!selectedMenu) {
+                        return self._commandResult(
+                            false, cleanCall, "menu_unavailable", {}, nextSnapshot
+                        );
+                    }
+                    if (selectedMenu.actionId !== parseInt(
+                            cleanCall.arguments && cleanCall.arguments.actionId, 10)) {
+                        return self._commandResult(
+                            false, cleanCall, "menu_action_conflict", {}, nextSnapshot
+                        );
+                    }
+                    var selectedContext = cleanCall.context && cleanCall.context.selectedMenu;
+                    var selectedByMention = selectedContext &&
+                        parseInt(selectedContext.menuId, 10) === selectedMenu.menuId &&
+                        parseInt(selectedContext.actionId, 10) === selectedMenu.actionId &&
+                        selectedContext.catalogId === self._menuCatalog.catalogId &&
+                        selectedContext.catalogRevision === self._menuCatalog.catalogRevision;
+                    var search = self._menuSearch;
+                    var selectedBySearch = search &&
+                        search.snapshotId === nextSnapshot.snapshotId &&
+                        search.hostRevision === nextSnapshot.hostRevision &&
+                        search.catalogId === self._menuCatalog.catalogId &&
+                        search.catalogRevision === self._menuCatalog.catalogRevision &&
+                        search.threadId && cleanCall.context &&
+                        search.threadId === cleanCall.context.threadId &&
+                        search.runId && cleanCall.context &&
+                        search.runId === cleanCall.context.runId &&
+                        search.menuId === selectedMenu.menuId &&
+                        search.actionId === selectedMenu.actionId;
+                    if (!selectedByMention && !selectedBySearch) {
+                        return self._commandResult(
+                            false, cleanCall, "menu_search_required", {}, nextSnapshot
+                        );
+                    }
                 }
                 return {
                     ok: true,
@@ -439,6 +604,7 @@ odoo.define("agui_chat.host_service", function (require) {
             var snapshot;
             var validation;
             try {
+                this._refreshMenuCatalog();
                 snapshot = this.getSnapshot();
                 if (this._commandBusy) {
                     return $.when(this._commandResult(false, call, "command_busy", {}, snapshot));
@@ -723,6 +889,7 @@ odoo.define("agui_chat.host_service", function (require) {
         },
 
         _publish: function () {
+            this._menuSearch = false;
             var snapshot = Adapter.clone(this._snapshot);
             var pending = this._snapshotWaiters;
             this._snapshotWaiters = [];
@@ -744,11 +911,46 @@ odoo.define("agui_chat.host_service", function (require) {
             });
         },
 
+        _publishMenuCatalog: function () {
+            var catalog = Adapter.clone(this._menuCatalog);
+            _.each((this._menuSubscribers || []).slice(0), function (entry) {
+                try {
+                    entry.callback.call(entry.owner, catalog);
+                } catch (error) {
+                    // Subscriber failures are isolated from Odoo.
+                }
+            });
+        },
+
         _validateTarget: function (call, snapshot) {
             var args = call && call.arguments;
             var target = args && args.target;
+            if (call && ["odoo.search_menu", "odoo.open_menu"].indexOf(call.tool) !== -1) {
+                if (!target || !_.has(target, "snapshotId") ||
+                        !_.has(target, "hostRevision") || !_.has(target, "catalogId") ||
+                        !_.has(target, "catalogRevision")) {
+                    return "invalid_target";
+                }
+                if (target.snapshotId !== snapshot.snapshotId ||
+                        target.hostRevision !== snapshot.hostRevision) {
+                    return "stale_snapshot";
+                }
+                if (target.catalogId !== this._menuCatalog.catalogId ||
+                        target.catalogRevision !== this._menuCatalog.catalogRevision) {
+                    if (call.tool === "odoo.open_menu") {
+                        var current = _.findWhere(this._menuOptions, {
+                            menuId: parseInt(args && args.menuId, 10),
+                        });
+                        if (current && current.actionId !== parseInt(args && args.actionId, 10)) {
+                            return "menu_action_conflict";
+                        }
+                    }
+                    return "stale_menu_catalog";
+                }
+                return false;
+            }
             if (call && [
-                    "odoo.open_menu", "odoo.read_mentioned_records",
+                    "odoo.read_mentioned_records",
                     "odoo.open_mentioned_menu", "odoo.open_mentioned_record",
                     "odoo.apply_mentioned_filter",
                 ].indexOf(call.tool) !== -1) {
@@ -802,7 +1004,12 @@ odoo.define("agui_chat.host_service", function (require) {
                 },
                 resolveToken: function (token, kind) { return self._resolveToken(token, kind); },
                 validateToken: function (binding, kind) { return self._validateToken(binding, kind); },
-                openMenu: function (menuId) { return self._openMenu(menuId); },
+                searchMenus: function (query, callContext) {
+                    return self.searchMenus(query, callContext);
+                },
+                openMenu: function (menuId, actionId) {
+                    return self._openMenu(menuId, actionId);
+                },
                 openRecord: function (binding, mode) { return self._openRecord(binding, mode); },
                 openMentionedRecord: function (recordId, mode) {
                     return self._openMentionedRecord(recordId, mode);
@@ -838,18 +1045,23 @@ odoo.define("agui_chat.host_service", function (require) {
 
         _menuOption: function (menuId) {
             menuId = parseInt(menuId, 10);
-            this._menuData = this._webClient && this._webClient.menu_data || this._menuData;
-            this._menuOptions = buildMenuOptions(this._menuData);
+            this._refreshMenuCatalog();
             return _.findWhere(this._menuOptions, {menuId: menuId}) || false;
         },
 
-        _openMenu: function (menuId) {
+        _openMenu: function (menuId, actionId) {
             var option = this._menuOption(menuId);
             var self = this;
             if (!option || !this._webClient || !_.isFunction(this._webClient.do_action)) {
                 var unavailable = new Error("所选菜单已删除或当前用户无权访问。");
                 unavailable.code = "menu_unavailable";
                 throw unavailable;
+            }
+            actionId = parseInt(actionId, 10);
+            if (isNaN(actionId) || actionId <= 0 || option.actionId !== actionId) {
+                var conflict = new Error("菜单对应动作已变化，请重新搜索后再打开。");
+                conflict.code = "menu_action_conflict";
+                throw conflict;
             }
             this._menu = {id: option.menuId, name: option.name};
             return $.when(this._webClient.do_action(option.actionId, {

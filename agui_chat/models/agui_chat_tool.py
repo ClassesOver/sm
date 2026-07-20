@@ -375,10 +375,11 @@ class AguiChatToolAuthorization(models.Model):
             return False
         arguments = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
         target = arguments.get("target") if isinstance(arguments.get("target"), dict) else {}
-        material = "%s:%s:%s:%s:%s:%s:%s:%s" % (
+        material = "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s" % (
             PROTOCOL, self.env.user.id, self.env.user.company_id.id,
             thread_id, run_id, tool_call_id,
             target.get("snapshotId") or "", target.get("hostRevision") or "",
+            target.get("catalogId") or "", target.get("catalogRevision") or "",
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
@@ -721,9 +722,14 @@ class AguiChatToolAuthorization(models.Model):
         if tool_name not in HOST_COMMAND_NAMES:
             return {"ok": False, "code": "unsupported_command"}
         target = arguments.get("target") if isinstance(arguments.get("target"), dict) else {}
-        target_keys = {"snapshotId", "hostRevision"} if tool_name in (
-            "odoo.open_menu", "odoo.read_mentioned_records", "odoo.open_mentioned_menu",
-            "odoo.open_mentioned_record", "odoo.apply_mentioned_filter",
+        target_keys = {
+            "snapshotId", "hostRevision", "catalogId", "catalogRevision",
+        } if tool_name in ("odoo.search_menu", "odoo.open_menu") else {
+            "snapshotId", "hostRevision",
+        } if tool_name in (
+            "odoo.read_mentioned_records",
+            "odoo.open_mentioned_menu", "odoo.open_mentioned_record",
+            "odoo.apply_mentioned_filter",
         ) else {
             "snapshotId", "hostRevision", "controllerId", "dataPointId", "model", "resId",
         }

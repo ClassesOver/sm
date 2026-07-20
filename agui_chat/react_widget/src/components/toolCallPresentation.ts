@@ -2,6 +2,7 @@ import type { ToolCall } from '../types'
 import { toolArgs, toolCallId, toolName } from '../runtime/utils'
 
 export const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  'odoo.search_menu': '搜索菜单',
   'odoo.open_menu': '打开菜单',
   'odoo.apply_filter': '筛选当前视图',
   'odoo.open_record': '打开记录',

@@ -5,7 +5,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
     var core = require("web.core");
 
     var PROTOCOL = "agui.odoo.v2";
-    var MODULE_VERSION = "12.0.8.7.0";
+    var MODULE_VERSION = "12.0.8.8.0";
     var WRITE_COMMANDS = {
         "odoo.stage_current_form": true,
         "odoo.patch_current_form": true,
@@ -200,7 +200,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
             hostState: clone(hostState),
             agentState: {},
             tools: clone(this.catalog),
-            menuOptions: clone(this.owner.call("agui_host", "getMenuOptions") || []),
+            menuCatalog: clone(this.owner.call("agui_host", "getMenuCatalog") || {}),
             agentSkills: clone(config.agent && config.agent.skills || []),
             surface: surface,
             hostBridge: this.publicApi(),
@@ -211,6 +211,9 @@ odoo.define("agui_chat.host_bridge", function (require) {
         var self = this;
         return {
             executeTool: function (call) { return self.executeTool(call); },
+            getMenuCatalog: function () {
+                return clone(self.owner.call("agui_host", "getMenuCatalog") || {});
+            },
             confirmTool: function (call, authorizationId, approved) {
                 return self.confirmTool(call, authorizationId, approved);
             },
@@ -219,6 +222,9 @@ odoo.define("agui_chat.host_bridge", function (require) {
             bindMention: function (values) { return self.bindMention(values); },
             getWorkspaceCapability: function (sessionId) {
                 return self.getWorkspaceCapability(sessionId);
+            },
+            previewX2ManyImport: function (values) {
+                return self.previewX2ManyImport(values);
             },
             listSessions: function () { return self.listSessions(); },
             createSession: function (values) { return self.createSession(values); },
@@ -298,6 +304,17 @@ odoo.define("agui_chat.host_bridge", function (require) {
     HostBridge.prototype.getWorkspaceCapability = function (sessionId) {
         return this._rpc("/agui_chat/workspace/capability", {
             session_id: sessionId,
+        });
+    };
+
+    HostBridge.prototype.previewX2ManyImport = function (values) {
+        values = clone(values || {});
+        return this._rpc("/agui_chat_import/preview", {
+            jobToken: values.jobToken || "",
+            expectedRevision: values.expectedRevision,
+            parseOptions: values.parseOptions || {},
+            mapping: values.mapping || {},
+            finalize: !!values.finalize,
         });
     };
 

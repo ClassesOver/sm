@@ -7135,12 +7135,34 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$F = [
+  const __iconNode$H = [
     ["rect", { width: "20", height: "5", x: "2", y: "3", rx: "1", key: "1wp1u1" }],
     ["path", { d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8", key: "1s80jp" }],
     ["path", { d: "M10 12h4", key: "a56b0p" }]
   ];
-  const Archive = createLucideIcon("Archive", __iconNode$F);
+  const Archive = createLucideIcon("Archive", __iconNode$H);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$G = [
+    ["path", { d: "M12 5v14", key: "s699le" }],
+    ["path", { d: "m19 12-7 7-7-7", key: "1idqje" }]
+  ];
+  const ArrowDown = createLucideIcon("ArrowDown", __iconNode$G);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$F = [
+    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
+    ["path", { d: "M19 12H5", key: "x3x0zl" }]
+  ];
+  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$F);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7148,10 +7170,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$E = [
-    ["path", { d: "M12 5v14", key: "s699le" }],
-    ["path", { d: "m19 12-7 7-7-7", key: "1idqje" }]
+    ["path", { d: "m5 12 7-7 7 7", key: "hav0vg" }],
+    ["path", { d: "M12 19V5", key: "x0mq9r" }]
   ];
-  const ArrowDown = createLucideIcon("ArrowDown", __iconNode$E);
+  const ArrowUp = createLucideIcon("ArrowUp", __iconNode$E);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7159,56 +7181,56 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$D = [
-    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
-    ["path", { d: "M19 12H5", key: "x3x0zl" }]
-  ];
-  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$D);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$C = [
-    ["path", { d: "m5 12 7-7 7 7", key: "hav0vg" }],
-    ["path", { d: "M12 19V5", key: "x0mq9r" }]
-  ];
-  const ArrowUp = createLucideIcon("ArrowUp", __iconNode$C);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$B = [
     ["circle", { cx: "12", cy: "12", r: "4", key: "4exip2" }],
     ["path", { d: "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8", key: "7n84p3" }]
   ];
-  const AtSign = createLucideIcon("AtSign", __iconNode$B);
+  const AtSign = createLucideIcon("AtSign", __iconNode$D);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$A = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
-  const Check = createLucideIcon("Check", __iconNode$A);
+  const __iconNode$C = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
+  const Check = createLucideIcon("Check", __iconNode$C);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$z = [["path", { d: "m6 9 6 6 6-6", key: "qrunsl" }]];
-  const ChevronDown = createLucideIcon("ChevronDown", __iconNode$z);
+  const __iconNode$B = [["path", { d: "m6 9 6 6 6-6", key: "qrunsl" }]];
+  const ChevronDown = createLucideIcon("ChevronDown", __iconNode$B);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$y = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
-  const ChevronRight = createLucideIcon("ChevronRight", __iconNode$y);
+  const __iconNode$A = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
+  const ChevronRight = createLucideIcon("ChevronRight", __iconNode$A);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$z = [
+    ["path", { d: "m11 17-5-5 5-5", key: "13zhaf" }],
+    ["path", { d: "m18 17-5-5 5-5", key: "h8a8et" }]
+  ];
+  const ChevronsLeft = createLucideIcon("ChevronsLeft", __iconNode$z);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$y = [
+    ["path", { d: "m6 17 5-5-5-5", key: "xnjwq" }],
+    ["path", { d: "m13 17 5-5-5-5", key: "17xmmf" }]
+  ];
+  const ChevronsRight = createLucideIcon("ChevronsRight", __iconNode$y);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7216,10 +7238,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$x = [
-    ["path", { d: "m11 17-5-5 5-5", key: "13zhaf" }],
-    ["path", { d: "m18 17-5-5 5-5", key: "h8a8et" }]
+    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
+    ["line", { x1: "12", x2: "12", y1: "8", y2: "12", key: "1pkeuh" }],
+    ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16", key: "4dfq90" }]
   ];
-  const ChevronsLeft = createLucideIcon("ChevronsLeft", __iconNode$x);
+  const CircleAlert = createLucideIcon("CircleAlert", __iconNode$x);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7227,10 +7250,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$w = [
-    ["path", { d: "m6 17 5-5-5-5", key: "xnjwq" }],
-    ["path", { d: "m13 17 5-5-5-5", key: "17xmmf" }]
+    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
+    ["path", { d: "m9 12 2 2 4-4", key: "dzmm74" }]
   ];
-  const ChevronsRight = createLucideIcon("ChevronsRight", __iconNode$w);
+  const CircleCheck = createLucideIcon("CircleCheck", __iconNode$w);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7239,10 +7262,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    */
   const __iconNode$v = [
     ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["line", { x1: "12", x2: "12", y1: "8", y2: "12", key: "1pkeuh" }],
-    ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16", key: "4dfq90" }]
+    ["polyline", { points: "12 6 12 12 16.5 12", key: "1aq6pp" }]
   ];
-  const CircleAlert = createLucideIcon("CircleAlert", __iconNode$v);
+  const Clock3 = createLucideIcon("Clock3", __iconNode$v);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7250,10 +7272,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$u = [
-    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["path", { d: "m9 12 2 2 4-4", key: "dzmm74" }]
+    ["path", { d: "M12 13v8", key: "1l5pq0" }],
+    ["path", { d: "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", key: "1pljnt" }],
+    ["path", { d: "m8 17 4-4 4 4", key: "1quai1" }]
   ];
-  const CircleCheck = createLucideIcon("CircleCheck", __iconNode$u);
+  const CloudUpload = createLucideIcon("CloudUpload", __iconNode$u);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7261,10 +7284,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$t = [
-    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["polyline", { points: "12 6 12 12 16.5 12", key: "1aq6pp" }]
+    ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
+    ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
   ];
-  const Clock3 = createLucideIcon("Clock3", __iconNode$t);
+  const Copy = createLucideIcon("Copy", __iconNode$t);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7272,11 +7295,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$s = [
-    ["path", { d: "M12 13v8", key: "1l5pq0" }],
-    ["path", { d: "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", key: "1pljnt" }],
-    ["path", { d: "m8 17 4-4 4 4", key: "1quai1" }]
+    ["ellipse", { cx: "12", cy: "5", rx: "9", ry: "3", key: "msslwz" }],
+    ["path", { d: "M3 5V19A9 3 0 0 0 21 19V5", key: "1wlel7" }],
+    ["path", { d: "M3 12A9 3 0 0 0 21 12", key: "mv7ke4" }]
   ];
-  const CloudUpload = createLucideIcon("CloudUpload", __iconNode$s);
+  const Database = createLucideIcon("Database", __iconNode$s);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7284,10 +7307,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$r = [
-    ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
-    ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
+    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
+    ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
+    ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
   ];
-  const Copy = createLucideIcon("Copy", __iconNode$r);
+  const Download = createLucideIcon("Download", __iconNode$r);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7295,11 +7319,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$q = [
-    ["ellipse", { cx: "12", cy: "5", rx: "9", ry: "3", key: "msslwz" }],
-    ["path", { d: "M3 5V19A9 3 0 0 0 21 19V5", key: "1wlel7" }],
-    ["path", { d: "M3 12A9 3 0 0 0 21 12", key: "mv7ke4" }]
+    ["path", { d: "M15 3h6v6", key: "1q9fwt" }],
+    ["path", { d: "M10 14 21 3", key: "gplh6r" }],
+    ["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6", key: "a6xqqp" }]
   ];
-  const Database = createLucideIcon("Database", __iconNode$q);
+  const ExternalLink = createLucideIcon("ExternalLink", __iconNode$q);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7307,30 +7331,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$p = [
-    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
-    ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
-    ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
-  ];
-  const Download = createLucideIcon("Download", __iconNode$p);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$o = [
-    ["path", { d: "M15 3h6v6", key: "1q9fwt" }],
-    ["path", { d: "M10 14 21 3", key: "gplh6r" }],
-    ["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6", key: "a6xqqp" }]
-  ];
-  const ExternalLink = createLucideIcon("ExternalLink", __iconNode$o);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$n = [
     [
       "path",
       {
@@ -7340,7 +7340,36 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ],
     ["circle", { cx: "12", cy: "12", r: "3", key: "1v7zrd" }]
   ];
-  const Eye = createLucideIcon("Eye", __iconNode$n);
+  const Eye = createLucideIcon("Eye", __iconNode$p);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$o = [
+    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
+    ["path", { d: "M8 13h2", key: "yr2amv" }],
+    ["path", { d: "M14 13h2", key: "un5t4a" }],
+    ["path", { d: "M8 17h2", key: "2yhykz" }],
+    ["path", { d: "M14 17h2", key: "10kma7" }]
+  ];
+  const FileSpreadsheet = createLucideIcon("FileSpreadsheet", __iconNode$o);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$n = [
+    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
+    ["path", { d: "M10 9H8", key: "b1mrlr" }],
+    ["path", { d: "M16 13H8", key: "t4e002" }],
+    ["path", { d: "M16 17H8", key: "z1uh3a" }]
+  ];
+  const FileText = createLucideIcon("FileText", __iconNode$n);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7349,12 +7378,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    */
   const __iconNode$m = [
     ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
-    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
-    ["path", { d: "M10 9H8", key: "b1mrlr" }],
-    ["path", { d: "M16 13H8", key: "t4e002" }],
-    ["path", { d: "M16 17H8", key: "z1uh3a" }]
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }]
   ];
-  const FileText = createLucideIcon("FileText", __iconNode$m);
+  const File = createLucideIcon("File", __iconNode$m);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7362,10 +7388,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$l = [
-    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
-    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }]
+    ["polygon", { points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3", key: "1yg77f" }]
   ];
-  const File = createLucideIcon("File", __iconNode$l);
+  const Filter = createLucideIcon("Filter", __iconNode$l);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7373,9 +7398,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$k = [
-    ["polygon", { points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3", key: "1yg77f" }]
+    [
+      "path",
+      {
+        d: "M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2",
+        key: "18mbvz"
+      }
+    ],
+    ["path", { d: "M6.453 15h11.094", key: "3shlmq" }],
+    ["path", { d: "M8.5 2h7", key: "csnxdl" }]
   ];
-  const Filter = createLucideIcon("Filter", __iconNode$k);
+  const FlaskConical = createLucideIcon("FlaskConical", __iconNode$k);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7654,7 +7687,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const defaultLabels = {
     inputPlaceholder: "输入消息，@ 选择记录、菜单或技能",
     emptyTitle: "智能助手",
-    emptyDescription: "询问当前 Odoo 记录、选中内容或操作。",
+    emptyDescription: "询问当前 HRP 记录、选中内容或操作。",
     newSession: "新建对话",
     copyResponse: "复制回复",
     copied: "已复制",
@@ -25127,13 +25160,232 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return this.state.failed ? this.props.fallback : this.props.children;
     }
   }
+  function asRecord(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  }
+  function importData(preview) {
+    return asRecord(preview.import);
+  }
+  function columnsFrom(value) {
+    if (!Array.isArray(value)) return [];
+    return value.map((raw, index2) => {
+      const column = asRecord(raw);
+      return {
+        index: Number.isInteger(column.index) ? Number(column.index) : index2,
+        header: String(column.header || ""),
+        mappedField: typeof column.mappedField === "string" ? column.mappedField : false,
+        mappable: column.mappable !== false
+      };
+    });
+  }
+  function fieldsFrom(value) {
+    if (!Array.isArray(value)) return [];
+    return value.map((raw) => {
+      const field = asRecord(raw);
+      const type = typeof field.type === "string" ? field.type : false;
+      return {
+        name: String(field.name || ""),
+        label: String(field.label || field.name || ""),
+        type,
+        required: field.required === true
+      };
+    }).filter((field) => field.name);
+  }
+  function parseOptionsFrom(value) {
+    const options = asRecord(value);
+    const encoding = typeof options.encoding === "string" ? options.encoding : false;
+    const separator = typeof options.separator === "string" ? options.separator : false;
+    return {
+      encoding,
+      separator,
+      quoting: typeof options.quoting === "string" ? options.quoting : '"'
+    };
+  }
+  function rowsFrom(value) {
+    if (!Array.isArray(value)) return [];
+    return value.map((row) => Array.isArray(row) ? row.map((cell) => String(cell ?? "")) : []);
+  }
+  function errorText(value) {
+    const error = asRecord(value);
+    const messages = Array.isArray(error.errors) ? error.errors.map(String) : [];
+    const prefix = Number.isInteger(error.row) && Number(error.row) > 0 ? `第 ${error.row} 行` : "文件";
+    return `${prefix}：${messages.join("；") || String(error.code || "导入数据无效")}`;
+  }
+  function X2ManyImportPreview({
+    preview,
+    running = false,
+    onSubmit
+  }) {
+    const initial = importData(preview);
+    const [data, setData] = reactExports.useState(initial);
+    const [mapping, setMapping] = reactExports.useState(
+      () => Object.fromEntries(columnsFrom(initial.columns).map((column) => [
+        column.header,
+        column.mappedField
+      ]))
+    );
+    const [parseOptions, setParseOptions] = reactExports.useState(
+      () => parseOptionsFrom(initial.parseOptions)
+    );
+    const [submitting, setSubmitting] = reactExports.useState(false);
+    const [requestError, setRequestError] = reactExports.useState("");
+    const columns = columnsFrom(data.columns);
+    const schema = asRecord(data.schema);
+    const fields = fieldsFrom(schema.fields);
+    const rows = rowsFrom(data.rows);
+    const errors = Array.isArray(data.errors) ? data.errors : [];
+    const errorCount = Number(data.errorCount || errors.length);
+    const errorReport = typeof data.errorReport === "string" && data.errorReport.startsWith("/agui_chat_import/error/") ? data.errorReport : "";
+    const selectedFields = Object.values(mapping).filter(Boolean);
+    const duplicateFields = new Set(selectedFields.filter(
+      (field, index2) => selectedFields.indexOf(field) !== index2
+    ));
+    const missingRequired = fields.filter(
+      (field) => field.required && !selectedFields.includes(field.name)
+    );
+    const state = String(data.state || "preview");
+    const locked = state !== "preview";
+    const result = asRecord(data.result);
+    const submit = async (finalize) => {
+      if (!onSubmit || locked || submitting) return;
+      setSubmitting(true);
+      setRequestError("");
+      try {
+        const response = await onSubmit({
+          jobToken: String(data.jobToken || ""),
+          expectedRevision: Number(data.revision || 0),
+          parseOptions,
+          mapping,
+          finalize
+        });
+        if (!response.ok) {
+          setRequestError(response.error || response.code || "导入预览更新失败。");
+          return;
+        }
+        const next = importData(asRecord(response.preview));
+        if (Object.keys(next).length) {
+          setData(next);
+          setMapping(Object.fromEntries(columnsFrom(next.columns).map((column) => [
+            column.header,
+            column.mappedField
+          ])));
+          setParseOptions(parseOptionsFrom(next.parseOptions));
+        }
+      } catch (reason) {
+        setRequestError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        setSubmitting(false);
+      }
+    };
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("section", { className: "mt-2 min-w-0 border-t border-border pt-2 text-xs text-primary", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-wrap items-center justify-between gap-2", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex min-w-0 items-center gap-2", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(FileSpreadsheet, { className: "size-4 shrink-0 text-positive" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "truncate font-semibold", children: String(data.fileName || "导入文件") }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "text-[11px] text-muted", children: [
+              Number(data.rowCount || 0).toLocaleString(),
+              " 行 · ",
+              Number(data.fileSize || 0).toLocaleString(),
+              " B"
+            ] })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] text-muted", children: state === "ready" ? "已通过测试" : state === "done" ? "已完成" : state === "failed" ? "执行失败" : "预览" })
+      ] }),
+      !locked ? /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { className: "mt-2 border-y border-border py-2", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("summary", { className: "cursor-pointer text-[11px] font-medium text-muted", children: "格式选项" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 grid gap-2 sm:grid-cols-3", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "grid gap-1 text-[11px] text-muted", children: [
+            "编码",
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { "aria-label": "编码", className: "h-8 min-w-0 border border-border bg-background px-2 text-primary", value: parseOptions.encoding || "", disabled: submitting || running, onChange: (event) => setParseOptions((current) => ({ ...current, encoding: event.target.value || false })), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "自动检测" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "ascii", children: "ASCII" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "utf-8", children: "UTF-8" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "utf-8-sig", children: "UTF-8 BOM" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "gb18030", children: "GB18030" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "gbk", children: "GBK" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "big5", children: "Big5" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "iso-8859-1", children: "ISO-8859-1" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "windows-1252", children: "Windows-1252" })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "grid gap-1 text-[11px] text-muted", children: [
+            "分隔符",
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { "aria-label": "分隔符", className: "h-8 min-w-0 border border-border bg-background px-2 text-primary", value: parseOptions.separator || "", disabled: submitting || running, onChange: (event) => setParseOptions((current) => ({ ...current, separator: event.target.value || false })), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "自动检测" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: ",", children: "逗号" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: ";", children: "分号" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "	", children: "制表符" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "|", children: "竖线" })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "grid gap-1 text-[11px] text-muted", children: [
+            "文本限定符",
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { "aria-label": "文本限定符", className: "h-8 min-w-0 border border-border bg-background px-2 text-primary", value: parseOptions.quoting, disabled: submitting || running, onChange: (event) => setParseOptions((current) => ({ ...current, quoting: event.target.value })), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: '"', children: "双引号" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "'", children: "单引号" })
+            ] })
+          ] })
+        ] })
+      ] }) : null,
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-2 max-w-full overflow-x-auto border border-border", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "min-w-max border-collapse text-left text-[11px]", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { className: "bg-background-secondary", children: /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: columns.map((column) => /* @__PURE__ */ jsxRuntimeExports.jsxs("th", { className: "min-w-40 border-r border-border p-2 last:border-r-0", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mb-1 max-w-48 truncate font-medium", title: column.header, children: column.header }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { "aria-label": `映射 ${column.header}`, className: "h-8 w-full border border-border bg-background px-2 font-normal text-primary", value: mapping[column.header] || "", disabled: locked || submitting || running || !column.mappable, onChange: (event) => setMapping((current) => ({ ...current, [column.header]: event.target.value || false })), children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "不导入" }),
+            fields.map((field) => /* @__PURE__ */ jsxRuntimeExports.jsxs("option", { value: field.name, disabled: selectedFields.includes(field.name) && mapping[column.header] !== field.name, children: [
+              field.label,
+              field.required ? " *" : ""
+            ] }, field.name))
+          ] })
+        ] }, column.header)) }) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: rows.length ? rows.map((row, rowIndex) => /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { className: "border-t border-border", children: columns.map((column) => /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "max-w-64 border-r border-border p-2 align-top last:border-r-0", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block max-w-60 truncate", title: row[column.index] || "", children: row[column.index] || "" }) }, column.header)) }, rowIndex)) : /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: Math.max(columns.length, 1), className: "p-4 text-center text-muted", children: "没有可预览的数据" }) }) })
+      ] }) }),
+      missingRequired.length || duplicateFields.size ? /* @__PURE__ */ jsxRuntimeExports.jsx(InlineNotice, { className: "mt-2", tone: "warning", children: missingRequired.length ? `请映射必填字段：${missingRequired.map((field) => field.label).join("、")}` : "同一目标字段不能重复映射。" }) : null,
+      errors.length ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 border-l-2 border-destructive pl-2 text-destructive", children: [
+        errors.map((error, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: errorText(error) }, index2)),
+        errorReport ? /* @__PURE__ */ jsxRuntimeExports.jsxs("a", { className: "mt-1 inline-flex items-center gap-1 font-medium underline", href: errorReport, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(Download, { className: "size-3.5" }),
+          "下载完整错误报告",
+          errorCount > errors.length ? `（共 ${errorCount} 项）` : ""
+        ] }) : null
+      ] }) : null,
+      requestError ? /* @__PURE__ */ jsxRuntimeExports.jsx(InlineNotice, { className: "mt-2", tone: "error", children: requestError }) : null,
+      state === "done" ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 text-positive", children: [
+        "已创建 ",
+        Number(result.created || 0),
+        " 条明细。"
+      ] }) : null,
+      !locked && onSubmit ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 flex flex-wrap justify-end gap-2", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { size: "sm", className: "h-8 rounded-md bg-background", disabled: submitting || running, onClick: () => void submit(false), children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(RefreshCw, { className: submitting ? "size-3.5 animate-spin" : "size-3.5" }),
+          "更新预览"
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { size: "sm", variant: "primary", className: "h-8 rounded-md", disabled: submitting || running || Boolean(missingRequired.length || duplicateFields.size), onClick: () => void submit(true), children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(FlaskConical, { className: "size-3.5" }),
+          "测试导入"
+        ] })
+      ] }) : null
+    ] });
+  }
+  function structuredPreview(result) {
+    const preview = result.preview && typeof result.preview === "object" ? result.preview : {};
+    if (preview.kind) return preview;
+    const nested = result.result && typeof result.result === "object" ? result.result : {};
+    return nested.preview && typeof nested.preview === "object" ? nested.preview : preview;
+  }
   function displayDiffValue(value) {
     if (value === false || value === null || value === void 0 || value === "") return "空";
     if (typeof value === "string") return value;
     return JSON.stringify(value);
   }
-  function ToolConfirmationPreview({ result }) {
-    const preview = result.preview && typeof result.preview === "object" ? result.preview : {};
+  function ToolConfirmationPreview({
+    result,
+    running,
+    onPreviewX2ManyImport
+  }) {
+    const preview = structuredPreview(result);
     const changes = Array.isArray(preview.changes) ? preview.changes : [];
     const riskLabels = {
       multiple_fields: "多字段修改",
@@ -25145,6 +25397,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const reasons = Array.isArray(preview.riskReasons) ? preview.riskReasons : [];
     const control = preview.control && typeof preview.control === "object" ? preview.control : null;
+    if (preview.kind === "x2many_import") {
+      const value = preview.import && typeof preview.import === "object" ? preview.import : {};
+      return /* @__PURE__ */ jsxRuntimeExports.jsx(
+        X2ManyImportPreview,
+        {
+          preview,
+          running,
+          onSubmit: onPreviewX2ManyImport
+        },
+        `${String(value.jobToken || "")}:${String(value.revision || "")}:${String(value.state || "")}`
+      );
+    }
     if (control) {
       return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 rounded border border-warning/25 bg-background p-2 text-xs text-primary", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "font-semibold", children: String(control.label || "对象按钮") }),
@@ -25217,6 +25481,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return { kind: "default" };
   }
   const TOOL_DISPLAY_NAMES = {
+    "odoo.search_menu": "搜索菜单",
     "odoo.open_menu": "打开菜单",
     "odoo.apply_filter": "筛选当前视图",
     "odoo.open_record": "打开记录",
@@ -25368,7 +25633,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     );
   }
-  function DefaultToolCallCard({ tool, onConfirm, onUndo, labels, running }) {
+  function DefaultToolCallCard({
+    tool,
+    onConfirm,
+    onUndo,
+    labels,
+    running,
+    onPreviewX2ManyImport
+  }) {
     const {
       displayName,
       result,
@@ -25380,7 +25652,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       undo,
       call
     } = getToolCallPresentation(tool);
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { open: needsConfirmation || void 0, className: "rounded-lg border border-border bg-background-secondary/80 p-2", children: [
+    const hasImportPreview = structuredPreview(result).kind === "x2many_import";
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { open: needsConfirmation || hasImportPreview || void 0, className: "rounded-lg border border-border bg-background-secondary/80 p-2", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("summary", { className: "flex cursor-pointer list-none flex-wrap items-center gap-2", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "inline-flex items-center gap-1.5 rounded-md bg-background px-2 py-1 font-mono text-[11px] text-primary", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(Hammer, { className: "size-3" }),
@@ -25401,12 +25674,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           "需要确认：",
           displayName
         ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(ToolConfirmationPreview, { result }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(ToolConfirmationPreview, { result, running, onPreviewX2ManyImport }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 flex gap-2", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { size: "sm", variant: "primary", className: "h-7 rounded-md", disabled: running, onClick: () => onConfirm(true), children: labels.approve }),
           /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { size: "sm", className: "h-7 rounded-md bg-background-panel", disabled: running, onClick: () => onConfirm(false), children: labels.reject })
         ] })
-      ] }) : null,
+      ] }) : hasImportPreview ? /* @__PURE__ */ jsxRuntimeExports.jsx(ToolConfirmationPreview, { result, running, onPreviewX2ManyImport }) : null,
       undo.available ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 flex items-center gap-2 border-t border-border pt-2", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { size: "sm", className: "h-8 rounded-md bg-background", disabled: running || undo.status === "running" || undo.status === "undone", title: "撤销本次修改", onClick: onUndo, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(RotateCcw, { className: "size-3.5" }),
@@ -25432,10 +25705,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     hostState,
     running,
     onSelectRelation,
-    onSelectRecord
+    onSelectRecord,
+    onPreviewX2ManyImport
   }) {
     const Renderer = renderers == null ? void 0 : renderers[toolName(tool)];
-    const fallback = /* @__PURE__ */ jsxRuntimeExports.jsx(DefaultToolCallCard, { tool, onConfirm, onUndo, labels, running });
+    const fallback = /* @__PURE__ */ jsxRuntimeExports.jsx(DefaultToolCallCard, { tool, onConfirm, onUndo, labels, running, onPreviewX2ManyImport });
     if (Renderer) return /* @__PURE__ */ jsxRuntimeExports.jsx(
       RenderErrorBoundary,
       {
@@ -25519,6 +25793,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     onRegenerate,
     onConfirmTool,
     onUndoTool = () => void 0,
+    onPreviewX2ManyImport,
     onSelectRelation,
     onSelectRecord
   }) {
@@ -25527,7 +25802,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-5", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx(MessageReasoning, { steps: reasoning }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(MessageReferences, { references }),
-      ((_a = message.tool_calls) == null ? void 0 : _a.length) ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-col gap-2", children: message.tool_calls.map((tool, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx(ToolCallCard, { tool, renderers: toolRenderers, labels, hostState, running, onSelectRelation, onSelectRecord, onConfirm: (approved) => onConfirmTool(tool, approved), onUndo: () => onUndoTool(tool) }, getToolCallRenderKey(tool, index2))) }) : null,
+      ((_a = message.tool_calls) == null ? void 0 : _a.length) ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-col gap-2", children: message.tool_calls.map((tool, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx(ToolCallCard, { tool, renderers: toolRenderers, labels, hostState, running, onSelectRelation, onSelectRecord, onConfirm: (approved) => onConfirmTool(tool, approved), onUndo: () => onUndoTool(tool), onPreviewX2ManyImport: onPreviewX2ManyImport ? (request) => onPreviewX2ManyImport(tool, request) : void 0 }, getToolCallRenderKey(tool, index2))) }) : null,
       content2 || message.streaming_error ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "group flex items-start gap-3", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid size-6 shrink-0 place-items-center rounded bg-primary text-primaryAccent", children: icons.assistant }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 flex-1", children: [
@@ -25585,6 +25860,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     hostState,
     onSelectRelation,
     onSelectRecord,
+    onPreviewX2ManyImport,
     onRemoveMenuMention,
     onRemoveMention
   }) {
@@ -25602,7 +25878,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       displayMessages.map((message, index2) => {
         var _a;
         const role = normalizeMessageRole(message.role);
-        if (role === "assistant") return /* @__PURE__ */ jsxRuntimeExports.jsx(AssistantMessage, { message, running, isCurrent: index2 === lastAssistantIndex, toolRenderers, labels, icons, feedback: messageFeedback.feedback[message.id] || null, hostState, onSelectRelation: (tool, candidates) => onSelectRelation(tool, candidates), onSelectRecord: (tool, candidate) => onSelectRecord(tool, candidate), onCopy: () => onCopy(message), onRegenerate: () => onRegenerate(message.id), onFeedback: (next) => messageFeedback.toggleFeedback(message, next), onConfirmTool, onUndoTool: (tool) => onUndoTool == null ? void 0 : onUndoTool(tool) }, message.id || `assistant-${index2}`);
+        if (role === "assistant") return /* @__PURE__ */ jsxRuntimeExports.jsx(AssistantMessage, { message, running, isCurrent: index2 === lastAssistantIndex, toolRenderers, labels, icons, feedback: messageFeedback.feedback[message.id] || null, hostState, onSelectRelation: (tool, candidates) => onSelectRelation(tool, candidates), onSelectRecord: (tool, candidate) => onSelectRecord(tool, candidate), onCopy: () => onCopy(message), onRegenerate: () => onRegenerate(message.id), onFeedback: (next) => messageFeedback.toggleFeedback(message, next), onConfirmTool, onUndoTool: (tool) => onUndoTool == null ? void 0 : onUndoTool(tool), onPreviewX2ManyImport }, message.id || `assistant-${index2}`);
         if (role === "user") return /* @__PURE__ */ jsxRuntimeExports.jsx(UserMessage, { message, icons, labels, onPreviewAttachment, onRemoveMenuMention: message.menuMention && onRemoveMenuMention ? () => onRemoveMenuMention(message.id) : void 0, onRemoveMention: ((_a = message.mentions) == null ? void 0 : _a.length) && onRemoveMention ? (referenceId) => onRemoveMention(message.id, referenceId) : void 0 }, message.id || `user-${index2}`);
         return null;
       }),
@@ -25851,7 +26127,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function canPreviewFile(type) {
     return PREVIEWABLE_TYPES.has(type.toLowerCase());
   }
-  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.7.0.js";
+  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.0.js";
   const FILE_VIEWER_LOAD_TIMEOUT_MS = 15e3;
   const STATUS_ATTRIBUTE = "data-agui-file-viewer-status";
   let viewerModulePromise;
@@ -26306,7 +26582,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex h-8 shrink-0 items-center overflow-hidden rounded-md border border-muted/35 bg-background-panel shadow-[0_1px_2px_rgba(15,23,42,0.08)] outline outline-1 outline-border/70 transition-colors hover:border-muted/55 hover:outline-muted/45 has-[:focus-visible]:border-primary/35 has-[:focus-visible]:outline-primary/25 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary/10", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(SlidersHorizontal, { size: 13, className: "ml-2 shrink-0 text-muted", "aria-hidden": "true" }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "relative", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { value: sortKey, onChange: (event) => onSortKeyChange(event.target.value), className: "h-8 w-[5.5rem] appearance-none border-0 bg-transparent py-0 pl-1.5 pr-5 text-xs text-secondary outline-none", "aria-label": "排序方式", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { value: sortKey, onChange: (event) => onSortKeyChange(event.target.value), className: "h-8 w-[88px] appearance-none border-0 bg-transparent py-0 pl-1.5 pr-5 text-xs text-secondary outline-none", "aria-label": "排序方式", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "name", children: "按名称" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "modifiedAt", children: "按修改时间" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "size", children: "按大小" })
@@ -26855,6 +27131,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         confirmTool: (tool, approved) => {
           void latest.current.runtime.confirmTool(tool, approved);
         },
+        previewX2ManyImport: (tool, request) => latest.current.runtime.previewX2ManyImport(tool, request),
         undoTool: (tool) => {
           void latest.current.runtime.undoTool(tool);
         },
@@ -26957,6 +27234,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                 onRegenerate: actions.regenerate,
                 onSuggestion: actions.suggestion,
                 onConfirmTool: actions.confirmTool,
+                onPreviewX2ManyImport: actions.previewX2ManyImport,
                 onUndoTool: actions.undoTool
               }
             )
@@ -26969,7 +27247,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             running: snapshot.running,
             disabled: snapshot.loadingSessions,
             attachments: props.attachments,
-            menuOptions: props.menuOptions,
+            menuOptions: props.menuCatalog.entries,
             agentSkills: props.agentSkills,
             hostBridge: props.hostBridge,
             workspaceReferences: workspace.references,
@@ -27070,6 +27348,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     });
     return next;
   }
+  const MAX_MENU_SEMANTIC_CONTEXT_BYTES = 128 * 1024;
   function endpoint(props) {
     const value = String(props.runtimeUrl || "").trim();
     if (!value) {
@@ -27094,7 +27373,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function validateHandshake(props) {
     const handshake = props.handshake;
     if (!handshake || handshake.protocol !== AGUI_ODOO_PROTOCOL) {
-      throw new Error("Odoo AG-UI 协议握手失败。");
+      throw new Error("HRP AG-UI 协议握手失败。");
     }
     if (handshake.agentProtocol !== AGUI_ODOO_PROTOCOL) {
       throw new Error("AgentOS AG-UI 协议握手失败。");
@@ -27106,7 +27385,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       throw new Error("AG-UI 命令目录不匹配。");
     }
     if (!props.hostState || props.hostState.protocol !== AGUI_ODOO_PROTOCOL) {
-      throw new Error("Odoo 宿主快照协议与运行服务不匹配。");
+      throw new Error("HRP 宿主快照协议与运行服务不匹配。");
     }
   }
   function normalizeToolCalls(toolCalls) {
@@ -27179,7 +27458,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       calls.forEach((call) => {
         const args = toolArgs(call);
         const callId = toolCallId(call);
-        if (callId && toolName(call) === "odoo.open_menu" && args && typeof args === "object" && !Array.isArray(args) && Number(args.menuId) === mention.menuId) {
+        if (callId && toolName(call) === "odoo.open_menu" && args && typeof args === "object" && !Array.isArray(args) && Number(args.menuId) === mention.menuId && Number(args.actionId) === mention.actionId) {
           matchingCalls.add(callId);
         }
       });
@@ -27193,7 +27472,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return true;
   }
-  function agentHostContext(host) {
+  function agentHostContext(props) {
+    const host = props.hostState;
+    const catalog = props.menuCatalog;
     const action = host.action && typeof host.action === "object" ? host.action : null;
     const record = host.record && typeof host.record === "object" ? host.record : null;
     const selection = host.selection && typeof host.selection === "object" ? host.selection : null;
@@ -27206,6 +27487,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       pageTarget: {
         snapshotId: host.snapshotId,
         hostRevision: host.hostRevision
+      },
+      menuTarget: {
+        snapshotId: host.snapshotId,
+        hostRevision: host.hostRevision,
+        catalogId: catalog.catalogId,
+        catalogRevision: catalog.catalogRevision
       },
       viewTarget: {
         snapshotId: host.snapshotId,
@@ -27235,12 +27522,68 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       capabilities: clone(host.capabilities)
     };
   }
+  function latestMenuSearchResult(messages) {
+    let userIndex = -1;
+    for (let index2 = messages.length - 1; index2 >= 0; index2 -= 1) {
+      if (messages[index2].role === "user") {
+        userIndex = index2;
+        break;
+      }
+    }
+    for (let index2 = messages.length - 1; index2 > userIndex; index2 -= 1) {
+      const message = messages[index2];
+      if (message.role !== "tool" || message.name !== "odoo.search_menu") continue;
+      const result = parseJson(message.content);
+      return result && typeof result === "object" && !Array.isArray(result) ? result : null;
+    }
+    return null;
+  }
+  function menuSemanticContext(props, messages) {
+    const menuToolsEnabled = ["odoo.search_menu", "odoo.open_menu"].every(
+      (name2) => props.tools.some((tool) => tool.name === name2)
+    );
+    if (!menuToolsEnabled) return null;
+    const result = latestMenuSearchResult(messages);
+    const candidates = Array.isArray(result == null ? void 0 : result.candidates) ? result.candidates : [];
+    const catalog = props.menuCatalog;
+    if ((result == null ? void 0 : result.matchType) !== "none" || candidates.length || result.catalogId !== catalog.catalogId || result.catalogRevision !== catalog.catalogRevision) return null;
+    const paths = [];
+    const encoder = new TextEncoder();
+    const base = {
+      catalogId: catalog.catalogId,
+      catalogRevision: catalog.catalogRevision,
+      totalCount: catalog.totalCount,
+      includedCount: 0,
+      complete: false,
+      navigationAuthorized: false,
+      requiredTool: "odoo.search_menu",
+      paths
+    };
+    const baseBytes = encoder.encode(JSON.stringify(base)).byteLength;
+    const countReserve = Math.max(0, String(catalog.totalCount).length - 1);
+    let pathBytes = 0;
+    for (const entry of catalog.entries) {
+      const encoded = encoder.encode(JSON.stringify(entry.fullPath)).byteLength;
+      const separator = paths.length ? 1 : 0;
+      if (baseBytes + countReserve + pathBytes + separator + encoded > MAX_MENU_SEMANTIC_CONTEXT_BYTES) {
+        break;
+      }
+      paths.push(entry.fullPath);
+      pathBytes += separator + encoded;
+    }
+    const value = contextValue({
+      ...base,
+      includedCount: paths.length,
+      complete: catalog.ready && paths.length === catalog.totalCount
+    });
+    return { description: "当前用户可见 HRP 菜单", value };
+  }
   function normalizeRunContext(props, messages) {
     var _a;
     const navigationPending = menuNavigationPending(messages);
     const context = [{
-      description: "Odoo 宿主快照",
-      value: contextValue(agentHostContext(props.hostState))
+      description: "HRP 宿主快照",
+      value: contextValue(agentHostContext(props))
     }];
     if (Array.isArray(props.context)) {
       props.context.forEach((item, index2) => {
@@ -27256,11 +27599,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       });
     }
     if (props.user !== void 0) {
-      context.push({ description: "Odoo 用户", value: contextValue(props.user) });
+      context.push({ description: "HRP 用户", value: contextValue(props.user) });
     }
     if (props.agentId !== void 0) {
       context.push({ description: "智能体 ID", value: props.agentId });
     }
+    const semanticMenuContext = menuSemanticContext(props, messages);
+    if (semanticMenuContext) context.push(semanticMenuContext);
     const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
     const selectedSkills = ((latestUserMessage == null ? void 0 : latestUserMessage.skills) || []).filter((skill) => skill.valid);
     if (selectedSkills.length) {
@@ -27287,7 +27632,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const mentions = ((latestUserMessage == null ? void 0 : latestUserMessage.mentions) || []).filter((mention) => mention.valid);
     if (mentions.length) {
       context.push({
-        description: "已选 Odoo 引用",
+        description: "已选 HRP 引用",
         value: contextValue(mentions.map((mention) => ({
           kind: mention.kind,
           action: mention.action,
@@ -27302,10 +27647,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if ((_a = latestUserMessage == null ? void 0 : latestUserMessage.menuMention) == null ? void 0 : _a.valid) {
       const mention = latestUserMessage.menuMention;
       context.push({
-        description: "已选 Odoo 菜单",
+        description: "已选 HRP 菜单",
         value: contextValue({
           menuId: mention.menuId,
           actionId: mention.actionId,
+          catalogId: mention.catalogId,
+          catalogRevision: mention.catalogRevision,
           name: mention.name,
           path: mention.path,
           fullPath: mention.fullPath,
@@ -27316,7 +27663,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     if ((latestUserMessage == null ? void 0 : latestUserMessage.recordSelection) && latestUserMessage.recordSelection.snapshotId === props.hostState.snapshotId && latestUserMessage.recordSelection.hostRevision === props.hostState.hostRevision) {
       context.push({
-        description: "已选 Odoo 记录候选项",
+        description: "已选 HRP 记录候选项",
         value: contextValue(latestUserMessage.recordSelection)
       });
     }
@@ -27562,7 +27909,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else if (nextProps.threadId && nextProps.threadId !== previousThreadId) {
         this.resetThread(nextProps.threadId, nextProps.initialMessages || []);
       }
-      const menuMentionsChanged = Boolean(nextProps.menuOptions && this.revalidateMenuMentions());
+      const menuMentionsChanged = Boolean(nextProps.menuCatalog && this.revalidateMenuMentions());
       const mentionsChanged = this.revalidateMentions();
       const skillsChanged = this.revalidateSkills();
       if (menuMentionsChanged || mentionsChanged || skillsChanged) {
@@ -27671,6 +28018,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const mentions = Array.isArray(selection) ? selection.map((item) => clone(item)) : [];
       const workspace = workspaceReferences.map((item) => clone(item));
       const menuMention = selection && !Array.isArray(selection) ? selection : void 0;
+      if (this.running || this.loadingSessions) return false;
+      await this.refreshMenuCatalog();
       const currentMenu = menuMention ? this.resolveMenuMention(menuMention) : void 0;
       if (menuMention && !currentMenu) {
         const error = new Error("所选菜单已失效或无权访问，请重新选择。");
@@ -27688,7 +28037,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         return false;
       }
       if (mentions.length + workspace.length > 5) {
-        const error = new Error("Odoo 引用与工作区引用合计最多 5 个。");
+        const error = new Error("HRP 引用与工作区引用合计最多 5 个。");
         this.error = error.message;
         (_f = (_e = this.props).onError) == null ? void 0 : _f.call(_e, error);
         this.emit();
@@ -27709,7 +28058,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         this.emit();
         return false;
       }
-      if (!text2 && !attachments.length && !currentMenu && !mentions.length && !workspace.length && !recordSelection || this.running || this.loadingSessions) {
+      if (!text2 && !attachments.length && !currentMenu && !mentions.length && !workspace.length && !recordSelection) {
         return false;
       }
       try {
@@ -27775,7 +28124,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           requestId: this.currentRequestId,
           runId: this.currentRunId,
           threadId: this.threadId,
-          selectedMentionTokens: this.latestMentionTokens()
+          selectedMentionTokens: this.latestMentionTokens(),
+          selectedMenu: this.latestMenuSelection()
         }
       };
       this.confirmingHostBridgeTools[key] = true;
@@ -27874,6 +28224,65 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       });
       const context = this.createRunContext(this.currentRunId);
       await this.executeRunLifecycle(context, () => this.run(context, 0));
+    }
+    async previewX2ManyImport(tool, request) {
+      const bridge = this.props.hostBridge;
+      const current = this.toolsByKey[toolKey(tool)] || tool;
+      if (this.running || !(bridge == null ? void 0 : bridge.previewX2ManyImport)) {
+        return { ok: false, code: "import_preview_unavailable", error: "导入预览当前不可用。" };
+      }
+      const currentResult = isRecord(current.result) ? current.result : {};
+      const currentPreview = isRecord(currentResult.preview) ? currentResult.preview : {};
+      const nestedResult = isRecord(currentResult.result) ? currentResult.result : {};
+      const nestedPreview = isRecord(nestedResult.preview) ? nestedResult.preview : {};
+      const preview = currentPreview.kind === "x2many_import" ? currentPreview : nestedPreview;
+      const importData2 = isRecord(preview.import) ? preview.import : {};
+      if (!request.jobToken || request.jobToken !== String(importData2.jobToken || "")) {
+        return { ok: false, code: "invalid_job_token", error: "导入任务已变化，请重新准备。" };
+      }
+      try {
+        const response = await Promise.resolve(bridge.previewX2ManyImport(request));
+        if (!response || response.ok === false) {
+          return response || { ok: false, code: "x2many_import_failed" };
+        }
+        const nextResult = {
+          ...response,
+          operation: toolName(current)
+        };
+        this.mergeTool({
+          ...current,
+          result: nextResult,
+          status: "ok",
+          error: false
+        });
+        this.notifyMessages();
+        this.emit();
+        if (response.state !== "ready" || !request.finalize) {
+          await this.persistImmediately();
+          return response;
+        }
+        const responsePreview = isRecord(response.preview) ? response.preview : {};
+        const responseImport = isRecord(responsePreview.import) ? responsePreview.import : {};
+        this.messages.push({
+          id: uuid(),
+          role: "user",
+          hidden: true,
+          content: JSON.stringify({
+            kind: "x2many_import_ready",
+            import: {
+              jobToken: String(response.jobToken || request.jobToken),
+              revision: Number(response.revision || responseImport.revision || 0),
+              mappingHash: String(responseImport.mappingHash || "")
+            }
+          }),
+          created_at: Date.now()
+        });
+        await this.executeNewTurn();
+        return response;
+      } catch (reason) {
+        const error = reason instanceof Error ? reason : new Error(String(reason));
+        return { ok: false, code: "x2many_import_failed", error: error.message };
+      }
     }
     async undoTool(tool) {
       var _a;
@@ -28209,7 +28618,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       const bridge = this.props.hostBridge;
       if (!(bridge == null ? void 0 : bridge.getWorkspaceCapability)) {
-        if (required) throw new Error("Odoo 未提供工作区 capability。");
+        if (required) throw new Error("HRP 未提供工作区 capability。");
         return null;
       }
       if (!((_a = this.session) == null ? void 0 : _a.id)) throw new Error("当前聊天会话不可用。");
@@ -28692,6 +29101,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     async run(context, depth) {
       this.throwIfRunCancelled(context);
+      await this.refreshMenuCatalog();
+      this.throwIfRunCancelled(context);
       const capability = await this.ensureWorkspaceCapability();
       context.pendingHostBridgePromises = [];
       context.hostBridgeFollowupNeeded = false;
@@ -28999,7 +29410,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           requestId: context.currentRequestId,
           runId: context.currentRunId,
           threadId: context.threadId,
-          selectedMentionTokens: this.latestMentionTokens()
+          selectedMentionTokens: this.latestMentionTokens(),
+          selectedMenu: this.latestMenuSelection()
         }
       };
       return bridge.executeTool ? Promise.resolve(bridge.executeTool(call)) : null;
@@ -29120,7 +29532,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     reportHostStateMutation() {
       var _a, _b;
-      (_b = (_a = this.props).onError) == null ? void 0 : _b.call(_a, new Error("已忽略智能体修改 Odoo 宿主状态的尝试。"));
+      (_b = (_a = this.props).onError) == null ? void 0 : _b.call(_a, new Error("已忽略智能体修改 HRP 宿主状态的尝试。"));
     }
     extractAgentState(value) {
       if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -29293,6 +29705,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const message = [...this.messages].reverse().find((item) => item.role === "user");
       return ((message == null ? void 0 : message.mentions) || []).filter((mention) => mention.valid).map((mention) => mention.token);
     }
+    latestMenuSelection() {
+      const message = [...this.messages].reverse().find((item) => item.role === "user");
+      const mention = message == null ? void 0 : message.menuMention;
+      return (mention == null ? void 0 : mention.valid) ? {
+        menuId: mention.menuId,
+        actionId: mention.actionId,
+        catalogId: mention.catalogId || this.props.menuCatalog.catalogId,
+        catalogRevision: mention.catalogRevision ?? this.props.menuCatalog.catalogRevision
+      } : void 0;
+    }
     validateMentions(mentions) {
       if (mentions.length > 5) return "每条消息最多引用 5 个对象。";
       if (new Set(mentions.map((mention) => mention.resourceKey)).size !== mentions.length) {
@@ -29349,10 +29771,35 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return changed;
     }
     resolveMenuMention(mention) {
-      const option = (this.props.menuOptions || []).find(
+      const catalog = this.props.menuCatalog;
+      const option = catalog.entries.find(
         (item) => item.menuId === mention.menuId && item.actionId === mention.actionId
       );
-      return option ? { ...clone(option), valid: true } : void 0;
+      return option ? {
+        ...clone(option),
+        catalogId: catalog.catalogId,
+        catalogRevision: catalog.catalogRevision,
+        valid: true
+      } : void 0;
+    }
+    async refreshMenuCatalog() {
+      var _a;
+      const getMenuCatalog = (_a = this.props.hostBridge) == null ? void 0 : _a.getMenuCatalog;
+      if (!getMenuCatalog) return;
+      let catalog;
+      try {
+        catalog = clone(await Promise.resolve(getMenuCatalog()));
+      } catch {
+        return;
+      }
+      if (!catalog || typeof catalog.catalogId !== "string" || !Number.isInteger(catalog.catalogRevision) || !Array.isArray(catalog.entries)) return;
+      if (JSON.stringify(catalog) === JSON.stringify(this.props.menuCatalog)) return;
+      this.props = { ...this.props, menuCatalog: catalog };
+      if (this.revalidateMenuMentions()) {
+        this.notifyMessages();
+        this.scheduleSave();
+        this.emit();
+      }
     }
     isCurrentRecordSelection(selection) {
       var _a;
@@ -29522,7 +29969,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.7.0";
+  const VERSION = "12.0.8.8.0";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

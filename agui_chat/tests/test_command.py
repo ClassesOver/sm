@@ -13,6 +13,7 @@ PAGE_COMMAND_XML_IDS = {
     "odoo.open_mentioned_record": "command_open_mentioned_record",
     "odoo.apply_mentioned_filter": "command_apply_mentioned_filter",
     "odoo.open_menu": "command_open_menu",
+    "odoo.search_menu": "command_search_menu",
     "odoo.apply_filter": "command_apply_filter",
     "odoo.open_record": "command_open_record",
     "odoo.open_create": "command_open_create",

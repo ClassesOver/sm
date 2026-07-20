@@ -14,8 +14,8 @@ configured AgentOS protocol endpoint must agree on:
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.7.0",
-  "bundle_version": "12.0.8.7.0",
+  "module_version": "12.0.8.8.0",
+  "bundle_version": "12.0.8.8.0",
   "command_catalog_hash": "sha256"
 }
 ```
@@ -49,6 +49,9 @@ Every `RunAgentInput.state` has exactly this envelope:
   Attempts to patch `/host` are ignored and reported.
 - `hostRevision` is a browser page revision. `sessionRevision` is the database
   session revision. They are never compared or restored into each other.
+- The visible menu catalog is a separate host-owned snapshot. It is never stored
+  in `RunAgentInput.state` or counted against the page snapshot budget, and a
+  catalog-only change does not increment `hostRevision`.
 - Session restore loads messages, `agentState`, and UI preferences. It never
   restores `hostState`.
 
@@ -74,6 +77,7 @@ HRP publishes standard AG-UI client tool schemas in the current
 - `odoo.open_mentioned_menu`
 - `odoo.open_mentioned_record`
 - `odoo.apply_mentioned_filter`
+- `odoo.search_menu`
 - `odoo.open_menu`
 - `odoo.apply_filter`
 - `odoo.open_record`
@@ -90,11 +94,31 @@ HRP publishes standard AG-UI client tool schemas in the current
 React executes a tool only if its exact name was declared for that run. Agno
 server tools remain display-only until their `TOOL_CALL_RESULT` arrives.
 
-Mention tools and `odoo.open_menu` carry a page target containing only
-`snapshotId` and `hostRevision`. Commands bound to the current view carry the
-full target with `controllerId`, `dataPointId`, `model`, and `resId`. Missing or
-stale target members fail closed. Stage/patch/save/discard and all mention tools also
-require a server-bound one-time authorization.
+Mention tools carry a page target containing `snapshotId` and `hostRevision`.
+`odoo.search_menu` and `odoo.open_menu` use a dedicated menu target that also
+contains `catalogId` and `catalogRevision`. Commands bound to the current view
+carry the full target with `controllerId`, `dataPointId`, `model`, and `resId`.
+Missing or stale target members fail closed. The server idempotency binding also
+includes the menu catalog identity when present.
+
+Navigation without an explicit `@` selection is available only when both menu
+tools are declared. The agent first calls `odoo.search_menu` with the user's
+original name or path. The host normalizes wrappers, whitespace, separators, and
+case, then prefers exact full-path or leaf-name matches and uses contains matches
+only when no exact result exists. Results include `matchType`, `matchCount`,
+`truncated`, catalog metadata, and at most eight candidates. Any ambiguous result
+stops for user selection.
+
+The full visible directory is not sent on the first Run. Only after a same-catalog
+`matchType=none` result does the immediately following client-tool continuation
+receive `当前用户可见 HRP 菜单`. This context contains only catalog metadata,
+completeness, and original `fullPath` strings, never menu/action IDs. Its UTF-8
+budget is 128 KiB and paths are never truncated. If `complete=false`, semantic
+rewrites are forbidden and the user must select with `@`. From a complete catalog
+the agent may retry at most two original paths. `odoo.open_menu` still requires a
+unique result in the same page, catalog, thread, and Run, or an explicit current
+selection. Catalog changes return `stale_menu_catalog`; action changes return
+`menu_action_conflict`; missing evidence returns `menu_search_required`.
 
 ## Object References
 
@@ -190,6 +214,45 @@ authorization is rejected and a fresh preview requires a new confirmation. A
 low-risk patch may refresh and rebind once when only the snapshot of the same
 record is stale. Dirty-field conflicts, ACL failures, validation errors,
 onchange failures, and save failures are never retried automatically.
+
+### One2many Import Preview
+
+`agui_chat_import` does not embed the legacy ImportView and never calls
+`execute_import()` or `load()`. `POST /agui_chat_import/prepare` copies an owned
+Chat attachment into a persistent import job and immediately creates a
+server-side preview. `POST /agui_chat_import/preview` accepts only `jobToken`,
+`expectedRevision`, `parseOptions`, `mapping`, and the JSON boolean `finalize`.
+Status recovery uses `POST /agui_chat_import/status`; bounded error reports use
+`GET /agui_chat_import/error/<jobToken>`.
+
+The server creates a temporary `base_import.import` wizard in the submitting
+user and company environment and calls `parse_preview(options, count=20)`.
+Odoo's full field tree and generic matches are discarded. The returned
+`preview.kind` is `x2many_import`; its `import` value contains the file summary,
+row count, headers, at most 20 truncated rows, profile-only target fields,
+mapping, normalized CSV options, errors, revision, mapping hash, target, and
+schema hashes. Files are limited to 50 columns and 80-character headers. The
+preview envelope has a 96 KiB budget, so wide previews can return fewer rows.
+Full converted rows never enter Chat messages or AG-UI events.
+
+Mappings may use only registered profile source columns and target fields. A
+target field cannot be selected twice and every required target must be mapped.
+Each preview update locks the job and compares `expectedRevision`. Only
+`finalize=true` performs full conversion of at most 2,000 rows and changes
+`preview` to `ready`. React then sends a hidden bounded user message containing
+only `kind=x2many_import_ready`, `jobToken`, `revision`, and `mappingHash`; this
+starts an ordinary Agent run rather than a custom interrupt.
+
+The business authorization can be prepared only while the job is `ready` and
+includes the same trusted preview. Approval synchronously locks authorization,
+job, and parent record, then rechecks user/company, ACL, record rules,
+`write_date`, profile, file, and mapping hashes. A single parent One2many write
+runs inside a savepoint. Existing command execution idempotency stores the
+result, so a lost response cannot create the rows twice. Terminal jobs clear the
+source attachment, full converted rows, and preview rows immediately. The
+existing audit-retention cron later deletes all expired import jobs and their
+source/error attachments, including abandoned previews; there is no import
+execution cron.
 
 Save uses `saveRecord()`. Validation uses the current Renderer. Approved
 discard calls the native discard path once. Navigation refuses a dirty form.
@@ -302,7 +365,9 @@ Session JSON endpoints remain under `/agui_chat/session/*`. Payload fields are
 `POST /agui` uses incremental run messages. A normal run sends only the latest
 user message. A client-tool continuation sends only the consecutive trailing
 `tool` result messages, in their original order. Tool declarations, the current
-HRP context and the state envelope are still sent in full on every request.
+page context and the state envelope are still sent in full on every request. The
+separate menu path directory is sent only on the no-result continuation described
+above.
 AgentOS PostgreSQL is the conversation-history authority and loads the latest
 10 runs. HRP `session/save` continues to persist the complete UI message
 snapshot for restoration and revision merging.
@@ -351,7 +416,7 @@ for compatibility with existing sessions.
 Switching surfaces moves the one stable React host node; it does not unmount,
 reload a session, or cancel the active SSE run.
 
-Upgrading to `12.0.8.7.0` archives every previously active HRP chat session and
+Upgrading to `12.0.8.8.0` archives every previously active HRP chat session and
 enqueues its workspace for the existing cleanup worker. HRP and AgentOS audit
 data are retained, but old threads are never reused. The first chat entry after
 upgrade creates a new run-ID-capable session automatically.

@@ -101,8 +101,11 @@ odoo.define("agui_chat.tests.host", function (require) {
     QUnit.test("host bridge forwards the Odoo session CSRF token", function (assert) {
         var bridge = new ChatBridge.HostBridge({
             call: function (_service, method) {
-                if (method === "getMenuOptions") {
-                    return [];
+                if (method === "getMenuCatalog") {
+                    return {
+                        catalogId: "catalog", catalogRevision: 1, capturedAt: "now",
+                        ready: true, totalCount: 0, entries: [],
+                    };
                 }
                 throw new Error("Unexpected host call: " + method);
             },
@@ -112,6 +115,30 @@ odoo.define("agui_chat.tests.host", function (require) {
         var props = bridge.mountProps({protocol: "agui.odoo.v2"}, "dock");
 
         assert.strictEqual(props.csrfToken, core.csrf_token);
+    });
+
+    QUnit.test("host bridge sends bounded One2many preview requests", function (assert) {
+        assert.expect(2);
+        var bridge = new ChatBridge.HostBridge({call: function () { return $.when(); }});
+        bridge._rpc = function (route, values) {
+            assert.strictEqual(route, "/agui_chat_import/preview");
+            assert.deepEqual(values, {
+                jobToken: "job-1",
+                expectedRevision: 3,
+                parseOptions: {encoding: "utf-8", separator: ",", quoting: '"'},
+                mapping: {"产品": "name"},
+                finalize: true,
+            });
+            return $.when({ok: true});
+        };
+
+        bridge.publicApi().previewX2ManyImport({
+            jobToken: "job-1",
+            expectedRevision: 3,
+            parseOptions: {encoding: "utf-8", separator: ",", quoting: '"'},
+            mapping: {"产品": "name"},
+            finalize: true,
+        });
     });
 
     QUnit.test("chat dock stays interactive above modal backdrops", function (assert) {
@@ -133,8 +160,8 @@ odoo.define("agui_chat.tests.host", function (require) {
         $manager.remove();
     });
 
-    QUnit.test("menu options refresh when WebClient menu data arrives late", function (assert) {
-        assert.expect(2);
+    QUnit.test("menu catalog refreshes when WebClient menu data arrives late", function (assert) {
+        assert.expect(4);
         var webClient = {menu_data: null};
         var service = Object.create(HostService.prototype);
         service._webClient = null;
@@ -142,7 +169,9 @@ odoo.define("agui_chat.tests.host", function (require) {
         service._menuOptions = [];
 
         service.configureNavigation(webClient, null);
-        assert.deepEqual(service.getMenuOptions(), []);
+        var pending = service.getMenuCatalog();
+        assert.notOk(pending.ready);
+        assert.deepEqual(pending.entries, []);
 
         webClient.menu_data = {
             children: [{
@@ -152,13 +181,236 @@ odoo.define("agui_chat.tests.host", function (require) {
                 children: [],
             }],
         };
-        assert.deepEqual(service.getMenuOptions(), [{
+        var ready = service.getMenuCatalog();
+        assert.ok(ready.ready);
+        assert.deepEqual(ready.entries, [{
             menuId: 90,
             actionId: 115,
             name: "员工",
             path: ["员工"],
             fullPath: "员工",
         }]);
+    });
+
+    QUnit.test("menu catalog version is stable and in-place changes do not publish a page snapshot", function (assert) {
+        assert.expect(8);
+        var menuData = {
+            children: [{
+                id: 90, name: "员工", action: "ir.actions.act_window,115", children: [],
+            }],
+        };
+        var service = Object.create(HostService.prototype);
+        service._webClient = null;
+        service._menuData = null;
+        service._menuOptions = [];
+        service._menuSubscribers = [];
+        service._menuSearch = {menuId: 90};
+        service._snapshot = {snapshotId: "page", hostRevision: 7};
+        service.configureNavigation({menu_data: menuData}, menuData);
+        var first = service.getMenuCatalog();
+        var stable = service.getMenuCatalog();
+
+        assert.strictEqual(stable.catalogId, first.catalogId);
+        assert.strictEqual(stable.catalogRevision, first.catalogRevision);
+        assert.strictEqual(service._snapshot.snapshotId, "page");
+        assert.strictEqual(service._snapshot.hostRevision, 7);
+
+        var published;
+        service.subscribeMenuCatalog({}, function (catalog) { published = catalog; });
+        menuData.children[0].name = "员工档案";
+        var changed = service.getMenuCatalog();
+
+        assert.notEqual(changed.catalogId, first.catalogId);
+        assert.strictEqual(changed.catalogRevision, first.catalogRevision + 1);
+        assert.strictEqual(published.entries[0].fullPath, "员工档案");
+        assert.notOk(service._menuSearch, "catalog changes invalidate search evidence");
+    });
+
+    QUnit.test("menu search prefers exact matches and falls back to contains matches", function (assert) {
+        assert.expect(11);
+        var service = Object.create(HostService.prototype);
+        service._webClient = null;
+        service._menuData = {
+            children: [{
+                id: 8,
+                name: "费用报销",
+                action: "",
+                children: [{
+                    id: 9,
+                    name: "报销单查询",
+                    action: "ir.actions.act_window,42",
+                    children: [],
+                }, {
+                    id: 10,
+                    name: "报销单查询归档",
+                    action: "ir.actions.act_window,43",
+                    children: [],
+                }],
+            }],
+        };
+        service._menuOptions = [];
+        service._menuSubscribers = [];
+        service._snapshot = {snapshotId: "page", hostRevision: 1};
+
+        var exact = service.searchMenus("打开报销单查询", {threadId: "thread", runId: "run"});
+        assert.strictEqual(exact.matchType, "exact");
+        assert.strictEqual(exact.matchCount, 1);
+        assert.notOk(exact.truncated);
+        assert.strictEqual(exact.candidates.length, 1);
+        assert.strictEqual(exact.candidates[0].menuId, 9);
+        assert.strictEqual(exact.candidates[0].actionId, 42);
+
+        var contains = service.searchMenus("报销", {threadId: "thread", runId: "run"});
+        assert.strictEqual(contains.matchType, "contains");
+        assert.strictEqual(contains.matchCount, 2);
+        assert.notOk(contains.truncated);
+        assert.deepEqual(_.pluck(contains.candidates, "menuId"), [9, 10]);
+        assert.notOk(service._menuSearch, "ambiguous results cannot authorize navigation");
+    });
+
+    QUnit.test("duplicate menu leaves remain ambiguous", function (assert) {
+        assert.expect(3);
+        var service = Object.create(HostService.prototype);
+        service._webClient = null;
+        service._menuData = {
+            children: [{
+                id: 1, name: "费用", action: "", children: [{
+                    id: 2, name: "查询", action: "ir.actions.act_window,42", children: [],
+                }],
+            }, {
+                id: 3, name: "采购", action: "", children: [{
+                    id: 4, name: "查询", action: "ir.actions.act_window,43", children: [],
+                }],
+            }],
+        };
+        service._menuOptions = [];
+        service._menuSubscribers = [];
+        service._snapshot = {snapshotId: "page", hostRevision: 1};
+
+        var result = service.searchMenus("查询", {threadId: "thread", runId: "run"});
+
+        assert.strictEqual(result.matchType, "exact");
+        assert.strictEqual(result.matchCount, 2);
+        assert.notOk(service._menuSearch);
+    });
+
+    QUnit.test("opening a menu rejects a stale action id", function (assert) {
+        assert.expect(2);
+        var opened = false;
+        var service = Object.create(HostService.prototype);
+        service._webClient = {
+            menu_data: {
+                children: [{
+                    id: 9,
+                    name: "报销单查询",
+                    action: "ir.actions.act_window,42",
+                    children: [],
+                }],
+            },
+            do_action: function () { opened = true; },
+        };
+        service._menuData = service._webClient.menu_data;
+        service._menuOptions = [];
+        service._menuSubscribers = [];
+
+        try {
+            service._openMenu(9, 43);
+            assert.ok(false, "stale action id must be rejected");
+        } catch (error) {
+            assert.strictEqual(error.code, "menu_action_conflict");
+            assert.notOk(opened);
+        }
+    });
+
+    QUnit.test("menu opening requires a unique search in the same run", function (assert) {
+        assert.expect(3);
+        var done = assert.async();
+        var service = Object.create(HostService.prototype);
+        service._snapshot = {
+            snapshotId: "page", hostRevision: 1, interactive: true,
+        };
+        service._webClient = null;
+        service._menuData = {
+            children: [{
+                id: 9,
+                name: "报销单查询",
+                action: "ir.actions.act_window,42",
+                children: [],
+            }],
+        };
+        service._menuOptions = [];
+        service._menuSubscribers = [];
+        service._menuSearch = false;
+        var catalog = service.getMenuCatalog();
+        var call = {
+            id: "open-menu",
+            tool: "odoo.open_menu",
+            arguments: {
+                target: {
+                    snapshotId: "page", hostRevision: 1,
+                    catalogId: catalog.catalogId, catalogRevision: catalog.catalogRevision,
+                },
+                menuId: 9,
+                actionId: 42,
+            },
+            context: {threadId: "thread-1", runId: "run-1"},
+        };
+
+        service.prepareHostCommand(call).then(function (result) {
+            assert.strictEqual(result.code, "menu_search_required");
+            service.searchMenus("报销单查询", {threadId: "thread-1", runId: "run-1"});
+            return service.prepareHostCommand(_.extend({}, call, {
+                context: {threadId: "thread-1", runId: "run-2"},
+            }));
+        }).then(function (result) {
+            assert.strictEqual(result.code, "menu_search_required");
+            return service.prepareHostCommand(call);
+        }).then(function (result) {
+            assert.ok(result.ok);
+            done();
+        });
+    });
+
+    QUnit.test("stale menu targets and changed actions fail closed", function (assert) {
+        assert.expect(2);
+        var done = assert.async();
+        var menuData = {
+            children: [{
+                id: 9, name: "报销单查询", action: "ir.actions.act_window,42", children: [],
+            }],
+        };
+        var service = Object.create(HostService.prototype);
+        service._snapshot = {snapshotId: "page", hostRevision: 1, interactive: true};
+        service._webClient = {menu_data: menuData};
+        service._menuData = menuData;
+        service._menuOptions = [];
+        service._menuSubscribers = [];
+        service._menuSearch = false;
+        var catalog = service.getMenuCatalog();
+        var call = {
+            id: "stale-menu", tool: "odoo.open_menu",
+            arguments: {
+                target: {
+                    snapshotId: "page", hostRevision: 1,
+                    catalogId: catalog.catalogId, catalogRevision: catalog.catalogRevision,
+                },
+                menuId: 9, actionId: 42,
+            },
+            context: {threadId: "thread", runId: "run"},
+        };
+
+        menuData.children[0].name = "报销查询";
+        service.prepareHostCommand(call).then(function (result) {
+            assert.strictEqual(result.code, "stale_menu_catalog");
+            var latest = service.getMenuCatalog();
+            call.arguments.target.catalogId = latest.catalogId;
+            call.arguments.target.catalogRevision = latest.catalogRevision;
+            menuData.children[0].action = "ir.actions.act_window,43";
+            return service.prepareHostCommand(call);
+        }).then(function (result) {
+            assert.strictEqual(result.code, "menu_action_conflict");
+            done();
+        });
     });
 
     QUnit.test("snapshot is bounded to view fields and redacts secrets", function (assert) {
@@ -803,12 +1055,15 @@ odoo.define("agui_chat.tests.host", function (require) {
     QUnit.test("client catalog requires the appropriate host target", function (assert) {
         assert.expect(Commands.getCatalog().length * 2);
         _.each(Commands.getCatalog(), function (tool) {
+            var menuTools = ["odoo.search_menu", "odoo.open_menu"];
             var pageTools = [
-                "odoo.open_menu", "odoo.read_mentioned_records",
+                "odoo.read_mentioned_records",
                 "odoo.open_mentioned_menu", "odoo.open_mentioned_record",
                 "odoo.apply_mentioned_filter",
             ];
-            var requiredTarget = pageTools.indexOf(tool.name) !== -1 ?
+            var requiredTarget = menuTools.indexOf(tool.name) !== -1 ?
+                ["snapshotId", "hostRevision", "catalogId", "catalogRevision"] :
+                pageTools.indexOf(tool.name) !== -1 ?
                 ["snapshotId", "hostRevision"] :
                 ["snapshotId", "hostRevision", "controllerId", "dataPointId", "model", "resId"];
             assert.ok(tool.parameters.required.indexOf("target") !== -1, tool.name);
@@ -1292,12 +1547,50 @@ odoo.define("agui_chat.tests.host", function (require) {
                 getSnapshot: function () { return {snapshotId: "page", hostRevision: 1}; },
                 hasUnsavedChanges: function () { return true; },
             }, {
-                tool: "odoo.open_menu", arguments: {menuId: 8},
+                tool: "odoo.open_menu", arguments: {menuId: 8, actionId: 42},
             });
         }).then(function () {
             assert.ok(false, "dirty form navigation must not execute");
         }, function (error) {
             assert.strictEqual(error.code, "unsaved_changes");
+            done();
+        });
+    });
+
+    QUnit.test("menu search is read-only and opening verifies the searched action", function (assert) {
+        assert.expect(6);
+        var done = assert.async();
+        var snapshot = {snapshotId: "page", hostRevision: 1};
+        var context = {
+            getSnapshot: function () { return snapshot; },
+            hasUnsavedChanges: function () { return false; },
+            searchMenus: function (query) {
+                assert.strictEqual(query, "报销单查询");
+                return {
+                    query: query,
+                    matchType: "exact",
+                    candidates: [{menuId: 9, actionId: 42, fullPath: "费用报销 / 报销单查询"}],
+                };
+            },
+            openMenu: function (menuId, actionId) {
+                assert.strictEqual(menuId, 9);
+                assert.strictEqual(actionId, 42);
+                snapshot = {snapshotId: "opened", hostRevision: 2};
+                return $.when({menuId: menuId, actionId: actionId});
+            },
+            waitForSnapshotChange: function () { return $.when(snapshot); },
+        };
+
+        Commands.execute(context, {
+            tool: "odoo.search_menu", arguments: {query: "报销单查询"},
+        }).then(function (result) {
+            assert.strictEqual(result.matchType, "exact");
+            assert.strictEqual(result.snapshotId, "page");
+            return Commands.execute(context, {
+                tool: "odoo.open_menu", arguments: {menuId: 9, actionId: 42},
+            });
+        }).then(function (result) {
+            assert.strictEqual(result.menu.actionId, 42);
             done();
         });
     });
@@ -1319,7 +1612,7 @@ odoo.define("agui_chat.tests.host", function (require) {
             openCreate: function () { created = true; return $.when(); },
         }, {
             tool: "odoo.open_mentioned_menu", authorizationId: "authorization-1",
-            arguments: {token: "menu", __mention: [{kind: "menu", action: "create", menu_id: 8, label: "客户"}]},
+            arguments: {token: "menu", __mention: [{kind: "menu", action: "create", menu_id: 8, action_id: 42, label: "客户"}]},
         }).then(function (result) {
             assert.ok(created, "create executes after opening the menu");
             assert.strictEqual(waits, 2);
@@ -1345,7 +1638,7 @@ odoo.define("agui_chat.tests.host", function (require) {
             openCreate: function () { created = true; return $.when(); },
         }, {
             tool: "odoo.open_mentioned_menu", authorizationId: "authorization-1",
-            arguments: {token: "menu", __mention: [{kind: "menu", action: "create", menu_id: 8, label: "客户"}]},
+            arguments: {token: "menu", __mention: [{kind: "menu", action: "create", menu_id: 8, action_id: 42, label: "客户"}]},
         }).then(function () {
             assert.ok(false, "unsupported create must fail");
             done();
@@ -1396,7 +1689,8 @@ odoo.define("agui_chat.tests.host", function (require) {
             arguments: {
                 token: "bound-record", __mention: [{
                     token: "bound-record", kind: "record", action: "view",
-                    model: "res.partner", record_id: 17, menu_id: 8, label: "Acme",
+                    model: "res.partner", record_id: 17, menu_id: 8, action_id: 42,
+                    label: "Acme",
                 }],
             },
         }).then(function (result) {
@@ -1415,7 +1709,7 @@ odoo.define("agui_chat.tests.host", function (require) {
         var applied;
         var binding = {
             token: "bound-filter", kind: "current_filter", action: "apply",
-            model: "res.partner", menu_id: 8, label: "当前筛选",
+            model: "res.partner", menu_id: 8, action_id: 42, label: "当前筛选",
             domain: [["name", "ilike", "Acme"]], context: {}, group_by: ["company_id"],
             sort: ["-name"],
         };

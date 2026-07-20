@@ -7,6 +7,20 @@
         <field name="confirmation_mode">never</field>
         <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
     </record>
+    <record id="policy_search_visible_menu" model="agui.chat.tool.policy">
+        <field name="name">搜索当前用户可见菜单</field>
+        <field name="tool_name">odoo.search_menu</field>
+        <field name="access_level">read</field>
+        <field name="confirmation_mode">never</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="policy_open_visible_menu" model="agui.chat.tool.policy">
+        <field name="name">打开当前用户可见菜单</field>
+        <field name="tool_name">odoo.open_menu</field>
+        <field name="access_level">navigation</field>
+        <field name="confirmation_mode">never</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
     <record id="policy_enter_current_form_edit_mode" model="agui.chat.tool.policy">
         <field name="name">进入当前表单编辑模式</field>
         <field name="tool_name">odoo.enter_edit_mode</field>
