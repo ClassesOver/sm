@@ -2,17 +2,17 @@
 
 ## 拓扑
 
-浏览器将标准 AG-UI 输入直接提交到同源 AgentOS 代理并消费 SSE。Odoo 提供配置、
+浏览器将标准 AG-UI 输入直接提交到同源 AgentOS 代理并消费 SSE。HRP 提供配置、
 界面会话、宿主命令策略和具名同步业务命令，但不代理 SSE。
 
 只配置一个公开运行地址：
 
 - `runtime_url`：AgentOS AG-UI POST 端点，例如 `/contract-review/agui`。
 
-Odoo 根据该值推导协议握手地址 `/contract-review/config`。AgentOS 必须公开推导出的
+HRP 根据该值推导协议握手地址 `/contract-review/config`。AgentOS 必须公开推导出的
 JSON 声明端点。
 
-声明必须包含已部署的 `agui.odoo.v2` 协议、前端包版本和 Odoo 命令目录哈希。Nginx
+声明必须包含已部署的 `agui.odoo.v2` 协议、前端包版本和 HRP 命令目录哈希。Nginx
 不得重试 AG-UI POST。SSE 必须关闭代理缓冲、缓存和压缩，并按至少 200 条并发流配置
 连接上限。
 
@@ -34,7 +34,7 @@ JSON 声明端点。
 模拟状态。
 
 模块内置一个只读 `odoo.apply_filter` 策略，将 `hr.employee` 筛选限制为内部用户。
-该策略只作用于当前绑定的列表或看板视图；Odoo 访问权限、记录规则和快照中的
+该策略只作用于当前绑定的列表或看板视图；HRP 访问权限、记录规则和快照中的
 `filterFields` 白名单仍决定可筛选的记录与字段。需要额外用户组或字段限制时，应增加
 逐模型策略。
 
@@ -52,7 +52,7 @@ JSON 声明端点。
 5. 货币字段可能参与聚合时，同时加入对应币种字段，通常为 `currency_id`。
 
 关闭 `write_tools_enabled` 时，该命令仍然可用。现有业务命令默认访问级别为 `write`，
-在该状态下不可用。必须使用非管理员账号测试每条策略，因为 Odoo ACL、记录规则、当前
+在该状态下不可用。必须使用非管理员账号测试每条策略，因为 HRP ACL、记录规则、当前
 公司、筛选可见性和菜单可见性仍然生效。
 
 ## 部署
@@ -138,7 +138,7 @@ AgentOS setup 会移除默认技能目录的组写和其他用户写权限，并
 `AGENT_SKILLS_TRUSTED_UID`。自定义技能目录必须由运维方执行同等权限约束，并显式配置其
 所有者 UID；校验失败时 AgentOS 会拒绝启动。
 
-在 Odoo 中，将 AgentOS HMAC 配置为仅服务端可见的系统参数，并将 AgentOS 地址设置为
+在 HRP 中，将 AgentOS HMAC 配置为仅服务端可见的系统参数，并将 AgentOS 地址设置为
 `http://127.0.0.1:7777` 或宿主机可访问的实际地址。
 
 <a id="first-start"></a>
@@ -188,7 +188,7 @@ AgentOS 容器通过 `host.docker.internal:33043` 访问 Daytona API，根目录
   时使用。
 - 每个修改型浏览器命令都使用绑定载荷的授权，以及由用户、公司、thread、run 和工具调用
   派生的幂等键。
-- 业务命令处理器始终使用当前 Odoo 用户，不使用 `sudo`，并在保存点内执行。处理失败时
+- 业务命令处理器始终使用当前 HRP 用户，不使用 `sudo`，并在保存点内执行。处理失败时
   回滚业务写入。
 - 宿主快照不发送二进制字段和密钥。审计详情会递归脱敏并限制大小。
 - 会话保存使用 `expectedSessionRevision` 和 `SELECT ... FOR UPDATE`。
@@ -199,7 +199,7 @@ AgentOS 容器通过 `host.docker.internal:33043` 访问 Daytona API，根目录
 同时测试前端包缺失、握手不匹配、onchange 或保存失败、过期控制器、重复工具事件、重放
 令牌和多标签页会话冲突。
 
-所有情况下，Odoo 导航、表单编辑、onchange、校验、保存和丢弃都必须保持可用。
+所有情况下，HRP 导航、表单编辑、onchange、校验、保存和丢弃都必须保持可用。
 WebClient 启动不得等待聊天。系统必须始终只有一个 React 根节点、一个活动 run 和一个
 会话保存队列。
 

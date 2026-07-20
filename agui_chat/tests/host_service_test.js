@@ -24,7 +24,7 @@ Controller.include = function (prototype) {
     Object.assign(Controller.prototype, prototype);
 };
 
-function main() {
+async function main() {
     const source = fs.readFileSync(
         path.join(__dirname, "../static/src/js/agui_host_service.js"), "utf8"
     );
@@ -62,6 +62,14 @@ function main() {
     };
     function jquery(value) { return value; }
     jquery.when = function (value) { return Promise.resolve(value); };
+    jquery.Deferred = function () {
+        let resolve;
+        const promise = new Promise(function (done) { resolve = done; });
+        return {
+            resolve,
+            promise() { return promise; },
+        };
+    };
     const sandbox = {
         console,
         Date,
@@ -94,6 +102,7 @@ function main() {
             },
             isFunction(value) { return typeof value === "function"; },
             filter(values, callback) { return values.filter(callback); },
+            without(values, removed) { return values.filter((value) => value !== removed); },
         },
         $: jquery,
     };
@@ -117,6 +126,26 @@ function main() {
     assert.strictEqual(recovered.controller.dataPointId, "record-2");
     assert.notStrictEqual(recovered.controller.controllerId, firstId);
     assert.strictEqual(service._controller, second);
+
+    const navigationSnapshotId = service._snapshot.snapshotId;
+    const navigationReady = service._waitForInteractiveSnapshotChange(navigationSnapshotId);
+    service._snapshot = Object.assign({}, service._snapshot, {
+        snapshotId: "navigation-transition",
+        interactive: false,
+    });
+    service._publish();
+    let navigationResolved = false;
+    navigationReady.then(function () { navigationResolved = true; });
+    await Promise.resolve();
+    assert.strictEqual(navigationResolved, false);
+    service._snapshot = Object.assign({}, service._snapshot, {
+        snapshotId: "navigation-ready",
+        interactive: true,
+    });
+    service._publish();
+    const navigationSnapshot = await navigationReady;
+    assert.strictEqual(navigationSnapshot.snapshotId, "navigation-ready");
+    assert.strictEqual(navigationSnapshot.interactive, true);
 
     let listEvent;
     second.trigger_up = function (name, data) { listEvent = {name, data}; };
@@ -163,4 +192,7 @@ function main() {
     console.log("host_service_test: ok");
 }
 
-main();
+main().catch(function (error) {
+    console.error(error);
+    process.exitCode = 1;
+});

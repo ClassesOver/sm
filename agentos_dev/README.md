@@ -1,6 +1,6 @@
 # 最小 AgentOS 开发应用
 
-该应用提供两个 Odoo 集成端点：
+该应用提供两个 HRP 集成端点：
 
 - `POST /agui`：标准 AG-UI SSE 运行端点。
 - `GET /config`：`agui.odoo.v2` 协议握手声明。
@@ -33,7 +33,7 @@ bash scripts/check_agentos.sh
 Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本应用时默认通过
 `http://127.0.0.1:33043/api` 访问 Daytona。
 
-默认监听 `127.0.0.1:7777`。Odoo 只需配置
+默认监听 `127.0.0.1:7777`。HRP 只需配置
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
 
 应用还注册五个受控 Pandas 报表工具，支持当前 thread 工作区内的 CSV、XLSX、顶层数组 JSON

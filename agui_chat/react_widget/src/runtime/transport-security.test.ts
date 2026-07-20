@@ -56,7 +56,7 @@ describe('production transport contract', () => {
       description: '已选智能体技能',
       value: JSON.stringify([{ id: 'review', name: '审查', description: '检查数据' }])
     })
-    expect(input.context.some((item) => item.description === 'Odoo 宿主快照')).toBe(true)
+    expect(input.context.some((item) => item.description === 'HRP 宿主快照')).toBe(true)
   })
 
   it('sends every consecutive trailing tool result in order', () => {
@@ -109,7 +109,7 @@ describe('production transport contract', () => {
     )
     expect(input.context).toEqual([
       {
-        description: 'Odoo 宿主快照',
+        description: 'HRP 宿主快照',
         value: JSON.stringify({
           protocol: 'agui.odoo.v2',
           snapshotId: 'snapshot-test-1',
@@ -141,7 +141,7 @@ describe('production transport contract', () => {
         })
       },
       { description: 'company', value: '{"id":1,"name":"Main"}' },
-      { description: 'Odoo 用户', value: '{"id":2,"name":"Administrator"}' },
+      { description: 'HRP 用户', value: '{"id":2,"name":"Administrator"}' },
       { description: '智能体 ID', value: 'odoo-assistant' }
     ])
     expect(input.forwardedProps).toEqual({})
@@ -161,7 +161,7 @@ describe('production transport contract', () => {
       {}
     )
     const hostContext = input.context.find(
-      (item) => item.description === 'Odoo 宿主快照'
+      (item) => item.description === 'HRP 宿主快照'
     )
     const snapshot = JSON.parse(hostContext?.value || '{}')
 
@@ -196,14 +196,14 @@ describe('production transport contract', () => {
 
     expect(input.messages).toEqual([{ id: 'selected', role: 'user', content: '打开它' }])
     expect(input.context).toContainEqual({
-      description: '已选 Odoo 菜单',
+      description: '已选 HRP 菜单',
       value: JSON.stringify({
         menuId: 8, actionId: 42, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户',
         navigationRequired: true, requiredFirstTool: 'odoo.open_menu'
       })
     })
     expect(input.context).toContainEqual({
-      description: '已选 Odoo 记录候选项', value: JSON.stringify(recordSelection)
+      description: '已选 HRP 记录候选项', value: JSON.stringify(recordSelection)
     })
     expect(JSON.stringify(input)).not.toContain('机密菜单')
   })
@@ -260,7 +260,7 @@ describe('production transport contract', () => {
       'odoo.open_menu', 'odoo.open_create'
     ])
     const selectedMenu = afterNavigation.context.find(
-      (item) => item.description === '已选 Odoo 菜单'
+      (item) => item.description === '已选 HRP 菜单'
     )
     expect(JSON.parse(selectedMenu?.value || '{}')).toMatchObject({
       navigationRequired: false,

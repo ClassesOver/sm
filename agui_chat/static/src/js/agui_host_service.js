@@ -727,7 +727,8 @@ odoo.define("agui_chat.host_service", function (require) {
             var pending = this._snapshotWaiters;
             this._snapshotWaiters = [];
             _.each(pending, function (waiter) {
-                if (snapshot.snapshotId !== waiter.snapshotId) {
+                if (snapshot.snapshotId !== waiter.snapshotId &&
+                        (!waiter.interactive || snapshot.interactive)) {
                     clearTimeout(waiter.timer);
                     waiter.resolve(snapshot);
                 } else {
@@ -796,6 +797,9 @@ odoo.define("agui_chat.host_service", function (require) {
                 },
                 hasUnsavedChanges: function () { return self._hasUnsavedChanges(); },
                 waitForSnapshotChange: function (snapshotId) { return self._waitForSnapshotChange(snapshotId); },
+                waitForInteractiveSnapshotChange: function (snapshotId) {
+                    return self._waitForInteractiveSnapshotChange(snapshotId);
+                },
                 resolveToken: function (token, kind) { return self._resolveToken(token, kind); },
                 validateToken: function (binding, kind) { return self._validateToken(binding, kind); },
                 openMenu: function (menuId) { return self._openMenu(menuId); },
@@ -1149,12 +1153,25 @@ odoo.define("agui_chat.host_service", function (require) {
         },
 
         _waitForSnapshotChange: function (snapshotId) {
+            return this._waitForChangedSnapshot(snapshotId, false);
+        },
+
+        _waitForInteractiveSnapshotChange: function (snapshotId) {
+            return this._waitForChangedSnapshot(snapshotId, true);
+        },
+
+        _waitForChangedSnapshot: function (snapshotId, interactive) {
             var deferred = $.Deferred();
             var self = this;
-            if (this._snapshot.snapshotId !== snapshotId) {
+            if (this._snapshot.snapshotId !== snapshotId &&
+                    (!interactive || this._snapshot.interactive)) {
                 return $.when(Adapter.clone(this._snapshot));
             }
-            var waiter = {snapshotId: snapshotId, resolve: deferred.resolve.bind(deferred)};
+            var waiter = {
+                snapshotId: snapshotId,
+                interactive: interactive,
+                resolve: deferred.resolve.bind(deferred),
+            };
             waiter.timer = setTimeout(function () {
                 self._snapshotWaiters = _.without(self._snapshotWaiters, waiter);
                 deferred.resolve(Adapter.clone(self._snapshot));

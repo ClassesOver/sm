@@ -88,7 +88,7 @@ class AguiChatConfig(models.Model):
     agentos_internal_url = fields.Char(
         string="AgentOS 内部服务地址",
         default="",
-        help="仅供 Odoo 服务端销毁工作区使用，不会发送到浏览器。",
+        help="仅供 HRP 服务端销毁工作区使用，不会发送到浏览器。",
     )
     allow_cross_origin_dev = fields.Boolean(
         string="允许跨域开发服务",
@@ -104,7 +104,7 @@ class AguiChatConfig(models.Model):
     )
     sensitive_field_names = fields.Char(
         string="敏感字段",
-        help="填写以逗号分隔的 Odoo 字段名，这些字段在页面快照中会被脱敏。",
+        help="填写以逗号分隔的 HRP 字段名，这些字段在页面快照中会被脱敏。",
     )
     max_request_bytes = fields.Integer(string="请求最大字节数", default=2 * 1024 * 1024)
     max_messages = fields.Integer(string="单次请求最大消息数", default=200)

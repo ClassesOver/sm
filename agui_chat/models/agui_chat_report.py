@@ -618,7 +618,7 @@ register_business_command(
     COMMAND_NAME,
     REPORT_SCHEMA,
     _handler,
-    description="批量描述、导出或聚合当前消息明确引用的 Odoo 筛选数据。",
+    description="批量描述、导出或聚合当前消息明确引用的 HRP 筛选数据。",
     access_level="read",
     binding_resolver=_binding_resolver,
 )

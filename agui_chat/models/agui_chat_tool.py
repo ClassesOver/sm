@@ -152,7 +152,7 @@ class AguiChatToolPolicy(models.Model):
     access_level = fields.Selection([
         ("read", "读取"), ("navigation", "导航"), ("write", "写入"),
     ], string="访问级别", required=True, default="read")
-    model_name = fields.Char(string="模型名称", help="可选，填写完整的 Odoo 模型技术名称。")
+    model_name = fields.Char(string="模型名称", help="可选，填写完整的 HRP 模型技术名称。")
     field_names = fields.Char(string="允许的字段", help="可选，填写以逗号分隔的字段白名单。")
     confirmation_mode = fields.Selection([
         ("risk", "按风险确认"), ("always", "始终确认"), ("never", "无需确认"),

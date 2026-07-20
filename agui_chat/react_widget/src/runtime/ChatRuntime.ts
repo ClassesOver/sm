@@ -407,7 +407,9 @@ export class ChatRuntime {
     const text = content.trim()
     const mentions = Array.isArray(selection) ? selection.map((item) => clone(item)) : []
     const workspace = workspaceReferences.map((item) => clone(item))
-    const menuMention = selection && !Array.isArray(selection) ? selection : undefined
+    const menuMention = selection && !Array.isArray(selection)
+      ? selection
+      : !selection ? this.resolveTypedMenuMention(text) : undefined
     const currentMenu = menuMention ? this.resolveMenuMention(menuMention) : undefined
     if (menuMention && !currentMenu) {
       const error = new Error('所选菜单已失效或无权访问，请重新选择。')
@@ -425,7 +427,7 @@ export class ChatRuntime {
       return false
     }
     if (mentions.length + workspace.length > 5) {
-      const error = new Error('Odoo 引用与工作区引用合计最多 5 个。')
+      const error = new Error('HRP 引用与工作区引用合计最多 5 个。')
       this.error = error.message
       this.props.onError?.(error)
       this.emit()
@@ -983,7 +985,7 @@ export class ChatRuntime {
     }
     const bridge = this.props.hostBridge
     if (!bridge?.getWorkspaceCapability) {
-      if (required) throw new Error('Odoo 未提供工作区 capability。')
+      if (required) throw new Error('HRP 未提供工作区 capability。')
       return null
     }
     if (!this.session?.id) throw new Error('当前聊天会话不可用。')
@@ -1971,7 +1973,7 @@ export class ChatRuntime {
   }
 
   private reportHostStateMutation(): void {
-    this.props.onError?.(new Error("已忽略智能体修改 Odoo 宿主状态的尝试。"))
+    this.props.onError?.(new Error("已忽略智能体修改 HRP 宿主状态的尝试。"))
   }
 
   private extractAgentState(value: unknown): Record<string, unknown> {
@@ -2217,6 +2219,23 @@ export class ChatRuntime {
       item.menuId === mention.menuId && item.actionId === mention.actionId
     )
     return option ? { ...clone(option), valid: true } : undefined
+  }
+
+  private resolveTypedMenuMention(content: string): MenuMention | undefined {
+    const normalize = (value: string) => value.trim().replace(/\s*\/\s*/g, ' / ').replace(/\s+/g, ' ')
+    const text = normalize(content)
+    const candidates = [text]
+    const openMatch = text.match(/^(?:请)?(?:打开|进入|导航到|跳转到)\s*(.+?)(?:\s*菜单)?[。！？!?]?$/)
+    if (openMatch?.[1]) candidates.unshift(normalize(openMatch[1]))
+
+    const options = this.props.menuOptions || []
+    for (const candidate of candidates) {
+      const fullPath = options.filter((option) => normalize(option.fullPath) === candidate)
+      if (fullPath.length === 1) return { ...clone(fullPath[0]), valid: true }
+      const leaf = options.filter((option) => normalize(option.name) === candidate)
+      if (leaf.length === 1) return { ...clone(leaf[0]), valid: true }
+    }
+    return undefined
   }
 
   private isCurrentRecordSelection(selection: RecordSelection): boolean {

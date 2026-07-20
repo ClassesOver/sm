@@ -100,7 +100,7 @@ describe('chat customization', () => {
     expect((buttons[1] as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('uses Chinese labels for Odoo form tools', () => {
+  it('uses Chinese labels for HRP form tools', () => {
     renderMessages({
       messages: [{
         id: 'assistant-tool',

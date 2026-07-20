@@ -59,7 +59,7 @@ export function transportError(status: number): Error {
 export function validateHandshake(props: AguiChatProps): void {
   const handshake = props.handshake
   if (!handshake || handshake.protocol !== AGUI_ODOO_PROTOCOL) {
-    throw new Error('Odoo AG-UI 协议握手失败。')
+    throw new Error('HRP AG-UI 协议握手失败。')
   }
   if (handshake.agentProtocol !== AGUI_ODOO_PROTOCOL) {
     throw new Error('AgentOS AG-UI 协议握手失败。')
@@ -78,7 +78,7 @@ export function validateHandshake(props: AguiChatProps): void {
     throw new Error('AG-UI 命令目录不匹配。')
   }
   if (!props.hostState || props.hostState.protocol !== AGUI_ODOO_PROTOCOL) {
-    throw new Error('Odoo 宿主快照协议与运行服务不匹配。')
+    throw new Error('HRP 宿主快照协议与运行服务不匹配。')
   }
 }
 
@@ -243,7 +243,7 @@ function normalizeRunContext(
 ): Array<{ description: string; value: string }> {
   const navigationPending = menuNavigationPending(messages)
   const context: Array<{ description: string; value: string }> = [{
-    description: 'Odoo 宿主快照',
+    description: 'HRP 宿主快照',
     value: contextValue(agentHostContext(props.hostState))
   }]
   if (Array.isArray(props.context)) {
@@ -264,7 +264,7 @@ function normalizeRunContext(
     })
   }
   if (props.user !== undefined) {
-    context.push({ description: 'Odoo 用户', value: contextValue(props.user) })
+    context.push({ description: 'HRP 用户', value: contextValue(props.user) })
   }
   if (props.agentId !== undefined) {
     context.push({ description: '智能体 ID', value: props.agentId })
@@ -295,7 +295,7 @@ function normalizeRunContext(
   const mentions = (latestUserMessage?.mentions || []).filter((mention) => mention.valid)
   if (mentions.length) {
     context.push({
-      description: '已选 Odoo 引用',
+      description: '已选 HRP 引用',
       value: contextValue(mentions.map((mention) => ({
         kind: mention.kind,
         action: mention.action,
@@ -310,7 +310,7 @@ function normalizeRunContext(
   if (latestUserMessage?.menuMention?.valid) {
     const mention = latestUserMessage.menuMention
     context.push({
-      description: '已选 Odoo 菜单',
+      description: '已选 HRP 菜单',
       value: contextValue({
         menuId: mention.menuId,
         actionId: mention.actionId,
@@ -328,7 +328,7 @@ function normalizeRunContext(
     latestUserMessage.recordSelection.hostRevision === props.hostState.hostRevision
   ) {
     context.push({
-      description: '已选 Odoo 记录候选项',
+      description: '已选 HRP 记录候选项',
       value: contextValue(latestUserMessage.recordSelection)
     })
   }

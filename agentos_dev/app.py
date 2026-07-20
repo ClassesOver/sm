@@ -119,7 +119,7 @@ def _is_fresh_user_request(run_input: RunAgentInput) -> bool:
 
 def _requires_menu_navigation(run_input: RunAgentInput) -> bool:
     for item in run_input.context or []:
-        if item.description != "已选 Odoo 菜单":
+        if item.description != "已选 HRP 菜单":
             continue
         try:
             value = json.loads(item.value)
@@ -550,7 +550,7 @@ async def run_agui(request: Request, run_input: RunAgentInput):
 
 
 def create_base_app(context: ApplicationContext) -> FastAPI:
-    application = FastAPI(title="Odoo AG-UI 开发智能体")
+    application = FastAPI(title="HRP AG-UI 开发智能体")
     application.state.agentos_context = context
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)

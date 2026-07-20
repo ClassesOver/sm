@@ -393,7 +393,14 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     }, {
       target: { snapshotId: pageState.snapshotId, hostRevision: pageState.hostRevision }
     })
-    expect(openedMenu.result).toMatchObject({ ok: true, operation: 'odoo.open_menu' })
+    expect(openedMenu.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.open_menu',
+      snapshot: {
+        interactive: true,
+        controller: { viewType: 'kanban' }
+      }
+    })
     await expect(page.locator('.o_kanban_view')).toBeVisible()
     await expect.poll(() => currentHostState(page).then((state) => state.model)).toBe('agui.chat.test.option')
 

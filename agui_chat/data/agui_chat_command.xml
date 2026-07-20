@@ -39,7 +39,7 @@
         <field name="name">打开菜单</field>
         <field name="code">odoo.open_menu</field>
         <field name="command_type">page</field>
-        <field name="description">打开用户已明确选择的 Odoo 窗口菜单；不要猜测 menuId。</field>
+        <field name="description">打开用户已明确选择的 HRP 窗口菜单；不要猜测 menuId。</field>
         <field name="sequence">10</field>
     </record>
     <record id="command_apply_filter" model="agui.chat.command">

@@ -27,7 +27,7 @@ def create_assistants(
 ) -> tuple[Agent, Agent]:
     assistant = Agent(
         id="odoo-assistant",
-        name="Odoo 助手",
+        name="HRP 助手",
         model=OpenAIChat(
             id=settings.model_id,
             base_url=settings.openai_base_url,

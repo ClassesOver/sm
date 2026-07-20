@@ -4,7 +4,7 @@ import type { ChatIcons, ChatLabels } from './types'
 export const defaultLabels: ChatLabels = {
   inputPlaceholder: '输入消息，@ 选择记录、菜单或技能',
   emptyTitle: '智能助手',
-  emptyDescription: '询问当前 Odoo 记录、选中内容或操作。',
+  emptyDescription: '询问当前 HRP 记录、选中内容或操作。',
   newSession: '新建对话',
   copyResponse: '复制回复',
   copied: '已复制',

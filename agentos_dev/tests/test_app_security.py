@@ -533,7 +533,7 @@ async def test_explicit_edit_request_routes_to_forced_agent(monkeypatch):
         run_input(
             context=[
                 {
-                    "description": "已选 Odoo 菜单",
+                    "description": "已选 HRP 菜单",
                     "value": json.dumps({"navigationRequired": True}),
                 }
             ]

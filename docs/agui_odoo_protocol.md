@@ -1,14 +1,14 @@
-# AG-UI / Odoo v2 Protocol
+# AG-UI / HRP v2 Protocol
 
 Version: `agui.odoo.v2`
 
-This module integrates one React AG-UI runtime with the current native Odoo 12
+This module integrates one chat runtime with the current native HRP 12
 `BasicModel` / `Controller` / `Renderer`. React does not render or persist a
-second Odoo form model.
+second HRP form model.
 
 ## Version Handshake
 
-Before React is mounted, Odoo `/agui_chat/config`, the loaded bundle, and the
+Before React is mounted, HRP `/agui_chat/config`, the loaded bundle, and the
 configured AgentOS protocol endpoint must agree on:
 
 ```json
@@ -22,7 +22,7 @@ configured AgentOS protocol endpoint must agree on:
 
 AgentOS exposes `protocol`, `bundle_version`, and `command_catalog_hash` at the
 `/config` URL derived from the configured `/agui` runtime URL. Missing or
-mismatched declarations disable Chat and host tools. They never reject Odoo
+mismatched declarations disable Chat and host tools. They never reject HRP
 WebClient startup.
 
 ## State Ownership
@@ -43,7 +43,7 @@ Every `RunAgentInput.state` has exactly this envelope:
 }
 ```
 
-- `host` is written only by the Odoo `agui_host` service from the current
+- `host` is written only by the HRP `agui_host` service from the current
   ActionManager controller and BasicModel data point.
 - `STATE_SNAPSHOT`, `STATE_DELTA`, and JSON Patch events write only `agent`.
   Attempts to patch `/host` are ignored and reported.
@@ -67,7 +67,7 @@ returns `snapshot_too_large` instead of silently dropping fields.
 
 ## Client Tools
 
-Odoo publishes standard AG-UI client tool schemas in the current
+HRP publishes standard AG-UI client tool schemas in the current
 `RunAgentInput.tools`:
 
 - `odoo.read_mentioned_records`
@@ -127,7 +127,7 @@ fields are always removed. HTML becomes plain text, scalar text is truncated,
 many2one returns its display name, and x2many returns only a count. Results are
 limited to twenty fields per record and 64 KB per call.
 
-Mentioned filters replace the current query through Odoo 12 `FavoriteMenu` and
+Mentioned filters replace the current query through HRP 12 `FavoriteMenu` and
 `SearchView`, including context, group-by, and sort. Cross-menu record actions
 re-enter the token-bound menu before switching its native controller to the
 form; dirty forms still reject navigation.
@@ -144,7 +144,7 @@ Relation search rules:
 - The browser evaluates `record.getDomain({fieldName})` and
   `record.getContext({fieldName})` against the live BasicModel data point,
   including unsaved onchange/dirty state, then calls `name_search` as the
-  current Odoo user.
+  current HRP user.
 - Raw domain/context values are never accepted from or returned to the Agent.
 - One exact candidate may be used directly. Multiple candidates require an
   explicit user selection; the Agent must never guess an ID.
@@ -163,8 +163,8 @@ Patch rules:
 
 - Fields must be present in `fieldsInfo.form` and currently visible/writable.
 - Existing dirty fields conflict; partial application is not allowed.
-- Scalars use Odoo field parsers; many2one accepts an explicit integer ID, an
-  Odoo-style `[ID, displayName]` pair, or a snapshot-style `{id, displayName}`
+- Scalars use HRP field parsers; many2one accepts an explicit integer ID, an
+  HRP-style `[ID, displayName]` pair, or a snapshot-style `{id, displayName}`
   object.
 - many2many supports only `link`, `unlink`, and `replace` of existing IDs.
 - one2many accepts at most 40 total `create`, `update`, and `delete`
@@ -262,11 +262,11 @@ current message. It supports:
 - `aggregate`: up to two dimensions, five `count/sum/avg/min/max` metrics, and
   5000 result groups.
 
-Saved filter expressions are parsed in Odoo's restricted evaluation
+Saved filter expressions are parsed in HRP's restricted evaluation
 environment. Temporary filters use their bound structured values. Domain,
 sort, original grouping, requested dimensions, and metrics must use policy
 fields. Sensitive, binary, one2many, and many2many fields are always rejected.
-Date grouping uses the Odoo user's timezone. Monetary metrics require their
+Date grouping uses the HRP user's timezone. Monetary metrics require their
 currency field as a dimension; no implicit conversion is performed.
 
 Detail and aggregate output is uploaded as `reports/data/<uuid>.jsonl` plus a
@@ -302,9 +302,9 @@ Session JSON endpoints remain under `/agui_chat/session/*`. Payload fields are
 `POST /agui` uses incremental run messages. A normal run sends only the latest
 user message. A client-tool continuation sends only the consecutive trailing
 `tool` result messages, in their original order. Tool declarations, the current
-Odoo context and the state envelope are still sent in full on every request.
+HRP context and the state envelope are still sent in full on every request.
 AgentOS PostgreSQL is the conversation-history authority and loads the latest
-10 runs. Odoo `session/save` continues to persist the complete UI message
+10 runs. HRP `session/save` continues to persist the complete UI message
 snapshot for restoration and revision merging.
 
 Every final assistant message stores its AgentOS run identifier in
@@ -316,7 +316,7 @@ forwarded there.
 
 `session/fork` locks and refreshes the source session, creates a new session
 named `原名称（分支）`, records `parent_session_id`, and copies only messages
-before the selected final answer. Referenced Odoo attachments are copied to the
+before the selected final answer. Referenced HRP attachments are copied to the
 new session and their IDs are rewritten. The branch inherits UI preferences,
 agent state, surface and agent selection, but receives a fresh `thread_id`.
 
@@ -332,7 +332,7 @@ snapshot at the selected run. Inventory is validated before the target sandbox
 is created: at most 2000 regular files, 256 MiB total and 25 MiB per file are
 allowed. Symbolic links, non-regular files, invalid paths and all over-limit
 workspaces reject the whole operation. A failure before `RUN_STARTED` removes
-prepared AgentOS/workspace state; React archives the Odoo branch and stays in
+prepared AgentOS/workspace state; React archives the HRP branch and stays in
 the source session. A model error after `RUN_STARTED` remains visible in the
 branch. Agent session persistence and branch workspace copy/rollback use the
 native asynchronous PostgreSQL and Daytona clients, so branch preparation does
@@ -351,7 +351,7 @@ for compatibility with existing sessions.
 Switching surfaces moves the one stable React host node; it does not unmount,
 reload a session, or cancel the active SSE run.
 
-Upgrading to `12.0.8.7.0` archives every previously active Odoo chat session and
-enqueues its workspace for the existing cleanup worker. Odoo and AgentOS audit
+Upgrading to `12.0.8.7.0` archives every previously active HRP chat session and
+enqueues its workspace for the existing cleanup worker. HRP and AgentOS audit
 data are retained, but old threads are never reused. The first chat entry after
 upgrade creates a new run-ID-capable session automatically.

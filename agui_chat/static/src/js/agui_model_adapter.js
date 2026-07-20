@@ -1127,8 +1127,8 @@ odoo.define("agui_chat.model_adapter", function (require) {
         }
         var metadataTooLarge = snapshotMetadataByteLength(snapshot) > MAX_SNAPSHOT_BYTES;
         var error = new Error(metadataTooLarge ?
-            "当前 Odoo 页面字段元信息超过 256 KiB 快照大小限制。" :
-            "当前 Odoo 页面必要字段元信息、脏字段值和操作令牌超过 256 KiB 快照大小限制。");
+            "当前 HRP 页面字段元信息超过 256 KiB 快照大小限制。" :
+            "当前 HRP 页面必要字段元信息、脏字段值和操作令牌超过 256 KiB 快照大小限制。");
         error.code = "snapshot_too_large";
         error.maxBytes = MAX_SNAPSHOT_BYTES;
         error.actualBytes = snapshotByteLength(snapshot);

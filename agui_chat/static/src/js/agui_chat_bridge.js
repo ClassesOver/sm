@@ -65,18 +65,18 @@ odoo.define("agui_chat.host_bridge", function (require) {
 
     HostBridge.prototype._validateOdooDeclaration = function (config) {
         if (!config || config.protocol !== PROTOCOL) {
-            throw bridgeError("protocol_mismatch", "Odoo 未声明 agui.odoo.v2 协议。")
+            throw bridgeError("protocol_mismatch", "HRP 未声明 agui.odoo.v2 协议。")
         }
         if (config.module_version !== MODULE_VERSION || config.bundle_version !== MODULE_VERSION) {
-            throw bridgeError("version_mismatch", "Odoo 模块与前端资源版本不一致。")
+            throw bridgeError("version_mismatch", "HRP 模块与前端资源版本不一致。")
         }
         if (!config.command_catalog_hash || !/^[a-f0-9]{64}$/.test(config.command_catalog_hash)) {
-            throw bridgeError("catalog_mismatch", "Odoo 命令目录摘要无效。")
+            throw bridgeError("catalog_mismatch", "HRP 命令目录摘要无效。")
         }
         if (config.chat_enabled) {
             if (!window.AguiChat || window.AguiChat.version !== config.bundle_version ||
                     window.AguiChat.protocol !== PROTOCOL) {
-                throw bridgeError("bundle_mismatch", "已加载的 React 资源与 Odoo 不匹配。")
+                throw bridgeError("bundle_mismatch", "已加载的 React 资源与 HRP 不匹配。")
             }
         }
     };
@@ -131,7 +131,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
     HostBridge.prototype._validateAgentDeclaration = function (config, agent) {
         if (!agent || agent.protocol !== PROTOCOL || agent.bundle_version !== config.bundle_version ||
                 agent.command_catalog_hash !== config.command_catalog_hash) {
-            throw bridgeError("agent_protocol_mismatch", "AgentOS 与 Odoo v2 协议不匹配。")
+            throw bridgeError("agent_protocol_mismatch", "AgentOS 与 HRP v2 协议不匹配。")
         }
     };
 

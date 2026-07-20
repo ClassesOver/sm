@@ -122,7 +122,7 @@ describe('ChatRuntime session naming', () => {
     expect(saveSession).toHaveBeenCalledWith(10, expect.objectContaining({ name: expected }))
   })
 
-  it('uses menu, record, Odoo reference, workspace, and attachment names in order', async () => {
+  it('uses menu, record, HRP reference, workspace, and attachment names in order', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(sseResponse([
       { type: 'RUN_FINISHED' }
     ]))))
@@ -980,7 +980,7 @@ describe('ChatRuntime protocol handling', () => {
     }))
   })
 
-  it('stops while waiting for Odoo and keeps a late result out of the next run', async () => {
+  it('stops while waiting for HRP and keeps a late result out of the next run', async () => {
     const hostResult = deferred<Record<string, unknown>>()
     let requestCount = 0
     vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
@@ -1421,13 +1421,48 @@ describe('ChatRuntime protocol handling', () => {
 
     expect(runtime.getSnapshot().messages[0].menuMention).toEqual({ ...option, valid: true })
     expect(body.messages[0].content).toBe('打开')
-    expect(body.context).toContainEqual(expect.objectContaining({ description: '已选 Odoo 菜单' }))
+    expect(body.context).toContainEqual(expect.objectContaining({ description: '已选 HRP 菜单' }))
 
     runtime.update({ menuOptions: [] })
     expect(runtime.getSnapshot().messages[0].menuMention?.valid).toBe(false)
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     runtime.removeMenuMention(runtime.getSnapshot().messages[0].id)
+    expect(runtime.getSnapshot().messages[0].menuMention).toBeUndefined()
+  })
+
+  it('resolves an exact menu path typed directly in the composer', async () => {
+    let body: any
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body))
+      return Promise.resolve(sseResponse([{ type: 'RUN_FINISHED' }]))
+    }))
+    const option = {
+      menuId: 8, actionId: 42, name: '报销单查询',
+      path: ['费用报销', '单据查询', '报销单查询'],
+      fullPath: '费用报销 / 单据查询 / 报销单查询'
+    }
+    for (const content of [
+      '费用报销 / 单据查询 / 报销单查询',
+      '打开费用报销 / 单据查询 / 报销单查询菜单'
+    ]) {
+      const runtime = createRuntime({ runtimeUrl: '/runtime/run', menuOptions: [option] })
+      await runtime.send(content)
+      expect(runtime.getSnapshot().messages[0].menuMention).toEqual({ ...option, valid: true })
+      expect(body.context).toContainEqual(expect.objectContaining({ description: '已选 HRP 菜单' }))
+    }
+  })
+
+  it('does not guess a duplicate leaf menu name', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(sseResponse([{ type: 'RUN_FINISHED' }]))))
+    const options = [
+      { menuId: 8, actionId: 42, name: '查询', path: ['费用', '查询'], fullPath: '费用 / 查询' },
+      { menuId: 9, actionId: 43, name: '查询', path: ['采购', '查询'], fullPath: '采购 / 查询' }
+    ]
+    const runtime = createRuntime({ runtimeUrl: '/runtime/run', menuOptions: options })
+
+    await runtime.send('打开查询')
+
     expect(runtime.getSnapshot().messages[0].menuMention).toBeUndefined()
   })
 
@@ -1450,7 +1485,7 @@ describe('ChatRuntime protocol handling', () => {
     expect(runtime.getSnapshot().messages[0].mentions).toEqual([readReference])
     expect(body.messages[0]).not.toHaveProperty('mentions')
     expect(body.context).toContainEqual({
-      description: '已选 Odoo 引用',
+      description: '已选 HRP 引用',
       value: JSON.stringify([{
         kind: 'record', action: 'read', token: 'opaque-read-token', label: '客户甲',
         detail: '销售 / 客户', model: 'res.partner', expiresAt
@@ -1515,7 +1550,7 @@ describe('ChatRuntime protocol handling', () => {
     expect(body.messages[0].content).toBe(content)
     expect(body.messages[0]).not.toHaveProperty('recordSelection')
     expect(body.context).toContainEqual({
-      description: '已选 Odoo 记录候选项',
+      description: '已选 HRP 记录候选项',
       value: JSON.stringify({
         token: 'record-token', displayName: '上海某公司',
         snapshotId: hostState.snapshotId, hostRevision: hostState.hostRevision

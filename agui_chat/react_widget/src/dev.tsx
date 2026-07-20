@@ -35,7 +35,7 @@ const scenarios: Record<Scenario, ChatMessage[]> = {
     { ...user, content: '把报价单 SO026 的有效期延长 7 天。' },
     {
       ...assistant,
-      content: '已准备好变更，确认后将写入 Odoo。',
+      content: '已准备好变更，确认后将写入 HRP。',
       tool_calls: [{
         id: 'tool-call-001', name: 'update_sale_order', status: 'needs_confirmation', needs_confirmation: true,
         args: { order: 'SO026', validity_days: 7 },

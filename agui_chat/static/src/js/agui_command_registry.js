@@ -81,7 +81,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         },
         {
             name: "odoo.open_menu",
-            description: "打开用户已明确选择的 Odoo 窗口菜单；不要猜测 menuId。",
+            description: "打开用户已明确选择的 HRP 窗口菜单；不要猜测 menuId。",
             parameters: pageSchema({
                 menuId: {type: "integer", minimum: 1},
             }, ["menuId"]),
@@ -259,7 +259,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         var snapshot = context.getSnapshot();
         var controller = context.getController();
         if (!snapshot.interactive || snapshot.controller.viewType !== "form" || !controller) {
-            throw commandError("no_current_form", "当前没有可用的 Odoo 原生表单。")
+            throw commandError("no_current_form", "当前没有可用的 HRP 原生表单。")
         }
         return controller;
     }
@@ -269,7 +269,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         var controller = context.getController();
         if (!snapshot.interactive || !controller ||
                 allowedTypes.indexOf(snapshot.controller.viewType) === -1) {
-            throw commandError("no_current_view", "当前没有可用的 Odoo 原生视图。");
+            throw commandError("no_current_view", "当前没有可用的 HRP 原生视图。");
         }
         return controller;
     }
@@ -281,7 +281,7 @@ odoo.define("agui_chat.command_registry", function (require) {
     }
 
     function navigationResult(context, before, result) {
-        return context.waitForSnapshotChange(before.snapshotId).then(function (snapshot) {
+        return context.waitForInteractiveSnapshotChange(before.snapshotId).then(function (snapshot) {
             return _.extend({navigated: snapshot.snapshotId !== before.snapshotId}, result || {});
         });
     }
@@ -367,7 +367,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         var before = context.getSnapshot();
         rejectUnsavedChanges(context);
         return $.when(context.openMenu(binding.menu_id)).then(function () {
-            return context.waitForSnapshotChange(before.snapshotId);
+            return context.waitForInteractiveSnapshotChange(before.snapshotId);
         });
     }
 
