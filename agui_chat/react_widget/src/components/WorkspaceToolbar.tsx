@@ -23,7 +23,7 @@ export function WorkspaceToolbar({
 }: WorkspaceToolbarProps) {
   return <div className="space-y-2 border-b border-border bg-background px-3 py-2">
     <div className="flex min-w-0 items-center gap-1.5">
-      <label className="flex min-w-0 flex-1 items-center gap-1.5 border border-border bg-background-panel px-2 outline outline-1 outline-border/70 transition-colors focus-within:border-primary/30 focus-within:outline-primary/25 focus-within:ring-2 focus-within:ring-primary/5">
+      <label className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-muted/35 bg-background-panel px-2 shadow-[0_1px_2px_rgba(15,23,42,0.08)] outline outline-1 outline-border/70 transition-colors hover:border-muted/55 hover:outline-muted/45 focus-within:border-primary/35 focus-within:outline-primary/25 focus-within:ring-2 focus-within:ring-primary/10">
         <Search size={14} className="shrink-0 text-muted" />
         <input value={search} onChange={(event) => onSearchChange(event.target.value)} className="h-8 min-w-0 flex-1 border-0 bg-transparent p-0 text-xs outline-none" placeholder="搜索当前目录" aria-label="搜索当前目录" />
         {search ? <IconButton label="清空搜索" size="xs" className="hover:bg-transparent" onClick={() => onSearchChange('')}><X size={13} /></IconButton> : null}
