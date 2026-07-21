@@ -269,6 +269,7 @@ export interface X2ManyCapability {
 
 export interface ViewCapabilities {
   create: boolean
+  viewTypes: Array<'kanban' | 'list' | 'form'>
   open: boolean
   edit: boolean
   filter: boolean

@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.8.3')
+    expect(AguiChat.version).toBe('12.0.8.8.4')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -1515,7 +1515,7 @@ describe('ChatRuntime protocol handling', () => {
     }
     const runtime = createRuntime({
       runtimeUrl: '/runtime/run',
-      tools: [{ name: 'odoo.search_menu', parameters: { type: 'object' } }],
+      tools: [{ name: 'odoo.navigate_menu', parameters: { type: 'object' } }],
       menuCatalog: menuCatalog([option])
     })
     await runtime.send('打开', [], { ...option, valid: true })
@@ -1573,10 +1573,7 @@ describe('ChatRuntime protocol handling', () => {
     }
     const runtime = createRuntime({
       runtimeUrl: '/runtime/run',
-      tools: [
-        { name: 'odoo.search_menu', parameters: { type: 'object' } },
-        { name: 'odoo.open_menu', parameters: { type: 'object' } }
-      ],
+      tools: [{ name: 'odoo.navigate_menu', parameters: { type: 'object' } }],
       menuCatalog: menuCatalog([option])
     })
     await runtime.send('打开费用报销 / 单据查询 / 报销单查询菜单')
@@ -1589,9 +1586,8 @@ describe('ChatRuntime protocol handling', () => {
     expect(body.context).toContainEqual({
       description: 'HRP 菜单导航请求',
       value: JSON.stringify({
-        phase: 'search',
         query: '费用报销 / 单据查询 / 报销单查询',
-        requiredFirstTool: 'odoo.search_menu',
+        requiredFirstTool: 'odoo.navigate_menu',
         catalogId: 'catalog-test-1',
         catalogRevision: 1
       })
@@ -1636,7 +1632,7 @@ describe('ChatRuntime protocol handling', () => {
     ] as const) {
       const requests: any[] = []
       const executeTool = vi.fn(() => ({
-        ok: true, operation: 'odoo.open_menu', navigated: true
+        ok: true, operation: 'odoo.navigate_menu', navigated: true
       }))
       vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
         requests.push(JSON.parse(String(init.body)))
@@ -1644,7 +1640,7 @@ describe('ChatRuntime protocol handling', () => {
           return Promise.resolve(sseResponse([
             {
               type: 'TOOL_CALL_START', toolCallId: `open-menu-${expected.menuId}`,
-              toolCallName: 'odoo.open_menu'
+              toolCallName: 'odoo.navigate_menu'
             },
             {
               type: 'TOOL_CALL_ARGS', toolCallId: `open-menu-${expected.menuId}`,
@@ -1658,15 +1654,12 @@ describe('ChatRuntime protocol handling', () => {
       }))
       const runtime = createRuntime({
         runtimeUrl: '/runtime/run',
-        tools: [
-          { name: 'odoo.search_menu', parameters: { type: 'object' } },
-          { name: 'odoo.open_menu', parameters: { type: 'object' } }
-        ],
+        tools: [{ name: 'odoo.navigate_menu', parameters: { type: 'object' } }],
         menuCatalog: menuCatalog(options),
         initialMessages: [
           { id: 'menu-user', role: 'user', content: '打开报销单查询' },
           {
-            id: 'menu-search-result', role: 'tool', name: 'odoo.search_menu',
+            id: 'menu-search-result', role: 'tool', name: 'odoo.navigate_menu',
             toolCallId: 'search-menu-1', content: JSON.stringify({
               query: '报销单查询', matchType: 'exact', matchCount: 3, truncated: false,
               candidates: options, catalogId: 'catalog-test-1', catalogRevision: 1
@@ -1679,16 +1672,16 @@ describe('ChatRuntime protocol handling', () => {
 
       await runtime.send(reply)
 
-      expect(requests[0].tools.map((tool: any) => tool.name)).toEqual(['odoo.open_menu'])
+      expect(requests[0].tools.map((tool: any) => tool.name)).toEqual(['odoo.navigate_menu'])
       const selectedMenu = requests[0].context.find(
         (item: any) => item.description === '已选 HRP 菜单'
       )
       expect(JSON.parse(selectedMenu.value)).toEqual({
         ...expected, catalogId: 'catalog-test-1', catalogRevision: 1,
-        navigationRequired: true, requiredFirstTool: 'odoo.open_menu'
+        navigationRequired: true, requiredFirstTool: 'odoo.navigate_menu'
       })
       expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({
-        tool: 'odoo.open_menu',
+        tool: 'odoo.navigate_menu',
         context: expect.objectContaining({
           selectedMenu: {
             menuId: expected.menuId, actionId: expected.actionId,
@@ -1715,15 +1708,12 @@ describe('ChatRuntime protocol handling', () => {
       }))
       const runtime = createRuntime({
         runtimeUrl: '/runtime/run',
-        tools: [
-          { name: 'odoo.search_menu', parameters: { type: 'object' } },
-          { name: 'odoo.open_menu', parameters: { type: 'object' } }
-        ],
+        tools: [{ name: 'odoo.navigate_menu', parameters: { type: 'object' } }],
         menuCatalog: menuCatalog(options),
         initialMessages: [
           { id: 'menu-user', role: 'user', content: '打开查询' },
           {
-            id: 'menu-search-result', role: 'tool', name: 'odoo.search_menu',
+            id: 'menu-search-result', role: 'tool', name: 'odoo.navigate_menu',
             toolCallId: 'search-menu-1', content: JSON.stringify({
               query: '查询', matchType: 'exact', matchCount: 2, truncated: false,
               candidates: options, catalogId: testCase.catalogId, catalogRevision: 1
@@ -1736,9 +1726,7 @@ describe('ChatRuntime protocol handling', () => {
       await runtime.send(testCase.reply)
 
       expect(runtime.getSnapshot().messages.at(-1)?.menuMention).toBeUndefined()
-      expect(body.tools.map((tool: any) => tool.name)).toEqual([
-        'odoo.search_menu', 'odoo.open_menu'
-      ])
+      expect(body.tools.map((tool: any) => tool.name)).toEqual(['odoo.navigate_menu'])
       expect(body.context.some((item: any) => item.description === '已选 HRP 菜单')).toBe(false)
     }
   })

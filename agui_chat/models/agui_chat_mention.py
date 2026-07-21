@@ -619,7 +619,12 @@ class AguiChatMentionToken(models.Model):
             next_path = path + ([name] if name else [])
             action = str(node.get("action") or "")
             parts = action.split(",")
-            if len(parts) == 2 and parts[0] == "ir.actions.act_window":
+            # 引用菜单与客户端导航共用同一边界：父级即使有 action 也不能导航。
+            if (
+                not (node.get("children") or [])
+                and len(parts) == 2
+                and parts[0] == "ir.actions.act_window"
+            ):
                 try:
                     action_id = int(parts[1])
                     menu_id = int(node.get("id"))

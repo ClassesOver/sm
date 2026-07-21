@@ -39,8 +39,8 @@ def odoo_contract():
 
 def test_agentos_contract_matches_odoo_source():
     values, digest = odoo_contract()
-    assert values["COMMAND_CATALOG_REVISION"] == 11
-    assert digest == "5e9686ce3ed1fb4131215d3c9fca997fda7610bb70cb1468f2e5564ef3f99306"
+    assert values["COMMAND_CATALOG_REVISION"] == 13
+    assert digest == "17566185369f10acba35a57a57c9e696c8ed9f52d54e7d2a27f2e7323fc51e41"
     assert app.PROTOCOL == values["PROTOCOL"]
     assert app.BUNDLE_VERSION == values["MODULE_VERSION"]
     assert app.COMMAND_CATALOG_HASH == digest
@@ -67,17 +67,13 @@ def test_agent_instructions_wait_for_chat_import_preview():
 def test_agent_instructions_prioritize_selected_menu_navigation():
     instructions = "\n".join(app.assistant.instructions)
 
-    assert "第一个且唯一可调用的页面工具是 odoo.open_menu" in instructions
-    assert "上下文存在“HRP 菜单导航请求”时" in instructions
-    assert "phase=search 时只先调用 odoo.search_menu" in instructions
-    assert "phase=open 时只先调用 odoo.open_menu" in instructions
-    assert "本轮第一个页面工具必须是 odoo.search_menu" in instructions
-    assert "返回多个候选时立即停止" in instructions
-    assert "首次 query 必须使用用户请求中的原始菜单名称或路径" in instructions
-    assert "最多尝试两个不同 fullPath" in instructions
-    assert "complete=false、目录缺失或版本不一致时必须停止" in instructions
-    assert "不得从目录生成 menuId 或 actionId" in instructions
-    assert "stale_menu_catalog 时，只能用最新 menuTarget 对原始 query 重试一次" in instructions
+    assert "结合当前请求和对话历史确定用户选择" in instructions
+    assert "使用其中的 menuId、actionId 调用 odoo.navigate_menu" in instructions
+    assert "存在“HRP 菜单导航请求”时先执行 requiredFirstTool" in instructions
+    assert "多个候选必须请用户选择" in instructions
+    assert "不得构造菜单 ID" in instructions
+    assert "失败时不得自动改选其他菜单" in instructions
+    assert "odoo.navigate_menu 返回 stale_menu_catalog" in instructions
     assert "菜单名称只用于定位" in instructions
     assert "用户消息明确要求创建" in instructions
     assert "不得从菜单名称中的“新建”或“创建”推断创建意图" in instructions
@@ -102,6 +98,14 @@ def test_agent_instructions_treat_grouping_as_complete_host_state():
     assert "明确要求清除分组时才能提交空数组" in instructions
     assert "只能依据工具返回的 groupBy 和新快照" in instructions
     assert "odoo.apply_filter 仍只负责筛选" in instructions
+
+
+def test_agent_instructions_restrict_native_view_switching():
+    instructions = "\n".join(app.assistant.instructions)
+
+    assert "明确要求切换当前视图时才能调用 odoo.switch_view" in instructions
+    assert "viewType 必须来自最新快照 capabilities.viewTypes" in instructions
+    assert "不能代替 odoo.open_record 打开已有记录" in instructions
 
 
 def test_agent_instructions_defer_current_view_report_workflow_to_skill():

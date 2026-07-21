@@ -2334,10 +2334,10 @@ export class ChatRuntime {
       const message = this.messages[index]
       if (message.role !== 'tool') continue
       const parsed = parseJson(message.content)
-      if (message.name === 'odoo.open_menu' && isRecord(parsed) && parsed.ok === true) {
+      if (message.name === 'odoo.navigate_menu' && isRecord(parsed) && parsed.navigated === true) {
         return undefined
       }
-      if (message.name !== 'odoo.search_menu') continue
+      if (message.name !== 'odoo.navigate_menu') continue
       result = isRecord(parsed) ? parsed : undefined
       break
     }

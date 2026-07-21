@@ -17,8 +17,7 @@ class ApplicationContext:
     skills: Any
     assistant: Agent
     edit_mode_assistant: Agent
-    search_menu_assistant: Agent
-    open_menu_assistant: Agent
+    menu_navigation_assistant: Agent
 
 
 def create_agentos_app(

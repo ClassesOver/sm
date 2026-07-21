@@ -114,6 +114,37 @@ async function openTestDocumentList(page: Page, groupBy: string[] = []) {
     .toBe('agui.chat.test.document')
 }
 
+async function openTestDocumentView(
+  page: Page,
+  viewType: 'kanban' | 'list' | 'form',
+  resId?: number
+) {
+  await page.evaluate(async ({ initialView, recordId }) => {
+    const webClient = (globalThis as any).odoo.__DEBUG__.services['web.web_client']
+    const viewTypes = [initialView, ...['kanban', 'list', 'form'].filter(
+      (candidate) => candidate !== initialView
+    )]
+    await Promise.resolve(webClient.do_action({
+      type: 'ir.actions.act_window',
+      name: 'AG-UI 通用测试单据',
+      res_model: 'agui.chat.test.document',
+      res_id: recordId,
+      views: viewTypes.map((type) => [false, type]),
+      target: 'current'
+    }))
+  }, { initialView: viewType, recordId: resId })
+  await expect(page.locator(`.o_${viewType}_view`)).toBeVisible()
+  await expect.poll(() => currentHostState(page).then((state) => ({
+    model: state.model,
+    viewType: state.viewType,
+    resId: state.resId
+  }))).toEqual({
+    model: 'agui.chat.test.document',
+    viewType,
+    resId: resId || false
+  })
+}
+
 async function currentListGroupBy(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const webClient = (globalThis as any).odoo.__DEBUG__.services['web.web_client']
@@ -218,7 +249,7 @@ async function executeTool(
     const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
     const state = manager.hostState
     const catalog = manager.call('agui_host', 'getMenuCatalog')
-    const target = toolOptions.target || (['odoo.search_menu', 'odoo.open_menu'].includes(toolName) ? {
+    const target = toolOptions.target || (toolName === 'odoo.navigate_menu' ? {
       snapshotId: state.snapshotId,
       hostRevision: state.hostRevision,
       catalogId: catalog.catalogId,
@@ -364,6 +395,23 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
           await route.fulfill({ response })
         })
       }
+    } else {
+      await page.route('**/agent/config', async (route) => {
+        const declaration = await page.evaluate(() => {
+          const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
+          return manager.bridge.config
+        })
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            protocol: declaration.protocol,
+            bundle_version: declaration.bundle_version,
+            command_catalog_hash: declaration.command_catalog_hash,
+            skills: []
+          })
+        })
+      })
     }
     await loginToOdoo(page)
     if (workspaceSecret) {
@@ -378,7 +426,7 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     if (!page.isClosed()) await cleanupE2e(page)
   })
 
-  realAgentOsTest('自然语言菜单导航依次搜索并打开唯一菜单', async ({ page }) => {
+  realAgentOsTest('自然语言菜单导航一次打开唯一菜单', async ({ page }) => {
     await openPartnerList(page)
     const existingSessionIds = await sessionIds(page)
     await openAssistant(page)
@@ -406,10 +454,8 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
           (message: any) => (message.tool_calls || []).map((call: any) => call.name)
         )
       }, existingSessionIds)
-      return created.filter((name: string) =>
-        name === 'odoo.search_menu' || name === 'odoo.open_menu'
-      )
-    }, { timeout: 120_000 }).toEqual(['odoo.search_menu', 'odoo.open_menu'])
+      return created.filter((name: string) => name === 'odoo.navigate_menu')
+    }, { timeout: 120_000 }).toEqual(['odoo.navigate_menu'])
     await expect(page.getByRole('button', { name: '停止生成' })).toBeHidden({
       timeout: 120_000
     })
@@ -424,18 +470,17 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
       return manager.bridge.catalog.map((tool: any) => tool.name)
     })
     expect(catalog).toEqual(expect.arrayContaining([
-      'odoo.search_menu',
-      'odoo.open_menu',
+      'odoo.navigate_menu',
       'odoo.apply_filter',
       'odoo.open_record',
       'odoo.open_create',
+      'odoo.switch_view',
       'odoo.activate_view_control'
     ]))
     expect(catalog).not.toEqual(expect.arrayContaining([
       'odoo.read_current_view',
       'odoo.open_action',
-      'odoo.open_chat_surface',
-      'odoo.switch_view'
+      'odoo.open_chat_surface'
     ]))
 
     const id = `validate-${Date.now()}`
@@ -469,13 +514,15 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
       runId: `run-menu-leaf-${Date.now()}`,
       threadId: `thread-menu-leaf-${Date.now()}`
     }
-    const searched = await executeTool(page, 'odoo.search_menu', {
+    const openedMenu = await executeTool(page, 'odoo.navigate_menu', {
       query: '入口看板'
     }, navigationContext)
-    expect(searched.result).toMatchObject({
+    expect(openedMenu.result).toMatchObject({
       ok: true,
+      operation: 'odoo.navigate_menu',
       matchType: 'exact',
       matchCount: 1,
+      navigated: true,
       candidates: [{
         name: '入口看板',
         fullPath: 'AG-UI 导航测试 / 入口看板',
@@ -483,15 +530,8 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
         actionId: expect.any(Number)
       }]
     })
-    const selected = searched.result.candidates?.[0] as { menuId: number, actionId: number }
-
-    const openedMenu = await executeTool(page, 'odoo.open_menu', {
-      menuId: selected.menuId,
-      actionId: selected.actionId
-    }, navigationContext)
     expect(openedMenu.result).toMatchObject({
       ok: true,
-      operation: 'odoo.open_menu',
       snapshot: {
         interactive: true,
         controller: { viewType: 'kanban' }
@@ -519,6 +559,64 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
       model: state.model, resId: state.resId, mode: state.mode
     }))).toEqual({ model: 'agui.chat.test.document', resId: false, mode: 'edit' })
     expect(await rpc<number>(page, 'agui.chat.test.document', 'search_count', [[]])).toBe(documentCount)
+  })
+
+  test('原生视图切换覆盖 Kanban、List 和 Form 多场景', async ({ page }) => {
+    const marker = `AGUI-E2E-视图切换-${Date.now()}`
+    const documentId = await rpc<number>(page, 'agui.chat.test.document', 'create', [{
+      name: marker,
+      required_code: marker
+    }])
+    const documentCount = await rpc<number>(page, 'agui.chat.test.document', 'search_count', [[]])
+
+    await openTestDocumentView(page, 'list')
+    expect((await currentHostState(page)).capabilities.viewTypes)
+      .toEqual(['list', 'kanban', 'form'])
+
+    for (const targetView of ['kanban', 'list'] as const) {
+      const switched = await executeTool(page, 'odoo.switch_view', { viewType: targetView })
+      expect(switched.result).toMatchObject({
+        ok: true,
+        operation: 'odoo.switch_view',
+        navigated: true,
+        viewType: targetView,
+        snapshot: { controller: { viewType: targetView } }
+      })
+      await expect(page.locator(`.o_${targetView}_view`)).toBeVisible()
+      await expect.poll(() => currentHostState(page).then((state) => state.viewType))
+        .toBe(targetView)
+    }
+
+    const alreadyActive = await executeTool(page, 'odoo.switch_view', { viewType: 'list' })
+    expect(alreadyActive.result).toMatchObject({ ok: false, code: 'view_already_active' })
+
+    const openedCreate = await executeTool(page, 'odoo.switch_view', { viewType: 'form' })
+    expect(openedCreate.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.switch_view',
+      navigated: true,
+      viewType: 'form'
+    })
+    await expect.poll(() => currentHostState(page).then((state) => ({
+      viewType: state.viewType, resId: state.resId, mode: state.mode
+    }))).toEqual({ viewType: 'form', resId: false, mode: 'edit' })
+    const discarded = await executeTool(page, 'odoo.discard_current_form', {}, { approve: true })
+    expect(discarded.result).toMatchObject({ ok: true, discarded: true })
+    expect(await rpc<number>(page, 'agui.chat.test.document', 'search_count', [[]]))
+      .toBe(documentCount)
+
+    await openTestDocumentView(page, 'form', documentId)
+    const switchedFromForm = await executeTool(page, 'odoo.switch_view', { viewType: 'kanban' })
+    expect(switchedFromForm.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.switch_view',
+      viewType: 'kanban'
+    })
+    await expect(page.locator('.o_kanban_view')).toBeVisible()
+
+    await openPartnerList(page)
+    const unavailable = await executeTool(page, 'odoo.switch_view', { viewType: 'kanban' })
+    expect(unavailable.result).toMatchObject({ ok: false, code: 'view_unavailable' })
   })
 
   test('原生筛选返回唯一记录 token 并打开对应只读表单', async ({ page }) => {
@@ -721,7 +819,7 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     })
   })
 
-  test('重复叶子搜索保持歧义且不能授权导航', async ({ page }) => {
+  test('重复叶子搜索保持歧义但明确菜单 ID 可以导航', async ({ page }) => {
     await openPartnerList(page)
     const before = await currentHostState(page)
     const duplicateCount = await page.evaluate(() => {
@@ -758,11 +856,12 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
       runId: `run-menu-duplicate-${Date.now()}`,
       threadId: `thread-menu-duplicate-${Date.now()}`
     }
-    const searched = await executeTool(page, 'odoo.search_menu', {
+    const searched = await executeTool(page, 'odoo.navigate_menu', {
       query: '入口看板'
     }, navigationContext)
     expect(searched.result).toMatchObject({
       ok: true,
+      navigated: false,
       matchType: 'exact',
       matchCount: 2,
       candidates: [
@@ -772,23 +871,36 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     })
 
     const candidate = searched.result.candidates?.[0] as { menuId: number, actionId: number }
-    const opened = await executeTool(page, 'odoo.open_menu', candidate, navigationContext)
-    expect(opened.result).toMatchObject({ ok: false, code: 'menu_search_required' })
-    expect((await currentHostState(page)).snapshotId).toBe(before.snapshotId)
+    const opened = await executeTool(page, 'odoo.navigate_menu', candidate, navigationContext)
+    expect(opened.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.navigate_menu',
+      navigated: true,
+      menu: candidate
+    })
+    expect((await currentHostState(page)).snapshotId).not.toBe(before.snapshotId)
   })
 
-  test('搜索后目录变化会拒绝旧目录 target', async ({ page }) => {
+  test('目录变化会拒绝旧目录 target', async ({ page }) => {
     await openPartnerList(page)
     const before = await currentHostState(page)
-    const navigationContext = {
-      runId: `run-menu-stale-${Date.now()}`,
-      threadId: `thread-menu-stale-${Date.now()}`
-    }
-    const searched = await executeTool(page, 'odoo.search_menu', {
-      query: '入口看板'
-    }, navigationContext)
-    expect(searched.result).toMatchObject({ matchType: 'exact', matchCount: 1 })
-    const candidate = searched.result.candidates?.[0] as { menuId: number, actionId: number }
+    const stale = await page.evaluate(() => {
+      const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client']
+        .aguiChatSurfaceManager
+      const state = manager.hostState
+      const catalog = manager.call('agui_host', 'getMenuCatalog')
+      const candidate = catalog.entries.find((entry: any) => entry.name === '入口看板')
+      if (!candidate) throw new Error('未找到入口看板菜单')
+      return {
+        candidate,
+        target: {
+          snapshotId: state.snapshotId,
+          hostRevision: state.hostRevision,
+          catalogId: catalog.catalogId,
+          catalogRevision: catalog.catalogRevision
+        }
+      }
+    })
 
     await page.evaluate((menuId) => {
       const webClient = (globalThis as any).odoo.__DEBUG__.services['web.web_client']
@@ -802,11 +914,10 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
         pending.push(...(node?.children || []))
       }
       webClient.aguiChatSurfaceManager.call('agui_host', 'getMenuCatalog')
-    }, candidate.menuId)
+    }, stale.candidate.menuId)
 
-    const opened = await executeTool(page, 'odoo.open_menu', candidate, {
-      ...navigationContext,
-      target: (searched.call.arguments as Record<string, unknown>).target as Record<string, unknown>
+    const opened = await executeTool(page, 'odoo.navigate_menu', stale.candidate, {
+      target: stale.target
     })
     expect(opened.result).toMatchObject({ ok: false, code: 'stale_menu_catalog' })
     expect((await currentHostState(page)).snapshotId).toBe(before.snapshotId)

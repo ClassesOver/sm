@@ -598,9 +598,10 @@ class TestHostCommandAuthorization(TransactionCase):
 
     def test_new_navigation_commands_are_declared_but_default_denied(self):
         new_commands = {
-            "odoo.search_menu", "odoo.open_menu", "odoo.apply_filter", "odoo.apply_group",
+            "odoo.navigate_menu", "odoo.apply_filter", "odoo.apply_group",
             "odoo.open_record",
             "odoo.open_create", "odoo.enter_edit_mode", "odoo.activate_view_control",
+            "odoo.switch_view",
             "odoo.open_x2many_record", "odoo.open_x2many_create",
             "odoo.prepare_x2many_import", "odoo.get_x2many_import_status",
             "odoo.reload_current_form",
@@ -609,7 +610,7 @@ class TestHostCommandAuthorization(TransactionCase):
         self.assertFalse(new_commands.intersection(self.config.enabled_command_names()))
         decision = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "disabled-open-menu",
-            "tool": "odoo.open_menu",
+            "tool": "odoo.navigate_menu",
             "arguments": {
                 "target": {
                     "snapshotId": "page-1", "hostRevision": 1,
@@ -658,10 +659,10 @@ class TestHostCommandAuthorization(TransactionCase):
         )
 
     def test_menu_target_is_accepted_for_selected_menu_navigation(self):
-        self.config.write({"enabled_commands": "odoo.open_menu"})
+        self.config.write({"enabled_commands": "odoo.navigate_menu"})
         decision = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "open-selected-menu",
-            "tool": "odoo.open_menu",
+            "tool": "odoo.navigate_menu",
             "arguments": {
                 "target": {
                     "snapshotId": "page-2", "hostRevision": 2,
@@ -684,10 +685,10 @@ class TestHostCommandAuthorization(TransactionCase):
         )
 
     def test_menu_target_is_accepted_for_menu_search(self):
-        self.config.write({"enabled_commands": "odoo.search_menu"})
+        self.config.write({"enabled_commands": "odoo.navigate_menu"})
         decision = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "search-menu",
-            "tool": "odoo.search_menu",
+            "tool": "odoo.navigate_menu",
             "arguments": {
                 "target": {
                     "snapshotId": "page-search", "hostRevision": 3,
@@ -709,11 +710,11 @@ class TestHostCommandAuthorization(TransactionCase):
         )
 
     def test_menu_target_requires_catalog_binding_and_changes_idempotency_key(self):
-        self.config.write({"enabled_commands": "odoo.search_menu"})
+        self.config.write({"enabled_commands": "odoo.navigate_menu"})
         model = self.env["agui.chat.tool.authorization"]
         base = {
             "id": "search-menu-catalog-binding",
-            "tool": "odoo.search_menu",
+            "tool": "odoo.navigate_menu",
             "arguments": {
                 "target": {"snapshotId": "page-search", "hostRevision": 3},
                 "query": "报销单查询",
@@ -743,25 +744,21 @@ class TestHostCommandAuthorization(TransactionCase):
         self.assertTrue(second["ok"])
         self.assertNotEqual(first["authorization_id"], second["authorization_id"])
 
-    def test_default_menu_policies_cover_search_and_open(self):
+    def test_default_menu_policy_covers_navigation(self):
         self.assertEqual(
-            self.env.ref("agui_chat.policy_search_visible_menu").tool_name,
-            "odoo.search_menu",
-        )
-        self.assertEqual(
-            self.env.ref("agui_chat.policy_open_visible_menu").tool_name,
-            "odoo.open_menu",
+            self.env.ref("agui_chat.policy_navigate_visible_menu").tool_name,
+            "odoo.navigate_menu",
         )
 
     def test_inactive_page_command_is_not_published_or_prepared(self):
-        self.config.write({"enabled_commands": "odoo.open_menu"})
-        command = self.env.ref("agui_chat.command_open_menu")
+        self.config.write({"enabled_commands": "odoo.navigate_menu"})
+        command = self.env.ref("agui_chat.command_navigate_menu")
         command.write({"active": False})
 
-        self.assertNotIn("odoo.open_menu", self.config.enabled_command_names())
+        self.assertNotIn("odoo.navigate_menu", self.config.enabled_command_names())
         disabled = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "inactive-open-menu",
-            "tool": "odoo.open_menu",
+            "tool": "odoo.navigate_menu",
             "arguments": {
                 "target": {
                     "snapshotId": "page-disabled", "hostRevision": 1,
@@ -781,7 +778,7 @@ class TestHostCommandAuthorization(TransactionCase):
         command.write({"active": True})
         enabled = self.env["agui.chat.tool.authorization"]._prepare_host_command({
             "id": "active-open-menu",
-            "tool": "odoo.open_menu",
+            "tool": "odoo.navigate_menu",
             "arguments": {
                 "target": {
                     "snapshotId": "page-enabled", "hostRevision": 2,

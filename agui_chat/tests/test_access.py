@@ -35,14 +35,14 @@ class TestServerStateAccess(TransactionCase):
             "idempotency_key": "access-authorization",
             "payload_hash": "access-payload",
             "tool_call_id": "access-tool-call",
-            "tool_name": "odoo.open_menu",
+            "tool_name": "odoo.navigate_menu",
             "state": "approved",
             "expires_at": expires_at,
         })
         self.audit = self.env["agui.chat.tool.audit"].sudo().create({
             "user_id": self.user.id,
             "company_id": self.user.company_id.id,
-            "tool_name": "odoo.open_menu",
+            "tool_name": "odoo.navigate_menu",
             "result": "allowed",
         })
         self.execution = self.env["agui.chat.command.execution"].sudo().create({

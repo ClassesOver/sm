@@ -25483,12 +25483,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return { kind: "default" };
   }
   const TOOL_DISPLAY_NAMES = {
-    "odoo.search_menu": "搜索菜单",
-    "odoo.open_menu": "打开菜单",
+    "odoo.navigate_menu": "导航菜单",
     "odoo.apply_filter": "筛选当前视图",
     "odoo.apply_group": "设置当前视图分组",
     "odoo.open_record": "打开记录",
     "odoo.open_create": "新建记录",
+    "odoo.switch_view": "切换视图",
     "odoo.enter_edit_mode": "进入编辑模式",
     "odoo.activate_view_control": "激活页面控件",
     "odoo.search_relation": "查询关系记录",
@@ -26130,7 +26130,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function canPreviewFile(type) {
     return PREVIEWABLE_TYPES.has(type.toLowerCase());
   }
-  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.3.js";
+  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.4.js";
   const FILE_VIEWER_LOAD_TIMEOUT_MS = 15e3;
   const STATUS_ATTRIBUTE = "data-agui-file-viewer-status";
   let viewerModulePromise;
@@ -27353,7 +27353,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const MAX_MENU_SEMANTIC_CONTEXT_BYTES = 128 * 1024;
   const MENU_NAVIGATION_CONTEXT = "HRP 菜单导航请求";
-  const MENU_NAVIGATION_TOOLS = ["odoo.search_menu", "odoo.open_menu"];
+  const MENU_NAVIGATION_TOOL = "odoo.navigate_menu";
   function endpoint(props) {
     const value = String(props.runtimeUrl || "").trim();
     if (!value) {
@@ -27463,7 +27463,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       calls.forEach((call) => {
         const args = toolArgs(call);
         const callId = toolCallId(call);
-        if (callId && toolName(call) === "odoo.open_menu" && args && typeof args === "object" && !Array.isArray(args) && Number(args.menuId) === mention.menuId && Number(args.actionId) === mention.actionId) {
+        if (callId && toolName(call) === MENU_NAVIGATION_TOOL && args && typeof args === "object" && !Array.isArray(args) && Number(args.menuId) === mention.menuId && Number(args.actionId) === mention.actionId) {
           matchingCalls.add(callId);
         }
       });
@@ -27567,7 +27567,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     for (let index2 = messages.length - 1; index2 > userIndex; index2 -= 1) {
       const message = messages[index2];
-      if (message.role !== "tool" || message.name !== "odoo.search_menu") continue;
+      if (message.role !== "tool" || message.name !== MENU_NAVIGATION_TOOL) continue;
       const result = parseJson(message.content);
       return result && typeof result === "object" && !Array.isArray(result) ? result : null;
     }
@@ -27578,7 +27578,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function explicitMenuNavigationQuery(props, messages) {
     var _a;
-    if (!MENU_NAVIGATION_TOOLS.every((name2) => props.tools.some((tool) => tool.name === name2))) {
+    if (!props.tools.some((tool) => tool.name === MENU_NAVIGATION_TOOL)) {
       return null;
     }
     const latestUser = [...messages].reverse().find((message) => message.role === "user");
@@ -27607,48 +27607,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     for (let index2 = messages.length - 1; index2 > userIndex; index2 -= 1) {
       const message = messages[index2];
-      if (message.role !== "tool" || !MENU_NAVIGATION_TOOLS.includes(message.name)) continue;
+      if (message.role !== "tool" || message.name !== MENU_NAVIGATION_TOOL) continue;
       const result = parseJson(message.content);
-      return {
-        name: String(message.name),
-        result: result && typeof result === "object" && !Array.isArray(result) ? result : null
-      };
+      return result && typeof result === "object" && !Array.isArray(result) ? result : null;
     }
     return null;
   }
   function menuNavigationContext(props, messages) {
     const query = explicitMenuNavigationQuery(props, messages);
     if (!query) return null;
-    const latestResult = latestMenuToolResult(messages);
-    let phase = "search";
-    let requiredFirstTool = "odoo.search_menu";
-    if (latestResult) {
-      if (latestResult.name === "odoo.open_menu") return null;
-      const result = latestResult.result;
-      const candidates = Array.isArray(result == null ? void 0 : result.candidates) ? result.candidates : [];
-      if ((result == null ? void 0 : result.catalogId) !== props.menuCatalog.catalogId || result.catalogRevision !== props.menuCatalog.catalogRevision) return null;
-      if (typeof result.query === "string" && normalizeMenuLookup(result.query) === normalizeMenuLookup(query)) {
-        if (result.truncated === true || Number(result.matchCount) !== 1 || candidates.length !== 1) return null;
-        phase = "open";
-        requiredFirstTool = "odoo.open_menu";
-      }
-    }
+    if (latestMenuToolResult(messages)) return null;
     return {
       description: MENU_NAVIGATION_CONTEXT,
       value: contextValue({
-        phase,
         query,
-        requiredFirstTool,
+        requiredFirstTool: MENU_NAVIGATION_TOOL,
         catalogId: props.menuCatalog.catalogId,
         catalogRevision: props.menuCatalog.catalogRevision
       })
     };
   }
   function menuSemanticContext(props, messages) {
-    const menuToolsEnabled = ["odoo.search_menu", "odoo.open_menu"].every(
-      (name2) => props.tools.some((tool) => tool.name === name2)
-    );
-    if (!menuToolsEnabled) return null;
+    if (!props.tools.some((tool) => tool.name === MENU_NAVIGATION_TOOL)) return null;
     const result = latestMenuSearchResult(messages);
     const candidates = Array.isArray(result == null ? void 0 : result.candidates) ? result.candidates : [];
     const catalog = props.menuCatalog;
@@ -27662,7 +27642,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       includedCount: 0,
       complete: false,
       navigationAuthorized: false,
-      requiredTool: "odoo.search_menu",
+      requiredTool: MENU_NAVIGATION_TOOL,
       paths
     };
     const baseBytes = encoder.encode(JSON.stringify(base)).byteLength;
@@ -27765,7 +27745,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           path: mention.path,
           fullPath: mention.fullPath,
           navigationRequired: navigationPending,
-          requiredFirstTool: navigationPending ? "odoo.open_menu" : false
+          requiredFirstTool: navigationPending ? MENU_NAVIGATION_TOOL : false
         })
       });
     }
@@ -27781,7 +27761,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     var _a;
     const runId = options.runId || uuid();
     const navigationPending = menuNavigationPending(messages);
-    const tools = clone(props.tools || []).filter((tool) => !navigationPending || tool.name === "odoo.open_menu");
+    const tools = clone(props.tools || []).filter((tool) => !navigationPending || tool.name === MENU_NAVIGATION_TOOL);
     const transportMessages = messages.filter((message) => {
       const isPendingEmpty = message.id === pendingAssistantId && !message.content && !message.streaming_error && !(message.tool_calls && message.tool_calls.length);
       return !isPendingEmpty;
@@ -29908,10 +29888,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const message = this.messages[index2];
         if (message.role !== "tool") continue;
         const parsed = parseJson(message.content);
-        if (message.name === "odoo.open_menu" && isRecord(parsed) && parsed.ok === true) {
+        if (message.name === "odoo.navigate_menu" && isRecord(parsed) && parsed.navigated === true) {
           return void 0;
         }
-        if (message.name !== "odoo.search_menu") continue;
+        if (message.name !== "odoo.navigate_menu") continue;
         result = isRecord(parsed) ? parsed : void 0;
         break;
       }
@@ -30117,7 +30097,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.8.3";
+  const VERSION = "12.0.8.8.4";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

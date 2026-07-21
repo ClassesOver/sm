@@ -14,8 +14,8 @@ configured AgentOS protocol endpoint must agree on:
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.8.3",
-  "bundle_version": "12.0.8.8.3",
+  "module_version": "12.0.8.8.4",
+  "bundle_version": "12.0.8.8.4",
   "command_catalog_hash": "sha256"
 }
 ```
@@ -53,8 +53,10 @@ Every `RunAgentInput.state` has exactly this envelope:
 - The visible menu catalog is a separate host-owned snapshot. It is never stored
   in `RunAgentInput.state` or counted against the page snapshot budget, and a
   catalog-only change does not increment `hostRevision`. The browser derives it
-  from native `WebClient.menu_data` actions and admits only
-  `ir.actions.act_window` and `ir.actions.client` entries.
+  from native `WebClient.menu_data` and admits only terminal nodes whose own
+  action is a valid `ir.actions.act_window` or `ir.actions.client`. A node with
+  children is never navigable, even when Odoo WebClient has copied a descendant
+  action onto that node.
 - Session restore loads messages, `agentState`, and UI preferences. It never
   restores `hostState`.
 
@@ -87,12 +89,12 @@ HRP publishes standard AG-UI client tool schemas in the current
 - `odoo.open_mentioned_menu`
 - `odoo.open_mentioned_record`
 - `odoo.apply_mentioned_filter`
-- `odoo.search_menu`
-- `odoo.open_menu`
+- `odoo.navigate_menu`
 - `odoo.apply_filter`
 - `odoo.apply_group`
 - `odoo.open_record`
 - `odoo.open_create`
+- `odoo.switch_view`
 - `odoo.enter_edit_mode`
 - `odoo.activate_view_control`
 - `odoo.search_relation`
@@ -106,11 +108,19 @@ React executes a tool only if its exact name was declared for that run. Agno
 server tools remain display-only until their `TOOL_CALL_RESULT` arrives.
 
 Mention tools carry a page target containing `snapshotId` and `hostRevision`.
-`odoo.search_menu` and `odoo.open_menu` use a dedicated menu target that also
+`odoo.navigate_menu` uses a dedicated menu target that also
 contains `catalogId` and `catalogRevision`. Commands bound to the current view
 carry the full target with `controllerId`, `dataPointId`, `model`, and `resId`.
 Missing or stale target members fail closed. The server idempotency binding also
 includes the menu catalog identity when present.
+
+Every native snapshot exposes `capabilities.viewTypes`, limited to `kanban`,
+`list`, and `form` entries declared by the current window action.
+`odoo.switch_view` accepts exactly one of those current values and waits for a
+new interactive snapshot before reporting success. Dirty forms, the active
+view, and unavailable targets are rejected. Switching from List/Kanban to Form
+enters an unsaved create form and therefore also requires the action's create
+capability; opening an existing record still requires `odoo.open_record`.
 
 List/Kanban snapshots expose native grouping as host-owned capabilities:
 
@@ -216,32 +226,35 @@ and does not require write confirmation. Stable grouping failures are
 normalized effective `groupBy`, and the refreshed `snapshotId` and
 `hostRevision`.
 
-Navigation without an explicit `@` selection is available only when both menu
-tools are declared. The agent first calls `odoo.search_menu` with the user's
-original name or path. The host normalizes wrappers, whitespace, separators, and
-case, then prefers exact full-path or leaf-name matches and uses contains matches
-only when no exact result exists. Results include `matchType`, `matchCount`,
-`truncated`, catalog metadata, and at most eight candidates. Any ambiguous result
-stops for user selection.
+Navigation without an explicit `@` selection is available only when
+`odoo.navigate_menu` is declared. The tool accepts exactly one of two input
+forms in addition to the current `menuTarget`: `{query}` or
+`{menuId, actionId}`. Mixed forms and an incomplete ID pair fail with
+`invalid_menu_navigation`.
+
+For `{query}`, the host normalizes wrappers, whitespace, separators, and case,
+then prefers exact full-path or leaf-name matches and uses contains matches only
+when no exact result exists. Results include `matchType`, `matchCount`,
+`truncated`, catalog metadata, and at most eight candidates. A non-truncated
+unique result opens within the same tool call. No result or multiple candidates
+return `navigated: false` and do not open any menu.
 
 An immediately following ordinal reply from `第一个` through `第八个` (including
 Arabic digits and optional `选择`) becomes an explicit menu selection only when
 that candidate still has the same menu/action IDs in the current catalog and the
 search result catalog ID and revision are unchanged. React then exposes only
-`odoo.open_menu` for the first page action and supplies the selected catalog
-binding to the host. Missing, out-of-range, stale, or already completed choices
-remain ordinary conversation input and never authorize navigation.
+`odoo.navigate_menu` for the first page action and supplies the selected
+`menuId` and `actionId` to the host. Missing, out-of-range, stale, or already
+completed choices remain ordinary conversation input and never authorize
+navigation.
 
 For an explicit `打开`, `进入`, `导航到`, or `跳转到` request whose target exactly
 matches a visible leaf name or full path, React adds `HRP 菜单导航请求` without
-menu/action IDs. The initial phase requires `odoo.search_menu`; a same-catalog,
-non-truncated unique result advances the next continuation to a required
-`odoo.open_menu` only when its echoed query normalizes to the original request;
-otherwise the continuation remains in the required search phase. AgentOS uses a
-forced tool choice for each phase and rejects
-plain text or a different first executable event with `required_tool_violation`.
-Questions, unknown targets, ambiguous results, stale catalogs, and completed
-opens do not receive this forced-navigation context.
+menu/action IDs. The context requires one `odoo.navigate_menu` call with the
+original query. AgentOS uses a forced tool choice and rejects plain text or a
+different first executable event with `required_tool_violation`. Questions,
+unknown targets, ambiguous results, stale catalogs, and completed opens do not
+receive this forced-navigation context.
 
 The full visible directory is not sent on the first Run. Only after a same-catalog
 `matchType=none` result does the immediately following client-tool continuation
@@ -249,10 +262,14 @@ receive `当前用户可见 HRP 菜单`. This context contains only catalog meta
 completeness, and original `fullPath` strings, never menu/action IDs. Its UTF-8
 budget is 128 KiB and paths are never truncated. If `complete=false`, semantic
 rewrites are forbidden and the user must select with `@`. From a complete catalog
-the agent may retry at most two original paths. `odoo.open_menu` still requires a
-unique result in the same page, catalog, thread, and Run, or an explicit current
-selection. Catalog changes return `stale_menu_catalog`; action changes return
-`menu_action_conflict`; missing evidence returns `menu_search_required`.
+the agent may retry at most two original paths through `odoo.navigate_menu`.
+
+For `{menuId, actionId}`, the host accepts the pair only when the terminal menu
+exists in the current visible catalog, its action is unchanged, and the page and
+catalog targets are current. The pair may come only from the current candidate
+context; the host does not require a preceding search in the same run. Catalog
+changes return `stale_menu_catalog`; action changes return
+`menu_action_conflict`, and missing menus return `menu_unavailable`.
 
 ## Object References
 

@@ -10,7 +10,7 @@ import { asText, clone, parseJson, toolArgs, toolCallId, toolName, uuid } from '
 
 const MAX_MENU_SEMANTIC_CONTEXT_BYTES = 128 * 1024
 const MENU_NAVIGATION_CONTEXT = 'HRP 菜单导航请求'
-const MENU_NAVIGATION_TOOLS = ['odoo.search_menu', 'odoo.open_menu'] as const
+const MENU_NAVIGATION_TOOL = 'odoo.navigate_menu'
 
 export interface RunStateEnvelope {
   protocol: typeof AGUI_ODOO_PROTOCOL
@@ -171,7 +171,7 @@ function menuNavigationPending(messages: ChatMessage[]): boolean {
       const callId = toolCallId(call)
       if (
         callId &&
-        toolName(call) === 'odoo.open_menu' &&
+        toolName(call) === MENU_NAVIGATION_TOOL &&
         args && typeof args === 'object' && !Array.isArray(args) &&
         Number((args as Record<string, unknown>).menuId) === mention.menuId &&
         Number((args as Record<string, unknown>).actionId) === mention.actionId
@@ -294,7 +294,7 @@ function latestMenuSearchResult(messages: ChatMessage[]): Record<string, unknown
   }
   for (let index = messages.length - 1; index > userIndex; index -= 1) {
     const message = messages[index]
-    if (message.role !== 'tool' || message.name !== 'odoo.search_menu') continue
+    if (message.role !== 'tool' || message.name !== MENU_NAVIGATION_TOOL) continue
     const result = parseJson(message.content)
     return result && typeof result === 'object' && !Array.isArray(result)
       ? result as Record<string, unknown>
@@ -316,7 +316,7 @@ function explicitMenuNavigationQuery(
   props: AguiChatProps,
   messages: ChatMessage[]
 ): string | null {
-  if (!MENU_NAVIGATION_TOOLS.every((name) => props.tools.some((tool) => tool.name === name))) {
+  if (!props.tools.some((tool) => tool.name === MENU_NAVIGATION_TOOL)) {
     return null
   }
   const latestUser = [...messages].reverse().find((message) => message.role === 'user')
@@ -340,9 +340,7 @@ function explicitMenuNavigationQuery(
   return null
 }
 
-function latestMenuToolResult(
-  messages: ChatMessage[]
-): { name: string; result: Record<string, unknown> | null } | null {
+function latestMenuToolResult(messages: ChatMessage[]): Record<string, unknown> | null {
   let userIndex = -1
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index].role === 'user') {
@@ -353,16 +351,12 @@ function latestMenuToolResult(
   for (let index = messages.length - 1; index > userIndex; index -= 1) {
     const message = messages[index]
     if (
-      message.role !== 'tool' ||
-      !MENU_NAVIGATION_TOOLS.includes(message.name as typeof MENU_NAVIGATION_TOOLS[number])
+      message.role !== 'tool' || message.name !== MENU_NAVIGATION_TOOL
     ) continue
     const result = parseJson(message.content)
-    return {
-      name: String(message.name),
-      result: result && typeof result === 'object' && !Array.isArray(result)
-        ? result as Record<string, unknown>
-        : null
-    }
+    return result && typeof result === 'object' && !Array.isArray(result)
+      ? result as Record<string, unknown>
+      : null
   }
   return null
 }
@@ -373,34 +367,12 @@ function menuNavigationContext(
 ): { description: string; value: string } | null {
   const query = explicitMenuNavigationQuery(props, messages)
   if (!query) return null
-  const latestResult = latestMenuToolResult(messages)
-  let phase = 'search'
-  let requiredFirstTool = 'odoo.search_menu'
-  if (latestResult) {
-    if (latestResult.name === 'odoo.open_menu') return null
-    const result = latestResult.result
-    const candidates = Array.isArray(result?.candidates) ? result.candidates : []
-    if (
-      result?.catalogId !== props.menuCatalog.catalogId ||
-      result.catalogRevision !== props.menuCatalog.catalogRevision
-    ) return null
-    if (
-      typeof result.query === 'string' &&
-      normalizeMenuLookup(result.query) === normalizeMenuLookup(query)
-    ) {
-      if (
-        result.truncated === true || Number(result.matchCount) !== 1 || candidates.length !== 1
-      ) return null
-      phase = 'open'
-      requiredFirstTool = 'odoo.open_menu'
-    }
-  }
+  if (latestMenuToolResult(messages)) return null
   return {
     description: MENU_NAVIGATION_CONTEXT,
     value: contextValue({
-      phase,
       query,
-      requiredFirstTool,
+      requiredFirstTool: MENU_NAVIGATION_TOOL,
       catalogId: props.menuCatalog.catalogId,
       catalogRevision: props.menuCatalog.catalogRevision
     })
@@ -411,10 +383,7 @@ function menuSemanticContext(
   props: AguiChatProps,
   messages: ChatMessage[]
 ): { description: string; value: string } | null {
-  const menuToolsEnabled = ['odoo.search_menu', 'odoo.open_menu'].every((name) =>
-    props.tools.some((tool) => tool.name === name)
-  )
-  if (!menuToolsEnabled) return null
+  if (!props.tools.some((tool) => tool.name === MENU_NAVIGATION_TOOL)) return null
   const result = latestMenuSearchResult(messages)
   const candidates = Array.isArray(result?.candidates) ? result.candidates : []
   const catalog = props.menuCatalog
@@ -433,7 +402,7 @@ function menuSemanticContext(
     includedCount: 0,
     complete: false,
     navigationAuthorized: false,
-    requiredTool: 'odoo.search_menu',
+    requiredTool: MENU_NAVIGATION_TOOL,
     paths
   }
   const baseBytes = encoder.encode(JSON.stringify(base)).byteLength
@@ -543,7 +512,7 @@ function normalizeRunContext(
         path: mention.path,
         fullPath: mention.fullPath,
         navigationRequired: navigationPending,
-        requiredFirstTool: navigationPending ? 'odoo.open_menu' : false
+        requiredFirstTool: navigationPending ? MENU_NAVIGATION_TOOL : false
       })
     })
   }
@@ -574,7 +543,7 @@ export function buildRunInput(
   const runId = options.runId || uuid()
   const navigationPending = menuNavigationPending(messages)
   const tools = clone(props.tools || []).filter((tool) => (
-    !navigationPending || tool.name === 'odoo.open_menu'
+    !navigationPending || tool.name === MENU_NAVIGATION_TOOL
   ))
   const transportMessages = messages.filter((message) => {
     const isPendingEmpty =

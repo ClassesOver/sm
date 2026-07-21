@@ -30,14 +30,13 @@ from .skills import load_skills
 from .workspace import WorkspaceError, WorkspaceService
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.8.8.3"
-COMMAND_CATALOG_HASH = "5e9686ce3ed1fb4131215d3c9fca997fda7610bb70cb1468f2e5564ef3f99306"
+BUNDLE_VERSION = "12.0.8.8.4"
+COMMAND_CATALOG_HASH = "17566185369f10acba35a57a57c9e696c8ed9f52d54e7d2a27f2e7323fc51e41"
 MAX_RUN_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 12 * 1024 * 1024
 MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
 EDIT_MODE_TOOL = "odoo.enter_edit_mode"
-SEARCH_MENU_TOOL = "odoo.search_menu"
-OPEN_MENU_TOOL = "odoo.open_menu"
+MENU_NAVIGATION_TOOL = "odoo.navigate_menu"
 MENU_NAVIGATION_CONTEXT = "HRP 菜单导航请求"
 EDIT_MODE_COMMANDS = frozenset(
     {
@@ -54,13 +53,9 @@ EDIT_MODE_TOOL_CHOICE = {
     "type": "function",
     "function": {"name": EDIT_MODE_TOOL},
 }
-SEARCH_MENU_TOOL_CHOICE = {
+MENU_NAVIGATION_TOOL_CHOICE = {
     "type": "function",
-    "function": {"name": SEARCH_MENU_TOOL},
-}
-OPEN_MENU_TOOL_CHOICE = {
-    "type": "function",
-    "function": {"name": OPEN_MENU_TOOL},
+    "function": {"name": MENU_NAVIGATION_TOOL},
 }
 REQUIRED_TOOL_PREAMBLE_EVENTS = frozenset(
     {
@@ -154,12 +149,8 @@ def _required_menu_tool(run_input: RunAgentInput) -> str | None:
             continue
         if not isinstance(value, dict):
             continue
-        tool_name = value.get("requiredFirstTool")
-        phase = value.get("phase")
-        if phase == "search" and tool_name == SEARCH_MENU_TOOL:
-            return SEARCH_MENU_TOOL
-        if phase == "open" and tool_name == OPEN_MENU_TOOL:
-            return OPEN_MENU_TOOL
+        if value.get("requiredFirstTool") == MENU_NAVIGATION_TOOL:
+            return MENU_NAVIGATION_TOOL
     return None
 
 
@@ -487,14 +478,13 @@ async def workspace_destroy(request: Request, payload: dict = Body(...)):
     return {"ok": True, "deleted": True}
 
 
-assistant, edit_mode_assistant, search_menu_assistant, open_menu_assistant = create_assistants(
+assistant, edit_mode_assistant, menu_navigation_assistant = create_assistants(
     settings,
     agent_skills,
     workspace_service,
     AGENT_INSTRUCTIONS,
     EDIT_MODE_TOOL_CHOICE,
-    SEARCH_MENU_TOOL_CHOICE,
-    OPEN_MENU_TOOL_CHOICE,
+    MENU_NAVIGATION_TOOL_CHOICE,
 )
 
 
@@ -515,17 +505,13 @@ async def run_agui(request: Request, run_input: RunAgentInput):
         forced_agent = None
         route_name = None
         if not branch and navigation_required:
-            forced_tool = OPEN_MENU_TOOL
-            forced_agent = context.open_menu_assistant
-            route_name = "selected_menu_open"
+            forced_tool = MENU_NAVIGATION_TOOL
+            forced_agent = context.menu_navigation_assistant
+            route_name = "selected_menu_navigation"
         elif not branch and context_menu_tool:
             forced_tool = context_menu_tool
-            forced_agent = (
-                context.search_menu_assistant
-                if context_menu_tool == SEARCH_MENU_TOOL
-                else context.open_menu_assistant
-            )
-            route_name = "menu_search" if context_menu_tool == SEARCH_MENU_TOOL else "menu_open"
+            forced_agent = context.menu_navigation_assistant
+            route_name = "menu_navigation"
         elif not branch and edit_intent and fresh_request:
             forced_tool = EDIT_MODE_TOOL
             forced_agent = context.edit_mode_assistant
@@ -618,8 +604,7 @@ application_context = ApplicationContext(
     agent_skills,
     assistant,
     edit_mode_assistant,
-    search_menu_assistant,
-    open_menu_assistant,
+    menu_navigation_assistant,
 )
 base_app = create_base_app(application_context)
 agent_os, app = create_agentos_app(application_context, base_app)

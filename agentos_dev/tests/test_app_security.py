@@ -498,19 +498,14 @@ def test_edit_mode_agent_has_isolated_tool_choice_and_shared_resources():
     assert app_module.edit_mode_assistant.db is app_module.assistant.db
 
 
-def test_menu_agents_have_isolated_tool_choices_and_shared_resources():
-    assert app_module.search_menu_assistant.tool_choice == {
+def test_menu_agent_has_isolated_tool_choice_and_shared_resources():
+    assert app_module.menu_navigation_assistant.tool_choice == {
         "type": "function",
-        "function": {"name": "odoo.search_menu"},
+        "function": {"name": "odoo.navigate_menu"},
     }
-    assert app_module.open_menu_assistant.tool_choice == {
-        "type": "function",
-        "function": {"name": "odoo.open_menu"},
-    }
-    assert app_module.search_menu_assistant is not app_module.assistant
-    assert app_module.open_menu_assistant is not app_module.assistant
-    assert app_module.search_menu_assistant.model is app_module.assistant.model
-    assert app_module.open_menu_assistant.db is app_module.assistant.db
+    assert app_module.menu_navigation_assistant is not app_module.assistant
+    assert app_module.menu_navigation_assistant.model is app_module.assistant.model
+    assert app_module.menu_navigation_assistant.db is app_module.assistant.db
 
 
 @pytest.mark.anyio
@@ -567,61 +562,41 @@ async def test_normal_and_unmarked_resume_requests_keep_main_agent(monkeypatch, 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("tool_name", "context", "expected_agent"),
+    "context",
     [
-        (
-            "odoo.search_menu",
-            {
-                "description": "HRP 菜单导航请求",
-                "value": json.dumps({"phase": "search", "requiredFirstTool": "odoo.search_menu"}),
-            },
-            "search_menu_assistant",
-        ),
-        (
-            "odoo.open_menu",
-            {
-                "description": "HRP 菜单导航请求",
-                "value": json.dumps({"phase": "open", "requiredFirstTool": "odoo.open_menu"}),
-            },
-            "open_menu_assistant",
-        ),
-        (
-            "odoo.open_menu",
-            {
-                "description": "已选 HRP 菜单",
-                "value": json.dumps({"navigationRequired": True}),
-            },
-            "open_menu_assistant",
-        ),
+        {
+            "description": "HRP 菜单导航请求",
+            "value": json.dumps({"requiredFirstTool": "odoo.navigate_menu"}),
+        },
+        {
+            "description": "已选 HRP 菜单",
+            "value": json.dumps({"navigationRequired": True}),
+        },
     ],
 )
-async def test_menu_navigation_routes_to_forced_agent(
-    monkeypatch, tool_name, context, expected_agent
-):
+async def test_menu_navigation_routes_to_forced_agent(monkeypatch, context):
     calls = []
 
     async def fake_run(entity, _run_input, user_id=None):
         calls.append(entity)
         yield RunStartedEvent(thread_id="thread-1", run_id="run-1")
-        yield ToolCallStartEvent(tool_call_id="call-1", tool_call_name=tool_name)
+        yield ToolCallStartEvent(
+            tool_call_id="call-1", tool_call_name=app_module.MENU_NAVIGATION_TOOL
+        )
         yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
 
     monkeypatch.setattr(app_module, "run_entity", fake_run)
-    messages = None
-    if tool_name == "odoo.open_menu" and context["description"] == "HRP 菜单导航请求":
-        messages = [{"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-0"}]
     value = run_input(
         "打开报销单查询",
-        tools=(tool_name,),
+        tools=(app_module.MENU_NAVIGATION_TOOL,),
         context=[context],
-        messages=messages,
     )
     response = await app_module.run_agui(direct_request(), value)
 
     body = await response_body(response)
 
-    assert calls == [getattr(app_module, expected_agent)]
-    assert tool_name in body
+    assert calls == [app_module.menu_navigation_assistant]
+    assert app_module.MENU_NAVIGATION_TOOL in body
     assert "required_tool_violation" not in body
 
 
@@ -636,13 +611,11 @@ async def test_menu_navigation_without_required_tool_fails_closed(monkeypatch):
         direct_request(),
         run_input(
             "打开报销单查询",
-            tools=("odoo.open_menu",),
+            tools=("odoo.open_record",),
             context=[
                 {
                     "description": "HRP 菜单导航请求",
-                    "value": json.dumps(
-                        {"phase": "search", "requiredFirstTool": "odoo.search_menu"}
-                    ),
+                    "value": json.dumps({"requiredFirstTool": "odoo.navigate_menu"}),
                 }
             ],
         ),
@@ -651,7 +624,7 @@ async def test_menu_navigation_without_required_tool_fails_closed(monkeypatch):
     body = await response_body(response)
 
     assert "required_tool_unavailable" in body
-    assert "odoo.search_menu" in body
+    assert "odoo.navigate_menu" in body
 
 
 @pytest.mark.anyio
@@ -691,7 +664,7 @@ async def test_edit_request_without_declared_tool_fails_closed(monkeypatch):
     monkeypatch.setattr(app_module, "run_entity", unexpected_run)
     response = await app_module.run_agui(
         direct_request(),
-        run_input(tools=("odoo.open_menu",)),
+        run_input(tools=("odoo.navigate_menu",)),
     )
 
     body = await response_body(response)
@@ -743,7 +716,7 @@ async def test_required_tool_guard_accepts_agno_preamble_before_expected_tool():
             RawEvent(event={"event": "RunContent"}),
             ToolCallStartEvent(
                 tool_call_id="call-1",
-                tool_call_name=app_module.SEARCH_MENU_TOOL,
+                tool_call_name=app_module.MENU_NAVIGATION_TOOL,
             ),
             RunFinishedEvent(thread_id="thread-1", run_id="run-1"),
         ]
@@ -753,7 +726,7 @@ async def test_required_tool_guard_accepts_agno_preamble_before_expected_tool():
         event
         async for event in app_module._guard_required_tool(
             stream,
-            app_module.SEARCH_MENU_TOOL,
+            app_module.MENU_NAVIGATION_TOOL,
         )
     ]
 
@@ -775,7 +748,7 @@ async def test_required_tool_guard_accepts_agno_preamble_before_expected_tool():
     "first_executable",
     [
         TextMessageContentEvent(message_id="message-1", delta="先输出文字"),
-        ToolCallStartEvent(tool_call_id="call-1", tool_call_name="odoo.open_menu"),
+        ToolCallStartEvent(tool_call_id="call-1", tool_call_name="odoo.open_record"),
         None,
     ],
 )

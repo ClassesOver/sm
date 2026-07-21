@@ -253,10 +253,7 @@ describe('production transport contract', () => {
     const input = buildRunInput([{
       id: 'selected', role: 'user', content: '打开它', menuMention, recordSelection
     }], v2Props({
-      tools: [
-        { name: 'odoo.search_menu', parameters: { type: 'object' } },
-        { name: 'odoo.open_menu', parameters: { type: 'object' } }
-      ],
+      tools: [{ name: 'odoo.navigate_menu', parameters: { type: 'object' } }],
       menuCatalog: menuCatalog([
         { ...menuMention },
         { menuId: 9, actionId: 43, name: '机密菜单', path: ['机密菜单'], fullPath: '机密菜单' }
@@ -269,7 +266,7 @@ describe('production transport contract', () => {
       value: JSON.stringify({
         menuId: 8, actionId: 42, catalogId: 'catalog-test-1', catalogRevision: 1,
         name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户',
-        navigationRequired: true, requiredFirstTool: 'odoo.open_menu'
+        navigationRequired: true, requiredFirstTool: 'odoo.navigate_menu'
       })
     })
     expect(input.context).toContainEqual({
@@ -284,10 +281,7 @@ describe('production transport contract', () => {
       { menuId: 9, actionId: 43, name: '申请单', path: ['采购', '申请单'], fullPath: '采购 / 申请单' }
     ]
     const props = v2Props({
-      tools: [
-        { name: 'odoo.search_menu', parameters: { type: 'object' } },
-        { name: 'odoo.open_menu', parameters: { type: 'object' } }
-      ],
+      tools: [{ name: 'odoo.navigate_menu', parameters: { type: 'object' } }],
       menuCatalog: menuCatalog(entries)
     })
     const first = buildRunInput(
@@ -299,7 +293,7 @@ describe('production transport contract', () => {
     const input = buildRunInput([
       { id: 'menu-user', role: 'user', content: '打开差旅入口' },
       {
-        id: 'menu-result', role: 'tool', name: 'odoo.search_menu', toolCallId: 'search-1',
+        id: 'menu-result', role: 'tool', name: 'odoo.navigate_menu', toolCallId: 'search-1',
         content: JSON.stringify({
           matchType: 'none', candidates: [], catalogId: 'catalog-test-1', catalogRevision: 1
         })
@@ -311,14 +305,14 @@ describe('production transport contract', () => {
     expect(catalog).toEqual({
       catalogId: 'catalog-test-1', catalogRevision: 1,
       totalCount: 2, includedCount: 2, complete: true,
-      navigationAuthorized: false, requiredTool: 'odoo.search_menu',
+      navigationAuthorized: false, requiredTool: 'odoo.navigate_menu',
       paths: ['费用 / 报销单', '采购 / 申请单']
     })
     expect(menuContext?.value).not.toContain('menuId')
     expect(menuContext?.value).not.toContain('actionId')
   })
 
-  it('marks exact menu navigation for required search and unique-result open stages', () => {
+  it('marks exact menu navigation as a single required tool call', () => {
     const entry = {
       menuId: 9,
       actionId: 42,
@@ -328,8 +322,7 @@ describe('production transport contract', () => {
     }
     const props = v2Props({
       tools: [
-        { name: 'odoo.search_menu', parameters: { type: 'object' } },
-        { name: 'odoo.open_menu', parameters: { type: 'object' } },
+        { name: 'odoo.navigate_menu', parameters: { type: 'object' } },
         { name: 'odoo.apply_filter', parameters: { type: 'object' } }
       ],
       menuCatalog: menuCatalog([entry])
@@ -340,78 +333,27 @@ describe('production transport contract', () => {
     expect(initial.context).toContainEqual({
       description: 'HRP 菜单导航请求',
       value: JSON.stringify({
-        phase: 'search',
         query: '报销单查询',
-        requiredFirstTool: 'odoo.search_menu',
+        requiredFirstTool: 'odoo.navigate_menu',
         catalogId: 'catalog-test-1',
         catalogRevision: 1
       })
     })
 
-    const wrongQuery = buildRunInput([
+    const completed = buildRunInput([
       user,
       {
-        id: 'menu-search', role: 'tool' as const, name: 'odoo.search_menu',
-        toolCallId: 'search-1', content: JSON.stringify({
-          query: '付款单查询', matchType: 'exact', matchCount: 1, truncated: false,
-          candidates: [entry], catalogId: 'catalog-test-1', catalogRevision: 1
-        })
-      }
-    ], props, 'thread-1', null, {})
-    expect(wrongQuery.context).toContainEqual({
-      description: 'HRP 菜单导航请求',
-      value: JSON.stringify({
-        phase: 'search',
-        query: '报销单查询',
-        requiredFirstTool: 'odoo.search_menu',
-        catalogId: 'catalog-test-1',
-        catalogRevision: 1
-      })
-    })
-
-    const searched = buildRunInput([
-      user,
-      {
-        id: 'menu-search', role: 'tool' as const, name: 'odoo.search_menu',
-        toolCallId: 'search-1', content: JSON.stringify({
+        id: 'menu-navigation', role: 'tool' as const, name: 'odoo.navigate_menu',
+        toolCallId: 'navigate-1', content: JSON.stringify({
           query: '报销单查询', matchType: 'exact', matchCount: 1, truncated: false,
-          candidates: [entry],
+          navigated: true, candidates: [entry],
           catalogId: 'catalog-test-1', catalogRevision: 1
         })
       }
     ], props, 'thread-1', null, {})
-    expect(searched.context).toContainEqual({
-      description: 'HRP 菜单导航请求',
-      value: JSON.stringify({
-        phase: 'open',
-        query: '报销单查询',
-        requiredFirstTool: 'odoo.open_menu',
-        catalogId: 'catalog-test-1',
-        catalogRevision: 1
-      })
-    })
-    const navigationContext = searched.context.find(
+    expect(completed.context.some(
       (item) => item.description === 'HRP 菜单导航请求'
-    )
-    expect(navigationContext?.value).not.toContain('menuId')
-    expect(navigationContext?.value).not.toContain('actionId')
-
-    const opened = buildRunInput([
-      user,
-      {
-        id: 'menu-search', role: 'tool' as const, name: 'odoo.search_menu',
-        toolCallId: 'search-1', content: JSON.stringify({
-          query: '报销单查询', matchType: 'exact', matchCount: 1, truncated: false,
-          candidates: [entry],
-          catalogId: 'catalog-test-1', catalogRevision: 1
-        })
-      },
-      {
-        id: 'menu-open', role: 'tool' as const, name: 'odoo.open_menu',
-        toolCallId: 'open-1', content: JSON.stringify({ ok: true, navigated: true })
-      }
-    ], props, 'thread-1', null, {})
-    expect(opened.context.some((item) => item.description === 'HRP 菜单导航请求')).toBe(false)
+    )).toBe(false)
   })
 
   it('does not force navigation for questions, unknown targets, or ambiguous results', () => {
@@ -423,10 +365,7 @@ describe('production transport contract', () => {
       fullPath: '费用报销 / 报销单查询'
     }
     const props = v2Props({
-      tools: [
-        { name: 'odoo.search_menu', parameters: { type: 'object' } },
-        { name: 'odoo.open_menu', parameters: { type: 'object' } }
-      ],
+      tools: [{ name: 'odoo.navigate_menu', parameters: { type: 'object' } }],
       menuCatalog: menuCatalog([entry])
     })
 
@@ -440,7 +379,7 @@ describe('production transport contract', () => {
     const ambiguous = buildRunInput([
       { id: 'menu-user', role: 'user', content: '打开报销单查询' },
       {
-        id: 'menu-search', role: 'tool', name: 'odoo.search_menu', toolCallId: 'search-1',
+        id: 'menu-search', role: 'tool', name: 'odoo.navigate_menu', toolCallId: 'search-1',
         content: JSON.stringify({
           query: '报销单查询', matchType: 'exact', matchCount: 2, truncated: false,
           candidates: [entry, { ...entry, menuId: 10, actionId: 43 }],
@@ -451,38 +390,33 @@ describe('production transport contract', () => {
     expect(ambiguous.context.some((item) => item.description === 'HRP 菜单导航请求')).toBe(false)
   })
 
-  it('does not add semantic menu context unless both menu tools are enabled', () => {
+  it('does not add semantic menu context unless navigate_menu is enabled', () => {
     const messages = [
       { id: 'menu-user', role: 'user' as const, content: '打开差旅入口' },
       {
-        id: 'menu-result', role: 'tool' as const, name: 'odoo.search_menu',
+        id: 'menu-result', role: 'tool' as const, name: 'odoo.navigate_menu',
         toolCallId: 'search-1', content: JSON.stringify({
           matchType: 'none', candidates: [], catalogId: 'catalog-test-1', catalogRevision: 1
         })
       }
     ]
 
-    for (const toolName of ['odoo.search_menu', 'odoo.open_menu']) {
-      const input = buildRunInput(messages, v2Props({
-        tools: [{ name: toolName, parameters: { type: 'object' } }],
-        menuCatalog: menuCatalog([{
-          menuId: 8, actionId: 42, name: '报销单',
-          path: ['费用', '报销单'], fullPath: '费用 / 报销单'
-        }])
-      }), 'thread-1', null, {})
+    const input = buildRunInput(messages, v2Props({
+      tools: [{ name: 'odoo.open_record', parameters: { type: 'object' } }],
+      menuCatalog: menuCatalog([{
+        menuId: 8, actionId: 42, name: '报销单',
+        path: ['费用', '报销单'], fullPath: '费用 / 报销单'
+      }])
+    }), 'thread-1', null, {})
 
-      expect(input.context.some(
-        (item) => item.description === '当前用户可见 HRP 菜单'
-      )).toBe(false)
-    }
+    expect(input.context.some(
+      (item) => item.description === '当前用户可见 HRP 菜单'
+    )).toBe(false)
   })
 
   it('does not add semantic menu context for a stale catalog miss', () => {
     const props = v2Props({
-      tools: [
-        { name: 'odoo.search_menu', parameters: { type: 'object' } },
-        { name: 'odoo.open_menu', parameters: { type: 'object' } }
-      ],
+      tools: [{ name: 'odoo.navigate_menu', parameters: { type: 'object' } }],
       menuCatalog: menuCatalog([{
         menuId: 8, actionId: 42, name: '报销单',
         path: ['费用', '报销单'], fullPath: '费用 / 报销单'
@@ -496,7 +430,7 @@ describe('production transport contract', () => {
       const input = buildRunInput([
         { id: 'menu-user', role: 'user', content: '打开差旅入口' },
         {
-          id: 'menu-result', role: 'tool', name: 'odoo.search_menu', toolCallId: 'search-1',
+          id: 'menu-result', role: 'tool', name: 'odoo.navigate_menu', toolCallId: 'search-1',
           content: JSON.stringify({ matchType: 'none', candidates: [], ...staleResult })
         }
       ], props, 'thread-1', null, {})
@@ -518,16 +452,13 @@ describe('production transport contract', () => {
     const input = buildRunInput([
       { id: 'menu-context', role: 'user', content: '打开相关菜单' },
       {
-        id: 'menu-miss', role: 'tool', name: 'odoo.search_menu', toolCallId: 'search-1',
+        id: 'menu-miss', role: 'tool', name: 'odoo.navigate_menu', toolCallId: 'search-1',
         content: JSON.stringify({
           matchType: 'none', candidates: [], catalogId: 'catalog-test-1', catalogRevision: 1
         })
       }
     ], v2Props({
-      tools: [
-        { name: 'odoo.search_menu', parameters: { type: 'object' } },
-        { name: 'odoo.open_menu', parameters: { type: 'object' } }
-      ],
+      tools: [{ name: 'odoo.navigate_menu', parameters: { type: 'object' } }],
       menuCatalog: menuCatalog(entries)
     }), 'thread-1', null, {})
     const menuContext = input.context.find(
@@ -539,7 +470,7 @@ describe('production transport contract', () => {
       totalCount: 300,
       complete: false,
       navigationAuthorized: false,
-      requiredTool: 'odoo.search_menu'
+      requiredTool: 'odoo.navigate_menu'
     })
     expect(new TextEncoder().encode(menuContext?.value || '').byteLength).toBeLessThanOrEqual(128 * 1024)
     expect(catalog.paths.length).toBeGreaterThan(0)
@@ -555,7 +486,7 @@ describe('production transport contract', () => {
       path: ['费用', '费用申请单创建'], fullPath: '费用 / 费用申请单创建', valid: true
     }
     const tools = [
-      { name: 'odoo.open_menu', parameters: { type: 'object' } },
+      { name: 'odoo.navigate_menu', parameters: { type: 'object' } },
       { name: 'odoo.open_create', parameters: { type: 'object' } }
     ]
     const userMessage = {
@@ -566,19 +497,19 @@ describe('production transport contract', () => {
       'thread-1', null, {}
     )
 
-    expect(initial.tools.map((tool) => tool.name)).toEqual(['odoo.open_menu'])
+    expect(initial.tools.map((tool) => tool.name)).toEqual(['odoo.navigate_menu'])
 
     const navigationMessages = [
       userMessage,
       {
         id: 'assistant-menu', role: 'assistant' as const, content: '', tool_calls: [{
-          id: 'menu-call', name: 'odoo.open_menu', args: { menuId: 1448, actionId: 42 }
+          id: 'menu-call', name: 'odoo.navigate_menu', args: { menuId: 1448, actionId: 42 }
         }]
       },
       {
-        id: 'tool-menu', role: 'tool' as const, name: 'odoo.open_menu',
+        id: 'tool-menu', role: 'tool' as const, name: 'odoo.navigate_menu',
         toolCallId: 'menu-call', content: JSON.stringify({
-          ok: true, operation: 'odoo.open_menu', navigated: true
+          ok: true, operation: 'odoo.navigate_menu', navigated: true
         })
       }
     ]
@@ -586,11 +517,11 @@ describe('production transport contract', () => {
       navigationMessages[0],
       {
         ...navigationMessages[1],
-        tool_calls: [{ id: 'menu-call', name: 'odoo.open_menu', args: { menuId: 1447, actionId: 42 } }]
+        tool_calls: [{ id: 'menu-call', name: 'odoo.navigate_menu', args: { menuId: 1447, actionId: 42 } }]
       },
       navigationMessages[2]
     ], v2Props({ menuCatalog: menuCatalog([menuMention]), tools }), 'thread-1', null, {})
-    expect(wrongMenu.tools.map((tool) => tool.name)).toEqual(['odoo.open_menu'])
+    expect(wrongMenu.tools.map((tool) => tool.name)).toEqual(['odoo.navigate_menu'])
 
     const afterNavigation = buildRunInput(
       navigationMessages, v2Props({ menuCatalog: menuCatalog([menuMention]), tools }),
@@ -598,7 +529,7 @@ describe('production transport contract', () => {
     )
 
     expect(afterNavigation.tools.map((tool) => tool.name)).toEqual([
-      'odoo.open_menu', 'odoo.open_create'
+      'odoo.navigate_menu', 'odoo.open_create'
     ])
     const selectedMenu = afterNavigation.context.find(
       (item) => item.description === '已选 HRP 菜单'

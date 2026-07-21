@@ -22,17 +22,17 @@ function main() {
     const runtime = read("react_widget/src/runtime/ChatRuntime.ts");
     const transport = read("react_widget/src/runtime/transport.ts");
     const types = read("react_widget/src/types.ts");
-    const bundlePath = path.join(__dirname, "../static/lib/agui-chat-react/agui_chat_widget.12.0.8.8.3.js");
-    const cssPath = path.join(__dirname, "../static/lib/agui-chat-react/agui_chat_widget.12.0.8.8.3.css");
+    const bundlePath = path.join(__dirname, "../static/lib/agui-chat-react/agui_chat_widget.12.0.8.8.4.js");
+    const cssPath = path.join(__dirname, "../static/lib/agui-chat-react/agui_chat_widget.12.0.8.8.4.css");
 
-    assert(manifest.includes('"version": "12.0.8.8.3"'));
+    assert(manifest.includes('"version": "12.0.8.8.4"'));
     assert(assets.includes("agui_model_adapter.js"));
     assert(assets.includes("agui_command_registry.js"));
     assert(assets.includes("agui_host_service.js"));
     assert(!assets.includes("view_state_bridge.js"));
     assert(!assets.includes("odoo_tools.js"));
     assert(!assets.includes("agui_chat_action.js"));
-    assert(!assets.includes("agui_chat_widget.12.0.8.8.3.css"));
+    assert(!assets.includes("agui_chat_widget.12.0.8.8.4.css"));
 
     assert(adapter.includes("captureModelCheckpoint"));
     assert(adapter.includes("restoreModelCheckpoint"));
@@ -65,7 +65,7 @@ function main() {
     assert(bridge.includes('"odoo.stage_current_form": true'));
     assert.strictEqual((surfaces.match(/this\.chatHandle = window\.AguiChat\.mount/g) || []).length, 1);
     assert(surfaces.includes("attachShadow"));
-    assert(surfaces.includes("agui_chat_widget.12.0.8.8.3.css"));
+    assert(surfaces.includes("agui_chat_widget.12.0.8.8.4.css"));
     assert(surfaces.includes("this.webClient.action_manager.getCurrentAction()"));
     assert(!surfaces.includes("Dialog"));
     assert(!surfaces.includes("popup"));

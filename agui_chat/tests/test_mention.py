@@ -132,6 +132,22 @@ class TestMentionReferences(TransactionCase):
         self.assertEqual(item["can_create"], self.tokens._can("res.partner", "create"))
         self.assertIsNot(catalog, self.tokens._menu_catalog())
 
+    def test_menu_catalog_excludes_non_terminal_action_menu(self):
+        self.root_menu.write({
+            "action": "ir.actions.act_window,%s" % self.action.id,
+        })
+        self.env["ir.ui.menu"].clear_caches()
+
+        catalog = self.tokens._menu_catalog()
+        menu_ids = [item["menu_id"] for item in catalog]
+        search = self._search("引用测试", "menu")
+        labels = [item["label"] for item in search["candidates"]]
+
+        self.assertNotIn(self.root_menu.id, menu_ids)
+        self.assertIn(self.menu.id, menu_ids)
+        self.assertNotIn("引用测试", labels)
+        self.assertIn("引用测试 / 联系人", labels)
+
     def test_model_picker_exposes_up_to_one_hundred_visible_models(self):
         catalog = [{
             "model": "x.model.%03d" % index,

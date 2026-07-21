@@ -2,10 +2,10 @@ import type { OdooHostSnapshot, ProtocolHandshake } from './types'
 
 export const devHandshake: ProtocolHandshake = {
   protocol: 'agui.odoo.v2',
-  moduleVersion: '12.0.8.8.3',
-  bundleVersion: '12.0.8.8.3',
+  moduleVersion: '12.0.8.8.4',
+  bundleVersion: '12.0.8.8.4',
   agentProtocol: 'agui.odoo.v2',
-  agentBundleVersion: '12.0.8.8.3',
+  agentBundleVersion: '12.0.8.8.4',
   commandCatalogHash: 'a'.repeat(64),
   agentCommandCatalogHash: 'a'.repeat(64)
 }
@@ -37,6 +37,7 @@ export const devHostState: OdooHostSnapshot = {
   fields: {},
   capabilities: {
     create: true,
+    viewTypes: ['form'],
     open: true,
     edit: true,
     filter: false,

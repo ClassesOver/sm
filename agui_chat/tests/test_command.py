@@ -16,12 +16,12 @@ PAGE_COMMAND_XML_IDS = {
     "odoo.open_mentioned_menu": "command_open_mentioned_menu",
     "odoo.open_mentioned_record": "command_open_mentioned_record",
     "odoo.apply_mentioned_filter": "command_apply_mentioned_filter",
-    "odoo.open_menu": "command_open_menu",
-    "odoo.search_menu": "command_search_menu",
+    "odoo.navigate_menu": "command_navigate_menu",
     "odoo.apply_filter": "command_apply_filter",
     "odoo.apply_group": "command_apply_group",
     "odoo.open_record": "command_open_record",
     "odoo.open_create": "command_open_create",
+    "odoo.switch_view": "command_switch_view",
     "odoo.open_x2many_record": "command_open_x2many_record",
     "odoo.open_x2many_create": "command_open_x2many_create",
     "odoo.prepare_x2many_import": "command_prepare_x2many_import",
@@ -41,10 +41,10 @@ PAGE_COMMAND_XML_IDS = {
 class TestAguiChatCommand(TransactionCase):
 
     def test_catalog_revision_and_hash_are_synchronized(self):
-        self.assertEqual(COMMAND_CATALOG_REVISION, 11)
+        self.assertEqual(COMMAND_CATALOG_REVISION, 13)
         self.assertEqual(
             COMMAND_CATALOG_HASH,
-            "5e9686ce3ed1fb4131215d3c9fca997fda7610bb70cb1468f2e5564ef3f99306",
+            "17566185369f10acba35a57a57c9e696c8ed9f52d54e7d2a27f2e7323fc51e41",
         )
 
     def test_page_master_data_matches_host_catalog(self):
@@ -60,7 +60,7 @@ class TestAguiChatCommand(TransactionCase):
         with self.assertRaises(IntegrityError), self.cr.savepoint():
             self.env["agui.chat.command"].create({
                 "name": "重复命令",
-                "code": "odoo.open_menu",
+                "code": "odoo.navigate_menu",
                 "command_type": "page",
             })
 
@@ -86,18 +86,18 @@ class TestAguiChatCommand(TransactionCase):
         })
         config = self.env["agui.chat.config"].create({
             "name": "旧配置",
-            "enabled_commands": "odoo.open_record, odoo.open_menu",
+            "enabled_commands": "odoo.open_record, odoo.navigate_menu",
             "enabled_business_commands": business.code,
         })
         self.assertEqual(
             set(config.enabled_command_ids.mapped("code")),
-            {"odoo.open_menu", "odoo.open_record"},
+            {"odoo.navigate_menu", "odoo.open_record"},
         )
         self.assertEqual(config.enabled_business_command_ids, business)
 
     def test_command_tags_write_back_legacy_strings(self):
         page_commands = self.env["agui.chat.command"].search([
-            ("code", "in", ["odoo.open_record", "odoo.open_menu"]),
+            ("code", "in", ["odoo.open_record", "odoo.navigate_menu"]),
         ])
         archive = self.env["agui.chat.command"].create({
             "name": "测试归档",
@@ -118,7 +118,7 @@ class TestAguiChatCommand(TransactionCase):
         })
         self.assertEqual(
             config.enabled_commands,
-            "odoo.open_menu,odoo.open_record",
+            "odoo.navigate_menu,odoo.open_record",
         )
         self.assertEqual(
             config.enabled_business_commands,

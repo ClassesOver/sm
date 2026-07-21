@@ -101,19 +101,24 @@ odoo.define("agui_chat.command_registry", function (require) {
             }, ["token"]),
         },
         {
-            name: "odoo.search_menu",
-            description: "搜索当前用户可见的 HRP 可导航菜单；先精确匹配完整路径或叶子名称，无精确结果时再返回包含匹配。",
-            parameters: menuSchema({
+            name: "odoo.navigate_menu",
+            description: "导航到当前用户可见且自身配置 action 的末级 HRP 菜单。目标名称明确时只传 query：唯一匹配会直接打开，多候选会返回供用户选择；已有明确选择时只传候选原样返回的 menuId 和 actionId。target 始终使用当前 menuTarget。",
+            parameters: _.extend(menuSchema({
                 query: {type: "string", minLength: 1, maxLength: 400},
-            }, ["query"]),
-        },
-        {
-            name: "odoo.open_menu",
-            description: "打开用户已明确选择或由 odoo.search_menu 唯一匹配的 HRP 可导航菜单；menuId 与 actionId 必须原样使用。",
-            parameters: menuSchema({
                 menuId: {type: "integer", minimum: 1},
                 actionId: {type: "integer", minimum: 1},
-            }, ["menuId", "actionId"]),
+            }), {
+                oneOf: [
+                    {
+                        required: ["query"],
+                        not: {anyOf: [{required: ["menuId"]}, {required: ["actionId"]}]},
+                    },
+                    {
+                        required: ["menuId", "actionId"],
+                        not: {required: ["query"]},
+                    },
+                ],
+            }),
         },
         {
             name: "odoo.apply_filter",
@@ -156,6 +161,13 @@ odoo.define("agui_chat.command_registry", function (require) {
             name: "odoo.open_create",
             description: "使用当前 action 上下文进入原生完整新建表单；不填写也不保存。",
             parameters: schema(),
+        },
+        {
+            name: "odoo.switch_view",
+            description: "切换到当前 action 声明的原生 Kanban、List 或 Form 视图；从多记录视图切到 Form 会进入未保存的新建表单。",
+            parameters: schema({
+                viewType: {type: "string", enum: ["kanban", "list", "form"]},
+            }, ["viewType"]),
         },
         {
             name: "odoo.open_x2many_record",
@@ -490,20 +502,37 @@ odoo.define("agui_chat.command_registry", function (require) {
         });
     };
 
-    COMMANDS["odoo.search_menu"] = function (context, args, call) {
+    COMMANDS["odoo.navigate_menu"] = function (context, args) {
         var snapshot = context.getSnapshot();
-        var result = context.searchMenus(args.query, call && call.context);
-        return _.extend({}, result, {
+        var hasQuery = _.isString(args.query) && !!args.query.trim();
+        var hasMenuId = _.isNumber(args.menuId) && args.menuId > 0;
+        var hasActionId = _.isNumber(args.actionId) && args.actionId > 0;
+        var result;
+        var selected;
+        if (hasQuery === (hasMenuId || hasActionId) || hasMenuId !== hasActionId) {
+            throw commandError(
+                "invalid_menu_navigation",
+                "菜单导航必须只提供 query，或同时提供 menuId 和 actionId。"
+            );
+        }
+        if (!hasQuery) {
+            rejectUnsavedChanges(context);
+            return $.when(context.openMenu(args.menuId, args.actionId)).then(function (menu) {
+                return navigationResult(context, snapshot, {menu: menu});
+            });
+        }
+        result = context.searchMenus(args.query);
+        result = _.extend({}, result, {
             snapshotId: snapshot.snapshotId,
             hostRevision: snapshot.hostRevision,
         });
-    };
-
-    COMMANDS["odoo.open_menu"] = function (context, args) {
-        var before = context.getSnapshot();
+        if (result.truncated || result.matchCount !== 1 || result.candidates.length !== 1) {
+            return _.extend({}, result, {navigated: false});
+        }
+        selected = result.candidates[0];
         rejectUnsavedChanges(context);
-        return $.when(context.openMenu(args.menuId, args.actionId)).then(function (menu) {
-            return navigationResult(context, before, {menu: menu});
+        return $.when(context.openMenu(selected.menuId, selected.actionId)).then(function (menu) {
+            return navigationResult(context, snapshot, _.extend({}, result, {menu: menu}));
         });
     };
 
@@ -613,6 +642,32 @@ odoo.define("agui_chat.command_registry", function (require) {
         }
         return $.when(context.openCreate(controller)).then(function () {
             return navigationResult(context, before, {opened: true, mode: "create"});
+        });
+    };
+
+    COMMANDS["odoo.switch_view"] = function (context, args) {
+        var before = context.getSnapshot();
+        var controller = requireView(context, ["form", "list", "kanban"]);
+        var viewTypes = before.capabilities && before.capabilities.viewTypes || [];
+        rejectUnsavedChanges(context);
+        if (before.controller.viewType === args.viewType) {
+            throw commandError("view_already_active", "目标视图已是当前视图。");
+        }
+        if (viewTypes.indexOf(args.viewType) === -1) {
+            throw commandError("view_unavailable", "当前 action 不提供目标视图。");
+        }
+        if (args.viewType === "form" && !(before.capabilities && before.capabilities.create)) {
+            throw commandError("create_not_allowed", "当前 action 不允许通过 Form 视图新建记录。");
+        }
+        return $.when(context.switchView(controller, args.viewType)).then(function () {
+            return navigationResult(context, before, {viewType: args.viewType});
+        }).then(function (result) {
+            var snapshot = context.getSnapshot();
+            if (!result.navigated || !snapshot.controller ||
+                    snapshot.controller.viewType !== args.viewType) {
+                throw commandError("switch_view_failed", "客户端未进入目标视图。");
+            }
+            return result;
         });
     };
 

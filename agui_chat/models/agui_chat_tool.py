@@ -724,7 +724,7 @@ class AguiChatToolAuthorization(models.Model):
         target = arguments.get("target") if isinstance(arguments.get("target"), dict) else {}
         target_keys = {
             "snapshotId", "hostRevision", "catalogId", "catalogRevision",
-        } if tool_name in ("odoo.search_menu", "odoo.open_menu") else {
+        } if tool_name == "odoo.navigate_menu" else {
             "snapshotId", "hostRevision",
         } if tool_name in (
             "odoo.read_mentioned_records",

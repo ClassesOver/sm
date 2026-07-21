@@ -24,9 +24,8 @@ def create_assistants(
     workspace_service: WorkspaceService,
     instructions: Sequence[str],
     edit_tool_choice: dict[str, Any],
-    search_menu_tool_choice: dict[str, Any],
-    open_menu_tool_choice: dict[str, Any],
-) -> tuple[Agent, Agent, Agent, Agent]:
+    menu_navigation_tool_choice: dict[str, Any],
+) -> tuple[Agent, Agent, Agent]:
     assistant = Agent(
         id="odoo-assistant",
         name="HRP 助手",
@@ -49,11 +48,11 @@ def create_assistants(
         tool_choice="auto",
     )
     edit_mode_assistant = assistant.deep_copy(update={"tool_choice": edit_tool_choice})
-    search_menu_assistant = assistant.deep_copy(update={"tool_choice": search_menu_tool_choice})
-    open_menu_assistant = assistant.deep_copy(update={"tool_choice": open_menu_tool_choice})
+    menu_navigation_assistant = assistant.deep_copy(
+        update={"tool_choice": menu_navigation_tool_choice}
+    )
     return (
         assistant,
         edit_mode_assistant,
-        search_menu_assistant,
-        open_menu_assistant,
+        menu_navigation_assistant,
     )

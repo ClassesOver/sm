@@ -5,11 +5,11 @@ describe('工具调用展示模型', () => {
   it('归一化已知工具名称、参数和默认状态', () => {
     const presentation = getToolCallPresentation({
       id: 'call-1',
-      name: 'odoo.open_menu',
+      name: 'odoo.navigate_menu',
       args: { menuId: 42 }
     })
 
-    expect(presentation.displayName).toBe('打开菜单')
+    expect(presentation.displayName).toBe('导航菜单')
     expect(presentation.status).toBe('pending')
     expect(presentation.call).toEqual({ id: 'call-1', args: { menuId: 42 } })
     expect(presentation.result).toEqual({})
@@ -22,6 +22,11 @@ describe('工具调用展示模型', () => {
   it('展示原生视图分组工具名称', () => {
     expect(getToolCallPresentation({ name: 'odoo.apply_group' }).displayName)
       .toBe('设置当前视图分组')
+  })
+
+  it('展示原生视图切换工具名称', () => {
+    expect(getToolCallPresentation({ name: 'odoo.switch_view' }).displayName)
+      .toBe('切换视图')
   })
 
   it('统计处理结果并提取撤销状态', () => {

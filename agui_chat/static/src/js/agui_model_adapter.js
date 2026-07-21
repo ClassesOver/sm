@@ -891,6 +891,12 @@ odoo.define("agui_chat.model_adapter", function (require) {
         var groupFields = searchGroupFields(controller, viewType, sensitiveFields || []);
         var records = [];
         var controls = [];
+        var viewTypes = _.chain(controller.actionViews || []).map(function (view) {
+            return view && (view.type || view[1]);
+        }).filter(function (type) {
+            return ["kanban", "list", "form"].indexOf(type) !== -1;
+        }).uniq().value();
+        if (viewTypes.indexOf(viewType) === -1) viewTypes.unshift(viewType);
         var widgets;
         if (viewType === "kanban") {
             widgets = kanbanRecordWidgets(controller.renderer);
@@ -972,6 +978,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
         controls = controls.concat(visibleViewButtons(controller, snapshot, registerToken));
         return {
             create: !!active.create,
+            viewTypes: viewTypes,
             open: viewType === "list" || viewType === "kanban",
             edit: !!active.edit,
             filter: !!(controller.searchView && _.isFunction(controller.searchView.updateFilters)),
