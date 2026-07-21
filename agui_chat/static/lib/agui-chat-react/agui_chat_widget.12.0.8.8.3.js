@@ -25486,6 +25486,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     "odoo.search_menu": "搜索菜单",
     "odoo.open_menu": "打开菜单",
     "odoo.apply_filter": "筛选当前视图",
+    "odoo.apply_group": "设置当前视图分组",
     "odoo.open_record": "打开记录",
     "odoo.open_create": "新建记录",
     "odoo.enter_edit_mode": "进入编辑模式",
@@ -26129,7 +26130,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function canPreviewFile(type) {
     return PREVIEWABLE_TYPES.has(type.toLowerCase());
   }
-  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.2.js";
+  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.3.js";
   const FILE_VIEWER_LOAD_TIMEOUT_MS = 15e3;
   const STATUS_ATTRIBUTE = "data-agui-file-viewer-status";
   let viewerModulePromise;
@@ -30116,7 +30117,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.8.2";
+  const VERSION = "12.0.8.8.3";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

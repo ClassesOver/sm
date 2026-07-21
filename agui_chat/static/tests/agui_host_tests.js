@@ -1238,6 +1238,49 @@ odoo.define("agui_chat.tests.host", function (require) {
         });
     });
 
+    QUnit.test("group command catalog exposes the complete bounded schema", function (assert) {
+        assert.expect(1);
+        var command = _.findWhere(Commands.getCatalog(), {name: "odoo.apply_group"});
+        assert.deepEqual(command.parameters, {
+            type: "object",
+            additionalProperties: false,
+            required: ["target", "groupBy"],
+            properties: {
+                target: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: [
+                        "snapshotId", "hostRevision", "controllerId", "dataPointId", "model", "resId",
+                    ],
+                    properties: {
+                        snapshotId: {type: "string"},
+                        hostRevision: {type: "integer"},
+                        controllerId: {type: "string"},
+                        dataPointId: {type: ["string", "boolean"]},
+                        model: {type: ["string", "boolean"]},
+                        resId: {type: ["integer", "boolean"]},
+                    },
+                },
+                groupBy: {
+                    type: "array",
+                    maxItems: 3,
+                    items: {
+                        type: "object",
+                        additionalProperties: false,
+                        required: ["field"],
+                        properties: {
+                            field: {type: "string", minLength: 1, maxLength: 128},
+                            interval: {
+                                type: "string",
+                                enum: ["day", "week", "month", "quarter", "year"],
+                            },
+                        },
+                    },
+                },
+            },
+        });
+    });
+
     QUnit.test("patch enters edit mode before applying changes", function (assert) {
         assert.expect(6);
         var done = assert.async();
@@ -1500,6 +1543,321 @@ odoo.define("agui_chat.tests.host", function (require) {
         assert.throws(function () {
             Adapter.validateFilterDomain(state, [["quantity", "=", "2"]]);
         }, function (error) { return error.code === "invalid_filter_condition"; });
+    });
+
+    QUnit.test("list group capabilities expose only native sortable safe fields", function (assert) {
+        assert.expect(12);
+        var fields = {
+            partner_id: {type: "many2one", string: "合作伙伴", sortable: true},
+            name: {type: "char", string: "名称", sortable: true},
+            active: {type: "boolean", string: "有效", sortable: true},
+            state: {type: "selection", string: "状态", sortable: true},
+            document_date: {type: "date", string: "单据日期", sortable: true},
+            write_date: {type: "datetime", string: "更新时间", sortable: true},
+            amount: {type: "float", string: "金额", sortable: true},
+            unsorted: {type: "char", string: "不可排序", sortable: false},
+            hidden: {type: "char", string: "隐藏字段", sortable: true, invisible: true},
+            secret_token: {type: "char", string: "密钥", sortable: true},
+        };
+        var state = {
+            id: "root", model: "res.partner", data: [], count: 0,
+            domain: [], context: {}, groupedBy: ["document_date:week", "state"],
+        };
+        var raw = _.extend({}, state, {fields: fields, fieldsInfo: {list: {}}});
+        var groupableFields = _.map(fields, function (field, name) {
+            return _.extend({name: name}, field);
+        });
+        var controller = {
+            handle: "root",
+            activeActions: {},
+            renderer: {},
+            searchView: {
+                query: {},
+                groupby_menu: {groupableFields: groupableFields},
+                fields: fields,
+            },
+            model: {get: function (_handle, options) { return options && options.raw ? raw : state; }},
+            getSelectedIds: function () { return []; },
+        };
+
+        var view = Adapter.buildSnapshot({
+            controller: controller, controllerId: "list-controller", viewType: "list",
+            action: {id: 1}, menu: false, hostRevision: 1, snapshotId: "list-snapshot",
+            surface: "dock", sensitiveFields: [],
+        });
+        var groupFields = view.capabilities.groupFields;
+
+        assert.ok(view.capabilities.group);
+        assert.deepEqual(_.keys(groupFields).sort(), [
+            "active", "document_date", "name", "partner_id", "state", "write_date",
+        ]);
+        assert.strictEqual(groupFields.partner_id.type, "many2one");
+        assert.strictEqual(groupFields.name.type, "char");
+        assert.strictEqual(groupFields.active.type, "boolean");
+        assert.strictEqual(groupFields.state.type, "selection");
+        assert.deepEqual(groupFields.document_date.intervals, [
+            "day", "week", "month", "quarter", "year",
+        ]);
+        assert.deepEqual(groupFields.write_date.intervals, [
+            "day", "week", "month", "quarter", "year",
+        ]);
+        assert.deepEqual(view.capabilities.groupBy, [
+            {field: "document_date", interval: "week"}, {field: "state"},
+        ]);
+
+        controller.searchView.groupby_menu.groupableFields = [
+            _.extend({name: "secret_token"}, fields.secret_token),
+        ];
+        raw.groupedBy = ["secret_token"];
+        view = Adapter.buildSnapshot({
+            controller: controller, controllerId: "list-controller", viewType: "list",
+            action: {id: 1}, menu: false, hostRevision: 2, snapshotId: "safe-empty-snapshot",
+            surface: "dock", sensitiveFields: [],
+        });
+        assert.ok(view.capabilities.group, "原生菜单可用性不依赖可暴露字段数量");
+        assert.deepEqual(view.capabilities.groupFields, {});
+        assert.deepEqual(view.capabilities.groupBy, []);
+    });
+
+    QUnit.test("form snapshots do not expose native grouping", function (assert) {
+        assert.expect(3);
+        var state = snapshot(fakeController());
+        assert.notOk(state.capabilities.group);
+        assert.deepEqual(state.capabilities.groupFields, {});
+        assert.deepEqual(state.capabilities.groupBy, []);
+    });
+
+    QUnit.test("group validation normalizes dates and rejects invalid target states", function (assert) {
+        assert.expect(9);
+        var state = {
+            capabilities: {
+                groupFields: {
+                    name: {type: "char", intervals: []},
+                    document_date: {
+                        type: "date", intervals: ["day", "week", "month", "quarter", "year"],
+                    },
+                    state: {type: "selection", intervals: []},
+                    active: {type: "boolean", intervals: []},
+                },
+            },
+        };
+        assert.deepEqual(Adapter.validateGroupBy(state, [
+            {field: "name"}, {field: "document_date"},
+        ]), [{field: "name"}, {field: "document_date", interval: "month"}]);
+        assert.deepEqual(Adapter.validateGroupBy(state, []), []);
+        assert.throws(function () { Adapter.validateGroupBy(state, "name"); }, function (error) {
+            return error.code === "invalid_group_by";
+        });
+        assert.throws(function () {
+            Adapter.validateGroupBy(state, [
+                {field: "name"}, {field: "state"}, {field: "active"}, {field: "document_date"},
+            ]);
+        }, function (error) { return error.code === "invalid_group_by"; });
+        assert.throws(function () { Adapter.validateGroupBy(state, [{field: ""}]); }, function (error) {
+            return error.code === "invalid_group_field";
+        });
+        assert.throws(function () { Adapter.validateGroupBy(state, [{field: "unknown"}]); }, function (error) {
+            return error.code === "invalid_group_field";
+        });
+        assert.throws(function () {
+            Adapter.validateGroupBy(state, [{field: "name"}, {field: "name"}]);
+        }, function (error) { return error.code === "invalid_group_field"; });
+        assert.throws(function () {
+            Adapter.validateGroupBy(state, [{field: "name", interval: "month"}]);
+        }, function (error) { return error.code === "invalid_group_interval"; });
+        assert.throws(function () {
+            Adapter.validateGroupBy(state, [{field: "document_date", interval: "hour"}]);
+        }, function (error) { return error.code === "invalid_group_interval"; });
+    });
+
+    QUnit.test("native grouping replaces only group facets and strips favorite group_by", function (assert) {
+        assert.expect(25);
+        var resets = 0;
+        var added = [];
+        var favoriteContext = {group_by: ["legacy"], orderedBy: [{name: "name", asc: false}]};
+        var favoriteField = {
+            get_context: function () { return favoriteContext; },
+            get_groupby: function () { return [{group_by: ["legacy"]}]; },
+            get_domain: function () { return [["active", "=", true]]; },
+        };
+        var favoriteFacet = {
+            attributes: {is_custom_filter: true, field: favoriteField},
+            get: function (name) { return this.attributes[name]; },
+        };
+        var filterFacet = {
+            attributes: {cat: "filterCategory"},
+            get: function (name) { return this.attributes[name]; },
+        };
+        var oldGroupFacet = {
+            attributes: {cat: "groupByCategory"},
+            get: function (name) { return this.attributes[name]; },
+        };
+        var facets = [favoriteFacet, filterFacet, oldGroupFacet];
+        var query = {
+            models: facets,
+            on: function () {},
+            each: function (callback) { facets.slice(0).forEach(callback); },
+            remove: function (facet, options) {
+                assert.ok(options.silent, "旧分组 facet 被静默移除");
+                facets.splice(facets.indexOf(facet), 1);
+            },
+            add: function (values, options) {
+                assert.ok(options.silent, "新分组 facet 被静默加入");
+                added.push(values[0]);
+            },
+            trigger: function (eventName) {
+                assert.strictEqual(eventName, "reset");
+                resets += 1;
+            },
+        };
+        var menu = {
+            fields: {
+                state: {type: "selection", string: "状态", sortable: true},
+                document_date: {type: "date", string: "单据日期", sortable: true},
+            },
+            groupableFields: [
+                {name: "state", type: "selection", string: "状态", sortable: true},
+                {name: "document_date", type: "date", string: "单据日期", sortable: true},
+            ],
+            intervalOptions: [
+                {description: "日", optionId: "day", groupId: 1},
+                {description: "月", optionId: "month", groupId: 1},
+            ],
+            items: [],
+            presentedFields: [],
+            _prepareItem: function (item) {
+                item.hasOptions = item.isDate;
+                item.defaultOptionId = "month";
+            },
+        };
+        var searchView = {
+            query: query,
+            groupby_menu: menu,
+            fields: menu.fields,
+            intervalMapping: [], periodMapping: [], groupbysMapping: [], groupsMapping: [],
+        };
+        var controller = {searchView: searchView};
+        var result = Adapter.applyGroupBy(controller, [
+            {field: "state"}, {field: "document_date", interval: "day"},
+        ]);
+
+        assert.deepEqual(result, [
+            {field: "state"}, {field: "document_date", interval: "day"},
+        ]);
+        assert.strictEqual(resets, 1);
+        assert.strictEqual(facets.indexOf(filterFacet), 1, "普通筛选 facet 保留");
+        assert.strictEqual(facets.indexOf(favoriteFacet), 0, "收藏 facet 保留");
+        assert.deepEqual(favoriteField.get_domain(), [["active", "=", true]]);
+        assert.strictEqual(favoriteField.get_context().group_by, undefined);
+        assert.deepEqual(favoriteField.get_context().orderedBy, favoriteContext.orderedBy);
+        assert.deepEqual(favoriteField.get_groupby(), []);
+        assert.strictEqual(added.length, 2);
+        assert.deepEqual(_.map(added, function (facet) {
+            return facet.values[0].value.attrs.fieldName;
+        }), ["state", "document_date"]);
+        assert.deepEqual(_.pluck(menu.items, "fieldName"), ["state", "document_date"]);
+        assert.strictEqual(searchView.groupbysMapping.length, 2);
+        assert.strictEqual(_.findWhere(menu.items, {fieldName: "document_date"}).currentOptionId, "day");
+
+        added = [];
+        Adapter.applyGroupBy(controller, [
+            {field: "state"}, {field: "document_date", interval: "month"},
+        ]);
+        assert.strictEqual(menu.items.length, 2, "重复应用不会新增菜单项");
+        assert.strictEqual(searchView.groupbysMapping.length, 2, "重复应用会复用原生映射");
+
+        added = [];
+        Adapter.applyGroupBy(controller, []);
+        assert.strictEqual(searchView.groupbysMapping.length, 2, "清除后保留原生菜单映射且不重复创建");
+        assert.deepEqual(added, []);
+    });
+
+    QUnit.test("kanban group command reloads and returns refreshed normalized state", function (assert) {
+        assert.expect(8);
+        var done = assert.async();
+        var resetCount = 0;
+        var reloaded = false;
+        var current = {
+            interactive: true,
+            controller: {viewType: "kanban"},
+            capabilities: {
+                group: true,
+                groupFields: {
+                    document_date: {
+                        type: "date", intervals: ["day", "week", "month", "quarter", "year"],
+                    },
+                },
+                groupBy: [],
+            },
+        };
+        var next = _.extend({}, current, {
+            snapshotId: "grouped", hostRevision: 4,
+            capabilities: _.extend({}, current.capabilities, {
+                groupBy: [{field: "document_date", interval: "month"}],
+            }),
+        });
+        var searchView = {
+            fields: {document_date: {type: "date", string: "单据日期", sortable: true}},
+            groupby_menu: {
+                fields: {document_date: {type: "date", string: "单据日期", sortable: true}},
+                groupableFields: [{
+                    name: "document_date", type: "date", string: "单据日期", sortable: true,
+                }],
+                intervalOptions: [], items: [], presentedFields: [],
+                _prepareItem: function () {},
+            },
+            intervalMapping: [], periodMapping: [], groupbysMapping: [], groupsMapping: [],
+            query: {
+                on: function () {}, each: function () {}, remove: function () {},
+                add: function (_facets, options) { assert.ok(options.silent); },
+                trigger: function (name) {
+                    assert.strictEqual(name, "reset");
+                    resetCount += 1;
+                },
+            },
+        };
+        var controller = {
+            searchView: searchView,
+            reload: function () { reloaded = true; return $.when(); },
+        };
+        Commands.execute({
+            getController: function () { return controller; },
+            getSnapshot: function () { return current; },
+            refresh: function () { return $.when(next); },
+        }, {
+            tool: "odoo.apply_group",
+            arguments: {groupBy: [{field: "document_date"}]},
+        }).then(function (result) {
+            assert.strictEqual(resetCount, 1);
+            assert.ok(reloaded);
+            assert.ok(result.applied);
+            assert.deepEqual(result.groupBy, [{field: "document_date", interval: "month"}]);
+            assert.strictEqual(result.snapshotId, "grouped");
+            assert.strictEqual(result.hostRevision, 4);
+            done();
+        });
+    });
+
+    QUnit.test("group command uses stable unavailable code outside list and kanban", function (assert) {
+        assert.expect(1);
+        var done = assert.async();
+        Commands.execute({
+            getController: function () { return {}; },
+            getSnapshot: function () {
+                return {
+                    interactive: true, controller: {viewType: "form"},
+                    capabilities: {group: false, groupFields: {}, groupBy: []},
+                };
+            },
+        }, {
+            tool: "odoo.apply_group", arguments: {groupBy: []},
+        }).then(function () {
+            assert.ok(false, "Form 视图不应执行分组");
+            done();
+        }, function (error) {
+            assert.strictEqual(error.code, "group_unavailable");
+            done();
+        });
     });
 
     QUnit.test("kanban snapshot exposes only visible record and control tokens", function (assert) {

@@ -56,6 +56,13 @@
         <field name="description">在当前列表或看板搜索视图中添加一个可见原生筛选，并返回匹配记录候选。</field>
         <field name="sequence">20</field>
     </record>
+    <record id="command_apply_group" model="agui.chat.command">
+        <field name="name">设置当前视图分组</field>
+        <field name="code">odoo.apply_group</field>
+        <field name="command_type">page</field>
+        <field name="description">设置当前列表或看板搜索视图的完整原生分组状态，空数组表示清除分组。</field>
+        <field name="sequence">21</field>
+    </record>
     <record id="command_open_record" model="agui.chat.command">
         <field name="name">打开记录</field>
         <field name="code">odoo.open_record</field>

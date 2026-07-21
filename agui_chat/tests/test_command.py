@@ -4,7 +4,11 @@ from psycopg2 import IntegrityError
 from odoo.exceptions import ValidationError
 from odoo.tests.common import TransactionCase
 
-from ..models.agui_chat_config import HOST_COMMAND_NAMES
+from ..models.agui_chat_config import (
+    COMMAND_CATALOG_HASH,
+    COMMAND_CATALOG_REVISION,
+    HOST_COMMAND_NAMES,
+)
 
 
 PAGE_COMMAND_XML_IDS = {
@@ -15,6 +19,7 @@ PAGE_COMMAND_XML_IDS = {
     "odoo.open_menu": "command_open_menu",
     "odoo.search_menu": "command_search_menu",
     "odoo.apply_filter": "command_apply_filter",
+    "odoo.apply_group": "command_apply_group",
     "odoo.open_record": "command_open_record",
     "odoo.open_create": "command_open_create",
     "odoo.open_x2many_record": "command_open_x2many_record",
@@ -34,6 +39,13 @@ PAGE_COMMAND_XML_IDS = {
 
 
 class TestAguiChatCommand(TransactionCase):
+
+    def test_catalog_revision_and_hash_are_synchronized(self):
+        self.assertEqual(COMMAND_CATALOG_REVISION, 11)
+        self.assertEqual(
+            COMMAND_CATALOG_HASH,
+            "5e9686ce3ed1fb4131215d3c9fca997fda7610bb70cb1468f2e5564ef3f99306",
+        )
 
     def test_page_master_data_matches_host_catalog(self):
         commands = self.env["agui.chat.command"].with_context(active_test=False).search([

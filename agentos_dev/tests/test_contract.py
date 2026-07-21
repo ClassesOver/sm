@@ -39,8 +39,8 @@ def odoo_contract():
 
 def test_agentos_contract_matches_odoo_source():
     values, digest = odoo_contract()
-    assert values["COMMAND_CATALOG_REVISION"] == 10
-    assert digest == "45b3b79f39f02b93936c7f5ab8b28c2c158b40d6edb8ebc3950b54f32b18d7b0"
+    assert values["COMMAND_CATALOG_REVISION"] == 11
+    assert digest == "5e9686ce3ed1fb4131215d3c9fca997fda7610bb70cb1468f2e5564ef3f99306"
     assert app.PROTOCOL == values["PROTOCOL"]
     assert app.BUNDLE_VERSION == values["MODULE_VERSION"]
     assert app.COMMAND_CATALOG_HASH == digest
@@ -92,6 +92,16 @@ def test_agent_instructions_enforce_tool_result_truthfulness():
     assert "失败或部分成功时必须准确说明" in instructions
     assert "第一个响应只能调用 odoo.enter_edit_mode" in instructions
     assert "不得先输出文字或询问字段" in instructions
+
+
+def test_agent_instructions_treat_grouping_as_complete_host_state():
+    instructions = "\n".join(app.assistant.instructions)
+
+    assert "必须先读取最新快照的 capabilities.groupFields" in instructions
+    assert "groupBy 是按顺序排列的完整目标状态" in instructions
+    assert "明确要求清除分组时才能提交空数组" in instructions
+    assert "只能依据工具返回的 groupBy 和新快照" in instructions
+    assert "odoo.apply_filter 仍只负责筛选" in instructions
 
 
 def test_agent_instructions_defer_current_view_report_workflow_to_skill():

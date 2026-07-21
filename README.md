@@ -18,7 +18,7 @@ HRP 提供 `/agui_chat/config`、v2 界面会话、浏览器宿主命令策略�
 不开放通用导入执行接口。
 
 配置 `runtime_url` 后，HRP 会根据其中的 `/agui` 路径推导对应的 `/config` 握手地址。
-部署匹配的 `12.0.8.8.2` 声明后，再启用灰度开关。详情参见
+部署匹配的 `12.0.8.8.3` 声明后，再启用灰度开关。详情参见
 [协议说明](docs/agui_odoo_protocol.md)和[生产部署指南](docs/agui_chat_production.md)。
 
 前端验证：

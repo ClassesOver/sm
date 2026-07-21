@@ -35,6 +35,9 @@ interface ToolResult {
   discarded?: boolean
   saved?: boolean
   undone?: boolean
+  groupBy?: Array<{ field: string, interval?: string }>
+  snapshotId?: string
+  hostRevision?: number
 }
 
 function minimalPdf(): Buffer {
@@ -97,6 +100,27 @@ async function openPartnerList(page: Page) {
   })
   await expect(page.locator('.o_list_view')).toBeVisible()
   await expect.poll(() => currentHostState(page).then((state) => state.interactive)).toBe(true)
+}
+
+async function openTestDocumentList(page: Page, groupBy: string[] = []) {
+  await page.evaluate(async (grouping) => {
+    const webClient = (globalThis as any).odoo.__DEBUG__.services['web.web_client']
+    await Promise.resolve(webClient.do_action('agui_chat_test.action_test_document', {
+      additional_context: grouping.length ? { group_by: grouping } : {}
+    }))
+  }, groupBy)
+  await expect(page.locator('.o_list_view')).toBeVisible()
+  await expect.poll(() => currentHostState(page).then((state) => state.model))
+    .toBe('agui.chat.test.document')
+}
+
+async function currentListGroupBy(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const webClient = (globalThis as any).odoo.__DEBUG__.services['web.web_client']
+    const controller = webClient.action_manager.getCurrentController().widget
+    const raw = controller.model.get(controller.handle, { raw: true }) || {}
+    return raw.groupedBy || []
+  })
 }
 
 async function openFirstPartner(page: Page, edit = false) {
@@ -560,6 +584,140 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
       resId: documentId,
       mode: 'readonly',
       name: marker
+    })
+  })
+
+  test('原生分组完整替换当前状态并与筛选跨轮保留', async ({ page }) => {
+    const marker = `AGUI-E2E-分组-${Date.now()}`
+    await rpc<number>(page, 'agui.chat.test.document', 'create', [{
+      name: `${marker}-启用`,
+      required_code: `${marker}-A`,
+      enabled: true,
+      priority: 'high',
+      document_type: 'standard',
+      domain_key: 'standard',
+      document_date: '2043-05-18',
+      document_datetime: '2043-05-18 08:30:00'
+    }])
+    await rpc<number>(page, 'agui.chat.test.document', 'create', [{
+      name: `${marker}-停用`,
+      required_code: `${marker}-B`,
+      enabled: false,
+      priority: 'low',
+      document_type: 'special',
+      domain_key: 'special',
+      document_date: '2042-04-17',
+      document_datetime: '2042-04-17 07:20:00'
+    }])
+    await openTestDocumentList(page, ['document_type'])
+    await expect.poll(() => currentListGroupBy(page)).toEqual(['document_type'])
+
+    const initial = await currentHostState(page)
+    expect(initial.capabilities.group).toBe(true)
+    expect(initial.capabilities.groupFields).toMatchObject({
+      candidate_id: { type: 'many2one', intervals: [] },
+      name: { type: 'char', intervals: [] },
+      enabled: { type: 'boolean', intervals: [] },
+      priority: { type: 'selection', intervals: [] },
+      document_date: {
+        type: 'date', intervals: ['day', 'week', 'month', 'quarter', 'year']
+      },
+      document_datetime: {
+        type: 'datetime', intervals: ['day', 'week', 'month', 'quarter', 'year']
+      }
+    })
+    expect(initial.capabilities.groupBy).toEqual([{ field: 'document_type' }])
+
+    const threadId = `thread-group-${Date.now()}`
+    const runId = `run-group-${Date.now()}`
+    const executions: Array<{
+      result: ToolResult,
+      call: Record<string, any>
+    }> = []
+    const applyGroup = async (groupBy: Array<{ field: string, interval?: string }>) => {
+      const before = await currentHostState(page)
+      const execution = await executeTool(page, 'odoo.apply_group', { groupBy }, {
+        threadId,
+        runId
+      })
+      executions.push(execution as { result: ToolResult, call: Record<string, any> })
+      expect(execution.call.arguments).toMatchObject({
+        target: {
+          snapshotId: before.snapshotId,
+          hostRevision: before.hostRevision
+        }
+      })
+      expect(execution.decision.needs_confirmation).not.toBe(true)
+      expect(execution.result).toMatchObject({
+        ok: true,
+        operation: 'odoo.apply_group',
+        applied: true,
+        groupBy
+      })
+      const nativeGroupBy = groupBy.map((item) =>
+        item.interval ? `${item.field}:${item.interval}` : item.field
+      )
+      await expect.poll(() => currentListGroupBy(page)).toEqual(nativeGroupBy)
+      return execution
+    }
+
+    const fieldCases: Array<{ field: string, interval?: string }> = [
+      { field: 'candidate_id' },
+      { field: 'name' },
+      { field: 'enabled' },
+      { field: 'priority' },
+      { field: 'document_date', interval: 'month' },
+      { field: 'document_datetime', interval: 'week' }
+    ]
+    for (const group of fieldCases) await applyGroup([group])
+
+    for (const interval of ['day', 'week', 'month', 'quarter', 'year']) {
+      await applyGroup([{ field: 'document_date', interval }])
+    }
+    await applyGroup([
+      { field: 'document_type' },
+      { field: 'enabled' },
+      { field: 'document_datetime', interval: 'quarter' }
+    ])
+
+    const filteredBeforeGroup = await executeTool(page, 'odoo.apply_filter', {
+      domain: [['name', 'ilike', marker]],
+      label: '分组端测记录'
+    }, { threadId, runId })
+    expect(filteredBeforeGroup.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.apply_filter',
+      count: 2
+    })
+    expect(filteredBeforeGroup.call.context).toMatchObject({ threadId })
+    await applyGroup([{ field: 'priority' }])
+    await expect.poll(() => currentHostState(page).then(
+      (state) => state.capabilities.totalCount
+    )).toBe(2)
+
+    await applyGroup([])
+    await expect.poll(() => currentHostState(page).then(
+      (state) => state.capabilities.totalCount
+    )).toBe(2)
+
+    await applyGroup([{ field: 'enabled' }])
+    const filteredAfterGroup = await executeTool(page, 'odoo.apply_filter', {
+      domain: [['name', 'ilike', marker]],
+      label: '分组后筛选端测记录'
+    }, { threadId, runId })
+    expect(filteredAfterGroup.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.apply_filter',
+      count: 2
+    })
+    expect(filteredAfterGroup.call.context).toMatchObject({ threadId })
+    await expect.poll(() => currentListGroupBy(page)).toEqual(['enabled'])
+
+    expect(executions.map((execution) => execution.call.context.threadId))
+      .toEqual(executions.map(() => threadId))
+    expect(executions[0].call.arguments.target).toMatchObject({
+      snapshotId: initial.snapshotId,
+      hostRevision: initial.hostRevision
     })
   })
 

@@ -19,6 +19,7 @@ AGENT_INSTRUCTIONS = [
     "首次 odoo.search_menu 返回 matchType=none 且 candidates 为空后，只能在紧邻续跑的“当前用户可见 HRP 菜单”与搜索结果目录 ID、版本一致且 complete=true 时做语义判断；每次只能选择 paths 中原样存在的一个完整 fullPath 重新调用 odoo.search_menu，最多尝试两个不同 fullPath。complete=false、目录缺失或版本不一致时必须停止并请用户用 @ 选择；不得截取、拼接或构造路径，不得使用目录顺序推断目标，不得从目录生成 menuId 或 actionId。任一次重搜返回多个候选时立即停止，全部无结果时停止并请用户用 @ 选择。",
     "odoo.search_menu 或 odoo.open_menu 返回 stale_menu_catalog 时，只能用最新 menuTarget 对原始 query 重试一次；menu_action_conflict、menu_search_required 或其他导航失败必须停止并准确报告，不得自动选择其他菜单。其他意图仍只能操作当前 action。",
     '筛选只能使用当前快照 capabilities.filterFields 中的字段和运算符，提交 JSON domain 与简短可见标签；即使只有一个条件也必须使用条件列表，例如 [["id", "=", 1]]；禁止字符串 domain、点号字段和表达式。',
+    "用户要求设置、切换或清除当前分组时，必须先读取最新快照的 capabilities.groupFields；odoo.apply_group 的 groupBy 是按顺序排列的完整目标状态，不是增量修改，只有用户明确要求清除分组时才能提交空数组。分组成功后只能依据工具返回的 groupBy 和新快照说明页面状态，不得自行声称生效。odoo.apply_filter 仍只负责筛选，筛选与分组可以连续多轮执行，但每轮都必须使用最新 viewTarget。",
     "严格区分搜索、查看和编辑记录。用户仅要求搜索、筛选或查找记录时，只调用 odoo.apply_filter；无论命中数量多少都必须停止，不得调用 odoo.open_record。只有用户明确要求打开、查看或编辑记录时，才先按名称调用 odoo.apply_filter：唯一命中后立即使用返回的记录 token 调用 odoo.open_record，多条命中时停止并等待用户选择。打开或查看必须使用 readonly 模式；只有用户明确要求编辑或修改时才使用 edit 模式，不得因唯一命中自行升级用户意图。“已选 HRP 记录候选项”只能在其 snapshotId 和 hostRevision 仍匹配时使用。若工具返回 policy_denied，应准确说明服务器策略拒绝了操作，不得归因于视图或 token。",
     "仅当用户消息明确要求创建，且已完成已选菜单导航（如有）后，才调用 odoo.open_create 进入空白原生新建表单并等待新快照；不得从菜单名称中的“新建”或“创建”推断创建意图。随后只能按新快照真实可见可写字段和控件继续暂存、校验与保存，不得假设固定 action、view、模型或字段。",
     "跨模型操作只能使用新快照中真实可见的 Kanban 控件 token 逐步导航；控件语义不明确或存在多个合理路径时请用户选择，不能猜测。",

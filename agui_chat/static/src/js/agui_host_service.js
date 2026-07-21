@@ -41,7 +41,8 @@ odoo.define("agui_chat.host_service", function (require) {
             fields: {},
             capabilities: {
                 create: false, open: false, edit: false, filter: false,
-                totalCount: 0, filterFields: {}, records: [], controls: [], x2many: [],
+                group: false, totalCount: 0, filterFields: {}, groupFields: {}, groupBy: [],
+                records: [], controls: [], x2many: [],
             },
         };
         if (error && error.code) {

@@ -5,6 +5,7 @@ export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   'odoo.search_menu': '搜索菜单',
   'odoo.open_menu': '打开菜单',
   'odoo.apply_filter': '筛选当前视图',
+  'odoo.apply_group': '设置当前视图分组',
   'odoo.open_record': '打开记录',
   'odoo.open_create': '新建记录',
   'odoo.enter_edit_mode': '进入编辑模式',

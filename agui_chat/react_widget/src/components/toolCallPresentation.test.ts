@@ -19,6 +19,11 @@ describe('工具调用展示模型', () => {
     expect(getToolCallPresentation({ tool_name: 'custom.audit' }).displayName).toBe('custom.audit')
   })
 
+  it('展示原生视图分组工具名称', () => {
+    expect(getToolCallPresentation({ name: 'odoo.apply_group' }).displayName)
+      .toBe('设置当前视图分组')
+  })
+
   it('统计处理结果并提取撤销状态', () => {
     const presentation = getToolCallPresentation({
       name: 'odoo.patch_current_form',

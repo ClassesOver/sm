@@ -213,6 +213,20 @@ export interface FilterFieldCapability {
   operators: string[]
 }
 
+export type GroupInterval = 'day' | 'week' | 'month' | 'quarter' | 'year'
+
+export interface GroupFieldCapability {
+  name: string
+  string: string
+  type: 'many2one' | 'char' | 'boolean' | 'selection' | 'date' | 'datetime'
+  intervals: GroupInterval[]
+}
+
+export interface GroupBySpec {
+  field: string
+  interval?: GroupInterval
+}
+
 export interface ViewControlCapability {
   token: string
   type: 'open' | 'edit' | 'action' | 'object'
@@ -258,8 +272,11 @@ export interface ViewCapabilities {
   open: boolean
   edit: boolean
   filter: boolean
+  group: boolean
   totalCount: number
   filterFields: Record<string, FilterFieldCapability>
+  groupFields: Record<string, GroupFieldCapability>
+  groupBy: GroupBySpec[]
   records: RecordCandidate[]
   controls: ViewControlCapability[]
   x2many: X2ManyCapability[]
@@ -408,6 +425,15 @@ export interface FilterResult {
   domain: unknown[]
   count: number
   candidates: RecordCandidate[]
+  snapshotId: string
+  hostRevision: number
+}
+
+export interface GroupResult {
+  ok: boolean
+  operation: 'odoo.apply_group'
+  applied: boolean
+  groupBy: GroupBySpec[]
   snapshotId: string
   hostRevision: number
 }

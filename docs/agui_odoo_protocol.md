@@ -14,8 +14,8 @@ configured AgentOS protocol endpoint must agree on:
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.8.2",
-  "bundle_version": "12.0.8.8.2",
+  "module_version": "12.0.8.8.3",
+  "bundle_version": "12.0.8.8.3",
   "command_catalog_hash": "sha256"
 }
 ```
@@ -88,6 +88,7 @@ HRP publishes standard AG-UI client tool schemas in the current
 - `odoo.search_menu`
 - `odoo.open_menu`
 - `odoo.apply_filter`
+- `odoo.apply_group`
 - `odoo.open_record`
 - `odoo.open_create`
 - `odoo.enter_edit_mode`
@@ -108,6 +109,110 @@ contains `catalogId` and `catalogRevision`. Commands bound to the current view
 carry the full target with `controllerId`, `dataPointId`, `model`, and `resId`.
 Missing or stale target members fail closed. The server idempotency binding also
 includes the menu catalog identity when present.
+
+List/Kanban snapshots expose native grouping as host-owned capabilities:
+
+```json
+{
+  "group": true,
+  "groupFields": {
+    "document_type": {
+      "name": "document_type",
+      "string": "单据类型",
+      "type": "selection",
+      "intervals": []
+    },
+    "document_date": {
+      "name": "document_date",
+      "string": "单据日期",
+      "type": "date",
+      "intervals": ["day", "week", "month", "quarter", "year"]
+    }
+  },
+  "groupBy": [{"field": "document_date", "interval": "month"}]
+}
+```
+
+`groupFields` contains only sortable, non-sensitive fields exposed by the native
+SearchView Group By menu. Supported types are `many2one`, `char`, `boolean`,
+`selection`, `date`, and `datetime`. Form views and views with grouping disabled
+return `group: false`, an empty field map, and an empty current state.
+
+`odoo.apply_group` accepts the exact current `viewTarget` and a required
+`groupBy` array with at most three items. Each item requires `field`; date and
+datetime items may also provide `interval` as `day`, `week`, `month`, `quarter`,
+or `year`, with `month` as the default. The array replaces the complete current
+grouping in the given order; `[]` clears grouping. It is never an incremental
+add/remove operation.
+
+The page command is declared with this complete JSON Schema:
+
+```json
+{
+  "name": "odoo.apply_group",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["target", "groupBy"],
+    "properties": {
+      "target": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshotId",
+          "hostRevision",
+          "controllerId",
+          "dataPointId",
+          "model",
+          "resId"
+        ],
+        "properties": {
+          "snapshotId": {"type": "string"},
+          "hostRevision": {"type": "integer"},
+          "controllerId": {"type": "string"},
+          "dataPointId": {"type": ["string", "boolean"]},
+          "model": {"type": ["string", "boolean"]},
+          "resId": {"type": ["integer", "boolean"]}
+        }
+      },
+      "groupBy": {
+        "type": "array",
+        "maxItems": 3,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["field"],
+          "properties": {
+            "field": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "interval": {
+              "type": "string",
+              "enum": ["day", "week", "month", "quarter", "year"]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The host removes only `groupByCategory` facets, reuses or creates native
+`Filter`/`FilterGroup` mappings and menu items, updates date intervals, and
+triggers one query reset. Other filter facets, domains, ordering, and context are
+preserved. An active favorite keeps its domain, ordering, and other context, but
+its own `group_by` is stripped so it cannot overwrite the requested grouping.
+The host never writes `BasicModel.groupedBy` directly.
+
+The command is a read-level page command, is not a member of `WRITE_COMMANDS`,
+and does not require write confirmation. Stable grouping failures are
+`group_unavailable`, `invalid_group_by`, `invalid_group_field`, and
+`invalid_group_interval`. A successful result returns `applied: true`, the
+normalized effective `groupBy`, and the refreshed `snapshotId` and
+`hostRevision`.
 
 Navigation without an explicit `@` selection is available only when both menu
 tools are declared. The agent first calls `odoo.search_menu` with the user's

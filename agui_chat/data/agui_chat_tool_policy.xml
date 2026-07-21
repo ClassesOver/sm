@@ -71,6 +71,14 @@
         <field name="confirmation_mode">never</field>
         <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
     </record>
+    <record id="policy_group_employee" model="agui.chat.tool.policy">
+        <field name="name">设置当前员工视图分组</field>
+        <field name="tool_name">odoo.apply_group</field>
+        <field name="access_level">read</field>
+        <field name="model_name">hr.employee</field>
+        <field name="confirmation_mode">never</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
     <record id="policy_stage_current_form" model="agui.chat.tool.policy">
         <field name="name">暂存当前可见表单字段</field>
         <field name="tool_name">odoo.stage_current_form</field>

@@ -124,6 +124,27 @@ odoo.define("agui_chat.command_registry", function (require) {
             }, ["domain", "label"]),
         },
         {
+            name: "odoo.apply_group",
+            description: "设置当前 List 或 Kanban SearchView 的完整原生分组状态。",
+            parameters: schema({
+                groupBy: {
+                    type: "array", maxItems: 3,
+                    items: {
+                        type: "object",
+                        additionalProperties: false,
+                        required: ["field"],
+                        properties: {
+                            field: {type: "string", minLength: 1, maxLength: 128},
+                            interval: {
+                                type: "string",
+                                enum: ["day", "week", "month", "quarter", "year"],
+                            },
+                        },
+                    },
+                },
+            }, ["groupBy"]),
+        },
+        {
             name: "odoo.open_record",
             description: "使用当前快照提供的记录 token 打开记录，可进入只读或编辑态。",
             parameters: schema({
@@ -526,6 +547,34 @@ odoo.define("agui_chat.command_registry", function (require) {
                 domain: domain,
                 count: capabilities.totalCount || 0,
                 candidates: capabilities.records || [],
+                snapshotId: nextSnapshot.snapshotId,
+                hostRevision: nextSnapshot.hostRevision,
+            };
+        });
+    };
+
+    COMMANDS["odoo.apply_group"] = function (context, args) {
+        var snapshot = context.getSnapshot();
+        var controller = context.getController();
+        var groupBy;
+        if (!snapshot.interactive || !controller ||
+                ["list", "kanban"].indexOf(snapshot.controller.viewType) === -1 ||
+                !snapshot.capabilities || !snapshot.capabilities.group) {
+            throw commandError("group_unavailable", "当前视图不支持原生分组。");
+        }
+        try {
+            groupBy = Adapter.validateGroupBy(snapshot, args.groupBy);
+            Adapter.applyGroupBy(controller, groupBy);
+        } catch (error) {
+            throw commandError(error.code || "invalid_group_by", error.message || "分组参数未通过校验。");
+        }
+        return $.when(_.isFunction(controller.reload) ? controller.reload() : undefined).then(function () {
+            return context.refresh(controller, true);
+        }).then(function (nextSnapshot) {
+            return {
+                applied: true,
+                groupBy: nextSnapshot.capabilities && _.isArray(nextSnapshot.capabilities.groupBy) ?
+                    nextSnapshot.capabilities.groupBy : groupBy,
                 snapshotId: nextSnapshot.snapshotId,
                 hostRevision: nextSnapshot.hostRevision,
             };

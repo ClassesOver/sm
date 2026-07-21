@@ -2,6 +2,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
     "use strict";
 
     var fieldUtils = require("web.field_utils");
+    var searchInputs = require("web.search_inputs");
 
     var MAX_TEXT_CHARS = 4096;
     var MAX_VALUE_OBJECT_KEYS = 120;
@@ -15,6 +16,7 @@ odoo.define("agui_chat.model_adapter", function (require) {
     var MAX_FILTER_CONDITIONS = 20;
     var MAX_FILTER_LOGIC_DEPTH = 4;
     var MAX_FILTER_TEXT_CHARS = 240;
+    var MAX_GROUP_LEVELS = 3;
     var MAX_SNAPSHOT_BYTES = 256 * 1024;
     var SECRET_FIELD = /(password|passwd|secret|token|api[_-]?key|phone|mobile|bank|card|vat|tax[_-]?id|identity|id[_-]?card|身份证|银行卡|手机号|税号)/i;
     var FILTER_OPERATORS = {
@@ -31,6 +33,8 @@ odoo.define("agui_chat.model_adapter", function (require) {
         selection: ["=", "!=", "in", "not in"],
         many2one: ["=", "!=", "ilike", "not ilike", "child_of"],
     };
+    var GROUP_FIELD_TYPES = ["many2one", "char", "boolean", "selection", "date", "datetime"];
+    var GROUP_INTERVALS = ["day", "week", "month", "quarter", "year"];
 
     function clone(value) {
         if (value === undefined || value === null) {
@@ -823,10 +827,68 @@ odoo.define("agui_chat.model_adapter", function (require) {
         return result;
     }
 
+    function groupingAvailable(controller, viewType) {
+        var searchView = controller && controller.searchView;
+        var groupByMenu = searchView && searchView.groupby_menu;
+        return ["list", "kanban"].indexOf(viewType) !== -1 && !!(
+            searchView && searchView.query && groupByMenu &&
+            _.isArray(groupByMenu.groupableFields)
+        );
+    }
+
+    function searchGroupFields(controller, viewType, sensitiveFields) {
+        var searchView = controller && controller.searchView;
+        var groupByMenu = searchView && searchView.groupby_menu;
+        var result = {};
+        if (!groupingAvailable(controller, viewType)) {
+            return result;
+        }
+        _.each(groupByMenu.groupableFields, function (field) {
+            var name = field && field.name;
+            if (!name || !field.sortable || GROUP_FIELD_TYPES.indexOf(field.type) === -1 ||
+                    field.invisible === true || field.modifiers && field.modifiers.invisible ||
+                    SECRET_FIELD.test(name) || sensitiveFields.indexOf(name) !== -1) {
+                return;
+            }
+            result[name] = {
+                name: name,
+                string: field.string || name,
+                type: field.type,
+                intervals: ["date", "datetime"].indexOf(field.type) !== -1 ?
+                    GROUP_INTERVALS.slice(0) : [],
+            };
+        });
+        return result;
+    }
+
+    function currentGroupBy(state, fields) {
+        var seen = {};
+        return _.chain(state && state.groupedBy || []).map(function (value) {
+            var parts = String(value || "").split(":");
+            var field = parts.shift();
+            var meta = fields[field];
+            var interval;
+            if (!meta || seen[field]) {
+                return false;
+            }
+            seen[field] = true;
+            if (["date", "datetime"].indexOf(meta.type) !== -1) {
+                interval = parts[0];
+                if (GROUP_INTERVALS.indexOf(interval) === -1) {
+                    interval = "month";
+                }
+                return {field: field, interval: interval};
+            }
+            return {field: field};
+        }).compact().first(MAX_GROUP_LEVELS).value();
+    }
+
     function buildViewCapabilities(controller, snapshot, registerToken, sensitiveFields) {
         var state = getRecord(controller, false);
         var viewType = snapshot.controller.viewType;
         var active = controller.activeActions || {};
+        var canGroup = groupingAvailable(controller, viewType);
+        var groupFields = searchGroupFields(controller, viewType, sensitiveFields || []);
         var records = [];
         var controls = [];
         var widgets;
@@ -913,8 +975,11 @@ odoo.define("agui_chat.model_adapter", function (require) {
             open: viewType === "list" || viewType === "kanban",
             edit: !!active.edit,
             filter: !!(controller.searchView && _.isFunction(controller.searchView.updateFilters)),
+            group: canGroup,
             totalCount: state && (_.isNumber(state.count) ? state.count : state.data && state.data.length) || 0,
             filterFields: searchFilterFields(controller, sensitiveFields || []),
+            groupFields: groupFields,
+            groupBy: currentGroupBy(state, groupFields),
             records: records,
             controls: controls.slice(0, MAX_VIEW_CONTROLS),
             x2many: viewType === "form" ? x2ManyCapabilities(
@@ -1020,6 +1085,192 @@ odoo.define("agui_chat.model_adapter", function (require) {
             throw error;
         }
         return clone(domain);
+    }
+
+    function groupError(code, message) {
+        var error = new Error(message);
+        error.code = code;
+        return error;
+    }
+
+    function validateGroupBy(snapshot, groupBy) {
+        var fields = snapshot.capabilities && snapshot.capabilities.groupFields || {};
+        var seen = {};
+        if (!_.isArray(groupBy) || groupBy.length > MAX_GROUP_LEVELS) {
+            throw groupError("invalid_group_by", "分组必须是最多三级的数组。");
+        }
+        return _.map(groupBy, function (item) {
+            var field = item && _.isString(item.field) ? item.field.trim() : "";
+            var meta = fields[field];
+            var isDate;
+            var interval;
+            if (!_.isObject(item) || _.isArray(item) ||
+                    _.difference(_.keys(item), ["field", "interval"]).length) {
+                throw groupError("invalid_group_by", "分组项格式无效。");
+            }
+            if (!field || field.length > 128 || field.indexOf(".") !== -1 || !meta || seen[field]) {
+                throw groupError("invalid_group_field", "分组字段不可用或重复。");
+            }
+            seen[field] = true;
+            isDate = ["date", "datetime"].indexOf(meta.type) !== -1;
+            interval = item.interval;
+            if (!isDate && interval !== undefined) {
+                throw groupError("invalid_group_interval", "非日期字段不能指定日期粒度。");
+            }
+            if (isDate) {
+                interval = interval === undefined ? "month" : interval;
+                if (!_.isString(interval) || (meta.intervals || []).indexOf(interval) === -1) {
+                    throw groupError("invalid_group_interval", "日期分组粒度无效。");
+                }
+                return {field: field, interval: interval};
+            }
+            return {field: field};
+        });
+    }
+
+    function facetAttribute(facet, name) {
+        return facet && _.isFunction(facet.get) ? facet.get(name) :
+            facet && facet.attributes && facet.attributes[name];
+    }
+
+    function stripFavoriteGroupBy(searchView) {
+        searchView.query.each(function (facet) {
+            var field;
+            var getContext;
+            if (!facetAttribute(facet, "is_custom_filter")) {
+                return;
+            }
+            field = facetAttribute(facet, "field");
+            if (!field || field.__aguiGroupByWrapped) {
+                return;
+            }
+            getContext = field.get_context;
+            field.get_context = function () {
+                var context = _.isFunction(getContext) ? getContext.apply(this, arguments) : getContext;
+                if (!context || !_.isObject(context) || _.isArray(context)) {
+                    return context;
+                }
+                return _.omit(context, "group_by");
+            };
+            field.get_groupby = function () { return []; };
+            field.__aguiGroupByWrapped = true;
+        });
+    }
+
+    function groupMapping(searchView, fieldName) {
+        return _.find(searchView.groupbysMapping || [], function (mapping) {
+            return mapping.groupby && mapping.groupby.attrs &&
+                mapping.groupby.attrs.fieldName === fieldName;
+        });
+    }
+
+    function groupMenuItem(menu, fieldName) {
+        return _.find(menu.items || [], function (item) {
+            return item.fieldName === fieldName;
+        });
+    }
+
+    function ensureGroupMapping(searchView, spec) {
+        var menu = searchView.groupby_menu;
+        var mapping = groupMapping(searchView, spec.field);
+        var menuItem = groupMenuItem(menu, spec.field);
+        var groupEntry;
+        var groupby;
+        var group;
+        var meta;
+        var isDate;
+        var groupId;
+        var presented;
+        meta = searchView.fields && searchView.fields[spec.field] ||
+            _.findWhere(menu.groupableFields || [], {name: spec.field}) || {};
+        isDate = ["date", "datetime"].indexOf(meta.type) !== -1;
+        groupId = mapping && mapping.groupId || menuItem && menuItem.groupId ||
+            _.uniqueId("__group__");
+        if (!menuItem) {
+            menuItem = {
+                itemId: mapping && mapping.groupbyId || _.uniqueId("__groupby__"),
+                description: meta.string || spec.field,
+                fieldName: spec.field,
+                groupId: groupId,
+                isDate: isDate,
+                isActive: false,
+            };
+            if (_.isFunction(menu._prepareItem)) {
+                menu._prepareItem(menuItem);
+            }
+            menu.items = menu.items || [];
+            menu.items.push(menuItem);
+            presented = _.findWhere(menu.presentedFields || [], {name: spec.field});
+            if (presented) {
+                menu.presentedFields.splice(menu.presentedFields.indexOf(presented), 1);
+            }
+        }
+        if (!mapping) {
+            groupby = new searchInputs.Filter({attrs: {
+                context: "{'group_by':'" + spec.field + "'}",
+                name: meta.string || spec.field,
+                string: meta.string || spec.field,
+                fieldName: spec.field,
+                isDate: isDate,
+                modifiers: {},
+            }}, searchView);
+            group = new searchInputs.FilterGroup(
+                [groupby], searchView, searchView.intervalMapping, searchView.periodMapping
+            );
+            mapping = {groupbyId: menuItem.itemId, groupby: groupby, groupId: groupId};
+            searchView.groupbysMapping.push(mapping);
+            searchView.groupsMapping.push({groupId: groupId, group: group, category: "Group By"});
+        }
+        groupEntry = _.findWhere(searchView.groupsMapping || [], {groupId: mapping.groupId});
+        if (!groupEntry) {
+            group = new searchInputs.FilterGroup(
+                [mapping.groupby], searchView, searchView.intervalMapping, searchView.periodMapping
+            );
+            groupEntry = {groupId: mapping.groupId, group: group, category: "Group By"};
+            searchView.groupsMapping.push(groupEntry);
+        }
+        return {mapping: mapping, group: groupEntry.group, menuItem: menuItem};
+    }
+
+    function applyGroupBy(controller, groupBy) {
+        var searchView = controller && controller.searchView;
+        var query = searchView && searchView.query;
+        var facets = [];
+        if (!searchView || !searchView.groupby_menu || !query ||
+                !_.isFunction(query.each) || !_.isFunction(query.remove) ||
+                !_.isFunction(query.add) || !_.isFunction(query.trigger)) {
+            throw groupError("group_unavailable", "当前视图不支持原生分组。");
+        }
+        stripFavoriteGroupBy(searchView);
+        query.each(function (facet) {
+            if (facetAttribute(facet, "cat") === "groupByCategory") {
+                facets.push(facet);
+            }
+        });
+        _.each(facets, function (facet) {
+            query.remove(facet, {silent: true});
+        });
+        _.each(groupBy, function (spec) {
+            var native = ensureGroupMapping(searchView, spec);
+            var couple;
+            if (spec.interval) {
+                couple = _.findWhere(searchView.intervalMapping, {groupby: native.mapping.groupby});
+                if (!couple) {
+                    couple = {groupby: native.mapping.groupby, interval: spec.interval};
+                    searchView.intervalMapping.push(couple);
+                }
+                couple.interval = spec.interval;
+                native.menuItem.currentOptionId = spec.interval;
+            }
+            if (_.isFunction(native.group.updateIntervalMapping)) {
+                native.group.updateIntervalMapping(searchView.intervalMapping);
+            }
+            query.add([native.group.make_facet([
+                native.group.make_value(native.mapping.groupby),
+            ])], {silent: true});
+        });
+        query.trigger("reset");
+        return clone(groupBy);
     }
 
     function compactActionViews(views) {
@@ -2293,6 +2544,8 @@ odoo.define("agui_chat.model_adapter", function (require) {
         markStagedPatch: markStagedPatch,
         validateForm: validateForm,
         validateFilterDomain: validateFilterDomain,
+        validateGroupBy: validateGroupBy,
+        applyGroupBy: applyGroupBy,
         expandUniqueRecordCandidate: expandUniqueRecordCandidate,
         clone: clone,
     };

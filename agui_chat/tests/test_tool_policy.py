@@ -80,6 +80,17 @@ class TestDefaultReadPolicies(TransactionCase):
         ])
         self.assertFalse(authorization.policy_id)
 
+    def test_employee_group_policy_is_read_only_without_confirmation(self):
+        policy = self.env.ref("agui_chat.policy_group_employee")
+        decision = self.env["agui.chat.tool.policy"].evaluate(
+            "odoo.apply_group", {"target": {"model": "hr.employee"}},
+        )
+
+        self.assertEqual(policy.access_level, "read")
+        self.assertEqual(policy.confirmation_mode, "never")
+        self.assertTrue(decision["allowed"])
+        self.assertFalse(decision["requires_confirmation"])
+
 class TestHostArgumentNormalization(TransactionCase):
 
     def test_single_filter_condition_is_wrapped_as_a_domain(self):
@@ -587,7 +598,8 @@ class TestHostCommandAuthorization(TransactionCase):
 
     def test_new_navigation_commands_are_declared_but_default_denied(self):
         new_commands = {
-            "odoo.search_menu", "odoo.open_menu", "odoo.apply_filter", "odoo.open_record",
+            "odoo.search_menu", "odoo.open_menu", "odoo.apply_filter", "odoo.apply_group",
+            "odoo.open_record",
             "odoo.open_create", "odoo.enter_edit_mode", "odoo.activate_view_control",
             "odoo.open_x2many_record", "odoo.open_x2many_create",
             "odoo.prepare_x2many_import", "odoo.get_x2many_import_status",
@@ -613,6 +625,37 @@ class TestHostCommandAuthorization(TransactionCase):
             },
         })
         self.assertEqual(decision["code"], "command_disabled")
+
+    def test_group_command_is_read_only_and_requires_current_target(self):
+        self.config.write({
+            "enabled_commands": "odoo.apply_group",
+            "write_tools_enabled": False,
+        })
+        self.env["agui.chat.tool.policy"].create({
+            "name": "联系人视图分组",
+            "tool_name": "odoo.apply_group",
+            "access_level": "read",
+            "model_name": "res.partner",
+            "confirmation_mode": "never",
+        })
+        call = self._call("odoo.apply_group", "apply-group", {
+            "groupBy": [{"field": "company_id"}],
+        })
+
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command(call)
+        self.assertTrue(decision["ok"])
+        self.assertFalse(decision.get("needs_confirmation"))
+
+        missing_target = deepcopy(call)
+        missing_target["id"] = "apply-group-missing-target"
+        missing_target["arguments"].pop("target")
+        missing_target["context"]["requestId"] = "request-apply-group-missing-target"
+        self.assertEqual(
+            self.env["agui.chat.tool.authorization"]._prepare_host_command(
+                missing_target
+            )["code"],
+            "invalid_target",
+        )
 
     def test_menu_target_is_accepted_for_selected_menu_navigation(self):
         self.config.write({"enabled_commands": "odoo.open_menu"})
