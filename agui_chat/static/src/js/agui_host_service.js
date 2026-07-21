@@ -55,8 +55,10 @@ odoo.define("agui_chat.host_service", function (require) {
 
     function menuAction(node) {
         var parts = String(node && node.action || "").split(",");
-        var actionId = parseInt(parts[1], 10);
-        return parts[0] === "ir.actions.act_window" && !isNaN(actionId) && actionId > 0 ? actionId : false;
+        var actionId = parseInt(node && node.action_id, 10);
+        return parts[0] === "ir.actions.act_window" &&
+            parseInt(parts[1], 10) === actionId && !isNaN(actionId) && actionId > 0 ?
+            actionId : false;
     }
 
     function buildMenuOptions(menuData) {
