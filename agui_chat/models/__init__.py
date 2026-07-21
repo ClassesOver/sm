@@ -6,4 +6,3 @@ from . import agui_chat_tool
 from . import agui_chat_mention
 from . import agui_chat_report
 from . import ir_actions_server
-from . import ir_ui_menu

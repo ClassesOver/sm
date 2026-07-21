@@ -62,23 +62,6 @@ class TestMentionReferences(TransactionCase):
         self.assertLessEqual(len(result["candidates"]), 20)
         self.assertLessEqual(len(result["modelScopes"]), 20)
 
-    def test_loaded_menu_tree_marks_only_explicit_window_actions(self):
-        root = self.env["ir.ui.menu"].load_menus(False)
-
-        def find_menu(node, menu_id):
-            if node.get("id") == menu_id:
-                return node
-            for child in node.get("children") or []:
-                found = find_menu(child, menu_id)
-                if found:
-                    return found
-            return False
-
-        folder = find_menu(root, self.root_menu.id)
-        menu = find_menu(root, self.menu.id)
-        self.assertFalse(folder["action_id"])
-        self.assertEqual(menu["action_id"], self.action.id)
-
     def test_global_soft_quotas_empty_browse_and_explicit_model_budget(self):
         for index in range(12):
             self.env["res.partner"].create({"name": "配额客户 %02d" % index})

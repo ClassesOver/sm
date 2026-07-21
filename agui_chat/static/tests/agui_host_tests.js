@@ -178,7 +178,6 @@ odoo.define("agui_chat.tests.host", function (require) {
                 id: 90,
                 name: "员工",
                 action: "ir.actions.act_window,115",
-                action_id: 115,
                 children: [],
             }],
         };
@@ -193,14 +192,26 @@ odoo.define("agui_chat.tests.host", function (require) {
         }]);
     });
 
-    QUnit.test("menu catalog excludes folders with inherited app actions", function (assert) {
-        assert.expect(2);
+    QUnit.test("menu catalog keeps native action leaves with their full paths", function (assert) {
+        assert.expect(4);
         var menuData = {
             children: [{
-                id: 90, name: "员工", action: "ir.actions.act_window,115",
-                action_id: false, children: [{
+                id: 90, name: "员工", action: false, children: [{
                     id: 91, name: "员工", action: "ir.actions.act_window,115",
-                    action_id: 115, children: [],
+                    children: [],
+                }],
+            }, {
+                id: 100, name: "费用报销", action: false,
+                children: [{
+                    id: 101, name: "费用报销", action: false, children: [{
+                        id: 1444, name: "报销单查询",
+                        action: "ir.actions.act_window,404", children: [],
+                    }],
+                }, {
+                    id: 102, name: "单据查询", action: false, children: [{
+                        id: 1265, name: "报销单查询",
+                        action: "ir.actions.act_window,404", children: [],
+                    }],
                 }],
             }],
         };
@@ -212,23 +223,36 @@ odoo.define("agui_chat.tests.host", function (require) {
 
         var catalog = service.configureNavigation({menu_data: menuData}, menuData);
 
-        assert.strictEqual(catalog.entries.length, 1);
+        assert.strictEqual(catalog.entries.length, 3);
         assert.strictEqual(catalog.entries[0].fullPath, "员工 / 员工");
+        assert.deepEqual(_.pluck(catalog.entries, "menuId"), [91, 1444, 1265]);
+        assert.deepEqual(_.pluck(catalog.entries, "fullPath"), [
+            "员工 / 员工",
+            "费用报销 / 费用报销 / 报销单查询",
+            "费用报销 / 单据查询 / 报销单查询",
+        ]);
     });
 
-    QUnit.test("menu catalog supports v1 menu data without action_id", function (assert) {
-        assert.expect(3);
+    QUnit.test("menu catalog opens only safe native action types", function (assert) {
+        assert.expect(5);
+        var done = assert.async();
+        var opened;
         var menuData = {
-            children: [{
-                id: 90, name: "员工", action: "ir.actions.act_window,115",
-                children: [{
-                    id: 91, name: "员工", action: "ir.actions.act_window,115",
-                    children: [],
-                }, {
-                    id: 92, name: "报销单查询", action: "ir.actions.act_window,404",
-                    children: [],
-                }],
-            }],
+            children: [
+                {id: 1, name: "窗口", action: "ir.actions.act_window,42", children: []},
+                {id: 2, name: "客户端", action: "ir.actions.client,43", children: []},
+                {id: 3, name: "服务端", action: "ir.actions.server,44", children: []},
+                {id: 4, name: "报表", action: "ir.actions.report,45", children: []},
+                {id: 5, name: "网址", action: "ir.actions.act_url,46", children: []},
+                {id: 6, name: "畸形", action: "ir.actions.client,47extra", children: []},
+            ],
+        };
+        var webClient = {
+            menu_data: menuData,
+            do_action: function (actionId, options) {
+                opened = {actionId: actionId, options: options};
+                return $.when();
+            },
         };
         var service = Object.create(HostService.prototype);
         service._webClient = null;
@@ -236,11 +260,16 @@ odoo.define("agui_chat.tests.host", function (require) {
         service._menuOptions = [];
         service._menuSubscribers = [];
 
-        var catalog = service.configureNavigation({menu_data: menuData}, menuData);
+        var catalog = service.configureNavigation(webClient, menuData);
 
-        assert.strictEqual(catalog.entries.length, 2);
-        assert.strictEqual(catalog.entries[0].fullPath, "员工 / 员工");
-        assert.strictEqual(catalog.entries[1].fullPath, "员工 / 报销单查询");
+        assert.deepEqual(_.pluck(catalog.entries, "menuId"), [1, 2]);
+        assert.deepEqual(_.pluck(catalog.entries, "actionId"), [42, 43]);
+        service._openMenu(2, 43).then(function (menu) {
+            assert.strictEqual(opened.actionId, 43);
+            assert.deepEqual(opened.options, {clear_breadcrumbs: true, action_menu_id: 2});
+            assert.strictEqual(menu.menuId, 2);
+            done();
+        });
     });
 
     QUnit.test("menu catalog version is stable and in-place changes do not publish a page snapshot", function (assert) {
@@ -248,7 +277,7 @@ odoo.define("agui_chat.tests.host", function (require) {
         var menuData = {
             children: [{
                 id: 90, name: "员工", action: "ir.actions.act_window,115",
-                action_id: 115, children: [],
+                children: [],
             }],
         };
         var service = Object.create(HostService.prototype);
@@ -287,18 +316,15 @@ odoo.define("agui_chat.tests.host", function (require) {
                 id: 8,
                 name: "费用报销",
                 action: "",
-                action_id: false,
                 children: [{
                     id: 9,
                     name: "报销单查询",
                     action: "ir.actions.act_window,42",
-                    action_id: 42,
                     children: [],
                 }, {
                     id: 10,
                     name: "报销单查询归档",
                     action: "ir.actions.act_window,43",
-                    action_id: 43,
                     children: [],
                 }],
             }],
@@ -329,14 +355,14 @@ odoo.define("agui_chat.tests.host", function (require) {
         service._webClient = null;
         service._menuData = {
             children: [{
-                id: 1, name: "费用", action: "", action_id: false, children: [{
+                id: 1, name: "费用", action: "", children: [{
                     id: 2, name: "查询", action: "ir.actions.act_window,42",
-                    action_id: 42, children: [],
+                    children: [],
                 }],
             }, {
-                id: 3, name: "采购", action: "", action_id: false, children: [{
+                id: 3, name: "采购", action: "", children: [{
                     id: 4, name: "查询", action: "ir.actions.act_window,43",
-                    action_id: 43, children: [],
+                    children: [],
                 }],
             }],
         };
@@ -361,7 +387,6 @@ odoo.define("agui_chat.tests.host", function (require) {
                     id: 9,
                     name: "报销单查询",
                     action: "ir.actions.act_window,42",
-                    action_id: 42,
                     children: [],
                 }],
             },
@@ -393,7 +418,6 @@ odoo.define("agui_chat.tests.host", function (require) {
                 id: 9,
                 name: "报销单查询",
                 action: "ir.actions.act_window,42",
-                action_id: 42,
                 children: [],
             }],
         };
@@ -436,7 +460,7 @@ odoo.define("agui_chat.tests.host", function (require) {
         var menuData = {
             children: [{
                 id: 9, name: "报销单查询", action: "ir.actions.act_window,42",
-                action_id: 42, children: [],
+                children: [],
             }],
         };
         var service = Object.create(HostService.prototype);
@@ -466,7 +490,6 @@ odoo.define("agui_chat.tests.host", function (require) {
             call.arguments.target.catalogId = latest.catalogId;
             call.arguments.target.catalogRevision = latest.catalogRevision;
             menuData.children[0].action = "ir.actions.act_window,43";
-            menuData.children[0].action_id = 43;
             return service.prepareHostCommand(call);
         }).then(function (result) {
             assert.strictEqual(result.code, "menu_action_conflict");

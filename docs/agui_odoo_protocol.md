@@ -52,7 +52,9 @@ Every `RunAgentInput.state` has exactly this envelope:
   session revision. They are never compared or restored into each other.
 - The visible menu catalog is a separate host-owned snapshot. It is never stored
   in `RunAgentInput.state` or counted against the page snapshot budget, and a
-  catalog-only change does not increment `hostRevision`.
+  catalog-only change does not increment `hostRevision`. The browser derives it
+  from native `WebClient.menu_data` actions and admits only
+  `ir.actions.act_window` and `ir.actions.client` entries.
 - Session restore loads messages, `agentState`, and UI preferences. It never
   restores `hostState`.
 

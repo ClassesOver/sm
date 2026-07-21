@@ -54,16 +54,14 @@ odoo.define("agui_chat.host_service", function (require) {
         return snapshot;
     }
 
-    function menuAction(node, topLevel) {
+    function menuAction(node) {
         var parts = String(node && node.action || "").split(",");
-        var actionId = parseInt(parts[1], 10);
-        if (parts[0] !== "ir.actions.act_window" || isNaN(actionId) || actionId <= 0) {
+        if (parts.length !== 2 ||
+                ["ir.actions.act_window", "ir.actions.client"].indexOf(parts[0]) === -1 ||
+                !/^[1-9]\d*$/.test(parts[1])) {
             return false;
         }
-        if (node && _.has(node, "action_id")) {
-            return parseInt(node.action_id, 10) === actionId ? actionId : false;
-        }
-        return topLevel && (node.children || []).length ? false : actionId;
+        return parseInt(parts[1], 10);
     }
 
     function buildMenuOptions(menuData) {
@@ -71,7 +69,7 @@ odoo.define("agui_chat.host_service", function (require) {
         function visit(node, path, primaryMenuId) {
             var name = String(node && node.name || "").trim();
             var nextPath = name ? path.concat([name]) : path;
-            var actionId = menuAction(node, path.length === 0);
+            var actionId = menuAction(node);
             var menuId = parseInt(node && node.id, 10);
             var primary = primaryMenuId || menuId;
             if (actionId && !isNaN(menuId) && menuId > 0) {

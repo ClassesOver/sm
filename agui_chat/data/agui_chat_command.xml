@@ -39,7 +39,7 @@
         <field name="name">打开菜单</field>
         <field name="code">odoo.open_menu</field>
         <field name="command_type">page</field>
-        <field name="description">打开用户已明确选择或同一运行中搜索唯一匹配的 HRP 窗口菜单；必须校验目录版本、menuId 和 actionId。</field>
+        <field name="description">打开用户已明确选择或同一运行中搜索唯一匹配的 HRP 可导航菜单；必须校验目录版本、menuId 和 actionId。</field>
         <field name="sequence">10</field>
     </record>
     <record id="command_search_menu" model="agui.chat.command">
