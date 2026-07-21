@@ -742,7 +742,13 @@ odoo.define("agui_chat.surfaces", function (require) {
             });
             return result;
         },
-
+        _getFileType: function () {
+            try {
+                return this._super.apply(this, arguments);
+            } catch (error) {
+                return $.when();
+            }
+        },
         destroy: function () {
             if (this.aguiChatSurfaceManager) {
                 this.aguiChatSurfaceManager.destroy();

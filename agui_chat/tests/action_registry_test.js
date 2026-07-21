@@ -209,8 +209,17 @@ function main() {
     vm.runInNewContext(source, sandbox, {filename: "agui_chat_surfaces.js"});
 
     const SurfaceManager = modules["agui_chat.surfaces"];
+    const fileTypeMixin = includes.find((item) => item._getFileType)._getFileType;
+    const fileType = {name: "pdf"};
+    assert.strictEqual(fileTypeMixin.call({
+        _super() { return fileType; },
+    }), fileType);
+    const fileTypeFallback = fileTypeMixin.call({
+        _super() { throw new Error("third-party file type patch failed"); },
+    });
     const manager = new SurfaceManager(new Base());
-    return Promise.resolve(manager.start()).then(() => Promise.resolve()).then(() => {
+    return Promise.resolve(fileTypeFallback).then(() => manager.start())
+        .then(() => Promise.resolve()).then(() => {
         assert.strictEqual(mounts.length, 1);
         assert.strictEqual((renderedHtml.match(/class='o_agui_chat_action o_agui_chat_direction'/g) || []).length, 4);
         assert(renderedHtml.includes("o_agui_chat_float"));
