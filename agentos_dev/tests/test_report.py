@@ -1,5 +1,8 @@
+import hashlib
 import json
+import tempfile
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -58,6 +61,54 @@ def upload_datasets(current, thread="report-thread"):
     current.upload(thread, "data/sales.xlsx", workbook.getvalue())
 
 
+def upload_manifest_dataset(current, fragments=None, thread="report-thread"):
+    dataset_id = "11111111-1111-4111-8111-111111111111"
+    base = f"报表/原始数据/{dataset_id}"
+    contents = fragments or [
+        b'{"region":"\xe5\x8d\x8e\xe4\xb8\x9c","category":"A","amount":10}\n',
+        b'{"region":"\xe5\x8d\x8e\xe5\x8d\x97","category":"B","amount":20}\n',
+    ]
+    items = []
+    row_count = 0
+    for index, content in enumerate(contents, start=1):
+        path = f"{base}/分片/数据-{index:04d}.jsonl"
+        current.upload(thread, path, content)
+        row_count += len(content.splitlines())
+        items.append(
+            {
+                "path": path,
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
+    manifest = {
+        "version": report.DATASET_MANIFEST_VERSION,
+        "datasetId": dataset_id,
+        "model": "res.partner",
+        "fields": [
+            {"name": "region", "label": "区域", "type": "char"},
+            {"name": "category", "label": "分类", "type": "char"},
+            {"name": "amount", "label": "金额", "type": "float"},
+        ],
+        "rowCount": row_count,
+        "columnCount": 3,
+        "fragments": items,
+        "totalSize": sum(len(content) for content in contents),
+        "scope": "domain",
+        "selectedCount": 0,
+        "timezone": "Asia/Shanghai",
+        "generatedAt": "2026-07-21 12:00:00",
+        "scopeFingerprint": "a" * 64,
+    }
+    path = f"{base}/数据集.json"
+    current.upload(
+        thread,
+        path,
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+    )
+    return path, manifest
+
+
 def test_profiles_csv_json_jsonl_and_xlsx(tmp_path):
     current = service(tmp_path)
     upload_datasets(current)
@@ -77,7 +128,150 @@ def test_profiles_csv_json_jsonl_and_xlsx(tmp_path):
         )
         assert result["rowCount"] in {2, 3}
         assert result["columnCount"] == 3
+        assert "sample" not in result
         assert len(json.dumps(result, ensure_ascii=False).encode("utf-8")) <= 32 * 1024
+
+
+def test_manifest_dataset_validates_fragments_and_bounds_explicit_sample(tmp_path):
+    current = service(tmp_path)
+    path, _manifest = upload_manifest_dataset(current)
+    current_tools = tools(current)
+
+    profile = call(current_tools["pandas_profile_dataset"], path=path, run_context=context())
+    assert profile["rowCount"] == 2
+    assert profile["columnCount"] == 3
+    assert "sample" not in profile
+
+    sample = call(
+        current_tools["pandas_sample_dataset"],
+        path=path,
+        columns=["region", "amount"],
+        limit=20,
+        run_context=context(),
+    )
+    assert sample["rowCount"] == 2
+    assert sample["columnCount"] == 2
+    assert sample["rows"] == [
+        {"region": "华东", "amount": 10},
+        {"region": "华南", "amount": 20},
+    ]
+    assert len(json.dumps(sample, ensure_ascii=False).encode("utf-8")) <= 32 * 1024
+
+    grouped = call(
+        current_tools["pandas_group_dataset"],
+        path=path,
+        dimensions=["category"],
+        metrics=[{"field": "amount", "aggregation": "sum"}],
+        run_context=context(),
+    )
+    assert grouped["rowCount"] == 2
+
+
+def test_manifest_loader_streams_fragments_into_one_temporary_file(tmp_path):
+    current = service(tmp_path)
+    path, manifest = upload_manifest_dataset(current)
+    with tempfile.TemporaryDirectory() as directory:
+        loaded = report._load_dataset_manifest(
+            current,
+            "report-thread",
+            path,
+            Path(directory) / "dataset.jsonl",
+        )
+        assert loaded is not None
+        loaded_manifest, local_path = loaded
+        assert loaded_manifest == manifest
+        assert isinstance(local_path, str)
+        assert Path(local_path).read_bytes() == b"".join(
+            current.file_bytes("report-thread", fragment["path"])[0]
+            for fragment in manifest["fragments"]
+        )
+
+
+def test_final_report_config_uses_validated_chinese_uuid_path(tmp_path):
+    current = service(tmp_path)
+    manifest_path, manifest = upload_manifest_dataset(current)
+    manifest_content, _mime = current.file_bytes("report-thread", manifest_path)
+    result = call(
+        tools(current)["pandas_create_report_config"],
+        manifest_path=manifest_path,
+        dataset_hash=hashlib.sha256(manifest_content).hexdigest(),
+        title="区域销售分析",
+        dimensions=["region"],
+        metrics=[{"field": "amount", "aggregation": "sum", "label": "销售额"}],
+        chart_type="bar",
+        chart_metric="amount:sum",
+        analysis_notes=["华东与华南按相同口径比较。"],
+        purpose="比较区域销售表现并识别差异。",
+        sections=["overview", "chart", "analysis"],
+        run_context=context(),
+    )
+    assert result["configPath"] == f"报表/配置/{result['reportId']}/报表配置.json"
+    config_content, _mime = current.file_bytes("report-thread", result["configPath"])
+    config = json.loads(config_content)
+    assert config["version"] == report.REPORT_CONFIG_VERSION
+    assert config["reportId"] == result["reportId"]
+    assert config["manifestPath"] == manifest_path
+    assert config["analysis"]["metrics"][0]["label"] == "销售额"
+    assert config["presentation"] == {
+        "purpose": "比较区域销售表现并识别差异。",
+        "sections": ["overview", "chart", "analysis"],
+    }
+    assert "fragments" not in config
+    assert "rows" not in config
+    assert "sample" not in config
+    assert manifest["scope"] == "domain"
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"purpose": ""}, "报表目的"),
+        ({"sections": []}, "报表章节"),
+        ({"sections": ["sample"]}, "报表章节"),
+    ],
+)
+def test_final_report_config_rejects_explicit_empty_presentation(tmp_path, override, message):
+    current = service(tmp_path)
+    manifest_path, _manifest = upload_manifest_dataset(current)
+    manifest_content, _mime = current.file_bytes("report-thread", manifest_path)
+    arguments = {
+        "manifest_path": manifest_path,
+        "dataset_hash": hashlib.sha256(manifest_content).hexdigest(),
+        "title": "区域销售分析",
+        "dimensions": ["region"],
+        "metrics": [{"field": "amount", "aggregation": "sum", "label": "销售额"}],
+        "chart_type": "bar",
+        "chart_metric": "amount:sum",
+        "run_context": context(),
+        **override,
+    }
+
+    with pytest.raises(WorkspaceError, match=message):
+        call(tools(current)["pandas_create_report_config"], **arguments)
+
+
+def test_manifest_rejects_hash_path_and_row_count_mismatches(tmp_path):
+    current = service(tmp_path)
+    path, manifest = upload_manifest_dataset(current)
+
+    for mutation, message in (
+        (lambda value: value["fragments"][0].update({"sha256": "0" * 64}), "SHA-256"),
+        (lambda value: value["fragments"][0].update({"path": "../escape.jsonl"}), "路径"),
+        (lambda value: value.update({"rowCount": 99}), "总行数"),
+    ):
+        changed = json.loads(json.dumps(manifest))
+        mutation(changed)
+        current.upload(
+            "report-thread",
+            path,
+            json.dumps(changed, ensure_ascii=False).encode("utf-8"),
+        )
+        with pytest.raises(WorkspaceError, match=message):
+            call(
+                tools(current)["pandas_profile_dataset"],
+                path=path,
+                run_context=context(),
+            )
 
 
 def test_each_call_uses_and_releases_a_new_pandas_toolkit(tmp_path, monkeypatch):
@@ -143,6 +337,7 @@ def test_group_pivot_concat_and_thread_isolation(tmp_path):
         run_context=context(),
     )
     assert concatenated["rowCount"] == 4
+    assert concatenated["path"].startswith("报表/分析数据/")
     content, _mime = current.file_bytes("report-thread", concatenated["path"])
     assert {json.loads(line)["_source"] for line in content.splitlines()} == {"JSON", "JSONL"}
 
@@ -335,8 +530,8 @@ def test_chart_outputs_png_and_download_only_html_without_confirmation(tmp_path)
     )
     png, png_mime = current.file_bytes("report-thread", result["pngPath"])
     html, html_mime = current.file_bytes("report-thread", result["htmlPath"])
-    assert result["pngPath"].startswith("reports/")
-    assert result["htmlPath"].startswith("reports/")
+    assert result["pngPath"].startswith("报表/图表/")
+    assert result["htmlPath"].startswith("报表/图表/")
     assert png.startswith(b"\x89PNG")
     assert png_mime == "image/png"
     assert b"plotly" in html.lower()

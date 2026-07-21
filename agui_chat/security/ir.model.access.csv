@@ -9,3 +9,4 @@ access_agui_chat_tool_audit_user,agui.chat.tool.audit user,model_agui_chat_tool_
 access_agui_chat_tool_audit_system,agui.chat.tool.audit system,model_agui_chat_tool_audit,base.group_system,1,1,1,1
 access_agui_chat_command_execution_user,agui.chat.command.execution user,model_agui_chat_command_execution,base.group_user,1,0,0,0
 access_agui_chat_mention_token_user,agui.chat.mention.token user,model_agui_chat_mention_token,base.group_user,1,0,0,0
+access_agui_chat_report_source_user,agui.chat.report.source user,model_agui_chat_report_source,base.group_user,1,0,0,0

@@ -350,6 +350,61 @@ odoo.define("agui_chat.host_service", function (require) {
             };
         },
 
+        getReportSourceState: function (target) {
+            var snapshot = this.getSnapshot();
+            var controller = this._resolveCurrentController();
+            var viewType = snapshot.controller && snapshot.controller.viewType;
+            var model = snapshot.selection && snapshot.selection.model;
+            var required = [
+                "snapshotId", "hostRevision", "controllerId", "dataPointId", "model", "resId",
+            ];
+            var error;
+            if (!snapshot.interactive || ["list", "kanban"].indexOf(viewType) === -1 ||
+                    !controller || !target || !_.every(required, function (name) {
+                        return _.has(target, name);
+                    }) || target.snapshotId !== snapshot.snapshotId ||
+                    target.hostRevision !== snapshot.hostRevision ||
+                    target.controllerId !== snapshot.controller.controllerId ||
+                    target.dataPointId !== snapshot.controller.dataPointId ||
+                    target.model !== model || target.resId !== false) {
+                error = new Error("当前列表范围已经变化，请重新发起报表请求。");
+                error.code = "stale_report_source";
+                throw error;
+            }
+            var raw = controller.model.get(controller.handle, {raw: true}) || {};
+            var selectedIds = controller.getSelectedIds ? controller.getSelectedIds() : [];
+            selectedIds = _.uniq(_.map(selectedIds || [], function (value) {
+                return parseInt(value, 10);
+            }));
+            if (_.some(selectedIds, function (value) { return isNaN(value) || value <= 0; })) {
+                error = new Error("当前列表勾选记录格式无效。");
+                error.code = "report_source_rejected";
+                throw error;
+            }
+            if (selectedIds.length > 5000) {
+                error = new Error("勾选记录超过 5000 条，请缩小选择或取消勾选。");
+                error.code = "report_selection_too_large";
+                throw error;
+            }
+            return {
+                target: Adapter.clone(target),
+                viewType: viewType,
+                menuId: snapshot.menu && snapshot.menu.id || false,
+                actionId: snapshot.controller.actionId || false,
+                domain: Adapter.clone(_.has(raw, "domain") ? raw.domain :
+                    snapshot.selection.domain || []),
+                context: Adapter.clone(_.has(raw, "context") ? raw.context :
+                    snapshot.selection.context || {}),
+                groupBy: Adapter.clone(raw.groupedBy || []),
+                sort: _.map(raw.orderedBy || [], function (item) {
+                    return (item.asc === false ? "-" : "") + item.name;
+                }),
+                selectedIds: selectedIds,
+                scope: selectedIds.length ? "selected" : "domain",
+                selectedCount: selectedIds.length,
+            };
+        },
+
         setCurrentController: function (action, descriptor) {
             try {
                 descriptor = descriptor || {};

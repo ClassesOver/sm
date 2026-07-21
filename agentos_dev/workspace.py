@@ -804,6 +804,16 @@ def _thread(run_context: RunContext | None) -> str:
     return run_context.session_id
 
 
+def _is_controlled_raw_dataset(path: str) -> bool:
+    parts = PurePosixPath(str(path or "")).parts
+    return bool(
+        len(parts) == 5
+        and parts[0:2] == ("报表", "原始数据")
+        and parts[3] == "分片"
+        and parts[4].endswith(".jsonl")
+    ) or bool(len(parts) == 3 and parts[0:2] == ("reports", "data") and parts[2].endswith(".jsonl"))
+
+
 def workspace_tools(service: WorkspaceService, skills: SecureSkills) -> list[Function]:
     def list_files(path: str = "", run_context: RunContext | None = None):
         """列出当前对话工作区中的文件。"""
@@ -811,6 +821,8 @@ def workspace_tools(service: WorkspaceService, skills: SecureSkills) -> list[Fun
 
     def read_file(path: str, run_context: RunContext | None = None):
         """读取当前对话工作区中大小受限的 UTF-8 文本文件。"""
+        if _is_controlled_raw_dataset(path):
+            raise WorkspaceError("原始报表分片不能进入智能体上下文；请使用报表分析工具。")
         return service.read_text(_thread(run_context), path)
 
     def write_file(path: str, content: str, run_context: RunContext | None = None):

@@ -1,9 +1,11 @@
+import hashlib
 import json
 import tempfile
 import uuid
 from contextlib import contextmanager
+from io import BytesIO
 from json import JSONDecodeError, JSONDecoder
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 from zipfile import BadZipFile, ZipFile
 
@@ -17,9 +19,18 @@ from .workspace import WorkspaceError, WorkspaceService
 
 MAX_DATASET_ROWS = 100_000
 MAX_DATASET_COLUMNS = 100
+MAX_MANIFEST_COLUMNS = 30
 MAX_EXPANDED_BYTES = 128 * 1024 * 1024
 MAX_XLSX_MEMBERS = 1000
 MAX_RESULT_BYTES = 32 * 1024
+MAX_SAMPLE_ROWS = 20
+MAX_SAMPLE_COLUMNS = 10
+MAX_MANIFEST_PARTS = 16
+MAX_MANIFEST_PART_BYTES = 8 * 1024 * 1024
+MAX_MANIFEST_TOTAL_BYTES = 100 * 1024 * 1024
+MAX_MANIFEST_BYTES = 256 * 1024
+DATASET_MANIFEST_VERSION = "agui.report.dataset.v1"
+REPORT_CONFIG_VERSION = "agui.report.config.v1"
 MAX_CHART_POINTS = 1000
 MAX_PIE_CATEGORIES = 20
 PREFLIGHT_CHUNK_ROWS = 1000
@@ -27,6 +38,9 @@ OBJECT_CELL_ESTIMATE_BYTES = 64
 SUPPORTED_SUFFIXES = {".csv", ".xlsx", ".json", ".jsonl"}
 AGGREGATIONS = {"count", "sum", "avg", "min", "max"}
 CHART_TYPES = {"bar", "line", "scatter", "pie", "histogram", "box"}
+FINAL_REPORT_CHART_TYPES = {"bar", "line", "pie"}
+FINAL_REPORT_SECTION_TYPES = {"overview", "notes", "chart", "analysis"}
+NUMERIC_MANIFEST_TYPES = {"float", "integer", "monetary"}
 
 
 def _thread(run_context: RunContext | None) -> str:
@@ -181,6 +195,140 @@ def _preflight_delimited(path: str, suffix: str) -> None:
         budget.add(frame)
 
 
+def _preflight_jsonl_paths(paths: list[str]) -> None:
+    budget = _FramePreflight()
+    for path in paths:
+        if not Path(path).stat().st_size:
+            continue
+        reader = pd.read_json(
+            path,
+            lines=True,
+            nrows=MAX_DATASET_ROWS + 1,
+            chunksize=PREFLIGHT_CHUNK_ROWS,
+        )
+        for frame in reader:
+            budget.add(frame)
+
+
+def _manifest_path_parts(path: str) -> tuple[str, ...] | None:
+    parts = PurePosixPath(path).parts
+    if (
+        len(parts) == 4
+        and parts[0] == "报表"
+        and parts[1] == "原始数据"
+        and parts[3] == "数据集.json"
+    ):
+        return parts
+    return None
+
+
+def _manifest_header(
+    service: WorkspaceService,
+    thread: str,
+    path: str,
+) -> tuple[dict[str, Any], bytes, str]:
+    parts = _manifest_path_parts(path)
+    if parts is None:
+        raise WorkspaceError("最终报表只能使用中文原始数据目录中的数据集清单")
+    dataset_id = parts[2]
+    try:
+        if str(uuid.UUID(dataset_id)) != dataset_id:
+            raise ValueError
+    except (ValueError, AttributeError):
+        raise WorkspaceError("数据集清单目录不是有效的 UUID")
+    content, _mime_type = service.file_bytes(thread, path)
+    if len(content) > MAX_MANIFEST_BYTES:
+        raise WorkspaceError("数据集清单超过 256 KiB")
+    try:
+        manifest = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, JSONDecodeError) as error:
+        raise WorkspaceError("数据集清单不是有效的 UTF-8 JSON") from error
+    if not isinstance(manifest, dict) or manifest.get("version") != DATASET_MANIFEST_VERSION:
+        raise WorkspaceError("数据集清单版本不受支持")
+    if manifest.get("datasetId") != dataset_id:
+        raise WorkspaceError("数据集清单与目录标识不一致")
+    return manifest, content, dataset_id
+
+
+def _load_dataset_manifest(
+    service: WorkspaceService,
+    thread: str,
+    path: str,
+    local_path: Path,
+) -> tuple[dict[str, Any], str] | None:
+    parts = _manifest_path_parts(path)
+    if parts is None:
+        return None
+    manifest, _content, dataset_id = _manifest_header(service, thread, path)
+    row_count = manifest.get("rowCount")
+    total_size = manifest.get("totalSize")
+    fields = manifest.get("fields")
+    fragments = manifest.get("fragments")
+    if (
+        isinstance(row_count, bool)
+        or not isinstance(row_count, int)
+        or not 0 <= row_count <= MAX_DATASET_ROWS
+    ):
+        raise WorkspaceError("数据集清单行数无效")
+    if (
+        isinstance(total_size, bool)
+        or not isinstance(total_size, int)
+        or not 0 <= total_size <= MAX_MANIFEST_TOTAL_BYTES
+    ):
+        raise WorkspaceError("数据集清单总大小无效")
+    if not isinstance(fields, list) or not 1 <= len(fields) <= MAX_MANIFEST_COLUMNS:
+        raise WorkspaceError("数据集清单字段数必须在 1 至 30 之间")
+    field_names = []
+    for field in fields:
+        name = field.get("name") if isinstance(field, dict) else None
+        if not isinstance(name, str) or not name or len(name) > 128:
+            raise WorkspaceError("数据集清单字段格式无效")
+        field_names.append(name)
+    if len(set(field_names)) != len(field_names):
+        raise WorkspaceError("数据集清单字段不能重复")
+    if not isinstance(fragments, list) or not 1 <= len(fragments) <= MAX_MANIFEST_PARTS:
+        raise WorkspaceError("数据集清单分片数必须在 1 至 16 之间")
+
+    actual_total = 0
+    actual_rows = 0
+    prefix = f"报表/原始数据/{dataset_id}/分片"
+    with local_path.open("wb") as output:
+        for index, fragment in enumerate(fragments, start=1):
+            if not isinstance(fragment, dict):
+                raise WorkspaceError("数据集清单分片格式无效")
+            expected_path = f"{prefix}/数据-{index:04d}.jsonl"
+            fragment_path = fragment.get("path")
+            size = fragment.get("size")
+            digest = fragment.get("sha256")
+            if fragment_path != expected_path:
+                raise WorkspaceError("数据集清单分片路径越界或顺序无效")
+            if (
+                isinstance(size, bool)
+                or not isinstance(size, int)
+                or not 0 <= size <= MAX_MANIFEST_PART_BYTES
+            ):
+                raise WorkspaceError("数据集清单分片大小无效")
+            if not isinstance(digest, str) or len(digest) != 64:
+                raise WorkspaceError("数据集清单分片摘要无效")
+            fragment_content, _fragment_mime = service.file_bytes(thread, fragment_path)
+            if len(fragment_content) != size:
+                raise WorkspaceError("数据集分片大小与清单不一致")
+            if hashlib.sha256(fragment_content).hexdigest() != digest:
+                raise WorkspaceError("数据集分片 SHA-256 校验失败")
+            for line in BytesIO(fragment_content):
+                if not line.strip():
+                    raise WorkspaceError("数据集分片包含空行")
+                actual_rows += 1
+            actual_total += len(fragment_content)
+            output.write(fragment_content)
+            del fragment_content
+    if actual_total != total_size:
+        raise WorkspaceError("数据集分片总大小与清单不一致")
+    if actual_rows != row_count:
+        raise WorkspaceError("数据集分片总行数与清单不一致")
+    return manifest, str(local_path)
+
+
 def _preflight_xlsx(path: str, sheet: str | int | None) -> None:
     try:
         with ZipFile(path) as archive:
@@ -238,6 +386,35 @@ def _load_frames(
         frames: list[pd.DataFrame] = []
         try:
             for index, path in enumerate(paths):
+                local_manifest_data = Path(directory) / f"dataset-{index}.jsonl"
+                manifest_dataset = _load_dataset_manifest(
+                    service, thread, path, local_manifest_data
+                )
+                if manifest_dataset is not None:
+                    manifest, manifest_local_path = manifest_dataset
+                    expected_columns = [item["name"] for item in manifest["fields"]]
+                    _preflight_jsonl_paths([manifest_local_path])
+                    if not Path(manifest_local_path).stat().st_size:
+                        frame = pd.DataFrame(columns=expected_columns)
+                    else:
+                        name = f"dataset_{index}"
+                        manifest_parameters = {
+                            "path_or_buf": manifest_local_path,
+                            "lines": True,
+                            "nrows": MAX_DATASET_ROWS + 1,
+                        }
+                        toolkit.create_pandas_dataframe(name, "read_json", manifest_parameters)
+                        frame = toolkit.dataframes.get(name)
+                        if frame is None:
+                            frame = pd.read_json(**manifest_parameters)
+                            toolkit.dataframes[name] = frame
+                    frame.columns = _column_names(frame)
+                    if list(frame.columns) != expected_columns:
+                        raise WorkspaceError("数据集分片字段与清单不一致")
+                    if len(frame.index) != manifest["rowCount"]:
+                        raise WorkspaceError("数据集加载行数与清单不一致")
+                    frames.append(_ensure_columns(frame))
+                    continue
                 suffix = PurePosixPath(path).suffix.lower()
                 if suffix not in SUPPORTED_SUFFIXES:
                     raise WorkspaceError("报表仅支持 CSV、XLSX、JSON 和 JSONL 文件")
@@ -426,7 +603,41 @@ def report_tools(service: WorkspaceService) -> list[Function]:
                     "columnCount": len(frame.columns),
                     "memoryBytes": int(frame.memory_usage(index=True, deep=True).sum()),
                     "columns": columns,
-                    "sample": _records(frame.head(10)),
+                }
+            )
+
+    def sample_dataset(
+        path: str,
+        columns: list[str] | None = None,
+        limit: int = 10,
+        run_context: RunContext | None = None,
+    ):
+        """返回当前对话数据集的有界原始样例，最多 20 行、10 列和 32 KiB。"""
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= MAX_SAMPLE_ROWS
+        ):
+            raise WorkspaceError("样例行数必须在 1 至 20 之间")
+        with _load_frames(service, _thread(run_context), [path]) as frames:
+            frame = frames[0]
+            selected = list(frame.columns[:MAX_SAMPLE_COLUMNS]) if columns is None else columns
+            if (
+                not isinstance(selected, list)
+                or not 1 <= len(selected) <= MAX_SAMPLE_COLUMNS
+                or not all(isinstance(name, str) for name in selected)
+                or len(set(selected)) != len(selected)
+            ):
+                raise WorkspaceError("样例字段必须是 1 至 10 个不重复字段")
+            for name in selected:
+                _column(frame, name)
+            return _bounded(
+                {
+                    "path": path,
+                    "rowCount": min(limit, len(frame.index)),
+                    "columnCount": len(selected),
+                    "columns": selected,
+                    "rows": _records(frame[selected].head(limit)),
                 }
             )
 
@@ -520,7 +731,7 @@ def report_tools(service: WorkspaceService) -> list[Function]:
                 item.insert(0, "_source", str(label)[:120])
                 labeled.append(item)
             result = _ensure_columns(pd.concat(labeled, ignore_index=True))
-            path = f"reports/data/{uuid.uuid4()}.jsonl"
+            path = f"报表/分析数据/{uuid.uuid4()}/合并数据.jsonl"
             content = result.to_json(orient="records", lines=True, force_ascii=False).encode(
                 "utf-8"
             )
@@ -533,6 +744,158 @@ def report_tools(service: WorkspaceService) -> list[Function]:
                     "sourceLabels": source_labels,
                 }
             )
+
+    def create_report_config(
+        manifest_path: str,
+        dataset_hash: str,
+        title: str,
+        dimensions: list[str],
+        metrics: list[dict[str, str]],
+        chart_type: str,
+        chart_metric: str,
+        chart_title: str | None = None,
+        analysis_notes: list[str] | None = None,
+        purpose: str | None = None,
+        sections: list[str] | None = None,
+        run_context: RunContext | None = None,
+    ):
+        """校验分析口径并在中文配置目录中创建最终报表配置。"""
+        thread = _thread(run_context)
+        manifest, manifest_content, _dataset_id = _manifest_header(service, thread, manifest_path)
+        if (
+            not isinstance(dataset_hash, str)
+            or len(dataset_hash) != 64
+            or hashlib.sha256(manifest_content).hexdigest() != dataset_hash
+        ):
+            raise WorkspaceError("数据集清单摘要不匹配")
+        fields = manifest.get("fields")
+        if not isinstance(fields, list) or not 1 <= len(fields) <= MAX_MANIFEST_COLUMNS:
+            raise WorkspaceError("数据集清单字段格式无效")
+        definitions = {
+            item.get("name"): item
+            for item in fields
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        if len(definitions) != len(fields):
+            raise WorkspaceError("数据集清单字段格式无效")
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 160:
+            raise WorkspaceError("报表标题必须是 1 至 160 个字符")
+        if (
+            not isinstance(dimensions, list)
+            or not 1 <= len(dimensions) <= 2
+            or len(set(dimensions)) != len(dimensions)
+            or any(name not in definitions for name in dimensions)
+        ):
+            raise WorkspaceError("最终报表必须选择 1 至 2 个有效维度")
+        if not isinstance(metrics, list) or not 1 <= len(metrics) <= 5:
+            raise WorkspaceError("最终报表必须选择 1 至 5 个指标")
+        aliases = set()
+        normalized_metrics = []
+        for metric in metrics:
+            if not isinstance(metric, dict) or set(metric) - {"field", "aggregation", "label"}:
+                raise WorkspaceError("最终报表指标格式无效")
+            field = metric.get("field")
+            aggregation = metric.get("aggregation")
+            label = metric.get("label")
+            if field not in definitions or aggregation not in AGGREGATIONS:
+                raise WorkspaceError("最终报表指标字段或聚合方式无效")
+            if (
+                aggregation in {"sum", "avg"}
+                and definitions[field].get("type") not in NUMERIC_MANIFEST_TYPES
+            ):
+                raise WorkspaceError(f"字段 {field} 不是可求和或平均的数值字段")
+            if aggregation in {"min", "max"} and definitions[field].get(
+                "type"
+            ) not in NUMERIC_MANIFEST_TYPES | {"date", "datetime"}:
+                raise WorkspaceError(f"字段 {field} 不支持最小值或最大值")
+            alias = f"{field}:{aggregation}"
+            if alias in aliases:
+                raise WorkspaceError("最终报表指标不能重复")
+            if label is not None and (
+                not isinstance(label, str) or not label.strip() or len(label.strip()) > 80
+            ):
+                raise WorkspaceError("指标标签必须是 1 至 80 个字符")
+            aliases.add(alias)
+            normalized_metrics.append(
+                {"field": field, "aggregation": aggregation, "label": label or alias}
+            )
+        chart_metric_definition = next(
+            (
+                metric
+                for metric in normalized_metrics
+                if f"{metric['field']}:{metric['aggregation']}" == chart_metric
+            ),
+            None,
+        )
+        if chart_type not in FINAL_REPORT_CHART_TYPES or chart_metric_definition is None:
+            raise WorkspaceError("最终报表图表类型或指标无效")
+        if (
+            chart_metric_definition["aggregation"] != "count"
+            and definitions[chart_metric_definition["field"]].get("type")
+            not in NUMERIC_MANIFEST_TYPES
+        ):
+            raise WorkspaceError("最终报表图表指标必须是数值结果")
+        if chart_title is not None and (
+            not isinstance(chart_title, str) or len(chart_title.strip()) > 160
+        ):
+            raise WorkspaceError("图表标题不能超过 160 个字符")
+        notes = analysis_notes or []
+        if (
+            not isinstance(notes, list)
+            or len(notes) > 10
+            or any(not isinstance(note, str) or len(note) > 500 for note in notes)
+        ):
+            raise WorkspaceError("分析说明最多 10 条且每条不超过 500 个字符")
+        report_purpose = title.strip() if purpose is None else purpose
+        if (
+            not isinstance(report_purpose, str)
+            or not report_purpose.strip()
+            or len(report_purpose.strip()) > 500
+        ):
+            raise WorkspaceError("报表目的必须是 1 至 500 个字符")
+        report_purpose = report_purpose.strip()
+        selected_sections = (
+            ["overview", "notes", "chart", "analysis"] if sections is None else sections
+        )
+        if (
+            not isinstance(selected_sections, list)
+            or not 1 <= len(selected_sections) <= len(FINAL_REPORT_SECTION_TYPES)
+            or len(set(selected_sections)) != len(selected_sections)
+            or any(value not in FINAL_REPORT_SECTION_TYPES for value in selected_sections)
+        ):
+            raise WorkspaceError("报表章节必须是有效且不重复的章节列表")
+
+        report_id = str(uuid.uuid4())
+        path = f"报表/配置/{report_id}/报表配置.json"
+        config = {
+            "version": REPORT_CONFIG_VERSION,
+            "reportId": report_id,
+            "manifestPath": manifest_path,
+            "datasetHash": dataset_hash,
+            "title": title.strip(),
+            "analysis": {
+                "dimensions": dimensions,
+                "metrics": normalized_metrics,
+                "notes": notes,
+            },
+            "chart": {
+                "type": chart_type,
+                "metric": chart_metric,
+                "title": (chart_title or title).strip(),
+            },
+            "presentation": {
+                "purpose": report_purpose,
+                "sections": selected_sections,
+            },
+        }
+        service.create_file(
+            thread,
+            path,
+            json.dumps(config, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
+                "utf-8"
+            ),
+        )
+        return {"reportId": report_id, "configPath": path}
 
     def generate_chart(
         path: str,
@@ -621,8 +984,8 @@ def report_tools(service: WorkspaceService) -> list[Function]:
                 html_figure = html_factory(plot_frame, x=x, y=y, color=group, title=title)
 
             identifier = str(uuid.uuid4())
-            png_path = f"reports/{identifier}.png"
-            html_path = f"reports/{identifier}.html"
+            png_path = f"报表/图表/{identifier}/图表.png"
+            html_path = f"报表/图表/{identifier}/交互图表.html"
             figure, axis = plt.subplots(figsize=(9, 5.5))
             try:
                 if chart_type in {"bar", "line"}:
@@ -675,8 +1038,10 @@ def report_tools(service: WorkspaceService) -> list[Function]:
 
     return [
         Function(name="pandas_profile_dataset", entrypoint=profile_dataset),
+        Function(name="pandas_sample_dataset", entrypoint=sample_dataset),
         Function(name="pandas_group_dataset", entrypoint=group_dataset),
         Function(name="pandas_pivot_dataset", entrypoint=pivot_dataset),
         Function(name="pandas_concat_datasets", entrypoint=concat_datasets),
         Function(name="pandas_generate_chart", entrypoint=generate_chart),
+        Function(name="pandas_create_report_config", entrypoint=create_report_config),
     ]

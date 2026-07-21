@@ -30,7 +30,7 @@ from .skills import load_skills
 from .workspace import WorkspaceError, WorkspaceService
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.8.8.1"
+BUNDLE_VERSION = "12.0.8.8.2"
 COMMAND_CATALOG_HASH = "45b3b79f39f02b93936c7f5ab8b28c2c158b40d6edb8ebc3950b54f32b18d7b0"
 MAX_RUN_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 12 * 1024 * 1024

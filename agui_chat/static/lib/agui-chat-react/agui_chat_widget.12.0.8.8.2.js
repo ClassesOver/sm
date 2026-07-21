@@ -26129,7 +26129,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function canPreviewFile(type) {
     return PREVIEWABLE_TYPES.has(type.toLowerCase());
   }
-  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.1.js";
+  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.2.js";
   const FILE_VIEWER_LOAD_TIMEOUT_MS = 15e3;
   const STATUS_ATTRIBUTE = "data-agui-file-viewer-status";
   let viewerModulePromise;
@@ -26576,7 +26576,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }) {
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2 border-b border-border bg-background px-3 py-2", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex min-w-0 items-center gap-1.5", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "flex min-w-0 flex-1 items-center gap-1.5 border border-border bg-background-panel px-2 outline outline-1 outline-border/70 transition-colors focus-within:border-primary/30 focus-within:outline-primary/25 focus-within:ring-2 focus-within:ring-primary/5", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-muted/35 bg-background-panel px-2 shadow-[0_1px_2px_rgba(15,23,42,0.08)] outline outline-1 outline-border/70 transition-colors hover:border-muted/55 hover:outline-muted/45 focus-within:border-primary/35 focus-within:outline-primary/25 focus-within:ring-2 focus-within:ring-primary/10", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { size: 14, className: "shrink-0 text-muted" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: search2, onChange: (event) => onSearchChange(event.target.value), className: "h-8 min-w-0 flex-1 border-0 bg-transparent p-0 text-xs outline-none", placeholder: "搜索当前目录", "aria-label": "搜索当前目录" }),
           search2 ? /* @__PURE__ */ jsxRuntimeExports.jsx(IconButton, { label: "清空搜索", size: "xs", className: "hover:bg-transparent", onClick: () => onSearchChange(""), children: /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 13 }) }) : null
@@ -27482,6 +27482,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const action = host.action && typeof host.action === "object" ? host.action : null;
     const record = host.record && typeof host.record === "object" ? host.record : null;
     const selection = host.selection && typeof host.selection === "object" ? host.selection : null;
+    const selectedCount = Array.isArray(selection == null ? void 0 : selection.ids) ? selection.ids.length : 0;
     return {
       protocol: host.protocol,
       snapshotId: host.snapshotId,
@@ -27515,15 +27516,44 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         resModel: action.resModel,
         resId: action.resId,
         viewMode: action.viewMode,
-        domain: action.domain,
-        context: action.context,
         target: action.target
       } : false,
       menu: clone(host.menu),
       record: clone(host.record),
-      selection: clone(host.selection),
+      selection: selection ? {
+        model: selection.model || false,
+        scope: selectedCount ? "selected" : "domain",
+        selectedCount
+      } : false,
       fields: clone(host.fields),
-      capabilities: clone(host.capabilities)
+      capabilities: agentCapabilities(host)
+    };
+  }
+  function agentCapabilities(host) {
+    const capabilities = clone(host.capabilities);
+    if (host.controller.viewType === "list" || host.controller.viewType === "kanban") {
+      capabilities.records = [];
+      capabilities.controls = capabilities.controls.filter((control) => !control.recordLabel);
+    }
+    return capabilities;
+  }
+  function agentHostProjection(props) {
+    const host = clone(props.hostState);
+    const action = host.action && typeof host.action === "object" ? { ...host.action } : false;
+    if (action) {
+      delete action.domain;
+      delete action.context;
+    }
+    const selection = host.selection;
+    return {
+      ...host,
+      action,
+      capabilities: agentCapabilities(host),
+      selection: selection ? {
+        model: selection.model,
+        scope: selection.ids.length ? "selected" : "domain",
+        selectedCount: selection.ids.length
+      } : false
     };
   }
   function latestMenuSearchResult(messages) {
@@ -27774,7 +27804,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       forwardedProps: options.branch ? { branch: clone(options.branch) } : {},
       state: {
         protocol: AGUI_ODOO_PROTOCOL,
-        host: clone(props.hostState),
+        host: agentHostProjection(props),
         agent: clone(agentState || {})
       },
       resume: clone(props.resume || []),
@@ -28094,11 +28124,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const text2 = content2.trim();
       const mentions = Array.isArray(selection) ? selection.map((item) => clone(item)) : [];
       const workspace = workspaceReferences.map((item) => clone(item));
-      const menuMention = selection && !Array.isArray(selection) ? selection : void 0;
+      const explicitMenuMention = selection && !Array.isArray(selection) ? selection : void 0;
       if (this.running || this.loadingSessions) return false;
       await this.refreshMenuCatalog();
-      const currentMenu = menuMention ? this.resolveMenuMention(menuMention) : void 0;
-      if (menuMention && !currentMenu) {
+      const currentMenu = explicitMenuMention ? this.resolveMenuMention(explicitMenuMention) : this.resolveMenuReplySelection(text2);
+      if (explicitMenuMention && !currentMenu) {
         const error = new Error("所选菜单已失效或无权访问，请重新选择。");
         this.error = error.message;
         (_b = (_a = this.props).onError) == null ? void 0 : _b.call(_a, error);
@@ -29859,6 +29889,46 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         valid: true
       } : void 0;
     }
+    resolveMenuReplySelection(value) {
+      const reply = value.trim().replace(/[。！？!?；;，,]+$/g, "").replace(/\s+/g, "");
+      const matched = /^(?:选|选择)?第([一二三四五六七八1-8])个(?:菜单)?$/.exec(reply);
+      if (!matched) return void 0;
+      const ordinal = Number(matched[1]) || "一二三四五六七八".indexOf(matched[1]) + 1;
+      let userIndex = -1;
+      for (let index2 = this.messages.length - 1; index2 >= 0; index2 -= 1) {
+        if (this.messages[index2].role === "user") {
+          userIndex = index2;
+          break;
+        }
+      }
+      if (userIndex < 0) return void 0;
+      let result;
+      for (let index2 = this.messages.length - 1; index2 > userIndex; index2 -= 1) {
+        const message = this.messages[index2];
+        if (message.role !== "tool") continue;
+        const parsed = parseJson(message.content);
+        if (message.name === "odoo.open_menu" && isRecord(parsed) && parsed.ok === true) {
+          return void 0;
+        }
+        if (message.name !== "odoo.search_menu") continue;
+        result = isRecord(parsed) ? parsed : void 0;
+        break;
+      }
+      const catalog = this.props.menuCatalog;
+      const candidates = Array.isArray(result == null ? void 0 : result.candidates) ? result.candidates : [];
+      if (candidates.length < 2 || ordinal > candidates.length || (result == null ? void 0 : result.catalogId) !== catalog.catalogId || result.catalogRevision !== catalog.catalogRevision) return void 0;
+      const candidate = candidates[ordinal - 1];
+      if (!isRecord(candidate) || typeof candidate.menuId !== "number" || !Number.isInteger(candidate.menuId) || typeof candidate.actionId !== "number" || !Number.isInteger(candidate.actionId)) return void 0;
+      const option = catalog.entries.find(
+        (item) => item.menuId === candidate.menuId && item.actionId === candidate.actionId
+      );
+      return option ? {
+        ...clone(option),
+        catalogId: catalog.catalogId,
+        catalogRevision: catalog.catalogRevision,
+        valid: true
+      } : void 0;
+    }
     async refreshMenuCatalog() {
       var _a;
       const getMenuCatalog = (_a = this.props.hostBridge) == null ? void 0 : _a.getMenuCatalog;
@@ -30046,7 +30116,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.8.1";
+  const VERSION = "12.0.8.8.2";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

@@ -14,8 +14,8 @@ configured AgentOS protocol endpoint must agree on:
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.8.1",
-  "bundle_version": "12.0.8.8.1",
+  "module_version": "12.0.8.8.2",
+  "bundle_version": "12.0.8.8.2",
   "command_catalog_hash": "sha256"
 }
 ```
@@ -43,8 +43,9 @@ Every `RunAgentInput.state` has exactly this envelope:
 }
 ```
 
-- `host` is written only by the HRP `agui_host` service from the current
-  ActionManager controller and BasicModel data point.
+- `host` is projected only from the HRP `agui_host` snapshot. The browser
+  `HostBridge` retains the complete local snapshot; AgentOS receives the
+  model-facing projection, not a second business-state copy.
 - `STATE_SNAPSHOT`, `STATE_DELTA`, and JSON Patch events write only `agent`.
   Attempts to patch `/host` are ignored and reported.
 - `hostRevision` is a browser page revision. `sessionRevision` is the database
@@ -54,6 +55,13 @@ Every `RunAgentInput.state` has exactly this envelope:
   catalog-only change does not increment `hostRevision`.
 - Session restore loads messages, `agentState`, and UI preferences. It never
   restores `hostState`.
+
+For List/Kanban projections, `selection` contains only `model`, host-selected
+`scope`, and `selectedCount`. Window-action and selection domain/context,
+selected IDs, visible row candidates, and row-bound control labels stay in the
+browser. Field metadata, aggregate view capabilities, and the exact
+`viewTarget` remain available. Form snapshots keep their existing record and
+control semantics.
 
 Snapshots preserve metadata for every field in the final native view, including
 binary and unsupported widget fields, while binary values remain omitted and
@@ -334,7 +342,7 @@ business handler, RPC, CRUD, or arbitrary model-method fallback.
 ### Filter Reports
 
 `odoo.business.report.filters` is a read-only command and is not enabled by
-default. Every request contains one to five filter tokens selected in the
+default. The legacy source contains one to five filter tokens selected in the
 current message. It supports:
 
 - `describe`: row count, allowed fields/types, original grouping, and allowed
@@ -357,18 +365,64 @@ filter label, model, fields, row count, aggregation basis, timezone, currency
 rule, generation time, and a domain fingerprint, but no token or full domain.
 An upload failure removes files created by that call.
 
-AgentOS registers five model-facing adapters: `pandas_profile_dataset`,
-`pandas_group_dataset`, `pandas_pivot_dataset`, `pandas_concat_datasets`, and
-`pandas_generate_chart`. Each call downloads only from the current thread,
+The same command also accepts a `current_view` source for the current
+interactive List/Kanban. The Agent sends only `source.kind`, the exact
+`viewTarget`, a mode, and one request. Before business preparation, the browser
+reads the complete domain, context, sort, grouping, and selected IDs directly
+from the current BasicModel and calls `/agui_chat/report/source/bind`. The
+binding is limited to 256 KiB and 5000 selected IDs and is tied to user,
+company, browser session, thread, snapshot, controller, menu, action, expiry,
+and a scope fingerprint. The returned `sourceHandle` is not authorization.
+
+`current_view` scope is host-defined: selected rows mean the intersection of
+the current domain and selected IDs; no selection means the full current
+domain. Selected IDs must all survive ACL, record-rule, company, and domain
+checks or the whole request fails. Preparation and execution repeat source,
+policy, expiry, and selection checks. A changed page returns
+`stale_report_source`; the Agent cannot submit domain/context/IDs or switch
+between selected and domain scope.
+
+`current_view/describe` returns only the handle, scope/counts, model, field
+schema, timezone, generation time, and fingerprint. `detail` preserves the
+BasicModel ordering and exports at most 100000 rows and 30 fields. Odoo writes
+up to 16 JSONL fragments of 8 MiB each (100 MiB total, 128 MiB estimated
+expanded memory) under `报表/原始数据/<dataset-uuid>/分片/`, uploads
+`数据集.json` last, and rolls back every uploaded file if any upload fails. The
+manifest contains paths, sizes, SHA-256 values, schema, counts, scope, timezone,
+time, and fingerprint but no query state or record values. A successful detail
+or aggregate consumes the source and immediately clears its stored query state
+and IDs. Oversized detail requires a narrower page range or explicit Odoo
+aggregate mode.
+
+AgentOS registers seven model-facing adapters: `pandas_profile_dataset`,
+`pandas_sample_dataset`, `pandas_group_dataset`, `pandas_pivot_dataset`,
+`pandas_concat_datasets`, `pandas_generate_chart`, and
+`pandas_create_report_config`. Each call downloads only from the current thread,
 creates a fresh Agno `PandasTools` instance over temporary local files, and
 releases all frames immediately. Native arbitrary Pandas functions are not
 published. Inputs are limited to 100000 rows, 100 columns, 128 MiB expanded
-memory, and model-visible results to 32 KiB. CSV and JSONL loaders read at most
+memory, and model-visible results to 32 KiB. Manifest datasets additionally
+limit schema to 30 columns and validate canonical UUID paths, fragment order,
+size, SHA-256, total rows, and total bytes while keeping only one fragment in
+memory. `profile` never returns raw rows; `sample` alone may return at most 20
+rows and 10 columns. CSV and JSONL loaders read at most
 100001 rows before rejecting an over-limit dataset. Top-level JSON arrays are
 shape-scanned before Pandas materializes them; XLSX archives are checked for
 member count, expanded size, and selected-sheet dimensions before loading.
-Chart outputs use UUID paths under `reports/`; PNG is inline-previewable and
-standalone Plotly HTML is downloaded.
+New analysis, chart, config, and final artifacts use structured UUID paths under
+`报表/分析数据/`, `报表/图表/`, `报表/配置/`, and `报表/生成结果/`.
+Historical `reports/` paths are not migrated. Text reads reject controlled raw
+JSONL paths in both layouts; user downloads remain available.
+
+The trusted `odoo-current-view-report` skill creates a non-raw config through
+the config adapter, then requires one confirmation before running its bundled
+script. The script revalidates config, manifest, fragment paths/sizes/hashes,
+and all rows before rendering. Its `agui.odoo.report.skill.v1` command protocol
+exposes `capabilities`, `validate`, and `render`; the normal agent path calls
+only `render`, which atomically publishes `分析报告.pdf`. Chart PNG data is
+temporary and is removed before publication. The final config and PDF never
+contain raw-row samples; bounded samples remain an analysis-only tool. Stdout
+contains one versioned JSON result envelope and never contains raw rows.
 
 `DELETE /workspace/file` accepts only `threadId`, `path`, and the optional JSON
 boolean `recursive`; string or numeric boolean lookalikes and unknown fields are

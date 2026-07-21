@@ -1074,6 +1074,11 @@
   text-transform: uppercase;
 }
 
+.agui-chat-react .ordinal {
+  --tw-ordinal: ordinal;
+  font-variant-numeric: var(--tw-ordinal) var(--tw-slashed-zero) var(--tw-numeric-figure) var(--tw-numeric-spacing) var(--tw-numeric-fraction);
+}
+
 .agui-chat-react .leading-4 {
   line-height: 16px;
 }
@@ -1722,10 +1727,6 @@
   border-right-width: 0px;
 }
 
-.agui-chat-react .focus-within\:border-primary\/30:focus-within {
-  border-color: rgb(24 24 27 / 0.3);
-}
-
 .agui-chat-react .focus-within\:border-primary\/35:focus-within {
   border-color: rgb(24 24 27 / 0.35);
 }
@@ -1767,8 +1768,8 @@
   box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000);
 }
 
-.agui-chat-react .focus-within\:ring-primary\/5:focus-within {
-  --tw-ring-color: rgb(24 24 27 / 0.05);
+.agui-chat-react .focus-within\:ring-primary\/10:focus-within {
+  --tw-ring-color: rgb(24 24 27 / 0.1);
 }
 
 .agui-chat-react .hover\:border-muted\/55:hover {

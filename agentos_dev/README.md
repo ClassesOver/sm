@@ -36,10 +36,18 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 默认监听 `127.0.0.1:7777`。HRP 只需配置
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
 
-应用还注册五个受控 Pandas 报表工具，支持当前 thread 工作区内的 CSV、XLSX、顶层数组 JSON
-和 JSONL。它们不暴露任意 DataFrame operation；图表自动写入 `reports/` 下的 UUID PNG 与
-独立 HTML。读取、新建文件和移动到空闲路径不需要确认；覆盖、删除和执行可信技能脚本
-仍要求确认，且不提供任意 Shell 或 Python 执行工具。
+应用注册七个受控报表工具，支持当前 thread 工作区内的 CSV、XLSX、顶层数组 JSON、JSONL，
+以及 Odoo 写入 `报表/原始数据/<dataset-uuid>/数据集.json` 的多分片数据集。profile 只返回
+字段类型与统计；原始样例必须显式调用 `pandas_sample_dataset`，并限制为 20 行、10 列、
+32 KiB。group、pivot 只返回派生聚合，图表写入 `报表/图表/<chart-uuid>/`；旧 `reports/`
+路径继续可读。`pandas_create_report_config` 负责生成中文 UUID 配置路径，模型不能自行拼接。
+
+`workspace_read_file` 禁止读取 `报表/原始数据/*/分片/*.jsonl` 和历史
+`reports/data/*.jsonl`，但用户仍可通过工作区下载接口取得本人 thread 中的文件。读取、新建
+文件和移动到空闲路径不需要确认；覆盖、删除和执行可信技能脚本仍要求确认，且不提供任意
+Shell 或 Python 执行工具。内置 `odoo-current-view-report` 技能经一次确认后在 Daytona 中
+通过 `agui.odoo.report.skill.v1` 协议生成
+`报表/生成结果/<report-uuid>/分析报告.pdf`。图表图片只在 PDF 渲染期间临时生成。
 
 应用默认读取 `/home/junge/pros/agents_app/.env`，复用其中的 `MODEL`、
 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。可通过 `AGENT_ENV_FILE` 指向其他

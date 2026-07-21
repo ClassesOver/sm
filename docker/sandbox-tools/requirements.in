@@ -28,6 +28,7 @@ python-magic
 python-pptx
 
 # 图表、统计与报告
+matplotlib
 pillow
 plotly
 scikit-learn

@@ -78,6 +78,20 @@ cron。升级到 `agui_chat_import` 12.0.8.8.1 会删除旧的 One2many 导入�
 在该状态下不可用。必须使用非管理员账号测试每条策略，因为 HRP ACL、记录规则、当前
 公司、筛选可见性和菜单可见性仍然生效。
 
+当前 List/Kanban 报表不要求用户创建 `@筛选` 引用。浏览器会在命令准备前通过
+`/agui_chat/report/source/bind` 绑定当前 BasicModel 的完整范围；AgentOS 只看到范围类型、
+勾选数量、schema、统计和有界样例。绑定请求最多 256 KiB，勾选最多 5000 条；明细数据集
+最多 100000 行、30 字段、16 个 8 MiB 分片、100 MiB 原始内容和 128 MiB 估算展开内存。
+超过限制时应缩小页面筛选或取消勾选；只有用户明确接受时才改用 Odoo 聚合模式。
+
+生产部署需包含 `deploy/agentos/skills/odoo-current-view-report/`，并保持技能目录及资源不可被
+组或其他用户写入。Daytona Snapshot 必须使用仓库 `docker/sandbox-tools` 镜像，其中锁定
+Matplotlib、WeasyPrint 和 Noto CJK 字体。最终脚本经一次确认执行，按
+`agui.odoo.report.skill.v1` 写入
+`报表/生成结果/<report-uuid>/分析报告.pdf`；PDF 只在完整成功后原子出现。历史
+`reports/...` 文件不迁移。原始 JSONL 禁止通过模型文本读取工具读取，但所属用户仍可通过
+工作区下载接口下载。
+
 ## 部署
 
 Python 模块和带版本的 React 前端包必须一起部署，随后清理旧资源缓存。模块与前端包
@@ -87,7 +101,8 @@ AgentOS 保留内置 `/health` 存活端点。流量就绪检查使用 `/ready`�
 可访问、沙箱注册表初始化完成且 HMAC 密钥至少为 32 字节时才返回成功。Compose 使用
 `/ready`，并自动重启 Agent 服务。
 
-Agent 镜像安装 pandas、openpyxl、matplotlib、Plotly 和 Noto CJK 字体。
+Agent 镜像安装 pandas、openpyxl、matplotlib 和 Plotly；Daytona sandbox-tools 镜像安装
+最终 PDF 报表所需的 Matplotlib、WeasyPrint 和 Noto CJK 字体。
 `agentos_dev/requirements.txt` 变化后必须重建镜像，不要在运行中的生产容器内交互安装
 这些依赖。
 

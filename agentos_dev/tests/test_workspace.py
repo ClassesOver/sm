@@ -208,6 +208,26 @@ def test_智能体新建覆盖和安全移动返回中文提示(tmp_path):
     assert moved["message"] == "文件或目录已移动。"
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "报表/原始数据/11111111-1111-4111-8111-111111111111/分片/数据-0001.jsonl",
+        "reports/data/legacy.jsonl",
+    ],
+)
+def test_智能体文本工具禁止读取受控原始报表分片(tmp_path, path):
+    current = service(tmp_path)
+    current.upload("thread", path, b'{"secret":"raw"}\n')
+    current_tools = {tool.name: tool for tool in workspace_tools(current, SecureSkills([]))}
+
+    with pytest.raises(WorkspaceError, match="不能进入智能体上下文"):
+        current_tools["workspace_read_file"].entrypoint(
+            path=path,
+            run_context=RunContext(run_id="run", session_id="thread"),
+        )
+    assert current.file_bytes("thread", path)[0] == b'{"secret":"raw"}\n'
+
+
 def test_中文路径长度层级控制字符和目录穿越受到限制(tmp_path):
     current = service(tmp_path)
     current.create_file("thread", "资料/报告.md", "内容".encode())

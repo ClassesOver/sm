@@ -640,13 +640,13 @@ class AguiChatToolAuthorization(models.Model):
         authorization, replayed = self._create_idempotent_authorization(values)
         if replayed:
             return authorization._existing_decision(binding_hash)
+        audit_details = {"binding": resolved.get("audit_details") or {}}
+        if not resolved.get("audit_details"):
+            audit_details["payload"] = redact(payload, sensitive_keys=sensitive)
         self.env["agui.chat.tool.audit"]._log(
             tool_name,
             "allowed",
-            details={
-                "payload": redact(payload, sensitive_keys=sensitive),
-                "binding": resolved.get("audit_details") or {},
-            },
+            details=audit_details,
             authorization_id=authorization.id,
             **self._audit_values(call)
         )
@@ -1151,6 +1151,16 @@ class AguiChatCommandExecution(models.Model):
         if not authorization or authorization.payload_hash != value_hash:
             return {"ok": False, "code": "authorization_invalid"}
         context = json.loads(authorization.context_json or "{}")
+        existing = self.search([
+            ("user_id", "=", self.env.user.id),
+            ("company_id", "=", self.env.user.company_id.id),
+            ("command_name", "=", command_name),
+            ("idempotency_key", "=", idempotency_key),
+        ], limit=1)
+        if existing:
+            if existing.payload_hash != value_hash:
+                return {"ok": False, "code": "idempotency_payload_mismatch"}
+            return existing._stored_result()
         resolved = {}
         if spec.get("binding_resolver"):
             try:
@@ -1198,16 +1208,6 @@ class AguiChatCommandExecution(models.Model):
                     authorization_id=authorization.id,
                 )
                 return {"ok": False, "code": "policy_denied"}
-        existing = self.search([
-            ("user_id", "=", self.env.user.id),
-            ("company_id", "=", self.env.user.company_id.id),
-            ("command_name", "=", command_name),
-            ("idempotency_key", "=", idempotency_key),
-        ], limit=1)
-        if existing:
-            if existing.payload_hash != value_hash:
-                return {"ok": False, "code": "idempotency_payload_mismatch"}
-            return existing._stored_result()
         try:
             with self.env.cr.savepoint():
                 execution = self.sudo().create({
@@ -1270,10 +1270,16 @@ class AguiChatCommandExecution(models.Model):
                 "result_json": canonical_json({"ok": False, "code": code}),
             })
             authorization.sudo().write({"state": "consumed"})
+        audit_details = execution._stored_result()
+        if resolved.get("audit_details"):
+            audit_details = {
+                "binding": resolved["audit_details"],
+                "result": execution.state,
+            }
         self.env["agui.chat.tool.audit"]._log(
             command_name,
             "ok" if execution.state == "success" else "error",
-            details=execution._stored_result(),
+            details=audit_details,
             authorization_id=authorization.id,
         )
         return execution._stored_result()
@@ -1411,4 +1417,5 @@ class AguiChatToolAudit(models.Model):
         self.env["agui.chat.mention.token"].sudo().search([
             ("expires_at", "<=", fields.Datetime.now())
         ]).unlink()
+        self.env["agui.chat.report.source"]._cleanup_expired()
         return True

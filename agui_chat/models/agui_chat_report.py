@@ -2,13 +2,16 @@
 import datetime
 import hashlib
 import json
+import os
+import tempfile
 import time
 import uuid
 
 import requests
 from dateutil.relativedelta import relativedelta
 
-from odoo import fields
+from odoo import api, fields, models
+from odoo.osv import expression
 from odoo.tools.safe_eval import safe_eval
 
 from .agui_chat_mention import MentionTokenError
@@ -19,11 +22,20 @@ from .agui_chat_workspace import issue_thread_capability
 COMMAND_NAME = "odoo.business.report.filters"
 MAX_FILTERS = 5
 MAX_DETAIL_ROWS = 5000
+MAX_CURRENT_VIEW_ROWS = 100000
 MAX_GROUPS = 5000
 MAX_DETAIL_FIELDS = 30
 MAX_DIMENSIONS = 2
 MAX_METRICS = 5
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_REPORT_PART_BYTES = 8 * 1024 * 1024
+MAX_REPORT_PARTS = 16
+MAX_REPORT_TOTAL_BYTES = 100 * 1024 * 1024
+MAX_REPORT_EXPANDED_BYTES = 128 * 1024 * 1024
+MAX_SELECTED_IDS = 5000
+MAX_REPORT_SOURCE_BIND_BYTES = 256 * 1024
+REPORT_SOURCE_TTL_MINUTES = 10
+DATASET_MANIFEST_VERSION = "agui.report.dataset.v1"
 FORBIDDEN_FIELD_TYPES = {"binary", "many2many", "one2many"}
 NUMERIC_FIELD_TYPES = {"float", "integer", "monetary"}
 ORDERABLE_FIELD_TYPES = NUMERIC_FIELD_TYPES.union({"date", "datetime"})
@@ -36,6 +48,277 @@ class ReportError(ValueError):
     def __init__(self, code, message=None):
         super(ReportError, self).__init__(message or code)
         self.code = code
+
+
+class AguiChatReportSource(models.Model):
+    _name = "agui.chat.report.source"
+    _description = "AG-UI 当前列表报表来源"
+    _order = "create_date desc"
+
+    handle = fields.Char(string="来源句柄", required=True, index=True, default=lambda self: str(uuid.uuid4()))
+    user_id = fields.Many2one(
+        "res.users", string="用户", required=True, default=lambda self: self.env.user,
+        index=True, ondelete="cascade",
+    )
+    company_id = fields.Many2one(
+        "res.company", string="公司", required=True,
+        default=lambda self: self.env.user.company_id, index=True, ondelete="cascade",
+    )
+    browser_session_hash = fields.Char(string="浏览器会话摘要", required=True, index=True)
+    thread_id = fields.Char(string="线程 ID", required=True, index=True)
+    snapshot_id = fields.Char(string="快照 ID", required=True, index=True)
+    host_revision = fields.Integer(string="宿主版本", required=True)
+    controller_id = fields.Char(string="控制器 ID", required=True)
+    data_point_id = fields.Char(string="数据点 ID", required=True)
+    model_name = fields.Char(string="业务模型", required=True, index=True)
+    menu_id = fields.Integer(string="菜单 ID")
+    action_id = fields.Integer(string="动作 ID")
+    view_type = fields.Selection(
+        [("list", "列表"), ("kanban", "看板")], string="视图类型", required=True,
+    )
+    scope = fields.Selection(
+        [("domain", "当前范围"), ("selected", "勾选交集")],
+        string="范围", required=True,
+    )
+    selected_count = fields.Integer(string="勾选数量", required=True, default=0)
+    domain_json = fields.Text(string="查询域")
+    context_json = fields.Text(string="查询上下文")
+    sort_json = fields.Text(string="排序")
+    group_by_json = fields.Text(string="分组")
+    selected_ids_json = fields.Text(string="勾选记录")
+    scope_fingerprint = fields.Char(string="范围摘要", required=True, index=True)
+    state = fields.Selection(
+        [("active", "有效"), ("consumed", "已消费")],
+        string="状态", required=True, default="active", index=True,
+    )
+    expires_at = fields.Datetime(string="失效时间", required=True, index=True)
+    dataset_manifest_path = fields.Char(string="数据集清单路径")
+
+    _sql_constraints = [
+        ("handle_unique", "unique(handle)", "报表来源句柄必须唯一。"),
+    ]
+
+    @api.model
+    def _bind_current_view(self, values, browser_session_hash):
+        values = values if isinstance(values, dict) else {}
+        if len(canonical_json(values).encode("utf-8")) > MAX_REPORT_SOURCE_BIND_BYTES:
+            raise ReportError(
+                "report_source_too_large", "当前列表查询状态超过 256 KiB，请缩小筛选条件。",
+            )
+        target = values.get("target") if isinstance(values.get("target"), dict) else {}
+        thread_id = str(values.get("threadId") or "").strip()
+        browser_session_hash = str(browser_session_hash or "").strip()
+        if not thread_id or len(thread_id) > 160 or not browser_session_hash:
+            raise ReportError("report_source_rejected", "报表来源缺少有效会话。")
+        session = self.env["agui.chat.session"].search([
+            ("thread_id", "=", thread_id), ("active", "=", True),
+        ], limit=1)
+        if not session:
+            raise ReportError("report_source_rejected", "报表对话已失效。")
+        required_target = {
+            "snapshotId", "hostRevision", "controllerId", "dataPointId", "model", "resId",
+        }
+        if set(target) != required_target or target.get("resId") not in (False, None):
+            raise ReportError("report_source_rejected", "当前列表目标格式无效。")
+        view_type = values.get("viewType")
+        model_name = target.get("model")
+        if (
+            view_type not in ("list", "kanban") or
+            not isinstance(model_name, str) or model_name not in self.env
+        ):
+            raise ReportError("unsupported_report_view", "当前页面不是可导出的列表或看板。")
+        if not all(
+            isinstance(target.get(name), str) and 0 < len(target[name]) <= 256
+            for name in ("snapshotId", "controllerId", "dataPointId")
+        ):
+            raise ReportError("report_source_rejected", "当前列表目标格式无效。")
+        if isinstance(target.get("hostRevision"), bool) or not isinstance(
+            target.get("hostRevision"), int
+        ):
+            raise ReportError("report_source_rejected", "当前列表版本格式无效。")
+
+        domain = values.get("domain")
+        report_context = values.get("context")
+        sort = values.get("sort")
+        group_by = values.get("groupBy")
+        selected_ids = values.get("selectedIds")
+        if not isinstance(domain, list) or not isinstance(report_context, dict):
+            raise ReportError("report_source_rejected", "当前列表查询状态格式无效。")
+        if not isinstance(sort, list) or not all(isinstance(item, str) for item in sort):
+            raise ReportError("report_source_rejected", "当前列表排序格式无效。")
+        if not isinstance(group_by, list) or not all(isinstance(item, str) for item in group_by):
+            raise ReportError("report_source_rejected", "当前列表分组格式无效。")
+        if not isinstance(selected_ids, list) or any(
+            isinstance(item, bool) or not isinstance(item, int) or item <= 0
+            for item in selected_ids
+        ):
+            raise ReportError("report_source_rejected", "当前列表勾选记录格式无效。")
+        selected_ids = list(dict.fromkeys(selected_ids))
+        if len(selected_ids) > MAX_SELECTED_IDS:
+            raise ReportError(
+                "report_selection_too_large", "勾选记录超过 5000 条，请缩小选择或取消勾选。",
+            )
+        for item in sort:
+            name, _direction = _sort_parts(item)
+            if "." in name or name not in self.env[model_name]._fields:
+                raise ReportError("report_source_rejected", "当前列表排序字段无效。")
+
+        _allowed_fields(self.env, model_name)
+        model = self.env[model_name].with_context(**report_context)
+        model.check_access_rights("read")
+        scope = "selected" if selected_ids else "domain"
+        effective_domain = _effective_source_domain(domain, selected_ids)
+        try:
+            if selected_ids:
+                allowed_ids = model.search(effective_domain, order="id").ids
+                if set(allowed_ids) != set(selected_ids):
+                    raise ReportError(
+                        "report_selection_forbidden",
+                        "勾选记录不完全属于当前列表范围或当前用户无权读取。",
+                    )
+            else:
+                model.search(effective_domain, limit=1)
+        except ReportError:
+            raise
+        except Exception:
+            raise ReportError("report_source_rejected", "当前列表查询状态无效。")
+
+        normalized = {
+            "target": target,
+            "viewType": view_type,
+            "menuId": _optional_positive_int(values.get("menuId")),
+            "actionId": _optional_positive_int(values.get("actionId")),
+            "domain": domain,
+            "context": report_context,
+            "sort": sort,
+            "groupBy": group_by,
+            "selectedIds": selected_ids,
+            "scope": scope,
+        }
+        fingerprint = hashlib.sha256(
+            canonical_json(normalized).encode("utf-8")
+        ).hexdigest()
+        source_handle = str(values.get("sourceHandle") or "").strip()
+        if source_handle:
+            source = self.search([
+                ("handle", "=", source_handle),
+                ("user_id", "=", self.env.user.id),
+                ("company_id", "=", self.env.user.company_id.id),
+                ("thread_id", "=", thread_id),
+                ("browser_session_hash", "=", browser_session_hash),
+            ], limit=1)
+            if not source:
+                raise ReportError("stale_report_source", "报表来源已失效，请重新描述当前列表。")
+            if source.expires_at <= fields.Datetime.now() or source.scope_fingerprint != fingerprint:
+                raise ReportError("stale_report_source", "当前列表范围已变化，请重新描述后再导出。")
+            return source
+
+        expires_at = fields.Datetime.to_string(
+            fields.Datetime.from_string(fields.Datetime.now()) +
+            datetime.timedelta(minutes=REPORT_SOURCE_TTL_MINUTES)
+        )
+        source = self.sudo().create({
+            "user_id": self.env.user.id,
+            "company_id": self.env.user.company_id.id,
+            "browser_session_hash": browser_session_hash,
+            "thread_id": thread_id,
+            "snapshot_id": target["snapshotId"],
+            "host_revision": target["hostRevision"],
+            "controller_id": target["controllerId"],
+            "data_point_id": target["dataPointId"],
+            "model_name": model_name,
+            "menu_id": normalized["menuId"] or False,
+            "action_id": normalized["actionId"] or False,
+            "view_type": view_type,
+            "scope": scope,
+            "selected_count": len(selected_ids),
+            "domain_json": canonical_json(domain),
+            "context_json": canonical_json(report_context),
+            "sort_json": canonical_json(sort),
+            "group_by_json": canonical_json(group_by),
+            "selected_ids_json": canonical_json(selected_ids),
+            "scope_fingerprint": fingerprint,
+            "expires_at": expires_at,
+        })
+        return self.browse(source.id)
+
+    def _public_description(self):
+        self.ensure_one()
+        return {
+            "sourceHandle": self.handle,
+            "scope": self.scope,
+            "selectedCount": self.selected_count,
+            "scopeFingerprint": self.scope_fingerprint,
+            "expiresAt": self.expires_at,
+        }
+
+    def _load_json(self, field_name, default):
+        self.ensure_one()
+        try:
+            value = json.loads(self[field_name] or "")
+        except (TypeError, ValueError):
+            raise ReportError("stale_report_source", "报表来源内容已失效。")
+        if not isinstance(value, type(default)):
+            raise ReportError("stale_report_source", "报表来源内容已失效。")
+        return value
+
+    def _mark_consumed(self, manifest_path):
+        self.ensure_one()
+        self.sudo().write({
+            "state": "consumed",
+            "dataset_manifest_path": manifest_path,
+            "domain_json": False,
+            "context_json": False,
+            "sort_json": False,
+            "group_by_json": False,
+            "selected_ids_json": False,
+        })
+
+    @api.model
+    def _cleanup_expired(self):
+        self.sudo().search([("expires_at", "<=", fields.Datetime.now())]).unlink()
+        return True
+
+
+def _optional_positive_int(value):
+    if value in (None, False, ""):
+        return False
+    if isinstance(value, bool):
+        raise ReportError("report_source_rejected", "报表来源菜单或动作格式无效。")
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise ReportError("report_source_rejected", "报表来源菜单或动作格式无效。")
+    if value <= 0:
+        raise ReportError("report_source_rejected", "报表来源菜单或动作格式无效。")
+    return value
+
+
+def _effective_source_domain(domain, selected_ids):
+    if selected_ids:
+        return expression.AND([domain, [("id", "in", selected_ids)]])
+    return domain
+
+
+def _validate_current_view_scope(env, binding):
+    model = env[binding["model"]].with_context(**binding["context"])
+    model.check_access_rights("read")
+    selected_ids = binding.get("selected_ids") or []
+    effective_domain = _effective_source_domain(binding["domain"], selected_ids)
+    try:
+        if selected_ids:
+            allowed_ids = model.search(effective_domain, order="id").ids
+            if set(allowed_ids) != set(selected_ids):
+                raise ReportError(
+                    "report_selection_forbidden",
+                    "勾选记录不完全属于当前列表范围或当前用户无权读取。",
+                )
+        else:
+            model.search(effective_domain, limit=1)
+    except ReportError:
+        raise
+    except Exception:
+        raise ReportError("stale_report_source", "当前列表查询状态或读取权限已经变化。")
 
 
 def _safe_filter_value(env, value, expected_type, label):
@@ -202,7 +485,8 @@ def _normalize_binding(env, binding):
 
 def _requested_fields(env, mode, request_item, binding):
     if mode == "describe":
-        if set(request_item) != {"token"}:
+        expected = set() if binding.get("kind") == "current_view" else {"token"}
+        if set(request_item) != expected:
             raise ReportError("invalid_report_request", "描述模式每个筛选只能提交 token。")
         return list(binding["allowed_fields"])
     if mode == "detail":
@@ -270,7 +554,90 @@ def _requested_fields(env, mode, request_item, binding):
     return names
 
 
+def _load_current_view_source(env, payload, context):
+    source_value = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+    target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
+    handle = source_value.get("sourceHandle")
+    if source_value.get("kind") != "current_view" or not isinstance(handle, str) or not handle:
+        raise ReportError("report_source_required", "当前列表报表必须先绑定数据来源。")
+    thread_id = context.get("threadId")
+    session_key = env.context.get("agui_session_key") or ""
+    if not isinstance(thread_id, str) or not thread_id or not session_key:
+        raise ReportError("stale_report_source", "报表来源会话已失效。")
+    source = env["agui.chat.report.source"].search([
+        ("handle", "=", handle),
+        ("user_id", "=", env.user.id),
+        ("company_id", "=", env.user.company_id.id),
+        ("thread_id", "=", thread_id),
+        ("browser_session_hash", "=", session_key),
+    ], limit=1)
+    if not source or source.expires_at <= fields.Datetime.now():
+        raise ReportError("stale_report_source", "报表来源已失效，请重新描述当前列表。")
+    expected_target = {
+        "snapshotId": source.snapshot_id,
+        "hostRevision": source.host_revision,
+        "controllerId": source.controller_id,
+        "dataPointId": source.data_point_id,
+        "model": source.model_name,
+        "resId": False,
+    }
+    if target != expected_target:
+        raise ReportError("stale_report_source", "当前页面目标与报表来源不一致。")
+    if source.state != "active":
+        raise ReportError("report_source_consumed", "报表来源已经导出，请重新描述当前列表。")
+    return source
+
+
+def _current_view_binding_resolver(env, payload, context):
+    mode = payload.get("mode")
+    requests_list = payload.get("requests")
+    if mode not in ("describe", "detail", "aggregate"):
+        raise ReportError("invalid_report_request", "报表模式无效。")
+    if not isinstance(requests_list, list) or len(requests_list) != 1:
+        raise ReportError("invalid_report_request", "当前列表报表每次只能提交一个请求。")
+    request_item = requests_list[0]
+    if not isinstance(request_item, dict):
+        raise ReportError("invalid_report_request", "当前列表报表请求格式无效。")
+    source = _load_current_view_source(env, payload, context)
+    allowed = _allowed_fields(env, source.model_name)
+    binding = {
+        "label": "当前列表",
+        "kind": "current_view",
+        "model": source.model_name,
+        "domain": source._load_json("domain_json", []),
+        "context": source._load_json("context_json", {}),
+        "group_by": source._load_json("group_by_json", []),
+        "sort": source._load_json("sort_json", []),
+        "selected_ids": source._load_json("selected_ids_json", []),
+        "allowed_fields": allowed,
+    }
+    _validate_current_view_scope(env, binding)
+    requested = _requested_fields(env, mode, request_item, binding)
+    return {
+        "policy_bindings": [{
+            "model": source.model_name,
+            "field_names": sorted(set(_field_name(item) for item in requested)),
+        }],
+        "handler_context": {
+            "filter_bindings": [binding],
+            "report_sources": source,
+        },
+        "audit_details": {
+            "source": "current_view",
+            "scope": source.scope,
+            "selected_count": source.selected_count,
+            "model": source.model_name,
+            "fields": sorted(set(_field_name(item) for item in requested)),
+            "scope_fingerprint": source.scope_fingerprint,
+            "mode": mode,
+        },
+    }
+
+
 def _binding_resolver(env, payload, context):
+    source = payload.get("source")
+    if isinstance(source, dict) and source.get("kind") == "current_view":
+        return _current_view_binding_resolver(env, payload, context)
     mode = payload.get("mode")
     requests_list = payload.get("requests")
     if mode not in ("describe", "detail", "aggregate"):
@@ -352,6 +719,10 @@ def _json_value(value):
     if isinstance(value, (datetime.date, datetime.datetime)):
         return value.isoformat()
     return value
+
+
+def _json_record(row, field_names):
+    return {name: _json_value(row.get(name)) for name in field_names}
 
 
 def _currency_rules(env, binding, request_item):
@@ -487,6 +858,194 @@ def _upload_files(env, thread_id, odoo_session, files_to_upload):
         raise ReportError("workspace_upload_failed", "报表文件上传失败。")
 
 
+def _upload_local_files(env, thread_id, odoo_session, files_to_upload):
+    config = env["agui.chat.config"].sudo().get_active_config()
+    internal_url = config.internal_agentos_url()
+    if not internal_url or not thread_id:
+        raise ReportError("workspace_unavailable", "报表工作区不可用。")
+    session = env["agui.chat.session"].search([
+        ("thread_id", "=", thread_id), ("active", "=", True),
+    ], limit=1)
+    if not session:
+        raise ReportError("workspace_unavailable", "报表对话已失效。")
+    capability, _claims = issue_thread_capability(env, thread_id, odoo_session)
+    headers = {
+        "X-AGUI-Capability": capability,
+        "X-AGUI-Thread": thread_id,
+    }
+    uploaded = []
+    try:
+        for path, local_path, mime_type in files_to_upload:
+            size = os.path.getsize(local_path)
+            if size > MAX_UPLOAD_BYTES:
+                raise ReportError("report_file_too_large", "单个报表文件超过 10 MB。")
+            with open(local_path, "rb") as stream:
+                response = requests.post(
+                    "%s/workspace/upload" % internal_url,
+                    data={"threadId": thread_id, "path": path},
+                    files={"file": (path.rsplit("/", 1)[-1], stream, mime_type)},
+                    headers=headers,
+                    timeout=30,
+                )
+            response.raise_for_status()
+            value = response.json()
+            if not value.get("ok"):
+                raise ReportError("workspace_upload_failed", "报表文件上传失败。")
+            uploaded.append(path)
+    except Exception as error:
+        for path in reversed(uploaded):
+            try:
+                requests.delete(
+                    "%s/workspace/file" % internal_url,
+                    json={"threadId": thread_id, "path": path},
+                    headers=headers,
+                    timeout=10,
+                )
+            except Exception:
+                pass
+        if isinstance(error, ReportError):
+            raise
+        raise ReportError("workspace_upload_failed", "报表文件上传失败。")
+
+
+def _current_view_field_metadata(env, binding, fields_list):
+    definitions = env[binding["model"]].fields_get(fields_list)
+    return [
+        {
+            "name": name,
+            "label": (definitions.get(name) or {}).get("string") or name,
+            "type": (definitions.get(name) or {}).get("type") or "unknown",
+        }
+        for name in fields_list
+    ]
+
+
+def _export_current_view_dataset(
+        env, source, binding, request_item, thread_id, odoo_session, generated_at):
+    field_names = request_item["fields"]
+    model = env[binding["model"]].with_context(**binding["context"])
+    effective_domain = _effective_source_domain(
+        binding["domain"], binding.get("selected_ids") or [],
+    )
+    records = model.search(
+        effective_domain,
+        order=_order_clause(binding["sort"]),
+        limit=MAX_CURRENT_VIEW_ROWS + 1,
+    )
+    if len(records) > MAX_CURRENT_VIEW_ROWS:
+        raise ReportError(
+            "report_dataset_too_large",
+            "当前列表超过 100000 行，请缩小范围或明确改用 Odoo 聚合模式。",
+        )
+
+    dataset_id = str(uuid.uuid4())
+    base_path = "报表/原始数据/%s" % dataset_id
+    fragments = []
+    total_size = 0
+    expanded_size = 0
+    row_count = 0
+    with tempfile.TemporaryDirectory(prefix="agui-report-source-") as directory:
+        part_number = 1
+        part_path = os.path.join(directory, "part-%04d.jsonl" % part_number)
+        part = open(part_path, "wb")
+        part_size = 0
+        try:
+            for offset in range(0, len(records), 500):
+                rows = records[offset:offset + 500].read(field_names)
+                for row in rows:
+                    encoded = (
+                        json.dumps(
+                            _json_record(row, field_names),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ).encode("utf-8") + b"\n"
+                    )
+                    if len(encoded) > MAX_REPORT_PART_BYTES:
+                        raise ReportError(
+                            "report_row_too_large", "报表中存在超过 8 MiB 的单行数据。",
+                        )
+                    if part_size and part_size + len(encoded) > MAX_REPORT_PART_BYTES:
+                        part.close()
+                        fragments.append((part_number, part_path, part_size))
+                        part_number += 1
+                        if part_number > MAX_REPORT_PARTS:
+                            raise ReportError(
+                                "report_dataset_too_large", "报表数据分片超过 16 个，请缩小范围。",
+                            )
+                        part_path = os.path.join(directory, "part-%04d.jsonl" % part_number)
+                        part = open(part_path, "wb")
+                        part_size = 0
+                    part.write(encoded)
+                    part_size += len(encoded)
+                    total_size += len(encoded)
+                    expanded_size += len(encoded) + len(field_names) * 64
+                    row_count += 1
+                    if total_size > MAX_REPORT_TOTAL_BYTES:
+                        raise ReportError(
+                            "report_dataset_too_large", "报表原始数据超过 100 MiB，请缩小范围。",
+                        )
+                    if expanded_size > MAX_REPORT_EXPANDED_BYTES:
+                        raise ReportError(
+                            "report_dataset_too_large", "报表展开内存超过 128 MiB，请缩小范围。",
+                        )
+        finally:
+            if not part.closed:
+                part.close()
+        fragments.append((part_number, part_path, part_size))
+
+        manifest_fragments = []
+        upload_items = []
+        for number, local_path, size in fragments:
+            digest = hashlib.sha256()
+            with open(local_path, "rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            relative_path = "%s/分片/数据-%04d.jsonl" % (base_path, number)
+            manifest_fragments.append({
+                "path": relative_path,
+                "size": size,
+                "sha256": digest.hexdigest(),
+            })
+            upload_items.append((relative_path, local_path, "application/x-ndjson"))
+
+        manifest = {
+            "version": DATASET_MANIFEST_VERSION,
+            "datasetId": dataset_id,
+            "model": binding["model"],
+            "fields": _current_view_field_metadata(env, binding, field_names),
+            "rowCount": row_count,
+            "columnCount": len(field_names),
+            "fragments": manifest_fragments,
+            "totalSize": total_size,
+            "scope": source.scope,
+            "selectedCount": source.selected_count,
+            "timezone": env.user.tz or "UTC",
+            "generatedAt": generated_at,
+            "scopeFingerprint": source.scope_fingerprint,
+        }
+        manifest_content = json.dumps(
+            manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+        ).encode("utf-8")
+        manifest_path = "%s/数据集.json" % base_path
+        local_manifest = os.path.join(directory, "manifest.json")
+        with open(local_manifest, "wb") as output:
+            output.write(manifest_content)
+        upload_items.append((manifest_path, local_manifest, "application/json"))
+        _upload_local_files(env, thread_id, odoo_session, upload_items)
+        source._mark_consumed(manifest_path)
+        return {
+            "sourceHandle": source.handle,
+            "manifestPath": manifest_path,
+            "rowCount": row_count,
+            "columnCount": len(field_names),
+            "fragmentCount": len(fragments),
+            "scope": source.scope,
+            "selectedCount": source.selected_count,
+            "datasetHash": hashlib.sha256(manifest_content).hexdigest(),
+            "generatedAt": generated_at,
+        }
+
+
 def _handler(env, payload, handler_context):
     mode = payload["mode"]
     requests_list = payload["requests"]
@@ -494,6 +1053,86 @@ def _handler(env, payload, handler_context):
     if len(bindings) != len(requests_list):
         raise ReportError("business_binding_invalid", "报表筛选绑定无效。")
     generated_at = fields.Datetime.to_string(fields.Datetime.now())
+    sources = handler_context.get("report_sources")
+    if sources:
+        source = sources.ensure_one()
+        binding = bindings[0]
+        request_item = requests_list[0]
+        effective_domain = _effective_source_domain(
+            binding["domain"], binding.get("selected_ids") or [],
+        )
+        model = env[binding["model"]].with_context(**binding["context"])
+        if mode == "describe":
+            report = source._public_description()
+            report.update({
+                "filterLabel": binding["label"],
+                "model": binding["model"],
+                "rowCount": model.search_count(effective_domain),
+                "fields": _field_metadata(env, binding),
+                "originalGroupBy": binding["group_by"],
+                "timezone": env.user.tz or "UTC",
+                "currencyRule": "多币种金额必须按币种字段分组，不做隐式汇率换算",
+                "generatedAt": generated_at,
+            })
+            return {"mode": mode, "reports": [report]}
+        if mode == "detail":
+            report = _export_current_view_dataset(
+                env,
+                source,
+                binding,
+                request_item,
+                handler_context.get("thread_id"),
+                handler_context.get("odoo_session"),
+                generated_at,
+            )
+            return {"mode": mode, "reports": [report]}
+
+        aggregate_binding = dict(binding, domain=effective_domain)
+        rows, currency_rules = _aggregate(env, aggregate_binding, request_item)
+        identifier = str(uuid.uuid4())
+        data_path = "报表/分析数据/%s/聚合数据.jsonl" % identifier
+        meta_path = "报表/分析数据/%s/聚合元数据.json" % identifier
+        data = b"\n".join(
+            json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            for row in rows
+        )
+        if data:
+            data += b"\n"
+        metadata = _metadata(
+            env, aggregate_binding, mode, len(rows), request_item,
+            currency_rules, generated_at,
+        )
+        meta = json.dumps(
+            metadata, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+        ).encode("utf-8")
+        _upload_files(
+            env,
+            handler_context.get("thread_id"),
+            handler_context.get("odoo_session"),
+            [
+                (data_path, data, "application/x-ndjson"),
+                (meta_path, meta, "application/json"),
+            ],
+        )
+        source._mark_consumed(meta_path)
+        return {
+            "mode": mode,
+            "reports": [{
+                "sourceHandle": source.handle,
+                "filterLabel": binding["label"],
+                "model": binding["model"],
+                "rowCount": len(rows),
+                "mode": mode,
+                "dataPath": data_path,
+                "metadataPath": meta_path,
+                "scope": source.scope,
+                "selectedCount": source.selected_count,
+                "scopeFingerprint": source.scope_fingerprint,
+                "timezone": env.user.tz or "UTC",
+                "currencyRules": metadata["currencyRules"],
+                "generatedAt": generated_at,
+            }],
+        }
     if mode == "describe":
         reports = []
         for binding in bindings:
@@ -581,11 +1220,33 @@ REPORT_SCHEMA = {
     "required": ["mode", "requests"],
     "additionalProperties": False,
     "properties": {
+        "source": {
+            "type": "object", "required": ["kind"], "additionalProperties": False,
+            "properties": {
+                "kind": {"type": "string", "enum": ["current_view"]},
+                "sourceHandle": {"type": "string", "minLength": 1, "maxLength": 160},
+            },
+        },
+        "target": {
+            "type": "object",
+            "required": [
+                "snapshotId", "hostRevision", "controllerId", "dataPointId", "model", "resId",
+            ],
+            "additionalProperties": False,
+            "properties": {
+                "snapshotId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "hostRevision": {"type": "integer", "minimum": 0},
+                "controllerId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "dataPointId": {"type": "string", "minLength": 1, "maxLength": 256},
+                "model": {"type": "string", "minLength": 1, "maxLength": 160},
+                "resId": {"type": "boolean", "enum": [False]},
+            },
+        },
         "mode": {"type": "string", "enum": ["describe", "detail", "aggregate"]},
         "requests": {
             "type": "array", "minItems": 1, "maxItems": MAX_FILTERS,
             "items": {
-                "type": "object", "required": ["token"], "additionalProperties": False,
+                "type": "object", "additionalProperties": False,
                 "properties": {
                     "token": {"type": "string", "minLength": 1, "maxLength": 160},
                     "fields": {

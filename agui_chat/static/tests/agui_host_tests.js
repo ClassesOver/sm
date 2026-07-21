@@ -816,6 +816,112 @@ odoo.define("agui_chat.tests.host", function (require) {
         });
     });
 
+    QUnit.test("current list reports bind full BasicModel state before server preparation", function (assert) {
+        assert.expect(10);
+        var done = assert.async();
+        var command = "odoo.business.report.filters";
+        var target = {
+            snapshotId: "snapshot-list", hostRevision: 3,
+            controllerId: "controller-list", dataPointId: "data-list",
+            model: "res.partner", resId: false,
+        };
+        var sourceState = {
+            target: target, viewType: "list", menuId: 7, actionId: 11,
+            domain: [["name", "ilike", "仅绑定接口可见"]],
+            context: {search_default_customer: 1}, groupBy: [], sort: ["-name"],
+            selectedIds: [5, 8], scope: "selected", selectedCount: 2,
+        };
+        var bridge = new ChatBridge.HostBridge({
+            call: function (service, method, value) {
+                assert.strictEqual(service + ":" + method, "agui_host:getReportSourceState");
+                assert.deepEqual(value, target);
+                return sourceState;
+            },
+        });
+        bridge.config = {
+            host_tools_enabled: true,
+            write_tools_enabled: false,
+            enabled_commands: [],
+            business_tools: [{
+                name: command, parameters: {type: "object"}, accessLevel: "read",
+            }],
+        };
+        bridge.setCatalog([]);
+        var routes = [];
+        bridge._rpc = function (route, values) {
+            routes.push(route);
+            if (route === "/agui_chat/report/source/bind") {
+                assert.deepEqual(values.source.selectedIds, [5, 8]);
+                assert.deepEqual(values.source.domain, sourceState.domain);
+                assert.strictEqual(values.source.threadId, "thread-list");
+                return $.when({ok: true, sourceHandle: "source-bound"});
+            }
+            if (route === "/agui_chat/business/prepare") {
+                assert.deepEqual(values.call.arguments.source, {
+                    kind: "current_view", sourceHandle: "source-bound",
+                });
+                assert.notOk(values.call.arguments.domain);
+                return $.when({
+                    ok: true,
+                    authorization_id: "authorization-report",
+                    bound_call: values.call,
+                });
+            }
+            assert.strictEqual(values.payload.source.sourceHandle, "source-bound");
+            return $.when({ok: true, result: {mode: "describe"}});
+        };
+        bridge.executeTool({
+            id: "report-list", tool: command,
+            arguments: {source: {kind: "current_view"}, target: target,
+                mode: "describe", requests: [{}]},
+            context: {requestId: "request-list", runId: "run-list", threadId: "thread-list"},
+        }).then(function (result) {
+            assert.ok(result.ok);
+            assert.deepEqual(routes, [
+                "/agui_chat/report/source/bind",
+                "/agui_chat/business/prepare",
+                "/agui_chat/business/execute",
+            ]);
+            done();
+        });
+    });
+
+    QUnit.test("current list report source falls back to the matching snapshot query", function (assert) {
+        assert.expect(4);
+        var service = Object.create(HostService.prototype);
+        var snapshot = {
+            snapshotId: "snapshot-list", hostRevision: 3, interactive: true,
+            controller: {
+                controllerId: "controller-list", dataPointId: "data-list",
+                actionId: 11, viewType: "list",
+            },
+            menu: {id: 7},
+            selection: {
+                model: "res.partner", ids: [],
+                domain: [["name", "ilike", "快照筛选"]],
+                context: {active_test: false},
+            },
+        };
+        var controller = {
+            handle: "data-list",
+            model: {get: function () { return {orderedBy: [], groupedBy: []}; }},
+            getSelectedIds: function () { return []; },
+        };
+        service.getSnapshot = function () { return snapshot; };
+        service._resolveCurrentController = function () { return controller; };
+
+        var result = service.getReportSourceState({
+            snapshotId: "snapshot-list", hostRevision: 3,
+            controllerId: "controller-list", dataPointId: "data-list",
+            model: "res.partner", resId: false,
+        });
+
+        assert.deepEqual(result.domain, snapshot.selection.domain);
+        assert.deepEqual(result.context, snapshot.selection.context);
+        assert.strictEqual(result.scope, "domain");
+        assert.strictEqual(result.selectedCount, 0);
+    });
+
     QUnit.test("host bridge completes rejected undo conflicts", function (assert) {
         assert.expect(4);
         var done = assert.async();

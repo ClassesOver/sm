@@ -14,7 +14,7 @@ const MENU_NAVIGATION_TOOLS = ['odoo.search_menu', 'odoo.open_menu'] as const
 
 export interface RunStateEnvelope {
   protocol: typeof AGUI_ODOO_PROTOCOL
-  host: OdooHostSnapshot
+  host: Record<string, unknown>
   agent: Record<string, unknown>
 }
 
@@ -205,6 +205,7 @@ function agentHostContext(props: AguiChatProps): Record<string, unknown> {
   const selection = host.selection && typeof host.selection === 'object'
     ? host.selection as Record<string, unknown>
     : null
+  const selectedCount = Array.isArray(selection?.ids) ? selection.ids.length : 0
   return {
     protocol: host.protocol,
     snapshotId: host.snapshotId,
@@ -238,15 +239,48 @@ function agentHostContext(props: AguiChatProps): Record<string, unknown> {
       resModel: action.resModel,
       resId: action.resId,
       viewMode: action.viewMode,
-      domain: action.domain,
-      context: action.context,
       target: action.target
     } : false,
     menu: clone(host.menu),
     record: clone(host.record),
-    selection: clone(host.selection),
+    selection: selection ? {
+      model: selection.model || false,
+      scope: selectedCount ? 'selected' : 'domain',
+      selectedCount
+    } : false,
     fields: clone(host.fields),
-    capabilities: clone(host.capabilities)
+    capabilities: agentCapabilities(host)
+  }
+}
+
+function agentCapabilities(host: OdooHostSnapshot) {
+  const capabilities = clone(host.capabilities)
+  if (host.controller.viewType === 'list' || host.controller.viewType === 'kanban') {
+    capabilities.records = []
+    capabilities.controls = capabilities.controls.filter((control) => !control.recordLabel)
+  }
+  return capabilities
+}
+
+function agentHostProjection(props: AguiChatProps): Record<string, unknown> {
+  const host = clone(props.hostState) as OdooHostSnapshot
+  const action = host.action && typeof host.action === 'object'
+    ? { ...host.action }
+    : false
+  if (action) {
+    delete action.domain
+    delete action.context
+  }
+  const selection = host.selection
+  return {
+    ...host,
+    action,
+    capabilities: agentCapabilities(host),
+    selection: selection ? {
+      model: selection.model,
+      scope: selection.ids.length ? 'selected' : 'domain',
+      selectedCount: selection.ids.length
+    } : false
   }
 }
 
@@ -569,7 +603,7 @@ export function buildRunInput(
     forwardedProps: options.branch ? { branch: clone(options.branch) } : {},
     state: {
       protocol: AGUI_ODOO_PROTOCOL,
-      host: clone(props.hostState),
+      host: agentHostProjection(props),
       agent: clone(agentState || {})
     },
     resume: clone(props.resume || []),

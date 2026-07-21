@@ -1347,7 +1347,9 @@ matplotlib==3.11.1 \
     --hash=sha256:e15ef41507f3d525f46154ac9e3ae785dacde9f20e593a25de8986267892ef74 \
     --hash=sha256:e4b9ac2f1f607ecda2af90a5232beee2af7582fce1cc30c4b6a1b012dc21ee99 \
     --hash=sha256:f2912f647f3fbe1ccf085f91e213936f9101bead81a5e670565b1f1b3712f4fb
-    # via seaborn
+    # via
+    #   -r docker/sandbox-tools/requirements.in
+    #   seaborn
 mdurl==0.1.2 \
     --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8 \
     --hash=sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba

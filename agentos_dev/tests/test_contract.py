@@ -94,6 +94,29 @@ def test_agent_instructions_enforce_tool_result_truthfulness():
     assert "不得先输出文字或询问字段" in instructions
 
 
+def test_agent_instructions_defer_current_view_report_workflow_to_skill():
+    instructions = "\n".join(app.assistant.instructions)
+    skill = (REPO_ROOT / "deploy/agentos/skills/odoo-current-view-report/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "odoo-current-view-report" not in instructions
+    assert "current_view 明细" not in instructions
+    assert "pandas_create_report_config" not in instructions
+    assert "scripts/generate_reports.py" not in instructions
+    assert "workspace_read_file 不得读取新旧受控原始 JSONL 分片" in instructions
+    assert 'source={"kind":"current_view"}' in skill
+    assert "有勾选记录时导出当前 domain 与勾选 IDs 的交集" in skill
+    assert "没有勾选记录时导出完整当前 domain" in skill
+    assert "不得提交 domain、context、IDs 或自行改选范围" in skill
+    assert "pandas_create_report_config" in skill
+    assert "run_skill_script" in skill
+    assert 'script_path="generate_reports.py"' in skill
+    assert 'args=["render", configPath]' in skill
+    assert "agui.odoo.report.skill.v1" in skill
+    assert "唯一产物" in skill and "分析报告.pdf" in skill
+
+
 def test_智能体说明明确工作区确认边界():
     instructions = "\n".join(app.assistant.instructions)
 

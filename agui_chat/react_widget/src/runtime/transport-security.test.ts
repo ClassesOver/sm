@@ -182,6 +182,65 @@ describe('production transport contract', () => {
     })
   })
 
+  it('keeps list query details in the browser and only sends the report scope', () => {
+    const listHost = {
+      ...testHostState,
+      controller: {
+        ...testHostState.controller,
+        viewType: 'list' as const,
+        mode: false as const
+      },
+      action: {
+        id: 1,
+        resModel: 'res.partner',
+        domain: [['company_id', '=', 3]],
+        context: { search_default_customer: 1 }
+      },
+      record: false as const,
+      selection: {
+        model: 'res.partner',
+        ids: [7, 9],
+        domain: [['name', 'ilike', '机密筛选值']],
+        context: { allowed_company_ids: [3] }
+      },
+      capabilities: {
+        ...testHostState.capabilities,
+        records: [{ token: 'record-token', displayName: '机密客户名称' }],
+        controls: [{
+          token: 'control-token', type: 'open' as const, label: '机密客户名称',
+          recordLabel: '机密客户名称'
+        }]
+      }
+    }
+    const input = buildRunInput(
+      [{ id: 'report', role: 'user', content: '生成当前列表报表' }],
+      v2Props({ hostState: listHost }),
+      'thread-1',
+      null,
+      {}
+    )
+    const hostContext = JSON.parse(input.context.find(
+      (item) => item.description === 'HRP 宿主快照'
+    )?.value || '{}')
+
+    expect(hostContext.selection).toEqual({
+      model: 'res.partner', scope: 'selected', selectedCount: 2
+    })
+    expect(hostContext.action).not.toHaveProperty('domain')
+    expect(hostContext.action).not.toHaveProperty('context')
+    expect(input.state.host.selection).toEqual({
+      model: 'res.partner', scope: 'selected', selectedCount: 2
+    })
+    expect(input.state.host.action).not.toHaveProperty('domain')
+    expect(input.state.host.action).not.toHaveProperty('context')
+    expect(hostContext.capabilities.records).toEqual([])
+    expect(hostContext.capabilities.controls).toEqual([])
+    expect((input.state.host.capabilities as { records: unknown[] }).records).toEqual([])
+    expect(JSON.stringify(input)).not.toContain('机密筛选值')
+    expect(JSON.stringify(input)).not.toContain('allowed_company_ids')
+    expect(JSON.stringify(input)).not.toContain('机密客户名称')
+  })
+
   it('keeps explicit selections without sending the menu catalog on the first run', () => {
     const menuMention = {
       menuId: 8, actionId: 42, name: '客户', path: ['销售', '客户'],
