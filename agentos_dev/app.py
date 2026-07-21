@@ -66,6 +66,9 @@ REQUIRED_TOOL_PREAMBLE_EVENTS = frozenset(
     {
         EventType.RUN_STARTED,
         EventType.STATE_SNAPSHOT,
+        EventType.RAW,
+        EventType.TEXT_MESSAGE_START,
+        EventType.TEXT_MESSAGE_END,
         EventType.THINKING_START,
         EventType.THINKING_END,
         EventType.THINKING_TEXT_MESSAGE_START,

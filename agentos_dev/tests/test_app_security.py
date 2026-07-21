@@ -10,10 +10,13 @@ import httpx
 import pytest
 from ag_ui.core import (
     EventType,
+    RawEvent,
     RunAgentInput,
     RunFinishedEvent,
     RunStartedEvent,
     StateSnapshotEvent,
+    TextMessageContentEvent,
+    TextMessageEndEvent,
     TextMessageStartEvent,
     ToolCallStartEvent,
 )
@@ -729,10 +732,49 @@ async def test_required_tool_guard_accepts_status_and_expected_tool():
 
 
 @pytest.mark.anyio
+async def test_required_tool_guard_accepts_agno_preamble_before_expected_tool():
+    stream = ClosingEventStream(
+        [
+            RunStartedEvent(thread_id="thread-1", run_id="run-1"),
+            StateSnapshotEvent(snapshot={}),
+            RawEvent(event={"event": "RunStarted"}),
+            TextMessageStartEvent(message_id="message-1"),
+            TextMessageEndEvent(message_id="message-1"),
+            RawEvent(event={"event": "RunContent"}),
+            ToolCallStartEvent(
+                tool_call_id="call-1",
+                tool_call_name=app_module.SEARCH_MENU_TOOL,
+            ),
+            RunFinishedEvent(thread_id="thread-1", run_id="run-1"),
+        ]
+    )
+
+    events = [
+        event
+        async for event in app_module._guard_required_tool(
+            stream,
+            app_module.SEARCH_MENU_TOOL,
+        )
+    ]
+
+    assert [event.type for event in events] == [
+        EventType.RUN_STARTED,
+        EventType.STATE_SNAPSHOT,
+        EventType.RAW,
+        EventType.TEXT_MESSAGE_START,
+        EventType.TEXT_MESSAGE_END,
+        EventType.RAW,
+        EventType.TOOL_CALL_START,
+        EventType.RUN_FINISHED,
+    ]
+    assert not stream.closed
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "first_executable",
     [
-        TextMessageStartEvent(message_id="message-1"),
+        TextMessageContentEvent(message_id="message-1", delta="先输出文字"),
         ToolCallStartEvent(tool_call_id="call-1", tool_call_name="odoo.open_menu"),
         None,
     ],

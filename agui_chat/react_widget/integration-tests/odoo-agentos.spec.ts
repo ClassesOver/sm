@@ -5,6 +5,7 @@ const database = process.env.ODOO_E2E_DB || 'odoo12_agui_e2e'
 const login = process.env.ODOO_E2E_LOGIN || 'admin'
 const password = process.env.ODOO_E2E_PASSWORD || 'admin'
 const workspaceSecret = process.env.AGUI_WORKSPACE_HMAC_SECRET || ''
+const realAgentOsTest = process.env.AGENTOS_E2E_REAL_MODEL === '1' ? test : test.skip
 
 interface ToolResult {
   result?: Record<string, unknown>
@@ -332,6 +333,14 @@ test.describe('@ 前端交互', () => {
 
 test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
   test.beforeEach(async ({ page }) => {
+    if (process.env.AGENTOS_E2E_REAL_MODEL === '1') {
+      for (const path of ['config', 'agui']) {
+        await page.route(`**/agent/${path}`, async (route) => {
+          const response = await route.fetch({ url: `http://127.0.0.1:7777/${path}` })
+          await route.fulfill({ response })
+        })
+      }
+    }
     await loginToOdoo(page)
     if (workspaceSecret) {
       await rpc(page, 'ir.config_parameter', 'set_param', [
@@ -343,6 +352,43 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
 
   test.afterEach(async ({ page }) => {
     if (!page.isClosed()) await cleanupE2e(page)
+  })
+
+  realAgentOsTest('自然语言菜单导航依次搜索并打开唯一菜单', async ({ page }) => {
+    await openPartnerList(page)
+    const existingSessionIds = await sessionIds(page)
+    await openAssistant(page)
+    await page.getByRole('button', { name: '新建对话' }).click()
+
+    const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
+    await input.fill('打开入口看板')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(page.getByRole('button', { name: '停止生成' })).toBeVisible()
+
+    await expect(page.locator('.o_kanban_view')).toBeVisible({ timeout: 120_000 })
+    await expect.poll(() => currentHostState(page).then((state) => state.model), {
+      timeout: 120_000
+    }).toBe('agui.chat.test.option')
+    await expect(page.getByText('模型未按要求首先调用')).toHaveCount(0)
+
+    await expect.poll(async () => {
+      const created = await page.evaluate(async (knownIds) => {
+        const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
+        const result = await Promise.resolve(manager.bridge.listSessions())
+        const session = result.sessions.find((item: any) => !knownIds.includes(item.id))
+        if (!session) return []
+        const loaded = await Promise.resolve(manager.bridge.loadSession(session.id))
+        return loaded.session.messages.flatMap(
+          (message: any) => (message.tool_calls || []).map((call: any) => call.name)
+        )
+      }, existingSessionIds)
+      return created.filter((name: string) =>
+        name === 'odoo.search_menu' || name === 'odoo.open_menu'
+      )
+    }, { timeout: 120_000 }).toEqual(['odoo.search_menu', 'odoo.open_menu'])
+    await expect(page.getByRole('button', { name: '停止生成' })).toBeHidden({
+      timeout: 120_000
+    })
   })
 
   test('精简目录、幂等重放和过期快照均 fail closed', async ({ page }) => {
@@ -449,6 +495,72 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
       model: state.model, resId: state.resId, mode: state.mode
     }))).toEqual({ model: 'agui.chat.test.document', resId: false, mode: 'edit' })
     expect(await rpc<number>(page, 'agui.chat.test.document', 'search_count', [[]])).toBe(documentCount)
+  })
+
+  test('原生筛选返回唯一记录 token 并打开对应只读表单', async ({ page }) => {
+    const marker = `AGUI-E2E-筛选打开-${Date.now()}`
+    const documentId = await rpc<number>(page, 'agui.chat.test.document', 'create', [{
+      name: marker,
+      required_code: marker
+    }])
+    await page.evaluate(async () => {
+      const webClient = (globalThis as any).odoo.__DEBUG__.services['web.web_client']
+      await Promise.resolve(webClient.do_action({
+        type: 'ir.actions.act_window',
+        name: 'AG-UI 通用测试单据',
+        res_model: 'agui.chat.test.document',
+        views: [[false, 'list'], [false, 'form']],
+        target: 'current'
+      }))
+    })
+    await expect(page.locator('.o_list_view')).toBeVisible()
+    await expect.poll(() => currentHostState(page).then((state) => state.model))
+      .toBe('agui.chat.test.document')
+
+    const invalid = await executeTool(page, 'odoo.apply_filter', {
+      domain: [['unknown_field', '=', marker]],
+      label: '无效字段筛选'
+    })
+    expect(invalid.result).toMatchObject({ ok: false, code: 'invalid_filter_condition' })
+
+    const filtered = await executeTool(page, 'odoo.apply_filter', {
+      domain: [['name', '=', marker]],
+      label: '唯一测试单据'
+    })
+    expect(filtered.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.apply_filter',
+      count: 1,
+      candidates: [{ token: expect.any(String), displayName: marker }]
+    })
+    const filteredRow = page.locator('.o_list_view tbody tr.o_data_row')
+    await expect(filteredRow).toHaveCount(1)
+    await expect(filteredRow).toContainText(marker)
+
+    const candidate = filtered.result.candidates?.[0] as { token: string }
+    const opened = await executeTool(page, 'odoo.open_record', {
+      recordToken: candidate.token,
+      mode: 'readonly'
+    })
+    expect(opened.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.open_record',
+      opened: true,
+      mode: 'readonly',
+      displayName: marker
+    })
+    await expect(page.locator('.o_form_view')).toBeVisible()
+    await expect.poll(() => currentHostState(page).then((state) => ({
+      model: state.model,
+      resId: state.resId,
+      mode: state.mode,
+      name: state.values.name
+    }))).toEqual({
+      model: 'agui.chat.test.document',
+      resId: documentId,
+      mode: 'readonly',
+      name: marker
+    })
   })
 
   test('重复叶子搜索保持歧义且不能授权导航', async ({ page }) => {
@@ -606,6 +718,152 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     expect(loading).toEqual({ request: 0, response: 0, failed: 0 })
     expect(toolResult!.result).toMatchObject({ ok: true, operation: 'odoo.search_relation' })
     expect(toolResult!.result.candidates?.length).toBeGreaterThan(0)
+  })
+
+  test('表单暂存放弃重载并打开和新建 One2many 明细', async ({ page }) => {
+    const marker = `AGUI-E2E-表单命令-${Date.now()}`
+    const lineMarker = `${marker}-明细`
+    const stagedDescription = `${marker}-未保存说明`
+    const documentId = await rpc<number>(page, 'agui.chat.test.document', 'create', [{
+      name: marker,
+      required_code: marker,
+      description: '初始说明',
+      detail_item_ids: [[0, 0, {
+        name: lineMarker,
+        quantity: 2,
+        domain_key: 'standard'
+      }]]
+    }])
+    await page.evaluate(async (resId) => {
+      const webClient = (globalThis as any).odoo.__DEBUG__.services['web.web_client']
+      await Promise.resolve(webClient.do_action({
+        type: 'ir.actions.act_window',
+        name: 'AG-UI 通用测试单据',
+        res_model: 'agui.chat.test.document',
+        res_id: resId,
+        views: [[false, 'form']],
+        target: 'current'
+      }))
+    }, documentId)
+    await expect(page.locator('.o_form_view')).toBeVisible()
+    await expect.poll(() => currentHostState(page).then((state) => state.resId)).toBe(documentId)
+
+    const staged = await executeTool(page, 'odoo.stage_current_form', {
+      patch: { description: stagedDescription }
+    })
+    expect(staged.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.stage_current_form',
+      staged: true,
+      saved: false,
+      enteredEditMode: true,
+      dirtyFields: expect.arrayContaining(['description'])
+    })
+    await expect.poll(() => currentHostState(page).then((state) => ({
+      description: state.values.description,
+      dirtyFields: state.dirtyFields
+    }))).toEqual({
+      description: stagedDescription,
+      dirtyFields: ['description']
+    })
+    expect((await rpc<Array<{ description: string }>>(page, 'agui.chat.test.document', 'read', [
+      [documentId], ['description']
+    ]))[0].description).toBe('初始说明')
+
+    const dirtyReload = await executeTool(page, 'odoo.reload_current_form')
+    expect(dirtyReload.result).toMatchObject({ ok: false, code: 'parent_form_dirty' })
+    expect((await currentHostState(page)).values.description).toBe(stagedDescription)
+
+    const discarded = await executeTool(page, 'odoo.discard_current_form', {}, { approve: true })
+    expect(discarded.decision).toMatchObject({
+      needs_confirmation: true,
+      code: 'confirmation_required'
+    })
+    expect(discarded.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.discard_current_form',
+      discarded: true
+    })
+    await expect.poll(() => currentHostState(page).then((state) => ({
+      description: state.values.description,
+      dirtyFields: state.dirtyFields
+    }))).toEqual({ description: '初始说明', dirtyFields: [] })
+
+    const reloaded = await executeTool(page, 'odoo.reload_current_form')
+    expect(reloaded.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.reload_current_form',
+      reloaded: true,
+      snapshotId: expect.any(String),
+      hostRevision: expect.any(Number)
+    })
+    await expect.poll(() => currentHostState(page).then((state) => state.values.description))
+      .toBe('初始说明')
+
+    const entered = await executeTool(page, 'odoo.enter_edit_mode')
+    expect(entered.result).toMatchObject({ ok: true, editing: true, enteredEditMode: true })
+    await expect.poll(() => currentHostState(page).then((state) => state.mode)).toBe('edit')
+    const parent = await currentHostState(page)
+    const detail = parent.capabilities.x2many.find((item: any) =>
+      item.field === 'detail_item_ids'
+    )
+    expect(detail).toMatchObject({
+      fieldToken: expect.any(String),
+      operations: { create: true, update: true },
+      rows: [{ token: expect.any(String), displayName: lineMarker }]
+    })
+
+    const openedLine = await executeTool(page, 'odoo.open_x2many_record', {
+      rowToken: detail.rows[0].token,
+      mode: 'edit'
+    })
+    expect(openedLine.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.open_x2many_record',
+      opened: true,
+      mode: 'edit',
+      persistence: 'parent_pending'
+    })
+    await expect(page.locator('.modal .o_form_view')).toBeVisible()
+    await expect.poll(() => currentHostState(page).then((state) => ({
+      model: state.model,
+      mode: state.mode,
+      name: state.values.name
+    }))).toEqual({ model: 'agui.chat.test.line', mode: 'edit', name: lineMarker })
+
+    const closedLine = await executeTool(page, 'odoo.discard_current_form', {}, { approve: true })
+    expect(closedLine.result).toMatchObject({ ok: true, discarded: true })
+    await expect(page.locator('.modal .o_form_view')).toBeHidden()
+    await expect.poll(() => currentHostState(page).then((state) => state.model))
+      .toBe('agui.chat.test.document')
+
+    const refreshedParent = await currentHostState(page)
+    const refreshedDetail = refreshedParent.capabilities.x2many.find((item: any) =>
+      item.field === 'detail_item_ids'
+    )
+    const openedCreate = await executeTool(page, 'odoo.open_x2many_create', {
+      fieldToken: refreshedDetail.fieldToken
+    })
+    expect(openedCreate.result).toMatchObject({
+      ok: true,
+      operation: 'odoo.open_x2many_create',
+      opened: true,
+      mode: 'create',
+      persistence: 'parent_pending'
+    })
+    await expect(page.locator('.modal .o_form_view')).toBeVisible()
+    await expect.poll(() => currentHostState(page).then((state) => ({
+      model: state.model,
+      resId: state.resId,
+      mode: state.mode
+    }))).toEqual({ model: 'agui.chat.test.line', resId: false, mode: 'edit' })
+
+    const closedCreate = await executeTool(page, 'odoo.discard_current_form', {}, { approve: true })
+    expect(closedCreate.result).toMatchObject({ ok: true, discarded: true })
+    await expect(page.locator('.modal .o_form_view')).toBeHidden()
+    expect(await rpc<number>(page, 'agui.chat.test.line', 'search_count', [[
+      ['document_id', '=', documentId]
+    ]])).toBe(1)
   })
 
   test('patch 无需确认并通过原生保存写入数据库', async ({ page }) => {
