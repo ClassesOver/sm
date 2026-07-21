@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import type { Dispatch, RefObject, SetStateAction } from 'react'
 import type {
-  AttachmentRef, MenuMention, MentionReference, SelectedAgentSkill, WorkspaceReference
+  AttachmentRef, MenuMention, SelectedAgentSkill, WorkspaceReference
 } from '../types'
 
 export type ComposerSend = (
   content: string,
   attachments: AttachmentRef[],
-  mentions?: MentionReference[] | MenuMention,
+  menuMention?: MenuMention,
   skills?: SelectedAgentSkill[],
   workspaceReferences?: WorkspaceReference[]
 ) => Promise<boolean | void> | boolean | void

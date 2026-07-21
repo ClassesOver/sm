@@ -603,7 +603,6 @@ class TestHostCommandAuthorization(TransactionCase):
             "odoo.open_create", "odoo.enter_edit_mode", "odoo.activate_view_control",
             "odoo.switch_view",
             "odoo.open_x2many_record", "odoo.open_x2many_create",
-            "odoo.prepare_x2many_import", "odoo.get_x2many_import_status",
             "odoo.reload_current_form",
         }
         self.assertTrue(new_commands.issubset(set(HOST_COMMAND_NAMES)))

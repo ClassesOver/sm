@@ -2,7 +2,7 @@ import { UploadCloud } from 'lucide-react'
 import { FormEvent, KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type {
-  AgentSkillOption, AttachmentOptions, AttachmentRef, ChatIcons, ChatLabels, HostBridge,
+  AgentSkillOption, AttachmentOptions, AttachmentRef, ChatIcons, ChatLabels,
   MenuMentionOption, WorkspaceReference
 } from '../types'
 import { AttachmentQueue } from './AttachmentQueue'
@@ -26,7 +26,6 @@ export interface ChatInputProps {
   attachments?: boolean | AttachmentOptions
   menuOptions: MenuMentionOption[]
   agentSkills?: AgentSkillOption[]
-  hostBridge?: HostBridge
   workspaceReferences?: WorkspaceReference[]
   onRemoveWorkspaceReference?: (id: string) => void
   onSend: ComposerSend

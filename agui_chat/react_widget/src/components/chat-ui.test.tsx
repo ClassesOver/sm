@@ -153,8 +153,6 @@ describe('chat customization', () => {
   })
 
   it('shows only menu and skill categories and filters up to eight local menus', () => {
-    const searchMentions = vi.fn()
-    const bindMention = vi.fn()
     const menuOptions = [
       { menuId: 1, actionId: 11, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户' },
       { menuId: 2, actionId: 12, name: '工单', path: ['服务', '工单'], fullPath: '服务 / 工单' },
@@ -167,7 +165,6 @@ describe('chat customization', () => {
       }))
     ]
     render(<ChatInput running={false} attachments={false} menuOptions={menuOptions}
-      hostBridge={{ searchMentions: searchMentions as any, bindMention: bindMention as any }}
       labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
     const input = screen.getByPlaceholderText(labels.inputPlaceholder)
 
@@ -192,8 +189,6 @@ describe('chat customization', () => {
     expect(fireEvent.pointerDown(workOrder)).toBe(true)
     fireEvent.click(workOrder)
     expect(screen.getByText('服务 / 工单')).toBeTruthy()
-    expect(searchMentions).not.toHaveBeenCalled()
-    expect(bindMention).not.toHaveBeenCalled()
   })
 
   it('keeps the picker open when Shadow DOM retargets an internal pointer event', () => {
@@ -336,7 +331,7 @@ describe('chat customization', () => {
     expect(screen.getByRole('dialog', { name: '添加到对话' })).toBeTruthy()
   })
 
-  it('removes the query, selects a menu, and sends the legacy menu mention', async () => {
+  it('removes the query, selects a menu, and sends the menu selection', async () => {
     const onSend = vi.fn()
     const option = { menuId: 1, actionId: 11, name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户' }
     render(<ChatInput running={false} attachments={false} menuOptions={[option]}
@@ -357,7 +352,6 @@ describe('chat customization', () => {
   it('shares skill selection between @ and toolbar entry points', () => {
     const agentSkills = [{ id: 'audit', name: '合同审计', description: '核对合同字段' }]
     render(<ChatInput running={false} attachments={false} menuOptions={[]} agentSkills={agentSkills}
-      hostBridge={{ searchMentions: vi.fn() as any, bindMention: vi.fn() as any }}
       labels={labels} icons={icons} onSend={vi.fn()} onStop={vi.fn()} onUpload={vi.fn()} onRemove={vi.fn()} />)
     const input = screen.getByPlaceholderText(labels.inputPlaceholder) as HTMLTextAreaElement
     fireEvent.change(input, { target: { value: '@', selectionStart: 1 } })

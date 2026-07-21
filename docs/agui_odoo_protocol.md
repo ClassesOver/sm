@@ -14,8 +14,8 @@ configured AgentOS protocol endpoint must agree on:
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.8.5",
-  "bundle_version": "12.0.8.8.5",
+  "module_version": "12.0.8.8.6",
+  "bundle_version": "12.0.8.8.6",
   "command_catalog_hash": "sha256"
 }
 ```
@@ -85,10 +85,6 @@ returns `snapshot_too_large` instead of silently dropping fields.
 HRP publishes standard AG-UI client tool schemas in the current
 `RunAgentInput.tools`:
 
-- `odoo.read_mentioned_records`
-- `odoo.open_mentioned_menu`
-- `odoo.open_mentioned_record`
-- `odoo.apply_mentioned_filter`
 - `odoo.navigate_menu`
 - `odoo.apply_filter`
 - `odoo.apply_group`
@@ -107,7 +103,6 @@ HRP publishes standard AG-UI client tool schemas in the current
 React executes a tool only if its exact name was declared for that run. Agno
 server tools remain display-only until their `TOOL_CALL_RESULT` arrives.
 
-Mention tools carry a page target containing `snapshotId` and `hostRevision`.
 `odoo.navigate_menu` uses a dedicated menu target that also
 contains `catalogId` and `catalogRevision`. Commands bound to the current view
 carry the full target with `controllerId`, `dataPointId`, `model`, and `resId`.
@@ -271,41 +266,7 @@ context; the host does not require a preceding search in the same run. Catalog
 changes return `stale_menu_catalog`; action changes return
 `menu_action_conflict`, and missing menus return `menu_unavailable`.
 
-## Object References
-
-User messages may contain up to five discriminated `mentions`. A message may
-contain at most one action that changes the page. The legacy `menuMention`
-field remains readable for stored sessions.
-
-Search candidates expire after five minutes. An explicit action choice binds a
-new two-hour opaque token to the current user, company, browser session,
-resource kind, and exact action. AG-UI receives only the final token and display
-metadata; record IDs and filter domain/context never enter the AG-UI request.
-
-Record search runs `name_search` as the current user across at most twenty
-models exposed by visible window-action menus. Saved filters come from
-`ir.filters.get_filters`; temporary filters are evaluated and size-limited by
-the native host before tokenization. Execution repeats menu, ACL, record-rule,
-company, filter-visibility, expiry, and exact-action checks.
-
-Saved and current filters support separate `read` and `apply` bindings. `read`
-is available only when `odoo.business.report.filters` is enabled and the
-current user matches an exact-model report policy. It is not a page action and
-up to five filters may coexist. `apply` remains a page action. Record `read`
-authorization never authorizes filter data access because validation includes
-both resource kind and action.
-
-`odoo.read_mentioned_records` accepts one to five tokens bound to `read`. An
-exact-model policy `field_names` allowlist wins; otherwise fields are derived
-from the default form view. Secret-like, configured-sensitive, and binary
-fields are always removed. HTML becomes plain text, scalar text is truncated,
-many2one returns its display name, and x2many returns only a count. Results are
-limited to twenty fields per record and 64 KB per call.
-
-Mentioned filters replace the current query through HRP 12 `FavoriteMenu` and
-`SearchView`, including context, group-by, and sort. Cross-menu record actions
-re-enter the token-bound menu before switching its native controller to the
-form; dirty forms still reject navigation.
+## Form Commands
 
 Relation search rules:
 

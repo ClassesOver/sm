@@ -17,8 +17,6 @@ export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   'odoo.save_current_form': '保存当前表单',
   'odoo.open_x2many_record': '打开明细表单',
   'odoo.open_x2many_create': '新建明细表单',
-  'odoo.prepare_x2many_import': '准备明细导入',
-  'odoo.get_x2many_import_status': '查询导入状态',
   'odoo.reload_current_form': '重新载入表单',
   'odoo.discard_current_form': '放弃表单更改'
 }

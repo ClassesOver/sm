@@ -2,7 +2,7 @@ import { Check, Copy, Paperclip, RefreshCcw, Send, Square, User } from 'lucide-r
 import type { ChatIcons, ChatLabels } from './types'
 
 export const defaultLabels: ChatLabels = {
-  inputPlaceholder: '输入消息，@ 选择记录、菜单或技能',
+  inputPlaceholder: '输入消息，@ 选择菜单或技能',
   emptyTitle: '智能助手',
   emptyDescription: '询问当前 HRP 记录、选中内容或操作。',
   newSession: '新建对话',

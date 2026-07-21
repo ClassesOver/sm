@@ -66,7 +66,6 @@
                         </page>
                         <page string="安全与容量">
                             <group string="数据安全">
-                                <field name="mention_model_id" options="{'no_create': True, 'no_open': True}"/>
                                     <field name="sensitive_field_names" placeholder="以逗号分隔 HRP 字段名"/>
                             </group>
                             <group>

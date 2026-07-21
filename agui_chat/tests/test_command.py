@@ -12,10 +12,6 @@ from ..models.agui_chat_config import (
 
 
 PAGE_COMMAND_XML_IDS = {
-    "odoo.read_mentioned_records": "command_read_mentioned_records",
-    "odoo.open_mentioned_menu": "command_open_mentioned_menu",
-    "odoo.open_mentioned_record": "command_open_mentioned_record",
-    "odoo.apply_mentioned_filter": "command_apply_mentioned_filter",
     "odoo.navigate_menu": "command_navigate_menu",
     "odoo.apply_filter": "command_apply_filter",
     "odoo.apply_group": "command_apply_group",
@@ -24,8 +20,6 @@ PAGE_COMMAND_XML_IDS = {
     "odoo.switch_view": "command_switch_view",
     "odoo.open_x2many_record": "command_open_x2many_record",
     "odoo.open_x2many_create": "command_open_x2many_create",
-    "odoo.prepare_x2many_import": "command_prepare_x2many_import",
-    "odoo.get_x2many_import_status": "command_get_x2many_import_status",
     "odoo.reload_current_form": "command_reload_current_form",
     "odoo.enter_edit_mode": "command_enter_edit_mode",
     "odoo.activate_view_control": "command_activate_view_control",
@@ -37,14 +31,23 @@ PAGE_COMMAND_XML_IDS = {
     "odoo.discard_current_form": "command_discard_current_form",
 }
 
+REMOVED_PAGE_COMMAND_XML_IDS = {
+    "odoo.read_mentioned_records": "command_read_mentioned_records",
+    "odoo.open_mentioned_menu": "command_open_mentioned_menu",
+    "odoo.open_mentioned_record": "command_open_mentioned_record",
+    "odoo.apply_mentioned_filter": "command_apply_mentioned_filter",
+    "odoo.prepare_x2many_import": "command_prepare_x2many_import",
+    "odoo.get_x2many_import_status": "command_get_x2many_import_status",
+}
+
 
 class TestAguiChatCommand(TransactionCase):
 
     def test_catalog_revision_and_hash_are_synchronized(self):
-        self.assertEqual(COMMAND_CATALOG_REVISION, 13)
+        self.assertEqual(COMMAND_CATALOG_REVISION, 14)
         self.assertEqual(
             COMMAND_CATALOG_HASH,
-            "17566185369f10acba35a57a57c9e696c8ed9f52d54e7d2a27f2e7323fc51e41",
+            "e075e3f9f2229aa8d2347f5d5f0e95f867e7e1bbc411e60e25f5dc3443fdb287",
         )
 
     def test_page_master_data_matches_host_catalog(self):
@@ -55,6 +58,16 @@ class TestAguiChatCommand(TransactionCase):
         self.assertEqual(set(PAGE_COMMAND_XML_IDS), set(HOST_COMMAND_NAMES))
         for code, xml_id in PAGE_COMMAND_XML_IDS.items():
             self.assertEqual(self.env.ref("agui_chat.%s" % xml_id).code, code)
+
+    def test_removed_page_commands_are_not_registered(self):
+        commands = self.env["agui.chat.command"].with_context(active_test=False).search([
+            ("code", "in", list(REMOVED_PAGE_COMMAND_XML_IDS)),
+        ])
+        self.assertFalse(commands)
+        for xml_id in REMOVED_PAGE_COMMAND_XML_IDS.values():
+            self.assertFalse(self.env.ref(
+                "agui_chat.%s" % xml_id, raise_if_not_found=False,
+            ))
 
     def test_command_code_is_unique(self):
         with self.assertRaises(IntegrityError), self.cr.savepoint():

@@ -3,16 +3,6 @@ odoo.define("agui_chat.command_registry", function (require) {
 
     var Adapter = require("agui_chat.model_adapter");
 
-    var PAGE_TARGET = {
-        type: "object",
-        additionalProperties: false,
-        required: ["snapshotId", "hostRevision"],
-        properties: {
-            snapshotId: {type: "string"},
-            hostRevision: {type: "integer"},
-        },
-    };
-
     var MENU_TARGET = {
         type: "object",
         additionalProperties: false,
@@ -50,15 +40,6 @@ odoo.define("agui_chat.command_registry", function (require) {
         };
     }
 
-    function pageSchema(properties, required) {
-        return {
-            type: "object",
-            additionalProperties: false,
-            required: ["target"].concat(required || []),
-            properties: _.extend({target: PAGE_TARGET}, properties || {}),
-        };
-    }
-
     function menuSchema(properties, required) {
         return {
             type: "object",
@@ -69,37 +50,6 @@ odoo.define("agui_chat.command_registry", function (require) {
     }
 
     var CATALOG = [
-        {
-            name: "odoo.read_mentioned_records",
-            description: "批量读取用户明确选择且绑定为引用数据动作的 1 至 5 条记录。",
-            parameters: pageSchema({
-                tokens: {
-                    type: "array", minItems: 1, maxItems: 5, uniqueItems: true,
-                    items: {type: "string", minLength: 1, maxLength: 160},
-                },
-            }, ["tokens"]),
-        },
-        {
-            name: "odoo.open_mentioned_menu",
-            description: "执行用户明确绑定的菜单打开或新建动作。",
-            parameters: pageSchema({
-                token: {type: "string", minLength: 1, maxLength: 160},
-            }, ["token"]),
-        },
-        {
-            name: "odoo.open_mentioned_record",
-            description: "执行用户明确绑定的记录查看或编辑动作。",
-            parameters: pageSchema({
-                token: {type: "string", minLength: 1, maxLength: 160},
-            }, ["token"]),
-        },
-        {
-            name: "odoo.apply_mentioned_filter",
-            description: "应用用户明确绑定的收藏筛选或当前临时筛选，并替换当前查询。",
-            parameters: pageSchema({
-                token: {type: "string", minLength: 1, maxLength: 160},
-            }, ["token"]),
-        },
         {
             name: "odoo.navigate_menu",
             description: "导航到当前用户可见且自身配置 action 的末级 HRP 菜单。目标名称明确时只传 query：唯一匹配会直接打开，多候选会返回供用户选择；已有明确选择时只传候选原样返回的 menuId 和 actionId。target 始终使用当前 menuTarget。",
@@ -185,21 +135,6 @@ odoo.define("agui_chat.command_registry", function (require) {
             }, ["fieldToken"]),
         },
         {
-            name: "odoo.prepare_x2many_import",
-            description: "为当前已保存父表单的 One2many 字段准备并异步校验 CSV/XLSX 导入任务。",
-            parameters: schema({
-                fieldToken: {type: "string", minLength: 1, maxLength: 160},
-                attachmentId: {type: "string", minLength: 1, maxLength: 40},
-            }, ["fieldToken", "attachmentId"]),
-        },
-        {
-            name: "odoo.get_x2many_import_status",
-            description: "查询当前用户 One2many 导入任务的校验或执行状态。",
-            parameters: schema({
-                jobToken: {type: "string", minLength: 1, maxLength: 160},
-            }, ["jobToken"]),
-        },
-        {
             name: "odoo.reload_current_form",
             description: "在当前父表单没有未保存更改时调用原生 reload 获取导入结果。",
             parameters: schema(),
@@ -272,13 +207,6 @@ odoo.define("agui_chat.command_registry", function (require) {
         "odoo.undo_current_form": true,
         "odoo.save_current_form": true,
         "odoo.discard_current_form": true,
-        "odoo.prepare_x2many_import": true,
-    };
-    var BOUND_MENTION_COMMANDS = {
-        "odoo.read_mentioned_records": true,
-        "odoo.open_mentioned_menu": true,
-        "odoo.open_mentioned_record": true,
-        "odoo.apply_mentioned_filter": true,
     };
     function commandError(code, message) {
         var error = new Error(message || code);
@@ -414,92 +342,6 @@ odoo.define("agui_chat.command_registry", function (require) {
         return Adapter.searchRelation(
             requireForm(context), context.getSnapshot(), args, resolveRowBinding(context, args)
         );
-    };
-
-    function mentionBinding(args, kind) {
-        var bindings = args && args.__mention;
-        var binding = _.isArray(bindings) && bindings.length === 1 ? bindings[0] : false;
-        if (!binding || binding.kind !== kind) {
-            throw commandError("invalid_mention_binding", "对象引用绑定无效。");
-        }
-        return binding;
-    }
-
-    function openMentionMenu(context, binding) {
-        var before = context.getSnapshot();
-        rejectUnsavedChanges(context);
-        return $.when(context.openMenu(binding.menu_id, binding.action_id)).then(function () {
-            return context.waitForInteractiveSnapshotChange(before.snapshotId);
-        });
-    }
-
-    COMMANDS["odoo.read_mentioned_records"] = function (context, args, call) {
-        if (!_.isArray(args.__mention) || args.__mention.length !== args.tokens.length) {
-            throw commandError("invalid_mention_binding", "记录引用绑定无效。");
-        }
-        return context.readMentions(args.tokens, call.authorizationId);
-    };
-
-    COMMANDS["odoo.open_mentioned_menu"] = function (context, args) {
-        var binding = mentionBinding(args, "menu");
-        return openMentionMenu(context, binding).then(function (snapshot) {
-            if (binding.action !== "create") {
-                return {opened: true, mode: "open", label: binding.label};
-            }
-            var controller = context.getController();
-            if (!controller || !(snapshot.capabilities && snapshot.capabilities.create)) {
-                throw commandError("create_not_allowed", "当前 action 不支持新建");
-            }
-            return $.when(context.openCreate(controller)).then(function () {
-                return context.waitForSnapshotChange(snapshot.snapshotId);
-            }).then(function (next) {
-                return {opened: next.snapshotId !== snapshot.snapshotId, mode: "create", label: binding.label};
-            });
-        });
-    };
-
-    COMMANDS["odoo.open_mentioned_record"] = function (context, args) {
-        var binding = mentionBinding(args, "record");
-        var mode = binding.action === "edit" ? "edit" : "readonly";
-        return openMentionMenu(context, binding).then(function (snapshot) {
-            var model = snapshot.record && snapshot.record.model ||
-                snapshot.selection && snapshot.selection.model;
-            if (model !== binding.model) {
-                throw commandError("mention_model_mismatch", "菜单与所选记录模型不匹配。");
-            }
-            return $.when(context.openMentionedRecord(binding.record_id, mode)).then(function () {
-                return context.waitForSnapshotChange(snapshot.snapshotId);
-            });
-        }).then(function (snapshot) {
-            if (!snapshot.record || snapshot.record.model !== binding.model ||
-                    snapshot.record.resId !== binding.record_id) {
-                throw commandError("record_open_failed", "客户端未进入所选记录表单。");
-            }
-            if (mode === "edit" && snapshot.controller.mode !== "edit") {
-                throw commandError("edit_mode_unavailable", "所选记录未进入编辑模式。");
-            }
-            return {opened: true, mode: mode, displayName: binding.label};
-        });
-    };
-
-    COMMANDS["odoo.apply_mentioned_filter"] = function (context, args) {
-        var bindings = args && args.__mention;
-        var binding = _.isArray(bindings) && bindings.length === 1 ? bindings[0] : false;
-        if (!binding || ["saved_filter", "current_filter"].indexOf(binding.kind) === -1) {
-            throw commandError("invalid_mention_binding", "筛选引用绑定无效。");
-        }
-        return openMentionMenu(context, binding).then(function (snapshot) {
-            return $.when(context.applyMentionFilter(binding)).then(function () {
-                return context.waitForSnapshotChange(snapshot.snapshotId);
-            });
-        }).then(function (snapshot) {
-            return {
-                applied: true,
-                label: binding.label,
-                snapshotId: snapshot.snapshotId,
-                hostRevision: snapshot.hostRevision,
-            };
-        });
     };
 
     COMMANDS["odoo.navigate_menu"] = function (context, args) {
@@ -713,56 +555,6 @@ odoo.define("agui_chat.command_registry", function (require) {
                 throw commandError("x2many_form_open_failed", "客户端未进入明细新建表单。");
             }
             return {opened: true, mode: "create", persistence: "parent_pending"};
-        });
-    };
-
-    COMMANDS["odoo.prepare_x2many_import"] = function (context, args) {
-        var controller = requireForm(context);
-        var snapshot = context.getSnapshot();
-        var fieldBinding = context.resolveToken(args.fieldToken, "x2many_field");
-        if (!snapshot.record || !snapshot.record.resId) {
-            throw commandError("parent_must_be_saved", "父单必须先保存后才能准备批量导入。");
-        }
-        if (context.hasUnsavedChanges()) {
-            throw commandError("parent_form_dirty", "父表单存在未保存更改，不能准备批量导入。");
-        }
-        if (!fieldBinding || !context.validateToken(fieldBinding, "x2many_field")) {
-            throw commandError("stale_x2many_field_token", "明细字段令牌已过期，请刷新后重试。");
-        }
-        var meta = _.findWhere(
-            snapshot.capabilities && snapshot.capabilities.x2many || [],
-            {field: fieldBinding.fieldName}
-        );
-        if (!meta || !meta.schemaHash || !(meta.operations && meta.operations.create)) {
-            throw commandError("one2many_operation_not_allowed", "当前明细字段不可导入。");
-        }
-        return context.prepareX2ManyImport({
-            parent_model: snapshot.record.model,
-            parent_id: snapshot.record.resId,
-            field_name: fieldBinding.fieldName,
-            attachment_id: args.attachmentId,
-            schema_hash: meta.schemaHash,
-        }).then(function (result) {
-            if (!result || !result.ok) {
-                throw commandError(
-                    result && result.code || "x2many_import_failed",
-                    result && result.error || "批量导入任务准备失败。"
-                );
-            }
-            return result;
-        });
-    };
-
-    COMMANDS["odoo.get_x2many_import_status"] = function (context, args) {
-        requireView(context, ["form"]);
-        return context.getX2ManyImportStatus(args.jobToken).then(function (result) {
-            if (!result || !result.ok) {
-                throw commandError(
-                    result && result.code || "x2many_import_failed",
-                    result && result.error || "导入任务状态查询失败。"
-                );
-            }
-            return result;
         });
     };
 
@@ -1022,7 +814,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         if (!COMMANDS[tool]) {
             return $.Deferred().reject(commandError("unsupported_command", "不支持此页面命令。")).promise();
         }
-        if ((WRITE_COMMANDS[tool] || BOUND_MENTION_COMMANDS[tool] || control &&
+        if ((WRITE_COMMANDS[tool] || control &&
                 ["object", "create", "delete", "state"].indexOf(control.type) !== -1) &&
                 !(call && call.authorizationId)) {
             return $.Deferred().reject(commandError("authorization_required", "此命令需要服务端授权。")).promise();

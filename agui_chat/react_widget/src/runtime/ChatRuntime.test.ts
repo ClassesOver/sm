@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.8.5')
+    expect(AguiChat.version).toBe('12.0.8.8.6')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -122,7 +122,7 @@ describe('ChatRuntime session naming', () => {
     expect(saveSession).toHaveBeenCalledWith(10, expect.objectContaining({ name: expected }))
   })
 
-  it('uses menu, record, HRP reference, workspace, and attachment names in order', async () => {
+  it('uses menu, record, workspace, and attachment names in order', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(sseResponse([
       { type: 'RUN_FINISHED' }
     ]))))
@@ -133,11 +133,6 @@ describe('ChatRuntime session naming', () => {
     const record = {
       token: 'record-token', displayName: '上海某公司',
       snapshotId: 'snapshot-test-1', hostRevision: 1
-    }
-    const mention = {
-      id: 'mention-1', token: 'mention-token', resourceKey: 'record-a', kind: 'record' as const,
-      action: 'read' as const, label: '客户甲', detail: '销售 / 客户', model: 'res.partner',
-      expiresAt: '2099-01-01 00:00:00', valid: true, pageAction: false
     }
     const workspace = {
       id: 'workspace:报表/本月.csv', path: '报表/本月.csv', name: '本月.csv', isDirectory: false
@@ -152,8 +147,7 @@ describe('ChatRuntime session naming', () => {
     }> = [
       { expected: '文字标题', args: ['文字标题', [attachment], menu, record, [], [workspace]] },
       { expected: '销售 / 客户', args: ['', [attachment], menu, record, [], [workspace]] },
-      { expected: '上海某公司', args: ['', [attachment], [mention], record, [], [workspace]] },
-      { expected: '客户甲', args: ['', [attachment], [mention], undefined, [], [workspace]] },
+      { expected: '上海某公司', args: ['', [attachment], undefined, record, [], [workspace]] },
       { expected: '本月.csv', args: ['', [attachment], undefined, undefined, [], [workspace]] },
       { expected: '合同.pdf', args: ['', [attachment]] }
     ]
@@ -228,11 +222,10 @@ describe('ChatRuntime session naming', () => {
       hostBridge: { saveSession }
     })
 
-    expect(await runtime.send('无效输入', [], [{
-      id: 'expired', token: 'expired-token', resourceKey: 'expired-record', kind: 'record',
-      action: 'read', label: '旧记录', detail: '客户', model: 'res.partner',
-      expiresAt: '2000-01-01 00:00:00', valid: true, pageAction: false
-    }])).toBe(false)
+    expect(await runtime.send('无效输入', [], {
+      menuId: 999, actionId: 999, name: '旧菜单', path: ['旧菜单'],
+      fullPath: '旧菜单', valid: true
+    })).toBe(false)
     expect(runtime.getSnapshot().session?.name).toBe('新对话')
     expect(runtime.getSnapshot().sessions[0].name).toBe('新对话')
     expect(saveSession).not.toHaveBeenCalled()
@@ -259,7 +252,7 @@ describe('ChatRuntime One2many import preview', () => {
     }
     const tool = {
       id: 'prepare-import-1',
-      name: 'odoo.prepare_x2many_import',
+      name: 'odoo.business.x2many_import.execute',
       status: 'ok' as const,
       result: { ok: true, preview }
     }
@@ -1729,62 +1722,6 @@ describe('ChatRuntime protocol handling', () => {
       expect(body.tools.map((tool: any) => tool.name)).toEqual(['odoo.navigate_menu'])
       expect(body.context.some((item: any) => item.description === '已选 HRP 菜单')).toBe(false)
     }
-  })
-
-  it('sends bound references as opaque context and enforces page-action limits', async () => {
-    let body: any
-    const fetchMock = vi.fn((_url: string, init: RequestInit) => {
-      body = JSON.parse(String(init.body))
-      return Promise.resolve(sseResponse([{ type: 'RUN_FINISHED' }]))
-    })
-    vi.stubGlobal('fetch', fetchMock)
-    const expiresAt = '2099-01-01 00:00:00'
-    const readReference = {
-      id: 'read-1', token: 'opaque-read-token', resourceKey: 'record-a', kind: 'record' as const,
-      action: 'read' as const, label: '客户甲', detail: '销售 / 客户', model: 'res.partner',
-      expiresAt, valid: true, pageAction: false
-    }
-    const runtime = createRuntime({ runtimeUrl: '/runtime/run' })
-    await runtime.send('比较资料', [], [readReference])
-
-    expect(runtime.getSnapshot().messages[0].mentions).toEqual([readReference])
-    expect(body.messages[0]).not.toHaveProperty('mentions')
-    expect(body.context).toContainEqual({
-      description: '已选 HRP 引用',
-      value: JSON.stringify([{
-        kind: 'record', action: 'read', token: 'opaque-read-token', label: '客户甲',
-        detail: '销售 / 客户', model: 'res.partner', expiresAt
-      }])
-    })
-    expect(JSON.stringify(body)).not.toContain('record-a')
-
-    const onError = vi.fn()
-    const rejected = createRuntime({ runtimeUrl: '/runtime/run', onError })
-    await rejected.send('连续操作', [], [
-      { ...readReference, id: 'view', token: 'view-token', resourceKey: 'record-b', action: 'view', pageAction: true },
-      { ...readReference, id: 'open', token: 'open-token', resourceKey: 'menu-a', kind: 'menu', action: 'open', pageAction: true }
-    ])
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
-      message: expect.stringContaining('最多包含 1 个页面动作')
-    }))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('marks expired stored references invalid without changing the stored answer', async () => {
-    const onError = vi.fn()
-    const runtime = createRuntime({
-      runtimeUrl: '/runtime/run', onError,
-      initialMessages: [{
-        id: 'user-expired', role: 'user', content: '读取', mentions: [{
-          id: 'expired', token: 'expired-token', resourceKey: 'expired-key', kind: 'record',
-          action: 'read', label: '旧记录', detail: '客户', model: 'res.partner',
-          expiresAt: '2000-01-01 00:00:00', valid: true, pageAction: false
-        }]
-      }, { id: 'assistant-expired', role: 'assistant', content: '旧回答' }]
-    })
-    expect(runtime.getSnapshot().messages[0].mentions?.[0].valid).toBe(false)
-    expect(runtime.getSnapshot().messages[1].content).toBe('旧回答')
-    expect(onError).not.toHaveBeenCalled()
   })
 
   it('sends record choices as structured context and rejects stale candidates', async () => {

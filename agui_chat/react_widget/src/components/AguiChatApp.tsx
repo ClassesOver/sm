@@ -67,7 +67,6 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
               onSelectRelation={actions.selectRelation}
               onSelectRecord={actions.selectRecord}
               onRemoveMenuMention={actions.removeMenuMention}
-              onRemoveMention={actions.removeMention}
               onCopy={actions.copy}
               onFeedback={actions.feedback}
               onPreviewAttachment={sidePanel.openFile}
@@ -87,7 +86,6 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
             attachments={props.attachments}
             menuOptions={props.menuCatalog.entries}
             agentSkills={props.agentSkills}
-            hostBridge={props.hostBridge}
             workspaceReferences={workspace.references}
             onRemoveWorkspaceReference={workspace.removeReference}
             labels={labels}

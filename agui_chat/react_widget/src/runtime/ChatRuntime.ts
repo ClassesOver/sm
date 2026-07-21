@@ -6,7 +6,6 @@ import type {
   LoadedSession,
   MenuCatalogSnapshot,
   MenuMention,
-  MentionReference,
   RecordCandidate,
   RecordSelection,
   RelationCandidate,
@@ -291,9 +290,8 @@ export class ChatRuntime {
       this.resetThread(nextProps.threadId, nextProps.initialMessages || [])
     }
     const menuMentionsChanged = Boolean(nextProps.menuCatalog && this.revalidateMenuMentions())
-    const mentionsChanged = this.revalidateMentions()
     const skillsChanged = this.revalidateSkills()
-    if (menuMentionsChanged || mentionsChanged || skillsChanged) {
+    if (menuMentionsChanged || skillsChanged) {
       this.notifyMessages()
       this.scheduleSave()
     }
@@ -402,15 +400,14 @@ export class ChatRuntime {
   async send(
     content: string,
     attachments: AttachmentRef[] = [],
-    selection?: MentionReference[] | MenuMention,
+    menuMention?: MenuMention,
     recordSelection?: RecordSelection,
     skills: SelectedAgentSkill[] = [],
     workspaceReferences: WorkspaceReference[] = []
   ): Promise<boolean> {
     const text = content.trim()
-    const mentions = Array.isArray(selection) ? selection.map((item) => clone(item)) : []
     const workspace = workspaceReferences.map((item) => clone(item))
-    const explicitMenuMention = selection && !Array.isArray(selection) ? selection : undefined
+    const explicitMenuMention = menuMention
     if (this.running || this.loadingSessions) return false
     await this.refreshMenuCatalog()
     const currentMenu = explicitMenuMention
@@ -418,21 +415,6 @@ export class ChatRuntime {
       : this.resolveMenuReplySelection(text)
     if (explicitMenuMention && !currentMenu) {
       const error = new Error('所选菜单已失效或无权访问，请重新选择。')
-      this.error = error.message
-      this.props.onError?.(error)
-      this.emit()
-      return false
-    }
-    const mentionError = this.validateMentions(mentions)
-    if (mentionError) {
-      const error = new Error(mentionError)
-      this.error = error.message
-      this.props.onError?.(error)
-      this.emit()
-      return false
-    }
-    if (mentions.length + workspace.length > 5) {
-      const error = new Error('HRP 引用与工作区引用合计最多 5 个。')
       this.error = error.message
       this.props.onError?.(error)
       this.emit()
@@ -453,7 +435,7 @@ export class ChatRuntime {
       this.emit()
       return false
     }
-    if (!text && !attachments.length && !currentMenu && !mentions.length && !workspace.length && !recordSelection) {
+    if (!text && !attachments.length && !currentMenu && !workspace.length && !recordSelection) {
       return false
     }
     try {
@@ -484,7 +466,6 @@ export class ChatRuntime {
       role: 'user',
       content: text,
       attachments: clone(syncedAttachments),
-      mentions: mentions.length ? mentions : undefined,
       workspaceReferences: workspace.length ? workspace : undefined,
       skills: skills.length ? skills.map((skill) => ({ ...skill, valid: true })) : undefined,
       menuMention: currentMenu,
@@ -525,7 +506,6 @@ export class ChatRuntime {
         requestId: this.currentRequestId,
         runId: this.currentRunId,
         threadId: this.threadId,
-        selectedMentionTokens: this.latestMentionTokens(),
         selectedMenu: this.latestMenuSelection()
       }
     }
@@ -802,17 +782,6 @@ export class ChatRuntime {
     const message = this.messages.find((item) => item.id === messageId && item.role === 'user')
     if (!message?.menuMention) return
     delete message.menuMention
-    this.notifyMessages()
-    this.scheduleSave()
-    this.emit()
-  }
-
-  removeMention(messageId: string, referenceId: string): void {
-    if (this.running) return
-    const message = this.messages.find((item) => item.id === messageId && item.role === 'user')
-    if (!message?.mentions?.some((mention) => mention.id === referenceId)) return
-    message.mentions = message.mentions.filter((mention) => mention.id !== referenceId)
-    if (!message.mentions.length) delete message.mentions
     this.notifyMessages()
     this.scheduleSave()
     this.emit()
@@ -1397,9 +1366,6 @@ export class ChatRuntime {
     const currentName = this.session.name || ''
     if (currentName.trim() && currentName !== DEFAULT_SESSION_NAME) return
 
-    const firstMentionLabel = message.mentions
-      ?.map((mention) => normalizeSessionName(mention.label))
-      .find(Boolean)
     const firstWorkspaceName = message.workspaceReferences
       ?.map((reference) => normalizeSessionName(reference.name))
       .find(Boolean)
@@ -1410,7 +1376,6 @@ export class ChatRuntime {
       message.content,
       message.menuMention?.fullPath,
       message.recordSelection?.displayName,
-      firstMentionLabel,
       firstWorkspaceName,
       firstAttachmentName
     ].map(normalizeSessionName).find(Boolean)
@@ -1904,7 +1869,6 @@ export class ChatRuntime {
         requestId: context.currentRequestId,
         runId: context.currentRunId,
         threadId: context.threadId,
-        selectedMentionTokens: this.latestMentionTokens(),
         selectedMenu: this.latestMenuSelection()
       }
     }
@@ -2118,12 +2082,6 @@ export class ChatRuntime {
         valid: false
       }
     }
-    if (Array.isArray(result.mentions)) {
-      result.mentions = result.mentions.map((mention) => ({
-        ...clone(mention),
-        valid: this.isMentionCurrent(mention)
-      }))
-    }
     if (Array.isArray(result.skills)) {
       result.skills = result.skills.map((skill) => ({
         ...clone(skill),
@@ -2198,9 +2156,6 @@ export class ChatRuntime {
     if (previous.menuMention && !message.menuMention) {
       message.menuMention = previous.menuMention
     }
-    if (previous.mentions?.length && !message.mentions?.length) {
-      message.mentions = previous.mentions
-    }
     if (previous.workspaceReferences?.length && !message.workspaceReferences?.length) {
       message.workspaceReferences = previous.workspaceReferences
     }
@@ -2211,20 +2166,6 @@ export class ChatRuntime {
       message.recordSelection = previous.recordSelection
     }
     return message
-  }
-
-  private isMentionCurrent(mention: MentionReference): boolean {
-    if (!mention?.token || !mention.resourceKey || !mention.kind || !mention.action) return false
-    const normalized = String(mention.expiresAt || '').includes('T')
-      ? String(mention.expiresAt)
-      : `${String(mention.expiresAt || '').replace(' ', 'T')}Z`
-    const expires = Date.parse(normalized)
-    return mention.valid !== false && Number.isFinite(expires) && expires > Date.now()
-  }
-
-  private latestMentionTokens(): string[] {
-    const message = [...this.messages].reverse().find((item) => item.role === 'user')
-    return (message?.mentions || []).filter((mention) => mention.valid).map((mention) => mention.token)
   }
 
   private latestMenuSelection(): {
@@ -2241,34 +2182,6 @@ export class ChatRuntime {
       catalogId: mention.catalogId || this.props.menuCatalog.catalogId,
       catalogRevision: mention.catalogRevision ?? this.props.menuCatalog.catalogRevision
     } : undefined
-  }
-
-  private validateMentions(mentions: MentionReference[]): string | null {
-    if (mentions.length > 5) return '每条消息最多引用 5 个对象。'
-    if (new Set(mentions.map((mention) => mention.resourceKey)).size !== mentions.length) {
-      return '不能重复引用同一对象。'
-    }
-    const pageActions = mentions.filter((mention) => mention.pageAction ||
-      ['open', 'create', 'view', 'edit', 'apply'].includes(mention.action))
-    if (pageActions.length > 1) return '每条消息最多包含 1 个页面动作。'
-    if (mentions.some((mention) => !this.isMentionCurrent(mention))) {
-      return '对象引用已过期，请重新选择。'
-    }
-    return null
-  }
-
-  private revalidateMentions(): boolean {
-    let changed = false
-    this.messages.forEach((message) => {
-      if (!message.mentions?.length) return
-      message.mentions = message.mentions.map((mention) => {
-        const valid = this.isMentionCurrent(mention)
-        if (valid === mention.valid) return mention
-        changed = true
-        return { ...mention, valid }
-      })
-    })
-    return changed
   }
 
   private isSkillCurrent(skill: SelectedAgentSkill): boolean {

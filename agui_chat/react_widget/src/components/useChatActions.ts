@@ -26,10 +26,9 @@ export function useChatActions(options: UseChatActionsOptions) {
       return runtime.send(content, attachments, selection, undefined, skills, references).then((sent) => {
         if (!sent) return false
         clearWorkspaceReferences()
-        const mentions = Array.isArray(selection) ? selection : undefined
-        const menuMention = selection && !Array.isArray(selection) ? selection : undefined
         observeInteraction(() => props.onInteraction?.({
-          type: 'send', content, attachments, mentions, menuMention, skills, workspaceReferences: references
+          type: 'send', content, attachments, menuMention: selection, skills,
+          workspaceReferences: references
         }))
         return true
       })
@@ -63,9 +62,6 @@ export function useChatActions(options: UseChatActionsOptions) {
         })
       },
       removeMenuMention: (messageId: string) => latest.current.runtime.removeMenuMention(messageId),
-      removeMention: (messageId: string, referenceId: string) => {
-        latest.current.runtime.removeMention(messageId, referenceId)
-      },
       copy: (message: ChatMessage) => {
         const { props } = latest.current
         const write = navigator.clipboard?.writeText(asText(message.content))

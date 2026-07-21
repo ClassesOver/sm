@@ -53,18 +53,6 @@ class TestServerStateAccess(TransactionCase):
             "payload_hash": "access-payload",
             "authorization_id": self.authorization.id,
         })
-        self.mention = self.env["agui.chat.mention.token"].sudo().create({
-            "token_kind": "candidate",
-            "resource_kind": "menu",
-            "resource_key": "access-menu",
-            "label": "权限测试菜单",
-            "payload_json": "{}",
-            "session_key": "access-session",
-            "user_id": self.user.id,
-            "company_id": self.user.company_id.id,
-            "expires_at": expires_at,
-        })
-
     def test_internal_user_cannot_create_or_write_server_state(self):
         records = {
             "agui.chat.session": (self.session.id, {"name": "伪造会话"}),
@@ -75,7 +63,6 @@ class TestServerStateAccess(TransactionCase):
             "agui.chat.command.execution": (
                 self.execution.id, {"error_code": "forged"},
             ),
-            "agui.chat.mention.token": (self.mention.id, {"label": "伪造引用"}),
         }
         for model_name, (record_id, values) in records.items():
             model = self.user_env[model_name]

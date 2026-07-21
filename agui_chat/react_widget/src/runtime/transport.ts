@@ -484,21 +484,6 @@ function normalizeRunContext(
       })))
     })
   }
-  const mentions = (latestUserMessage?.mentions || []).filter((mention) => mention.valid)
-  if (mentions.length) {
-    context.push({
-      description: '已选 HRP 引用',
-      value: contextValue(mentions.map((mention) => ({
-        kind: mention.kind,
-        action: mention.action,
-        token: mention.token,
-        label: mention.label,
-        detail: mention.detail,
-        model: mention.model,
-        expiresAt: mention.expiresAt
-      })))
-    })
-  }
   if (latestUserMessage?.menuMention?.valid) {
     const mention = latestUserMessage.menuMention
     context.push({

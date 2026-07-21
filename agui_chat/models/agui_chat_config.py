@@ -7,18 +7,14 @@ from odoo.exceptions import ValidationError
 
 
 PROTOCOL = "agui.odoo.v2"
-MODULE_VERSION = "12.0.8.8.5"
-COMMAND_CATALOG_REVISION = 13
+MODULE_VERSION = "12.0.8.8.6"
+COMMAND_CATALOG_REVISION = 14
 DEFAULT_SENSITIVE_FIELD_NAMES = (
     "phone", "mobile", "phone_number", "mobile_number",
     "bank_account", "bank_account_id", "acc_number", "card_number",
     "vat", "tax_id", "identity_number", "id_card", "id_number",
 )
 HOST_COMMAND_NAMES = (
-    "odoo.read_mentioned_records",
-    "odoo.open_mentioned_menu",
-    "odoo.open_mentioned_record",
-    "odoo.apply_mentioned_filter",
     "odoo.navigate_menu",
     "odoo.apply_filter",
     "odoo.apply_group",
@@ -27,8 +23,6 @@ HOST_COMMAND_NAMES = (
     "odoo.switch_view",
     "odoo.open_x2many_record",
     "odoo.open_x2many_create",
-    "odoo.prepare_x2many_import",
-    "odoo.get_x2many_import_status",
     "odoo.reload_current_form",
     "odoo.enter_edit_mode",
     "odoo.activate_view_control",
@@ -98,12 +92,6 @@ class AguiChatConfig(models.Model):
         default=False,
     )
     default_agent_id = fields.Char(string="默认智能体 ID", default="odoo-assistant")
-    mention_model_id = fields.Many2one(
-        "ir.model",
-        string="业务模型白名单",
-        ondelete="set null",
-        help="仅允许引用所选业务模型；留空表示允许菜单中可读的全部业务类型。",
-    )
     sensitive_field_names = fields.Char(
         string="敏感字段",
         help="填写以逗号分隔的 HRP 字段名，这些字段在页面快照中会被脱敏。",
@@ -230,10 +218,6 @@ class AguiChatConfig(models.Model):
             ("code", "in", configured),
         ]).mapped("code"))
         return [name for name in configured if name in active]
-
-    def mention_model_names(self):
-        self.ensure_one()
-        return [self.mention_model_id.model] if self.mention_model_id else []
 
     def sensitive_fields(self):
         self.ensure_one()

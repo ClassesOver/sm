@@ -42,20 +42,6 @@
         <field name="confirmation_mode">never</field>
         <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
     </record>
-    <record id="policy_prepare_x2many_import" model="agui.chat.tool.policy">
-        <field name="name">准备 One2many 批量导入任务</field>
-        <field name="tool_name">odoo.prepare_x2many_import</field>
-        <field name="access_level">write</field>
-        <field name="confirmation_mode">never</field>
-        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
-    </record>
-    <record id="policy_get_x2many_import_status" model="agui.chat.tool.policy">
-        <field name="name">查询 One2many 导入任务</field>
-        <field name="tool_name">odoo.get_x2many_import_status</field>
-        <field name="access_level">read</field>
-        <field name="confirmation_mode">never</field>
-        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
-    </record>
     <record id="policy_reload_current_form" model="agui.chat.tool.policy">
         <field name="name">重新载入当前表单</field>
         <field name="tool_name">odoo.reload_current_form</field>

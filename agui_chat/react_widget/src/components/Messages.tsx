@@ -46,7 +46,6 @@ export interface MessagesProps {
   onSelectRelation: (tool: ToolCall, candidates: RelationCandidate[]) => void
   onSelectRecord: (tool: ToolCall, candidate: RecordCandidate) => void
   onRemoveMenuMention?: (messageId: string) => void
-  onRemoveMention?: (messageId: string, referenceId: string) => void
 }
 
 export function DefaultAssistantMessage({
@@ -80,17 +79,15 @@ export function DefaultAssistantMessage({
   </div>
 }
 
-export function DefaultUserMessage({ message, labels, onPreviewAttachment, onRemoveMenuMention, onRemoveMention }: UserMessageProps) {
+export function DefaultUserMessage({ message, labels, onPreviewAttachment, onRemoveMenuMention }: UserMessageProps) {
   const content = getUserMessageContent(message)
   return <div className="flex w-full justify-end">
     <div className="min-w-0 max-w-[82%]">
       <MessageAttachments attachments={message.attachments} labels={labels} onPreview={onPreviewAttachment} />
       <MessageContextBar
-        mentions={message.mentions}
         workspaceReferences={message.workspaceReferences}
         skills={message.skills}
         menuMention={message.menuMention}
-        onRemoveMention={onRemoveMention}
         onRemoveMenuMention={onRemoveMenuMention}
       />
       {content ? <div className="ml-auto w-fit rounded-lg bg-background-secondary px-3.5 py-2 text-sm leading-6 text-secondary">{content}</div> : null}
@@ -102,7 +99,7 @@ export function Messages({
   messages, running, suggestions, toolRenderers, labels, icons, components,
   onRegenerate, onSuggestion, onConfirmTool, onUndoTool, onCopy, onFeedback, onPreviewAttachment,
   hostState, onSelectRelation, onSelectRecord, onPreviewX2ManyImport,
-  onRemoveMenuMention, onRemoveMention
+  onRemoveMenuMention
 }: MessagesProps) {
   const messageFeedback = useMessageFeedback(onFeedback)
   const { displayMessages, lastAssistantIndex } = getMessageListPresentation(messages)
@@ -118,7 +115,7 @@ export function Messages({
     {displayMessages.map((message, index) => {
       const role = normalizeMessageRole(message.role)
       if (role === 'assistant') return <AssistantMessage key={message.id || `assistant-${index}`} message={message} running={running} isCurrent={index === lastAssistantIndex} toolRenderers={toolRenderers} labels={labels} icons={icons} feedback={messageFeedback.feedback[message.id] || null} hostState={hostState} onSelectRelation={(tool, candidates) => onSelectRelation(tool, candidates)} onSelectRecord={(tool, candidate) => onSelectRecord(tool, candidate)} onCopy={() => onCopy(message)} onRegenerate={() => onRegenerate(message.id)} onFeedback={(next) => messageFeedback.toggleFeedback(message, next)} onConfirmTool={onConfirmTool} onUndoTool={(tool) => onUndoTool?.(tool)} onPreviewX2ManyImport={onPreviewX2ManyImport} />
-      if (role === 'user') return <UserMessage key={message.id || `user-${index}`} message={message} icons={icons} labels={labels} onPreviewAttachment={onPreviewAttachment} onRemoveMenuMention={message.menuMention && onRemoveMenuMention ? () => onRemoveMenuMention(message.id) : undefined} onRemoveMention={message.mentions?.length && onRemoveMention ? (referenceId) => onRemoveMention(message.id, referenceId) : undefined} />
+      if (role === 'user') return <UserMessage key={message.id || `user-${index}`} message={message} icons={icons} labels={labels} onPreviewAttachment={onPreviewAttachment} onRemoveMenuMention={message.menuMention && onRemoveMenuMention ? () => onRemoveMenuMention(message.id) : undefined} />
       return null
     })}
     {running ? <div className="agui-activity flex items-center gap-1.5 py-1" aria-label={labels.generatingResponse}>{[0, 1, 2].map((index) => <React.Fragment key={index}>{icons.activity}</React.Fragment>)}</div> : <SuggestionList suggestions={suggestions} disabled={false} onSelect={onSuggestion} />}

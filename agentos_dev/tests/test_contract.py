@@ -39,8 +39,8 @@ def odoo_contract():
 
 def test_agentos_contract_matches_odoo_source():
     values, digest = odoo_contract()
-    assert values["COMMAND_CATALOG_REVISION"] == 13
-    assert digest == "17566185369f10acba35a57a57c9e696c8ed9f52d54e7d2a27f2e7323fc51e41"
+    assert values["COMMAND_CATALOG_REVISION"] == 14
+    assert digest == "e075e3f9f2229aa8d2347f5d5f0e95f867e7e1bbc411e60e25f5dc3443fdb287"
     assert app.PROTOCOL == values["PROTOCOL"]
     assert app.BUNDLE_VERSION == values["MODULE_VERSION"]
     assert app.COMMAND_CATALOG_HASH == digest
@@ -53,15 +53,6 @@ def test_agent_instructions_enforce_staged_odoo_workflow():
     assert "等待 onchange 新快照 → odoo.search_relation" in instructions
     assert "odoo.validate_current_form" in instructions
     assert "独立确认后 odoo.save_current_form" in instructions
-
-
-def test_agent_instructions_wait_for_chat_import_preview():
-    instructions = "\n".join(app.assistant.instructions)
-
-    assert "等待用户在 Chat 内完成服务端预览、字段映射和测试导入" in instructions
-    assert "kind=x2many_import_ready" in instructions
-    assert "odoo.get_x2many_import_status 只用于恢复或查询" in instructions
-    assert "不得构造行数据、mappingHash、schema 摘要" in instructions
 
 
 def test_agent_instructions_prioritize_selected_menu_navigation():

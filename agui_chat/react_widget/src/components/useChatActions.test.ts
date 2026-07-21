@@ -20,7 +20,6 @@ function runtimeMock() {
     selectRelationCandidates: vi.fn(async () => '已选择客户'),
     selectRecordCandidate: vi.fn(async () => '已选择记录'),
     removeMenuMention: vi.fn(),
-    removeMention: vi.fn(),
     regenerate: vi.fn(async () => undefined),
     confirmTool: vi.fn(async () => undefined),
     undoTool: vi.fn(async () => undefined),
@@ -54,7 +53,7 @@ describe('聊天动作适配', () => {
     expect(clearWorkspaceReferences).toHaveBeenCalledOnce()
     expect(onInteraction).toHaveBeenCalledWith({
       type: 'send', content: '打开客户', attachments: [], menuMention: selection,
-      mentions: undefined, skills: undefined, workspaceReferences: []
+      skills: undefined, workspaceReferences: []
     })
   })
 

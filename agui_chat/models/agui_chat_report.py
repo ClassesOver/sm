@@ -4,24 +4,18 @@ import hashlib
 import json
 import os
 import tempfile
-import time
 import uuid
 
 import requests
-from dateutil.relativedelta import relativedelta
 
 from odoo import api, fields, models
 from odoo.osv import expression
-from odoo.tools.safe_eval import safe_eval
 
-from .agui_chat_mention import MentionTokenError
 from .agui_chat_tool import canonical_json, register_business_command
 from .agui_chat_workspace import issue_thread_capability
 
 
 COMMAND_NAME = "odoo.business.report.filters"
-MAX_FILTERS = 5
-MAX_DETAIL_ROWS = 5000
 MAX_CURRENT_VIEW_ROWS = 100000
 MAX_GROUPS = 5000
 MAX_DETAIL_FIELDS = 30
@@ -321,30 +315,6 @@ def _validate_current_view_scope(env, binding):
         raise ReportError("stale_report_source", "当前列表查询状态或读取权限已经变化。")
 
 
-def _safe_filter_value(env, value, expected_type, label):
-    if isinstance(value, expected_type):
-        return value
-    if not isinstance(value, str):
-        raise ReportError("invalid_filter", "%s格式无效。" % label)
-    namespace = {
-        "context": dict(env.context),
-        "context_today": lambda: fields.Date.context_today(env.user),
-        "current_date": fields.Date.context_today(env.user),
-        "datetime": datetime,
-        "relativedelta": relativedelta,
-        "time": time,
-        "uid": env.uid,
-        "user": env.user,
-    }
-    try:
-        result = safe_eval(value, namespace, mode="eval", nocopy=True)
-    except Exception:
-        raise ReportError("invalid_filter", "%s无法在受限环境中解析。" % label)
-    if not isinstance(result, expected_type):
-        raise ReportError("invalid_filter", "%s格式无效。" % label)
-    return result
-
-
 def _policy_for_model(env, model_name):
     groups = set(env.user.groups_id.ids)
     policies = env["agui.chat.tool.policy"].sudo().search([
@@ -385,42 +355,6 @@ def _field_name(value):
     return str(value or "").split(":", 1)[0]
 
 
-def _domain_fields(domain):
-    result = set()
-
-    def visit(value):
-        if isinstance(value, (list, tuple)):
-            if (
-                len(value) >= 3 and isinstance(value[0], str) and
-                value[0] not in ("&", "|", "!")
-            ):
-                result.add(value[0])
-                return
-            for item in value:
-                visit(item)
-
-    visit(domain)
-    return result
-
-
-def _normalize_group_by(value):
-    if not value:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
-        return list(value)
-    raise ReportError("invalid_filter", "筛选分组格式无效。")
-
-
-def _normalize_sort(value):
-    if not value:
-        return []
-    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
-        raise ReportError("invalid_filter", "筛选排序格式无效。")
-    return list(value)
-
-
 def _sort_parts(value):
     value = str(value or "").strip()
     if value.startswith("-"):
@@ -436,10 +370,6 @@ def _sort_parts(value):
     return parts[0], direction
 
 
-def _sort_field(value):
-    return _sort_parts(value)[0]
-
-
 def _validate_field_set(env, model_name, names, allowed, code="field_not_allowed"):
     model = env[model_name]
     for raw_name in names:
@@ -450,47 +380,13 @@ def _validate_field_set(env, model_name, names, allowed, code="field_not_allowed
             raise ReportError(code, "字段 %s 的类型不可用于报表。" % name)
 
 
-def _normalize_binding(env, binding):
-    model_name = binding.get("model")
-    if not model_name or model_name not in env:
-        raise ReportError("invalid_filter", "筛选业务模型无效。")
-    allowed = _allowed_fields(env, model_name)
-    domain = _safe_filter_value(env, binding.get("domain") or [], (list, tuple), "筛选条件")
-    context = _safe_filter_value(env, binding.get("context") or {}, dict, "筛选上下文")
-    sort = _safe_filter_value(env, binding.get("sort") or [], (list, tuple), "筛选排序")
-    group_by = binding.get("group_by") or context.get("group_by") or []
-    group_by = _normalize_group_by(group_by)
-    sort = _normalize_sort(sort)
-    domain_names = _domain_fields(domain)
-    order_names = {_sort_field(item) for item in sort}
-    group_names = {_field_name(item) for item in group_by}
-    _validate_field_set(
-        env, model_name, domain_names.union(order_names).union(group_names), allowed,
-        code="filter_field_not_allowed",
-    )
-    return {
-        "label": binding.get("label") or "筛选",
-        "kind": binding.get("kind"),
-        "model": model_name,
-        "domain": list(domain),
-        "context": {
-            "active_test": context.get("active_test", True),
-            "tz": env.user.tz or "UTC",
-        },
-        "group_by": group_by,
-        "sort": sort,
-        "allowed_fields": allowed,
-    }
-
-
 def _requested_fields(env, mode, request_item, binding):
     if mode == "describe":
-        expected = set() if binding.get("kind") == "current_view" else {"token"}
-        if set(request_item) != expected:
-            raise ReportError("invalid_report_request", "描述模式每个筛选只能提交 token。")
+        if request_item:
+            raise ReportError("invalid_report_request", "描述模式请求必须为空。")
         return list(binding["allowed_fields"])
     if mode == "detail":
-        if set(request_item) - {"token", "fields"}:
+        if set(request_item) - {"fields"}:
             raise ReportError("invalid_report_request", "明细模式不接受聚合参数。")
         fields_list = request_item.get("fields")
         if not isinstance(fields_list, list) or not 1 <= len(fields_list) <= MAX_DETAIL_FIELDS:
@@ -502,7 +398,7 @@ def _requested_fields(env, mode, request_item, binding):
             binding["allowed_fields"],
         )
         return list(fields_list)
-    if set(request_item) - {"token", "dimensions", "metrics"}:
+    if set(request_item) - {"dimensions", "metrics"}:
         raise ReportError("invalid_report_request", "聚合模式不接受明细字段参数。")
     dimensions = request_item.get("dimensions")
     metrics = request_item.get("metrics")
@@ -635,55 +531,7 @@ def _current_view_binding_resolver(env, payload, context):
 
 
 def _binding_resolver(env, payload, context):
-    source = payload.get("source")
-    if isinstance(source, dict) and source.get("kind") == "current_view":
-        return _current_view_binding_resolver(env, payload, context)
-    mode = payload.get("mode")
-    requests_list = payload.get("requests")
-    if mode not in ("describe", "detail", "aggregate"):
-        raise ReportError("invalid_report_request", "报表模式无效。")
-    if not isinstance(requests_list, list) or not 1 <= len(requests_list) <= MAX_FILTERS:
-        raise ReportError("invalid_report_request", "每次必须提供 1 至 5 个筛选。")
-    selected = context.get("selectedMentionTokens")
-    selected = selected if isinstance(selected, list) else []
-    tokens = [item.get("token") for item in requests_list if isinstance(item, dict)]
-    if (
-        len(tokens) != len(requests_list) or len(set(tokens)) != len(tokens) or
-        any(not isinstance(token, str) or token not in selected for token in tokens)
-    ):
-        raise ReportError("mention_not_selected", "报表筛选必须来自当前消息选择。")
-
-    mention_tokens = env["agui.chat.mention.token"]
-    session_key = env.context.get("agui_session_key") or ""
-    bindings = []
-    policy_bindings = []
-    for request_item, token in zip(requests_list, tokens):
-        bound = mention_tokens._load_token(token, "bound", session_key)
-        if bound.resource_kind not in ("saved_filter", "current_filter") or bound.bound_action != "read":
-            raise MentionTokenError("mention_action_mismatch", "报表命令只接受绑定为引用数据的筛选。")
-        raw = mention_tokens._resolved_binding(
-            token, bound.resource_kind, "read", session_key,
-        )
-        binding = _normalize_binding(env, raw)
-        requested = _requested_fields(env, mode, request_item, binding)
-        bindings.append(binding)
-        policy_bindings.append({
-            "model": binding["model"],
-            "field_names": sorted(set(
-                requested + list(_domain_fields(binding["domain"])) +
-                [_sort_field(item) for item in binding["sort"]] +
-                [_field_name(item) for item in binding["group_by"]]
-            )),
-        })
-    return {
-        "policy_bindings": policy_bindings,
-        "handler_context": {"filter_bindings": bindings},
-        "audit_details": {
-            "filter_count": len(bindings),
-            "models": sorted(set(item["model"] for item in bindings)),
-            "mode": mode,
-        },
-    }
+    return _current_view_binding_resolver(env, payload, context)
 
 
 def _field_metadata(env, binding):
@@ -1054,170 +902,91 @@ def _handler(env, payload, handler_context):
         raise ReportError("business_binding_invalid", "报表筛选绑定无效。")
     generated_at = fields.Datetime.to_string(fields.Datetime.now())
     sources = handler_context.get("report_sources")
-    if sources:
-        source = sources.ensure_one()
-        binding = bindings[0]
-        request_item = requests_list[0]
-        effective_domain = _effective_source_domain(
-            binding["domain"], binding.get("selected_ids") or [],
-        )
-        model = env[binding["model"]].with_context(**binding["context"])
-        if mode == "describe":
-            report = source._public_description()
-            report.update({
-                "filterLabel": binding["label"],
-                "model": binding["model"],
-                "rowCount": model.search_count(effective_domain),
-                "fields": _field_metadata(env, binding),
-                "originalGroupBy": binding["group_by"],
-                "timezone": env.user.tz or "UTC",
-                "currencyRule": "多币种金额必须按币种字段分组，不做隐式汇率换算",
-                "generatedAt": generated_at,
-            })
-            return {"mode": mode, "reports": [report]}
-        if mode == "detail":
-            report = _export_current_view_dataset(
-                env,
-                source,
-                binding,
-                request_item,
-                handler_context.get("thread_id"),
-                handler_context.get("odoo_session"),
-                generated_at,
-            )
-            return {"mode": mode, "reports": [report]}
-
-        aggregate_binding = dict(binding, domain=effective_domain)
-        rows, currency_rules = _aggregate(env, aggregate_binding, request_item)
-        identifier = str(uuid.uuid4())
-        data_path = "报表/分析数据/%s/聚合数据.jsonl" % identifier
-        meta_path = "报表/分析数据/%s/聚合元数据.json" % identifier
-        data = b"\n".join(
-            json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            for row in rows
-        )
-        if data:
-            data += b"\n"
-        metadata = _metadata(
-            env, aggregate_binding, mode, len(rows), request_item,
-            currency_rules, generated_at,
-        )
-        meta = json.dumps(
-            metadata, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
-        ).encode("utf-8")
-        _upload_files(
-            env,
-            handler_context.get("thread_id"),
-            handler_context.get("odoo_session"),
-            [
-                (data_path, data, "application/x-ndjson"),
-                (meta_path, meta, "application/json"),
-            ],
-        )
-        source._mark_consumed(meta_path)
-        return {
-            "mode": mode,
-            "reports": [{
-                "sourceHandle": source.handle,
-                "filterLabel": binding["label"],
-                "model": binding["model"],
-                "rowCount": len(rows),
-                "mode": mode,
-                "dataPath": data_path,
-                "metadataPath": meta_path,
-                "scope": source.scope,
-                "selectedCount": source.selected_count,
-                "scopeFingerprint": source.scope_fingerprint,
-                "timezone": env.user.tz or "UTC",
-                "currencyRules": metadata["currencyRules"],
-                "generatedAt": generated_at,
-            }],
-        }
+    if not sources:
+        raise ReportError("business_binding_invalid", "当前列表报表来源无效。")
+    source = sources.ensure_one()
+    binding = bindings[0]
+    request_item = requests_list[0]
+    effective_domain = _effective_source_domain(
+        binding["domain"], binding.get("selected_ids") or [],
+    )
+    model = env[binding["model"]].with_context(**binding["context"])
     if mode == "describe":
-        reports = []
-        for binding in bindings:
-            model = env[binding["model"]].with_context(**binding["context"])
-            reports.append({
-                "filterLabel": binding["label"],
-                "model": binding["model"],
-                "rowCount": model.search_count(binding["domain"]),
-                "fields": _field_metadata(env, binding),
-                "originalGroupBy": binding["group_by"],
-                "timezone": env.user.tz or "UTC",
-                "currencyRule": "多币种金额必须按币种字段分组，不做隐式汇率换算",
-                "generatedAt": generated_at,
-            })
-        return {"mode": mode, "reports": reports}
-
-    files_to_upload = []
-    reports = []
-    for request_item, binding in zip(requests_list, bindings):
-        model = env[binding["model"]].with_context(**binding["context"])
-        currency_rules = []
-        if mode == "detail":
-            row_count = model.search_count(binding["domain"])
-            if row_count > MAX_DETAIL_ROWS:
-                raise ReportError(
-                    "aggregation_required",
-                    "筛选“%s”超过 5000 行，必须改用聚合模式。" % binding["label"],
-                )
-            records = model.search(
-                binding["domain"], order=_order_clause(binding["sort"]),
-                limit=MAX_DETAIL_ROWS + 1,
-            )
-            if len(records) > MAX_DETAIL_ROWS:
-                raise ReportError(
-                    "aggregation_required",
-                    "筛选“%s”超过 5000 行，必须改用聚合模式。" % binding["label"],
-                )
-            row_count = len(records)
-            rows = [
-                {name: _json_value(row.get(name)) for name in request_item["fields"]}
-                for row in records.read(request_item["fields"])
-            ]
-        else:
-            rows, currency_rules = _aggregate(env, binding, request_item)
-            row_count = len(rows)
-        identifier = str(uuid.uuid4())
-        data_path = "reports/data/%s.jsonl" % identifier
-        meta_path = "reports/data/%s.meta.json" % identifier
-        data = b"\n".join(
-            json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            for row in rows
-        )
-        if data:
-            data += b"\n"
-        metadata = _metadata(
-            env, binding, mode, row_count, request_item, currency_rules, generated_at,
-        )
-        meta = json.dumps(
-            metadata, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
-        ).encode("utf-8")
-        files_to_upload.extend([
-            (data_path, data, "application/x-ndjson"),
-            (meta_path, meta, "application/json"),
-        ])
-        reports.append({
+        report = source._public_description()
+        report.update({
             "filterLabel": binding["label"],
             "model": binding["model"],
-            "rowCount": row_count,
+            "rowCount": model.search_count(effective_domain),
+            "fields": _field_metadata(env, binding),
+            "originalGroupBy": binding["group_by"],
+            "timezone": env.user.tz or "UTC",
+            "currencyRule": "多币种金额必须按币种字段分组，不做隐式汇率换算",
+            "generatedAt": generated_at,
+        })
+        return {"mode": mode, "reports": [report]}
+    if mode == "detail":
+        report = _export_current_view_dataset(
+            env,
+            source,
+            binding,
+            request_item,
+            handler_context.get("thread_id"),
+            handler_context.get("odoo_session"),
+            generated_at,
+        )
+        return {"mode": mode, "reports": [report]}
+
+    aggregate_binding = dict(binding, domain=effective_domain)
+    rows, currency_rules = _aggregate(env, aggregate_binding, request_item)
+    identifier = str(uuid.uuid4())
+    data_path = "报表/分析数据/%s/聚合数据.jsonl" % identifier
+    meta_path = "报表/分析数据/%s/聚合元数据.json" % identifier
+    data = b"\n".join(
+        json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        for row in rows
+    )
+    if data:
+        data += b"\n"
+    metadata = _metadata(
+        env, aggregate_binding, mode, len(rows), request_item,
+        currency_rules, generated_at,
+    )
+    meta = json.dumps(
+        metadata, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8")
+    _upload_files(
+        env,
+        handler_context.get("thread_id"),
+        handler_context.get("odoo_session"),
+        [
+            (data_path, data, "application/x-ndjson"),
+            (meta_path, meta, "application/json"),
+        ],
+    )
+    source._mark_consumed(meta_path)
+    return {
+        "mode": mode,
+        "reports": [{
+            "sourceHandle": source.handle,
+            "filterLabel": binding["label"],
+            "model": binding["model"],
+            "rowCount": len(rows),
             "mode": mode,
             "dataPath": data_path,
             "metadataPath": meta_path,
+            "scope": source.scope,
+            "selectedCount": source.selected_count,
+            "scopeFingerprint": source.scope_fingerprint,
             "timezone": env.user.tz or "UTC",
             "currencyRules": metadata["currencyRules"],
             "generatedAt": generated_at,
-        })
-    _upload_files(
-        env, handler_context.get("thread_id"), handler_context.get("odoo_session"),
-        files_to_upload,
-    )
-    return {"mode": mode, "reports": reports}
+        }],
+    }
 
 
 REPORT_SCHEMA = {
     "type": "object",
-    "required": ["mode", "requests"],
+    "required": ["source", "target", "mode", "requests"],
     "additionalProperties": False,
     "properties": {
         "source": {
@@ -1244,11 +1013,10 @@ REPORT_SCHEMA = {
         },
         "mode": {"type": "string", "enum": ["describe", "detail", "aggregate"]},
         "requests": {
-            "type": "array", "minItems": 1, "maxItems": MAX_FILTERS,
+            "type": "array", "minItems": 1, "maxItems": 1,
             "items": {
                 "type": "object", "additionalProperties": False,
                 "properties": {
-                    "token": {"type": "string", "minLength": 1, "maxLength": 160},
                     "fields": {
                         "type": "array", "maxItems": MAX_DETAIL_FIELDS,
                         "items": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -1279,7 +1047,7 @@ register_business_command(
     COMMAND_NAME,
     REPORT_SCHEMA,
     _handler,
-    description="批量描述、导出或聚合当前消息明确引用的 HRP 筛选数据。",
+    description="描述、导出或聚合当前 HRP 列表或看板数据。",
     access_level="read",
     binding_resolver=_binding_resolver,
 )

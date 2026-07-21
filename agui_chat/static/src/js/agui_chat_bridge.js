@@ -5,13 +5,12 @@ odoo.define("agui_chat.host_bridge", function (require) {
     var core = require("web.core");
 
     var PROTOCOL = "agui.odoo.v2";
-    var MODULE_VERSION = "12.0.8.8.5";
+    var MODULE_VERSION = "12.0.8.8.6";
     var WRITE_COMMANDS = {
         "odoo.stage_current_form": true,
         "odoo.patch_current_form": true,
         "odoo.save_current_form": true,
         "odoo.discard_current_form": true,
-        "odoo.prepare_x2many_import": true,
     };
 
     function clone(value) {
@@ -218,8 +217,6 @@ odoo.define("agui_chat.host_bridge", function (require) {
                 return self.confirmTool(call, authorizationId, approved);
             },
             undoTool: function (authorizationId) { return self.undoTool(authorizationId); },
-            searchMentions: function (values) { return self.searchMentions(values); },
-            bindMention: function (values) { return self.bindMention(values); },
             getWorkspaceCapability: function (sessionId) {
                 return self.getWorkspaceCapability(sessionId);
             },
@@ -278,27 +275,6 @@ odoo.define("agui_chat.host_bridge", function (require) {
 
     HostBridge.prototype.openSurface = function (surface) {
         return $.when(this.owner.call("agui_host", "setSurface", surface));
-    };
-
-    HostBridge.prototype.searchMentions = function (values) {
-        values = clone(values || {});
-        var context = this.owner.call("agui_host", "getMentionSearchContext") || {};
-        return this._rpc("/agui_chat/mention/search", {
-            query: values.query || "",
-            scope: values.scope || "all",
-            model_scope: values.modelScope || false,
-            current_model: context.currentModel || false,
-            recent_models: context.recentModels || [],
-            current_filter: context.currentFilter || false,
-        });
-    };
-
-    HostBridge.prototype.bindMention = function (values) {
-        values = values || {};
-        return this._rpc("/agui_chat/mention/bind", {
-            candidate_token: values.candidateToken || "",
-            action: values.action || "",
-        });
     };
 
     HostBridge.prototype.getWorkspaceCapability = function (sessionId) {

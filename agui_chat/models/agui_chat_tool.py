@@ -11,7 +11,6 @@ from odoo import api, fields, models
 from odoo.exceptions import ValidationError
 
 from .agui_chat_config import HOST_COMMAND_NAMES, PROTOCOL
-from .agui_chat_mention import MentionTokenError
 
 
 WRITE_COMMANDS = {
@@ -19,7 +18,6 @@ WRITE_COMMANDS = {
     "odoo.patch_current_form",
     "odoo.save_current_form",
     "odoo.discard_current_form",
-    "odoo.prepare_x2many_import",
 }
 CONFIRMATION_COMMANDS = {
     "odoo.save_current_form",
@@ -35,12 +33,6 @@ MAX_ARGUMENT_BYTES = 64 * 1024
 MAX_RESULT_BYTES = 128 * 1024
 MAX_HOST_RESULT_BYTES = 512 * 1024
 BUSINESS_COMMANDS = {}
-MENTION_COMMANDS = {
-    "odoo.read_mentioned_records", "odoo.open_mentioned_menu",
-    "odoo.open_mentioned_record", "odoo.apply_mentioned_filter",
-}
-
-
 def canonical_json(value):
     return json.dumps(
         value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
@@ -667,34 +659,6 @@ class AguiChatToolAuthorization(models.Model):
             return {"ok": False, "code": "host_tools_disabled"}
         if tool_name not in config.enabled_command_names():
             return {"ok": False, "code": "command_disabled"}
-        context = call.get("context") if isinstance(call.get("context"), dict) else {}
-        if tool_name in MENTION_COMMANDS:
-            selected = context.get("selectedMentionTokens")
-            selected = selected if isinstance(selected, list) else []
-            requested = arguments.get("tokens") if tool_name == "odoo.read_mentioned_records" else [
-                arguments.get("token")
-            ]
-            if (
-                not requested or len(requested) > 5 or
-                any(not isinstance(token, str) or token not in selected for token in requested)
-            ):
-                self.env["agui.chat.tool.audit"]._log(
-                    tool_name, "denied", details={"reason": "mention_not_selected"},
-                    **self._audit_values(call)
-                )
-                return {"ok": False, "code": "mention_not_selected"}
-        mention_audit = False
-        try:
-            arguments, mention_audit = self.env["agui.chat.mention.token"]._resolve_tool_arguments(
-                tool_name, arguments, self.env.context.get("agui_session_key") or "",
-            )
-        except MentionTokenError as error:
-            self.env["agui.chat.tool.audit"]._log(
-                tool_name or "unknown", "denied",
-                details=dict(error.audit_details, reason=error.code),
-                **self._audit_values(call)
-            )
-            return {"ok": False, "code": error.code, "error": str(error)}
         control = arguments.get("__control") if isinstance(arguments.get("__control"), dict) else {}
         if tool_name == "odoo.activate_view_control":
             if control.get("type") not in (
@@ -725,12 +689,6 @@ class AguiChatToolAuthorization(models.Model):
         target_keys = {
             "snapshotId", "hostRevision", "catalogId", "catalogRevision",
         } if tool_name == "odoo.navigate_menu" else {
-            "snapshotId", "hostRevision",
-        } if tool_name in (
-            "odoo.read_mentioned_records",
-            "odoo.open_mentioned_menu", "odoo.open_mentioned_record",
-            "odoo.apply_mentioned_filter",
-        ) else {
             "snapshotId", "hostRevision", "controllerId", "dataPointId", "model", "resId",
         }
         if not target_keys.issubset(set(target.keys())):
@@ -756,31 +714,12 @@ class AguiChatToolAuthorization(models.Model):
         existing = self._find_idempotent_authorization(key)
         if existing:
             return existing._existing_decision(binding_hash)
-        mention_bindings = arguments.get("__mention") if mention_audit else []
-        decisions = [
-            self.env["agui.chat.tool.policy"].evaluate(
-                tool_name, dict(arguments, model=binding.get("model")),
-            )
-            for binding in mention_bindings
-        ] if mention_bindings else [
-            self.env["agui.chat.tool.policy"].evaluate(tool_name, arguments)
-        ]
-        decision = next((item for item in decisions if not item.get("allowed")), decisions[0])
-        if all(item.get("allowed") for item in decisions):
-            decision = {
-                "allowed": True,
-                "requires_confirmation": any(item.get("requires_confirmation") for item in decisions),
-                "policy_id": next((item.get("policy_id") for item in decisions if item.get("policy_id")), False),
-                "risk_reasons": sorted(set(
-                    reason for item in decisions for reason in item.get("risk_reasons") or []
-                )),
-            }
+        decision = self.env["agui.chat.tool.policy"].evaluate(tool_name, arguments)
         if not decision.get("allowed"):
             self.env["agui.chat.tool.audit"]._log(
                 tool_name, "denied", details={
                     "reason": decision.get("reason"),
                     "policy_mismatches": decision.get("policy_mismatches") or [],
-                    "mention": mention_audit,
                 },
                 **self._audit_values(call)
             )
@@ -818,7 +757,7 @@ class AguiChatToolAuthorization(models.Model):
         if replayed:
             return authorization._existing_decision(binding_hash)
         self.env["agui.chat.tool.audit"]._log(
-            tool_name, "allowed", details=(mention_audit or {"arguments": arguments}),
+            tool_name, "allowed", details={"arguments": arguments},
             authorization_id=authorization.id, **self._audit_values(call)
         )
         if decision.get("requires_confirmation"):
@@ -968,15 +907,10 @@ class AguiChatToolAuthorization(models.Model):
         context = json.loads(self.context_json or "{}")
         arguments = json.loads(self.arguments_json or "{}")
         call = {"id": self.tool_call_id, "context": context, "arguments": arguments}
-        audit_details = (
-            self.env["agui.chat.mention.token"]._audit_details(
-                self.tool_name, arguments, result,
-            ) if arguments.get("__mention") else result
-        )
         self.env["agui.chat.tool.audit"]._log(
             self.tool_name,
             "ok" if isinstance(result, dict) and result.get("ok") else "error",
-            details=audit_details,
+            details=result,
             authorization_id=self.id,
             **self._audit_values(call)
         )
@@ -1413,9 +1347,6 @@ class AguiChatToolAudit(models.Model):
         ]).unlink()
         self.env["agui.chat.command.execution"].sudo().search([
             ("create_date", "<", audit_cutoff)
-        ]).unlink()
-        self.env["agui.chat.mention.token"].sudo().search([
-            ("expires_at", "<=", fields.Datetime.now())
         ]).unlink()
         self.env["agui.chat.report.source"]._cleanup_expired()
         return True
