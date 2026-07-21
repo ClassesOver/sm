@@ -216,6 +216,33 @@ odoo.define("agui_chat.tests.host", function (require) {
         assert.strictEqual(catalog.entries[0].fullPath, "员工 / 员工");
     });
 
+    QUnit.test("menu catalog supports v1 menu data without action_id", function (assert) {
+        assert.expect(3);
+        var menuData = {
+            children: [{
+                id: 90, name: "员工", action: "ir.actions.act_window,115",
+                children: [{
+                    id: 91, name: "员工", action: "ir.actions.act_window,115",
+                    children: [],
+                }, {
+                    id: 92, name: "报销单查询", action: "ir.actions.act_window,404",
+                    children: [],
+                }],
+            }],
+        };
+        var service = Object.create(HostService.prototype);
+        service._webClient = null;
+        service._menuData = null;
+        service._menuOptions = [];
+        service._menuSubscribers = [];
+
+        var catalog = service.configureNavigation({menu_data: menuData}, menuData);
+
+        assert.strictEqual(catalog.entries.length, 2);
+        assert.strictEqual(catalog.entries[0].fullPath, "员工 / 员工");
+        assert.strictEqual(catalog.entries[1].fullPath, "员工 / 报销单查询");
+    });
+
     QUnit.test("menu catalog version is stable and in-place changes do not publish a page snapshot", function (assert) {
         assert.expect(8);
         var menuData = {
