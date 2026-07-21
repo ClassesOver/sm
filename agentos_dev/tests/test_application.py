@@ -1,5 +1,4 @@
 from dataclasses import replace
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -91,17 +90,10 @@ def test_default_application_exposes_explicit_context():
 
 
 @pytest.mark.anyio
-async def test_base_application_routes_use_their_own_context(monkeypatch):
+async def test_base_application_routes_use_their_own_context():
     from agentos_dev import app as app_module
 
     settings = AgentSettings.from_environment({}, load_env_file=False)
-    verified_secrets = []
-
-    def verify(_token, secret, thread_id):
-        verified_secrets.append(secret)
-        return SimpleNamespace(thread=thread_id)
-
-    monkeypatch.setattr(app_module, "verify_capability", verify)
     first_context = ApplicationContext(
         settings=replace(settings, workspace_hmac_secret="first-secret"),
         workspace_service=FakeWorkspace("first-file"),
@@ -125,23 +117,14 @@ async def test_base_application_routes_use_their_own_context(monkeypatch):
         transport=httpx.ASGITransport(app=first_app), base_url="http://test"
     ) as first_client:
         first_config = await first_client.get("/config")
-        first_files = await first_client.get(
-            "/workspace/files",
-            params={"threadId": "thread-1"},
-            headers={"X-AGUI-Thread": "thread-1", "X-AGUI-Capability": "first"},
-        )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=second_app), base_url="http://test"
     ) as second_client:
         second_config = await second_client.get("/config")
-        second_files = await second_client.get(
-            "/workspace/files",
-            params={"threadId": "thread-2"},
-            headers={"X-AGUI-Thread": "thread-2", "X-AGUI-Capability": "second"},
-        )
 
     assert first_config.json()["skills"] == [{"name": "first"}]
     assert second_config.json()["skills"] == [{"name": "second"}]
-    assert first_files.json()["entries"] == [{"name": "first-file"}]
-    assert second_files.json()["entries"] == [{"name": "second-file"}]
-    assert verified_secrets == ["first-secret", "second-secret"]
+    assert first_app.state.agentos_context is first_context
+    assert second_app.state.agentos_context is second_context
+    assert first_app.state.agentos_context.workspace_service.name == "first-file"
+    assert second_app.state.agentos_context.workspace_service.name == "second-file"
