@@ -1611,6 +1611,138 @@ describe('ChatRuntime protocol handling', () => {
     expect(runtime.getSnapshot().messages[0].menuMention).toBeUndefined()
   })
 
+  it('binds an ordinal reply to the matching menu candidate from the previous run', async () => {
+    const options = [
+      {
+        menuId: 1444, actionId: 44, name: '报销单查询',
+        path: ['费用报销', '费用报销', '报销单查询'],
+        fullPath: '费用报销 / 费用报销 / 报销单查询'
+      },
+      {
+        menuId: 1265, actionId: 65, name: '报销单查询',
+        path: ['费用报销', '单据查询', '报销单查询'],
+        fullPath: '费用报销 / 单据查询 / 报销单查询'
+      },
+      {
+        menuId: 1777, actionId: 77, name: '报销单查询',
+        path: ['费用报销', '历史单据', '报销单查询'],
+        fullPath: '费用报销 / 历史单据 / 报销单查询'
+      }
+    ]
+    for (const [reply, expected] of [
+      ['第一个', options[0]],
+      ['第二个', options[1]],
+      ['第3个', options[2]]
+    ] as const) {
+      const requests: any[] = []
+      const executeTool = vi.fn(() => ({
+        ok: true, operation: 'odoo.open_menu', navigated: true
+      }))
+      vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+        requests.push(JSON.parse(String(init.body)))
+        if (requests.length === 1) {
+          return Promise.resolve(sseResponse([
+            {
+              type: 'TOOL_CALL_START', toolCallId: `open-menu-${expected.menuId}`,
+              toolCallName: 'odoo.open_menu'
+            },
+            {
+              type: 'TOOL_CALL_ARGS', toolCallId: `open-menu-${expected.menuId}`,
+              delta: JSON.stringify({ menuId: expected.menuId, actionId: expected.actionId })
+            },
+            { type: 'TOOL_CALL_END', toolCallId: `open-menu-${expected.menuId}` },
+            { type: 'RUN_FINISHED' }
+          ]))
+        }
+        return Promise.resolve(sseResponse([{ type: 'RUN_FINISHED' }]))
+      }))
+      const runtime = createRuntime({
+        runtimeUrl: '/runtime/run',
+        tools: [
+          { name: 'odoo.search_menu', parameters: { type: 'object' } },
+          { name: 'odoo.open_menu', parameters: { type: 'object' } }
+        ],
+        menuCatalog: menuCatalog(options),
+        initialMessages: [
+          { id: 'menu-user', role: 'user', content: '打开报销单查询' },
+          {
+            id: 'menu-search-result', role: 'tool', name: 'odoo.search_menu',
+            toolCallId: 'search-menu-1', content: JSON.stringify({
+              query: '报销单查询', matchType: 'exact', matchCount: 3, truncated: false,
+              candidates: options, catalogId: 'catalog-test-1', catalogRevision: 1
+            })
+          },
+          { id: 'menu-prompt', role: 'assistant', content: '请选择第一个、第二个或第三个。' }
+        ],
+        hostBridge: { executeTool }
+      })
+
+      await runtime.send(reply)
+
+      expect(requests[0].tools.map((tool: any) => tool.name)).toEqual(['odoo.open_menu'])
+      const selectedMenu = requests[0].context.find(
+        (item: any) => item.description === '已选 HRP 菜单'
+      )
+      expect(JSON.parse(selectedMenu.value)).toEqual({
+        ...expected, catalogId: 'catalog-test-1', catalogRevision: 1,
+        navigationRequired: true, requiredFirstTool: 'odoo.open_menu'
+      })
+      expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({
+        tool: 'odoo.open_menu',
+        context: expect.objectContaining({
+          selectedMenu: {
+            menuId: expected.menuId, actionId: expected.actionId,
+            catalogId: 'catalog-test-1', catalogRevision: 1
+          }
+        })
+      }))
+    }
+  })
+
+  it('does not bind a stale or out-of-range ordinal menu reply', async () => {
+    const options = [
+      { menuId: 8, actionId: 42, name: '查询', path: ['费用', '查询'], fullPath: '费用 / 查询' },
+      { menuId: 9, actionId: 43, name: '查询', path: ['采购', '查询'], fullPath: '采购 / 查询' }
+    ]
+    for (const testCase of [
+      { reply: '第一个', catalogId: 'catalog-stale' },
+      { reply: '第三个', catalogId: 'catalog-test-1' }
+    ]) {
+      let body: any
+      vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+        body = JSON.parse(String(init.body))
+        return Promise.resolve(sseResponse([{ type: 'RUN_FINISHED' }]))
+      }))
+      const runtime = createRuntime({
+        runtimeUrl: '/runtime/run',
+        tools: [
+          { name: 'odoo.search_menu', parameters: { type: 'object' } },
+          { name: 'odoo.open_menu', parameters: { type: 'object' } }
+        ],
+        menuCatalog: menuCatalog(options),
+        initialMessages: [
+          { id: 'menu-user', role: 'user', content: '打开查询' },
+          {
+            id: 'menu-search-result', role: 'tool', name: 'odoo.search_menu',
+            toolCallId: 'search-menu-1', content: JSON.stringify({
+              query: '查询', matchType: 'exact', matchCount: 2, truncated: false,
+              candidates: options, catalogId: testCase.catalogId, catalogRevision: 1
+            })
+          },
+          { id: 'menu-prompt', role: 'assistant', content: '请选择。' }
+        ]
+      })
+
+      await runtime.send(testCase.reply)
+
+      expect(runtime.getSnapshot().messages.at(-1)?.menuMention).toBeUndefined()
+      expect(body.tools.map((tool: any) => tool.name)).toEqual([
+        'odoo.search_menu', 'odoo.open_menu'
+      ])
+      expect(body.context.some((item: any) => item.description === '已选 HRP 菜单')).toBe(false)
+    }
+  })
+
   it('sends bound references as opaque context and enforces page-action limits', async () => {
     let body: any
     const fetchMock = vi.fn((_url: string, init: RequestInit) => {

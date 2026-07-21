@@ -410,11 +410,13 @@ export class ChatRuntime {
     const text = content.trim()
     const mentions = Array.isArray(selection) ? selection.map((item) => clone(item)) : []
     const workspace = workspaceReferences.map((item) => clone(item))
-    const menuMention = selection && !Array.isArray(selection) ? selection : undefined
+    const explicitMenuMention = selection && !Array.isArray(selection) ? selection : undefined
     if (this.running || this.loadingSessions) return false
     await this.refreshMenuCatalog()
-    const currentMenu = menuMention ? this.resolveMenuMention(menuMention) : undefined
-    if (menuMention && !currentMenu) {
+    const currentMenu = explicitMenuMention
+      ? this.resolveMenuMention(explicitMenuMention)
+      : this.resolveMenuReplySelection(text)
+    if (explicitMenuMention && !currentMenu) {
       const error = new Error('所选菜单已失效或无权访问，请重新选择。')
       this.error = error.message
       this.props.onError?.(error)
@@ -2304,6 +2306,57 @@ export class ChatRuntime {
     const catalog = this.props.menuCatalog
     const option = catalog.entries.find((item) =>
       item.menuId === mention.menuId && item.actionId === mention.actionId
+    )
+    return option ? {
+      ...clone(option),
+      catalogId: catalog.catalogId,
+      catalogRevision: catalog.catalogRevision,
+      valid: true
+    } : undefined
+  }
+
+  private resolveMenuReplySelection(value: string): MenuMention | undefined {
+    const reply = value.trim().replace(/[。！？!?；;，,]+$/g, '').replace(/\s+/g, '')
+    const matched = /^(?:选|选择)?第([一二三四五六七八1-8])个(?:菜单)?$/.exec(reply)
+    if (!matched) return undefined
+    const ordinal = Number(matched[1]) || '一二三四五六七八'.indexOf(matched[1]) + 1
+
+    let userIndex = -1
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      if (this.messages[index].role === 'user') {
+        userIndex = index
+        break
+      }
+    }
+    if (userIndex < 0) return undefined
+    let result: Record<string, unknown> | undefined
+    for (let index = this.messages.length - 1; index > userIndex; index -= 1) {
+      const message = this.messages[index]
+      if (message.role !== 'tool') continue
+      const parsed = parseJson(message.content)
+      if (message.name === 'odoo.open_menu' && isRecord(parsed) && parsed.ok === true) {
+        return undefined
+      }
+      if (message.name !== 'odoo.search_menu') continue
+      result = isRecord(parsed) ? parsed : undefined
+      break
+    }
+    const catalog = this.props.menuCatalog
+    const candidates = Array.isArray(result?.candidates) ? result.candidates : []
+    if (
+      candidates.length < 2 || ordinal > candidates.length ||
+      result?.catalogId !== catalog.catalogId ||
+      result.catalogRevision !== catalog.catalogRevision
+    ) return undefined
+
+    const candidate = candidates[ordinal - 1]
+    if (
+      !isRecord(candidate) ||
+      typeof candidate.menuId !== 'number' || !Number.isInteger(candidate.menuId) ||
+      typeof candidate.actionId !== 'number' || !Number.isInteger(candidate.actionId)
+    ) return undefined
+    const option = catalog.entries.find((item) =>
+      item.menuId === candidate.menuId && item.actionId === candidate.actionId
     )
     return option ? {
       ...clone(option),

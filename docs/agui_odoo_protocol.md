@@ -109,6 +109,14 @@ only when no exact result exists. Results include `matchType`, `matchCount`,
 `truncated`, catalog metadata, and at most eight candidates. Any ambiguous result
 stops for user selection.
 
+An immediately following ordinal reply from `第一个` through `第八个` (including
+Arabic digits and optional `选择`) becomes an explicit menu selection only when
+that candidate still has the same menu/action IDs in the current catalog and the
+search result catalog ID and revision are unchanged. React then exposes only
+`odoo.open_menu` for the first page action and supplies the selected catalog
+binding to the host. Missing, out-of-range, stale, or already completed choices
+remain ordinary conversation input and never authorize navigation.
+
 For an explicit `打开`, `进入`, `导航到`, or `跳转到` request whose target exactly
 matches a visible leaf name or full path, React adds `HRP 菜单导航请求` without
 menu/action IDs. The initial phase requires `odoo.search_menu`; a same-catalog,
