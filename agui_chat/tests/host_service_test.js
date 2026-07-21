@@ -35,7 +35,9 @@ async function main() {
         return extend(AbstractService, prototype);
     };
     const WebClient = function () {};
-    WebClient.include = function () {};
+    WebClient.include = function (prototype) {
+        Object.assign(WebClient.prototype, prototype);
+    };
     const FormViewDialog = function () {};
     FormViewDialog.include = function (prototype) {
         Object.assign(FormViewDialog.prototype, prototype);
@@ -70,8 +72,11 @@ async function main() {
             promise() { return promise; },
         };
     };
+    const warnings = [];
     const sandbox = {
-        console,
+        console: Object.assign({}, console, {
+            warn() { warnings.push(Array.from(arguments)); },
+        }),
         Date,
         Math,
         setTimeout,
@@ -102,12 +107,79 @@ async function main() {
             },
             map(values, callback) { return (values || []).map(callback); },
             isFunction(value) { return typeof value === "function"; },
+            isArray(value) { return Array.isArray(value); },
+            has(value, key) { return Object.prototype.hasOwnProperty.call(value, key); },
+            omit(value, key) {
+                return Object.fromEntries(Object.entries(value).filter(function (entry) {
+                    return entry[0] !== key;
+                }));
+            },
             filter(values, callback) { return values.filter(callback); },
             without(values, removed) { return values.filter((value) => value !== removed); },
         },
         $: jquery,
     };
     vm.runInNewContext(source, sandbox, {filename: "agui_host_service.js"});
+
+    const menuService = new Service();
+    let publishedCatalogs = 0;
+    menuService.subscribeMenuCatalog({}, function () { publishedCatalogs += 1; });
+    const webClient = new WebClient();
+    const firstMenuData = {
+        children: [{
+            id: 90, name: "员工", action: "ir.actions.act_window,115", children: [],
+        }],
+    };
+    const lifecycleEvents = [];
+    let finishMenuWidgets;
+    const originalResult = {ready: true};
+    webClient.menu_data = firstMenuData;
+    webClient._super = function () {
+        lifecycleEvents.push("super");
+        return new Promise(function (resolve) { finishMenuWidgets = resolve; });
+    };
+    webClient.call = function (serviceName, method, owner, menuData) {
+        lifecycleEvents.push("configure");
+        assert.strictEqual(serviceName, "agui_host");
+        assert.strictEqual(method, "configureNavigation");
+        assert.strictEqual(owner, webClient);
+        assert.strictEqual(menuData, webClient.menu_data);
+        return menuService.configureNavigation(owner, menuData);
+    };
+
+    const firstLifecycle = webClient.instanciate_menu_widgets();
+    assert.deepStrictEqual(lifecycleEvents, ["super"]);
+    assert.strictEqual(publishedCatalogs, 0);
+    finishMenuWidgets(originalResult);
+    assert.strictEqual(await firstLifecycle, originalResult);
+    assert.deepStrictEqual(lifecycleEvents, ["super", "configure"]);
+    assert.strictEqual(publishedCatalogs, 1);
+
+    webClient.menu_data = {
+        children: [{
+            id: 91, name: "部门", action: "ir.actions.act_window,116", children: [],
+        }],
+    };
+    webClient._super = function () { return Promise.resolve("reloaded"); };
+    assert.strictEqual(await webClient.instanciate_menu_widgets(), "reloaded");
+    assert.strictEqual(publishedCatalogs, 2);
+    assert.strictEqual(await webClient.instanciate_menu_widgets(), "reloaded");
+    assert.strictEqual(publishedCatalogs, 2);
+
+    const menuFailure = new Error("menu load failed");
+    let configuredAfterFailure = false;
+    webClient._super = function () { return Promise.reject(menuFailure); };
+    webClient.call = function () { configuredAfterFailure = true; };
+    await assert.rejects(webClient.instanciate_menu_widgets(), function (error) {
+        return error === menuFailure;
+    });
+    assert.strictEqual(configuredAfterFailure, false);
+
+    webClient._super = function () { return Promise.resolve(originalResult); };
+    webClient.call = function () { throw new Error("catalog sync failed"); };
+    assert.strictEqual(await webClient.instanciate_menu_widgets(), originalResult);
+    assert.strictEqual(warnings.length, 1);
+    assert.strictEqual(warnings[0][0], "AG-UI menu catalog sync failed");
 
     const first = new Controller();
     let current = {widget: first};

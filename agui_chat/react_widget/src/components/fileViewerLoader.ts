@@ -3,7 +3,7 @@ type FileViewerModule = { FileViewer: FileViewerComponent }
 
 export type { FileViewerComponent, FileViewerModule }
 
-export const FILE_VIEWER_SCRIPT_URL = '/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.4.js'
+export const FILE_VIEWER_SCRIPT_URL = '/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.5.js'
 export const FILE_VIEWER_LOAD_TIMEOUT_MS = 15_000
 
 const STATUS_ATTRIBUTE = 'data-agui-file-viewer-status'

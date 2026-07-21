@@ -1593,6 +1593,19 @@ odoo.define("agui_chat.host_service", function (require) {
     });
 
     WebClient.include({
+        instanciate_menu_widgets: function () {
+            var self = this;
+            return $.when(this._super.apply(this, arguments)).then(function (value) {
+                try {
+                    self.call("agui_host", "configureNavigation", self, self.menu_data);
+                } catch (error) {
+                    if (typeof console !== "undefined" && console.warn) {
+                        console.warn("AG-UI menu catalog sync failed", error);
+                    }
+                }
+                return value;
+            });
+        },
         current_action_updated: function (action, descriptor) {
             var result = this._super.apply(this, arguments);
             var serviceDescriptor = _.extend({}, descriptor || {}, {

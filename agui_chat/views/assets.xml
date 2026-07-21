@@ -7,7 +7,7 @@
             <script type="text/javascript" src="/agui_chat/static/src/js/agui_command_registry.js"/>
             <script type="text/javascript" src="/agui_chat/static/src/js/agui_host_service.js"/>
             <script type="text/javascript" src="/agui_chat/static/src/js/agui_chat_bridge.js"/>
-            <script type="text/javascript" src="/agui_chat/static/lib/agui-chat-react/agui_chat_widget.12.0.8.8.4.js"/>
+            <script type="text/javascript" src="/agui_chat/static/lib/agui-chat-react/agui_chat_widget.12.0.8.8.5.js"/>
             <script type="text/javascript" src="/agui_chat/static/src/js/agui_chat_surfaces.js"/>
         </xpath>
     </template>
