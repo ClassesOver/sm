@@ -4,6 +4,7 @@ import { expect, test } from '@playwright/test'
 const database = process.env.ODOO_E2E_DB || 'odoo12_agui_e2e'
 const login = process.env.ODOO_E2E_LOGIN || 'admin'
 const password = process.env.ODOO_E2E_PASSWORD || 'admin'
+const qunitFilter = process.env.ODOO_QUNIT_FILTER || ''
 
 
 test('AG-UI 宿主适配与命令 QUnit', async ({ page }) => {
@@ -17,8 +18,9 @@ test('AG-UI 宿主适配与命令 QUnit', async ({ page }) => {
   ])
 
   const moduleName = 'agui_chat v2 host adapter'
+  const filter = qunitFilter ? `&filter=${encodeURIComponent(qunitFilter)}` : ''
   await page.goto(
-    `/web/tests?db=${encodeURIComponent(database)}&mod=agui_chat&module=${encodeURIComponent(moduleName)}&failfast&debug=assets`
+    `/web/tests?db=${encodeURIComponent(database)}&mod=agui_chat&module=${encodeURIComponent(moduleName)}${filter}&failfast&debug=assets`
   )
   await page.waitForFunction(() => {
     const result = document.querySelector('#qunit-testresult')
@@ -38,5 +40,5 @@ test('AG-UI 宿主适配与命令 QUnit', async ({ page }) => {
   expect(result.failed).toBe(0)
   expect(result.passed).toBeGreaterThan(0)
   expect(result.total).toBe(result.passed)
-  expect(result.executedTests).toBe(62)
+  expect(result.executedTests).toBe(qunitFilter ? 3 : 65)
 })

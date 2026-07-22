@@ -15,6 +15,7 @@ PAGE_COMMAND_XML_IDS = {
     "odoo.navigate_menu": "command_navigate_menu",
     "odoo.apply_filter": "command_apply_filter",
     "odoo.apply_group": "command_apply_group",
+    "odoo.export_current_view": "command_export_current_view",
     "odoo.open_record": "command_open_record",
     "odoo.open_create": "command_open_create",
     "odoo.switch_view": "command_switch_view",
@@ -49,10 +50,10 @@ REMOVED_BUSINESS_COMMANDS = {
 class TestAguiChatCommand(TransactionCase):
 
     def test_catalog_revision_and_hash_are_synchronized(self):
-        self.assertEqual(COMMAND_CATALOG_REVISION, 14)
+        self.assertEqual(COMMAND_CATALOG_REVISION, 15)
         self.assertEqual(
             COMMAND_CATALOG_HASH,
-            "e075e3f9f2229aa8d2347f5d5f0e95f867e7e1bbc411e60e25f5dc3443fdb287",
+            "23ea66d90181a45b4a52705c171372c38955208af6f556f56f26643bcc033512",
         )
 
     def test_page_master_data_matches_host_catalog(self):

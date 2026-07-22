@@ -5,7 +5,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
     var core = require("web.core");
 
     var PROTOCOL = "agui.odoo.v2";
-    var MODULE_VERSION = "12.0.8.8.6";
+    var MODULE_VERSION = "12.0.8.8.7";
     var WRITE_COMMANDS = {
         "odoo.stage_current_form": true,
         "odoo.patch_current_form": true,
@@ -40,6 +40,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
         this.config = null;
         this.catalog = [];
         this.allowedTools = {};
+        this.executionSessions = {};
     }
 
     HostBridge.prototype._rpc = function (route, values) {
@@ -288,6 +289,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
             message_id: call && call.message_id || false,
             context: clone(call && call.context || {}),
         };
+        delete result.context.sessionId;
         if (_.isObject(result.arguments)) {
             delete result.arguments.confirmed;
             delete result.arguments.authorizationId;
@@ -300,7 +302,15 @@ odoo.define("agui_chat.host_bridge", function (require) {
     HostBridge.prototype.executeTool = function (call) {
         var self = this;
         var cleanCall = this._cleanCall(call);
+        if (cleanCall.tool === "odoo.export_current_view" && call && call.context &&
+                call.context.sessionId && cleanCall.id) {
+            this.executionSessions[String(cleanCall.id)] = {
+                sessionId: call.context.sessionId,
+                threadId: cleanCall.context.threadId,
+            };
+        }
         if (!this.allowedTools[cleanCall.tool]) {
+            delete this.executionSessions[String(cleanCall.id || "")];
             return $.when(resultError(cleanCall.tool, "tool_not_declared", "本次运行未声明该客户端工具。"));
         }
         if (this.allowedTools[cleanCall.tool] === "business") {
@@ -308,10 +318,12 @@ odoo.define("agui_chat.host_bridge", function (require) {
         }
         return this._browserPrepare(cleanCall, true).then(function (prepared) {
             if (!prepared || !prepared.ok) {
+                delete self.executionSessions[String(cleanCall.id || "")];
                 return prepared || resultError(cleanCall.tool, "host_unavailable");
             }
             return self._serverPrepare(prepared.call, 0);
         }, function (error) {
+            delete self.executionSessions[String(cleanCall.id || "")];
             return resultError(cleanCall.tool, error.code || "host_unavailable", error.message);
         });
     };
@@ -365,15 +377,25 @@ odoo.define("agui_chat.host_bridge", function (require) {
             call: call,
         }).then(function (decision) {
             if (!decision || !decision.ok || decision.needs_confirmation) {
+                if ((!decision || !decision.needs_confirmation) &&
+                        call.tool === "odoo.export_current_view") {
+                    delete self.executionSessions[String(call.id || "")];
+                }
                 return decision || resultError(call.tool, "policy_denied");
             }
             if (decision.replay_result) {
+                if (call.tool === "odoo.export_current_view") {
+                    delete self.executionSessions[String(call.id || "")];
+                }
                 return self._withUndoReceipt(
                     decision.replay_result, decision.authorization_id
                 );
             }
             return self._executeBound(decision, retryCount || 0);
         }, function (error) {
+            if (call.tool === "odoo.export_current_view") {
+                delete self.executionSessions[String(call.id || "")];
+            }
             return resultError(call.tool, error.code || "policy_unavailable", error.message);
         });
     };
@@ -381,10 +403,19 @@ odoo.define("agui_chat.host_bridge", function (require) {
     HostBridge.prototype.confirmTool = function (call, authorizationId, approved) {
         var self = this;
         var cleanCall = this._cleanCall(call);
+        if (cleanCall.tool === "odoo.export_current_view" && call && call.context &&
+                call.context.sessionId && cleanCall.id) {
+            this.executionSessions[String(cleanCall.id)] = {
+                sessionId: call.context.sessionId,
+                threadId: cleanCall.context.threadId,
+            };
+        }
         if (!this.allowedTools[cleanCall.tool]) {
+            delete this.executionSessions[String(cleanCall.id || "")];
             return $.when(resultError(cleanCall.tool, "tool_not_declared"));
         }
         if (!approved) {
+            delete self.executionSessions[String(cleanCall.id || "")];
             return this._confirmAuthorization(cleanCall.tool, authorizationId, false);
         }
         if (this.allowedTools[cleanCall.tool] === "business") {
@@ -523,6 +554,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
         var bound = clone(decision.bound_call || {});
         function finish(result) {
             return self._complete(decision.authorization_id, result).then(function (completion) {
+                delete self.executionSessions[String(bound.id || "")];
                 if (!completion || !completion.ok) {
                     return self._persistenceFailure(bound.tool, result, completion);
                 }
@@ -538,12 +570,43 @@ odoo.define("agui_chat.host_bridge", function (require) {
                 }
                 return self._withUndoReceipt(result, decision.authorization_id);
             }, function (error) {
+                delete self.executionSessions[String(bound.id || "")];
                 return self._persistenceFailure(bound.tool, result, error);
             });
         }
         bound.authorizationId = decision.authorization_id;
         var execute = function () {
-            return self.owner.call("agui_host", "executeHostCommand", bound);
+            var executionContext;
+            var runtimeUrl;
+            if (bound.tool !== "odoo.export_current_view") {
+                return self.owner.call("agui_host", "executeHostCommand", bound);
+            }
+            executionContext = self.executionSessions[String(bound.id || "")];
+            if (!executionContext || !executionContext.sessionId) {
+                return $.when(resultError(bound.tool, "workspace_capability_rejected"));
+            }
+            return self.getWorkspaceCapability(executionContext.sessionId).then(function (capability) {
+                var filesUrl;
+                if (!capability || !capability.ok || !capability.capability ||
+                        capability.threadId !== executionContext.threadId) {
+                    return resultError(bound.tool, "workspace_capability_rejected");
+                }
+                runtimeUrl = String(self.config && self.config.runtime_url || "");
+                filesUrl = runtimeUrl.replace(/\/agui\/?$/, "/workspace/files");
+                if (!runtimeUrl || filesUrl === runtimeUrl) {
+                    return resultError(bound.tool, "workspace_upload_failed");
+                }
+                bound.__workspace = {
+                    capability: capability.capability,
+                    threadId: capability.threadId,
+                    expectedThreadId: executionContext.threadId,
+                    filesUrl: filesUrl,
+                    credentials: self.config && self.config.credentials || "same-origin",
+                };
+                return self.owner.call("agui_host", "executeHostCommand", bound);
+            }, function () {
+                return resultError(bound.tool, "workspace_capability_rejected");
+            });
         };
         var execution = this.owner && typeof this.owner._withChatFocusPreserved === "function" ?
             this.owner._withChatFocusPreserved(execute) : execute();

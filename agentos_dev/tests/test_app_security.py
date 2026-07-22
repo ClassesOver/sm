@@ -163,6 +163,7 @@ async def test_public_config_and_protected_routes(client):
     assert config.json()["limits"] == {
         "run_request_bytes": 2 * 1024 * 1024,
         "workspace_upload_request_bytes": 12 * 1024 * 1024,
+        "workspace_file_bytes": 10 * 1024 * 1024,
         "json_mutation_request_bytes": 64 * 1024,
     }
 
@@ -301,6 +302,95 @@ async def test_http_上传保持覆盖路径的兼容调用语义(monkeypatch, c
         ("thread-1", "报告.txt", b"first"),
         ("thread-1", "报告.txt", b"second"),
     ]
+
+
+@pytest.mark.anyio
+async def test_workspace_files_post_creates_without_overwrite(monkeypatch, client):
+    async def inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    calls = []
+
+    def create_file(thread, path, content):
+        calls.append((thread, path, content))
+        return {"path": path, "size": len(content), "status": "synced"}
+
+    monkeypatch.setattr(app_module, "run_in_threadpool", inline)
+    monkeypatch.setattr(app_module.workspace_service, "create_file_locked", create_file)
+    response = await client.post(
+        "/workspace/files",
+        data={"threadId": "thread-1", "path": "exports/员工.csv"},
+        files={"file": ("员工.csv", b"name\nAlice\n", "text/csv")},
+        headers={
+            "X-AGUI-Thread": "thread-1",
+            "X-AGUI-Capability": capability(),
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "ok": True,
+        "entry": {"path": "exports/员工.csv", "size": 11, "status": "synced"},
+    }
+    assert calls == [("thread-1", "exports/员工.csv", b"name\nAlice\n")]
+
+
+@pytest.mark.anyio
+async def test_workspace_files_post_maps_conflict_size_and_backend_errors(monkeypatch, client):
+    async def inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "run_in_threadpool", inline)
+    headers = {
+        "X-AGUI-Thread": "thread-1",
+        "X-AGUI-Capability": capability(),
+    }
+
+    monkeypatch.setattr(
+        app_module.workspace_service,
+        "create_file_locked",
+        lambda *_args: (_ for _ in ()).throw(app_module.WorkspacePathConflict()),
+    )
+    conflict = await client.post(
+        "/workspace/files",
+        data={"threadId": "thread-1", "path": "exports/员工.csv"},
+        files={"file": ("员工.csv", b"content", "text/csv")},
+        headers=headers,
+    )
+
+    monkeypatch.setattr(app_module, "WORKSPACE_FILE_BYTES", 4)
+    too_large = await client.post(
+        "/workspace/files",
+        data={"threadId": "thread-1", "path": "exports/员工.csv"},
+        files={
+            "file": (
+                "员工.csv",
+                b"12345",
+                "text/csv",
+            )
+        },
+        headers=headers,
+    )
+
+    monkeypatch.setattr(
+        app_module.workspace_service,
+        "create_file_locked",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("daytona unavailable")),
+    )
+    monkeypatch.setattr(app_module, "WORKSPACE_FILE_BYTES", 10 * 1024 * 1024)
+    failed = await client.post(
+        "/workspace/files",
+        data={"threadId": "thread-1", "path": "exports/员工.csv"},
+        files={"file": ("员工.csv", b"content", "text/csv")},
+        headers=headers,
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json() == {"error": "workspace_path_conflict"}
+    assert too_large.status_code == 413
+    assert too_large.json() == {"error": "export_file_too_large"}
+    assert failed.status_code == 502
+    assert failed.json() == {"error": "workspace_upload_failed"}
 
 
 @pytest.mark.anyio

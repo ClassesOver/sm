@@ -1111,6 +1111,131 @@ odoo.define("agui_chat.tests.host", function (require) {
         });
     });
 
+    QUnit.test("export command catalog only accepts the current target and bounded format", function (assert) {
+        assert.expect(6);
+        var command = _.findWhere(Commands.getCatalog(), {name: "odoo.export_current_view"});
+        assert.ok(command.description.indexOf("List") !== -1);
+        assert.deepEqual(command.parameters.required, ["target", "format"]);
+        assert.deepEqual(command.parameters.properties.format, {
+            type: "string", enum: ["csv", "xls"],
+        });
+        assert.notOk(command.parameters.properties.domain);
+        assert.notOk(command.parameters.properties.ids);
+        assert.notOk(command.parameters.properties.fields);
+    });
+
+    QUnit.test("export prepare keeps visible column order and binds selected scope", function (assert) {
+        assert.expect(5);
+        var done = assert.async();
+        var target = {
+            snapshotId: "export-snapshot", hostRevision: 3,
+            controllerId: "list-controller", dataPointId: "list-1",
+            model: "res.partner", resId: false,
+        };
+        var rawRecord = {
+            domain: [["active", "=", true]],
+            getContext: function () { return {}; },
+        };
+        var controller = {
+            handle: "list-1",
+            renderer: {columns: [
+                {tag: "field", attrs: {name: "name", string: "名称"}},
+                {tag: "field", attrs: {name: "image", string: "图片"}},
+                {tag: "button", attrs: {name: "action_open", string: "打开"}},
+                {tag: "field", attrs: {name: "email", string: "邮箱"}},
+            ]},
+            model: {
+                get: function () { return rawRecord; },
+                isDirty: function () { return false; },
+            },
+            getActiveDomain: function () { return $.Deferred().resolve(); },
+            getSelectedIds: function () { return [7, 9]; },
+        };
+        var snapshot = {
+            interactive: true, capturedAt: "2026-07-22T01:02:03.000Z",
+            controller: {viewType: "list"}, record: {model: "res.partner"},
+            fields: {
+                name: {string: "名称", type: "char", invisible: false, redacted: false},
+                image: {string: "图片", type: "binary", invisible: false, redacted: false},
+                email: {string: "邮箱", type: "char", invisible: false, redacted: false},
+            },
+            capabilities: {totalCount: 18},
+        };
+        Commands.prepare({
+            getSnapshot: function () { return snapshot; },
+            getController: function () { return controller; },
+        }, {
+            id: "call-1234", tool: "odoo.export_current_view",
+            arguments: {target: target, format: "csv"},
+        }).then(function (prepared) {
+            assert.deepEqual(prepared.call.arguments.field_names, ["name", "email"]);
+            assert.deepEqual(prepared.preview.export.columns, ["名称", "邮箱"]);
+            assert.strictEqual(prepared.preview.export.scope, "selection");
+            assert.strictEqual(prepared.preview.export.recordCount, 2);
+            assert.strictEqual(
+                prepared.preview.export.workspacePath,
+                "exports/res.partner-20260722T010203Z-call1234.csv"
+            );
+            done();
+        });
+    });
+
+    QUnit.test("export execution uses native Odoo payload then create-only workspace upload", function (assert) {
+        assert.expect(7);
+        var done = assert.async();
+        var originalFetch = window.fetch;
+        var requests = [];
+        window.fetch = function (url, options) {
+            requests.push({url: url, options: options});
+            if (url === "/web/export/csv") {
+                return Promise.resolve({
+                    ok: true,
+                    headers: {get: function () { return "attachment; filename=res.partner.csv"; }},
+                    blob: function () { return Promise.resolve(new Blob(["名称\nAcme\n"])); },
+                });
+            }
+            return Promise.resolve({
+                ok: true,
+                json: function () { return Promise.resolve({ok: true, entry: {}}); },
+            });
+        };
+        var service = Object.create(HostService.prototype);
+        service._exportCurrentView({
+            __workspace: {
+                capability: "private-capability", threadId: "thread-1",
+                expectedThreadId: "thread-1", filesUrl: "/workspace/files",
+                credentials: "same-origin",
+            },
+        }, {
+            model: "res.partner",
+            fields: [{name: "name", label: "名称"}, {name: "email", label: "邮箱"}],
+            ids: [7], domain: [], context: {lang: "zh_CN"},
+        }, {
+            workspacePath: "exports/res.partner-20260722T010203Z-call1.csv",
+            format: "csv", recordCount: 1, fieldCount: 2,
+        }).then(function (result) {
+            var exportPayload = JSON.parse(requests[0].options.body.get("data"));
+            assert.strictEqual(requests[0].url, "/web/export/csv");
+            assert.deepEqual(exportPayload.fields, [
+                {name: "name", label: "名称"}, {name: "email", label: "邮箱"},
+            ]);
+            assert.deepEqual(exportPayload.ids, [7]);
+            assert.strictEqual(exportPayload.import_compat, false);
+            assert.strictEqual(requests[1].url, "/workspace/files");
+            assert.strictEqual(requests[1].options.headers["X-AGUI-Capability"], "private-capability");
+            assert.deepEqual(result, {
+                path: "exports/res.partner-20260722T010203Z-call1.csv",
+                format: "csv", size: 12, recordCount: 1, fieldCount: 2,
+            });
+            window.fetch = originalFetch;
+            done();
+        }, function (error) {
+            window.fetch = originalFetch;
+            assert.ok(false, error && error.message || "导出执行失败");
+            done();
+        });
+    });
+
     QUnit.test("switch view catalog is limited to native supported views", function (assert) {
         assert.expect(2);
         var command = _.findWhere(Commands.getCatalog(), {name: "odoo.switch_view"});

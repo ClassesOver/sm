@@ -27,13 +27,14 @@ from .instructions import build_agent_instructions
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
 from .skills import load_skills
-from .workspace import WorkspaceError, WorkspaceService
+from .workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.8.8.6"
-COMMAND_CATALOG_HASH = "e075e3f9f2229aa8d2347f5d5f0e95f867e7e1bbc411e60e25f5dc3443fdb287"
+BUNDLE_VERSION = "12.0.8.8.7"
+COMMAND_CATALOG_HASH = "23ea66d90181a45b4a52705c171372c38955208af6f556f56f26643bcc033512"
 MAX_RUN_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 12 * 1024 * 1024
+WORKSPACE_FILE_BYTES = 10 * 1024 * 1024
 MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
 EDIT_MODE_TOOL = "odoo.enter_edit_mode"
 MENU_NAVIGATION_TOOL = "odoo.navigate_menu"
@@ -228,7 +229,7 @@ def _request_thread(request: Request) -> str:
 def _request_limit(path: str, method: str) -> int | None:
     if path == "/agui":
         return MAX_RUN_REQUEST_BYTES
-    if path == "/workspace/upload":
+    if path in {"/workspace/upload", "/workspace/files"} and method == "POST":
         return MAX_WORKSPACE_UPLOAD_REQUEST_BYTES
     if path.startswith("/workspace/") and method in {"POST", "PUT", "PATCH", "DELETE"}:
         return MAX_JSON_MUTATION_REQUEST_BYTES
@@ -312,6 +313,7 @@ async def integration_config(request: Request):
         "limits": {
             "run_request_bytes": MAX_RUN_REQUEST_BYTES,
             "workspace_upload_request_bytes": MAX_WORKSPACE_UPLOAD_REQUEST_BYTES,
+            "workspace_file_bytes": WORKSPACE_FILE_BYTES,
             "json_mutation_request_bytes": MAX_JSON_MUTATION_REQUEST_BYTES,
         },
     }
@@ -388,12 +390,38 @@ async def workspace_upload(
 ):
     context = _application_context(request)
     _check_thread(request, threadId)
-    content = await file.read(10 * 1024 * 1024 + 1)
+    content = await file.read(WORKSPACE_FILE_BYTES + 1)
     try:
         entry = await run_in_threadpool(context.workspace_service.upload, threadId, path, content)
         return {"ok": True, "entry": entry}
     except Exception as error:
         _workspace_error(error)
+
+
+@router.post("/workspace/files", include_in_schema=False, status_code=201)
+async def workspace_file_create(
+    request: Request,
+    threadId: str = Form(...),
+    path: str = Form(...),
+    file: UploadFile = File(...),
+):
+    context = _application_context(request)
+    _check_thread(request, threadId)
+    content = await file.read(WORKSPACE_FILE_BYTES + 1)
+    if len(content) > WORKSPACE_FILE_BYTES:
+        return JSONResponse({"error": "export_file_too_large"}, status_code=413)
+    try:
+        entry = await run_in_threadpool(
+            context.workspace_service.create_file_locked,
+            threadId,
+            path,
+            content,
+        )
+        return JSONResponse({"ok": True, "entry": entry}, status_code=201)
+    except WorkspacePathConflict:
+        return JSONResponse({"error": "workspace_path_conflict"}, status_code=409)
+    except Exception:
+        return JSONResponse({"error": "workspace_upload_failed"}, status_code=502)
 
 
 @router.get("/workspace/file", include_in_schema=False)

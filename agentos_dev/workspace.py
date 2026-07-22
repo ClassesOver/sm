@@ -47,6 +47,10 @@ class WorkspaceError(ValueError):
     pass
 
 
+class WorkspacePathConflict(WorkspaceError):
+    pass
+
+
 class SandboxRegistry:
     def __init__(self, db_url: str | None = None):
         self.db_url = db_url or psycopg_db_url()
@@ -647,7 +651,9 @@ class WorkspaceService:
         self._ensure_directory(sandbox, parent)
         info = self._validate_destination(sandbox, relative, remote)
         if mode == "create" and info is not None:
-            raise WorkspaceError(f"文件“{relative}”已经存在。如需覆盖，请使用覆盖文件工具并确认。")
+            raise WorkspacePathConflict(
+                f"文件“{relative}”已经存在。如需覆盖，请使用覆盖文件工具并确认。"
+            )
         if mode == "replace" and info is None:
             raise WorkspaceError(f"文件“{relative}”不存在。如需新建，请使用新建文件工具。")
         if info is not None and info.is_dir:
@@ -663,6 +669,12 @@ class WorkspaceService:
 
     def create_file(self, thread: str, path: str, content: bytes) -> dict[str, Any]:
         return self._store_file(thread, path, content, "create")
+
+    def create_file_locked(self, thread: str, path: str, content: bytes) -> dict[str, Any]:
+        relative, _remote = self.normalize_path(path, allow_root=False)
+        lock_key = f"agui-workspace-file:{self._hash(thread)}:{relative}"
+        with self.registry.locked(lock_key):
+            return self.create_file(thread, relative, content)
 
     def replace_file(self, thread: str, path: str, content: bytes) -> dict[str, Any]:
         return self._store_file(thread, path, content, "replace")

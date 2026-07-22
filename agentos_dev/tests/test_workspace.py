@@ -30,6 +30,7 @@ from agentos_dev.workspace import (
     WORKSPACE_ROOT,
     SandboxRegistry,
     WorkspaceError,
+    WorkspacePathConflict,
     WorkspaceService,
     workspace_tools,
 )
@@ -152,7 +153,7 @@ def test_工具确认边界与可信技能注册符合策略(tmp_path):
 def test_新建覆盖移动和系统上传保持各自语义(tmp_path):
     current = service(tmp_path)
     current.create_file("thread", "报告.md", "初稿".encode())
-    with pytest.raises(WorkspaceError, match="已经存在.*覆盖文件工具"):
+    with pytest.raises(WorkspacePathConflict, match="已经存在.*覆盖文件工具"):
         current.create_file("thread", "报告.md", "误覆盖".encode())
 
     current.replace_file("thread", "报告.md", "终稿".encode())
@@ -180,6 +181,23 @@ def test_新建覆盖移动和系统上传保持各自语义(tmp_path):
     sandbox.fs.create_folder(f"{WORKSPACE_ROOT}/目录", "700")
     with pytest.raises(WorkspaceError, match="自身或其子目录"):
         current.move_file("thread", "目录", "目录/子目录")
+
+
+def test_create_file_locked_serializes_same_thread_and_path(tmp_path):
+    current = service(tmp_path)
+
+    def create(content):
+        try:
+            return current.create_file_locked("thread", "exports/report.csv", content)
+        except WorkspacePathConflict:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(create, (b"first", b"second")))
+
+    assert results.count("conflict") == 1
+    assert sum(isinstance(result, dict) for result in results) == 1
+    assert current.file_bytes("thread", "exports/report.csv")[0] in {b"first", b"second"}
 
 
 def test_智能体新建覆盖和安全移动返回中文提示(tmp_path):

@@ -364,6 +364,17 @@ class AguiChatToolAuthorization(models.Model):
 
     @api.model
     def _normalize_preview(self, preview, arguments):
+        if isinstance(arguments.get("__export"), dict):
+            export = arguments["__export"]
+            expected = preview.get("export") if isinstance(preview, dict) else None
+            keys = (
+                "workspacePath", "format", "scope", "recordCount", "fieldCount", "columns",
+            )
+            if not isinstance(expected, dict) or any(
+                expected.get(key) != export.get(key) for key in keys
+            ):
+                return {}
+            return {"export": {key: export.get(key) for key in keys}}
         control = arguments.get("__control") if isinstance(arguments.get("__control"), dict) else {}
         if control:
             control_preview = {
@@ -651,6 +662,43 @@ class AguiChatToolAuthorization(models.Model):
             return {"ok": False, "code": "write_tools_disabled"}
         if tool_name not in HOST_COMMAND_NAMES:
             return {"ok": False, "code": "unsupported_command"}
+        if tool_name == "odoo.export_current_view":
+            for private_key in ("domain", "ids", "context", "fields"):
+                arguments.pop(private_key, None)
+            export = arguments.get("__export") if isinstance(arguments.get("__export"), dict) else {}
+            field_names = arguments.get("field_names")
+            model_name = (arguments.get("target") or {}).get("model")
+            if (
+                arguments.get("format") not in ("csv", "xls") or
+                export.get("format") != arguments.get("format") or
+                not isinstance(field_names, list) or not field_names or
+                len(field_names) != export.get("fieldCount") or
+                not isinstance(export.get("columns"), list) or
+                len(export["columns"]) != len(field_names) or
+                export.get("scope") not in ("selection", "filter") or
+                not isinstance(export.get("recordCount"), int) or
+                export.get("recordCount") < 0 or
+                (arguments.get("format") == "xls" and export.get("recordCount") > 65535) or
+                not isinstance(export.get("workspacePath"), str) or
+                not re.match(
+                    r"^exports/[A-Za-z0-9_.-]+-\d{8}T\d{6}Z-[A-Za-z0-9]{1,12}\.(csv|xls)$",
+                    export.get("workspacePath"),
+                ) or
+                any(not isinstance(label, str) or len(label) > 160 for label in export["columns"])
+            ):
+                return {"ok": False, "code": "invalid_export_binding"}
+            definitions = self.env["ir.model.fields"].sudo().search([
+                ("model", "=", model_name), ("name", "in", field_names),
+            ])
+            field_types = {definition.name: definition.ttype for definition in definitions}
+            sensitive = set(config.sensitive_fields())
+            if (
+                len(set(field_names)) != len(field_names) or
+                set(field_types) != set(field_names) or
+                any(field_types[name] == "binary" for name in field_names) or
+                any(name in sensitive or SECRET_KEYS.search(name) for name in field_names)
+            ):
+                return {"ok": False, "code": "export_field_rejected"}
         target = arguments.get("target") if isinstance(arguments.get("target"), dict) else {}
         target_keys = {
             "snapshotId", "hostRevision", "catalogId", "catalogRevision",
@@ -698,7 +746,9 @@ class AguiChatToolAuthorization(models.Model):
                 "state": "state_change",
             }[control.get("type")]
             decision["risk_reasons"] = list(decision.get("risk_reasons") or []) + [reason]
-        if decision.get("requires_confirmation") and tool_name == "odoo.patch_current_form" and not preview:
+        if decision.get("requires_confirmation") and tool_name in (
+            "odoo.patch_current_form", "odoo.export_current_view",
+        ) and not preview:
             return {"ok": False, "code": "preview_required"}
         expires_at = fields.Datetime.to_string(
             fields.Datetime.from_string(fields.Datetime.now()) + timedelta(minutes=5)
@@ -722,8 +772,15 @@ class AguiChatToolAuthorization(models.Model):
         authorization, replayed = self._create_idempotent_authorization(values)
         if replayed:
             return authorization._existing_decision(binding_hash)
+        audit_arguments = arguments
+        if tool_name == "odoo.export_current_view":
+            audit_arguments = {
+                "target": arguments.get("target"),
+                "format": arguments.get("format"),
+                "export": arguments.get("__export"),
+            }
         self.env["agui.chat.tool.audit"]._log(
-            tool_name, "allowed", details={"arguments": arguments},
+            tool_name, "allowed", details={"arguments": audit_arguments},
             authorization_id=authorization.id, **self._audit_values(call)
         )
         if decision.get("requires_confirmation"):

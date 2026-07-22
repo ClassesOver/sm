@@ -96,6 +96,10 @@
   margin-right: auto;
 }
 
+.agui-chat-react .mb-1 {
+  margin-bottom: 4px;
+}
+
 .agui-chat-react .mb-2 {
   margin-bottom: 8px;
 }
@@ -274,6 +278,10 @@
 
 .agui-chat-react .h-full {
   height: 100%;
+}
+
+.agui-chat-react .max-h-28 {
+  max-height: 112px;
 }
 
 .agui-chat-react .max-h-52 {
@@ -460,6 +468,10 @@
   -webkit-appearance: none;
      -moz-appearance: none;
           appearance: none;
+}
+
+.agui-chat-react .grid-cols-\[auto_minmax\(0\2c 1fr\)\] {
+  grid-template-columns: auto minmax(0,1fr);
 }
 
 .agui-chat-react .grid-cols-\[minmax\(0\2c 1fr\)_auto_minmax\(0\2c 1fr\)\] {

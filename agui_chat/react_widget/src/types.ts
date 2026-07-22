@@ -528,6 +528,7 @@ export interface HostBridgeToolCall {
     requestId: string
     runId: string
     threadId: string
+    sessionId?: string | number
     selectedMenu?: {
       menuId: number
       actionId: number

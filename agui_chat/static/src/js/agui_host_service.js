@@ -534,12 +534,18 @@ odoo.define("agui_chat.host_service", function (require) {
                         );
                     }
                 }
-                return {
-                    ok: true,
-                    call: cleanCall,
-                    preview: preview || false,
-                    retried: !!retry,
-                };
+                return Commands.prepare(self._commandContext(), cleanCall).then(function (prepared) {
+                    return {
+                        ok: true,
+                        call: prepared.call,
+                        preview: prepared.preview || preview || false,
+                        retried: !!retry,
+                    };
+                }, function (error) {
+                    return self._commandResult(false, cleanCall, error && error.code || "command_failed", {
+                        error: error && error.message || "页面命令准备失败。",
+                    }, nextSnapshot);
+                });
             });
         },
 
@@ -562,6 +568,11 @@ odoo.define("agui_chat.host_service", function (require) {
                 return Commands.execute(this._commandContext(), call).then(function (payload) {
                     var nextSnapshot = self.getSnapshot();
                     self._commandBusy = false;
+                    if (call.tool === "odoo.export_current_view") {
+                        return _.extend({
+                            ok: true, operation: call.tool, code: "ok",
+                        }, payload || {});
+                    }
                     return self._commandResult(true, call, "ok", payload, nextSnapshot);
                 }, function (error) {
                     var nextSnapshot = self.getSnapshot();
@@ -950,7 +961,83 @@ odoo.define("agui_chat.host_service", function (require) {
                 saveForm: function (controller) { return self._saveForm(controller); },
                 discardForm: function (controller) { return self._discardForm(controller); },
                 reloadForm: function (controller) { return self._reloadForm(controller); },
+                exportCurrentView: function (call, spec, metadata) {
+                    return self._exportCurrentView(call, spec, metadata);
+                },
             };
+        },
+
+        _exportCurrentView: function (call, spec, metadata) {
+            var workspace = call && call.__workspace;
+            var format = metadata && metadata.format;
+            var exportData = {
+                import_compat: false,
+                model: spec.model,
+                fields: _.map(spec.fields || [], function (field) {
+                    return {name: field.name, label: field.label};
+                }),
+                ids: spec.ids || false,
+                domain: spec.domain || [],
+                context: spec.context || {},
+            };
+            if (!workspace || !workspace.capability || !workspace.threadId ||
+                    workspace.threadId !== workspace.expectedThreadId) {
+                return $.Deferred().reject(_.extend(
+                    new Error("工作区能力令牌无效。"), {code: "workspace_capability_rejected"}
+                )).promise();
+            }
+            var exportBody = new FormData();
+            exportBody.append("data", JSON.stringify(exportData));
+            exportBody.append("token", "agui-export");
+            return window.fetch("/web/export/" + format, {
+                method: "POST", credentials: "same-origin", body: exportBody,
+            }).then(function (response) {
+                var disposition = response.headers.get("Content-Disposition") || "";
+                if (!response.ok || disposition.toLowerCase().indexOf("attachment;") !== 0) {
+                    throw _.extend(new Error("Odoo 原生导出失败。"), {code: "odoo_export_failed"});
+                }
+                return response.blob().catch(function () {
+                    throw _.extend(new Error("Odoo 原生导出失败。"), {code: "odoo_export_failed"});
+                });
+            }, function () {
+                throw _.extend(new Error("Odoo 原生导出失败。"), {code: "odoo_export_failed"});
+            }).then(function (blob) {
+                if (blob.size > 10 * 1024 * 1024) {
+                    throw _.extend(new Error("导出文件超过 10 MiB。"), {code: "export_file_too_large"});
+                }
+                var uploadBody = new FormData();
+                uploadBody.append("threadId", workspace.threadId);
+                uploadBody.append("path", metadata.workspacePath);
+                uploadBody.append("file", blob, metadata.workspacePath.split("/").pop());
+                return window.fetch(workspace.filesUrl, {
+                    method: "POST",
+                    credentials: workspace.credentials,
+                    headers: {
+                        "X-AGUI-Thread": workspace.threadId,
+                        "X-AGUI-Capability": workspace.capability,
+                    },
+                    body: uploadBody,
+                }).then(function (response) {
+                    return response.json().catch(function () { return {}; }).then(function (payload) {
+                        if (!response.ok) {
+                            throw _.extend(new Error(payload.error || "工作区上传失败。"), {
+                                code: payload.error || "workspace_upload_failed",
+                            });
+                        }
+                        return {
+                            path: metadata.workspacePath,
+                            format: format,
+                            size: blob.size,
+                            recordCount: metadata.recordCount,
+                            fieldCount: metadata.fieldCount,
+                        };
+                    });
+                }, function () {
+                    throw _.extend(new Error("工作区上传失败。"), {
+                        code: "workspace_upload_failed",
+                    });
+                });
+            });
         },
 
         _menuOption: function (menuId) {

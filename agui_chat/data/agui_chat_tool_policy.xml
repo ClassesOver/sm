@@ -72,6 +72,13 @@
         <field name="confirmation_mode">never</field>
         <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
     </record>
+    <record id="policy_export_current_view" model="agui.chat.tool.policy">
+        <field name="name">导出当前列表到工作区</field>
+        <field name="tool_name">odoo.export_current_view</field>
+        <field name="access_level">read</field>
+        <field name="confirmation_mode">always</field>
+        <field name="group_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
     <record id="policy_patch_current_form" model="agui.chat.tool.policy">
         <field name="name">修改并保存当前可见表单字段</field>
         <field name="tool_name">odoo.patch_current_form</field>

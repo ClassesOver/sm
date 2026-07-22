@@ -25096,6 +25096,30 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const reasons = Array.isArray(preview.riskReasons) ? preview.riskReasons : [];
     const control = preview.control && typeof preview.control === "object" ? preview.control : null;
+    const exportPreview = preview.export && typeof preview.export === "object" ? preview.export : null;
+    if (exportPreview) {
+      const columns = Array.isArray(exportPreview.columns) ? exportPreview.columns : [];
+      return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 overflow-hidden rounded border border-warning/25 bg-background text-xs text-primary", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 p-2", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-muted", children: "目标" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "break-all", children: String(exportPreview.workspacePath || "") }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-muted", children: "范围" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: exportPreview.scope === "selection" ? "已选记录" : "当前筛选结果" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-muted", children: "格式" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: String(exportPreview.format || "").toUpperCase() }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-muted", children: "记录" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: String(exportPreview.recordCount ?? 0) })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "border-t border-border p-2", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mb-1 text-muted", children: [
+            "列（",
+            String(exportPreview.fieldCount ?? columns.length),
+            "）"
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "max-h-28 overflow-auto break-words", children: columns.map(String).join("、") })
+        ] })
+      ] });
+    }
     if (control) {
       return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 rounded border border-warning/25 bg-background p-2 text-xs text-primary", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "font-semibold", children: String(control.label || "对象按钮") }),
@@ -25804,7 +25828,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function canPreviewFile(type) {
     return PREVIEWABLE_TYPES.has(type.toLowerCase());
   }
-  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.6.js";
+  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.7.js";
   const FILE_VIEWER_LOAD_TIMEOUT_MS = 15e3;
   const STATUS_ATTRIBUTE = "data-agui-file-viewer-status";
   let viewerModulePromise;
@@ -27824,6 +27848,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.cancel();
     }
     async confirmTool(tool, approved) {
+      var _a;
       const bridge = this.props.hostBridge;
       const key = toolKey(tool);
       const current = this.toolsByKey[key] || tool;
@@ -27843,6 +27868,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           requestId: this.currentRequestId,
           runId: this.currentRunId,
           threadId: this.threadId,
+          sessionId: ((_a = this.session) == null ? void 0 : _a.id) || "",
           selectedMenu: this.latestMenuSelection()
         }
       };
@@ -29045,6 +29071,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       context.pendingHostBridgePromises.push(handled);
     }
     callHostBridge(tool, context) {
+      var _a;
       const bridge = this.props.hostBridge || {};
       const args = toolArgs(tool);
       const call = {
@@ -29056,6 +29083,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           requestId: context.currentRequestId,
           runId: context.currentRunId,
           threadId: context.threadId,
+          sessionId: ((_a = this.session) == null ? void 0 : _a.id) || "",
           selectedMenu: this.latestMenuSelection()
         }
       };
@@ -29609,7 +29637,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.8.6";
+  const VERSION = "12.0.8.8.7";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

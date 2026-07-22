@@ -504,6 +504,7 @@ export class ChatRuntime {
         requestId: this.currentRequestId,
         runId: this.currentRunId,
         threadId: this.threadId,
+        sessionId: this.session?.id || '',
         selectedMenu: this.latestMenuSelection()
       }
     }
@@ -1804,6 +1805,7 @@ export class ChatRuntime {
         requestId: context.currentRequestId,
         runId: context.currentRunId,
         threadId: context.threadId,
+        sessionId: this.session?.id || '',
         selectedMenu: this.latestMenuSelection()
       }
     }

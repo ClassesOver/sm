@@ -35,6 +35,28 @@ export function ToolConfirmationPreview({ result }: ToolConfirmationPreviewProps
   const reasons = Array.isArray(preview.riskReasons) ? preview.riskReasons : []
   const control = preview.control && typeof preview.control === 'object'
     ? preview.control as Record<string, unknown> : null
+  const exportPreview = preview.export && typeof preview.export === 'object'
+    ? preview.export as Record<string, unknown> : null
+
+  if (exportPreview) {
+    const columns = Array.isArray(exportPreview.columns) ? exportPreview.columns : []
+    return <div className="mt-2 overflow-hidden rounded border border-warning/25 bg-background text-xs text-primary">
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 p-2">
+        <span className="text-muted">目标</span>
+        <span className="break-all">{String(exportPreview.workspacePath || '')}</span>
+        <span className="text-muted">范围</span>
+        <span>{exportPreview.scope === 'selection' ? '已选记录' : '当前筛选结果'}</span>
+        <span className="text-muted">格式</span>
+        <span>{String(exportPreview.format || '').toUpperCase()}</span>
+        <span className="text-muted">记录</span>
+        <span>{String(exportPreview.recordCount ?? 0)}</span>
+      </div>
+      <div className="border-t border-border p-2">
+        <div className="mb-1 text-muted">列（{String(exportPreview.fieldCount ?? columns.length)}）</div>
+        <div className="max-h-28 overflow-auto break-words">{columns.map(String).join('、')}</div>
+      </div>
+    </div>
+  }
 
   if (control) {
     return <div className="mt-2 rounded border border-warning/25 bg-background p-2 text-xs text-primary">

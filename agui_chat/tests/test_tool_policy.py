@@ -524,6 +524,53 @@ class TestHostCommandAuthorization(TransactionCase):
         ])
         self.assertEqual(set(audits.mapped("result")), {"allowed", "ok"})
 
+    def test_export_is_read_only_but_always_confirmed_and_does_not_persist_scope(self):
+        self.config.write({
+            "write_tools_enabled": False,
+            "enabled_commands": "odoo.export_current_view",
+        })
+        self.env["agui.chat.tool.policy"].create({
+            "name": "导出联系人列表",
+            "tool_name": "odoo.export_current_view",
+            "access_level": "read",
+            "model_name": "res.partner",
+            "confirmation_mode": "always",
+            "field_names": "name,email",
+        })
+        export = {
+            "workspacePath": "exports/res.partner-20260722T010203Z-export1.csv",
+            "format": "csv",
+            "scope": "filter",
+            "recordCount": 2,
+            "fieldCount": 2,
+            "columns": ["名称", "Email"],
+        }
+        call = self._call(
+            "odoo.export_current_view",
+            "export-call",
+            {
+                "format": "csv",
+                "field_names": ["name", "email"],
+                "__export": export,
+            },
+        )
+        call["preview"] = {"export": export}
+        call["arguments"]["domain"] = [["name", "ilike", "secret"]]
+        call["arguments"]["ids"] = [1, 2]
+        call["arguments"]["context"] = {"lang": "zh_CN"}
+
+        decision = self.env["agui.chat.tool.authorization"]._prepare_host_command(call)
+
+        self.assertTrue(decision["needs_confirmation"])
+        self.assertFalse(decision.get("code") == "write_tools_disabled")
+        authorization = self.env["agui.chat.tool.authorization"].search([
+            ("token", "=", decision["authorization_id"]),
+        ])
+        stored = json.loads(authorization.arguments_json)
+        self.assertNotIn("domain", stored)
+        self.assertNotIn("ids", stored)
+        self.assertNotIn("context", stored)
+
     def test_host_results_use_a_separate_bounded_storage_limit(self):
         authorizations = self.env["agui.chat.tool.authorization"]
         stored_call = self._call(

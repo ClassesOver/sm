@@ -21,6 +21,27 @@ describe('工具展示组件', () => {
     expect(screen.getByText('custom_reason')).toBeTruthy()
   })
 
+  it('展示导出目标、范围、格式、记录数和有序列', () => {
+    render(<ToolConfirmationPreview result={{
+      preview: {
+        export: {
+          workspacePath: 'exports/hr.employee-20260722T010203Z-call1.csv',
+          format: 'csv',
+          scope: 'selection',
+          recordCount: 2,
+          fieldCount: 2,
+          columns: ['姓名', '部门']
+        }
+      }
+    }} />)
+
+    expect(screen.getByText('exports/hr.employee-20260722T010203Z-call1.csv')).toBeTruthy()
+    expect(screen.getByText('已选记录')).toBeTruthy()
+    expect(screen.getByText('CSV')).toBeTruthy()
+    expect(screen.getByText('2', { selector: 'span' })).toBeTruthy()
+    expect(screen.getByText('姓名、部门')).toBeTruthy()
+  })
+
   it('统一工具状态标签和颜色', () => {
     const { container, rerender } = render(<ToolStatusBadge status="running" />)
     expect(screen.getByText('执行中')).toBeTruthy()

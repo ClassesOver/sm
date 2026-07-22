@@ -2,6 +2,7 @@ odoo.define("agui_chat.command_registry", function (require) {
     "use strict";
 
     var Adapter = require("agui_chat.model_adapter");
+    var pyUtils = require("web.py_utils");
 
     var MENU_TARGET = {
         type: "object",
@@ -98,6 +99,13 @@ odoo.define("agui_chat.command_registry", function (require) {
                     },
                 },
             }, ["groupBy"]),
+        },
+        {
+            name: "odoo.export_current_view",
+            description: "仅在当前 List 视图导出当前勾选记录或当前筛选结果到 thread 工作区；必须使用当前 viewTarget，并指定 csv 或 xls。",
+            parameters: schema({
+                format: {type: "string", enum: ["csv", "xls"]},
+            }, ["format"]),
         },
         {
             name: "odoo.open_record",
@@ -269,6 +277,116 @@ odoo.define("agui_chat.command_registry", function (require) {
             throw commandError("unsaved_changes", "当前表单有未保存修改，请先保存或放弃后再继续。");
         }
     }
+
+    function exportError(code, message) {
+        throw commandError(code, message);
+    }
+
+    function exportColumns(controller, snapshot) {
+        var columns = controller.renderer && controller.renderer.columns || [];
+        return _.chain(columns).map(function (column) {
+            var attrs = column && column.attrs || {};
+            var name = attrs.name || column && column.name;
+            var field = name && snapshot.fields && snapshot.fields[name];
+            var invisible = column && column.invisible || attrs.invisible === "1" ||
+                attrs.invisible === 1 || attrs.invisible === true;
+            if (!name || column && column.tag === "button" || invisible || !field ||
+                    field.type === "binary" || field.invisible || field.redacted) {
+                return false;
+            }
+            return {name: name, label: String(attrs.string || field.string || name).slice(0, 160)};
+        }).compact().value();
+    }
+
+    function exportPath(snapshot, callId, format) {
+        var captured = new Date(snapshot.capturedAt);
+        var timestamp = isNaN(captured.getTime()) ? "invalid" : captured.toISOString()
+            .replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+        var model = String(snapshot.record && snapshot.record.model || "export")
+            .replace(/[^a-zA-Z0-9_.-]/g, "_");
+        var shortId = String(callId || "export").replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "export";
+        return "exports/" + model + "-" + timestamp + "-" + shortId + "." + format;
+    }
+
+    function buildExportBinding(context, args, call) {
+        var snapshot = context.getSnapshot();
+        var controller = context.getController();
+        var format = String(args.format || "");
+        var columns;
+        var ids;
+        var domainReady;
+        var record;
+        if (!snapshot.interactive || snapshot.controller.viewType !== "list" || !controller) {
+            exportError("no_current_list", "当前没有可用的 HRP 原生列表。");
+        }
+        if (format !== "csv" && format !== "xls") {
+            exportError("invalid_arguments", "导出格式必须是 csv 或 xls。");
+        }
+        if (controller.model && _.isFunction(controller.model.isDirty) &&
+                controller.model.isDirty(controller.handle)) {
+            exportError("unsaved_changes", "当前列表有未保存修改，请先保存或放弃后再导出。");
+        }
+        columns = exportColumns(controller, snapshot);
+        if (!columns.length) {
+            exportError("export_no_fields", "当前列表没有可安全导出的列。");
+        }
+        record = controller.model.get(controller.handle);
+        domainReady = $.when(
+            _.isFunction(controller.getActiveDomain) ? controller.getActiveDomain() : undefined
+        );
+        return domainReady.then(function (activeDomain) {
+            var domain;
+            if (activeDomain === undefined) {
+                ids = _.isFunction(controller.getSelectedIds) ? controller.getSelectedIds() || [] : [];
+                domain = record && record.domain || [];
+            } else {
+                ids = false;
+                domain = activeDomain || [];
+            }
+            var recordCount = ids && ids.length || snapshot.capabilities &&
+                snapshot.capabilities.totalCount || 0;
+            if (format === "xls" && recordCount > 65535) {
+                exportError("export_xls_row_limit", "XLS 导出不能超过 65535 行。");
+            }
+            return {
+                publicArguments: {
+                    target: Adapter.clone(args.target),
+                    format: format,
+                    field_names: _.pluck(columns, "name"),
+                    __export: {
+                        workspacePath: exportPath(snapshot, call && call.id, format),
+                        format: format,
+                        scope: ids && ids.length ? "selection" : "filter",
+                        recordCount: recordCount,
+                        fieldCount: columns.length,
+                        columns: _.pluck(columns, "label"),
+                    },
+                },
+                privateSpec: {
+                    model: snapshot.record && snapshot.record.model,
+                    fields: columns,
+                    ids: ids || false,
+                    domain: domain,
+                    context: record && _.isFunction(record.getContext) ?
+                        pyUtils.eval("contexts", [record.getContext()]) : {},
+                },
+            };
+        });
+    }
+
+    function sameExportBinding(left, right) {
+        return JSON.stringify(left || {}) === JSON.stringify(right || {});
+    }
+
+    COMMANDS["odoo.export_current_view"] = function (context, args, call) {
+        return buildExportBinding(context, args, call).then(function (binding) {
+            if (!sameExportBinding(binding.publicArguments.__export, args.__export) ||
+                    !sameExportBinding(binding.publicArguments.field_names, args.field_names)) {
+                exportError("stale_snapshot", "当前导出范围或列已变化，请重新确认。");
+            }
+            return context.exportCurrentView(call, binding.privateSpec, args.__export);
+        });
+    };
 
     function navigationResult(context, before, result) {
         return context.waitForInteractiveSnapshotChange(before.snapshotId).then(function (snapshot) {
@@ -806,6 +924,17 @@ odoo.define("agui_chat.command_registry", function (require) {
         return Adapter.clone(CATALOG);
     }
 
+    function prepare(context, call) {
+        if (!call || call.tool !== "odoo.export_current_view") {
+            return $.when({call: call, preview: false});
+        }
+        return buildExportBinding(context, call.arguments || {}, call).then(function (binding) {
+            call.arguments = binding.publicArguments;
+            call.preview = {export: Adapter.clone(binding.publicArguments.__export)};
+            return {call: call, preview: call.preview};
+        });
+    }
+
     function execute(context, call) {
         var tool = call && call.tool;
         var args = call && call.arguments || {};
@@ -828,6 +957,7 @@ odoo.define("agui_chat.command_registry", function (require) {
 
     return {
         getCatalog: getCatalog,
+        prepare: prepare,
         execute: execute,
     };
 });

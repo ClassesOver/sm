@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.8.6')
+    expect(AguiChat.version).toBe('12.0.8.8.7')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -537,7 +537,7 @@ describe('ChatRuntime protocol handling', () => {
 
     expect(confirmTool).toHaveBeenCalledWith(
       expect.objectContaining({
-        context: expect.objectContaining({ runId: 'persisted-run' })
+        context: expect.objectContaining({ runId: 'persisted-run', sessionId: 7 })
       }),
       'persisted-authorization', true
     )
@@ -1562,6 +1562,7 @@ describe('ChatRuntime protocol handling', () => {
       }))
       const runtime = createRuntime({
         runtimeUrl: '/runtime/run',
+        session: { id: 23, protocol: 'agui.odoo.v2', thread_id: 'thread-menu' },
         tools: [{ name: 'odoo.navigate_menu', parameters: { type: 'object' } }],
         menuCatalog: menuCatalog(options),
         initialMessages: [
@@ -1591,6 +1592,7 @@ describe('ChatRuntime protocol handling', () => {
       expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({
         tool: 'odoo.navigate_menu',
         context: expect.objectContaining({
+          sessionId: 23,
           selectedMenu: {
             menuId: expected.menuId, actionId: expected.actionId,
             catalogId: 'catalog-test-1', catalogRevision: 1
