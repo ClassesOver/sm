@@ -22,6 +22,8 @@ class Info:
 class FakeFs:
     def __init__(self):
         self.entries = {"/home/daytona/workspace": (Info("workspace", True), b"")}
+        self.download_calls = []
+        self.stream_download_calls = []
 
     def get_file_info(self, path):
         if path not in self.entries:
@@ -37,7 +39,16 @@ class FakeFs:
         self.entries[path] = (Info(PurePosixPath(path).name, size=len(content)), bytes(content))
 
     def download_file(self, path):
+        self.download_calls.append(path)
         return self.entries[path][1]
+
+    def download_file_stream(self, path):
+        self.stream_download_calls.append(path)
+        content = self.entries[path][1]
+        midpoint = len(content) // 2
+        for chunk in (content[:midpoint], content[midpoint:]):
+            if chunk:
+                yield chunk
 
     def list_files(self, path):
         prefix = path.rstrip("/") + "/"
@@ -122,6 +133,13 @@ class AsyncFakeFs:
 
     async def download_file(self, path):
         return self._fs.download_file(path)
+
+    async def download_file_stream(self, path):
+        async def stream():
+            for chunk in self._fs.download_file_stream(path):
+                yield chunk
+
+        return stream()
 
     async def list_files(self, path):
         return self._fs.list_files(path)

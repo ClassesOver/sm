@@ -25,7 +25,7 @@ from .database import psycopg_db_url
 from .security import thread_label
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
-WORKSPACE_SNAPSHOT = "registry:6000/daytona/sandbox:0.5.0-tools"
+WORKSPACE_SNAPSHOT = "sandbox-tools-20260722"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 MAX_READ_BYTES = 1024 * 1024
@@ -462,7 +462,11 @@ class WorkspaceService:
                     _relative, remote = self.normalize_path(relative, allow_root=False)
                     await self._aensure_directory(target, remote)
                 for relative, remote, expected_size in files:
-                    content = await source.fs.download_file(remote)
+                    content = await self._adownload_file(
+                        source,
+                        remote,
+                        MAX_BRANCH_FILE_BYTES,
+                    )
                     if not isinstance(content, bytes) or len(content) != expected_size:
                         raise WorkspaceError("源工作区在分支复制期间发生变化，请重试。")
                     _relative, target_remote = self.normalize_path(relative, allow_root=False)
@@ -687,10 +691,43 @@ class WorkspaceService:
             raise WorkspaceError("所选项目是目录，不能作为文件下载，请选择普通文件。")
         if int(info.size or 0) > MAX_DOWNLOAD_BYTES:
             raise WorkspaceError("所选文件超过 25 MB，请缩小文件后重试。")
-        content = sandbox.fs.download_file(remote)
+        content = self._download_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
         if not isinstance(content, bytes) or len(content) > MAX_DOWNLOAD_BYTES:
             raise WorkspaceError("工作区返回的文件超过 25 MB，请缩小文件后重试。")
         return content, mimetypes.guess_type(relative)[0] or "application/octet-stream"
+
+    @staticmethod
+    def _download_file(sandbox: Any, remote: str, max_bytes: int) -> bytes:
+        if remote.isascii():
+            return sandbox.fs.download_file(remote)
+
+        chunks = []
+        total = 0
+        for chunk in sandbox.fs.download_file_stream(remote):
+            if not isinstance(chunk, bytes):
+                raise WorkspaceError("工作区返回了无效的文件内容，请稍后重试。")
+            total += len(chunk)
+            if total > max_bytes:
+                raise WorkspaceError("工作区返回的文件超过允许大小，请缩小文件后重试。")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    @staticmethod
+    async def _adownload_file(sandbox: Any, remote: str, max_bytes: int) -> bytes:
+        if remote.isascii():
+            return await sandbox.fs.download_file(remote)
+
+        chunks = []
+        total = 0
+        stream = await sandbox.fs.download_file_stream(remote)
+        async for chunk in stream:
+            if not isinstance(chunk, bytes):
+                raise WorkspaceError("工作区返回了无效的文件内容，请稍后重试。")
+            total += len(chunk)
+            if total > max_bytes:
+                raise WorkspaceError("工作区返回的文件超过允许大小，请缩小文件后重试。")
+            chunks.append(chunk)
+        return b"".join(chunks)
 
     def read_text(self, thread: str, path: str) -> str:
         relative, remote = self.normalize_path(path, allow_root=False)
@@ -701,7 +738,7 @@ class WorkspaceService:
             raise WorkspaceError("所选项目是目录，不能作为文本文件读取。")
         if int(info.size or 0) > MAX_READ_BYTES:
             raise WorkspaceError("所选文件超过 1 MB，请下载后使用对应软件打开。")
-        content = sandbox.fs.download_file(remote)
+        content = self._download_file(sandbox, remote, MAX_READ_BYTES)
         if not isinstance(content, bytes) or len(content) > MAX_READ_BYTES:
             raise WorkspaceError("工作区返回的文件超过 1 MB，请下载后使用对应软件打开。")
         if b"\x00" in content:
@@ -895,8 +932,9 @@ class WorkspaceReportToolkit(WorkspaceToolkit):
         if result["exitCode"] != 0:
             raise WorkspaceError(result["output"] or "报表运行失败。")
         try:
-            return json.loads(result["output"])
-        except json.JSONDecodeError as error:
+            output = next(line for line in reversed(result["output"].splitlines()) if line.strip())
+            return json.loads(output)
+        except (StopIteration, json.JSONDecodeError) as error:
             raise WorkspaceError("报表运行时返回无效结果。") from error
 
     async def report_list_capabilities(self, run_context: RunContext | None = None):

@@ -211,3 +211,5 @@ AgentOS 的工作区智能报表依赖现有 `docker/sandbox-tools` 镜像，不
 镜像。镜像必须保留 WeasyPrint 69、pypdf、Matplotlib、pandas、openpyxl、xlrd 与 Noto CJK
 字体和 `/usr/bin/bash`；Daytona sandbox 必须继续启用 `network_block_all`。报表任务的中间状态位于 sandbox
 `/tmp/workspace-report`，成功后只保留工作区内的最终 PDF，失败状态最多保留 24 小时。
+从工具镜像创建并激活自定义 Snapshot `sandbox-tools-20260722`，不要使用同名 System
+Snapshot；System Snapshot 的固定 `ref` 不会因 Registry tag 更新而刷新。

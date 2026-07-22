@@ -289,6 +289,25 @@ def test_中文路径长度层级控制字符和目录穿越受到限制(tmp_pat
         current.normalize_path("C:\\Windows\\system.ini")
 
 
+def test_中文文件使用流式下载并限制实际返回大小(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    current.create_file("thread", "资料/报告.md", "内容".encode())
+    sandbox = current.sandbox_for("thread")
+    remote = f"{WORKSPACE_ROOT}/资料/报告.md"
+    sandbox.fs.download_file = lambda _path: (_ for _ in ()).throw(
+        AssertionError("中文路径不应使用 bulk 下载")
+    )
+
+    assert current.file_bytes("thread", "资料/报告.md")[0] == "内容".encode()
+    assert current.read_text("thread", "资料/报告.md") == "内容"
+    assert sandbox.fs.stream_download_calls == [remote, remote]
+
+    monkeypatch.setattr(workspace_module, "MAX_DOWNLOAD_BYTES", 4)
+    sandbox.fs.entries[remote][0].size = 4
+    with pytest.raises(WorkspaceError, match="超过允许大小"):
+        current.file_bytes("thread", "资料/报告.md")
+
+
 def test_文本读取严格区分目录二进制非_utf8_和大小边界(tmp_path):
     current = service(tmp_path)
     sandbox = current.sandbox_for("thread")
@@ -401,7 +420,7 @@ async def test_异步分支工作区先校验限制和符号链接再创建目�
 @pytest.mark.anyio
 async def test_异步分支工作区复制失败会清理目标(tmp_path):
     current = service(tmp_path)
-    current.create_file("source", "报告.txt", b"content")
+    current.create_file("source", "report.txt", b"content")
     source = current.sandbox_for("source")
     source.fs.download_file = lambda _path: (_ for _ in ()).throw(RuntimeError("offline"))
     async_service = WorkspaceService(
@@ -429,7 +448,7 @@ async def test_异步分支工作区复制被取消也会清理目标(tmp_path, 
         download_started.set()
         await never_complete.wait()
 
-    monkeypatch.setattr(AsyncFakeFs, "download_file", blocking_download)
+    monkeypatch.setattr(AsyncFakeFs, "download_file_stream", blocking_download)
     async_service = WorkspaceService(
         current.secret,
         client=current.client,

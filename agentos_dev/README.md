@@ -43,6 +43,8 @@ sandbox 中运行，实际安全边界是启用 `network_block_all` 的 Daytona 
 相对路径。固定报表运行时由 AgentOS 上传并按源码摘要命名，任务状态保存在 sandbox 的
 `/tmp/workspace-report`，最终 PDF 输出到 `报表/生成结果/<job_id>/`。生产环境必须使用仓库
 现有 `docker/sandbox-tools` 镜像，以提供 WeasyPrint 69、pypdf、Matplotlib 和 Noto CJK。
+部署时从该镜像创建并激活自定义 Snapshot `sandbox-tools-20260722`；不要复用不可删除的
+System Snapshot。
 
 应用默认读取 `/home/junge/pros/agents_app/.env`，复用其中的 `MODEL`、
 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。可通过 `AGENT_ENV_FILE` 指向其他

@@ -2,6 +2,7 @@ import io
 import json
 import os
 import shlex
+import uuid
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,12 @@ from daytona import CreateSandboxFromSnapshotParams, Daytona
 from pypdf import PdfReader
 
 from agentos_dev import report_runtime
-from agentos_dev.workspace import WORKSPACE_ROOT, WORKSPACE_SNAPSHOT
+from agentos_dev.workspace import (
+    MAX_DOWNLOAD_BYTES,
+    WORKSPACE_ROOT,
+    WORKSPACE_SNAPSHOT,
+    WorkspaceService,
+)
 
 
 @pytest.mark.integration
@@ -21,7 +27,7 @@ def test_sandbox_tools_生成三套中文_pdf():
     try:
         sandbox = client.create(
             CreateSandboxFromSnapshotParams(
-                name="agui-report-integration",
+                name=f"agui-report-integration-{uuid.uuid4().hex[:8]}",
                 snapshot=WORKSPACE_SNAPSHOT,
                 public=False,
                 ephemeral=True,
@@ -41,7 +47,8 @@ def test_sandbox_tools_生成三套中文_pdf():
             )
             result = sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=120)
             assert result.exit_code == 0, result.result
-            return json.loads(result.result)
+            output = next(line for line in reversed(result.result.splitlines()) if line.strip())
+            return json.loads(output)
 
         for template in ("经营", "财务", "项目"):
             prepared = run("prepare", {"paths": ["data.csv"]})
@@ -65,7 +72,11 @@ def test_sandbox_tools_生成三套中文_pdf():
                 },
             )
             rendered = run("render", {"job_id": prepared["jobId"]})
-            content = sandbox.fs.download_file(f"{WORKSPACE_ROOT}/{rendered['path']}")
+            content = WorkspaceService._download_file(
+                sandbox,
+                f"{WORKSPACE_ROOT}/{rendered['path']}",
+                MAX_DOWNLOAD_BYTES,
+            )
             reader = PdfReader(io.BytesIO(content))
             text = "".join(page.extract_text() or "" for page in reader.pages)
             assert reader.pages and template in text and "截断" in text
