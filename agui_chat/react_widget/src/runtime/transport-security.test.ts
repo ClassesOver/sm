@@ -38,7 +38,7 @@ describe('production transport contract', () => {
         id: 'latest-user', role: 'user', content: '第三轮',
         attachments: [{
           id: '12', name: '数据.csv', mimeType: 'text/csv', size: 10,
-          modality: 'document', workspacePath: '附件/1-数据.csv'
+          modality: 'document', workspacePath: '附件/12-数据.csv'
         }],
         skills: [{ id: 'review', name: '审查', description: '检查数据', valid: true }]
       },
@@ -49,7 +49,7 @@ describe('production transport contract', () => {
       id: 'latest-user', role: 'user', content: '第三轮',
       attachments: [{
         id: '12', name: '数据.csv', mimeType: 'text/csv', size: 10,
-        modality: 'document', workspacePath: '附件/1-数据.csv'
+        modality: 'document', workspacePath: '附件/12-数据.csv'
       }]
     }])
     expect(input.context).toContainEqual({
