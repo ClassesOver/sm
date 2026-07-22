@@ -36,14 +36,13 @@ def create_assistants(
             api_key=settings.openai_api_key,
             role_map=OPENAI_COMPATIBLE_ROLE_MAP,
             extra_body={"enable_thinking": False},
-            temperature=0.0,
+            # temperature=0.0,
         ),
         instructions=instructions,
         skills=skills,
         tools=[WorkspaceReportToolkit(workspace_service)],
         db=SerializedAsyncPostgresDb(db_url=settings.database_url),
         add_history_to_context=True,
-        num_history_runs=10,
         debug_mode=settings.debug,
         markdown=True,
         tool_choice="auto",
@@ -52,6 +51,9 @@ def create_assistants(
     menu_navigation_assistant = assistant.deep_copy(
         update={"tool_choice": menu_navigation_tool_choice}
     )
+    # Agno maps constructor None to 3; post-init None means all runs in session.get_messages.
+    for current in (assistant, edit_mode_assistant, menu_navigation_assistant):
+        current.num_history_runs = None
     return (
         assistant,
         edit_mode_assistant,

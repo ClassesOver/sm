@@ -73,6 +73,12 @@ def test_agent_uses_dynamic_instructions_callable():
     assert app.assistant.instructions is build_agent_instructions
 
 
+def test_agent_history_runs_are_not_truncated():
+    assert app.assistant.num_history_runs is None
+    assert app.edit_mode_assistant.num_history_runs is None
+    assert app.menu_navigation_assistant.num_history_runs is None
+
+
 def test_plain_request_only_uses_core_instructions():
     assert build_agent_instructions(instruction_context()) == CORE_INSTRUCTIONS
 
@@ -158,9 +164,10 @@ def test_智能体说明明确工作区确认边界():
     instructions = "\n".join(build_agent_instructions(instruction_context()))
 
     assert "工作区只属于当前 thread" in instructions
-    assert "新建、覆盖、移动、删除、sandbox 命令和 PDF 渲染均须独立确认" in instructions
-    assert "必须将这些路径原样传给 report_prepare_dataset" in instructions
-    assert "不得改用 sandbox_exec、Python 或 pandas 读取" in instructions
+    assert "sandbox_exec 和 report_analyze_dataset 均须独立确认" in instructions
+    assert "准备和 Markdown 转 PDF 无需确认" in instructions
+    assert "同一 job_id 多轮调用 report_analyze_dataset" in instructions
+    assert "至少一轮成功后生成 Markdown" in instructions
     assert "sandbox_exec 默认工作目录是 /home/daytona/workspace" in instructions
     assert "可信技能脚本" not in instructions
 
@@ -171,7 +178,10 @@ def test_智能报表技能统一使用工作区相对路径和报表工具():
     )
 
     assert "相对 `/home/daytona/workspace` 的工作区路径" in skill
-    assert "将上述路径原样传给 `report_prepare_dataset`" in skill
-    assert "不得使用 `sandbox_exec`、Python 或 pandas 读取" in skill
-    assert '`{"type": "summary"}`' in skill
-    assert '`{"type": "trend", "column": "字段名", "limit": 10}`' in skill
+    assert "`report_list_analysis_capabilities`" in skill
+    assert "模型根据每轮结果自行决定轮数" in skill
+    assert "若返回 `ok: false`" in skill
+    assert "直到至少一轮返回 `ok: true`" in skill
+    assert "每轮执行前等待工具确认" in skill
+    assert "直接调用无需确认的 `report_render_markdown`" in skill
+    assert "不使用 `report_compile`、`blocks`" in skill

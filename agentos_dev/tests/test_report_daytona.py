@@ -19,7 +19,7 @@ from agentos_dev.workspace import (
 
 
 @pytest.mark.integration
-def test_sandbox_tools_生成三套中文_pdf():
+def test_sandbox_tools_多轮分析后将_markdown_渲染为_pdf():
     if not os.getenv("DAYTONA_API_KEY"):
         pytest.skip("需要 Daytona API Key")
     client = Daytona()
@@ -38,7 +38,10 @@ def test_sandbox_tools_生成三套中文_pdf():
             timeout=180,
         )
         sandbox.fs.upload_file(Path(report_runtime.__file__).read_bytes(), "/tmp/report_runtime.py")
-        sandbox.fs.upload_file(b"region,amount\nEast,10\nSouth,30\n", f"{WORKSPACE_ROOT}/data.csv")
+        sandbox.fs.upload_file(
+            b"region,amount\nEast,10\nSouth,30\n",
+            f"{WORKSPACE_ROOT}/data.csv",
+        )
 
         def run(action, payload):
             command = (
@@ -50,36 +53,58 @@ def test_sandbox_tools_生成三套中文_pdf():
             output = next(line for line in reversed(result.result.splitlines()) if line.strip())
             return json.loads(output)
 
-        for template in ("经营", "财务", "项目"):
-            prepared = run("prepare", {"paths": ["data.csv"]})
-            analyzed = run(
-                "analyze",
-                {"job_id": prepared["jobId"], "operations": [{"type": "summary"}]},
-            )
-            run(
-                "compile",
-                {
-                    "job_id": prepared["jobId"],
-                    "title": f"{template}验收",
-                    "template": template,
-                    "blocks": [
-                        {
-                            "type": "table",
-                            "analysis_id": analyzed["analyses"][0]["analysisId"],
-                        },
-                        {"type": "appendix"},
-                    ],
-                },
-            )
-            rendered = run("render", {"job_id": prepared["jobId"]})
-            content = WorkspaceService._download_file(
-                sandbox,
-                f"{WORKSPACE_ROOT}/{rendered['path']}",
-                MAX_DOWNLOAD_BYTES,
-            )
-            reader = PdfReader(io.BytesIO(content))
-            text = "".join(page.extract_text() or "" for page in reader.pages)
-            assert reader.pages and template in text and "截断" in text
+        capabilities = run("capabilities", {})
+        assert capabilities["packages"]["pandas"]
+
+        prepared = run("prepare", {"paths": ["data.csv"]})
+        failed = run(
+            "analyze",
+            {"job_id": prepared["jobId"], "command": "false"},
+        )
+        assert failed["ok"] is False
+
+        directory = f"报表/生成结果/{prepared['jobId']}"
+        markdown = (
+            "# 中文智能报表\n\n"
+            "|地区|金额|\n|---|---:|\n|East|10|\n|South|30|\n\n"
+            "![金额](chart.png)\n"
+        )
+        command = (
+            f"mkdir -p {shlex.quote(directory)} && "
+            "python - <<'PY'\n"
+            "from pathlib import Path\n"
+            "import matplotlib.pyplot as plt\n"
+            f"root = Path({directory!r})\n"
+            "plt.bar(['East', 'South'], [10, 30])\n"
+            "plt.savefig(root / 'chart.png')\n"
+            "plt.close()\n"
+            f"(root / 'report.md').write_text({markdown!r}, encoding='utf-8')\n"
+            "print('analysis complete')\n"
+            "PY"
+        )
+        analyzed = run(
+            "analyze",
+            {"job_id": prepared["jobId"], "command": command, "timeout": 60},
+        )
+        assert analyzed["ok"] is True
+        assert analyzed["roundCount"] == 2
+
+        rendered = run(
+            "render_markdown",
+            {
+                "job_id": prepared["jobId"],
+                "markdown_path": f"{directory}/report.md",
+                "output_path": f"{directory}/report.pdf",
+            },
+        )
+        content = WorkspaceService._download_file(
+            sandbox,
+            f"{WORKSPACE_ROOT}/{rendered['pdfPath']}",
+            MAX_DOWNLOAD_BYTES,
+        )
+        reader = PdfReader(io.BytesIO(content))
+        text = "".join(page.extract_text() or "" for page in reader.pages)
+        assert reader.pages and "中文智能报表" in text and rendered["imageCount"] == 1
     finally:
         if sandbox is not None:
             client.delete(sandbox)

@@ -1,148 +1,226 @@
-"""固定报表运行时；由 WorkspaceReportToolkit 以哈希校验后的源码运行。"""
+"""受限 Markdown 报表运行时；由 WorkspaceReportToolkit 在 Daytona 中执行。"""
 
 from __future__ import annotations
 
-import csv
+import base64
+import ctypes
+import fcntl
 import hashlib
-import html as html_module
 import json
-import re
+import os
 import shutil
+import signal
+import subprocess
 import sys
+import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
-import matplotlib
-
-matplotlib.use("Agg")
-from typing import Annotated, Literal
-
-import matplotlib.pyplot as plt
-import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
-
-MAX_ROWS = 100_000
-MAX_COLUMNS = 100
-MAX_TOTAL_BYTES = 100 * 1024 * 1024
-MAX_MEMORY = 128 * 1024 * 1024
-MAX_RESULT_BYTES = 32 * 1024
-MAX_APPENDIX_ROWS = 1_000
-MAX_APPENDIX_COLUMNS = 20
-SUPPORTED = {".csv", ".xls", ".xlsx", ".json", ".jsonl"}
-TEMPLATES = {"经营", "财务", "项目"}
+MAX_MARKDOWN_BYTES = 1024 * 1024
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_COUNT = 50
+MAX_TOTAL_IMAGE_BYTES = 50 * 1024 * 1024
+MAX_RESULT_BYTES = 64 * 1024
+MAX_COMMAND_BYTES = 32 * 1024
+MAX_ANALYSIS_OUTPUT_BYTES = 8 * 1024
+MAX_DATASET_PATHS = 20
+MAX_ANALYSIS_TIMEOUT = 60
+IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 FAILURE_TTL_SECONDS = 24 * 60 * 60
-
-
-class _Operation(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class SummaryOperation(_Operation):
-    type: Literal["summary"]
-
-
-class ColumnOperation(_Operation):
-    type: Literal["trend", "top_bottom", "share", "pivot", "iqr"]
-    column: str
-    limit: int = Field(default=10, ge=1, le=1000)
-
-
-AnalysisOperation = Annotated[SummaryOperation | ColumnOperation, Field(discriminator="type")]
-ANALYSIS_OPERATIONS = TypeAdapter(list[AnalysisOperation])
 
 
 class ReportFailure(ValueError):
     pass
 
 
-def _json_size(value: Any) -> int:
-    return len(json.dumps(value, ensure_ascii=False, default=str).encode())
-
-
-def _columns(frame: pd.DataFrame) -> list[str]:
-    result: list[str] = []
-    counts: dict[str, int] = {}
-    for raw in frame.columns:
-        name = str(raw).strip() or "未命名"
-        counts[name] = counts.get(name, 0) + 1
-        result.append(name if counts[name] == 1 else f"{name} ({counts[name]})")
-    return result
-
-
-def _check(frame: pd.DataFrame) -> pd.DataFrame:
-    frame = frame.copy()
-    frame.columns = _columns(frame)
-    if len(frame) > MAX_ROWS or len(frame.columns) > MAX_COLUMNS:
-        raise ReportFailure("数据集超过行列边界")
-    if int(frame.memory_usage(index=True, deep=True).sum()) > MAX_MEMORY:
-        raise ReportFailure("数据集展开内存超过 128 MiB")
-    return frame
-
-
-def _safe_path(workspace: Path, value: str) -> Path:
+def _relative_path(value: str, suffix: str | None = None) -> PurePosixPath:
     if not isinstance(value, str) or not value or "\\" in value:
         raise ReportFailure("路径必须是当前工作区的相对路径")
     path = PurePosixPath(value)
-    if path.is_absolute() or ".." in path.parts or any(part in ("", ".") for part in path.parts):
-        raise ReportFailure("路径必须是当前工作区的相对路径")
-    result = workspace.joinpath(*path.parts)
-    try:
-        result.relative_to(workspace)
-    except ValueError as error:
-        raise ReportFailure("路径越界") from error
-    if result.is_symlink() or not result.is_file():
-        raise ReportFailure("路径不是普通文件")
+    if (
+        path.is_absolute()
+        or ".." in path.parts
+        or any(part in ("", ".") for part in path.parts)
+        or (suffix is not None and path.suffix.lower() != suffix)
+    ):
+        expected = f" {suffix}" if suffix is not None else ""
+        raise ReportFailure(f"路径必须是当前工作区内的{expected}相对路径")
+    return path
+
+
+def _reject_symlinks(workspace: Path, path: Path) -> None:
+    relative = path.relative_to(workspace)
+    current = workspace
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise ReportFailure("报表路径不能包含符号链接")
+
+
+def _input_path(workspace: Path, value: str, suffix: str) -> Path:
+    relative = _relative_path(value, suffix)
+    path = workspace.joinpath(*relative.parts)
+    _reject_symlinks(workspace, path)
+    if not path.is_file():
+        raise ReportFailure("报表源文件不存在或不是普通文件")
+    return path
+
+
+def _output_path(workspace: Path, value: str) -> Path:
+    relative = _relative_path(value, ".pdf")
+    path = workspace.joinpath(*relative.parts)
+    parent = path.parent
+    _reject_symlinks(workspace, parent)
+    if not parent.is_dir():
+        raise ReportFailure("PDF 输出目录不存在")
+    if path.exists() or path.is_symlink():
+        raise ReportFailure("PDF 输出文件已经存在")
+    return path
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _enable_child_subreaper() -> None:
+    if sys.platform != "linux":
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+        raise ReportFailure("无法启用分析进程隔离")
+
+
+def _process_parents() -> dict[int, int]:
+    result = {}
+    for status in Path("/proc").glob("[0-9]*/status"):
+        try:
+            values = {
+                key: value.strip()
+                for key, value in (
+                    line.split(":", 1) for line in status.read_text().splitlines() if ":" in line
+                )
+            }
+            result[int(status.parent.name)] = int(values["PPid"])
+        except (FileNotFoundError, KeyError, PermissionError, ValueError):
+            continue
     return result
 
 
-def _signature(path: Path) -> None:
-    data = path.read_bytes()[:8]
-    suffix = path.suffix.lower()
-    if suffix in {".xlsx", ".xls"} and data[:2] not in {b"PK", b"\xd0\xcf"}:
-        raise ReportFailure("文件签名与扩展名不匹配")
-    if suffix in {".csv", ".json", ".jsonl"} and data.startswith(b"PK"):
-        raise ReportFailure("文件签名与扩展名不匹配")
+def _descendants(parent_pid: int, parents: dict[int, int]) -> set[int]:
+    result: set[int] = set()
+    changed = True
+    while changed:
+        changed = False
+        for pid, parent in parents.items():
+            if pid not in result and (parent == parent_pid or parent in result):
+                result.add(pid)
+                changed = True
+    return result
 
 
-def _read(path: Path, sheet: str | None = None) -> pd.DataFrame:
-    suffix = path.suffix.lower()
+def _terminate_descendants() -> None:
+    if sys.platform != "linux":
+        return
+    parent_pid = os.getpid()
+    for _attempt in range(8):
+        parents = _process_parents()
+        descendants = _descendants(parent_pid, parents)
+        if not descendants:
+            return
+        for pid in descendants:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        for pid, process_parent in parents.items():
+            if process_parent != parent_pid or pid not in descendants:
+                continue
+            try:
+                os.waitpid(pid, 0)
+            except (ChildProcessError, ProcessLookupError):
+                pass
+
+
+def _execute_command(command: str, timeout: int) -> dict[str, Any]:
+    _enable_child_subreaper()
+    process = subprocess.Popen(
+        ["/bin/bash", "--noprofile", "--norc", "-c", command],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
     try:
-        if suffix == ".csv":
-            frame = pd.read_csv(path)
-            with path.open("r", encoding="utf-8-sig", newline="") as stream:
-                header = next(csv.reader(stream), [])
-            if len(header) == len(frame.columns):
-                frame.columns = header
-            return frame
-        if suffix in {".xls", ".xlsx"}:
-            selected = sheet
-            if selected is None:
-                workbook = pd.ExcelFile(path)
-                selected = workbook.sheet_names[0]
-                if suffix == ".xlsx":
-                    from openpyxl import load_workbook
+        output_bytes, _stderr = process.communicate(timeout=timeout)
+        exit_code = process.returncode
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        _terminate_descendants()
+        output_bytes, _stderr = process.communicate()
+        exit_code = 124
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        _terminate_descendants()
+    truncated = len(output_bytes) > MAX_ANALYSIS_OUTPUT_BYTES
+    return {
+        "exitCode": exit_code,
+        "output": base64.b64encode(output_bytes[:MAX_ANALYSIS_OUTPUT_BYTES]).decode("ascii"),
+        "truncated": truncated,
+    }
 
-                    book = load_workbook(path, read_only=True, data_only=True)
-                    visible = [
-                        item.title for item in book.worksheets if item.sheet_state == "visible"
-                    ]
-                    book.close()
-                    if visible:
-                        selected = visible[0]
-                workbook.close()
-            return pd.read_excel(path, sheet_name=selected)
-        if suffix == ".jsonl":
-            return pd.read_json(path, lines=True)
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, list) or any(not isinstance(row, dict) for row in raw):
-            raise ReportFailure("JSON 仅支持顶层对象数组")
-        return pd.DataFrame(raw)
-    except ReportFailure:
-        raise
-    except Exception as error:
-        raise ReportFailure("数据文件格式无效或工作表不存在") from error
+
+def _run_supervised_command(command: str, cwd: Path, timeout: int) -> tuple[bytes, int, bool]:
+    payload = json.dumps({"command": command, "timeout": timeout}, ensure_ascii=False)
+    supervisor = subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "_execute", payload],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        output_bytes, _stderr = supervisor.communicate(timeout=timeout + 5)
+    except subprocess.TimeoutExpired as error:
+        os.killpg(supervisor.pid, signal.SIGKILL)
+        supervisor.wait()
+        raise ReportFailure("分析 supervisor 未能按时退出") from error
+    output = output_bytes.decode("utf-8", errors="replace")
+    if supervisor.returncode != 0:
+        raise ReportFailure(output or "分析 supervisor 执行失败")
+    try:
+        line = next(line for line in reversed(output.splitlines()) if line.strip())
+        result = json.loads(line)
+        command_output = base64.b64decode(result["output"], validate=True)
+        exit_code = result["exitCode"]
+        truncated = result["truncated"]
+    except (StopIteration, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ReportFailure(output or "分析 supervisor 返回无效结果") from error
+    if not isinstance(exit_code, int) or not isinstance(truncated, bool):
+        raise ReportFailure("分析 supervisor 返回无效结果")
+    return command_output, exit_code, truncated
+
+
+def _check_image_signature(path: Path) -> None:
+    header = path.read_bytes()[:12]
+    suffix = path.suffix.lower()
+    valid = {
+        ".png": header.startswith(b"\x89PNG\r\n\x1a\n"),
+        ".jpg": header.startswith(b"\xff\xd8\xff"),
+        ".jpeg": header.startswith(b"\xff\xd8\xff"),
+        ".gif": header.startswith((b"GIF87a", b"GIF89a")),
+        ".webp": header.startswith(b"RIFF") and header[8:12] == b"WEBP",
+    }.get(suffix, False)
+    if not valid:
+        raise ReportFailure("Markdown 图片格式或文件签名无效")
 
 
 class ReportRuntime:
@@ -155,282 +233,331 @@ class ReportRuntime:
             if path.is_dir() and now - path.stat().st_mtime > FAILURE_TTL_SECONDS:
                 shutil.rmtree(path, ignore_errors=True)
 
-    def _state(self, job_id: str) -> Path:
-        if not re.fullmatch(r"[0-9a-f-]{36}", job_id):
-            raise ReportFailure("job_id 无效")
-        path = self.state_root / job_id
-        if not path.is_dir():
-            raise ReportFailure("任务不存在")
-        return path
-
     def _load(self, job_id: str) -> dict[str, Any]:
-        state = self._state(job_id)
-        return json.loads((state / "state.json").read_text(encoding="utf-8"))
+        state_path = self._job_path(job_id) / "state.json"
+        return json.loads(state_path.read_text(encoding="utf-8"))
+
+    def _job_path(self, job_id: str) -> Path:
+        try:
+            value = uuid.UUID(job_id)
+        except (TypeError, ValueError) as error:
+            raise ReportFailure("job_id 无效") from error
+        job = self.state_root / str(value)
+        if not (job / "state.json").is_file():
+            raise ReportFailure("分析任务不存在")
+        return job
+
+    @contextmanager
+    def _locked_state(self, job_id: str):
+        job = self._job_path(job_id)
+        with (job / "state.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield self._load(job_id)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
     def _save(self, state: dict[str, Any]) -> None:
-        path = self.state_root / state["jobId"]
-        path.mkdir(parents=True, exist_ok=True)
-        (path / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        job = self.state_root / state["jobId"]
+        job.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix="state-", suffix=".tmp", dir=job)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(state, stream, ensure_ascii=False)
+            temporary.replace(job / "state.json")
+        finally:
+            temporary.unlink(missing_ok=True)
 
-    def prepare(self, paths: list[str], sheet_name: str | None = None) -> dict[str, Any]:
-        if not isinstance(paths, list) or not 1 <= len(paths) <= 5:
-            raise ReportFailure("paths 数量必须在 1 至 5 个之间")
+    def _validate_datasets(self, state: dict[str, Any]) -> None:
+        hashes = state.get("hashes")
+        if not isinstance(hashes, dict):
+            raise ReportFailure("分析任务缺少源文件校验信息")
+        for value in state["paths"]:
+            relative = _relative_path(value)
+            path = self.workspace.joinpath(*relative.parts)
+            _reject_symlinks(self.workspace, path)
+            if not path.is_file() or _sha256(path) != hashes.get(value):
+                raise ReportFailure("源文件发生变化，分析任务已失效")
+
+    def prepare_dataset(self, paths: list[str]) -> dict[str, Any]:
+        if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_DATASET_PATHS:
+            raise ReportFailure("paths 数量必须在 1 至 20 个之间")
         if len(set(paths)) != len(paths):
             raise ReportFailure("paths 不能重复")
-        if isinstance(sheet_name, str) and not sheet_name.strip():
-            sheet_name = None
-        files = [_safe_path(self.workspace, path) for path in paths]
-        if any(path.suffix.lower() not in SUPPORTED for path in files):
-            raise ReportFailure("不支持的数据文件格式")
-        for path in files:
-            _signature(path)
-        suffixes = {path.suffix.lower() for path in files}
-        if len(suffixes) != 1:
-            raise ReportFailure("多文件必须使用相同格式")
-        if sum(path.stat().st_size for path in files) > MAX_TOTAL_BYTES:
-            raise ReportFailure("源文件合计超过 100 MiB")
-        frames = [_check(_read(path, sheet_name)) for path in files]
-        first = list(frames[0].columns)
-        for frame in frames[1:]:
-            if list(frame.columns) != first:
-                raise ReportFailure("多文件必须具有相同字段")
-            for column in first:
-                left = frame[column]
-                right = frames[0][column]
-                if pd.api.types.is_numeric_dtype(left) != pd.api.types.is_numeric_dtype(right):
-                    raise ReportFailure("多文件字段类型不兼容")
-        frame = _check(pd.concat(frames, ignore_index=True))
-        warnings: list[str] = []
-        if frame.empty:
-            warnings.append("数据集没有数据行")
-        job_id = str(uuid.uuid4())
+        normalized = []
+        hashes = {}
+        for value in paths:
+            relative = _relative_path(value)
+            path = self.workspace.joinpath(*relative.parts)
+            _reject_symlinks(self.workspace, path)
+            if not path.is_file():
+                raise ReportFailure("分析输入不存在或不是普通文件")
+            normalized_path = str(relative)
+            normalized.append(normalized_path)
+            hashes[normalized_path] = _sha256(path)
         state = {
-            "jobId": job_id,
-            "status": "prepared",
-            "paths": paths,
-            "sheetName": sheet_name,
-            "hashes": {
-                path: hashlib.sha256(file.read_bytes()).hexdigest()
-                for path, file in zip(paths, files)
-            },
-            "schema": [{"name": name, "type": str(frame[name].dtype)} for name in frame.columns],
-            "rowCount": len(frame),
-            "columnCount": len(frame.columns),
-            "analyses": {},
-            "warnings": warnings,
+            "jobId": str(uuid.uuid4()),
+            "paths": normalized,
+            "hashes": hashes,
+            "roundCount": 0,
+            "successfulRoundCount": 0,
         }
         self._save(state)
+        return {"status": "prepared", **state}
+
+    @staticmethod
+    def analysis_capabilities() -> dict[str, Any]:
+        from importlib.metadata import PackageNotFoundError, version
+
+        packages = {
+            "numpy": "numpy",
+            "pandas": "pandas",
+            "polars": "polars",
+            "pyarrow": "pyarrow",
+            "scipy": "scipy",
+            "statsmodels": "statsmodels",
+            "scikit-learn": "scikit-learn",
+            "matplotlib": "matplotlib",
+            "seaborn": "seaborn",
+            "plotly": "plotly",
+            "openpyxl": "openpyxl",
+            "xlrd": "xlrd",
+            "xlsxwriter": "xlsxwriter",
+            "pypdf": "pypdf",
+            "pdfplumber": "pdfplumber",
+            "reportlab": "reportlab",
+            "weasyprint": "weasyprint",
+            "markitdown": "markitdown",
+            "networkx": "networkx",
+            "sympy": "sympy",
+        }
+        available = {}
+        for name, distribution in packages.items():
+            try:
+                available[name] = version(distribution)
+            except PackageNotFoundError:
+                continue
+        commands = [
+            name
+            for name in ("python", "pandoc", "libreoffice", "pdfinfo", "pdftotext", "qpdf")
+            if shutil.which(name)
+        ]
         return {
-            key: state[key]
-            for key in (
-                "jobId",
-                "status",
-                "schema",
-                "rowCount",
-                "columnCount",
-                "hashes",
-                "warnings",
-            )
+            "python": sys.version.split()[0],
+            "packages": available,
+            "commands": commands,
+            "sql": ["sqlite3"],
         }
 
-    def _frame(self, state: dict[str, Any]) -> pd.DataFrame:
-        frames = []
-        for path in state["paths"]:
-            file = _safe_path(self.workspace, path)
-            if hashlib.sha256(file.read_bytes()).hexdigest() != state["hashes"][path]:
-                raise ReportFailure("源文件发生变化，任务已失效")
-            frames.append(_check(_read(file, state.get("sheetName"))))
-        return _check(pd.concat(frames, ignore_index=True))
-
-    def analyze(self, job_id: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
-        state = self._load(job_id)
-        if state["status"] != "prepared":
-            raise ReportFailure("任务状态不允许分析")
-        frame = self._frame(state)
-        try:
-            validated = ANALYSIS_OPERATIONS.validate_python(operations)
-        except ValueError as error:
-            raise ReportFailure("分析操作参数无效") from error
-        result = []
-        for operation in validated:
-            kind = operation.type
-            analysis_id = str(uuid.uuid4())
-            value: Any
-            if kind == "summary":
-                summary: dict[str, dict[str, Any]] = {}
-                for column in frame.columns:
-                    series = frame[column]
-                    item: dict[str, Any] = {
-                        "count": int(series.count()),
-                        "unique": int(series.nunique()),
-                    }
-                    if pd.api.types.is_numeric_dtype(series):
-                        item.update(
-                            mean=float(series.mean()),
-                            min=float(series.min()),
-                            max=float(series.max()),
-                        )
-                    summary[column] = item
-                value = summary
-            elif isinstance(operation, ColumnOperation):
-                column = operation.column
-                if column not in frame.columns:
-                    raise ReportFailure("分析字段不存在")
-                series = frame[column]
-                if kind == "iqr":
-                    numeric = pd.to_numeric(series, errors="coerce").dropna()
-                    q1, q3 = numeric.quantile([0.25, 0.75])
-                    spread = q3 - q1
-                    value = {
-                        "lower": float(q1 - 1.5 * spread),
-                        "upper": float(q3 + 1.5 * spread),
-                        "count": int(
-                            ((numeric < q1 - 1.5 * spread) | (numeric > q3 + 1.5 * spread)).sum()
-                        ),
-                    }
-                elif kind == "share":
-                    counts = series.value_counts(dropna=False).head(operation.limit)
-                    value = {str(key): float(item / counts.sum()) for key, item in counts.items()}
-                elif kind == "trend":
-                    value = [
-                        {"index": str(index), "value": value}
-                        for index, value in series.head(operation.limit).items()
-                    ]
-                else:
-                    counts = series.value_counts(dropna=False).head(operation.limit)
-                    value = {str(key): int(item) for key, item in counts.items()}
-            else:
-                raise ReportFailure("不支持的分析类型")
-            state["analyses"][analysis_id] = {"type": kind, "value": value}
-            result.append({"analysisId": analysis_id, "type": kind, "result": value})
-        state["status"] = "analyzed"
-        self._save(state)
-        return {"jobId": job_id, "status": state["status"], "analyses": result}
-
-    def compile(
-        self, job_id: str, title: str, template: str, blocks: list[dict[str, Any]]
+    def analyze_dataset(
+        self,
+        job_id: str,
+        command: str,
+        cwd: str | None = None,
+        timeout: int = 30,
     ) -> dict[str, Any]:
-        state = self._load(job_id)
-        if state["status"] != "analyzed" or template not in TEMPLATES:
-            raise ReportFailure("任务状态或模板无效")
-        self._frame(state)
-        for block in blocks:
-            if block.get("type") not in {
-                "summary",
-                "kpi",
-                "body",
-                "table",
-                "chart",
-                "note",
-                "page_break",
-                "appendix",
-            }:
-                raise ReportFailure("blocks 包含不支持的块类型")
-            if (
-                block.get("type") in {"kpi", "table", "chart"}
-                and block.get("analysis_id") not in state["analyses"]
-            ):
-                raise ReportFailure("blocks 只能引用已保存的 analysis_id")
-        state.update(
-            {
-                "status": "compiled",
-                "title": str(title)[:120],
-                "template": template,
-                "blocks": blocks,
+        if not isinstance(command, str) or not command.strip():
+            raise ReportFailure("分析命令不能为空")
+        if len(command.encode("utf-8")) > MAX_COMMAND_BYTES:
+            raise ReportFailure("分析命令超过 32 KiB")
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, int)
+            or not 1 <= timeout <= MAX_ANALYSIS_TIMEOUT
+        ):
+            raise ReportFailure("分析超时必须在 1 至 60 秒之间")
+        working_directory = self.workspace
+        if cwd is not None:
+            relative = _relative_path(cwd)
+            working_directory = self.workspace.joinpath(*relative.parts)
+            _reject_symlinks(self.workspace, working_directory)
+            if not working_directory.is_dir():
+                raise ReportFailure("分析工作目录不存在")
+        with self._locked_state(job_id) as state:
+            self._validate_datasets(state)
+            output_bytes, exit_code, truncated = _run_supervised_command(
+                command, working_directory, timeout
+            )
+            self._validate_datasets(state)
+            output = output_bytes.decode("utf-8", errors="replace")
+            succeeded = exit_code == 0 and bool(output.strip())
+            if exit_code == 0 and not succeeded:
+                output = "分析命令退出码为 0，但没有返回分析结果；请输出本轮结果后重试。"
+            state["roundCount"] += 1
+            if succeeded:
+                state["successfulRoundCount"] += 1
+            self._save(state)
+            return {
+                "ok": succeeded,
+                "jobId": state["jobId"],
+                "status": "analyzed" if succeeded else "analysis_failed",
+                "roundCount": state["roundCount"],
+                "successfulRoundCount": state["successfulRoundCount"],
+                "paths": state["paths"],
+                "exitCode": exit_code,
+                "output": output,
+                "truncated": truncated,
             }
-        )
-        self._save(state)
-        return {"jobId": job_id, "status": "compiled", "template": template}
 
-    def render(self, job_id: str) -> dict[str, Any]:
-        state = self._load(job_id)
-        if state["status"] != "compiled":
-            raise ReportFailure("任务状态不允许渲染")
-        self._frame(state)
+    def _images(self, markdown_path: Path, tokens: list[Any]) -> set[Path]:
+        images: list[Path] = []
+        for token in tokens:
+            for child in token.children or []:
+                if child.type != "image":
+                    continue
+                source = child.attrGet("src") or ""
+                parsed = urlsplit(source)
+                if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+                    raise ReportFailure("Markdown 图片只能引用工作区内的相对路径")
+                decoded = unquote(parsed.path)
+                if not decoded or "\\" in decoded:
+                    raise ReportFailure("Markdown 图片路径无效")
+                relative = PurePosixPath(decoded)
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise ReportFailure("Markdown 图片只能引用工作区内的相对路径")
+                image = markdown_path.parent.joinpath(*relative.parts)
+                _reject_symlinks(self.workspace, image)
+                try:
+                    image.relative_to(self.workspace)
+                except ValueError as error:
+                    raise ReportFailure("Markdown 图片路径越界") from error
+                if image.suffix.lower() not in IMAGE_SUFFIXES or not image.is_file():
+                    raise ReportFailure("Markdown 图片不存在或格式不受支持")
+                if image.stat().st_size > MAX_IMAGE_BYTES:
+                    raise ReportFailure("单张 Markdown 图片超过 10 MiB")
+                _check_image_signature(image)
+                images.append(image.resolve())
+        unique = set(images)
+        if len(images) > MAX_IMAGE_COUNT:
+            raise ReportFailure("Markdown 图片数量超过 50 张")
+        if sum(path.stat().st_size for path in unique) > MAX_TOTAL_IMAGE_BYTES:
+            raise ReportFailure("Markdown 图片合计超过 50 MiB")
+        return unique
+
+    def render_markdown(self, job_id: str, markdown_path: str, output_path: str) -> dict[str, Any]:
         try:
             import pypdf
-            from weasyprint import HTML
+            from markdown_it import MarkdownIt
+            from weasyprint import HTML, URLFetcher
         except ImportError as error:
             raise ReportFailure("PDF 运行时依赖不可用") from error
-        job = self.state_root / job_id
-        chart = job / "chart.png"
-        frame = self._frame(state)
-        fig, axis = plt.subplots(figsize=(8, 4))
-        numeric = frame.select_dtypes(include="number")
-        if not numeric.empty:
-            numeric.iloc[:, 0].plot(kind="bar", ax=axis)
-        fig.tight_layout()
-        fig.savefig(chart)
-        plt.close(fig)
-        title = re.sub(r"[^\w\u4e00-\u9fff.-]+", "_", state["title"]).strip("._") or "报表"
-        output = self.workspace / "报表" / "生成结果" / job_id / f"{title}.pdf"
-        output.parent.mkdir(parents=True, exist_ok=True)
-        rows = []
-        for block in state["blocks"]:
-            analysis = state["analyses"].get(block.get("analysis_id"), {})
-            if block.get("type") in {"table", "kpi", "summary"}:
-                rows.append(
-                    f"<h2>{html_module.escape(str(block.get('type')))}</h2><pre>{html_module.escape(json.dumps(analysis.get('value', {}), ensure_ascii=False, default=str))}</pre>"
-                )
-            elif block.get("type") == "note":
-                rows.append(f"<p>{html_module.escape(str(block.get('text', '')))}</p>")
-            elif block.get("type") == "appendix":
-                truncated = (
-                    len(frame) > MAX_APPENDIX_ROWS or len(frame.columns) > MAX_APPENDIX_COLUMNS
-                )
-                rows.append(
-                    f"<p>附录行数：{min(len(frame), MAX_APPENDIX_ROWS)}；截断：{'是' if truncated else '否'}</p>"
-                )
-        html = f"<meta charset='utf-8'><style>@page{{size:A4;margin:18mm}}body{{font-family:'Noto Sans CJK SC','Noto Sans CJK JP',sans-serif}}img{{width:100%}}pre{{white-space:pre-wrap}}</style><h1>{html_module.escape(state['title'])}</h1><p>模板：{html_module.escape(state['template'])}</p><img src='{chart.as_uri()}'><p>数据行数：{len(frame)}</p>{''.join(rows)}"
-        temporary = output.with_suffix(".tmp.pdf")
-        HTML(string=html, base_url=str(self.workspace)).write_pdf(str(temporary))
-        reader = pypdf.PdfReader(str(temporary))
-        if not reader.pages:
-            raise ReportFailure("PDF 校验失败")
-        temporary.replace(output)
-        shutil.rmtree(job, ignore_errors=True)
-        return {
-            "jobId": job_id,
-            "status": "rendered",
-            "path": str(output.relative_to(self.workspace)),
-        }
+
+        with self._locked_state(job_id) as state:
+            self._validate_datasets(state)
+            if state["successfulRoundCount"] < 1:
+                raise ReportFailure("至少成功完成一轮分析后才能渲染 PDF")
+            source = _input_path(self.workspace, markdown_path, ".md")
+            if source.stat().st_size > MAX_MARKDOWN_BYTES:
+                raise ReportFailure("Markdown 文件超过 1 MiB")
+            try:
+                markdown = source.read_text(encoding="utf-8")
+            except UnicodeDecodeError as error:
+                raise ReportFailure("Markdown 文件必须使用 UTF-8 编码") from error
+
+            parser = MarkdownIt("commonmark", {"html": False}).enable("table")
+            tokens = parser.parse(markdown)
+            allowed_images = self._images(source, tokens)
+            body = parser.renderer.render(tokens, parser.options, {})
+            output = _output_path(self.workspace, output_path)
+            file_fetcher = URLFetcher(allowed_protocols={"file"}, fail_on_errors=True)
+
+            def fetch_resource(url: str) -> dict[str, Any]:
+                parsed = urlsplit(url)
+                if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+                    raise ReportFailure("PDF 渲染禁止访问外部资源")
+                path = Path(unquote(parsed.path)).resolve()
+                if path not in allowed_images:
+                    raise ReportFailure("PDF 渲染引用了未校验资源")
+                return file_fetcher(url)
+
+            document = (
+                "<meta charset='utf-8'>"
+                "<style>"
+                "@page{size:A4;margin:18mm}"
+                "body{font-family:'Noto Sans CJK SC','Noto Sans CJK JP',sans-serif;"
+                "font-size:10.5pt;line-height:1.65;color:#202124}"
+                "h1{font-size:24pt}h2{font-size:17pt}h3{font-size:13pt}"
+                "h1,h2,h3{page-break-after:avoid}"
+                "table{width:100%;border-collapse:collapse;margin:10px 0}"
+                "th,td{border:1px solid #c7c9cc;padding:5px 7px;text-align:left}"
+                "th{background:#f1f3f4}"
+                "img{display:block;max-width:100%;height:auto;margin:12px auto}"
+                "pre,code{white-space:pre-wrap;overflow-wrap:anywhere}"
+                "blockquote{border-left:3px solid #9aa0a6;margin-left:0;padding-left:12px}"
+                "</style>"
+                f"{body}"
+            )
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{output.name}-", suffix=".tmp.pdf", dir=output.parent
+            )
+            os.close(descriptor)
+            temporary = Path(temporary_name)
+            try:
+                HTML(
+                    string=document,
+                    base_url=str(source.parent),
+                    url_fetcher=fetch_resource,
+                ).write_pdf(str(temporary))
+                reader = pypdf.PdfReader(str(temporary))
+                if not reader.pages:
+                    raise ReportFailure("PDF 校验失败")
+                page_count = len(reader.pages)
+                try:
+                    os.link(temporary, output)
+                except FileExistsError as error:
+                    raise ReportFailure("PDF 输出文件已经存在") from error
+            finally:
+                temporary.unlink(missing_ok=True)
+            return {
+                "status": "rendered",
+                "jobId": state["jobId"],
+                "roundCount": state["roundCount"],
+                "successfulRoundCount": state["successfulRoundCount"],
+                "markdownPath": str(source.relative_to(self.workspace)),
+                "pdfPath": str(output.relative_to(self.workspace)),
+                "pageCount": page_count,
+                "imageCount": len(allowed_images),
+                "size": output.stat().st_size,
+            }
 
 
 def main(arguments: list[str] | None = None) -> int:
     values = arguments if arguments is not None else sys.argv[1:]
     try:
+        if len(values) != 2:
+            raise ReportFailure("报表渲染参数无效")
         action, payload_text = values
         payload = json.loads(payload_text)
-        runtime = ReportRuntime(Path.cwd())
-        if action == "capabilities":
-            result = {
-                "runtime": {"python": sys.version.split()[0], "pandas": pd.__version__},
-                "formats": sorted(SUPPORTED),
-                "analyses": ["summary", "trend", "top_bottom", "share", "pivot", "iqr"],
-                "charts": ["bar", "horizontal_bar", "line", "area", "pie", "donut", "scatter"],
-                "templates": sorted(TEMPLATES),
-                "fonts": ["Noto CJK"],
-            }
-        elif action == "prepare":
-            result = runtime.prepare(payload["paths"], payload.get("sheet_name"))
-        elif action == "analyze":
-            result = runtime.analyze(payload["job_id"], payload["operations"])
-        elif action == "compile":
-            result = runtime.compile(
-                payload["job_id"], payload["title"], payload["template"], payload["blocks"]
-            )
-        elif action == "render":
-            result = runtime.render(payload["job_id"])
+        if action == "_execute":
+            result = _execute_command(payload["command"], payload["timeout"])
         else:
-            raise ReportFailure("未知报表操作")
-        encoded = json.dumps(result, ensure_ascii=False, default=str)
+            runtime = ReportRuntime(Path.cwd())
+            if action == "capabilities":
+                result = runtime.analysis_capabilities()
+            elif action == "prepare":
+                result = runtime.prepare_dataset(payload["paths"])
+            elif action == "analyze":
+                result = runtime.analyze_dataset(
+                    payload["job_id"],
+                    payload["command"],
+                    payload.get("cwd"),
+                    payload.get("timeout", 30),
+                )
+            elif action == "render_markdown":
+                result = runtime.render_markdown(
+                    payload["job_id"], payload["markdown_path"], payload["output_path"]
+                )
+            else:
+                raise ReportFailure("未知报表操作")
+        encoded = json.dumps(result, ensure_ascii=False)
         if len(encoded.encode()) > MAX_RESULT_BYTES:
-            raise ReportFailure("报表工具结果超过 32 KiB")
+            raise ReportFailure("报表结果超过返回边界")
         print(encoded)
         return 0
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-        print(str(error), file=sys.stderr)
-        return 2
+    except (KeyError, TypeError, json.JSONDecodeError, ReportFailure) as error:
+        print(json.dumps({"error": str(error)}, ensure_ascii=False))
+        return 1
 
 
 if __name__ == "__main__":

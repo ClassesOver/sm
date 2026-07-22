@@ -35,14 +35,18 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 默认监听 `127.0.0.1:7777`。HRP 只需配置
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
 
-Agent 只注册线性继承的 `WorkspaceReportToolkit`。工作区读取和列举无需确认；新建、覆盖、
-移动、删除、任意 sandbox 命令和 PDF 渲染均需要确认。任意命令只在当前 thread 的 Daytona
-sandbox 中运行，实际安全边界是启用 `network_block_all` 的 Daytona 隔离。
+Agent 只注册线性继承的 `WorkspaceReportToolkit`。工作区读取、列举以及智能报表的能力发现、
+准备和 Markdown 转 PDF 无需确认；新建、覆盖、移动、删除、通用 `sandbox_exec` 和任意分析命令
+需要确认。分析命令只在当前 thread 的 Daytona sandbox 中运行，实际安全边界是启用
+`network_block_all` 的 Daytona 隔离、单轮最长 60 秒和 8 KiB 输出截断。
 
-智能报表统一接收当前 thread 工作区内的 CSV、XLS、XLSX、顶层对象数组 JSON 或 JSONL
-相对路径。固定报表运行时由 AgentOS 上传并按源码摘要命名，任务状态保存在 sandbox 的
-`/tmp/workspace-report`，最终 PDF 输出到 `报表/生成结果/<job_id>/`。生产环境必须使用仓库
-现有 `docker/sandbox-tools` 镜像，以提供 WeasyPrint 69、pypdf、Matplotlib 和 Noto CJK。
+智能报表先登记当前 thread 工作区内的输入文件，再由模型使用同一 `job_id` 自主执行多轮
+Python、Shell 或 SQL 分析。输入内容以 SHA-256 绑定，每轮命令必须输出分析结果；失败轮次把退出码
+和输出返回给模型继续修正。至少一轮成功后由模型生成完整 Markdown 和本地图表，最后无需确认地将
+Markdown 渲染为新的 PDF 文件；已有 PDF 不会被覆盖。系统不再使用固定模板、`compile` 或 `blocks`。
+任务状态保存在 sandbox 的 `/tmp/workspace-report`，Markdown、图片和 PDF 输出到
+`报表/生成结果/<job_id>/`。生产环境必须使用仓库现有
+`docker/sandbox-tools` 镜像，以提供 WeasyPrint 69、pypdf、数据分析库和 Noto CJK。
 部署时从该镜像创建并激活自定义 Snapshot `sandbox-tools-20260722`；不要复用不可删除的
 System Snapshot。
 

@@ -7,7 +7,7 @@ import threading
 import unicodedata
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import PurePosixPath
-from typing import Annotated, Any, Literal
+from typing import Any
 
 import psycopg
 from agno.run import RunContext
@@ -19,7 +19,6 @@ from daytona import (
     ListSandboxesQuery,
 )
 from daytona.common.errors import DaytonaNotFoundError
-from pydantic import BaseModel, ConfigDict, Field
 
 from .async_utils import complete_cleanup
 from .database import psycopg_db_url
@@ -47,26 +46,6 @@ class WorkspaceError(ValueError):
 
 class WorkspacePathConflict(WorkspaceError):
     pass
-
-
-class _ReportAnalysisOperation(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class ReportSummaryOperation(_ReportAnalysisOperation):
-    type: Literal["summary"]
-
-
-class ReportColumnOperation(_ReportAnalysisOperation):
-    type: Literal["trend", "top_bottom", "share", "pivot", "iqr"]
-    column: str
-    limit: int = Field(default=10, ge=1, le=1000)
-
-
-ReportAnalysisOperation = Annotated[
-    ReportSummaryOperation | ReportColumnOperation,
-    Field(discriminator="type"),
-]
 
 
 class SandboxRegistry:
@@ -895,7 +874,7 @@ class WorkspaceToolkit(DaytonaToolkit):
     def workspace_read_file(self, path: str, run_context: RunContext | None = None):
         """读取当前对话工作区中大小受限的 UTF-8 文本文件。"""
         if _is_controlled_raw_dataset(path):
-            raise WorkspaceError("原始报表分片不能进入智能体上下文；请使用报表分析工具。")
+            raise WorkspaceError("原始报表分片不能进入智能体上下文；请在 sandbox 中分析。")
         return self.service.read_text(_thread(run_context), path)
 
     def workspace_write_file(self, path: str, content: str, run_context: RunContext | None = None):
@@ -929,16 +908,25 @@ class WorkspaceReportToolkit(WorkspaceToolkit):
     def __init__(self, service: WorkspaceService):
         super().__init__(service)
         for function in (
-            self.report_list_capabilities,
+            self.report_list_analysis_capabilities,
             self.report_prepare_dataset,
             self.report_analyze_dataset,
-            self.report_compile,
-            self.report_render,
+            self.report_render_markdown,
         ):
             self.register(function)
-        self.async_functions["report_render"].requires_confirmation = True
+        analysis_function = self.functions.get(
+            "report_analyze_dataset"
+        ) or self.async_functions.get("report_analyze_dataset")
+        if analysis_function is None:
+            raise RuntimeError("report_analyze_dataset 工具注册失败")
+        analysis_function.requires_confirmation = True
 
-    async def _report(self, action: str, payload: dict[str, Any], run_context: RunContext | None):
+    async def _report(
+        self,
+        action: str,
+        payload: dict[str, Any],
+        run_context: RunContext | None,
+    ):
         from . import report_runtime
 
         content = open(report_runtime.__file__, "rb").read()
@@ -947,8 +935,16 @@ class WorkspaceReportToolkit(WorkspaceToolkit):
         async with self.service._async_client() as client:
             sandbox = await self.service._asandbox_for(client, _thread(run_context))
             await sandbox.fs.upload_file(content, remote)
-            command = f"python {shlex.quote(remote)} {shlex.quote(action)} {shlex.quote(json.dumps(payload, ensure_ascii=False))}"
-            value = await sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=60)
+            command = (
+                f"python {shlex.quote(remote)} {shlex.quote(action)} "
+                f"{shlex.quote(json.dumps(payload, ensure_ascii=False))}"
+            )
+            execution_timeout = 70 if action == "analyze" else 60
+            value = await sandbox.process.exec(
+                command,
+                cwd=WORKSPACE_ROOT,
+                timeout=execution_timeout,
+            )
         result = self.service._bounded_output(value)
         if result["exitCode"] != 0:
             raise WorkspaceError(result["output"] or "报表运行失败。")
@@ -958,49 +954,52 @@ class WorkspaceReportToolkit(WorkspaceToolkit):
         except (StopIteration, json.JSONDecodeError) as error:
             raise WorkspaceError("报表运行时返回无效结果。") from error
 
-    async def report_list_capabilities(self, run_context: RunContext | None = None):
-        """检查固定报表运行时、依赖、格式、分析、图表与模板能力。"""
+    async def report_list_analysis_capabilities(self, run_context: RunContext | None = None):
+        """列出智能报表沙箱当前可用的 Python 分析库、版本和系统命令。"""
         return await self._report("capabilities", {}, run_context)
 
     async def report_prepare_dataset(
-        self, paths: list[str], sheet_name: str | None = None, run_context: RunContext | None = None
+        self,
+        paths: list[str],
+        run_context: RunContext | None = None,
     ):
-        """从一至五个当前工作区相对路径准备统一数据集；附件直接使用 workspacePath，已选文件和 Odoo 导出直接使用 path，不接受绝对路径；未指定工作表时省略 sheet_name，空字符串按未指定处理。"""
-        return await self._report(
-            "prepare", {"paths": paths, "sheet_name": sheet_name}, run_context
-        )
+        """登记一至二十个当前工作区分析输入，可使用任意文件格式；返回支持多轮分析的 job_id。"""
+        return await self._report("prepare", {"paths": paths}, run_context)
 
     async def report_analyze_dataset(
         self,
         job_id: str,
-        operations: list[ReportAnalysisOperation],
+        command: str,
+        cwd: str | None = None,
+        timeout: int = 30,
         run_context: RunContext | None = None,
     ):
-        """对已准备数据执行受控分析并保存可复用结果；summary 仅需 type，其他操作还需 column，可选 limit 为 1 至 1000。"""
+        """在当前 thread 的 Daytona sandbox 中执行一轮任意 Python、Shell 或 SQL 分析；同一 job_id 可多轮调用；失败结果会返回给模型继续修正；执行前需要确认。"""
         return await self._report(
             "analyze",
             {
                 "job_id": job_id,
-                "operations": [operation.model_dump() for operation in operations],
+                "command": command,
+                "cwd": cwd,
+                "timeout": timeout,
             },
             run_context,
         )
 
-    async def report_compile(
+    async def report_render_markdown(
         self,
         job_id: str,
-        title: str,
-        template: str,
-        blocks: list[dict[str, Any]],
+        markdown_path: str,
+        output_path: str,
         run_context: RunContext | None = None,
     ):
-        """使用模板和已保存分析结果编排 PDF 报表。"""
+        """完成至少一轮分析后，将工作区 Markdown 渲染为 PDF；图片使用相对路径；无需用户确认。"""
         return await self._report(
-            "compile",
-            {"job_id": job_id, "title": title, "template": template, "blocks": blocks},
+            "render_markdown",
+            {
+                "job_id": job_id,
+                "markdown_path": markdown_path,
+                "output_path": output_path,
+            },
             run_context,
         )
-
-    async def report_render(self, job_id: str, run_context: RunContext | None = None):
-        """在 sandbox 内生成并校验最终 PDF；执行前需要确认。"""
-        return await self._report("render", {"job_id": job_id}, run_context)

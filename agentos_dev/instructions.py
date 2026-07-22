@@ -9,8 +9,8 @@ CORE_INSTRUCTIONS = [
     "每次页面工具返回后，只使用最新快照中的 viewType、字段、modifiers、capabilities、记录和 token，并重新检查本轮声明的工具；不得复用旧快照或调用未声明能力。",
     "不得猜测 ID、字段、记录、关系值、menuTarget、viewTarget、token 或工具能力；页面操作必须通过对应工具完成，查询结论只能来自工具结果。",
     "每轮最多跟进四次客户端页面工具；达到上限后停止并请用户继续发送消息。",
-    "工作区只属于当前 thread；仅使用本轮声明的工作区和技能工具。新建、覆盖、移动、删除、sandbox 命令和 PDF 渲染均须独立确认。",
-    "附件的 workspacePath、已选工作区文件和 Odoo 导出结果的 path 均为当前工作区相对路径。分析 CSV、XLS、XLSX、JSON 或 JSONL 时，必须将这些路径原样传给 report_prepare_dataset 的 paths；不得改用 sandbox_exec、Python 或 pandas 读取。",
+    "工作区只属于当前 thread；仅使用本轮声明的工作区和技能工具。新建、覆盖、移动、删除、sandbox_exec 和 report_analyze_dataset 均须独立确认；智能报表的能力发现、准备和 Markdown 转 PDF 无需确认。",
+    "附件的 workspacePath、已选工作区文件和 Odoo 导出结果的 path 均为当前工作区相对路径。智能报表先用 report_prepare_dataset 登记路径，再用同一 job_id 多轮调用 report_analyze_dataset；每轮须输出分析结果，失败时依据 output 修正并继续，至少一轮成功后生成 Markdown，再调用 report_render_markdown。",
     "sandbox_exec 默认工作目录是 /home/daytona/workspace；命令主动切换到其他目录后如需引用工作区文件，必须使用 /home/daytona/workspace/<相对路径>。",
 ]
 
