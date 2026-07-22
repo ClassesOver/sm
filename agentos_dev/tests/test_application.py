@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from agentos_dev.application import ApplicationContext, create_agentos_app
 from agentos_dev.settings import AgentSettings
+from agentos_dev.skills import public_skill_metadata
 
 
 class FakeAssistant:
@@ -17,8 +18,8 @@ class FakeSkills:
     def __init__(self, name):
         self.name = name
 
-    def public_metadata(self):
-        return [{"name": self.name}]
+    def get_all_skills(self):
+        return [type("FakeSkill", (), {"name": self.name, "description": ""})()]
 
 
 class FakeWorkspace:
@@ -122,8 +123,8 @@ async def test_base_application_routes_use_their_own_context():
     ) as second_client:
         second_config = await second_client.get("/config")
 
-    assert first_config.json()["skills"] == [{"name": "first"}]
-    assert second_config.json()["skills"] == [{"name": "second"}]
+    assert first_config.json()["skills"] == public_skill_metadata(first_context.skills)
+    assert second_config.json()["skills"] == public_skill_metadata(second_context.skills)
     assert first_app.state.agentos_context is first_context
     assert second_app.state.agentos_context is second_context
     assert first_app.state.agentos_context.workspace_service.name == "first-file"

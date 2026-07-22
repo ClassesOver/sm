@@ -1,212 +1,23 @@
-import hashlib
-import json
 import os
-import stat
-from pathlib import Path
 
 from agno.skills import LocalSkills, Skills
-from agno.tools.function import Function
+from agno.skills.loaders.base import SkillLoader
 
 
-class UntrustedSkillsDirectory(ValueError):
-    pass
-
-
-def _trusted_path(path: Path, expected: str) -> None:
-    metadata = path.lstat()
-    _trusted_metadata(metadata, path, expected)
-
-
-def _trusted_metadata(metadata, path: Path, expected: str) -> None:
-    if stat.S_ISLNK(metadata.st_mode):
-        raise UntrustedSkillsDirectory(f"技能路径不能是符号链接：{path}")
-    correct_type = (
-        stat.S_ISDIR(metadata.st_mode)
-        if expected == "directory"
-        else stat.S_ISREG(metadata.st_mode)
-    )
-    if not correct_type:
-        expected_name = "目录" if expected == "directory" else "文件"
-        raise UntrustedSkillsDirectory(f"技能路径必须是{expected_name}：{path}")
-
-
-def _read_trusted_bytes(path: Path) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    try:
-        _trusted_metadata(os.fstat(descriptor), path, "file")
-        with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            return stream.read()
-    finally:
-        os.close(descriptor)
-
-
-class TrustedLocalSkills(LocalSkills):
-    def __init__(self, path: str, validate: bool = True):
-        original = Path(path)
-        _trusted_path(original, "directory")
-        super().__init__(path, validate=validate)
-        self.root = original.resolve()
-
-    def load(self):
-        self._validate_tree()
-        skills = super().load()
-        for skill in skills:
-            folder = Path(skill.source_path)
-            resolved_folder = folder.resolve()
-            if resolved_folder == self.root or self.root not in resolved_folder.parents:
-                raise UntrustedSkillsDirectory("技能目录超出配置的根目录")
-            _trusted_path(folder, "directory")
-            for child in [folder / "SKILL.md"] + [
-                folder / category / name
-                for category, names in (
-                    ("scripts", skill.scripts),
-                    ("references", skill.references),
-                )
-                for name in names
-            ]:
-                category_path = child.parent
-                if category_path != folder:
-                    _trusted_path(category_path, "directory")
-                if folder.resolve() not in child.resolve().parents:
-                    raise UntrustedSkillsDirectory(f"技能资源超出所属目录：{child}")
-                _trusted_path(child, "file")
-        return skills
-
-    def _validate_tree(self) -> None:
-        pending = [self.root]
-        while pending:
-            current = pending.pop()
-            _trusted_path(current, "directory")
-            for child in current.iterdir():
-                metadata = child.lstat()
-                if stat.S_ISDIR(metadata.st_mode):
-                    _trusted_metadata(metadata, child, "directory")
-                    pending.append(child)
-                else:
-                    _trusted_metadata(metadata, child, "file")
-
-    def validate_resource(
-        self, skill, category: str | None = None, resource_path: str | None = None
-    ) -> Path:
-        folder = Path(skill.source_path)
-        _trusted_path(self.root, "directory")
-        _trusted_path(folder, "directory")
-        if self.root not in folder.resolve().parents:
-            raise UntrustedSkillsDirectory("技能目录超出配置的根目录")
-        target = folder / "SKILL.md" if category is None else folder / category / str(resource_path)
-        if folder.resolve() not in target.resolve().parents:
-            raise UntrustedSkillsDirectory("技能资源超出所属目录")
-        parent = target.parent
-        while parent != folder:
-            _trusted_path(parent, "directory")
-            parent = parent.parent
-        _trusted_path(target, "file")
-        return target
-
-
-class SecureSkills(Skills):
-    def _load_skills(self) -> None:
-        for loader in self.loaders:
-            for skill in loader.load():
-                self._skills[skill.name] = skill
-
-    def get_tools(self):
-        return [
-            Function(
-                name="get_skill_instructions",
-                description="加载技能的完整说明。",
-                entrypoint=self._get_skill_instructions,
-            ),
-            Function(
-                name="get_skill_reference",
-                description="读取技能声明的一份参考文档。",
-                entrypoint=self._get_skill_reference,
-            ),
-        ]
-
-    def get_system_prompt_snippet(self) -> str:
-        return "\n".join(
-            line
-            for line in super().get_system_prompt_snippet().splitlines()
-            if "script" not in line.lower()
-        )
-
-    @staticmethod
-    def skill_id(name: str) -> str:
-        return hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
-
-    def public_metadata(self, limit: int = 50) -> list[dict[str, str]]:
-        return [
-            {
-                "id": self.skill_id(skill.name),
-                "name": skill.name,
-                "description": skill.description or "",
-            }
-            for skill in self.get_all_skills()[:limit]
-        ]
-
-    def skill_by_id(self, skill_id: str):
-        return next(
-            (skill for skill in self.get_all_skills() if self.skill_id(skill.name) == skill_id),
-            None,
-        )
-
-    def _skill_resource(self, skill_name: str, category: str, resource_path: str) -> Path:
-        skill = self.get_skill(skill_name)
-        if skill is None:
-            raise ValueError(f"未知技能：{skill_name}")
-        declared = skill.scripts if category == "scripts" else skill.references
-        if resource_path not in declared:
-            category_name = "脚本" if category == "scripts" else "参考文档"
-            raise ValueError(f"未知{category_name}：{resource_path}")
-        loader = self._loader_for(skill)
-        return loader.validate_resource(skill, category, resource_path)
-
-    def _loader_for(self, skill) -> TrustedLocalSkills:
-        folder = Path(skill.source_path).resolve()
-        loader = next(
-            (
-                item
-                for item in self.loaders
-                if isinstance(item, TrustedLocalSkills)
-                and (folder == item.root or item.root in folder.parents)
-            ),
-            None,
-        )
-        if loader is None:
-            raise UntrustedSkillsDirectory("技能并非由受信任的本地加载器提供")
-        return loader
-
-    def _get_skill_instructions(self, skill_name: str) -> str:
-        skill = self.get_skill(skill_name)
-        if skill is None:
-            return json.dumps({"error": f"未知技能：{skill_name}"})
-        try:
-            self._loader_for(skill).validate_resource(skill)
-            return super()._get_skill_instructions(skill_name)
-        except (OSError, UnicodeError, ValueError) as error:
-            return json.dumps({"error": str(error), "skill_name": skill_name})
-
-    def _get_skill_reference(self, skill_name: str, reference_path: str) -> str:
-        skill = self.get_skill(skill_name)
-        if skill is None or reference_path not in (skill.references or []):
-            return json.dumps({"error": f"未知参考文档：{reference_path}"})
-        try:
-            target = self._skill_resource(skill_name, "references", reference_path)
-            content = _read_trusted_bytes(target).decode("utf-8")
-            return json.dumps(
-                {
-                    "skill_name": skill_name,
-                    "reference_path": reference_path,
-                    "content": content,
-                }
-            )
-        except (OSError, UnicodeError, ValueError) as error:
-            return json.dumps({"error": str(error), "skill_name": skill_name})
-
-
-def load_skills(path: str | None = None) -> SecureSkills:
+def load_skills(path: str | None = None) -> Skills:
     skills_path = (path if path is not None else os.getenv("AGENT_SKILLS_DIR", "")).strip()
-    if not skills_path:
-        return SecureSkills(loaders=[])
-    return SecureSkills(loaders=[TrustedLocalSkills(skills_path)])
+    loaders: list[SkillLoader] = []
+    if skills_path:
+        loaders.append(LocalSkills(skills_path))
+    return Skills(loaders=loaders)
+
+
+def public_skill_metadata(skills: Skills) -> list[dict[str, str]]:
+    return [
+        {
+            "id": skill.name,
+            "name": skill.name,
+            "description": skill.description or "",
+        }
+        for skill in skills.get_all_skills()
+    ]

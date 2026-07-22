@@ -26,7 +26,7 @@ from .database import check_database
 from .instructions import build_agent_instructions
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
-from .skills import load_skills
+from .skills import load_skills, public_skill_metadata
 from .workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
 
 PROTOCOL = "agui.odoo.v2"
@@ -92,7 +92,7 @@ class WorkspaceDeleteFilePayload(BaseModel):
 settings = AgentSettings.from_environment()
 
 workspace_secret = settings.workspace_hmac_secret
-agent_skills = load_skills()
+agent_skills = load_skills(settings.skills_dir)
 workspace_service = WorkspaceService(secret=workspace_secret)
 router = APIRouter()
 
@@ -309,7 +309,7 @@ async def integration_config(request: Request):
         "protocol": PROTOCOL,
         "bundle_version": BUNDLE_VERSION,
         "command_catalog_hash": COMMAND_CATALOG_HASH,
-        "skills": context.skills.public_metadata(),
+        "skills": public_skill_metadata(context.skills),
         "limits": {
             "run_request_bytes": MAX_RUN_REQUEST_BYTES,
             "workspace_upload_request_bytes": MAX_WORKSPACE_UPLOAD_REQUEST_BYTES,

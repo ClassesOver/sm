@@ -64,4 +64,4 @@ PostgreSQL 绑定到 `127.0.0.1:55432`，容器内 AgentOS 则通过 `agent-db:5
 `regenerate=True, replace_original=True`。分支工作区复制源会话当前文件，限制为 2000 个
 普通文件、总计 256 MiB、单文件 25 MiB，符号链接或任一超限会整体拒绝。
 
-使用自定义 `AGENT_SKILLS_DIR` 时，目录和资源不得包含符号链接或越出技能根目录。
+`AGENT_SKILLS_DIR` 使用 Agno 官方 `Skills(loaders=[LocalSkills(...)])` 方式加载。
