@@ -140,7 +140,49 @@ Workflow，但没有 Codex 风格的专用 `update_plan`。本项目因此在 Ag
 `agent_tool_search` 搜索服务端 Toolkit 类别，`agent_load_toolkit` 只修改保留的加载状态。Agno
 在每个 run 开始时解析一次 callable tools，因此新 Toolkit 从下一 run 生效；这不需要用户确认，
 也不会绕过具体工具原有的确认策略。`cache_callables=False` 防止不同 thread 或不同加载状态复用
-错误的工具列表。选择智能报表 skill 时，报表 Toolkit 会在该 run 自动加载。
+错误的工具列表。搜索结果带 `routeSkill` 时只用于发现，不能通过 `agent_load_toolkit` 加载；选择
+智能报表 skill 时，服务端将新 run 路由到独立 `report-agent`，主助手不会动态加载报表 Toolkit。
+续跑、branch 和 regenerate 按源 run 的 Agent ID 保持同一 Agent；无法确认原 Agent 时失败关闭。
+
+### 泛化数据源与 ReportAgent
+
+`report-agent` 固定暴露 `AgentControlToolkit`、`BaseToolkit`、`ReportDataSourceToolkit` 和
+`WorkspaceReportToolkit`。它不使用固定 Workflow 或 Team，模型自行决定分析命令和轮次，但必须
+完成“发现数据源 → 物化数据集 → 确定性剖析 → 至少一轮成功分析 → Markdown → PDF → 验收”的
+受控链路。完整文件内容不会注入模型上下文；模型只接收数据源句柄、schema、剖析结果和分析输出。
+
+工作区文件、目录、SQLite、DuckDB、Odoo 受控导出和服务端注册的只读 PostgreSQL 均通过
+`DatasetHandle` 进入报表工具。目录只列直接子项，文件变化会返回稳定的 `stale_dataset`，单个
+任务最多 20 个输入；单文件不超过 25 MiB，数据库物化总量不超过 256 MiB。Odoo 导出仍必须
+经过现有导出、确认和一次性授权链路，ReportAgent 不访问 Odoo ORM 或数据库。
+
+外部 PostgreSQL 数据源由 `AGENT_REPORT_DATA_SOURCES_FILE` 指向的 JSON 配置注册。配置只保存
+数据源 ID、`dsnEnv`、允许的 schema/table 和限额，DSN 从同名环境变量读取，不能由模型提供；
+AgentOS 自身 PostgreSQL 会被拒绝。示例：
+
+```json
+{
+  "sources": [
+    {
+      "id": "finance",
+      "name": "财务只读库",
+      "type": "postgresql",
+      "dsnEnv": "REPORT_FINANCE_DSN",
+      "schemas": ["reporting"],
+      "tables": ["reporting.revenue"],
+      "statementTimeoutMs": 30000,
+      "maxRows": 1000000,
+      "maxBytes": 268435456
+    }
+  ]
+}
+```
+
+SQL 只允许单条 `SELECT` 或只读 CTE，并强制只读事务、超时、schema/table 白名单和结果
+分片限制。Compose 默认只读挂载仓库中的空配置 `deploy/agentos/report-data-sources.json`；
+生产环境通过 `AGENT_REPORT_DATA_SOURCES_FILE` 指向宿主机配置，并确保 `dsnEnv` 对应变量已
+注入 AgentOS 容器。工作区 SQLite 使用只读 URI，DuckDB 使用只读连接，sandbox-tools 镜像
+包含 DuckDB 运行时依赖。
 
 `agent_context_status` 使用 Agno 模型的 `count_tokens(messages, tools, output_schema)` 估算本轮完整
 上下文，返回 256K 上限、估算已用、扣除输出预留后的余量、预算历史和计数可靠性；计数器不可用时

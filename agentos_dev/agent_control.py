@@ -5,6 +5,7 @@ from typing import Any
 from agno.run import RunContext
 from agno.tools import Toolkit
 
+from .report_data_sources import ReportDataSourceToolkit
 from .workspace import BaseToolkit, WorkspaceReportToolkit, WorkspaceService
 
 AGENT_PLAN_STATE_KEY = "agentos_plan"
@@ -36,15 +37,9 @@ _TOOLKIT_CATALOG = {
         "description": "数据集准备、多轮分析、Markdown 写作和 PDF 渲染工具。",
         "keywords": "报表 报告 数据 分析 csv pandas markdown pdf report",
         "alwaysLoaded": False,
+        "routeSkill": "workspace-smart-report",
     },
 }
-
-
-def _selected_report_skill(dependencies: dict[str, Any] | None) -> bool:
-    selected = (dependencies or {}).get("已选智能体技能")
-    if not isinstance(selected, list):
-        return False
-    return any(isinstance(item, dict) and item.get("name") == "report" for item in selected)
 
 
 def build_agent_tools(
@@ -55,16 +50,10 @@ def build_agent_tools(
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
 ) -> list[Toolkit]:
-    """Agno callable tools factory；每个 run 根据受控 session state 解析一次。"""
+    """主助手工具工厂；报表能力只由独立 ReportAgent 暴露。"""
     state = run_context.session_state if isinstance(run_context.session_state, dict) else {}
-    loaded = state.get(AGENT_LOADED_TOOLKITS_STATE_KEY, [])
-    report_loaded = (
-        isinstance(loaded, list)
-        and "report" in loaded
-        or _selected_report_skill(run_context.dependencies)
-    )
     continuation = state.get(AGENT_CONTINUATION_STATE_KEY)
-    tools: list[Toolkit] = [
+    return [
         AgentControlToolkit(
             workspace_service,
             model=getattr(agent, "model", None),
@@ -74,9 +63,38 @@ def build_agent_tools(
         ),
         BaseToolkit(workspace_service),
     ]
-    if report_loaded:
-        tools.append(WorkspaceReportToolkit(workspace_service))
-    return tools
+
+
+def build_report_agent_tools(
+    workspace_service: WorkspaceService,
+    *,
+    run_context: RunContext,
+    agent: Any | None = None,
+    context_token_budget: int = 262144,
+    output_token_reserve: int = 32768,
+    report_data_sources_file: str | None = None,
+    database_url: str | None = None,
+) -> list[Toolkit]:
+    """ReportAgent 固定工具工厂；每个 run 重新解析当前引用和受控 session state。"""
+    state = run_context.session_state if isinstance(run_context.session_state, dict) else {}
+    continuation = state.get(AGENT_CONTINUATION_STATE_KEY)
+    data_sources = ReportDataSourceToolkit(
+        workspace_service,
+        config_path=report_data_sources_file,
+        excluded_database_url=database_url,
+    )
+    return [
+        AgentControlToolkit(
+            workspace_service,
+            model=getattr(agent, "model", None),
+            context_token_budget=context_token_budget,
+            output_token_reserve=output_token_reserve,
+            continuation=continuation if isinstance(continuation, dict) else None,
+        ),
+        BaseToolkit(workspace_service),
+        data_sources,
+        WorkspaceReportToolkit(workspace_service, data_sources=data_sources),
+    ]
 
 
 class AgentControlToolkit(Toolkit):
@@ -146,7 +164,8 @@ class AgentControlToolkit(Toolkit):
                 self.agent_load_toolkit,
             ],
             instructions=(
-                "复杂任务先用 agent_update_plan 维护简短计划；需要专业工具时先搜索并加载。"
+                "复杂任务先用 agent_update_plan 维护简短计划；需要专业工具时先搜索。"
+                "搜索结果包含 routeSkill 时必须选择对应 Skill，不能动态加载；其他可加载项再调用 agent_load_toolkit。"
                 "工具加载在下一 run 生效，不代表用户确认，也不改变 Odoo 授权或工作区确认。"
                 "上下文余量不足时用 agent_prepare_continuation 保存非业务交接；它不会自动启动新 run。"
                 f"{continuation_instruction}"
@@ -360,6 +379,9 @@ class AgentControlToolkit(Toolkit):
         """
         if toolkit not in _TOOLKIT_CATALOG:
             raise ValueError("未知 Toolkit，请先使用 agent_tool_search。")
+        route_skill = _TOOLKIT_CATALOG[toolkit].get("routeSkill")
+        if route_skill:
+            raise ValueError(f"该能力必须通过 {route_skill} Skill 路由，不能动态加载。")
         if run_context is None:
             raise ValueError("缺少当前运行上下文。")
         if run_context.session_state is None:

@@ -24,6 +24,7 @@ def test_settings_defaults():
     assert current.context_token_budget == 262144
     assert current.history_token_budget == 196608
     assert current.output_token_reserve == 32768
+    assert current.report_data_sources_file is None
 
 
 def test_agent_feature_flags_can_be_disabled():
@@ -42,6 +43,12 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.history_token_budget == 32768
     assert current.context_token_budget == 131072
     assert current.output_token_reserve == 16384
+
+
+def test_report_data_sources_file_is_trimmed():
+    assert settings(
+        AGENT_REPORT_DATA_SOURCES_FILE=" /run/report-sources.json "
+    ).report_data_sources_file == ("/run/report-sources.json")
 
 
 def test_context_budget_rejects_invalid_reserve():

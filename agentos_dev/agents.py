@@ -5,7 +5,7 @@ from typing import Any
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 
-from .agent_control import build_agent_tools
+from .agent_control import build_agent_tools, build_report_agent_tools
 from .context_management import (
     ProtectedCompressionManager,
     RollingSessionSummaryManager,
@@ -31,9 +31,10 @@ def create_assistants(
     skills: Any,
     workspace_service: WorkspaceService,
     instructions: AgentInstructions,
+    report_instructions: AgentInstructions,
     edit_tool_choice: dict[str, Any],
     menu_navigation_tool_choice: dict[str, Any],
-) -> tuple[Agent, Agent, Agent]:
+) -> tuple[Agent, Agent, Agent, Agent]:
     primary_model = OpenAIChat(
         id=settings.model_id,
         base_url=settings.openai_base_url,
@@ -99,11 +100,29 @@ def create_assistants(
     menu_navigation_assistant = assistant.deep_copy(
         update={"tool_choice": menu_navigation_tool_choice}
     )
+    report_agent = assistant.deep_copy(
+        update={
+            "id": "report-agent",
+            "name": "智能报表",
+            "instructions": report_instructions,
+            "skills": None,
+            "tools": partial(
+                build_report_agent_tools,
+                workspace_service,
+                context_token_budget=settings.context_token_budget,
+                output_token_reserve=settings.output_token_reserve,
+                report_data_sources_file=settings.report_data_sources_file,
+                database_url=settings.database_url,
+            ),
+            "tool_choice": "auto",
+        }
+    )
     # Agno maps constructor None to 3; post-init None means all runs in session.get_messages.
-    for current in (assistant, edit_mode_assistant, menu_navigation_assistant):
+    for current in (assistant, edit_mode_assistant, menu_navigation_assistant, report_agent):
         current.num_history_runs = None
     return (
         assistant,
         edit_mode_assistant,
         menu_navigation_assistant,
+        report_agent,
     )

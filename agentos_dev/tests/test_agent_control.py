@@ -10,6 +10,7 @@ from agentos_dev.agent_control import (
     AGENT_PLAN_STATE_KEY,
     AgentControlToolkit,
     build_agent_tools,
+    build_report_agent_tools,
 )
 from agentos_dev.tests.workspace_fakes import service
 
@@ -125,23 +126,35 @@ def test_agent_prepare_continuation_only_stores_sanitized_handoff(tmp_path):
         )
 
 
-def test_toolkit_search_and_load_apply_on_next_run(tmp_path):
+def test_report_toolkit_is_discoverable_but_requires_skill_route(tmp_path):
     workspace_service = service(tmp_path)
     toolkit = AgentControlToolkit(workspace_service)
     context = RunContext(run_id="run", session_id="thread", session_state={})
 
     found = toolkit.agent_tool_search("报表", run_context=context)
-    loaded = toolkit.agent_load_toolkit("report", run_context=context)
 
     assert found["matches"][0]["name"] == "report"
-    assert loaded == {"ok": True, "toolkit": "report", "appliesFrom": "next_run"}
-    assert context.session_state["agentos_loaded_toolkits"] == ["report"]
+    assert found["matches"][0]["routeSkill"] == "workspace-smart-report"
+    with pytest.raises(ValueError, match="workspace-smart-report Skill"):
+        toolkit.agent_load_toolkit("report", run_context=context)
+    assert "agentos_loaded_toolkits" not in context.session_state
 
     tools = build_agent_tools(
         workspace_service,
         run_context=SimpleNamespace(session_state=context.session_state, dependencies={}),
     )
-    assert any(tool.name == "workspace_report" for tool in tools)
+    assert [tool.name for tool in tools] == ["agent_control", "base"]
+
+    report_tools = build_report_agent_tools(
+        workspace_service,
+        run_context=SimpleNamespace(session_state=context.session_state, dependencies={}),
+    )
+    assert [tool.name for tool in report_tools] == [
+        "agent_control",
+        "base",
+        "report_data_sources",
+        "workspace_report",
+    ]
 
 
 def test_tool_factory_injects_model_budget_and_continuation(tmp_path):

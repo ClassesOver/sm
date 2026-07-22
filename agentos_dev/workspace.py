@@ -673,6 +673,35 @@ class WorkspaceService:
             )
         return sorted(result, key=lambda item: (not item["isDirectory"], item["name"].lower()))
 
+    async def alist_files(self, thread: str, path: str = "") -> list[dict[str, Any]]:
+        relative, remote = self.normalize_path(path)
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            await self._avalidate_existing_path(sandbox, relative)
+            entries = await sandbox.fs.list_files(remote)
+        if len(entries) > MAX_LIST_ENTRIES:
+            raise WorkspaceError(
+                f"工作区目录包含超过 {MAX_LIST_ENTRIES} 个项目，请进入子目录后重试。"
+            )
+        result = []
+        for entry in entries:
+            if entry.name in (".", "..") or self._is_symlink(entry):
+                continue
+            child = f"{relative}/{entry.name}".strip("/")
+            result.append(
+                {
+                    "path": child,
+                    "name": entry.name,
+                    "isDirectory": bool(entry.is_dir),
+                    "size": int(entry.size or 0),
+                    "mimeType": False
+                    if entry.is_dir
+                    else (mimetypes.guess_type(entry.name)[0] or "application/octet-stream"),
+                    "modifiedAt": entry.modified_at or entry.mod_time,
+                }
+            )
+        return sorted(result, key=lambda item: (not item["isDirectory"], item["name"].lower()))
+
     @staticmethod
     def _validate_content(content: bytes):
         if not isinstance(content, bytes):
@@ -3588,8 +3617,9 @@ class BaseToolkit(WorkspaceToolkit):
 
 
 class WorkspaceReportToolkit(Toolkit):
-    def __init__(self, service: WorkspaceService):
+    def __init__(self, service: WorkspaceService, data_sources: Any | None = None):
         self.service = service
+        self.data_sources = data_sources
         super().__init__(
             name="workspace_report",
             tools=[
@@ -3683,10 +3713,22 @@ class WorkspaceReportToolkit(Toolkit):
 
     async def report_prepare_dataset(
         self,
-        paths: list[str],
+        paths: list[str] | None = None,
+        dataset_ids: list[str] | None = None,
         run_context: RunContext | None = None,
     ):
-        """登记一至二十个当前工作区分析输入，可使用任意文件格式；返回支持多轮分析的 job_id。"""
+        """按工作区路径或 dataset_id 登记一至二十个输入；两种方式不能混用。"""
+        if paths is not None and dataset_ids is not None:
+            raise WorkspaceError("paths 与 dataset_ids 不能同时使用，请只选择一种输入。")
+        if dataset_ids is not None:
+            if self.data_sources is None:
+                raise WorkspaceError("当前报表工具未配置数据集解析器，请重新进入智能报表。")
+            paths = await self.data_sources.resolve_dataset_paths(
+                dataset_ids,
+                run_context=run_context,
+            )
+        if not paths:
+            raise WorkspaceError("请提供 paths 或 dataset_ids 后再准备报表数据集。")
         return await self._report("prepare", {"paths": paths}, run_context)
 
     async def report_profile_dataset(

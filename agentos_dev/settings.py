@@ -84,6 +84,7 @@ class AgentSettings:
     cors_allowed_origins: tuple[str, ...]
     database_url: str
     skills_dir: str | None
+    report_data_sources_file: str | None
     workspace_hmac_secret: str
     enable_tool_result_compression: bool
     enable_session_summaries: bool
@@ -144,6 +145,9 @@ class AgentSettings:
             cors_allowed_origins=origins,
             database_url=database_url_from_environment(values),
             skills_dir=values.get("AGENT_SKILLS_DIR"),
+            report_data_sources_file=(
+                values.get("AGENT_REPORT_DATA_SOURCES_FILE", "").strip() or None
+            ),
             workspace_hmac_secret=values.get("AGUI_WORKSPACE_HMAC_SECRET", ""),
             enable_tool_result_compression=_flag(
                 values.get("AGENT_ENABLE_TOOL_RESULT_COMPRESSION"), default=True

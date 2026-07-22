@@ -21,6 +21,7 @@ from ag_ui.core import (
     TextMessageContentEvent,
     TextMessageEndEvent,
     TextMessageStartEvent,
+    ToolCallResultEvent,
     ToolCallStartEvent,
 )
 from agno.models.message import Message
@@ -137,6 +138,15 @@ async def response_body(response):
     async for chunk in response.body_iterator:
         chunks.append(chunk.encode() if isinstance(chunk, str) else chunk)
     return b"".join(chunks).decode()
+
+
+@pytest.mark.anyio
+async def test_direct_agent_run_routes_are_disabled(client):
+    for agent_id in ("odoo-assistant", "report-agent"):
+        response = await client.post(f"/agents/{agent_id}/runs", json={})
+
+        assert response.status_code == 404
+        assert response.json() == {"error": "agent_run_route_disabled"}
 
 
 class ClosingEventStream:
@@ -645,11 +655,28 @@ async def test_explicit_edit_request_routes_to_forced_agent(monkeypatch):
 )
 async def test_normal_and_unmarked_resume_requests_keep_main_agent(monkeypatch, value):
     calls = []
+    session = AgentSession(
+        session_id="thread-1",
+        agent_id="odoo-assistant",
+        user_id="owner",
+        runs=[
+            RunOutput(
+                run_id="run-1",
+                session_id="thread-1",
+                agent_id="odoo-assistant",
+                status=RunStatus.paused,
+            )
+        ],
+    )
+
+    async def get_session(**_kwargs):
+        return session
 
     async def fake_run(entity, _run_input, user_id=None):
         calls.append(entity)
         yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
 
+    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
     monkeypatch.setattr(app_module, "run_entity", fake_run)
     response = await app_module.run_agui(direct_request(), value)
 
@@ -730,17 +757,30 @@ async def test_fresh_request_receives_budgeted_history_without_old_odoo_results(
 async def test_resume_request_does_not_reload_or_reinject_budgeted_history(monkeypatch):
     loaded = False
     captured = []
+    session = AgentSession(
+        session_id="thread-1",
+        agent_id="odoo-assistant",
+        user_id="owner",
+        runs=[
+            RunOutput(
+                run_id="run-1",
+                session_id="thread-1",
+                agent_id="odoo-assistant",
+                status=RunStatus.paused,
+            )
+        ],
+    )
 
-    async def unexpected_get_session(**_kwargs):
+    async def get_session(**_kwargs):
         nonlocal loaded
         loaded = True
-        return None
+        return session
 
     async def fake_run(_entity, value, user_id=None):
         captured.append(value)
         yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
 
-    monkeypatch.setattr(app_module.assistant, "aget_session", unexpected_get_session)
+    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
     monkeypatch.setattr(app_module, "run_entity", fake_run)
     value = run_input(
         messages=[
@@ -756,8 +796,463 @@ async def test_resume_request_does_not_reload_or_reinject_budgeted_history(monke
     response = await app_module.run_agui(direct_request(), value)
     await response_body(response)
 
-    assert loaded is False
+    assert loaded is True
     assert [item.description for item in captured[0].context] == ["HRP 宿主快照"]
+
+
+@pytest.mark.anyio
+async def test_selected_report_skill_routes_fresh_request_to_report_agent(monkeypatch):
+    calls = []
+
+    async def fake_run(entity, _value, user_id=None):
+        calls.append(entity)
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    value = run_input(
+        "生成报表",
+        context=[
+            {
+                "description": "已选智能体技能",
+                "value": '[{"id":"report","name":"report"}]',
+            }
+        ],
+    )
+
+    response = await app_module.run_agui(direct_request(), value)
+    await response_body(response)
+
+    assert calls == [app_module.report_agent]
+
+
+@pytest.mark.anyio
+async def test_report_attachment_context_is_server_derived_and_validated(monkeypatch):
+    captured = []
+
+    class FakeWorkspace:
+        @staticmethod
+        def normalize_path(path, allow_root=True):
+            del allow_root
+            return path, f"/home/daytona/workspace/{path}"
+
+        async def astat(self, thread, path):
+            assert thread == "thread-1"
+            assert path == "附件/收入.csv"
+            return {"path": path, "type": "file", "size": 18}
+
+        async def ahash_file(self, thread, path):
+            assert thread == "thread-1"
+            return {"path": path, "size": 18, "sha256": "a" * 64}
+
+    async def no_session(**_kwargs):
+        return None
+
+    async def fake_run(entity, value, user_id=None):
+        captured.append((entity, value, user_id))
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module.report_agent, "aget_session", no_session)
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    request = direct_request()
+    request.app.state.agentos_context = replace(
+        app_module.application_context,
+        workspace_service=FakeWorkspace(),
+    )
+    value = run_input(
+        "分析附件",
+        messages=[
+            {
+                "id": "user-1",
+                "role": "user",
+                "content": "分析附件",
+                "attachments": [
+                    {
+                        "workspacePath": "附件/收入.csv",
+                        "name": "伪造名称",
+                        "tool": "sandbox_exec",
+                    }
+                ],
+            }
+        ],
+        context=[
+            {
+                "description": "已选智能体技能",
+                "value": '[{"id":"report","name":"report"}]',
+            },
+            {
+                "description": app_module.CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
+                "value": '[{"path":"其他.csv","type":"file"}]',
+            },
+        ],
+    )
+
+    response = await app_module.run_agui(request, value)
+    await response_body(response)
+
+    attachment_context = next(
+        item
+        for item in captured[0][1].context
+        if item.description == app_module.CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY
+    )
+    assert json.loads(attachment_context.value) == [
+        {
+            "path": "附件/收入.csv",
+            "type": "file",
+            "size": 18,
+            "sha256": "a" * 64,
+        }
+    ]
+    assert "伪造名称" not in attachment_context.value
+    assert "sandbox_exec" not in attachment_context.value
+
+
+@pytest.mark.anyio
+async def test_invalid_report_attachment_returns_stable_error_without_running_agent(monkeypatch):
+    called = False
+
+    class ChangedWorkspace:
+        @staticmethod
+        def normalize_path(path, allow_root=True):
+            del allow_root
+            return path, f"/home/daytona/workspace/{path}"
+
+        async def astat(self, _thread, path):
+            return {"path": path, "type": "file", "size": 18}
+
+        async def ahash_file(self, _thread, path):
+            return {"path": path, "size": 19, "sha256": "a" * 64}
+
+    async def fake_run(_entity, _value, user_id=None):
+        del user_id
+        nonlocal called
+        called = True
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    request = direct_request()
+    request.app.state.agentos_context = replace(
+        app_module.application_context,
+        workspace_service=ChangedWorkspace(),
+    )
+    value = run_input(
+        "分析附件",
+        messages=[
+            {
+                "id": "user-1",
+                "role": "user",
+                "content": "分析附件",
+                "attachments": [{"workspacePath": "附件/收入.csv"}],
+            }
+        ],
+        context=[
+            {
+                "description": "已选智能体技能",
+                "value": '[{"id":"report","name":"report"}]',
+            }
+        ],
+    )
+
+    response = await app_module.run_agui(request, value)
+    body = await response_body(response)
+
+    assert called is False
+    assert "report_attachment_invalid" in body
+
+
+@pytest.mark.anyio
+async def test_report_resume_uses_agent_from_stored_run(monkeypatch):
+    session = AgentSession(
+        session_id="thread-1",
+        agent_id="odoo-assistant",
+        user_id="owner",
+        runs=[
+            RunOutput(
+                run_id="run-1",
+                session_id="thread-1",
+                agent_id="report-agent",
+                status=RunStatus.paused,
+            )
+        ],
+    )
+    calls = []
+
+    async def get_session(**_kwargs):
+        return session
+
+    async def fake_run(entity, _value, user_id=None):
+        calls.append(entity)
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    value = run_input(
+        messages=[
+            {"id": "user-1", "role": "user", "content": "生成报表"},
+            {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
+        ]
+    )
+
+    response = await app_module.run_agui(direct_request(), value)
+    await response_body(response)
+
+    assert calls == [app_module.report_agent]
+
+
+@pytest.mark.anyio
+async def test_resume_fails_closed_when_stored_run_agent_cannot_be_resolved(monkeypatch):
+    called = False
+
+    async def no_session(**_kwargs):
+        return None
+
+    async def fake_run(_entity, _value, user_id=None):
+        del user_id
+        nonlocal called
+        called = True
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module.assistant, "aget_session", no_session)
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    value = run_input(
+        messages=[
+            {"id": "user-1", "role": "user", "content": "生成报表"},
+            {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
+        ]
+    )
+
+    response = await app_module.run_agui(direct_request(), value)
+    body = await response_body(response)
+
+    assert called is False
+    assert "run_agent_not_found" in body
+
+
+@pytest.mark.anyio
+async def test_report_resume_ignores_fresh_request_menu_routing(monkeypatch):
+    session = AgentSession(
+        session_id="thread-1",
+        agent_id="odoo-assistant",
+        user_id="owner",
+        runs=[
+            RunOutput(
+                run_id="run-1",
+                session_id="thread-1",
+                agent_id="report-agent",
+                status=RunStatus.paused,
+            )
+        ],
+    )
+    calls = []
+
+    async def get_session(**_kwargs):
+        return session
+
+    async def fake_run(entity, _value, user_id=None):
+        calls.append(entity)
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    value = run_input(
+        messages=[
+            {"id": "user-1", "role": "user", "content": "生成报表"},
+            {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
+        ],
+        context=[
+            {
+                "description": app_module.MENU_NAVIGATION_CONTEXT,
+                "value": json.dumps({"requiredFirstTool": app_module.MENU_NAVIGATION_TOOL}),
+            },
+            {
+                "description": "已选 HRP 菜单",
+                "value": json.dumps({"navigationRequired": True}),
+            },
+        ],
+    )
+
+    response = await app_module.run_agui(direct_request(), value)
+    await response_body(response)
+
+    assert calls == [app_module.report_agent]
+
+
+@pytest.mark.anyio
+async def test_report_analysis_traceback_is_redacted_from_agui_stream(monkeypatch):
+    async def fake_run(entity, _value, user_id=None):
+        assert entity is app_module.report_agent
+        yield ToolCallStartEvent(
+            tool_call_id="analysis-call",
+            tool_call_name="report_analyze_dataset",
+        )
+        yield ToolCallResultEvent(
+            message_id="tool-message",
+            tool_call_id="analysis-call",
+            content=json.dumps(
+                {
+                    "ok": False,
+                    "status": "analysis_failed",
+                    "exitCode": 1,
+                    "output": "Traceback (most recent call last): secret-path",
+                }
+            ),
+            raw_event={"output": "Traceback: secret-path"},
+        )
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    value = run_input(
+        "生成报表",
+        context=[
+            {
+                "description": "已选智能体技能",
+                "value": '[{"id":"report","name":"report"}]',
+            }
+        ],
+    )
+
+    response = await app_module.run_agui(direct_request(), value)
+    body = await response_body(response)
+
+    assert "Traceback" not in body
+    assert "secret-path" not in body
+    assert "outputRedacted" in body
+    assert "analysis_failed" in body
+
+
+@pytest.mark.anyio
+async def test_report_analysis_traceback_is_redacted_without_start_event(monkeypatch):
+    async def fake_run(entity, _value, user_id=None):
+        assert entity is app_module.report_agent
+        yield ToolCallResultEvent(
+            message_id="analysis-call",
+            tool_call_id="analysis-call",
+            content=json.dumps(
+                {
+                    "ok": False,
+                    "jobId": "job-1",
+                    "status": "analysis_failed",
+                    "roundCount": 1,
+                    "successfulRoundCount": 0,
+                    "exitCode": 1,
+                    "output": "Traceback (most recent call last): secret-path",
+                    "truncated": False,
+                }
+            ),
+            raw_event={"output": "Traceback: secret-path"},
+        )
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    value = run_input(
+        "生成报表",
+        context=[
+            {
+                "description": "已选智能体技能",
+                "value": '[{"id":"report","name":"report"}]',
+            }
+        ],
+    )
+
+    response = await app_module.run_agui(direct_request(), value)
+    body = await response_body(response)
+
+    assert "Traceback" not in body
+    assert "secret-path" not in body
+    assert "outputRedacted" in body
+    assert "analysis_failed" in body
+
+
+@pytest.mark.anyio
+async def test_branch_uses_source_run_agent_instead_of_session_agent(monkeypatch):
+    branch = SimpleNamespace(source_thread_id="source-thread", source_run_id="source-run")
+    session = AgentSession(
+        session_id="source-thread",
+        agent_id="odoo-assistant",
+        user_id="owner",
+        runs=[
+            RunOutput(
+                run_id="source-run",
+                session_id="source-thread",
+                agent_id="report-agent",
+                status=RunStatus.completed,
+            )
+        ],
+    )
+    calls = []
+
+    async def get_session(**_kwargs):
+        return session
+
+    async def fake_branch(entity, workspace, value, spec, user_id):
+        calls.append((entity, workspace, value, spec, user_id))
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
+    monkeypatch.setattr(app_module, "run_branch", fake_branch)
+    request = direct_request(branch)
+
+    response = await app_module.run_agui(request, run_input())
+    await response_body(response)
+
+    assert calls[0][0] is app_module.report_agent
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("message", "tools", "extra_context", "expected_agent", "expected_tool"),
+    [
+        (
+            "编辑",
+            (app_module.EDIT_MODE_TOOL,),
+            (),
+            app_module.edit_mode_assistant,
+            app_module.EDIT_MODE_TOOL,
+        ),
+        (
+            "打开报销单查询",
+            (app_module.MENU_NAVIGATION_TOOL,),
+            (
+                {
+                    "description": "HRP 菜单导航请求",
+                    "value": json.dumps({"requiredFirstTool": app_module.MENU_NAVIGATION_TOOL}),
+                },
+            ),
+            app_module.menu_navigation_assistant,
+            app_module.MENU_NAVIGATION_TOOL,
+        ),
+    ],
+)
+async def test_menu_and_edit_routes_take_priority_over_report_skill(
+    monkeypatch,
+    message,
+    tools,
+    extra_context,
+    expected_agent,
+    expected_tool,
+):
+    calls = []
+
+    async def fake_run(entity, _value, user_id=None):
+        calls.append(entity)
+        yield ToolCallStartEvent(tool_call_id="call-1", tool_call_name=expected_tool)
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    contexts = [
+        {
+            "description": "已选智能体技能",
+            "value": '[{"id":"report","name":"report"}]',
+        },
+        *extra_context,
+    ]
+
+    response = await app_module.run_agui(
+        direct_request(),
+        run_input(message, tools=tools, context=contexts),
+    )
+    await response_body(response)
+
+    assert calls == [expected_agent]
 
 
 @pytest.mark.anyio

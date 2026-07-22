@@ -18,6 +18,7 @@ from agentos_dev.instructions import (
     VIEW_CONTROL_INSTRUCTIONS,
     X2MANY_INSTRUCTIONS,
     build_agent_instructions,
+    build_report_agent_instructions,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -72,16 +73,18 @@ def test_agentos_contract_matches_odoo_source():
 
 def test_agent_uses_dynamic_instructions_callable():
     assert app.assistant.instructions is build_agent_instructions
+    assert app.report_agent.instructions is build_report_agent_instructions
 
 
 def test_agent_history_runs_are_not_truncated():
     assert app.assistant.num_history_runs is None
     assert app.edit_mode_assistant.num_history_runs is None
     assert app.menu_navigation_assistant.num_history_runs is None
+    assert app.report_agent.num_history_runs is None
 
 
-def test_agent_registers_base_and_report_toolkits_without_overlap():
-    expected = [
+def test_agent_registers_main_and_report_toolkits_without_overlap():
+    control_and_base = [
         {
             "agent_update_plan",
             "agent_context_status",
@@ -120,15 +123,6 @@ def test_agent_registers_base_and_report_toolkits_without_overlap():
             "workspace_view_image",
             "workspace_inspect_pdf",
         },
-        {
-            "report_list_analysis_capabilities",
-            "report_prepare_dataset",
-            "report_profile_dataset",
-            "report_job_status",
-            "report_analyze_dataset",
-            "report_render_markdown",
-            "report_validate_pdf",
-        },
     ]
     for assistant in (
         app.assistant,
@@ -143,22 +137,51 @@ def test_agent_registers_base_and_report_toolkits_without_overlap():
             )
         )
         assert assistant.cache_callables is False
-        assert [toolkit.name for toolkit in toolkits] == [
-            "agent_control",
-            "base",
-            "workspace_report",
-        ]
+        assert [toolkit.name for toolkit in toolkits] == ["agent_control", "base"]
         registered = [set(toolkit.functions) | set(toolkit.async_functions) for toolkit in toolkits]
-        assert registered == expected
+        assert registered == control_and_base
         assert all(
             left.isdisjoint(right)
             for index, left in enumerate(registered)
             for right in registered[index + 1 :]
         )
 
+    report_toolkits = app.report_agent.tools(
+        run_context=RunContext(run_id="run", session_id="thread", session_state={})
+    )
+    assert [toolkit.name for toolkit in report_toolkits] == [
+        "agent_control",
+        "base",
+        "report_data_sources",
+        "workspace_report",
+    ]
+    report_registered = [
+        set(toolkit.functions) | set(toolkit.async_functions) for toolkit in report_toolkits
+    ]
+    assert report_registered[:2] == control_and_base
+    assert report_registered[2] == {
+        "report_list_data_sources",
+        "report_describe_data_source",
+        "report_materialize_dataset",
+    }
+    assert report_registered[3] == {
+        "report_list_analysis_capabilities",
+        "report_prepare_dataset",
+        "report_profile_dataset",
+        "report_job_status",
+        "report_analyze_dataset",
+        "report_render_markdown",
+        "report_validate_pdf",
+    }
+    assert all(
+        left.isdisjoint(right)
+        for index, left in enumerate(report_registered)
+        for right in report_registered[index + 1 :]
+    )
+
 
 def test_toolkit_instructions_are_injected_by_agno():
-    control_toolkit, base_toolkit, report_toolkit = app.assistant.tools(
+    control_toolkit, base_toolkit, data_source_toolkit, report_toolkit = app.report_agent.tools(
         run_context=RunContext(
             run_id="run",
             session_id="thread",
@@ -173,20 +196,22 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert "sandbox_process_poll 轮询到 completed" in base_toolkit.instructions
     assert "工具失败时依据返回的错误" in base_toolkit.instructions
     assert report_toolkit.add_instructions is True
+    assert data_source_toolkit.add_instructions is True
     assert "同一 jobId 多轮调用 report_analyze_dataset" in report_toolkit.instructions
     assert "report_validate_pdf" in report_toolkit.instructions
 
-    toolkits = [control_toolkit, base_toolkit, report_toolkit]
+    toolkits = [control_toolkit, base_toolkit, data_source_toolkit, report_toolkit]
     parsed = parse_tools(
-        app.assistant,
+        app.report_agent,
         toolkits,
-        app.assistant.model,
+        app.report_agent.model,
         run_context=instruction_context(),
         async_mode=True,
     )
 
-    assert base_toolkit.instructions in app.assistant._tool_instructions
-    assert report_toolkit.instructions in app.assistant._tool_instructions
+    assert base_toolkit.instructions in app.report_agent._tool_instructions
+    assert data_source_toolkit.instructions in app.report_agent._tool_instructions
+    assert report_toolkit.instructions in app.report_agent._tool_instructions
     parsed_tools = {function.name: function for function in parsed if hasattr(function, "name")}
     parsed_exec_schema = parsed_tools["sandbox_exec"].parameters
     assert parsed_exec_schema["additionalProperties"] is False
@@ -201,6 +226,7 @@ def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
         app.assistant,
         app.edit_mode_assistant,
         app.menu_navigation_assistant,
+        app.report_agent,
     ):
         assert assistant.checkpoint == "tool-batch"
         assert assistant.tool_call_limit is None
@@ -300,7 +326,7 @@ def test_instruction_character_budgets():
     assert max(scenario_lengths) <= 2200
 
 
-def test_智能体说明明确工作区确认边界():
+def test_主智能体说明明确工作区确认边界():
     instructions = "\n".join(build_agent_instructions(instruction_context()))
 
     assert "工作区只属于当前 thread" in instructions
@@ -314,11 +340,20 @@ def test_智能体说明明确工作区确认边界():
     assert "sandbox_exec 须独立确认" in instructions
     assert "后台进程轮询" in instructions
     assert "sandbox_process_poll" in instructions
-    assert "准备、剖析、分析、状态读取、Markdown 转 PDF 和 PDF 验收无需确认" in instructions
-    assert "同一 job_id 多轮调用 report_analyze_dataset" in instructions
-    assert "至少一轮成功后生成 Markdown" in instructions
     assert "sandbox_exec 默认工作目录是 /home/daytona/workspace" in instructions
     assert "可信技能脚本" not in instructions
+
+
+def test_报表智能体说明明确泛化数据源和验收链路():
+    instructions = "\n".join(build_report_agent_instructions(instruction_context()))
+
+    assert "独立的智能报表 Agent" in instructions
+    assert "report_list_data_sources" in instructions
+    assert "不可变 DatasetHandle" in instructions
+    assert "具体分析命令和轮次由你" in instructions
+    assert "至少一轮分析成功" in instructions
+    assert "最终 job 状态为 validated" in instructions
+    assert "只读 PostgreSQL" in instructions
 
 
 def test_智能报表技能统一使用工作区相对路径和报表工具():

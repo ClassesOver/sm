@@ -45,8 +45,10 @@ services:
       DAYTONA_API_KEY: ${DAYTONA_API_KEY:-}
       AGUI_WORKSPACE_HMAC_SECRET: ${AGUI_WORKSPACE_HMAC_SECRET:?必须与 Odoo agui_chat.workspace_hmac_secret 一致}
       AGENT_SKILLS_DIR: /opt/agent-skills
+      AGENT_REPORT_DATA_SOURCES_FILE: /run/agentos/report-data-sources.json
     volumes:
       - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
+      - ${AGENT_REPORT_DATA_SOURCES_FILE:-./deploy/agentos/report-data-sources.json}:/run/agentos/report-data-sources.json:ro
     depends_on:
       agent-db:
         condition: service_healthy

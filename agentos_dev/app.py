@@ -12,7 +12,7 @@ from agno.os.interfaces.agui.router import run_entity
 from agno.session.agent import AgentSession
 from fastapi import APIRouter, Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from .agent_control import (
@@ -36,7 +36,13 @@ from .context_management import (
     build_budgeted_history_context,
 )
 from .database import check_database
-from .instructions import build_agent_instructions
+from .instructions import build_agent_instructions, build_report_agent_instructions
+from .report_data_sources import (
+    CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
+    MAX_DATASET_FILE_BYTES,
+    MAX_REPORT_INPUTS,
+    REPORT_DATASET_HANDLES_STATE_KEY,
+)
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
 from .skills import load_skills, public_skill_metadata
@@ -105,6 +111,7 @@ SERVER_SESSION_STATE_KEYS = frozenset(
         AGENT_PLAN_STATE_KEY,
         AGENT_CONTINUATION_STATE_KEY,
         AGENT_LOADED_TOOLKITS_STATE_KEY,
+        REPORT_DATASET_HANDLES_STATE_KEY,
     }
 )
 logger = logging.getLogger(__name__)
@@ -116,6 +123,12 @@ class WorkspaceDeleteFilePayload(BaseModel):
     thread_id: str = Field(alias="threadId", min_length=1, max_length=256)
     path: str
     recursive: StrictBool = False
+
+
+class WorkspaceAttachmentPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    workspace_path: str = Field(alias="workspacePath", min_length=1, max_length=1024)
 
 
 settings = AgentSettings.from_environment()
@@ -160,7 +173,12 @@ def _sanitize_run_input(run_input: RunAgentInput) -> RunAgentInput:
     context = [
         item
         for item in (run_input.context or [])
-        if item.description not in {HISTORY_CONTEXT_DESCRIPTION, AGENT_CONTEXT_STATUS_DEPENDENCY}
+        if item.description
+        not in {
+            HISTORY_CONTEXT_DESCRIPTION,
+            AGENT_CONTEXT_STATUS_DEPENDENCY,
+            CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
+        }
     ]
     state = run_input.state
     if isinstance(state, dict):
@@ -170,8 +188,67 @@ def _sanitize_run_input(run_input: RunAgentInput) -> RunAgentInput:
     return run_input.model_copy(update={"context": context, "state": state})
 
 
-async def _prepare_run_input(agent, run_input: RunAgentInput, user_id: str, settings):
+async def _current_attachment_context(
+    run_input: RunAgentInput,
+    workspace_service: WorkspaceService,
+) -> Context | None:
+    attachments = None
+    for message in reversed(run_input.messages or []):
+        if message.role == "user":
+            attachments = getattr(message, "attachments", None)
+            break
+    if attachments is None:
+        return None
+    if not isinstance(attachments, list) or not 1 <= len(attachments) <= MAX_REPORT_INPUTS:
+        raise ValueError("当前消息附件数量无效。")
+    values = []
+    seen = set()
+    for raw in attachments:
+        attachment = WorkspaceAttachmentPayload.model_validate(raw)
+        relative = workspace_service.normalize_path(
+            attachment.workspace_path,
+            allow_root=False,
+        )[0]
+        if relative in seen:
+            continue
+        seen.add(relative)
+        stat = await workspace_service.astat(run_input.thread_id, relative)
+        if stat.get("type") != "file":
+            raise ValueError("当前消息附件不是普通文件。")
+        digest = await workspace_service.ahash_file(run_input.thread_id, relative)
+        size = int(digest.get("size", -1))
+        if size < 0 or size > MAX_DATASET_FILE_BYTES or size != int(stat.get("size", -2)):
+            raise ValueError("当前消息附件大小无效或已变化。")
+        sha256 = str(digest.get("sha256") or "")
+        if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
+            raise ValueError("当前消息附件哈希无效。")
+        values.append(
+            {
+                "path": relative,
+                "type": "file",
+                "size": size,
+                "sha256": sha256,
+            }
+        )
+    return Context(
+        description=CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
+        value=json.dumps(values, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
+async def _prepare_run_input(
+    agent,
+    run_input: RunAgentInput,
+    user_id: str,
+    settings,
+    *,
+    server_context: list[Context] | None = None,
+):
     prepared = _sanitize_run_input(run_input)
+    if server_context:
+        prepared = prepared.model_copy(
+            update={"context": [*(prepared.context or []), *server_context]}
+        )
     if not _is_fresh_user_request(prepared):
         return prepared
     try:
@@ -290,6 +367,45 @@ def _is_raw_reasoning_event(event) -> bool:
     return event.type == EventType.RAW and _has_reasoning_key(getattr(event, "event", None))
 
 
+def _redact_report_analysis_result(event):
+    try:
+        payload = json.loads(event.content)
+    except (AttributeError, TypeError, json.JSONDecodeError):
+        payload = {}
+    allowed = {
+        "exitCode",
+        "jobId",
+        "ok",
+        "roundCount",
+        "status",
+        "successfulRoundCount",
+        "truncated",
+    }
+    redacted = {key: payload[key] for key in allowed if key in payload}
+    redacted["outputRedacted"] = True
+    return event.model_copy(
+        update={
+            "content": json.dumps(redacted, ensure_ascii=False, separators=(",", ":")),
+            "raw_event": None,
+        }
+    )
+
+
+def _is_report_analysis_result(event) -> bool:
+    try:
+        payload = json.loads(event.content)
+    except (AttributeError, TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and {
+        "exitCode",
+        "jobId",
+        "output",
+        "roundCount",
+        "status",
+        "successfulRoundCount",
+    }.issubset(payload)
+
+
 def _requires_menu_navigation(run_input: RunAgentInput) -> bool:
     for item in run_input.context or []:
         if item.description != "已选 HRP 菜单":
@@ -301,6 +417,57 @@ def _requires_menu_navigation(run_input: RunAgentInput) -> bool:
         if isinstance(value, dict) and value.get("navigationRequired") is True:
             return True
     return False
+
+
+def _selected_report_skill(run_input: RunAgentInput) -> bool:
+    for item in run_input.context or []:
+        if item.description != "已选智能体技能":
+            continue
+        try:
+            value = json.loads(item.value)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, list) and any(
+            isinstance(skill, dict)
+            and (
+                skill.get("id") in {"report", "workspace-smart-report"}
+                or skill.get("name") in {"report", "workspace-smart-report"}
+            )
+            for skill in value
+        ):
+            return True
+    return False
+
+
+async def _agent_for_stored_run(
+    context: ApplicationContext,
+    thread_id: str,
+    user_id: str,
+    run_id: str | None = None,
+):
+    try:
+        session = await context.assistant.aget_session(session_id=thread_id, user_id=user_id)
+    except Exception as error:
+        logger.warning("agent_route_session_load_failed error_type=%s", type(error).__name__)
+        return None
+    if not isinstance(session, AgentSession):
+        return None
+    agent_id = session.agent_id
+    if run_id:
+        matching = next(
+            (run for run in reversed(session.runs or []) if run.run_id == run_id),
+            None,
+        )
+        if matching is None:
+            return None
+        matching_agent_id = getattr(matching, "agent_id", None)
+        if isinstance(matching_agent_id, str) and matching_agent_id:
+            agent_id = matching_agent_id
+    if agent_id == context.report_agent.id:
+        return context.report_agent
+    if agent_id == context.assistant.id:
+        return context.assistant
+    return None
 
 
 def _required_menu_tool(run_input: RunAgentInput) -> str | None:
@@ -421,6 +588,9 @@ async def _read_limited_body(request: Request, limit: int) -> bytes | None:
 async def require_workspace_capability(request: Request, call_next):
     context = _application_context(request)
     path = request.url.path.rstrip("/") or "/"
+    path_parts = path.strip("/").split("/")
+    if len(path_parts) >= 3 and path_parts[0] == "agents" and path_parts[2] == "runs":
+        return JSONResponse({"error": "agent_run_route_disabled"}, status_code=404)
     protected = path == "/agui" or path.startswith("/workspace")
     if not protected:
         return await call_next(request)
@@ -669,11 +839,12 @@ async def workspace_destroy(request: Request, payload: dict = Body(...)):
     return {"ok": True, "deleted": True}
 
 
-assistant, edit_mode_assistant, menu_navigation_assistant = create_assistants(
+assistant, edit_mode_assistant, menu_navigation_assistant, report_agent = create_assistants(
     settings,
     agent_skills,
     workspace_service,
     build_agent_instructions,
+    build_report_agent_instructions,
     EDIT_MODE_TOOL_CHOICE,
     MENU_NAVIGATION_TOOL_CHOICE,
 )
@@ -688,10 +859,13 @@ async def run_agui(request: Request, run_input: RunAgentInput):
     encoder = EventEncoder()
 
     async def events():
+        tool_names_by_call_id: dict[str, str] = {}
         edit_intent = _is_explicit_edit_mode_request(run_input)
         fresh_request = _is_fresh_user_request(run_input)
-        navigation_required = _requires_menu_navigation(run_input)
-        context_menu_tool = _required_menu_tool(run_input)
+        # 菜单强制工具只适用于新请求；恢复/续跑必须沿用原 run 的 Agent。
+        navigation_required = fresh_request and _requires_menu_navigation(run_input)
+        context_menu_tool = _required_menu_tool(run_input) if fresh_request else None
+        report_selected = _selected_report_skill(run_input)
         forced_tool = None
         forced_agent = None
         route_name = None
@@ -715,6 +889,7 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             "menu_context_tool": context_menu_tool,
             "forced_route_selected": bool(forced_tool),
             "menu_navigation_required": navigation_required,
+            "report_route_selected": report_selected and fresh_request,
         }
         _audit_tool_route(
             request,
@@ -725,21 +900,70 @@ async def run_agui(request: Request, run_input: RunAgentInput):
         )
 
         if branch:
-            source = run_branch(
-                context.assistant,
-                context.workspace_service,
-                _sanitize_run_input(run_input),
-                branch,
-                user_id,
-            )
+            if hasattr(branch, "source_thread_id") and hasattr(branch, "source_run_id"):
+                branch_agent = await _agent_for_stored_run(
+                    context,
+                    branch.source_thread_id,
+                    user_id,
+                    branch.source_run_id,
+                )
+            else:
+                branch_agent = context.assistant
+            if branch_agent is None:
+                source = _run_error(
+                    "无法确认源运行所属智能体，请刷新会话后重试。",
+                    "run_agent_not_found",
+                )
+            else:
+                source = run_branch(
+                    branch_agent,
+                    context.workspace_service,
+                    _sanitize_run_input(run_input),
+                    branch,
+                    user_id,
+                )
         elif not forced_tool:
-            prepared_input = await _prepare_run_input(
-                context.assistant,
-                run_input,
-                user_id,
-                context.settings,
-            )
-            source = run_entity(context.assistant, prepared_input, user_id=user_id)
+            if fresh_request:
+                run_agent = context.report_agent if report_selected else context.assistant
+            else:
+                run_agent = await _agent_for_stored_run(
+                    context,
+                    run_input.thread_id,
+                    user_id,
+                    run_input.run_id,
+                )
+            if run_agent is None:
+                source = _run_error(
+                    "无法确认原运行所属智能体，请刷新会话后重试。",
+                    "run_agent_not_found",
+                )
+            else:
+                server_context = None
+                attachment_error = False
+                if fresh_request and run_agent is context.report_agent:
+                    try:
+                        attachment_context = await _current_attachment_context(
+                            run_input,
+                            context.workspace_service,
+                        )
+                        server_context = (
+                            [attachment_context] if attachment_context is not None else None
+                        )
+                    except (ValidationError, ValueError, WorkspaceError):
+                        attachment_error = True
+                        source = _run_error(
+                            "当前消息附件未同步、已变化或不属于当前工作区，请重新选择附件。",
+                            "report_attachment_invalid",
+                        )
+                if not attachment_error:
+                    prepared_input = await _prepare_run_input(
+                        run_agent,
+                        run_input,
+                        user_id,
+                        context.settings,
+                        server_context=server_context,
+                    )
+                    source = run_entity(run_agent, prepared_input, user_id=user_id)
         elif not tool_declared:
             _audit_tool_route(
                 request,
@@ -783,6 +1007,17 @@ async def run_agui(request: Request, run_input: RunAgentInput):
         async for event in source:
             if _is_raw_reasoning_event(event):
                 continue
+            if event.type == EventType.TOOL_CALL_START:
+                tool_call_id = str(getattr(event, "tool_call_id", "") or "")
+                tool_call_name = str(getattr(event, "tool_call_name", "") or "")
+                if tool_call_id and tool_call_name:
+                    tool_names_by_call_id[tool_call_id] = tool_call_name
+            elif event.type == EventType.TOOL_CALL_RESULT:
+                tool_call_id = str(getattr(event, "tool_call_id", "") or "")
+                if tool_names_by_call_id.get(
+                    tool_call_id
+                ) == "report_analyze_dataset" or _is_report_analysis_result(event):
+                    event = _redact_report_analysis_result(event)
             yield encoder.encode(event)
 
     return StreamingResponse(
@@ -810,6 +1045,7 @@ application_context = ApplicationContext(
     assistant,
     edit_mode_assistant,
     menu_navigation_assistant,
+    report_agent,
 )
 base_app = create_base_app(application_context)
 agent_os, app = create_agentos_app(application_context, base_app)

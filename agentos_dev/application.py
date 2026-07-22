@@ -18,6 +18,7 @@ class ApplicationContext:
     assistant: Agent
     edit_mode_assistant: Agent
     menu_navigation_assistant: Agent
+    report_agent: Agent
 
 
 def create_agentos_app(
@@ -26,7 +27,7 @@ def create_agentos_app(
 ) -> tuple[AgentOS, FastAPI]:
     agent_os = AgentOS(
         name="HRP开发服务",
-        agents=[context.assistant],
+        agents=[context.assistant, context.report_agent],
         interfaces=[AGUI(agent=context.assistant)],
         base_app=base_app,
         on_route_conflict="preserve_base_app",

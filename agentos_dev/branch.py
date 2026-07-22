@@ -23,6 +23,11 @@ from agno.run.base import RunContext, RunStatus
 from agno.session.agent import AgentSession
 
 from .async_utils import complete_cleanup
+from .report_data_sources import (
+    REPORT_DATASET_HANDLES_STATE_KEY,
+    ReportDataSourceError,
+    rebind_report_dataset_handles,
+)
 from .security import CapabilityClaims
 from .workspace import WorkspaceService
 
@@ -178,8 +183,21 @@ async def prepare_branch(
         spec.source_run_id,
         user_id,
     )
-    workspace_result = await workspace.acopy_branch(spec.source_thread_id, target_thread_id)
+    target.agent_id = str(getattr(agent, "id", "") or source.agent_id or "") or None
     try:
+        workspace_result = await workspace.acopy_branch(spec.source_thread_id, target_thread_id)
+        report_handles = await rebind_report_dataset_handles(
+            source.session_data,
+            workspace,
+            spec.source_thread_id,
+            target_thread_id,
+        )
+        if report_handles:
+            if target.session_data is None:
+                target.session_data = {}
+            target.session_data["session_state"] = {
+                REPORT_DATASET_HANDLES_STATE_KEY: report_handles,
+            }
         await agent.asave_session(target)
     except BaseException:
         try:
@@ -287,7 +305,7 @@ async def run_branch(
             run_state=state_snapshot,
         ):
             yield event
-    except BranchError as error:
+    except (BranchError, ReportDataSourceError) as error:
         if prepared and not started:
             try:
                 await cleanup_branch(agent, workspace, run_input.thread_id, user_id)
@@ -296,7 +314,7 @@ async def run_branch(
         yield RunErrorEvent(
             type=EventType.RUN_ERROR,
             message="无法基于所选消息创建分支。",
-            code=str(error),
+            code=error.code if isinstance(error, ReportDataSourceError) else str(error),
         )
     except Exception as error:
         logger.error("branch_failed error_type=%s", type(error).__name__)

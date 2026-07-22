@@ -58,11 +58,13 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
         FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
+        FakeAssistant(),
     )
     second_context = ApplicationContext(
         settings,
         object(),
         FakeSkills("second"),
+        FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
@@ -76,6 +78,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert second_app is second_base
     assert created[0].values["on_route_conflict"] == "preserve_base_app"
     assert created[0].values["cors_allowed_origins"] == list(settings.cors_allowed_origins)
+    assert len(created[0].values["agents"]) == 2
 
 
 def test_default_application_exposes_explicit_context():
@@ -88,6 +91,7 @@ def test_default_application_exposes_explicit_context():
     assert context.assistant is app_module.assistant
     assert context.edit_mode_assistant is app_module.edit_mode_assistant
     assert context.menu_navigation_assistant is app_module.menu_navigation_assistant
+    assert context.report_agent is app_module.report_agent
 
 
 @pytest.mark.anyio
@@ -102,6 +106,7 @@ async def test_base_application_routes_use_their_own_context():
         assistant=FakeAssistant(),
         edit_mode_assistant=FakeAssistant(),
         menu_navigation_assistant=FakeAssistant(),
+        report_agent=FakeAssistant(),
     )
     second_context = ApplicationContext(
         settings=replace(settings, workspace_hmac_secret="second-secret"),
@@ -110,6 +115,7 @@ async def test_base_application_routes_use_their_own_context():
         assistant=FakeAssistant(),
         edit_mode_assistant=FakeAssistant(),
         menu_navigation_assistant=FakeAssistant(),
+        report_agent=FakeAssistant(),
     )
     first_app = app_module.create_base_app(first_context)
     second_app = app_module.create_base_app(second_context)

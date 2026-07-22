@@ -43,6 +43,7 @@ babel
 cairosvg
 dateparser
 deepdiff
+duckdb
 httpx
 jmespath
 json-repair
