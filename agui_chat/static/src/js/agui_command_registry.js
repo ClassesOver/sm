@@ -72,7 +72,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         },
         {
             name: "odoo.apply_filter",
-            description: "在当前 List 或 Kanban SearchView 中添加一个可见原生筛选，并返回匹配记录候选。",
+            description: "仅当当前宿主快照的 viewType 为 list 或 kanban 时调用；Odoo tree 视图按 list 兼容。在对应 SearchView 中添加一个可见原生筛选并返回匹配记录候选，其他视图类型禁止调用。",
             parameters: schema({
                 domain: {type: "array", description: "已验证的 JSON domain 条件列表；单个条件也写成 [[字段, 运算符, 值]]，禁止字符串和字段点号路径。"},
                 label: {type: "string", minLength: 1, maxLength: 120},
@@ -80,7 +80,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         },
         {
             name: "odoo.apply_group",
-            description: "设置当前 List 或 Kanban SearchView 的完整原生分组状态。",
+            description: "仅当当前宿主快照的 viewType 为 list 或 kanban 时调用；Odoo tree 视图按 list 兼容。设置对应 SearchView 的完整原生分组状态，其他视图类型禁止调用。",
             parameters: schema({
                 groupBy: {
                     type: "array", maxItems: 3,
@@ -114,7 +114,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         },
         {
             name: "odoo.switch_view",
-            description: "切换到当前 action 声明的原生 Kanban、List 或 Form 视图；从多记录视图切到 Form 会进入未保存的新建表单。",
+            description: "仅当当前宿主快照的 viewType 为 list 或 kanban 时调用；Odoo tree 视图按 list 兼容。切换到当前 action 声明的原生 Kanban、List 或 Form 视图，从多记录视图切到 Form 会进入未保存的新建表单，Form 当前视图禁止调用。",
             parameters: schema({
                 viewType: {type: "string", enum: ["kanban", "list", "form"]},
             }, ["viewType"]),
@@ -153,7 +153,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         },
         {
             name: "odoo.search_relation",
-            description: "使用当前表单或当前快照 One2many 行 token 的实时域和上下文搜索可写关系字段。",
+            description: "仅当当前宿主快照的 viewType 为 form 时调用；使用当前表单或当前快照 One2many 行 token 的实时域和上下文搜索可写关系字段，其他视图类型禁止调用。",
             parameters: schema({
                 field: {type: "string", minLength: 1, maxLength: 128},
                 rowToken: {type: "string", minLength: 1, maxLength: 160},
@@ -164,7 +164,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         },
         {
             name: "odoo.stage_current_form",
-            description: "在当前原生表单暂存字段并执行 onchange，但不保存；修改 One2many 行时必须使用当前编辑态快照中的 rowToken。",
+            description: "仅当当前宿主快照的 viewType 为 form 时调用；暂存字段并执行 onchange，但不保存，修改 One2many 行时必须使用当前编辑态快照中的 rowToken，其他视图类型禁止调用。",
             parameters: schema({
                 rowToken: {type: "string", minLength: 1, maxLength: 160},
                 patch: {
@@ -175,7 +175,7 @@ odoo.define("agui_chat.command_registry", function (require) {
         },
         {
             name: "odoo.patch_current_form",
-            description: "应用并保存当前表单变更；只读模式会自动进入编辑模式并等待宿主状态同步，无需用户手动点击编辑。",
+            description: "仅当当前宿主快照的 viewType 为 form 时调用；应用并保存当前表单变更，其他视图类型禁止调用。只读模式会自动进入编辑模式并等待宿主状态同步，无需用户手动点击编辑。",
             parameters: schema({
                 patch: {
                     type: "object",
@@ -185,17 +185,17 @@ odoo.define("agui_chat.command_registry", function (require) {
         },
         {
             name: "odoo.validate_current_form",
-            description: "执行当前原生表单渲染器校验。",
+            description: "仅当当前宿主快照的 viewType 为 form 时调用；执行当前原生表单渲染器校验，其他视图类型禁止调用。",
             parameters: schema(),
         },
         {
             name: "odoo.save_current_form",
-            description: "通过当前原生 FormController 保存表单。",
+            description: "仅当当前宿主快照的 viewType 为 form 时调用；通过当前原生 FormController 保存表单，其他视图类型禁止调用。",
             parameters: schema(),
         },
         {
             name: "odoo.discard_current_form",
-            description: "确认后放弃当前原生表单的更改。",
+            description: "仅当当前宿主快照的 viewType 为 form 时调用；确认后放弃当前原生表单的更改，其他视图类型禁止调用。",
             parameters: schema(),
         },
     ];
@@ -489,7 +489,7 @@ odoo.define("agui_chat.command_registry", function (require) {
 
     COMMANDS["odoo.switch_view"] = function (context, args) {
         var before = context.getSnapshot();
-        var controller = requireView(context, ["form", "list", "kanban"]);
+        var controller = requireView(context, ["list", "kanban"]);
         var viewTypes = before.capabilities && before.capabilities.viewTypes || [];
         rejectUnsavedChanges(context);
         if (before.controller.viewType === args.viewType) {

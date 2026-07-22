@@ -22,7 +22,6 @@
 ## 架构边界与事实来源
 
 - `agui_chat/` 是 Odoo 12 核心模块，负责配置、权限、会话、页面宿主、业务命令和授权审计。
-- `agui_chat_import/` 是受控 One2many 批量导入扩展，必须经过 schema、策略、权限和原子导入链路。
 - `agui_chat/react_widget/` 是 React 18、TypeScript strict、Vite 的 AG-UI 客户端。
 - `agentos_dev/` 是 Python 3.12、FastAPI、Agno 2.7.3 的 AgentOS 服务，负责智能体、AG-UI、持久化和 Daytona 工作区。
 - `agui_chat_test/` 是本地 Odoo 集成测试夹具，不是产品业务实现。
@@ -38,7 +37,6 @@
 - 所有 token、授权和命令必须继续绑定当前数据库、用户、公司、会话、thread、run、tool call、控制器、记录、快照及 payload 中适用的部分。
 - 使用 `sudo()` 前后仍须显式保留用户、公司、所有权、ACL、record rule 或精确策略校验。`sudo()` 只能用于已验证后的必要系统操作，不能代替授权。
 - 控制器入口必须校验输入类型、长度、数量、所有权和状态；对外返回稳定 `code`，不要暴露 traceback、内部路径或敏感值。
-- One2many 导入必须保持 schema hash、字段白名单、行数/文件限制、预校验和原子提交；不要复用普通页面 patch 绕过批量导入策略。
 - 修改模型、访问权限、XML 数据或前端资源时，检查对应 `__manifest__.py` 版本、依赖、加载顺序和迁移影响。
 
 ## React 客户端

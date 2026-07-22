@@ -1,11 +1,10 @@
-from collections.abc import Sequence
+from collections.abc import Callable
 from typing import Any
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 
 from .database import SerializedAsyncPostgresDb
-from .report import report_tools
 from .settings import AgentSettings
 from .workspace import WorkspaceService, workspace_tools
 
@@ -17,12 +16,14 @@ OPENAI_COMPATIBLE_ROLE_MAP = {
     "model": "assistant",
 }
 
+AgentInstructions = str | list[str] | Callable[..., str | list[str]]
+
 
 def create_assistants(
     settings: AgentSettings,
     skills: Any,
     workspace_service: WorkspaceService,
-    instructions: Sequence[str],
+    instructions: AgentInstructions,
     edit_tool_choice: dict[str, Any],
     menu_navigation_tool_choice: dict[str, Any],
 ) -> tuple[Agent, Agent, Agent]:
@@ -37,9 +38,9 @@ def create_assistants(
             extra_body={"enable_thinking": False},
             temperature=0.0,
         ),
-        instructions=list(instructions),
+        instructions=instructions,
         skills=skills,
-        tools=workspace_tools(workspace_service, skills) + report_tools(workspace_service),
+        tools=workspace_tools(workspace_service, skills),
         db=SerializedAsyncPostgresDb(db_url=settings.database_url),
         add_history_to_context=True,
         num_history_runs=10,

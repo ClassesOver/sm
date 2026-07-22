@@ -1,16 +1,7 @@
 import { ChevronRight } from 'lucide-react'
-import type {
-  X2ManyImportPreviewRequest,
-  X2ManyImportPreviewResponse
-} from '../types'
-import { X2ManyImportPreview } from './X2ManyImportPreview'
 
 interface ToolConfirmationPreviewProps {
   result: Record<string, unknown>
-  running?: boolean
-  onPreviewX2ManyImport?: (
-    request: X2ManyImportPreviewRequest
-  ) => Promise<X2ManyImportPreviewResponse>
 }
 
 export function structuredPreview(result: Record<string, unknown>): Record<string, unknown> {
@@ -29,9 +20,7 @@ function displayDiffValue(value: unknown): string {
   return JSON.stringify(value)
 }
 
-export function ToolConfirmationPreview({
-  result, running, onPreviewX2ManyImport
-}: ToolConfirmationPreviewProps) {
+export function ToolConfirmationPreview({ result }: ToolConfirmationPreviewProps) {
   const preview = structuredPreview(result)
   const changes = Array.isArray(preview.changes)
     ? preview.changes as Array<Record<string, unknown>> : []
@@ -46,17 +35,6 @@ export function ToolConfirmationPreview({
   const reasons = Array.isArray(preview.riskReasons) ? preview.riskReasons : []
   const control = preview.control && typeof preview.control === 'object'
     ? preview.control as Record<string, unknown> : null
-
-  if (preview.kind === 'x2many_import') {
-    const value = preview.import && typeof preview.import === 'object'
-      ? preview.import as Record<string, unknown> : {}
-    return <X2ManyImportPreview
-      key={`${String(value.jobToken || '')}:${String(value.revision || '')}:${String(value.state || '')}`}
-      preview={preview}
-      running={running}
-      onSubmit={onPreviewX2ManyImport}
-    />
-  }
 
   if (control) {
     return <div className="mt-2 rounded border border-warning/25 bg-background p-2 text-xs text-primary">

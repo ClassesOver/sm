@@ -8,7 +8,6 @@ from datetime import timedelta
 from psycopg2 import IntegrityError
 
 from odoo import api, fields, models
-from odoo.exceptions import ValidationError
 
 from .agui_chat_config import HOST_COMMAND_NAMES, PROTOCOL
 
@@ -156,39 +155,6 @@ class AguiChatToolPolicy(models.Model):
         string="允许的按钮",
         help="仅用于页面控件命令；填写以逗号分隔的原生按钮 name 白名单。",
     )
-
-    @api.constrains("tool_name", "access_level", "model_name", "field_names")
-    def _check_report_policy(self):
-        forbidden_types = {"binary", "many2many", "one2many"}
-        sensitive = set(
-            self.env["agui.chat.config"].sudo().get_active_config().sensitive_fields()
-        )
-        for policy in self:
-            if policy.tool_name != "odoo.business.report.filters":
-                continue
-            if policy.access_level != "read" or not policy.model_name:
-                raise ValidationError("筛选报表策略必须选择读取级别并填写业务模型。")
-            names = {
-                item.strip() for item in (policy.field_names or "").split(",")
-                if item.strip()
-            }
-            if not names:
-                raise ValidationError("筛选报表策略必须配置非空字段白名单。")
-            if policy.model_name not in self.env:
-                raise ValidationError("筛选报表策略的业务模型不存在。")
-            model = self.env[policy.model_name]
-            unknown = names - set(model._fields)
-            forbidden = {
-                name for name in names
-                if name in model._fields and (
-                    model._fields[name].type in forbidden_types or
-                    name in sensitive or SECRET_KEYS.search(name)
-                )
-            }
-            if unknown:
-                raise ValidationError("筛选报表策略包含不存在的字段：%s" % ", ".join(sorted(unknown)))
-            if forbidden:
-                raise ValidationError("筛选报表策略包含禁止字段：%s" % ", ".join(sorted(forbidden)))
 
     @api.model
     def _patch_field_names(self, arguments):
@@ -1348,5 +1314,4 @@ class AguiChatToolAudit(models.Model):
         self.env["agui.chat.command.execution"].sudo().search([
             ("create_date", "<", audit_cutoff)
         ]).unlink()
-        self.env["agui.chat.report.source"]._cleanup_expired()
         return True

@@ -90,8 +90,6 @@ export function useChatActions(options: UseChatActionsOptions) {
       confirmTool: (tool: ToolCall, approved: boolean) => {
         void latest.current.runtime.confirmTool(tool, approved)
       },
-      previewX2ManyImport: (tool: ToolCall, request: import('../types').X2ManyImportPreviewRequest) =>
-        latest.current.runtime.previewX2ManyImport(tool, request),
       undoTool: (tool: ToolCall) => { void latest.current.runtime.undoTool(tool) },
       stop: () => {
         const { runtime, props } = latest.current

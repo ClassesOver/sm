@@ -13,10 +13,6 @@
 HRP 提供 `/agui_chat/config`、v2 界面会话、浏览器宿主命令策略，以及仅允许已注册命令的
 同步业务命令端点。HRP 不代理 SSE，也不开放通用 RPC 或 CRUD。
 
-可选的 `agui_chat_import` 在 Chat 内提供 Odoo ImportView 风格的 CSV/XLSX 预览、profile
-字段映射和测试导入；最终 One2many 写入仍使用具名业务命令的确认、幂等和原子事务链路，
-不开放通用导入执行接口。
-
 配置 `runtime_url` 后，HRP 会根据其中的 `/agui` 路径推导对应的 `/config` 握手地址。
 部署匹配的 `12.0.8.8.6` 声明后，再启用灰度开关。详情参见
 [协议说明](docs/agui_odoo_protocol.md)和[生产部署指南](docs/agui_chat_production.md)。
@@ -106,11 +102,6 @@ Runner、SSH Gateway、PostgreSQL、Redis、Registry、MinIO、MailDev、Jaeger�
 OpenTelemetry Collector 只在 Daytona 内部网络提供。SSH 入口按需通过独立 override 开放。
 完整命令、远程 HTTPS、端口和备份要求见 [Daytona 部署说明](docker/README.md)与
 [生产部署指南](docs/agui_chat_production.md#first-start)。
-
-收藏筛选和当前筛选可在管理员启用 `odoo.business.report.filters` 并配置逐模型读取策略后，
-导出到同一对话工作区，再由受控 Pandas 工具分析和生成图表。当前 List/Kanban 还可通过
-`odoo-current-view-report` 技能按完整 BasicModel 范围或勾选交集生成标准 PDF 报表；查询条件
-和记录 ID 仅在浏览器与 Odoo 的短期来源绑定中使用，不进入 AgentOS 上下文。
 
 集成开发环境可直接启动仓库内的最小 AgentOS 应用：
 

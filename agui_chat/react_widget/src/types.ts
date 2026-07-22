@@ -292,28 +292,6 @@ export interface ToolCall {
   confirmation_id?: string | false
 }
 
-export interface X2ManyImportPreviewRequest {
-  jobToken: string
-  expectedRevision: number
-  parseOptions: {
-    encoding: string | false
-    separator: string | false
-    quoting: string
-  }
-  mapping: Record<string, string | false>
-  finalize: boolean
-}
-
-export interface X2ManyImportPreviewResponse {
-  ok: boolean
-  code?: string
-  error?: string
-  jobToken?: string
-  state?: string
-  revision?: number
-  preview?: Record<string, unknown>
-}
-
 export interface RelationCandidate {
   id: number
   displayName: string
@@ -489,10 +467,6 @@ export interface AssistantMessageProps {
   onFeedback: (feedback: Exclude<ChatFeedback, null>) => void
   onConfirmTool: (tool: ToolCall, approved: boolean) => void
   onUndoTool?: (tool: ToolCall) => void
-  onPreviewX2ManyImport?: (
-    tool: ToolCall,
-    request: X2ManyImportPreviewRequest
-  ) => Promise<X2ManyImportPreviewResponse>
   hostState: OdooHostSnapshot
   onSelectRelation: (tool: ToolCall, candidates: RelationCandidate[]) => void
   onSelectRecord: (tool: ToolCall, candidate: RecordCandidate) => void
@@ -601,9 +575,6 @@ export interface HostBridge {
   getWorkspaceCapability?: (
     sessionId: string | number
   ) => Promise<{ ok?: boolean; code?: string; error?: string } & Partial<WorkspaceCapability>>
-  previewX2ManyImport?: (
-    request: X2ManyImportPreviewRequest
-  ) => Promise<X2ManyImportPreviewResponse> | X2ManyImportPreviewResponse
   listSessions?: SessionApi['list']
   createSession?: SessionApi['create']
   loadSession?: SessionApi['load']

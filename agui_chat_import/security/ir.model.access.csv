@@ -1,2 +1,0 @@
-id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
-access_agui_chat_x2many_import_job_user,agui.chat.x2many.import.job user,model_agui_chat_x2many_import_job,base.group_user,1,0,0,0

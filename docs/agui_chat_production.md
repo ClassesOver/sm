@@ -42,58 +42,13 @@ JSON 声明端点。
 基于残缺路径猜测。
 
 模块内置只读的 `odoo.apply_filter` 和 `odoo.apply_group` 策略，将 `hr.employee` 的筛选与
-分组限制为内部用户。策略只作用于当前绑定的列表或看板视图；HRP 访问权限、记录规则以及
+分组限制为内部用户。两个命令仅当最新宿主快照的 `viewType` 为 `list` 或 `kanban` 时可用；
+Odoo `tree` 视图在宿主边界归一化为协议值 `list`，二者兼容。
+策略只作用于当前绑定的列表或看板视图。HRP 访问权限、记录规则以及
 快照中的 `filterFields`、`groupFields` 白名单仍决定可操作范围。分组最多三级，日期和时间
 字段支持日、周、月、季度和年，完整数组会替换当前分组，空数组只用于明确清除分组。
 升级不会自动把新命令加入现有配置；启用时应将 `odoo.apply_group` 加入
 `enabled_commands`，需要额外用户组或字段限制时增加逐模型策略。
-
-### One2many 导入
-
-启用 `agui_chat_import` 时，业务模块必须用
-`register_x2many_import_profile()` 精确注册父模型、One2many 字段、允许的源列和目标字段，
-并在修改 converter 或 `row_prepare` 行为时提升 profile 版本。导入文件限制为 CSV/XLSX、
-10 MB、2,000 行、50 列和 80 字符表头。Chat 预览限制为 96 KiB，通常显示服务端生成的
-前 20 行，宽表或长文本会减少返回行数。不要给 profile 回调增加网络访问、额外写入或
-其他副作用。
-
-导入预览和测试通过同步 JSON 请求完成，最终确认后同步执行，不依赖 queue worker 或导入
-cron。升级到 `agui_chat_import` 12.0.8.8.1 会删除旧的 One2many 导入执行 cron，并把遗留的
-`validating/queued` 任务退回预览状态，要求按新协议重新映射和测试；不会修改 `agui_chat`
-统一审计保留 cron。终态任务会立即删除源文件副本和完整转换行；所有超期任务（包括未完成预览）
-及其源文件、错误报告由现有 `audit_retention_days` 统一清理。升级后应确认旧 XML ID
-`agui_chat_import.ir_cron_process_x2many_import_jobs` 已不存在。
-
-### 报表管理
-
-筛选报表命令会作为命令主数据安装，但不会自动加入 `enabled_business_commands`。
-启用报表时：
-
-1. 将 `odoo.business.report.filters` 加入现有的已启用业务命令选择。
-2. 按允许的模型和用户组范围分别创建 `agui.chat.tool.policy`。
-3. 将访问级别设为 `read`，填写精确的 `model_name`，并提供非空的逗号分隔
-   `field_names` 白名单。
-4. 不要将敏感字段、二进制字段、one2many 或 many2many 字段加入白名单；保存此类
-   策略会被拒绝。
-5. 货币字段可能参与聚合时，同时加入对应币种字段，通常为 `currency_id`。
-
-关闭 `write_tools_enabled` 时，该命令仍然可用。现有业务命令默认访问级别为 `write`，
-在该状态下不可用。必须使用非管理员账号测试每条策略，因为 HRP ACL、记录规则、当前
-公司、筛选可见性和菜单可见性仍然生效。
-
-当前 List/Kanban 报表不要求用户创建 `@筛选` 引用。浏览器会在命令准备前通过
-`/agui_chat/report/source/bind` 绑定当前 BasicModel 的完整范围；AgentOS 只看到范围类型、
-勾选数量、schema、统计和有界样例。绑定请求最多 256 KiB，勾选最多 5000 条；明细数据集
-最多 100000 行、30 字段、16 个 8 MiB 分片、100 MiB 原始内容和 128 MiB 估算展开内存。
-超过限制时应缩小页面筛选或取消勾选；只有用户明确接受时才改用 Odoo 聚合模式。
-
-生产部署需包含 `deploy/agentos/skills/odoo-current-view-report/`，并保持技能目录及资源不可被
-组或其他用户写入。Daytona Snapshot 必须使用仓库 `docker/sandbox-tools` 镜像，其中锁定
-Matplotlib、WeasyPrint 和 Noto CJK 字体。最终脚本经一次确认执行，按
-`agui.odoo.report.skill.v1` 写入
-`报表/生成结果/<report-uuid>/分析报告.pdf`；PDF 只在完整成功后原子出现。历史
-`reports/...` 文件不迁移。原始 JSONL 禁止通过模型文本读取工具读取，但所属用户仍可通过
-工作区下载接口下载。
 
 ## 部署
 

@@ -16,9 +16,7 @@ import type {
   TransportState,
   WorkspaceCapability,
   WorkspaceEntry,
-  WorkspaceReference,
-  X2ManyImportPreviewRequest,
-  X2ManyImportPreviewResponse
+  WorkspaceReference
 } from '../types'
 import { AGUI_ODOO_PROTOCOL } from '../types'
 import { applyJsonPatch, deepMerge } from './jsonPatch'
@@ -610,69 +608,6 @@ export class ChatRuntime {
     })
     const context = this.createRunContext(this.currentRunId)
     await this.executeRunLifecycle(context, () => this.run(context, 0))
-  }
-
-  async previewX2ManyImport(
-    tool: ToolCall,
-    request: X2ManyImportPreviewRequest
-  ): Promise<X2ManyImportPreviewResponse> {
-    const bridge = this.props.hostBridge
-    const current = this.toolsByKey[toolKey(tool)] || tool
-    if (this.running || !bridge?.previewX2ManyImport) {
-      return { ok: false, code: 'import_preview_unavailable', error: '导入预览当前不可用。' }
-    }
-    const currentResult = isRecord(current.result) ? current.result : {}
-    const currentPreview = isRecord(currentResult.preview) ? currentResult.preview : {}
-    const nestedResult = isRecord(currentResult.result) ? currentResult.result : {}
-    const nestedPreview = isRecord(nestedResult.preview) ? nestedResult.preview : {}
-    const preview = currentPreview.kind === 'x2many_import' ? currentPreview : nestedPreview
-    const importData = isRecord(preview.import) ? preview.import : {}
-    if (!request.jobToken || request.jobToken !== String(importData.jobToken || '')) {
-      return { ok: false, code: 'invalid_job_token', error: '导入任务已变化，请重新准备。' }
-    }
-    try {
-      const response = await Promise.resolve(bridge.previewX2ManyImport(request))
-      if (!response || response.ok === false) {
-        return response || { ok: false, code: 'x2many_import_failed' }
-      }
-      const nextResult = {
-        ...response,
-        operation: toolName(current)
-      }
-      this.mergeTool({
-        ...current,
-        result: nextResult,
-        status: 'ok',
-        error: false
-      })
-      this.notifyMessages()
-      this.emit()
-      if (response.state !== 'ready' || !request.finalize) {
-        await this.persistImmediately()
-        return response
-      }
-      const responsePreview = isRecord(response.preview) ? response.preview : {}
-      const responseImport = isRecord(responsePreview.import) ? responsePreview.import : {}
-      this.messages.push({
-        id: uuid(),
-        role: 'user',
-        hidden: true,
-        content: JSON.stringify({
-          kind: 'x2many_import_ready',
-          import: {
-            jobToken: String(response.jobToken || request.jobToken),
-            revision: Number(response.revision || responseImport.revision || 0),
-            mappingHash: String(responseImport.mappingHash || '')
-          }
-        }),
-        created_at: Date.now()
-      })
-      await this.executeNewTurn()
-      return response
-    } catch (reason) {
-      const error = reason instanceof Error ? reason : new Error(String(reason))
-      return { ok: false, code: 'x2many_import_failed', error: error.message }
-    }
   }
 
   async undoTool(tool: ToolCall): Promise<void> {

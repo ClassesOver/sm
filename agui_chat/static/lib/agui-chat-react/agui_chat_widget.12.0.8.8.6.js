@@ -7135,34 +7135,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$F = [
+  const __iconNode$D = [
     ["rect", { width: "20", height: "5", x: "2", y: "3", rx: "1", key: "1wp1u1" }],
     ["path", { d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8", key: "1s80jp" }],
     ["path", { d: "M10 12h4", key: "a56b0p" }]
   ];
-  const Archive = createLucideIcon("Archive", __iconNode$F);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$E = [
-    ["path", { d: "M12 5v14", key: "s699le" }],
-    ["path", { d: "m19 12-7 7-7-7", key: "1idqje" }]
-  ];
-  const ArrowDown = createLucideIcon("ArrowDown", __iconNode$E);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$D = [
-    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
-    ["path", { d: "M19 12H5", key: "x3x0zl" }]
-  ];
-  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$D);
+  const Archive = createLucideIcon("Archive", __iconNode$D);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7170,10 +7148,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$C = [
-    ["path", { d: "m5 12 7-7 7 7", key: "hav0vg" }],
-    ["path", { d: "M12 19V5", key: "x0mq9r" }]
+    ["path", { d: "M12 5v14", key: "s699le" }],
+    ["path", { d: "m19 12-7 7-7-7", key: "1idqje" }]
   ];
-  const ArrowUp = createLucideIcon("ArrowUp", __iconNode$C);
+  const ArrowDown = createLucideIcon("ArrowDown", __iconNode$C);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7181,56 +7159,56 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$B = [
+    ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
+    ["path", { d: "M19 12H5", key: "x3x0zl" }]
+  ];
+  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$B);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$A = [
+    ["path", { d: "m5 12 7-7 7 7", key: "hav0vg" }],
+    ["path", { d: "M12 19V5", key: "x0mq9r" }]
+  ];
+  const ArrowUp = createLucideIcon("ArrowUp", __iconNode$A);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$z = [
     ["circle", { cx: "12", cy: "12", r: "4", key: "4exip2" }],
     ["path", { d: "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8", key: "7n84p3" }]
   ];
-  const AtSign = createLucideIcon("AtSign", __iconNode$B);
+  const AtSign = createLucideIcon("AtSign", __iconNode$z);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$A = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
-  const Check = createLucideIcon("Check", __iconNode$A);
+  const __iconNode$y = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
+  const Check = createLucideIcon("Check", __iconNode$y);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$z = [["path", { d: "m6 9 6 6 6-6", key: "qrunsl" }]];
-  const ChevronDown = createLucideIcon("ChevronDown", __iconNode$z);
+  const __iconNode$x = [["path", { d: "m6 9 6 6 6-6", key: "qrunsl" }]];
+  const ChevronDown = createLucideIcon("ChevronDown", __iconNode$x);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$y = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
-  const ChevronRight = createLucideIcon("ChevronRight", __iconNode$y);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$x = [
-    ["path", { d: "m11 17-5-5 5-5", key: "13zhaf" }],
-    ["path", { d: "m18 17-5-5 5-5", key: "h8a8et" }]
-  ];
-  const ChevronsLeft = createLucideIcon("ChevronsLeft", __iconNode$x);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$w = [
-    ["path", { d: "m6 17 5-5-5-5", key: "xnjwq" }],
-    ["path", { d: "m13 17 5-5-5-5", key: "17xmmf" }]
-  ];
-  const ChevronsRight = createLucideIcon("ChevronsRight", __iconNode$w);
+  const __iconNode$w = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
+  const ChevronRight = createLucideIcon("ChevronRight", __iconNode$w);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7238,11 +7216,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$v = [
-    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["line", { x1: "12", x2: "12", y1: "8", y2: "12", key: "1pkeuh" }],
-    ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16", key: "4dfq90" }]
+    ["path", { d: "m11 17-5-5 5-5", key: "13zhaf" }],
+    ["path", { d: "m18 17-5-5 5-5", key: "h8a8et" }]
   ];
-  const CircleAlert = createLucideIcon("CircleAlert", __iconNode$v);
+  const ChevronsLeft = createLucideIcon("ChevronsLeft", __iconNode$v);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7250,10 +7227,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$u = [
-    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["path", { d: "m9 12 2 2 4-4", key: "dzmm74" }]
+    ["path", { d: "m6 17 5-5-5-5", key: "xnjwq" }],
+    ["path", { d: "m13 17 5-5-5-5", key: "17xmmf" }]
   ];
-  const CircleCheck = createLucideIcon("CircleCheck", __iconNode$u);
+  const ChevronsRight = createLucideIcon("ChevronsRight", __iconNode$u);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7262,9 +7239,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    */
   const __iconNode$t = [
     ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["polyline", { points: "12 6 12 12 16.5 12", key: "1aq6pp" }]
+    ["line", { x1: "12", x2: "12", y1: "8", y2: "12", key: "1pkeuh" }],
+    ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16", key: "4dfq90" }]
   ];
-  const Clock3 = createLucideIcon("Clock3", __iconNode$t);
+  const CircleAlert = createLucideIcon("CircleAlert", __iconNode$t);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7272,11 +7250,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$s = [
-    ["path", { d: "M12 13v8", key: "1l5pq0" }],
-    ["path", { d: "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", key: "1pljnt" }],
-    ["path", { d: "m8 17 4-4 4 4", key: "1quai1" }]
+    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
+    ["path", { d: "m9 12 2 2 4-4", key: "dzmm74" }]
   ];
-  const CloudUpload = createLucideIcon("CloudUpload", __iconNode$s);
+  const CircleCheck = createLucideIcon("CircleCheck", __iconNode$s);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7284,10 +7261,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$r = [
-    ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
-    ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
+    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
+    ["polyline", { points: "12 6 12 12 16.5 12", key: "1aq6pp" }]
   ];
-  const Copy = createLucideIcon("Copy", __iconNode$r);
+  const Clock3 = createLucideIcon("Clock3", __iconNode$r);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7295,11 +7272,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$q = [
-    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
-    ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
-    ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
+    ["path", { d: "M12 13v8", key: "1l5pq0" }],
+    ["path", { d: "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", key: "1pljnt" }],
+    ["path", { d: "m8 17 4-4 4 4", key: "1quai1" }]
   ];
-  const Download = createLucideIcon("Download", __iconNode$q);
+  const CloudUpload = createLucideIcon("CloudUpload", __iconNode$q);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7307,11 +7284,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$p = [
-    ["path", { d: "M15 3h6v6", key: "1q9fwt" }],
-    ["path", { d: "M10 14 21 3", key: "gplh6r" }],
-    ["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6", key: "a6xqqp" }]
+    ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
+    ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
   ];
-  const ExternalLink = createLucideIcon("ExternalLink", __iconNode$p);
+  const Copy = createLucideIcon("Copy", __iconNode$p);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7319,6 +7295,30 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$o = [
+    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
+    ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
+    ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
+  ];
+  const Download = createLucideIcon("Download", __iconNode$o);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$n = [
+    ["path", { d: "M15 3h6v6", key: "1q9fwt" }],
+    ["path", { d: "M10 14 21 3", key: "gplh6r" }],
+    ["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6", key: "a6xqqp" }]
+  ];
+  const ExternalLink = createLucideIcon("ExternalLink", __iconNode$n);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$m = [
     [
       "path",
       {
@@ -7328,36 +7328,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ],
     ["circle", { cx: "12", cy: "12", r: "3", key: "1v7zrd" }]
   ];
-  const Eye = createLucideIcon("Eye", __iconNode$o);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$n = [
-    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
-    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
-    ["path", { d: "M8 13h2", key: "yr2amv" }],
-    ["path", { d: "M14 13h2", key: "un5t4a" }],
-    ["path", { d: "M8 17h2", key: "2yhykz" }],
-    ["path", { d: "M14 17h2", key: "10kma7" }]
-  ];
-  const FileSpreadsheet = createLucideIcon("FileSpreadsheet", __iconNode$n);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$m = [
-    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
-    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
-    ["path", { d: "M10 9H8", key: "b1mrlr" }],
-    ["path", { d: "M16 13H8", key: "t4e002" }],
-    ["path", { d: "M16 17H8", key: "z1uh3a" }]
-  ];
-  const FileText = createLucideIcon("FileText", __iconNode$m);
+  const Eye = createLucideIcon("Eye", __iconNode$m);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7366,9 +7337,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    */
   const __iconNode$l = [
     ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
-    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }]
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
+    ["path", { d: "M10 9H8", key: "b1mrlr" }],
+    ["path", { d: "M16 13H8", key: "t4e002" }],
+    ["path", { d: "M16 17H8", key: "z1uh3a" }]
   ];
-  const File = createLucideIcon("File", __iconNode$l);
+  const FileText = createLucideIcon("FileText", __iconNode$l);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7376,17 +7350,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$k = [
-    [
-      "path",
-      {
-        d: "M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2",
-        key: "18mbvz"
-      }
-    ],
-    ["path", { d: "M6.453 15h11.094", key: "3shlmq" }],
-    ["path", { d: "M8.5 2h7", key: "csnxdl" }]
+    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }]
   ];
-  const FlaskConical = createLucideIcon("FlaskConical", __iconNode$k);
+  const File = createLucideIcon("File", __iconNode$k);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -25105,217 +25072,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return this.state.failed ? this.props.fallback : this.props.children;
     }
   }
-  function asRecord(value) {
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  }
-  function importData(preview) {
-    return asRecord(preview.import);
-  }
-  function columnsFrom(value) {
-    if (!Array.isArray(value)) return [];
-    return value.map((raw, index2) => {
-      const column = asRecord(raw);
-      return {
-        index: Number.isInteger(column.index) ? Number(column.index) : index2,
-        header: String(column.header || ""),
-        mappedField: typeof column.mappedField === "string" ? column.mappedField : false,
-        mappable: column.mappable !== false
-      };
-    });
-  }
-  function fieldsFrom(value) {
-    if (!Array.isArray(value)) return [];
-    return value.map((raw) => {
-      const field = asRecord(raw);
-      const type = typeof field.type === "string" ? field.type : false;
-      return {
-        name: String(field.name || ""),
-        label: String(field.label || field.name || ""),
-        type,
-        required: field.required === true
-      };
-    }).filter((field) => field.name);
-  }
-  function parseOptionsFrom(value) {
-    const options = asRecord(value);
-    const encoding = typeof options.encoding === "string" ? options.encoding : false;
-    const separator = typeof options.separator === "string" ? options.separator : false;
-    return {
-      encoding,
-      separator,
-      quoting: typeof options.quoting === "string" ? options.quoting : '"'
-    };
-  }
-  function rowsFrom(value) {
-    if (!Array.isArray(value)) return [];
-    return value.map((row) => Array.isArray(row) ? row.map((cell) => String(cell ?? "")) : []);
-  }
-  function errorText(value) {
-    const error = asRecord(value);
-    const messages = Array.isArray(error.errors) ? error.errors.map(String) : [];
-    const prefix = Number.isInteger(error.row) && Number(error.row) > 0 ? `第 ${error.row} 行` : "文件";
-    return `${prefix}：${messages.join("；") || String(error.code || "导入数据无效")}`;
-  }
-  function X2ManyImportPreview({
-    preview,
-    running = false,
-    onSubmit
-  }) {
-    const initial = importData(preview);
-    const [data, setData] = reactExports.useState(initial);
-    const [mapping, setMapping] = reactExports.useState(
-      () => Object.fromEntries(columnsFrom(initial.columns).map((column) => [
-        column.header,
-        column.mappedField
-      ]))
-    );
-    const [parseOptions, setParseOptions] = reactExports.useState(
-      () => parseOptionsFrom(initial.parseOptions)
-    );
-    const [submitting, setSubmitting] = reactExports.useState(false);
-    const [requestError, setRequestError] = reactExports.useState("");
-    const appliedParseOptions = parseOptionsFrom(data.parseOptions);
-    const parseOptionsChanged = parseOptions.encoding !== appliedParseOptions.encoding || parseOptions.separator !== appliedParseOptions.separator || parseOptions.quoting !== appliedParseOptions.quoting;
-    const columns = columnsFrom(data.columns);
-    const schema = asRecord(data.schema);
-    const fields = fieldsFrom(schema.fields);
-    const rows = rowsFrom(data.rows);
-    const errors = Array.isArray(data.errors) ? data.errors : [];
-    const errorCount = Number(data.errorCount || errors.length);
-    const errorReport = typeof data.errorReport === "string" && data.errorReport.startsWith("/agui_chat_import/error/") ? data.errorReport : "";
-    const selectedFields = Object.values(mapping).filter(Boolean);
-    const duplicateFields = new Set(selectedFields.filter(
-      (field, index2) => selectedFields.indexOf(field) !== index2
-    ));
-    const missingRequired = fields.filter(
-      (field) => field.required && !selectedFields.includes(field.name)
-    );
-    const state = String(data.state || "preview");
-    const locked = state !== "preview";
-    const result = asRecord(data.result);
-    const submit = async (finalize) => {
-      if (!onSubmit || locked || submitting) return;
-      setSubmitting(true);
-      setRequestError("");
-      try {
-        const response = await onSubmit({
-          jobToken: String(data.jobToken || ""),
-          expectedRevision: Number(data.revision || 0),
-          parseOptions,
-          mapping: parseOptionsChanged ? {} : mapping,
-          finalize
-        });
-        if (!response.ok) {
-          setRequestError(response.error || response.code || "导入预览更新失败。");
-          return;
-        }
-        const next = importData(asRecord(response.preview));
-        if (Object.keys(next).length) {
-          setData(next);
-          setMapping(Object.fromEntries(columnsFrom(next.columns).map((column) => [
-            column.header,
-            column.mappedField
-          ])));
-          setParseOptions(parseOptionsFrom(next.parseOptions));
-        }
-      } catch (reason) {
-        setRequestError(reason instanceof Error ? reason.message : String(reason));
-      } finally {
-        setSubmitting(false);
-      }
-    };
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("section", { className: "mt-2 min-w-0 border-t border-border pt-2 text-xs text-primary", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-wrap items-center justify-between gap-2", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex min-w-0 items-center gap-2", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(FileSpreadsheet, { className: "size-4 shrink-0 text-positive" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "truncate font-semibold", children: String(data.fileName || "导入文件") }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "text-[11px] text-muted", children: [
-              Number(data.rowCount || 0).toLocaleString(),
-              " 行 · ",
-              Number(data.fileSize || 0).toLocaleString(),
-              " B"
-            ] })
-          ] })
-        ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] text-muted", children: state === "ready" ? "已通过测试" : state === "done" ? "已完成" : state === "failed" ? "执行失败" : "预览" })
-      ] }),
-      !locked ? /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { className: "mt-2 border-y border-border py-2", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("summary", { className: "cursor-pointer text-[11px] font-medium text-muted", children: "格式选项" }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 grid gap-2 sm:grid-cols-3", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "grid gap-1 text-[11px] text-muted", children: [
-            "编码",
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { "aria-label": "编码", className: "h-8 min-w-0 border border-border bg-background px-2 text-primary", value: parseOptions.encoding || "", disabled: submitting || running, onChange: (event) => setParseOptions((current) => ({ ...current, encoding: event.target.value || false })), children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "自动检测" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "ascii", children: "ASCII" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "utf-8", children: "UTF-8" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "utf-8-sig", children: "UTF-8 BOM" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "gb18030", children: "GB18030" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "gbk", children: "GBK" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "big5", children: "Big5" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "iso-8859-1", children: "ISO-8859-1" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "windows-1252", children: "Windows-1252" })
-            ] })
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "grid gap-1 text-[11px] text-muted", children: [
-            "分隔符",
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { "aria-label": "分隔符", className: "h-8 min-w-0 border border-border bg-background px-2 text-primary", value: parseOptions.separator || "", disabled: submitting || running, onChange: (event) => setParseOptions((current) => ({ ...current, separator: event.target.value || false })), children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "自动检测" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: ",", children: "逗号" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: ";", children: "分号" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "	", children: "制表符" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "|", children: "竖线" })
-            ] })
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "grid gap-1 text-[11px] text-muted", children: [
-            "文本限定符",
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { "aria-label": "文本限定符", className: "h-8 min-w-0 border border-border bg-background px-2 text-primary", value: parseOptions.quoting, disabled: submitting || running, onChange: (event) => setParseOptions((current) => ({ ...current, quoting: event.target.value })), children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: '"', children: "双引号" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "'", children: "单引号" })
-            ] })
-          ] })
-        ] })
-      ] }) : null,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-2 max-w-full overflow-x-auto border border-border", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "min-w-max border-collapse text-left text-[11px]", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { className: "bg-background-secondary", children: /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: columns.map((column) => /* @__PURE__ */ jsxRuntimeExports.jsxs("th", { className: "min-w-40 border-r border-border p-2 last:border-r-0", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mb-1 max-w-48 truncate font-medium", title: column.header, children: column.header }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("select", { "aria-label": `映射 ${column.header}`, className: "h-8 w-full border border-border bg-background px-2 font-normal text-primary", value: mapping[column.header] || "", disabled: locked || submitting || running || !column.mappable, onChange: (event) => setMapping((current) => ({ ...current, [column.header]: event.target.value || false })), children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "不导入" }),
-            fields.map((field) => /* @__PURE__ */ jsxRuntimeExports.jsxs("option", { value: field.name, disabled: selectedFields.includes(field.name) && mapping[column.header] !== field.name, children: [
-              field.label,
-              field.required ? " *" : ""
-            ] }, field.name))
-          ] })
-        ] }, column.header)) }) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: rows.length ? rows.map((row, rowIndex) => /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { className: "border-t border-border", children: columns.map((column) => /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "max-w-64 border-r border-border p-2 align-top last:border-r-0", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "block max-w-60 truncate", title: row[column.index] || "", children: row[column.index] || "" }) }, column.header)) }, rowIndex)) : /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { colSpan: Math.max(columns.length, 1), className: "p-4 text-center text-muted", children: "没有可预览的数据" }) }) })
-      ] }) }),
-      missingRequired.length || duplicateFields.size ? /* @__PURE__ */ jsxRuntimeExports.jsx(InlineNotice, { className: "mt-2", tone: "warning", children: missingRequired.length ? `请映射必填字段：${missingRequired.map((field) => field.label).join("、")}` : "同一目标字段不能重复映射。" }) : null,
-      errors.length ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 border-l-2 border-destructive pl-2 text-destructive", children: [
-        errors.map((error, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: errorText(error) }, index2)),
-        errorReport ? /* @__PURE__ */ jsxRuntimeExports.jsxs("a", { className: "mt-1 inline-flex items-center gap-1 font-medium underline", href: errorReport, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Download, { className: "size-3.5" }),
-          "下载完整错误报告",
-          errorCount > errors.length ? `（共 ${errorCount} 项）` : ""
-        ] }) : null
-      ] }) : null,
-      requestError ? /* @__PURE__ */ jsxRuntimeExports.jsx(InlineNotice, { className: "mt-2", tone: "error", children: requestError }) : null,
-      state === "done" ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 text-positive", children: [
-        "已创建 ",
-        Number(result.created || 0),
-        " 条明细。"
-      ] }) : null,
-      !locked && onSubmit ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 flex flex-wrap justify-end gap-2", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { size: "sm", className: "h-8 rounded-md bg-background", disabled: submitting || running, onClick: () => void submit(false), children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(RefreshCw, { className: submitting ? "size-3.5 animate-spin" : "size-3.5" }),
-          "更新预览"
-        ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { size: "sm", variant: "primary", className: "h-8 rounded-md", disabled: submitting || running || Boolean(missingRequired.length || duplicateFields.size), onClick: () => void submit(true), children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(FlaskConical, { className: "size-3.5" }),
-          "测试导入"
-        ] })
-      ] }) : null
-    ] });
-  }
   function structuredPreview(result) {
     const preview = result.preview && typeof result.preview === "object" ? result.preview : {};
     if (preview.kind) return preview;
@@ -25327,11 +25083,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (typeof value === "string") return value;
     return JSON.stringify(value);
   }
-  function ToolConfirmationPreview({
-    result,
-    running,
-    onPreviewX2ManyImport
-  }) {
+  function ToolConfirmationPreview({ result }) {
     const preview = structuredPreview(result);
     const changes = Array.isArray(preview.changes) ? preview.changes : [];
     const riskLabels = {
@@ -25344,18 +25096,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const reasons = Array.isArray(preview.riskReasons) ? preview.riskReasons : [];
     const control = preview.control && typeof preview.control === "object" ? preview.control : null;
-    if (preview.kind === "x2many_import") {
-      const value = preview.import && typeof preview.import === "object" ? preview.import : {};
-      return /* @__PURE__ */ jsxRuntimeExports.jsx(
-        X2ManyImportPreview,
-        {
-          preview,
-          running,
-          onSubmit: onPreviewX2ManyImport
-        },
-        `${String(value.jobToken || "")}:${String(value.revision || "")}:${String(value.state || "")}`
-      );
-    }
     if (control) {
       return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 rounded border border-warning/25 bg-background p-2 text-xs text-primary", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "font-semibold", children: String(control.label || "对象按钮") }),
@@ -25584,8 +25324,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     onConfirm,
     onUndo,
     labels,
-    running,
-    onPreviewX2ManyImport
+    running
   }) {
     const {
       displayName,
@@ -25598,8 +25337,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       undo,
       call
     } = getToolCallPresentation(tool);
-    const hasImportPreview = structuredPreview(result).kind === "x2many_import";
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { open: needsConfirmation || hasImportPreview || void 0, className: "rounded-lg border border-border bg-background-secondary/80 p-2", children: [
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { open: needsConfirmation || void 0, className: "rounded-lg border border-border bg-background-secondary/80 p-2", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("summary", { className: "flex cursor-pointer list-none flex-wrap items-center gap-2", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "inline-flex items-center gap-1.5 rounded-md bg-background px-2 py-1 font-mono text-[11px] text-primary", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(Hammer, { className: "size-3" }),
@@ -25620,12 +25358,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           "需要确认：",
           displayName
         ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(ToolConfirmationPreview, { result, running, onPreviewX2ManyImport }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(ToolConfirmationPreview, { result }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 flex gap-2", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { size: "sm", variant: "primary", className: "h-7 rounded-md", disabled: running, onClick: () => onConfirm(true), children: labels.approve }),
           /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { size: "sm", className: "h-7 rounded-md bg-background-panel", disabled: running, onClick: () => onConfirm(false), children: labels.reject })
         ] })
-      ] }) : hasImportPreview ? /* @__PURE__ */ jsxRuntimeExports.jsx(ToolConfirmationPreview, { result, running, onPreviewX2ManyImport }) : null,
+      ] }) : null,
       undo.available ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 flex items-center gap-2 border-t border-border pt-2", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { size: "sm", className: "h-8 rounded-md bg-background", disabled: running || undo.status === "running" || undo.status === "undone", title: "撤销本次修改", onClick: onUndo, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(RotateCcw, { className: "size-3.5" }),
@@ -25651,11 +25389,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     hostState,
     running,
     onSelectRelation,
-    onSelectRecord,
-    onPreviewX2ManyImport
+    onSelectRecord
   }) {
     const Renderer = renderers == null ? void 0 : renderers[toolName(tool)];
-    const fallback = /* @__PURE__ */ jsxRuntimeExports.jsx(DefaultToolCallCard, { tool, onConfirm, onUndo, labels, running, onPreviewX2ManyImport });
+    const fallback = /* @__PURE__ */ jsxRuntimeExports.jsx(DefaultToolCallCard, { tool, onConfirm, onUndo, labels, running });
     if (Renderer) return /* @__PURE__ */ jsxRuntimeExports.jsx(
       RenderErrorBoundary,
       {
@@ -25739,7 +25476,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     onRegenerate,
     onConfirmTool,
     onUndoTool = () => void 0,
-    onPreviewX2ManyImport,
     onSelectRelation,
     onSelectRecord
   }) {
@@ -25748,7 +25484,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-5", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx(MessageReasoning, { steps: reasoning }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(MessageReferences, { references }),
-      ((_a = message.tool_calls) == null ? void 0 : _a.length) ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-col gap-2", children: message.tool_calls.map((tool, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx(ToolCallCard, { tool, renderers: toolRenderers, labels, hostState, running, onSelectRelation, onSelectRecord, onConfirm: (approved) => onConfirmTool(tool, approved), onUndo: () => onUndoTool(tool), onPreviewX2ManyImport: onPreviewX2ManyImport ? (request) => onPreviewX2ManyImport(tool, request) : void 0 }, getToolCallRenderKey(tool, index2))) }) : null,
+      ((_a = message.tool_calls) == null ? void 0 : _a.length) ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-col gap-2", children: message.tool_calls.map((tool, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx(ToolCallCard, { tool, renderers: toolRenderers, labels, hostState, running, onSelectRelation, onSelectRecord, onConfirm: (approved) => onConfirmTool(tool, approved), onUndo: () => onUndoTool(tool) }, getToolCallRenderKey(tool, index2))) }) : null,
       content2 || message.streaming_error ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "group flex items-start gap-3", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid size-6 shrink-0 place-items-center rounded bg-primary text-primaryAccent", children: icons.assistant }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 flex-1", children: [
@@ -25804,7 +25540,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     hostState,
     onSelectRelation,
     onSelectRecord,
-    onPreviewX2ManyImport,
     onRemoveMenuMention
   }) {
     const messageFeedback = useMessageFeedback(onFeedback);
@@ -25820,7 +25555,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mx-auto flex w-full max-w-3xl flex-col gap-12 px-4 py-8", children: [
       displayMessages.map((message, index2) => {
         const role = normalizeMessageRole(message.role);
-        if (role === "assistant") return /* @__PURE__ */ jsxRuntimeExports.jsx(AssistantMessage, { message, running, isCurrent: index2 === lastAssistantIndex, toolRenderers, labels, icons, feedback: messageFeedback.feedback[message.id] || null, hostState, onSelectRelation: (tool, candidates) => onSelectRelation(tool, candidates), onSelectRecord: (tool, candidate) => onSelectRecord(tool, candidate), onCopy: () => onCopy(message), onRegenerate: () => onRegenerate(message.id), onFeedback: (next) => messageFeedback.toggleFeedback(message, next), onConfirmTool, onUndoTool: (tool) => onUndoTool == null ? void 0 : onUndoTool(tool), onPreviewX2ManyImport }, message.id || `assistant-${index2}`);
+        if (role === "assistant") return /* @__PURE__ */ jsxRuntimeExports.jsx(AssistantMessage, { message, running, isCurrent: index2 === lastAssistantIndex, toolRenderers, labels, icons, feedback: messageFeedback.feedback[message.id] || null, hostState, onSelectRelation: (tool, candidates) => onSelectRelation(tool, candidates), onSelectRecord: (tool, candidate) => onSelectRecord(tool, candidate), onCopy: () => onCopy(message), onRegenerate: () => onRegenerate(message.id), onFeedback: (next) => messageFeedback.toggleFeedback(message, next), onConfirmTool, onUndoTool: (tool) => onUndoTool == null ? void 0 : onUndoTool(tool) }, message.id || `assistant-${index2}`);
         if (role === "user") return /* @__PURE__ */ jsxRuntimeExports.jsx(UserMessage, { message, icons, labels, onPreviewAttachment, onRemoveMenuMention: message.menuMention && onRemoveMenuMention ? () => onRemoveMenuMention(message.id) : void 0 }, message.id || `user-${index2}`);
         return null;
       }),
@@ -27067,7 +26802,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         confirmTool: (tool, approved) => {
           void latest.current.runtime.confirmTool(tool, approved);
         },
-        previewX2ManyImport: (tool, request) => latest.current.runtime.previewX2ManyImport(tool, request),
         undoTool: (tool) => {
           void latest.current.runtime.undoTool(tool);
         },
@@ -27169,7 +26903,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                 onRegenerate: actions.regenerate,
                 onSuggestion: actions.suggestion,
                 onConfirmTool: actions.confirmTool,
-                onPreviewX2ManyImport: actions.previewX2ManyImport,
                 onUndoTool: actions.undoTool
               }
             )
@@ -28209,65 +27942,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       });
       const context = this.createRunContext(this.currentRunId);
       await this.executeRunLifecycle(context, () => this.run(context, 0));
-    }
-    async previewX2ManyImport(tool, request) {
-      const bridge = this.props.hostBridge;
-      const current = this.toolsByKey[toolKey(tool)] || tool;
-      if (this.running || !(bridge == null ? void 0 : bridge.previewX2ManyImport)) {
-        return { ok: false, code: "import_preview_unavailable", error: "导入预览当前不可用。" };
-      }
-      const currentResult = isRecord(current.result) ? current.result : {};
-      const currentPreview = isRecord(currentResult.preview) ? currentResult.preview : {};
-      const nestedResult = isRecord(currentResult.result) ? currentResult.result : {};
-      const nestedPreview = isRecord(nestedResult.preview) ? nestedResult.preview : {};
-      const preview = currentPreview.kind === "x2many_import" ? currentPreview : nestedPreview;
-      const importData2 = isRecord(preview.import) ? preview.import : {};
-      if (!request.jobToken || request.jobToken !== String(importData2.jobToken || "")) {
-        return { ok: false, code: "invalid_job_token", error: "导入任务已变化，请重新准备。" };
-      }
-      try {
-        const response = await Promise.resolve(bridge.previewX2ManyImport(request));
-        if (!response || response.ok === false) {
-          return response || { ok: false, code: "x2many_import_failed" };
-        }
-        const nextResult = {
-          ...response,
-          operation: toolName(current)
-        };
-        this.mergeTool({
-          ...current,
-          result: nextResult,
-          status: "ok",
-          error: false
-        });
-        this.notifyMessages();
-        this.emit();
-        if (response.state !== "ready" || !request.finalize) {
-          await this.persistImmediately();
-          return response;
-        }
-        const responsePreview = isRecord(response.preview) ? response.preview : {};
-        const responseImport = isRecord(responsePreview.import) ? responsePreview.import : {};
-        this.messages.push({
-          id: uuid(),
-          role: "user",
-          hidden: true,
-          content: JSON.stringify({
-            kind: "x2many_import_ready",
-            import: {
-              jobToken: String(response.jobToken || request.jobToken),
-              revision: Number(response.revision || responseImport.revision || 0),
-              mappingHash: String(responseImport.mappingHash || "")
-            }
-          }),
-          created_at: Date.now()
-        });
-        await this.executeNewTurn();
-        return response;
-      } catch (reason) {
-        const error = reason instanceof Error ? reason : new Error(String(reason));
-        return { ok: false, code: "x2many_import_failed", error: error.message };
-      }
     }
     async undoTool(tool) {
       var _a;

@@ -25,7 +25,7 @@ def create_agentos_app(
     base_app: FastAPI,
 ) -> tuple[AgentOS, FastAPI]:
     agent_os = AgentOS(
-        name="HRP AG-UI 开发服务",
+        name="HRP开发服务",
         agents=[context.assistant],
         interfaces=[AGUI(agent=context.assistant)],
         base_app=base_app,

@@ -118,32 +118,8 @@ odoo.define("agui_chat.tests.host", function (require) {
         assert.strictEqual(props.csrfToken, core.csrf_token);
     });
 
-    QUnit.test("host bridge sends bounded One2many preview requests", function (assert) {
-        assert.expect(2);
-        var bridge = new ChatBridge.HostBridge({call: function () { return $.when(); }});
-        bridge._rpc = function (route, values) {
-            assert.strictEqual(route, "/agui_chat_import/preview");
-            assert.deepEqual(values, {
-                jobToken: "job-1",
-                expectedRevision: 3,
-                parseOptions: {encoding: "utf-8", separator: ",", quoting: '"'},
-                mapping: {"产品": "name"},
-                finalize: true,
-            });
-            return $.when({ok: true});
-        };
-
-        bridge.publicApi().previewX2ManyImport({
-            jobToken: "job-1",
-            expectedRevision: 3,
-            parseOptions: {encoding: "utf-8", separator: ",", quoting: '"'},
-            mapping: {"产品": "name"},
-            finalize: true,
-        });
-    });
-
     QUnit.test("chat dock stays interactive above modal backdrops", function (assert) {
-        assert.expect(2);
+        assert.expect(3);
         var $manager = $(
             "<div class='o_agui_chat_surface_manager o_agui_chat_enabled " +
             "o_agui_chat_dock_open o_agui_chat_dock_right'>" +
@@ -780,112 +756,6 @@ odoo.define("agui_chat.tests.host", function (require) {
         });
     });
 
-    QUnit.test("current list reports bind full BasicModel state before server preparation", function (assert) {
-        assert.expect(10);
-        var done = assert.async();
-        var command = "odoo.business.report.filters";
-        var target = {
-            snapshotId: "snapshot-list", hostRevision: 3,
-            controllerId: "controller-list", dataPointId: "data-list",
-            model: "res.partner", resId: false,
-        };
-        var sourceState = {
-            target: target, viewType: "list", menuId: 7, actionId: 11,
-            domain: [["name", "ilike", "仅绑定接口可见"]],
-            context: {search_default_customer: 1}, groupBy: [], sort: ["-name"],
-            selectedIds: [5, 8], scope: "selected", selectedCount: 2,
-        };
-        var bridge = new ChatBridge.HostBridge({
-            call: function (service, method, value) {
-                assert.strictEqual(service + ":" + method, "agui_host:getReportSourceState");
-                assert.deepEqual(value, target);
-                return sourceState;
-            },
-        });
-        bridge.config = {
-            host_tools_enabled: true,
-            write_tools_enabled: false,
-            enabled_commands: [],
-            business_tools: [{
-                name: command, parameters: {type: "object"}, accessLevel: "read",
-            }],
-        };
-        bridge.setCatalog([]);
-        var routes = [];
-        bridge._rpc = function (route, values) {
-            routes.push(route);
-            if (route === "/agui_chat/report/source/bind") {
-                assert.deepEqual(values.source.selectedIds, [5, 8]);
-                assert.deepEqual(values.source.domain, sourceState.domain);
-                assert.strictEqual(values.source.threadId, "thread-list");
-                return $.when({ok: true, sourceHandle: "source-bound"});
-            }
-            if (route === "/agui_chat/business/prepare") {
-                assert.deepEqual(values.call.arguments.source, {
-                    kind: "current_view", sourceHandle: "source-bound",
-                });
-                assert.notOk(values.call.arguments.domain);
-                return $.when({
-                    ok: true,
-                    authorization_id: "authorization-report",
-                    bound_call: values.call,
-                });
-            }
-            assert.strictEqual(values.payload.source.sourceHandle, "source-bound");
-            return $.when({ok: true, result: {mode: "describe"}});
-        };
-        bridge.executeTool({
-            id: "report-list", tool: command,
-            arguments: {source: {kind: "current_view"}, target: target,
-                mode: "describe", requests: [{}]},
-            context: {requestId: "request-list", runId: "run-list", threadId: "thread-list"},
-        }).then(function (result) {
-            assert.ok(result.ok);
-            assert.deepEqual(routes, [
-                "/agui_chat/report/source/bind",
-                "/agui_chat/business/prepare",
-                "/agui_chat/business/execute",
-            ]);
-            done();
-        });
-    });
-
-    QUnit.test("current list report source falls back to the matching snapshot query", function (assert) {
-        assert.expect(4);
-        var service = Object.create(HostService.prototype);
-        var snapshot = {
-            snapshotId: "snapshot-list", hostRevision: 3, interactive: true,
-            controller: {
-                controllerId: "controller-list", dataPointId: "data-list",
-                actionId: 11, viewType: "list",
-            },
-            menu: {id: 7},
-            selection: {
-                model: "res.partner", ids: [],
-                domain: [["name", "ilike", "快照筛选"]],
-                context: {active_test: false},
-            },
-        };
-        var controller = {
-            handle: "data-list",
-            model: {get: function () { return {orderedBy: [], groupedBy: []}; }},
-            getSelectedIds: function () { return []; },
-        };
-        service.getSnapshot = function () { return snapshot; };
-        service._resolveCurrentController = function () { return controller; };
-
-        var result = service.getReportSourceState({
-            snapshotId: "snapshot-list", hostRevision: 3,
-            controllerId: "controller-list", dataPointId: "data-list",
-            model: "res.partner", resId: false,
-        });
-
-        assert.deepEqual(result.domain, snapshot.selection.domain);
-        assert.deepEqual(result.context, snapshot.selection.context);
-        assert.strictEqual(result.scope, "domain");
-        assert.strictEqual(result.selectedCount, 0);
-    });
-
     QUnit.test("host bridge completes rejected undo conflicts", function (assert) {
         assert.expect(4);
         var done = assert.async();
@@ -1196,8 +1066,11 @@ odoo.define("agui_chat.tests.host", function (require) {
     });
 
     QUnit.test("group command catalog exposes the complete bounded schema", function (assert) {
-        assert.expect(1);
+        assert.expect(3);
+        var filterCommand = _.findWhere(Commands.getCatalog(), {name: "odoo.apply_filter"});
         var command = _.findWhere(Commands.getCatalog(), {name: "odoo.apply_group"});
+        assert.ok(filterCommand.description.indexOf("viewType 为 list 或 kanban") !== -1);
+        assert.ok(command.description.indexOf("viewType 为 list 或 kanban") !== -1);
         assert.deepEqual(command.parameters, {
             type: "object",
             additionalProperties: false,
@@ -1246,6 +1119,23 @@ odoo.define("agui_chat.tests.host", function (require) {
             command.parameters.properties.viewType,
             {type: "string", enum: ["kanban", "list", "form"]}
         );
+        assert.ok(command.description.indexOf("viewType 为 list 或 kanban") !== -1);
+    });
+
+    QUnit.test("form command catalog explicitly requires the form view type", function (assert) {
+        var names = [
+            "odoo.search_relation",
+            "odoo.stage_current_form",
+            "odoo.patch_current_form",
+            "odoo.validate_current_form",
+            "odoo.save_current_form",
+            "odoo.discard_current_form",
+        ];
+        assert.expect(names.length);
+        _.each(names, function (name) {
+            var command = _.findWhere(Commands.getCatalog(), {name: name});
+            assert.ok(command.description.indexOf("viewType 为 form") !== -1, name);
+        });
     });
 
     QUnit.test("patch enters edit mode before applying changes", function (assert) {
@@ -2101,6 +1991,30 @@ odoo.define("agui_chat.tests.host", function (require) {
             assert.ok(false, "form create without permission must fail");
         }, function (error) {
             assert.strictEqual(error.code, "create_not_allowed");
+            done();
+        });
+    });
+
+    QUnit.test("switch view rejects calls from the current form view", function (assert) {
+        assert.expect(1);
+        var done = assert.async();
+        var current = {
+            interactive: true,
+            snapshotId: "form-snapshot",
+            controller: {viewType: "form"},
+            capabilities: {create: true, viewTypes: ["list", "kanban", "form"]},
+        };
+        Commands.execute({
+            getSnapshot: function () { return current; },
+            getController: function () { return {}; },
+            hasUnsavedChanges: function () { return false; },
+        }, {
+            tool: "odoo.switch_view", arguments: {viewType: "kanban"},
+        }).then(function () {
+            assert.ok(false, "form view must reject switch_view");
+            done();
+        }, function (error) {
+            assert.strictEqual(error.code, "no_current_view");
             done();
         });
     });

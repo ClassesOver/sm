@@ -1,15 +1,13 @@
-# AG-UI / HRP v2 Protocol
+# AG-UI / HRP 协议
 
-Version: `agui.odoo.v2`
+版本：`agui.odoo.v2`
 
-This module integrates one chat runtime with the current native HRP 12
-`BasicModel` / `Controller` / `Renderer`. React does not render or persist a
-second HRP form model.
+本模块将一个聊天运行时接入当前原生 HRP 的
+`BasicModel` / `Controller` / `Renderer`。React 不渲染或持久化第二份 HRP 表单模型。
 
-## Version Handshake
+## 版本握手
 
-Before React is mounted, HRP `/agui_chat/config`, the loaded bundle, and the
-configured AgentOS protocol endpoint must agree on:
+挂载 React 之前，HRP `/agui_chat/config`、已加载的资源包和配置的 AgentOS 协议端点必须一致：
 
 ```json
 {
@@ -20,14 +18,13 @@ configured AgentOS protocol endpoint must agree on:
 }
 ```
 
-AgentOS exposes `protocol`, `bundle_version`, and `command_catalog_hash` at the
-`/config` URL derived from the configured `/agui` runtime URL. Missing or
-mismatched declarations disable Chat and host tools. They never reject HRP
-WebClient startup.
+AgentOS 在由配置的 `/agui` 运行时 URL 推导出的 `/config` 地址公开
+`protocol`、`bundle_version` 和 `command_catalog_hash`。声明缺失或不一致时禁用聊天和宿主工具，
+但不会阻止 HRP WebClient 启动。
 
-## State Ownership
+## 状态归属
 
-Every `RunAgentInput.state` has exactly this envelope:
+每个 `RunAgentInput.state` 必须严格使用以下外层结构：
 
 ```json
 {
@@ -43,47 +40,31 @@ Every `RunAgentInput.state` has exactly this envelope:
 }
 ```
 
-- `host` is projected only from the HRP `agui_host` snapshot. The browser
-  `HostBridge` retains the complete local snapshot; AgentOS receives the
-  model-facing projection, not a second business-state copy.
-- `STATE_SNAPSHOT`, `STATE_DELTA`, and JSON Patch events write only `agent`.
-  Attempts to patch `/host` are ignored and reported.
-- `hostRevision` is a browser page revision. `sessionRevision` is the database
-  session revision. They are never compared or restored into each other.
-- The visible menu catalog is a separate host-owned snapshot. It is never stored
-  in `RunAgentInput.state` or counted against the page snapshot budget, and a
-  catalog-only change does not increment `hostRevision`. The browser derives it
-  from native `WebClient.menu_data` and admits only terminal nodes whose own
-  action is a valid `ir.actions.act_window` or `ir.actions.client`. A node with
-  children is never navigable, even when Odoo WebClient has copied a descendant
-  action onto that node.
-- Session restore loads messages, `agentState`, and UI preferences. It never
-  restores `hostState`.
+* `host` 只能由 HRP `agui_host` 快照投影得到。浏览器 `HostBridge` 保留完整本地快照，
+  AgentOS 只接收面向模型的投影，不维护第二份业务状态。
+* `STATE_SNAPSHOT`、`STATE_DELTA` 和 JSON Patch 事件只能写入 `agent`；尝试修改 `/host` 时忽略并报告。
+* `hostRevision` 是浏览器页面版本，`sessionRevision` 是数据库会话版本，二者不比较，也不相互恢复。
+* 可见菜单目录是独立的宿主快照，不写入 `RunAgentInput.state`，也不计入页面快照预算；仅目录变化不会增加
+  `hostRevision`。浏览器从原生 `WebClient.menu_data` 派生目录，只接受自身 action 为有效
+  `ir.actions.act_window` 或 `ir.actions.client` 的叶节点。含子节点的节点永远不可导航，即使 Odoo
+  WebClient 将后代 action 复制到了该节点。
+* 会话恢复只加载消息、`agentState` 和界面偏好，不恢复 `hostState`。
 
-For List/Kanban projections, `selection` contains only `model`, host-selected
-`scope`, and `selectedCount`. Window-action and selection domain/context,
-selected IDs, visible row candidates, and row-bound control labels stay in the
-browser. Field metadata, aggregate view capabilities, and the exact
-`viewTarget` remain available. Form snapshots keep their existing record and
-control semantics.
+List/Kanban 投影中的 `selection` 只包含 `model`、宿主选择的 `scope` 和 `selectedCount`。
+窗口 action 与选择范围的 domain/context、选中 ID、可见行候选及行绑定控件标签留在浏览器中。
+字段元数据、聚合视图能力和精确的 `viewTarget` 保持可用。表单快照保留现有记录和控件语义。
 
-Snapshots preserve metadata for every field in the final native view, including
-binary and unsupported widget fields, while binary values remain omitted and
-sensitive values remain redacted. `capabilities.x2many` discovers every
-one2many directly from the complete Form `fieldsInfo`; it exports schema source,
-schema hash/count, collection counts, operation state, a field token, and light
-loaded-row tokens without child values or duplicated child-field maps.
+快照保留最终原生视图中每个字段的元数据，包括 binary 和不支持的 widget 字段；binary 值始终省略，
+敏感值始终脱敏。`capabilities.x2many` 直接从完整 Form `fieldsInfo` 发现每个 one2many，导出 schema
+来源、schema 哈希/数量、集合数量、操作状态、字段 token 和轻量已加载行 token，不包含子记录值或重复的子字段映射。
 
-The snapshot budget is 256 KiB. When necessary, the host removes non-dirty
-record values, one2many values, and nonessential row display text in that order.
-It never removes field metadata, dirty values, or required operation tokens. If
-the remaining metadata and required state still exceed the budget, the host
-returns `snapshot_too_large` instead of silently dropping fields.
+快照预算为 256 KiB。必要时宿主依次删除非 dirty 记录值、one2many 值和非必要的行显示文本。
+不会删除字段元数据、dirty 值或必需的操作 token。如果剩余元数据和必需状态仍超出预算，宿主返回
+`snapshot_too_large`，不会静默丢弃字段。
 
-## Client Tools
+## 客户端工具
 
-HRP publishes standard AG-UI client tool schemas in the current
-`RunAgentInput.tools`:
+HRP 在当前 `RunAgentInput.tools` 中发布标准 AG-UI 客户端工具 schema：
 
 - `odoo.navigate_menu`
 - `odoo.apply_filter`
@@ -91,6 +72,8 @@ HRP publishes standard AG-UI client tool schemas in the current
 - `odoo.open_record`
 - `odoo.open_create`
 - `odoo.switch_view`
+- `odoo.open_x2many_record`
+- `odoo.open_x2many_create`
 - `odoo.enter_edit_mode`
 - `odoo.activate_view_control`
 - `odoo.search_relation`
@@ -100,24 +83,21 @@ HRP publishes standard AG-UI client tool schemas in the current
 - `odoo.save_current_form`
 - `odoo.discard_current_form`
 
-React executes a tool only if its exact name was declared for that run. Agno
-server tools remain display-only until their `TOOL_CALL_RESULT` arrives.
+React 只执行本次运行声明了完全相同名称的工具。Agno 服务端工具在收到
+`TOOL_CALL_RESULT` 前仅用于展示。
 
-`odoo.navigate_menu` uses a dedicated menu target that also
-contains `catalogId` and `catalogRevision`. Commands bound to the current view
-carry the full target with `controllerId`, `dataPointId`, `model`, and `resId`.
-Missing or stale target members fail closed. The server idempotency binding also
-includes the menu catalog identity when present.
+`odoo.navigate_menu` 使用专用菜单目标，其中还包含 `catalogId` 和 `catalogRevision`。
+绑定当前视图的命令携带包含 `controllerId`、`dataPointId`、`model` 和 `resId` 的完整目标。
+目标成员缺失或过期时失败关闭。存在菜单目录标识时，服务端幂等绑定也包含该标识。
 
-Every native snapshot exposes `capabilities.viewTypes`, limited to `kanban`,
-`list`, and `form` entries declared by the current window action.
-`odoo.switch_view` accepts exactly one of those current values and waits for a
-new interactive snapshot before reporting success. Dirty forms, the active
-view, and unavailable targets are rejected. Switching from List/Kanban to Form
-enters an unsaved create form and therefore also requires the action's create
-capability; opening an existing record still requires `odoo.open_record`.
+每个原生快照都公开 `capabilities.viewTypes`，其值仅限当前窗口 action 声明的 `kanban`、`list`
+和 `form`。Odoo action 或视图声明中的 `tree` 会在宿主边界统一归一化为协议值 `list`，二者兼容，
+但快照和工具参数始终使用 `list`。`odoo.switch_view` 仅允许从当前 `viewType` 为 `list` 或 `kanban` 的页面发起，
+目标值仍须是其中一个当前值，并等待新的交互快照后才报告成功；当前为 `form` 时拒绝调用。
+dirty 表单、当前活动视图和不可用目标会被拒绝。从 List/Kanban 切换到 Form 会进入未保存的新建表单，
+因此还要求 action 具备 create 能力；打开已有记录仍须使用 `odoo.open_record`。
 
-List/Kanban snapshots expose native grouping as host-owned capabilities:
+List/Kanban 快照将原生分组公开为宿主持有的能力：
 
 ```json
 {
@@ -140,19 +120,19 @@ List/Kanban snapshots expose native grouping as host-owned capabilities:
 }
 ```
 
-`groupFields` contains only sortable, non-sensitive fields exposed by the native
-SearchView Group By menu. Supported types are `many2one`, `char`, `boolean`,
-`selection`, `date`, and `datetime`. Form views and views with grouping disabled
-return `group: false`, an empty field map, and an empty current state.
+`groupFields` 只包含原生 SearchView“分组依据”菜单公开的可排序、非敏感字段。支持类型为
+`many2one`、`char`、`boolean`、`selection`、`date` 和 `datetime`。Form 视图及禁用分组的视图
+返回 `group: false`、空字段映射和空当前状态。
 
-`odoo.apply_group` accepts the exact current `viewTarget` and a required
-`groupBy` array with at most three items. Each item requires `field`; date and
-datetime items may also provide `interval` as `day`, `week`, `month`, `quarter`,
-or `year`, with `month` as the default. The array replaces the complete current
-grouping in the given order; `[]` clears grouping. It is never an incremental
-add/remove operation.
+`odoo.apply_filter` 和 `odoo.apply_group` 仅当最新宿主快照的 `viewType` 为 `list` 或 `kanban`
+时可调用；Odoo `tree` 视图按规范值 `list` 兼容，`form` 及其他视图类型禁止调用。
+`odoo.apply_group` 接受精确的当前 `viewTarget`
+和必填的 `groupBy` 数组，最多三项。
+每项必须包含 `field`；date 和 datetime 项还可提供 `interval`，取值为 `day`、`week`、`month`、
+`quarter` 或 `year`，默认 `month`。数组按给定顺序替换完整的当前分组；`[]` 清空分组，
+它不是增量添加或删除操作。
 
-The page command is declared with this complete JSON Schema:
+该页面命令使用以下完整 JSON Schema 声明：
 
 ```json
 {
@@ -207,374 +187,143 @@ The page command is declared with this complete JSON Schema:
 }
 ```
 
-The host removes only `groupByCategory` facets, reuses or creates native
-`Filter`/`FilterGroup` mappings and menu items, updates date intervals, and
-triggers one query reset. Other filter facets, domains, ordering, and context are
-preserved. An active favorite keeps its domain, ordering, and other context, but
-its own `group_by` is stripped so it cannot overwrite the requested grouping.
-The host never writes `BasicModel.groupedBy` directly.
+宿主只移除 `groupByCategory` facet，复用或创建原生 `Filter`/`FilterGroup` 映射和菜单项，
+更新日期 interval，并触发一次查询重置。其他筛选 facet、domain、排序和 context 均保留。
+活动收藏保留其 domain、排序和其他 context，但会移除自身的 `group_by`，避免覆盖请求的分组。
+宿主绝不直接写入 `BasicModel.groupedBy`。
 
-The command is a read-level page command, is not a member of `WRITE_COMMANDS`,
-and does not require write confirmation. Stable grouping failures are
-`group_unavailable`, `invalid_group_by`, `invalid_group_field`, and
-`invalid_group_interval`. A successful result returns `applied: true`, the
-normalized effective `groupBy`, and the refreshed `snapshotId` and
-`hostRevision`.
+该命令是 read 级页面命令，不属于 `WRITE_COMMANDS`，无需写确认。稳定分组错误码为
+`group_unavailable`、`invalid_group_by`、`invalid_group_field` 和
+`invalid_group_interval`。成功结果返回 `applied: true`、规范化后的有效 `groupBy`，以及刷新的
+`snapshotId` 和 `hostRevision`。
 
-Navigation without an explicit `@` selection is available only when
-`odoo.navigate_menu` is declared. The tool accepts exactly one of two input
-forms in addition to the current `menuTarget`: `{query}` or
-`{menuId, actionId}`. Mixed forms and an incomplete ID pair fail with
-`invalid_menu_navigation`.
+只有声明了 `odoo.navigate_menu` 时，才允许不经显式 `@` 选择进行导航。除当前 `menuTarget` 外，
+工具只接受两种输入形式之一：`{query}` 或 `{menuId, actionId}`。混合形式或不完整的 ID 对返回
+`invalid_menu_navigation`。
 
-For `{query}`, the host normalizes wrappers, whitespace, separators, and case,
-then prefers exact full-path or leaf-name matches and uses contains matches only
-when no exact result exists. Results include `matchType`, `matchCount`,
-`truncated`, catalog metadata, and at most eight candidates. A non-truncated
-unique result opens within the same tool call. No result or multiple candidates
-return `navigated: false` and do not open any menu.
+对于 `{query}`，宿主规范化包裹符、空白、分隔符和大小写，优先精确匹配完整路径或叶节点名称，
+仅在没有精确结果时使用包含匹配。结果包含 `matchType`、`matchCount`、`truncated`、目录元数据及最多
+八个候选。未截断的唯一结果在同一次工具调用中打开；无结果或多个候选时返回
+`navigated: false`，且不打开任何菜单。
 
-An immediately following ordinal reply from `第一个` through `第八个` (including
-Arabic digits and optional `选择`) becomes an explicit menu selection only when
-that candidate still has the same menu/action IDs in the current catalog and the
-search result catalog ID and revision are unchanged. React then exposes only
-`odoo.navigate_menu` for the first page action and supplies the selected
-`menuId` and `actionId` to the host. Missing, out-of-range, stale, or already
-completed choices remain ordinary conversation input and never authorize
-navigation.
+紧随其后的“第一个”至“第八个”序号回复（包括阿拉伯数字和可选的“选择”）只有在候选项仍具有相同的
+menu/action ID，且搜索结果的目录 ID 和版本未变化时，才转为显式菜单选择。随后 React 只为首个页面动作
+公开 `odoo.navigate_menu`，并向宿主提供所选 `menuId` 和 `actionId`。缺失、越界、过期或已完成的选择
+仍作为普通对话输入，绝不授权导航。
 
-For an explicit `打开`, `进入`, `导航到`, or `跳转到` request whose target exactly
-matches a visible leaf name or full path, React adds `HRP 菜单导航请求` without
-menu/action IDs. The context requires one `odoo.navigate_menu` call with the
-original query. AgentOS uses a forced tool choice and rejects plain text or a
-different first executable event with `required_tool_violation`. Questions,
-unknown targets, ambiguous results, stale catalogs, and completed opens do not
-receive this forced-navigation context.
+对于明确的“打开”“进入”“导航到”或“跳转到”请求，如果目标精确匹配可见叶节点名称或完整路径，React
+会添加不含 menu/action ID 的 `HRP 菜单导航请求`。该上下文要求使用原始 query 调用一次
+`odoo.navigate_menu`。AgentOS 强制选择该工具；纯文本或不同的首个可执行事件会以
+`required_tool_violation` 拒绝。问题、未知目标、歧义结果、过期目录和已完成的打开操作不会获得该强制导航上下文。
 
-The full visible directory is not sent on the first Run. Only after a same-catalog
-`matchType=none` result does the immediately following client-tool continuation
-receive `当前用户可见 HRP 菜单`. This context contains only catalog metadata,
-completeness, and original `fullPath` strings, never menu/action IDs. Its UTF-8
-budget is 128 KiB and paths are never truncated. If `complete=false`, semantic
-rewrites are forbidden and the user must select with `@`. From a complete catalog
-the agent may retry at most two original paths through `odoo.navigate_menu`.
+首次运行不发送完整可见目录。只有同一目录返回 `matchType=none` 后，紧随其后的客户端工具续跑才接收
+`当前用户可见 HRP 菜单`。该上下文只包含目录元数据、完整性和原始 `fullPath` 字符串，绝不包含
+menu/action ID。UTF-8 预算为 128 KiB，路径不截断。若 `complete=false`，禁止语义改写，用户必须通过
+`@` 选择。目录完整时，智能体最多可通过 `odoo.navigate_menu` 重试两个原始路径。
 
-For `{menuId, actionId}`, the host accepts the pair only when the terminal menu
-exists in the current visible catalog, its action is unchanged, and the page and
-catalog targets are current. The pair may come only from the current candidate
-context; the host does not require a preceding search in the same run. Catalog
-changes return `stale_menu_catalog`; action changes return
-`menu_action_conflict`, and missing menus return `menu_unavailable`.
+对于 `{menuId, actionId}`，只有终端菜单存在于当前可见目录、action 未变化且页面与目录目标均为最新时，
+宿主才接受该 ID 对。ID 对只能来自当前候选上下文；宿主不要求同一次运行中先执行搜索。目录变化返回
+`stale_menu_catalog`，action 变化返回 `menu_action_conflict`，菜单缺失返回 `menu_unavailable`。
 
-## Form Commands
+## 表单命令
 
-Relation search rules:
+以下命令仅能在最新宿主快照的 `viewType=form` 时调用；List/Kanban 页面必须先进入真实表单，其他视图类型会被宿主拒绝：
+`odoo.search_relation`、`odoo.stage_current_form`、`odoo.patch_current_form`、`odoo.validate_current_form`、
+`odoo.save_current_form` 和 `odoo.discard_current_form`。
 
-- `odoo.search_relation` only accepts fields from the current native form and
-  supports writable many2one/many2many fields. A loaded one2many row is bound
-  by its current `rowToken`; the relation field name remains the child field
-  name from that row snapshot.
-- A new row must first be created through its visible native create control.
-  After staging scalar dependencies with the issued row token, relation search
-  evaluates the resulting live child data point and its onchange state.
-- The browser evaluates `record.getDomain({fieldName})` and
-  `record.getContext({fieldName})` against the live BasicModel data point,
-  including unsaved onchange/dirty state, then calls `name_search` as the
-  current HRP user.
-- Raw domain/context values are never accepted from or returned to the Agent.
-- One exact candidate may be used directly. Multiple candidates require an
-  explicit user selection; the Agent must never guess an ID.
-- Relation IDs are checked again against the latest domain before a patch is
-  applied. Many2many unlink is limited to IDs currently selected.
+关系搜索规则：
 
-Stage rules:
+* `odoo.search_relation` 只接受当前原生表单中的字段，支持可写的 many2one/many2many 字段。
+  已加载的 one2many 行由当前 `rowToken` 绑定；关系字段名仍使用该行快照中的子字段名。
+* 新行必须先通过可见的原生新建控件创建。暂存带已发放 row token 的标量依赖后，关系搜索会基于实时子数据点及其 onchange 状态计算。
+* 浏览器针对实时 BasicModel 数据点（包括未保存 onchange/dirty 状态）计算
+  `record.getDomain({fieldName})` 和 `record.getContext({fieldName})`，再以当前 HRP 用户调用 `name_search`。
+* 绝不接受或返回原始 domain/context 值给智能体。
+* 唯一精确候选可直接使用；多个候选必须由用户明确选择，智能体不得猜测 ID。
+* 应用 patch 前会再次依据最新 domain 检查关系 ID；many2many unlink 仅限当前已选 ID。
 
-- `odoo.stage_current_form` uses the same visible/writable field validation,
-  native `_applyChanges`, relation-domain recheck, and onchange completion as a
-  patch, but never calls `saveRecord()`.
-- Every successful stage publishes a fresh snapshot. Later relation searches,
-  validation, and save must use that snapshot rather than stale tokens.
+暂存规则：
 
-Patch rules:
+* `odoo.stage_current_form` 与 patch 使用相同的可见/可写字段校验、原生 `_applyChanges`、关系 domain 复查和 onchange 完成流程，但绝不调用 `saveRecord()`。
+* 每次成功暂存都会发布新快照；后续关系搜索、校验和保存必须使用该快照，不得使用过期 token。
 
-- Fields must be present in `fieldsInfo.form` and currently visible/writable.
-- Existing dirty fields conflict; partial application is not allowed.
-- Scalars use HRP field parsers; many2one accepts an explicit integer ID, an
-  HRP-style `[ID, displayName]` pair, or a snapshot-style `{id, displayName}`
-  object.
-- many2many supports only `link`, `unlink`, and `replace` of existing IDs.
-- one2many accepts at most 40 total `create`, `update`, and `delete`
-  operations across the patch. Parent-form batch operations are rejected with
-  `requires_form_activation` unless the complete child schema is already loaded.
-  Normal create/open/edit flows use `odoo.open_x2many_create` and
-  `odoo.open_x2many_record`; large imports use the registered schema hash flow.
-- Patches containing one2many use native BasicModel `CREATE`, `UPDATE`, and
-  `DELETE`. Patch saves the parent once; stage keeps the parent dirty for a
-  later explicit validate/save. There is no generic RPC fallback.
+Patch 规则：
 
-Patch policies expose `confirmation_mode` with `risk` (default), `always`, and
-`never`, plus an optional high-risk field allowlist. In `risk` mode the server,
-not the Agent, requires confirmation for multi-field patches, many2one or
-many2many/one2many fields, and policy-marked fields. A high-risk prepare must include a
-preview built from the live BasicModel. Each preview change contains the field
-name and label, field type, old value, new value, and risk reasons. Sensitive
-values are shown only as `[redacted]`.
+* 字段必须存在于 `fieldsInfo.form` 且当前可见、可写。
+* 已有 dirty 字段会冲突，不允许部分应用。
+* 标量使用 HRP 字段解析器；many2one 接受显式整数 ID、HRP 风格的 `[ID, displayName]` 对，或快照风格的 `{id, displayName}` 对象。
+* many2many 只支持对已有 ID 执行 `link`、`unlink` 和 `replace`。
+* 一个 patch 中 one2many 的 `create`、`update`、`delete` 总操作数最多 40。除非完整子 schema 已加载，否则父表单批量操作以 `requires_form_activation` 拒绝。普通新建/打开/编辑使用 `odoo.open_x2many_create` 和 `odoo.open_x2many_record`。
+* 含 one2many 的 patch 使用原生 BasicModel 的 `CREATE`、`UPDATE` 和 `DELETE`。patch 只保存一次父记录；stage 保持父记录 dirty，等待后续显式校验/保存。没有通用 RPC 回退。
 
-The preview and authorization are bound to the current controller, record,
-snapshot, and `hostRevision`. If that binding changes before approval, the old
-authorization is rejected and a fresh preview requires a new confirmation. A
-low-risk patch may refresh and rebind once when only the snapshot of the same
-record is stale. Dirty-field conflicts, ACL failures, validation errors,
-onchange failures, and save failures are never retried automatically.
+Patch 策略公开 `confirmation_mode`：`risk`（默认）、`always`、`never`，以及可选的高风险字段白名单。
+在 `risk` 模式下，由服务端而非智能体为多字段 patch、many2one 或 many2many/one2many 字段及策略标记字段要求确认。
+高风险 prepare 必须包含由实时 BasicModel 生成的预览。每个预览变更包含字段名和标签、字段类型、旧值、新值及风险原因；敏感值只显示为 `[redacted]`。
 
-### One2many Import Preview
+预览和授权绑定当前 controller、记录、快照及 `hostRevision`。批准前绑定变化时拒绝旧授权，并要求新预览和新确认。
+仅当同一记录的快照过期时，低风险 patch 才可刷新并重新绑定一次。dirty 字段冲突、ACL 失败、校验错误、onchange 失败和保存失败绝不自动重试。
 
-`agui_chat_import` does not embed the legacy ImportView and never calls
-`execute_import()` or `load()`. `POST /agui_chat_import/prepare` copies an owned
-Chat attachment into a persistent import job and immediately creates a
-server-side preview. `POST /agui_chat_import/preview` accepts only `jobToken`,
-`expectedRevision`, `parseOptions`, `mapping`, and the JSON boolean `finalize`.
-Status recovery uses `POST /agui_chat_import/status`; bounded error reports use
-`GET /agui_chat_import/error/<jobToken>`.
+## 浏览器授权
 
-The server creates a temporary `base_import.import` wizard in the submitting
-user and company environment and calls `parse_preview(options, count=20)`.
-Odoo's full field tree and generic matches are discarded. The returned
-`preview.kind` is `x2many_import`; its `import` value contains the file summary,
-row count, headers, at most 20 truncated rows, profile-only target fields,
-mapping, normalized CSV options, errors, revision, mapping hash, target, and
-schema hashes. Files are limited to 50 columns and 80-character headers. The
-preview envelope has a 96 KiB budget, so wide previews can return fewer rows.
-Full converted rows never enter Chat messages or AG-UI events.
+`/agui_chat/host_command` 是唯一的浏览器命令策略端点。其 prepare/confirm/complete 阶段将精确命令 payload 绑定到用户、公司、run、thread 和工具调用 ID。
+重放幂等键返回已存结果或以进行中失败；payload 变化会被拒绝。
 
-Mappings may use only registered profile source columns and target fields. A
-target field cannot be selected twice and every required target must be mapped.
-Each preview update locks the job and compares `expectedRevision`. Only
-`finalize=true` performs full conversion of at most 2,000 rows and changes
-`preview` to `ready`. React then sends a hidden bounded user message containing
-only `kind=x2many_import_ready`, `jobToken`, `revision`, and `mappingHash`; this
-starts an ordinary Agent run rather than a custom interrupt.
+确认批准或拒绝会在 React 启动唯一一次后续 Agent 运行前持久化。重复确认事件会被忽略或重放已存结果，不能重复执行命令或恢复 Agent。
 
-The business authorization can be prepared only while the job is `ready` and
-includes the same trusted preview. Approval synchronously locks authorization,
-job, and parent record, then rechecks user/company, ACL, record rules,
-`write_date`, profile, file, and mapping hashes. A single parent One2many write
-runs inside a savepoint. Existing command execution idempotency stores the
-result, so a lost response cannot create the rows twice. Terminal jobs clear the
-source attachment, full converted rows, and preview rows immediately. The
-existing audit-retention cron later deletes all expired import jobs and their
-source/error attachments, including abandoned previews; there is no import
-execution cron.
+成功且符合条件的 patch 获得一次性 undo 授权，十分钟后过期。Undo 是内部宿主操作，不发布到 Agent 工具目录。
+它支持现有标量、many2one 和 many2many patch 形式；敏感、binary 和 one2many 字段不生成 undo 授权。
+应用逆 patch 前，宿主要求当前记录相同、无相关 dirty 字段，且当前值仍等于原 patch 写入的值；否则返回 `undo_conflict`，不覆盖更新数据。
+Undo 执行及其失败结果会被存储以便幂等重放。
 
-Save uses `saveRecord()`. Validation uses the current Renderer. Approved
-discard calls the native discard path once. Navigation refuses a dirty form.
+动作模拟、通用 RPC/CRUD 和任意模型方法不属于本协议。
 
-Host results use stable `code` values and include `operation`, `hostRevision`,
-and `retryable` when execution reached the browser host. Patch results also
-include the structured `preview` and a `receipt` describing the saved changes.
-Examples of terminal failures include `dirty_conflict`, `validation_failed`,
-`onchange_failed`, `save_failed`, `stale_snapshot`, and `undo_conflict`.
+## 业务命令
 
-## Browser Authorization
+同步服务端命令使用 `odoo.business.<domain>.<verb>` 下的精确名称。只有同时存在于 Python 注册表和
+`enabled_business_commands` 中的命令，才会作为当前运行的客户端工具发布；注册的 JSON schema 即工具的 `parameters`。
 
-`/agui_chat/host_command` is the single browser-command policy endpoint. Its
-prepare/confirm/complete phases bind the exact command payload to user,
-company, run, thread, and tool call IDs. Replayed idempotency keys return a
-stored result or fail as in-progress; payload changes are rejected.
+注册命令默认访问级别为 `write`。显式注册为 `read` 的命令在关闭 `write_tools_enabled` 时仍可发布和执行。
+两种访问级别都要求精确匹配策略。绑定解析器可绑定当前消息的不透明 token 并按模型生成策略输入；执行时会再次运行，
+因此 token 可见性、ACL、记录规则、公司、浏览器会话、过期或策略撤销失败都会使整批操作原子失败。
 
-Confirmation approval or rejection is persisted before React starts exactly
-one follow-up Agent run. Duplicate confirmation events are ignored or replay
-the stored result, so they cannot execute the command or resume the Agent
-twice.
+浏览器调用 `/agui_chat/business/prepare`，必要时复用普通确认界面，再使用服务端绑定的 payload 和授权 token
+调用 `/agui_chat/business/execute`。业务命令要求精确工具策略，缺少策略时失败关闭。各插件负责自身模型 ACL、
+记录规则、状态和 domain 检查。执行器还应用服务端 schema 校验、用户/公司/run/tool-call payload 绑定、授权过期、
+幂等锁、数据库 savepoint、已存结果重放、默认敏感键脱敏和脱敏审计。不存在通用业务 handler、RPC、CRUD 或任意模型方法回退。
 
-A successful eligible patch receives a one-time undo authorization that expires
-after ten minutes. Undo is an internal host operation and is not published in
-the Agent tool catalog. It supports the existing scalar, many2one, and
-many2many patch forms; sensitive fields, binary fields, and one2many fields do
-not produce an undo authorization. Before applying the inverse patch, the host
-requires the same current record, no related dirty fields, and current values
-equal to the values written by the original patch. Otherwise it returns
-`undo_conflict` without overwriting newer data. Undo execution and its failure
-result are stored for idempotent replay.
+`DELETE /workspace/file` 只接受 `threadId`、`path` 和可选 JSON 布尔值 `recursive`；字符串或数字形式的伪布尔值及未知字段会被拒绝。
+工作区下载同时发送 ASCII `filename` 回退和 RFC 5987 `filename*=UTF-8''...`，使非 ASCII 文件名有效，
+且不会把 Unicode 直接写入 Latin-1 响应头。
 
-Action simulation, generic RPC/CRUD, and arbitrary model methods are not part
-of this protocol.
+## 会话与界面
 
-## Business Commands
+会话 JSON 端点仍位于 `/agui_chat/session/*`。payload 字段为 `messages`、`agentState`、`uiPreferences` 和 `sessionRevision`。
 
-Synchronous server-side commands use exact names under
-`odoo.business.<domain>.<verb>`. Only commands present in both the Python
-registry and `enabled_business_commands` are published as client tools for the
-current Run; their registered JSON schema is the tool's `parameters`.
+`POST /agui` 使用增量运行消息。普通运行只发送最新用户消息。客户端工具续跑只发送连续尾部的 `tool` 结果消息，保持原始顺序。
+每次请求仍完整发送工具声明、当前页面上下文和状态外层结构。独立菜单路径目录只在上文所述的无结果续跑中发送。
+AgentOS PostgreSQL 是对话历史权威，并加载最近 10 次运行。HRP `session/save` 继续持久化完整 UI 消息快照，用于恢复和版本合并。
 
-Registered commands default to `write`. A command explicitly registered as
-`read` remains published and executable while `write_tools_enabled` is off.
-Both access levels still require an exact matching policy. A binding resolver
-may bind current-message opaque tokens and emit per-model policy inputs; it is
-run again during execution so token visibility, ACL, record rules, company,
-browser session, expiry, and policy revocation fail the whole batch atomically.
+每条最终 assistant 消息都在 `extra_data.agent_run_id` 保存 AgentOS run ID。同一轮的所有客户端工具续跑复用该 ID。
+普通运行的 `forwardedProps` 为空；分支运行只允许 `branch.sourceThreadId`、`branch.sourceRunId` 和 `branch.targetMessageId`。
+身份信息和任意后端参数绝不通过该字段转发。
 
-The browser calls `/agui_chat/business/prepare`, reuses the normal confirmation
-UI when required, and then calls `/agui_chat/business/execute` with the
-server-bound payload and authorization token. Business commands require an
-exact tool policy; missing policies fail closed. Each plugin owns its model
-ACL, record-rule, state, and domain checks. The executor additionally applies
-server-side schema validation, user/company/run/tool-call payload binding,
-authorization expiry, idempotency locking, a database savepoint, stored result
-replay, default sensitive-key redaction, and redacted audit. There is no generic
-business handler, RPC, CRUD, or arbitrary model-method fallback.
+`session/fork` 锁定并刷新源会话，创建名为 `原名称（分支）` 的新会话，记录 `parent_session_id`，只复制选定最终答案之前的消息。
+引用的 HRP 附件会复制到新会话并重写其 ID。分支继承 UI 偏好、agent 状态、界面和智能体选择，但获得新的 `thread_id`。
 
-### Filter Reports
+AgentOS 校验源、目标 thread 的 capability，并要求数据库、用户、公司和浏览器会话身份一致。
+它只复制截至选定 run 的源运行，为每个复制 run 分配新 ID，发出旧到新的映射，并使用
+`regenerate=true`、`replace_original=true` 调用 Agno 重新生成。选定 run 已完成的工具交互保留在历史中，不会再次执行；源会话不会修改。
 
-`odoo.business.report.filters` is a read-only command and is not enabled by
-default. The legacy source contains one to five filter tokens selected in the
-current message. It supports:
+分支工作区复制源会话的当前文件，而不是选定 run 时的历史快照。创建目标沙箱前校验清单：最多 2000 个普通文件、总计 256 MiB、单文件 25 MiB。
+符号链接、非普通文件、无效路径和任一超限都会拒绝整个工作区。`RUN_STARTED` 前失败会删除已准备的 AgentOS/工作区状态；React 归档 HRP 分支并停留在源会话。
+`RUN_STARTED` 后的模型错误在分支中可见。Agent 会话持久化及分支工作区复制/回滚使用原生异步 PostgreSQL 和 Daytona 客户端，因此分支准备不会阻塞 AG-UI SSE 事件循环。
+受控分支失败在 `RUN_ERROR.code` 发出稳定的 `branch_*` 值；意外失败使用 `branch_failed`。客户端消息不包含后端原始异常文本。
 
-- `describe`: row count, allowed fields/types, original grouping, and allowed
-  aggregations;
-- `detail`: up to 30 fields and at most 5000 rows per filter, with no silent
-  truncation;
-- `aggregate`: up to two dimensions, five `count/sum/avg/min/max` metrics, and
-  5000 result groups.
+每次保存都提供 `expectedSessionRevision`。首次版本冲突时，React 重载会话，按消息 ID 合并本地和远程消息，并重试一次。
+第二次冲突保留内存消息和确认结果并报告明确错误，绝不静默丢弃。
 
-Saved filter expressions are parsed in HRP's restricted evaluation
-environment. Temporary filters use their bound structured values. Domain,
-sort, original grouping, requested dimensions, and metrics must use policy
-fields. Sensitive, binary, one2many, and many2many fields are always rejected.
-Date grouping uses the HRP user's timezone. Monetary metrics require their
-currency field as a dimension; no implicit conversion is performed.
+界面只存在 `dock` 和 `standalone`。`standalone` 是 WebClient 内可移动、可调整大小的浮动窗口；协议值为兼容既有会话而保留。
+切换界面只移动唯一稳定的 React 宿主节点，不卸载节点、不重载会话，也不取消活动 SSE 运行。
 
-Detail and aggregate output is uploaded as `reports/data/<uuid>.jsonl` plus a
-`.meta.json` file through the existing thread capability. Metadata contains the
-filter label, model, fields, row count, aggregation basis, timezone, currency
-rule, generation time, and a domain fingerprint, but no token or full domain.
-An upload failure removes files created by that call.
-
-The same command also accepts a `current_view` source for the current
-interactive List/Kanban. The Agent sends only `source.kind`, the exact
-`viewTarget`, a mode, and one request. Before business preparation, the browser
-reads the complete domain, context, sort, grouping, and selected IDs directly
-from the current BasicModel and calls `/agui_chat/report/source/bind`. The
-binding is limited to 256 KiB and 5000 selected IDs and is tied to user,
-company, browser session, thread, snapshot, controller, menu, action, expiry,
-and a scope fingerprint. The returned `sourceHandle` is not authorization.
-
-`current_view` scope is host-defined: selected rows mean the intersection of
-the current domain and selected IDs; no selection means the full current
-domain. Selected IDs must all survive ACL, record-rule, company, and domain
-checks or the whole request fails. Preparation and execution repeat source,
-policy, expiry, and selection checks. A changed page returns
-`stale_report_source`; the Agent cannot submit domain/context/IDs or switch
-between selected and domain scope.
-
-`current_view/describe` returns only the handle, scope/counts, model, field
-schema, timezone, generation time, and fingerprint. `detail` preserves the
-BasicModel ordering and exports at most 100000 rows and 30 fields. Odoo writes
-up to 16 JSONL fragments of 8 MiB each (100 MiB total, 128 MiB estimated
-expanded memory) under `报表/原始数据/<dataset-uuid>/分片/`, uploads
-`数据集.json` last, and rolls back every uploaded file if any upload fails. The
-manifest contains paths, sizes, SHA-256 values, schema, counts, scope, timezone,
-time, and fingerprint but no query state or record values. A successful detail
-or aggregate consumes the source and immediately clears its stored query state
-and IDs. Oversized detail requires a narrower page range or explicit Odoo
-aggregate mode.
-
-AgentOS registers seven model-facing adapters: `pandas_profile_dataset`,
-`pandas_sample_dataset`, `pandas_group_dataset`, `pandas_pivot_dataset`,
-`pandas_concat_datasets`, `pandas_generate_chart`, and
-`pandas_create_report_config`. Each call downloads only from the current thread,
-creates a fresh Agno `PandasTools` instance over temporary local files, and
-releases all frames immediately. Native arbitrary Pandas functions are not
-published. Inputs are limited to 100000 rows, 100 columns, 128 MiB expanded
-memory, and model-visible results to 32 KiB. Manifest datasets additionally
-limit schema to 30 columns and validate canonical UUID paths, fragment order,
-size, SHA-256, total rows, and total bytes while keeping only one fragment in
-memory. `profile` never returns raw rows; `sample` alone may return at most 20
-rows and 10 columns. CSV and JSONL loaders read at most
-100001 rows before rejecting an over-limit dataset. Top-level JSON arrays are
-shape-scanned before Pandas materializes them; XLSX archives are checked for
-member count, expanded size, and selected-sheet dimensions before loading.
-New analysis, chart, config, and final artifacts use structured UUID paths under
-`报表/分析数据/`, `报表/图表/`, `报表/配置/`, and `报表/生成结果/`.
-Historical `reports/` paths are not migrated. Text reads reject controlled raw
-JSONL paths in both layouts; user downloads remain available.
-
-The trusted `odoo-current-view-report` skill creates a non-raw config through
-the config adapter, then requires one confirmation before running its bundled
-script. The script revalidates config, manifest, fragment paths/sizes/hashes,
-and all rows before rendering. Its `agui.odoo.report.skill.v1` command protocol
-exposes `capabilities`, `validate`, and `render`; the normal agent path calls
-only `render`, which atomically publishes `分析报告.pdf`. Chart PNG data is
-temporary and is removed before publication. The final config and PDF never
-contain raw-row samples; bounded samples remain an analysis-only tool. Stdout
-contains one versioned JSON result envelope and never contains raw rows.
-
-`DELETE /workspace/file` accepts only `threadId`, `path`, and the optional JSON
-boolean `recursive`; string or numeric boolean lookalikes and unknown fields are
-rejected. Workspace downloads send an ASCII `filename` fallback plus RFC 5987
-`filename*=UTF-8''...`, so non-ASCII names remain valid without putting Unicode
-directly into the Latin-1 response header.
-
-## Sessions And Surfaces
-
-Session JSON endpoints remain under `/agui_chat/session/*`. Payload fields are
-`messages`, `agentState`, `uiPreferences`, and `sessionRevision`.
-
-`POST /agui` uses incremental run messages. A normal run sends only the latest
-user message. A client-tool continuation sends only the consecutive trailing
-`tool` result messages, in their original order. Tool declarations, the current
-page context and the state envelope are still sent in full on every request. The
-separate menu path directory is sent only on the no-result continuation described
-above.
-AgentOS PostgreSQL is the conversation-history authority and loads the latest
-10 runs. HRP `session/save` continues to persist the complete UI message
-snapshot for restoration and revision merging.
-
-Every final assistant message stores its AgentOS run identifier in
-`extra_data.agent_run_id`. All client-tool continuations belonging to one turn
-reuse that identifier. `forwardedProps` is empty for ordinary runs; branch runs
-allow only `branch.sourceThreadId`, `branch.sourceRunId`, and
-`branch.targetMessageId`. Identity and arbitrary backend parameters are never
-forwarded there.
-
-`session/fork` locks and refreshes the source session, creates a new session
-named `原名称（分支）`, records `parent_session_id`, and copies only messages
-before the selected final answer. Referenced HRP attachments are copied to the
-new session and their IDs are rewritten. The branch inherits UI preferences,
-agent state, surface and agent selection, but receives a fresh `thread_id`.
-
-AgentOS verifies capabilities for both source and target threads and requires
-the same database, user, company and browser-session identity. It copies source
-runs only through the selected run, assigns every copied run a fresh ID, emits
-the old-to-new mapping, and calls Agno regeneration with `regenerate=true` and
-`replace_original=true`. The selected run's completed tool exchanges remain in
-history and are not executed again. The source session is never modified.
-
-Branch workspaces copy the source session's current files, not a historical
-snapshot at the selected run. Inventory is validated before the target sandbox
-is created: at most 2000 regular files, 256 MiB total and 25 MiB per file are
-allowed. Symbolic links, non-regular files, invalid paths and all over-limit
-workspaces reject the whole operation. A failure before `RUN_STARTED` removes
-prepared AgentOS/workspace state; React archives the HRP branch and stays in
-the source session. A model error after `RUN_STARTED` remains visible in the
-branch. Agent session persistence and branch workspace copy/rollback use the
-native asynchronous PostgreSQL and Daytona clients, so branch preparation does
-not block the AG-UI SSE event loop. Controlled branch failures emit their stable
-`branch_*` value in `RUN_ERROR.code`; unexpected failures use `branch_failed`.
-Client messages never contain raw backend exception text.
-
-Every save supplies `expectedSessionRevision`. On the first revision conflict,
-React reloads the session, merges local and remote messages by message ID, and
-retries once. A second conflict leaves the in-memory messages and confirmation
-result intact and reports an explicit error; it never silently drops them.
-
-Only `dock` and `standalone` surfaces exist. `standalone` is a movable,
-resizable floating window inside the WebClient; the protocol value is retained
-for compatibility with existing sessions.
-Switching surfaces moves the one stable React host node; it does not unmount,
-reload a session, or cancel the active SSE run.
-
-Upgrading to `12.0.8.8.0` archives every previously active HRP chat session and
-enqueues its workspace for the existing cleanup worker. HRP and AgentOS audit
-data are retained, but old threads are never reused. The first chat entry after
-upgrade creates a new run-ID-capable session automatically.
+升级到 `12.0.8.8.0` 会归档此前所有活动 HRP 聊天会话，并将其工作区加入既有清理 worker。
+HRP 和 AgentOS 审计数据保留，但不会再次使用旧 thread。升级后的首次聊天会自动创建支持 run ID 的新会话。

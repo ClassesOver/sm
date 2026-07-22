@@ -73,7 +73,6 @@ export function AguiChatApp({ runtime, props }: AguiChatAppProps) {
               onRegenerate={actions.regenerate}
               onSuggestion={actions.suggestion}
               onConfirmTool={actions.confirmTool}
-              onPreviewX2ManyImport={actions.previewX2ManyImport}
               onUndoTool={actions.undoTool}
             />
           </div>

@@ -220,9 +220,6 @@ odoo.define("agui_chat.host_bridge", function (require) {
             getWorkspaceCapability: function (sessionId) {
                 return self.getWorkspaceCapability(sessionId);
             },
-            previewX2ManyImport: function (values) {
-                return self.previewX2ManyImport(values);
-            },
             listSessions: function () { return self.listSessions(); },
             createSession: function (values) { return self.createSession(values); },
             loadSession: function (sessionId) { return self.loadSession(sessionId); },
@@ -283,17 +280,6 @@ odoo.define("agui_chat.host_bridge", function (require) {
         });
     };
 
-    HostBridge.prototype.previewX2ManyImport = function (values) {
-        values = clone(values || {});
-        return this._rpc("/agui_chat_import/preview", {
-            jobToken: values.jobToken || "",
-            expectedRevision: values.expectedRevision,
-            parseOptions: values.parseOptions || {},
-            mapping: values.mapping || {},
-            finalize: !!values.finalize,
-        });
-    };
-
     HostBridge.prototype._cleanCall = function (call) {
         var result = {
             id: call && call.id || false,
@@ -332,11 +318,7 @@ odoo.define("agui_chat.host_bridge", function (require) {
 
     HostBridge.prototype._businessPrepare = function (call) {
         var self = this;
-        var ready = call.tool === "odoo.business.report.filters" &&
-                call.arguments && call.arguments.source &&
-                call.arguments.source.kind === "current_view" ?
-            this._bindCurrentViewReportSource(call) : $.when(call);
-        return ready.then(function (boundCall) {
+        return $.when(call).then(function (boundCall) {
             return self._rpc("/agui_chat/business/prepare", {
                 call: clone(boundCall),
             });
@@ -348,43 +330,6 @@ odoo.define("agui_chat.host_bridge", function (require) {
         }, function (error) {
             return resultError(call.tool, error.code || "policy_unavailable", error.message);
         });
-    };
-
-    HostBridge.prototype._bindCurrentViewReportSource = function (call) {
-        var self = this;
-        var source = call.arguments.source || {};
-        var state;
-        try {
-            state = this.owner.call(
-                "agui_host", "getReportSourceState", clone(call.arguments.target || {})
-            );
-        } catch (error) {
-            return $.Deferred().reject(error).promise();
-        }
-        state = clone(state || {});
-        state.threadId = call.context && call.context.threadId || "";
-        state.sourceHandle = source.sourceHandle || false;
-        return this._rpc("/agui_chat/report/source/bind", {source: state}).then(
-            function (result) {
-                if (!result || !result.ok || !result.sourceHandle) {
-                    return $.Deferred().reject(bridgeError(
-                        result && result.code || "report_source_rejected",
-                        result && result.error || "当前列表报表来源绑定失败。"
-                    )).promise();
-                }
-                var bound = clone(call);
-                bound.arguments.source = {
-                    kind: "current_view",
-                    sourceHandle: result.sourceHandle,
-                };
-                return bound;
-            },
-            function (error) {
-                return $.Deferred().reject(bridgeError(
-                    error.code || "report_source_rejected", error.message
-                )).promise();
-            }
-        );
     };
 
     HostBridge.prototype._executeBusiness = function (decision) {

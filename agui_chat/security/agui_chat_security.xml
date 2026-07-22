@@ -24,10 +24,4 @@
         <field name="domain_force">[('user_id', '=', user.id)]</field>
         <field name="groups" eval="[(4, ref('base.group_user'))]"/>
     </record>
-    <record id="rule_agui_chat_report_source_user" model="ir.rule">
-        <field name="name">当前列表报表来源仅属于当前用户和公司</field>
-        <field name="model_id" ref="model_agui_chat_report_source"/>
-        <field name="domain_force">[('user_id', '=', user.id), ('company_id', '=', user.company_id.id)]</field>
-        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-    </record>
 </odoo>

@@ -23,7 +23,7 @@ from .branch import (
     validate_branch_identity,
 )
 from .database import check_database
-from .instructions import AGENT_INSTRUCTIONS
+from .instructions import build_agent_instructions
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
 from .skills import load_skills
@@ -482,7 +482,7 @@ assistant, edit_mode_assistant, menu_navigation_assistant = create_assistants(
     settings,
     agent_skills,
     workspace_service,
-    AGENT_INSTRUCTIONS,
+    build_agent_instructions,
     EDIT_MODE_TOOL_CHOICE,
     MENU_NAVIGATION_TOOL_CHOICE,
 )

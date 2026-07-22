@@ -1,9 +1,7 @@
 import json
 import os
-from pathlib import Path
 
 import pytest
-from agno.skills import LocalSkills
 
 import agentos_dev.skills as skills_module
 from agentos_dev.skills import (
@@ -11,8 +9,6 @@ from agentos_dev.skills import (
     TrustedLocalSkills,
     UntrustedSkillsDirectory,
 )
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def create_skill(root, name="review"):
@@ -33,21 +29,6 @@ def create_skill(root, name="review"):
     (folder / "scripts" / "check.py").chmod(0o644)
     (folder / "references" / "guide.md").chmod(0o644)
     return folder
-
-
-def test_current_view_report_skill_matches_agno_spec_and_is_discoverable():
-    skill_path = REPO_ROOT / "deploy/agentos/skills/odoo-current-view-report"
-    loader = LocalSkills(str(skill_path), validate=True)
-
-    [skill] = loader.load()
-    prompt = SecureSkills(loaders=[loader]).get_system_prompt_snippet()
-
-    assert skill.name == "odoo-current-view-report"
-    assert skill.scripts == ["generate_reports.py"]
-    assert skill.references == ["report-manifest.md", "report-protocol.md"]
-    assert "<name>odoo-current-view-report</name>" in prompt
-    assert "<scripts>generate_reports.py</scripts>" in prompt
-    assert "<references>report-manifest.md, report-protocol.md</references>" in prompt
 
 
 def test_public_metadata_is_clean_and_host_script_execution_is_absent(tmp_path):

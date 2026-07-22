@@ -2,8 +2,7 @@ import React from 'react'
 import type {
   AssistantMessageProps, AttachmentRef, ChatComponents, ChatFeedback, ChatIcons,
     ChatLabels, ChatMessage, OdooHostSnapshot, RecordCandidate, RelationCandidate,
-    Suggestion, ToolCall, ToolRenderer, UserMessageProps, X2ManyImportPreviewRequest,
-    X2ManyImportPreviewResponse
+    Suggestion, ToolCall, ToolRenderer, UserMessageProps
 } from '../types'
 import { AssistantMessageControls } from './AssistantMessageControls'
 import { InlineNotice } from './InlineNotice'
@@ -28,10 +27,6 @@ export interface MessagesProps {
   running: boolean
   onConfirmTool: (tool: ToolCall, approved: boolean) => void
   onUndoTool?: (tool: ToolCall) => void
-  onPreviewX2ManyImport?: (
-    tool: ToolCall,
-    request: X2ManyImportPreviewRequest
-  ) => Promise<X2ManyImportPreviewResponse>
   suggestions?: Suggestion[]
   toolRenderers?: Record<string, ToolRenderer>
   onRegenerate: (messageId: string) => void
@@ -51,14 +46,14 @@ export interface MessagesProps {
 export function DefaultAssistantMessage({
   message, running, isCurrent, toolRenderers, labels, icons, hostState,
   onCopy, onRegenerate, onConfirmTool, onUndoTool = () => undefined,
-  onPreviewX2ManyImport, onSelectRelation, onSelectRecord
+  onSelectRelation, onSelectRecord
 }: AssistantMessageProps) {
   const { content, reasoning, references, canRegenerate } = getAssistantMessagePresentation(message)
   return <div className="flex flex-col gap-5">
     <MessageReasoning steps={reasoning} />
     <MessageReferences references={references} />
     {message.tool_calls?.length ? <div className="flex flex-col gap-2">{message.tool_calls.map((tool, index) => (
-      <ToolCallCard key={getToolCallRenderKey(tool, index)} tool={tool} renderers={toolRenderers} labels={labels} hostState={hostState} running={running} onSelectRelation={onSelectRelation} onSelectRecord={onSelectRecord} onConfirm={(approved) => onConfirmTool(tool, approved)} onUndo={() => onUndoTool(tool)} onPreviewX2ManyImport={onPreviewX2ManyImport ? (request) => onPreviewX2ManyImport(tool, request) : undefined} />
+      <ToolCallCard key={getToolCallRenderKey(tool, index)} tool={tool} renderers={toolRenderers} labels={labels} hostState={hostState} running={running} onSelectRelation={onSelectRelation} onSelectRecord={onSelectRecord} onConfirm={(approved) => onConfirmTool(tool, approved)} onUndo={() => onUndoTool(tool)} />
     ))}</div> : null}
     {content || message.streaming_error ? <div className="group flex items-start gap-3">
       <div className="grid size-6 shrink-0 place-items-center rounded bg-primary text-primaryAccent">{icons.assistant}</div>
@@ -98,7 +93,7 @@ export function DefaultUserMessage({ message, labels, onPreviewAttachment, onRem
 export function Messages({
   messages, running, suggestions, toolRenderers, labels, icons, components,
   onRegenerate, onSuggestion, onConfirmTool, onUndoTool, onCopy, onFeedback, onPreviewAttachment,
-  hostState, onSelectRelation, onSelectRecord, onPreviewX2ManyImport,
+  hostState, onSelectRelation, onSelectRecord,
   onRemoveMenuMention
 }: MessagesProps) {
   const messageFeedback = useMessageFeedback(onFeedback)
@@ -114,7 +109,7 @@ export function Messages({
   return <div className="mx-auto flex w-full max-w-3xl flex-col gap-12 px-4 py-8">
     {displayMessages.map((message, index) => {
       const role = normalizeMessageRole(message.role)
-      if (role === 'assistant') return <AssistantMessage key={message.id || `assistant-${index}`} message={message} running={running} isCurrent={index === lastAssistantIndex} toolRenderers={toolRenderers} labels={labels} icons={icons} feedback={messageFeedback.feedback[message.id] || null} hostState={hostState} onSelectRelation={(tool, candidates) => onSelectRelation(tool, candidates)} onSelectRecord={(tool, candidate) => onSelectRecord(tool, candidate)} onCopy={() => onCopy(message)} onRegenerate={() => onRegenerate(message.id)} onFeedback={(next) => messageFeedback.toggleFeedback(message, next)} onConfirmTool={onConfirmTool} onUndoTool={(tool) => onUndoTool?.(tool)} onPreviewX2ManyImport={onPreviewX2ManyImport} />
+      if (role === 'assistant') return <AssistantMessage key={message.id || `assistant-${index}`} message={message} running={running} isCurrent={index === lastAssistantIndex} toolRenderers={toolRenderers} labels={labels} icons={icons} feedback={messageFeedback.feedback[message.id] || null} hostState={hostState} onSelectRelation={(tool, candidates) => onSelectRelation(tool, candidates)} onSelectRecord={(tool, candidate) => onSelectRecord(tool, candidate)} onCopy={() => onCopy(message)} onRegenerate={() => onRegenerate(message.id)} onFeedback={(next) => messageFeedback.toggleFeedback(message, next)} onConfirmTool={onConfirmTool} onUndoTool={(tool) => onUndoTool?.(tool)} />
       if (role === 'user') return <UserMessage key={message.id || `user-${index}`} message={message} icons={icons} labels={labels} onPreviewAttachment={onPreviewAttachment} onRemoveMenuMention={message.menuMention && onRemoveMenuMention ? () => onRemoveMenuMention(message.id) : undefined} />
       return null
     })}

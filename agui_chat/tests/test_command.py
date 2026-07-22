@@ -40,6 +40,11 @@ REMOVED_PAGE_COMMAND_XML_IDS = {
     "odoo.get_x2many_import_status": "command_get_x2many_import_status",
 }
 
+REMOVED_BUSINESS_COMMANDS = {
+    "odoo.business.report.filters",
+    "odoo.business.x2many_import.execute",
+}
+
 
 class TestAguiChatCommand(TransactionCase):
 
@@ -68,6 +73,12 @@ class TestAguiChatCommand(TransactionCase):
             self.assertFalse(self.env.ref(
                 "agui_chat.%s" % xml_id, raise_if_not_found=False,
             ))
+
+    def test_removed_business_commands_are_not_registered(self):
+        commands = self.env["agui.chat.command"].with_context(active_test=False).search([
+            ("code", "in", list(REMOVED_BUSINESS_COMMANDS)),
+        ])
+        self.assertFalse(commands)
 
     def test_command_code_is_unique(self):
         with self.assertRaises(IntegrityError), self.cr.savepoint():

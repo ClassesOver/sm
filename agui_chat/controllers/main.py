@@ -223,20 +223,6 @@ class AguiChatController(http.Controller):
                 "error": str(error),
             }
 
-    @http.route("/agui_chat/report/source/bind", type="json", auth="user")
-    def report_source_bind(self, source=None):
-        try:
-            record = request.env["agui.chat.report.source"]._bind_current_view(
-                source if isinstance(source, dict) else {}, self._session_key(),
-            )
-            return {"ok": True, **record._public_description()}
-        except (AccessError, ValidationError, ValueError) as error:
-            return {
-                "ok": False,
-                "code": getattr(error, "code", "report_source_rejected"),
-                "error": str(error),
-            }
-
     @http.route("/agui_chat/host_command", type="json", auth="user")
     def host_command(self, phase, call=None, authorization_id=None, approved=False, result=None):
         try:
