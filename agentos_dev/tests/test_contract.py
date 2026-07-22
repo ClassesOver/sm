@@ -158,5 +158,5 @@ def test_智能体说明明确工作区确认边界():
     instructions = "\n".join(build_agent_instructions(instruction_context()))
 
     assert "工作区只属于当前 thread" in instructions
-    assert "覆盖、删除及执行可信技能脚本仍须独立确认" in instructions
-    assert "不存在任意 Shell 或 Python 执行能力" in instructions
+    assert "新建、覆盖、移动、删除、sandbox 命令和 PDF 渲染均须独立确认" in instructions
+    assert "可信技能脚本" not in instructions

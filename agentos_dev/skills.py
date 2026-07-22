@@ -7,8 +7,6 @@ from pathlib import Path
 from agno.skills import LocalSkills, Skills
 from agno.tools.function import Function
 
-MAX_SKILL_SCRIPT_BYTES = 256 * 1024
-
 
 class UntrustedSkillsDirectory(ValueError):
     pass
@@ -124,24 +122,14 @@ class SecureSkills(Skills):
                 description="读取技能声明的一份参考文档。",
                 entrypoint=self._get_skill_reference,
             ),
-            Function(
-                name="get_skill_script",
-                description="读取技能声明的一个脚本；此工具不会执行脚本。",
-                entrypoint=self.read_skill_script,
-            ),
         ]
 
     def get_system_prompt_snippet(self) -> str:
-        value = super().get_system_prompt_snippet()
-        value = value.replace(
-            "3. `get_skill_script(skill_name, script_path, execute=False)` - Read or run scripts",
-            "3. `get_skill_script(skill_name, script_path)` - 仅可读取脚本源码",
+        return "\n".join(
+            line
+            for line in super().get_system_prompt_snippet().splitlines()
+            if "script" not in line.lower()
         )
-        value = value.replace(
-            "4. **Scripts**: Use `get_skill_script` to read or execute scripts from a skill",
-            "4. **脚本**：使用 `get_skill_script` 读取；仅可通过已确认的 `run_skill_script` 工具执行",
-        )
-        return value
 
     @staticmethod
     def skill_id(name: str) -> str:
@@ -215,30 +203,6 @@ class SecureSkills(Skills):
             )
         except (OSError, UnicodeError, ValueError) as error:
             return json.dumps({"error": str(error), "skill_name": skill_name})
-
-    def read_skill_script(self, skill_name: str, script_path: str) -> str:
-        try:
-            content = _read_trusted_bytes(
-                self._skill_resource(skill_name, "scripts", script_path)
-            ).decode("utf-8")
-            if len(content.encode("utf-8")) > MAX_SKILL_SCRIPT_BYTES:
-                raise ValueError("技能脚本超过 256 KB")
-            return json.dumps(
-                {
-                    "skill_name": skill_name,
-                    "script_path": script_path,
-                    "content": content,
-                }
-            )
-        except (OSError, UnicodeError, ValueError) as error:
-            return json.dumps({"error": str(error), "skill_name": skill_name})
-
-    def script_bytes(self, skill_name: str, script_path: str) -> bytes:
-        target = self._skill_resource(skill_name, "scripts", script_path)
-        content = _read_trusted_bytes(target)
-        if len(content) > MAX_SKILL_SCRIPT_BYTES:
-            raise ValueError("技能脚本超过 256 KB")
-        return content
 
 
 def load_skills(path: str | None = None) -> SecureSkills:

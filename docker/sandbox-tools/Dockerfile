@@ -12,6 +12,7 @@ RUN sed -i \
         /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+        bash \
         file \
         fontconfig \
         fonts-liberation \
@@ -51,8 +52,8 @@ ENV HOME=/home/daytona \
     XDG_CACHE_HOME=/home/daytona/.cache \
     XDG_CONFIG_HOME=/home/daytona/.config \
     MPLCONFIGDIR=/home/daytona/.cache/matplotlib \
-    LANG=en_US.UTF-8 \
-    LC_ALL=en_US.UTF-8 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
     SAL_USE_VCLPLUGIN=svp
 
 USER daytona

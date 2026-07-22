@@ -6,7 +6,7 @@ from agno.models.openai import OpenAIChat
 
 from .database import SerializedAsyncPostgresDb
 from .settings import AgentSettings
-from .workspace import WorkspaceService, workspace_tools
+from .workspace import WorkspaceReportToolkit, WorkspaceService
 
 OPENAI_COMPATIBLE_ROLE_MAP = {
     "system": "user",
@@ -40,7 +40,7 @@ def create_assistants(
         ),
         instructions=instructions,
         skills=skills,
-        tools=workspace_tools(workspace_service, skills),
+        tools=[WorkspaceReportToolkit(workspace_service)],
         db=SerializedAsyncPostgresDb(db_url=settings.database_url),
         add_history_to_context=True,
         num_history_runs=10,

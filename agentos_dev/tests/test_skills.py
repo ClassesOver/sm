@@ -48,10 +48,7 @@ def test_public_metadata_is_clean_and_host_script_execution_is_absent(tmp_path):
     assert set(tools) == {
         "get_skill_instructions",
         "get_skill_reference",
-        "get_skill_script",
     }
-    assert "execute" not in tools["get_skill_script"].parameters["properties"]
-    assert "print('ok')" in skills.read_skill_script("review", "check.py")
 
 
 def test_rejects_untrusted_root_and_escaping_symlink(tmp_path):
@@ -65,7 +62,7 @@ def test_rejects_untrusted_root_and_escaping_symlink(tmp_path):
         SecureSkills(loaders=[TrustedLocalSkills(str(trusted))])
 
 
-def test_revalidates_symlink_and_accepts_group_writable_paths(tmp_path):
+def test_accepts_group_writable_paths(tmp_path):
     folder = create_skill(tmp_path)
     folder.chmod(0o775)
     reference = folder / "references" / "guide.md"
@@ -73,12 +70,3 @@ def test_revalidates_symlink_and_accepts_group_writable_paths(tmp_path):
     skills = SecureSkills(loaders=[TrustedLocalSkills(str(tmp_path))])
 
     assert "guide" in skills._get_skill_reference("review", "guide.md")
-
-    script = folder / "scripts" / "check.py"
-    script.chmod(0o664)
-    assert skills.script_bytes("review", "check.py") == b"print('ok')"
-
-    script.unlink()
-    script.symlink_to(folder / "SKILL.md")
-    with pytest.raises(UntrustedSkillsDirectory):
-        skills.script_bytes("review", "check.py")

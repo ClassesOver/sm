@@ -205,3 +205,9 @@ node scripts/agui_sse_load.js https://odoo.example.com/contract-review/agui 200
 ```
 
 生产目标是传输错误率低于 1%，且浏览器中止的 run 能及时释放上游连接。
+## 智能报表运行时
+
+AgentOS 的工作区智能报表依赖现有 `docker/sandbox-tools` 镜像，不支持基础 Daytona slim
+镜像。镜像必须保留 WeasyPrint 69、pypdf、Matplotlib、pandas、openpyxl、xlrd 与 Noto CJK
+字体和 `/usr/bin/bash`；Daytona sandbox 必须继续启用 `network_block_all`。报表任务的中间状态位于 sandbox
+`/tmp/workspace-report`，成功后只保留工作区内的最终 PDF，失败状态最多保留 24 小时。

@@ -11,7 +11,7 @@ from typing import Any
 
 import psycopg
 from agno.run import RunContext
-from agno.tools.function import Function
+from agno.tools import Toolkit
 from daytona import (
     AsyncDaytona,
     CreateSandboxFromSnapshotParams,
@@ -23,9 +23,9 @@ from daytona.common.errors import DaytonaNotFoundError
 from .async_utils import complete_cleanup
 from .database import psycopg_db_url
 from .security import thread_label
-from .skills import MAX_SKILL_SCRIPT_BYTES, SecureSkills
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
+WORKSPACE_SNAPSHOT = "registry:6000/daytona/sandbox:0.5.0-tools"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 MAX_READ_BYTES = 1024 * 1024
@@ -34,9 +34,6 @@ MAX_LIST_ENTRIES = 500
 MAX_PATH_BYTES = 1024
 MAX_PATH_COMPONENT_BYTES = 255
 MAX_PATH_DEPTH = 32
-MAX_SCRIPT_BYTES = MAX_SKILL_SCRIPT_BYTES
-MAX_SCRIPT_ARGS = 20
-MAX_SCRIPT_ARG_BYTES = 1024
 MAX_EXECUTION_TIMEOUT = 60
 MAX_BRANCH_FILES = 2000
 MAX_BRANCH_TOTAL_BYTES = 256 * 1024 * 1024
@@ -243,6 +240,7 @@ class WorkspaceService:
             if sandbox is None and create:
                 sandbox = self.client.create(
                     CreateSandboxFromSnapshotParams(
+                        snapshot=WORKSPACE_SNAPSHOT,
                         name=f"agui-{value[:20]}",
                         language="python",
                         labels={"agui-thread": value},
@@ -333,6 +331,7 @@ class WorkspaceService:
             if sandbox is None and create:
                 sandbox = await client.create(
                     CreateSandboxFromSnapshotParams(
+                        snapshot=WORKSPACE_SNAPSHOT,
                         name=f"agui-{value[:20]}",
                         language="python",
                         labels={"agui-thread": value},
@@ -765,50 +764,6 @@ class WorkspaceService:
             )
         return timeout
 
-    def run_skill_script(
-        self,
-        thread: str,
-        skills: SecureSkills,
-        skill_name: str,
-        script_path: str,
-        args: list[str] | None = None,
-        timeout: int = 30,
-    ):
-        execution_timeout = self._validate_timeout(timeout)
-        if args is not None and not isinstance(args, list):
-            raise WorkspaceError("技能脚本参数必须是字符串列表，请修改后重试。")
-        arguments = args or []
-        if len(arguments) > MAX_SCRIPT_ARGS:
-            raise WorkspaceError("技能脚本最多接受 20 个参数，请减少参数后重试。")
-        if any(not isinstance(value, str) for value in arguments):
-            raise WorkspaceError("技能脚本参数必须是字符串，请修改后重试。")
-        if any(len(str(value).encode("utf-8")) > MAX_SCRIPT_ARG_BYTES for value in arguments):
-            raise WorkspaceError("技能脚本参数超过 1 KiB，请缩短参数后重试。")
-        try:
-            content = skills.script_bytes(skill_name, script_path)
-        except (OSError, UnicodeError, ValueError) as error:
-            raise WorkspaceError(f"技能脚本无法读取：{error}。请检查技能声明后重试。") from error
-        if not isinstance(content, bytes) or len(content) > MAX_SCRIPT_BYTES:
-            raise WorkspaceError("技能脚本超过 256 KiB，请缩小脚本后重试。")
-        extension = PurePosixPath(script_path).suffix.lower()
-        interpreter = {".py": "python", ".js": "node", ".sh": "sh"}.get(extension)
-        if not interpreter:
-            raise WorkspaceError("技能脚本类型不可执行，请选择 Python、JavaScript 或 Shell 脚本。")
-        skill_key = SecureSkills.skill_id(skill_name)
-        digest = hashlib.sha256(content).hexdigest()
-        relative = f"skills/{skill_key}/{digest}{extension}"
-        self.upload(thread, relative, content)
-        remote = f"{WORKSPACE_ROOT}/{relative}"
-        command_arguments = " ".join(shlex.quote(str(value)) for value in arguments)
-        value = self.sandbox_for(thread).process.exec(
-            f"{interpreter} {shlex.quote(remote)} {command_arguments}".rstrip(),
-            cwd=WORKSPACE_ROOT,
-            timeout=execution_timeout,
-        )
-        result = self._bounded_output(value)
-        result["message"] = "技能脚本执行结束，请根据退出码和输出检查结果。"
-        return result
-
 
 def _thread(run_context: RunContext | None) -> str:
     if not run_context or not run_context.session_id:
@@ -826,95 +781,159 @@ def _is_controlled_raw_dataset(path: str) -> bool:
     ) or bool(len(parts) == 3 and parts[0:2] == ("reports", "data") and parts[2].endswith(".jsonl"))
 
 
-def workspace_tools(service: WorkspaceService, skills: SecureSkills) -> list[Function]:
-    def list_files(path: str = "", run_context: RunContext | None = None):
-        """列出当前对话工作区中的文件。"""
-        return json.dumps(service.list_files(_thread(run_context), path), ensure_ascii=False)
+class DaytonaToolkit(Toolkit):
+    def __init__(self, service: WorkspaceService):
+        self.service = service
+        super().__init__(
+            name="daytona_workspace",
+            tools=[self.sandbox_exec],
+            requires_confirmation_tools=["sandbox_exec"],
+        )
 
-    def read_file(path: str, run_context: RunContext | None = None):
+    async def sandbox_exec(
+        self,
+        command: str,
+        cwd: str | None = None,
+        timeout: int = 30,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        """在当前对话的 Daytona sandbox 中执行命令。"""
+        if not isinstance(command, str) or not command.strip():
+            raise WorkspaceError("命令不能为空。")
+        execution_timeout = self.service._validate_timeout(timeout)
+        remote_cwd = WORKSPACE_ROOT
+        if cwd is not None:
+            _relative, remote_cwd = self.service.normalize_path(cwd)
+        async with self.service._async_client() as client:
+            sandbox = await self.service._asandbox_for(client, _thread(run_context))
+            value = await sandbox.process.exec(command, cwd=remote_cwd, timeout=execution_timeout)
+        return self.service._bounded_output(value)
+
+
+class WorkspaceToolkit(DaytonaToolkit):
+    def __init__(self, service: WorkspaceService):
+        super().__init__(service)
+        for function in (
+            self.workspace_list_files,
+            self.workspace_read_file,
+            self.workspace_write_file,
+            self.workspace_replace_file,
+            self.workspace_move_file,
+            self.workspace_delete_file,
+        ):
+            self.register(function)
+        for name in (
+            "workspace_write_file",
+            "workspace_replace_file",
+            "workspace_move_file",
+            "workspace_delete_file",
+        ):
+            self.functions[name].requires_confirmation = True
+
+    def workspace_list_files(self, path: str = "", run_context: RunContext | None = None):
+        """列出当前对话工作区中的文件。"""
+        return json.dumps(self.service.list_files(_thread(run_context), path), ensure_ascii=False)
+
+    def workspace_read_file(self, path: str, run_context: RunContext | None = None):
         """读取当前对话工作区中大小受限的 UTF-8 文本文件。"""
         if _is_controlled_raw_dataset(path):
             raise WorkspaceError("原始报表分片不能进入智能体上下文；请使用报表分析工具。")
-        return service.read_text(_thread(run_context), path)
+        return self.service.read_text(_thread(run_context), path)
 
-    def write_file(path: str, content: str, run_context: RunContext | None = None):
-        """在当前对话工作区中新建 UTF-8 文件；目标已存在时拒绝写入。"""
-        result = service.create_file(_thread(run_context), path, content.encode("utf-8"))
+    def workspace_write_file(self, path: str, content: str, run_context: RunContext | None = None):
+        """在当前对话工作区中新建 UTF-8 文件；执行前需要确认。"""
+        result = self.service.create_file(_thread(run_context), path, content.encode("utf-8"))
         return {**result, "message": "文件已新建。"}
 
-    def replace_file(path: str, content: str, run_context: RunContext | None = None):
+    def workspace_replace_file(
+        self, path: str, content: str, run_context: RunContext | None = None
+    ):
         """覆盖当前对话工作区中的普通 UTF-8 文件；执行前需要确认。"""
-        result = service.replace_file(_thread(run_context), path, content.encode("utf-8"))
+        result = self.service.replace_file(_thread(run_context), path, content.encode("utf-8"))
         return {**result, "message": "文件已覆盖。"}
 
-    def move_file(source: str, destination: str, run_context: RunContext | None = None):
+    def workspace_move_file(
+        self, source: str, destination: str, run_context: RunContext | None = None
+    ):
         """移动或重命名当前对话工作区中的文件或目录；目标已存在时拒绝操作。"""
-        service.move_file(_thread(run_context), source, destination)
+        self.service.move_file(_thread(run_context), source, destination)
         return {"ok": True, "message": "文件或目录已移动。"}
 
-    def delete_file(path: str, recursive: bool = False, run_context: RunContext | None = None):
+    def workspace_delete_file(
+        self, path: str, recursive: bool = False, run_context: RunContext | None = None
+    ):
         """删除当前对话工作区中的文件或目录；执行前需要确认。"""
-        service.delete_file(_thread(run_context), path, recursive)
+        self.service.delete_file(_thread(run_context), path, recursive)
         return {"ok": True, "message": "文件或目录已删除。"}
 
-    def run_skill_script(
-        skill_name: str,
-        script_path: str,
-        args: list[str] | None = None,
-        timeout: int = 30,
-        run_context: RunContext | None = None,
+
+class WorkspaceReportToolkit(WorkspaceToolkit):
+    def __init__(self, service: WorkspaceService):
+        super().__init__(service)
+        for function in (
+            self.report_list_capabilities,
+            self.report_prepare_dataset,
+            self.report_analyze_dataset,
+            self.report_compile,
+            self.report_render,
+        ):
+            self.register(function)
+        self.async_functions["report_render"].requires_confirmation = True
+
+    async def _report(self, action: str, payload: dict[str, Any], run_context: RunContext | None):
+        from . import report_runtime
+
+        content = open(report_runtime.__file__, "rb").read()
+        digest = hashlib.sha256(content).hexdigest()
+        remote = f"/tmp/workspace-report-runtime-{digest}.py"
+        async with self.service._async_client() as client:
+            sandbox = await self.service._asandbox_for(client, _thread(run_context))
+            await sandbox.fs.upload_file(content, remote)
+            command = f"python {shlex.quote(remote)} {shlex.quote(action)} {shlex.quote(json.dumps(payload, ensure_ascii=False))}"
+            value = await sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=60)
+        result = self.service._bounded_output(value)
+        if result["exitCode"] != 0:
+            raise WorkspaceError(result["output"] or "报表运行失败。")
+        try:
+            return json.loads(result["output"])
+        except json.JSONDecodeError as error:
+            raise WorkspaceError("报表运行时返回无效结果。") from error
+
+    async def report_list_capabilities(self, run_context: RunContext | None = None):
+        """检查固定报表运行时、依赖、格式、分析、图表与模板能力。"""
+        return await self._report("capabilities", {}, run_context)
+
+    async def report_prepare_dataset(
+        self, paths: list[str], sheet_name: str | None = None, run_context: RunContext | None = None
     ):
-        """在当前工作区中复制并执行可信技能声明的脚本；执行前需要确认。"""
-        return service.run_skill_script(
-            _thread(run_context),
-            skills,
-            skill_name,
-            script_path,
-            args,
-            timeout,
+        """从一至五个当前工作区相对路径准备统一数据集。"""
+        return await self._report(
+            "prepare", {"paths": paths, "sheet_name": sheet_name}, run_context
         )
 
-    tools = [
-        Function(
-            name="workspace_list_files",
-            description="列出当前对话工作区中的文件。",
-            entrypoint=list_files,
-        ),
-        Function(
-            name="workspace_read_file",
-            description="读取当前对话工作区中大小受限的 UTF-8 文本文件。",
-            entrypoint=read_file,
-        ),
-        Function(
-            name="workspace_write_file",
-            description="新建 UTF-8 文件；目标已存在时拒绝写入。",
-            entrypoint=write_file,
-        ),
-        Function(
-            name="workspace_move_file",
-            description="移动或重命名文件或目录；目标已存在时拒绝操作。",
-            entrypoint=move_file,
-        ),
-        Function(
-            name="workspace_replace_file",
-            description="覆盖已有的普通 UTF-8 文件；执行前需要确认。",
-            entrypoint=replace_file,
-            requires_confirmation=True,
-        ),
-        Function(
-            name="workspace_delete_file",
-            description="删除文件或目录；执行前需要确认。",
-            entrypoint=delete_file,
-            requires_confirmation=True,
-        ),
-    ]
-    if skills.get_all_skills():
-        tools.append(
-            Function(
-                name="run_skill_script",
-                description="执行可信技能声明的脚本；执行前需要确认。",
-                entrypoint=run_skill_script,
-                requires_confirmation=True,
-            )
+    async def report_analyze_dataset(
+        self, job_id: str, operations: list[dict[str, Any]], run_context: RunContext | None = None
+    ):
+        """对已准备数据执行受控分析并保存可复用结果。"""
+        return await self._report(
+            "analyze", {"job_id": job_id, "operations": operations}, run_context
         )
-    return tools
+
+    async def report_compile(
+        self,
+        job_id: str,
+        title: str,
+        template: str,
+        blocks: list[dict[str, Any]],
+        run_context: RunContext | None = None,
+    ):
+        """使用模板和已保存分析结果编排 PDF 报表。"""
+        return await self._report(
+            "compile",
+            {"job_id": job_id, "title": title, "template": template, "blocks": blocks},
+            run_context,
+        )
+
+    async def report_render(self, job_id: str, run_context: RunContext | None = None):
+        """在 sandbox 内生成并校验最终 PDF；执行前需要确认。"""
+        return await self._report("render", {"job_id": job_id}, run_context)

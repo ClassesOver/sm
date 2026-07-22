@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -7,7 +6,6 @@ import pytest
 from agno.run import RunContext
 
 import agentos_dev.workspace as workspace_module
-from agentos_dev.skills import SecureSkills
 from agentos_dev.tests.workspace_fakes import (
     SECRET,
     AsyncFakeClient,
@@ -19,20 +17,20 @@ from agentos_dev.tests.workspace_fakes import (
     service,
 )
 from agentos_dev.workspace import (
-    MAX_EXECUTION_TIMEOUT,
     MAX_PATH_BYTES,
     MAX_PATH_COMPONENT_BYTES,
     MAX_PATH_DEPTH,
     MAX_READ_BYTES,
-    MAX_SCRIPT_ARG_BYTES,
-    MAX_SCRIPT_BYTES,
     MAX_UPLOAD_BYTES,
     WORKSPACE_ROOT,
+    WORKSPACE_SNAPSHOT,
+    DaytonaToolkit,
     SandboxRegistry,
     WorkspaceError,
     WorkspacePathConflict,
+    WorkspaceReportToolkit,
     WorkspaceService,
-    workspace_tools,
+    WorkspaceToolkit,
 )
 
 
@@ -48,6 +46,7 @@ def test_每个对话使用独立持久沙箱且注册表可跨服务复用(tmp_
     assert params.public is False
     assert params.ephemeral is False
     assert params.network_block_all is True
+    assert params.snapshot == WORKSPACE_SNAPSHOT
     assert params.auto_stop_interval == 60
     assert list(params.labels) == ["agui-thread"]
     assert "thread-one" not in str(params.labels)
@@ -113,41 +112,59 @@ def test_注册表直到首次使用才初始化(monkeypatch):
         registry.ensure_initialized()
 
 
-def test_工具确认边界与可信技能注册符合策略(tmp_path):
-    no_skill_tools = {
-        tool.name: tool for tool in workspace_tools(service(tmp_path), SecureSkills([]))
-    }
-    assert set(no_skill_tools) == {
+def test_最终工具集线性继承且确认边界符合策略(tmp_path):
+    toolkit = WorkspaceReportToolkit(service(tmp_path))
+    assert isinstance(toolkit, WorkspaceToolkit)
+    assert isinstance(toolkit, DaytonaToolkit)
+    tools = {**toolkit.functions, **toolkit.async_functions}
+    assert set(tools) == {
+        "sandbox_exec",
         "workspace_list_files",
         "workspace_read_file",
         "workspace_write_file",
         "workspace_move_file",
         "workspace_replace_file",
         "workspace_delete_file",
+        "report_list_capabilities",
+        "report_prepare_dataset",
+        "report_analyze_dataset",
+        "report_compile",
+        "report_render",
     }
     for name in (
-        "workspace_list_files",
-        "workspace_read_file",
+        "sandbox_exec",
         "workspace_write_file",
         "workspace_move_file",
+        "workspace_replace_file",
+        "workspace_delete_file",
+        "report_render",
     ):
-        assert no_skill_tools[name].requires_confirmation is not True
-        assert no_skill_tools[name].description
-    for name in ("workspace_replace_file", "workspace_delete_file"):
-        assert no_skill_tools[name].requires_confirmation is True
+        assert tools[name].requires_confirmation is True
 
-    fake_skills = type(
-        "可信技能",
-        (),
-        {
-            "get_all_skills": lambda _self: [object()],
-            "script_bytes": lambda *_args: b"print('ok')",
-        },
-    )()
-    skill_tools = {tool.name: tool for tool in workspace_tools(service(tmp_path), fake_skills)}
-    assert skill_tools["run_skill_script"].requires_confirmation is True
-    assert "workspace_shell" not in skill_tools
-    assert "workspace_run_code" not in skill_tools
+
+@pytest.mark.anyio
+async def test_sandbox_exec_使用原生异步进程并绑定工作区(tmp_path):
+    current = service(tmp_path)
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+    toolkit = WorkspaceReportToolkit(async_service)
+
+    result = await toolkit.sandbox_exec(
+        "pwd", cwd="资料", timeout=30, run_context=RunContext(run_id="run", session_id="thread")
+    )
+
+    assert result == {"exitCode": 0, "output": "pwd", "truncated": False}
+    process = current.sandbox_for("thread").process
+    assert process.calls[-1] == {
+        "command": "pwd",
+        "cwd": f"{WORKSPACE_ROOT}/资料",
+        "timeout": 30,
+    }
 
 
 def test_新建覆盖移动和系统上传保持各自语义(tmp_path):
@@ -202,7 +219,8 @@ def test_create_file_locked_serializes_same_thread_and_path(tmp_path):
 
 def test_智能体新建覆盖和安全移动返回中文提示(tmp_path):
     current = service(tmp_path)
-    tools = {tool.name: tool for tool in workspace_tools(current, SecureSkills([]))}
+    toolkit = WorkspaceReportToolkit(current)
+    tools = toolkit.functions
     context = RunContext(run_id="run", session_id="thread")
 
     created = tools["workspace_write_file"].entrypoint(
@@ -236,7 +254,7 @@ def test_智能体新建覆盖和安全移动返回中文提示(tmp_path):
 def test_智能体文本工具禁止读取受控原始报表分片(tmp_path, path):
     current = service(tmp_path)
     current.upload("thread", path, b'{"secret":"raw"}\n')
-    current_tools = {tool.name: tool for tool in workspace_tools(current, SecureSkills([]))}
+    current_tools = WorkspaceReportToolkit(current).functions
 
     with pytest.raises(WorkspaceError, match="不能进入智能体上下文"):
         current_tools["workspace_read_file"].entrypoint(
@@ -428,65 +446,6 @@ async def test_异步分支工作区复制被取消也会清理目标(tmp_path, 
         await copy_task
 
     assert current.sandbox_for("target", create=False) is None
-
-
-def test_技能执行输入在创建沙箱前被拒绝(tmp_path):
-    current = service(tmp_path)
-    fake_skills = type("Skills", (), {"script_bytes": lambda *_args: b"print('ok')"})()
-    with pytest.raises(WorkspaceError, match="最多接受 20"):
-        current.run_skill_script("thread", fake_skills, "review", "check.py", ["x"] * 21)
-    with pytest.raises(WorkspaceError, match="1 KiB"):
-        current.run_skill_script(
-            "thread",
-            fake_skills,
-            "review",
-            "check.py",
-            ["界" * (MAX_SCRIPT_ARG_BYTES // 3 + 1)],
-        )
-    with pytest.raises(WorkspaceError, match="1 至 60 秒"):
-        current.run_skill_script(
-            "thread",
-            fake_skills,
-            "review",
-            "check.py",
-            timeout=MAX_EXECUTION_TIMEOUT + 1,
-        )
-    with pytest.raises(WorkspaceError, match="字符串列表"):
-        current.run_skill_script(
-            "thread",
-            fake_skills,
-            "review",
-            "check.py",
-            args="bad",
-        )
-    large_skills = type(
-        "Skills",
-        (),
-        {
-            "script_bytes": lambda *_args: b"x" * (MAX_SCRIPT_BYTES + 1),
-        },
-    )()
-    with pytest.raises(WorkspaceError, match="脚本超过 256 KiB"):
-        current.run_skill_script("thread", large_skills, "review", "check.py")
-    assert not current.client.created
-
-
-def test_技能执行接受参数和超时边界并使用内容摘要路径(tmp_path):
-    current = service(tmp_path)
-    content = b"print('ok')"
-    fake_skills = type("Skills", (), {"script_bytes": lambda *_args: content})()
-
-    result = current.run_skill_script(
-        "thread",
-        fake_skills,
-        "review",
-        "check.py",
-        ["x" * MAX_SCRIPT_ARG_BYTES] * 20,
-        timeout=MAX_EXECUTION_TIMEOUT,
-    )
-    assert result["exitCode"] == 0
-    assert hashlib.sha256(content).hexdigest() + ".py" in result["output"]
-    assert "检查结果" in result["message"]
 
 
 @pytest.mark.integration

@@ -9,7 +9,7 @@ CORE_INSTRUCTIONS = [
     "每次页面工具返回后，只使用最新快照中的 viewType、字段、modifiers、capabilities、记录和 token，并重新检查本轮声明的工具；不得复用旧快照或调用未声明能力。",
     "不得猜测 ID、字段、记录、关系值、menuTarget、viewTarget、token 或工具能力；页面操作必须通过对应工具完成，查询结论只能来自工具结果。",
     "每轮最多跟进四次客户端页面工具；达到上限后停止并请用户继续发送消息。",
-    "工作区只属于当前 thread；仅使用本轮声明的工作区和技能工具，不存在任意 Shell 或 Python 执行能力。覆盖、删除及执行可信技能脚本仍须独立确认。",
+    "工作区只属于当前 thread；仅使用本轮声明的工作区和技能工具。新建、覆盖、移动、删除、sandbox 命令和 PDF 渲染均须独立确认。",
 ]
 
 NAVIGATION_INSTRUCTIONS = [

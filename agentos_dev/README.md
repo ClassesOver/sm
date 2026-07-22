@@ -35,10 +35,14 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 默认监听 `127.0.0.1:7777`。HRP 只需配置
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
 
-`workspace_read_file` 禁止读取 `报表/原始数据/*/分片/*.jsonl` 和历史
-`reports/data/*.jsonl`，但用户仍可通过工作区下载接口取得本人 thread 中的文件。读取、新建
-文件和移动到空闲路径不需要确认；覆盖、删除和执行可信技能脚本仍要求确认，且不提供任意
-Shell 或 Python 执行工具。
+Agent 只注册线性继承的 `WorkspaceReportToolkit`。工作区读取和列举无需确认；新建、覆盖、
+移动、删除、任意 sandbox 命令和 PDF 渲染均需要确认。任意命令只在当前 thread 的 Daytona
+sandbox 中运行，实际安全边界是启用 `network_block_all` 的 Daytona 隔离。
+
+智能报表统一接收当前 thread 工作区内的 CSV、XLS、XLSX、顶层对象数组 JSON 或 JSONL
+相对路径。固定报表运行时由 AgentOS 上传并按源码摘要命名，任务状态保存在 sandbox 的
+`/tmp/workspace-report`，最终 PDF 输出到 `报表/生成结果/<job_id>/`。生产环境必须使用仓库
+现有 `docker/sandbox-tools` 镜像，以提供 WeasyPrint 69、pypdf、Matplotlib 和 Noto CJK。
 
 应用默认读取 `/home/junge/pros/agents_app/.env`，复用其中的 `MODEL`、
 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。可通过 `AGENT_ENV_FILE` 指向其他

@@ -55,7 +55,11 @@ class FakeFs:
 
 
 class FakeProcess:
+    def __init__(self):
+        self.calls = []
+
     def exec(self, command, cwd=None, timeout=None):
+        self.calls.append({"command": command, "cwd": cwd, "timeout": timeout})
         return type("Result", (), {"result": command, "exit_code": 0})()
 
 
@@ -123,10 +127,19 @@ class AsyncFakeFs:
         return self._fs.list_files(path)
 
 
+class AsyncFakeProcess:
+    def __init__(self, process):
+        self._process = process
+
+    async def exec(self, command, cwd=None, timeout=None):
+        return self._process.exec(command, cwd=cwd, timeout=timeout)
+
+
 class AsyncFakeSandbox:
     def __init__(self, sandbox):
         self._sandbox = sandbox
         self.fs = AsyncFakeFs(sandbox.fs)
+        self.process = AsyncFakeProcess(sandbox.process)
 
     @property
     def id(self):
