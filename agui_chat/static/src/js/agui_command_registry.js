@@ -481,7 +481,7 @@ odoo.define("agui_chat.command_registry", function (require) {
                     domain: domain,
                     groupby: (record && record.groupedBy || []).slice(0),
                     context: directContext,
-                    action: snapshot.action && snapshot.action.id || false,
+                    action: Adapter.clone(snapshot.action || false),
                     orderby: directExportGroupOrder(record),
                     detail_orderby: directExportDetailOrder(controller, record),
                 },

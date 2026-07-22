@@ -96,7 +96,7 @@ React 只执行本次运行声明了完全相同名称的工具。Agno 服务端
 该工具始终要求用户确认。`preview.export` 只公开 `workspacePath`、`format`、`scope`、
 `recordCount`、`fieldCount` 和有序列标签。确认后浏览器使用当前 Odoo 会话调用
 业务 `/web/export/xlsx`，请求字段与 `dy_base.DataExport.direct_export_data()` 一致，包含列表
-`fieldInfo`、分组布局、action、分组排序、明细排序以及 `context.export_way/expWay`；随后携带当前
+`fieldInfo`、分组布局、当前 action 对象、分组排序、明细排序以及 `context.export_way/expWay`；随后携带当前
 thread capability 调用 AgentOS
 `POST /workspace/files`。成功结果包含 `path`、`filename`、`format`、`size`、`recordCount` 与
 `fieldCount`，其中 `filename` 由 Odoo `web.contentdisposition` 解析响应头得到。该文件名仅作为

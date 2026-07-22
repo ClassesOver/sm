@@ -1229,7 +1229,12 @@ odoo.define("agui_chat.tests.host", function (require) {
         var snapshot = {
             interactive: true, capturedAt: "2026-07-22T01:02:03.000Z",
             controller: {viewType: "list"}, record: false,
-            action: {id: 404},
+            action: {
+                id: 404,
+                name: "报销单查询",
+                type: "ir.actions.act_window",
+                resModel: "dy.expense.report",
+            },
             selection: {model: "dy.expense.report", ids: [7]},
             fields: {
                 state: {string: "状态", type: "selection", invisible: false, redacted: false},
@@ -1261,7 +1266,12 @@ odoo.define("agui_chat.tests.host", function (require) {
                 assert.deepEqual(spec.context, {
                     lang: "zh_CN", export_way: "direct", expWay: "expense",
                 });
-                assert.strictEqual(spec.action, 404);
+                assert.deepEqual(spec.action, {
+                    id: 404,
+                    name: "报销单查询",
+                    type: "ir.actions.act_window",
+                    resModel: "dy.expense.report",
+                });
                 assert.strictEqual(spec.orderby, "state ASC, amount DESC");
                 assert.strictEqual(spec.detail_orderby, "state ASC, amount DESC");
                 return $.when({path: metadata.workspacePath});
@@ -1421,7 +1431,12 @@ odoo.define("agui_chat.tests.host", function (require) {
             ids: [7], domain: [["active", "=", true]],
             groupby: ["state"],
             context: {lang: "zh_CN", export_way: "direct", expWay: "finance"},
-            action: 404,
+            action: {
+                id: 404,
+                name: "报销单查询",
+                type: "ir.actions.act_window",
+                resModel: "res.partner",
+            },
             orderby: "state ASC",
             detail_orderby: "name DESC",
         }, {
@@ -1442,7 +1457,12 @@ odoo.define("agui_chat.tests.host", function (require) {
             assert.deepEqual(exportPayload.context, {
                 lang: "zh_CN", export_way: "direct", expWay: "finance",
             });
-            assert.strictEqual(exportPayload.action, 404);
+            assert.deepEqual(exportPayload.action, {
+                id: 404,
+                name: "报销单查询",
+                type: "ir.actions.act_window",
+                resModel: "res.partner",
+            });
             assert.strictEqual(exportPayload.orderby, "state ASC");
             assert.strictEqual(exportPayload.detail_orderby, "name DESC");
             assert.strictEqual(exportPayload.import_compat, false);
