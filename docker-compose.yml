@@ -45,7 +45,6 @@ services:
       DAYTONA_API_KEY: ${DAYTONA_API_KEY:-}
       AGUI_WORKSPACE_HMAC_SECRET: ${AGUI_WORKSPACE_HMAC_SECRET:?必须与 Odoo agui_chat.workspace_hmac_secret 一致}
       AGENT_SKILLS_DIR: /opt/agent-skills
-      AGENT_SKILLS_TRUSTED_UID: ${AGENT_SKILLS_TRUSTED_UID:?必须先运行 env-init}
     volumes:
       - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
     depends_on:

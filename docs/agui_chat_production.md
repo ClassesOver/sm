@@ -130,9 +130,8 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
 删除环境文件或数据卷。已有环境文件会备份到各自的 `.env.backups/` 目录；不要在已有数据卷
 运行时盲目轮换 Daytona 加密密钥、Runner Token 或数据库密码。
 
-AgentOS setup 会移除默认技能目录的组写和其他用户写权限，并把目录所有者写入
-`AGENT_SKILLS_TRUSTED_UID`。自定义技能目录必须由运维方执行同等权限约束，并显式配置其
-所有者 UID；校验失败时 AgentOS 会拒绝启动。
+AgentOS 会拒绝技能目录中的符号链接、非普通文件和越界资源；自定义技能目录也必须满足
+这些路径约束。
 
 在 HRP 中，将 AgentOS HMAC 配置为仅服务端可见的系统参数，并将 AgentOS 地址设置为
 `http://127.0.0.1:7777` 或宿主机可访问的实际地址。

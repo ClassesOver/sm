@@ -14,17 +14,6 @@ class UntrustedSkillsDirectory(ValueError):
     pass
 
 
-def _trusted_uids() -> set[int]:
-    configured = os.getenv("AGENT_SKILLS_TRUSTED_UID", "").strip()
-    try:
-        configured_uid = int(configured) if configured else os.geteuid()
-    except ValueError as error:
-        raise UntrustedSkillsDirectory("AGENT_SKILLS_TRUSTED_UID 必须是整数") from error
-    if configured_uid < 0:
-        raise UntrustedSkillsDirectory("AGENT_SKILLS_TRUSTED_UID 不能是负数")
-    return {0, os.geteuid(), configured_uid}
-
-
 def _trusted_path(path: Path, expected: str) -> None:
     metadata = path.lstat()
     _trusted_metadata(metadata, path, expected)
@@ -41,8 +30,6 @@ def _trusted_metadata(metadata, path: Path, expected: str) -> None:
     if not correct_type:
         expected_name = "目录" if expected == "directory" else "文件"
         raise UntrustedSkillsDirectory(f"技能路径必须是{expected_name}：{path}")
-    if metadata.st_uid not in _trusted_uids() or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-        raise UntrustedSkillsDirectory(f"技能路径的所有者或权限模式不受信任：{path}")
 
 
 def _read_trusted_bytes(path: Path) -> bytes:

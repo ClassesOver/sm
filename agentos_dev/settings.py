@@ -84,7 +84,6 @@ class AgentSettings:
     cors_allowed_origins: tuple[str, ...]
     database_url: str
     skills_dir: str | None
-    skills_trusted_uid: str | None
     workspace_hmac_secret: str
 
     @classmethod
@@ -121,6 +120,5 @@ class AgentSettings:
             cors_allowed_origins=origins,
             database_url=database_url_from_environment(values),
             skills_dir=values.get("AGENT_SKILLS_DIR"),
-            skills_trusted_uid=values.get("AGENT_SKILLS_TRUSTED_UID"),
             workspace_hmac_secret=values.get("AGUI_WORKSPACE_HMAC_SECRET", ""),
         )

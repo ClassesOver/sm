@@ -1,9 +1,7 @@
 import json
-import os
 
 import pytest
 
-import agentos_dev.skills as skills_module
 from agentos_dev.skills import (
     SecureSkills,
     TrustedLocalSkills,
@@ -57,12 +55,6 @@ def test_public_metadata_is_clean_and_host_script_execution_is_absent(tmp_path):
 
 
 def test_rejects_untrusted_root_and_escaping_symlink(tmp_path):
-    untrusted = tmp_path / "untrusted"
-    untrusted.mkdir()
-    untrusted.chmod(0o777)
-    with pytest.raises(UntrustedSkillsDirectory):
-        TrustedLocalSkills(str(untrusted))
-
     trusted = tmp_path / "trusted"
     folder = create_skill(trusted)
     outside = tmp_path / "outside.py"
@@ -73,29 +65,20 @@ def test_rejects_untrusted_root_and_escaping_symlink(tmp_path):
         SecureSkills(loaders=[TrustedLocalSkills(str(trusted))])
 
 
-def test_revalidates_replaced_resources_and_group_writable_paths(tmp_path):
+def test_revalidates_symlink_and_accepts_group_writable_paths(tmp_path):
     folder = create_skill(tmp_path)
+    folder.chmod(0o775)
+    reference = folder / "references" / "guide.md"
+    reference.chmod(0o664)
     skills = SecureSkills(loaders=[TrustedLocalSkills(str(tmp_path))])
+
+    assert "guide" in skills._get_skill_reference("review", "guide.md")
 
     script = folder / "scripts" / "check.py"
     script.chmod(0o664)
-    with pytest.raises(UntrustedSkillsDirectory):
-        skills.script_bytes("review", "check.py")
+    assert skills.script_bytes("review", "check.py") == b"print('ok')"
 
     script.unlink()
     script.symlink_to(folder / "SKILL.md")
     with pytest.raises(UntrustedSkillsDirectory):
         skills.script_bytes("review", "check.py")
-
-
-def test_accepts_explicit_trusted_uid(monkeypatch, tmp_path):
-    create_skill(tmp_path)
-    monkeypatch.setenv("AGENT_SKILLS_TRUSTED_UID", str(os.getuid()))
-    assert SecureSkills(loaders=[TrustedLocalSkills(str(tmp_path))]).get_skill("review")
-
-
-def test_rejects_wrong_owner(monkeypatch, tmp_path):
-    create_skill(tmp_path)
-    monkeypatch.setattr(skills_module, "_trusted_uids", lambda: {os.getuid() + 1})
-    with pytest.raises(UntrustedSkillsDirectory):
-        TrustedLocalSkills(str(tmp_path))

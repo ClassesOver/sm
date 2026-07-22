@@ -28,8 +28,7 @@ bash scripts/check_agentos.sh
 ```
 
 初始化命令中的 `HOST_UID`/`HOST_GID` 用于保持 `.env` 的宿主文件所有权，`--rm` 只在
-脚本结束后删除临时初始化容器。初始化还会修正默认技能目录权限，并将实际所有者 UID 写入
-`.env`。Compose 会在启动数据库时自动创建项目默认网络。
+脚本结束后删除临时初始化容器。Compose 会在启动数据库时自动创建项目默认网络。
 Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本应用时默认通过
 `http://127.0.0.1:33043/api` 访问 Daytona。
 
@@ -59,5 +58,4 @@ PostgreSQL 绑定到 `127.0.0.1:55432`，容器内 AgentOS 则通过 `agent-db:5
 `regenerate=True, replace_original=True`。分支工作区复制源会话当前文件，限制为 2000 个
 普通文件、总计 256 MiB、单文件 25 MiB，符号链接或任一超限会整体拒绝。
 
-使用自定义 `AGENT_SKILLS_DIR` 时，目录和资源不得允许组或其他用户写入，并需将目录所有者
-UID 写入 `AGENT_SKILLS_TRUSTED_UID`。
+使用自定义 `AGENT_SKILLS_DIR` 时，目录和资源不得包含符号链接或越出技能根目录。

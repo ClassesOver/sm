@@ -49,8 +49,8 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
   --profile setup run --build --rm env-init
 ```
 
-该脚本生成 AgentOS PostgreSQL 密码和工作区 HMAC，同时移除默认技能目录的组写权限并记录
-其宿主 UID。编辑 `.env`，只需手工填写模型 `OPENAI_API_KEY`；需要时可增加
+该脚本生成 AgentOS PostgreSQL 密码和工作区 HMAC。编辑 `.env`，只需手工填写模型
+`OPENAI_API_KEY`；需要时可增加
 `OPENAI_BASE_URL` 和 `MODEL`。
 
 2. 生成独立的 Daytona `docker/.env`：

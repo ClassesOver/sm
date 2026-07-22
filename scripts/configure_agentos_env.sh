@@ -6,7 +6,6 @@ TEMPLATE_FILE="$ROOT_DIR/.env.example"
 ENV_FILE=${1:-"$ROOT_DIR/.env"}
 ENV_DIR=$(dirname "$ENV_FILE")
 BACKUP_DIR="$ENV_DIR/.env.backups"
-DEFAULT_SKILLS_DIR="$ROOT_DIR/deploy/agentos/skills"
 WORK_FILE=
 
 die() {
@@ -22,7 +21,6 @@ trap cleanup EXIT
 
 command -v openssl >/dev/null 2>&1 || die "缺少 openssl。"
 command -v awk >/dev/null 2>&1 || die "缺少 awk。"
-command -v stat >/dev/null 2>&1 || die "缺少 stat。"
 [[ -f "$TEMPLATE_FILE" ]] || die "未找到 $TEMPLATE_FILE。"
 
 ask_yes_no() {
@@ -80,14 +78,6 @@ else
     printf '已备份现有配置到 %s。\n' "$backup"
 fi
 chmod 600 "$WORK_FILE"
-
-[[ ! -L "$DEFAULT_SKILLS_DIR" ]] || die "默认技能目录不能是符号链接：$DEFAULT_SKILLS_DIR"
-mkdir -p "$DEFAULT_SKILLS_DIR"
-chmod -R go-w "$DEFAULT_SKILLS_DIR"
-skills_uid=$(stat -c %u "$DEFAULT_SKILLS_DIR")
-set_env AGENT_SKILLS_TRUSTED_UID "$skills_uid"
-printf '已校验默认技能目录权限，可信所有者 UID：%s。\n' "$skills_uid"
-unset skills_uid
 
 if [[ "$is_new" == true ]]; then
     set_random_env AGENT_POSTGRES_PASSWORD 9
