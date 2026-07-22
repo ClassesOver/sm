@@ -27503,6 +27503,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const DEFAULT_SESSION_NAME = "新对话";
   const MAX_SESSION_NAME_LENGTH = 30;
+  const MAX_WORKSPACE_PATH_COMPONENT_BYTES = 255;
+  const MAX_ATTACHMENT_ID_BYTES = 64;
+  const UTF8_ENCODER = new TextEncoder();
+  const CONTROL_CHARACTERS = new RegExp("\\p{C}+", "gu");
+  function truncateUtf8(value, maxBytes) {
+    let result = "";
+    let bytes = 0;
+    for (const character of value) {
+      const characterBytes = UTF8_ENCODER.encode(character).byteLength;
+      if (bytes + characterBytes > maxBytes) break;
+      result += character;
+      bytes += characterBytes;
+    }
+    return result;
+  }
   function eventText(event) {
     return String(event.delta || event.content || event.text || "");
   }
@@ -27826,7 +27841,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       let syncedAttachments;
       try {
         await this.ensureWorkspaceCapability();
-        syncedAttachments = await this.syncAttachments(messageId, attachments);
+        syncedAttachments = await this.syncAttachments(attachments);
       } catch (reason) {
         const error = reason instanceof Error ? reason : new Error(String(reason));
         this.error = error.message;
@@ -28315,12 +28330,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       };
       return this.workspaceCapability;
     }
-    safeAttachmentName(name2, index2) {
-      const basename2 = name2.replace(/\\/g, "/").split("/").pop() || `attachment-${index2 + 1}`;
-      const safe = basename2.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "").slice(0, 120);
-      return `${index2 + 1}-${safe || `attachment-${index2 + 1}`}`;
+    safeAttachmentName(name2, attachmentId) {
+      const basename2 = name2.replace(/\\/g, "/").split("/").pop() || "attachment";
+      const safeId = truncateUtf8(
+        attachmentId.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "") || "attachment",
+        MAX_ATTACHMENT_ID_BYTES
+      );
+      const prefix = `${safeId}-`;
+      const safeName = basename2.replace(CONTROL_CHARACTERS, "_").replace(/^\.+/, "") || "attachment";
+      const nameBudget = MAX_WORKSPACE_PATH_COMPONENT_BYTES - UTF8_ENCODER.encode(prefix).byteLength;
+      if (UTF8_ENCODER.encode(safeName).byteLength <= nameBudget) return `${prefix}${safeName}`;
+      const extensionIndex = safeName.lastIndexOf(".");
+      if (extensionIndex > 0) {
+        const extension2 = safeName.slice(extensionIndex);
+        const extensionBytes = UTF8_ENCODER.encode(extension2).byteLength;
+        if (extensionBytes < nameBudget) {
+          const stem = truncateUtf8(safeName.slice(0, extensionIndex), nameBudget - extensionBytes);
+          if (stem) return `${prefix}${stem}${extension2}`;
+        }
+      }
+      return `${prefix}${truncateUtf8(safeName, nameBudget)}`;
     }
-    async syncAttachments(messageId, attachments) {
+    async syncAttachments(attachments) {
       var _a;
       if (!attachments.length) return [];
       if (!((_a = this.props.hostBridge) == null ? void 0 : _a.getWorkspaceCapability)) return clone(attachments);
@@ -28328,14 +28359,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (!capability) throw new Error("工作区 capability 不可用。");
       const synced = [];
       try {
-        for (let index2 = 0; index2 < attachments.length; index2 += 1) {
-          const attachment = attachments[index2];
+        for (const attachment of attachments) {
           const source = await fetch(`/agui_chat/attachment/${encodeURIComponent(attachment.id)}`, {
             credentials: this.props.credentials || "same-origin"
           });
           if (!source.ok) throw new Error(`附件 ${attachment.name} 读取失败。`);
           const blob = await source.blob();
-          const path2 = `attachments/${messageId}/${this.safeAttachmentName(attachment.name, index2)}`;
+          const path2 = `附件/${this.safeAttachmentName(attachment.name, attachment.id)}`;
           const form = new FormData();
           form.set("threadId", this.threadId);
           form.set("path", path2);

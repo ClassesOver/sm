@@ -809,14 +809,17 @@ describe('ChatRuntime protocol handling', () => {
     })
 
     expect(await runtime.send('检查', [{
-      id: '42', name: '../../report.pdf', mimeType: 'application/pdf', size: 6,
+      id: '42', name: '../../王金增 11.20-11.22 海口(1).xlsx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 6,
       modality: 'document'
     }])).toBe(true)
 
     const upload = requests.find((request) => request.url === '/runtime/workspace/upload')
     const form = upload?.init.body as FormData
     expect(form.get('threadId')).toBe('thread-sync')
-    expect(form.get('path')).toMatch(/^attachments\/.+\/1-report\.pdf$/)
+    expect(form.get('path')).toMatch(
+      /^附件\/42-王金增 11\.20-11\.22 海口\(1\)\.xlsx$/
+    )
     expect(upload?.init.headers).toMatchObject({
       'X-AGUI-Capability': 'signed-capability', 'X-AGUI-Thread': 'thread-sync'
     })

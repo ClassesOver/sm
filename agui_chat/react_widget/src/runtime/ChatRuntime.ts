@@ -40,6 +40,22 @@ type Listener = () => void
 
 const DEFAULT_SESSION_NAME = '新对话'
 const MAX_SESSION_NAME_LENGTH = 30
+const MAX_WORKSPACE_PATH_COMPONENT_BYTES = 255
+const MAX_ATTACHMENT_ID_BYTES = 64
+const UTF8_ENCODER = new TextEncoder()
+const CONTROL_CHARACTERS = /\p{C}+/gu
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  let result = ''
+  let bytes = 0
+  for (const character of value) {
+    const characterBytes = UTF8_ENCODER.encode(character).byteLength
+    if (bytes + characterBytes > maxBytes) break
+    result += character
+    bytes += characterBytes
+  }
+  return result
+}
 
 type RunContext = {
   threadId: string
@@ -457,7 +473,7 @@ export class ChatRuntime {
     let syncedAttachments: AttachmentRef[]
     try {
       await this.ensureWorkspaceCapability()
-      syncedAttachments = await this.syncAttachments(messageId, attachments)
+      syncedAttachments = await this.syncAttachments(attachments)
     } catch (reason) {
       const error = reason instanceof Error ? reason : new Error(String(reason))
       this.error = error.message
@@ -985,14 +1001,30 @@ export class ChatRuntime {
     return this.workspaceCapability
   }
 
-  private safeAttachmentName(name: string, index: number): string {
-    const basename = name.replace(/\\/g, '/').split('/').pop() || `attachment-${index + 1}`
-    const safe = basename.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '').slice(0, 120)
-    return `${index + 1}-${safe || `attachment-${index + 1}`}`
+  private safeAttachmentName(name: string, attachmentId: string): string {
+    const basename = name.replace(/\\/g, '/').split('/').pop() || 'attachment'
+    const safeId = truncateUtf8(
+      attachmentId.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '') || 'attachment',
+      MAX_ATTACHMENT_ID_BYTES
+    )
+    const prefix = `${safeId}-`
+    const safeName = basename.replace(CONTROL_CHARACTERS, '_').replace(/^\.+/, '') || 'attachment'
+    const nameBudget = MAX_WORKSPACE_PATH_COMPONENT_BYTES - UTF8_ENCODER.encode(prefix).byteLength
+    if (UTF8_ENCODER.encode(safeName).byteLength <= nameBudget) return `${prefix}${safeName}`
+
+    const extensionIndex = safeName.lastIndexOf('.')
+    if (extensionIndex > 0) {
+      const extension = safeName.slice(extensionIndex)
+      const extensionBytes = UTF8_ENCODER.encode(extension).byteLength
+      if (extensionBytes < nameBudget) {
+        const stem = truncateUtf8(safeName.slice(0, extensionIndex), nameBudget - extensionBytes)
+        if (stem) return `${prefix}${stem}${extension}`
+      }
+    }
+    return `${prefix}${truncateUtf8(safeName, nameBudget)}`
   }
 
   private async syncAttachments(
-    messageId: string,
     attachments: AttachmentRef[]
   ): Promise<AttachmentRef[]> {
     if (!attachments.length) return []
@@ -1001,14 +1033,13 @@ export class ChatRuntime {
     if (!capability) throw new Error('工作区 capability 不可用。')
     const synced: AttachmentRef[] = []
     try {
-      for (let index = 0; index < attachments.length; index += 1) {
-        const attachment = attachments[index]
+      for (const attachment of attachments) {
         const source = await fetch(`/agui_chat/attachment/${encodeURIComponent(attachment.id)}`, {
           credentials: this.props.credentials || 'same-origin'
         })
         if (!source.ok) throw new Error(`附件 ${attachment.name} 读取失败。`)
         const blob = await source.blob()
-        const path = `attachments/${messageId}/${this.safeAttachmentName(attachment.name, index)}`
+        const path = `附件/${this.safeAttachmentName(attachment.name, attachment.id)}`
         const form = new FormData()
         form.set('threadId', this.threadId)
         form.set('path', path)
