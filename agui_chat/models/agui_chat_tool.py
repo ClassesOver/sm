@@ -669,7 +669,7 @@ class AguiChatToolAuthorization(models.Model):
             field_names = arguments.get("field_names")
             model_name = (arguments.get("target") or {}).get("model")
             if (
-                arguments.get("format") not in ("csv", "xls") or
+                arguments.get("format") != "xlsx" or
                 export.get("format") != arguments.get("format") or
                 not isinstance(field_names, list) or not field_names or
                 len(field_names) != export.get("fieldCount") or
@@ -678,10 +678,9 @@ class AguiChatToolAuthorization(models.Model):
                 export.get("scope") not in ("selection", "filter") or
                 not isinstance(export.get("recordCount"), int) or
                 export.get("recordCount") < 0 or
-                (arguments.get("format") == "xls" and export.get("recordCount") > 65535) or
                 not isinstance(export.get("workspacePath"), str) or
                 not re.match(
-                    r"^exports/[A-Za-z0-9_.-]+-\d{8}T\d{6}Z-[A-Za-z0-9]{1,12}\.(csv|xls)$",
+                    r"^exports/[A-Za-z0-9_.-]+-\d{8}T\d{6}Z-[A-Za-z0-9]{1,12}\.xlsx$",
                     export.get("workspacePath"),
                 ) or
                 any(not isinstance(label, str) or len(label) > 160 for label in export["columns"])

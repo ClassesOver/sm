@@ -50,10 +50,10 @@ REMOVED_BUSINESS_COMMANDS = {
 class TestAguiChatCommand(TransactionCase):
 
     def test_catalog_revision_and_hash_are_synchronized(self):
-        self.assertEqual(COMMAND_CATALOG_REVISION, 15)
+        self.assertEqual(COMMAND_CATALOG_REVISION, 16)
         self.assertEqual(
             COMMAND_CATALOG_HASH,
-            "23ea66d90181a45b4a52705c171372c38955208af6f556f56f26643bcc033512",
+            "6529262bf0a1c05a61a1238c67415ed3734e0db58bc12dcd59cf6c534d2467f4",
         )
 
     def test_page_master_data_matches_host_catalog(self):

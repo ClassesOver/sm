@@ -2,6 +2,7 @@ odoo.define("agui_chat.host_service", function (require) {
     "use strict";
 
     var AbstractService = require("web.AbstractService");
+    var contentdisposition = require("web.contentdisposition");
     var core = require("web.core");
     var FormController = require("web.FormController");
     var KanbanController = require("web.KanbanController");
@@ -17,6 +18,27 @@ odoo.define("agui_chat.host_service", function (require) {
 
     function uuid() {
         return "agui-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+    }
+
+    function exportResponseFilename(disposition, fallback) {
+        var header = String(disposition || "").replace(/;$/, "");
+        var parsed;
+        var filename;
+        try {
+            parsed = header && contentdisposition.parse(header);
+        } catch (_error) {
+            return false;
+        }
+        if (!parsed || parsed.type !== "attachment") {
+            return false;
+        }
+        filename = String(parsed.parameters.filename || fallback || "")
+            .replace(/\\/g, "/").split("/").pop()
+            .replace(/[\x00-\x1f\x7f]/g, "").trim();
+        if (!filename || filename.length > 255 || !/\.xlsx$/i.test(filename)) {
+            filename = fallback;
+        }
+        return filename || false;
     }
 
     function unavailableSnapshot(revision, surface, snapshotId, error) {
@@ -974,11 +996,20 @@ odoo.define("agui_chat.host_service", function (require) {
                 import_compat: false,
                 model: spec.model,
                 fields: _.map(spec.fields || [], function (field) {
-                    return {name: field.name, label: field.label};
+                    return {
+                        name: field.name,
+                        label: field.label,
+                        fieldInfo: field.fieldInfo,
+                    };
                 }),
+                data: spec.data || [],
                 ids: spec.ids || false,
                 domain: spec.domain || [],
+                groupby: spec.groupby || [],
                 context: spec.context || {},
+                action: spec.action || false,
+                orderby: spec.orderby,
+                detail_orderby: spec.detail_orderby || "",
             };
             if (!workspace || !workspace.capability || !workspace.threadId ||
                     workspace.threadId !== workspace.expectedThreadId) {
@@ -989,26 +1020,37 @@ odoo.define("agui_chat.host_service", function (require) {
             var exportBody = new FormData();
             exportBody.append("data", JSON.stringify(exportData));
             exportBody.append("token", "agui-export");
+            if (core.csrf_token) {
+                exportBody.append("csrf_token", core.csrf_token);
+            }
             return window.fetch("/web/export/" + format, {
                 method: "POST", credentials: "same-origin", body: exportBody,
             }).then(function (response) {
                 var disposition = response.headers.get("Content-Disposition") || "";
-                if (!response.ok || disposition.toLowerCase().indexOf("attachment;") !== 0) {
+                var filename = exportResponseFilename(
+                    disposition, metadata.workspacePath.split("/").pop()
+                );
+                if (!response.ok || !filename) {
                     throw _.extend(new Error("Odoo 原生导出失败。"), {code: "odoo_export_failed"});
                 }
-                return response.blob().catch(function () {
-                    throw _.extend(new Error("Odoo 原生导出失败。"), {code: "odoo_export_failed"});
+                return response.blob().then(function (blob) {
+                    return {blob: blob, filename: filename};
+                }, function () {
+                    throw _.extend(new Error("Odoo 原生导出失败。"), {
+                        code: "odoo_export_failed",
+                    });
                 });
             }, function () {
                 throw _.extend(new Error("Odoo 原生导出失败。"), {code: "odoo_export_failed"});
-            }).then(function (blob) {
+            }).then(function (exportFile) {
+                var blob = exportFile.blob;
                 if (blob.size > 10 * 1024 * 1024) {
                     throw _.extend(new Error("导出文件超过 10 MiB。"), {code: "export_file_too_large"});
                 }
                 var uploadBody = new FormData();
                 uploadBody.append("threadId", workspace.threadId);
                 uploadBody.append("path", metadata.workspacePath);
-                uploadBody.append("file", blob, metadata.workspacePath.split("/").pop());
+                uploadBody.append("file", blob, exportFile.filename);
                 return window.fetch(workspace.filesUrl, {
                     method: "POST",
                     credentials: workspace.credentials,
@@ -1028,6 +1070,7 @@ odoo.define("agui_chat.host_service", function (require) {
                         }
                         return {
                             path: metadata.workspacePath,
+                            filename: exportFile.filename,
                             format: format,
                             size: blob.size,
                             recordCount: metadata.recordCount,

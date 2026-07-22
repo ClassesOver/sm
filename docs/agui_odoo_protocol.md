@@ -12,8 +12,8 @@
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.8.8",
-  "bundle_version": "12.0.8.8.8",
+  "module_version": "12.0.8.8.9",
+  "bundle_version": "12.0.8.8.9",
   "command_catalog_hash": "sha256"
 }
 ```
@@ -87,7 +87,7 @@ HRP 在当前 `RunAgentInput.tools` 中发布标准 AG-UI 客户端工具 schema
 React 只执行本次运行声明了完全相同名称的工具。Agno 服务端工具在收到
 `TOOL_CALL_RESULT` 前仅用于展示。
 
-`odoo.export_current_view` 仅接受当前 List `viewTarget` 和 `format: "csv" | "xls"`。
+`odoo.export_current_view` 仅接受当前 List `viewTarget` 和 `format: "xlsx"`。
 浏览器从最新 `ListController` 与 `BasicModel` 派生导出范围：有具体勾选时导出这些 ID，
 无勾选时使用当前 domain；原生“全选筛选结果”继续使用 `getActiveDomain()`。当前列表存在
 未保存编辑时拒绝导出。字段严格按 `renderer.columns` 顺序生成，并排除按钮、binary、不可见列、
@@ -95,14 +95,18 @@ React 只执行本次运行声明了完全相同名称的工具。Agno 服务端
 
 该工具始终要求用户确认。`preview.export` 只公开 `workspacePath`、`format`、`scope`、
 `recordCount`、`fieldCount` 和有序列标签。确认后浏览器使用当前 Odoo 会话调用
-`/web/export/csv` 或 `/web/export/xls`，再携带当前 thread capability 调用 AgentOS
-`POST /workspace/files`。成功结果只包含 `path`、`format`、`size`、`recordCount` 与
-`fieldCount`；domain、ID、context、字段描述符、capability 和文件内容不会进入授权、审计、消息或结果。
+业务 `/web/export/xlsx`，请求字段与 `dy_base.DataExport.direct_export_data()` 一致，包含列表
+`fieldInfo`、分组布局、action、分组排序、明细排序以及 `context.export_way/expWay`；随后携带当前
+thread capability 调用 AgentOS
+`POST /workspace/files`。成功结果包含 `path`、`filename`、`format`、`size`、`recordCount` 与
+`fieldCount`，其中 `filename` 由 Odoo `web.contentdisposition` 解析响应头得到。该文件名仅作为
+multipart 文件元数据；实际写入位置仍是确认时绑定的 `path`。domain、ID、context、字段描述符、
+capability 和文件内容不会进入授权、审计或消息。
 
 导出路径固定为 `exports/<model>-<capturedAt UTC>-<tool call 短 ID>.<format>`，因此同一绑定快照
-的重复 prepare 路径不变。XLS 最多 65535 行，单文件最多 10 MiB；空结果允许生成仅含表头的文件。
-分组列表按 Odoo 原生扁平记录导出，不包含组标题或小计，也不额外承诺排序。稳定失败码包括
-`no_current_list`、`unsaved_changes`、`export_no_fields`、`export_xls_row_limit`、
+的重复 prepare 路径不变。单文件最多 10 MiB；空结果允许生成仅含表头的文件。分组、排序、
+字段精度和 `expWay` 语义由业务 XLSX 导出控制器处理。稳定失败码包括
+`no_current_list`、`unsaved_changes`、`export_no_fields`、
 `odoo_export_failed`、`export_file_too_large`、`workspace_capability_rejected`、
 `workspace_path_conflict` 和 `workspace_upload_failed`，并保留现有 stale/target 错误。
 

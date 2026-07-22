@@ -1117,7 +1117,7 @@ odoo.define("agui_chat.tests.host", function (require) {
         assert.ok(command.description.indexOf("List") !== -1);
         assert.deepEqual(command.parameters.required, ["target", "format"]);
         assert.deepEqual(command.parameters.properties.format, {
-            type: "string", enum: ["csv", "xls"],
+            type: "string", enum: ["xlsx"],
         });
         assert.notOk(command.parameters.properties.domain);
         assert.notOk(command.parameters.properties.ids);
@@ -1167,7 +1167,7 @@ odoo.define("agui_chat.tests.host", function (require) {
             getController: function () { return controller; },
         }, {
             id: "call-1234", tool: "odoo.export_current_view",
-            arguments: {target: target, format: "csv"},
+            arguments: {target: target, format: "xlsx"},
         }).then(function (prepared) {
             assert.deepEqual(prepared.call.arguments.field_names, ["name", "email"]);
             assert.deepEqual(prepared.preview.export.columns, ["名称", "邮箱"]);
@@ -1175,8 +1175,114 @@ odoo.define("agui_chat.tests.host", function (require) {
             assert.strictEqual(prepared.preview.export.recordCount, 2);
             assert.strictEqual(
                 prepared.preview.export.workspacePath,
-                "exports/res.partner-20260722T010203Z-call1234.csv"
+                "exports/res.partner-20260722T010203Z-call1234.xlsx"
             );
+            done();
+        });
+    });
+
+    QUnit.test("xlsx export binding follows dy direct-export metadata", function (assert) {
+        assert.expect(11);
+        var done = assert.async();
+        var rawRecord = {
+            model: "dy.expense.report",
+            domain: [],
+            data: [{
+                count: 1, res_ids: [7], isOpen: true, isSelect: true,
+                data: [{count: 1, data: {state: "created", amount: 12.5}}],
+            }],
+            fields: {
+                state: {type: "selection"},
+                amount: {type: "float", group_operator: "sum"},
+            },
+            fieldsInfo: {list: {
+                state: {string: "状态", options: {}},
+                amount: {string: "金额", options: {decimal_precision: "Expense"}},
+            }},
+            groupedBy: ["state"],
+            orderedBy: [{name: "state", asc: true}, {name: "amount", asc: false}],
+            getContext: function () { return {lang: "zh_CN"}; },
+        };
+        var controller = {
+            handle: "list-1",
+            expWay: "expense",
+            renderer: {
+                arch: {attrs: {default_order: "name desc"}},
+                columns: [
+                    {tag: "field", attrs: {name: "state", string: "状态"}},
+                    {tag: "field", attrs: {name: "amount", string: "金额"}},
+                ],
+            },
+            model: {
+                get: function () { return rawRecord; },
+                isDirty: function () { return false; },
+            },
+            call: function (service, method, key) {
+                assert.deepEqual([service, method, key], [
+                    "session_storage", "getItem", "decimal_precision",
+                ]);
+                return {Expense: 4};
+            },
+            getActiveDomain: function () { return $.Deferred().resolve(); },
+            getSelectedIds: function () { return [7]; },
+        };
+        var snapshot = {
+            interactive: true, capturedAt: "2026-07-22T01:02:03.000Z",
+            controller: {viewType: "list"}, record: false,
+            action: {id: 404},
+            selection: {model: "dy.expense.report", ids: [7]},
+            fields: {
+                state: {string: "状态", type: "selection", invisible: false, redacted: false},
+                amount: {string: "金额", type: "float", invisible: false, redacted: false},
+            },
+            capabilities: {totalCount: 1},
+        };
+        var context = {
+            getSnapshot: function () { return snapshot; },
+            getController: function () { return controller; },
+            exportCurrentView: function (call, spec, metadata) {
+                assert.strictEqual(spec.model, "dy.expense.report");
+                assert.deepEqual(JSON.parse(JSON.stringify(spec.fields)), [
+                    {
+                        name: "state", label: "状态",
+                        fieldInfo: {string: "状态", options: {}, type: "selection"},
+                    },
+                    {
+                        name: "amount", label: "金额",
+                        fieldInfo: {
+                            string: "金额", options: {decimal_precision: "Expense"},
+                            type: "float", decimal_precision: 4,
+                        },
+                    },
+                ]);
+                assert.deepEqual(JSON.parse(JSON.stringify(spec.data)), [{count: 1, num: 1}]);
+                assert.deepEqual(spec.ids, [7]);
+                assert.deepEqual(spec.groupby, ["state"]);
+                assert.deepEqual(spec.context, {
+                    lang: "zh_CN", export_way: "direct", expWay: "expense",
+                });
+                assert.strictEqual(spec.action, 404);
+                assert.strictEqual(spec.orderby, "state ASC, amount DESC");
+                assert.strictEqual(spec.detail_orderby, "state ASC, amount DESC");
+                return $.when({path: metadata.workspacePath});
+            },
+        };
+        Commands.prepare(context, {
+            id: "call-direct", tool: "odoo.export_current_view",
+            arguments: {
+                target: {
+                    snapshotId: "export-snapshot", hostRevision: 3,
+                    controllerId: "list-controller", dataPointId: "list-1",
+                    model: "dy.expense.report", resId: false,
+                },
+                format: "xlsx",
+            },
+        }).then(function (prepared) {
+            return Commands.execute(context, prepared.call);
+        }).then(function () {
+            done();
+        }, function (error) {
+            assert.ok(false, error && error.message || "业务 XLSX 绑定测试失败");
             done();
         });
     });
@@ -1229,7 +1335,7 @@ odoo.define("agui_chat.tests.host", function (require) {
                     controllerId: "list-controller", dataPointId: "list-1",
                     model: "dy.expense.report", resId: false,
                 },
-                format: "csv",
+                format: "xlsx",
             },
         };
 
@@ -1246,7 +1352,7 @@ odoo.define("agui_chat.tests.host", function (require) {
             return Commands.execute(context, prepared.call).then(function (result) {
                 assert.strictEqual(
                     result.path,
-                    "exports/dy.expense.report-20260722T010203Z-callsorted.csv"
+                    "exports/dy.expense.report-20260722T010203Z-callsorted.xlsx"
                 );
                 selectedIds = [7];
                 Commands.execute(context, prepared.call).then(function () {
@@ -1271,18 +1377,20 @@ odoo.define("agui_chat.tests.host", function (require) {
         });
     });
 
-    QUnit.test("export execution uses native Odoo payload then create-only workspace upload", function (assert) {
-        assert.expect(7);
+    QUnit.test("xlsx export sends dy direct-export payload then uploads to workspace", function (assert) {
+        assert.expect(16);
         var done = assert.async();
         var originalFetch = window.fetch;
         var requests = [];
         window.fetch = function (url, options) {
             requests.push({url: url, options: options});
-            if (url === "/web/export/csv") {
+            if (url === "/web/export/xlsx") {
                 return Promise.resolve({
                     ok: true,
-                    headers: {get: function () { return "attachment; filename=res.partner.csv"; }},
-                    blob: function () { return Promise.resolve(new Blob(["名称\nAcme\n"])); },
+                    headers: {get: function () {
+                        return "attachment; filename*=UTF-8''%E6%8A%A5%E9%94%80%E5%8D%95%E6%9F%A5%E8%AF%A2.xlsx";
+                    }},
+                    blob: function () { return Promise.resolve(new Blob(["xlsx-content"])); },
                 });
             }
             return Promise.resolve({
@@ -1291,7 +1399,7 @@ odoo.define("agui_chat.tests.host", function (require) {
                 json: function () {
                     return Promise.resolve({
                         ok: true,
-                        entry: {path: "exports/res.partner-20260722T010203Z-call1.csv"},
+                        entry: {path: "exports/res.partner-20260722T010203Z-call1.xlsx"},
                     });
                 },
             });
@@ -1305,24 +1413,46 @@ odoo.define("agui_chat.tests.host", function (require) {
             },
         }, {
             model: "res.partner",
-            fields: [{name: "name", label: "名称"}, {name: "email", label: "邮箱"}],
-            ids: [7], domain: [], context: {lang: "zh_CN"},
+            fields: [
+                {name: "name", label: "名称", fieldInfo: {type: "char"}},
+                {name: "email", label: "邮箱", fieldInfo: {type: "char"}},
+            ],
+            data: [{count: 1, num: 1}],
+            ids: [7], domain: [["active", "=", true]],
+            groupby: ["state"],
+            context: {lang: "zh_CN", export_way: "direct", expWay: "finance"},
+            action: 404,
+            orderby: "state ASC",
+            detail_orderby: "name DESC",
         }, {
-            workspacePath: "exports/res.partner-20260722T010203Z-call1.csv",
-            format: "csv", recordCount: 1, fieldCount: 2,
+            workspacePath: "exports/res.partner-20260722T010203Z-call1.xlsx",
+            format: "xlsx", recordCount: 1, fieldCount: 2,
         }).then(function (result) {
             var exportPayload = JSON.parse(requests[0].options.body.get("data"));
-            assert.strictEqual(requests[0].url, "/web/export/csv");
+            assert.strictEqual(requests[0].url, "/web/export/xlsx");
+            assert.strictEqual(requests[0].options.body.get("csrf_token"), core.csrf_token);
             assert.deepEqual(exportPayload.fields, [
-                {name: "name", label: "名称"}, {name: "email", label: "邮箱"},
+                {name: "name", label: "名称", fieldInfo: {type: "char"}},
+                {name: "email", label: "邮箱", fieldInfo: {type: "char"}},
             ]);
+            assert.deepEqual(exportPayload.data, [{count: 1, num: 1}]);
             assert.deepEqual(exportPayload.ids, [7]);
+            assert.deepEqual(exportPayload.domain, [["active", "=", true]]);
+            assert.deepEqual(exportPayload.groupby, ["state"]);
+            assert.deepEqual(exportPayload.context, {
+                lang: "zh_CN", export_way: "direct", expWay: "finance",
+            });
+            assert.strictEqual(exportPayload.action, 404);
+            assert.strictEqual(exportPayload.orderby, "state ASC");
+            assert.strictEqual(exportPayload.detail_orderby, "name DESC");
             assert.strictEqual(exportPayload.import_compat, false);
             assert.strictEqual(requests[1].url, "/workspace/files");
             assert.strictEqual(requests[1].options.headers["X-AGUI-Capability"], "private-capability");
+            assert.strictEqual(requests[1].options.body.get("file").name, "报销单查询.xlsx");
             assert.deepEqual(result, {
-                path: "exports/res.partner-20260722T010203Z-call1.csv",
-                format: "csv", size: 12, recordCount: 1, fieldCount: 2,
+                path: "exports/res.partner-20260722T010203Z-call1.xlsx",
+                filename: "报销单查询.xlsx", format: "xlsx", size: 12,
+                recordCount: 1, fieldCount: 2,
             });
             window.fetch = originalFetch;
             done();
@@ -1338,11 +1468,11 @@ odoo.define("agui_chat.tests.host", function (require) {
         var done = assert.async();
         var originalFetch = window.fetch;
         window.fetch = function (url) {
-            if (url === "/web/export/csv") {
+            if (url === "/web/export/xlsx") {
                 return Promise.resolve({
                     ok: true,
-                    headers: {get: function () { return "attachment; filename=res.partner.csv"; }},
-                    blob: function () { return Promise.resolve(new Blob(["名称\nAcme\n"])); },
+                    headers: {get: function () { return "attachment; filename=res.partner.xlsx"; }},
+                    blob: function () { return Promise.resolve(new Blob(["xlsx-content"])); },
                 });
             }
             return Promise.resolve({
@@ -1364,8 +1494,8 @@ odoo.define("agui_chat.tests.host", function (require) {
             model: "res.partner", fields: [{name: "name", label: "名称"}],
             ids: [7], domain: [], context: {},
         }, {
-            workspacePath: "exports/res.partner-20260722T010203Z-call1.csv",
-            format: "csv", recordCount: 1, fieldCount: 1,
+            workspacePath: "exports/res.partner-20260722T010203Z-call1.xlsx",
+            format: "xlsx", recordCount: 1, fieldCount: 1,
         }).then(function () {
             window.fetch = originalFetch;
             assert.ok(false, "mismatched upload path must be rejected");

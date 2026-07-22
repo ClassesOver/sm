@@ -91,6 +91,30 @@ async function main() {
                             serviceRegistry: {add(_serviceName, Constructor) { Service = Constructor; }},
                         };
                     }
+                    if (name === "web.contentdisposition") {
+                        return {
+                            parse(value) {
+                                const parts = value.split(";");
+                                const parameters = {};
+                                parts.slice(1).forEach((part) => {
+                                    const separator = part.indexOf("=");
+                                    if (separator < 0) return;
+                                    const key = part.slice(0, separator).trim().toLowerCase();
+                                    let parameter = part.slice(separator + 1).trim();
+                                    if (parameter[0] === '"' && parameter[parameter.length - 1] === '"') {
+                                        parameter = parameter.slice(1, -1);
+                                    }
+                                    if (key === "filename*") {
+                                        parameter = decodeURIComponent(parameter.split("''").pop());
+                                        parameters.filename = parameter;
+                                    } else if (key === "filename" && !parameters.filename) {
+                                        parameters.filename = parameter;
+                                    }
+                                });
+                                return {type: parts[0].trim().toLowerCase(), parameters};
+                            },
+                        };
+                    }
                     if (name === "web.FormController" || name === "web.ListController" ||
                             name === "web.KanbanController") return Controller;
                     if (name === "web.WebClient") return WebClient;

@@ -538,8 +538,8 @@ class TestHostCommandAuthorization(TransactionCase):
             "field_names": "name,email",
         })
         export = {
-            "workspacePath": "exports/res.partner-20260722T010203Z-export1.csv",
-            "format": "csv",
+            "workspacePath": "exports/res.partner-20260722T010203Z-export1.xlsx",
+            "format": "xlsx",
             "scope": "filter",
             "recordCount": 2,
             "fieldCount": 2,
@@ -549,7 +549,7 @@ class TestHostCommandAuthorization(TransactionCase):
             "odoo.export_current_view",
             "export-call",
             {
-                "format": "csv",
+                "format": "xlsx",
                 "field_names": ["name", "email"],
                 "__export": export,
             },

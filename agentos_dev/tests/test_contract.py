@@ -62,8 +62,8 @@ def instruction_context(*tools, dependencies=None):
 
 def test_agentos_contract_matches_odoo_source():
     values, digest = odoo_contract()
-    assert values["COMMAND_CATALOG_REVISION"] == 15
-    assert digest == "23ea66d90181a45b4a52705c171372c38955208af6f556f56f26643bcc033512"
+    assert values["COMMAND_CATALOG_REVISION"] == 16
+    assert digest == "6529262bf0a1c05a61a1238c67415ed3734e0db58bc12dcd59cf6c534d2467f4"
     assert app.PROTOCOL == values["PROTOCOL"]
     assert app.BUNDLE_VERSION == values["MODULE_VERSION"]
     assert app.COMMAND_CATALOG_HASH == digest

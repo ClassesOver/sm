@@ -32,7 +32,7 @@
         <field name="name">导出当前列表到工作区</field>
         <field name="code">odoo.export_current_view</field>
         <field name="command_type">page</field>
-        <field name="description">经用户确认后，使用 Odoo 原生导出接口把当前 List 视图的选中记录或筛选结果写入当前 thread 工作区。</field>
+        <field name="description">经用户确认后，使用业务 XLSX 导出接口把当前 List 视图的选中记录或筛选结果写入当前 thread 工作区。</field>
         <field name="sequence">25</field>
     </record>
     <record id="command_open_create" model="agui.chat.command">

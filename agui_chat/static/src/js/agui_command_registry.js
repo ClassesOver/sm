@@ -102,9 +102,9 @@ odoo.define("agui_chat.command_registry", function (require) {
         },
         {
             name: "odoo.export_current_view",
-            description: "仅在当前 List 视图导出当前勾选记录或当前筛选结果到 thread 工作区；必须使用当前 viewTarget，并指定 csv 或 xls。",
+            description: "仅在当前 List 视图按业务导出规则把当前勾选记录或当前筛选结果导出为 XLSX 到 thread 工作区；必须使用当前 viewTarget。",
             parameters: schema({
-                format: {type: "string", enum: ["csv", "xls"]},
+                format: {type: "string", enum: ["xlsx"]},
             }, ["format"]),
         },
         {
@@ -303,6 +303,109 @@ odoo.define("agui_chat.command_registry", function (require) {
             snapshot.selection && snapshot.selection.model || false;
     }
 
+    function directExportFields(controller, record, columns) {
+        var fields = record && record.fields || {};
+        var fieldsInfo = record && record.fieldsInfo && record.fieldsInfo.list || {};
+        var precisionMap = {};
+        if (_.isFunction(controller.call)) {
+            precisionMap = controller.call(
+                "session_storage", "getItem", "decimal_precision"
+            ) || {};
+        }
+        return _.map(columns, function (column) {
+            var field = fields[column.name] || {};
+            var fieldInfo = fieldsInfo[column.name] || {};
+            var options = fieldInfo.options || {};
+            var precisionName = options.decimal_precision;
+            var decimalPrecision = precisionName && precisionMap[precisionName];
+            return {
+                name: column.name,
+                label: column.label,
+                fieldInfo: _.extend({}, fieldInfo, {
+                    type: field.type,
+                    decimal_precision: ["float", "integer"].indexOf(field.type) !== -1 ?
+                        (decimalPrecision === undefined ? 2 : decimalPrecision) : undefined,
+                }),
+            };
+        });
+    }
+
+    function flattenDirectExportData(items, selectedIds, num) {
+        var parentNum = 0;
+        return _.reduce(items || [], function (result, item) {
+            if (selectedIds.length && _.isArray(item && item.data)) {
+                parentNum = _.intersection(selectedIds, item.res_ids || []).length;
+            } else {
+                parentNum = item && item.data && item.data.length;
+            }
+            if (_.isArray(item && item.data) && item.data.length) {
+                return result.concat(flattenDirectExportData(item.data, selectedIds, parentNum));
+            }
+            return result.concat({
+                count: item && item.count || 1,
+                isOpen: item && item.isOpen,
+                isSelect: item && item.isSelect,
+                num: num || 0,
+            });
+        }, []);
+    }
+
+    function directExportData(record, selectedIds) {
+        var recordData = $.extend(true, {}, record || {});
+        function trimSelectedData(dataPoint) {
+            if (!dataPoint || !_.isArray(dataPoint.data)) {
+                return;
+            }
+            $.each(dataPoint.data, function (_index, item) {
+                if (!item) {
+                    return;
+                }
+                if (item.count !== 0) {
+                    trimSelectedData(item);
+                } else if (selectedIds.length) {
+                    var count = _.intersection(selectedIds, dataPoint.res_ids || []).length;
+                    dataPoint.data = dataPoint.data.slice(0, count);
+                    return false;
+                }
+            });
+        }
+        trimSelectedData(recordData);
+        return flattenDirectExportData(recordData.data, selectedIds);
+    }
+
+    function directExportOrder(orderedBy) {
+        return _.map(orderedBy || [], function (order) {
+            return order.name + (order.asc !== false ? " ASC" : " DESC");
+        }).join(", ");
+    }
+
+    function directExportDetailOrder(controller, record) {
+        var orderedBy = directExportOrder(record && record.orderedBy);
+        var defaultOrder = controller.renderer && controller.renderer.arch &&
+            controller.renderer.arch.attrs.default_order;
+        if (orderedBy || !defaultOrder) {
+            return orderedBy;
+        }
+        return _.map(defaultOrder.split(","), function (order) {
+            var parts = order.trim().split(/\s+/);
+            return parts[0] + (String(parts[1] || "").toLowerCase() === "desc" ?
+                " DESC" : " ASC");
+        }).join(", ");
+    }
+
+    function directExportGroupOrder(record) {
+        var groupedBy = record && record.groupedBy || [];
+        if (!groupedBy.length) {
+            return undefined;
+        }
+        var rawGroupBy = groupedBy[0].split(":")[0];
+        var fields = record.fields || {};
+        return directExportOrder(_.filter(record.orderedBy || [], function (order) {
+            return order.name === rawGroupBy || fields[order.name] &&
+                fields[order.name].group_operator !== undefined;
+        }));
+    }
+
     function exportPath(snapshot, callId, format) {
         var captured = new Date(snapshot.capturedAt);
         var timestamp = isNaN(captured.getTime()) ? "invalid" : captured.toISOString()
@@ -324,8 +427,8 @@ odoo.define("agui_chat.command_registry", function (require) {
         if (!snapshot.interactive || snapshot.controller.viewType !== "list" || !controller) {
             exportError("no_current_list", "当前没有可用的 HRP 原生列表。");
         }
-        if (format !== "csv" && format !== "xls") {
-            exportError("invalid_arguments", "导出格式必须是 csv 或 xls。");
+        if (format !== "xlsx") {
+            exportError("invalid_arguments", "导出格式必须是 xlsx。");
         }
         if (controller.model && _.isFunction(controller.model.isDirty) &&
                 controller.model.isDirty(controller.handle)) {
@@ -350,9 +453,12 @@ odoo.define("agui_chat.command_registry", function (require) {
             }
             var recordCount = ids && ids.length || snapshot.capabilities &&
                 snapshot.capabilities.totalCount || 0;
-            if (format === "xls" && recordCount > 65535) {
-                exportError("export_xls_row_limit", "XLS 导出不能超过 65535 行。");
-            }
+            var selectedIds = ids || [];
+            var directContext = record && _.isFunction(record.getContext) ?
+                pyUtils.eval("contexts", [record.getContext(), {
+                    export_way: "direct",
+                    expWay: controller.expWay,
+                }]) : {export_way: "direct", expWay: controller.expWay};
             return {
                 publicArguments: {
                     target: Adapter.clone(args.target),
@@ -369,11 +475,15 @@ odoo.define("agui_chat.command_registry", function (require) {
                 },
                 privateSpec: {
                     model: exportModel(snapshot),
-                    fields: columns,
+                    fields: directExportFields(controller, record, columns),
+                    data: directExportData(record, selectedIds),
                     ids: ids || false,
                     domain: domain,
-                    context: record && _.isFunction(record.getContext) ?
-                        pyUtils.eval("contexts", [record.getContext()]) : {},
+                    groupby: (record && record.groupedBy || []).slice(0),
+                    context: directContext,
+                    action: snapshot.action && snapshot.action.id || false,
+                    orderby: directExportGroupOrder(record),
+                    detail_orderby: directExportDetailOrder(controller, record),
                 },
             };
         });
