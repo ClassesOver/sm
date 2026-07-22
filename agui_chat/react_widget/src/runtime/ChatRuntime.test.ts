@@ -1318,6 +1318,38 @@ describe('ChatRuntime protocol handling', () => {
     expect(message.tool_calls?.[0].status).toBe('needs_confirmation')
   })
 
+  it('replaces streamed tool arguments when the same tool call is replayed', () => {
+    const runtime = createRuntime({ threadId: 'thread-1' })
+
+    runtime.applyEvent({
+      type: 'TOOL_CALL_START',
+      toolCallId: 'report-tool-1',
+      toolCallName: 'report_analyze_dataset'
+    })
+    runtime.applyEvent({
+      type: 'TOOL_CALL_ARGS',
+      toolCallId: 'report-tool-1',
+      delta: '{"job_id":"job-1","command":""}'
+    })
+    runtime.applyEvent({ type: 'TOOL_CALL_END', toolCallId: 'report-tool-1' })
+
+    runtime.applyEvent({
+      type: 'TOOL_CALL_START',
+      toolCallId: 'report-tool-1',
+      toolCallName: 'report_analyze_dataset'
+    })
+    runtime.applyEvent({
+      type: 'TOOL_CALL_ARGS',
+      toolCallId: 'report-tool-1',
+      delta: '{"command":"python analyze.py","job_id":"job-1"}'
+    })
+    runtime.applyEvent({ type: 'TOOL_CALL_END', toolCallId: 'report-tool-1' })
+
+    const tool = runtime.getSnapshot().messages[0].tool_calls?.[0]
+    expect(tool?.argsText).toBe('{"command":"python analyze.py","job_id":"job-1"}')
+    expect(tool?.args).toEqual({ command: 'python analyze.py', job_id: 'job-1' })
+  })
+
   it('rejects non-SSE responses, missing bodies, and streams without RUN_FINISHED', async () => {
     const runtime = createRuntime({ runtimeUrl: '/runtime/run', attachments: false })
 

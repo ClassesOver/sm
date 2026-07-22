@@ -29032,7 +29032,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       );
       const message = this.ensureAssistant(parentMessageId || void 0);
       const cleanTool = Object.fromEntries(
-        Object.entries(tool).filter(([, value]) => value !== void 0 && value !== "")
+        Object.entries(tool).filter(
+          ([key2, value]) => value !== void 0 && (value !== "" || key2 === "argsText")
+        )
       );
       const name2 = toolName({ ...existing, ...cleanTool });
       const args = toolArgs({ ...existing, ...cleanTool });

@@ -1749,7 +1749,9 @@ export class ChatRuntime {
     )
     const message = this.ensureAssistant(parentMessageId || undefined)
     const cleanTool = Object.fromEntries(
-      Object.entries(tool).filter(([, value]) => value !== undefined && value !== '')
+      Object.entries(tool).filter(([key, value]) =>
+        value !== undefined && (value !== '' || key === 'argsText')
+      )
     ) as ToolCall
     const name = toolName({ ...existing, ...cleanTool })
     const args = toolArgs({ ...existing, ...cleanTool })

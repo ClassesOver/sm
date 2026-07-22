@@ -164,8 +164,8 @@ def test_智能体说明明确工作区确认边界():
     instructions = "\n".join(build_agent_instructions(instruction_context()))
 
     assert "工作区只属于当前 thread" in instructions
-    assert "sandbox_exec 和 report_analyze_dataset 均须独立确认" in instructions
-    assert "准备和 Markdown 转 PDF 无需确认" in instructions
+    assert "sandbox_exec 须独立确认" in instructions
+    assert "准备、分析和 Markdown 转 PDF 无需确认" in instructions
     assert "同一 job_id 多轮调用 report_analyze_dataset" in instructions
     assert "至少一轮成功后生成 Markdown" in instructions
     assert "sandbox_exec 默认工作目录是 /home/daytona/workspace" in instructions
@@ -182,6 +182,6 @@ def test_智能报表技能统一使用工作区相对路径和报表工具():
     assert "模型根据每轮结果自行决定轮数" in skill
     assert "若返回 `ok: false`" in skill
     assert "直到至少一轮返回 `ok: true`" in skill
-    assert "每轮执行前等待工具确认" in skill
+    assert "`report_analyze_dataset` 无需确认" in skill
     assert "直接调用无需确认的 `report_render_markdown`" in skill
     assert "不使用 `report_compile`、`blocks`" in skill

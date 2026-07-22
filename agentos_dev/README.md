@@ -36,8 +36,8 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
 
 Agent 只注册线性继承的 `WorkspaceReportToolkit`。工作区读取、列举以及智能报表的能力发现、
-准备和 Markdown 转 PDF 无需确认；新建、覆盖、移动、删除、通用 `sandbox_exec` 和任意分析命令
-需要确认。分析命令只在当前 thread 的 Daytona sandbox 中运行，实际安全边界是启用
+准备、分析和 Markdown 转 PDF 无需确认；新建、覆盖、移动、删除和通用 `sandbox_exec`
+需要确认。每轮分析调用必须提供完整非空命令，并且只在当前 thread 的 Daytona sandbox 中运行，实际安全边界是启用
 `network_block_all` 的 Daytona 隔离、单轮最长 60 秒和 8 KiB 输出截断。
 
 智能报表先登记当前 thread 工作区内的输入文件，再由模型使用同一 `job_id` 自主执行多轮

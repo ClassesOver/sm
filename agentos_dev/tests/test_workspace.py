@@ -136,7 +136,6 @@ def test_最终工具集线性继承且确认边界符合策略(tmp_path):
         "workspace_move_file",
         "workspace_replace_file",
         "workspace_delete_file",
-        "report_analyze_dataset",
     ):
         assert tools[name].requires_confirmation is True
 
@@ -145,14 +144,17 @@ def test_最终工具集线性继承且确认边界符合策略(tmp_path):
     tools["report_analyze_dataset"].process_entrypoint()
     tools["report_render_markdown"].process_entrypoint()
     assert "/home/daytona/workspace" in tools["sandbox_exec"].description
-    assert tools["report_analyze_dataset"].requires_confirmation is True
+    assert tools["report_analyze_dataset"].requires_confirmation is False
     assert tools["report_render_markdown"].requires_confirmation is False
     assert set(tools["report_analyze_dataset"].parameters["required"]) == {
         "job_id",
         "command",
     }
+    command_schema = tools["report_analyze_dataset"].parameters["properties"]["command"]
+    assert command_schema["minLength"] == 1
     assert "多轮调用" in tools["report_analyze_dataset"].description
-    assert "执行前需要确认" in tools["report_analyze_dataset"].description
+    assert "完整非空命令" in command_schema["description"]
+    assert "无需用户确认" in tools["report_analyze_dataset"].description
     assert "无需用户确认" in tools["report_render_markdown"].description
 
 

@@ -11,7 +11,7 @@ from typing import Any
 
 import psycopg
 from agno.run import RunContext
-from agno.tools import Toolkit
+from agno.tools import Function, Toolkit
 from daytona import (
     AsyncDaytona,
     CreateSandboxFromSnapshotParams,
@@ -910,16 +910,49 @@ class WorkspaceReportToolkit(WorkspaceToolkit):
         for function in (
             self.report_list_analysis_capabilities,
             self.report_prepare_dataset,
-            self.report_analyze_dataset,
             self.report_render_markdown,
         ):
             self.register(function)
-        analysis_function = self.functions.get(
-            "report_analyze_dataset"
-        ) or self.async_functions.get("report_analyze_dataset")
-        if analysis_function is None:
-            raise RuntimeError("report_analyze_dataset 工具注册失败")
-        analysis_function.requires_confirmation = True
+        self.register(
+            Function(
+                name="report_analyze_dataset",
+                description=(
+                    "在当前 thread 的 Daytona sandbox 中执行一轮任意 Python、Shell 或 SQL "
+                    "分析；同一 job_id 可多轮调用；失败结果会返回给模型继续修正；无需用户确认。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "job_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "report_prepare_dataset 返回的 jobId。",
+                        },
+                        "command": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": (
+                                "本轮拟执行的完整非空命令，必须向标准输出写出分析结果；"
+                                "不得使用空字符串占位。"
+                            ),
+                        },
+                        "cwd": {
+                            "anyOf": [{"type": "string"}, {"type": "null"}],
+                            "description": "可选的工作区相对目录。",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 60,
+                            "description": "本轮执行超时秒数，默认 30。",
+                        },
+                    },
+                    "required": ["job_id", "command"],
+                    "additionalProperties": False,
+                },
+                entrypoint=self.report_analyze_dataset,
+            )
+        )
 
     async def _report(
         self,
@@ -974,7 +1007,7 @@ class WorkspaceReportToolkit(WorkspaceToolkit):
         timeout: int = 30,
         run_context: RunContext | None = None,
     ):
-        """在当前 thread 的 Daytona sandbox 中执行一轮任意 Python、Shell 或 SQL 分析；同一 job_id 可多轮调用；失败结果会返回给模型继续修正；执行前需要确认。"""
+        """在当前 thread 的 Daytona sandbox 中执行一轮任意 Python、Shell 或 SQL 分析；同一 job_id 可多轮调用；失败结果会返回给模型继续修正；无需用户确认。"""
         return await self._report(
             "analyze",
             {
