@@ -177,6 +177,8 @@ class ReportRuntime:
             raise ReportFailure("paths 数量必须在 1 至 5 个之间")
         if len(set(paths)) != len(paths):
             raise ReportFailure("paths 不能重复")
+        if isinstance(sheet_name, str) and not sheet_name.strip():
+            sheet_name = None
         files = [_safe_path(self.workspace, path) for path in paths]
         if any(path.suffix.lower() not in SUPPORTED for path in files):
             raise ReportFailure("不支持的数据文件格式")

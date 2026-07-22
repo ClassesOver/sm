@@ -944,7 +944,7 @@ class WorkspaceReportToolkit(WorkspaceToolkit):
     async def report_prepare_dataset(
         self, paths: list[str], sheet_name: str | None = None, run_context: RunContext | None = None
     ):
-        """从一至五个当前工作区相对路径准备统一数据集；附件直接使用 workspacePath，已选文件和 Odoo 导出直接使用 path，不接受绝对路径。"""
+        """从一至五个当前工作区相对路径准备统一数据集；附件直接使用 workspacePath，已选文件和 Odoo 导出直接使用 path，不接受绝对路径；未指定工作表时省略 sheet_name，空字符串按未指定处理。"""
         return await self._report(
             "prepare", {"paths": paths, "sheet_name": sheet_name}, run_context
         )

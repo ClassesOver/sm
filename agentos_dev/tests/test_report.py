@@ -56,7 +56,7 @@ def test_excel_默认选择首个可见工作表(runtime):
         pd.DataFrame({"可见": [2]}).to_excel(writer, sheet_name="visible", index=False)
         writer.book["hidden"].sheet_state = "hidden"
 
-    prepared = runtime.prepare([source.name])
+    prepared = runtime.prepare([source.name], "")
 
     assert [item["name"] for item in prepared["schema"]] == ["可见"]
 
