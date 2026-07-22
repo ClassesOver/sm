@@ -120,6 +120,7 @@ export function useWorkspaceDirectory({
   }, [path, runtime])
 
   useEffect(() => { void load() }, [load, threadId])
+  useEffect(() => runtime.subscribeWorkspace(() => { void load(true) }), [load, runtime])
   useEffect(() => () => { listRequest.current += 1 }, [])
 
   const navigate = useCallback((nextPath: string) => {

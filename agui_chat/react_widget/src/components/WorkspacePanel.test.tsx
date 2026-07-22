@@ -37,6 +37,7 @@ function deferred<T>() {
 function runtimeWith(overrides: Record<string, unknown> = {}): ChatRuntime {
   return {
     listWorkspace: vi.fn(async () => []),
+    subscribeWorkspace: vi.fn(() => () => undefined),
     readWorkspaceFile: vi.fn(async () => ({ blob: new Blob(['content'], { type: 'text/plain' }), mimeType: 'text/plain' })),
     downloadWorkspaceFile: vi.fn(async () => undefined),
     deleteWorkspaceEntry: vi.fn(async () => undefined),
@@ -159,6 +160,26 @@ describe('workspace browsing', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('无法读取工作区。')
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
     expect(await screen.findByText('当前目录为空。')).toBeTruthy()
+  })
+
+  it('refreshes the current directory after a host export changes the workspace', async () => {
+    let workspaceListener: ((path: string) => void) | undefined
+    const listWorkspace = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([entry('exports', { isDirectory: true })])
+    const runtime = runtimeWith({
+      listWorkspace,
+      subscribeWorkspace: vi.fn((listener: (path: string) => void) => {
+        workspaceListener = listener
+        return () => undefined
+      })
+    })
+    renderPanel(runtime)
+
+    expect(await screen.findByText('当前目录为空。')).toBeTruthy()
+    act(() => workspaceListener?.('exports/report.csv'))
+    expect(await screen.findByText('exports')).toBeTruthy()
+    expect(listWorkspace).toHaveBeenLastCalledWith('')
   })
 })
 

@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.8.7')
+    expect(AguiChat.version).toBe('12.0.8.8.8')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -430,6 +430,34 @@ describe('ChatRuntime protocol handling', () => {
       ok: true, navigated: true, opened: true
     }))
     expect(current?.tool_calls).toEqual([])
+  })
+
+  it('notifies workspace subscribers after a confirmed export result', () => {
+    const runtime = createRuntime()
+    const internal = runtime as any
+    const listener = vi.fn()
+    const unsubscribe = runtime.subscribeWorkspace(listener)
+    const tool = internal.mergeTool({
+      id: 'call-export-1',
+      name: 'odoo.export_current_view',
+      args: { format: 'csv' },
+      status: 'running'
+    })
+
+    internal.recordHostBridgeResult(tool, {
+      ok: true,
+      operation: 'odoo.export_current_view',
+      path: 'exports/report.csv'
+    })
+
+    expect(listener).toHaveBeenCalledWith('exports/report.csv')
+    unsubscribe()
+    internal.recordHostBridgeResult(tool, {
+      ok: true,
+      operation: 'odoo.export_current_view',
+      path: 'exports/second.csv'
+    })
+    expect(listener).toHaveBeenCalledOnce()
   })
 
   it.each([

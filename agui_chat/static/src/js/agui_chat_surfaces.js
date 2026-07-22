@@ -6,7 +6,7 @@ odoo.define("agui_chat.surfaces", function (require) {
     var core = require("web.core");
     var ChatBridge = require("agui_chat.host_bridge");
     var CHAT_CSS_URL = "/agui_chat/static/lib/agui-chat-react/" +
-        "agui_chat_widget.12.0.8.8.7.css";
+        "agui_chat_widget.12.0.8.8.8.css";
     var DIRECTIONS = ["left", "right", "top", "bottom"];
     var WEBCLIENT_CLASSES = [
         "o_agui_chat_webclient_dock_left", "o_agui_chat_webclient_dock_right",

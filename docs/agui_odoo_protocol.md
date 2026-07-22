@@ -12,8 +12,8 @@
 ```json
 {
   "protocol": "agui.odoo.v2",
-  "module_version": "12.0.8.8.7",
-  "bundle_version": "12.0.8.8.7",
+  "module_version": "12.0.8.8.8",
+  "bundle_version": "12.0.8.8.8",
   "command_catalog_hash": "sha256"
 }
 ```

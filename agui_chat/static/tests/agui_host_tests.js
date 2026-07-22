@@ -1287,7 +1287,13 @@ odoo.define("agui_chat.tests.host", function (require) {
             }
             return Promise.resolve({
                 ok: true,
-                json: function () { return Promise.resolve({ok: true, entry: {}}); },
+                status: 201,
+                json: function () {
+                    return Promise.resolve({
+                        ok: true,
+                        entry: {path: "exports/res.partner-20260722T010203Z-call1.csv"},
+                    });
+                },
             });
         };
         var service = Object.create(HostService.prototype);
@@ -1323,6 +1329,51 @@ odoo.define("agui_chat.tests.host", function (require) {
         }, function (error) {
             window.fetch = originalFetch;
             assert.ok(false, error && error.message || "导出执行失败");
+            done();
+        });
+    });
+
+    QUnit.test("export rejects an upload response without the confirmed workspace path", function (assert) {
+        assert.expect(2);
+        var done = assert.async();
+        var originalFetch = window.fetch;
+        window.fetch = function (url) {
+            if (url === "/web/export/csv") {
+                return Promise.resolve({
+                    ok: true,
+                    headers: {get: function () { return "attachment; filename=res.partner.csv"; }},
+                    blob: function () { return Promise.resolve(new Blob(["名称\nAcme\n"])); },
+                });
+            }
+            return Promise.resolve({
+                ok: true,
+                status: 201,
+                json: function () {
+                    return Promise.resolve({ok: true, entry: {path: "exports/other.csv"}});
+                },
+            });
+        };
+        var service = Object.create(HostService.prototype);
+        service._exportCurrentView({
+            __workspace: {
+                capability: "private-capability", threadId: "thread-1",
+                expectedThreadId: "thread-1", filesUrl: "/workspace/files",
+                credentials: "same-origin",
+            },
+        }, {
+            model: "res.partner", fields: [{name: "name", label: "名称"}],
+            ids: [7], domain: [], context: {},
+        }, {
+            workspacePath: "exports/res.partner-20260722T010203Z-call1.csv",
+            format: "csv", recordCount: 1, fieldCount: 1,
+        }).then(function () {
+            window.fetch = originalFetch;
+            assert.ok(false, "mismatched upload path must be rejected");
+            done();
+        }, function (error) {
+            window.fetch = originalFetch;
+            assert.strictEqual(error.code, "workspace_upload_failed");
+            assert.strictEqual(error.message, "工作区上传失败。");
             done();
         });
     });

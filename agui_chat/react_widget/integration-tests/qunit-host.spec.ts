@@ -43,6 +43,6 @@ test('AG-UI 宿主适配与命令 QUnit', async ({ page }) => {
   if (qunitFilter) {
     expect(result.executedTests).toBeGreaterThan(0)
   } else {
-    expect(result.executedTests).toBe(66)
+    expect(result.executedTests).toBe(67)
   }
 })

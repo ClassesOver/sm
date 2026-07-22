@@ -1019,7 +1019,9 @@ odoo.define("agui_chat.host_service", function (require) {
                     body: uploadBody,
                 }).then(function (response) {
                     return response.json().catch(function () { return {}; }).then(function (payload) {
-                        if (!response.ok) {
+                        var entry = payload && payload.entry;
+                        if (!response.ok || response.status !== 201 || payload.ok !== true ||
+                                !entry || entry.path !== metadata.workspacePath) {
                             throw _.extend(new Error(payload.error || "工作区上传失败。"), {
                                 code: payload.error || "workspace_upload_failed",
                             });

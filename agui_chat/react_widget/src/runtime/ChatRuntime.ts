@@ -231,6 +231,8 @@ export class ChatRuntime {
 
   private workspaceCapability: WorkspaceCapability | null = null
 
+  private workspaceListeners = new Set<(path: string) => void>()
+
   private serverConfirmationDecisions: Record<string, boolean> = {}
 
   constructor(props: AguiChatProps) {
@@ -257,6 +259,11 @@ export class ChatRuntime {
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  subscribeWorkspace(listener: (path: string) => void): () => void {
+    this.workspaceListeners.add(listener)
+    return () => this.workspaceListeners.delete(listener)
   }
 
   getSnapshot(): RuntimeSnapshot {
@@ -1876,6 +1883,10 @@ export class ChatRuntime {
     }
     if (context && !context.cancelled && this.activeRunContext === context) {
       context.hostBridgeFollowupNeeded = true
+    }
+    if (result.ok === true && result.operation === 'odoo.export_current_view' &&
+        typeof result.path === 'string' && result.path) {
+      this.workspaceListeners.forEach((listener) => listener(result.path as string))
     }
     this.notifyMessages()
     this.emit()

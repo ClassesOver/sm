@@ -25828,7 +25828,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function canPreviewFile(type) {
     return PREVIEWABLE_TYPES.has(type.toLowerCase());
   }
-  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.7.js";
+  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.8.js";
   const FILE_VIEWER_LOAD_TIMEOUT_MS = 15e3;
   const STATUS_ATTRIBUTE = "data-agui-file-viewer-status";
   let viewerModulePromise;
@@ -26452,6 +26452,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     reactExports.useEffect(() => {
       void load();
     }, [load, threadId]);
+    reactExports.useEffect(() => runtime.subscribeWorkspace(() => {
+      void load(true);
+    }), [load, runtime]);
     reactExports.useEffect(() => () => {
       listRequest.current += 1;
     }, []);
@@ -27618,6 +27621,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "saveTimer", null);
       __publicField(this, "saveQueue", Promise.resolve());
       __publicField(this, "workspaceCapability", null);
+      __publicField(this, "workspaceListeners", /* @__PURE__ */ new Set());
       __publicField(this, "serverConfirmationDecisions", {});
       var _a;
       this.props = props;
@@ -27642,6 +27646,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     subscribe(listener) {
       this.listeners.add(listener);
       return () => this.listeners.delete(listener);
+    }
+    subscribeWorkspace(listener) {
+      this.workspaceListeners.add(listener);
+      return () => this.workspaceListeners.delete(listener);
     }
     getSnapshot() {
       return {
@@ -29145,6 +29153,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (context && !context.cancelled && this.activeRunContext === context) {
         context.hostBridgeFollowupNeeded = true;
       }
+      if (result.ok === true && result.operation === "odoo.export_current_view" && typeof result.path === "string" && result.path) {
+        this.workspaceListeners.forEach((listener) => listener(result.path));
+      }
       this.notifyMessages();
       this.emit();
     }
@@ -29637,7 +29648,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.8.7";
+  const VERSION = "12.0.8.8.8";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

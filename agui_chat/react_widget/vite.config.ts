@@ -40,14 +40,14 @@ export default defineConfig(({ command }) => ({
       entry: 'src/index.tsx',
       formats: ['iife'],
       name: 'AguiChatReactBundle',
-      fileName: () => 'agui_chat_widget.12.0.8.8.7.js',
-      cssFileName: 'agui_chat_widget.12.0.8.8.7'
+      fileName: () => 'agui_chat_widget.12.0.8.8.8.js',
+      cssFileName: 'agui_chat_widget.12.0.8.8.8'
     },
     rollupOptions: {
       output: {
         assetFileNames: (assetInfo) =>
           assetInfo.name === 'style.css'
-            ? 'agui_chat_widget.12.0.8.8.7.css'
+            ? 'agui_chat_widget.12.0.8.8.8.css'
             : '[name][extname]'
       }
     }

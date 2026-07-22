@@ -31,6 +31,7 @@ function deferred<T>() {
 function runtimeWith(overrides: Record<string, unknown> = {}): ChatRuntime {
   return {
     listWorkspace: vi.fn(async () => []),
+    subscribeWorkspace: vi.fn(() => () => undefined),
     readWorkspaceFile: vi.fn(async () => ({ blob: new Blob(['content']), mimeType: 'text/plain' })),
     downloadWorkspaceFile: vi.fn(async () => undefined),
     deleteWorkspaceEntry: vi.fn(async () => undefined),

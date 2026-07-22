@@ -637,6 +637,7 @@ class FakeRuntime {
   listener?: () => void
   getSnapshot = () => this.snapshot
   subscribe = (listener: () => void) => { this.listener = listener; return () => undefined }
+  subscribeWorkspace = vi.fn(() => () => undefined)
   emit() { this.listener?.() }
   newSession = vi.fn()
   refreshSessions = vi.fn()
@@ -652,7 +653,11 @@ class FakeRuntime {
 describe('workspace references', () => {
   it('adds, removes, and synchronizes deleted entries', async () => {
     const entry = { path: '合同/甲.txt', name: '甲.txt', isDirectory: false, size: 12, mimeType: 'text/plain', modifiedAt: '' }
-    const runtime = { listWorkspace: vi.fn(async () => [entry]), deleteWorkspaceEntry: vi.fn(async () => undefined) }
+    const runtime = {
+      listWorkspace: vi.fn(async () => [entry]),
+      subscribeWorkspace: vi.fn(() => () => undefined),
+      deleteWorkspaceEntry: vi.fn(async () => undefined)
+    }
     const onToggleReference = vi.fn()
     const onDeleted = vi.fn()
     const { rerender } = render(<WorkspacePanel runtime={runtime as unknown as ChatRuntime} threadId='thread-1' references={[]} onToggleReference={onToggleReference} onDeleted={onDeleted} onClose={vi.fn()} />)
