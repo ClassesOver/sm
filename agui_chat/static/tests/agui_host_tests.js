@@ -1153,7 +1153,8 @@ odoo.define("agui_chat.tests.host", function (require) {
         };
         var snapshot = {
             interactive: true, capturedAt: "2026-07-22T01:02:03.000Z",
-            controller: {viewType: "list"}, record: {model: "res.partner"},
+            controller: {viewType: "list"}, record: false,
+            selection: {model: "res.partner", ids: [7, 9]},
             fields: {
                 name: {string: "名称", type: "char", invisible: false, redacted: false},
                 image: {string: "图片", type: "binary", invisible: false, redacted: false},
@@ -1176,6 +1177,96 @@ odoo.define("agui_chat.tests.host", function (require) {
                 prepared.preview.export.workspacePath,
                 "exports/res.partner-20260722T010203Z-call1234.csv"
             );
+            done();
+        });
+    });
+
+    QUnit.test("export execution ignores object key order but rejects changed scope or columns", function (assert) {
+        assert.expect(5);
+        var done = assert.async();
+        var selectedIds = [7, 9];
+        var rawRecord = {
+            domain: [["active", "=", true]],
+            getContext: function () { return {lang: "zh_CN"}; },
+        };
+        var controller = {
+            handle: "list-1",
+            renderer: {columns: [
+                {tag: "field", attrs: {name: "name", string: "名称"}},
+                {tag: "field", attrs: {name: "email", string: "邮箱"}},
+            ]},
+            model: {
+                get: function () { return rawRecord; },
+                isDirty: function () { return false; },
+            },
+            getActiveDomain: function () { return $.Deferred().resolve(); },
+            getSelectedIds: function () { return selectedIds; },
+        };
+        var snapshot = {
+            interactive: true, capturedAt: "2026-07-22T01:02:03.000Z",
+            controller: {viewType: "list"}, record: false,
+            selection: {model: "dy.expense.report", ids: selectedIds},
+            fields: {
+                name: {string: "名称", type: "char", invisible: false, redacted: false},
+                email: {string: "邮箱", type: "char", invisible: false, redacted: false},
+            },
+            capabilities: {totalCount: 18},
+        };
+        var context = {
+            getSnapshot: function () { return snapshot; },
+            getController: function () { return controller; },
+            exportCurrentView: function (call, spec, exportBinding) {
+                assert.strictEqual(spec.model, "dy.expense.report");
+                assert.deepEqual(spec.ids, [7, 9]);
+                return $.when({path: exportBinding.workspacePath});
+            },
+        };
+        var call = {
+            id: "call-sorted", tool: "odoo.export_current_view",
+            arguments: {
+                target: {
+                    snapshotId: "export-snapshot", hostRevision: 3,
+                    controllerId: "list-controller", dataPointId: "list-1",
+                    model: "dy.expense.report", resId: false,
+                },
+                format: "csv",
+            },
+        };
+
+        Commands.prepare(context, call).then(function (prepared) {
+            var exportBinding = prepared.call.arguments.__export;
+            prepared.call.arguments.__export = {
+                columns: exportBinding.columns,
+                fieldCount: exportBinding.fieldCount,
+                format: exportBinding.format,
+                recordCount: exportBinding.recordCount,
+                scope: exportBinding.scope,
+                workspacePath: exportBinding.workspacePath,
+            };
+            return Commands.execute(context, prepared.call).then(function (result) {
+                assert.strictEqual(
+                    result.path,
+                    "exports/dy.expense.report-20260722T010203Z-callsorted.csv"
+                );
+                selectedIds = [7];
+                Commands.execute(context, prepared.call).then(function () {
+                    assert.ok(false, "changed selection must be rejected");
+                    done();
+                }, function (error) {
+                    assert.strictEqual(error.code, "stale_snapshot");
+                    selectedIds = [7, 9];
+                    controller.renderer.columns.pop();
+                    Commands.execute(context, prepared.call).then(function () {
+                        assert.ok(false, "changed columns must be rejected");
+                        done();
+                    }, function (columnError) {
+                        assert.strictEqual(columnError.code, "stale_snapshot");
+                        done();
+                    });
+                });
+            });
+        }).then(null, function (error) {
+            assert.ok(false, error && error.message || "导出绑定测试失败");
             done();
         });
     });

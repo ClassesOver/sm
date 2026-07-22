@@ -298,11 +298,16 @@ odoo.define("agui_chat.command_registry", function (require) {
         }).compact().value();
     }
 
+    function exportModel(snapshot) {
+        return snapshot.record && snapshot.record.model ||
+            snapshot.selection && snapshot.selection.model || false;
+    }
+
     function exportPath(snapshot, callId, format) {
         var captured = new Date(snapshot.capturedAt);
         var timestamp = isNaN(captured.getTime()) ? "invalid" : captured.toISOString()
             .replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-        var model = String(snapshot.record && snapshot.record.model || "export")
+        var model = String(exportModel(snapshot) || "export")
             .replace(/[^a-zA-Z0-9_.-]/g, "_");
         var shortId = String(callId || "export").replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "export";
         return "exports/" + model + "-" + timestamp + "-" + shortId + "." + format;
@@ -363,7 +368,7 @@ odoo.define("agui_chat.command_registry", function (require) {
                     },
                 },
                 privateSpec: {
-                    model: snapshot.record && snapshot.record.model,
+                    model: exportModel(snapshot),
                     fields: columns,
                     ids: ids || false,
                     domain: domain,
@@ -375,7 +380,7 @@ odoo.define("agui_chat.command_registry", function (require) {
     }
 
     function sameExportBinding(left, right) {
-        return JSON.stringify(left || {}) === JSON.stringify(right || {});
+        return _.isEqual(left || {}, right || {});
     }
 
     COMMANDS["odoo.export_current_view"] = function (context, args, call) {
