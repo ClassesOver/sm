@@ -444,8 +444,10 @@ odoo.define("agui_chat.command_registry", function (require) {
         );
         return domainReady.then(function (activeDomain) {
             var domain;
-            if (activeDomain === undefined) {
-                ids = _.isFunction(controller.getSelectedIds) ? controller.getSelectedIds() || [] : [];
+            var emptyActiveDomain;
+            ids = _.isFunction(controller.getSelectedIds) ? controller.getSelectedIds() || [] : [];
+            emptyActiveDomain = !ids.length && _.isEqual(activeDomain, [["id", "in", []]]);
+            if (activeDomain === undefined || emptyActiveDomain) {
                 domain = record && record.domain || [];
             } else {
                 ids = false;
@@ -454,11 +456,13 @@ odoo.define("agui_chat.command_registry", function (require) {
             var recordCount = ids && ids.length || snapshot.capabilities &&
                 snapshot.capabilities.totalCount || 0;
             var selectedIds = ids || [];
+            var expWay = controller.expWay === undefined || controller.expWay === null ?
+                "0" : controller.expWay;
             var directContext = record && _.isFunction(record.getContext) ?
                 pyUtils.eval("contexts", [record.getContext(), {
                     export_way: "direct",
-                    expWay: controller.expWay,
-                }]) : {export_way: "direct", expWay: controller.expWay};
+                    expWay: expWay,
+                }]) : {export_way: "direct", expWay: expWay};
             return {
                 publicArguments: {
                     target: Adapter.clone(args.target),
@@ -481,7 +485,10 @@ odoo.define("agui_chat.command_registry", function (require) {
                     domain: domain,
                     groupby: (record && record.groupedBy || []).slice(0),
                     context: directContext,
-                    action: Adapter.clone(snapshot.action || false),
+                    action: snapshot.action ? {
+                        id: snapshot.action.id || false,
+                        name: snapshot.action.name || false,
+                    } : false,
                     orderby: directExportGroupOrder(record),
                     detail_orderby: directExportDetailOrder(controller, record),
                 },

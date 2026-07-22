@@ -1182,7 +1182,7 @@ odoo.define("agui_chat.tests.host", function (require) {
     });
 
     QUnit.test("xlsx export binding follows dy direct-export metadata", function (assert) {
-        assert.expect(11);
+        assert.expect(12);
         var done = assert.async();
         var rawRecord = {
             model: "dy.expense.report",
@@ -1205,7 +1205,6 @@ odoo.define("agui_chat.tests.host", function (require) {
         };
         var controller = {
             handle: "list-1",
-            expWay: "expense",
             renderer: {
                 arch: {attrs: {default_order: "name desc"}},
                 columns: [
@@ -1223,8 +1222,10 @@ odoo.define("agui_chat.tests.host", function (require) {
                 ]);
                 return {Expense: 4};
             },
-            getActiveDomain: function () { return $.Deferred().resolve(); },
-            getSelectedIds: function () { return [7]; },
+            getActiveDomain: function () {
+                return $.Deferred().resolve([["id", "in", []]]);
+            },
+            getSelectedIds: function () { return []; },
         };
         var snapshot = {
             interactive: true, capturedAt: "2026-07-22T01:02:03.000Z",
@@ -1235,7 +1236,7 @@ odoo.define("agui_chat.tests.host", function (require) {
                 type: "ir.actions.act_window",
                 resModel: "dy.expense.report",
             },
-            selection: {model: "dy.expense.report", ids: [7]},
+            selection: {model: "dy.expense.report", ids: []},
             fields: {
                 state: {string: "状态", type: "selection", invisible: false, redacted: false},
                 amount: {string: "金额", type: "float", invisible: false, redacted: false},
@@ -1261,16 +1262,15 @@ odoo.define("agui_chat.tests.host", function (require) {
                     },
                 ]);
                 assert.deepEqual(JSON.parse(JSON.stringify(spec.data)), [{count: 1, num: 1}]);
-                assert.deepEqual(spec.ids, [7]);
+                assert.deepEqual(spec.ids, []);
+                assert.deepEqual(spec.domain, []);
                 assert.deepEqual(spec.groupby, ["state"]);
                 assert.deepEqual(spec.context, {
-                    lang: "zh_CN", export_way: "direct", expWay: "expense",
+                    lang: "zh_CN", export_way: "direct", expWay: "0",
                 });
                 assert.deepEqual(spec.action, {
                     id: 404,
                     name: "报销单查询",
-                    type: "ir.actions.act_window",
-                    resModel: "dy.expense.report",
                 });
                 assert.strictEqual(spec.orderby, "state ASC, amount DESC");
                 assert.strictEqual(spec.detail_orderby, "state ASC, amount DESC");
@@ -1434,8 +1434,6 @@ odoo.define("agui_chat.tests.host", function (require) {
             action: {
                 id: 404,
                 name: "报销单查询",
-                type: "ir.actions.act_window",
-                resModel: "res.partner",
             },
             orderby: "state ASC",
             detail_orderby: "name DESC",
@@ -1460,8 +1458,6 @@ odoo.define("agui_chat.tests.host", function (require) {
             assert.deepEqual(exportPayload.action, {
                 id: 404,
                 name: "报销单查询",
-                type: "ir.actions.act_window",
-                resModel: "res.partner",
             });
             assert.strictEqual(exportPayload.orderby, "state ASC");
             assert.strictEqual(exportPayload.detail_orderby, "name DESC");
