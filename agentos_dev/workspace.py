@@ -7,7 +7,7 @@ import threading
 import unicodedata
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import psycopg
 from agno.run import RunContext
@@ -19,6 +19,7 @@ from daytona import (
     ListSandboxesQuery,
 )
 from daytona.common.errors import DaytonaNotFoundError
+from pydantic import BaseModel, ConfigDict, Field
 
 from .async_utils import complete_cleanup
 from .database import psycopg_db_url
@@ -46,6 +47,26 @@ class WorkspaceError(ValueError):
 
 class WorkspacePathConflict(WorkspaceError):
     pass
+
+
+class _ReportAnalysisOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ReportSummaryOperation(_ReportAnalysisOperation):
+    type: Literal["summary"]
+
+
+class ReportColumnOperation(_ReportAnalysisOperation):
+    type: Literal["trend", "top_bottom", "share", "pivot", "iqr"]
+    column: str
+    limit: int = Field(default=10, ge=1, le=1000)
+
+
+ReportAnalysisOperation = Annotated[
+    ReportSummaryOperation | ReportColumnOperation,
+    Field(discriminator="type"),
+]
 
 
 class SandboxRegistry:
@@ -950,11 +971,19 @@ class WorkspaceReportToolkit(WorkspaceToolkit):
         )
 
     async def report_analyze_dataset(
-        self, job_id: str, operations: list[dict[str, Any]], run_context: RunContext | None = None
+        self,
+        job_id: str,
+        operations: list[ReportAnalysisOperation],
+        run_context: RunContext | None = None,
     ):
-        """对已准备数据执行受控分析并保存可复用结果。"""
+        """对已准备数据执行受控分析并保存可复用结果；summary 仅需 type，其他操作还需 column，可选 limit 为 1 至 1000。"""
         return await self._report(
-            "analyze", {"job_id": job_id, "operations": operations}, run_context
+            "analyze",
+            {
+                "job_id": job_id,
+                "operations": [operation.model_dump() for operation in operations],
+            },
+            run_context,
         )
 
     async def report_compile(

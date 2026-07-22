@@ -173,3 +173,5 @@ def test_智能报表技能统一使用工作区相对路径和报表工具():
     assert "相对 `/home/daytona/workspace` 的工作区路径" in skill
     assert "将上述路径原样传给 `report_prepare_dataset`" in skill
     assert "不得使用 `sandbox_exec`、Python 或 pandas 读取" in skill
+    assert '`{"type": "summary"}`' in skill
+    assert '`{"type": "trend", "column": "字段名", "limit": 10}`' in skill

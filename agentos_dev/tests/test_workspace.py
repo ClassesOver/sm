@@ -143,9 +143,22 @@ def test_最终工具集线性继承且确认边界符合策略(tmp_path):
 
     tools["sandbox_exec"].process_entrypoint()
     tools["report_prepare_dataset"].process_entrypoint()
+    tools["report_analyze_dataset"].process_entrypoint()
     assert "/home/daytona/workspace" in tools["sandbox_exec"].description
     assert "不接受绝对路径" in tools["report_prepare_dataset"].description
     assert "空字符串按未指定处理" in tools["report_prepare_dataset"].description
+    operation_schemas = tools["report_analyze_dataset"].parameters["properties"]["operations"][
+        "items"
+    ]["anyOf"]
+    assert operation_schemas[0]["properties"]["type"]["const"] == "summary"
+    assert operation_schemas[1]["properties"]["type"]["enum"] == [
+        "trend",
+        "top_bottom",
+        "share",
+        "pivot",
+        "iqr",
+    ]
+    assert operation_schemas[1]["required"] == ["type", "column"]
 
 
 @pytest.mark.anyio
