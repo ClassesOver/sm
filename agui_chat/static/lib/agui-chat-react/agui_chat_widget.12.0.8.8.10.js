@@ -7135,34 +7135,100 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$D = [
+  const __iconNode$J = [
     ["rect", { width: "20", height: "5", x: "2", y: "3", rx: "1", key: "1wp1u1" }],
     ["path", { d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8", key: "1s80jp" }],
     ["path", { d: "M10 12h4", key: "a56b0p" }]
   ];
-  const Archive = createLucideIcon("Archive", __iconNode$D);
+  const Archive = createLucideIcon("Archive", __iconNode$J);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$C = [
+  const __iconNode$I = [
     ["path", { d: "M12 5v14", key: "s699le" }],
     ["path", { d: "m19 12-7 7-7-7", key: "1idqje" }]
   ];
-  const ArrowDown = createLucideIcon("ArrowDown", __iconNode$C);
+  const ArrowDown = createLucideIcon("ArrowDown", __iconNode$I);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$B = [
+  const __iconNode$H = [
     ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
     ["path", { d: "M19 12H5", key: "x3x0zl" }]
   ];
-  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$B);
+  const ArrowLeft = createLucideIcon("ArrowLeft", __iconNode$H);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$G = [
+    ["path", { d: "m5 12 7-7 7 7", key: "hav0vg" }],
+    ["path", { d: "M12 19V5", key: "x0mq9r" }]
+  ];
+  const ArrowUp = createLucideIcon("ArrowUp", __iconNode$G);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$F = [
+    ["circle", { cx: "12", cy: "12", r: "4", key: "4exip2" }],
+    ["path", { d: "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8", key: "7n84p3" }]
+  ];
+  const AtSign = createLucideIcon("AtSign", __iconNode$F);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$E = [
+    [
+      "path",
+      { d: "M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1", key: "ezmyqa" }
+    ],
+    [
+      "path",
+      {
+        d: "M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1",
+        key: "e1hn23"
+      }
+    ]
+  ];
+  const Braces = createLucideIcon("Braces", __iconNode$E);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$D = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
+  const Check = createLucideIcon("Check", __iconNode$D);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$C = [["path", { d: "m6 9 6 6 6-6", key: "qrunsl" }]];
+  const ChevronDown = createLucideIcon("ChevronDown", __iconNode$C);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$B = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
+  const ChevronRight = createLucideIcon("ChevronRight", __iconNode$B);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7170,10 +7236,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$A = [
-    ["path", { d: "m5 12 7-7 7 7", key: "hav0vg" }],
-    ["path", { d: "M12 19V5", key: "x0mq9r" }]
+    ["path", { d: "m11 17-5-5 5-5", key: "13zhaf" }],
+    ["path", { d: "m18 17-5-5 5-5", key: "h8a8et" }]
   ];
-  const ArrowUp = createLucideIcon("ArrowUp", __iconNode$A);
+  const ChevronsLeft = createLucideIcon("ChevronsLeft", __iconNode$A);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7181,34 +7247,44 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$z = [
-    ["circle", { cx: "12", cy: "12", r: "4", key: "4exip2" }],
-    ["path", { d: "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8", key: "7n84p3" }]
+    ["path", { d: "m6 17 5-5-5-5", key: "xnjwq" }],
+    ["path", { d: "m13 17 5-5-5-5", key: "17xmmf" }]
   ];
-  const AtSign = createLucideIcon("AtSign", __iconNode$z);
+  const ChevronsRight = createLucideIcon("ChevronsRight", __iconNode$z);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$y = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
-  const Check = createLucideIcon("Check", __iconNode$y);
+  const __iconNode$y = [
+    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
+    ["line", { x1: "12", x2: "12", y1: "8", y2: "12", key: "1pkeuh" }],
+    ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16", key: "4dfq90" }]
+  ];
+  const CircleAlert = createLucideIcon("CircleAlert", __iconNode$y);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$x = [["path", { d: "m6 9 6 6 6-6", key: "qrunsl" }]];
-  const ChevronDown = createLucideIcon("ChevronDown", __iconNode$x);
+  const __iconNode$x = [
+    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
+    ["path", { d: "m9 12 2 2 4-4", key: "dzmm74" }]
+  ];
+  const CircleCheck = createLucideIcon("CircleCheck", __iconNode$x);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$w = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
-  const ChevronRight = createLucideIcon("ChevronRight", __iconNode$w);
+  const __iconNode$w = [
+    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
+    ["polyline", { points: "12 6 12 12 16.5 12", key: "1aq6pp" }]
+  ];
+  const Clock3 = createLucideIcon("Clock3", __iconNode$w);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7216,10 +7292,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$v = [
-    ["path", { d: "m11 17-5-5 5-5", key: "13zhaf" }],
-    ["path", { d: "m18 17-5-5 5-5", key: "h8a8et" }]
+    ["path", { d: "M12 13v8", key: "1l5pq0" }],
+    ["path", { d: "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", key: "1pljnt" }],
+    ["path", { d: "m8 17 4-4 4 4", key: "1quai1" }]
   ];
-  const ChevronsLeft = createLucideIcon("ChevronsLeft", __iconNode$v);
+  const CloudUpload = createLucideIcon("CloudUpload", __iconNode$v);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7227,10 +7304,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$u = [
-    ["path", { d: "m6 17 5-5-5-5", key: "xnjwq" }],
-    ["path", { d: "m13 17 5-5-5-5", key: "17xmmf" }]
+    ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
+    ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
   ];
-  const ChevronsRight = createLucideIcon("ChevronsRight", __iconNode$u);
+  const Copy = createLucideIcon("Copy", __iconNode$u);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7238,11 +7315,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$t = [
-    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["line", { x1: "12", x2: "12", y1: "8", y2: "12", key: "1pkeuh" }],
-    ["line", { x1: "12", x2: "12.01", y1: "16", y2: "16", key: "4dfq90" }]
+    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
+    ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
+    ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
   ];
-  const CircleAlert = createLucideIcon("CircleAlert", __iconNode$t);
+  const Download = createLucideIcon("Download", __iconNode$t);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7250,10 +7327,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$s = [
-    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["path", { d: "m9 12 2 2 4-4", key: "dzmm74" }]
+    ["path", { d: "M15 3h6v6", key: "1q9fwt" }],
+    ["path", { d: "M10 14 21 3", key: "gplh6r" }],
+    ["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6", key: "a6xqqp" }]
   ];
-  const CircleCheck = createLucideIcon("CircleCheck", __iconNode$s);
+  const ExternalLink = createLucideIcon("ExternalLink", __iconNode$s);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7261,10 +7339,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$r = [
-    ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-    ["polyline", { points: "12 6 12 12 16.5 12", key: "1aq6pp" }]
+    [
+      "path",
+      {
+        d: "M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0",
+        key: "1nclc0"
+      }
+    ],
+    ["circle", { cx: "12", cy: "12", r: "3", key: "1v7zrd" }]
   ];
-  const Clock3 = createLucideIcon("Clock3", __iconNode$r);
+  const Eye = createLucideIcon("Eye", __iconNode$r);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7272,11 +7356,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$q = [
-    ["path", { d: "M12 13v8", key: "1l5pq0" }],
-    ["path", { d: "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", key: "1pljnt" }],
-    ["path", { d: "m8 17 4-4 4 4", key: "1quai1" }]
+    ["path", { d: "M12.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v9.5", key: "1couwa" }],
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
+    [
+      "path",
+      {
+        d: "M13.378 15.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z",
+        key: "1y4qbx"
+      }
+    ]
   ];
-  const CloudUpload = createLucideIcon("CloudUpload", __iconNode$q);
+  const FilePen = createLucideIcon("FilePen", __iconNode$q);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7284,10 +7374,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$p = [
-    ["rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2", key: "17jyea" }],
-    ["path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2", key: "zix9uf" }]
+    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
+    ["path", { d: "M10 9H8", key: "b1mrlr" }],
+    ["path", { d: "M16 13H8", key: "t4e002" }],
+    ["path", { d: "M16 17H8", key: "z1uh3a" }]
   ];
-  const Copy = createLucideIcon("Copy", __iconNode$p);
+  const FileText = createLucideIcon("FileText", __iconNode$p);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7295,11 +7388,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$o = [
-    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
-    ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
-    ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
+    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
+    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }]
   ];
-  const Download = createLucideIcon("Download", __iconNode$o);
+  const File = createLucideIcon("File", __iconNode$o);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7307,11 +7399,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$n = [
-    ["path", { d: "M15 3h6v6", key: "1q9fwt" }],
-    ["path", { d: "M10 14 21 3", key: "gplh6r" }],
-    ["path", { d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6", key: "a6xqqp" }]
+    [
+      "path",
+      {
+        d: "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
+        key: "usdka0"
+      }
+    ]
   ];
-  const ExternalLink = createLucideIcon("ExternalLink", __iconNode$n);
+  const FolderOpen = createLucideIcon("FolderOpen", __iconNode$n);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7322,13 +7418,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     [
       "path",
       {
-        d: "M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0",
-        key: "1nclc0"
+        d: "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+        key: "1kt360"
       }
-    ],
-    ["circle", { cx: "12", cy: "12", r: "3", key: "1v7zrd" }]
+    ]
   ];
-  const Eye = createLucideIcon("Eye", __iconNode$m);
+  const Folder = createLucideIcon("Folder", __iconNode$m);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7336,63 +7431,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$l = [
-    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
-    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }],
-    ["path", { d: "M10 9H8", key: "b1mrlr" }],
-    ["path", { d: "M16 13H8", key: "t4e002" }],
-    ["path", { d: "M16 17H8", key: "z1uh3a" }]
-  ];
-  const FileText = createLucideIcon("FileText", __iconNode$l);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$k = [
-    ["path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", key: "1rqfz7" }],
-    ["path", { d: "M14 2v4a2 2 0 0 0 2 2h4", key: "tnqrlb" }]
-  ];
-  const File = createLucideIcon("File", __iconNode$k);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$j = [
-    [
-      "path",
-      {
-        d: "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
-        key: "usdka0"
-      }
-    ]
-  ];
-  const FolderOpen = createLucideIcon("FolderOpen", __iconNode$j);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$i = [
-    [
-      "path",
-      {
-        d: "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
-        key: "1kt360"
-      }
-    ]
-  ];
-  const Folder = createLucideIcon("Folder", __iconNode$i);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$h = [
     ["circle", { cx: "9", cy: "12", r: "1", key: "1vctgf" }],
     ["circle", { cx: "9", cy: "5", r: "1", key: "hp0tcf" }],
     ["circle", { cx: "9", cy: "19", r: "1", key: "fkjjf6" }],
@@ -7400,7 +7438,55 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ["circle", { cx: "15", cy: "5", r: "1", key: "19l28e" }],
     ["circle", { cx: "15", cy: "19", r: "1", key: "f4zoj3" }]
   ];
-  const GripVertical = createLucideIcon("GripVertical", __iconNode$h);
+  const GripVertical = createLucideIcon("GripVertical", __iconNode$l);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$k = [
+    ["path", { d: "m3 17 2 2 4-4", key: "1jhpwq" }],
+    ["path", { d: "m3 7 2 2 4-4", key: "1obspn" }],
+    ["path", { d: "M13 6h8", key: "15sg57" }],
+    ["path", { d: "M13 12h8", key: "h98zly" }],
+    ["path", { d: "M13 18h8", key: "oe0vm4" }]
+  ];
+  const ListChecks = createLucideIcon("ListChecks", __iconNode$k);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$j = [
+    ["path", { d: "M3 6h18", key: "d0wm0j" }],
+    ["path", { d: "M7 12h10", key: "b7w52i" }],
+    ["path", { d: "M10 18h4", key: "1ulq68" }]
+  ];
+  const ListFilter = createLucideIcon("ListFilter", __iconNode$j);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$i = [
+    ["path", { d: "M21 12h-8", key: "1bmf0i" }],
+    ["path", { d: "M21 6H8", key: "1pqkrb" }],
+    ["path", { d: "M21 18h-8", key: "1tm79t" }],
+    ["path", { d: "M3 6v4c0 1.1.9 2 2 2h3", key: "1ywdgy" }],
+    ["path", { d: "M3 10v6c0 1.1.9 2 2 2h3", key: "2wc746" }]
+  ];
+  const ListTree = createLucideIcon("ListTree", __iconNode$i);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$h = [["path", { d: "M21 12a9 9 0 1 1-6.219-8.56", key: "13zald" }]];
+  const LoaderCircle = createLucideIcon("LoaderCircle", __iconNode$h);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7408,25 +7494,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$g = [
-    ["path", { d: "m15 12-8.373 8.373a1 1 0 1 1-3-3L12 9", key: "eefl8a" }],
-    ["path", { d: "m18 15 4-4", key: "16gjal" }],
-    [
-      "path",
-      {
-        d: "m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172V7l-2.26-2.26a6 6 0 0 0-4.202-1.756L9 2.96l.92.82A6.18 6.18 0 0 1 12 8.4V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5",
-        key: "b7pghm"
-      }
-    ]
+    ["line", { x1: "4", x2: "20", y1: "12", y2: "12", key: "1e0a9i" }],
+    ["line", { x1: "4", x2: "20", y1: "6", y2: "6", key: "1owob3" }],
+    ["line", { x1: "4", x2: "20", y1: "18", y2: "18", key: "yk5zj1" }]
   ];
-  const Hammer = createLucideIcon("Hammer", __iconNode$g);
+  const Menu = createLucideIcon("Menu", __iconNode$g);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
    * This source code is licensed under the ISC license.
    * See the LICENSE file in the root directory of this source tree.
    */
-  const __iconNode$f = [["path", { d: "M21 12a9 9 0 1 1-6.219-8.56", key: "13zald" }]];
-  const LoaderCircle = createLucideIcon("LoaderCircle", __iconNode$f);
+  const __iconNode$f = [
+    ["path", { d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z", key: "1lielz" }],
+    ["path", { d: "M12 7v6", key: "lw1j43" }],
+    ["path", { d: "M9 10h6", key: "9gxzsh" }]
+  ];
+  const MessageSquarePlus = createLucideIcon("MessageSquarePlus", __iconNode$f);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7434,11 +7518,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$e = [
-    ["line", { x1: "4", x2: "20", y1: "12", y2: "12", key: "1e0a9i" }],
-    ["line", { x1: "4", x2: "20", y1: "6", y2: "6", key: "1owob3" }],
-    ["line", { x1: "4", x2: "20", y1: "18", y2: "18", key: "yk5zj1" }]
+    ["polygon", { points: "3 11 22 2 13 21 11 13 3 11", key: "1ltx0t" }]
   ];
-  const Menu = createLucideIcon("Menu", __iconNode$e);
+  const Navigation = createLucideIcon("Navigation", __iconNode$e);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7446,18 +7528,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$d = [
-    ["path", { d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z", key: "1lielz" }],
-    ["path", { d: "M12 7v6", key: "lw1j43" }],
-    ["path", { d: "M9 10h6", key: "9gxzsh" }]
-  ];
-  const MessageSquarePlus = createLucideIcon("MessageSquarePlus", __iconNode$d);
-  /**
-   * @license lucide-react v0.475.0 - ISC
-   *
-   * This source code is licensed under the ISC license.
-   * See the LICENSE file in the root directory of this source tree.
-   */
-  const __iconNode$c = [
     ["path", { d: "M13.234 20.252 21 12.3", key: "1cbrk9" }],
     [
       "path",
@@ -7467,7 +7537,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     ]
   ];
-  const Paperclip = createLucideIcon("Paperclip", __iconNode$c);
+  const Paperclip = createLucideIcon("Paperclip", __iconNode$d);
+  /**
+   * @license lucide-react v0.475.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   */
+  const __iconNode$c = [
+    ["path", { d: "M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", key: "14sxne" }],
+    ["path", { d: "M3 3v5h5", key: "1xhq8a" }],
+    ["path", { d: "M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16", key: "1hlbsb" }],
+    ["path", { d: "M16 16h5v5", key: "ccwih5" }]
+  ];
+  const RefreshCcw = createLucideIcon("RefreshCcw", __iconNode$c);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7475,12 +7558,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$b = [
-    ["path", { d: "M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", key: "14sxne" }],
-    ["path", { d: "M3 3v5h5", key: "1xhq8a" }],
-    ["path", { d: "M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16", key: "1hlbsb" }],
-    ["path", { d: "M16 16h5v5", key: "ccwih5" }]
+    ["path", { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8", key: "v9h5vc" }],
+    ["path", { d: "M21 3v5h-5", key: "1q7to0" }],
+    ["path", { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16", key: "3uifl3" }],
+    ["path", { d: "M8 16H3v5", key: "1cv678" }]
   ];
-  const RefreshCcw = createLucideIcon("RefreshCcw", __iconNode$b);
+  const RefreshCw = createLucideIcon("RefreshCw", __iconNode$b);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7488,12 +7571,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$a = [
-    ["path", { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8", key: "v9h5vc" }],
-    ["path", { d: "M21 3v5h-5", key: "1q7to0" }],
-    ["path", { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16", key: "3uifl3" }],
-    ["path", { d: "M8 16H3v5", key: "1cv678" }]
+    ["path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", key: "1357e3" }],
+    ["path", { d: "M3 3v5h5", key: "1xhq8a" }]
   ];
-  const RefreshCw = createLucideIcon("RefreshCw", __iconNode$a);
+  const RotateCcw = createLucideIcon("RotateCcw", __iconNode$a);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7501,10 +7582,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$9 = [
-    ["path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", key: "1357e3" }],
-    ["path", { d: "M3 3v5h5", key: "1xhq8a" }]
+    [
+      "path",
+      {
+        d: "M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z",
+        key: "1c8476"
+      }
+    ],
+    ["path", { d: "M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7", key: "1ydtos" }],
+    ["path", { d: "M7 3v4a1 1 0 0 0 1 1h7", key: "t51u73" }]
   ];
-  const RotateCcw = createLucideIcon("RotateCcw", __iconNode$9);
+  const Save = createLucideIcon("Save", __iconNode$9);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -7613,11 +7701,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
    * See the LICENSE file in the root directory of this source tree.
    */
   const __iconNode$1 = [
-    ["rect", { width: "8", height: "8", x: "3", y: "3", rx: "2", key: "by2w9f" }],
-    ["path", { d: "M7 11v4a2 2 0 0 0 2 2h4", key: "xkn7yn" }],
-    ["rect", { width: "8", height: "8", x: "13", y: "13", rx: "2", key: "1cgmvn" }]
+    [
+      "path",
+      {
+        d: "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z",
+        key: "cbrjhi"
+      }
+    ]
   ];
-  const Workflow = createLucideIcon("Workflow", __iconNode$1);
+  const Wrench = createLucideIcon("Wrench", __iconNode$1);
   /**
    * @license lucide-react v0.475.0 - ISC
    *
@@ -24774,24 +24866,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ) }) : null
     ] });
   }
-  function MessageReasoning({ steps }) {
-    if (!steps.length) return null;
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-start gap-3", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx(Workflow, { className: "mt-0.5 size-5 shrink-0 text-muted" }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-2", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "text-xs font-medium uppercase text-muted", children: "执行状态" }),
-        steps.map((step, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { className: "rounded-lg border border-border bg-accent px-3 py-2 text-sm", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("summary", { className: "cursor-pointer text-xs text-primary", children: [
-            "步骤 ",
-            index2 + 1,
-            "：",
-            step.title
-          ] }),
-          step.content ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-2 text-xs leading-5 text-muted", children: step.content }) : null
-        ] }, `${step.title}-${index2}`))
-      ] })
-    ] });
-  }
   function uuid() {
     const cryptoValue = globalThis.crypto;
     if (cryptoValue == null ? void 0 : cryptoValue.randomUUID) {
@@ -25009,6 +25083,135 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       `${suggestion.title}-${suggestion.message}`
     )) });
   }
+  function isRecord$1(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+  }
+  function isRelationSearchResult(value) {
+    if (!isRecord$1(value) || value.ok !== true || !Array.isArray(value.candidates)) return false;
+    return value.operation === "odoo.search_relation" && typeof value.field === "string" && (value.fieldLabel === void 0 || typeof value.fieldLabel === "string") && (value.fieldType === "many2one" || value.fieldType === "many2many") && typeof value.relation === "string" && (value.rowToken === void 0 || value.rowToken === false || typeof value.rowToken === "string") && typeof value.query === "string" && ["set", "link", "unlink"].includes(String(value.relationOperation)) && ["none", "unique_exact", "ambiguous"].includes(String(value.resolution)) && typeof value.snapshotId === "string" && typeof value.hostRevision === "number" && value.candidates.every((candidate) => isRecord$1(candidate) && typeof candidate.id === "number" && typeof candidate.displayName === "string" && typeof candidate.selected === "boolean");
+  }
+  function isFilterResult(value) {
+    if (!isRecord$1(value) || value.ok !== true || !Array.isArray(value.candidates)) return false;
+    return value.operation === "odoo.apply_filter" && typeof value.label === "string" && Array.isArray(value.domain) && typeof value.count === "number" && typeof value.snapshotId === "string" && typeof value.hostRevision === "number" && value.candidates.every((candidate) => isRecord$1(candidate) && typeof candidate.token === "string" && typeof candidate.displayName === "string");
+  }
+  function getBuiltInToolPresentation(tool) {
+    const name2 = toolName(tool);
+    if (name2 === "odoo.search_relation" && isRelationSearchResult(tool.result)) {
+      return { kind: "relation_search", result: tool.result };
+    }
+    if (name2 === "odoo.apply_filter" && isFilterResult(tool.result)) {
+      return { kind: "record_candidates", result: tool.result };
+    }
+    return { kind: "default" };
+  }
+  const ACTIVE_TOOL_STATUSES = /* @__PURE__ */ new Set(["pending", "running", "needs_confirmation"]);
+  function getAssistantMessagePresentation(message) {
+    const extra = message.extra_data;
+    return {
+      content: asText(message.content),
+      reasoning: (extra == null ? void 0 : extra.reasoning_steps) || [],
+      references: (extra == null ? void 0 : extra.references) || [],
+      canRegenerate: Boolean(
+        message.content && !message.streaming_error && typeof (extra == null ? void 0 : extra.agent_run_id) === "string" && extra.agent_run_id && extra.agent_run_final === true && !(message.tool_calls || []).some((tool) => ACTIVE_TOOL_STATUSES.has(tool.status || "pending"))
+      )
+    };
+  }
+  function getUserMessageContent(message) {
+    return asText(message.content);
+  }
+  function normalizeMessageRole(role) {
+    return role === "agent" ? "assistant" : role;
+  }
+  function getMessageListPresentation(messages) {
+    const displayMessages = visibleMessages(messages);
+    const lastAssistantIndex = displayMessages.reduce(
+      (last, message, index2) => normalizeMessageRole(message.role) === "assistant" ? index2 : last,
+      -1
+    );
+    return { displayMessages, lastAssistantIndex };
+  }
+  function assistantRunKey(message, index2) {
+    var _a;
+    const runId = (_a = message.extra_data) == null ? void 0 : _a.agent_run_id;
+    return typeof runId === "string" && runId ? `run:${runId}` : `message:${message.id || index2}`;
+  }
+  function toolAliases(tool) {
+    const aliases = [];
+    if (tool.key) aliases.push(`key:${tool.key}`);
+    const id = toolCallId(tool);
+    if (id) aliases.push(`id:${id}`);
+    return aliases;
+  }
+  function mergeGroupTools(calls) {
+    const tools = [];
+    const indexes = /* @__PURE__ */ new Map();
+    calls.forEach((tool) => {
+      const aliases = toolAliases(tool);
+      const existingIndex = aliases.reduce(
+        (found, alias) => found ?? indexes.get(alias),
+        void 0
+      );
+      if (existingIndex === void 0) {
+        const index2 = tools.length;
+        tools.push(tool);
+        aliases.forEach((alias) => indexes.set(alias, index2));
+        return;
+      }
+      tools[existingIndex] = { ...tools[existingIndex], ...tool };
+      toolAliases(tools[existingIndex]).forEach((alias) => indexes.set(alias, existingIndex));
+    });
+    return tools;
+  }
+  function getToolEffectiveStatus(tool) {
+    if (tool.status === "needs_confirmation" || tool.needs_confirmation) return "needs_confirmation";
+    const builtIn = getBuiltInToolPresentation(tool);
+    if (builtIn.kind === "relation_search" && builtIn.result.resolution === "ambiguous" && builtIn.result.candidates.length || builtIn.kind === "record_candidates" && builtIn.result.candidates.length) return "needs_selection";
+    if (!tool.status || tool.status === "pending" || tool.status === "running") return "running";
+    return tool.status;
+  }
+  const GROUP_STATUS_PRIORITY = [
+    "needs_confirmation",
+    "needs_selection",
+    "running",
+    "error",
+    "cancelled",
+    "ok"
+  ];
+  function getToolGroupState(tools) {
+    const effectiveStatuses = tools.map(getToolEffectiveStatus);
+    const status = GROUP_STATUS_PRIORITY.find((candidate) => effectiveStatuses.includes(candidate)) || "ok";
+    let activeToolIndex = -1;
+    effectiveStatuses.forEach((candidate, index2) => {
+      if (candidate === "needs_confirmation" || candidate === "needs_selection" || candidate === "running") {
+        activeToolIndex = index2;
+      }
+    });
+    return { status, activeToolIndex, requiresAttention: activeToolIndex >= 0 };
+  }
+  function getToolCallGroups(messages) {
+    const visibleIds = new Set(visibleMessages(messages).map((message) => message.id));
+    const grouped = /* @__PURE__ */ new Map();
+    messages.forEach((message, index2) => {
+      if (normalizeMessageRole(message.role) !== "assistant") return;
+      const key = assistantRunKey(message, index2);
+      const current = grouped.get(key) || { targetMessageId: "", calls: [] };
+      if (visibleIds.has(message.id)) current.targetMessageId = message.id;
+      current.calls.push(...message.tool_calls || []);
+      grouped.set(key, current);
+    });
+    const result = /* @__PURE__ */ new Map();
+    grouped.forEach((group, key) => {
+      if (!group.targetMessageId || !group.calls.length) return;
+      const tools = mergeGroupTools(group.calls);
+      result.set(group.targetMessageId, {
+        key,
+        targetMessageId: group.targetMessageId,
+        tools,
+        ...getToolGroupState(tools)
+      });
+    });
+    return result;
+  }
   function CandidatePanel({
     title,
     description,
@@ -25154,6 +25357,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (status === "running") return /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "size-3 animate-spin" });
     if (status === "ok") return /* @__PURE__ */ jsxRuntimeExports.jsx(CircleCheck, { className: "size-3" });
     if (status === "error" || status === "cancelled") return /* @__PURE__ */ jsxRuntimeExports.jsx(CircleAlert, { className: "size-3" });
+    if (status === "needs_selection") return /* @__PURE__ */ jsxRuntimeExports.jsx(ListChecks, { className: "size-3" });
     return /* @__PURE__ */ jsxRuntimeExports.jsx(Clock3, { className: "size-3" });
   }
   function statusLabel(status) {
@@ -25162,6 +25366,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (status === "error") return "出错";
     if (status === "cancelled") return "已取消";
     if (status === "needs_confirmation") return "待确认";
+    if (status === "needs_selection") return "待选择";
     return "等待中";
   }
   function ToolStatusBadge({ status }) {
@@ -25169,27 +25374,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       statusIcon(status),
       statusLabel(status)
     ] });
-  }
-  function isRecord$1(value) {
-    return Boolean(value && typeof value === "object" && !Array.isArray(value));
-  }
-  function isRelationSearchResult(value) {
-    if (!isRecord$1(value) || value.ok !== true || !Array.isArray(value.candidates)) return false;
-    return value.operation === "odoo.search_relation" && typeof value.field === "string" && (value.fieldLabel === void 0 || typeof value.fieldLabel === "string") && (value.fieldType === "many2one" || value.fieldType === "many2many") && typeof value.relation === "string" && (value.rowToken === void 0 || value.rowToken === false || typeof value.rowToken === "string") && typeof value.query === "string" && ["set", "link", "unlink"].includes(String(value.relationOperation)) && ["none", "unique_exact", "ambiguous"].includes(String(value.resolution)) && typeof value.snapshotId === "string" && typeof value.hostRevision === "number" && value.candidates.every((candidate) => isRecord$1(candidate) && typeof candidate.id === "number" && typeof candidate.displayName === "string" && typeof candidate.selected === "boolean");
-  }
-  function isFilterResult(value) {
-    if (!isRecord$1(value) || value.ok !== true || !Array.isArray(value.candidates)) return false;
-    return value.operation === "odoo.apply_filter" && typeof value.label === "string" && Array.isArray(value.domain) && typeof value.count === "number" && typeof value.snapshotId === "string" && typeof value.hostRevision === "number" && value.candidates.every((candidate) => isRecord$1(candidate) && typeof candidate.token === "string" && typeof candidate.displayName === "string");
-  }
-  function getBuiltInToolPresentation(tool) {
-    const name2 = toolName(tool);
-    if (name2 === "odoo.search_relation" && isRelationSearchResult(tool.result)) {
-      return { kind: "relation_search", result: tool.result };
-    }
-    if (name2 === "odoo.apply_filter" && isFilterResult(tool.result)) {
-      return { kind: "record_candidates", result: tool.result };
-    }
-    return { kind: "default" };
   }
   const TOOL_DISPLAY_NAMES = {
     "odoo.navigate_menu": "导航菜单",
@@ -25210,6 +25394,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     "odoo.reload_current_form": "重新载入表单",
     "odoo.discard_current_form": "放弃表单更改"
   };
+  function getToolIcon(name2) {
+    if (name2.includes("search")) return Search;
+    if (name2.includes("filter")) return ListFilter;
+    if (name2.includes("group")) return ListTree;
+    if (name2.includes("navigate") || name2.includes("open")) return name2.includes("record") ? FolderOpen : Navigation;
+    if (name2.includes("save") || name2.includes("reload")) return Save;
+    if (name2.includes("patch") || name2.includes("edit") || name2.includes("validate")) return FilePen;
+    if (name2.includes("workspace") || name2.includes("file")) return FolderOpen;
+    if (name2.includes("json") || name2.includes("schema")) return Braces;
+    return Wrench;
+  }
   function getToolCallPresentation(tool) {
     const name2 = toolName(tool);
     const result = tool.result && typeof tool.result === "object" ? tool.result : {};
@@ -25343,7 +25538,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     );
   }
-  function DefaultToolCallCard({
+  function DefaultToolCallContent({
     tool,
     onConfirm,
     onUndo,
@@ -25353,29 +25548,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const {
       displayName,
       result,
-      applied,
-      rejected,
-      status,
       error,
       needsConfirmation,
       undo,
       call
     } = getToolCallPresentation(tool);
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { open: needsConfirmation || void 0, className: "rounded-lg border border-border bg-background-secondary/80 p-2", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("summary", { className: "flex cursor-pointer list-none flex-wrap items-center gap-2", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "inline-flex items-center gap-1.5 rounded-md bg-background px-2 py-1 font-mono text-[11px] text-primary", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Hammer, { className: "size-3" }),
-          displayName
-        ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(ToolStatusBadge, { status }),
-        applied || rejected ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "rounded-md bg-background px-2 py-1 text-[11px] text-muted", children: [
-          "已应用 ",
-          applied,
-          " 项 / 已拒绝 ",
-          rejected,
-          " 项"
-        ] }) : null
-      ] }),
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
       error ? /* @__PURE__ */ jsxRuntimeExports.jsx(InlineNotice, { className: "mt-2", tone: "error", children: String(error) }) : null,
       needsConfirmation ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 rounded-md border border-solid border-warning/25 bg-warning/10 p-2 text-xs text-warning", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
@@ -25404,7 +25582,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ] })
     ] });
   }
-  function ToolCallCard({
+  function ToolCallContent({
     tool,
     renderers,
     onConfirm,
@@ -25416,7 +25594,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     onSelectRecord
   }) {
     const Renderer = renderers == null ? void 0 : renderers[toolName(tool)];
-    const fallback = /* @__PURE__ */ jsxRuntimeExports.jsx(DefaultToolCallCard, { tool, onConfirm, onUndo, labels, running });
+    const fallback = /* @__PURE__ */ jsxRuntimeExports.jsx(DefaultToolCallContent, { tool, onConfirm, onUndo, labels, running });
     if (Renderer) return /* @__PURE__ */ jsxRuntimeExports.jsx(
       RenderErrorBoundary,
       {
@@ -25444,34 +25622,139 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return fallback;
   }
-  const ACTIVE_TOOL_STATUSES = /* @__PURE__ */ new Set(["pending", "running", "needs_confirmation"]);
-  function getAssistantMessagePresentation(message) {
-    const extra = message.extra_data;
-    return {
-      content: asText(message.content),
-      reasoning: (extra == null ? void 0 : extra.reasoning_steps) || [],
-      references: (extra == null ? void 0 : extra.references) || [],
-      canRegenerate: Boolean(
-        message.content && !message.streaming_error && typeof (extra == null ? void 0 : extra.agent_run_id) === "string" && extra.agent_run_id && extra.agent_run_final === true && !(message.tool_calls || []).some((tool) => ACTIVE_TOOL_STATUSES.has(tool.status || "pending"))
-      )
-    };
+  function ToolCallSummary({ tool, effectiveStatus }) {
+    const { displayName, status, applied, rejected } = getToolCallPresentation(tool);
+    const Icon2 = getToolIcon(toolName(tool));
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "flex min-w-0 flex-1 items-center gap-2", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(Icon2, { className: "size-3.5 shrink-0 text-muted", "aria-hidden": "true" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "min-w-0 flex-1 truncate text-xs text-primary", title: displayName, children: displayName }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(ToolStatusBadge, { status: effectiveStatus || status }),
+      applied || rejected ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "hidden shrink-0 text-[10px] text-muted sm:inline", children: [
+        "已应用 ",
+        applied,
+        " / 已拒绝 ",
+        rejected
+      ] }) : null
+    ] });
   }
-  function getUserMessageContent(message) {
-    return asText(message.content);
-  }
-  function normalizeMessageRole(role) {
-    return role === "agent" ? "assistant" : role;
-  }
-  function getMessageListPresentation(messages) {
-    const displayMessages = visibleMessages(messages);
-    const lastAssistantIndex = displayMessages.reduce(
-      (last, message, index2) => normalizeMessageRole(message.role) === "assistant" ? index2 : last,
-      -1
+  function ToolCallRow({ effectiveStatus, ...props }) {
+    const requiresAttention = effectiveStatus === "needs_confirmation" || effectiveStatus === "needs_selection";
+    const [open, setOpen] = reactExports.useState(requiresAttention);
+    const previousAttention = reactExports.useRef(requiresAttention);
+    reactExports.useEffect(() => {
+      if (requiresAttention !== previousAttention.current) setOpen(requiresAttention);
+      previousAttention.current = requiresAttention;
+    }, [requiresAttention]);
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "details",
+      {
+        open,
+        role: "listitem",
+        className: "agui-tool-row border-b border-border/60 last:border-b-0",
+        "data-tool-id": toolCallId(props.tool) || props.tool.key || void 0,
+        onToggle: (event) => setOpen(event.currentTarget.open),
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("summary", { className: "flex min-h-7 cursor-pointer list-none items-center gap-2 px-1 py-1 outline-none transition-colors hover:bg-background-secondary/70 focus-visible:bg-background-secondary/70", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronRight, { className: "agui-tool-chevron size-3 shrink-0 text-muted transition-transform", "aria-hidden": "true" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(ToolCallSummary, { tool: props.tool, effectiveStatus })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "pb-2 pl-6 pr-1", children: /* @__PURE__ */ jsxRuntimeExports.jsx(ToolCallContent, { ...props }) })
+        ]
+      }
     );
-    return { displayMessages, lastAssistantIndex };
   }
-  function getToolCallRenderKey(tool, index2) {
-    return tool.key || toolCallId(tool) || `${toolName(tool)}-${index2}`;
+  const GROUP_STATUS_LABELS = {
+    needs_confirmation: "待确认",
+    needs_selection: "待选择",
+    running: "执行中",
+    error: "有失败",
+    cancelled: "已取消",
+    ok: "已完成"
+  };
+  function scrollToActive(container, activeIndex) {
+    if (activeIndex < 0) return;
+    const row = container.children.item(activeIndex);
+    if (!row) return;
+    const viewTop = container.scrollTop;
+    const viewBottom = viewTop + container.clientHeight;
+    const containerRect = container.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const rowTop = rowRect.top - containerRect.top + viewTop;
+    const rowBottom = rowTop + rowRect.height;
+    let nextTop = null;
+    if (rowBottom > viewBottom) nextTop = rowBottom - container.clientHeight;
+    if (rowTop < viewTop) nextTop = rowTop;
+    if (nextTop === null) return;
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const top = Math.max(0, Math.min(nextTop, maxTop));
+    const prefersReducedMotion = typeof globalThis.matchMedia === "function" && globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (typeof container.scrollTo === "function") {
+      container.scrollTo({ top, behavior: prefersReducedMotion ? "auto" : "smooth" });
+    } else {
+      container.scrollTop = top;
+    }
+  }
+  function ToolCallGroup({
+    group,
+    renderers,
+    labels,
+    hostState,
+    running,
+    onSelectRelation,
+    onSelectRecord,
+    onConfirmTool,
+    onUndoTool
+  }) {
+    const [open, setOpen] = reactExports.useState(group.requiresAttention);
+    const previousAttention = reactExports.useRef(group.requiresAttention);
+    const listRef = reactExports.useRef(null);
+    reactExports.useEffect(() => {
+      if (group.requiresAttention !== previousAttention.current) setOpen(group.requiresAttention);
+      previousAttention.current = group.requiresAttention;
+    }, [group.requiresAttention]);
+    reactExports.useEffect(() => {
+      if (!open || !group.requiresAttention || !listRef.current) return;
+      scrollToActive(listRef.current, group.activeToolIndex);
+    }, [open, group.activeToolIndex, group.requiresAttention, group.status, group.tools.length]);
+    const summaryLabel = `思考过程，${group.tools.length} 个工具，${GROUP_STATUS_LABELS[group.status]}`;
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "details",
+      {
+        open,
+        className: "agui-tool-group min-w-0",
+        "data-testid": "tool-call-group",
+        "aria-label": summaryLabel,
+        onToggle: (event) => setOpen(event.currentTarget.open),
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("summary", { className: "flex min-h-8 cursor-pointer list-none items-center gap-2 rounded-md px-1 py-1 text-xs text-muted outline-none transition-colors hover:bg-background-secondary/70 focus-visible:bg-background-secondary/70", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronRight, { className: "agui-tool-group-chevron size-3.5 shrink-0 transition-transform", "aria-hidden": "true" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "shrink-0 font-medium text-secondary", children: "思考过程" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "shrink-0 text-[11px]", children: [
+              "· ",
+              group.tools.length,
+              " 个工具"
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(ToolStatusBadge, { status: group.status })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { ref: listRef, role: "list", className: "agui-tool-group-list mt-1 max-h-56 overflow-y-auto border-l border-border/70 pl-2", children: group.tools.map((tool, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+            ToolCallRow,
+            {
+              tool,
+              effectiveStatus: getToolEffectiveStatus(tool),
+              renderers,
+              labels,
+              hostState,
+              running,
+              onSelectRelation,
+              onSelectRecord,
+              onConfirm: (approved) => onConfirmTool(tool, approved),
+              onUndo: () => onUndoTool(tool)
+            },
+            tool.key || tool.id || `${group.key}-${index2}`
+          )) })
+        ]
+      }
+    );
   }
   function useMessageFeedback(onFeedback) {
     const [feedback, setFeedback] = reactExports.useState({});
@@ -25492,23 +25775,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     message,
     running,
     isCurrent,
-    toolRenderers,
     labels,
     icons,
-    hostState,
     onCopy,
-    onRegenerate,
-    onConfirmTool,
-    onUndoTool = () => void 0,
-    onSelectRelation,
-    onSelectRecord
+    onRegenerate
   }) {
-    var _a;
-    const { content: content2, reasoning, references, canRegenerate } = getAssistantMessagePresentation(message);
+    const { content: content2, references, canRegenerate } = getAssistantMessagePresentation(message);
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-5", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx(MessageReasoning, { steps: reasoning }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(MessageReferences, { references }),
-      ((_a = message.tool_calls) == null ? void 0 : _a.length) ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-col gap-2", children: message.tool_calls.map((tool, index2) => /* @__PURE__ */ jsxRuntimeExports.jsx(ToolCallCard, { tool, renderers: toolRenderers, labels, hostState, running, onSelectRelation, onSelectRecord, onConfirm: (approved) => onConfirmTool(tool, approved), onUndo: () => onUndoTool(tool) }, getToolCallRenderKey(tool, index2))) }) : null,
       content2 || message.streaming_error ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "group flex items-start gap-3", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid size-6 shrink-0 place-items-center rounded bg-primary text-primaryAccent", children: icons.assistant }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 flex-1", children: [
@@ -25568,7 +25842,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }) {
     const messageFeedback = useMessageFeedback(onFeedback);
     const { displayMessages, lastAssistantIndex } = getMessageListPresentation(messages);
-    const AssistantMessage = (components == null ? void 0 : components.AssistantMessage) || DefaultAssistantMessage;
+    const toolGroups = getToolCallGroups(messages);
+    const CustomAssistantMessage = components == null ? void 0 : components.AssistantMessage;
+    const AssistantMessage = CustomAssistantMessage || DefaultAssistantMessage;
     const UserMessage = (components == null ? void 0 : components.UserMessage) || DefaultUserMessage;
     if (!displayMessages.length) return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex min-h-[320px] flex-col items-center justify-center px-4 text-center", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid size-12 place-items-center rounded-xl bg-accent text-primary", children: icons.assistant }),
@@ -25579,7 +25855,29 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mx-auto flex w-full max-w-3xl flex-col gap-12 px-4 py-8", children: [
       displayMessages.map((message, index2) => {
         const role = normalizeMessageRole(message.role);
-        if (role === "assistant") return /* @__PURE__ */ jsxRuntimeExports.jsx(AssistantMessage, { message, running, isCurrent: index2 === lastAssistantIndex, toolRenderers, labels, icons, feedback: messageFeedback.feedback[message.id] || null, hostState, onSelectRelation: (tool, candidates) => onSelectRelation(tool, candidates), onSelectRecord: (tool, candidate) => onSelectRecord(tool, candidate), onCopy: () => onCopy(message), onRegenerate: () => onRegenerate(message.id), onFeedback: (next) => messageFeedback.toggleFeedback(message, next), onConfirmTool, onUndoTool: (tool) => onUndoTool == null ? void 0 : onUndoTool(tool) }, message.id || `assistant-${index2}`);
+        if (role === "assistant") {
+          const group = toolGroups.get(message.id);
+          const presentedMessage = !CustomAssistantMessage && group ? { ...message, tool_calls: group.tools } : message;
+          const assistant = /* @__PURE__ */ jsxRuntimeExports.jsx(AssistantMessage, { message: presentedMessage, running, isCurrent: index2 === lastAssistantIndex, toolRenderers, labels, icons, feedback: messageFeedback.feedback[message.id] || null, hostState, onSelectRelation: (tool, candidates) => onSelectRelation(tool, candidates), onSelectRecord: (tool, candidate) => onSelectRecord(tool, candidate), onCopy: () => onCopy(message), onRegenerate: () => onRegenerate(message.id), onFeedback: (next) => messageFeedback.toggleFeedback(message, next), onConfirmTool, onUndoTool: (tool) => onUndoTool == null ? void 0 : onUndoTool(tool) });
+          if (CustomAssistantMessage || !group) return /* @__PURE__ */ jsxRuntimeExports.jsx(React.Fragment, { children: assistant }, message.id || `assistant-${index2}`);
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex min-w-0 flex-col gap-5", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              ToolCallGroup,
+              {
+                group,
+                renderers: toolRenderers,
+                labels,
+                hostState,
+                running,
+                onSelectRelation,
+                onSelectRecord,
+                onConfirmTool,
+                onUndoTool: (tool) => onUndoTool == null ? void 0 : onUndoTool(tool)
+              }
+            ),
+            assistant
+          ] }, message.id || `assistant-${index2}`);
+        }
         if (role === "user") return /* @__PURE__ */ jsxRuntimeExports.jsx(UserMessage, { message, icons, labels, onPreviewAttachment, onRemoveMenuMention: message.menuMention && onRemoveMenuMention ? () => onRemoveMenuMention(message.id) : void 0 }, message.id || `user-${index2}`);
         return null;
       }),
@@ -25828,7 +26126,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function canPreviewFile(type) {
     return PREVIEWABLE_TYPES.has(type.toLowerCase());
   }
-  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.9.js";
+  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.10.js";
   const FILE_VIEWER_LOAD_TIMEOUT_MS = 15e3;
   const STATUS_ATTRIBUTE = "data-agui-file-viewer-status";
   let viewerModulePromise;
@@ -29712,7 +30010,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.8.9";
+  const VERSION = "12.0.8.8.10";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

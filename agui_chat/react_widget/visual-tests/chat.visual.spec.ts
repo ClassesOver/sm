@@ -34,6 +34,15 @@ test('light scenarios', async ({ page }) => {
       await expect(page.getByRole('button', { name: /上海远景贸易有限公司/ })).toBeVisible()
     }
 
+    if (scenario === 'tool') {
+      const toolGroup = page.getByTestId('tool-call-group')
+      await expect(toolGroup).toHaveAttribute('open', '')
+      await expect(toolGroup.getByText('思考过程')).toBeVisible()
+      const toolList = toolGroup.getByRole('list')
+      await expect.poll(() => toolList.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+      expect(await toolList.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+    }
+
     await page.addStyleTag({ content: '*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }' })
     await expect.poll(() => errors).toEqual([])
     const layout = await page.evaluate(() => {
@@ -53,6 +62,12 @@ test('light scenarios', async ({ page }) => {
     expect(layout.emptyRoot).toBe(false)
     expect(layout.clipped).toEqual([])
     await expect(page).toHaveScreenshot(`${scenario}.png`, { fullPage: true })
+    if (scenario === 'tool') {
+      const toolGroup = page.getByTestId('tool-call-group')
+      await toolGroup.locator('summary').first().click()
+      await expect(toolGroup).not.toHaveAttribute('open', '')
+      await expect(page).toHaveScreenshot('tool-collapsed.png', { fullPage: true })
+    }
     if (scenario === 'attachments') {
       await page.getByRole('button', { name: '文件预览: sales-dashboard.svg' }).click()
       const preview = page.getByRole('complementary', { name: '文件预览' })
@@ -94,7 +109,7 @@ test('light scenarios', async ({ page }) => {
       })
       await expect(page.getByLabel('拖放附件')).toBeHidden()
 
-      await page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能').evaluate((element) => {
+      await page.getByRole('textbox', { name: '输入消息，@ 选择菜单或技能' }).evaluate((element) => {
         const transfer = new DataTransfer()
         transfer.items.add(new File(['paste'], 'paste-check.txt', { type: 'text/plain' }))
         transfer.items.add(new File(['region,amount'], 'sales-report.csv', { type: 'text/csv' }))
@@ -104,7 +119,7 @@ test('light scenarios', async ({ page }) => {
       await expect(page.getByText('sales-report.csv')).toBeVisible()
       await expect(page.getByText('文本文件 · 1 KB')).toBeVisible()
       await expect(page).toHaveScreenshot('composer-attachments.png', { fullPage: true })
-      await page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能').fill('@')
+      await page.getByRole('textbox', { name: '输入消息，@ 选择菜单或技能' }).fill('@')
       await expect(page.getByRole('dialog', { name: '添加到对话' })).toBeVisible()
       await expect(page).toHaveScreenshot('mention-picker.png', { fullPage: true })
       await page.getByRole('option', { name: /菜单/ }).click()

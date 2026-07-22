@@ -1,3 +1,7 @@
+import {
+  Braces, FileEdit, FolderOpen, ListFilter, ListTree, Navigation, Search, Save, Wrench,
+  type LucideIcon
+} from 'lucide-react'
 import type { ToolCall } from '../types'
 import { toolArgs, toolCallId, toolName } from '../runtime/utils'
 
@@ -19,6 +23,18 @@ export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   'odoo.open_x2many_create': '新建明细表单',
   'odoo.reload_current_form': '重新载入表单',
   'odoo.discard_current_form': '放弃表单更改'
+}
+
+export function getToolIcon(name: string): LucideIcon {
+  if (name.includes('search')) return Search
+  if (name.includes('filter')) return ListFilter
+  if (name.includes('group')) return ListTree
+  if (name.includes('navigate') || name.includes('open')) return name.includes('record') ? FolderOpen : Navigation
+  if (name.includes('save') || name.includes('reload')) return Save
+  if (name.includes('patch') || name.includes('edit') || name.includes('validate')) return FileEdit
+  if (name.includes('workspace') || name.includes('file')) return FolderOpen
+  if (name.includes('json') || name.includes('schema')) return Braces
+  return Wrench
 }
 
 export function getToolCallPresentation(tool: ToolCall) {

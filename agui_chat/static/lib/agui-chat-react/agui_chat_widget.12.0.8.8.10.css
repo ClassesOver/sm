@@ -288,6 +288,10 @@
   max-height: 208px;
 }
 
+.agui-chat-react .max-h-56 {
+  max-height: 224px;
+}
+
 .agui-chat-react .max-h-60 {
   max-height: 240px;
 }
@@ -322,6 +326,10 @@
 
 .agui-chat-react .min-h-32 {
   min-height: 128px;
+}
+
+.agui-chat-react .min-h-7 {
+  min-height: 28px;
 }
 
 .agui-chat-react .min-h-8 {
@@ -626,6 +634,10 @@
 
 .agui-chat-react .border-b {
   border-bottom-width: 1px;
+}
+
+.agui-chat-react .border-l {
+  border-left-width: 1px;
 }
 
 .agui-chat-react .border-l-2 {
@@ -949,12 +961,24 @@
   padding-bottom: 32px;
 }
 
+.agui-chat-react .pb-2 {
+  padding-bottom: 8px;
+}
+
 .agui-chat-react .pb-3 {
   padding-bottom: 12px;
 }
 
 .agui-chat-react .pl-1\.5 {
   padding-left: 6px;
+}
+
+.agui-chat-react .pl-2 {
+  padding-left: 8px;
+}
+
+.agui-chat-react .pl-6 {
+  padding-left: 24px;
 }
 
 .agui-chat-react .pr-1 {
@@ -1239,6 +1263,12 @@
   transition-duration: 150ms;
 }
 
+.agui-chat-react .transition-transform {
+  transition-property: transform;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+
 .agui-chat-react .duration-150 {
   transition-duration: 150ms;
 }
@@ -1302,6 +1332,21 @@
 
 .agui-chat-react ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+.agui-chat-react .agui-tool-group > summary::-webkit-details-marker,
+.agui-chat-react .agui-tool-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agui-chat-react .agui-tool-group > summary::marker,
+.agui-chat-react .agui-tool-row > summary::marker {
+  content: "";
+}
+
+.agui-chat-react .agui-tool-group[open] > summary .agui-tool-group-chevron,
+.agui-chat-react .agui-tool-row[open] > summary .agui-tool-chevron {
+  transform: rotate(90deg);
 }
 
 .agui-chat-react .agui-markdown {
@@ -1596,6 +1641,14 @@
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .agui-chat-react .agui-tool-group *,
+  .agui-chat-react .agui-tool-row * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 @container (max-width: 1295px) {
   .agui-chat-react .agui-aside-backdrop {
     position: absolute;
@@ -1836,6 +1889,10 @@
   border-radius: 2px;
 }
 
+.agui-chat-react .focus-visible\:bg-background-secondary\/70:focus-visible {
+  background-color: rgb(241 245 249 / 0.7);
+}
+
 .agui-chat-react .focus-visible\:outline:focus-visible {
   outline-style: solid;
 }
@@ -1946,6 +2003,10 @@
 }
 
 @media (min-width: 640px) {
+
+  .agui-chat-react .sm\:inline {
+    display: inline;
+  }
 
   .agui-chat-react .sm\:px-6 {
     padding-left: 24px;

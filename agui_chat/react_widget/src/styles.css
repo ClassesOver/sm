@@ -60,6 +60,21 @@
   background: transparent;
 }
 
+.agui-chat-react .agui-tool-group > summary::-webkit-details-marker,
+.agui-chat-react .agui-tool-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agui-chat-react .agui-tool-group > summary::marker,
+.agui-chat-react .agui-tool-row > summary::marker {
+  content: "";
+}
+
+.agui-chat-react .agui-tool-group[open] > summary .agui-tool-group-chevron,
+.agui-chat-react .agui-tool-row[open] > summary .agui-tool-chevron {
+  transform: rotate(90deg);
+}
+
 .agui-chat-react .agui-markdown {
   overflow-wrap: anywhere;
 }
@@ -349,6 +364,14 @@
   40% {
     opacity: 1;
     transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agui-chat-react .agui-tool-group *,
+  .agui-chat-react .agui-tool-row * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
   }
 }
 

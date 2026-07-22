@@ -9,14 +9,13 @@ import { InlineNotice } from './InlineNotice'
 import { Markdown } from './Markdown'
 import { MessageAttachments } from './MessageAttachments'
 import { MessageContextBar } from './MessageContextBar'
-import { MessageReasoning } from './MessageReasoning'
 import { MessageReferences } from './MessageReferences'
 import { SuggestionList } from './SuggestionList'
-import { ToolCallCard } from './ToolCallCard'
+import { ToolCallGroup } from './ToolCallGroup'
 import {
   getAssistantMessagePresentation,
   getMessageListPresentation,
-  getToolCallRenderKey,
+  getToolCallGroups,
   getUserMessageContent,
   normalizeMessageRole
 } from './messagePresentation'
@@ -44,17 +43,11 @@ export interface MessagesProps {
 }
 
 export function DefaultAssistantMessage({
-  message, running, isCurrent, toolRenderers, labels, icons, hostState,
-  onCopy, onRegenerate, onConfirmTool, onUndoTool = () => undefined,
-  onSelectRelation, onSelectRecord
+  message, running, isCurrent, labels, icons, onCopy, onRegenerate
 }: AssistantMessageProps) {
-  const { content, reasoning, references, canRegenerate } = getAssistantMessagePresentation(message)
+  const { content, references, canRegenerate } = getAssistantMessagePresentation(message)
   return <div className="flex flex-col gap-5">
-    <MessageReasoning steps={reasoning} />
     <MessageReferences references={references} />
-    {message.tool_calls?.length ? <div className="flex flex-col gap-2">{message.tool_calls.map((tool, index) => (
-      <ToolCallCard key={getToolCallRenderKey(tool, index)} tool={tool} renderers={toolRenderers} labels={labels} hostState={hostState} running={running} onSelectRelation={onSelectRelation} onSelectRecord={onSelectRecord} onConfirm={(approved) => onConfirmTool(tool, approved)} onUndo={() => onUndoTool(tool)} />
-    ))}</div> : null}
     {content || message.streaming_error ? <div className="group flex items-start gap-3">
       <div className="grid size-6 shrink-0 place-items-center rounded bg-primary text-primaryAccent">{icons.assistant}</div>
       <div className="min-w-0 flex-1">
@@ -98,7 +91,9 @@ export function Messages({
 }: MessagesProps) {
   const messageFeedback = useMessageFeedback(onFeedback)
   const { displayMessages, lastAssistantIndex } = getMessageListPresentation(messages)
-  const AssistantMessage = components?.AssistantMessage || DefaultAssistantMessage
+  const toolGroups = getToolCallGroups(messages)
+  const CustomAssistantMessage = components?.AssistantMessage
+  const AssistantMessage = CustomAssistantMessage || DefaultAssistantMessage
   const UserMessage = components?.UserMessage || DefaultUserMessage
   if (!displayMessages.length) return <div className="flex min-h-[320px] flex-col items-center justify-center px-4 text-center">
     <div className="grid size-12 place-items-center rounded-xl bg-accent text-primary">{icons.assistant}</div>
@@ -109,7 +104,28 @@ export function Messages({
   return <div className="mx-auto flex w-full max-w-3xl flex-col gap-12 px-4 py-8">
     {displayMessages.map((message, index) => {
       const role = normalizeMessageRole(message.role)
-      if (role === 'assistant') return <AssistantMessage key={message.id || `assistant-${index}`} message={message} running={running} isCurrent={index === lastAssistantIndex} toolRenderers={toolRenderers} labels={labels} icons={icons} feedback={messageFeedback.feedback[message.id] || null} hostState={hostState} onSelectRelation={(tool, candidates) => onSelectRelation(tool, candidates)} onSelectRecord={(tool, candidate) => onSelectRecord(tool, candidate)} onCopy={() => onCopy(message)} onRegenerate={() => onRegenerate(message.id)} onFeedback={(next) => messageFeedback.toggleFeedback(message, next)} onConfirmTool={onConfirmTool} onUndoTool={(tool) => onUndoTool?.(tool)} />
+      if (role === 'assistant') {
+        const group = toolGroups.get(message.id)
+        const presentedMessage = !CustomAssistantMessage && group
+          ? { ...message, tool_calls: group.tools }
+          : message
+        const assistant = <AssistantMessage message={presentedMessage} running={running} isCurrent={index === lastAssistantIndex} toolRenderers={toolRenderers} labels={labels} icons={icons} feedback={messageFeedback.feedback[message.id] || null} hostState={hostState} onSelectRelation={(tool, candidates) => onSelectRelation(tool, candidates)} onSelectRecord={(tool, candidate) => onSelectRecord(tool, candidate)} onCopy={() => onCopy(message)} onRegenerate={() => onRegenerate(message.id)} onFeedback={(next) => messageFeedback.toggleFeedback(message, next)} onConfirmTool={onConfirmTool} onUndoTool={(tool) => onUndoTool?.(tool)} />
+        if (CustomAssistantMessage || !group) return <React.Fragment key={message.id || `assistant-${index}`}>{assistant}</React.Fragment>
+        return <div key={message.id || `assistant-${index}`} className="flex min-w-0 flex-col gap-5">
+          <ToolCallGroup
+            group={group}
+            renderers={toolRenderers}
+            labels={labels}
+            hostState={hostState}
+            running={running}
+            onSelectRelation={onSelectRelation}
+            onSelectRecord={onSelectRecord}
+            onConfirmTool={onConfirmTool}
+            onUndoTool={(tool) => onUndoTool?.(tool)}
+          />
+          {assistant}
+        </div>
+      }
       if (role === 'user') return <UserMessage key={message.id || `user-${index}`} message={message} icons={icons} labels={labels} onPreviewAttachment={onPreviewAttachment} onRemoveMenuMention={message.menuMention && onRemoveMenuMention ? () => onRemoveMenuMention(message.id) : undefined} />
       return null
     })}

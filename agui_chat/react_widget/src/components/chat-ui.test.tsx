@@ -119,6 +119,47 @@ describe('chat customization', () => {
     expect(screen.getByText('需要确认：修改当前表单')).toBeTruthy()
   })
 
+  it('aggregates one run before its final assistant body without rendering reasoning text', () => {
+    renderMessages({
+      messages: [
+        {
+          id: 'assistant-first', role: 'assistant', content: '前序正文',
+          extra_data: { agent_run_id: 'run-1', reasoning_steps: [{ title: '内部步骤', content: '原始推理正文' }] },
+          tool_calls: [{ id: 'call-1', name: 'odoo.open_record', status: 'ok' }]
+        },
+        {
+          id: 'assistant-last', role: 'assistant', content: '最终正文',
+          extra_data: { agent_run_id: 'run-1', agent_run_final: true },
+          tool_calls: [{ id: 'call-2', name: 'odoo.save_current_form', status: 'ok' }]
+        }
+      ]
+    })
+
+    expect(screen.getAllByText('思考过程')).toHaveLength(1)
+    expect(screen.getByText('前序正文')).toBeTruthy()
+    expect(screen.getByText('最终正文')).toBeTruthy()
+    expect(screen.queryByText('内部步骤')).toBeNull()
+    expect(screen.queryByText('原始推理正文')).toBeNull()
+    const group = screen.getByTestId('tool-call-group')
+    const finalBody = screen.getByText('最终正文').closest('.group')
+    expect(group.compareDocumentPosition(finalBody!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps original per-message tools for a custom assistant renderer', () => {
+    const Assistant = vi.fn(({ message }: AssistantMessageProps) => <div>{message.id}:{message.tool_calls?.length || 0}</div>)
+    renderMessages({
+      components: { AssistantMessage: Assistant },
+      messages: [
+        { id: 'first', role: 'assistant', extra_data: { agent_run_id: 'run-1' }, tool_calls: [{ id: 'call-1' }] },
+        { id: 'last', role: 'assistant', extra_data: { agent_run_id: 'run-1' }, tool_calls: [{ id: 'call-2' }] }
+      ]
+    })
+
+    expect(screen.queryByText('思考过程')).toBeNull()
+    expect(screen.getByText('first:1')).toBeTruthy()
+    expect(screen.getByText('last:1')).toBeTruthy()
+  })
+
   it('renders filter candidates and disables an expired snapshot', () => {
     const onSelectRecord = vi.fn()
     const filterTool = {

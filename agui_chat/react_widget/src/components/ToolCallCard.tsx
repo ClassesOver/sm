@@ -1,9 +1,10 @@
+import { useEffect, useRef, useState } from 'react'
 import { ChevronRight, Hammer, RotateCcw } from 'lucide-react'
 import type {
   ChatLabels, FilterResult, OdooHostSnapshot, RecordCandidate, RelationCandidate,
   RelationSearchResult, ToolCall, ToolRenderer
 } from '../types'
-import { toolName } from '../runtime/utils'
+import { toolCallId, toolName } from '../runtime/utils'
 import { Button } from './Button'
 import { CandidateOption, CandidatePanel } from './CandidatePanel'
 import { InlineNotice } from './InlineNotice'
@@ -11,7 +12,8 @@ import { RenderErrorBoundary } from './RenderErrorBoundary'
 import { ToolConfirmationPreview } from './ToolConfirmationPreview'
 import { ToolStatusBadge } from './ToolStatusBadge'
 import { getBuiltInToolPresentation } from './builtInToolPresentation'
-import { getToolCallPresentation } from './toolCallPresentation'
+import type { ToolGroupStatus } from './messagePresentation'
+import { getToolCallPresentation, getToolIcon } from './toolCallPresentation'
 import {
   isCandidateSnapshotStale,
   useRelationCandidateSelection
@@ -94,7 +96,7 @@ function RecordCandidatesCard({
   </CandidatePanel>
 }
 
-function DefaultToolCallCard({
+function DefaultToolCallContent({
   tool, onConfirm, onUndo, labels, running
 }: {
   tool: ToolCall
@@ -104,18 +106,10 @@ function DefaultToolCallCard({
   running: boolean
 }) {
   const {
-    displayName, result, applied, rejected, status, error, needsConfirmation, undo, call
+    displayName, result, error, needsConfirmation, undo, call
   } = getToolCallPresentation(tool)
-  return (
-    <details open={needsConfirmation || undefined} className="rounded-lg border border-border bg-background-secondary/80 p-2">
-      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2">
-        <span className="inline-flex items-center gap-1.5 rounded-md bg-background px-2 py-1 font-mono text-[11px] text-primary">
-          <Hammer className="size-3" />{displayName}
-        </span>
-        <ToolStatusBadge status={status} />
-        {applied || rejected ? <span className="rounded-md bg-background px-2 py-1 text-[11px] text-muted">已应用 {applied} 项 / 已拒绝 {rejected} 项</span> : null}
-      </summary>
-      {error ? <InlineNotice className="mt-2" tone="error">{String(error)}</InlineNotice> : null}
+  return <>
+    {error ? <InlineNotice className="mt-2" tone="error">{String(error)}</InlineNotice> : null}
       {needsConfirmation ? <div className="mt-2 rounded-md border border-solid border-warning/25 bg-warning/10 p-2 text-xs text-warning">
         <div>需要确认：{displayName}</div>
         <ToolConfirmationPreview result={result} />
@@ -132,16 +126,15 @@ function DefaultToolCallCard({
           <pre className="max-h-52 overflow-auto rounded-md bg-background p-2 text-[11px] text-muted">{JSON.stringify(tool.result || null, null, 2)}</pre>
         </div>
       </details>
-    </details>
-  )
+  </>
 }
 
-export function ToolCallCard({
+function ToolCallContent({
   tool, renderers, onConfirm, onUndo, labels, hostState, running,
   onSelectRelation, onSelectRecord
 }: ToolCallCardProps) {
   const Renderer = renderers?.[toolName(tool)]
-  const fallback = <DefaultToolCallCard tool={tool} onConfirm={onConfirm} onUndo={onUndo} labels={labels} running={running} />
+  const fallback = <DefaultToolCallContent tool={tool} onConfirm={onConfirm} onUndo={onUndo} labels={labels} running={running} />
   if (Renderer) return <RenderErrorBoundary
     fallback={fallback}
     resetKeys={[
@@ -166,4 +159,73 @@ export function ToolCallCard({
     return <RecordCandidatesCard tool={tool} result={builtIn.result} hostState={hostState} running={running} onSelect={onSelectRecord} />
   }
   return fallback
+}
+
+function ToolCallSummary({ tool, effectiveStatus }: { tool: ToolCall; effectiveStatus?: ToolGroupStatus }) {
+  const { displayName, status, applied, rejected } = getToolCallPresentation(tool)
+  const Icon = getToolIcon(toolName(tool))
+  return <span className="flex min-w-0 flex-1 items-center gap-2">
+    <Icon className="size-3.5 shrink-0 text-muted" aria-hidden="true" />
+    <span className="min-w-0 flex-1 truncate text-xs text-primary" title={displayName}>{displayName}</span>
+    <ToolStatusBadge status={effectiveStatus || status} />
+    {applied || rejected ? <span className="hidden shrink-0 text-[10px] text-muted sm:inline">已应用 {applied} / 已拒绝 {rejected}</span> : null}
+  </span>
+}
+
+interface ToolCallRowProps extends ToolCallCardProps {
+  effectiveStatus: ToolGroupStatus
+}
+
+export function ToolCallRow({ effectiveStatus, ...props }: ToolCallRowProps) {
+  const requiresAttention = effectiveStatus === 'needs_confirmation' || effectiveStatus === 'needs_selection'
+  const [open, setOpen] = useState(requiresAttention)
+  const previousAttention = useRef(requiresAttention)
+
+  useEffect(() => {
+    if (requiresAttention !== previousAttention.current) setOpen(requiresAttention)
+    previousAttention.current = requiresAttention
+  }, [requiresAttention])
+
+  return <details
+    open={open}
+    role="listitem"
+    className="agui-tool-row border-b border-border/60 last:border-b-0"
+    data-tool-id={toolCallId(props.tool) || props.tool.key || undefined}
+    onToggle={(event) => setOpen(event.currentTarget.open)}
+  >
+    <summary className="flex min-h-7 cursor-pointer list-none items-center gap-2 px-1 py-1 outline-none transition-colors hover:bg-background-secondary/70 focus-visible:bg-background-secondary/70">
+      <ChevronRight className="agui-tool-chevron size-3 shrink-0 text-muted transition-transform" aria-hidden="true" />
+      <ToolCallSummary tool={props.tool} effectiveStatus={effectiveStatus} />
+    </summary>
+    <div className="pb-2 pl-6 pr-1">
+      <ToolCallContent {...props} />
+    </div>
+  </details>
+}
+
+export function ToolCallCard({
+  tool, renderers, onConfirm, onUndo, labels, hostState, running,
+  onSelectRelation, onSelectRecord
+}: ToolCallCardProps) {
+  const { displayName, status, applied, rejected, needsConfirmation } = getToolCallPresentation(tool)
+  return <details open={needsConfirmation || undefined} className="rounded-lg border border-border bg-background-secondary/80 p-2">
+    <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2">
+      <span className="inline-flex items-center gap-1.5 rounded-md bg-background px-2 py-1 font-mono text-[11px] text-primary">
+        <Hammer className="size-3" />{displayName}
+      </span>
+      <ToolStatusBadge status={status} />
+      {applied || rejected ? <span className="rounded-md bg-background px-2 py-1 text-[11px] text-muted">已应用 {applied} 项 / 已拒绝 {rejected} 项</span> : null}
+    </summary>
+    <ToolCallContent
+      tool={tool}
+      renderers={renderers}
+      onConfirm={onConfirm}
+      onUndo={onUndo}
+      labels={labels}
+      hostState={hostState}
+      running={running}
+      onSelectRelation={onSelectRelation}
+      onSelectRecord={onSelectRecord}
+    />
+  </details>
 }

@@ -34,13 +34,26 @@ const scenarios: Record<Scenario, ChatMessage[]> = {
   tool: [
     { ...user, content: '把报价单 SO026 的有效期延长 7 天。' },
     {
-      ...assistant,
-      content: '已准备好变更，确认后将写入 HRP。',
-      tool_calls: [{
-        id: 'tool-call-001', name: 'update_sale_order', status: 'needs_confirmation', needs_confirmation: true,
-        args: { order: 'SO026', validity_days: 7 },
-        result: { operation: '更新报价有效期', target: { model: 'sale.order', name: 'SO026' }, patch: { validity_date: '2026-07-22' } }
-      }]
+      ...assistant, id: 'message-assistant-tool-001', content: '我先定位报价单并核对当前页面状态。',
+      extra_data: { agent_run_id: 'visual-tool-run-001', agent_run_final: false },
+      tool_calls: [
+        { id: 'tool-call-001', name: 'odoo.navigate_menu', status: 'ok', args: { menu: '销售 / 报价单' } },
+        { id: 'tool-call-002', name: 'odoo.apply_filter', status: 'ok', args: { domain: [['name', '=', 'SO026']] } },
+        { id: 'tool-call-003', name: 'odoo.open_record', status: 'ok', args: { record: 'SO026' } },
+        { id: 'tool-call-004', name: 'odoo.enter_edit_mode', status: 'ok' },
+        { id: 'tool-call-005', name: 'odoo.stage_current_form', status: 'ok' }
+      ]
+    },
+    {
+      ...assistant, id: 'message-assistant-tool-002', content: '正在校验修改结果，完成后会给出最终确认。',
+      extra_data: { agent_run_id: 'visual-tool-run-001', agent_run_final: false },
+      tool_calls: [
+        { id: 'tool-call-001', name: 'odoo.navigate_menu', status: 'ok', result: { ok: true } },
+        { id: 'tool-call-006', name: 'odoo.patch_current_form', status: 'ok', args: { validity_date: '2026-07-22' } },
+        { id: 'tool-call-007', name: 'odoo.validate_current_form', status: 'ok' },
+        { id: 'tool-call-008', name: 'custom.audit_sale_order_validity_with_a_long_descriptive_tool_name', status: 'ok' },
+        { id: 'tool-call-009', name: 'odoo.save_current_form', status: 'running' }
+      ]
     }
   ],
   relation: [
