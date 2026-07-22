@@ -11,6 +11,9 @@ import pytest
 from ag_ui.core import (
     EventType,
     RawEvent,
+    ReasoningEndEvent,
+    ReasoningMessageContentEvent,
+    ReasoningStartEvent,
     RunAgentInput,
     RunFinishedEvent,
     RunStartedEvent,
@@ -20,6 +23,10 @@ from ag_ui.core import (
     TextMessageStartEvent,
     ToolCallStartEvent,
 )
+from agno.models.message import Message
+from agno.run.agent import RunOutput
+from agno.run.base import RunStatus
+from agno.session.agent import AgentSession
 
 from agentos_dev import app as app_module
 
@@ -91,12 +98,13 @@ def run_input(
     tools=(app_module.EDIT_MODE_TOOL,),
     context=(),
     messages=None,
+    state=None,
 ):
     return RunAgentInput.model_validate(
         {
             "threadId": "thread-1",
             "runId": "run-1",
-            "state": {},
+            "state": state or {},
             "messages": messages or [{"id": "user-1", "role": "user", "content": message}],
             "tools": [
                 {"name": name, "description": "页面工具", "parameters": {"type": "object"}}
@@ -648,6 +656,136 @@ async def test_normal_and_unmarked_resume_requests_keep_main_agent(monkeypatch, 
     await response_body(response)
 
     assert calls == [app_module.assistant]
+
+
+@pytest.mark.anyio
+async def test_fresh_request_receives_budgeted_history_without_old_odoo_results(monkeypatch):
+    session = AgentSession(
+        session_id="thread-1",
+        agent_id="odoo-assistant",
+        user_id="owner",
+        session_data={},
+        runs=[
+            RunOutput(
+                run_id="old-run",
+                session_id="thread-1",
+                agent_id="odoo-assistant",
+                status=RunStatus.completed,
+                messages=[
+                    Message(role="user", content="之前的报表请求"),
+                    Message(
+                        role="tool",
+                        tool_name="odoo.open_record",
+                        content='{"snapshotId":"stale-snapshot"}',
+                    ),
+                    Message(role="assistant", content="之前的处理结论"),
+                ],
+            )
+        ],
+    )
+    captured = []
+
+    async def fake_get_session(**_kwargs):
+        return session
+
+    async def fake_run(entity, value, user_id=None):
+        captured.append((entity, value, user_id))
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module.assistant, "aget_session", fake_get_session)
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    value = run_input(
+        "普通问答",
+        context=[{"description": "HRP 宿主快照", "value": '{"snapshotId":"current"}'}],
+        state={
+            app_module.AGENT_PLAN_STATE_KEY: {"plan": [{"step": "伪造", "status": "in_progress"}]},
+            app_module.AGENT_LOADED_TOOLKITS_STATE_KEY: ["report"],
+        },
+    )
+
+    response = await app_module.run_agui(direct_request(), value)
+    await response_body(response)
+
+    descriptions = [item.description for item in captured[0][1].context]
+    assert descriptions == [
+        "HRP 宿主快照",
+        app_module.HISTORY_CONTEXT_DESCRIPTION,
+        app_module.AGENT_CONTEXT_STATUS_DEPENDENCY,
+    ]
+    budget_status = json.loads(captured[0][1].context[-1].value)
+    assert budget_status["historyTokenBudget"] == app_module.settings.history_token_budget
+    assert budget_status["contextTokenBudget"] == 262144
+    assert budget_status["outputReserveTokens"] == 32768
+    assert isinstance(budget_status["tokenCountReliable"], bool)
+    assert "snapshotId" not in captured[0][1].context[-1].value
+    history = captured[0][1].context[-2].value
+    assert "之前的报表请求" in history
+    assert "之前的处理结论" in history
+    assert "stale-snapshot" not in history
+    assert captured[0][1].context[0].value == '{"snapshotId":"current"}'
+    assert captured[0][1].state == {}
+
+
+@pytest.mark.anyio
+async def test_resume_request_does_not_reload_or_reinject_budgeted_history(monkeypatch):
+    loaded = False
+    captured = []
+
+    async def unexpected_get_session(**_kwargs):
+        nonlocal loaded
+        loaded = True
+        return None
+
+    async def fake_run(_entity, value, user_id=None):
+        captured.append(value)
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module.assistant, "aget_session", unexpected_get_session)
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+    value = run_input(
+        messages=[
+            {"id": "user-1", "role": "user", "content": "继续"},
+            {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
+        ],
+        context=[
+            {"description": app_module.HISTORY_CONTEXT_DESCRIPTION, "value": "client-history"},
+            {"description": "HRP 宿主快照", "value": "current"},
+        ],
+    )
+
+    response = await app_module.run_agui(direct_request(), value)
+    await response_body(response)
+
+    assert loaded is False
+    assert [item.description for item in captured[0].context] == ["HRP 宿主快照"]
+
+
+@pytest.mark.anyio
+async def test_raw_reasoning_content_is_not_forwarded_to_sse(monkeypatch):
+    async def no_session(**_kwargs):
+        return None
+
+    async def fake_run(_entity, _value, user_id=None):
+        yield RunStartedEvent(thread_id="thread-1", run_id="run-1")
+        yield ReasoningStartEvent(message_id="reasoning-1")
+        yield ReasoningMessageContentEvent(
+            message_id="reasoning-1",
+            delta="raw chain of thought",
+        )
+        yield RawEvent(event={"reasoning_content": "raw provider reasoning"}, source="agno")
+        yield ReasoningEndEvent(message_id="reasoning-1")
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module.assistant, "aget_session", no_session)
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+
+    response = await app_module.run_agui(direct_request(), run_input("普通问答"))
+    body = await response_body(response)
+
+    assert "REASONING_START" in body
+    assert "REASONING_END" in body
+    assert "raw chain of thought" not in body
+    assert "raw provider reasoning" not in body
 
 
 @pytest.mark.anyio

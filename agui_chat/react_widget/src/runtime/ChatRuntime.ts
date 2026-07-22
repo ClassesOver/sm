@@ -28,7 +28,6 @@ import {
   normalizeReferenceGroups,
   parseJson,
   statusFromResult,
-  textSummary,
   toolArgs,
   toolCallId,
   toolKey,
@@ -72,6 +71,8 @@ type RunContext = {
   upstreamError: string
   pendingHostBridgePromises: Promise<unknown>[]
   hostBridgeFollowupNeeded: boolean
+  hasToolResult: boolean
+  hasReasoning: boolean
   branch?: {
     sourceSession: LoadedSession
     sourceCapability: WorkspaceCapability
@@ -139,25 +140,22 @@ function eventToolCallName(event: Record<string, unknown>): string {
   return String(event.toolCallName || event.tool_call_name || event.name || event.tool || '')
 }
 
-function normalizeReasoningSteps(value: unknown, fallbackContent?: unknown) {
-  const source = Array.isArray(value) && value.length ? value : fallbackContent ? [fallbackContent] : []
-  return source.map((step) => {
-    if (typeof step === 'string') {
-      return {
-        title: textSummary(step, 80) || '推理过程',
-        content: step
-      }
-    }
-    const raw = step && typeof step === 'object' ? (step as Record<string, unknown>) : {}
-    const content = raw.content || raw.reasoning || raw.text || raw.action || ''
-    return {
-      title: String(raw.title || textSummary(content || raw, 80) || '推理过程'),
-      content: typeof content === 'string' ? content : textSummary(content, 240),
-      action: raw.action ? String(raw.action) : undefined,
-      result: raw.result ? String(raw.result) : undefined,
-      reasoning: raw.reasoning ? String(raw.reasoning) : undefined
-    }
-  })
+function withoutReasoningData(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutReasoningData)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !/(reasoning|thinking)/i.test(key))
+      .map(([key, item]) => [key, withoutReasoningData(item)])
+  )
+}
+
+function hasReasoningData(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasReasoningData)
+  if (!value || typeof value !== 'object') return false
+  return Object.entries(value as Record<string, unknown>).some(([key, item]) =>
+    /(reasoning|thinking)/i.test(key) || hasReasoningData(item)
+  )
 }
 
 function sessionListFromResult(result: unknown): SessionEntry[] {
@@ -1138,21 +1136,32 @@ export class ChatRuntime {
       this.executeHostBridgeTool(tool, context)
     } else if (type === 'TOOL_CALL_RESULT') {
       this.applyToolResult(event)
+      if (context) context.hasToolResult = true
     } else if (type === 'RUN_ERROR') {
       const message = String(data.message || data.content || event.message || 'AG-UI 运行失败。')
       if (context) {
         context.upstreamError = message
         context.receivedTerminalEvent = true
       }
+      if (context?.hasReasoning) this.finishReasoningStatus('分析未完成')
       this.recordRunError(message)
     } else if (type === 'RUN_FINISHED') {
       if (context) context.receivedTerminalEvent = true
       this.applyRunFinished(event, context)
-    } else if (type === 'REASONING_START' || type === 'REASONING_MESSAGE_START') {
-      this.ensureAssistant()
+    } else if (
+      type === 'REASONING_START' || type === 'REASONING_MESSAGE_START' ||
+      type === 'THINKING_START' || type === 'THINKING_TEXT_MESSAGE_START'
+    ) {
+      if (context) context.hasReasoning = true
+      this.updateReasoningStatus(context?.hasToolResult === true)
     } else if (type === 'REASONING_MESSAGE_CONTENT' || type === 'REASONING_MESSAGE_CHUNK') {
-      this.appendReasoning(eventText(event))
-    } else if (type === 'REASONING_MESSAGE_END' || type === 'REASONING_END') {
+      // 原始 reasoning 不进入客户端消息状态。
+    } else if (type === 'THINKING_TEXT_MESSAGE_CONTENT') {
+      // 原始 thinking 不进入客户端消息状态。
+    } else if (
+      type === 'REASONING_MESSAGE_END' || type === 'REASONING_END' ||
+      type === 'THINKING_TEXT_MESSAGE_END' || type === 'THINKING_END'
+    ) {
       this.ensureAssistant()
     } else if (type === 'STATE_SNAPSHOT' || type === 'STATE_CHANGED') {
       this.applyStateSnapshot(
@@ -1377,7 +1386,9 @@ export class ChatRuntime {
       receivedRunStarted: false,
       upstreamError: '',
       pendingHostBridgePromises: [],
-      hostBridgeFollowupNeeded: false
+      hostBridgeFollowupNeeded: false,
+      hasToolResult: false,
+      hasReasoning: false
     }
     this.activeRunContext = context
     this.running = true
@@ -1415,6 +1426,7 @@ export class ChatRuntime {
     if (this.activeRunContext !== context) return
     if (context.cancelled || (error as Error)?.name === 'AbortError') {
       context.cancelled = true
+      if (context.hasReasoning) this.finishReasoningStatus('分析未完成')
       this.transportState = 'cancelled'
       return
     }
@@ -1455,6 +1467,7 @@ export class ChatRuntime {
   private cancelRun(context: RunContext): void {
     if (context.cancelled) return
     context.cancelled = true
+    if (context.hasReasoning) this.finishReasoningStatus('分析未完成')
     if (!context.controller.signal.aborted) context.controller.abort()
     this.finalizeRun(context, 'cancelled')
   }
@@ -1916,6 +1929,7 @@ export class ChatRuntime {
     }
     if (context && !context.cancelled && this.activeRunContext === context) {
       context.hostBridgeFollowupNeeded = true
+      context.hasToolResult = true
     }
     if (result.ok === true && result.operation === 'odoo.export_current_view' &&
         typeof result.path === 'string' && result.path) {
@@ -1961,6 +1975,9 @@ export class ChatRuntime {
         result: { ...value, server_confirmation: true }
       })
     })
+    if (context?.hasReasoning) {
+      this.finishReasoningStatus(interrupts.length ? '等待确认操作' : '已完成分析')
+    }
     if (!context) return
     Object.values(this.toolsByKey).forEach((candidate) => {
       if (context.activeClientTools.has(toolName(candidate)) || candidate.result !== undefined ||
@@ -1979,14 +1996,21 @@ export class ChatRuntime {
     })
   }
 
-  private appendReasoning(content: string): void {
+  private updateReasoningStatus(hasToolResult: boolean): void {
     const message = this.ensureAssistant()
     message.extra_data = message.extra_data || {}
-    message.extra_data.reasoning_steps = message.extra_data.reasoning_steps || []
-    message.extra_data.reasoning_steps.push({
-      title: '推理过程',
-      content
-    })
+    message.extra_data.reasoning_steps = [{
+      title: hasToolResult ? '正在整理工具结果' : '正在分析当前请求'
+    }]
+  }
+
+  private finishReasoningStatus(title: string): void {
+    const message = [...this.messages].reverse().find((item) =>
+      item.role === 'assistant' && item.extra_data?.reasoning_steps?.length
+    )
+    if (message?.extra_data) {
+      message.extra_data.reasoning_steps = [{ title }]
+    }
   }
 
   private reportHostStateMutation(): void {
@@ -2052,6 +2076,12 @@ export class ChatRuntime {
 
   private normalizeMessage(rawMessage: ChatMessage): ChatMessage {
     const result = { ...(rawMessage || {}) } as ChatMessage
+    const hadReasoning = hasReasoningData(result)
+    Object.keys(result).forEach((key) => {
+      if (/(reasoning|thinking)/i.test(key)) {
+        delete (result as unknown as Record<string, unknown>)[key]
+      }
+    })
     result.id = result.id || uuid()
     result.role = result.role === 'agent' ? 'assistant' : result.role || 'assistant'
     if (result.content === undefined || result.content === null) {
@@ -2072,6 +2102,9 @@ export class ChatRuntime {
     if (result.streamingError && !result.streaming_error) {
       result.streaming_error = 'AG-UI 运行失败。'
     }
+    if (result.extra_data) {
+      result.extra_data = withoutReasoningData(result.extra_data) as ChatMessage['extra_data']
+    }
     if (result.references) {
       result.extra_data = {
         ...(result.extra_data || {}),
@@ -2082,6 +2115,12 @@ export class ChatRuntime {
       result.extra_data.references = normalizeReferenceGroups(result.extra_data.references)
     }
     if (result.role === 'assistant') {
+      if (hadReasoning) {
+        result.extra_data = {
+          ...result.extra_data,
+          reasoning_steps: [{ title: '已完成分析' }]
+        }
+      }
       this.mergeMessageToolCalls(result)
     }
     return result
@@ -2305,18 +2344,22 @@ export class ChatRuntime {
   }
 
   private consumeReasoningMessage(message: ChatMessage, targetMessages: ChatMessage[]): void {
-    const steps = normalizeReasoningSteps(message.extra_data?.reasoning_steps, asText(message.content))
+    const steps = [{ title: '已完成分析' }]
     const target = [...targetMessages].reverse().find((item) => item.role === 'assistant')
     if (!target) {
-      message.extra_data = {
-        ...(message.extra_data || {}),
-        reasoning_steps: steps
-      }
-      targetMessages.push(message)
+      targetMessages.push({
+        ...message,
+        role: 'assistant',
+        content: '',
+        extra_data: {
+          ...(withoutReasoningData(message.extra_data || {}) as ChatMessage['extra_data']),
+          reasoning_steps: steps
+        }
+      })
       return
     }
     target.extra_data = target.extra_data || {}
-    target.extra_data.reasoning_steps = [...(target.extra_data.reasoning_steps || []), ...steps]
+    target.extra_data.reasoning_steps = steps
   }
 
   private mergeMessageToolCalls(message: ChatMessage): void {

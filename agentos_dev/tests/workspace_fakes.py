@@ -68,10 +68,72 @@ class FakeFs:
 class FakeProcess:
     def __init__(self):
         self.calls = []
+        self.sessions = {}
+        self.input_calls = []
+        self.deleted_sessions = []
 
     def exec(self, command, cwd=None, timeout=None):
         self.calls.append({"command": command, "cwd": cwd, "timeout": timeout})
         return type("Result", (), {"result": command, "exit_code": 0})()
+
+    def create_session(self, session_id):
+        self.sessions[session_id] = type(
+            "Session", (), {"session_id": session_id, "commands": []}
+        )()
+
+    def list_sessions(self):
+        return list(self.sessions.values())
+
+    def execute_session_command(self, session_id, request, timeout=None):
+        session = self.sessions[session_id]
+        command_id = f"command-{len(session.commands) + 1}"
+        command = type(
+            "Command",
+            (),
+            {
+                "id": command_id,
+                "command": request.command,
+                "suppress_input_echo": request.suppress_input_echo,
+                "exit_code": None if request.run_async else 0,
+                "output": "started",
+            },
+        )()
+        session.commands.append(command)
+        return type(
+            "SessionResult",
+            (),
+            {
+                "cmd_id": command_id,
+                "output": "started",
+                "stdout": "started",
+                "stderr": "",
+                "exit_code": command.exit_code,
+            },
+        )()
+
+    def get_session(self, session_id):
+        return self.sessions[session_id]
+
+    def get_session_command(self, session_id, command_id):
+        return next(
+            command for command in self.sessions[session_id].commands if command.id == command_id
+        )
+
+    def get_session_command_logs(self, session_id, command_id):
+        command = self.get_session_command(session_id, command_id)
+        return type(
+            "Logs",
+            (),
+            {"output": command.output, "stdout": command.output, "stderr": ""},
+        )()
+
+    def send_session_command_input(self, session_id, command_id, data):
+        self.get_session_command(session_id, command_id)
+        self.input_calls.append({"session_id": session_id, "command_id": command_id, "data": data})
+
+    def delete_session(self, session_id):
+        self.deleted_sessions.append(session_id)
+        del self.sessions[session_id]
 
 
 class FakeSandbox:
@@ -151,6 +213,30 @@ class AsyncFakeProcess:
 
     async def exec(self, command, cwd=None, timeout=None):
         return self._process.exec(command, cwd=cwd, timeout=timeout)
+
+    async def create_session(self, session_id):
+        return self._process.create_session(session_id)
+
+    async def list_sessions(self):
+        return self._process.list_sessions()
+
+    async def execute_session_command(self, session_id, request, timeout=None):
+        return self._process.execute_session_command(session_id, request, timeout=timeout)
+
+    async def get_session(self, session_id):
+        return self._process.get_session(session_id)
+
+    async def get_session_command(self, session_id, command_id):
+        return self._process.get_session_command(session_id, command_id)
+
+    async def get_session_command_logs(self, session_id, command_id):
+        return self._process.get_session_command_logs(session_id, command_id)
+
+    async def send_session_command_input(self, session_id, command_id, data):
+        return self._process.send_session_command_input(session_id, command_id, data)
+
+    async def delete_session(self, session_id):
+        return self._process.delete_session(session_id)
 
 
 class AsyncFakeSandbox:

@@ -69,8 +69,8 @@ docker compose up -d --build
 
 ## 构建工具镜像
 
-`sandbox-tools` 在默认镜像上增加文档转 Markdown、PDF/Office/HTML、图表、Parquet、结构化数据和
-压缩处理能力，依赖清单见 `docker/sandbox-tools/requirements.in`。它保留 requests 和 HTTPX，
+`sandbox-tools` 在默认镜像上增加 ripgrep、Git、`script` PTY、文档转 Markdown、PDF/Office/HTML、
+图表、Parquet、结构化数据和压缩处理能力，依赖清单见 `docker/sandbox-tools/requirements.in`。它保留 requests 和 HTTPX，
 不增加 OCR、数据库客户端或 ORM。
 
 ```bash
@@ -104,6 +104,11 @@ docker compose --env-file docker/.env \
 ```dotenv
 DAYTONA_DEFAULT_SNAPSHOT=registry:6000/daytona/sandbox:0.5.0-tools
 ```
+
+推送新镜像后，需要在 Daytona 中重新创建并激活自定义 Snapshot
+`sandbox-tools-20260722`。Registry tag 更新不会刷新既有 Snapshot 的固定镜像引用；继续使用旧
+Snapshot 时，Base Toolkit 的搜索、Git、PTY、stat、目录树、哈希和大文件分段读取会因缺少
+`rg`、`git`、`script` 或对应 coreutils 命令而失败。
 
 ## 导入 Sandbox 镜像
 

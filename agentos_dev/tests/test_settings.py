@@ -18,6 +18,39 @@ def test_settings_defaults():
         "http://127.0.0.1:18069",
         "http://localhost:18069",
     )
+    assert current.enable_tool_result_compression is True
+    assert current.enable_session_summaries is True
+    assert current.enable_thinking is True
+    assert current.context_token_budget == 262144
+    assert current.history_token_budget == 196608
+    assert current.output_token_reserve == 32768
+
+
+def test_agent_feature_flags_can_be_disabled():
+    current = settings(
+        AGENT_ENABLE_TOOL_RESULT_COMPRESSION="false",
+        AGENT_ENABLE_SESSION_SUMMARIES="0",
+        AGENT_ENABLE_THINKING="off",
+        AGENT_HISTORY_TOKEN_BUDGET="32768",
+        AGENT_CONTEXT_TOKEN_BUDGET="131072",
+        AGENT_OUTPUT_TOKEN_RESERVE="16384",
+    )
+
+    assert current.enable_tool_result_compression is False
+    assert current.enable_session_summaries is False
+    assert current.enable_thinking is False
+    assert current.history_token_budget == 32768
+    assert current.context_token_budget == 131072
+    assert current.output_token_reserve == 16384
+
+
+def test_context_budget_rejects_invalid_reserve():
+    with pytest.raises(ValueError, match="AGENT_OUTPUT_TOKEN_RESERVE"):
+        settings(
+            AGENT_CONTEXT_TOKEN_BUDGET="1024",
+            AGENT_HISTORY_TOKEN_BUDGET="512",
+            AGENT_OUTPUT_TOKEN_RESERVE="1024",
+        )
 
 
 def test_environment_precedes_file_and_file_populates_missing_values(tmp_path):

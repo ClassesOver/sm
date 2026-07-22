@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import shlex
 import sys
@@ -7,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from agentos_dev import report_runtime
 from agentos_dev.report_runtime import ReportFailure, ReportRuntime
 
 PNG = base64.b64decode(
@@ -16,8 +18,16 @@ PNG = base64.b64decode(
 
 def test_sandbox_tools_提供智能报表所需命令和分析库():
     dockerfile = Path("docker/sandbox-tools/Dockerfile").read_text(encoding="utf-8")
+    matplotlibrc = Path("docker/sandbox-tools/matplotlibrc").read_text(encoding="utf-8")
 
     assert "        bash \\\n" in dockerfile
+    assert "        file \\\n" in dockerfile
+    assert "        ripgrep \\\n" in dockerfile
+    assert "command -v" in dockerfile and " file " in dockerfile and " rg " in dockerfile
+    assert " pdftoppm " in dockerfile
+    assert "COPY docker/sandbox-tools/matplotlibrc /tmp/matplotlibrc" in dockerfile
+    assert "font.sans-serif: Noto Sans CJK JP, DejaVu Sans" in matplotlibrc
+    assert "axes.unicode_minus: False" in matplotlibrc
     for package in ("matplotlib", "pandas", "polars", "scipy", "seaborn", "sklearn"):
         assert package in dockerfile
 
@@ -157,6 +167,173 @@ def test_分析能力返回沙箱实际库版本(runtime):
     assert capabilities["python"]
     assert capabilities["packages"]["pandas"]
     assert "sqlite3" in capabilities["sql"]
+    assert "pdftoppm" in capabilities["commands"]
+
+
+def test_matplotlib_中文字体配置不产生缺字警告():
+    matplotlib = pytest.importorskip("matplotlib")
+    import warnings
+
+    config = Path("docker/sandbox-tools/matplotlibrc")
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        with matplotlib.rc_context(fname=str(config)):
+            import matplotlib.pyplot as pyplot
+
+            figure, axis = pyplot.subplots()
+            axis.set_title("医院收入趋势")
+            axis.set_xlabel("月份")
+            axis.plot([1, 2], [10, 20])
+            figure.canvas.draw()
+            pyplot.close(figure)
+
+    assert not any("Glyph" in str(item.message) for item in captured)
+
+
+def test_分析命令自动使用隔离的中文绘图字体(runtime):
+    (runtime.workspace / "data.csv").write_text("value\n1\n", encoding="utf-8")
+    job_id = runtime.prepare_dataset(["data.csv"])["jobId"]
+    python = shlex.quote(sys.executable)
+
+    result = runtime.analyze_dataset(
+        job_id,
+        f"{python} -c 'import matplotlib; print(matplotlib.rcParams[\"font.sans-serif\"][0])'",
+    )
+
+    assert result["ok"] is True
+    assert result["output"].strip() == "Noto Sans CJK JP"
+
+
+def test_损坏的_matplotlib_配置返回稳定错误(runtime):
+    (runtime.workspace / "data.csv").write_text("value\n1\n", encoding="utf-8")
+    job_id = runtime.prepare_dataset(["data.csv"])["jobId"]
+    config = runtime._job_path(job_id) / "matplotlib"
+    config.mkdir()
+    (config / "matplotlibrc").write_bytes(b"\xff")
+
+    with pytest.raises(ReportFailure, match="绘图字体配置文件无效"):
+        runtime._matplotlib_config_dir(job_id)
+
+
+def test_确定性剖析已登记_csv并返回受限统计(runtime):
+    (runtime.workspace / "income.csv").write_text(
+        "科室,收入,日期\n外科,100.5,2026-01-01\n内科,,2026-01-02\n外科,300,2026-01-03\n",
+        encoding="utf-8",
+    )
+    job_id = runtime.prepare_dataset(["income.csv"])["jobId"]
+
+    result = runtime.profile_dataset(job_id)
+
+    assert result["status"] == "profiled"
+    assert result["jobId"] == job_id
+    assert result["datasetCount"] == 1
+    profile = result["datasets"][0]
+    assert profile["path"] == "income.csv"
+    assert profile["format"] == "csv"
+    assert profile["rowCount"] == 3
+    assert profile["columnCount"] == 3
+    assert profile["sampled"] is False
+    columns = {column["name"]: column for column in profile["columns"]}
+    assert columns["收入"]["nullCount"] == 1
+    assert columns["收入"]["numeric"]["min"] == 100.5
+    assert columns["收入"]["numeric"]["max"] == 300.0
+    assert columns["科室"]["topValues"][0] == {"value": "外科", "count": 2}
+    assert len(json.dumps(result, ensure_ascii=False).encode("utf-8")) < 64 * 1024
+
+
+def test_parquet_剖析只读取受限批次(runtime, monkeypatch):
+    arrow = pytest.importorskip("pyarrow")
+    parquet = pytest.importorskip("pyarrow.parquet")
+    source = runtime.workspace / "income.parquet"
+    parquet.write_table(
+        arrow.table({"收入": range(report_runtime.MAX_PROFILE_ROWS + 10)}),
+        source,
+        row_group_size=25_000,
+    )
+    original_parquet_file = parquet.ParquetFile
+
+    class BoundedParquetFile:
+        def __init__(self, path):
+            self._source = original_parquet_file(path)
+            self.metadata = self._source.metadata
+            self.schema_arrow = self._source.schema_arrow
+
+        def iter_batches(self, **kwargs):
+            return self._source.iter_batches(**kwargs)
+
+        def read(self, *args, **kwargs):
+            raise AssertionError("剖析不应读取完整 Parquet")
+
+    monkeypatch.setattr(parquet, "ParquetFile", BoundedParquetFile)
+    job_id = runtime.prepare_dataset(["income.parquet"])["jobId"]
+
+    profile = runtime.profile_dataset(job_id)["datasets"][0]
+
+    assert profile["rowCount"] == report_runtime.MAX_PROFILE_ROWS + 10
+    assert profile["sampleRowCount"] == report_runtime.MAX_PROFILE_ROWS
+    assert profile["sampled"] is True
+
+
+def test_普通_json_超过剖析边界时返回稳定错误(runtime, monkeypatch):
+    (runtime.workspace / "income.json").write_text('[{"收入": 1}]', encoding="utf-8")
+    monkeypatch.setattr(report_runtime, "MAX_PROFILE_JSON_BYTES", 4)
+    job_id = runtime.prepare_dataset(["income.json"])["jobId"]
+
+    with pytest.raises(ReportFailure, match="普通 JSON 文件超过"):
+        runtime.profile_dataset(job_id)
+
+
+def test_损坏的_excel_返回稳定剖析错误(runtime):
+    (runtime.workspace / "broken.xlsx").write_bytes(b"not an excel workbook")
+    job_id = runtime.prepare_dataset(["broken.xlsx"])["jobId"]
+
+    with pytest.raises(ReportFailure, match="无法剖析数据集 broken.xlsx"):
+        runtime.profile_dataset(job_id)
+
+
+def test_runtime_未预期异常不暴露_traceback(monkeypatch, capsys):
+    def fail():
+        raise RuntimeError("private internal path")
+
+    monkeypatch.setattr(ReportRuntime, "analysis_capabilities", staticmethod(fail))
+
+    assert report_runtime.main(["capabilities", "{}"]) == 1
+    output = capsys.readouterr().out
+    assert "报表运行时执行失败" in output
+    assert "private internal path" not in output
+    assert "Traceback" not in output
+
+
+def test_剖析结果按返回边界减少末尾列(runtime, monkeypatch):
+    long_value = "甲" * 200
+    columns = [f"字段{index}" for index in range(8)]
+    (runtime.workspace / "wide.csv").write_text(
+        ",".join(columns) + "\n" + ",".join(f"{long_value}{index}" for index in range(8)) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report_runtime, "MAX_RESULT_BYTES", 2_000)
+    job_id = runtime.prepare_dataset(["wide.csv"])["jobId"]
+
+    result = runtime.profile_dataset(job_id)
+
+    profile = result["datasets"][0]
+    assert len(profile["columns"]) < len(columns)
+    assert any("已减少末尾列" in warning for warning in profile["warnings"])
+    assert len(json.dumps(result, ensure_ascii=False).encode("utf-8")) + 1 <= 2_000
+
+
+def test_剖析不接受任务外路径且源文件变化后失效(runtime):
+    source = runtime.workspace / "income.csv"
+    source.write_text("收入\n1\n", encoding="utf-8")
+    (runtime.workspace / "other.csv").write_text("收入\n2\n", encoding="utf-8")
+    job_id = runtime.prepare_dataset(["income.csv"])["jobId"]
+
+    with pytest.raises(TypeError):
+        runtime.profile_dataset(job_id, "other.csv")
+
+    source.write_text("收入\n3\n", encoding="utf-8")
+    with pytest.raises(ReportFailure, match="源文件发生变化"):
+        runtime.profile_dataset(job_id)
 
 
 def test_没有成功分析不能渲染(runtime):
@@ -204,6 +381,62 @@ def test_markdown_正文表格和多图完整渲染为_pdf(runtime):
     assert "医院人力资源报告" in text
     assert "外科" in text
     assert sum(len(page.images) for page in reader.pages) >= 2
+
+    status = runtime.job_status(job_id)
+    assert status["status"] == "rendered"
+    assert status["sources"][0]["sha256"]
+    assert status["artifacts"]["markdown"]["path"] == rendered["markdownPath"]
+    assert status["artifacts"]["pdf"]["path"] == rendered["pdfPath"]
+    assert status["artifacts"]["pdf"]["sha256"]
+
+    validation = runtime.validate_pdf(job_id, rendered["pdfPath"])
+    assert validation["ok"] is True
+    assert validation["status"] == "validated"
+    assert validation["pageCount"] == rendered["pageCount"]
+    assert validation["markdownImageCount"] == 2
+    assert validation["renderedImageCount"] >= 2
+    assert all(page["nonWhiteRatio"] > 0 for page in validation["pages"])
+    assert runtime.job_status(job_id)["validation"]["ok"] is True
+
+    pdf.write_bytes(pdf.read_bytes() + b"\n% changed")
+    changed = runtime.job_status(job_id)
+    assert changed["status"] == "artifact_changed"
+    assert changed["artifacts"]["pdf"]["changed"] is True
+
+
+def test_pdf_视觉验收识别空白页且不把失败当作完成(runtime, monkeypatch):
+    pypdf = pytest.importorskip("pypdf")
+    from weasyprint import HTML
+
+    def write_blank_pdf(_document, target):
+        writer = pypdf.PdfWriter()
+        writer.add_blank_page(width=595, height=842)
+        with open(target, "wb") as stream:
+            writer.write(stream)
+
+    monkeypatch.setattr(HTML, "write_pdf", write_blank_pdf)
+    (runtime.workspace / "data.csv").write_text("value\n1\n", encoding="utf-8")
+    (runtime.workspace / "report.md").write_text("# 报表", encoding="utf-8")
+    job_id = runtime.prepare_dataset(["data.csv"])["jobId"]
+    runtime.analyze_dataset(job_id, "printf analyzed")
+    rendered = runtime.render_markdown(job_id, "report.md", "report.pdf")
+
+    validation = runtime.validate_pdf(job_id, rendered["pdfPath"])
+
+    assert validation["ok"] is False
+    assert validation["status"] == "validation_failed"
+    assert validation["blankPages"] == [1]
+    assert validation["pages"][0]["nonWhiteRatio"] == 0
+    assert runtime.job_status(job_id)["status"] == "validation_failed"
+
+
+def test_pdf_视觉验收只接受当前任务记录的产物(runtime):
+    (runtime.workspace / "data.csv").write_text("value\n1\n", encoding="utf-8")
+    (runtime.workspace / "other.pdf").write_bytes(b"not a pdf")
+    job_id = runtime.prepare_dataset(["data.csv"])["jobId"]
+
+    with pytest.raises(ReportFailure, match="未登记"):
+        runtime.validate_pdf(job_id, "other.pdf")
 
 
 @pytest.mark.parametrize(

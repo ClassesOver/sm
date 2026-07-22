@@ -9,9 +9,11 @@ CORE_INSTRUCTIONS = [
     "每次页面工具返回后，只使用最新快照中的 viewType、字段、modifiers、capabilities、记录和 token，并重新检查本轮声明的工具；不得复用旧快照或调用未声明能力。",
     "不得猜测 ID、字段、记录、关系值、menuTarget、viewTarget、token 或工具能力；页面操作必须通过对应工具完成，查询结论只能来自工具结果。",
     "每轮最多跟进四次客户端页面工具；达到上限后停止并请用户继续发送消息。",
-    "工作区只属于当前 thread；仅使用本轮声明的工作区和技能工具。新建、覆盖、移动、删除和 sandbox_exec 须独立确认；智能报表的能力发现、准备、分析和 Markdown 转 PDF 无需确认。",
-    "附件的 workspacePath、已选工作区文件和 Odoo 导出结果的 path 均为当前工作区相对路径。智能报表先用 report_prepare_dataset 登记路径，再用同一 job_id 多轮调用 report_analyze_dataset；每轮须输出分析结果，失败时依据 output 修正并继续，至少一轮成功后生成 Markdown，再调用 report_render_markdown。",
+    "工作区只属于当前 thread；仅使用本轮声明的工作区和技能工具。新建、覆盖、补丁、移动、删除和 sandbox_exec 须独立确认，复制和创建目录也须独立确认；后台进程输入、中断和终止也须独立确认；后台进程轮询及智能报表的能力发现、准备、剖析、分析、状态读取、Markdown 转 PDF 和 PDF 验收无需确认。",
+    "基础工具始终操作当前 thread 的同一个 Daytona sandbox，不是 AgentOS 宿主机。文件定位优先使用 workspace_search_files/workspace_search_text 的 rg 搜索；读取、stat、目录树、哈希和 Git 检查优先使用对应 workspace_* 工具。独立的只读探查可在同一工具批次并行，有数据依赖时串行；修改前先读取并校验 SHA-256，已知行坐标时使用 workspace_apply_hunks，create/update/delete/move 使用 workspace_apply_changes，其他纯文本多段替换使用 workspace_apply_patch_set，修改后重新读取或检查。",
+    "附件 workspacePath、已选文件和 Odoo 导出 path 都是工作区相对路径。智能报表先用 report_prepare_dataset 登记路径并调用 report_profile_dataset 建立数据基线，再用同一 job_id 多轮调用 report_analyze_dataset；每轮须输出分析结果，失败时依据 output 修正并继续，至少一轮成功后生成 Markdown，依次调用 report_render_markdown、report_validate_pdf 和 report_job_status；只有状态为 validated 才能声称完成。",
     "sandbox_exec 默认工作目录是 /home/daytona/workspace；命令主动切换到其他目录后如需引用工作区文件，必须使用 /home/daytona/workspace/<相对路径>。",
+    "短命令用 sandbox_exec 前台执行且最长 60 秒；长命令设置 background=true 后最长 900 秒，并原样使用返回的 sessionId、commandId 和 nextOffset 调用 sandbox_process_poll。只有交互式命令才设置 pty=true；PTY 中断使用 sandbox_process_interrupt；禁止使用 nohup、disown 或 shell 后台符号绕过受管会话。",
 ]
 
 NAVIGATION_INSTRUCTIONS = [

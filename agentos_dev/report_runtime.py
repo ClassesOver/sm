@@ -29,8 +29,20 @@ MAX_COMMAND_BYTES = 32 * 1024
 MAX_ANALYSIS_OUTPUT_BYTES = 8 * 1024
 MAX_DATASET_PATHS = 20
 MAX_ANALYSIS_TIMEOUT = 60
+MAX_PROFILE_ROWS = 100_000
+MAX_PROFILE_COLUMNS = 50
+MAX_PROFILE_TOTAL_COLUMNS = 100
+MAX_PROFILE_TOP_VALUES = 5
+MAX_PROFILE_JSON_BYTES = 25 * 1024 * 1024
 IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+PROFILE_SUFFIXES = {".csv", ".json", ".jsonl", ".parquet", ".tsv", ".xls", ".xlsx"}
 FAILURE_TTL_SECONDS = 24 * 60 * 60
+MATPLOTLIBRC = """\
+backend: Agg
+font.family: sans-serif
+font.sans-serif: Noto Sans CJK JP, DejaVu Sans
+axes.unicode_minus: False
+"""
 
 
 class ReportFailure(ValueError):
@@ -88,6 +100,20 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _json_scalar(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "item"):
+        value = value.item()
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value[:200] if isinstance(value, str) else value
+    return str(value)[:200]
 
 
 def _enable_child_subreaper() -> None:
@@ -149,13 +175,22 @@ def _terminate_descendants() -> None:
                 pass
 
 
-def _execute_command(command: str, timeout: int) -> dict[str, Any]:
+def _execute_command(
+    command: str,
+    timeout: int,
+    matplotlib_config_dir: str | None = None,
+) -> dict[str, Any]:
     _enable_child_subreaper()
+    environment = os.environ.copy()
+    if matplotlib_config_dir is not None:
+        environment["MPLCONFIGDIR"] = matplotlib_config_dir
+        environment["MPLBACKEND"] = "Agg"
     process = subprocess.Popen(
         ["/bin/bash", "--noprofile", "--norc", "-c", command],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         start_new_session=True,
+        env=environment,
     )
     try:
         output_bytes, _stderr = process.communicate(timeout=timeout)
@@ -178,8 +213,20 @@ def _execute_command(command: str, timeout: int) -> dict[str, Any]:
     }
 
 
-def _run_supervised_command(command: str, cwd: Path, timeout: int) -> tuple[bytes, int, bool]:
-    payload = json.dumps({"command": command, "timeout": timeout}, ensure_ascii=False)
+def _run_supervised_command(
+    command: str,
+    cwd: Path,
+    timeout: int,
+    matplotlib_config_dir: Path,
+) -> tuple[bytes, int, bool]:
+    payload = json.dumps(
+        {
+            "command": command,
+            "timeout": timeout,
+            "matplotlib_config_dir": str(matplotlib_config_dir),
+        },
+        ensure_ascii=False,
+    )
     supervisor = subprocess.Popen(
         [sys.executable, str(Path(__file__).resolve()), "_execute", payload],
         cwd=cwd,
@@ -269,6 +316,23 @@ class ReportRuntime:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def _matplotlib_config_dir(self, job_id: str) -> Path:
+        try:
+            config = self._job_path(job_id) / "matplotlib"
+            if config.is_symlink() or (config.exists() and not config.is_dir()):
+                raise ReportFailure("绘图字体配置目录无效")
+            config.mkdir(mode=0o700, exist_ok=True)
+            path = config / "matplotlibrc"
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                raise ReportFailure("绘图字体配置文件无效")
+            if not path.is_file() or path.read_text(encoding="utf-8") != MATPLOTLIBRC:
+                path.write_text(MATPLOTLIBRC, encoding="utf-8")
+            return config
+        except ReportFailure:
+            raise
+        except (OSError, UnicodeError) as error:
+            raise ReportFailure("绘图字体配置文件无效") from error
+
     def _validate_datasets(self, state: dict[str, Any]) -> None:
         hashes = state.get("hashes")
         if not isinstance(hashes, dict):
@@ -279,6 +343,29 @@ class ReportRuntime:
             _reject_symlinks(self.workspace, path)
             if not path.is_file() or _sha256(path) != hashes.get(value):
                 raise ReportFailure("源文件发生变化，分析任务已失效")
+
+    def _artifact(self, path: Path) -> dict[str, Any]:
+        _reject_symlinks(self.workspace, path)
+        if not path.is_file():
+            raise ReportFailure("报表产物不存在或不是普通文件")
+        return {
+            "path": str(path.relative_to(self.workspace)),
+            "size": path.stat().st_size,
+            "sha256": _sha256(path),
+        }
+
+    @staticmethod
+    def _job_status_value(state: dict[str, Any]) -> str:
+        validation = state.get("validation")
+        if isinstance(validation, dict):
+            return "validated" if validation.get("ok") is True else "validation_failed"
+        if isinstance(state.get("render"), dict):
+            return "rendered"
+        if state.get("successfulRoundCount", 0) > 0:
+            return "analyzed"
+        if state.get("roundCount", 0) > 0:
+            return "analysis_failed"
+        return "prepared"
 
     def prepare_dataset(self, paths: list[str]) -> dict[str, Any]:
         if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_DATASET_PATHS:
@@ -340,7 +427,15 @@ class ReportRuntime:
                 continue
         commands = [
             name
-            for name in ("python", "pandoc", "libreoffice", "pdfinfo", "pdftotext", "qpdf")
+            for name in (
+                "python",
+                "pandoc",
+                "libreoffice",
+                "pdfinfo",
+                "pdftoppm",
+                "pdftotext",
+                "qpdf",
+            )
             if shutil.which(name)
         ]
         return {
@@ -349,6 +444,226 @@ class ReportRuntime:
             "commands": commands,
             "sql": ["sqlite3"],
         }
+
+    @staticmethod
+    def _read_profile_frame(path: Path):
+        import pandas as pd
+
+        suffix = path.suffix.lower()
+        if suffix not in PROFILE_SUFFIXES:
+            raise ReportFailure("确定性剖析仅支持 CSV、TSV、Excel、JSON、JSONL 和 Parquet")
+        sampled = False
+        if suffix in {".csv", ".tsv"}:
+            chunks = pd.read_csv(
+                path,
+                sep="\t" if suffix == ".tsv" else ",",
+                chunksize=MAX_PROFILE_ROWS,
+                low_memory=False,
+            )
+            try:
+                frame = next(chunks)
+            except StopIteration:
+                frame = pd.DataFrame()
+            row_count = len(frame)
+            for chunk in chunks:
+                row_count += len(chunk)
+                sampled = True
+        elif suffix == ".jsonl":
+            chunks = pd.read_json(path, lines=True, chunksize=MAX_PROFILE_ROWS)
+            try:
+                frame = next(chunks)
+            except StopIteration:
+                frame = pd.DataFrame()
+            row_count = len(frame)
+            for chunk in chunks:
+                row_count += len(chunk)
+                sampled = True
+        elif suffix == ".parquet":
+            import pyarrow.parquet as parquet
+
+            source = parquet.ParquetFile(path)
+            row_count = source.metadata.num_rows
+            batch = next(source.iter_batches(batch_size=MAX_PROFILE_ROWS), None)
+            frame = (
+                batch.to_pandas()
+                if batch is not None
+                else pd.DataFrame(columns=source.schema_arrow.names)
+            )
+            sampled = row_count > len(frame)
+        elif suffix in {".xls", ".xlsx"}:
+            frame = pd.read_excel(path, nrows=MAX_PROFILE_ROWS)
+            if suffix == ".xlsx":
+                from openpyxl import load_workbook
+
+                workbook = load_workbook(path, read_only=True, data_only=True)
+                try:
+                    row_count = max(0, int(workbook.active.max_row or 0) - 1)
+                finally:
+                    workbook.close()
+            else:
+                import xlrd
+
+                workbook = xlrd.open_workbook(path, on_demand=True)
+                try:
+                    row_count = max(0, int(workbook.sheet_by_index(0).nrows) - 1)
+                finally:
+                    workbook.release_resources()
+            row_count = max(row_count, len(frame))
+            sampled = row_count > len(frame)
+        else:
+            if path.stat().st_size > MAX_PROFILE_JSON_BYTES:
+                raise ReportFailure("普通 JSON 文件超过 25 MiB，请改用 JSONL、Parquet 或分析命令")
+            frame = pd.read_json(path)
+            row_count = len(frame)
+            if row_count > MAX_PROFILE_ROWS:
+                frame = frame.head(MAX_PROFILE_ROWS)
+                sampled = True
+        return frame, int(row_count), sampled
+
+    @staticmethod
+    def _profile_column(series: Any, name: Any, *, sampled: bool) -> dict[str, Any]:
+        import pandas as pd
+
+        non_null = series.dropna()
+        result: dict[str, Any] = {
+            "name": str(name)[:200],
+            "dtype": str(series.dtype),
+            "nullCount": int(series.isna().sum()),
+            "nullRatio": round(float(series.isna().mean()), 6) if len(series) else 0.0,
+            "uniqueCount": int(non_null.nunique(dropna=True)),
+            "statisticsScope": "sample" if sampled else "full",
+        }
+        if pd.api.types.is_numeric_dtype(series.dtype) and not pd.api.types.is_bool_dtype(
+            series.dtype
+        ):
+            numeric = pd.to_numeric(non_null, errors="coerce").dropna()
+            if len(numeric):
+                quantiles = numeric.quantile([0.25, 0.5, 0.75])
+                result["numeric"] = {
+                    "min": _json_scalar(numeric.min()),
+                    "max": _json_scalar(numeric.max()),
+                    "mean": _json_scalar(round(float(numeric.mean()), 6)),
+                    "median": _json_scalar(quantiles.loc[0.5]),
+                    "p25": _json_scalar(quantiles.loc[0.25]),
+                    "p75": _json_scalar(quantiles.loc[0.75]),
+                }
+        elif pd.api.types.is_datetime64_any_dtype(series.dtype):
+            if len(non_null):
+                result["datetime"] = {
+                    "min": _json_scalar(non_null.min()),
+                    "max": _json_scalar(non_null.max()),
+                }
+        else:
+            counts = non_null.astype(str).value_counts(dropna=True).head(MAX_PROFILE_TOP_VALUES)
+            result["topValues"] = [
+                {"value": str(value)[:200], "count": int(count)} for value, count in counts.items()
+            ]
+        return result
+
+    def profile_dataset(self, job_id: str) -> dict[str, Any]:
+        with self._locked_state(job_id) as state:
+            self._validate_datasets(state)
+            column_limit = max(
+                1,
+                min(MAX_PROFILE_COLUMNS, MAX_PROFILE_TOTAL_COLUMNS // len(state["paths"])),
+            )
+            datasets = []
+            for value in state["paths"]:
+                relative = _relative_path(value)
+                path = self.workspace.joinpath(*relative.parts)
+                try:
+                    frame, row_count, sampled = self._read_profile_frame(path)
+                except ReportFailure:
+                    raise
+                except Exception as error:
+                    raise ReportFailure(
+                        f"无法剖析数据集 {relative}，请检查文件格式和沙箱分析依赖"
+                    ) from error
+                all_columns = list(frame.columns)
+                selected_columns = all_columns[:column_limit]
+                warnings = []
+                if len(all_columns) > len(selected_columns):
+                    warnings.append(f"列数超过返回边界，仅剖析前 {len(selected_columns)} 列")
+                if sampled:
+                    warnings.append(f"统计基于前 {len(frame)} 行确定性样本，rowCount 为完整行数")
+                datasets.append(
+                    {
+                        "path": str(relative),
+                        "format": path.suffix.lower().lstrip("."),
+                        "size": path.stat().st_size,
+                        "sha256": state["hashes"][value],
+                        "rowCount": row_count,
+                        "sampleRowCount": len(frame),
+                        "columnCount": len(all_columns),
+                        "sampled": sampled,
+                        "columns": [
+                            self._profile_column(frame[name], name, sampled=sampled)
+                            for name in selected_columns
+                        ],
+                        "warnings": warnings,
+                    }
+                )
+            result = {
+                "status": "profiled",
+                "jobId": state["jobId"],
+                "datasetCount": len(datasets),
+                "datasets": datasets,
+            }
+            size_warning = "剖析结果超过返回边界，已减少末尾列"
+            while (
+                len(json.dumps(result, ensure_ascii=False).encode("utf-8")) + 1 > MAX_RESULT_BYTES
+            ):
+                candidates = [dataset for dataset in datasets if dataset["columns"]]
+                if not candidates:
+                    raise ReportFailure("数据集元信息超过返回边界，请缩短文件路径后重试")
+                dataset = max(candidates, key=lambda item: len(item["columns"]))
+                dataset["columns"].pop()
+                if size_warning not in dataset["warnings"]:
+                    dataset["warnings"].append(size_warning)
+            return result
+
+    def job_status(self, job_id: str) -> dict[str, Any]:
+        with self._locked_state(job_id) as state:
+            self._validate_datasets(state)
+            sources = [
+                self._artifact(self.workspace.joinpath(*_relative_path(value).parts))
+                for value in state["paths"]
+            ]
+            result: dict[str, Any] = {
+                "jobId": state["jobId"],
+                "status": self._job_status_value(state),
+                "roundCount": state["roundCount"],
+                "successfulRoundCount": state["successfulRoundCount"],
+                "sources": sources,
+            }
+            render = state.get("render")
+            if isinstance(render, dict):
+
+                def current_artifact(recorded: dict[str, Any]) -> dict[str, Any]:
+                    current = self._artifact(
+                        self.workspace.joinpath(*_relative_path(recorded["path"]).parts)
+                    )
+                    current["changed"] = current["sha256"] != recorded["sha256"]
+                    return current
+
+                markdown_artifact = current_artifact(render["markdown"])
+                pdf_artifact = current_artifact(render["pdf"])
+                image_artifacts = [current_artifact(item) for item in render.get("images", [])]
+                artifacts: dict[str, Any] = {
+                    "markdown": markdown_artifact,
+                    "pdf": pdf_artifact,
+                    "images": image_artifacts,
+                }
+                result["artifacts"] = artifacts
+                if (
+                    markdown_artifact["changed"]
+                    or pdf_artifact["changed"]
+                    or any(item["changed"] for item in image_artifacts)
+                ):
+                    result["status"] = "artifact_changed"
+            if isinstance(state.get("validation"), dict):
+                result["validation"] = state["validation"]
+            return result
 
     def analyze_dataset(
         self,
@@ -377,7 +692,10 @@ class ReportRuntime:
         with self._locked_state(job_id) as state:
             self._validate_datasets(state)
             output_bytes, exit_code, truncated = _run_supervised_command(
-                command, working_directory, timeout
+                command,
+                working_directory,
+                timeout,
+                self._matplotlib_config_dir(job_id),
             )
             self._validate_datasets(state)
             output = output_bytes.decode("utf-8", errors="replace")
@@ -458,6 +776,8 @@ class ReportRuntime:
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
             tokens = parser.parse(markdown)
             allowed_images = self._images(source, tokens)
+            source_artifact = self._artifact(source)
+            image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
             body = parser.renderer.render(tokens, parser.options, {})
             output = _output_path(self.workspace, output_path)
             file_fetcher = URLFetcher(allowed_protocols={"file"}, fail_on_errors=True)
@@ -509,6 +829,22 @@ class ReportRuntime:
                     raise ReportFailure("PDF 输出文件已经存在") from error
             finally:
                 temporary.unlink(missing_ok=True)
+            if self._artifact(source)["sha256"] != source_artifact["sha256"] or any(
+                self._artifact(path)["sha256"] != artifact["sha256"]
+                for path, artifact in zip(sorted(allowed_images), image_artifacts, strict=True)
+            ):
+                output.unlink(missing_ok=True)
+                raise ReportFailure("Markdown 或图片在渲染期间发生变化，请重新生成报表")
+            render = {
+                "markdown": source_artifact,
+                "pdf": self._artifact(output),
+                "images": image_artifacts,
+                "pageCount": page_count,
+                "imageCount": len(allowed_images),
+            }
+            state["render"] = render
+            state.pop("validation", None)
+            self._save(state)
             return {
                 "status": "rendered",
                 "jobId": state["jobId"],
@@ -521,6 +857,107 @@ class ReportRuntime:
                 "size": output.stat().st_size,
             }
 
+    def validate_pdf(self, job_id: str, pdf_path: str) -> dict[str, Any]:
+        try:
+            import pypdf
+            from PIL import Image
+        except ImportError as error:
+            raise ReportFailure("PDF 视觉验收依赖不可用") from error
+        if not shutil.which("pdftoppm"):
+            raise ReportFailure("PDF 视觉验收命令不可用")
+
+        with self._locked_state(job_id) as state:
+            self._validate_datasets(state)
+            render = state.get("render")
+            if not isinstance(render, dict) or render.get("pdf", {}).get("path") != pdf_path:
+                raise ReportFailure("PDF 未登记为当前分析任务的渲染产物")
+            supporting_artifacts = [render["markdown"], *render.get("images", [])]
+            for artifact in supporting_artifacts:
+                supporting = self.workspace.joinpath(*_relative_path(artifact["path"]).parts)
+                if self._artifact(supporting)["sha256"] != artifact["sha256"]:
+                    raise ReportFailure("Markdown 或图片产物发生变化，请重新渲染后验收")
+            relative = _relative_path(pdf_path, ".pdf")
+            path = self.workspace.joinpath(*relative.parts)
+            current = self._artifact(path)
+            if current["sha256"] != render["pdf"]["sha256"]:
+                raise ReportFailure("PDF 产物发生变化，请重新渲染后验收")
+            pages = []
+            blank_pages = []
+            rendered_image_count = 0
+            with tempfile.TemporaryDirectory(
+                prefix="pdf-visual-", dir=self._job_path(job_id)
+            ) as temp:
+                prefix = Path(temp) / "page"
+                try:
+                    process = subprocess.run(
+                        [
+                            "pdftoppm",
+                            "-gray",
+                            "-r",
+                            "72",
+                            "-png",
+                            str(path),
+                            str(prefix),
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=60,
+                        check=False,
+                    )
+                    reader = pypdf.PdfReader(str(path))
+                except (OSError, subprocess.TimeoutExpired, pypdf.errors.PdfReadError) as error:
+                    raise ReportFailure("PDF 视觉验收无法打开产物") from error
+                rendered_pages = sorted(
+                    Path(temp).glob("page-*.png"),
+                    key=lambda item: int(item.stem.rsplit("-", 1)[-1]),
+                )
+                if process.returncode != 0 or len(rendered_pages) != len(reader.pages):
+                    raise ReportFailure("PDF 视觉验收栅格化失败")
+                for index, (page, rendered_page) in enumerate(
+                    zip(reader.pages, rendered_pages, strict=True), start=1
+                ):
+                    with Image.open(rendered_page) as image:
+                        grayscale = image.convert("L")
+                        samples = grayscale.tobytes()
+                        width, height = grayscale.size
+                    non_white = sum(value < 250 for value in samples)
+                    ratio = round(non_white / len(samples), 6) if samples else 0.0
+                    text_char_count = len("".join((page.extract_text() or "").split()))
+                    image_count = len(page.images)
+                    rendered_image_count += image_count
+                    blank = ratio < 0.0005 and text_char_count == 0 and image_count == 0
+                    if blank:
+                        blank_pages.append(index)
+                    pages.append(
+                        {
+                            "page": index,
+                            "width": width,
+                            "height": height,
+                            "nonWhiteRatio": ratio,
+                            "textCharCount": text_char_count,
+                            "imageCount": image_count,
+                            "blank": blank,
+                        }
+                    )
+            markdown_image_count = int(render.get("imageCount") or 0)
+            missing_images = max(0, markdown_image_count - rendered_image_count)
+            ok = bool(pages) and not blank_pages and missing_images == 0
+            validation = {
+                "ok": ok,
+                "status": "validated" if ok else "validation_failed",
+                "pdfPath": pdf_path,
+                "pdfSha256": current["sha256"],
+                "pageCount": len(pages),
+                "markdownImageCount": markdown_image_count,
+                "renderedImageCount": rendered_image_count,
+                "missingImageCount": missing_images,
+                "blankPages": blank_pages,
+                "pages": pages,
+            }
+            state["validation"] = validation
+            self._save(state)
+            return validation
+
 
 def main(arguments: list[str] | None = None) -> int:
     values = arguments if arguments is not None else sys.argv[1:]
@@ -530,13 +967,21 @@ def main(arguments: list[str] | None = None) -> int:
         action, payload_text = values
         payload = json.loads(payload_text)
         if action == "_execute":
-            result = _execute_command(payload["command"], payload["timeout"])
+            result = _execute_command(
+                payload["command"],
+                payload["timeout"],
+                payload.get("matplotlib_config_dir"),
+            )
         else:
             runtime = ReportRuntime(Path.cwd())
             if action == "capabilities":
                 result = runtime.analysis_capabilities()
             elif action == "prepare":
                 result = runtime.prepare_dataset(payload["paths"])
+            elif action == "profile":
+                result = runtime.profile_dataset(payload["job_id"])
+            elif action == "status":
+                result = runtime.job_status(payload["job_id"])
             elif action == "analyze":
                 result = runtime.analyze_dataset(
                     payload["job_id"],
@@ -548,15 +993,20 @@ def main(arguments: list[str] | None = None) -> int:
                 result = runtime.render_markdown(
                     payload["job_id"], payload["markdown_path"], payload["output_path"]
                 )
+            elif action == "validate_pdf":
+                result = runtime.validate_pdf(payload["job_id"], payload["pdf_path"])
             else:
                 raise ReportFailure("未知报表操作")
         encoded = json.dumps(result, ensure_ascii=False)
-        if len(encoded.encode()) > MAX_RESULT_BYTES:
+        if len(encoded.encode()) + 1 > MAX_RESULT_BYTES:
             raise ReportFailure("报表结果超过返回边界")
         print(encoded)
         return 0
     except (KeyError, TypeError, json.JSONDecodeError, ReportFailure) as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False))
+        return 1
+    except Exception:
+        print(json.dumps({"error": "报表运行时执行失败"}, ensure_ascii=False))
         return 1
 
 

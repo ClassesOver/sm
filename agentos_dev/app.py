@@ -4,15 +4,23 @@ import unicodedata
 from pathlib import PurePosixPath
 from urllib.parse import quote
 
-from ag_ui.core import EventType, RunAgentInput, RunErrorEvent
+from ag_ui.core import Context, EventType, RunAgentInput, RunErrorEvent
 from ag_ui.encoder import EventEncoder
+from agno.models.message import Message
 from agno.os.interfaces.agui.input import extract_tool_messages, extract_user_input
 from agno.os.interfaces.agui.router import run_entity
+from agno.session.agent import AgentSession
 from fastapi import APIRouter, Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.concurrency import run_in_threadpool
 
+from .agent_control import (
+    AGENT_CONTEXT_STATUS_DEPENDENCY,
+    AGENT_CONTINUATION_STATE_KEY,
+    AGENT_LOADED_TOOLKITS_STATE_KEY,
+    AGENT_PLAN_STATE_KEY,
+)
 from .agents import create_assistants
 from .application import ApplicationContext, create_agentos_app
 from .branch import (
@@ -21,6 +29,11 @@ from .branch import (
     parse_forwarded_props,
     run_branch,
     validate_branch_identity,
+)
+from .context_management import (
+    HISTORY_CONTEXT_DESCRIPTION,
+    ProtectedCompressionManager,
+    build_budgeted_history_context,
 )
 from .database import check_database
 from .instructions import build_agent_instructions
@@ -36,6 +49,7 @@ MAX_RUN_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 12 * 1024 * 1024
 WORKSPACE_FILE_BYTES = 10 * 1024 * 1024
 MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
+SERVER_TOOL_SCHEMA_TOKEN_RESERVE = 16 * 1024
 EDIT_MODE_TOOL = "odoo.enter_edit_mode"
 MENU_NAVIGATION_TOOL = "odoo.navigate_menu"
 MENU_NAVIGATION_CONTEXT = "HRP 菜单导航请求"
@@ -76,6 +90,21 @@ REQUIRED_TOOL_PREAMBLE_EVENTS = frozenset(
         EventType.REASONING_MESSAGE_END,
         EventType.REASONING_END,
         EventType.REASONING_ENCRYPTED_VALUE,
+    }
+)
+RAW_REASONING_EVENTS = frozenset(
+    {
+        EventType.THINKING_TEXT_MESSAGE_CONTENT,
+        EventType.REASONING_MESSAGE_CONTENT,
+        EventType.REASONING_MESSAGE_CHUNK,
+        EventType.REASONING_ENCRYPTED_VALUE,
+    }
+)
+SERVER_SESSION_STATE_KEYS = frozenset(
+    {
+        AGENT_PLAN_STATE_KEY,
+        AGENT_CONTINUATION_STATE_KEY,
+        AGENT_LOADED_TOOLKITS_STATE_KEY,
     }
 )
 logger = logging.getLogger(__name__)
@@ -125,6 +154,140 @@ def _is_fresh_user_request(run_input: RunAgentInput) -> bool:
         and not run_input.resume
         and not extract_tool_messages(messages)
     )
+
+
+def _sanitize_run_input(run_input: RunAgentInput) -> RunAgentInput:
+    context = [
+        item
+        for item in (run_input.context or [])
+        if item.description not in {HISTORY_CONTEXT_DESCRIPTION, AGENT_CONTEXT_STATUS_DEPENDENCY}
+    ]
+    state = run_input.state
+    if isinstance(state, dict):
+        state = {key: value for key, value in state.items() if key not in SERVER_SESSION_STATE_KEYS}
+    if len(context) == len(run_input.context or []) and state is run_input.state:
+        return run_input
+    return run_input.model_copy(update={"context": context, "state": state})
+
+
+async def _prepare_run_input(agent, run_input: RunAgentInput, user_id: str, settings):
+    prepared = _sanitize_run_input(run_input)
+    if not _is_fresh_user_request(prepared):
+        return prepared
+    try:
+        session = await agent.aget_session(
+            session_id=prepared.thread_id,
+            user_id=user_id,
+        )
+    except Exception as error:
+        logger.warning("history_context_load_failed error_type=%s", type(error).__name__)
+        return prepared
+    if not isinstance(session, AgentSession):
+        return prepared
+
+    compression_manager = (
+        agent.compression_manager
+        if isinstance(agent.compression_manager, ProtectedCompressionManager)
+        else None
+    )
+    history_status: dict[str, object] = {}
+    mandatory_messages = [Message(role="user", content=extract_user_input(prepared.messages or []))]
+    mandatory_messages.extend(
+        Message(role="user", content=item.value) for item in prepared.context or []
+    )
+    if prepared.tools:
+        mandatory_messages.append(
+            Message(
+                role="user",
+                content=json.dumps(
+                    [
+                        item.model_dump() if hasattr(item, "model_dump") else item
+                        for item in prepared.tools
+                    ],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                ),
+            )
+        )
+    mandatory_tokens: int | None
+    try:
+        mandatory_tokens = agent.model.count_tokens(mandatory_messages)
+    except Exception:
+        mandatory_tokens = None
+    effective_history_budget = min(
+        settings.history_token_budget,
+        max(
+            1,
+            settings.context_token_budget
+            - settings.output_token_reserve
+            - SERVER_TOOL_SCHEMA_TOKEN_RESERVE
+            - (mandatory_tokens or 0),
+        ),
+    )
+    try:
+        history, changed = await build_budgeted_history_context(
+            session,
+            agent.model,
+            history_token_budget=effective_history_budget,
+            compression_manager=compression_manager,
+            include_summary=settings.enable_session_summaries,
+            status=history_status,
+        )
+    except Exception as error:
+        logger.warning("history_context_build_failed error_type=%s", type(error).__name__)
+        return prepared
+    history_status.update(
+        {
+            "configuredHistoryTokenBudget": settings.history_token_budget,
+            "contextTokenBudget": settings.context_token_budget,
+            "outputReserveTokens": settings.output_token_reserve,
+            "mandatoryContextTokensEstimate": mandatory_tokens,
+        }
+    )
+
+    if changed:
+        if session.session_data is None:
+            session.session_data = {}
+        try:
+            await agent.asave_session(session)
+        except Exception as error:
+            logger.warning("history_compression_save_failed error_type=%s", type(error).__name__)
+    context = list(prepared.context or [])
+    if history is not None:
+        context.append(history)
+    context.append(
+        Context(
+            description=AGENT_CONTEXT_STATUS_DEPENDENCY,
+            value=json.dumps(history_status, ensure_ascii=False, separators=(",", ":")),
+        )
+    )
+    return prepared.model_copy(update={"context": context})
+
+
+def _has_reasoning_key(value) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = str(key).lower()
+            if ("reasoning" in normalized or "thinking" in normalized) and item not in (
+                None,
+                "",
+                False,
+                [],
+                {},
+            ):
+                return True
+            if _has_reasoning_key(item):
+                return True
+    elif isinstance(value, list):
+        return any(_has_reasoning_key(item) for item in value)
+    return False
+
+
+def _is_raw_reasoning_event(event) -> bool:
+    if event.type in RAW_REASONING_EVENTS:
+        return True
+    return event.type == EventType.RAW and _has_reasoning_key(getattr(event, "event", None))
 
 
 def _requires_menu_navigation(run_input: RunAgentInput) -> bool:
@@ -565,12 +728,18 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             source = run_branch(
                 context.assistant,
                 context.workspace_service,
-                run_input,
+                _sanitize_run_input(run_input),
                 branch,
                 user_id,
             )
         elif not forced_tool:
-            source = run_entity(context.assistant, run_input, user_id=user_id)
+            prepared_input = await _prepare_run_input(
+                context.assistant,
+                run_input,
+                user_id,
+                context.settings,
+            )
+            source = run_entity(context.assistant, prepared_input, user_id=user_id)
         elif not tool_declared:
             _audit_tool_route(
                 request,
@@ -585,9 +754,15 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             )
         else:
             assert forced_agent is not None
-            guarded_source = run_entity(
+            prepared_input = await _prepare_run_input(
                 forced_agent,
                 run_input,
+                user_id,
+                context.settings,
+            )
+            guarded_source = run_entity(
+                forced_agent,
+                prepared_input,
                 user_id=user_id,
             )
 
@@ -606,6 +781,8 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                 audit=audit_guard,
             )
         async for event in source:
+            if _is_raw_reasoning_event(event):
+                continue
             yield encoder.encode(event)
 
     return StreamingResponse(

@@ -15,7 +15,7 @@ describe('消息附属内容组件', () => {
       { title: '生成建议' }
     ]} />)
 
-    expect(screen.getByText('思考过程')).toBeTruthy()
+    expect(screen.getByText('执行状态')).toBeTruthy()
     expect(screen.getByText('步骤 1：读取表单')).toBeTruthy()
     expect(screen.getByText('确认当前客户字段。')).toBeTruthy()
     expect(screen.getByText('步骤 2：生成建议')).toBeTruthy()

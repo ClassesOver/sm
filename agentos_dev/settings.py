@@ -85,6 +85,12 @@ class AgentSettings:
     database_url: str
     skills_dir: str | None
     workspace_hmac_secret: str
+    enable_tool_result_compression: bool
+    enable_session_summaries: bool
+    enable_thinking: bool
+    context_token_budget: int
+    history_token_budget: int
+    output_token_reserve: int
 
     @classmethod
     def from_environment(
@@ -106,6 +112,24 @@ class AgentSettings:
             )
             if origin.strip()
         )
+        context_token_budget = _positive_int(
+            values,
+            "AGENT_CONTEXT_TOKEN_BUDGET",
+            262144,
+        )
+        history_token_budget = _positive_int(
+            values,
+            "AGENT_HISTORY_TOKEN_BUDGET",
+            196608,
+            maximum=context_token_budget,
+        )
+        output_token_reserve = _positive_int(
+            values,
+            "AGENT_OUTPUT_TOKEN_RESERVE",
+            32768,
+        )
+        if output_token_reserve >= context_token_budget:
+            raise ValueError("AGENT_OUTPUT_TOKEN_RESERVE 必须小于 AGENT_CONTEXT_TOKEN_BUDGET")
         return cls(
             env_file=env_file,
             model_id=values.get("MODEL", DEFAULT_MODEL_ID),
@@ -121,4 +145,14 @@ class AgentSettings:
             database_url=database_url_from_environment(values),
             skills_dir=values.get("AGENT_SKILLS_DIR"),
             workspace_hmac_secret=values.get("AGUI_WORKSPACE_HMAC_SECRET", ""),
+            enable_tool_result_compression=_flag(
+                values.get("AGENT_ENABLE_TOOL_RESULT_COMPRESSION"), default=True
+            ),
+            enable_session_summaries=_flag(
+                values.get("AGENT_ENABLE_SESSION_SUMMARIES"), default=True
+            ),
+            enable_thinking=_flag(values.get("AGENT_ENABLE_THINKING"), default=True),
+            context_token_budget=context_token_budget,
+            history_token_budget=history_token_budget,
+            output_token_reserve=output_token_reserve,
         )

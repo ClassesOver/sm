@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from agno.agent._tools import parse_tools
 from agno.run import RunContext
 
 from agentos_dev import app
@@ -77,6 +78,145 @@ def test_agent_history_runs_are_not_truncated():
     assert app.assistant.num_history_runs is None
     assert app.edit_mode_assistant.num_history_runs is None
     assert app.menu_navigation_assistant.num_history_runs is None
+
+
+def test_agent_registers_base_and_report_toolkits_without_overlap():
+    expected = [
+        {
+            "agent_update_plan",
+            "agent_context_status",
+            "agent_prepare_continuation",
+            "agent_tool_search",
+            "agent_load_toolkit",
+        },
+        {
+            "sandbox_exec",
+            "sandbox_process_poll",
+            "sandbox_process_write",
+            "sandbox_process_interrupt",
+            "sandbox_process_stop",
+            "workspace_list_files",
+            "workspace_read_file",
+            "workspace_read_lines",
+            "workspace_stat",
+            "workspace_tree",
+            "workspace_search_files",
+            "workspace_search_text",
+            "workspace_hash_file",
+            "workspace_git_status",
+            "workspace_git_diff",
+            "workspace_git_log",
+            "workspace_git_show",
+            "workspace_write_file",
+            "workspace_replace_file",
+            "workspace_move_file",
+            "workspace_apply_patch",
+            "workspace_apply_patch_set",
+            "workspace_apply_hunks",
+            "workspace_apply_changes",
+            "workspace_create_directory",
+            "workspace_copy_file",
+            "workspace_delete_file",
+            "workspace_view_image",
+            "workspace_inspect_pdf",
+        },
+        {
+            "report_list_analysis_capabilities",
+            "report_prepare_dataset",
+            "report_profile_dataset",
+            "report_job_status",
+            "report_analyze_dataset",
+            "report_render_markdown",
+            "report_validate_pdf",
+        },
+    ]
+    for assistant in (
+        app.assistant,
+        app.edit_mode_assistant,
+        app.menu_navigation_assistant,
+    ):
+        toolkits = assistant.tools(
+            run_context=RunContext(
+                run_id="run",
+                session_id="thread",
+                session_state={"agentos_loaded_toolkits": ["report"]},
+            )
+        )
+        assert assistant.cache_callables is False
+        assert [toolkit.name for toolkit in toolkits] == [
+            "agent_control",
+            "base",
+            "workspace_report",
+        ]
+        registered = [set(toolkit.functions) | set(toolkit.async_functions) for toolkit in toolkits]
+        assert registered == expected
+        assert all(
+            left.isdisjoint(right)
+            for index, left in enumerate(registered)
+            for right in registered[index + 1 :]
+        )
+
+
+def test_toolkit_instructions_are_injected_by_agno():
+    control_toolkit, base_toolkit, report_toolkit = app.assistant.tools(
+        run_context=RunContext(
+            run_id="run",
+            session_id="thread",
+            session_state={"agentos_loaded_toolkits": ["report"]},
+        )
+    )
+
+    assert control_toolkit.add_instructions is True
+    assert base_toolkit.add_instructions is True
+    assert "优先使用 workspace_* 专用工具" in base_toolkit.instructions
+    assert "读取和哈希 → 精确补丁 → 重新读取或检查" in base_toolkit.instructions
+    assert "sandbox_process_poll 轮询到 completed" in base_toolkit.instructions
+    assert "工具失败时依据返回的错误" in base_toolkit.instructions
+    assert report_toolkit.add_instructions is True
+    assert "同一 jobId 多轮调用 report_analyze_dataset" in report_toolkit.instructions
+    assert "report_validate_pdf" in report_toolkit.instructions
+
+    toolkits = [control_toolkit, base_toolkit, report_toolkit]
+    parsed = parse_tools(
+        app.assistant,
+        toolkits,
+        app.assistant.model,
+        run_context=instruction_context(),
+        async_mode=True,
+    )
+
+    assert base_toolkit.instructions in app.assistant._tool_instructions
+    assert report_toolkit.instructions in app.assistant._tool_instructions
+    parsed_tools = {function.name: function for function in parsed if hasattr(function, "name")}
+    parsed_exec_schema = parsed_tools["sandbox_exec"].parameters
+    assert parsed_exec_schema["additionalProperties"] is False
+    assert parsed_exec_schema["properties"]["command"]["minLength"] == 1
+    assert parsed_exec_schema["properties"]["timeout"]["maximum"] == 900
+    parsed_patch_schema = parsed_tools["workspace_apply_patch"].parameters["properties"]
+    assert parsed_patch_schema["expected_sha256"]["pattern"] == r"^[0-9a-fA-F]{64}$"
+
+
+def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
+    for assistant in (
+        app.assistant,
+        app.edit_mode_assistant,
+        app.menu_navigation_assistant,
+    ):
+        assert assistant.checkpoint == "tool-batch"
+        assert assistant.tool_call_limit is None
+        assert assistant.retries == 0
+        assert assistant.exponential_backoff is False
+        assert assistant.model.retries == 2
+        assert assistant.model.exponential_backoff is True
+        assert assistant.model.extra_body["enable_thinking"] is True
+        assert assistant.compression_manager.model.extra_body["enable_thinking"] is False
+        assert assistant.session_summary_manager.model.extra_body["enable_thinking"] is False
+        assert assistant.compression_manager.model.retries == 2
+        assert assistant.session_summary_manager.model.retries == 2
+        assert assistant.add_history_to_context is False
+        assert assistant.compress_tool_results is True
+        assert assistant.enable_session_summaries is True
+        assert assistant.post_hooks
 
 
 def test_plain_request_only_uses_core_instructions():
@@ -164,8 +304,17 @@ def test_智能体说明明确工作区确认边界():
     instructions = "\n".join(build_agent_instructions(instruction_context()))
 
     assert "工作区只属于当前 thread" in instructions
+    assert "同一个 Daytona sandbox" in instructions
+    assert "不是 AgentOS 宿主机" in instructions
+    assert "独立的只读探查可在同一工具批次并行" in instructions
+    assert "有数据依赖时串行" in instructions
+    assert "修改前先读取并校验 SHA-256" in instructions
+    assert "修改后重新读取或检查" in instructions
+    assert "新建、覆盖、补丁、移动、删除" in instructions
     assert "sandbox_exec 须独立确认" in instructions
-    assert "准备、分析和 Markdown 转 PDF 无需确认" in instructions
+    assert "后台进程轮询" in instructions
+    assert "sandbox_process_poll" in instructions
+    assert "准备、剖析、分析、状态读取、Markdown 转 PDF 和 PDF 验收无需确认" in instructions
     assert "同一 job_id 多轮调用 report_analyze_dataset" in instructions
     assert "至少一轮成功后生成 Markdown" in instructions
     assert "sandbox_exec 默认工作目录是 /home/daytona/workspace" in instructions
@@ -179,9 +328,12 @@ def test_智能报表技能统一使用工作区相对路径和报表工具():
 
     assert "相对 `/home/daytona/workspace` 的工作区路径" in skill
     assert "`report_list_analysis_capabilities`" in skill
+    assert "`report_profile_dataset`" in skill
     assert "模型根据每轮结果自行决定轮数" in skill
     assert "若返回 `ok: false`" in skill
     assert "直到至少一轮返回 `ok: true`" in skill
     assert "`report_analyze_dataset` 无需确认" in skill
     assert "直接调用无需确认的 `report_render_markdown`" in skill
+    assert "`report_validate_pdf`" in skill
+    assert "状态为 `validated`" in skill
     assert "不使用 `report_compile`、`blocks`" in skill

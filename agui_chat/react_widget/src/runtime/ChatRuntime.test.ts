@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AguiChat } from '../index'
 import { ChatRuntime } from './ChatRuntime'
-import type { AguiChatProps } from '../types'
+import type { AguiChatProps, ChatMessage } from '../types'
 import { menuCatalog, v2Props } from '../test/fixtures'
 
 function createRuntime(props: Partial<AguiChatProps> = {}) {
@@ -393,6 +393,66 @@ describe('ChatRuntime protocol handling', () => {
     expect(assistantMessages[0].content).toBe('')
     expect(assistantMessages[0].tool_calls?.[0].status).toBe('ok')
     expect(assistantMessages[1].content).toBe('done')
+  })
+
+  it('keeps reasoning content out of messages and exposes one sanitized phase', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(sseResponse([
+      { type: 'REASONING_START', messageId: 'reasoning-1' },
+      { type: 'REASONING_MESSAGE_START', messageId: 'reasoning-1' },
+      { type: 'REASONING_MESSAGE_CONTENT', messageId: 'reasoning-1', delta: 'raw first delta' },
+      { type: 'REASONING_MESSAGE_CONTENT', messageId: 'reasoning-1', delta: 'raw second delta' },
+      { type: 'REASONING_MESSAGE_END', messageId: 'reasoning-1' },
+      { type: 'REASONING_END', messageId: 'reasoning-1' },
+      {
+        type: 'TOOL_CALL_RESULT', toolCallId: 'analysis-1',
+        toolCallName: 'report_analyze_dataset', content: '{"ok":true}'
+      },
+      { type: 'REASONING_START', messageId: 'reasoning-2' },
+      { type: 'REASONING_MESSAGE_CONTENT', messageId: 'reasoning-2', delta: 'raw after tool' },
+      { type: 'TEXT_MESSAGE_CONTENT', messageId: 'assistant-1', delta: '分析完成' },
+      { type: 'RUN_FINISHED' }
+    ]))))
+    const runtime = createRuntime({ runtimeUrl: '/runtime/run', attachments: false })
+
+    await runtime.send('分析数据')
+
+    const assistants = runtime.getSnapshot().messages.filter((message) => message.role === 'assistant')
+    expect(assistants[0]?.extra_data?.reasoning_steps).toEqual([
+      { title: '已完成分析' }
+    ])
+    expect(assistants.at(-1)?.content).toBe('分析完成')
+    expect(JSON.stringify(runtime.getSnapshot().messages)).not.toContain('raw first delta')
+    expect(JSON.stringify(runtime.getSnapshot().messages)).not.toContain('raw second delta')
+    expect(JSON.stringify(runtime.getSnapshot().messages)).not.toContain('raw after tool')
+  })
+
+  it('sanitizes reasoning content loaded from an older session', () => {
+    const runtime = createRuntime({
+      initialMessages: [
+        {
+          id: 'assistant-1', role: 'assistant', content: '结果',
+          reasoning_content: 'raw top-level reasoning',
+          extra_data: {
+            reasoning_steps: [{ title: 'raw title', content: 'raw stored reasoning' }],
+            provider: { thinking_content: 'raw nested thinking', request_id: 'req-1' }
+          }
+        } as ChatMessage & { reasoning_content: string },
+        {
+          id: 'reasoning-1', role: 'reasoning', content: 'raw reasoning message',
+          extra_data: { reasoning_content: 'raw extra reasoning' }
+        }
+      ]
+    })
+
+    const messages = runtime.getSnapshot().messages
+    expect(messages).toHaveLength(1)
+    expect(messages[0].extra_data?.reasoning_steps).toEqual([{ title: '已完成分析' }])
+    expect(JSON.stringify(messages)).not.toContain('raw stored reasoning')
+    expect(JSON.stringify(messages)).not.toContain('raw top-level reasoning')
+    expect(JSON.stringify(messages)).not.toContain('raw reasoning message')
+    expect(JSON.stringify(messages)).not.toContain('raw nested thinking')
+    expect(JSON.stringify(messages)).not.toContain('raw extra reasoning')
+    expect(JSON.stringify(messages)).toContain('req-1')
   })
 
   it('keeps an asynchronous host result on the original tool card', () => {
@@ -911,6 +971,7 @@ describe('ChatRuntime protocol handling', () => {
       return Promise.resolve(new Response(new ReadableStream({
         start(controller) {
           controller.enqueue(encoder.encode(
+            'data: {"type":"REASONING_START","messageId":"reasoning-1"}\n\n' +
             'data: {"type":"TEXT_MESSAGE_CONTENT","delta":"partial"}\n\n'
           ))
           init.signal?.addEventListener('abort', () => {
@@ -927,6 +988,9 @@ describe('ChatRuntime protocol handling', () => {
     expect(runtime.getSnapshot().error).toBe('')
     expect(runtime.getSnapshot().transportState).toBe('cancelled')
     expect(runtime.getSnapshot().messages[1].content).toBe('partial')
+    expect(runtime.getSnapshot().messages[1].extra_data?.reasoning_steps).toEqual([
+      { title: '分析未完成' }
+    ])
   })
 
   it('ends immediately on RUN_ERROR even when the SSE connection stays open', async () => {

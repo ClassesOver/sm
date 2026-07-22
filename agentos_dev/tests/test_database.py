@@ -1,4 +1,14 @@
-from agentos_dev.database import DEFAULT_AGENT_DB_URL, agent_db_url, psycopg_db_url
+from types import SimpleNamespace
+
+import pytest
+from agno.db.postgres import AsyncPostgresDb
+
+from agentos_dev.database import (
+    DEFAULT_AGENT_DB_URL,
+    SerializedAsyncPostgresDb,
+    agent_db_url,
+    psycopg_db_url,
+)
 
 DATABASE_ENV = (
     "AGENT_DB_URL",
@@ -46,3 +56,23 @@ def test_database_url_does_not_validate_unrelated_agentos_settings(monkeypatch):
     monkeypatch.setenv("AGENT_OS_PORT", "invalid")
 
     assert agent_db_url() == DEFAULT_AGENT_DB_URL
+
+
+@pytest.mark.anyio
+async def test_session_upsert_clears_terminal_reasoning_before_database_write(monkeypatch):
+    captured = []
+
+    async def fake_upsert(_self, session, deserialize=True):
+        captured.append((session, deserialize))
+        return session
+
+    monkeypatch.setattr(AsyncPostgresDb, "upsert_session", fake_upsert)
+    run = SimpleNamespace(status="error", reasoning_content="private", messages=[])
+    session = SimpleNamespace(runs=[run])
+    database = SerializedAsyncPostgresDb(db_url=DEFAULT_AGENT_DB_URL)
+
+    result = await database.upsert_session(session, deserialize=False)
+
+    assert result is session
+    assert run.reasoning_content is None
+    assert captured == [(session, False)]

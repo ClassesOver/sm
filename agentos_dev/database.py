@@ -1,6 +1,7 @@
 import psycopg
 from agno.db.postgres import AsyncPostgresDb
 
+from .context_management import clear_terminal_session_reasoning
 from .settings import DEFAULT_AGENT_DB_URL as SETTINGS_DEFAULT_AGENT_DB_URL
 from .settings import database_url_from_environment
 
@@ -29,3 +30,7 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
                 ("agno:create-all-tables",),
             )
             return await super()._create_all_tables()
+
+    async def upsert_session(self, session, deserialize=True):
+        clear_terminal_session_reasoning(session)
+        return await super().upsert_session(session, deserialize=deserialize)

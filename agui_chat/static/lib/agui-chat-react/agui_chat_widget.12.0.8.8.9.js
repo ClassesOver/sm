@@ -24779,7 +24779,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-start gap-3", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx(Workflow, { className: "mt-0.5 size-5 shrink-0 text-muted" }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-2", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "text-xs font-medium uppercase text-muted", children: "思考过程" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "text-xs font-medium uppercase text-muted", children: "执行状态" }),
         steps.map((step, index2) => /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { className: "rounded-lg border border-border bg-accent px-3 py-2 text-sm", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("summary", { className: "cursor-pointer text-xs text-primary", children: [
             "步骤 ",
@@ -27559,25 +27559,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function eventToolCallName(event) {
     return String(event.toolCallName || event.tool_call_name || event.name || event.tool || "");
   }
-  function normalizeReasoningSteps(value, fallbackContent) {
-    const source = Array.isArray(value) && value.length ? value : fallbackContent ? [fallbackContent] : [];
-    return source.map((step) => {
-      if (typeof step === "string") {
-        return {
-          title: textSummary(step, 80) || "推理过程",
-          content: step
-        };
-      }
-      const raw = step && typeof step === "object" ? step : {};
-      const content2 = raw.content || raw.reasoning || raw.text || raw.action || "";
-      return {
-        title: String(raw.title || textSummary(content2 || raw, 80) || "推理过程"),
-        content: typeof content2 === "string" ? content2 : textSummary(content2, 240),
-        action: raw.action ? String(raw.action) : void 0,
-        result: raw.result ? String(raw.result) : void 0,
-        reasoning: raw.reasoning ? String(raw.reasoning) : void 0
-      };
-    });
+  function withoutReasoningData(value) {
+    if (Array.isArray(value)) return value.map(withoutReasoningData);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value).filter(([key]) => !/(reasoning|thinking)/i.test(key)).map(([key, item]) => [key, withoutReasoningData(item)])
+    );
+  }
+  function hasReasoningData(value) {
+    if (Array.isArray(value)) return value.some(hasReasoningData);
+    if (!value || typeof value !== "object") return false;
+    return Object.entries(value).some(
+      ([key, item]) => /(reasoning|thinking)/i.test(key) || hasReasoningData(item)
+    );
   }
   function sessionListFromResult(result) {
     if (Array.isArray(result)) {
@@ -28461,21 +28455,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         this.executeHostBridgeTool(tool, context);
       } else if (type === "TOOL_CALL_RESULT") {
         this.applyToolResult(event);
+        if (context) context.hasToolResult = true;
       } else if (type === "RUN_ERROR") {
         const message = String(data.message || data.content || event.message || "AG-UI 运行失败。");
         if (context) {
           context.upstreamError = message;
           context.receivedTerminalEvent = true;
         }
+        if (context == null ? void 0 : context.hasReasoning) this.finishReasoningStatus("分析未完成");
         this.recordRunError(message);
       } else if (type === "RUN_FINISHED") {
         if (context) context.receivedTerminalEvent = true;
         this.applyRunFinished(event, context);
-      } else if (type === "REASONING_START" || type === "REASONING_MESSAGE_START") {
-        this.ensureAssistant();
-      } else if (type === "REASONING_MESSAGE_CONTENT" || type === "REASONING_MESSAGE_CHUNK") {
-        this.appendReasoning(eventText(event));
-      } else if (type === "REASONING_MESSAGE_END" || type === "REASONING_END") {
+      } else if (type === "REASONING_START" || type === "REASONING_MESSAGE_START" || type === "THINKING_START" || type === "THINKING_TEXT_MESSAGE_START") {
+        if (context) context.hasReasoning = true;
+        this.updateReasoningStatus((context == null ? void 0 : context.hasToolResult) === true);
+      } else if (type === "REASONING_MESSAGE_CONTENT" || type === "REASONING_MESSAGE_CHUNK") ;
+      else if (type === "THINKING_TEXT_MESSAGE_CONTENT") ;
+      else if (type === "REASONING_MESSAGE_END" || type === "REASONING_END" || type === "THINKING_TEXT_MESSAGE_END" || type === "THINKING_END") {
         this.ensureAssistant();
       } else if (type === "STATE_SNAPSHOT" || type === "STATE_CHANGED") {
         this.applyStateSnapshot(
@@ -28688,7 +28685,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         receivedRunStarted: false,
         upstreamError: "",
         pendingHostBridgePromises: [],
-        hostBridgeFollowupNeeded: false
+        hostBridgeFollowupNeeded: false,
+        hasToolResult: false,
+        hasReasoning: false
       };
       this.activeRunContext = context;
       this.running = true;
@@ -28722,6 +28721,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (this.activeRunContext !== context) return;
       if (context.cancelled || (error == null ? void 0 : error.name) === "AbortError") {
         context.cancelled = true;
+        if (context.hasReasoning) this.finishReasoningStatus("分析未完成");
         this.transportState = "cancelled";
         return;
       }
@@ -28757,6 +28757,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     cancelRun(context) {
       if (context.cancelled) return;
       context.cancelled = true;
+      if (context.hasReasoning) this.finishReasoningStatus("分析未完成");
       if (!context.controller.signal.aborted) context.controller.abort();
       this.finalizeRun(context, "cancelled");
     }
@@ -29184,6 +29185,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       if (context && !context.cancelled && this.activeRunContext === context) {
         context.hostBridgeFollowupNeeded = true;
+        context.hasToolResult = true;
       }
       if (result.ok === true && result.operation === "odoo.export_current_view" && typeof result.path === "string" && result.path) {
         this.workspaceListeners.forEach((listener) => listener(result.path));
@@ -29221,6 +29223,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           result: { ...value, server_confirmation: true }
         });
       });
+      if (context == null ? void 0 : context.hasReasoning) {
+        this.finishReasoningStatus(interrupts.length ? "等待确认操作" : "已完成分析");
+      }
       if (!context) return;
       Object.values(this.toolsByKey).forEach((candidate) => {
         if (context.activeClientTools.has(toolName(candidate)) || candidate.result !== void 0 || !["pending", "running"].includes(candidate.status || "pending")) return;
@@ -29237,14 +29242,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         });
       });
     }
-    appendReasoning(content2) {
+    updateReasoningStatus(hasToolResult) {
       const message = this.ensureAssistant();
       message.extra_data = message.extra_data || {};
-      message.extra_data.reasoning_steps = message.extra_data.reasoning_steps || [];
-      message.extra_data.reasoning_steps.push({
-        title: "推理过程",
-        content: content2
-      });
+      message.extra_data.reasoning_steps = [{
+        title: hasToolResult ? "正在整理工具结果" : "正在分析当前请求"
+      }];
+    }
+    finishReasoningStatus(title) {
+      const message = [...this.messages].reverse().find(
+        (item) => {
+          var _a, _b;
+          return item.role === "assistant" && ((_b = (_a = item.extra_data) == null ? void 0 : _a.reasoning_steps) == null ? void 0 : _b.length);
+        }
+      );
+      if (message == null ? void 0 : message.extra_data) {
+        message.extra_data.reasoning_steps = [{ title }];
+      }
     }
     reportHostStateMutation() {
       var _a, _b;
@@ -29308,6 +29322,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     normalizeMessage(rawMessage) {
       var _a, _b;
       const result = { ...rawMessage || {} };
+      const hadReasoning = hasReasoningData(result);
+      Object.keys(result).forEach((key) => {
+        if (/(reasoning|thinking)/i.test(key)) {
+          delete result[key];
+        }
+      });
       result.id = result.id || uuid();
       result.role = result.role === "agent" ? "assistant" : result.role || "assistant";
       if (result.content === void 0 || result.content === null) {
@@ -29328,6 +29348,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (result.streamingError && !result.streaming_error) {
         result.streaming_error = "AG-UI 运行失败。";
       }
+      if (result.extra_data) {
+        result.extra_data = withoutReasoningData(result.extra_data);
+      }
       if (result.references) {
         result.extra_data = {
           ...result.extra_data || {},
@@ -29338,6 +29361,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         result.extra_data.references = normalizeReferenceGroups(result.extra_data.references);
       }
       if (result.role === "assistant") {
+        if (hadReasoning) {
+          result.extra_data = {
+            ...result.extra_data,
+            reasoning_steps: [{ title: "已完成分析" }]
+          };
+        }
         this.mergeMessageToolCalls(result);
       }
       return result;
@@ -29533,19 +29562,22 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return changed;
     }
     consumeReasoningMessage(message, targetMessages) {
-      var _a;
-      const steps = normalizeReasoningSteps((_a = message.extra_data) == null ? void 0 : _a.reasoning_steps, asText(message.content));
+      const steps = [{ title: "已完成分析" }];
       const target = [...targetMessages].reverse().find((item) => item.role === "assistant");
       if (!target) {
-        message.extra_data = {
-          ...message.extra_data || {},
-          reasoning_steps: steps
-        };
-        targetMessages.push(message);
+        targetMessages.push({
+          ...message,
+          role: "assistant",
+          content: "",
+          extra_data: {
+            ...withoutReasoningData(message.extra_data || {}),
+            reasoning_steps: steps
+          }
+        });
         return;
       }
       target.extra_data = target.extra_data || {};
-      target.extra_data.reasoning_steps = [...target.extra_data.reasoning_steps || [], ...steps];
+      target.extra_data.reasoning_steps = steps;
     }
     mergeMessageToolCalls(message) {
       const calls = [
