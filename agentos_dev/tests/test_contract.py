@@ -159,4 +159,17 @@ def test_智能体说明明确工作区确认边界():
 
     assert "工作区只属于当前 thread" in instructions
     assert "新建、覆盖、移动、删除、sandbox 命令和 PDF 渲染均须独立确认" in instructions
+    assert "必须将这些路径原样传给 report_prepare_dataset" in instructions
+    assert "不得改用 sandbox_exec、Python 或 pandas 读取" in instructions
+    assert "sandbox_exec 默认工作目录是 /home/daytona/workspace" in instructions
     assert "可信技能脚本" not in instructions
+
+
+def test_智能报表技能统一使用工作区相对路径和报表工具():
+    skill = (REPO_ROOT / "deploy/agentos/skills/workspace-smart-report/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "相对 `/home/daytona/workspace` 的工作区路径" in skill
+    assert "将上述路径原样传给 `report_prepare_dataset`" in skill
+    assert "不得使用 `sandbox_exec`、Python 或 pandas 读取" in skill

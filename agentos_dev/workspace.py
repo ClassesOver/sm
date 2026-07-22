@@ -834,7 +834,7 @@ class DaytonaToolkit(Toolkit):
         timeout: int = 30,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        """在当前对话的 Daytona sandbox 中执行命令。"""
+        """在当前对话的 Daytona sandbox 中执行命令；默认工作目录为 /home/daytona/workspace。命令切换到其他目录后，工作区文件须使用该目录下的绝对路径。"""
         if not isinstance(command, str) or not command.strip():
             raise WorkspaceError("命令不能为空。")
         execution_timeout = self.service._validate_timeout(timeout)
@@ -944,7 +944,7 @@ class WorkspaceReportToolkit(WorkspaceToolkit):
     async def report_prepare_dataset(
         self, paths: list[str], sheet_name: str | None = None, run_context: RunContext | None = None
     ):
-        """从一至五个当前工作区相对路径准备统一数据集。"""
+        """从一至五个当前工作区相对路径准备统一数据集；附件直接使用 workspacePath，已选文件和 Odoo 导出直接使用 path，不接受绝对路径。"""
         return await self._report(
             "prepare", {"paths": paths, "sheet_name": sheet_name}, run_context
         )

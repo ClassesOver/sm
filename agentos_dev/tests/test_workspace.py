@@ -141,6 +141,11 @@ def test_最终工具集线性继承且确认边界符合策略(tmp_path):
     ):
         assert tools[name].requires_confirmation is True
 
+    tools["sandbox_exec"].process_entrypoint()
+    tools["report_prepare_dataset"].process_entrypoint()
+    assert "/home/daytona/workspace" in tools["sandbox_exec"].description
+    assert "不接受绝对路径" in tools["report_prepare_dataset"].description
+
 
 @pytest.mark.anyio
 async def test_sandbox_exec_使用原生异步进程并绑定工作区(tmp_path):
