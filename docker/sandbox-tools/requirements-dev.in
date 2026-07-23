@@ -1,0 +1,22 @@
+# Python 开发与测试
+build
+coverage
+faker
+freezegun
+hypothesis
+ipython
+libcst
+mypy
+pydantic
+pytest
+pytest-asyncio
+pytest-cov
+pytest-mock
+pytest-xdist
+radon
+responses
+respx
+ruff
+tenacity
+tomlkit
+typer

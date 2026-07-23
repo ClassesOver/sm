@@ -1,0 +1,10 @@
+# 常用数据库客户端
+clickhouse-connect
+mysql-connector-python
+neo4j
+psycopg[binary]
+pymongo
+pymysql
+redis
+starrocks
+trino

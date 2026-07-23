@@ -69,11 +69,11 @@ docker compose up -d --build
 
 ## 构建工具镜像
 
-`sandbox-tools` 在默认镜像上增加 ripgrep、Git、`script` PTY、文档转 Markdown、
+`sandbox-tools` 在默认镜像上增加 curl、wget、ripgrep、Git、Git LFS、SSH、diff/patch、jq、压缩归档、进程查看、`script` PTY、文档转 Markdown、
 PDF/Office/HTML/XML/RST、Notebook 执行与导出、出版级表格、Excel 公式、图像与地理空间处理、
 离线图表与 SVG 渲染、统计、SQL、本地结构化数据、并行与多维数据、压缩处理，以及 Python
-测试、构建、类型检查和源码分析工具。依赖清单见
-`docker/sandbox-tools/requirements.in`。镜像保留
+测试、构建、类型检查和源码分析工具。依赖清单按功能拆分为
+`docker/sandbox-tools/requirements-*.in`。镜像保留
 requests、HTTPX 和 SQLAlchemy 能力，但不内置数据库服务端，也不改变沙箱的网络隔离。
 
 ```bash

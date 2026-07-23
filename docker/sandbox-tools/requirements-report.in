@@ -1,0 +1,32 @@
+# 图表、统计与报告
+adjusttext
+altair
+bokeh
+graphviz
+great-tables
+matplotlib
+pillow
+plotly
+plotnine
+pygal
+scipy
+seaborn
+statsmodels
+sympy
+tabulate
+vl-convert-python
+wordcloud
+
+# Notebook 报表
+ipykernel
+nbclient
+nbconvert
+nbformat
+
+# 图像与地理空间
+geopandas
+opencv-python-headless
+pyproj
+qrcode
+scikit-image
+shapely

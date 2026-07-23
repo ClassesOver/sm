@@ -1,0 +1,41 @@
+# SQL、数据格式与本地分析
+dask[dataframe]
+defusedxml
+h5py
+jsonlines
+msgpack
+pandas
+pyreadstat
+sqlalchemy
+sqlglot
+xarray
+xmltodict
+zarr
+
+# 中文文本与业务计算
+holidays
+jieba
+pypinyin
+pulp
+
+# 常用数据与工具
+babel
+dateparser
+deepdiff
+duckdb
+httpx
+jmespath
+json-repair
+jsonschema
+networkx
+orjson
+polars
+py7zr
+pyarrow
+python-frontmatter
+pyyaml
+rapidfuzz
+requests
+rich
+tomli-w
+tqdm
