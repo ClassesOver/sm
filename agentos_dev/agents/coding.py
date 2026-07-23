@@ -5,6 +5,7 @@ from agno.agent import Agent
 
 from ..agent_control import build_coding_agent_tools
 from ..instructions import build_coding_agent_instructions
+from ..skills import load_builtin_coding_skills
 from ..workspace import WorkspaceService
 
 AgentInstructions = str | list[str] | Callable[..., str | list[str]]
@@ -24,7 +25,7 @@ def create_coding_agent(
             "name": "Coding Agent",
             "role": "在当前 Daytona 工作区执行受控软件开发任务。",
             "instructions": instructions,
-            "skills": None,
+            "skills": load_builtin_coding_skills(),
             "tools": partial(
                 build_coding_agent_tools,
                 workspace_service,

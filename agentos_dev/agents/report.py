@@ -23,7 +23,6 @@ def create_report_agent(
             "name": "智能报表",
             "role": "在当前 Daytona 工作区执行受控 Python 编码、数据分析和智能报表任务。",
             "instructions": instructions,
-            "skills": None,
             "tools": partial(
                 build_report_agent_tools,
                 workspace_service,

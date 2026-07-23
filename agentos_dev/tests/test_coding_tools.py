@@ -145,6 +145,7 @@ def test_report_agent_extends_unregistered_coding_agent(tmp_path):
 
     assert coding_agent.id == "coding-agent"
     assert coding_agent.instructions is build_coding_agent_instructions
+    assert [skill.name for skill in coding_agent.skills.get_all_skills()] == ["sandbox-tooling"]
     assert coding_agent not in app.assistant_team.members(
         RunContext(run_id="run", session_id="thread", session_state={})
     )
@@ -153,6 +154,7 @@ def test_report_agent_extends_unregistered_coding_agent(tmp_path):
     assert report_agent.compression_manager is coding_agent.compression_manager
     assert report_agent.checkpoint == coding_agent.checkpoint == "tool-batch"
     assert report_agent.session_summary_manager is coding_agent.session_summary_manager
+    assert [skill.name for skill in report_agent.skills.get_all_skills()] == ["sandbox-tooling"]
     assert [tool.name for tool in report_agent.tools(run_context=context())] == [
         "coding",
         "report_data_sources",

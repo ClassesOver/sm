@@ -265,3 +265,9 @@ Toolkit instructions 注入各自的工具选择、迭代、失败恢复和完�
 sandbox，独立只读探查可并行，存在依赖时串行，并在修改前后校验真实文件状态。
 这些 Hermes/Codex 对齐只改善能力发现和执行纪律，不会把工具执行移到 AgentOS 宿主机，
 也不会放宽确认、网络、路径、文件或超时边界。
+
+`coding-agent` 还固定加载随 AgentOS 镜像打包的 `agentos_dev/builtin_skills/sandbox-tooling` 系统
+Skill，`report-agent` 从 coding 基座继承该 Skill。它按需披露当前 Daytona sandbox-tools
+镜像已预装和明确未预装的开发、文档、数据及数据库客户端能力，不受
+`AGENT_SKILLS_DIR` 配置影响，也不进入前端可选业务 Skill 列表。调整
+`docker/sandbox-tools/Dockerfile` 或其 `requirements-*.in` 时必须同步更新该系统 Skill。

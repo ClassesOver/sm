@@ -1,7 +1,10 @@
 import os
+from pathlib import Path
 
 from agno.skills import LocalSkills, Skills
 from agno.skills.loaders.base import SkillLoader
+
+BUILTIN_CODING_SKILLS_DIR = Path(__file__).with_name("builtin_skills")
 
 
 def load_skills(path: str | None = None) -> Skills:
@@ -10,6 +13,10 @@ def load_skills(path: str | None = None) -> Skills:
     if skills_path:
         loaders.append(LocalSkills(skills_path))
     return Skills(loaders=loaders)
+
+
+def load_builtin_coding_skills() -> Skills:
+    return Skills(loaders=[LocalSkills(str(BUILTIN_CODING_SKILLS_DIR))])
 
 
 def public_skill_metadata(skills: Skills) -> list[dict[str, str]]:
