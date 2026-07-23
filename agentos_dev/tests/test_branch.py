@@ -6,7 +6,9 @@ import pytest
 from ag_ui.core import EventType, RunFinishedEvent
 from agno.run.agent import RunOutput
 from agno.run.base import RunStatus
+from agno.run.team import TeamRunOutput
 from agno.session.agent import AgentSession
+from agno.session.team import TeamSession
 
 from agentos_dev import branch as branch_module
 from agentos_dev.branch import (
@@ -50,6 +52,48 @@ def source_session():
             for index in range(1, 4)
         ],
     )
+
+
+def test_copy_team_session_preserves_team_identity_and_run_graph():
+    source = TeamSession(
+        session_id="source-thread",
+        team_id="odoo-assistant-team",
+        user_id="owner",
+        team_data={"name": "HRP 助手团队"},
+        runs=[
+            TeamRunOutput(
+                run_id="team-run",
+                session_id="source-thread",
+                team_id="odoo-assistant-team",
+                status=RunStatus.completed,
+            ),
+            RunOutput(
+                run_id="member-run",
+                parent_run_id="team-run",
+                session_id="source-thread",
+                agent_id="odoo-assistant",
+                status=RunStatus.completed,
+            ),
+        ],
+    )
+
+    target, run_id_map, copied_run_id = _copy_session_through_run(
+        source,
+        "target-thread",
+        "team-run",
+        "owner",
+    )
+
+    assert isinstance(target, TeamSession)
+    assert target.team_id == "odoo-assistant-team"
+    assert target.team_data == source.team_data
+    assert target.team_data is not source.team_data
+    assert copied_run_id == run_id_map["team-run"]
+    member_run = next(
+        run for run in target.runs if getattr(run, "agent_id", None) == "odoo-assistant"
+    )
+    assert member_run.parent_run_id == copied_run_id
+    assert all(run.session_id == "target-thread" for run in target.runs)
 
 
 def test_forwarded_props_only_accepts_controlled_branch_data():

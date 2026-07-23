@@ -4,6 +4,8 @@ from typing import Any
 
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
+from agno.run import RunContext
+from agno.team import Team, TeamMode
 
 from .agent_control import build_agent_tools, build_report_agent_tools
 from .context_management import (
@@ -24,6 +26,19 @@ OPENAI_COMPATIBLE_ROLE_MAP = {
 }
 
 AgentInstructions = str | list[str] | Callable[..., str | list[str]]
+
+ASSISTANT_ID = "general-assistant"
+LEGACY_ASSISTANT_IDS = frozenset({"odoo-assistant"})
+TEAM_DELEGATION_TOOL_CHOICE = {
+    "type": "function",
+    "function": {"name": "delegate_task_to_member"},
+}
+TEAM_ROUTE_DEPENDENCY = "AgentOS 可信团队路由"
+
+TEAM_INSTRUCTIONS = [
+    "服务端已按请求边界筛选本轮可用成员；只委派给唯一可用成员，并直接返回其结果。",
+    "不得改派给本轮不可用的成员，也不得根据菜单名称、附件或模糊意图推断特殊路由。",
+]
 
 
 def create_assistants(
@@ -63,8 +78,9 @@ def create_assistants(
         exponential_backoff=True,
     )
     assistant = Agent(
-        id="odoo-assistant",
+        id=ASSISTANT_ID,
         name="HRP 助手",
+        role="处理普通问答、Odoo 页面操作和工作区任务。",
         model=primary_model,
         instructions=instructions,
         skills=skills,
@@ -96,14 +112,27 @@ def create_assistants(
         markdown=True,
         tool_choice="auto",
     )
-    edit_mode_assistant = assistant.deep_copy(update={"tool_choice": edit_tool_choice})
+    edit_mode_assistant = assistant.deep_copy(
+        update={
+            "id": "edit-mode-assistant",
+            "name": "编辑模式助手",
+            "role": "只处理简短且完整的进入编辑模式请求。",
+            "tool_choice": edit_tool_choice,
+        }
+    )
     menu_navigation_assistant = assistant.deep_copy(
-        update={"tool_choice": menu_navigation_tool_choice}
+        update={
+            "id": "menu-navigation-assistant",
+            "name": "菜单导航助手",
+            "role": "只处理上下文明确要求的 Odoo 菜单导航。",
+            "tool_choice": menu_navigation_tool_choice,
+        }
     )
     report_agent = assistant.deep_copy(
         update={
             "id": "report-agent",
             "name": "智能报表",
+            "role": "在当前 Daytona 工作区执行受控 Python 编码、数据分析和智能报表任务。",
             "instructions": report_instructions,
             "skills": None,
             "tools": partial(
@@ -126,3 +155,54 @@ def create_assistants(
         menu_navigation_assistant,
         report_agent,
     )
+
+
+def create_assistant_team(
+    assistant: Agent,
+    edit_mode_assistant: Agent,
+    menu_navigation_assistant: Agent,
+    report_agent: Agent,
+) -> Team:
+    all_members = [
+        assistant,
+        edit_mode_assistant,
+        menu_navigation_assistant,
+        report_agent,
+    ]
+    members_by_id = {member.id: member for member in all_members}
+
+    def members_for_run(run_context: RunContext) -> list[Agent]:
+        route = (run_context.dependencies or {}).get(TEAM_ROUTE_DEPENDENCY)
+        if route is None:
+            return all_members
+        if not isinstance(route, dict):
+            return []
+        member = members_by_id.get(route.get("memberId"))
+        return [member] if member is not None else []
+
+    team = Team(
+        id="odoo-assistant-team",
+        name="HRP 助手团队",
+        model=assistant.model,
+        mode=TeamMode.route,
+        members=members_for_run,
+        instructions=TEAM_INSTRUCTIONS,
+        determine_input_for_members=False,
+        tool_choice=TEAM_DELEGATION_TOOL_CHOICE,
+        db=assistant.db,
+        checkpoint="tool-batch",
+        add_history_to_context=False,
+        enable_session_summaries=assistant.enable_session_summaries,
+        add_session_summary_to_context=False,
+        session_summary_manager=assistant.session_summary_manager,
+        compress_tool_results=assistant.compress_tool_results,
+        compression_manager=assistant.compression_manager,
+        post_hooks=[clear_terminal_reasoning],
+        retries=0,
+        stream_member_events=True,
+        cache_callables=False,
+        debug_mode=assistant.debug_mode,
+        markdown=True,
+    )
+    team.num_history_runs = None
+    return team

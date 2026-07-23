@@ -45,8 +45,9 @@ sandbox；实际安全边界包括 `network_block_all`、路径和符号链接�
 前台命令最长 60 秒、后台命令最长 900 秒。
 
 Base 层借鉴 Codex 的少量强工具和 Hermes 的分段读取、分页搜索、精确替换及陈旧文件检测，
-但不直接挂载 Agno 的 `Workspace`、`FileTools` 或 `CodingTools`，因为这些工具操作 AgentOS 宿主目录，
-无法继承本项目的 Daytona/thread 隔离。文件和文本搜索在 Daytona sandbox 内通过服务端生成的
+不直接挂载 Agno 的 `Workspace`、`FileTools` 或 `CodingTools`，因为这些工具操作 AgentOS 宿主目录，
+无法继承本项目的 Daytona/thread 隔离；`BaseToolkit` 是面向该边界的 coding agent 实现，覆盖 read、
+edit、write、shell 以及 grep/find/ls。文件和文本搜索在 Daytona sandbox 内通过服务端生成的
 `rg` 参数执行，支持多 include/exclude glob、正则、智能大小写、整词、上下文、文件列表和计数输出，
 不接收模型提供的任意 flags。分段读取、统计、目录树和哈希在 sandbox 内复用 `sed`、`wc`、
 `stat`、`find` 与 `sha256sum`，因此可检查超过 1 MiB 的文件且不会先下载到 AgentOS。Git status、
@@ -65,8 +66,8 @@ Agent 在每个工具批次后持久化 checkpoint；模型请求遇到临时失
 
 ## Codex 对齐配置
 
-这里的“对齐”是增强长任务的自主工具循环、持久化和失败恢复能力，不是把 HRP Agent
-改造成通用代码代理。当前采用以下配置：
+这里的“对齐”是让 report-agent 成为受 Daytona 隔离的 coding agent 扩展，同时保留数据源、
+统计剖析、Markdown/PDF 和 Odoo 导出的报表能力。当前采用以下配置：
 
 | 配置 | 当前值 | 作用 |
 | --- | --- | --- |
@@ -85,7 +86,7 @@ Agent 在每个工具批次后持久化 checkpoint；模型请求遇到临时失
 | `enable_session_summaries` | `True` | 成功 run 后滚动更新非权威摘要 |
 | `enable_thinking` | `True` | 主模型启用；辅助模型关闭，客户端不接收原始 reasoning |
 
-等价的核心配置如下；三个 Assistant 均使用同一组配置，仅强制工具选择不同：
+等价的核心配置如下；普通、编辑和菜单 Assistant 使用同一组配置，仅身份、职责和强制工具选择不同：
 
 ```python
 assistant = Agent(
@@ -103,6 +104,17 @@ assistant.model.exponential_backoff = True
 # Agno 2.7.3 会在构造时把 None 归一化为 3；这里恢复的是检索语义。
 assistant.num_history_runs = None
 ```
+
+运行入口使用 Agno `TeamMode.route` 编排 `assistant`、`edit_mode_assistant`、
+`menu_navigation_assistant` 和 `report_agent`，Team 领导者只负责选择一个成员并直接返回成员结果。
+整个服务只创建一个 Team；其 callable members 按服务端注入的可信路由上下文仅暴露一个目标成员。
+明确菜单上下文路由给 `menu_navigation_assistant`，完整短编辑指令路由给 `edit_mode_assistant`，显式选择
+智能报表技能路由给 `report_agent`，其余请求路由给 ID 为 `general-assistant` 的 `assistant`。客户端
+同名上下文会先被删除，不能伪造目标成员。Team 内部 `delegate_task_to_member` 调用不会作为 AG-UI
+页面工具发送给浏览器；菜单和编辑的首工具守卫仍检查成员首先调用的 `odoo.navigate_menu` 或
+`odoo.enter_edit_mode`。同一 thread
+因而始终保持 TeamSession，续跑和 branch 不会在 TeamSession 与 AgentSession 之间切换；升级前已
+保存的 AgentSession 仍按原 Agent 恢复。
 
 PostgreSQL 仍永久保存完整 runs 和原始 `Message.content`。完整模型上下文上限为 256K tokens，
 预算装配器为输出预留 32K，并根据最新 HRP 宿主快照、当前用户输入和客户端工具 schema 的估算
@@ -150,6 +162,10 @@ Workflow，但没有 Codex 风格的专用 `update_plan`。本项目因此在 Ag
 `WorkspaceReportToolkit`。它不使用固定 Workflow 或 Team，模型自行决定分析命令和轮次，但必须
 完成“发现数据源 → 物化数据集 → 确定性剖析 → 至少一轮成功分析 → Markdown → PDF → 验收”的
 受控链路。完整文件内容不会注入模型上下文；模型只接收数据源句柄、schema、剖析结果和分析输出。
+复杂分析可通过 BaseToolkit 在当前 thread 工作区创建、读取、哈希和精确修改任意 Python 脚本，
+再以 `python3 <工作区相对脚本路径>` 的完整 Shell 命令交给 `report_analyze_dataset` 多轮执行。
+脚本文件写入仍需确认，分析执行仍受 Daytona 网络隔离、路径、进程、超时和输出大小限制；不新增
+AgentOS 宿主机 Python 或绕过现有确认策略的执行入口。
 
 工作区文件、目录、SQLite、DuckDB、Odoo 受控导出和服务端注册的只读 PostgreSQL 均通过
 `DatasetHandle` 进入报表工具。目录只列直接子项，文件变化会返回稳定的 `stale_dataset`，单个

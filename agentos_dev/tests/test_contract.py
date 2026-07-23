@@ -6,8 +6,10 @@ from types import SimpleNamespace
 
 from agno.agent._tools import parse_tools
 from agno.run import RunContext
+from agno.team import TeamMode
 
 from agentos_dev import app
+from agentos_dev.agents import TEAM_ROUTE_DEPENDENCY
 from agentos_dev.instructions import (
     BUSINESS_COMMAND_INSTRUCTIONS,
     CORE_INSTRUCTIONS,
@@ -74,6 +76,37 @@ def test_agentos_contract_matches_odoo_source():
 def test_agent_uses_dynamic_instructions_callable():
     assert app.assistant.instructions is build_agent_instructions
     assert app.report_agent.instructions is build_report_agent_instructions
+
+
+def test_assistant_team_routes_to_specialized_members():
+    assert app.assistant.id == "general-assistant"
+    assert app.assistant_team.mode is TeamMode.route
+    assert app.assistant_team.determine_input_for_members is False
+    assert app.assistant_team.tool_choice == {
+        "type": "function",
+        "function": {"name": "delegate_task_to_member"},
+    }
+    all_members = [
+        app.assistant,
+        app.edit_mode_assistant,
+        app.menu_navigation_assistant,
+        app.report_agent,
+    ]
+    assert callable(app.assistant_team.members)
+    assert app.assistant_team.members(instruction_context()) == all_members
+    for member in all_members:
+        assert app.assistant_team.members(
+            instruction_context(dependencies={TEAM_ROUTE_DEPENDENCY: {"memberId": member.id}})
+        ) == [member]
+    assert (
+        app.assistant_team.members(
+            instruction_context(dependencies={TEAM_ROUTE_DEPENDENCY: {"memberId": "unknown"}})
+        )
+        == []
+    )
+    assert app.assistant_team.id == "odoo-assistant-team"
+    assert app.assistant_team.cache_callables is False
+    assert "Python 编码" in app.report_agent.role
 
 
 def test_agent_history_runs_are_not_truncated():
@@ -195,9 +228,13 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert "读取和哈希 → 精确补丁 → 重新读取或检查" in base_toolkit.instructions
     assert "sandbox_process_poll 轮询到 completed" in base_toolkit.instructions
     assert "工具失败时依据返回的错误" in base_toolkit.instructions
+    assert "可验证的成功标准" in base_toolkit.instructions
+    assert "运行与改动匹配的测试或脚本" in base_toolkit.instructions
     assert report_toolkit.add_instructions is True
     assert data_source_toolkit.add_instructions is True
     assert "同一 jobId 多轮调用 report_analyze_dataset" in report_toolkit.instructions
+    assert "workspace_write_file" in report_toolkit.instructions
+    assert "python3 <工作区相对脚本路径>" in report_toolkit.instructions
     assert "report_validate_pdf" in report_toolkit.instructions
 
     toolkits = [control_toolkit, base_toolkit, data_source_toolkit, report_toolkit]
@@ -219,6 +256,19 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert parsed_exec_schema["properties"]["timeout"]["maximum"] == 900
     parsed_patch_schema = parsed_tools["workspace_apply_patch"].parameters["properties"]
     assert parsed_patch_schema["expected_sha256"]["pattern"] == r"^[0-9a-fA-F]{64}$"
+
+
+def test_report_agent_instructions_support_iterative_python_scripts():
+    instructions = "\n".join(build_report_agent_instructions(instruction_context()))
+
+    assert "像 coding agent 一样" in instructions
+    assert "workspace_write_file" in instructions
+    assert "workspace_apply_changes" in instructions
+    assert "workspace_read_file" in instructions
+    assert "workspace_hash_file" in instructions
+    assert "workspace_apply_hunks" in instructions
+    assert "python3 <工作区相对脚本路径>" in instructions
+    assert "不得把裸 Python 代码直接作为 command" in instructions
 
 
 def test_agent_long_running_tool_loop_is_checkpointed_and_retried():

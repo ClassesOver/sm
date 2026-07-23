@@ -11,6 +11,7 @@ from ag_ui.core import Context
 from agno.compression.manager import CompressionManager
 from agno.models.message import Message
 from agno.session.summary import SessionSummary, SessionSummaryManager
+from agno.session.team import TeamSession
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 HISTORY_CONTEXT_DESCRIPTION = "AgentOS 预算历史（非权威）"
@@ -153,6 +154,13 @@ def _latest_fallback_run(runs: list[Any], remaining: int) -> list[dict[str, Any]
     return []
 
 
+def _session_history_runs(session: Any) -> list[Any]:
+    runs = list(getattr(session, "runs", None) or [])
+    if isinstance(session, TeamSession):
+        return [run for run in runs if getattr(run, "parent_run_id", None) is None]
+    return runs
+
+
 def build_history_context(
     session: Any,
     model: Any,
@@ -175,7 +183,7 @@ def build_history_context(
         summary_tokens = 0
 
     remaining = max(0, history_token_budget - summary_tokens)
-    runs = list(getattr(session, "runs", None) or [])
+    runs = _session_history_runs(session)
     if token_count_failed:
         fallback_selected = _latest_fallback_run(runs, remaining)
         if status is not None:
@@ -456,7 +464,7 @@ async def build_budgeted_history_context(
     if compression_manager is not None:
         originals: list[Message] = []
         tasks = []
-        for run in getattr(session, "runs", None) or []:
+        for run in _session_history_runs(session):
             if _status_value(run) not in {"completed", ""}:
                 continue
             for message in getattr(run, "messages", None) or []:
@@ -538,7 +546,7 @@ class RollingSessionSummaryManager(SessionSummaryManager):
         return metadata if isinstance(metadata, dict) else {}
 
     def _summary_input(self, session: Any) -> tuple[str | None, list[Any], int]:
-        runs = list(getattr(session, "runs", None) or [])
+        runs = _session_history_runs(session)
         metadata = self._metadata(session)
         previous = str(getattr(getattr(session, "summary", None), "summary", "") or "").strip()
         last_run_id = str(metadata.get("lastSourceRunId") or "")

@@ -21,6 +21,8 @@ from agno.os.interfaces.agui.input import extract_context, parse_client_tools, v
 from agno.os.interfaces.agui.stream import async_stream_agno_response_as_agui_events
 from agno.run.base import RunContext, RunStatus
 from agno.session.agent import AgentSession
+from agno.session.team import TeamSession
+from agno.team import Team
 
 from .async_utils import complete_cleanup
 from .report_data_sources import (
@@ -92,27 +94,35 @@ def capability_user_id(claims: CapabilityClaims) -> str:
 
 
 def _copy_session_through_run(
-    source: AgentSession,
+    source: AgentSession | TeamSession,
     target_thread_id: str,
     source_run_id: str,
     user_id: str,
-) -> tuple[AgentSession, dict[str, str], str]:
+) -> tuple[AgentSession | TeamSession, dict[str, str], str]:
     runs = source.runs or []
+    top_level_runs = [run for run in runs if run.parent_run_id is None]
     target_index = next(
-        (
-            index
-            for index, run in enumerate(runs)
-            if run.run_id == source_run_id and run.parent_run_id is None
-        ),
+        (index for index, run in enumerate(top_level_runs) if run.run_id == source_run_id),
         -1,
     )
     if target_index < 0:
         raise BranchError("branch_source_run_not_found")
-    target_run = runs[target_index]
+    target_run = top_level_runs[target_index]
     if target_run.status != RunStatus.completed:
         raise BranchError("branch_source_run_not_completed")
 
-    copied_runs = copy.deepcopy(runs[: target_index + 1])
+    included_run_ids = {str(run.run_id or "") for run in top_level_runs[: target_index + 1]}
+    while True:
+        child_run_ids = {
+            str(run.run_id or "")
+            for run in runs
+            if str(run.parent_run_id or "") in included_run_ids
+        }
+        expanded = included_run_ids | child_run_ids
+        if expanded == included_run_ids:
+            break
+        included_run_ids = expanded
+    copied_runs = copy.deepcopy([run for run in runs if str(run.run_id or "") in included_run_ids])
     source_run_ids = [str(run.run_id or "") for run in copied_runs]
     if any(not run_id for run_id in source_run_ids) or len(set(source_run_ids)) != len(
         source_run_ids
@@ -139,27 +149,44 @@ def _copy_session_through_run(
             run.forked_from_session_id = source.session_id
 
     now = int(time())
-    session = AgentSession(
-        session_id=target_thread_id,
-        agent_id=source.agent_id,
-        user_id=user_id,
-        agent_data=copy.deepcopy(source.agent_data),
-        session_data={"forked_from_session_id": source.session_id},
-        metadata={
-            **copy.deepcopy(source.metadata or {}),
-            "forked_from_session_id": source.session_id,
-            "forked_from_run_id": source_run_id,
-        },
-        runs=copied_runs,
-        summary=None,
-        created_at=now,
-        updated_at=now,
-    )
+    session_data = {"forked_from_session_id": source.session_id}
+    metadata = {
+        **copy.deepcopy(source.metadata or {}),
+        "forked_from_session_id": source.session_id,
+        "forked_from_run_id": source_run_id,
+    }
+    session: AgentSession | TeamSession
+    if isinstance(source, TeamSession):
+        session = TeamSession(
+            session_id=target_thread_id,
+            team_id=source.team_id,
+            user_id=user_id,
+            team_data=copy.deepcopy(source.team_data),
+            session_data=session_data,
+            metadata=metadata,
+            runs=copied_runs,
+            summary=None,
+            created_at=now,
+            updated_at=now,
+        )
+    else:
+        session = AgentSession(
+            session_id=target_thread_id,
+            agent_id=source.agent_id,
+            user_id=user_id,
+            agent_data=copy.deepcopy(source.agent_data),
+            session_data=session_data,
+            metadata=metadata,
+            runs=copied_runs,
+            summary=None,
+            created_at=now,
+            updated_at=now,
+        )
     return session, run_id_map, run_id_map[source_run_id]
 
 
 async def prepare_branch(
-    agent: Agent,
+    agent: Agent | Team,
     workspace: WorkspaceService,
     spec: BranchSpec,
     target_thread_id: str,
@@ -171,7 +198,7 @@ async def prepare_branch(
         session_id=spec.source_thread_id,
         user_id=user_id,
     )
-    if not isinstance(source, AgentSession):
+    if not isinstance(source, (AgentSession, TeamSession)):
         raise BranchError("branch_source_session_not_found")
     existing = await agent.aget_session(session_id=target_thread_id)
     if existing is not None:
@@ -183,7 +210,11 @@ async def prepare_branch(
         spec.source_run_id,
         user_id,
     )
-    target.agent_id = str(getattr(agent, "id", "") or source.agent_id or "") or None
+    entity_id = str(getattr(agent, "id", "") or "") or None
+    if isinstance(target, TeamSession):
+        target.team_id = entity_id or target.team_id
+    else:
+        target.agent_id = entity_id or target.agent_id
     try:
         workspace_result = await workspace.acopy_branch(spec.source_thread_id, target_thread_id)
         report_handles = await rebind_report_dataset_handles(
@@ -198,7 +229,14 @@ async def prepare_branch(
             target.session_data["session_state"] = {
                 REPORT_DATASET_HANDLES_STATE_KEY: report_handles,
             }
-        await agent.asave_session(target)
+        if isinstance(agent, Team):
+            if not isinstance(target, TeamSession):
+                raise BranchError("branch_source_session_invalid")
+            await agent.asave_session(target)
+        else:
+            if not isinstance(target, AgentSession):
+                raise BranchError("branch_source_session_invalid")
+            await agent.asave_session(target)
     except BaseException:
         try:
             await complete_cleanup(cleanup_branch(agent, workspace, target_thread_id, user_id))
@@ -209,7 +247,7 @@ async def prepare_branch(
 
 
 async def cleanup_branch(
-    agent: Agent,
+    agent: Agent | Team,
     workspace: WorkspaceService,
     target_thread_id: str,
     user_id: str,
@@ -222,7 +260,7 @@ async def cleanup_branch(
 
 
 async def run_branch(
-    agent: Agent,
+    agent: Agent | Team,
     workspace: WorkspaceService,
     run_input: RunAgentInput,
     spec: BranchSpec,

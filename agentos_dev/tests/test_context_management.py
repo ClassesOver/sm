@@ -3,7 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 from agno.models.message import Message
+from agno.run.agent import RunOutput
+from agno.run.base import RunStatus
+from agno.run.team import TeamRunOutput
 from agno.session.summary import SessionSummary
+from agno.session.team import TeamSession
 
 from agentos_dev.context_management import (
     HISTORY_CONTEXT_DESCRIPTION,
@@ -88,6 +92,40 @@ def test_history_context_excludes_old_odoo_results_and_host_context():
     assert "odoo.open_record" not in value.value
     assert "secret-token" not in value.value
     assert session.runs[0].messages[1].content == '{"snapshotId":"stale"}'
+
+
+def test_team_history_context_excludes_delegated_member_runs():
+    session = TeamSession(
+        session_id="thread-1",
+        team_id="odoo-assistant-team",
+        runs=[
+            TeamRunOutput(
+                run_id="team-run",
+                session_id="thread-1",
+                team_id="odoo-assistant-team",
+                status=RunStatus.completed,
+                messages=[
+                    Message(role="user", content="生成本月报表"),
+                    Message(role="assistant", content="报表已生成"),
+                ],
+            ),
+            RunOutput(
+                run_id="member-run",
+                parent_run_id="team-run",
+                session_id="thread-1",
+                agent_id="report-agent",
+                status=RunStatus.completed,
+                messages=[Message(role="assistant", content="成员内部重复结果")],
+            ),
+        ],
+    )
+
+    value = build_history_context(session, CountingModel(), history_token_budget=1024)
+
+    assert value is not None
+    assert "生成本月报表" in value.value
+    assert "报表已生成" in value.value
+    assert "成员内部重复结果" not in value.value
 
 
 def test_history_context_uses_summary_and_budget_fallback():

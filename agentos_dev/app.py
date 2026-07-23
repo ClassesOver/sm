@@ -6,10 +6,13 @@ from urllib.parse import quote
 
 from ag_ui.core import Context, EventType, RunAgentInput, RunErrorEvent
 from ag_ui.encoder import EventEncoder
+from agno.agent import Agent
 from agno.models.message import Message
 from agno.os.interfaces.agui.input import extract_tool_messages, extract_user_input
 from agno.os.interfaces.agui.router import run_entity
 from agno.session.agent import AgentSession
+from agno.session.team import TeamSession
+from agno.team import Team
 from fastapi import APIRouter, Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
@@ -21,7 +24,12 @@ from .agent_control import (
     AGENT_LOADED_TOOLKITS_STATE_KEY,
     AGENT_PLAN_STATE_KEY,
 )
-from .agents import create_assistants
+from .agents import (
+    LEGACY_ASSISTANT_IDS,
+    TEAM_ROUTE_DEPENDENCY,
+    create_assistant_team,
+    create_assistants,
+)
 from .application import ApplicationContext, create_agentos_app
 from .branch import (
     BranchError,
@@ -178,6 +186,7 @@ def _sanitize_run_input(run_input: RunAgentInput) -> RunAgentInput:
             HISTORY_CONTEXT_DESCRIPTION,
             AGENT_CONTEXT_STATUS_DEPENDENCY,
             CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
+            TEAM_ROUTE_DEPENDENCY,
         }
     ]
     state = run_input.state
@@ -259,7 +268,7 @@ async def _prepare_run_input(
     except Exception as error:
         logger.warning("history_context_load_failed error_type=%s", type(error).__name__)
         return prepared
-    if not isinstance(session, AgentSession):
+    if not isinstance(session, (AgentSession, TeamSession)):
         return prepared
 
     compression_manager = (
@@ -439,12 +448,22 @@ def _selected_report_skill(run_input: RunAgentInput) -> bool:
     return False
 
 
-async def _agent_for_stored_run(
+async def _entity_for_stored_run(
     context: ApplicationContext,
     thread_id: str,
     user_id: str,
     run_id: str | None = None,
-):
+) -> Agent | Team | None:
+    try:
+        team_session = await context.assistant_team.aget_session(
+            session_id=thread_id, user_id=user_id
+        )
+    except Exception as error:
+        logger.warning("team_route_session_load_failed error_type=%s", type(error).__name__)
+        team_session = None
+    if isinstance(team_session, TeamSession) and team_session.team_id == context.assistant_team.id:
+        if not run_id or any(run.run_id == run_id for run in (team_session.runs or [])):
+            return context.assistant_team
     try:
         session = await context.assistant.aget_session(session_id=thread_id, user_id=user_id)
     except Exception as error:
@@ -465,9 +484,37 @@ async def _agent_for_stored_run(
             agent_id = matching_agent_id
     if agent_id == context.report_agent.id:
         return context.report_agent
-    if agent_id == context.assistant.id:
+    if agent_id == context.edit_mode_assistant.id:
+        return context.edit_mode_assistant
+    if agent_id == context.menu_navigation_assistant.id:
+        return context.menu_navigation_assistant
+    if agent_id == context.assistant.id or agent_id in LEGACY_ASSISTANT_IDS:
         return context.assistant
     return None
+
+
+async def _hide_team_delegation_events(source):
+    hidden_call_ids: set[str] = set()
+    async for event in source:
+        call_id = str(getattr(event, "tool_call_id", "") or "")
+        if event.type == EventType.TOOL_CALL_START and (
+            getattr(event, "tool_call_name", "") == "delegate_task_to_member"
+        ):
+            if call_id:
+                hidden_call_ids.add(call_id)
+            continue
+        if call_id and call_id in hidden_call_ids:
+            continue
+        yield event
+
+
+def _team_route_context(member_id: str | None) -> Context:
+    if not member_id:
+        raise RuntimeError("团队成员缺少稳定 ID。")
+    return Context(
+        description=TEAM_ROUTE_DEPENDENCY,
+        value=json.dumps({"memberId": member_id}, ensure_ascii=True, separators=(",", ":")),
+    )
 
 
 def _required_menu_tool(run_input: RunAgentInput) -> str | None:
@@ -848,6 +895,12 @@ assistant, edit_mode_assistant, menu_navigation_assistant, report_agent = create
     EDIT_MODE_TOOL_CHOICE,
     MENU_NAVIGATION_TOOL_CHOICE,
 )
+assistant_team = create_assistant_team(
+    assistant,
+    edit_mode_assistant,
+    menu_navigation_assistant,
+    report_agent,
+)
 
 
 @router.post("/agui", include_in_schema=False)
@@ -862,24 +915,50 @@ async def run_agui(request: Request, run_input: RunAgentInput):
         tool_names_by_call_id: dict[str, str] = {}
         edit_intent = _is_explicit_edit_mode_request(run_input)
         fresh_request = _is_fresh_user_request(run_input)
-        # 菜单强制工具只适用于新请求；恢复/续跑必须沿用原 run 的 Agent。
+        existing_entity = None
+        if fresh_request and not branch:
+            existing_entity = await _entity_for_stored_run(
+                context,
+                run_input.thread_id,
+                user_id,
+            )
+        legacy_agent_session = any(
+            existing_entity is agent
+            for agent in (
+                context.assistant,
+                context.edit_mode_assistant,
+                context.menu_navigation_assistant,
+                context.report_agent,
+            )
+        )
+        # 菜单强制工具只适用于新请求；恢复/续跑必须沿用原 run 的实体。
         navigation_required = fresh_request and _requires_menu_navigation(run_input)
         context_menu_tool = _required_menu_tool(run_input) if fresh_request else None
         report_selected = _selected_report_skill(run_input)
         forced_tool = None
-        forced_agent = None
+        forced_entity = None
         route_name = None
         if not branch and navigation_required:
             forced_tool = MENU_NAVIGATION_TOOL
-            forced_agent = context.menu_navigation_assistant
+            forced_entity = (
+                context.menu_navigation_assistant
+                if legacy_agent_session
+                else context.assistant_team
+            )
             route_name = "selected_menu_navigation"
         elif not branch and context_menu_tool:
             forced_tool = context_menu_tool
-            forced_agent = context.menu_navigation_assistant
+            forced_entity = (
+                context.menu_navigation_assistant
+                if legacy_agent_session
+                else context.assistant_team
+            )
             route_name = "menu_navigation"
         elif not branch and edit_intent and fresh_request:
             forced_tool = EDIT_MODE_TOOL
-            forced_agent = context.edit_mode_assistant
+            forced_entity = (
+                context.edit_mode_assistant if legacy_agent_session else context.assistant_team
+            )
             route_name = "edit_mode"
         tool_declared = bool(forced_tool and _declares_tool(run_input, forced_tool))
         audit_values = {
@@ -890,6 +969,7 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             "forced_route_selected": bool(forced_tool),
             "menu_navigation_required": navigation_required,
             "report_route_selected": report_selected and fresh_request,
+            "legacy_agent_session": legacy_agent_session,
         }
         _audit_tool_route(
             request,
@@ -901,7 +981,7 @@ async def run_agui(request: Request, run_input: RunAgentInput):
 
         if branch:
             if hasattr(branch, "source_thread_id") and hasattr(branch, "source_run_id"):
-                branch_agent = await _agent_for_stored_run(
+                branch_agent = await _entity_for_stored_run(
                     context,
                     branch.source_thread_id,
                     user_id,
@@ -923,10 +1003,14 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                     user_id,
                 )
         elif not forced_tool:
+            run_agent: Agent | Team | None
             if fresh_request:
-                run_agent = context.report_agent if report_selected else context.assistant
+                if legacy_agent_session:
+                    run_agent = context.report_agent if report_selected else context.assistant
+                else:
+                    run_agent = context.assistant_team
             else:
-                run_agent = await _agent_for_stored_run(
+                run_agent = await _entity_for_stored_run(
                     context,
                     run_input.thread_id,
                     user_id,
@@ -940,7 +1024,7 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             else:
                 server_context = None
                 attachment_error = False
-                if fresh_request and run_agent is context.report_agent:
+                if fresh_request and report_selected:
                     try:
                         attachment_context = await _current_attachment_context(
                             run_input,
@@ -956,6 +1040,13 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                             "report_attachment_invalid",
                         )
                 if not attachment_error:
+                    if fresh_request and run_agent is context.assistant_team:
+                        server_context = [
+                            *(server_context or []),
+                            _team_route_context(
+                                context.report_agent.id if report_selected else context.assistant.id
+                            ),
+                        ]
                     prepared_input = await _prepare_run_input(
                         run_agent,
                         run_input,
@@ -977,18 +1068,28 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                 "required_tool_unavailable",
             )
         else:
-            assert forced_agent is not None
+            assert forced_entity is not None
             prepared_input = await _prepare_run_input(
-                forced_agent,
+                forced_entity,
                 run_input,
                 user_id,
                 context.settings,
+                server_context=[
+                    _team_route_context(
+                        context.menu_navigation_assistant.id
+                        if forced_tool == MENU_NAVIGATION_TOOL
+                        else context.edit_mode_assistant.id
+                    )
+                ]
+                if forced_entity is context.assistant_team
+                else None,
             )
             guarded_source = run_entity(
-                forced_agent,
+                forced_entity,
                 prepared_input,
                 user_id=user_id,
             )
+            guarded_source = _hide_team_delegation_events(guarded_source)
 
             def audit_guard(result):
                 _audit_tool_route(
@@ -1004,6 +1105,7 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                 forced_tool,
                 audit=audit_guard,
             )
+        source = _hide_team_delegation_events(source)
         async for event in source:
             if _is_raw_reasoning_event(event):
                 continue
@@ -1046,6 +1148,7 @@ application_context = ApplicationContext(
     edit_mode_assistant,
     menu_navigation_assistant,
     report_agent,
+    assistant_team,
 )
 base_app = create_base_app(application_context)
 agent_os, app = create_agentos_app(application_context, base_app)

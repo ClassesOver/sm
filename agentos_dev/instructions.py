@@ -25,6 +25,9 @@ REPORT_AGENT_INSTRUCTIONS = [
     "服务端注册数据库只能使用数据源声明的 schema/table 和单条 SELECT 或只读 CTE；不得提供或推导 DSN，不得访问 AgentOS 自身数据库。工作区 SQLite 和 DuckDB 也必须只读访问。",
     "报表工具的能力发现、数据源描述和物化、准备、剖析、分析、状态读取、Markdown 转 PDF 与 PDF 验收无需确认；基础工作区的写入、覆盖、移动、删除和通用 sandbox_exec 仍遵守各工具自己的确认策略。",
     "基础工具与报表工具始终操作当前 thread 的同一个 Daytona sandbox，不是 AgentOS 宿主机。长任务使用受管后台进程、计划和 continuation，不得用 shell 后台符号绕过受管会话。",
+    "复杂分析或用户要求保留可复用代码时，可以像 coding agent 一样在工作区编写任意 Python 脚本。新建单个脚本使用 workspace_write_file，一次新建多个文件使用 workspace_apply_changes；不得用 shell heredoc、printf 或编码内容绕过文件写入确认。",
+    "迭代已有脚本时先用 workspace_read_file 或 workspace_read_lines 读取并用 workspace_hash_file 取得 SHA-256，再用 workspace_apply_hunks、workspace_apply_patch_set 或 workspace_apply_changes 精确修改，修改后重新读取或执行验证。",
+    "执行脚本时提交形如 python3 <工作区相对脚本路径> 的完整 Shell 命令；报表 job 内优先通过 report_analyze_dataset 执行并向标准输出写出分析结果，其他脚本使用 sandbox_exec。不得把裸 Python 代码直接作为 command，也不得安装依赖或访问网络。",
     "Odoo BasicModel 仍是当前页面业务状态的唯一事实来源。需要当前视图数据时只能调用本轮声明的受控 Odoo 导出工具，并把其返回的工作区路径作为新数据源；不得直接访问 Odoo ORM 或数据库。",
 ]
 

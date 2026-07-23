@@ -2396,6 +2396,8 @@ BASE_TOOLKIT_INSTRUCTIONS = """
 - 所有工具都操作当前 thread 的同一个 Daytona sandbox，不是 AgentOS 宿主机；路径使用工作区相对路径。
 - 文件定位优先使用 rg 搜索，读取、stat、目录树、哈希和 Git 只读检查优先使用 workspace_* 专用工具；这些工具在 sandbox 内复用 sed、wc、stat、find、sha256sum 和 git，不要用 sandbox_exec 重复实现。
 - 修改已有文本遵循“读取和哈希 → 精确补丁 → 重新读取或检查”；已知原文件行坐标时使用 workspace_apply_hunks，同一任务涉及 create/update/delete/move 时优先使用 workspace_apply_changes，只有不依赖行坐标的纯文本多段替换使用 workspace_apply_patch_set。创建目录或复制普通文件使用对应 workspace_* 工具。
+- 对编码任务先检查相关文件、测试和 Git 状态，明确可验证的成功标准；完成修改后运行与改动匹配的测试或脚本，再检查输出和 workspace_git_diff，不能只凭写入成功声称完成。
+- Python 编码优先创建工作区内 `.py` 脚本并反复读取、精确修改和执行；使用当前沙箱已安装的解释器和依赖，不要默认安装新包或访问网络。
 - 独立的只读调用可放在同一工具批次；后一步依赖前一步结果时必须串行，并原样使用工具返回的路径、SHA-256、sessionId 和 commandId。
 - 短命令使用前台 sandbox_exec；长任务设置 background=true，再用 sandbox_process_poll 轮询到 completed，每次分页原样使用返回的 nextOffset。需要输入、PTY 中断或终止时分别使用 sandbox_process_write、sandbox_process_interrupt 或 sandbox_process_stop，不要用 shell 后台符号绕过受管会话。
 - 工具失败时依据返回的错误、output、exitCode 或 status 修正后再继续；不得忽略失败或盲目重复有副作用的调用。
@@ -2408,6 +2410,8 @@ WORKSPACE_REPORT_TOOLKIT_INSTRUCTIONS = """
 - 仅在需要分析工作区数据或生成报表时使用本工具集；不确定可用 Python 库或系统命令时先调用 report_list_analysis_capabilities。
 - 先用 report_prepare_dataset 登记一至二十个工作区相对路径，并在后续各轮原样复用返回的 jobId。
 - 先调用 report_profile_dataset 获取确定性的行列、空值、数值范围和高频值基线；它只读取 job 已登记的输入，不能替代后续针对业务问题的多轮分析。
+- 复杂分析可以用 workspace_write_file 或 workspace_apply_changes 在工作区创建 Python 脚本；迭代已有脚本时遵循基础工具的读取、哈希、精确补丁和复查流程，不得用 Shell 绕过文件写入确认。
+- 通过 report_analyze_dataset 执行脚本时，command 必须是 python3 <工作区相对脚本路径> 及其参数组成的完整 Shell 命令，不得直接提交裸 Python 代码。
 - 使用同一 jobId 多轮调用 report_analyze_dataset；每轮提交可独立执行的完整命令，并向标准输出写出本轮分析结果。
 - 分析失败时读取返回的 output、exitCode 和 status，修正命令后继续；由模型根据证据充分性决定轮次，但生成报表前至少要有一轮成功分析。
 - 分析充分后，基于真实工具结果生成 Markdown 文件；结论、数字、表格和图片不得脱离分析结果，图片使用相对 Markdown 文件的路径。
@@ -3637,8 +3641,9 @@ class WorkspaceReportToolkit(Toolkit):
             Function(
                 name="report_analyze_dataset",
                 description=(
-                    "在当前 thread 的 Daytona sandbox 中执行一轮任意 Python、Shell 或 SQL "
-                    "分析；同一 job_id 可多轮调用；失败结果会返回给模型继续修正；无需用户确认。"
+                    "在当前 thread 的 Daytona sandbox 中执行一轮完整 Shell 分析命令，可调用 "
+                    "Python 脚本、Shell 或 SQL 客户端；同一 job_id 可多轮调用；"
+                    "失败结果会返回给模型继续修正；无需用户确认。"
                 ),
                 parameters={
                     "type": "object",
@@ -3652,8 +3657,9 @@ class WorkspaceReportToolkit(Toolkit):
                             "type": "string",
                             "minLength": 1,
                             "description": (
-                                "本轮拟执行的完整非空命令，必须向标准输出写出分析结果；"
-                                "不得使用空字符串占位。"
+                                "本轮拟执行的完整非空命令（使用 Shell 语法），必须向标准输出写出分析结果；"
+                                "Python 使用 python3 <工作区相对脚本路径> 或 python3 -c，"
+                                "不得直接提交裸 Python 代码或使用空字符串占位。"
                             ),
                         },
                         "cwd": {

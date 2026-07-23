@@ -4,6 +4,7 @@ from typing import Any
 from agno.agent import Agent
 from agno.os import AgentOS
 from agno.os.interfaces.agui import AGUI
+from agno.team import Team
 from fastapi import FastAPI
 
 from .settings import AgentSettings
@@ -19,6 +20,7 @@ class ApplicationContext:
     edit_mode_assistant: Agent
     menu_navigation_assistant: Agent
     report_agent: Agent
+    assistant_team: Team
 
 
 def create_agentos_app(
@@ -28,7 +30,8 @@ def create_agentos_app(
     agent_os = AgentOS(
         name="HRP开发服务",
         agents=[context.assistant, context.report_agent],
-        interfaces=[AGUI(agent=context.assistant)],
+        teams=[context.assistant_team],
+        interfaces=[AGUI(team=context.assistant_team)],
         base_app=base_app,
         on_route_conflict="preserve_base_app",
         cors_allowed_origins=list(context.settings.cors_allowed_origins),

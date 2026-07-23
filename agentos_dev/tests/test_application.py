@@ -47,7 +47,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
             return self.values["base_app"]
 
     monkeypatch.setattr("agentos_dev.application.AgentOS", FakeAgentOS)
-    monkeypatch.setattr("agentos_dev.application.AGUI", lambda agent: ("agui", agent))
+    monkeypatch.setattr("agentos_dev.application.AGUI", lambda **value: ("agui", value))
     settings = AgentSettings.from_environment({}, load_env_file=False)
     first_base = FastAPI()
     second_base = FastAPI()
@@ -59,11 +59,13 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
         FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
+        FakeAssistant(),
     )
     second_context = ApplicationContext(
         settings,
         object(),
         FakeSkills("second"),
+        FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
@@ -79,6 +81,8 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["on_route_conflict"] == "preserve_base_app"
     assert created[0].values["cors_allowed_origins"] == list(settings.cors_allowed_origins)
     assert len(created[0].values["agents"]) == 2
+    assert created[0].values["teams"] == [first_context.assistant_team]
+    assert created[0].values["interfaces"] == [("agui", {"team": first_context.assistant_team})]
 
 
 def test_default_application_exposes_explicit_context():
@@ -92,6 +96,7 @@ def test_default_application_exposes_explicit_context():
     assert context.edit_mode_assistant is app_module.edit_mode_assistant
     assert context.menu_navigation_assistant is app_module.menu_navigation_assistant
     assert context.report_agent is app_module.report_agent
+    assert context.assistant_team is app_module.assistant_team
 
 
 @pytest.mark.anyio
@@ -107,6 +112,7 @@ async def test_base_application_routes_use_their_own_context():
         edit_mode_assistant=FakeAssistant(),
         menu_navigation_assistant=FakeAssistant(),
         report_agent=FakeAssistant(),
+        assistant_team=FakeAssistant(),
     )
     second_context = ApplicationContext(
         settings=replace(settings, workspace_hmac_secret="second-secret"),
@@ -116,6 +122,7 @@ async def test_base_application_routes_use_their_own_context():
         edit_mode_assistant=FakeAssistant(),
         menu_navigation_assistant=FakeAssistant(),
         report_agent=FakeAssistant(),
+        assistant_team=FakeAssistant(),
     )
     first_app = app_module.create_base_app(first_context)
     second_app = app_module.create_base_app(second_context)
