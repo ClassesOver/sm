@@ -99,7 +99,7 @@ odoo.define("agui_chat.tests.host", function (require) {
     QUnit.module("agui_chat v2 host adapter");
 
     QUnit.test("host bridge forwards the Odoo session CSRF token", function (assert) {
-        assert.expect(1);
+        assert.expect(3);
         var bridge = new ChatBridge.HostBridge({
             call: function (_service, method) {
                 if (method === "getMenuCatalog") {
@@ -116,6 +116,8 @@ odoo.define("agui_chat.tests.host", function (require) {
         var props = bridge.mountProps({protocol: "agui.odoo.v2"}, "dock");
 
         assert.strictEqual(props.csrfToken, core.csrf_token);
+        assert.strictEqual(props.attachments.maxFileSize, 200 * 1024 * 1024);
+        assert.strictEqual(props.attachments.maxTotalSize, 200 * 1024 * 1024);
     });
 
     QUnit.test("chat dock stays interactive above modal backdrops", function (assert) {

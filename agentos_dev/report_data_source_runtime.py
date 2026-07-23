@@ -7,7 +7,7 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-MAX_PART_BYTES = 25 * 1024 * 1024
+MAX_PART_BYTES = 200 * 1024 * 1024
 MAX_PARTS = 20
 WORKSPACE_ROOT = Path("/home/daytona/workspace")
 

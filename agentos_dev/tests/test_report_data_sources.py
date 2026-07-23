@@ -13,6 +13,7 @@ from agentos_dev.report_data_sources import (
     CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
     MAX_DATASET_FILE_BYTES,
     MAX_DIRECTORY_ENTRIES,
+    REPORT_DATA_RUNTIME_TIMEOUT_SECONDS,
     REPORT_DATASET_HANDLES_STATE_KEY,
     PostgresDataSource,
     PostgresSourceConfig,
@@ -65,6 +66,12 @@ class FakeWorkspaceService:
                 }
             )
         return result
+
+
+def test_数据转换动作预算为600秒():
+    assert MAX_DATASET_FILE_BYTES == 200 * 1024 * 1024
+    assert report_data_source_runtime.MAX_PART_BYTES == 200 * 1024 * 1024
+    assert REPORT_DATA_RUNTIME_TIMEOUT_SECONDS == 600
 
 
 def context(references, attachments=None):

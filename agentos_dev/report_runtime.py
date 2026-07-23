@@ -18,9 +18,9 @@ MAX_IMAGE_COUNT = 50
 MAX_TOTAL_IMAGE_BYTES = 50 * 1024 * 1024
 MAX_RESULT_BYTES = 64 * 1024
 MAX_DATASET_PATHS = 20
-MAX_PDF_BYTES = 25 * 1024 * 1024
+MAX_PDF_BYTES = 200 * 1024 * 1024
 MAX_PDF_PAGES = 200
-PDF_VALIDATION_TIMEOUT_SECONDS = 240
+PDF_VALIDATION_TIMEOUT_SECONDS = 540
 IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 
 
@@ -271,7 +271,7 @@ class ReportRuntime:
             ).write_pdf(str(temporary))
             pdf_size = temporary.stat().st_size
             if pdf_size > MAX_PDF_BYTES:
-                raise ReportFailure("PDF 文件不能超过 25 MiB")
+                raise ReportFailure("PDF 文件不能超过 200 MiB")
             reader = pypdf.PdfReader(str(temporary))
             page_count = len(reader.pages)
             if not page_count:
@@ -338,8 +338,8 @@ class ReportRuntime:
                     raise ReportFailure("Markdown 或图片产物发生变化，请重新渲染后验收")
             relative = _relative_path(pdf_path, ".pdf")
             path = self.workspace.joinpath(*relative.parts)
-            current = self._artifact(path)
             self._check_pdf_bounds(path)
+            current = self._artifact(path)
             if current["sha256"] != render["pdf"]["sha256"]:
                 raise ReportFailure("PDF 产物发生变化，请重新渲染后验收")
             pages = []
@@ -428,7 +428,7 @@ class ReportRuntime:
         except ImportError as error:
             raise ReportFailure("PDF 视觉验收依赖不可用") from error
         if not path.is_file() or path.stat().st_size > MAX_PDF_BYTES:
-            raise ReportFailure("PDF 文件不能超过 25 MiB")
+            raise ReportFailure("PDF 文件不能超过 200 MiB")
         try:
             page_count = len(pypdf.PdfReader(str(path)).pages)
         except pypdf.errors.PdfReadError as error:

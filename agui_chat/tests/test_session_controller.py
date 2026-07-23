@@ -12,6 +12,9 @@ from odoo.addons.agui_chat.controllers import main as controller_main
 
 class TestAguiChatSessionController(TransactionCase):
 
+    def test_attachment_single_file_limit_is_200_mib(self):
+        self.assertEqual(controller_main.MAX_ATTACHMENT_SIZE, 200 * 1024 * 1024)
+
     def test_attachment_routes_use_odoo_csrf_validation(self):
         upload_routing = controller_main.AguiChatController.attachment_upload.routing
         delete_routing = controller_main.AguiChatController.attachment_delete.routing

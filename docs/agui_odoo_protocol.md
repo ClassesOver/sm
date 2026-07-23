@@ -105,13 +105,13 @@ multipart 文件元数据；实际写入位置仍是确认时绑定的 `path`。
 capability 和文件内容不会进入授权、审计或消息。
 
 导出路径固定为 `exports/<model>-<capturedAt UTC>-<tool call 短 ID>.<format>`，因此同一绑定快照
-的重复 prepare 路径不变。单文件最多 10 MiB；空结果允许生成仅含表头的文件。分组、排序、
+的重复 prepare 路径不变。单文件最多 200 MiB；空结果允许生成仅含表头的文件。分组、排序、
 字段精度和 `expWay` 语义由业务 XLSX 导出控制器处理。稳定失败码包括
 `no_current_list`、`unsaved_changes`、`export_no_fields`、
 `odoo_export_failed`、`export_file_too_large`、`workspace_capability_rejected`、
 `workspace_path_conflict` 和 `workspace_upload_failed`，并保留现有 stale/target 错误。
 
-AgentOS `/config.limits.workspace_file_bytes` 固定为 `10485760`。`POST /workspace/files` 是
+AgentOS `/config.limits.workspace_file_bytes` 固定为 `209715200`。`POST /workspace/files` 是
 multipart create-only 接口，成功返回 `201 {ok, entry}`；同一 thread/path 通过 PostgreSQL
 advisory lock 串行化存在性检查与上传，重名返回 `409 workspace_path_conflict`。既有
 `POST /workspace/upload` 仍保留覆盖语义。
@@ -345,7 +345,7 @@ AgentOS 校验源、目标 thread 的 capability，并要求数据库、用户�
 它只复制截至选定 run 的源运行，为每个复制 run 分配新 ID，发出旧到新的映射，并使用
 `regenerate=true`、`replace_original=true` 调用 Agno 重新生成。选定 run 已完成的工具交互保留在历史中，不会再次执行；源会话不会修改。
 
-分支工作区复制源会话的当前文件，而不是选定 run 时的历史快照。创建目标沙箱前校验清单：最多 2000 个普通文件、总计 256 MiB、单文件 25 MiB。
+分支工作区复制源会话的当前文件，而不是选定 run 时的历史快照。创建目标沙箱前校验清单：最多 2000 个普通文件、总计 256 MiB、单文件 200 MiB。
 符号链接、非普通文件、无效路径和任一超限都会拒绝整个工作区。`RUN_STARTED` 前失败会删除已准备的 AgentOS/工作区状态；React 归档 HRP 分支并停留在源会话。
 `RUN_STARTED` 后的模型错误在分支中可见。Agent 会话持久化及分支工作区复制/回滚使用原生异步 PostgreSQL 和 Daytona 客户端，因此分支准备不会阻塞 AG-UI SSE 事件循环。
 受控分支失败在 `RUN_ERROR.code` 发出稳定的 `branch_*` 值；意外失败使用 `branch_failed`。客户端消息不包含后端原始异常文本。

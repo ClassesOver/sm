@@ -202,6 +202,11 @@ odoo.define("agui_chat.host_bridge", function (require) {
             tools: clone(this.catalog),
             menuCatalog: clone(this.owner.call("agui_host", "getMenuCatalog") || {}),
             agentSkills: clone(config.agent && config.agent.skills || []),
+            attachments: {
+                enabled: true,
+                maxFileSize: 200 * 1024 * 1024,
+                maxTotalSize: 200 * 1024 * 1024,
+            },
             surface: surface,
             hostBridge: this.publicApi(),
         };

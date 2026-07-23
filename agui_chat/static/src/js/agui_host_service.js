@@ -1044,8 +1044,8 @@ odoo.define("agui_chat.host_service", function (require) {
                 throw _.extend(new Error("Odoo 原生导出失败。"), {code: "odoo_export_failed"});
             }).then(function (exportFile) {
                 var blob = exportFile.blob;
-                if (blob.size > 10 * 1024 * 1024) {
-                    throw _.extend(new Error("导出文件超过 10 MiB。"), {code: "export_file_too_large"});
+                if (blob.size > 200 * 1024 * 1024) {
+                    throw _.extend(new Error("导出文件超过 200 MiB。"), {code: "export_file_too_large"});
                 }
                 var uploadBody = new FormData();
                 uploadBody.append("threadId", workspace.threadId);

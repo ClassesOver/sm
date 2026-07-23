@@ -23,6 +23,9 @@ from agentos_dev.tests.workspace_fakes import (
     service,
 )
 from agentos_dev.workspace import (
+    MAX_BRANCH_FILE_BYTES,
+    MAX_DOWNLOAD_BYTES,
+    MAX_IMAGE_BYTES,
     MAX_MANAGED_PROCESSES,
     MAX_PATH_BYTES,
     MAX_PATH_COMPONENT_BYTES,
@@ -32,6 +35,7 @@ from agentos_dev.workspace import (
     MAX_TOOL_OUTPUT_BYTES,
     MAX_UPLOAD_BYTES,
     REPORT_JOBS_STATE_KEY,
+    REPORT_RUNTIME_TIMEOUT_SECONDS,
     WORKSPACE_ROOT,
     WORKSPACE_SNAPSHOT,
     BaseToolkit,
@@ -43,6 +47,14 @@ from agentos_dev.workspace import (
     WorkspaceService,
     WorkspaceToolkit,
 )
+
+
+def test_报表动作和工作区单文件边界统一为200mib():
+    assert REPORT_RUNTIME_TIMEOUT_SECONDS == 600
+    assert MAX_UPLOAD_BYTES == 200 * 1024 * 1024
+    assert MAX_DOWNLOAD_BYTES == 200 * 1024 * 1024
+    assert MAX_BRANCH_FILE_BYTES == 200 * 1024 * 1024
+    assert MAX_IMAGE_BYTES == 10 * 1024 * 1024
 
 
 def test_每个对话使用独立持久沙箱且注册表可跨服务复用(tmp_path):
@@ -67,14 +79,16 @@ def test_每个对话使用独立持久沙箱且注册表可跨服务复用(tmp_
     assert len(client.created) == 2
 
 
-def test_路径大小符号链接和销毁边界均生效(tmp_path):
+def test_路径大小符号链接和销毁边界均生效(tmp_path, monkeypatch):
     current = service(tmp_path)
     with pytest.raises(WorkspaceError, match="目录穿越"):
         current.upload("thread", "../escape", b"bad")
     with pytest.raises(WorkspaceError, match="绝对路径"):
         current.list_files("thread", "/etc")
-    with pytest.raises(WorkspaceError, match="10 MB"):
-        current.upload("thread", "large.bin", b"x" * (MAX_UPLOAD_BYTES + 1))
+    with monkeypatch.context() as patch:
+        patch.setattr(workspace_module, "MAX_UPLOAD_BYTES", 4)
+        with pytest.raises(WorkspaceError, match="文件内容超过"):
+            current.upload("thread", "large.bin", b"12345")
 
     current.upload("thread", "docs/readme.txt", b"hello")
     assert current.read_text("thread", "docs/readme.txt") == "hello"
@@ -94,6 +108,19 @@ def test_路径大小符号链接和销毁边界均生效(tmp_path):
 
     assert current.destroy("thread") is True
     assert current.destroy("thread") is False
+
+
+def test_工作区下载允许200mib并拒绝更大文件(tmp_path):
+    current = service(tmp_path)
+    current.create_file("thread", "archive.bin", b"file")
+    info = current.sandbox_for("thread").fs.entries[f"{WORKSPACE_ROOT}/archive.bin"][0]
+    info.size = MAX_DOWNLOAD_BYTES
+
+    assert current.file_bytes("thread", "archive.bin")[0] == b"file"
+
+    info.size = MAX_DOWNLOAD_BYTES + 1
+    with pytest.raises(WorkspaceError, match="超过 200 MiB"):
+        current.file_bytes("thread", "archive.bin")
 
 
 def test_销毁会删除重复标签沙箱并清理注册表(tmp_path):

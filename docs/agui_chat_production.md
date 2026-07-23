@@ -214,7 +214,7 @@ AgentOS 的工作区智能报表依赖现有 `docker/sandbox-tools` 镜像，不
 pypdf、Matplotlib、pandas、openpyxl、xlrd、Python 测试与静态检查工具，
 以及 Noto CJK 字体和 `/usr/bin/bash`；Daytona sandbox 必须继续启用 `network_block_all`。报表 job 的可信状态保存在
 AgentOS/Agno session state，并绑定 thread、输入 SHA-256 和大小；sandbox `/tmp/workspace-report-*` 只能存放一次
-渲染或验收的临时文件，超时和失败由 AgentOS 精确清理。PDF 最大 25 MiB、200 页，渲染和验收动作各有 300 秒服务端预算。
+渲染或验收的临时文件，超时和失败由 AgentOS 精确清理。工作区文件和 PDF 的单文件上限为 200 MiB，PDF 最多 200 页；渲染、验收和数据转换动作各有 600 秒服务端预算。
 从工具镜像创建并激活自定义 Snapshot `sandbox-tools-20260723`，不要使用同名 System
 Snapshot；System Snapshot 的固定 `ref` 不会因 Registry tag 更新而刷新。
 每次更新工具镜像后都必须重新创建并激活该自定义 Snapshot；只推送同名 Registry tag 不会让

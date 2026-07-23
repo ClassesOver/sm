@@ -12,7 +12,7 @@ description: 使用当前对话的 Daytona 沙箱自由分析工作区文件，�
 3. 分析完全使用 Coding 工具：先用 `exec_command` 检查文件和可用依赖，再用 `apply_patch` 创建或修改任意 Python 脚本；用 `exec_command` 执行 Python、Shell 或当前 Daytona 工作区允许的其他命令，返回整数 `session_id` 时用 `write_stdin` 轮询、输入或中断。Report 层不限制分析命令、输出大小、执行轮次或分析方式；失败时读取 `output` 和 `exit_code`，修正脚本或命令后继续。不得把失败结果当作分析结论，也不得另行向用户提问。
 4. 可在后续轮次读取前面生成的脚本、中间数据和图片。根据用户诉求自由决定分析方法、章节、表格、图表类型和图表数量；对关键统计口径和异常结论增加复核轮次。沙箱已为 Matplotlib/Seaborn 配置 Noto CJK 图表字体；不要覆盖为 DejaVu-only 字体，中文图表标题、坐标轴和图例必须使用可覆盖 CJK 的字体。
 5. 在 `报表/生成结果/<jobId>/` 下生成完整 UTF-8 Markdown 和图片。Markdown 是报表正文的唯一来源，图片使用相对 Markdown 文件的 PNG、JPEG、GIF 或 WebP 路径；不要写 raw HTML、外部 URL 或绝对路径，PDF 输出必须使用尚不存在的新路径。
-6. 用 `view_image` 检查生成的图表，并核对标题、数据范围、统计口径、单位、空值、截断声明和结论依据；随后直接调用无需确认的 `report_render_markdown`，再用返回的 `pdfPath` 调用 `report_validate_pdf`。PDF 最多 25 MiB、200 页；空白页、图片缺失或其他验收失败时，修正 Markdown 或图片并使用新的 PDF 路径重新渲染和验收。
+6. 用 `view_image` 检查生成的图表，并核对标题、数据范围、统计口径、单位、空值、截断声明和结论依据；随后直接调用无需确认的 `report_render_markdown`，再用返回的 `pdfPath` 调用 `report_validate_pdf`。PDF 最多 200 MiB、200 页；空白页、图片缺失或其他验收失败时，修正 Markdown 或图片并使用新的 PDF 路径重新渲染和验收。
 7. 最后调用 `report_job_status`。只有状态为 `validated` 且产物没有 `changed` 时，才可使用状态返回的 Markdown/PDF 相对路径、页数、图片数、大小和 SHA-256 报告完成；`rendered`、`validation_failed` 或 `artifact_changed` 都不代表完成。最终响应同时给出 Markdown、PDF 和主要数据产物的工作区相对路径。
 8. 数据源发现、报表准备、状态读取、PDF 渲染和视觉验收无需确认；编码和分析遵循 Coding 工具的确认策略，Odoo 当前视图导出仍遵循自身的授权链路。
 

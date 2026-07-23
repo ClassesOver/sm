@@ -223,8 +223,8 @@ async def test_public_config_and_protected_routes(client):
     }
     assert config.json()["limits"] == {
         "run_request_bytes": 2 * 1024 * 1024,
-        "workspace_upload_request_bytes": 12 * 1024 * 1024,
-        "workspace_file_bytes": 10 * 1024 * 1024,
+        "workspace_upload_request_bytes": 202 * 1024 * 1024,
+        "workspace_file_bytes": 200 * 1024 * 1024,
         "json_mutation_request_bytes": 64 * 1024,
     }
 
@@ -438,7 +438,7 @@ async def test_workspace_files_post_maps_conflict_size_and_backend_errors(monkey
         "create_file_locked",
         lambda *_args: (_ for _ in ()).throw(RuntimeError("daytona unavailable")),
     )
-    monkeypatch.setattr(app_module, "WORKSPACE_FILE_BYTES", 10 * 1024 * 1024)
+    monkeypatch.setattr(app_module, "WORKSPACE_FILE_BYTES", 200 * 1024 * 1024)
     failed = await client.post(
         "/workspace/files",
         data={"threadId": "thread-1", "path": "exports/员工.csv"},
@@ -536,7 +536,7 @@ async def test_invalid_capability_is_rejected_before_large_run_body(client):
 
 
 @pytest.mark.anyio
-async def test_chunked_request_limits_return_413(client):
+async def test_chunked_request_limits_return_413(client, monkeypatch):
     headers = {
         "X-AGUI-Thread": "thread-1",
         "X-AGUI-Capability": capability(),
@@ -557,6 +557,8 @@ async def test_chunked_request_limits_return_413(client):
         content=b"x" * (app_module.MAX_JSON_MUTATION_REQUEST_BYTES + 1),
         headers=headers,
     )
+
+    monkeypatch.setattr(app_module, "MAX_WORKSPACE_UPLOAD_REQUEST_BYTES", 4)
 
     async def upload_chunks():
         yield b"x" * app_module.MAX_WORKSPACE_UPLOAD_REQUEST_BYTES

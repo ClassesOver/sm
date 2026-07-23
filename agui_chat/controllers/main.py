@@ -37,7 +37,7 @@ REPORT_ATTACHMENT_SUFFIXES = {
     ".json": "application/json",
     ".jsonl": "application/x-ndjson",
 }
-MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
+MAX_ATTACHMENT_SIZE = 200 * 1024 * 1024
 
 
 def _attachment_type(mime_type, filename):
@@ -100,7 +100,7 @@ class AguiChatController(http.Controller):
                 raise ValueError("不支持此附件类型。")
             content = upload.read(MAX_ATTACHMENT_SIZE + 1)
             if len(content) > MAX_ATTACHMENT_SIZE:
-                raise ValueError("附件大小超过 10 MB。")
+                raise ValueError("附件大小超过 200 MiB。")
             attachment = request.env["ir.attachment"].sudo().create({
                 "name": upload.filename or "attachment",
                 "datas_fname": upload.filename or "attachment",

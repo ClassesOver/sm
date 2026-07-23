@@ -181,7 +181,7 @@ AgentOS 宿主机 Python 或绕过现有确认策略的执行入口。
 
 工作区文件、目录、SQLite、DuckDB、Odoo 受控导出和服务端注册的只读 PostgreSQL 均通过
 `DatasetHandle` 进入报表工具。目录只列直接子项，文件变化会返回稳定的 `stale_dataset`，单个
-任务最多 20 个输入；单文件不超过 25 MiB，数据库物化总量不超过 256 MiB。Odoo 导出仍必须
+任务最多 20 个输入；单文件不超过 200 MiB，数据库物化总量不超过 256 MiB。Odoo 导出仍必须
 经过现有导出、确认和一次性授权链路，ReportAgent 不访问 Odoo ORM 或数据库。
 
 外部 PostgreSQL 数据源由 `AGENT_REPORT_DATA_SOURCES_FILE` 指向的 JSON 配置注册。配置只保存
@@ -222,7 +222,7 @@ SQL 只允许单条 `SELECT` 或只读 CTE，并强制只读事务、超时、sc
 服务端 job。模型随后直接使用 Coding Toolkit
 执行当前 Daytona 工作区允许的 Python、Shell 或其他分析命令；Report 层不再提供能力探测、固定剖析、
 独立命令执行器、60 秒分析超时或成功轮次门槛。模型生成完整 Markdown 和本地图表后，将其渲染为
-不覆盖已有文件的新 PDF；渲染和 PDF 验收各自最多运行 300 秒。PDF 限制为 25 MiB 和 200 页，运行时使用
+不覆盖已有文件的新 PDF；渲染和 PDF 验收各自最多运行 600 秒。PDF 限制为 200 MiB 和 200 页，运行时使用
 Poppler 将 PDF 逐页栅格化，检查空白页、文本、图片数量和像素占比，并把 Markdown、图片、PDF 的
 路径、大小、SHA-256 和验收结果写入 AgentOS 的持久化 session state。只有 `report_job_status` 返回 `validated`
 且产物未变化才算完成。系统不再使用固定模板、`compile` 或 `blocks`。
@@ -251,7 +251,7 @@ PostgreSQL 绑定到 `127.0.0.1:55432`，容器内 AgentOS 则通过 `agent-db:5
 由服务端从 AgentOS PostgreSQL 装配预算历史，续跑沿用原暂停 run，不重复注入。历史回答重生成使用受控 branch 元数据和源、
 目标 thread 双 capability，在新 thread 中复制截至目标 run 的历史并调用 Agno 原生
 `regenerate=True, replace_original=True`。分支工作区复制源会话当前文件，限制为 2000 个
-普通文件、总计 256 MiB、单文件 25 MiB，符号链接或任一超限会整体拒绝。
+普通文件、总计 256 MiB、单文件 200 MiB，符号链接或任一超限会整体拒绝。
 
 `AGENT_SKILLS_DIR` 使用 Agno 官方 `Skills(loaders=[LocalSkills(...)])` 方式加载。
 Skills 保持渐进披露：模型先看到名称和描述，再按需读取指令、reference 或 script，

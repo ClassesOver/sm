@@ -34,8 +34,9 @@ from .security import thread_label
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
 WORKSPACE_SNAPSHOT = "sandbox-tools-20260722"
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_READ_BYTES = 1024 * 1024
 MAX_TOOL_OUTPUT_BYTES = 64 * 1024
 MAX_LIST_ENTRIES = 500
@@ -61,14 +62,14 @@ MAX_PTY_COLS = 400
 MAX_GIT_LOG_ENTRIES = 100
 MAX_BRANCH_FILES = 2000
 MAX_BRANCH_TOTAL_BYTES = 256 * 1024 * 1024
-MAX_BRANCH_FILE_BYTES = 25 * 1024 * 1024
+MAX_BRANCH_FILE_BYTES = 200 * 1024 * 1024
 MAX_INSPECT_PDF_PAGES = 200
 IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 MANAGED_PROCESS_PREFIX = "agui-exec-"
 REPORT_JOBS_STATE_KEY = "report_jobs"
 MAX_REPORT_JOBS = 10
 MAX_REPORT_JOB_STATE_BYTES = 48 * 1024
-REPORT_RUNTIME_TIMEOUT_SECONDS = 300
+REPORT_RUNTIME_TIMEOUT_SECONDS = 600
 
 
 class WorkspaceError(ValueError):
@@ -465,7 +466,7 @@ class WorkspaceService:
                     raise WorkspaceError("源工作区包含非普通文件，无法创建分支。")
                 size = int(entry.size or 0)
                 if size < 0 or size > MAX_BRANCH_FILE_BYTES:
-                    raise WorkspaceError("源工作区存在超过 25 MiB 的文件，无法创建分支。")
+                    raise WorkspaceError("源工作区存在超过 200 MiB 的文件，无法创建分支。")
                 files.append((relative, remote, size))
                 if len(files) > MAX_BRANCH_FILES:
                     raise WorkspaceError("源工作区文件数超过 2000 个，无法创建分支。")
@@ -716,7 +717,7 @@ class WorkspaceService:
         if not isinstance(content, bytes):
             raise WorkspaceError("文件内容格式无效，请使用二进制内容后重试。")
         if len(content) > MAX_UPLOAD_BYTES:
-            raise WorkspaceError("文件内容超过 10 MB，请缩小文件后重试。")
+            raise WorkspaceError("文件内容超过 200 MiB，请缩小文件后重试。")
 
     def _store_file(
         self,
@@ -768,10 +769,10 @@ class WorkspaceService:
         if info.is_dir:
             raise WorkspaceError("所选项目是目录，不能作为文件下载，请选择普通文件。")
         if int(info.size or 0) > MAX_DOWNLOAD_BYTES:
-            raise WorkspaceError("所选文件超过 25 MB，请缩小文件后重试。")
+            raise WorkspaceError("所选文件超过 200 MiB，请缩小文件后重试。")
         content = self._download_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
         if not isinstance(content, bytes) or len(content) > MAX_DOWNLOAD_BYTES:
-            raise WorkspaceError("工作区返回的文件超过 25 MB，请缩小文件后重试。")
+            raise WorkspaceError("工作区返回的文件超过 200 MiB，请缩小文件后重试。")
         return content, mimetypes.guess_type(relative)[0] or "application/octet-stream"
 
     @staticmethod
@@ -971,7 +972,7 @@ class WorkspaceService:
             "--sort",
             "path",
             "--max-filesize",
-            "25M",
+            "200M",
         ]
 
     @staticmethod
@@ -2107,7 +2108,7 @@ class WorkspaceService:
                 original, _mime_type = self.file_bytes(thread, relative)
                 if operation == "delete" and len(original) > MAX_UPLOAD_BYTES:
                     raise WorkspaceError(
-                        "变更集不能删除超过 10 MB 的文件；请使用独立删除工具并确认。"
+                        "变更集不能删除超过 200 MiB 的文件；请使用独立删除工具并确认。"
                     )
                 expected_sha256 = self._validate_patch_hash(change["expected_sha256"])
                 if hashlib.sha256(original).hexdigest() != expected_sha256:
@@ -2203,8 +2204,8 @@ class WorkspaceService:
         if suffix not in IMAGE_SUFFIXES:
             raise WorkspaceError("仅支持 PNG、JPEG、GIF 或 WebP 图片。")
         content, mime_type = self.file_bytes(thread, relative)
-        if len(content) > MAX_UPLOAD_BYTES:
-            raise WorkspaceError("图片超过 10 MB，请缩小后重试。")
+        if len(content) > MAX_IMAGE_BYTES:
+            raise WorkspaceError("图片超过 10 MiB，请缩小后重试。")
         header = content[:12]
         valid_signature = {
             ".png": header.startswith(b"\x89PNG\r\n\x1a\n"),
@@ -2299,14 +2300,14 @@ class WorkspaceService:
             if not self._is_regular_file(source_info):
                 raise WorkspaceError("复制源路径不是普通文件，请选择普通文件后重试。")
             if int(getattr(source_info, "size", 0) or 0) > MAX_UPLOAD_BYTES:
-                raise WorkspaceError("复制源文件超过 10 MB，请使用 sandbox_exec 处理大文件。")
+                raise WorkspaceError("复制源文件超过 200 MiB，请使用工作区命令处理大文件。")
             if self._inspect_destination_without_writes(sandbox, destination_relative) is not None:
                 raise WorkspacePathConflict(
                     f"文件“{destination_relative}”已经存在，请更换目标路径后重试。"
                 )
             content = self._download_file(sandbox, source_remote, MAX_UPLOAD_BYTES)
             if not isinstance(content, bytes) or len(content) > MAX_UPLOAD_BYTES:
-                raise WorkspaceError("复制源文件超过 10 MB，请使用 sandbox_exec 处理大文件。")
+                raise WorkspaceError("复制源文件超过 200 MiB，请使用工作区命令处理大文件。")
             digest = hashlib.sha256(content).hexdigest()
             created = False
             try:
@@ -3583,7 +3584,7 @@ class WorkspaceToolkit(DaytonaToolkit):
         destination: str,
         run_context: RunContext | None = None,
     ):
-        """复制不超过 10 MB 的普通文件；目标已存在时拒绝；执行前需要确认。
+        """复制不超过 200 MiB 的普通文件；目标已存在时拒绝；执行前需要确认。
 
         Args:
             source: 源普通文件的工作区相对路径。
@@ -3604,7 +3605,7 @@ class WorkspaceToolkit(DaytonaToolkit):
         return {"ok": True, "message": "文件或目录已删除。"}
 
     def workspace_view_image(self, path: str, run_context: RunContext | None = None) -> ToolResult:
-        """加载当前工作区中不超过 10 MB 的 PNG、JPEG、GIF 或 WebP 图片。
+        """加载当前工作区中不超过 10 MiB 的 PNG、JPEG、GIF 或 WebP 图片。
 
         Args:
             path: 要检查的工作区相对图片路径。

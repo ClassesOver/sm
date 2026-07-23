@@ -31,6 +31,12 @@ def test_sandbox_tools_提供智能报表所需命令和分析库():
         assert package in dockerfile
 
 
+def test_pdf_资源边界为200mib和600秒动作预算():
+    assert report_runtime.MAX_PDF_BYTES == 200 * 1024 * 1024
+    assert report_runtime.MAX_PDF_PAGES == 200
+    assert report_runtime.PDF_VALIDATION_TIMEOUT_SECONDS == 540
+
+
 @pytest.fixture
 def runtime(tmp_path):
     workspace = tmp_path / "workspace"
@@ -307,6 +313,25 @@ def test_markdown_使用唯一临时文件发布_pdf(runtime, monkeypatch):
 
     assert (runtime.workspace / rendered["pdfPath"]).is_file()
     assert legacy_temporary.read_bytes() == b"keep"
+
+
+def test_markdown_拒绝超过200mib的_pdf且不发布产物(runtime, monkeypatch):
+    from weasyprint import HTML
+
+    def write_oversized_pdf(_document, target):
+        with open(target, "wb") as stream:
+            stream.truncate(report_runtime.MAX_PDF_BYTES + 1)
+
+    monkeypatch.setattr(HTML, "write_pdf", write_oversized_pdf)
+    (runtime.workspace / "data").write_bytes(b"data")
+    (runtime.workspace / "report.md").write_text("# 报表", encoding="utf-8")
+    job = prepare_job(runtime, ["data"])
+
+    with pytest.raises(ReportFailure, match="不能超过 200 MiB"):
+        render_job(runtime, job, "report.md", "report.pdf")
+
+    assert not (runtime.workspace / "report.pdf").exists()
+    assert "render" not in job
 
 
 def test_markdown_拒绝超过页数边界的_pdf且不发布产物(runtime, monkeypatch):

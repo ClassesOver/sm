@@ -34,9 +34,9 @@ REPORT_DATASET_HANDLES_STATE_KEY = "report_dataset_handles"
 CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY = "当前消息工作区附件"
 MAX_REPORT_INPUTS = 20
 MAX_DIRECTORY_ENTRIES = 200
-MAX_DATASET_FILE_BYTES = 25 * 1024 * 1024
+MAX_DATASET_FILE_BYTES = 200 * 1024 * 1024
 MAX_MATERIALIZED_PART_BYTES = MAX_DATASET_FILE_BYTES
-REPORT_DATA_RUNTIME_TIMEOUT_SECONDS = 300
+REPORT_DATA_RUNTIME_TIMEOUT_SECONDS = 600
 SUPPORTED_FILE_FORMATS = frozenset(
     {
         "csv",
@@ -769,7 +769,7 @@ class ReportDataSourceToolkit(Toolkit):
             }:
                 raise ReportDataSourceError("dataset_invalid", "数据集类型无效，请重新准备。")
             if handle.size > MAX_DATASET_FILE_BYTES:
-                raise ReportDataSourceError("dataset_too_large", "单个数据集文件不能超过 25 MiB。")
+                raise ReportDataSourceError("dataset_too_large", "单个数据集文件不能超过 200 MiB。")
             digest = await self.service.ahash_file(_thread(run_context), handle.path)
             if digest.get("sha256") != handle.sha256 or int(digest.get("size", -1)) != handle.size:
                 raise ReportDataSourceError(
@@ -1179,7 +1179,7 @@ class ReportDataSourceToolkit(Toolkit):
             raise ReportDataSourceError("dataset_file_required", "数据集输入必须是普通文件。")
         digest = await self.service.ahash_file(thread, path)
         if int(digest.get("size", -1)) > MAX_DATASET_FILE_BYTES:
-            raise ReportDataSourceError("dataset_too_large", "单个数据集文件不能超过 25 MiB。")
+            raise ReportDataSourceError("dataset_too_large", "单个数据集文件不能超过 200 MiB。")
         file_format = _file_format(path)
         if path.startswith("exports/"):
             source_type = "odoo_export"
@@ -1226,7 +1226,7 @@ class ReportDataSourceToolkit(Toolkit):
             return adapter, stat, None
         digest = await self.service.ahash_file(_thread(run_context), normalized)
         if int(digest.get("size", -1)) > MAX_DATASET_FILE_BYTES:
-            raise ReportDataSourceError("dataset_too_large", "单个数据集文件不能超过 25 MiB。")
+            raise ReportDataSourceError("dataset_too_large", "单个数据集文件不能超过 200 MiB。")
         if (reference.size is not None and reference.size != int(digest.get("size", -1))) or (
             reference.sha256 is not None and reference.sha256 != digest.get("sha256")
         ):

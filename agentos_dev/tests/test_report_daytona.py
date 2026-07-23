@@ -128,7 +128,7 @@ def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
                 f"python /tmp/report_runtime.py {shlex.quote(action)} "
                 f"{shlex.quote(json.dumps(payload, ensure_ascii=False))}"
             )
-            result = sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=300)
+            result = sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=600)
             assert result.exit_code == 0, result.result
             output = next(line for line in reversed(result.result.splitlines()) if line.strip())
             return json.loads(output)
