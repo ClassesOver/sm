@@ -66,6 +66,8 @@ MAX_BRANCH_FILE_BYTES = 200 * 1024 * 1024
 MAX_INSPECT_PDF_PAGES = 200
 IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 MANAGED_PROCESS_PREFIX = "agui-exec-"
+MANAGED_TIMEOUT_ENV = "AGUI_MANAGED_TIMEOUT_MARKER"
+MANAGED_TIMEOUT_OUTPUT_PREFIX = "__AGUI_MANAGED_TIMEOUT__"
 REPORT_JOBS_STATE_KEY = "report_jobs"
 MAX_REPORT_JOBS = 10
 MAX_REPORT_JOB_STATE_BYTES = 48 * 1024
@@ -2419,8 +2421,8 @@ WORKSPACE_REPORT_TOOLKIT_INSTRUCTIONS = """
 智能报表工具规则：
 - 本工具集只负责绑定报表输入、渲染 Markdown 和验收 PDF；文件检查、Python 编码、分析和长进程统一使用 Coding 工具。
 - 先通过 report_materialize_dataset 获得一至二十个 datasetId，再用 report_prepare_dataset 绑定这些不可变数据集句柄，并在后续各轮原样复用返回的 jobId。
-- 复杂分析先用 exec_command 检查文件，再用 apply_patch 在工作区创建或修改 Python 脚本；不得用 Shell 绕过文件写入确认。
-- 用 exec_command 执行任意当前依赖和权限允许的分析命令；返回 session_id 时用 poll_process 持续读取，用 write_stdin 输入或中断，不另加 Report 层命令限制。
+- 复杂分析先用 exec_command 检查文件，再用 apply_patch 在工作区创建或修改 Python 脚本；不得用 Shell 绕过只能使用 apply_patch 的文件修改边界。
+- 用 exec_command 执行任意当前依赖和权限允许的分析命令；返回 session_id 时用 poll_process 持续读取，用 write_stdin 输入或中断，用 stop_process 终止任意受管命令，不另加 Report 层命令限制。
 - 分析失败时读取 output 和 exit_code，修正脚本或命令后继续；由模型根据证据充分性决定分析方式和轮次。
 - 分析充分后，基于真实工具结果生成 Markdown 文件；结论、数字、表格和图片不得脱离分析结果，图片使用相对 Markdown 文件的路径。
 - 使用新的输出路径调用 report_render_markdown，再调用 report_validate_pdf 做逐页视觉验收；必要时用 view_image 检查生成的图表。只有 report_job_status 为 validated 才能声称报表完成。
@@ -2829,6 +2831,7 @@ class DaytonaToolkit(Toolkit):
         offset: int = 0,
         max_bytes: int = MAX_TOOL_OUTPUT_BYTES,
         wall_time_seconds: float | None = None,
+        timeout_marker: str | None = None,
     ) -> dict[str, Any]:
         output = getattr(value, "output", None)
         if output in (None, ""):
@@ -2846,7 +2849,12 @@ class DaytonaToolkit(Toolkit):
             raise WorkspaceError(
                 f"后台日志单次读取字节数必须是 1 至 {MAX_TOOL_OUTPUT_BYTES} 之间的整数。"
             )
-        encoded = str(output or "").encode("utf-8", errors="replace")
+        raw_output = str(output or "")
+        marker_output = self._timeout_output_marker(timeout_marker) if timeout_marker else None
+        timed_out = bool(marker_output and marker_output in raw_output)
+        if marker_output:
+            raw_output = raw_output.replace(marker_output, "")
+        encoded = raw_output.encode("utf-8", errors="replace")
         total_bytes = len(encoded)
         if offset > total_bytes:
             raise WorkspaceError("后台日志偏移超过当前日志大小，请使用返回的 nextOffset。")
@@ -2885,7 +2893,28 @@ class DaytonaToolkit(Toolkit):
         }
         if wall_time_seconds is not None:
             result["wallTimeSeconds"] = round(max(0.0, wall_time_seconds), 3)
+        if timed_out:
+            result["timedOut"] = True
         return result
+
+    @staticmethod
+    def _timeout_output_marker(marker: str) -> str:
+        return f"\n{MANAGED_TIMEOUT_OUTPUT_PREFIX}:{marker}\n"
+
+    @staticmethod
+    def _managed_timeout_marker(command: Any) -> str | None:
+        try:
+            wrapper = shlex.split(str(getattr(command, "command", "") or ""))
+        except ValueError:
+            return None
+        prefix = f"{MANAGED_TIMEOUT_ENV}="
+        for token in wrapper:
+            if not token.startswith(prefix):
+                continue
+            marker = token.removeprefix(prefix)
+            if len(marker) == 32 and all(character in "0123456789abcdef" for character in marker):
+                return marker
+        return None
 
     @staticmethod
     def _validate_yield_time(yield_time_ms: int | None) -> int | None:
@@ -2928,6 +2957,7 @@ class DaytonaToolkit(Toolkit):
             offset=offset,
             max_bytes=max_bytes,
             wall_time_seconds=asyncio.get_running_loop().time() - started_at,
+            timeout_marker=self._managed_timeout_marker(command),
         )
         if status == "completed" and not result["hasMore"]:
             await process.delete_session(session_id)
@@ -3007,12 +3037,36 @@ class DaytonaToolkit(Toolkit):
             sandbox = await self.service._asandbox_for(client, _thread(run_context))
             if background:
                 started_at = asyncio.get_running_loop().time()
-                pty_environment = "env AGUI_MANAGED_PTY=1 " if pty else ""
+                timeout_marker = uuid.uuid4().hex
+                timeout_status_path = f"/tmp/agui-managed-status-{timeout_marker}"
+                tracked_command = (
+                    f"(\n{executed_command}\n)\n"
+                    "command_status=$?\n"
+                    f"printf '%s' \"$command_status\" > {shlex.quote(timeout_status_path)}\n"
+                    'exit "$command_status"'
+                )
+                timeout_command = (
+                    "timeout --signal=TERM --kill-after=5s "
+                    f"{execution_timeout}s /bin/sh -lc {shlex.quote(tracked_command)}\n"
+                    "transport_status=$?\n"
+                    f"if [ -f {shlex.quote(timeout_status_path)} ]; then\n"
+                    f"  command_status=$(cat -- {shlex.quote(timeout_status_path)})\n"
+                    f"  rm -f -- {shlex.quote(timeout_status_path)}\n"
+                    '  exit "$command_status"\n'
+                    "fi\n"
+                    f"rm -f -- {shlex.quote(timeout_status_path)}\n"
+                    'if [ "$transport_status" -eq 124 ]; then\n'
+                    f"  printf '%s' {shlex.quote(self._timeout_output_marker(timeout_marker))} >&2\n"
+                    "fi\n"
+                    'exit "$transport_status"'
+                )
+                environment = ["env"]
+                if pty:
+                    environment.append("AGUI_MANAGED_PTY=1")
+                environment.append(f"{MANAGED_TIMEOUT_ENV}={timeout_marker}")
                 wrapped_command = (
                     f"cd -- {shlex.quote(remote_cwd)} && "
-                    f"{pty_environment}timeout --signal=TERM --kill-after=5s "
-                    f"{execution_timeout}s "
-                    f"/bin/sh -lc {shlex.quote(executed_command)}"
+                    f"{shlex.join(environment)} /bin/sh -lc {shlex.quote(timeout_command)}"
                 )
                 session_id, command_id, value = await self._start_managed_session(
                     sandbox.process,
@@ -3042,6 +3096,7 @@ class DaytonaToolkit(Toolkit):
                     status=status,
                     exit_code=exit_code,
                     wall_time_seconds=asyncio.get_running_loop().time() - started_at,
+                    timeout_marker=timeout_marker,
                 )
                 if status == "completed" and not result["hasMore"]:
                     await sandbox.process.delete_session(session_id)
@@ -3081,6 +3136,7 @@ class DaytonaToolkit(Toolkit):
                 exit_code=exit_code,
                 offset=offset,
                 max_bytes=max_bytes,
+                timeout_marker=self._managed_timeout_marker(command),
             )
             if status == "completed" and not result["hasMore"]:
                 await sandbox.process.delete_session(session_id)

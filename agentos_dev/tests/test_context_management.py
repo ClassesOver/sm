@@ -25,7 +25,9 @@ from agentos_dev.context_management import (
 
 
 def test_coding_process_outputs_are_compressible_history():
-    assert {"exec_command", "poll_process", "write_stdin"}.issubset(COMPRESSIBLE_HISTORY_TOOLS)
+    assert {"exec_command", "poll_process", "write_stdin", "stop_process"}.issubset(
+        COMPRESSIBLE_HISTORY_TOOLS
+    )
 
 
 class CountingModel:
@@ -228,6 +230,36 @@ def test_compression_tokenizer_failure_does_not_fail_main_run():
     analysis.from_history = True
 
     assert manager.should_compress([analysis], model=BrokenCountingModel()) is False
+
+
+@pytest.mark.anyio
+async def test_compression_preserves_coding_process_continuation_metadata():
+    manager = ProtectedCompressionManager(
+        model=SummaryModel(parsed=ToolCompressionResponse(summary="服务仍在运行")),
+        compress_tool_results_limit=1,
+    )
+    process_result = Message(
+        role="tool",
+        tool_name="exec_command",
+        content=json.dumps(
+            {
+                "status": "running",
+                "session_id": 7,
+                "timeout_seconds": 3600,
+                "outcome": "running",
+                "output": "x" * 3000,
+            }
+        ),
+    )
+
+    candidate = await manager.compress_history_message(process_result)
+
+    assert candidate.compressed_content is not None
+    compressed = json.loads(candidate.compressed_content)
+    assert compressed["exact"]["$.session_id"] == 7
+    assert compressed["exact"]["$.timeout_seconds"] == 3600
+    assert compressed["exact"]["$.outcome"] == "running"
+    assert "xxx" not in candidate.compressed_content
 
 
 @pytest.mark.anyio

@@ -657,7 +657,11 @@ class CodingToolkit(Toolkit):
         expires_at = entry.get("expires_at")
         valid_expiry = isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool)
         return bool(
-            (valid_expiry and now > expires_at)
+            (
+                isinstance(expires_at, (int, float))
+                and not isinstance(expires_at, bool)
+                and now > expires_at
+            )
             or (
                 not valid_expiry
                 and isinstance(started_at, (int, float))

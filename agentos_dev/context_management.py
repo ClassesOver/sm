@@ -25,6 +25,7 @@ COMPRESSIBLE_HISTORY_TOOLS = frozenset(
         "exec_command",
         "poll_process",
         "write_stdin",
+        "stop_process",
         "report_analyze_dataset",
     }
 )
@@ -42,6 +43,7 @@ _EXACT_METADATA_KEYS = frozenset(
         "status",
         "exitCode",
         "exit_code",
+        "outcome",
         "imageCount",
         "jobId",
         "path",
@@ -53,10 +55,13 @@ _EXACT_METADATA_KEYS = frozenset(
         "job_id",
         "roundCount",
         "sessionId",
+        "session_id",
         "commandId",
         "sha256",
         "size",
         "successfulRoundCount",
+        "timedOut",
+        "timeout_seconds",
         "truncated",
     }
 )

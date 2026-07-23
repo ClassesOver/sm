@@ -381,6 +381,7 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
         "exec_command",
         "poll_process",
         "write_stdin",
+        "stop_process",
         "apply_patch",
         "view_image",
         "update_plan",

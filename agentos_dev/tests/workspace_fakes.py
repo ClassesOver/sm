@@ -112,12 +112,20 @@ class FakeProcess:
         )()
 
     def get_session(self, session_id):
+        if session_id not in self.sessions:
+            from daytona.common.errors import DaytonaNotFoundError
+
+            raise DaytonaNotFoundError("not found")
         return self.sessions[session_id]
 
     def get_session_command(self, session_id, command_id):
-        return next(
-            command for command in self.sessions[session_id].commands if command.id == command_id
-        )
+        from daytona.common.errors import DaytonaNotFoundError
+
+        session = self.get_session(session_id)
+        try:
+            return next(command for command in session.commands if command.id == command_id)
+        except StopIteration as error:
+            raise DaytonaNotFoundError("not found") from error
 
     def get_session_command_logs(self, session_id, command_id):
         command = self.get_session_command(session_id, command_id)

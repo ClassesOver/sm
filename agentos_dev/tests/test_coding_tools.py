@@ -1,4 +1,6 @@
 import asyncio
+import shlex
+import subprocess
 import time
 
 import pytest
@@ -574,7 +576,7 @@ async def test_stop_process_terminates_default_non_pty_command_and_closes_handle
 async def test_timeout_marker_distinguishes_managed_timeout_from_exit_124(tmp_path):
     current, toolkit = async_toolkit(tmp_path)
     run_context = context()
-    started = await toolkit.exec_command("long-running", yield_time_ms=0, run_context=run_context)
+    await toolkit.exec_command("long-running", yield_time_ms=0, run_context=run_context)
     entry = run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY]["1"]
     process = current.sandbox_for("thread").process
     command = process.get_session_command(entry["session_id"], entry["command_id"])
@@ -588,6 +590,50 @@ async def test_timeout_marker_distinguishes_managed_timeout_from_exit_124(tmp_pa
     assert result["output"] == "partial\n"
     assert result["exit_code"] == 124
     assert result["outcome"] == "timed_out"
+
+
+@pytest.mark.anyio
+async def test_managed_timeout_wrapper_marks_only_actual_timeouts(tmp_path):
+    current, toolkit = async_toolkit(tmp_path)
+    run_context = context()
+
+    async def wrapper_for(command_text):
+        started = await toolkit.exec_command(
+            command_text,
+            timeout_seconds=1,
+            yield_time_ms=0,
+            run_context=run_context,
+        )
+        entry = run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY][str(started["session_id"])]
+        command = current.sandbox_for("thread").process.get_session_command(
+            entry["session_id"], entry["command_id"]
+        )
+        marker = toolkit._workspace._managed_timeout_marker(command)
+        assert marker is not None
+        return shlex.split(command.command)[-1], toolkit._workspace._timeout_output_marker(marker)
+
+    exit_wrapper, exit_marker = await wrapper_for("exit 124")
+    timeout_wrapper, timeout_marker = await wrapper_for("sleep 2")
+
+    exited = subprocess.run(
+        ["/bin/sh", "-lc", exit_wrapper],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    timed_out = subprocess.run(
+        ["/bin/sh", "-lc", timeout_wrapper],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert exited.returncode == 124
+    assert exit_marker not in exited.stderr
+    assert timed_out.returncode == 124
+    assert timeout_marker in timed_out.stderr
 
 
 @pytest.mark.anyio
