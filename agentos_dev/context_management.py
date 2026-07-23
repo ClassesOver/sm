@@ -23,6 +23,7 @@ COMPRESSIBLE_HISTORY_TOOLS = frozenset(
         "sandbox_exec",
         "sandbox_process_poll",
         "exec_command",
+        "poll_process",
         "write_stdin",
         "report_analyze_dataset",
     }

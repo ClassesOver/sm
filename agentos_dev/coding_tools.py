@@ -13,6 +13,7 @@ from daytona.common.errors import DaytonaNotFoundError
 from .agent_control import AgentControlToolkit
 from .async_utils import complete_cleanup
 from .workspace import (
+    MAX_BACKGROUND_EXECUTION_TIMEOUT,
     MAX_MANAGED_PROCESSES,
     MAX_PATCH_FILES,
     MAX_PROCESS_INPUT_BYTES,
@@ -28,6 +29,7 @@ CODEX_EXEC_SESSIONS_STATE_KEY = "agentos_codex_exec_sessions"
 CODEX_EXEC_NEXT_SESSION_STATE_KEY = "agentos_codex_exec_next_session"
 MAX_CODEX_SESSION_HANDLES = MAX_MANAGED_PROCESSES * 4
 CODEX_EXEC_SESSION_TTL_SECONDS = 3600
+DEFAULT_EXEC_TIMEOUT_SECONDS = 900
 DEFAULT_YIELD_TIME_MS = 10_000
 DEFAULT_MAX_OUTPUT_TOKENS = MAX_TOOL_OUTPUT_BYTES // 4
 MAX_OUTPUT_TOKENS = MAX_TOOL_OUTPUT_BYTES // 4
@@ -39,9 +41,11 @@ Coding Agent 工具规则：
 - 所有命令和文件都位于当前 thread 隔离的 Daytona 工作区；workdir 和文件路径只能使用工作区相对路径。
 - 搜索和读取优先通过 exec_command 使用 rg、sed、git 等现有命令；不得访问 AgentOS 宿主文件系统。
 - 修改文件只能使用 apply_patch；新增文件必须使用“*** Begin Patch\n*** Add File: path\n+content\n*** End Patch”格式，禁止使用 ---/+++、/dev/null 或普通 unified diff。
-- exec_command 和 write_stdin 的 yield_time_ms 必须在 0 至 30000 之间；不得提交 60000 等越界值。
-- 短命令调用 exec_command 后检查 exit_code；普通长任务返回 session_id 时用 write_stdin 轮询或输入，直到 status 为 completed。
-- 对服务器等预期长驻进程，status 为 running 且用独立 exec_command 健康检查成功后即可报告启动成功并保留 session_id；后续按需或定时用 write_stdin 读取增量日志和状态，但不要在同一轮中紧密轮询等待服务退出。
+- exec_command、poll_process 和 write_stdin 的 yield_time_ms 必须在 0 至 30000 之间；不得提交 60000 等越界值。
+- exec_command 默认最多运行 900 秒；明确需要更长时间的构建、测试或服务才设置 timeout_seconds，最长 86400 秒。短命令完成后检查 exit_code；普通长任务返回 session_id 时用无需确认的 poll_process 读取增量日志，直到 status 为 completed。
+- write_stdin 只用于向仍在运行的命令写入非空字符或发送 Ctrl-C，属于有副作用操作并需要确认；不要用它执行纯轮询。
+- 对服务器等预期长驻进程，status 为 running 且用独立 exec_command 健康检查成功后即可报告启动成功并保留 session_id；后续按需或定时用 poll_process 读取增量日志和状态，但不要在同一轮中紧密轮询等待服务退出。
+- 工作区镜像预装常用 Linux、文档、数据、测试和数据库能力；任务需要外部命令或 Python 模块时先用有界命令探测直接依赖，已存在则复用，确认缺失后才安装；不要无目的枚举完整环境。
 - 任务确需安装依赖时允许使用包管理器，但应设置明确 timeout、保留完整错误输出并检查 exit_code；不要把 pip 输出管道到 tail，否则网络受限时无法获得实时错误反馈。
 - 非长驻命令连续两次轮询均为 running 且没有新输出时，不得继续盲目轮询；应检查进程状态、使用有界替代命令，或报告当前阻塞与 session_id。
 - Python 任务优先创建 .py 脚本，再用 python3 <工作区相对脚本> 执行、检查错误、修改并重跑测试。
@@ -308,6 +312,16 @@ class CodingToolkit(Toolkit):
                                 "default": False,
                                 "description": "是否分配 PTY。",
                             },
+                            "timeout_seconds": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": MAX_BACKGROUND_EXECUTION_TIMEOUT,
+                                "default": DEFAULT_EXEC_TIMEOUT_SECONDS,
+                                "description": (
+                                    "受管命令的最长运行秒数；默认 900，"
+                                    "明确的长构建、测试或服务可提高至 86400。"
+                                ),
+                            },
                             "yield_time_ms": {
                                 "type": "integer",
                                 "minimum": 0,
@@ -342,8 +356,8 @@ class CodingToolkit(Toolkit):
                     requires_confirmation=True,
                 ),
                 Function(
-                    name="write_stdin",
-                    description="轮询受管命令，或向仍在运行的命令写入字符。",
+                    name="poll_process",
+                    description="无需确认地轮询受管命令，并返回增量日志和当前状态。",
                     parameters={
                         "type": "object",
                         "properties": {
@@ -352,18 +366,12 @@ class CodingToolkit(Toolkit):
                                 "minimum": 1,
                                 "description": "exec_command 返回的当前 thread 受管整数句柄，不是 OS PID。",
                             },
-                            "chars": {
-                                "type": "string",
-                                "maxLength": MAX_PROCESS_INPUT_BYTES,
-                                "default": "",
-                                "description": "写入字符；空字符串表示只轮询。",
-                            },
                             "yield_time_ms": {
                                 "type": "integer",
                                 "minimum": 0,
                                 "maximum": 30000,
                                 "default": DEFAULT_YIELD_TIME_MS,
-                                "description": "写入或轮询后的等待毫秒数，必须在 0 至 30000 之间。",
+                                "description": "轮询时等待新输出或完成的毫秒数，必须在 0 至 30000 之间。",
                             },
                             "max_output_tokens": {
                                 "type": "integer",
@@ -374,6 +382,43 @@ class CodingToolkit(Toolkit):
                             },
                         },
                         "required": ["session_id"],
+                        "additionalProperties": False,
+                    },
+                    entrypoint=self.poll_process,
+                ),
+                Function(
+                    name="write_stdin",
+                    description="向仍在运行的受管命令写入字符或发送 Ctrl-C；执行前需要确认。",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "exec_command 返回的当前 thread 受管整数句柄，不是 OS PID。",
+                            },
+                            "chars": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": MAX_PROCESS_INPUT_BYTES,
+                                "description": "要写入的非空字符；使用 \\u0003 发送 Ctrl-C。",
+                            },
+                            "yield_time_ms": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 30000,
+                                "default": DEFAULT_YIELD_TIME_MS,
+                                "description": "写入后的等待毫秒数，必须在 0 至 30000 之间。",
+                            },
+                            "max_output_tokens": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": MAX_OUTPUT_TOKENS,
+                                "default": DEFAULT_MAX_OUTPUT_TOKENS,
+                                "description": "返回输出的近似 token 上限。",
+                            },
+                        },
+                        "required": ["session_id", "chars"],
                         "additionalProperties": False,
                     },
                     entrypoint=self.write_stdin,
@@ -503,12 +548,24 @@ class CodingToolkit(Toolkit):
             raise WorkspaceError("Coding Agent 进程状态无效，请开始新的运行。")
         now = time.time()
         for key, entry in list(sessions.items()):
-            started_at = entry.get("started_at") if isinstance(entry, dict) else None
-            if (
-                isinstance(started_at, (int, float))
+            if not isinstance(entry, dict):
+                sessions.pop(key, None)
+                continue
+            started_at = entry.get("started_at")
+            expires_at = entry.get("expires_at")
+            valid_expiry = isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool)
+            expired = (
+                isinstance(expires_at, (int, float))
+                and not isinstance(expires_at, bool)
+                and now > expires_at
+            )
+            legacy_expired = (
+                not valid_expiry
+                and isinstance(started_at, (int, float))
                 and not isinstance(started_at, bool)
                 and now - started_at > CODEX_EXEC_SESSION_TTL_SECONDS
-            ):
+            )
+            if expired or legacy_expired:
                 sessions.pop(key, None)
         return sessions
 
@@ -600,7 +657,15 @@ class CodingToolkit(Toolkit):
         output, clipped = self._bounded_output(result.get("output", ""), max_output_tokens)
         status = result.get("status", "completed")
         exit_code = result.get("exitCode")
-        outcome = "running" if status == "running" else "success" if exit_code == 0 else "failed"
+        outcome = (
+            "running"
+            if status == "running"
+            else "success"
+            if exit_code == 0
+            else "timed_out"
+            if exit_code == 124
+            else "failed"
+        )
         value = {
             "status": status,
             "output": output,
@@ -611,10 +676,15 @@ class CodingToolkit(Toolkit):
         }
         if value["status"] == "running":
             value["guidance"] = (
-                "普通长任务使用 write_stdin 继续读取；预期长驻服务应保留 session_id，"
+                "普通长任务使用 poll_process 继续读取；预期长驻服务应保留 session_id，"
                 "改用独立 exec_command 执行健康检查；成功后结束当前任务，后续按需或定时"
-                "使用 write_stdin 读取增量日志和状态，不要在同一轮中紧密轮询等待退出。"
+                "使用 poll_process 读取增量日志和状态，不要在同一轮中紧密轮询等待退出。"
                 "非长驻命令连续两次轮询没有新输出时，应停止盲目轮询并报告阻塞。"
+            )
+        elif outcome == "timed_out":
+            value["guidance"] = (
+                "命令已达到 timeout_seconds 并被受管执行器终止。请报告超时，"
+                "检查已有输出后决定是修正任务，还是仅在确有需要时使用更长时限重新执行。"
             )
         elif outcome == "failed":
             value["guidance"] = (
@@ -652,6 +722,7 @@ class CodingToolkit(Toolkit):
         cmd: str,
         workdir: str | None = None,
         tty: bool = False,
+        timeout_seconds: int = DEFAULT_EXEC_TIMEOUT_SECONDS,
         yield_time_ms: int = DEFAULT_YIELD_TIME_MS,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         shell: str | None = None,
@@ -668,24 +739,31 @@ class CodingToolkit(Toolkit):
             arguments.append("-l")
         arguments.extend(["-c", cmd])
         command = f"exec {shlex.join(arguments)}"
+        execution_timeout = self.service._validate_timeout(
+            timeout_seconds,
+            MAX_BACKGROUND_EXECUTION_TIMEOUT,
+        )
         maximum = self._validate_output_tokens(max_output_tokens)
         started_at = time.time()
         sessions, key, handle, entry = self._reserve_session(
             run_context,
             started_at=started_at,
         )
+        entry["expires_at"] = started_at + execution_timeout + 300
+        entry["timeout_seconds"] = execution_timeout
         result: dict[str, Any] | None = None
         try:
             result = await self._workspace.sandbox_exec(
                 command,
                 cwd=workdir,
-                timeout=900,
+                timeout=execution_timeout,
                 background=True,
                 pty=tty,
                 yield_time_ms=yield_time_ms,
                 run_context=run_context,
             )
             formatted = self._format_process_result(result, maximum)
+            formatted["timeout_seconds"] = execution_timeout
             needs_session = result.get("status") == "running" or bool(result.get("hasMore"))
             if not needs_session:
                 sessions.pop(key, None)
@@ -722,13 +800,48 @@ class CodingToolkit(Toolkit):
                         pass
             raise
 
+    async def poll_process(
+        self,
+        session_id: int,
+        yield_time_ms: int = DEFAULT_YIELD_TIME_MS,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        return await self._continue_process(
+            session_id,
+            chars="",
+            yield_time_ms=yield_time_ms,
+            max_output_tokens=max_output_tokens,
+            run_context=run_context,
+        )
+
     async def write_stdin(
         self,
         session_id: int,
+        # 兼容升级前已持久化的待确认轮询；新工具 schema 仍要求 chars。
         chars: str = "",
         yield_time_ms: int = DEFAULT_YIELD_TIME_MS,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(chars, str):
+            raise WorkspaceError("进程输入必须是字符串。")
+        return await self._continue_process(
+            session_id,
+            chars=chars,
+            yield_time_ms=yield_time_ms,
+            max_output_tokens=max_output_tokens,
+            run_context=run_context,
+        )
+
+    async def _continue_process(
+        self,
+        session_id: int,
+        *,
+        chars: str,
+        yield_time_ms: int,
+        max_output_tokens: int,
+        run_context: RunContext | None,
     ) -> dict[str, Any]:
         maximum = self._validate_output_tokens(max_output_tokens)
         handle = self._validate_session_id(session_id)
@@ -761,6 +874,12 @@ class CodingToolkit(Toolkit):
                         "polling_paused": True,
                         "status_is_cached": True,
                         "retry_after_seconds": max(1, round(cooldown_until - now)),
+                        **(
+                            {"timeout_seconds": entry["timeout_seconds"]}
+                            if isinstance(entry.get("timeout_seconds"), int)
+                            and not isinstance(entry.get("timeout_seconds"), bool)
+                            else {}
+                        ),
                         "guidance": (
                             "连续空轮询已暂停；返回的是上次已知 running 状态，本次没有访问远端，"
                             "也没有终止远端进程。"
@@ -815,6 +934,9 @@ class CodingToolkit(Toolkit):
             formatted = self._format_process_result(
                 result, maximum, None if completed else session_id
             )
+            timeout_seconds = entry.get("timeout_seconds")
+            if isinstance(timeout_seconds, int) and not isinstance(timeout_seconds, bool):
+                formatted["timeout_seconds"] = timeout_seconds
             empty_poll = not chars and result.get("status") == "running" and not formatted["output"]
             if empty_poll:
                 raw_empty_poll_count = entry.get("empty_poll_count", 0)

@@ -33,7 +33,7 @@ from .database import psycopg_db_url
 from .security import thread_label
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
-WORKSPACE_SNAPSHOT = "sandbox-tools-20260722"
+WORKSPACE_SNAPSHOT = "sandbox-tools-20260723"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -54,7 +54,7 @@ MAX_PATH_BYTES = 1024
 MAX_PATH_COMPONENT_BYTES = 255
 MAX_PATH_DEPTH = 32
 MAX_EXECUTION_TIMEOUT = 60
-MAX_BACKGROUND_EXECUTION_TIMEOUT = 900
+MAX_BACKGROUND_EXECUTION_TIMEOUT = 24 * 60 * 60
 MAX_MANAGED_PROCESSES = 4
 MAX_PROCESS_INPUT_BYTES = 8 * 1024
 MAX_PTY_ROWS = 200
@@ -2409,7 +2409,7 @@ BASE_TOOLKIT_INSTRUCTIONS = """
 - 对编码任务先检查相关文件、测试和 Git 状态，明确可验证的成功标准；完成修改后运行与改动匹配的测试或脚本，再检查输出和 workspace_git_diff，不能只凭写入成功声称完成。
 - Python 编码优先创建工作区内 `.py` 脚本并反复读取、精确修改和执行；使用当前沙箱已安装的解释器和依赖，不要默认安装新包或访问网络。
 - 独立的只读调用可放在同一工具批次；后一步依赖前一步结果时必须串行，并原样使用工具返回的路径、SHA-256、sessionId 和 commandId。
-- 短命令使用前台 sandbox_exec；长任务设置 background=true，再用 sandbox_process_poll 轮询到 completed，每次分页原样使用返回的 nextOffset。需要输入、PTY 中断或终止时分别使用 sandbox_process_write、sandbox_process_interrupt 或 sandbox_process_stop，不要用 shell 后台符号绕过受管会话。
+- 短命令使用前台 sandbox_exec；后台命令默认使用短时限，只有明确的长构建、测试或服务才提高 timeout，最长 86400 秒，再用 sandbox_process_poll 轮询到 completed，每次分页原样使用返回的 nextOffset。需要输入、PTY 中断或终止时分别使用 sandbox_process_write、sandbox_process_interrupt 或 sandbox_process_stop，不要用 shell 后台符号绕过受管会话。
 - 工具失败时依据返回的错误、output、exitCode 或 status 修正后再继续；不得忽略失败或盲目重复有副作用的调用。
 - 只有命令成功结束、后台任务到达 completed、文件修改重新校验后，才能声称对应操作完成；running、已提交或已写入输入都不代表完成。
 """.strip()
@@ -2420,7 +2420,7 @@ WORKSPACE_REPORT_TOOLKIT_INSTRUCTIONS = """
 - 本工具集只负责绑定报表输入、渲染 Markdown 和验收 PDF；文件检查、Python 编码、分析和长进程统一使用 Coding 工具。
 - 先通过 report_materialize_dataset 获得一至二十个 datasetId，再用 report_prepare_dataset 绑定这些不可变数据集句柄，并在后续各轮原样复用返回的 jobId。
 - 复杂分析先用 exec_command 检查文件，再用 apply_patch 在工作区创建或修改 Python 脚本；不得用 Shell 绕过文件写入确认。
-- 用 exec_command 执行任意当前依赖和权限允许的分析命令；返回 session_id 时用 write_stdin 持续读取、输入或中断，不另加 Report 层命令限制。
+- 用 exec_command 执行任意当前依赖和权限允许的分析命令；返回 session_id 时用 poll_process 持续读取，用 write_stdin 输入或中断，不另加 Report 层命令限制。
 - 分析失败时读取 output 和 exit_code，修正脚本或命令后继续；由模型根据证据充分性决定分析方式和轮次。
 - 分析充分后，基于真实工具结果生成 Markdown 文件；结论、数字、表格和图片不得脱离分析结果，图片使用相对 Markdown 文件的路径。
 - 使用新的输出路径调用 report_render_markdown，再调用 report_validate_pdf 做逐页视觉验收；必要时用 view_image 检查生成的图表。只有 report_job_status 为 validated 才能声称报表完成。
@@ -2954,7 +2954,7 @@ class DaytonaToolkit(Toolkit):
         Args:
             command: 要在 sandbox 内执行的完整 Shell 命令。
             cwd: 相对工作区根目录的工作目录；省略时使用工作区根目录。
-            timeout: 执行超时秒数；前台最多 60 秒，后台最多 900 秒。
+            timeout: 执行超时秒数；前台最多 60 秒，后台最多 86400 秒。
             background: 是否以受管后台会话执行；长任务使用后台模式。
             pty: 是否通过 script 分配伪终端；仅交互式命令需要启用。
             pty_rows: 伪终端行数，范围为 1 至 200。

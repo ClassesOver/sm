@@ -14,6 +14,7 @@ from agentos_dev.coding_tools import (
     CODEX_EXEC_SESSION_TTL_SECONDS,
     CODEX_EXEC_SESSIONS_STATE_KEY,
     CODING_TOOLKIT_INSTRUCTIONS,
+    DEFAULT_EXEC_TIMEOUT_SECONDS,
     EMPTY_POLL_COOLDOWN_SECONDS,
     MAX_CODEX_SESSION_HANDLES,
     CodingToolkit,
@@ -72,6 +73,7 @@ def test_coding_tool_contract_uses_codex_names_and_json_patch(tmp_path):
 
     assert set(tools) == {
         "exec_command",
+        "poll_process",
         "write_stdin",
         "apply_patch",
         "view_image",
@@ -82,15 +84,19 @@ def test_coding_tool_contract_uses_codex_names_and_json_patch(tmp_path):
         "cmd",
         "workdir",
         "tty",
+        "timeout_seconds",
         "yield_time_ms",
         "max_output_tokens",
         "shell",
         "login",
     }
-    assert tools["write_stdin"].parameters["required"] == ["session_id"]
+    assert tools["poll_process"].parameters["required"] == ["session_id"]
+    assert tools["write_stdin"].parameters["required"] == ["session_id", "chars"]
+    assert tools["write_stdin"].parameters["properties"]["chars"]["minLength"] == 1
     assert tools["apply_patch"].parameters["required"] == ["patch"]
     assert tools["apply_patch"].parameters["properties"]["patch"]["type"] == "string"
     assert tools["exec_command"].requires_confirmation is True
+    assert tools["poll_process"].requires_confirmation is not True
     assert tools["write_stdin"].requires_confirmation is True
     assert tools["apply_patch"].requires_confirmation is True
 
@@ -99,18 +105,26 @@ def test_coding_tool_contract_explains_limits_patch_format_and_persistent_servic
     toolkit = CodingToolkit(service(tmp_path))
     tools = {**toolkit.functions, **toolkit.async_functions}
     exec_schema = tools["exec_command"].parameters["properties"]
-    poll_schema = tools["write_stdin"].parameters["properties"]
+    poll_schema = tools["poll_process"].parameters["properties"]
     patch_description = tools["apply_patch"].parameters["properties"]["patch"]["description"]
 
     assert exec_schema["yield_time_ms"]["maximum"] == 30000
+    assert exec_schema["timeout_seconds"]["default"] == DEFAULT_EXEC_TIMEOUT_SECONDS
+    assert exec_schema["timeout_seconds"]["maximum"] == 86400
     assert "0 至 30000" in exec_schema["yield_time_ms"]["description"]
     assert "0 至 30000" in poll_schema["yield_time_ms"]["description"]
     assert "*** Add File: path" in patch_description
     assert "禁止 ---/+++" in patch_description
     assert "独立 exec_command" in CODING_TOOLKIT_INSTRUCTIONS
-    assert "按需或定时用 write_stdin" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "按需或定时用 poll_process" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "write_stdin 只用于" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "有副作用操作并需要确认" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不要在同一轮中紧密轮询" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不要把 pip 输出管道到 tail" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "确认缺失后才安装" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "不要无目的枚举完整环境" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "默认最多运行 900 秒" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "最长 86400 秒" in CODING_TOOLKIT_INSTRUCTIONS
     assert "明确 timeout" in CODING_TOOLKIT_INSTRUCTIONS
     assert "连续两次轮询" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不得继续盲目轮询" in CODING_TOOLKIT_INSTRUCTIONS
@@ -334,6 +348,50 @@ async def test_exec_command_completes_in_foreground_and_uses_requested_shell(tmp
 
 
 @pytest.mark.anyio
+async def test_exec_command_uses_explicit_long_timeout_and_matching_handle_expiry(tmp_path):
+    current, toolkit = async_toolkit(tmp_path)
+    run_context = context()
+    started_before = time.time()
+
+    result = await toolkit.exec_command(
+        "python3 long_build.py",
+        timeout_seconds=3600,
+        yield_time_ms=0,
+        run_context=run_context,
+    )
+
+    assert result["status"] == "running"
+    assert result["timeout_seconds"] == 3600
+    entry = run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY][str(result["session_id"])]
+    assert entry["timeout_seconds"] == 3600
+    assert entry["expires_at"] >= started_before + 3900
+    remote = current.sandbox_for("thread").process.get_session_command(
+        entry["session_id"], entry["command_id"]
+    )
+    assert "timeout --signal=TERM --kill-after=5s 3600s" in remote.command
+
+    with pytest.raises(WorkspaceError, match="后台命令.*86400"):
+        await toolkit.exec_command(
+            "too-long",
+            timeout_seconds=86401,
+            yield_time_ms=0,
+            run_context=run_context,
+        )
+
+
+def test_process_result_distinguishes_timeout_from_failure(tmp_path):
+    toolkit = CodingToolkit(service(tmp_path))
+
+    result = toolkit._format_process_result(
+        {"status": "completed", "output": "partial\n", "exitCode": 124},
+        max_output_tokens=100,
+    )
+
+    assert result["outcome"] == "timed_out"
+    assert "timeout_seconds" in result["guidance"]
+
+
+@pytest.mark.anyio
 async def test_python_script_can_be_created_executed_fixed_and_rerun(tmp_path):
     current, toolkit = async_toolkit(tmp_path)
     run_context = context()
@@ -410,7 +468,7 @@ async def test_exec_command_integer_handle_poll_input_interrupt_and_completion(t
     command = process.get_session_command(session["session_id"], session["command_id"])
     command.output = "startedready\n"
 
-    polled = await toolkit.write_stdin(1, yield_time_ms=0, run_context=run_context)
+    polled = await toolkit.poll_process(1, yield_time_ms=0, run_context=run_context)
     assert polled["output"] == "ready\n"
     assert polled["session_id"] == 1
 
@@ -427,9 +485,12 @@ async def test_exec_command_integer_handle_poll_input_interrupt_and_completion(t
     assert interrupted["session_id"] == 1
     assert process.input_calls[-1]["data"] == "\x03"
 
+    legacy_poll = await toolkit.write_stdin(1, "", yield_time_ms=0, run_context=run_context)
+    assert legacy_poll["session_id"] == 1
+
     command.output += "done\n"
     command.exit_code = 130
-    completed = await toolkit.write_stdin(1, yield_time_ms=0, run_context=run_context)
+    completed = await toolkit.poll_process(1, yield_time_ms=0, run_context=run_context)
     assert completed["status"] == "completed"
     assert completed["exit_code"] == 130
     assert completed["outcome"] == "failed"
@@ -464,7 +525,7 @@ async def test_exec_command_truncation_keeps_unread_running_output(tmp_path):
     assert started["output"] == "abcd"
     assert started["truncated"] is True
 
-    polled = await toolkit.write_stdin(
+    polled = await toolkit.poll_process(
         started["session_id"],
         yield_time_ms=0,
         max_output_tokens=2,
@@ -474,7 +535,7 @@ async def test_exec_command_truncation_keeps_unread_running_output(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_write_stdin_serializes_the_same_handle(tmp_path, monkeypatch):
+async def test_poll_process_serializes_the_same_handle(tmp_path, monkeypatch):
     _current, toolkit = async_toolkit(tmp_path)
     run_context = context()
     started = await toolkit.exec_command("long-running", yield_time_ms=0, run_context=run_context)
@@ -502,8 +563,8 @@ async def test_write_stdin_serializes_the_same_handle(tmp_path, monkeypatch):
 
     monkeypatch.setattr(toolkit, "_poll_process", poll)
     first, second = await asyncio.gather(
-        toolkit.write_stdin(started["session_id"], yield_time_ms=0, run_context=run_context),
-        toolkit.write_stdin(started["session_id"], yield_time_ms=0, run_context=run_context),
+        toolkit.poll_process(started["session_id"], yield_time_ms=0, run_context=run_context),
+        toolkit.poll_process(started["session_id"], yield_time_ms=0, run_context=run_context),
     )
 
     assert maximum_active == 1
@@ -529,7 +590,7 @@ def test_next_offset_rejects_invalid_metadata(tmp_path, result, message):
 
 
 @pytest.mark.anyio
-async def test_write_stdin_removes_missing_handle_and_keeps_invalid_offset_retryable(
+async def test_poll_process_removes_missing_handle_and_keeps_invalid_offset_retryable(
     tmp_path, monkeypatch
 ):
     _current, toolkit = async_toolkit(tmp_path)
@@ -548,7 +609,7 @@ async def test_write_stdin_removes_missing_handle_and_keeps_invalid_offset_retry
 
     monkeypatch.setattr(toolkit, "_poll_process", invalid_offset)
     with pytest.raises(WorkspaceError, match="输出偏移"):
-        await toolkit.write_stdin(started["session_id"], run_context=run_context)
+        await toolkit.poll_process(started["session_id"], run_context=run_context)
     assert str(started["session_id"]) in run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY]
 
     async def missing(_entry, **_kwargs):
@@ -556,7 +617,7 @@ async def test_write_stdin_removes_missing_handle_and_keeps_invalid_offset_retry
 
     monkeypatch.setattr(toolkit, "_poll_process", missing)
     with pytest.raises(WorkspaceError, match="已经结束或丢失"):
-        await toolkit.write_stdin(started["session_id"], run_context=run_context)
+        await toolkit.poll_process(started["session_id"], run_context=run_context)
     assert run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY] == {}
 
 
@@ -570,13 +631,13 @@ async def test_running_process_result_guides_persistent_service_health_check(tmp
     assert started["status"] == "running"
     assert started["session_id"] == 1
     assert "独立 exec_command" in started["guidance"]
-    assert "按需或定时使用 write_stdin" in started["guidance"]
+    assert "按需或定时使用 poll_process" in started["guidance"]
     assert "不要在同一轮中紧密轮询" in started["guidance"]
     assert "连续两次轮询没有新输出" in started["guidance"]
 
 
 @pytest.mark.anyio
-async def test_write_stdin_pauses_tight_polling_after_two_empty_results(tmp_path, monkeypatch):
+async def test_poll_process_pauses_tight_polling_after_two_empty_results(tmp_path, monkeypatch):
     _current, toolkit = async_toolkit(tmp_path)
     run_context = context()
     started = await toolkit.exec_command("long-running", yield_time_ms=0, run_context=run_context)
@@ -600,13 +661,13 @@ async def test_write_stdin_pauses_tight_polling_after_two_empty_results(tmp_path
     monkeypatch.setattr(toolkit, "_poll_process", empty_poll)
     monkeypatch.setattr("agentos_dev.coding_tools.time.time", lambda: current_time)
 
-    first = await toolkit.write_stdin(
+    first = await toolkit.poll_process(
         started["session_id"], yield_time_ms=0, run_context=run_context
     )
-    second = await toolkit.write_stdin(
+    second = await toolkit.poll_process(
         started["session_id"], yield_time_ms=0, run_context=run_context
     )
-    paused = await toolkit.write_stdin(
+    paused = await toolkit.poll_process(
         started["session_id"], yield_time_ms=0, run_context=run_context
     )
 
@@ -622,7 +683,7 @@ async def test_write_stdin_pauses_tight_polling_after_two_empty_results(tmp_path
     assert poll_calls == 2
 
     current_time += EMPTY_POLL_COOLDOWN_SECONDS
-    resumed = await toolkit.write_stdin(
+    resumed = await toolkit.poll_process(
         started["session_id"], yield_time_ms=0, run_context=run_context
     )
 
@@ -644,6 +705,7 @@ async def test_exec_command_prunes_stale_handles_before_capacity_check(tmp_path)
                 "command_id": "command-1",
                 "offset": 0,
                 "started_at": expired,
+                **({"expires_at": "invalid"} if index == 1 else {}),
             }
             for index in range(1, MAX_CODEX_SESSION_HANDLES + 1)
         }
@@ -713,23 +775,23 @@ async def test_exec_command_reserves_last_handle_before_starting_remote_process(
 
 
 @pytest.mark.anyio
-async def test_write_stdin_rejects_invalid_cross_thread_and_cross_user_handles(tmp_path):
+async def test_poll_process_rejects_invalid_cross_thread_and_cross_user_handles(tmp_path):
     _current, toolkit = async_toolkit(tmp_path)
     state = {}
     owner = context(thread="thread-a", user_id="user-a", state=state)
     started = await toolkit.exec_command("sleep 1", yield_time_ms=0, run_context=owner)
 
     with pytest.raises(WorkspaceError, match="正整数"):
-        await toolkit.write_stdin(True, run_context=owner)
+        await toolkit.poll_process(True, run_context=owner)
     with pytest.raises(WorkspaceError, match="不属于"):
-        await toolkit.write_stdin(999, run_context=owner)
+        await toolkit.poll_process(999, run_context=owner)
     with pytest.raises(WorkspaceError, match="不属于"):
-        await toolkit.write_stdin(
+        await toolkit.poll_process(
             started["session_id"],
             run_context=context(thread="thread-b", user_id="user-a", state=state),
         )
     with pytest.raises(WorkspaceError, match="不属于"):
-        await toolkit.write_stdin(
+        await toolkit.poll_process(
             started["session_id"],
             run_context=context(thread="thread-a", user_id="user-b", state=state),
         )

@@ -25,7 +25,7 @@ from agentos_dev.context_management import (
 
 
 def test_coding_process_outputs_are_compressible_history():
-    assert {"exec_command", "write_stdin"}.issubset(COMPRESSIBLE_HISTORY_TOOLS)
+    assert {"exec_command", "poll_process", "write_stdin"}.issubset(COMPRESSIBLE_HISTORY_TOOLS)
 
 
 class CountingModel:

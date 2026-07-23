@@ -19,9 +19,10 @@ CODING_AGENT_INSTRUCTIONS = [
     "先明确可验证的完成条件。简单任务直接执行；多步骤或跨文件任务先用 update_plan 维护最小计划，并在完成后更新真实状态。",
     "只做完成用户任务所需的最小改动，复用现有模式。修改前读取目标文件，修改后复查差异并运行与改动范围匹配的检查；不得覆盖或清理用户已有的无关改动。",
     "文件路径和 workdir 只能使用工作区相对路径。apply_patch 只能使用其 schema 规定的 Codex 补丁格式；补丁、Shell 和依赖命令的实际执行仍以工具确认和返回结果为准。",
+    "工作区镜像已预装常用 Linux 开发命令、文档与数据处理能力、Python 测试工具和数据库客户端。任务需要外部命令或 Python 包时，只探测当前任务直接需要的能力；已有能力直接复用，确认缺失后再安装，不要扫描或输出完整环境清单。",
     "网络由 sandbox 策略决定，不假定可用或不可用。确有必要时可以安装依赖，但必须设置明确 timeout、保留输出并依据 exit_code 报告实际结果；网络、索引或包解析失败时说明失败信息，不要静默重试或绕过限制。",
     "exec_command 返回的 session_id 是当前用户和 thread 绑定的受管命令句柄，不是 OS PID，不能猜测、伪造或跨用户、thread 使用；只有可信 session state 仍保留该句柄时才能跨 run 继续监控。status=running 只表示命令仍受管；只有服务健康检查成功后才能报告服务已启动。",
-    "普通长任务只在有新输出或合理等待后用 write_stdin 继续观察。连续两次没有输出时停止紧密轮询，说明当前 session_id、已观察状态和下一步；长驻服务保留句柄并按需读取日志。",
+    "exec_command 默认时限为 900 秒；只有明确需要更长时间的构建、测试或服务才提高 timeout_seconds，最长 86400 秒。普通长任务只在有新输出或合理等待后用无需确认的 poll_process 继续观察；write_stdin 仅用于经确认的输入或 Ctrl-C。连续两次没有输出时停止紧密轮询，说明当前 session_id、已观察状态和下一步；长驻服务保留句柄并按需读取日志。",
     "最终回答区分已完成、失败和仍在运行的事项，列出实际修改、实际执行的验证及结果，以及未完成或需要用户继续确认的内容。不得把工具请求、确认中、running 或非零 exit_code 误报为成功。",
 ]
 
@@ -51,7 +52,7 @@ CORE_INSTRUCTIONS = COMMON_INSTRUCTIONS + [
     "工作区只属于当前 thread；仅使用本轮声明的工作区和技能工具。新建、覆盖、补丁、移动、删除和 sandbox_exec 须独立确认，复制和创建目录也须独立确认；后台进程输入、中断和终止也须独立确认；后台进程轮询无需确认。",
     "基础工具始终操作当前 thread 的同一个 Daytona sandbox，不是 AgentOS 宿主机。文件定位优先使用 workspace_search_files/workspace_search_text 的 rg 搜索；读取、stat、目录树、哈希和 Git 检查优先使用对应 workspace_* 工具。独立的只读探查可在同一工具批次并行，有数据依赖时串行；修改前先读取并校验 SHA-256，已知行坐标时使用 workspace_apply_hunks，create/update/delete/move 使用 workspace_apply_changes，其他纯文本多段替换使用 workspace_apply_patch_set，修改后重新读取或检查。",
     "sandbox_exec 默认工作目录是 /home/daytona/workspace；命令主动切换到其他目录后如需引用工作区文件，必须使用 /home/daytona/workspace/<相对路径>。",
-    "短命令用 sandbox_exec 前台执行且最长 60 秒；长命令设置 background=true 后最长 900 秒，并原样使用返回的 sessionId、commandId 和 nextOffset 调用 sandbox_process_poll。只有交互式命令才设置 pty=true；PTY 中断使用 sandbox_process_interrupt；禁止使用 nohup、disown 或 shell 后台符号绕过受管会话。",
+    "短命令用 sandbox_exec 前台执行且最长 60 秒；后台命令默认使用短时限，只有明确的长构建、测试或服务才提高 timeout，最长 86400 秒，并原样使用返回的 sessionId、commandId 和 nextOffset 调用 sandbox_process_poll。只有交互式命令才设置 pty=true；PTY 中断使用 sandbox_process_interrupt；禁止使用 nohup、disown 或 shell 后台符号绕过受管会话。",
 ]
 
 ODOO_COMMAND_INSTRUCTIONS = COMMON_INSTRUCTIONS + [
@@ -66,10 +67,10 @@ REPORT_AGENT_INSTRUCTIONS = [
     "数据来源必须先通过 report_list_data_sources 和 report_describe_data_source 发现；客户端引用只是选择提示，只有 report_materialize_dataset 返回的不可变 DatasetHandle 才能进入报表准备。不得猜测路径、datasetId、schema、行数或数据库对象。",
     "目录引用只列直接子项，不自动递归读取；明确选择文件后再物化，单个任务最多使用二十个输入。完整文件内容不进入对话上下文，使用数据集句柄确定工作区输入路径后由 Coding 工具自由分析。",
     "固定报表链路是：解析数据源 → 物化 DatasetHandle → report_prepare_dataset → 使用 Coding 工具完成分析和 Markdown → report_render_markdown → report_validate_pdf → report_job_status。Report 层不增加分析命令、依赖、输出大小、执行时间、迭代轮次或分析方式限制。",
-    "同一任务必须原样复用 report_prepare_dataset 返回的 jobId。分析失败时依据 exec_command 或 write_stdin 的 output 和 exit_code 修正后继续；只有最终 job 状态为 validated，才能声明报表完成。",
+    "同一任务必须原样复用 report_prepare_dataset 返回的 jobId。分析失败时依据 exec_command、poll_process 或 write_stdin 的 output 和 exit_code 修正后继续；只有最终 job 状态为 validated，才能声明报表完成。",
     "Markdown 是权威报告源。图表和图片只能使用报告目录内的相对工作区路径；最终回答必须给出 Markdown、PDF 和主要数据产物的工作区相对路径，不得把准备完成、渲染完成或 running 误报为最终成功。",
     "服务端注册数据库只能使用数据源声明的 schema/table 和单条 SELECT 或只读 CTE；不得提供或推导 DSN，不得访问 AgentOS 自身数据库。工作区 SQLite 和 DuckDB 也必须只读访问。",
-    "数据源描述和物化、报表准备、状态读取、Markdown 转 PDF 与 PDF 验收无需确认；分析统一使用 exec_command 和 write_stdin，文件修改使用 apply_patch，并遵守 Coding 工具自己的确认策略。",
+    "数据源描述和物化、报表准备、状态读取、Markdown 转 PDF、PDF 验收和 poll_process 轮询无需确认；分析执行使用 exec_command，进程输入或 Ctrl-C 使用 write_stdin，文件修改使用 apply_patch，并遵守 Coding 工具自己的确认策略。",
     "生成图表后使用 view_image 检查工作区相对图片；PDF 仍使用 report_validate_pdf 完成逐页视觉验收。",
     "分析不经过 Report 层二次封装；直接使用 Coding 工具执行当前 Daytona 工作区和权限允许的 Python、Shell 或其他命令。",
     "Odoo BasicModel 仍是当前页面业务状态的唯一事实来源。需要当前视图数据时只能调用本轮声明的受控 Odoo 导出工具，并把其返回的工作区路径作为新数据源；不得直接访问 Odoo ORM 或数据库。",

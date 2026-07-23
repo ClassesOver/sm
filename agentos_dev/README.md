@@ -42,7 +42,7 @@ Report Agent 固定注册 `CodingToolkit`、`ReportDataSourceToolkit` 和 `Works
 数据登记、多轮分析和 Markdown 转 PDF。读取、检查和后台轮询无需确认，新建、覆盖、补丁、移动、
 删除、通用 `sandbox_exec`、后台输入及终止需要确认。所有能力仍绑定当前 thread 的 Daytona
 sandbox；实际安全边界包括 `network_block_all`、路径和符号链接校验、文件/结果大小限制以及
-前台命令最长 60 秒、后台命令最长 900 秒。
+前台命令最长 60 秒、后台命令最长 86400 秒；后台命令仍须设置明确时限。
 
 Base 层借鉴 Codex 的少量强工具和 Hermes 的分段读取、分页搜索、精确替换及陈旧文件检测，
 不直接挂载 Agno 的 `Workspace`、`FileTools` 或 `CodingTools`，因为这些工具操作 AgentOS 宿主目录，
@@ -56,7 +56,7 @@ diff、log 和 show 同样使用固定只读参数，不开放任意 Git flags�
 全部目标预检通过后才写入。完整变更集可在一次预检和确认中
 执行 create/update/delete/move，每个既有文件都绑定预期 SHA-256；任一预检失败时零写入，执行失败
 按逆序回滚。短命令采用一次性受监督执行；异步命令使用 Daytona 原生 session，最多同时四个、
-单个最长 900 秒，并通过 UTF-8 字节日志游标分页轮询、输入、中断或终止；交互式命令可通过
+单个最长 86400 秒，并通过 UTF-8 字节日志游标分页轮询、输入、中断或终止；交互式命令可通过
 `script` 获取指定行列且默认关闭输入回显的 PTY，禁止
 `nohup`、`disown` 和 shell 后台符号绕过受管生命周期。后台启动可用 `yield_time_ms` 等待最多
 30 秒并返回耗时、原始字节数和日志游标；后台输入也可在写入后按同一游标直接等待新输出。
@@ -130,7 +130,7 @@ PostgreSQL 仍永久保存完整 runs 和原始 `Message.content`。完整模型
 动态缩小历史预算；默认历史最多 192K。待确认操作和当前 run 结果属于强制上下文，不会为了保留
 旧历史而裁剪。旧 `odoo.*` 工具调用和结果不进入后续模型上下文，避免旧快照、token 和
 modifiers 与最新 `BasicModel` 状态竞争；`sandbox_exec`、`sandbox_process_poll`、`exec_command`、
-`write_stdin` 以及历史 `report_analyze_dataset` 结果保留，
+`poll_process`、`write_stdin` 以及历史 `report_analyze_dataset` 结果保留，
 大结果优先使用独立的 `compressed_content`，原文不被覆盖。
 
 滚动摘要只包含用户目标、已确认决策、工作区产物、完成事项和待办事项，并标记为非权威历史。
@@ -168,13 +168,14 @@ Workflow，但没有 Codex 风格的专用 `update_plan`。本项目因此提供
 
 ### 泛化数据源与 ReportAgent
 
-`coding-agent` 是可独立构造但不注册为 Team 成员的基座，固定暴露 `exec_command`、`write_stdin`、
-`apply_patch`、`view_image` 和 `update_plan`。`report-agent` 从该基座派生，固定暴露
+`coding-agent` 是可独立构造但不注册为 Team 成员的基座，固定暴露 `exec_command`、`poll_process`、
+`write_stdin`、`apply_patch`、`view_image` 和 `update_plan`。其中只读轮询无需确认，stdin 输入和
+Ctrl-C 仍需确认。`report-agent` 从该基座派生，固定暴露
 `CodingToolkit`、`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`。它不使用固定 Workflow，
 模型自行决定分析命令、运行时长和迭代轮次；Report 层只保留数据源物化、输入绑定、Markdown/PDF
 渲染及验收。完整文件内容不会注入模型上下文；模型从数据源句柄取得工作区路径后使用 Coding 工具分析。
 复杂分析先通过 `exec_command` 检查文件，再用 `apply_patch` 在当前 thread 工作区创建或精确修改
-任意 Python 脚本，并用 `exec_command`、`write_stdin` 执行和持续管理；不再经过
+任意 Python 脚本，并用 `exec_command`、`poll_process`、`write_stdin` 执行和持续管理；不再经过
 `report_analyze_dataset` 的二次命令封装。
 脚本文件写入仍需确认，分析执行仍受 Daytona 网络隔离、路径、进程、超时和输出大小限制；不新增
 AgentOS 宿主机 Python 或绕过现有确认策略的执行入口。
@@ -231,7 +232,7 @@ sandbox 的 `/tmp/workspace-report-*` 仅用于一次渲染或验收的临时文
 `docker/sandbox-tools` 镜像，以提供 ripgrep、WeasyPrint 69、pypdf、数据分析库和 Noto CJK。镜像
 同时安装 `matplotlibrc`，将 Matplotlib/Seaborn 默认字体固定为 Noto CJK，避免中文图表在生成 PNG
 时已经丢失字形；不要在分析命令中改回仅含 DejaVu 的字体配置。
-部署时从该镜像创建并激活自定义 Snapshot `sandbox-tools-20260722`；不要复用不可删除的
+部署时从该镜像创建并激活自定义 Snapshot `sandbox-tools-20260723`；不要复用不可删除的
 System Snapshot。工具镜像更新后必须重新创建并激活该自定义 Snapshot；仅推送同名 Registry tag
 不会刷新既有 Snapshot 的固定镜像引用。
 

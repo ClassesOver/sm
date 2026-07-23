@@ -155,6 +155,8 @@ def test_coding_agent_uses_trusted_per_run_instructions():
     )
 
     assert "当前可用工具、其 schema、确认要求" in text
+    assert "确认缺失后再安装" in text
+    assert "不要扫描或输出完整环境清单" in text
     assert "网络由 sandbox 策略决定" in text
     assert "不是 OS PID" in text
     assert "最终回答区分已完成、失败和仍在运行" in text
@@ -373,6 +375,7 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
     coding_registered = report_registered[0]
     assert coding_registered == {
         "exec_command",
+        "poll_process",
         "write_stdin",
         "apply_patch",
         "view_image",
@@ -408,6 +411,7 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert coding_toolkit.add_instructions is True
     assert "exec_command" in coding_toolkit.instructions
     assert "apply_patch" in coding_toolkit.instructions
+    assert "poll_process" in coding_toolkit.instructions
     assert "write_stdin" in coding_toolkit.instructions
     assert report_toolkit.add_instructions is True
     assert data_source_toolkit.add_instructions is True
@@ -447,6 +451,7 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert resolved == [*build_coding_agent_instructions(context), *REPORT_AGENT_INSTRUCTIONS]
     assert "exec_command" in instructions
     assert "apply_patch" in instructions
+    assert "poll_process" in instructions
     assert "write_stdin" in instructions
     assert "view_image" in instructions
     assert "Python、Shell 或其他命令" in instructions
@@ -605,7 +610,8 @@ def test_智能报表技能统一使用工作区相对路径和报表工具():
     assert "相对 `/home/daytona/workspace` 的工作区路径" in skill
     assert "`exec_command` 检查文件和可用依赖" in skill
     assert "`apply_patch` 创建或修改任意 Python 脚本" in skill
-    assert "`write_stdin` 轮询、输入或中断" in skill
+    assert "`poll_process` 轮询日志和状态" in skill
+    assert "`write_stdin` 输入或中断" in skill
     assert "`view_image` 检查生成的图表" in skill
     assert "workspace_write_file" not in skill
     assert "workspace_apply_changes" not in skill

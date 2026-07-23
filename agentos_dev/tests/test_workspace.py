@@ -58,6 +58,7 @@ def test_报表动作和工作区单文件边界统一为200mib():
 
 
 def test_每个对话使用独立持久沙箱且注册表可跨服务复用(tmp_path):
+    assert WORKSPACE_SNAPSHOT == "sandbox-tools-20260723"
     client = FakeClient()
     first = service(tmp_path, client)
     one = first.sandbox_for("thread-one")
@@ -262,7 +263,7 @@ def test_基础和报表工具集独立且确认边界符合策略(tmp_path):
     exec_schema = base_tools["sandbox_exec"].parameters["properties"]
     assert exec_schema["command"]["minLength"] == 1
     assert exec_schema["timeout"]["minimum"] == 1
-    assert exec_schema["timeout"]["maximum"] == 900
+    assert exec_schema["timeout"]["maximum"] == 86400
     assert exec_schema["timeout"]["default"] == 30
     assert exec_schema["background"]["default"] is False
     assert exec_schema["pty"]["default"] is False
