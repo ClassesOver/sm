@@ -57,21 +57,21 @@ def source_session():
 def test_copy_team_session_preserves_team_identity_and_run_graph():
     source = TeamSession(
         session_id="source-thread",
-        team_id="odoo-assistant-team",
+        team_id="hrp-assistant-team",
         user_id="owner",
         team_data={"name": "HRP 助手团队"},
         runs=[
             TeamRunOutput(
                 run_id="team-run",
                 session_id="source-thread",
-                team_id="odoo-assistant-team",
+                team_id="hrp-assistant-team",
                 status=RunStatus.completed,
             ),
             RunOutput(
                 run_id="member-run",
                 parent_run_id="team-run",
                 session_id="source-thread",
-                agent_id="odoo-assistant",
+                agent_id="general-assistant",
                 status=RunStatus.completed,
             ),
         ],
@@ -85,12 +85,12 @@ def test_copy_team_session_preserves_team_identity_and_run_graph():
     )
 
     assert isinstance(target, TeamSession)
-    assert target.team_id == "odoo-assistant-team"
+    assert target.team_id == "hrp-assistant-team"
     assert target.team_data == source.team_data
     assert target.team_data is not source.team_data
     assert copied_run_id == run_id_map["team-run"]
     member_run = next(
-        run for run in target.runs if getattr(run, "agent_id", None) == "odoo-assistant"
+        run for run in target.runs if getattr(run, "agent_id", None) == "general-assistant"
     )
     assert member_run.parent_run_id == copied_run_id
     assert all(run.session_id == "target-thread" for run in target.runs)

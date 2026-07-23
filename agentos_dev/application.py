@@ -17,8 +17,7 @@ class ApplicationContext:
     workspace_service: WorkspaceService
     skills: Any
     assistant: Agent
-    edit_mode_assistant: Agent
-    menu_navigation_assistant: Agent
+    odoo_command_assistant: Agent
     report_agent: Agent
     assistant_team: Team
 
@@ -29,7 +28,7 @@ def create_agentos_app(
 ) -> tuple[AgentOS, FastAPI]:
     agent_os = AgentOS(
         name="HRP开发服务",
-        agents=[context.assistant, context.report_agent],
+        agents=[context.assistant, context.odoo_command_assistant, context.report_agent],
         teams=[context.assistant_team],
         interfaces=[AGUI(team=context.assistant_team)],
         base_app=base_app,

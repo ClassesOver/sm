@@ -26,9 +26,13 @@ from .agent_control import (
 )
 from .agents import (
     LEGACY_ASSISTANT_IDS,
+    LEGACY_ODOO_COMMAND_ASSISTANT_IDS,
+    LEGACY_TEAM_IDS,
+    ODOO_COMMAND_ASSISTANT_ID,
     TEAM_ROUTE_DEPENDENCY,
     create_assistant_team,
     create_assistants,
+    is_odoo_command_name,
 )
 from .application import ApplicationContext, create_agentos_app
 from .branch import (
@@ -38,13 +42,21 @@ from .branch import (
     run_branch,
     validate_branch_identity,
 )
+from .coding_tools import (
+    CODEX_EXEC_NEXT_SESSION_STATE_KEY,
+    CODEX_EXEC_SESSIONS_STATE_KEY,
+)
 from .context_management import (
     HISTORY_CONTEXT_DESCRIPTION,
     ProtectedCompressionManager,
     build_budgeted_history_context,
 )
 from .database import check_database
-from .instructions import build_agent_instructions, build_report_agent_instructions
+from .instructions import (
+    build_agent_instructions,
+    build_odoo_command_instructions,
+    build_report_agent_instructions,
+)
 from .report_data_sources import (
     CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
     MAX_DATASET_FILE_BYTES,
@@ -64,46 +76,43 @@ MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 12 * 1024 * 1024
 WORKSPACE_FILE_BYTES = 10 * 1024 * 1024
 MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
 SERVER_TOOL_SCHEMA_TOKEN_RESERVE = 16 * 1024
-EDIT_MODE_TOOL = "odoo.enter_edit_mode"
-MENU_NAVIGATION_TOOL = "odoo.navigate_menu"
-MENU_NAVIGATION_CONTEXT = "HRP 菜单导航请求"
-EDIT_MODE_COMMANDS = frozenset(
+REPORT_TOOL_MIGRATION_ERROR = "report_tool_migration_required"
+LEGACY_REPORT_BASE_TOOLS = frozenset(
     {
-        "编辑",
-        "修改",
-        "进入编辑模式",
-        "编辑当前表单",
-        "编辑当前单据",
-        "修改当前表单",
-        "修改当前单据",
-    }
-)
-EDIT_MODE_TOOL_CHOICE = {
-    "type": "function",
-    "function": {"name": EDIT_MODE_TOOL},
-}
-MENU_NAVIGATION_TOOL_CHOICE = {
-    "type": "function",
-    "function": {"name": MENU_NAVIGATION_TOOL},
-}
-REQUIRED_TOOL_PREAMBLE_EVENTS = frozenset(
-    {
-        EventType.RUN_STARTED,
-        EventType.STATE_SNAPSHOT,
-        EventType.RAW,
-        EventType.TEXT_MESSAGE_START,
-        EventType.TEXT_MESSAGE_END,
-        EventType.THINKING_START,
-        EventType.THINKING_END,
-        EventType.THINKING_TEXT_MESSAGE_START,
-        EventType.THINKING_TEXT_MESSAGE_CONTENT,
-        EventType.THINKING_TEXT_MESSAGE_END,
-        EventType.REASONING_START,
-        EventType.REASONING_MESSAGE_START,
-        EventType.REASONING_MESSAGE_CONTENT,
-        EventType.REASONING_MESSAGE_END,
-        EventType.REASONING_END,
-        EventType.REASONING_ENCRYPTED_VALUE,
+        "agent_update_plan",
+        "agent_context_status",
+        "agent_prepare_continuation",
+        "agent_tool_search",
+        "agent_load_toolkit",
+        "sandbox_exec",
+        "sandbox_process_poll",
+        "sandbox_process_write",
+        "sandbox_process_interrupt",
+        "sandbox_process_stop",
+        "workspace_list_files",
+        "workspace_read_file",
+        "workspace_read_lines",
+        "workspace_stat",
+        "workspace_tree",
+        "workspace_search_files",
+        "workspace_search_text",
+        "workspace_hash_file",
+        "workspace_git_status",
+        "workspace_git_diff",
+        "workspace_git_log",
+        "workspace_git_show",
+        "workspace_write_file",
+        "workspace_replace_file",
+        "workspace_move_file",
+        "workspace_apply_patch",
+        "workspace_apply_patch_set",
+        "workspace_apply_hunks",
+        "workspace_apply_changes",
+        "workspace_create_directory",
+        "workspace_copy_file",
+        "workspace_delete_file",
+        "workspace_view_image",
+        "workspace_inspect_pdf",
     }
 )
 RAW_REASONING_EVENTS = frozenset(
@@ -120,6 +129,8 @@ SERVER_SESSION_STATE_KEYS = frozenset(
         AGENT_CONTINUATION_STATE_KEY,
         AGENT_LOADED_TOOLKITS_STATE_KEY,
         REPORT_DATASET_HANDLES_STATE_KEY,
+        CODEX_EXEC_SESSIONS_STATE_KEY,
+        CODEX_EXEC_NEXT_SESSION_STATE_KEY,
     }
 )
 logger = logging.getLogger(__name__)
@@ -149,22 +160,6 @@ router = APIRouter()
 
 def _application_context(request: Request) -> ApplicationContext:
     return request.app.state.agentos_context
-
-
-def _strip_trailing_punctuation(value: str) -> str:
-    value = value.strip()
-    while value and unicodedata.category(value[-1]).startswith("P"):
-        value = value[:-1].rstrip()
-    return value
-
-
-def _is_explicit_edit_mode_request(run_input: RunAgentInput) -> bool:
-    return (
-        _strip_trailing_punctuation(
-            extract_user_input(run_input.messages or []),
-        )
-        in EDIT_MODE_COMMANDS
-    )
 
 
 def _is_fresh_user_request(run_input: RunAgentInput) -> bool:
@@ -252,6 +247,7 @@ async def _prepare_run_input(
     settings,
     *,
     server_context: list[Context] | None = None,
+    history_entity: Agent | Team | None = None,
 ):
     prepared = _sanitize_run_input(run_input)
     if server_context:
@@ -260,8 +256,9 @@ async def _prepare_run_input(
         )
     if not _is_fresh_user_request(prepared):
         return prepared
+    session_owner = history_entity or agent
     try:
-        session = await agent.aget_session(
+        session = await session_owner.aget_session(
             session_id=prepared.thread_id,
             user_id=user_id,
         )
@@ -336,7 +333,10 @@ async def _prepare_run_input(
         if session.session_data is None:
             session.session_data = {}
         try:
-            await agent.asave_session(session)
+            if isinstance(session_owner, Team) and isinstance(session, TeamSession):
+                await session_owner.asave_session(session)
+            elif isinstance(session_owner, Agent) and isinstance(session, AgentSession):
+                await session_owner.asave_session(session)
         except Exception as error:
             logger.warning("history_compression_save_failed error_type=%s", type(error).__name__)
     context = list(prepared.context or [])
@@ -415,19 +415,6 @@ def _is_report_analysis_result(event) -> bool:
     }.issubset(payload)
 
 
-def _requires_menu_navigation(run_input: RunAgentInput) -> bool:
-    for item in run_input.context or []:
-        if item.description != "已选 HRP 菜单":
-            continue
-        try:
-            value = json.loads(item.value)
-        except (TypeError, ValueError):
-            continue
-        if isinstance(value, dict) and value.get("navigationRequired") is True:
-            return True
-    return False
-
-
 def _selected_report_skill(run_input: RunAgentInput) -> bool:
     for item in run_input.context or []:
         if item.description != "已选智能体技能":
@@ -461,7 +448,10 @@ async def _entity_for_stored_run(
     except Exception as error:
         logger.warning("team_route_session_load_failed error_type=%s", type(error).__name__)
         team_session = None
-    if isinstance(team_session, TeamSession) and team_session.team_id == context.assistant_team.id:
+    if isinstance(team_session, TeamSession) and team_session.team_id in {
+        context.assistant_team.id,
+        *LEGACY_TEAM_IDS,
+    }:
         if not run_id or any(run.run_id == run_id for run in (team_session.runs or [])):
             return context.assistant_team
     try:
@@ -484,13 +474,76 @@ async def _entity_for_stored_run(
             agent_id = matching_agent_id
     if agent_id == context.report_agent.id:
         return context.report_agent
-    if agent_id == context.edit_mode_assistant.id:
-        return context.edit_mode_assistant
-    if agent_id == context.menu_navigation_assistant.id:
-        return context.menu_navigation_assistant
+    if (
+        agent_id == context.odoo_command_assistant.id
+        or agent_id in LEGACY_ODOO_COMMAND_ASSISTANT_IDS
+    ):
+        return context.odoo_command_assistant
     if agent_id == context.assistant.id or agent_id in LEGACY_ASSISTANT_IDS:
         return context.assistant
     return None
+
+
+def _pending_legacy_report_tool(session: AgentSession, run_id: str | None) -> str | None:
+    runs = session.runs or []
+    run = next(
+        (item for item in reversed(runs) if run_id is None or item.run_id == run_id),
+        None,
+    )
+    if run is None:
+        return None
+    for requirement in run.requirements or []:
+        is_resolved = getattr(requirement, "is_resolved", None)
+        if callable(is_resolved) and is_resolved():
+            continue
+        execution = getattr(requirement, "tool_execution", None)
+        name = getattr(execution, "tool_name", None)
+        if name in LEGACY_REPORT_BASE_TOOLS:
+            return name
+    for execution in run.tools or []:
+        name = getattr(execution, "tool_name", None)
+        pending_confirmation = bool(getattr(execution, "requires_confirmation", False)) and (
+            getattr(execution, "confirmed", None) is None
+        )
+        pending_external = bool(getattr(execution, "external_execution_required", False)) and (
+            getattr(execution, "result", None) is None
+        )
+        if name in LEGACY_REPORT_BASE_TOOLS and (pending_confirmation or pending_external):
+            return name
+        result = getattr(execution, "result", None)
+        if name not in LEGACY_REPORT_BASE_TOOLS or result is None:
+            continue
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (TypeError, ValueError):
+                continue
+        if (
+            isinstance(result, dict)
+            and result.get("status") == "running"
+            and isinstance(result.get("sessionId"), str)
+            and isinstance(result.get("commandId"), str)
+        ):
+            return name
+    return None
+
+
+async def _pending_legacy_report_tool_for_run(
+    agent: Agent,
+    thread_id: str,
+    user_id: str,
+    run_id: str | None,
+) -> str | None:
+    try:
+        session = await agent.aget_session(session_id=thread_id, user_id=user_id)
+    except Exception as error:
+        logger.warning(
+            "report_tool_migration_session_load_failed error_type=%s", type(error).__name__
+        )
+        return None
+    if not isinstance(session, AgentSession):
+        return None
+    return _pending_legacy_report_tool(session, run_id)
 
 
 async def _hide_team_delegation_events(source):
@@ -508,32 +561,39 @@ async def _hide_team_delegation_events(source):
         yield event
 
 
-def _team_route_context(member_id: str | None) -> Context:
-    if not member_id:
+def _team_route_context(*member_ids: str | None) -> Context:
+    normalized = [member_id for member_id in member_ids if member_id]
+    if not normalized:
         raise RuntimeError("团队成员缺少稳定 ID。")
+    route = {"memberId": normalized[0]} if len(normalized) == 1 else {"memberIds": normalized}
     return Context(
         description=TEAM_ROUTE_DEPENDENCY,
-        value=json.dumps({"memberId": member_id}, ensure_ascii=True, separators=(",", ":")),
+        value=json.dumps(route, ensure_ascii=True, separators=(",", ":")),
     )
 
 
-def _required_menu_tool(run_input: RunAgentInput) -> str | None:
-    for item in run_input.context or []:
-        if item.description != MENU_NAVIGATION_CONTEXT:
-            continue
-        try:
-            value = json.loads(item.value)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(value, dict):
-            continue
-        if value.get("requiredFirstTool") == MENU_NAVIGATION_TOOL:
-            return MENU_NAVIGATION_TOOL
-    return None
-
-
-def _declares_tool(run_input: RunAgentInput, tool_name: str) -> bool:
-    return any(tool.name == tool_name for tool in (run_input.tools or []))
+def _filter_client_tools_for_agent(
+    run_input: RunAgentInput,
+    entity: Agent | Team,
+) -> RunAgentInput:
+    if isinstance(entity, Team):
+        return run_input
+    declared_tools = list(run_input.tools or [])
+    if entity.id == ODOO_COMMAND_ASSISTANT_ID:
+        tools = [
+            tool for tool in declared_tools if is_odoo_command_name(getattr(tool, "name", None))
+        ]
+    elif entity.id == "report-agent":
+        tools = [
+            tool
+            for tool in declared_tools
+            if getattr(tool, "name", None) == "odoo.export_current_view"
+        ]
+    else:
+        tools = []
+    if len(tools) == len(declared_tools):
+        return run_input
+    return run_input.model_copy(update={"tools": tools})
 
 
 def _audit_tool_route(request: Request, run_input: RunAgentInput, **values) -> None:
@@ -549,54 +609,6 @@ def _audit_tool_route(request: Request, run_input: RunAgentInput, **values) -> N
 
 async def _run_error(message: str, code: str):
     yield RunErrorEvent(type=EventType.RUN_ERROR, message=message, code=code)
-
-
-async def _guard_required_tool(source, tool_name: str, audit=None):
-    accepted = False
-    violation = False
-    try:
-        async for event in source:
-            if accepted:
-                yield event
-                continue
-            if event.type == EventType.TOOL_CALL_START:
-                if event.tool_call_name == tool_name:
-                    accepted = True
-                    if audit:
-                        audit("accepted")
-                    yield event
-                    continue
-                violation = True
-                break
-            if event.type in REQUIRED_TOOL_PREAMBLE_EVENTS:
-                yield event
-                continue
-            violation = True
-            break
-        if not accepted:
-            violation = True
-    except Exception:
-        if accepted:
-            raise
-        violation = True
-    finally:
-        if violation:
-            close = getattr(source, "aclose", None)
-            if close:
-                try:
-                    await close()
-                except Exception:
-                    # 关闭失败不能覆盖面向客户端的协议错误。
-                    pass
-
-    if violation:
-        if audit:
-            audit("required_tool_violation")
-        yield RunErrorEvent(
-            type=EventType.RUN_ERROR,
-            message=f"模型未按要求首先调用 {tool_name}，已终止本次运行。",
-            code="required_tool_violation",
-        )
 
 
 def _request_thread(request: Request) -> str:
@@ -636,8 +648,9 @@ async def require_workspace_capability(request: Request, call_next):
     context = _application_context(request)
     path = request.url.path.rstrip("/") or "/"
     path_parts = path.strip("/").split("/")
-    if len(path_parts) >= 3 and path_parts[0] == "agents" and path_parts[2] == "runs":
-        return JSONResponse({"error": "agent_run_route_disabled"}, status_code=404)
+    if len(path_parts) >= 3 and path_parts[0] in {"agents", "teams"} and path_parts[2] == "runs":
+        resource = path_parts[0][:-1]
+        return JSONResponse({"error": f"{resource}_run_route_disabled"}, status_code=404)
     protected = path == "/agui" or path.startswith("/workspace")
     if not protected:
         return await call_next(request)
@@ -886,19 +899,17 @@ async def workspace_destroy(request: Request, payload: dict = Body(...)):
     return {"ok": True, "deleted": True}
 
 
-assistant, edit_mode_assistant, menu_navigation_assistant, report_agent = create_assistants(
+assistant, odoo_command_assistant, report_agent = create_assistants(
     settings,
     agent_skills,
     workspace_service,
     build_agent_instructions,
+    build_odoo_command_instructions,
     build_report_agent_instructions,
-    EDIT_MODE_TOOL_CHOICE,
-    MENU_NAVIGATION_TOOL_CHOICE,
 )
 assistant_team = create_assistant_team(
     assistant,
-    edit_mode_assistant,
-    menu_navigation_assistant,
+    odoo_command_assistant,
     report_agent,
 )
 
@@ -913,7 +924,6 @@ async def run_agui(request: Request, run_input: RunAgentInput):
 
     async def events():
         tool_names_by_call_id: dict[str, str] = {}
-        edit_intent = _is_explicit_edit_mode_request(run_input)
         fresh_request = _is_fresh_user_request(run_input)
         existing_entity = None
         if fresh_request and not branch:
@@ -926,56 +936,31 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             existing_entity is agent
             for agent in (
                 context.assistant,
-                context.edit_mode_assistant,
-                context.menu_navigation_assistant,
+                context.odoo_command_assistant,
                 context.report_agent,
             )
         )
-        # 菜单强制工具只适用于新请求；恢复/续跑必须沿用原 run 的实体。
-        navigation_required = fresh_request and _requires_menu_navigation(run_input)
-        context_menu_tool = _required_menu_tool(run_input) if fresh_request else None
         report_selected = _selected_report_skill(run_input)
-        forced_tool = None
-        forced_entity = None
-        route_name = None
-        if not branch and navigation_required:
-            forced_tool = MENU_NAVIGATION_TOOL
-            forced_entity = (
-                context.menu_navigation_assistant
-                if legacy_agent_session
-                else context.assistant_team
-            )
-            route_name = "selected_menu_navigation"
-        elif not branch and context_menu_tool:
-            forced_tool = context_menu_tool
-            forced_entity = (
-                context.menu_navigation_assistant
-                if legacy_agent_session
-                else context.assistant_team
-            )
-            route_name = "menu_navigation"
-        elif not branch and edit_intent and fresh_request:
-            forced_tool = EDIT_MODE_TOOL
-            forced_entity = (
-                context.edit_mode_assistant if legacy_agent_session else context.assistant_team
-            )
-            route_name = "edit_mode"
-        tool_declared = bool(forced_tool and _declares_tool(run_input, forced_tool))
+        declared_odoo_commands = [
+            tool.name for tool in (run_input.tools or []) if is_odoo_command_name(tool.name)
+        ]
+        route_name = "stored_run"
+        if fresh_request:
+            if report_selected:
+                route_name = "report_agent"
+            elif declared_odoo_commands:
+                route_name = "assistant_or_odoo_command_assistant"
+            else:
+                route_name = "assistant"
         audit_values = {
-            "forced_tool": forced_tool,
-            "forced_route": route_name,
-            "edit_route_matched": edit_intent,
-            "menu_context_tool": context_menu_tool,
-            "forced_route_selected": bool(forced_tool),
-            "menu_navigation_required": navigation_required,
+            "route": route_name,
+            "declared_odoo_commands": declared_odoo_commands,
             "report_route_selected": report_selected and fresh_request,
             "legacy_agent_session": legacy_agent_session,
         }
         _audit_tool_route(
             request,
             run_input,
-            guard_result="pending" if forced_tool else "not_applicable",
-            error_code=None,
             **audit_values,
         )
 
@@ -998,17 +983,20 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                 source = run_branch(
                     branch_agent,
                     context.workspace_service,
-                    _sanitize_run_input(run_input),
+                    _filter_client_tools_for_agent(
+                        _sanitize_run_input(run_input),
+                        branch_agent,
+                    ),
                     branch,
                     user_id,
                 )
-        elif not forced_tool:
+        else:
             run_agent: Agent | Team | None
+            history_entity: Agent | Team | None = None
             if fresh_request:
+                run_agent = context.assistant_team
                 if legacy_agent_session:
-                    run_agent = context.report_agent if report_selected else context.assistant
-                else:
-                    run_agent = context.assistant_team
+                    history_entity = existing_entity
             else:
                 run_agent = await _entity_for_stored_run(
                     context,
@@ -1024,6 +1012,21 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             else:
                 server_context = None
                 attachment_error = False
+                legacy_report_tool = None
+                if not fresh_request and run_agent is context.report_agent:
+                    legacy_report_tool = await _pending_legacy_report_tool_for_run(
+                        context.report_agent,
+                        run_input.thread_id,
+                        user_id,
+                        run_input.run_id,
+                    )
+                if legacy_report_tool is not None:
+                    attachment_error = True
+                    source = _run_error(
+                        f"旧版报表工具 {legacy_report_tool} 的待处理调用不能在新工具集下续跑；"
+                        "请开始新的报表消息并重新执行该步骤。",
+                        REPORT_TOOL_MIGRATION_ERROR,
+                    )
                 if fresh_request and report_selected:
                     try:
                         attachment_context = await _current_attachment_context(
@@ -1041,70 +1044,36 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                         )
                 if not attachment_error:
                     if fresh_request and run_agent is context.assistant_team:
+                        member_ids = (
+                            [context.report_agent.id]
+                            if report_selected
+                            else [
+                                context.assistant.id,
+                                *(
+                                    [context.odoo_command_assistant.id]
+                                    if declared_odoo_commands
+                                    else []
+                                ),
+                                *(
+                                    [context.report_agent.id]
+                                    if existing_entity is context.report_agent
+                                    else []
+                                ),
+                            ]
+                        )
                         server_context = [
                             *(server_context or []),
-                            _team_route_context(
-                                context.report_agent.id if report_selected else context.assistant.id
-                            ),
+                            _team_route_context(*member_ids),
                         ]
                     prepared_input = await _prepare_run_input(
                         run_agent,
-                        run_input,
+                        _filter_client_tools_for_agent(run_input, run_agent),
                         user_id,
                         context.settings,
                         server_context=server_context,
+                        history_entity=history_entity,
                     )
                     source = run_entity(run_agent, prepared_input, user_id=user_id)
-        elif not tool_declared:
-            _audit_tool_route(
-                request,
-                run_input,
-                guard_result="required_tool_unavailable",
-                error_code="required_tool_unavailable",
-                **audit_values,
-            )
-            source = _run_error(
-                f"当前运行未声明必需工具 {forced_tool}，无法执行该操作。",
-                "required_tool_unavailable",
-            )
-        else:
-            assert forced_entity is not None
-            prepared_input = await _prepare_run_input(
-                forced_entity,
-                run_input,
-                user_id,
-                context.settings,
-                server_context=[
-                    _team_route_context(
-                        context.menu_navigation_assistant.id
-                        if forced_tool == MENU_NAVIGATION_TOOL
-                        else context.edit_mode_assistant.id
-                    )
-                ]
-                if forced_entity is context.assistant_team
-                else None,
-            )
-            guarded_source = run_entity(
-                forced_entity,
-                prepared_input,
-                user_id=user_id,
-            )
-            guarded_source = _hide_team_delegation_events(guarded_source)
-
-            def audit_guard(result):
-                _audit_tool_route(
-                    request,
-                    run_input,
-                    guard_result=result,
-                    error_code=result if result == "required_tool_violation" else None,
-                    **audit_values,
-                )
-
-            source = _guard_required_tool(
-                guarded_source,
-                forced_tool,
-                audit=audit_guard,
-            )
         source = _hide_team_delegation_events(source)
         async for event in source:
             if _is_raw_reasoning_event(event):
@@ -1145,8 +1114,7 @@ application_context = ApplicationContext(
     workspace_service,
     agent_skills,
     assistant,
-    edit_mode_assistant,
-    menu_navigation_assistant,
+    odoo_command_assistant,
     report_agent,
     assistant_team,
 )

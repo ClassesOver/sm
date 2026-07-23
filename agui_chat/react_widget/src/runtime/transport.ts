@@ -372,7 +372,6 @@ function menuNavigationContext(
     description: MENU_NAVIGATION_CONTEXT,
     value: contextValue({
       query,
-      requiredFirstTool: MENU_NAVIGATION_TOOL,
       catalogId: props.menuCatalog.catalogId,
       catalogRevision: props.menuCatalog.catalogRevision
     })
@@ -496,8 +495,7 @@ function normalizeRunContext(
         name: mention.name,
         path: mention.path,
         fullPath: mention.fullPath,
-        navigationRequired: navigationPending,
-        requiredFirstTool: navigationPending ? MENU_NAVIGATION_TOOL : false
+        navigationRequired: navigationPending
       })
     })
   }

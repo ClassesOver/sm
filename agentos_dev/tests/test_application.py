@@ -59,13 +59,11 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
         FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
-        FakeAssistant(),
     )
     second_context = ApplicationContext(
         settings,
         object(),
         FakeSkills("second"),
-        FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
@@ -80,7 +78,11 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert second_app is second_base
     assert created[0].values["on_route_conflict"] == "preserve_base_app"
     assert created[0].values["cors_allowed_origins"] == list(settings.cors_allowed_origins)
-    assert len(created[0].values["agents"]) == 2
+    assert created[0].values["agents"] == [
+        first_context.assistant,
+        first_context.odoo_command_assistant,
+        first_context.report_agent,
+    ]
     assert created[0].values["teams"] == [first_context.assistant_team]
     assert created[0].values["interfaces"] == [("agui", {"team": first_context.assistant_team})]
 
@@ -93,8 +95,7 @@ def test_default_application_exposes_explicit_context():
     assert context.workspace_service is app_module.workspace_service
     assert context.skills is app_module.agent_skills
     assert context.assistant is app_module.assistant
-    assert context.edit_mode_assistant is app_module.edit_mode_assistant
-    assert context.menu_navigation_assistant is app_module.menu_navigation_assistant
+    assert context.odoo_command_assistant is app_module.odoo_command_assistant
     assert context.report_agent is app_module.report_agent
     assert context.assistant_team is app_module.assistant_team
 
@@ -109,8 +110,7 @@ async def test_base_application_routes_use_their_own_context():
         workspace_service=FakeWorkspace("first-file"),
         skills=FakeSkills("first"),
         assistant=FakeAssistant(),
-        edit_mode_assistant=FakeAssistant(),
-        menu_navigation_assistant=FakeAssistant(),
+        odoo_command_assistant=FakeAssistant(),
         report_agent=FakeAssistant(),
         assistant_team=FakeAssistant(),
     )
@@ -119,8 +119,7 @@ async def test_base_application_routes_use_their_own_context():
         workspace_service=FakeWorkspace("second-file"),
         skills=FakeSkills("second"),
         assistant=FakeAssistant(),
-        edit_mode_assistant=FakeAssistant(),
-        menu_navigation_assistant=FakeAssistant(),
+        odoo_command_assistant=FakeAssistant(),
         report_agent=FakeAssistant(),
         assistant_team=FakeAssistant(),
     )

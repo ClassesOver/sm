@@ -27610,7 +27610,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       description: MENU_NAVIGATION_CONTEXT,
       value: contextValue({
         query,
-        requiredFirstTool: MENU_NAVIGATION_TOOL,
         catalogId: props.menuCatalog.catalogId,
         catalogRevision: props.menuCatalog.catalogRevision
       })
@@ -27718,8 +27717,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           name: mention.name,
           path: mention.path,
           fullPath: mention.fullPath,
-          navigationRequired: navigationPending,
-          requiredFirstTool: navigationPending ? MENU_NAVIGATION_TOOL : false
+          navigationRequired: navigationPending
         })
       });
     }

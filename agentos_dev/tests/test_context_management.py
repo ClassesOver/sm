@@ -97,12 +97,12 @@ def test_history_context_excludes_old_odoo_results_and_host_context():
 def test_team_history_context_excludes_delegated_member_runs():
     session = TeamSession(
         session_id="thread-1",
-        team_id="odoo-assistant-team",
+        team_id="hrp-assistant-team",
         runs=[
             TeamRunOutput(
                 run_id="team-run",
                 session_id="thread-1",
-                team_id="odoo-assistant-team",
+                team_id="hrp-assistant-team",
                 status=RunStatus.completed,
                 messages=[
                     Message(role="user", content="生成本月报表"),

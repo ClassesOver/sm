@@ -1622,7 +1622,6 @@ describe('ChatRuntime protocol handling', () => {
       description: 'HRP 菜单导航请求',
       value: JSON.stringify({
         query: '费用报销 / 单据查询 / 报销单查询',
-        requiredFirstTool: 'odoo.navigate_menu',
         catalogId: 'catalog-test-1',
         catalogRevision: 1
       })
@@ -1714,7 +1713,7 @@ describe('ChatRuntime protocol handling', () => {
       )
       expect(JSON.parse(selectedMenu.value)).toEqual({
         ...expected, catalogId: 'catalog-test-1', catalogRevision: 1,
-        navigationRequired: true, requiredFirstTool: 'odoo.navigate_menu'
+        navigationRequired: true
       })
       expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({
         tool: 'odoo.navigate_menu',

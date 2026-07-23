@@ -65,6 +65,20 @@ def build_agent_tools(
     ]
 
 
+def build_coding_agent_tools(
+    workspace_service: WorkspaceService,
+    *,
+    run_context: RunContext,
+    agent: Any | None = None,
+    context_token_budget: int = 262144,
+    output_token_reserve: int = 32768,
+) -> list[Toolkit]:
+    """Coding Agent 固定使用 Codex 风格工作区工具。"""
+    from .coding_tools import CodingToolkit
+
+    return [CodingToolkit(workspace_service)]
+
+
 def build_report_agent_tools(
     workspace_service: WorkspaceService,
     *,
@@ -76,22 +90,15 @@ def build_report_agent_tools(
     database_url: str | None = None,
 ) -> list[Toolkit]:
     """ReportAgent 固定工具工厂；每个 run 重新解析当前引用和受控 session state。"""
-    state = run_context.session_state if isinstance(run_context.session_state, dict) else {}
-    continuation = state.get(AGENT_CONTINUATION_STATE_KEY)
+    from .coding_tools import CodingToolkit
+
     data_sources = ReportDataSourceToolkit(
         workspace_service,
         config_path=report_data_sources_file,
         excluded_database_url=database_url,
     )
     return [
-        AgentControlToolkit(
-            workspace_service,
-            model=getattr(agent, "model", None),
-            context_token_budget=context_token_budget,
-            output_token_reserve=output_token_reserve,
-            continuation=continuation if isinstance(continuation, dict) else None,
-        ),
-        BaseToolkit(workspace_service),
+        CodingToolkit(workspace_service),
         data_sources,
         WorkspaceReportToolkit(workspace_service, data_sources=data_sources),
     ]

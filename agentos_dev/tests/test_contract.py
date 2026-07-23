@@ -4,22 +4,30 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from agno.agent import Agent
 from agno.agent._tools import parse_tools
 from agno.run import RunContext
+from agno.run.agent import RunOutput
+from agno.run.team import TeamRunOutput
+from agno.session.team import TeamSession
 from agno.team import TeamMode
+from agno.tools.function import Function
+from agno.utils.callables import resolve_callable_members
 
 from agentos_dev import app
-from agentos_dev.agents import TEAM_ROUTE_DEPENDENCY
+from agentos_dev.agents import ODOO_HOST_COMMAND_NAMES, TEAM_ROUTE_DEPENDENCY
 from agentos_dev.instructions import (
     BUSINESS_COMMAND_INSTRUCTIONS,
     CORE_INSTRUCTIONS,
     FORM_EDIT_INSTRUCTIONS,
     LIST_VIEW_INSTRUCTIONS,
     NAVIGATION_INSTRUCTIONS,
+    ODOO_COMMAND_INSTRUCTIONS,
     SELECTED_SKILL_INSTRUCTIONS,
     VIEW_CONTROL_INSTRUCTIONS,
     X2MANY_INSTRUCTIONS,
     build_agent_instructions,
+    build_odoo_command_instructions,
     build_report_agent_instructions,
 )
 
@@ -64,6 +72,30 @@ def instruction_context(*tools, dependencies=None):
     )
 
 
+def team_context(*tools, member_id=None, member_ids=None):
+    if member_id is not None:
+        dependencies = {TEAM_ROUTE_DEPENDENCY: {"memberId": member_id}}
+    elif member_ids is not None:
+        dependencies = {TEAM_ROUTE_DEPENDENCY: {"memberIds": member_ids}}
+    else:
+        dependencies = None
+    return RunContext(
+        run_id="run-1",
+        session_id="thread-1",
+        client_tools=[
+            Function(
+                name=name,
+                description="客户端工具",
+                parameters={"type": "object", "properties": {}},
+                external_execution=True,
+            )
+            for name in tools
+        ],
+        dependencies=dependencies,
+        session_state={},
+    )
+
+
 def test_agentos_contract_matches_odoo_source():
     values, digest = odoo_contract()
     assert values["COMMAND_CATALOG_REVISION"] == 16
@@ -71,15 +103,18 @@ def test_agentos_contract_matches_odoo_source():
     assert app.PROTOCOL == values["PROTOCOL"]
     assert app.BUNDLE_VERSION == values["MODULE_VERSION"]
     assert app.COMMAND_CATALOG_HASH == digest
+    assert ODOO_HOST_COMMAND_NAMES == frozenset(values["HOST_COMMAND_NAMES"])
 
 
 def test_agent_uses_dynamic_instructions_callable():
     assert app.assistant.instructions is build_agent_instructions
+    assert app.odoo_command_assistant.instructions is build_odoo_command_instructions
     assert app.report_agent.instructions is build_report_agent_instructions
 
 
 def test_assistant_team_routes_to_specialized_members():
     assert app.assistant.id == "general-assistant"
+    assert app.odoo_command_assistant.id == "odoo-command-assistant"
     assert app.assistant_team.mode is TeamMode.route
     assert app.assistant_team.determine_input_for_members is False
     assert app.assistant_team.tool_choice == {
@@ -88,31 +123,122 @@ def test_assistant_team_routes_to_specialized_members():
     }
     all_members = [
         app.assistant,
-        app.edit_mode_assistant,
-        app.menu_navigation_assistant,
+        app.odoo_command_assistant,
         app.report_agent,
     ]
     assert callable(app.assistant_team.members)
-    assert app.assistant_team.members(instruction_context()) == all_members
-    for member in all_members:
-        assert app.assistant_team.members(
-            instruction_context(dependencies={TEAM_ROUTE_DEPENDENCY: {"memberId": member.id}})
-        ) == [member]
-    assert (
-        app.assistant_team.members(
-            instruction_context(dependencies={TEAM_ROUTE_DEPENDENCY: {"memberId": "unknown"}})
-        )
-        == []
+    resolved = app.assistant_team.members(team_context())
+    assert [member.id for member in resolved] == [member.id for member in all_members]
+    assert all(
+        member is not original for member, original in zip(resolved, all_members, strict=True)
     )
-    assert app.assistant_team.id == "odoo-assistant-team"
+    for member in all_members:
+        resolved = app.assistant_team.members(team_context(member_id=member.id))
+        assert [current.id for current in resolved] == [member.id]
+        assert resolved[0] is not member
+    resolved = app.assistant_team.members(
+        team_context(member_ids=[app.assistant.id, app.odoo_command_assistant.id])
+    )
+    assert [member.id for member in resolved] == [
+        app.assistant.id,
+        app.odoo_command_assistant.id,
+    ]
+    assert app.assistant_team.members(team_context(member_id="unknown")) == []
+    assert app.assistant_team.id == "hrp-assistant-team"
     assert app.assistant_team.cache_callables is False
     assert "Python 编码" in app.report_agent.role
 
 
+def test_team_members_bind_only_their_allowed_client_tools():
+    context = team_context(
+        "odoo.navigate_menu",
+        "odoo.apply_filter",
+        "odoo.export_current_view",
+        "odoo.business.test.execute",
+        "odoo.unknown_command",
+        "custom.browser_tool",
+    )
+
+    members = {member.id: member for member in app.assistant_team.members(context)}
+
+    assert context.client_tools is None
+    assistant_tools = members[app.assistant.id].tools
+    command_tools = members[app.odoo_command_assistant.id].tools
+    report_tools = members[app.report_agent.id].tools
+    assert [tool.name for tool in assistant_tools] == ["agent_control", "base"]
+    assert {tool.name for tool in command_tools} == {
+        "odoo.navigate_menu",
+        "odoo.apply_filter",
+        "odoo.export_current_view",
+        "odoo.business.test.execute",
+    }
+    assert [tool.name for tool in report_tools[:-1]] == [
+        "coding",
+        "report_data_sources",
+        "workspace_report",
+    ]
+    assert report_tools[-1].name == "odoo.export_current_view"
+    assert "odoo.unknown_command" not in {tool.name for tool in command_tools}
+    assert "custom.browser_tool" not in {tool.name for tool in command_tools}
+
+
+def test_team_delegate_runs_command_member_with_only_odoo_commands(monkeypatch):
+    calls = []
+
+    def fake_run(member, *args, **kwargs):
+        calls.append(
+            (
+                member.id,
+                [tool.name for tool in member.tools or []],
+            )
+        )
+        return RunOutput(
+            run_id=kwargs["run_id"],
+            session_id=kwargs["session_id"],
+            agent_id=member.id,
+            content="ok",
+        )
+
+    monkeypatch.setattr(Agent, "run", fake_run)
+    context = team_context(
+        "odoo.navigate_menu",
+        "odoo.business.expense.submit",
+        "odoo.unknown_command",
+        "custom.browser_tool",
+        member_ids=[app.assistant.id, app.odoo_command_assistant.id],
+    )
+    resolve_callable_members(app.assistant_team, context)
+    delegate = app.assistant_team._get_delegate_task_function(
+        TeamRunOutput(
+            run_id=context.run_id,
+            session_id=context.session_id,
+            team_id=app.assistant_team.id,
+        ),
+        context,
+        TeamSession(session_id=context.session_id, team_id=app.assistant_team.id),
+        {},
+        input="提交费用单",
+    )
+
+    result = list(
+        delegate.entrypoint(
+            member_id=app.odoo_command_assistant.id,
+            task="提交费用单",
+        )
+    )
+
+    assert result == ["ok"]
+    assert calls == [
+        (
+            app.odoo_command_assistant.id,
+            ["odoo.navigate_menu", "odoo.business.expense.submit"],
+        )
+    ]
+
+
 def test_agent_history_runs_are_not_truncated():
     assert app.assistant.num_history_runs is None
-    assert app.edit_mode_assistant.num_history_runs is None
-    assert app.menu_navigation_assistant.num_history_runs is None
+    assert app.odoo_command_assistant.num_history_runs is None
     assert app.report_agent.num_history_runs is None
 
 
@@ -157,11 +283,7 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
             "workspace_inspect_pdf",
         },
     ]
-    for assistant in (
-        app.assistant,
-        app.edit_mode_assistant,
-        app.menu_navigation_assistant,
-    ):
+    for assistant in (app.assistant,):
         toolkits = assistant.tools(
             run_context=RunContext(
                 run_id="run",
@@ -179,25 +301,33 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
             for right in registered[index + 1 :]
         )
 
+    assert app.odoo_command_assistant.tools == []
+
     report_toolkits = app.report_agent.tools(
         run_context=RunContext(run_id="run", session_id="thread", session_state={})
     )
     assert [toolkit.name for toolkit in report_toolkits] == [
-        "agent_control",
-        "base",
+        "coding",
         "report_data_sources",
         "workspace_report",
     ]
     report_registered = [
         set(toolkit.functions) | set(toolkit.async_functions) for toolkit in report_toolkits
     ]
-    assert report_registered[:2] == control_and_base
-    assert report_registered[2] == {
+    coding_registered = report_registered[0]
+    assert coding_registered == {
+        "exec_command",
+        "write_stdin",
+        "apply_patch",
+        "view_image",
+        "update_plan",
+    }
+    assert report_registered[1] == {
         "report_list_data_sources",
         "report_describe_data_source",
         "report_materialize_dataset",
     }
-    assert report_registered[3] == {
+    assert report_registered[2] == {
         "report_list_analysis_capabilities",
         "report_prepare_dataset",
         "report_profile_dataset",
@@ -214,7 +344,7 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
 
 
 def test_toolkit_instructions_are_injected_by_agno():
-    control_toolkit, base_toolkit, data_source_toolkit, report_toolkit = app.report_agent.tools(
+    coding_toolkit, data_source_toolkit, report_toolkit = app.report_agent.tools(
         run_context=RunContext(
             run_id="run",
             session_id="thread",
@@ -222,22 +352,18 @@ def test_toolkit_instructions_are_injected_by_agno():
         )
     )
 
-    assert control_toolkit.add_instructions is True
-    assert base_toolkit.add_instructions is True
-    assert "优先使用 workspace_* 专用工具" in base_toolkit.instructions
-    assert "读取和哈希 → 精确补丁 → 重新读取或检查" in base_toolkit.instructions
-    assert "sandbox_process_poll 轮询到 completed" in base_toolkit.instructions
-    assert "工具失败时依据返回的错误" in base_toolkit.instructions
-    assert "可验证的成功标准" in base_toolkit.instructions
-    assert "运行与改动匹配的测试或脚本" in base_toolkit.instructions
+    assert coding_toolkit.add_instructions is True
+    assert "exec_command" in coding_toolkit.instructions
+    assert "apply_patch" in coding_toolkit.instructions
+    assert "write_stdin" in coding_toolkit.instructions
     assert report_toolkit.add_instructions is True
     assert data_source_toolkit.add_instructions is True
     assert "同一 jobId 多轮调用 report_analyze_dataset" in report_toolkit.instructions
-    assert "workspace_write_file" in report_toolkit.instructions
+    assert "apply_patch" in report_toolkit.instructions
     assert "python3 <工作区相对脚本路径>" in report_toolkit.instructions
     assert "report_validate_pdf" in report_toolkit.instructions
 
-    toolkits = [control_toolkit, base_toolkit, data_source_toolkit, report_toolkit]
+    toolkits = [coding_toolkit, data_source_toolkit, report_toolkit]
     parsed = parse_tools(
         app.report_agent,
         toolkits,
@@ -246,27 +372,25 @@ def test_toolkit_instructions_are_injected_by_agno():
         async_mode=True,
     )
 
-    assert base_toolkit.instructions in app.report_agent._tool_instructions
+    assert coding_toolkit.instructions in app.report_agent._tool_instructions
     assert data_source_toolkit.instructions in app.report_agent._tool_instructions
     assert report_toolkit.instructions in app.report_agent._tool_instructions
     parsed_tools = {function.name: function for function in parsed if hasattr(function, "name")}
-    parsed_exec_schema = parsed_tools["sandbox_exec"].parameters
+    parsed_exec_schema = parsed_tools["exec_command"].parameters
     assert parsed_exec_schema["additionalProperties"] is False
-    assert parsed_exec_schema["properties"]["command"]["minLength"] == 1
-    assert parsed_exec_schema["properties"]["timeout"]["maximum"] == 900
-    parsed_patch_schema = parsed_tools["workspace_apply_patch"].parameters["properties"]
-    assert parsed_patch_schema["expected_sha256"]["pattern"] == r"^[0-9a-fA-F]{64}$"
+    assert parsed_exec_schema["properties"]["cmd"]["minLength"] == 1
+    assert parsed_exec_schema["properties"]["yield_time_ms"]["maximum"] == 30000
+    parsed_patch_schema = parsed_tools["apply_patch"].parameters["properties"]
+    assert parsed_patch_schema["patch"]["minLength"] == 1
 
 
 def test_report_agent_instructions_support_iterative_python_scripts():
     instructions = "\n".join(build_report_agent_instructions(instruction_context()))
 
-    assert "像 coding agent 一样" in instructions
-    assert "workspace_write_file" in instructions
-    assert "workspace_apply_changes" in instructions
-    assert "workspace_read_file" in instructions
-    assert "workspace_hash_file" in instructions
-    assert "workspace_apply_hunks" in instructions
+    assert "exec_command" in instructions
+    assert "apply_patch" in instructions
+    assert "write_stdin" in instructions
+    assert "view_image" in instructions
     assert "python3 <工作区相对脚本路径>" in instructions
     assert "不得把裸 Python 代码直接作为 command" in instructions
 
@@ -274,8 +398,7 @@ def test_report_agent_instructions_support_iterative_python_scripts():
 def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
     for assistant in (
         app.assistant,
-        app.edit_mode_assistant,
-        app.menu_navigation_assistant,
+        app.odoo_command_assistant,
         app.report_agent,
     ):
         assert assistant.checkpoint == "tool-batch"
@@ -299,19 +422,24 @@ def test_plain_request_only_uses_core_instructions():
     assert build_agent_instructions(instruction_context()) == CORE_INSTRUCTIONS
 
 
-def test_navigation_tools_only_add_navigation_policy():
-    instructions = build_agent_instructions(instruction_context("odoo.navigate_menu"))
+def test_plain_command_request_only_uses_command_instructions():
+    assert build_odoo_command_instructions(instruction_context()) == ODOO_COMMAND_INSTRUCTIONS
 
-    assert instructions == CORE_INSTRUCTIONS + NAVIGATION_INSTRUCTIONS
+
+def test_navigation_tools_only_add_navigation_policy():
+    instructions = build_odoo_command_instructions(instruction_context("odoo.navigate_menu"))
+
+    assert instructions == ODOO_COMMAND_INSTRUCTIONS + NAVIGATION_INSTRUCTIONS
     assert not set(FORM_EDIT_INSTRUCTIONS) & set(instructions)
     assert "stage_current_form" not in "\n".join(instructions)
+    assert "requiredFirstTool" not in "\n".join(instructions)
 
 
 def test_list_view_tools_add_list_policy():
-    instructions = build_agent_instructions(instruction_context("odoo.apply_group"))
+    instructions = build_odoo_command_instructions(instruction_context("odoo.apply_group"))
     text = "\n".join(instructions)
 
-    assert instructions == CORE_INSTRUCTIONS + LIST_VIEW_INSTRUCTIONS
+    assert instructions == ODOO_COMMAND_INSTRUCTIONS + LIST_VIEW_INSTRUCTIONS
     assert "viewType 为 list 或 kanban" in text
     assert "groupBy 是有序的完整目标状态" in text
     assert "切到 form 会进入空白新建表单" in text
@@ -319,26 +447,28 @@ def test_list_view_tools_add_list_policy():
 
 
 def test_discard_form_tool_adds_form_view_policy():
-    instructions = build_agent_instructions(instruction_context("odoo.discard_current_form"))
+    instructions = build_odoo_command_instructions(instruction_context("odoo.discard_current_form"))
 
-    assert instructions == CORE_INSTRUCTIONS + FORM_EDIT_INSTRUCTIONS
+    assert instructions == ODOO_COMMAND_INSTRUCTIONS + FORM_EDIT_INSTRUCTIONS
     assert "viewType 为 form" in "\n".join(instructions)
 
 
 def test_view_control_tools_add_ambiguous_navigation_policy():
-    instructions = build_agent_instructions(instruction_context("odoo.activate_view_control"))
+    instructions = build_odoo_command_instructions(
+        instruction_context("odoo.activate_view_control")
+    )
 
-    assert instructions == CORE_INSTRUCTIONS + VIEW_CONTROL_INSTRUCTIONS
+    assert instructions == ODOO_COMMAND_INSTRUCTIONS + VIEW_CONTROL_INSTRUCTIONS
     text = "\n".join(instructions)
     assert "控件语义不明确或存在多个合理路径时停止并请用户选择" in text
     assert "不得猜测控件、目标模型、action 或记录" in text
 
 
 def test_form_tools_add_staged_edit_policy_without_report_workflow():
-    instructions = build_agent_instructions(instruction_context("odoo.stage_current_form"))
+    instructions = build_odoo_command_instructions(instruction_context("odoo.stage_current_form"))
     text = "\n".join(instructions)
 
-    assert instructions == CORE_INSTRUCTIONS + FORM_EDIT_INSTRUCTIONS
+    assert instructions == ODOO_COMMAND_INSTRUCTIONS + FORM_EDIT_INSTRUCTIONS
     assert "能力发现 → stage_current_form 暂存依赖标量" in text
     assert "独立确认后 save_current_form" in text
     assert "odoo-current-view-report" not in text
@@ -346,21 +476,21 @@ def test_form_tools_add_staged_edit_policy_without_report_workflow():
 
 
 def test_x2many_business_and_selected_skill_policies_are_selected_independently():
-    x2many = build_agent_instructions(instruction_context("odoo.open_x2many_record"))
-    business = build_agent_instructions(instruction_context("odoo.business.test.execute"))
+    x2many = build_odoo_command_instructions(instruction_context("odoo.open_x2many_record"))
+    business = build_odoo_command_instructions(instruction_context("odoo.business.test.execute"))
     selected_skill = build_agent_instructions(
         instruction_context(dependencies={"已选智能体技能": [{"name": "report"}]})
     )
 
-    assert x2many == CORE_INSTRUCTIONS + X2MANY_INSTRUCTIONS
-    assert business == CORE_INSTRUCTIONS + BUSINESS_COMMAND_INSTRUCTIONS
+    assert x2many == ODOO_COMMAND_INSTRUCTIONS + X2MANY_INSTRUCTIONS
+    assert business == ODOO_COMMAND_INSTRUCTIONS + BUSINESS_COMMAND_INSTRUCTIONS
     assert selected_skill == CORE_INSTRUCTIONS + SELECTED_SKILL_INSTRUCTIONS
 
 
 def test_instruction_character_budgets():
     core_length = len("\n".join(CORE_INSTRUCTIONS))
     scenario_lengths = [
-        len("\n".join(CORE_INSTRUCTIONS + policy))
+        len("\n".join(ODOO_COMMAND_INSTRUCTIONS + policy))
         for policy in (
             NAVIGATION_INSTRUCTIONS,
             LIST_VIEW_INSTRUCTIONS,
@@ -373,6 +503,7 @@ def test_instruction_character_budgets():
     ]
 
     assert core_length <= 1500
+    assert len("\n".join(ODOO_COMMAND_INSTRUCTIONS)) <= 1500
     assert max(scenario_lengths) <= 2200
 
 
@@ -414,6 +545,12 @@ def test_智能报表技能统一使用工作区相对路径和报表工具():
     assert "相对 `/home/daytona/workspace` 的工作区路径" in skill
     assert "`report_list_analysis_capabilities`" in skill
     assert "`report_profile_dataset`" in skill
+    assert "`exec_command` 检查相关文件" in skill
+    assert "`apply_patch` 创建或修改任意 Python 脚本" in skill
+    assert "`write_stdin` 轮询或输入" in skill
+    assert "`view_image` 检查生成的图表" in skill
+    assert "workspace_write_file" not in skill
+    assert "workspace_apply_changes" not in skill
     assert "模型根据每轮结果自行决定轮数" in skill
     assert "若返回 `ok: false`" in skill
     assert "直到至少一轮返回 `ok: true`" in skill

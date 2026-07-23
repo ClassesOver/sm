@@ -150,8 +150,7 @@ def test_report_toolkit_is_discoverable_but_requires_skill_route(tmp_path):
         run_context=SimpleNamespace(session_state=context.session_state, dependencies={}),
     )
     assert [tool.name for tool in report_tools] == [
-        "agent_control",
-        "base",
+        "coding",
         "report_data_sources",
         "workspace_report",
     ]

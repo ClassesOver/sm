@@ -266,7 +266,7 @@ describe('production transport contract', () => {
       value: JSON.stringify({
         menuId: 8, actionId: 42, catalogId: 'catalog-test-1', catalogRevision: 1,
         name: '客户', path: ['销售', '客户'], fullPath: '销售 / 客户',
-        navigationRequired: true, requiredFirstTool: 'odoo.navigate_menu'
+        navigationRequired: true
       })
     })
     expect(input.context).toContainEqual({
@@ -312,7 +312,7 @@ describe('production transport contract', () => {
     expect(menuContext?.value).not.toContain('actionId')
   })
 
-  it('marks exact menu navigation as a single required tool call', () => {
+  it('adds exact menu navigation context without a required first tool', () => {
     const entry = {
       menuId: 9,
       actionId: 42,
@@ -334,7 +334,6 @@ describe('production transport contract', () => {
       description: 'HRP 菜单导航请求',
       value: JSON.stringify({
         query: '报销单查询',
-        requiredFirstTool: 'odoo.navigate_menu',
         catalogId: 'catalog-test-1',
         catalogRevision: 1
       })
@@ -535,9 +534,9 @@ describe('production transport contract', () => {
       (item) => item.description === '已选 HRP 菜单'
     )
     expect(JSON.parse(selectedMenu?.value || '{}')).toMatchObject({
-      navigationRequired: false,
-      requiredFirstTool: false
+      navigationRequired: false
     })
+    expect(JSON.parse(selectedMenu?.value || '{}')).not.toHaveProperty('requiredFirstTool')
   })
 
   it('adds exact workspace paths and tools to Agent context', () => {

@@ -70,6 +70,10 @@ class WorkspaceError(ValueError):
     pass
 
 
+class WorkspaceProcessNotFound(WorkspaceError):
+    pass
+
+
 class WorkspacePathConflict(WorkspaceError):
     pass
 
@@ -2410,12 +2414,12 @@ WORKSPACE_REPORT_TOOLKIT_INSTRUCTIONS = """
 - 仅在需要分析工作区数据或生成报表时使用本工具集；不确定可用 Python 库或系统命令时先调用 report_list_analysis_capabilities。
 - 先用 report_prepare_dataset 登记一至二十个工作区相对路径，并在后续各轮原样复用返回的 jobId。
 - 先调用 report_profile_dataset 获取确定性的行列、空值、数值范围和高频值基线；它只读取 job 已登记的输入，不能替代后续针对业务问题的多轮分析。
-- 复杂分析可以用 workspace_write_file 或 workspace_apply_changes 在工作区创建 Python 脚本；迭代已有脚本时遵循基础工具的读取、哈希、精确补丁和复查流程，不得用 Shell 绕过文件写入确认。
+- 复杂分析先用 exec_command 检查文件，再用 apply_patch 在工作区创建或修改 Python 脚本；不得用 Shell 绕过文件写入确认。
 - 通过 report_analyze_dataset 执行脚本时，command 必须是 python3 <工作区相对脚本路径> 及其参数组成的完整 Shell 命令，不得直接提交裸 Python 代码。
 - 使用同一 jobId 多轮调用 report_analyze_dataset；每轮提交可独立执行的完整命令，并向标准输出写出本轮分析结果。
 - 分析失败时读取返回的 output、exitCode 和 status，修正命令后继续；由模型根据证据充分性决定轮次，但生成报表前至少要有一轮成功分析。
 - 分析充分后，基于真实工具结果生成 Markdown 文件；结论、数字、表格和图片不得脱离分析结果，图片使用相对 Markdown 文件的路径。
-- 使用新的输出路径调用 report_render_markdown，再调用 report_validate_pdf 做逐页视觉验收；必要时用 workspace_inspect_pdf 深入检查。只有 report_job_status 为 validated 才能声称报表完成。
+- 使用新的输出路径调用 report_render_markdown，再调用 report_validate_pdf 做逐页视觉验收；必要时用 view_image 检查生成的图表。只有 report_job_status 为 validated 才能声称报表完成。
 """.strip()
 
 
@@ -2757,30 +2761,58 @@ class DaytonaToolkit(Toolkit):
     @staticmethod
     async def _managed_command(process: Any, session_id: str, command_id: str):
         session_id, command_id = DaytonaToolkit._validate_process_ids(session_id, command_id)
-        session = await process.get_session(session_id)
+        try:
+            session = await process.get_session(session_id)
+        except DaytonaNotFoundError as error:
+            raise WorkspaceProcessNotFound("后台进程不属于当前会话或已经结束。") from error
         if command_id not in {
             str(getattr(command, "id", "") or "") for command in getattr(session, "commands", [])
         }:
-            raise WorkspaceError("后台进程不属于当前会话或已经结束。")
-        return await process.get_session_command(session_id, command_id)
+            raise WorkspaceProcessNotFound("后台进程不属于当前会话或已经结束。")
+        try:
+            return await process.get_session_command(session_id, command_id)
+        except DaytonaNotFoundError as error:
+            raise WorkspaceProcessNotFound("后台进程不属于当前会话或已经结束。") from error
 
-    @staticmethod
-    async def _reserve_managed_session(process: Any) -> str:
-        active = 0
-        for session in await process.list_sessions():
-            session_id = str(getattr(session, "session_id", "") or "")
-            if not session_id.startswith(MANAGED_PROCESS_PREFIX):
-                continue
-            commands = list(getattr(session, "commands", []) or [])
-            if not commands:
-                await process.delete_session(session_id)
-            elif any(getattr(command, "exit_code", None) is None for command in commands):
-                active += 1
-        if active >= MAX_MANAGED_PROCESSES:
-            raise WorkspaceError(
-                f"当前对话已有 {MAX_MANAGED_PROCESSES} 个后台进程，请轮询或终止后再启动。"
-            )
-        return f"{MANAGED_PROCESS_PREFIX}{uuid.uuid4().hex}"
+    async def _start_managed_session(
+        self,
+        process: Any,
+        thread: str,
+        request: SessionExecuteRequest,
+    ) -> tuple[str, str, Any]:
+        lock_key = f"agui-managed-processes:{self.service._hash(thread)}"
+        async with self.service.async_registry.locked(lock_key):
+            active = 0
+            for session in await process.list_sessions():
+                session_id = str(getattr(session, "session_id", "") or "")
+                if not session_id.startswith(MANAGED_PROCESS_PREFIX):
+                    continue
+                commands = list(getattr(session, "commands", []) or [])
+                if not commands:
+                    await process.delete_session(session_id)
+                elif any(getattr(command, "exit_code", None) is None for command in commands):
+                    active += 1
+            if active >= MAX_MANAGED_PROCESSES:
+                raise WorkspaceError(
+                    f"当前对话已有 {MAX_MANAGED_PROCESSES} 个后台进程，请轮询或终止后再启动。"
+                )
+            session_id = f"{MANAGED_PROCESS_PREFIX}{uuid.uuid4().hex}"
+            await process.create_session(session_id)
+            try:
+                value = await process.execute_session_command(
+                    session_id,
+                    request,
+                    timeout=5,
+                )
+                command_id = str(getattr(value, "cmd_id", "") or "")
+                self._validate_process_ids(session_id, command_id)
+            except BaseException:
+                try:
+                    await complete_cleanup(process.delete_session(session_id))
+                except Exception:
+                    pass
+                raise
+            return session_id, command_id, value
 
     def _session_output(
         self,
@@ -2971,8 +3003,6 @@ class DaytonaToolkit(Toolkit):
             sandbox = await self.service._asandbox_for(client, _thread(run_context))
             if background:
                 started_at = asyncio.get_running_loop().time()
-                session_id = await self._reserve_managed_session(sandbox.process)
-                await sandbox.process.create_session(session_id)
                 pty_environment = "env AGUI_MANAGED_PTY=1 " if pty else ""
                 wrapped_command = (
                     f"cd -- {shlex.quote(remote_cwd)} && "
@@ -2980,24 +3010,15 @@ class DaytonaToolkit(Toolkit):
                     f"{execution_timeout}s "
                     f"/bin/sh -lc {shlex.quote(executed_command)}"
                 )
-                try:
-                    value = await sandbox.process.execute_session_command(
-                        session_id,
-                        SessionExecuteRequest(
-                            command=wrapped_command,
-                            run_async=True,
-                            suppress_input_echo=suppress_input_echo if pty else False,
-                        ),
-                        timeout=5,
-                    )
-                    command_id = str(getattr(value, "cmd_id", "") or "")
-                    self._validate_process_ids(session_id, command_id)
-                except BaseException:
-                    try:
-                        await sandbox.process.delete_session(session_id)
-                    except Exception:
-                        pass
-                    raise
+                session_id, command_id, value = await self._start_managed_session(
+                    sandbox.process,
+                    _thread(run_context),
+                    SessionExecuteRequest(
+                        command=wrapped_command,
+                        run_async=True,
+                        suppress_input_echo=suppress_input_echo if pty else False,
+                    ),
+                )
                 exit_code = getattr(value, "exit_code", None)
                 if yield_time_ms is not None:
                     return await self._wait_managed_output(

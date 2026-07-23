@@ -35,8 +35,8 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 默认监听 `127.0.0.1:7777`。HRP 只需配置
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
 
-Agent 通过 Agno callable tools factory 注册 `AgentControlToolkit`、`BaseToolkit` 和按需加载的
-`WorkspaceReportToolkit`。Base 层提供受限终端及
+主 Assistant 通过 Agno callable tools factory 注册 `AgentControlToolkit` 和 `BaseToolkit`；
+Report Agent 固定注册 `CodingToolkit`、`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`。Base 层提供受限终端及
 后台会话、基于 ripgrep 的文件/文本搜索、分段读取、文件统计、递归目录树、SHA-256、只读 Git、
 定位 hunk、单文件补丁、完整变更集、目录创建、文件复制、图片查看和 PDF 检查；报表层只提供能力发现、
 数据登记、多轮分析和 Markdown 转 PDF。读取、检查和后台轮询无需确认，新建、覆盖、补丁、移动、
@@ -86,7 +86,7 @@ Agent 在每个工具批次后持久化 checkpoint；模型请求遇到临时失
 | `enable_session_summaries` | `True` | 成功 run 后滚动更新非权威摘要 |
 | `enable_thinking` | `True` | 主模型启用；辅助模型关闭，客户端不接收原始 reasoning |
 
-等价的核心配置如下；普通、编辑和菜单 Assistant 使用同一组配置，仅身份、职责和强制工具选择不同：
+等价的核心配置如下；三个成员共享模型、存储、检查点和历史预算配置，但身份、指令和工具能力相互独立：
 
 ```python
 assistant = Agent(
@@ -105,16 +105,25 @@ assistant.model.exponential_backoff = True
 assistant.num_history_runs = None
 ```
 
-运行入口使用 Agno `TeamMode.route` 编排 `assistant`、`edit_mode_assistant`、
-`menu_navigation_assistant` 和 `report_agent`，Team 领导者只负责选择一个成员并直接返回成员结果。
-整个服务只创建一个 Team；其 callable members 按服务端注入的可信路由上下文仅暴露一个目标成员。
-明确菜单上下文路由给 `menu_navigation_assistant`，完整短编辑指令路由给 `edit_mode_assistant`，显式选择
-智能报表技能路由给 `report_agent`，其余请求路由给 ID 为 `general-assistant` 的 `assistant`。客户端
-同名上下文会先被删除，不能伪造目标成员。Team 内部 `delegate_task_to_member` 调用不会作为 AG-UI
-页面工具发送给浏览器；菜单和编辑的首工具守卫仍检查成员首先调用的 `odoo.navigate_menu` 或
-`odoo.enter_edit_mode`。同一 thread
-因而始终保持 TeamSession，续跑和 branch 不会在 TeamSession 与 AgentSession 之间切换；升级前已
-保存的 AgentSession 仍按原 Agent 恢复。
+运行入口只创建 ID 为 `hrp-assistant-team` 的一个 Agno `TeamMode.route` Team，成员为
+`assistant`、`odoo_command_assistant` 和 `report_agent`。普通 `assistant` 的 ID 是
+`general-assistant`，负责问答、非报表技能和工作区服务端工具，不获得任何 Odoo client command；
+`odoo_command_assistant` 的 ID 是 `odoo-command-assistant`，只获得本轮声明且属于固定宿主 command
+目录或合法 `odoo.business.<namespace>.<command>` 的工具，不获得工作区或报表工具；`report_agent`
+负责工作区编码、数据分析和报表工具，额外只允许 `odoo.export_current_view`。
+
+显式选择智能报表技能时，可信路由上下文只暴露 `report_agent`。其他新请求在存在合法 Odoo command
+能力时只暴露普通和 command 两个成员，由 Team 领导者按用户是否明确要求执行 Odoo 页面或业务操作
+选择；工具目录只表示能力可用，不能单独作为操作意图。没有合法 Odoo command 时只暴露普通成员。
+客户端同名上下文会先被删除，不能伪造目标成员。Team 内部强制调用的
+`delegate_task_to_member` 只负责委派，不会作为 AG-UI 页面工具发送给浏览器；AgentOS 不再强制或
+检查成员的首个 Odoo 工具。自动生成的 `/agents/*/runs` 和 `/teams/*/runs` 运行入口统一禁用，
+浏览器运行只能经过带 capability、输入清洗和可信候选成员上下文的 `/agui`。
+
+新会话使用 TeamSession。旧 `odoo-assistant-team` 仍可续跑；旧 `odoo-assistant` 映射到普通成员，
+旧 `edit-mode-assistant` 和 `menu-navigation-assistant` 在原 run 续跑时映射到 command 成员。旧
+standalone AgentSession 收到 fresh 用户消息时迁入 Team，从原会话注入预算化历史，并按当前消息重新
+筛选普通、command 和适用的 report 候选；原运行的工具续跑和 branch 仍按存储的原实体恢复。
 
 PostgreSQL 仍永久保存完整 runs 和原始 `Message.content`。完整模型上下文上限为 256K tokens，
 预算装配器为输出预留 32K，并根据最新 HRP 宿主快照、当前用户输入和客户端工具 schema 的估算
@@ -145,9 +154,10 @@ thinking。服务端不转发原始 reasoning delta，终态持久化前清除 r
 ### 计划、工具发现与上下文状态
 
 Agno 2.7.3 支持 `session_state`、AG-UI `STATE_DELTA`、callable tools factory 和固定步骤
-Workflow，但没有 Codex 风格的专用 `update_plan`。本项目因此在 Agno Toolkit 内提供受约束的
-`agent_update_plan`：最多 20 步、最多一个 `in_progress`，且只写保留键 `agentos_plan`；它是任务
-进度，不是 Odoo 业务事实，也不得保存快照、授权或 modifiers。
+Workflow，但没有 Codex 风格的专用 `update_plan`。本项目因此提供受约束的计划工具：主 Assistant
+继续使用 `agent_update_plan`，Coding/Report Agent 使用 `update_plan`；两者最多 20 步、最多一个
+`in_progress`，且只写保留键 `agentos_plan`。计划是任务进度，不是 Odoo 业务事实，也不得保存快照、
+授权或 modifiers。
 
 `agent_tool_search` 搜索服务端 Toolkit 类别，`agent_load_toolkit` 只修改保留的加载状态。Agno
 在每个 run 开始时解析一次 callable tools，因此新 Toolkit 从下一 run 生效；这不需要用户确认，
@@ -158,12 +168,15 @@ Workflow，但没有 Codex 风格的专用 `update_plan`。本项目因此在 Ag
 
 ### 泛化数据源与 ReportAgent
 
-`report-agent` 固定暴露 `AgentControlToolkit`、`BaseToolkit`、`ReportDataSourceToolkit` 和
-`WorkspaceReportToolkit`。它不使用固定 Workflow 或 Team，模型自行决定分析命令和轮次，但必须
+`coding-agent` 是可独立构造但不注册为 Team 成员的基座，固定暴露 `exec_command`、`write_stdin`、
+`apply_patch`、`view_image` 和 `update_plan`。`report-agent` 从该基座派生，固定暴露
+`CodingToolkit`、`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`。它不使用固定 Workflow，
+模型自行决定分析命令和轮次，但必须
 完成“发现数据源 → 物化数据集 → 确定性剖析 → 至少一轮成功分析 → Markdown → PDF → 验收”的
 受控链路。完整文件内容不会注入模型上下文；模型只接收数据源句柄、schema、剖析结果和分析输出。
-复杂分析可通过 BaseToolkit 在当前 thread 工作区创建、读取、哈希和精确修改任意 Python 脚本，
-再以 `python3 <工作区相对脚本路径>` 的完整 Shell 命令交给 `report_analyze_dataset` 多轮执行。
+复杂分析先通过 `exec_command` 检查文件，再用 `apply_patch` 在当前 thread 工作区创建或精确修改
+任意 Python 脚本，并用 `exec_command` 执行验证；报表 job 内再以
+`python3 <工作区相对脚本路径>` 的完整 Shell 命令交给 `report_analyze_dataset` 多轮执行。
 脚本文件写入仍需确认，分析执行仍受 Daytona 网络隔离、路径、进程、超时和输出大小限制；不新增
 AgentOS 宿主机 Python 或绕过现有确认策略的执行入口。
 

@@ -15,6 +15,7 @@ from agentos_dev.tests.workspace_fakes import (
     SECRET,
     AsyncFakeClient,
     AsyncFakeFs,
+    AsyncFakeProcess,
     AsyncMemoryRegistry,
     FakeClient,
     FakeSandbox,
@@ -22,6 +23,7 @@ from agentos_dev.tests.workspace_fakes import (
     service,
 )
 from agentos_dev.workspace import (
+    MAX_MANAGED_PROCESSES,
     MAX_PATH_BYTES,
     MAX_PATH_COMPONENT_BYTES,
     MAX_PATH_DEPTH,
@@ -1066,6 +1068,54 @@ async def test_后台进程完成后轮询返回最终输出并清理会话(tmp_
     assert result["nextOffset"] == 13
     assert result["hasMore"] is False
     assert started["sessionId"] not in process.sessions
+
+
+@pytest.mark.anyio
+async def test_并发启动后台进程不会突破数量上限(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+    toolkit = DaytonaToolkit(async_service)
+    original_create_session = AsyncFakeProcess.create_session
+    original_execute_session_command = AsyncFakeProcess.execute_session_command
+
+    async def delayed_create_session(self, session_id):
+        await asyncio.sleep(0)
+        return await original_create_session(self, session_id)
+
+    async def delayed_execute_session_command(self, session_id, request, timeout=None):
+        await asyncio.sleep(0)
+        return await original_execute_session_command(self, session_id, request, timeout=timeout)
+
+    monkeypatch.setattr(AsyncFakeProcess, "create_session", delayed_create_session)
+    monkeypatch.setattr(
+        AsyncFakeProcess,
+        "execute_session_command",
+        delayed_execute_session_command,
+    )
+    results = await asyncio.gather(
+        *[
+            toolkit.sandbox_exec(
+                f"sleep {index}",
+                background=True,
+                run_context=RunContext(run_id=f"run-{index}", session_id="thread"),
+            )
+            for index in range(MAX_MANAGED_PROCESSES + 1)
+        ],
+        return_exceptions=True,
+    )
+
+    succeeded = [result for result in results if isinstance(result, dict)]
+    failed = [result for result in results if isinstance(result, WorkspaceError)]
+    assert len(succeeded) == MAX_MANAGED_PROCESSES
+    assert len(failed) == 1
+    assert "后台进程" in str(failed[0])
+    assert len(current.sandbox_for("thread").process.sessions) == MAX_MANAGED_PROCESSES
 
 
 @pytest.mark.anyio
