@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import json
 import os
@@ -127,39 +128,52 @@ def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
                 f"python /tmp/report_runtime.py {shlex.quote(action)} "
                 f"{shlex.quote(json.dumps(payload, ensure_ascii=False))}"
             )
-            result = sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=120)
+            result = sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=300)
             assert result.exit_code == 0, result.result
             output = next(line for line in reversed(result.result.splitlines()) if line.strip())
             return json.loads(output)
 
-        def analyze(job_id: str, source: str):
+        def analyze(source: str):
             command = "python - <<'PY'\n" + textwrap.dedent(source).strip() + "\nPY"
-            return run("analyze", {"job_id": job_id, "command": command, "timeout": 60})
+            result = sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=120)
+            return {
+                "ok": result.exit_code == 0,
+                "exitCode": result.exit_code,
+                "output": result.result,
+            }
 
-        capabilities = run("capabilities", {})
-        assert capabilities["packages"]["pandas"]
-        assert capabilities["packages"]["matplotlib"]
-
-        prepared = run("prepare", {"paths": ["employees.csv", "revenue.csv", "turnover.csv"]})
-        assert prepared["paths"] == ["employees.csv", "revenue.csv", "turnover.csv"]
-        failed = run(
-            "analyze",
-            {
-                "job_id": prepared["jobId"],
-                "command": "python -c 'raise ValueError(\"缺少预期分析列\")'",
-            },
+        job_id = str(uuid.uuid4())
+        job = {
+            "jobId": job_id,
+            "sources": [
+                {
+                    "path": path,
+                    "size": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+                for path, content in (
+                    ("employees.csv", employees_csv),
+                    ("revenue.csv", revenue_csv),
+                    ("turnover.csv", turnover_csv),
+                )
+            ],
+        }
+        failed_process = sandbox.process.exec(
+            "python -c 'raise ValueError(\"缺少预期分析列\")'",
+            cwd=WORKSPACE_ROOT,
+            timeout=120,
         )
+        failed = {
+            "ok": failed_process.exit_code == 0,
+            "exitCode": failed_process.exit_code,
+            "output": failed_process.result,
+        }
         assert failed["ok"] is False
-        assert failed["status"] == "analysis_failed"
         assert failed["exitCode"] != 0
-        assert failed["roundCount"] == 1
-        assert failed["successfulRoundCount"] == 0
         assert "Traceback" in failed["output"]
 
-        job_id = prepared["jobId"]
         directory = f"报表/生成结果/{job_id}"
         summarized = analyze(
-            job_id,
             f"""
             import json
             from pathlib import Path
@@ -191,12 +205,9 @@ def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
             """,
         )
         assert summarized["ok"] is True
-        assert summarized["roundCount"] == 2
-        assert summarized["successfulRoundCount"] == 1
         assert '"employeeCount": 80000' in summarized["output"]
 
         trended = analyze(
-            job_id,
             f"""
             import json
             from pathlib import Path
@@ -254,12 +265,9 @@ def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
             """,
         )
         assert trended["ok"] is True
-        assert trended["roundCount"] == 3
-        assert trended["successfulRoundCount"] == 2
         assert '"revenueRowCount": 120000' in trended["output"]
 
         reported = analyze(
-            job_id,
             f"""
             import json
             from pathlib import Path
@@ -367,36 +375,43 @@ def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
             """,
         )
         assert reported["ok"] is True, reported["output"]
-        assert reported["roundCount"] == 4
-        assert reported["successfulRoundCount"] == 3
         assert '"charts": 4' in reported["output"]
         assert "Glyph" not in reported["output"]
 
+        temporary_pdf = f"/tmp/workspace-report-{uuid.uuid4().hex}-render/render.pdf"
         rendered = run(
             "render_markdown",
             {
-                "job_id": job_id,
+                "job": job,
                 "markdown_path": f"{directory}/复杂人力资源分析报告.md",
                 "output_path": f"{directory}/复杂人力资源分析报告.pdf",
+                "temporary_path": temporary_pdf,
             },
         )
-        assert rendered["roundCount"] == 4
-        assert rendered["successfulRoundCount"] == 3
+        render = rendered.pop("render")
+        sandbox.process.exec(
+            f"cp --no-clobber -- {shlex.quote(temporary_pdf)} "
+            f"{shlex.quote(WORKSPACE_ROOT + '/' + rendered['pdfPath'])}",
+            cwd=WORKSPACE_ROOT,
+            timeout=30,
+        )
+        job["render"] = render
         assert rendered["imageCount"] == 4
         assert rendered["pageCount"] >= 2
         assert rendered["size"] > 20_000
 
         validated = run(
             "validate_pdf",
-            {"job_id": job_id, "pdf_path": rendered["pdfPath"]},
+            {
+                "job": job,
+                "pdf_path": rendered["pdfPath"],
+                "temporary_directory": f"/tmp/workspace-report-{uuid.uuid4().hex}-validate",
+            },
         )
         assert validated["ok"] is True
         assert validated["status"] == "validated"
         assert validated["blankPages"] == []
         assert validated["missingImageCount"] == 0
-        status = run("status", {"job_id": job_id})
-        assert status["status"] == "validated"
-        assert status["artifacts"]["pdf"]["changed"] is False
 
         content = WorkspaceService._download_file(
             sandbox,

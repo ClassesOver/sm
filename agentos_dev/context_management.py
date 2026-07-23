@@ -22,6 +22,8 @@ COMPRESSIBLE_HISTORY_TOOLS = frozenset(
     {
         "sandbox_exec",
         "sandbox_process_poll",
+        "exec_command",
+        "write_stdin",
         "report_analyze_dataset",
     }
 )
@@ -327,7 +329,7 @@ def _compression_messages(tool_result: Message) -> list[Message]:
             role="system",
             content=(
                 "压缩分析工具输出。只总结关键发现，不推导权限、Odoo 页面状态或标识符；"
-                "不要在摘要中复制令牌、快照或 modifiers。"
+                "不要在摘要中复制令牌、快照或 modifiers。必须只返回符合指定 schema 的 JSON 对象。"
             ),
         ),
         Message(role="user", content=_message_text(tool_result)),
@@ -585,6 +587,7 @@ class RollingSessionSummaryManager(SessionSummaryManager):
                     "更新非权威滚动会话摘要。只输出用户目标、已确认决策、工作区文件、"
                     "完成事项和待办事项；不得包含或推导 Odoo 当前记录值、权限状态、"
                     "snapshotId、hostRevision、授权 token 或 modifiers。"
+                    "必须只返回符合指定 schema 的 JSON 对象。"
                 ),
             ),
             Message(

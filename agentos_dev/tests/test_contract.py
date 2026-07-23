@@ -23,10 +23,12 @@ from agentos_dev.instructions import (
     LIST_VIEW_INSTRUCTIONS,
     NAVIGATION_INSTRUCTIONS,
     ODOO_COMMAND_INSTRUCTIONS,
+    REPORT_AGENT_INSTRUCTIONS,
     SELECTED_SKILL_INSTRUCTIONS,
     VIEW_CONTROL_INSTRUCTIONS,
     X2MANY_INSTRUCTIONS,
     build_agent_instructions,
+    build_coding_agent_instructions,
     build_odoo_command_instructions,
     build_report_agent_instructions,
 )
@@ -110,6 +112,26 @@ def test_agent_uses_dynamic_instructions_callable():
     assert app.assistant.instructions is build_agent_instructions
     assert app.odoo_command_assistant.instructions is build_odoo_command_instructions
     assert app.report_agent.instructions is build_report_agent_instructions
+
+
+def test_coding_agent_uses_trusted_per_run_instructions():
+    instructions = build_coding_agent_instructions(instruction_context())
+    text = "\n".join(instructions)
+    resumed = build_coding_agent_instructions(
+        RunContext(
+            run_id="run-1",
+            session_id="thread-1",
+            session_state={"agentos_plan": {"plan": []}},
+        )
+    )
+
+    assert "AGENTS.md" in text
+    assert "当前可用工具、其 schema、确认要求" in text
+    assert "网络由 sandbox 策略决定" in text
+    assert "不是 OS PID" in text
+    assert "最终回答区分已完成、失败和仍在运行" in text
+    assert "当前会话没有可复用的任务计划" in text
+    assert "当前会话保存了任务计划" in "\n".join(resumed)
 
 
 def test_assistant_team_routes_to_specialized_members():
@@ -328,11 +350,8 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
         "report_materialize_dataset",
     }
     assert report_registered[2] == {
-        "report_list_analysis_capabilities",
         "report_prepare_dataset",
-        "report_profile_dataset",
         "report_job_status",
-        "report_analyze_dataset",
         "report_render_markdown",
         "report_validate_pdf",
     }
@@ -358,9 +377,11 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert "write_stdin" in coding_toolkit.instructions
     assert report_toolkit.add_instructions is True
     assert data_source_toolkit.add_instructions is True
-    assert "同一 jobId 多轮调用 report_analyze_dataset" in report_toolkit.instructions
+    assert "分析和长进程统一使用 Coding 工具" in report_toolkit.instructions
+    assert "不另加 Report 层命令限制" in report_toolkit.instructions
     assert "apply_patch" in report_toolkit.instructions
-    assert "python3 <工作区相对脚本路径>" in report_toolkit.instructions
+    assert "exec_command" in report_toolkit.instructions
+    assert "write_stdin" in report_toolkit.instructions
     assert "report_validate_pdf" in report_toolkit.instructions
 
     toolkits = [coding_toolkit, data_source_toolkit, report_toolkit]
@@ -385,14 +406,17 @@ def test_toolkit_instructions_are_injected_by_agno():
 
 
 def test_report_agent_instructions_support_iterative_python_scripts():
-    instructions = "\n".join(build_report_agent_instructions(instruction_context()))
+    context = instruction_context("odoo.navigate_menu", "odoo.apply_filter")
+    resolved = build_report_agent_instructions(context)
+    instructions = "\n".join(resolved)
 
+    assert resolved == [*build_coding_agent_instructions(context), *REPORT_AGENT_INSTRUCTIONS]
     assert "exec_command" in instructions
     assert "apply_patch" in instructions
     assert "write_stdin" in instructions
     assert "view_image" in instructions
-    assert "python3 <工作区相对脚本路径>" in instructions
-    assert "不得把裸 Python 代码直接作为 command" in instructions
+    assert "Python、Shell 或其他命令" in instructions
+    assert "分析不经过 Report 层二次封装" in instructions
 
 
 def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
@@ -528,11 +552,13 @@ def test_主智能体说明明确工作区确认边界():
 def test_报表智能体说明明确泛化数据源和验收链路():
     instructions = "\n".join(build_report_agent_instructions(instruction_context()))
 
-    assert "独立的智能报表 Agent" in instructions
+    assert "Coding Agent 的智能报表扩展" in instructions
     assert "report_list_data_sources" in instructions
     assert "不可变 DatasetHandle" in instructions
-    assert "具体分析命令和轮次由你" in instructions
-    assert "至少一轮分析成功" in instructions
+    assert (
+        "Report 层不增加分析命令、依赖、输出大小、执行时间、迭代轮次或分析方式限制" in instructions
+    )
+    assert "分析不经过 Report 层二次封装" in instructions
     assert "最终 job 状态为 validated" in instructions
     assert "只读 PostgreSQL" in instructions
 
@@ -543,18 +569,16 @@ def test_智能报表技能统一使用工作区相对路径和报表工具():
     )
 
     assert "相对 `/home/daytona/workspace` 的工作区路径" in skill
-    assert "`report_list_analysis_capabilities`" in skill
-    assert "`report_profile_dataset`" in skill
-    assert "`exec_command` 检查相关文件" in skill
+    assert "`exec_command` 检查文件和可用依赖" in skill
     assert "`apply_patch` 创建或修改任意 Python 脚本" in skill
-    assert "`write_stdin` 轮询或输入" in skill
+    assert "`write_stdin` 轮询、输入或中断" in skill
     assert "`view_image` 检查生成的图表" in skill
     assert "workspace_write_file" not in skill
     assert "workspace_apply_changes" not in skill
-    assert "模型根据每轮结果自行决定轮数" in skill
-    assert "若返回 `ok: false`" in skill
-    assert "直到至少一轮返回 `ok: true`" in skill
-    assert "`report_analyze_dataset` 无需确认" in skill
+    assert "Report 层不限制分析命令、输出大小、执行轮次或分析方式" in skill
+    assert "report_list_analysis_capabilities" not in skill
+    assert "report_profile_dataset" not in skill
+    assert "report_analyze_dataset" not in skill
     assert "直接调用无需确认的 `report_render_markdown`" in skill
     assert "`report_validate_pdf`" in skill
     assert "状态为 `validated`" in skill

@@ -36,8 +36,12 @@ CODING_TOOLKIT_INSTRUCTIONS = """
 Coding Agent 工具规则：
 - 所有命令和文件都位于当前 thread 隔离的 Daytona 工作区；workdir 和文件路径只能使用工作区相对路径。
 - 搜索和读取优先通过 exec_command 使用 rg、sed、git 等现有命令；不得访问 AgentOS 宿主文件系统。
-- 修改文件只能使用 apply_patch；补丁采用 *** Begin Patch / *** End Patch 格式，支持 Add、Update、Delete 和 Move。
-- 短命令调用 exec_command 后检查 exit_code；返回 session_id 时用 write_stdin 轮询或输入，直到 status 为 completed。
+- 修改文件只能使用 apply_patch；新增文件必须使用“*** Begin Patch\n*** Add File: path\n+content\n*** End Patch”格式，禁止使用 ---/+++、/dev/null 或普通 unified diff。
+- exec_command 和 write_stdin 的 yield_time_ms 必须在 0 至 30000 之间；不得提交 60000 等越界值。
+- 短命令调用 exec_command 后检查 exit_code；普通长任务返回 session_id 时用 write_stdin 轮询或输入，直到 status 为 completed。
+- 对服务器等预期长驻进程，status 为 running 且用独立 exec_command 健康检查成功后即可报告启动成功并保留 session_id；后续按需或定时用 write_stdin 读取增量日志和状态，但不要在同一轮中紧密轮询等待服务退出。
+- 任务确需安装依赖时允许使用包管理器，但应设置明确 timeout、保留完整错误输出并检查 exit_code；不要把 pip 输出管道到 tail，否则网络受限时无法获得实时错误反馈。
+- 非长驻命令连续两次轮询均为 running 且没有新输出时，不得继续盲目轮询；应检查进程状态、使用有界替代命令，或报告当前阻塞与 session_id。
 - Python 任务优先创建 .py 脚本，再用 python3 <工作区相对脚本> 执行、检查错误、修改并重跑测试。
 - 复杂任务用 update_plan 维护可验证步骤；只有命令成功、文件已复查且测试通过后才能声称完成。
 """.strip()
@@ -284,7 +288,7 @@ class CodingToolkit(Toolkit):
             tools=[
                 Function(
                     name="exec_command",
-                    description="在当前 thread 的 Daytona 工作区执行完整 Shell 命令。",
+                    description="在当前 thread 的 Daytona 工作区执行完整 Shell 命令；返回受管 session_id 时它不是 OS PID。",
                     parameters={
                         "type": "object",
                         "properties": {
@@ -307,7 +311,7 @@ class CodingToolkit(Toolkit):
                                 "minimum": 0,
                                 "maximum": 30000,
                                 "default": DEFAULT_YIELD_TIME_MS,
-                                "description": "返回前等待输出或完成的毫秒数。",
+                                "description": "返回前等待输出或完成的毫秒数，必须在 0 至 30000 之间。",
                             },
                             "max_output_tokens": {
                                 "type": "integer",
@@ -344,7 +348,7 @@ class CodingToolkit(Toolkit):
                             "session_id": {
                                 "type": "integer",
                                 "minimum": 1,
-                                "description": "exec_command 返回的整数句柄。",
+                                "description": "exec_command 返回的当前 thread 受管整数句柄，不是 OS PID。",
                             },
                             "chars": {
                                 "type": "string",
@@ -357,7 +361,7 @@ class CodingToolkit(Toolkit):
                                 "minimum": 0,
                                 "maximum": 30000,
                                 "default": DEFAULT_YIELD_TIME_MS,
-                                "description": "写入或轮询后的等待毫秒数。",
+                                "description": "写入或轮询后的等待毫秒数，必须在 0 至 30000 之间。",
                             },
                             "max_output_tokens": {
                                 "type": "integer",
@@ -382,7 +386,11 @@ class CodingToolkit(Toolkit):
                             "patch": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "以 *** Begin Patch 开始、*** End Patch 结束的完整补丁。",
+                                "description": (
+                                    "完整 Codex 补丁，例如：*** Begin Patch\\n"
+                                    "*** Add File: path\\n+content\\n*** End Patch。"
+                                    "禁止 ---/+++、/dev/null 和普通 unified diff。"
+                                ),
                             }
                         },
                         "required": ["patch"],
@@ -588,13 +596,29 @@ class CodingToolkit(Toolkit):
         session_id: int | None = None,
     ) -> dict[str, Any]:
         output, clipped = self._bounded_output(result.get("output", ""), max_output_tokens)
+        status = result.get("status", "completed")
+        exit_code = result.get("exitCode")
+        outcome = "running" if status == "running" else "success" if exit_code == 0 else "failed"
         value = {
-            "status": result.get("status", "completed"),
+            "status": status,
             "output": output,
-            "exit_code": result.get("exitCode"),
+            "exit_code": exit_code,
+            "outcome": outcome,
             "wall_time_seconds": result.get("wallTimeSeconds", 0.0),
             "truncated": bool(result.get("truncated")) or clipped,
         }
+        if value["status"] == "running":
+            value["guidance"] = (
+                "普通长任务使用 write_stdin 继续读取；预期长驻服务应保留 session_id，"
+                "改用独立 exec_command 执行健康检查；成功后结束当前任务，后续按需或定时"
+                "使用 write_stdin 读取增量日志和状态，不要在同一轮中紧密轮询等待退出。"
+                "非长驻命令连续两次轮询没有新输出时，应停止盲目轮询并报告阻塞。"
+            )
+        elif outcome == "failed":
+            value["guidance"] = (
+                "命令已结束但 exit_code 非零。请依据 output 报告实际失败原因；"
+                "依赖安装场景需如实说明网络、索引、解析或构建错误，不要把该结果报告为成功。"
+            )
         if session_id is not None:
             value["session_id"] = session_id
         return value

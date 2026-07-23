@@ -13,10 +13,12 @@ from agentos_dev.agents import create_coding_agent, create_report_agent
 from agentos_dev.coding_tools import (
     CODEX_EXEC_SESSION_TTL_SECONDS,
     CODEX_EXEC_SESSIONS_STATE_KEY,
+    CODING_TOOLKIT_INSTRUCTIONS,
     MAX_CODEX_SESSION_HANDLES,
     CodingToolkit,
     parse_codex_patch,
 )
+from agentos_dev.instructions import build_coding_agent_instructions
 from agentos_dev.tests.workspace_fakes import (
     AsyncFakeClient,
     AsyncMemoryRegistry,
@@ -92,6 +94,31 @@ def test_coding_tool_contract_uses_codex_names_and_json_patch(tmp_path):
     assert tools["apply_patch"].requires_confirmation is True
 
 
+def test_coding_tool_contract_explains_limits_patch_format_and_persistent_services(tmp_path):
+    toolkit = CodingToolkit(service(tmp_path))
+    tools = {**toolkit.functions, **toolkit.async_functions}
+    exec_schema = tools["exec_command"].parameters["properties"]
+    poll_schema = tools["write_stdin"].parameters["properties"]
+    patch_description = tools["apply_patch"].parameters["properties"]["patch"]["description"]
+
+    assert exec_schema["yield_time_ms"]["maximum"] == 30000
+    assert "0 至 30000" in exec_schema["yield_time_ms"]["description"]
+    assert "0 至 30000" in poll_schema["yield_time_ms"]["description"]
+    assert "*** Add File: path" in patch_description
+    assert "禁止 ---/+++" in patch_description
+    assert "独立 exec_command" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "按需或定时用 write_stdin" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "不要在同一轮中紧密轮询" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "不要把 pip 输出管道到 tail" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "明确 timeout" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "连续两次轮询" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "不得继续盲目轮询" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "0 至 30000" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "禁止使用 ---/+++" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "不是 OS PID" in tools["exec_command"].description
+    assert "不是 OS PID" in poll_schema["session_id"]["description"]
+
+
 def test_report_agent_extends_unregistered_coding_agent(tmp_path):
     workspace_service = service(tmp_path)
     coding_agent = create_coding_agent(app.assistant, workspace_service)
@@ -102,6 +129,7 @@ def test_report_agent_extends_unregistered_coding_agent(tmp_path):
     )
 
     assert coding_agent.id == "coding-agent"
+    assert coding_agent.instructions is build_coding_agent_instructions
     assert coding_agent not in app.assistant_team.members(
         RunContext(run_id="run", session_id="thread", session_state={})
     )
@@ -337,6 +365,8 @@ async def test_python_script_can_be_created_executed_fixed_and_rerun(tmp_path):
         run_context=run_context,
     )
     assert failed["exit_code"] == 1
+    assert failed["outcome"] == "failed"
+    assert "exit_code 非零" in failed["guidance"]
     assert "RuntimeError" in failed["output"]
 
     toolkit.apply_patch(
@@ -354,6 +384,7 @@ async def test_python_script_can_be_created_executed_fixed_and_rerun(tmp_path):
         run_context=run_context,
     )
     assert succeeded["exit_code"] == 0
+    assert succeeded["outcome"] == "success"
     assert succeeded["output"] == "analysis-ok\n"
 
 
@@ -369,6 +400,7 @@ async def test_exec_command_integer_handle_poll_input_interrupt_and_completion(t
         run_context=run_context,
     )
     assert started["status"] == "running"
+    assert started["outcome"] == "running"
     assert started["session_id"] == 1
     assert isinstance(started["session_id"], int)
 
@@ -399,6 +431,8 @@ async def test_exec_command_integer_handle_poll_input_interrupt_and_completion(t
     completed = await toolkit.write_stdin(1, yield_time_ms=0, run_context=run_context)
     assert completed["status"] == "completed"
     assert completed["exit_code"] == 130
+    assert completed["outcome"] == "failed"
+    assert "exit_code 非零" in completed["guidance"]
     assert completed["output"] == "done\n"
     assert "session_id" not in completed
     assert run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY] == {}
@@ -523,6 +557,21 @@ async def test_write_stdin_removes_missing_handle_and_keeps_invalid_offset_retry
     with pytest.raises(WorkspaceError, match="已经结束或丢失"):
         await toolkit.write_stdin(started["session_id"], run_context=run_context)
     assert run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY] == {}
+
+
+@pytest.mark.anyio
+async def test_running_process_result_guides_persistent_service_health_check(tmp_path):
+    _current, toolkit = async_toolkit(tmp_path)
+    run_context = context()
+
+    started = await toolkit.exec_command("long-running", yield_time_ms=0, run_context=run_context)
+
+    assert started["status"] == "running"
+    assert started["session_id"] == 1
+    assert "独立 exec_command" in started["guidance"]
+    assert "按需或定时使用 write_stdin" in started["guidance"]
+    assert "不要在同一轮中紧密轮询" in started["guidance"]
+    assert "连续两次轮询没有新输出" in started["guidance"]
 
 
 @pytest.mark.anyio
@@ -681,6 +730,7 @@ def test_pending_legacy_report_tools_require_explicit_migration():
         tool_name="sandbox_exec",
         result='{"status":"completed","exitCode":0}',
     )
+    removed = ToolExecution(tool_name="report_analyze_dataset")
     new_tool = ToolExecution(tool_name="apply_patch", requires_confirmation=True)
 
     def session_with(*, requirements=None, tools=None):
@@ -706,4 +756,8 @@ def test_pending_legacy_report_tools_require_explicit_migration():
     assert app._pending_legacy_report_tool(session_with(requirements=[requirement]), "run") is None
     assert app._pending_legacy_report_tool(session_with(tools=[running]), "run") == "sandbox_exec"
     assert app._pending_legacy_report_tool(session_with(tools=[completed]), "run") is None
+    assert (
+        app._pending_legacy_report_tool(session_with(tools=[removed]), "run")
+        == "report_analyze_dataset"
+    )
     assert app._pending_legacy_report_tool(session_with(tools=[new_tool]), "run") is None

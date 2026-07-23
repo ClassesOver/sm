@@ -67,7 +67,7 @@ Agent 在每个工具批次后持久化 checkpoint；模型请求遇到临时失
 ## Codex 对齐配置
 
 这里的“对齐”是让 report-agent 成为受 Daytona 隔离的 coding agent 扩展，同时保留数据源、
-统计剖析、Markdown/PDF 和 Odoo 导出的报表能力。当前采用以下配置：
+Markdown/PDF 和 Odoo 导出的报表能力。当前采用以下配置：
 
 | 配置 | 当前值 | 作用 |
 | --- | --- | --- |
@@ -129,8 +129,8 @@ PostgreSQL 仍永久保存完整 runs 和原始 `Message.content`。完整模型
 预算装配器为输出预留 32K，并根据最新 HRP 宿主快照、当前用户输入和客户端工具 schema 的估算
 动态缩小历史预算；默认历史最多 192K。待确认操作和当前 run 结果属于强制上下文，不会为了保留
 旧历史而裁剪。旧 `odoo.*` 工具调用和结果不进入后续模型上下文，避免旧快照、token 和
-modifiers 与最新 `BasicModel` 状态竞争；`sandbox_exec`、`sandbox_process_poll` 和
-`report_analyze_dataset` 结果保留，
+modifiers 与最新 `BasicModel` 状态竞争；`sandbox_exec`、`sandbox_process_poll`、`exec_command`、
+`write_stdin` 以及历史 `report_analyze_dataset` 结果保留，
 大结果优先使用独立的 `compressed_content`，原文不被覆盖。
 
 滚动摘要只包含用户目标、已确认决策、工作区产物、完成事项和待办事项，并标记为非权威历史。
@@ -171,12 +171,11 @@ Workflow，但没有 Codex 风格的专用 `update_plan`。本项目因此提供
 `coding-agent` 是可独立构造但不注册为 Team 成员的基座，固定暴露 `exec_command`、`write_stdin`、
 `apply_patch`、`view_image` 和 `update_plan`。`report-agent` 从该基座派生，固定暴露
 `CodingToolkit`、`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`。它不使用固定 Workflow，
-模型自行决定分析命令和轮次，但必须
-完成“发现数据源 → 物化数据集 → 确定性剖析 → 至少一轮成功分析 → Markdown → PDF → 验收”的
-受控链路。完整文件内容不会注入模型上下文；模型只接收数据源句柄、schema、剖析结果和分析输出。
+模型自行决定分析命令、运行时长和迭代轮次；Report 层只保留数据源物化、输入绑定、Markdown/PDF
+渲染及验收。完整文件内容不会注入模型上下文；模型从数据源句柄取得工作区路径后使用 Coding 工具分析。
 复杂分析先通过 `exec_command` 检查文件，再用 `apply_patch` 在当前 thread 工作区创建或精确修改
-任意 Python 脚本，并用 `exec_command` 执行验证；报表 job 内再以
-`python3 <工作区相对脚本路径>` 的完整 Shell 命令交给 `report_analyze_dataset` 多轮执行。
+任意 Python 脚本，并用 `exec_command`、`write_stdin` 执行和持续管理；不再经过
+`report_analyze_dataset` 的二次命令封装。
 脚本文件写入仍需确认，分析执行仍受 Daytona 网络隔离、路径、进程、超时和输出大小限制；不新增
 AgentOS 宿主机 Python 或绕过现有确认策略的执行入口。
 
@@ -219,17 +218,16 @@ SQL 只允许单条 `SELECT` 或只读 CTE，并强制只读事务、超时、sc
 `agent_prepare_continuation` 保存摘要、待办和工作区相对产物路径；该工具只建立下一 run 可见的受控
 交接，不会递归启动 run，也不会绕过工具确认。计划全部完成时交接状态会被清除。
 
-智能报表先登记当前 thread 工作区内的输入文件，并对 CSV、TSV、Excel、JSON、JSONL 或 Parquet
-生成确定性的受限数据剖析，再由模型使用同一 `job_id` 自主执行多轮 Python、Shell 或 SQL 分析。
-CSV、JSONL、Excel 和 Parquet 剖析只在内存中保留前 100,000 行；普通 JSON 因格式无法流式读取，
-超过 25 MiB 时应转换为 JSONL/Parquet 或直接使用分析命令。
-输入内容以 SHA-256 绑定，每轮命令必须输出分析结果；失败轮次把退出码和输出返回给模型继续修正。
-至少一轮成功后由模型生成完整 Markdown 和本地图表，再渲染为不覆盖已有文件的新 PDF。运行时使用
+智能报表先将数据源物化为当前 thread 绑定的 DatasetHandle，再以 SHA-256、大小和 thread 绑定创建
+服务端 job。模型随后直接使用 Coding Toolkit
+执行当前 Daytona 工作区允许的 Python、Shell 或其他分析命令；Report 层不再提供能力探测、固定剖析、
+独立命令执行器、60 秒分析超时或成功轮次门槛。模型生成完整 Markdown 和本地图表后，将其渲染为
+不覆盖已有文件的新 PDF；渲染和 PDF 验收各自最多运行 300 秒。PDF 限制为 25 MiB 和 200 页，运行时使用
 Poppler 将 PDF 逐页栅格化，检查空白页、文本、图片数量和像素占比，并把 Markdown、图片、PDF 的
-路径、大小、SHA-256 和验收结果写入同一 job manifest。只有 `report_job_status` 返回 `validated`
+路径、大小、SHA-256 和验收结果写入 AgentOS 的持久化 session state。只有 `report_job_status` 返回 `validated`
 且产物未变化才算完成。系统不再使用固定模板、`compile` 或 `blocks`。
-任务状态保存在 sandbox 的 `/tmp/workspace-report`，Markdown、图片和 PDF 输出到
-`报表/生成结果/<job_id>/`。生产环境必须使用仓库现有
+sandbox 的 `/tmp/workspace-report-*` 仅用于一次渲染或验收的临时文件；超时和失败都会由 AgentOS 清理，
+不能作为 job 状态或验收依据。Markdown、图片和 PDF 输出到 `报表/生成结果/<job_id>/`。生产环境必须使用仓库现有
 `docker/sandbox-tools` 镜像，以提供 ripgrep、WeasyPrint 69、pypdf、数据分析库和 Noto CJK。镜像
 同时安装 `matplotlibrc`，将 Matplotlib/Seaborn 默认字体固定为 Noto CJK，避免中文图表在生成 PNG
 时已经丢失字形；不要在分析命令中改回仅含 DejaVu 的字体配置。

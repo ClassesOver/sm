@@ -11,6 +11,7 @@ from agno.run import RunContext
 from agentos_dev import report_data_source_runtime, report_data_sources
 from agentos_dev.report_data_sources import (
     CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
+    MAX_DATASET_FILE_BYTES,
     MAX_DIRECTORY_ENTRIES,
     REPORT_DATASET_HANDLES_STATE_KEY,
     PostgresDataSource,
@@ -290,6 +291,26 @@ async def test_数据集句柄不能由其他thread直接复用():
         await toolkit.resolve_dataset_paths([dataset_id], run_context=other_context)
 
     assert error.value.code == "stale_dataset"
+
+
+@pytest.mark.anyio
+async def test_解析数据集句柄时再次执行单文件大小边界():
+    service = FakeWorkspaceService()
+    toolkit = ReportDataSourceToolkit(service)
+    run_context = context([{"path": "收入.csv", "type": "file"}])
+    sources = await toolkit.report_list_data_sources(run_context=run_context)
+    materialized = await toolkit.report_materialize_dataset(
+        sources["sources"][1]["sourceId"], run_context=run_context
+    )
+    dataset_id = materialized["datasets"][0]["datasetId"]
+    stored = run_context.session_state[REPORT_DATASET_HANDLES_STATE_KEY][dataset_id]
+    stored["size"] = MAX_DATASET_FILE_BYTES + 1
+    service.entries["收入.csv"]["size"] = MAX_DATASET_FILE_BYTES + 1
+
+    with pytest.raises(ReportDataSourceError) as error:
+        await toolkit.resolve_dataset_paths([dataset_id], run_context=run_context)
+
+    assert error.value.code == "dataset_too_large"
 
 
 def test_postgres_注册配置只引用凭据环境变量(tmp_path):
@@ -817,5 +838,40 @@ async def test_工作区数据库查询期间变化会清理生成目录(monkeyp
         )
 
     assert error.value.code == "stale_dataset"
+    assert len(cleaned) == 1
+    assert cleaned[0].endswith("/分片")
+
+
+@pytest.mark.anyio
+async def test_工作区数据库物化超时会清理确定输出目录(monkeypatch):
+    service = FakeWorkspaceService()
+    service.entries["收入.sqlite"] = {
+        "type": "file",
+        "size": 12,
+        "sha256": "a" * 64,
+    }
+    toolkit = ReportDataSourceToolkit(service)
+    run_context = context([{"path": "收入.sqlite", "type": "file"}])
+    source = (await toolkit.report_list_data_sources(run_context=run_context))["sources"][1]
+    resolved = await toolkit._resolve_source(source["sourceId"], run_context)
+    cleaned = []
+
+    async def timeout(*_args, **_kwargs):
+        raise TimeoutError
+
+    async def cleanup(path, _run_context):
+        cleaned.append(path)
+
+    monkeypatch.setattr(toolkit, "_run_data_source_runtime", timeout)
+    monkeypatch.setattr(toolkit, "_delete_materialized_output", cleanup)
+
+    with pytest.raises(TimeoutError):
+        await toolkit._materialize_workspace_database(
+            resolved,
+            "SELECT amount FROM revenue",
+            "csv",
+            run_context,
+        )
+
     assert len(cleaned) == 1
     assert cleaned[0].endswith("/分片")

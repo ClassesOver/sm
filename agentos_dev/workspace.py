@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import difflib
 import hashlib
 import json
@@ -7,7 +8,7 @@ import shlex
 import threading
 import unicodedata
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from contextlib import asynccontextmanager, contextmanager
 from io import BytesIO
 from pathlib import PurePosixPath
@@ -16,7 +17,7 @@ from typing import Any
 import psycopg
 from agno.media import Image
 from agno.run import RunContext
-from agno.tools import Function, Toolkit
+from agno.tools import Toolkit
 from agno.tools.function import ToolResult
 from daytona import (
     AsyncDaytona,
@@ -64,6 +65,10 @@ MAX_BRANCH_FILE_BYTES = 25 * 1024 * 1024
 MAX_INSPECT_PDF_PAGES = 200
 IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 MANAGED_PROCESS_PREFIX = "agui-exec-"
+REPORT_JOBS_STATE_KEY = "report_jobs"
+MAX_REPORT_JOBS = 10
+MAX_REPORT_JOB_STATE_BYTES = 48 * 1024
+REPORT_RUNTIME_TIMEOUT_SECONDS = 300
 
 
 class WorkspaceError(ValueError):
@@ -2411,13 +2416,11 @@ BASE_TOOLKIT_INSTRUCTIONS = """
 
 WORKSPACE_REPORT_TOOLKIT_INSTRUCTIONS = """
 智能报表工具规则：
-- 仅在需要分析工作区数据或生成报表时使用本工具集；不确定可用 Python 库或系统命令时先调用 report_list_analysis_capabilities。
-- 先用 report_prepare_dataset 登记一至二十个工作区相对路径，并在后续各轮原样复用返回的 jobId。
-- 先调用 report_profile_dataset 获取确定性的行列、空值、数值范围和高频值基线；它只读取 job 已登记的输入，不能替代后续针对业务问题的多轮分析。
+- 本工具集只负责绑定报表输入、渲染 Markdown 和验收 PDF；文件检查、Python 编码、分析和长进程统一使用 Coding 工具。
+- 先通过 report_materialize_dataset 获得一至二十个 datasetId，再用 report_prepare_dataset 绑定这些不可变数据集句柄，并在后续各轮原样复用返回的 jobId。
 - 复杂分析先用 exec_command 检查文件，再用 apply_patch 在工作区创建或修改 Python 脚本；不得用 Shell 绕过文件写入确认。
-- 通过 report_analyze_dataset 执行脚本时，command 必须是 python3 <工作区相对脚本路径> 及其参数组成的完整 Shell 命令，不得直接提交裸 Python 代码。
-- 使用同一 jobId 多轮调用 report_analyze_dataset；每轮提交可独立执行的完整命令，并向标准输出写出本轮分析结果。
-- 分析失败时读取返回的 output、exitCode 和 status，修正命令后继续；由模型根据证据充分性决定轮次，但生成报表前至少要有一轮成功分析。
+- 用 exec_command 执行任意当前依赖和权限允许的分析命令；返回 session_id 时用 write_stdin 持续读取、输入或中断，不另加 Report 层命令限制。
+- 分析失败时读取 output 和 exit_code，修正脚本或命令后继续；由模型根据证据充分性决定分析方式和轮次。
 - 分析充分后，基于真实工具结果生成 Markdown 文件；结论、数字、表格和图片不得脱离分析结果，图片使用相对 Markdown 文件的路径。
 - 使用新的输出路径调用 report_render_markdown，再调用 report_validate_pdf 做逐页视觉验收；必要时用 view_image 检查生成的图表。只有 report_job_status 为 validated 才能声称报表完成。
 """.strip()
@@ -3648,9 +3651,7 @@ class WorkspaceReportToolkit(Toolkit):
         super().__init__(
             name="workspace_report",
             tools=[
-                self.report_list_analysis_capabilities,
                 self.report_prepare_dataset,
-                self.report_profile_dataset,
                 self.report_job_status,
                 self.report_render_markdown,
                 self.report_validate_pdf,
@@ -3658,58 +3659,130 @@ class WorkspaceReportToolkit(Toolkit):
             instructions=WORKSPACE_REPORT_TOOLKIT_INSTRUCTIONS,
             add_instructions=True,
         )
-        self.register(
-            Function(
-                name="report_analyze_dataset",
-                description=(
-                    "在当前 thread 的 Daytona sandbox 中执行一轮完整 Shell 分析命令，可调用 "
-                    "Python 脚本、Shell 或 SQL 客户端；同一 job_id 可多轮调用；"
-                    "失败结果会返回给模型继续修正；无需用户确认。"
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "job_id": {
-                            "type": "string",
-                            "minLength": 1,
-                            "description": "report_prepare_dataset 返回的 jobId。",
-                        },
-                        "command": {
-                            "type": "string",
-                            "minLength": 1,
-                            "description": (
-                                "本轮拟执行的完整非空命令（使用 Shell 语法），必须向标准输出写出分析结果；"
-                                "Python 使用 python3 <工作区相对脚本路径> 或 python3 -c，"
-                                "不得直接提交裸 Python 代码或使用空字符串占位。"
-                            ),
-                        },
-                        "cwd": {
-                            "anyOf": [{"type": "string"}, {"type": "null"}],
-                            "description": "可选的工作区相对目录。",
-                        },
-                        "timeout": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 60,
-                            "description": "本轮执行超时秒数，默认 30。",
-                        },
-                    },
-                    "required": ["job_id", "command"],
-                    "additionalProperties": False,
-                },
-                entrypoint=self.report_analyze_dataset,
-            )
-        )
 
-    async def _report(
+    @staticmethod
+    def _session_state(run_context: RunContext | None) -> MutableMapping[str, Any]:
+        if run_context is None:
+            raise WorkspaceError("当前报表操作没有绑定对话，请刷新页面后重试。")
+        if run_context.session_state is None:
+            run_context.session_state = {}
+        if not isinstance(run_context.session_state, MutableMapping):
+            raise WorkspaceError("当前报表任务状态无效，请重新准备数据集。")
+        return run_context.session_state
+
+    @staticmethod
+    def _thread_binding(thread: str) -> str:
+        return hashlib.sha256(thread.encode()).hexdigest()
+
+    def _load_job(
+        self,
+        job_id: str,
+        run_context: RunContext | None,
+    ) -> dict[str, Any]:
+        try:
+            normalized_job_id = str(uuid.UUID(job_id))
+        except (AttributeError, TypeError, ValueError) as error:
+            raise WorkspaceError("job_id 无效，请重新准备数据集。") from error
+        stored = self._session_state(run_context).get(REPORT_JOBS_STATE_KEY, {})
+        raw = stored.get(normalized_job_id) if isinstance(stored, dict) else None
+        if not isinstance(raw, dict):
+            raise WorkspaceError("分析任务不存在，请重新准备数据集。")
+        if raw.get("jobId") != normalized_job_id:
+            raise WorkspaceError("分析任务状态无效，请重新准备数据集。")
+        if raw.get("_threadBinding") != self._thread_binding(_thread(run_context)):
+            raise WorkspaceError("分析任务不属于当前对话，请重新准备数据集。")
+        return copy.deepcopy(raw)
+
+    def _store_job(
+        self,
+        job: dict[str, Any],
+        run_context: RunContext | None,
+    ) -> None:
+        if len(json.dumps(job, ensure_ascii=False).encode("utf-8")) > MAX_REPORT_JOB_STATE_BYTES:
+            raise WorkspaceError("报表任务状态超过服务端边界，请减少报表页数后重试。")
+        state = self._session_state(run_context)
+        current = state.get(REPORT_JOBS_STATE_KEY, {})
+        jobs = dict(current) if isinstance(current, dict) else {}
+        job_id = str(job["jobId"])
+        jobs[job_id] = copy.deepcopy(job)
+        while len(jobs) > MAX_REPORT_JOBS:
+            jobs.pop(next(iter(jobs)))
+        state[REPORT_JOBS_STATE_KEY] = jobs
+
+    async def _current_artifact(
+        self,
+        recorded: Any,
+        run_context: RunContext | None,
+    ) -> dict[str, Any]:
+        if not isinstance(recorded, dict) or not isinstance(recorded.get("path"), str):
+            raise WorkspaceError("报表任务产物状态无效，请重新生成报表。")
+        current = await self.service.ahash_file(_thread(run_context), recorded["path"])
+        current["changed"] = current.get("sha256") != recorded.get("sha256") or current.get(
+            "size"
+        ) != recorded.get("size")
+        return current
+
+    async def _job_status(
+        self,
+        job: dict[str, Any],
+        run_context: RunContext | None,
+    ) -> dict[str, Any]:
+        sources = job.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise WorkspaceError("分析任务缺少数据集状态，请重新准备数据集。")
+        current_sources = [await self._current_artifact(source, run_context) for source in sources]
+        if any(source["changed"] for source in current_sources):
+            raise WorkspaceError("源文件发生变化，分析任务已失效，请重新准备数据集。")
+        validation = job.get("validation")
+        render = job.get("render")
+        status = (
+            "validated"
+            if isinstance(validation, dict) and validation.get("ok") is True
+            else "validation_failed"
+            if isinstance(validation, dict)
+            else "rendered"
+            if isinstance(render, dict)
+            else "prepared"
+        )
+        result: dict[str, Any] = {
+            "jobId": job["jobId"],
+            "status": status,
+            "sources": current_sources,
+        }
+        if isinstance(render, dict):
+            markdown_artifact = await self._current_artifact(render.get("markdown"), run_context)
+            pdf_artifact = await self._current_artifact(render.get("pdf"), run_context)
+            image_artifacts = [
+                await self._current_artifact(item, run_context) for item in render.get("images", [])
+            ]
+            artifacts: dict[str, Any] = {
+                "markdown": markdown_artifact,
+                "pdf": pdf_artifact,
+                "images": image_artifacts,
+            }
+            result["artifacts"] = artifacts
+            if (
+                markdown_artifact["changed"]
+                or pdf_artifact["changed"]
+                or any(item["changed"] for item in image_artifacts)
+            ):
+                result["status"] = "artifact_changed"
+        if isinstance(validation, dict):
+            result["validation"] = validation
+        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > MAX_TOOL_OUTPUT_BYTES:
+            raise WorkspaceError("报表任务状态超过返回边界，请重新生成较短的报表。")
+        return result
+
+    async def _run_report_runtime(
         self,
         action: str,
         payload: dict[str, Any],
         run_context: RunContext | None,
-    ):
+    ) -> dict[str, Any]:
         from . import report_runtime
 
-        content = open(report_runtime.__file__, "rb").read()
+        with open(report_runtime.__file__, "rb") as runtime_file:
+            content = runtime_file.read()
         digest = hashlib.sha256(content).hexdigest()
         remote = f"/tmp/workspace-report-runtime-{digest}.py"
         async with self.service._async_client() as client:
@@ -3719,80 +3792,92 @@ class WorkspaceReportToolkit(Toolkit):
                 f"python {shlex.quote(remote)} {shlex.quote(action)} "
                 f"{shlex.quote(json.dumps(payload, ensure_ascii=False))}"
             )
-            execution_timeout = 70 if action == "analyze" else 60
             value = await sandbox.process.exec(
                 command,
                 cwd=WORKSPACE_ROOT,
-                timeout=execution_timeout,
+                timeout=REPORT_RUNTIME_TIMEOUT_SECONDS,
             )
         result = self.service._bounded_output(value)
         if result["exitCode"] != 0:
-            raise WorkspaceError(result["output"] or "报表运行失败。")
+            try:
+                failure = json.loads(
+                    next(line for line in reversed(result["output"].splitlines()) if line.strip())
+                )
+            except (StopIteration, json.JSONDecodeError):
+                failure = None
+            message = failure.get("error") if isinstance(failure, dict) else None
+            raise WorkspaceError(str(message or "报表运行失败。"))
         try:
             output = next(line for line in reversed(result["output"].splitlines()) if line.strip())
-            return json.loads(output)
+            parsed = json.loads(output)
         except (StopIteration, json.JSONDecodeError) as error:
             raise WorkspaceError("报表运行时返回无效结果。") from error
+        if not isinstance(parsed, dict):
+            raise WorkspaceError("报表运行时返回无效结果。")
+        return parsed
 
-    async def report_list_analysis_capabilities(self, run_context: RunContext | None = None):
-        """列出智能报表沙箱当前可用的 Python 分析库、版本和系统命令。"""
-        return await self._report("capabilities", {}, run_context)
+    async def _delete_report_path(
+        self,
+        remote: str,
+        run_context: RunContext | None,
+        *,
+        recursive: bool,
+    ) -> None:
+        try:
+            async with self.service._async_client() as client:
+                sandbox = await self.service._asandbox_for(client, _thread(run_context))
+                await sandbox.fs.delete_file(remote, recursive=recursive)
+        except Exception:
+            pass
+
+    async def _delete_published_report(
+        self,
+        remote_output: str,
+        remote_staging: str,
+        run_context: RunContext | None,
+    ) -> None:
+        try:
+            async with self.service._async_client() as client:
+                sandbox = await self.service._asandbox_for(client, _thread(run_context))
+                command = self.service._shell_command(
+                    f"if [ -f {shlex.quote(remote_staging)} ] "
+                    f"&& [ {shlex.quote(remote_output)} -ef {shlex.quote(remote_staging)} ]; "
+                    f"then rm -- {shlex.quote(remote_output)}; fi"
+                )
+                await sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=30)
+        except Exception:
+            pass
 
     async def report_prepare_dataset(
         self,
-        paths: list[str] | None = None,
-        dataset_ids: list[str] | None = None,
+        dataset_ids: list[str],
         run_context: RunContext | None = None,
     ):
-        """按工作区路径或 dataset_id 登记一至二十个输入；两种方式不能混用。"""
-        if paths is not None and dataset_ids is not None:
-            raise WorkspaceError("paths 与 dataset_ids 不能同时使用，请只选择一种输入。")
-        if dataset_ids is not None:
-            if self.data_sources is None:
-                raise WorkspaceError("当前报表工具未配置数据集解析器，请重新进入智能报表。")
-            paths = await self.data_sources.resolve_dataset_paths(
-                dataset_ids,
-                run_context=run_context,
-            )
-        if not paths:
-            raise WorkspaceError("请提供 paths 或 dataset_ids 后再准备报表数据集。")
-        return await self._report("prepare", {"paths": paths}, run_context)
-
-    async def report_profile_dataset(
-        self,
-        job_id: str,
-        run_context: RunContext | None = None,
-    ):
-        """确定性剖析 job 已登记的表格数据，返回受限的行列、空值、数值和高频值统计。"""
-        return await self._report("profile", {"job_id": job_id}, run_context)
+        """通过一至二十个不可变 dataset_id 创建服务端报表任务。"""
+        if self.data_sources is None:
+            raise WorkspaceError("当前报表工具未配置数据集解析器，请重新进入智能报表。")
+        if not isinstance(dataset_ids, list) or len(set(dataset_ids)) != len(dataset_ids):
+            raise WorkspaceError("dataset_ids 必须是不重复的数据集标识数组。")
+        paths = await self.data_sources.resolve_dataset_paths(
+            dataset_ids,
+            run_context=run_context,
+        )
+        sources = [await self.service.ahash_file(_thread(run_context), path) for path in paths]
+        job = {
+            "jobId": str(uuid.uuid4()),
+            "_threadBinding": self._thread_binding(_thread(run_context)),
+            "sources": sources,
+        }
+        self._store_job(job, run_context)
+        return {"status": "prepared", "jobId": job["jobId"], "sources": sources}
 
     async def report_job_status(
         self,
         job_id: str,
         run_context: RunContext | None = None,
     ):
-        """返回 job 的分析轮次、输入哈希、已登记产物哈希和最近 PDF 验收状态。"""
-        return await self._report("status", {"job_id": job_id}, run_context)
-
-    async def report_analyze_dataset(
-        self,
-        job_id: str,
-        command: str,
-        cwd: str | None = None,
-        timeout: int = 30,
-        run_context: RunContext | None = None,
-    ):
-        """在当前 thread 的 Daytona sandbox 中执行一轮任意 Python、Shell 或 SQL 分析；同一 job_id 可多轮调用；失败结果会返回给模型继续修正；无需用户确认。"""
-        return await self._report(
-            "analyze",
-            {
-                "job_id": job_id,
-                "command": command,
-                "cwd": cwd,
-                "timeout": timeout,
-            },
-            run_context,
-        )
+        """返回 job 的输入哈希、已登记产物哈希和最近 PDF 验收状态。"""
+        return await self._job_status(self._load_job(job_id, run_context), run_context)
 
     async def report_render_markdown(
         self,
@@ -3801,16 +3886,93 @@ class WorkspaceReportToolkit(Toolkit):
         output_path: str,
         run_context: RunContext | None = None,
     ):
-        """完成至少一轮分析后，将工作区 Markdown 渲染为 PDF；图片使用相对路径；无需用户确认。"""
-        return await self._report(
-            "render_markdown",
-            {
-                "job_id": job_id,
-                "markdown_path": markdown_path,
-                "output_path": output_path,
-            },
-            run_context,
+        """将工作区 Markdown 渲染为 PDF；图片使用相对路径；无需用户确认。"""
+        job = self._load_job(job_id, run_context)
+        await self._job_status(job, run_context)
+        relative_output, remote_output = self.service.normalize_path(output_path, allow_root=False)
+        invocation = uuid.uuid4().hex
+        temporary_root = f"/tmp/workspace-report-{invocation}-render"
+        temporary_pdf = f"{temporary_root}/render.pdf"
+        output = PurePosixPath(relative_output)
+        staging_name = f".{output.name}.{invocation}.tmp.pdf"
+        staging_relative = str(output.parent / staging_name)
+        _relative_staging, remote_staging = self.service.normalize_path(
+            staging_relative, allow_root=False
         )
+        try:
+            async with self.service._async_client() as client:
+                sandbox = await self.service._asandbox_for(client, _thread(run_context))
+                await self.service._avalidate_existing_path(
+                    sandbox, relative_output, include_leaf=False
+                )
+                try:
+                    await self.service._ainfo(sandbox, remote_output)
+                except DaytonaNotFoundError:
+                    pass
+                else:
+                    raise WorkspaceError("PDF 输出文件已经存在，请使用新的输出路径。")
+            result = await self._run_report_runtime(
+                "render_markdown",
+                {
+                    "job": job,
+                    "markdown_path": markdown_path,
+                    "output_path": output_path,
+                    "temporary_path": temporary_pdf,
+                },
+                run_context,
+            )
+            render = result.pop("render", None)
+            if not isinstance(render, dict) or render.get("pdf", {}).get("path") != relative_output:
+                raise WorkspaceError("报表运行时返回无效产物。")
+            async with self.service._async_client() as client:
+                sandbox = await self.service._asandbox_for(client, _thread(run_context))
+                copied = await sandbox.process.exec(
+                    self.service._shell_command(
+                        f"cp --no-clobber -- {shlex.quote(temporary_pdf)} "
+                        f"{shlex.quote(remote_staging)}"
+                    ),
+                    cwd=WORKSPACE_ROOT,
+                    timeout=30,
+                )
+            if getattr(copied, "exit_code", None) != 0:
+                raise WorkspaceError("PDF 暂存失败，请重新生成报表。")
+            staged = await self.service.ahash_file(_thread(run_context), staging_relative)
+            if staged.get("sha256") != render["pdf"].get("sha256") or staged.get("size") != render[
+                "pdf"
+            ].get("size"):
+                raise WorkspaceError("PDF 暂存校验失败，请重新生成报表。")
+            async with self.service._async_client() as client:
+                sandbox = await self.service._asandbox_for(client, _thread(run_context))
+                published = await sandbox.process.exec(
+                    self.service._shell_command(
+                        f"ln -- {shlex.quote(remote_staging)} {shlex.quote(remote_output)}"
+                    ),
+                    cwd=WORKSPACE_ROOT,
+                    timeout=30,
+                )
+            if getattr(published, "exit_code", None) != 0:
+                raise WorkspaceError("PDF 发布失败，请使用新的输出路径后重试。")
+            current = await self.service.ahash_file(_thread(run_context), relative_output)
+            if current.get("sha256") != render["pdf"].get("sha256") or current.get(
+                "size"
+            ) != render["pdf"].get("size"):
+                raise WorkspaceError("PDF 发布校验失败，请重新生成报表。")
+            job["render"] = render
+            job.pop("validation", None)
+            self._store_job(job, run_context)
+            return result
+        except BaseException:
+            await complete_cleanup(
+                self._delete_published_report(remote_output, remote_staging, run_context)
+            )
+            raise
+        finally:
+            await complete_cleanup(
+                self._delete_report_path(remote_staging, run_context, recursive=False)
+            )
+            await complete_cleanup(
+                self._delete_report_path(temporary_root, run_context, recursive=True)
+            )
 
     async def report_validate_pdf(
         self,
@@ -3819,8 +3981,30 @@ class WorkspaceReportToolkit(Toolkit):
         run_context: RunContext | None = None,
     ):
         """栅格化检查当前 job 已登记 PDF 的空白页、文本和图片完整性；无需用户确认。"""
-        return await self._report(
-            "validate_pdf",
-            {"job_id": job_id, "pdf_path": pdf_path},
-            run_context,
-        )
+        job = self._load_job(job_id, run_context)
+        status = await self._job_status(job, run_context)
+        if status["status"] == "artifact_changed":
+            raise WorkspaceError("报表产物发生变化，请重新渲染后验收。")
+        temporary_directory = f"/tmp/workspace-report-{uuid.uuid4().hex}-validate"
+        try:
+            validation = await self._run_report_runtime(
+                "validate_pdf",
+                {
+                    "job": job,
+                    "pdf_path": pdf_path,
+                    "temporary_directory": temporary_directory,
+                },
+                run_context,
+            )
+            if validation.get("pdfPath") != pdf_path or not isinstance(validation.get("ok"), bool):
+                raise WorkspaceError("PDF 验收返回无效结果。")
+            current_status = await self._job_status(job, run_context)
+            if current_status["status"] == "artifact_changed":
+                raise WorkspaceError("报表产物在验收期间发生变化，请重新渲染后验收。")
+            job["validation"] = validation
+            self._store_job(job, run_context)
+            return validation
+        finally:
+            await complete_cleanup(
+                self._delete_report_path(temporary_directory, run_context, recursive=True)
+            )

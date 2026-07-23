@@ -872,6 +872,7 @@ async def test_fresh_request_receives_budgeted_history_without_old_odoo_results(
                 }
             },
             app_module.CODEX_EXEC_NEXT_SESSION_STATE_KEY: 99,
+            app_module.REPORT_JOBS_STATE_KEY: {"forged-job": {"validation": {"ok": True}}},
         },
     )
 

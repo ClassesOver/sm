@@ -66,7 +66,12 @@ from .report_data_sources import (
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
 from .skills import load_skills, public_skill_metadata
-from .workspace import WorkspaceError, WorkspacePathConflict, WorkspaceService
+from .workspace import (
+    REPORT_JOBS_STATE_KEY,
+    WorkspaceError,
+    WorkspacePathConflict,
+    WorkspaceService,
+)
 
 PROTOCOL = "agui.odoo.v2"
 BUNDLE_VERSION = "12.0.8.8.10"
@@ -77,6 +82,13 @@ WORKSPACE_FILE_BYTES = 10 * 1024 * 1024
 MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
 SERVER_TOOL_SCHEMA_TOKEN_RESERVE = 16 * 1024
 REPORT_TOOL_MIGRATION_ERROR = "report_tool_migration_required"
+REMOVED_REPORT_TOOLS = frozenset(
+    {
+        "report_list_analysis_capabilities",
+        "report_profile_dataset",
+        "report_analyze_dataset",
+    }
+)
 LEGACY_REPORT_BASE_TOOLS = frozenset(
     {
         "agent_update_plan",
@@ -113,6 +125,7 @@ LEGACY_REPORT_BASE_TOOLS = frozenset(
         "workspace_delete_file",
         "workspace_view_image",
         "workspace_inspect_pdf",
+        *REMOVED_REPORT_TOOLS,
     }
 )
 RAW_REASONING_EVENTS = frozenset(
@@ -129,6 +142,7 @@ SERVER_SESSION_STATE_KEYS = frozenset(
         AGENT_CONTINUATION_STATE_KEY,
         AGENT_LOADED_TOOLKITS_STATE_KEY,
         REPORT_DATASET_HANDLES_STATE_KEY,
+        REPORT_JOBS_STATE_KEY,
         CODEX_EXEC_SESSIONS_STATE_KEY,
         CODEX_EXEC_NEXT_SESSION_STATE_KEY,
     }
@@ -508,7 +522,12 @@ def _pending_legacy_report_tool(session: AgentSession, run_id: str | None) -> st
         pending_external = bool(getattr(execution, "external_execution_required", False)) and (
             getattr(execution, "result", None) is None
         )
-        if name in LEGACY_REPORT_BASE_TOOLS and (pending_confirmation or pending_external):
+        pending_removed = (
+            name in REMOVED_REPORT_TOOLS and getattr(execution, "result", None) is None
+        )
+        if name in LEGACY_REPORT_BASE_TOOLS and (
+            pending_confirmation or pending_external or pending_removed
+        ):
             return name
         result = getattr(execution, "result", None)
         if name not in LEGACY_REPORT_BASE_TOOLS or result is None:

@@ -31,6 +31,7 @@ from agentos_dev.workspace import (
     MAX_READ_BYTES,
     MAX_TOOL_OUTPUT_BYTES,
     MAX_UPLOAD_BYTES,
+    REPORT_JOBS_STATE_KEY,
     WORKSPACE_ROOT,
     WORKSPACE_SNAPSHOT,
     BaseToolkit,
@@ -133,7 +134,7 @@ def test_基础和报表工具集独立且确认边界符合策略(tmp_path):
     assert report_toolkit.add_instructions is True
     assert report_toolkit.instructions
     assert "report_prepare_dataset" in report_toolkit.instructions
-    assert "多轮调用 report_analyze_dataset" in report_toolkit.instructions
+    assert "分析和长进程统一使用 Coding 工具" in report_toolkit.instructions
     assert "report_validate_pdf" in report_toolkit.instructions
     assert isinstance(base_toolkit, WorkspaceToolkit)
     assert isinstance(base_toolkit, DaytonaToolkit)
@@ -172,11 +173,8 @@ def test_基础和报表工具集独立且确认边界符合策略(tmp_path):
         "workspace_inspect_pdf",
     }
     assert set(report_tools) == {
-        "report_list_analysis_capabilities",
         "report_prepare_dataset",
-        "report_profile_dataset",
         "report_job_status",
-        "report_analyze_dataset",
         "report_render_markdown",
         "report_validate_pdf",
     }
@@ -204,9 +202,7 @@ def test_基础和报表工具集独立且确认边界符合策略(tmp_path):
     base_tools["sandbox_process_write"].process_entrypoint()
     base_tools["sandbox_process_stop"].process_entrypoint()
     report_tools["report_prepare_dataset"].process_entrypoint()
-    report_tools["report_profile_dataset"].process_entrypoint()
     report_tools["report_job_status"].process_entrypoint()
-    report_tools["report_analyze_dataset"].process_entrypoint()
     report_tools["report_render_markdown"].process_entrypoint()
     report_tools["report_validate_pdf"].process_entrypoint()
     assert "/home/daytona/workspace" in base_tools["sandbox_exec"].description
@@ -217,9 +213,10 @@ def test_基础和报表工具集独立且确认边界符合策略(tmp_path):
         "session_id",
         "command_id",
     ]
-    assert report_tools["report_analyze_dataset"].requires_confirmation is False
     assert report_tools["report_render_markdown"].requires_confirmation is False
     assert report_tools["report_validate_pdf"].requires_confirmation is False
+    assert report_tools["report_prepare_dataset"].parameters["required"] == ["dataset_ids"]
+    assert "paths" not in report_tools["report_prepare_dataset"].parameters["properties"]
     base_tools["workspace_apply_patch"].process_entrypoint()
     assert set(base_tools["workspace_apply_patch"].parameters["required"]) == {
         "path",
@@ -227,15 +224,6 @@ def test_基础和报表工具集独立且确认边界符合策略(tmp_path):
         "new_text",
         "expected_sha256",
     }
-    assert set(report_tools["report_analyze_dataset"].parameters["required"]) == {
-        "job_id",
-        "command",
-    }
-    command_schema = report_tools["report_analyze_dataset"].parameters["properties"]["command"]
-    assert command_schema["minLength"] == 1
-    assert "多轮调用" in report_tools["report_analyze_dataset"].description
-    assert "完整非空命令" in command_schema["description"]
-    assert "无需用户确认" in report_tools["report_analyze_dataset"].description
     assert "无需用户确认" in report_tools["report_render_markdown"].description
 
     for function in base_tools.values():
@@ -311,6 +299,132 @@ def test_基础和报表工具集独立且确认边界符合策略(tmp_path):
         "delete",
         "move",
     ]
+
+
+class _ReportStateService:
+    def __init__(self):
+        self.entries = {
+            "报表/数据集/收入.csv": {
+                "path": "报表/数据集/收入.csv",
+                "size": 12,
+                "sha256": "a" * 64,
+            }
+        }
+
+    async def ahash_file(self, _thread, path):
+        return dict(self.entries[path])
+
+
+class _ReportDatasetResolver:
+    async def resolve_dataset_paths(self, dataset_ids, *, run_context=None):
+        assert dataset_ids == ["dataset-income"]
+        assert run_context is not None
+        return ["报表/数据集/收入.csv"]
+
+
+@pytest.mark.anyio
+async def test_报表任务由session_state恢复并拒绝跨thread复用和超限污染():
+    service = _ReportStateService()
+    context = RunContext(run_id="run-1", session_id="thread", session_state={})
+    prepared = await WorkspaceReportToolkit(
+        service, _ReportDatasetResolver()
+    ).report_prepare_dataset(["dataset-income"], run_context=context)
+
+    restarted = WorkspaceReportToolkit(service, _ReportDatasetResolver())
+    status = await restarted.report_job_status(prepared["jobId"], run_context=context)
+
+    assert status["status"] == "prepared"
+    assert status["sources"][0]["changed"] is False
+    assert prepared["jobId"] in context.session_state[REPORT_JOBS_STATE_KEY]
+
+    other_context = RunContext(
+        run_id="run-2",
+        session_id="other-thread",
+        session_state=json.loads(json.dumps(context.session_state)),
+    )
+    with pytest.raises(WorkspaceError, match="不属于当前对话"):
+        await restarted.report_job_status(prepared["jobId"], run_context=other_context)
+
+    job = restarted._load_job(prepared["jobId"], context)
+    before = json.loads(json.dumps(context.session_state))
+    job["validation"] = {"ok": True, "pages": ["x" * (64 * 1024)]}
+    with pytest.raises(WorkspaceError, match="超过服务端边界"):
+        restarted._store_job(job, context)
+    assert context.session_state == before
+
+
+@pytest.mark.anyio
+async def test_报表发布后状态提交失败会清理pdf和本次临时目录(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    current.sandbox_for("thread")
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+    toolkit = WorkspaceReportToolkit(async_service)
+    job_id = str(uuid.uuid4())
+    context = RunContext(
+        run_id="run",
+        session_id="thread",
+        session_state={
+            REPORT_JOBS_STATE_KEY: {
+                job_id: {
+                    "jobId": job_id,
+                    "_threadBinding": toolkit._thread_binding("thread"),
+                    "sources": [{"path": "data.csv", "size": 12, "sha256": "a" * 64}],
+                }
+            }
+        },
+    )
+    deleted = []
+
+    async def status(job, _run_context):
+        return {"jobId": job["jobId"], "status": "prepared", "sources": []}
+
+    async def render(_action, payload, _run_context):
+        return {
+            "status": "rendered",
+            "pdfPath": "report.pdf",
+            "render": {
+                "markdown": {"path": "report.md", "size": 1, "sha256": "b" * 64},
+                "pdf": {"path": "report.pdf", "size": 20, "sha256": "c" * 64},
+                "images": [],
+            },
+        }
+
+    async def hash_file(_thread, path):
+        return {"path": path, "size": 20, "sha256": "c" * 64}
+
+    async def cleanup(path, _run_context, *, recursive):
+        deleted.append((path, recursive))
+
+    async def unpublish(path, _staging, _run_context):
+        deleted.append((path, False))
+
+    monkeypatch.setattr(toolkit, "_job_status", status)
+    monkeypatch.setattr(toolkit, "_run_report_runtime", render)
+    monkeypatch.setattr(async_service, "ahash_file", hash_file)
+    monkeypatch.setattr(toolkit, "_delete_report_path", cleanup)
+    monkeypatch.setattr(toolkit, "_delete_published_report", unpublish)
+    monkeypatch.setattr(
+        toolkit,
+        "_store_job",
+        lambda *_args: (_ for _ in ()).throw(WorkspaceError("state failed")),
+    )
+
+    with pytest.raises(WorkspaceError, match="state failed"):
+        await toolkit.report_render_markdown(
+            job_id,
+            "report.md",
+            "report.pdf",
+            run_context=context,
+        )
+
+    assert (f"{WORKSPACE_ROOT}/report.pdf", False) in deleted
+    assert len([item for item in deleted if item[0].endswith("-render")]) == 1
 
 
 @pytest.mark.anyio

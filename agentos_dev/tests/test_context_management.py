@@ -10,6 +10,7 @@ from agno.session.summary import SessionSummary
 from agno.session.team import TeamSession
 
 from agentos_dev.context_management import (
+    COMPRESSIBLE_HISTORY_TOOLS,
     HISTORY_CONTEXT_DESCRIPTION,
     MAX_SUMMARY_TOKENS,
     ProtectedCompressionManager,
@@ -21,6 +22,10 @@ from agentos_dev.context_management import (
     clear_terminal_reasoning,
     clear_terminal_session_reasoning,
 )
+
+
+def test_coding_process_outputs_are_compressible_history():
+    assert {"exec_command", "write_stdin"}.issubset(COMPRESSIBLE_HISTORY_TOOLS)
 
 
 class CountingModel:
@@ -265,6 +270,7 @@ async def test_budgeted_history_compresses_analysis_without_changing_raw_content
     assert "abc" in analysis.compressed_content
     assert value is not None
     assert "rows" not in value.value
+    assert "JSON" in str(compression_model.requests[0][0].content)
 
 
 @pytest.mark.anyio
@@ -356,6 +362,7 @@ async def test_rolling_summary_uses_previous_summary_and_only_new_messages():
     result = await manager.acreate_session_summary(session)
 
     assert result is session.summary
+    assert "JSON" in str(model.requests[0][0].content)
     request = str(model.requests[0][-1].content)
     assert "旧目标" in request
     assert "继续生成 PDF" in request

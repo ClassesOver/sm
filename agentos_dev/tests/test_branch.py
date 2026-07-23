@@ -22,6 +22,7 @@ from agentos_dev.branch import (
 )
 from agentos_dev.report_data_sources import REPORT_DATASET_HANDLES_STATE_KEY
 from agentos_dev.security import CapabilityClaims
+from agentos_dev.workspace import REPORT_JOBS_STATE_KEY
 
 
 def claims(thread, user=7):
@@ -247,6 +248,7 @@ def report_dataset_session_data():
                     "_threadBinding": hashlib.sha256(b"source-thread").hexdigest(),
                 }
             },
+            REPORT_JOBS_STATE_KEY: {"source-job": {"validation": {"ok": True}}},
             "unrelated_server_state": {"mustNotCopy": True},
         }
     }

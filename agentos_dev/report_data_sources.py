@@ -18,6 +18,7 @@ from psycopg import ProgrammingError
 from psycopg.conninfo import conninfo_to_dict
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .async_utils import complete_cleanup
 from .workspace import WORKSPACE_ROOT, WorkspaceError, WorkspaceService
 
 sqlglot: Any
@@ -35,6 +36,7 @@ MAX_REPORT_INPUTS = 20
 MAX_DIRECTORY_ENTRIES = 200
 MAX_DATASET_FILE_BYTES = 25 * 1024 * 1024
 MAX_MATERIALIZED_PART_BYTES = MAX_DATASET_FILE_BYTES
+REPORT_DATA_RUNTIME_TIMEOUT_SECONDS = 300
 SUPPORTED_FILE_FORMATS = frozenset(
     {
         "csv",
@@ -766,6 +768,8 @@ class ReportDataSourceToolkit(Toolkit):
                 "postgresql_materialized",
             }:
                 raise ReportDataSourceError("dataset_invalid", "数据集类型无效，请重新准备。")
+            if handle.size > MAX_DATASET_FILE_BYTES:
+                raise ReportDataSourceError("dataset_too_large", "单个数据集文件不能超过 25 MiB。")
             digest = await self.service.ahash_file(_thread(run_context), handle.path)
             if digest.get("sha256") != handle.sha256 or int(digest.get("size", -1)) != handle.size:
                 raise ReportDataSourceError(
@@ -788,35 +792,40 @@ class ReportDataSourceToolkit(Toolkit):
         query_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()
         materialization_id = self._materialization_id(source.source_id, query_hash, run_context)
         output_dir = f"报表/数据集/{materialization_id}/分片"
-        result = await self._run_data_source_runtime(
-            "materialize_local",
-            {
-                "source_path": source.path,
-                "file_format": source.format,
-                "query": query,
-                "output_format": output_format,
-                "output_dir": output_dir,
-                "max_rows": 1_000_000,
-                "max_bytes": 256 * 1024 * 1024,
-            },
-            run_context,
-        )
-        after = await self.service.ahash_file(thread, source.path)
-        if before.get("sha256") != after.get("sha256") or before.get("size") != after.get("size"):
-            await self._delete_materialized_output(output_dir, run_context)
-            raise ReportDataSourceError(
-                "stale_dataset", "工作区数据库在查询期间发生变化，请重新物化。"
+        try:
+            result = await self._run_data_source_runtime(
+                "materialize_local",
+                {
+                    "source_path": source.path,
+                    "file_format": source.format,
+                    "query": query,
+                    "output_format": output_format,
+                    "output_dir": output_dir,
+                    "max_rows": 1_000_000,
+                    "max_bytes": 256 * 1024 * 1024,
+                },
+                run_context,
             )
-        return await self._store_materialized_handles(
-            source_id=source.source_id,
-            source_type="workspace_database",
-            paths=result.get("paths"),
-            file_format=output_format,
-            schema=result.get("schema"),
-            row_count=result.get("rowCount"),
-            provenance={"workspacePath": source.path, "querySha256": query_hash},
-            run_context=run_context,
-        )
+            after = await self.service.ahash_file(thread, source.path)
+            if before.get("sha256") != after.get("sha256") or before.get("size") != after.get(
+                "size"
+            ):
+                raise ReportDataSourceError(
+                    "stale_dataset", "工作区数据库在查询期间发生变化，请重新物化。"
+                )
+            return await self._store_materialized_handles(
+                source_id=source.source_id,
+                source_type="workspace_database",
+                paths=result.get("paths"),
+                file_format=output_format,
+                schema=result.get("schema"),
+                row_count=result.get("rowCount"),
+                provenance={"workspacePath": source.path, "querySha256": query_hash},
+                run_context=run_context,
+            )
+        except BaseException:
+            await complete_cleanup(self._delete_materialized_output(output_dir, run_context))
+            raise
 
     async def _materialize_postgres(
         self,
@@ -922,41 +931,48 @@ class ReportDataSourceToolkit(Toolkit):
                 raise ReportDataSourceError(
                     "database_query_failed", "只读 PostgreSQL 查询失败，请检查 SQL 和数据源范围。"
                 ) from error
-        result: dict[str, Any]
-        if output_format == "parquet":
-            parquet_dir = f"报表/数据集/{materialization_id}/分片"
-            async with self.service._async_client() as client:
-                sandbox = await self.service._asandbox_for(client, thread)
-                _relative, csv_remote = self.service.normalize_path(csv_dir)
-                try:
-                    result = await self._run_data_source_runtime(
-                        "convert_csv",
-                        {
-                            "paths": csv_paths,
-                            "output_dir": parquet_dir,
-                            "max_bytes": source.max_bytes,
-                        },
-                        run_context,
-                    )
-                finally:
-                    await self._best_effort_delete(sandbox, csv_remote)
-        else:
-            result = {
-                "paths": csv_paths,
-                "rowCount": total_rows,
-                "size": total_bytes,
-                "schema": {"columns": columns},
-            }
-        return await self._store_materialized_handles(
-            source_id=source.id,
-            source_type="postgresql_materialized",
-            paths=result.get("paths"),
-            file_format=output_format,
-            schema=result.get("schema"),
-            row_count=result.get("rowCount", total_rows),
-            provenance={"dataSourceId": source.id, "querySha256": query_hash},
-            run_context=run_context,
-        )
+        output_dir = csv_dir
+        try:
+            result: dict[str, Any]
+            if output_format == "parquet":
+                output_dir = f"报表/数据集/{materialization_id}/分片"
+                async with self.service._async_client() as client:
+                    sandbox = await self.service._asandbox_for(client, thread)
+                    _relative, csv_remote = self.service.normalize_path(csv_dir)
+                    try:
+                        result = await self._run_data_source_runtime(
+                            "convert_csv",
+                            {
+                                "paths": csv_paths,
+                                "output_dir": output_dir,
+                                "max_bytes": source.max_bytes,
+                            },
+                            run_context,
+                        )
+                    finally:
+                        await self._best_effort_delete(sandbox, csv_remote)
+            else:
+                result = {
+                    "paths": csv_paths,
+                    "rowCount": total_rows,
+                    "size": total_bytes,
+                    "schema": {"columns": columns},
+                }
+            return await self._store_materialized_handles(
+                source_id=source.id,
+                source_type="postgresql_materialized",
+                paths=result.get("paths"),
+                file_format=output_format,
+                schema=result.get("schema"),
+                row_count=result.get("rowCount", total_rows),
+                provenance={"dataSourceId": source.id, "querySha256": query_hash},
+                run_context=run_context,
+            )
+        except BaseException:
+            await complete_cleanup(self._delete_materialized_output(output_dir, run_context))
+            if output_dir != csv_dir:
+                await complete_cleanup(self._delete_materialized_output(csv_dir, run_context))
+            raise
 
     async def _run_data_source_runtime(
         self,
@@ -977,7 +993,11 @@ class ReportDataSourceToolkit(Toolkit):
                 f"python {shlex.quote(remote)} {shlex.quote(action)} "
                 f"{shlex.quote(json.dumps(payload, ensure_ascii=False))}"
             )
-            value = await sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=60)
+            value = await sandbox.process.exec(
+                command,
+                cwd=WORKSPACE_ROOT,
+                timeout=REPORT_DATA_RUNTIME_TIMEOUT_SECONDS,
+            )
         output = str(getattr(value, "result", "") or "")
         try:
             result = json.loads(
