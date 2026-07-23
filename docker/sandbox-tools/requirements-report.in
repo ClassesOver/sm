@@ -19,9 +19,11 @@ wordcloud
 
 # Notebook 报表
 ipykernel
+jedi<0.20
 nbclient
 nbconvert
 nbformat
+websockets>=15,<16
 
 # 图像与地理空间
 geopandas

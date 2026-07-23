@@ -5,6 +5,7 @@ faker
 freezegun
 hypothesis
 ipython
+jedi<0.20
 libcst
 mypy
 pydantic
