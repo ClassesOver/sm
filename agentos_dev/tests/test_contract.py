@@ -15,7 +15,11 @@ from agno.tools.function import Function
 from agno.utils.callables import resolve_callable_members
 
 from agentos_dev import app
-from agentos_dev.agents import ODOO_HOST_COMMAND_NAMES, TEAM_ROUTE_DEPENDENCY
+from agentos_dev.agents import (
+    ODOO_HOST_COMMAND_NAMES,
+    OPENAI_COMPATIBLE_ROLE_MAP,
+    TEAM_ROUTE_DEPENDENCY,
+)
 from agentos_dev.instructions import (
     BUSINESS_COMMAND_INSTRUCTIONS,
     CORE_INSTRUCTIONS,
@@ -114,6 +118,10 @@ def test_agent_uses_dynamic_instructions_callable():
     assert app.report_agent.instructions is build_report_agent_instructions
 
 
+def test_openai_compatible_role_map_preserves_system_instructions():
+    assert OPENAI_COMPATIBLE_ROLE_MAP["system"] == "system"
+
+
 def test_coding_agent_uses_trusted_per_run_instructions():
     instructions = build_coding_agent_instructions(instruction_context())
     text = "\n".join(instructions)
@@ -121,17 +129,43 @@ def test_coding_agent_uses_trusted_per_run_instructions():
         RunContext(
             run_id="run-1",
             session_id="thread-1",
-            session_state={"agentos_plan": {"plan": []}},
+            session_state={
+                "agentos_plan": {
+                    "plan": [
+                        {"step": "检查现状", "status": "completed"},
+                        {"step": "运行验证", "status": "in_progress"},
+                    ],
+                    "explanation": "已完成代码检查",
+                },
+                "odoo": {"snapshotId": "不得注入"},
+            },
+        )
+    )
+    invalid = build_coding_agent_instructions(
+        RunContext(
+            run_id="run-1",
+            session_id="thread-1",
+            session_state={
+                "agentos_plan": {
+                    "plan": [{"step": "snapshotId=secret", "status": "in_progress"}],
+                    "explanation": "",
+                }
+            },
         )
     )
 
-    assert "AGENTS.md" in text
     assert "当前可用工具、其 schema、确认要求" in text
     assert "网络由 sandbox 策略决定" in text
     assert "不是 OS PID" in text
     assert "最终回答区分已完成、失败和仍在运行" in text
     assert "当前会话没有可复用的任务计划" in text
-    assert "当前会话保存了任务计划" in "\n".join(resumed)
+    resumed_text = "\n".join(resumed)
+    assert "当前会话保存了以下服务端任务计划" in resumed_text
+    assert "检查现状" in resumed_text
+    assert "运行验证" in resumed_text
+    assert "已完成代码检查" in resumed_text
+    assert "snapshotId" not in resumed_text
+    assert "当前会话没有可复用的任务计划" in "\n".join(invalid)
 
 
 def test_assistant_team_routes_to_specialized_members():

@@ -14,6 +14,7 @@ from agentos_dev.coding_tools import (
     CODEX_EXEC_SESSION_TTL_SECONDS,
     CODEX_EXEC_SESSIONS_STATE_KEY,
     CODING_TOOLKIT_INSTRUCTIONS,
+    EMPTY_POLL_COOLDOWN_SECONDS,
     MAX_CODEX_SESSION_HANDLES,
     CodingToolkit,
     parse_codex_patch,
@@ -572,6 +573,62 @@ async def test_running_process_result_guides_persistent_service_health_check(tmp
     assert "按需或定时使用 write_stdin" in started["guidance"]
     assert "不要在同一轮中紧密轮询" in started["guidance"]
     assert "连续两次轮询没有新输出" in started["guidance"]
+
+
+@pytest.mark.anyio
+async def test_write_stdin_pauses_tight_polling_after_two_empty_results(tmp_path, monkeypatch):
+    _current, toolkit = async_toolkit(tmp_path)
+    run_context = context()
+    started = await toolkit.exec_command("long-running", yield_time_ms=0, run_context=run_context)
+    poll_calls = 0
+    current_time = 1000.0
+
+    async def empty_poll(_entry, *, offset, **_kwargs):
+        nonlocal poll_calls
+        poll_calls += 1
+        return {
+            "status": "running",
+            "output": "",
+            "exitCode": None,
+            "offset": offset,
+            "nextOffset": offset,
+            "totalBytes": offset,
+            "hasMore": False,
+            "truncated": False,
+        }
+
+    monkeypatch.setattr(toolkit, "_poll_process", empty_poll)
+    monkeypatch.setattr("agentos_dev.coding_tools.time.time", lambda: current_time)
+
+    first = await toolkit.write_stdin(
+        started["session_id"], yield_time_ms=0, run_context=run_context
+    )
+    second = await toolkit.write_stdin(
+        started["session_id"], yield_time_ms=0, run_context=run_context
+    )
+    paused = await toolkit.write_stdin(
+        started["session_id"], yield_time_ms=0, run_context=run_context
+    )
+
+    assert first["empty_poll_count"] == 1
+    assert "polling_paused" not in first
+    assert second["empty_poll_count"] == 2
+    assert second["polling_paused"] is True
+    assert second["retry_after_seconds"] == EMPTY_POLL_COOLDOWN_SECONDS
+    assert paused["polling_paused"] is True
+    assert paused["status_is_cached"] is True
+    assert paused["session_id"] == started["session_id"]
+    assert "本次没有访问远端" in paused["guidance"]
+    assert poll_calls == 2
+
+    current_time += EMPTY_POLL_COOLDOWN_SECONDS
+    resumed = await toolkit.write_stdin(
+        started["session_id"], yield_time_ms=0, run_context=run_context
+    )
+
+    assert resumed["empty_poll_count"] == 1
+    assert "polling_paused" not in resumed
+    assert poll_calls == 3
 
 
 @pytest.mark.anyio

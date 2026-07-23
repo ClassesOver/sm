@@ -25,7 +25,7 @@ from .odoo_command import (
 from .report import create_report_agent
 
 OPENAI_COMPATIBLE_ROLE_MAP = {
-    "system": "user",
+    "system": "system",
     "user": "user",
     "assistant": "assistant",
     "tool": "tool",

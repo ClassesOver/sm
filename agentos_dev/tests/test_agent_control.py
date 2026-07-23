@@ -11,6 +11,7 @@ from agentos_dev.agent_control import (
     AgentControlToolkit,
     build_agent_tools,
     build_report_agent_tools,
+    validated_agent_plan,
 )
 from agentos_dev.tests.workspace_fakes import service
 
@@ -48,6 +49,34 @@ def test_agent_update_plan_rejects_multiple_active_steps(tmp_path):
             ],
             run_context=RunContext(run_id="run", session_id="thread", session_state={}),
         )
+
+
+def test_validated_agent_plan_rejects_untrusted_or_invalid_state():
+    assert validated_agent_plan(
+        {
+            "plan": [
+                {"step": "读取数据", "status": "completed"},
+                {"step": "生成报表", "status": "in_progress"},
+            ],
+            "explanation": "已完成准备",
+        }
+    ) == {
+        "plan": [
+            {"step": "读取数据", "status": "completed"},
+            {"step": "生成报表", "status": "in_progress"},
+        ],
+        "explanation": "已完成准备",
+    }
+    assert validated_agent_plan({"plan": [], "explanation": ""}) is None
+    assert (
+        validated_agent_plan(
+            {
+                "plan": [{"step": "snapshotId=secret", "status": "in_progress"}],
+                "explanation": "",
+            }
+        )
+        is None
+    )
 
 
 class CountingModel:

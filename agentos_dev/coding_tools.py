@@ -31,6 +31,8 @@ CODEX_EXEC_SESSION_TTL_SECONDS = 3600
 DEFAULT_YIELD_TIME_MS = 10_000
 DEFAULT_MAX_OUTPUT_TOKENS = MAX_TOOL_OUTPUT_BYTES // 4
 MAX_OUTPUT_TOKENS = MAX_TOOL_OUTPUT_BYTES // 4
+EMPTY_POLL_LIMIT = 2
+EMPTY_POLL_COOLDOWN_SECONDS = 30
 
 CODING_TOOLKIT_INSTRUCTIONS = """
 Coding Agent 工具规则：
@@ -733,6 +735,40 @@ class CodingToolkit(Toolkit):
         thread = _thread(run_context)
         async with self._session_lock(thread, handle):
             sessions, key, entry = self._session_entry(handle, run_context)
+            now = time.time()
+            cooldown_until = entry.get("poll_cooldown_until")
+            if (
+                not chars
+                and isinstance(cooldown_until, (int, float))
+                and not isinstance(cooldown_until, bool)
+            ):
+                if now < cooldown_until:
+                    started_at = entry.get("started_at")
+                    wall_time = (
+                        round(max(0.0, now - started_at), 3)
+                        if isinstance(started_at, (int, float)) and not isinstance(started_at, bool)
+                        else 0.0
+                    )
+                    return {
+                        "status": "running",
+                        "output": "",
+                        "exit_code": None,
+                        "outcome": "running",
+                        "wall_time_seconds": wall_time,
+                        "truncated": False,
+                        "session_id": session_id,
+                        "empty_poll_count": entry.get("empty_poll_count", EMPTY_POLL_LIMIT),
+                        "polling_paused": True,
+                        "status_is_cached": True,
+                        "retry_after_seconds": max(1, round(cooldown_until - now)),
+                        "guidance": (
+                            "连续空轮询已暂停；返回的是上次已知 running 状态，本次没有访问远端，"
+                            "也没有终止远端进程。"
+                            "请先报告当前状态或执行独立健康检查，冷却后再按需读取日志。"
+                        ),
+                    }
+                entry.pop("poll_cooldown_until", None)
+                entry["empty_poll_count"] = 0
             offset = entry.get("offset", 0)
             max_bytes = min(MAX_TOOL_OUTPUT_BYTES, maximum * 4)
             try:
@@ -779,6 +815,34 @@ class CodingToolkit(Toolkit):
             formatted = self._format_process_result(
                 result, maximum, None if completed else session_id
             )
+            empty_poll = not chars and result.get("status") == "running" and not formatted["output"]
+            if empty_poll:
+                raw_empty_poll_count = entry.get("empty_poll_count", 0)
+                empty_poll_count = (
+                    raw_empty_poll_count
+                    if isinstance(raw_empty_poll_count, int)
+                    and not isinstance(raw_empty_poll_count, bool)
+                    and raw_empty_poll_count >= 0
+                    else 0
+                ) + 1
+                entry["empty_poll_count"] = empty_poll_count
+                formatted["empty_poll_count"] = empty_poll_count
+                if empty_poll_count >= EMPTY_POLL_LIMIT:
+                    entry["poll_cooldown_until"] = time.time() + EMPTY_POLL_COOLDOWN_SECONDS
+                    formatted.update(
+                        {
+                            "polling_paused": True,
+                            "retry_after_seconds": EMPTY_POLL_COOLDOWN_SECONDS,
+                            "guidance": (
+                                "连续两次轮询没有新输出，已暂停紧密轮询，但未终止远端进程。"
+                                "请报告当前 session_id 和运行状态，或执行独立健康检查；"
+                                "冷却后可继续按需读取日志。"
+                            ),
+                        }
+                    )
+            else:
+                entry.pop("empty_poll_count", None)
+                entry.pop("poll_cooldown_until", None)
             started_at = entry.get("started_at")
             if isinstance(started_at, (int, float)) and not isinstance(started_at, bool):
                 formatted["wall_time_seconds"] = round(max(0.0, time.time() - started_at), 3)
