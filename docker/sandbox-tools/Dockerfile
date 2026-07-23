@@ -20,10 +20,12 @@ RUN sed -i \
         fonts-liberation \
         fonts-noto-cjk \
         git \
+        graphviz \
         libcairo2 \
         libmagic1 \
         libpango-1.0-0 \
         libpangoft2-1.0-0 \
+        librsvg2-bin \
         libreoffice-calc \
         libreoffice-impress \
         libreoffice-writer \
@@ -48,8 +50,9 @@ RUN python -m pip install \
         --require-hashes \
         -r /tmp/requirements-tools.txt \
     && python -m pip check \
-    && python -c "import babel, bs4, cairosvg, dateparser, deepdiff, docx, fitz, frontmatter, html5lib, httpx, jinja2, jmespath, json_repair, jsonschema, lxml, magic, magika, mammoth, markdown, markitdown, matplotlib, networkx, numpy, odf, openpyxl, orjson, pandas, pdfplumber, pikepdf, PIL, plotly, polars, pptx, py7zr, pyarrow, pypandoc, pypdf, rapidfuzz, reportlab, requests, rich, scipy, seaborn, sklearn, statsmodels, sympy, tomli_w, tqdm, weasyprint, xlsxwriter, xlrd, yaml" \
-    && command -v bash cairosvg file find git head libreoffice magika markitdown pandoc pdfinfo pdftoppm pdftotext qpdf rg script sed sha256sum sort stat stty tail timeout wc \
+    && python -c "from importlib.metadata import distributions; normalize=lambda name: name.lower().replace('_', '-').replace('.', '-'); installed={normalize(dist.metadata['Name']) for dist in distributions()}; forbidden={'adlfs', 'azure-storage-blob', 'boto3', 'catboost', 'contextily', 'distributed', 'gcsfs', 'geopy', 'google-cloud-storage', 'huggingface-hub', 'jax', 'jaxlib', 'kaleido', 'keras', 'lightgbm', 'magika', 'markitdown', 'mlflow', 'newspaper3k', 'nltk', 'onnxruntime', 'osmnx', 'pandas-datareader', 'playwright', 'pyppeteer', 's3fs', 'scikit-learn', 'selenium', 'sentence-transformers', 'spacy', 'tensorflow', 'torch', 'trafilatura', 'transformers', 'webdriver-manager', 'xgboost', 'yfinance'}; found=installed & forbidden; assert not found, f'forbidden packages: {sorted(found)}'" \
+    && python -c "import IPython, adjustText, altair, babel, bokeh, bs4, build, cairosvg, coverage, cssselect, cssutils, cv2, dask, dateparser, deepdiff, defusedxml, docutils, docx, docx2python, docxcompose, docxtpl, ebooklib, faker, fitz, formulas, fpdf, freezegun, frontmatter, geopandas, graphviz, great_tables, h5py, holidays, html2text, html5lib, httpx, hypothesis, ipykernel, jieba, jinja2, jmespath, json_repair, jsonlines, jsonschema, libcst, lxml, magic, mammoth, markdown, matplotlib, mdit_py_plugins, msoffcrypto, msgpack, mypy, nbclient, nbconvert, nbformat, networkx, numpy, odf, openpyxl, orjson, pandas, pdfplumber, picosvg, pikepdf, PIL, plotly, plotnine, polars, pptx, premailer, pulp, py7zr, pyarrow, pydantic, pygal, pypandoc, pypdf, pypinyin, pyproj, pyreadstat, pytest, pytest_asyncio, pytest_cov, pytest_mock, python_calamine, qrcode, radon, rapidfuzz, readability, reportlab, requests, responses, respx, rich, roman, rst2pdf, scipy, scour, seaborn, selectolax, shapely, skimage, sqlalchemy, sqlglot, statsmodels, svglib, svgpathtools, svgwrite, sympy, tenacity, tomli_w, tomlkit, tqdm, typer, vl_convert, weasyprint, wordcloud, xarray, xdist, xlsx2csv, xlsxwriter, xlrd, xmldiff, xmlschema, xmltodict, yaml, zarr" \
+    && command -v bash cairosvg coverage dot file find git head ipython jupyter-nbconvert libreoffice mypy pandoc pdfinfo pdftoppm pdftotext pyproject-build pytest qpdf radon rg rst2pdf rsvg-convert ruff scour script sed sha256sum sort stat stty tail timeout wc xlsx2csv \
     && install -d -o daytona -g daytona \
         /home/daytona/.cache/matplotlib \
         /home/daytona/.config/libreoffice \

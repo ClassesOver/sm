@@ -69,9 +69,12 @@ docker compose up -d --build
 
 ## 构建工具镜像
 
-`sandbox-tools` 在默认镜像上增加 ripgrep、Git、`script` PTY、文档转 Markdown、PDF/Office/HTML、
-图表、Parquet、结构化数据和压缩处理能力，依赖清单见 `docker/sandbox-tools/requirements.in`。它保留 requests 和 HTTPX，
-不增加 OCR、数据库客户端或 ORM。
+`sandbox-tools` 在默认镜像上增加 ripgrep、Git、`script` PTY、文档转 Markdown、
+PDF/Office/HTML/XML/RST、Notebook 执行与导出、出版级表格、Excel 公式、图像与地理空间处理、
+离线图表与 SVG 渲染、统计、SQL、本地结构化数据、并行与多维数据、压缩处理，以及 Python
+测试、构建、类型检查和源码分析工具。依赖清单见
+`docker/sandbox-tools/requirements.in`。镜像保留
+requests、HTTPX 和 SQLAlchemy 能力，但不内置数据库服务端，也不改变沙箱的网络隔离。
 
 ```bash
 docker build \
@@ -106,7 +109,7 @@ DAYTONA_DEFAULT_SNAPSHOT=registry:6000/daytona/sandbox:0.5.0-tools
 ```
 
 推送新镜像后，需要在 Daytona 中重新创建并激活自定义 Snapshot
-`sandbox-tools-20260722`。Registry tag 更新不会刷新既有 Snapshot 的固定镜像引用；继续使用旧
+`sandbox-tools-20260723`。Registry tag 更新不会刷新既有 Snapshot 的固定镜像引用；继续使用旧
 Snapshot 时，Base Toolkit 的搜索、Git、PTY、stat、目录树、哈希和大文件分段读取会因缺少
 `rg`、`git`、`script` 或对应 coreutils 命令而失败。
 

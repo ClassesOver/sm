@@ -60,7 +60,9 @@ AgentOS 保留内置 `/health` 存活端点。流量就绪检查使用 `/ready`�
 `/ready`，并自动重启 Agent 服务。
 
 Agent 镜像安装 pandas、openpyxl、matplotlib 和 Plotly；Daytona sandbox-tools 镜像安装
-最终 PDF 报表所需的 Matplotlib、WeasyPrint 和 Noto CJK 字体。
+最终 PDF 报表所需的 Matplotlib、WeasyPrint 和 Noto CJK 字体，并预装 RST、Notebook、
+出版级表格、Excel 公式、离线图表与 SVG 渲染、图像、地理空间、SQL、并行与多维数据分析，
+以及 Python 测试、构建和静态检查工具。沙箱仍禁止运行时安装依赖和访问网络。
 `agentos_dev/requirements.txt` 变化后必须重建镜像，不要在运行中的生产容器内交互安装
 这些依赖。
 
@@ -209,10 +211,11 @@ node scripts/agui_sse_load.js https://odoo.example.com/contract-review/agui 200
 
 AgentOS 的工作区智能报表依赖现有 `docker/sandbox-tools` 镜像，不支持基础 Daytona slim
 镜像。镜像必须保留 ripgrep、Git、util-linux `script`、coreutils、findutils、WeasyPrint 69、
-pypdf、Matplotlib、pandas、openpyxl、xlrd 与 Noto CJK
-字体和 `/usr/bin/bash`；Daytona sandbox 必须继续启用 `network_block_all`。报表任务的中间状态位于 sandbox
-`/tmp/workspace-report`，成功后只保留工作区内的最终 PDF，失败状态最多保留 24 小时。
-从工具镜像创建并激活自定义 Snapshot `sandbox-tools-20260722`，不要使用同名 System
+pypdf、Matplotlib、pandas、openpyxl、xlrd、Python 测试与静态检查工具，
+以及 Noto CJK 字体和 `/usr/bin/bash`；Daytona sandbox 必须继续启用 `network_block_all`。报表 job 的可信状态保存在
+AgentOS/Agno session state，并绑定 thread、输入 SHA-256 和大小；sandbox `/tmp/workspace-report-*` 只能存放一次
+渲染或验收的临时文件，超时和失败由 AgentOS 精确清理。PDF 最大 25 MiB、200 页，渲染和验收动作各有 300 秒服务端预算。
+从工具镜像创建并激活自定义 Snapshot `sandbox-tools-20260723`，不要使用同名 System
 Snapshot；System Snapshot 的固定 `ref` 不会因 Registry tag 更新而刷新。
 每次更新工具镜像后都必须重新创建并激活该自定义 Snapshot；只推送同名 Registry tag 不会让
 现有 sandbox 获得新的搜索、Git、PTY、文件统计和大文件分段读取能力。
