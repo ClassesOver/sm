@@ -11,6 +11,7 @@ from agno.session.agent import AgentSession
 from agentos_dev import app
 from agentos_dev.agents import create_coding_agent, create_report_agent
 from agentos_dev.coding_tools import (
+    CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
     CODEX_EXEC_SESSION_TTL_SECONDS,
     CODEX_EXEC_SESSIONS_STATE_KEY,
     CODING_TOOLKIT_INSTRUCTIONS,
@@ -75,6 +76,7 @@ def test_coding_tool_contract_uses_codex_names_and_json_patch(tmp_path):
         "exec_command",
         "poll_process",
         "write_stdin",
+        "stop_process",
         "apply_patch",
         "view_image",
         "update_plan",
@@ -93,12 +95,10 @@ def test_coding_tool_contract_uses_codex_names_and_json_patch(tmp_path):
     assert tools["poll_process"].parameters["required"] == ["session_id"]
     assert tools["write_stdin"].parameters["required"] == ["session_id", "chars"]
     assert tools["write_stdin"].parameters["properties"]["chars"]["minLength"] == 1
+    assert tools["stop_process"].parameters["required"] == ["session_id"]
     assert tools["apply_patch"].parameters["required"] == ["patch"]
     assert tools["apply_patch"].parameters["properties"]["patch"]["type"] == "string"
-    assert tools["exec_command"].requires_confirmation is True
-    assert tools["poll_process"].requires_confirmation is not True
-    assert tools["write_stdin"].requires_confirmation is True
-    assert tools["apply_patch"].requires_confirmation is True
+    assert all(tool.requires_confirmation is False for tool in tools.values())
 
 
 def test_coding_tool_contract_explains_limits_patch_format_and_persistent_services(tmp_path):
@@ -118,9 +118,12 @@ def test_coding_tool_contract_explains_limits_patch_format_and_persistent_servic
     assert "独立 exec_command" in CODING_TOOLKIT_INSTRUCTIONS
     assert "按需或定时用 poll_process" in CODING_TOOLKIT_INSTRUCTIONS
     assert "write_stdin 只用于" in CODING_TOOLKIT_INSTRUCTIONS
-    assert "有副作用操作并需要确认" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "全部工具直接执行，不会请求确认" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不要在同一轮中紧密轮询" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不要把 pip 输出管道到 tail" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "shell 后台符号 &" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "sed -i" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "不能改用标准库" in CODING_TOOLKIT_INSTRUCTIONS
     assert "确认缺失后才安装" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不要无目的枚举完整环境" in CODING_TOOLKIT_INSTRUCTIONS
     assert "默认最多运行 900 秒" in CODING_TOOLKIT_INSTRUCTIONS
@@ -384,13 +387,50 @@ async def test_exec_command_uses_explicit_long_timeout_and_matching_handle_expir
 def test_process_result_distinguishes_timeout_from_failure(tmp_path):
     toolkit = CodingToolkit(service(tmp_path))
 
-    result = toolkit._format_process_result(
+    ordinary_failure = toolkit._format_process_result(
         {"status": "completed", "output": "partial\n", "exitCode": 124},
         max_output_tokens=100,
     )
+    timed_out = toolkit._format_process_result(
+        {
+            "status": "completed",
+            "output": "partial\n",
+            "exitCode": 124,
+            "timedOut": True,
+        },
+        max_output_tokens=100,
+    )
 
-    assert result["outcome"] == "timed_out"
-    assert "timeout_seconds" in result["guidance"]
+    assert ordinary_failure["outcome"] == "failed"
+    assert timed_out["outcome"] == "timed_out"
+    assert "timeout_seconds" in timed_out["guidance"]
+
+
+@pytest.mark.anyio
+async def test_exec_command_rejects_feedback_loss_and_unmanaged_shell_patterns(tmp_path):
+    _current, toolkit = async_toolkit(tmp_path)
+    run_context = context()
+
+    blocked = [
+        ("pip3 install fastapi 2>&1 | tail -50", "pip 输出"),
+        ("python3 -m pip install fastapi | grep error", "pip 输出"),
+        ("nohup python3 server.py", "nohup"),
+        ("python3 server.py > /tmp/server.log 2>&1 &", "后台符号"),
+        ("sed -i 's/a/b/' app.py", "apply_patch"),
+        ("perl -pi -e 's/a/b/' app.py", "apply_patch"),
+        ("source .venv/bin/activate", "source"),
+    ]
+    for command, message in blocked:
+        with pytest.raises(WorkspaceError, match=message):
+            await toolkit.exec_command(command, yield_time_ms=0, run_context=run_context)
+
+    result = await toolkit.exec_command(
+        "source .venv/bin/activate",
+        shell="/bin/bash",
+        yield_time_ms=0,
+        run_context=run_context,
+    )
+    assert result["status"] in {"running", "completed"}
 
 
 @pytest.mark.anyio
@@ -500,6 +540,53 @@ async def test_exec_command_integer_handle_poll_input_interrupt_and_completion(t
     assert completed["output"] == "done\n"
     assert "session_id" not in completed
     assert run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY] == {}
+    with pytest.raises(WorkspaceError, match="已经完成"):
+        await toolkit.poll_process(1, yield_time_ms=0, run_context=run_context)
+
+
+@pytest.mark.anyio
+async def test_stop_process_terminates_default_non_pty_command_and_closes_handle(tmp_path):
+    current, toolkit = async_toolkit(tmp_path)
+    run_context = context()
+    started = await toolkit.exec_command(
+        "python3 server.py",
+        tty=False,
+        yield_time_ms=0,
+        run_context=run_context,
+    )
+    entry = run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY]["1"]
+    process = current.sandbox_for("thread").process
+
+    result = await toolkit.stop_process(started["session_id"], run_context=run_context)
+
+    assert result == {"status": "terminated", "outcome": "terminated", "session_id": 1}
+    assert entry["session_id"] in process.deleted_sessions
+    assert run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY] == {}
+    assert run_context.session_state[CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY]["1"]["reason"] == (
+        "terminated"
+    )
+    with pytest.raises(WorkspaceError, match="已经终止"):
+        await toolkit.stop_process(1, run_context=run_context)
+
+
+@pytest.mark.anyio
+async def test_timeout_marker_distinguishes_managed_timeout_from_exit_124(tmp_path):
+    current, toolkit = async_toolkit(tmp_path)
+    run_context = context()
+    started = await toolkit.exec_command("long-running", yield_time_ms=0, run_context=run_context)
+    entry = run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY]["1"]
+    process = current.sandbox_for("thread").process
+    command = process.get_session_command(entry["session_id"], entry["command_id"])
+    marker = toolkit._workspace._managed_timeout_marker(command)
+    assert marker is not None
+    command.output += "partial\n" + toolkit._workspace._timeout_output_marker(marker)
+    command.exit_code = 124
+
+    result = await toolkit.poll_process(1, yield_time_ms=0, run_context=run_context)
+
+    assert result["output"] == "partial\n"
+    assert result["exit_code"] == 124
+    assert result["outcome"] == "timed_out"
 
 
 @pytest.mark.anyio
@@ -621,6 +708,8 @@ async def test_poll_process_removes_missing_handle_and_keeps_invalid_offset_retr
     with pytest.raises(WorkspaceError, match="已经结束或丢失"):
         await toolkit.poll_process(started["session_id"], run_context=run_context)
     assert run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY] == {}
+    with pytest.raises(WorkspaceError, match="已经结束或丢失"):
+        await toolkit.poll_process(started["session_id"], run_context=run_context)
 
 
 @pytest.mark.anyio
@@ -718,6 +807,48 @@ async def test_exec_command_prunes_stale_handles_before_capacity_check(tmp_path)
 
     assert started["session_id"] == 1
     assert list(state[CODEX_EXEC_SESSIONS_STATE_KEY]) == ["1"]
+    assert state[CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY]["2"]["reason"] == "expired"
+    with pytest.raises(WorkspaceError, match="已过期"):
+        await toolkit.poll_process(2, run_context=run_context)
+
+
+@pytest.mark.anyio
+async def test_exec_command_stops_remote_session_before_pruning_expired_handle(tmp_path):
+    current, toolkit = async_toolkit(tmp_path)
+    run_context = context()
+    started = await toolkit.exec_command("first", yield_time_ms=0, run_context=run_context)
+    entry = run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY]["1"]
+    remote_session_id = entry["session_id"]
+    entry["expires_at"] = time.time() - 1
+    process = current.sandbox_for("thread").process
+
+    replacement = await toolkit.exec_command("second", yield_time_ms=0, run_context=run_context)
+
+    assert replacement["session_id"] == 2
+    assert remote_session_id in process.deleted_sessions
+    assert remote_session_id not in process.sessions
+    assert str(started["session_id"]) not in run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY]
+    assert run_context.session_state[CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY]["1"]["reason"] == (
+        "expired"
+    )
+
+
+@pytest.mark.anyio
+async def test_expired_remote_cleanup_failure_preserves_handle_for_retry(tmp_path, monkeypatch):
+    _current, toolkit = async_toolkit(tmp_path)
+    run_context = context()
+    await toolkit.exec_command("first", yield_time_ms=0, run_context=run_context)
+    entry = run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY]["1"]
+    entry["expires_at"] = time.time() - 1
+
+    async def fail_cleanup(*_args, **_kwargs):
+        raise RuntimeError("daytona unavailable")
+
+    monkeypatch.setattr(toolkit._workspace, "sandbox_process_stop", fail_cleanup)
+
+    with pytest.raises(WorkspaceError, match="清理过期进程失败"):
+        await toolkit.exec_command("second", yield_time_ms=0, run_context=run_context)
+    assert "1" in run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY]
 
 
 @pytest.mark.anyio
@@ -785,7 +916,7 @@ async def test_poll_process_rejects_invalid_cross_thread_and_cross_user_handles(
 
     with pytest.raises(WorkspaceError, match="正整数"):
         await toolkit.poll_process(True, run_context=owner)
-    with pytest.raises(WorkspaceError, match="不属于"):
+    with pytest.raises(WorkspaceError, match="不存在或已经结束"):
         await toolkit.poll_process(999, run_context=owner)
     with pytest.raises(WorkspaceError, match="不属于"):
         await toolkit.poll_process(
@@ -835,6 +966,7 @@ def test_view_image_and_update_plan_keep_workspace_and_plan_boundaries(tmp_path)
 
 def test_coding_state_keys_are_removed_from_client_state():
     assert CODEX_EXEC_SESSIONS_STATE_KEY in app.SERVER_SESSION_STATE_KEYS
+    assert CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY in app.SERVER_SESSION_STATE_KEYS
     assert "agentos_codex_exec_next_session" in app.SERVER_SESSION_STATE_KEYS
 
 

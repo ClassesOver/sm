@@ -873,6 +873,9 @@ async def test_fresh_request_receives_budgeted_history_without_old_odoo_results(
                     "command_id": "forged-command",
                 }
             },
+            app_module.CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY: {
+                "1": {"thread": "thread-1", "user_id": "7", "reason": "completed"}
+            },
             app_module.CODEX_EXEC_NEXT_SESSION_STATE_KEY: 99,
             app_module.REPORT_JOBS_STATE_KEY: {"forged-job": {"validation": {"ok": True}}},
         },

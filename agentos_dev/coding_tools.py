@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import re
 import shlex
 import time
 import weakref
@@ -27,7 +28,9 @@ from .workspace import (
 
 CODEX_EXEC_SESSIONS_STATE_KEY = "agentos_codex_exec_sessions"
 CODEX_EXEC_NEXT_SESSION_STATE_KEY = "agentos_codex_exec_next_session"
+CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY = "agentos_codex_exec_closed_sessions"
 MAX_CODEX_SESSION_HANDLES = MAX_MANAGED_PROCESSES * 4
+MAX_CLOSED_SESSION_HANDLES = MAX_CODEX_SESSION_HANDLES * 2
 CODEX_EXEC_SESSION_TTL_SECONDS = 3600
 DEFAULT_EXEC_TIMEOUT_SECONDS = 900
 DEFAULT_YIELD_TIME_MS = 10_000
@@ -35,18 +38,32 @@ DEFAULT_MAX_OUTPUT_TOKENS = MAX_TOOL_OUTPUT_BYTES // 4
 MAX_OUTPUT_TOKENS = MAX_TOOL_OUTPUT_BYTES // 4
 EMPTY_POLL_LIMIT = 2
 EMPTY_POLL_COOLDOWN_SECONDS = 30
+MUTATING_INLINE_EDIT_COMMAND = re.compile(
+    r"(?:^|[;&|]\s*)(?:sed\s+(?:-[^;&|\s]*i\b|[^;&|]*\s-i(?:\s|$))|perl\s+-p?i(?:\s|$))"
+)
+PIP_INSTALL_WITH_OUTPUT_FILTER = re.compile(
+    r"(?:^|[;&|]\s*)(?:python3?\s+-m\s+pip|pip3?|uv\s+pip)\s+install\b[^|]*\|"
+    r"\s*(?:tail|head|grep|sed)\b"
+)
+DETACHED_PROCESS_COMMAND = re.compile(r"(?:^|[;&|]\s*)(?:nohup|disown)\b")
 
 CODING_TOOLKIT_INSTRUCTIONS = """
 Coding Agent 工具规则：
 - 所有命令和文件都位于当前 thread 隔离的 Daytona 工作区；workdir 和文件路径只能使用工作区相对路径。
 - 搜索和读取优先通过 exec_command 使用 rg、sed、git 等现有命令；不得访问 AgentOS 宿主文件系统。
 - 修改文件只能使用 apply_patch；新增文件必须使用“*** Begin Patch\n*** Add File: path\n+content\n*** End Patch”格式，禁止使用 ---/+++、/dev/null 或普通 unified diff。
+- CodingToolkit 的全部工具直接执行，不会请求确认；这不扩大当前 thread、Daytona 工作区、路径、进程、网络、超时或输出限制。
 - exec_command、poll_process 和 write_stdin 的 yield_time_ms 必须在 0 至 30000 之间；不得提交 60000 等越界值。
-- exec_command 默认最多运行 900 秒；明确需要更长时间的构建、测试或服务才设置 timeout_seconds，最长 86400 秒。短命令完成后检查 exit_code；普通长任务返回 session_id 时用无需确认的 poll_process 读取增量日志，直到 status 为 completed。
-- write_stdin 只用于向仍在运行的命令写入非空字符或发送 Ctrl-C，属于有副作用操作并需要确认；不要用它执行纯轮询。
+- exec_command 默认最多运行 900 秒；明确需要更长时间的构建、测试或服务才设置 timeout_seconds，最长 86400 秒。短命令完成后检查 exit_code；普通长任务返回 session_id 时用 poll_process 读取增量日志，直到 status 为 completed。
+- write_stdin 只用于向仍在运行的命令写入非空字符或发送 Ctrl-C；不要用它执行纯轮询。
+- stop_process 用于终止仍在运行的受管命令，包括默认非 PTY 长任务；终止后句柄不可继续使用。
 - 对服务器等预期长驻进程，status 为 running 且用独立 exec_command 健康检查成功后即可报告启动成功并保留 session_id；后续按需或定时用 poll_process 读取增量日志和状态，但不要在同一轮中紧密轮询等待服务退出。
+- 禁止使用 shell 后台符号 &、nohup 或 disown 绕过受管进程；长驻服务直接以前台命令启动，让 exec_command 返回受管 session_id，再用独立健康检查验证。
+- 修改文件只能使用 apply_patch，不得使用 sed -i、perl -pi 或类似命令绕过补丁校验。
+- 默认 shell 是 /bin/sh；需要 bash 语法时显式设置 shell="/bin/bash"，否则不要使用 source。
 - 工作区镜像预装常用 Linux、文档、数据、测试和数据库能力；任务需要外部命令或 Python 模块时先用有界命令探测直接依赖，已存在则复用，确认缺失后才安装；不要无目的枚举完整环境。
 - 任务确需安装依赖时允许使用包管理器，但应设置明确 timeout、保留完整错误输出并检查 exit_code；不要把 pip 输出管道到 tail，否则网络受限时无法获得实时错误反馈。
+- 如果用户明确要求某框架或库（例如 FastAPI），依赖无法安装时必须报告阻塞，不能改用标准库或其他框架冒充完成。
 - 非长驻命令连续两次轮询均为 running 且没有新输出时，不得继续盲目轮询；应检查进程状态、使用有界替代命令，或报告当前阻塞与 session_id。
 - Python 任务优先创建 .py 脚本，再用 python3 <工作区相对脚本> 执行、检查错误、修改并重跑测试。
 - 复杂任务用 update_plan 维护可验证步骤；只有命令成功、文件已复查且测试通过后才能声称完成。
@@ -353,11 +370,10 @@ class CodingToolkit(Toolkit):
                         "additionalProperties": False,
                     },
                     entrypoint=self.exec_command,
-                    requires_confirmation=True,
                 ),
                 Function(
                     name="poll_process",
-                    description="无需确认地轮询受管命令，并返回增量日志和当前状态。",
+                    description="轮询受管命令，并返回增量日志和当前状态。",
                     parameters={
                         "type": "object",
                         "properties": {
@@ -388,7 +404,7 @@ class CodingToolkit(Toolkit):
                 ),
                 Function(
                     name="write_stdin",
-                    description="向仍在运行的受管命令写入字符或发送 Ctrl-C；执行前需要确认。",
+                    description="向仍在运行的受管命令写入字符或发送 Ctrl-C。",
                     parameters={
                         "type": "object",
                         "properties": {
@@ -422,7 +438,23 @@ class CodingToolkit(Toolkit):
                         "additionalProperties": False,
                     },
                     entrypoint=self.write_stdin,
-                    requires_confirmation=True,
+                ),
+                Function(
+                    name="stop_process",
+                    description="终止仍在运行的受管命令并清理远端会话；支持非 PTY 命令。",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "exec_command 返回的当前 thread 受管整数句柄。",
+                            }
+                        },
+                        "required": ["session_id"],
+                        "additionalProperties": False,
+                    },
+                    entrypoint=self.stop_process,
                 ),
                 Function(
                     name="apply_patch",
@@ -444,7 +476,6 @@ class CodingToolkit(Toolkit):
                         "additionalProperties": False,
                     },
                     entrypoint=self.apply_patch,
-                    requires_confirmation=True,
                 ),
                 Function(
                     name="view_image",
@@ -514,6 +545,7 @@ class CodingToolkit(Toolkit):
         for function in {**self.functions, **self.async_functions}.values():
             function.process_entrypoint()
             function.skip_entrypoint_processing = True
+            function.requires_confirmation = False
 
     @staticmethod
     def _validate_output_tokens(value: int) -> int:
@@ -535,6 +567,106 @@ class CodingToolkit(Toolkit):
         return encoded[:maximum].decode("utf-8", errors="ignore"), True
 
     @staticmethod
+    def _closed_session_store(run_context: RunContext | None) -> dict[str, dict[str, Any]]:
+        if run_context is None:
+            raise WorkspaceError("缺少当前运行上下文。")
+        if run_context.session_state is None:
+            run_context.session_state = {}
+        state = run_context.session_state
+        if not isinstance(state, dict):
+            raise WorkspaceError("当前会话状态无效。")
+        closed = state.setdefault(CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY, {})
+        if not isinstance(closed, dict):
+            raise WorkspaceError("Coding Agent 已结束进程状态无效，请开始新的运行。")
+        for key, entry in list(closed.items()):
+            if not isinstance(entry, dict):
+                closed.pop(key, None)
+                continue
+            closed_at = entry.get("closed_at")
+            if (
+                isinstance(closed_at, (int, float))
+                and not isinstance(closed_at, bool)
+                and time.time() - closed_at > CODEX_EXEC_SESSION_TTL_SECONDS
+            ):
+                closed.pop(key, None)
+        return closed
+
+    @staticmethod
+    def _remember_closed_session(
+        run_context: RunContext | None,
+        key: str,
+        entry: dict[str, Any] | None,
+        reason: str,
+    ) -> None:
+        if not isinstance(entry, dict):
+            return
+        try:
+            closed = CodingToolkit._closed_session_store(run_context)
+        except WorkspaceError:
+            return
+        closed[key] = {
+            "thread": entry.get("thread"),
+            "user_id": entry.get("user_id"),
+            "reason": reason,
+            "closed_at": time.time(),
+            **(
+                {"timeout_seconds": entry["timeout_seconds"]}
+                if isinstance(entry.get("timeout_seconds"), int)
+                and not isinstance(entry.get("timeout_seconds"), bool)
+                else {}
+            ),
+        }
+        while len(closed) > MAX_CLOSED_SESSION_HANDLES:
+            oldest = min(
+                closed,
+                key=lambda item: (
+                    closed[item].get("closed_at", 0) if isinstance(closed.get(item), dict) else 0
+                ),
+            )
+            closed.pop(oldest, None)
+
+    @staticmethod
+    def _closed_session_error(session_id: int, run_context: RunContext | None) -> None:
+        closed = CodingToolkit._closed_session_store(run_context)
+        entry = closed.get(str(session_id))
+        if not isinstance(entry, dict):
+            return
+        if entry.get("thread") != _thread(run_context) or entry.get("user_id") != getattr(
+            run_context, "user_id", None
+        ):
+            return
+        reason = entry.get("reason")
+        if reason == "completed":
+            raise WorkspaceError(
+                "进程 session_id 对应的受管命令已经完成；请依据最后一次结果判断状态，"
+                "不要继续轮询或写入。"
+            )
+        if reason == "timed_out":
+            raise WorkspaceError("进程 session_id 对应的受管命令已经超时终止，请重新执行必要命令。")
+        if reason == "expired":
+            raise WorkspaceError("进程 session_id 已过期，不能跨过期会话继续监控。")
+        if reason == "lost":
+            raise WorkspaceError("进程 session_id 对应的后台命令已经结束或丢失。")
+        if reason == "terminated":
+            raise WorkspaceError("进程 session_id 对应的受管命令已经终止，不能继续使用。")
+        raise WorkspaceError("进程 session_id 已关闭，不能继续轮询或写入。")
+
+    @staticmethod
+    def _session_expired(entry: dict[str, Any], now: float) -> bool:
+        started_at = entry.get("started_at")
+        expires_at = entry.get("expires_at")
+        valid_expiry = isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool)
+        return bool(
+            (valid_expiry and now > expires_at)
+            or (
+                not valid_expiry
+                and isinstance(started_at, (int, float))
+                and not isinstance(started_at, bool)
+                and now - started_at > CODEX_EXEC_SESSION_TTL_SECONDS
+            )
+        )
+
+    @staticmethod
     def _session_store(run_context: RunContext | None) -> dict[str, dict[str, Any]]:
         if run_context is None:
             raise WorkspaceError("缺少当前运行上下文。")
@@ -546,28 +678,51 @@ class CodingToolkit(Toolkit):
         sessions = state.setdefault(CODEX_EXEC_SESSIONS_STATE_KEY, {})
         if not isinstance(sessions, dict):
             raise WorkspaceError("Coding Agent 进程状态无效，请开始新的运行。")
-        now = time.time()
         for key, entry in list(sessions.items()):
             if not isinstance(entry, dict):
                 sessions.pop(key, None)
-                continue
-            started_at = entry.get("started_at")
-            expires_at = entry.get("expires_at")
-            valid_expiry = isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool)
-            expired = (
-                isinstance(expires_at, (int, float))
-                and not isinstance(expires_at, bool)
-                and now > expires_at
-            )
-            legacy_expired = (
-                not valid_expiry
-                and isinstance(started_at, (int, float))
-                and not isinstance(started_at, bool)
-                and now - started_at > CODEX_EXEC_SESSION_TTL_SECONDS
-            )
-            if expired or legacy_expired:
-                sessions.pop(key, None)
         return sessions
+
+    async def _stop_remote_session(
+        self,
+        entry: dict[str, Any],
+        run_context: RunContext | None,
+        *,
+        missing_ok: bool,
+    ) -> None:
+        try:
+            await self._workspace.sandbox_process_stop(
+                entry["session_id"],
+                entry["command_id"],
+                run_context=run_context,
+            )
+        except (DaytonaNotFoundError, WorkspaceProcessNotFound):
+            if not missing_ok:
+                raise
+
+    async def _prune_expired_sessions(self, run_context: RunContext | None) -> None:
+        sessions = self._session_store(run_context)
+        thread = _thread(run_context)
+        for key in list(sessions):
+            try:
+                handle = int(key)
+            except (TypeError, ValueError):
+                sessions.pop(key, None)
+                continue
+            async with self._session_lock(thread, handle):
+                entry = sessions.get(key)
+                if not isinstance(entry, dict) or not self._session_expired(entry, time.time()):
+                    continue
+                if entry.get("thread") != thread or entry.get("user_id") != getattr(
+                    run_context, "user_id", None
+                ):
+                    raise WorkspaceError("Coding Agent 过期进程状态不属于当前 thread 和用户。")
+                try:
+                    await self._stop_remote_session(entry, run_context, missing_ok=True)
+                except Exception as error:
+                    raise WorkspaceError("清理过期进程失败，请稍后重试。") from error
+                self._remember_closed_session(run_context, key, entry, "expired")
+                sessions.pop(key, None)
 
     def _session_lock(self, thread: str, session_id: int) -> asyncio.Lock:
         key = (thread, session_id)
@@ -636,10 +791,13 @@ class CodingToolkit(Toolkit):
         sessions = self._session_store(run_context)
         key = str(session_id)
         entry = sessions.get(key)
-        if (
-            not isinstance(entry, dict)
-            or entry.get("thread") != _thread(run_context)
-            or entry.get("user_id") != getattr(run_context, "user_id", None)
+        if not isinstance(entry, dict):
+            self._closed_session_error(session_id, run_context)
+            raise WorkspaceError(
+                "进程 session_id 不存在或已经结束；请使用 exec_command 返回的最新句柄。"
+            )
+        if entry.get("thread") != _thread(run_context) or entry.get("user_id") != getattr(
+            run_context, "user_id", None
         ):
             raise WorkspaceError("进程 session_id 不属于当前 thread 和用户，或已经结束。")
         if not isinstance(entry.get("session_id"), str) or not isinstance(
@@ -663,7 +821,7 @@ class CodingToolkit(Toolkit):
             else "success"
             if exit_code == 0
             else "timed_out"
-            if exit_code == 124
+            if result.get("timedOut") is True
             else "failed"
         )
         value = {
@@ -694,6 +852,58 @@ class CodingToolkit(Toolkit):
         if session_id is not None:
             value["session_id"] = session_id
         return value
+
+    @staticmethod
+    def _contains_shell_background_operator(cmd: str) -> bool:
+        quote: str | None = None
+        escaped = False
+        for index, char in enumerate(cmd):
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if quote is not None:
+                if char == quote:
+                    quote = None
+                continue
+            if char in {"'", '"'}:
+                quote = char
+                continue
+            if char != "&":
+                continue
+            previous_char = cmd[index - 1] if index > 0 else ""
+            next_char = cmd[index + 1] if index + 1 < len(cmd) else ""
+            if previous_char == "&" or next_char == "&":
+                continue
+            if previous_char in {">", "<"}:
+                continue
+            return True
+        return False
+
+    @classmethod
+    def _validate_command_policy(cls, cmd: str, selected_shell: str) -> None:
+        if not isinstance(cmd, str) or not cmd.strip():
+            raise WorkspaceError("Shell 命令不能为空。")
+        if PIP_INSTALL_WITH_OUTPUT_FILTER.search(cmd):
+            raise WorkspaceError(
+                "安装依赖时不能把 pip 输出管道到 tail/head/grep/sed；"
+                "请保留完整输出，以便报告网络、索引、解析或构建错误。"
+            )
+        if MUTATING_INLINE_EDIT_COMMAND.search(cmd):
+            raise WorkspaceError("修改文件必须使用 apply_patch；不得使用 sed -i 或 perl -pi。")
+        if DETACHED_PROCESS_COMMAND.search(cmd):
+            raise WorkspaceError("禁止使用 nohup 或 disown；长驻服务必须保持为受管前台命令。")
+        if cls._contains_shell_background_operator(cmd):
+            raise WorkspaceError(
+                "禁止使用 shell 后台符号 & 绕过受管进程；"
+                "请直接以前台命令启动服务，让 exec_command 返回 session_id。"
+            )
+        if selected_shell == "/bin/sh" and re.search(r"(?:^|[;&|]\s*)source\s+", cmd):
+            raise WorkspaceError(
+                '默认 shell 是 /bin/sh，不支持 source；需要时设置 shell="/bin/bash"。'
+            )
 
     async def _poll_process(
         self,
@@ -734,6 +944,7 @@ class CodingToolkit(Toolkit):
         selected_shell = shell or "/bin/sh"
         if selected_shell not in {"/bin/sh", "/bin/bash"}:
             raise WorkspaceError("shell 只支持 /bin/sh 或 /bin/bash。")
+        self._validate_command_policy(cmd, selected_shell)
         arguments = [selected_shell]
         if login:
             arguments.append("-l")
@@ -745,6 +956,7 @@ class CodingToolkit(Toolkit):
         )
         maximum = self._validate_output_tokens(max_output_tokens)
         started_at = time.time()
+        await self._prune_expired_sessions(run_context)
         sessions, key, handle, entry = self._reserve_session(
             run_context,
             started_at=started_at,
@@ -766,6 +978,8 @@ class CodingToolkit(Toolkit):
             formatted["timeout_seconds"] = execution_timeout
             needs_session = result.get("status") == "running" or bool(result.get("hasMore"))
             if not needs_session:
+                reason = "timed_out" if formatted["outcome"] == "timed_out" else "completed"
+                self._remember_closed_session(run_context, key, entry, reason)
                 sessions.pop(key, None)
                 return formatted
             raw_offset = result.get("offset", 0)
@@ -834,6 +1048,25 @@ class CodingToolkit(Toolkit):
             run_context=run_context,
         )
 
+    async def stop_process(
+        self,
+        session_id: int,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        handle = self._validate_session_id(session_id)
+        thread = _thread(run_context)
+        async with self._session_lock(thread, handle):
+            sessions, key, entry = self._session_entry(handle, run_context)
+            try:
+                await self._stop_remote_session(entry, run_context, missing_ok=False)
+            except (DaytonaNotFoundError, WorkspaceProcessNotFound) as error:
+                self._remember_closed_session(run_context, key, entry, "lost")
+                sessions.pop(key, None)
+                raise WorkspaceError("进程 session_id 对应的后台命令已经结束或丢失。") from error
+            self._remember_closed_session(run_context, key, entry, "terminated")
+            sessions.pop(key, None)
+            return {"status": "terminated", "outcome": "terminated", "session_id": handle}
+
     async def _continue_process(
         self,
         session_id: int,
@@ -847,6 +1080,15 @@ class CodingToolkit(Toolkit):
         handle = self._validate_session_id(session_id)
         thread = _thread(run_context)
         async with self._session_lock(thread, handle):
+            sessions = self._session_store(run_context)
+            current = sessions.get(str(handle))
+            if isinstance(current, dict) and self._session_expired(current, time.time()):
+                try:
+                    await self._stop_remote_session(current, run_context, missing_ok=True)
+                except Exception as error:
+                    raise WorkspaceError("清理过期进程失败，请稍后重试。") from error
+                self._remember_closed_session(run_context, str(handle), current, "expired")
+                sessions.pop(str(handle), None)
             sessions, key, entry = self._session_entry(handle, run_context)
             now = time.time()
             cooldown_until = entry.get("poll_cooldown_until")
@@ -925,11 +1167,15 @@ class CodingToolkit(Toolkit):
                         run_context=run_context,
                     )
             except (DaytonaNotFoundError, WorkspaceProcessNotFound) as error:
+                self._remember_closed_session(run_context, key, entry, "lost")
                 sessions.pop(key, None)
                 raise WorkspaceError("进程 session_id 对应的后台命令已经结束或丢失。") from error
             entry["offset"] = self._next_offset(result, offset)
             completed = result.get("status") == "completed" and not result.get("hasMore")
             if completed:
+                outcome = self._format_process_result(result, maximum).get("outcome")
+                reason = "timed_out" if outcome == "timed_out" else "completed"
+                self._remember_closed_session(run_context, key, entry, reason)
                 sessions.pop(key, None)
             formatted = self._format_process_result(
                 result, maximum, None if completed else session_id
