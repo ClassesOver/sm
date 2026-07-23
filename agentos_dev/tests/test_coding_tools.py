@@ -118,6 +118,7 @@ def test_coding_tool_contract_explains_limits_patch_format_and_persistent_servic
     assert "独立 exec_command" in CODING_TOOLKIT_INSTRUCTIONS
     assert "按需或定时用 poll_process" in CODING_TOOLKIT_INSTRUCTIONS
     assert "write_stdin 只用于" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "stop_process 用于终止" in CODING_TOOLKIT_INSTRUCTIONS
     assert "全部工具直接执行，不会请求确认" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不要在同一轮中紧密轮询" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不要把 pip 输出管道到 tail" in CODING_TOOLKIT_INSTRUCTIONS
@@ -827,7 +828,9 @@ async def test_exec_command_stops_remote_session_before_pruning_expired_handle(t
     assert replacement["session_id"] == 2
     assert remote_session_id in process.deleted_sessions
     assert remote_session_id not in process.sessions
-    assert str(started["session_id"]) not in run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY]
+    assert (
+        str(started["session_id"]) not in run_context.session_state[CODEX_EXEC_SESSIONS_STATE_KEY]
+    )
     assert run_context.session_state[CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY]["1"]["reason"] == (
         "expired"
     )

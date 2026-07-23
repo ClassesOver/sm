@@ -417,6 +417,7 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert "apply_patch" in coding_toolkit.instructions
     assert "poll_process" in coding_toolkit.instructions
     assert "write_stdin" in coding_toolkit.instructions
+    assert "stop_process" in coding_toolkit.instructions
     assert report_toolkit.add_instructions is True
     assert data_source_toolkit.add_instructions is True
     assert "分析和长进程统一使用 Coding 工具" in report_toolkit.instructions
@@ -424,6 +425,7 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert "apply_patch" in report_toolkit.instructions
     assert "exec_command" in report_toolkit.instructions
     assert "write_stdin" in report_toolkit.instructions
+    assert "stop_process" in report_toolkit.instructions
     assert "report_validate_pdf" in report_toolkit.instructions
 
     toolkits = [coding_toolkit, data_source_toolkit, report_toolkit]
@@ -451,6 +453,7 @@ def test_toolkit_instructions_are_injected_by_agno():
             "exec_command",
             "poll_process",
             "write_stdin",
+            "stop_process",
             "apply_patch",
             "view_image",
             "update_plan",
@@ -468,6 +471,7 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "apply_patch" in instructions
     assert "poll_process" in instructions
     assert "write_stdin" in instructions
+    assert "stop_process" in instructions
     assert "view_image" in instructions
     assert "Python、Shell 或其他命令" in instructions
     assert "分析不经过 Report 层二次封装" in instructions
@@ -627,6 +631,7 @@ def test_智能报表技能统一使用工作区相对路径和报表工具():
     assert "`apply_patch` 创建或修改任意 Python 脚本" in skill
     assert "`poll_process` 轮询日志和状态" in skill
     assert "`write_stdin` 输入或中断" in skill
+    assert "`stop_process` 终止任意受管命令" in skill
     assert "CodingToolkit 的全部工具默认不要求确认" in skill
     assert "`view_image` 检查生成的图表" in skill
     assert "workspace_write_file" not in skill
