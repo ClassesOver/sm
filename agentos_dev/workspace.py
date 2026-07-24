@@ -5,7 +5,6 @@ import hashlib
 import json
 import mimetypes
 import shlex
-import threading
 import unicodedata
 import uuid
 from collections.abc import Callable, MutableMapping
@@ -14,7 +13,7 @@ from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Any
 
-import psycopg
+from agno.db.base import AsyncBaseDb, BaseDb
 from agno.media import Image
 from agno.run import RunContext
 from agno.tools import Toolkit
@@ -27,9 +26,11 @@ from daytona import (
     SessionExecuteRequest,
 )
 from daytona.common.errors import DaytonaNotFoundError
+from sqlalchemy import Column, DateTime, MetaData, String, Table, insert, select, update
+from sqlalchemy.sql import func
 
 from .async_utils import complete_cleanup
-from .database import psycopg_db_url
+from .database import AgentDatabase, create_agent_database
 from .security import thread_label
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
@@ -69,6 +70,10 @@ MANAGED_PROCESS_PREFIX = "agui-exec-"
 MANAGED_TIMEOUT_ENV = "AGUI_MANAGED_TIMEOUT_MARKER"
 MANAGED_TIMEOUT_OUTPUT_PREFIX = "__AGUI_MANAGED_TIMEOUT__"
 REPORT_JOBS_STATE_KEY = "report_jobs"
+REPORT_DELIVERY_STATE_KEY = "report_delivery"
+REPORT_DELIVERY_INCOMPLETE_MESSAGE = (
+    "报表未完成：服务端未找到本轮已验收且当前仍存在的 Markdown/PDF 产物，已阻止发送生成成功结论。"
+)
 MAX_REPORT_JOBS = 10
 MAX_REPORT_JOB_STATE_BYTES = 48 * 1024
 REPORT_RUNTIME_TIMEOUT_SECONDS = 600
@@ -86,76 +91,148 @@ class WorkspacePathConflict(WorkspaceError):
     pass
 
 
+def report_delivery_content(content: Any, evidence: dict[str, Any] | None) -> str:
+    if evidence is None:
+        return REPORT_DELIVERY_INCOMPLETE_MESSAGE
+    markdown_path = str(evidence["markdownPath"])
+    pdf_path = str(evidence["pdfPath"])
+    text = content.strip() if isinstance(content, str) else ""
+    if markdown_path in text and pdf_path in text:
+        return text
+    prefix = text or "报表已生成并通过服务端验收。"
+    return f"{prefix}\n\n已验证产物：\n- Markdown：`{markdown_path}`\n- PDF：`{pdf_path}`"
+
+
 class SandboxRegistry:
-    def __init__(self, db_url: str | None = None):
-        self.db_url = db_url or psycopg_db_url()
+    def __init__(self, database: BaseDb | str | None = None):
+        self._database_bundle = (
+            create_agent_database(database if isinstance(database, str) else None)
+            if database is None or isinstance(database, str)
+            else None
+        )
+        if self._database_bundle is not None:
+            resolved_database = self._database_bundle.sync_db
+        else:
+            assert isinstance(database, BaseDb)
+            resolved_database = database
+        self.db: BaseDb = resolved_database
+        schema = getattr(self.db, "db_schema", None)
+        self.metadata = MetaData(schema=schema)
+        self.table = Table(
+            "agui_workspace_sandbox",
+            self.metadata,
+            Column("thread_hash", String(64), primary_key=True),
+            Column("sandbox_id", String(256), nullable=False),
+            Column(
+                "updated_at",
+                DateTime(timezone=True),
+                nullable=False,
+                server_default=func.current_timestamp(),
+            ),
+        )
         self._initialized = False
-        self._initialize_lock = threading.Lock()
 
     def _connect(self):
-        return psycopg.connect(self.db_url)
+        return self.db.db_engine.connect()  # type: ignore[attr-defined,no-any-return]
 
     def ensure_initialized(self):
         if self._initialized:
             return
-        with self._initialize_lock:
-            if self._initialized:
-                return
-            with self._connect() as connection:
-                connection.execute(
+        with self._connect() as connection, connection.begin():
+            if connection.dialect.name == "postgresql":
+                if self.metadata.schema:
+                    connection.exec_driver_sql(
+                        f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"'
+                    )
+                connection.exec_driver_sql(
                     "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                     ("agui-workspace:initialize",),
                 )
-                connection.execute(
-                    "CREATE TABLE IF NOT EXISTS agui_workspace_sandbox ("
-                    "thread_hash TEXT PRIMARY KEY, sandbox_id TEXT NOT NULL, "
-                    "updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"
-                    ")"
-                )
-            self._initialized = True
+            self.metadata.create_all(connection)
+        self.db.upsert_schema_version(self.table.name, "1.0.0")
+        self._initialized = True
 
     @contextmanager
     def locked(self, value: str):
         self.ensure_initialized()
         with self._connect() as connection:
-            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (value,))
-            yield SandboxRegistryTransaction(connection)
+            if connection.dialect.name == "sqlite":
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
+                try:
+                    yield SandboxRegistryTransaction(connection, self.table)
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+            else:
+                with connection.begin():
+                    connection.exec_driver_sql(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (value,),
+                    )
+                    yield SandboxRegistryTransaction(connection, self.table)
 
 
 class SandboxRegistryTransaction:
-    def __init__(self, connection):
+    def __init__(self, connection, table: Table):
         self.connection = connection
+        self.table = table
 
     def get(self, value: str) -> str | None:
         row = self.connection.execute(
-            "SELECT sandbox_id FROM agui_workspace_sandbox WHERE thread_hash = %s",
-            (value,),
-        ).fetchone()
+            select(self.table.c.sandbox_id).where(self.table.c.thread_hash == value)
+        ).first()
         return row[0] if row else None
 
     def set(self, value: str, sandbox_id: str):
-        self.connection.execute(
-            "INSERT INTO agui_workspace_sandbox (thread_hash, sandbox_id, updated_at) "
-            "VALUES (%s, %s, CURRENT_TIMESTAMP) "
-            "ON CONFLICT (thread_hash) DO UPDATE SET "
-            "sandbox_id = EXCLUDED.sandbox_id, updated_at = CURRENT_TIMESTAMP",
-            (value, sandbox_id),
+        exists = self.connection.execute(
+            select(self.table.c.thread_hash).where(self.table.c.thread_hash == value)
+        ).first()
+        statement = (
+            update(self.table)
+            .where(self.table.c.thread_hash == value)
+            .values(sandbox_id=sandbox_id, updated_at=func.current_timestamp())
+            if exists
+            else insert(self.table).values(thread_hash=value, sandbox_id=sandbox_id)
         )
+        self.connection.execute(statement)
 
     def delete(self, value: str):
-        self.connection.execute(
-            "DELETE FROM agui_workspace_sandbox WHERE thread_hash = %s", (value,)
-        )
+        self.connection.execute(self.table.delete().where(self.table.c.thread_hash == value))
 
 
 class AsyncSandboxRegistry:
-    def __init__(self, db_url: str | None = None):
-        self.db_url = db_url or psycopg_db_url()
+    def __init__(self, database: AsyncBaseDb | str | None = None):
+        self._database_bundle = (
+            create_agent_database(database if isinstance(database, str) else None)
+            if database is None or isinstance(database, str)
+            else None
+        )
+        if self._database_bundle is not None:
+            resolved_database = self._database_bundle.async_db
+        else:
+            assert isinstance(database, AsyncBaseDb)
+            resolved_database = database
+        self.db: AsyncBaseDb = resolved_database
+        schema = getattr(self.db, "db_schema", None)
+        self.metadata = MetaData(schema=schema)
+        self.table = Table(
+            "agui_workspace_sandbox",
+            self.metadata,
+            Column("thread_hash", String(64), primary_key=True),
+            Column("sandbox_id", String(256), nullable=False),
+            Column(
+                "updated_at",
+                DateTime(timezone=True),
+                nullable=False,
+                server_default=func.current_timestamp(),
+            ),
+        )
         self._initialized = False
         self._initialize_lock = asyncio.Lock()
 
     async def _connect(self):
-        return await psycopg.AsyncConnection.connect(self.db_url)
+        return await self.db.db_engine.connect()  # type: ignore[attr-defined,no-any-return]
 
     async def ensure_initialized(self):
         if self._initialized:
@@ -164,17 +241,18 @@ class AsyncSandboxRegistry:
             if self._initialized:
                 return
             connection = await self._connect()
-            async with connection:
-                await connection.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    ("agui-workspace:initialize",),
-                )
-                await connection.execute(
-                    "CREATE TABLE IF NOT EXISTS agui_workspace_sandbox ("
-                    "thread_hash TEXT PRIMARY KEY, sandbox_id TEXT NOT NULL, "
-                    "updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP"
-                    ")"
-                )
+            async with connection, connection.begin():
+                if connection.dialect.name == "postgresql":
+                    if self.metadata.schema:
+                        await connection.exec_driver_sql(
+                            f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"'
+                        )
+                    await connection.exec_driver_sql(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        ("agui-workspace:initialize",),
+                    )
+                await connection.run_sync(self.metadata.create_all)
+            await self.db.upsert_schema_version(self.table.name, "1.0.0")
             self._initialized = True
 
     @asynccontextmanager
@@ -182,37 +260,53 @@ class AsyncSandboxRegistry:
         await self.ensure_initialized()
         connection = await self._connect()
         async with connection:
-            await connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (value,)
-            )
-            yield AsyncSandboxRegistryTransaction(connection)
+            if connection.dialect.name == "sqlite":
+                await connection.exec_driver_sql("BEGIN IMMEDIATE")
+                try:
+                    yield AsyncSandboxRegistryTransaction(connection, self.table)
+                    await connection.commit()
+                except Exception:
+                    await connection.rollback()
+                    raise
+            else:
+                async with connection.begin():
+                    await connection.exec_driver_sql(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (value,),
+                    )
+                    yield AsyncSandboxRegistryTransaction(connection, self.table)
 
 
 class AsyncSandboxRegistryTransaction:
-    def __init__(self, connection):
+    def __init__(self, connection, table: Table):
         self.connection = connection
+        self.table = table
 
     async def get(self, value: str) -> str | None:
-        cursor = await self.connection.execute(
-            "SELECT sandbox_id FROM agui_workspace_sandbox WHERE thread_hash = %s",
-            (value,),
-        )
-        row = await cursor.fetchone()
+        row = (
+            await self.connection.execute(
+                select(self.table.c.sandbox_id).where(self.table.c.thread_hash == value)
+            )
+        ).first()
         return row[0] if row else None
 
     async def set(self, value: str, sandbox_id: str):
-        await self.connection.execute(
-            "INSERT INTO agui_workspace_sandbox (thread_hash, sandbox_id, updated_at) "
-            "VALUES (%s, %s, CURRENT_TIMESTAMP) "
-            "ON CONFLICT (thread_hash) DO UPDATE SET "
-            "sandbox_id = EXCLUDED.sandbox_id, updated_at = CURRENT_TIMESTAMP",
-            (value, sandbox_id),
+        exists = (
+            await self.connection.execute(
+                select(self.table.c.thread_hash).where(self.table.c.thread_hash == value)
+            )
+        ).first()
+        statement = (
+            update(self.table)
+            .where(self.table.c.thread_hash == value)
+            .values(sandbox_id=sandbox_id, updated_at=func.current_timestamp())
+            if exists
+            else insert(self.table).values(thread_hash=value, sandbox_id=sandbox_id)
         )
+        await self.connection.execute(statement)
 
     async def delete(self, value: str):
-        await self.connection.execute(
-            "DELETE FROM agui_workspace_sandbox WHERE thread_hash = %s", (value,)
-        )
+        await self.connection.execute(self.table.delete().where(self.table.c.thread_hash == value))
 
 
 class WorkspaceService:
@@ -223,13 +317,14 @@ class WorkspaceService:
         registry: SandboxRegistry | None = None,
         async_client: Any | None = None,
         async_registry: Any | None = None,
+        database: AgentDatabase | None = None,
     ):
         self.secret = secret
         self._client = client
-        self.registry = registry or SandboxRegistry()
+        self.registry = registry or SandboxRegistry(database.sync_db if database else None)
         self._async_client_override = async_client
         self.async_registry = async_registry or AsyncSandboxRegistry(
-            getattr(self.registry, "db_url", None)
+            database.async_db if database else None
         )
 
     @property
@@ -2421,11 +2516,11 @@ WORKSPACE_REPORT_TOOLKIT_INSTRUCTIONS = """
 智能报表工具规则：
 - 本工具集只负责绑定报表输入、渲染 Markdown 和验收 PDF；文件检查、Python 编码、分析和长进程统一使用 Coding 工具。
 - 先通过 report_materialize_dataset 获得一至二十个 datasetId，再用 report_prepare_dataset 绑定这些不可变数据集句柄，并在后续各轮原样复用返回的 jobId。
-- 复杂分析先用 exec_command 检查文件，再用 apply_patch 在工作区创建或修改 Python 脚本；不得用 Shell 绕过只能使用 apply_patch 的文件修改边界。
-- 用 exec_command 执行任意当前依赖和权限允许的分析命令；返回 session_id 时用 poll_process 持续读取，用 write_stdin 输入或中断，用 stop_process 终止任意受管命令，不另加 Report 层命令限制。
+- 复杂分析先用 terminal 检查文件，再用 patch 的 replace 或 patch 模式在工作区创建或修改 Python 脚本；不得用 Shell 绕过补丁边界。
+- 用 terminal 执行当前依赖和权限允许的分析命令；返回 session_id 时用 process 轮询、输入或终止，不另加 Report 层命令限制。
 - 分析失败时读取 output 和 exit_code，修正脚本或命令后继续；由模型根据证据充分性决定分析方式和轮次。
 - 分析充分后，基于真实工具结果生成 Markdown 文件；结论、数字、表格和图片不得脱离分析结果，图片使用相对 Markdown 文件的路径。
-- 使用新的输出路径调用 report_render_markdown，再调用 report_validate_pdf 做逐页视觉验收；必要时用 view_image 检查生成的图表。只有 report_job_status 为 validated 才能声称报表完成。
+- 使用新的输出路径调用 report_render_markdown，再调用 report_validate_pdf 做逐页视觉验收；必要时用 view_image 检查生成的图表。report_job_status 为 validated 后仍须调用 finish_task，只有门禁 accepted 才能声称报表完成。
 """.strip()
 
 
@@ -2785,24 +2880,26 @@ class DaytonaToolkit(Toolkit):
         process: Any,
         thread: str,
         request: SessionExecuteRequest,
+        session_id: str | None = None,
     ) -> tuple[str, str, Any]:
         lock_key = f"agui-managed-processes:{self.service._hash(thread)}"
         async with self.service.async_registry.locked(lock_key):
             active = 0
             for session in await process.list_sessions():
-                session_id = str(getattr(session, "session_id", "") or "")
-                if not session_id.startswith(MANAGED_PROCESS_PREFIX):
+                existing_session_id = str(getattr(session, "session_id", "") or "")
+                if not existing_session_id.startswith(MANAGED_PROCESS_PREFIX):
                     continue
                 commands = list(getattr(session, "commands", []) or [])
                 if not commands:
-                    await process.delete_session(session_id)
+                    await process.delete_session(existing_session_id)
                 elif any(getattr(command, "exit_code", None) is None for command in commands):
                     active += 1
             if active >= MAX_MANAGED_PROCESSES:
                 raise WorkspaceError(
                     f"当前对话已有 {MAX_MANAGED_PROCESSES} 个后台进程，请轮询或终止后再启动。"
                 )
-            session_id = f"{MANAGED_PROCESS_PREFIX}{uuid.uuid4().hex}"
+            session_id = session_id or f"{MANAGED_PROCESS_PREFIX}{uuid.uuid4().hex}"
+            self._validate_process_ids(session_id, "pending")
             await process.create_session(session_id)
             try:
                 value = await process.execute_session_command(
@@ -3766,6 +3863,16 @@ class WorkspaceReportToolkit(Toolkit):
             jobs.pop(next(iter(jobs)))
         state[REPORT_JOBS_STATE_KEY] = jobs
 
+    def _touch_job(self, job_id: str, run_context: RunContext | None) -> None:
+        state = self._session_state(run_context)
+        delivery = state.get(REPORT_DELIVERY_STATE_KEY)
+        if not isinstance(delivery, dict) or not isinstance(delivery.get("deliveryId"), str):
+            return
+        state[REPORT_DELIVERY_STATE_KEY] = {
+            "deliveryId": delivery["deliveryId"],
+            "jobId": job_id,
+        }
+
     async def _current_artifact(
         self,
         recorded: Any,
@@ -3829,6 +3936,52 @@ class WorkspaceReportToolkit(Toolkit):
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > MAX_TOOL_OUTPUT_BYTES:
             raise WorkspaceError("报表任务状态超过返回边界，请重新生成较短的报表。")
         return result
+
+    async def validated_delivery(
+        self,
+        delivery_id: str,
+        run_context: RunContext | None,
+    ) -> dict[str, Any] | None:
+        state = self._session_state(run_context)
+        delivery = state.get(REPORT_DELIVERY_STATE_KEY)
+        if (
+            not isinstance(delivery, dict)
+            or delivery.get("deliveryId") != delivery_id
+            or not isinstance(delivery.get("jobId"), str)
+        ):
+            return None
+        try:
+            job = self._load_job(delivery["jobId"], run_context)
+            status = await self._job_status(job, run_context)
+        except Exception:
+            return None
+        if status.get("status") != "validated":
+            return None
+        artifacts = status.get("artifacts")
+        validation = status.get("validation")
+        if not isinstance(artifacts, dict) or not isinstance(validation, dict):
+            return None
+        markdown = artifacts.get("markdown")
+        pdf = artifacts.get("pdf")
+        if (
+            not isinstance(markdown, dict)
+            or not isinstance(pdf, dict)
+            or markdown.get("changed") is not False
+            or pdf.get("changed") is not False
+            or not isinstance(markdown.get("path"), str)
+            or not isinstance(pdf.get("path"), str)
+            or validation.get("ok") is not True
+            or validation.get("pdfPath") != pdf["path"]
+        ):
+            return None
+        return {
+            "jobId": job["jobId"],
+            "status": "validated",
+            "markdownPath": markdown["path"],
+            "pdfPath": pdf["path"],
+            "markdownSha256": markdown.get("sha256"),
+            "pdfSha256": pdf.get("sha256"),
+        }
 
     async def _run_report_runtime(
         self,
@@ -3920,13 +4073,15 @@ class WorkspaceReportToolkit(Toolkit):
             run_context=run_context,
         )
         sources = [await self.service.ahash_file(_thread(run_context), path) for path in paths]
+        job_id = str(uuid.uuid4())
         job = {
-            "jobId": str(uuid.uuid4()),
+            "jobId": job_id,
             "_threadBinding": self._thread_binding(_thread(run_context)),
             "sources": sources,
         }
         self._store_job(job, run_context)
-        return {"status": "prepared", "jobId": job["jobId"], "sources": sources}
+        self._touch_job(job_id, run_context)
+        return {"status": "prepared", "jobId": job_id, "sources": sources}
 
     async def report_job_status(
         self,
@@ -3934,7 +4089,9 @@ class WorkspaceReportToolkit(Toolkit):
         run_context: RunContext | None = None,
     ):
         """返回 job 的输入哈希、已登记产物哈希和最近 PDF 验收状态。"""
-        return await self._job_status(self._load_job(job_id, run_context), run_context)
+        job = self._load_job(job_id, run_context)
+        self._touch_job(job["jobId"], run_context)
+        return await self._job_status(job, run_context)
 
     async def report_render_markdown(
         self,
@@ -3945,6 +4102,7 @@ class WorkspaceReportToolkit(Toolkit):
     ):
         """将工作区 Markdown 渲染为 PDF；图片使用相对路径；无需用户确认。"""
         job = self._load_job(job_id, run_context)
+        self._touch_job(job["jobId"], run_context)
         await self._job_status(job, run_context)
         relative_output, remote_output = self.service.normalize_path(output_path, allow_root=False)
         invocation = uuid.uuid4().hex
@@ -4039,6 +4197,7 @@ class WorkspaceReportToolkit(Toolkit):
     ):
         """栅格化检查当前 job 已登记 PDF 的空白页、文本和图片完整性；无需用户确认。"""
         job = self._load_job(job_id, run_context)
+        self._touch_job(job["jobId"], run_context)
         status = await self._job_status(job, run_context)
         if status["status"] == "artifact_changed":
             raise WorkspaceError("报表产物发生变化，请重新渲染后验收。")

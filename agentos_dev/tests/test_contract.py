@@ -155,7 +155,7 @@ def test_coding_agent_uses_trusted_per_run_instructions():
     )
 
     assert "当前可用工具、其 schema、确认要求" in text
-    assert "CodingToolkit 的全部工具不要求确认" in text
+    assert "生产只提供当前六个 Coding 工具，全部不要求确认" in text
     assert "确认缺失后再安装" in text
     assert "不要扫描或输出完整环境清单" in text
     assert "网络由 sandbox 策略决定" in text
@@ -163,7 +163,7 @@ def test_coding_agent_uses_trusted_per_run_instructions():
     assert "禁止用 shell 后台 &" in text
     assert "不得用 sed -i" in text
     assert "不是 OS PID" in text
-    assert "最终回答区分已完成、失败和仍在运行" in text
+    assert "只有 finish_task 返回 accepted 才能结束任务" in text
     assert "当前会话没有可复用的任务计划" in text
     resumed_text = "\n".join(resumed)
     assert "当前会话保存了以下服务端任务计划" in resumed_text
@@ -186,6 +186,7 @@ def test_assistant_team_routes_to_specialized_members():
     all_members = [
         app.assistant,
         app.odoo_command_assistant,
+        app.coding_agent,
         app.report_agent,
     ]
     assert callable(app.assistant_team.members)
@@ -226,6 +227,7 @@ def test_team_members_bind_only_their_allowed_client_tools():
     assert context.client_tools is None
     assistant_tools = members[app.assistant.id].tools
     command_tools = members[app.odoo_command_assistant.id].tools
+    coding_tools = members[app.coding_agent.id].tools
     report_tools = members[app.report_agent.id].tools
     assert [tool.name for tool in assistant_tools] == ["agent_control", "base"]
     assert {tool.name for tool in command_tools} == {
@@ -234,8 +236,9 @@ def test_team_members_bind_only_their_allowed_client_tools():
         "odoo.export_current_view",
         "odoo.business.test.execute",
     }
+    assert [tool.name for tool in coding_tools] == ["run_coding_task"]
     assert [tool.name for tool in report_tools[:-1]] == [
-        "coding",
+        "workspace_coding",
         "report_data_sources",
         "workspace_report",
     ]
@@ -369,7 +372,7 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
         run_context=RunContext(run_id="run", session_id="thread", session_state={})
     )
     assert [toolkit.name for toolkit in report_toolkits] == [
-        "coding",
+        "workspace_coding",
         "report_data_sources",
         "workspace_report",
     ]
@@ -378,13 +381,12 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
     ]
     coding_registered = report_registered[0]
     assert coding_registered == {
-        "exec_command",
-        "poll_process",
-        "write_stdin",
-        "stop_process",
-        "apply_patch",
+        "terminal",
+        "process",
+        "patch",
         "view_image",
         "update_plan",
+        "finish_task",
     }
     assert report_registered[1] == {
         "report_list_data_sources",
@@ -414,20 +416,24 @@ def test_toolkit_instructions_are_injected_by_agno():
     )
 
     assert coding_toolkit.add_instructions is True
-    assert "exec_command" in coding_toolkit.instructions
-    assert "apply_patch" in coding_toolkit.instructions
-    assert "poll_process" in coding_toolkit.instructions
-    assert "write_stdin" in coding_toolkit.instructions
-    assert "stop_process" in coding_toolkit.instructions
+    assert "terminal" in coding_toolkit.instructions
+    assert "patch" in coding_toolkit.instructions
+    assert "apply_changes" not in coding_toolkit.instructions
+    assert "process" in coding_toolkit.instructions
+    assert "finish_task" in coding_toolkit.instructions
     assert report_toolkit.add_instructions is True
     assert data_source_toolkit.add_instructions is True
     assert "分析和长进程统一使用 Coding 工具" in report_toolkit.instructions
     assert "不另加 Report 层命令限制" in report_toolkit.instructions
-    assert "apply_patch" in report_toolkit.instructions
-    assert "exec_command" in report_toolkit.instructions
-    assert "write_stdin" in report_toolkit.instructions
-    assert "stop_process" in report_toolkit.instructions
+    assert "patch" in report_toolkit.instructions
+    assert "apply_changes" not in report_toolkit.instructions
+    assert "terminal" in report_toolkit.instructions
+    assert "process" in report_toolkit.instructions
+    assert "finish_task" in report_toolkit.instructions
     assert "report_validate_pdf" in report_toolkit.instructions
+    forbidden_brand = "co" + "dex"
+    assert forbidden_brand not in coding_toolkit.instructions.lower()
+    assert forbidden_brand not in report_toolkit.instructions.lower()
 
     toolkits = [coding_toolkit, data_source_toolkit, report_toolkit]
     parsed = parse_tools(
@@ -442,22 +448,23 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert data_source_toolkit.instructions in app.report_agent._tool_instructions
     assert report_toolkit.instructions in app.report_agent._tool_instructions
     parsed_tools = {function.name: function for function in parsed if hasattr(function, "name")}
-    parsed_exec_schema = parsed_tools["exec_command"].parameters
-    assert parsed_exec_schema["additionalProperties"] is False
-    assert parsed_exec_schema["properties"]["cmd"]["minLength"] == 1
-    assert parsed_exec_schema["properties"]["yield_time_ms"]["maximum"] == 30000
-    parsed_patch_schema = parsed_tools["apply_patch"].parameters["properties"]
-    assert parsed_patch_schema["patch"]["minLength"] == 1
+    parsed_terminal_schema = parsed_tools["terminal"].parameters
+    assert parsed_terminal_schema["additionalProperties"] is False
+    assert parsed_terminal_schema["properties"]["command"]["minLength"] == 1
+    assert parsed_terminal_schema["properties"]["timeout"]["maximum"] == 86400
+    assert parsed_tools["patch"].parameters["properties"]["mode"]["enum"] == [
+        "replace",
+        "patch",
+    ]
     assert all(
         parsed_tools[name].requires_confirmation is False
         for name in (
-            "exec_command",
-            "poll_process",
-            "write_stdin",
-            "stop_process",
-            "apply_patch",
+            "terminal",
+            "process",
+            "patch",
             "view_image",
             "update_plan",
+            "finish_task",
         )
     )
 
@@ -468,11 +475,11 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     instructions = "\n".join(resolved)
 
     assert resolved == [*build_coding_agent_instructions(context), *REPORT_AGENT_INSTRUCTIONS]
-    assert "exec_command" in instructions
-    assert "apply_patch" in instructions
-    assert "poll_process" in instructions
-    assert "write_stdin" in instructions
-    assert "stop_process" in instructions
+    assert "terminal" in instructions
+    assert "finish_task" in instructions
+    assert 'patch 的 mode="replace"' in instructions
+    assert "apply_changes" not in instructions
+    assert "process" in instructions
     assert "view_image" in instructions
     assert "Python、Shell 或其他命令" in instructions
     assert "分析不经过 Report 层二次封装" in instructions
@@ -499,6 +506,8 @@ def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
         assert assistant.compress_tool_results is True
         assert assistant.enable_session_summaries is True
         assert assistant.post_hooks
+    assert app.report_agent.post_hooks[-1].__name__ == "report_delivery_guard"
+    assert app.assistant_team.post_hooks[-1].__name__ == "report_delivery_guard"
 
 
 def test_plain_request_only_uses_core_instructions():
@@ -628,12 +637,12 @@ def test_智能报表技能统一使用工作区相对路径和报表工具():
     )
 
     assert "相对 `/home/daytona/workspace` 的工作区路径" in skill
-    assert "`exec_command` 检查文件和可用依赖" in skill
-    assert "`apply_patch` 创建或修改任意 Python 脚本" in skill
-    assert "`poll_process` 轮询日志和状态" in skill
-    assert "`write_stdin` 输入或中断" in skill
-    assert "`stop_process` 终止任意受管命令" in skill
-    assert "CodingToolkit 的全部工具默认不要求确认" in skill
+    assert "`terminal` 检查文件和可用依赖" in skill
+    assert "创建脚本或多文件修改使用 `patch`" in skill
+    assert '`patch` 的 `mode="replace"`' in skill
+    assert "`apply_changes`" not in skill
+    assert "`process` 的 `poll/wait/write/submit/kill`" in skill
+    assert "生产 Coding Toolkit 的六个工具均不要求确认" in skill
     assert "`view_image` 检查生成的图表" in skill
     assert "workspace_write_file" not in skill
     assert "workspace_apply_changes" not in skill
@@ -642,6 +651,8 @@ def test_智能报表技能统一使用工作区相对路径和报表工具():
     assert "report_profile_dataset" not in skill
     assert "report_analyze_dataset" not in skill
     assert "直接调用无需确认的 `report_render_markdown`" in skill
+    assert "co" + "dex" not in skill.lower()
     assert "`report_validate_pdf`" in skill
     assert "状态为 `validated`" in skill
+    assert "`finish_task` 返回 `accepted`" in skill
     assert "不使用 `report_compile`、`blocks`" in skill

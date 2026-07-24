@@ -4,6 +4,7 @@ from functools import partial
 from agno.agent import Agent
 
 from ..agent_control import build_coding_agent_tools
+from ..coding.repository import CodingTaskRepository
 from ..instructions import build_coding_agent_instructions
 from ..skills import load_builtin_coding_skills
 from ..workspace import WorkspaceService
@@ -14,6 +15,7 @@ AgentInstructions = str | list[str] | Callable[..., str | list[str]]
 def create_coding_agent(
     base_agent: Agent,
     workspace_service: WorkspaceService,
+    coding_repository: CodingTaskRepository,
     *,
     instructions: AgentInstructions = build_coding_agent_instructions,
     context_token_budget: int = 262144,
@@ -29,6 +31,7 @@ def create_coding_agent(
             "tools": partial(
                 build_coding_agent_tools,
                 workspace_service,
+                coding_repository,
                 context_token_budget=context_token_budget,
                 output_token_reserve=output_token_reserve,
             ),

@@ -7,10 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 
 import pytest
+from agno.models.message import Message
 from agno.run import RunContext
+from agno.run.agent import RunOutput
 from pypdf import PdfWriter
 
 import agentos_dev.workspace as workspace_module
+from agentos_dev.agents.report import enforce_report_delivery_output
 from agentos_dev.tests.workspace_fakes import (
     SECRET,
     AsyncFakeClient,
@@ -34,6 +37,8 @@ from agentos_dev.workspace import (
     MAX_READ_BYTES,
     MAX_TOOL_OUTPUT_BYTES,
     MAX_UPLOAD_BYTES,
+    REPORT_DELIVERY_INCOMPLETE_MESSAGE,
+    REPORT_DELIVERY_STATE_KEY,
     REPORT_JOBS_STATE_KEY,
     REPORT_RUNTIME_TIMEOUT_SECONDS,
     WORKSPACE_ROOT,
@@ -379,6 +384,156 @@ async def test_报表任务由session_state恢复并拒绝跨thread复用和超�
     with pytest.raises(WorkspaceError, match="超过服务端边界"):
         restarted._store_job(job, context)
     assert context.session_state == before
+
+
+@pytest.mark.anyio
+async def test_报表交付只接受当前请求触达且仍通过哈希复核的产物():
+    service = _ReportStateService()
+    service.entries.update(
+        {
+            "报表/年度收入.md": {
+                "path": "报表/年度收入.md",
+                "size": 21,
+                "sha256": "b" * 64,
+            },
+            "报表/年度收入.pdf": {
+                "path": "报表/年度收入.pdf",
+                "size": 34,
+                "sha256": "c" * 64,
+            },
+        }
+    )
+    toolkit = WorkspaceReportToolkit(service)
+    job_id = str(uuid.uuid4())
+    context = RunContext(
+        run_id="member-run",
+        session_id="thread",
+        session_state={
+            REPORT_DELIVERY_STATE_KEY: {
+                "deliveryId": "delivery-1",
+                "jobId": job_id,
+            },
+            REPORT_JOBS_STATE_KEY: {
+                job_id: {
+                    "jobId": job_id,
+                    "_threadBinding": toolkit._thread_binding("thread"),
+                    "sources": [service.entries["报表/数据集/收入.csv"]],
+                    "render": {
+                        "markdown": service.entries["报表/年度收入.md"],
+                        "pdf": service.entries["报表/年度收入.pdf"],
+                        "images": [],
+                    },
+                    "validation": {
+                        "ok": True,
+                        "pdfPath": "报表/年度收入.pdf",
+                    },
+                }
+            },
+        },
+    )
+
+    evidence = await toolkit.validated_delivery("delivery-1", run_context=context)
+
+    assert evidence == {
+        "jobId": job_id,
+        "status": "validated",
+        "markdownPath": "报表/年度收入.md",
+        "pdfPath": "报表/年度收入.pdf",
+        "markdownSha256": "b" * 64,
+        "pdfSha256": "c" * 64,
+    }
+    assert await toolkit.validated_delivery("other-delivery", run_context=context) is None
+
+    service.entries["报表/年度收入.pdf"] = {
+        "path": "报表/年度收入.pdf",
+        "size": 35,
+        "sha256": "d" * 64,
+    }
+    assert await toolkit.validated_delivery("delivery-1", run_context=context) is None
+
+
+@pytest.mark.anyio
+async def test_报表工具把本轮实际触达的job绑定到交付门禁():
+    service = _ReportStateService()
+    context = RunContext(
+        run_id="member-run",
+        session_id="thread",
+        session_state={
+            REPORT_DELIVERY_STATE_KEY: {
+                "deliveryId": "delivery-1",
+                "jobId": None,
+            }
+        },
+    )
+    toolkit = WorkspaceReportToolkit(service, _ReportDatasetResolver())
+
+    prepared = await toolkit.report_prepare_dataset(["dataset-income"], run_context=context)
+
+    assert context.session_state[REPORT_DELIVERY_STATE_KEY] == {
+        "deliveryId": "delivery-1",
+        "jobId": prepared["jobId"],
+    }
+
+
+@pytest.mark.anyio
+async def test_报表post_hook同步修正持久化内容并补充真实路径():
+    service = _ReportStateService()
+    service.entries.update(
+        {
+            "报表/结果.md": {"path": "报表/结果.md", "size": 20, "sha256": "b" * 64},
+            "报表/结果.pdf": {"path": "报表/结果.pdf", "size": 30, "sha256": "c" * 64},
+        }
+    )
+    toolkit = WorkspaceReportToolkit(service)
+    job_id = str(uuid.uuid4())
+    context = RunContext(
+        run_id="member-run",
+        session_id="thread",
+        session_state={
+            REPORT_DELIVERY_STATE_KEY: {"deliveryId": "delivery-1", "jobId": job_id},
+            REPORT_JOBS_STATE_KEY: {
+                job_id: {
+                    "jobId": job_id,
+                    "_threadBinding": toolkit._thread_binding("thread"),
+                    "sources": [service.entries["报表/数据集/收入.csv"]],
+                    "render": {
+                        "markdown": service.entries["报表/结果.md"],
+                        "pdf": service.entries["报表/结果.pdf"],
+                        "images": [],
+                    },
+                    "validation": {"ok": True, "pdfPath": "报表/结果.pdf"},
+                }
+            },
+        },
+    )
+    output = RunOutput(
+        content="报表完成。",
+        messages=[Message(role="assistant", content="报表完成。")],
+    )
+
+    await enforce_report_delivery_output(output, context, service)
+
+    assert "报表/结果.md" in output.content
+    assert "报表/结果.pdf" in output.content
+    assert output.messages[-1].content == output.content
+
+    del service.entries["报表/结果.pdf"]
+    failed = RunOutput(
+        content="PDF 已生成。",
+        messages=[Message(role="assistant", content="PDF 已生成。")],
+    )
+    await enforce_report_delivery_output(failed, context, service)
+
+    assert failed.content == REPORT_DELIVERY_INCOMPLETE_MESSAGE
+    assert failed.messages[-1].content == REPORT_DELIVERY_INCOMPLETE_MESSAGE
+
+    ordinary = RunOutput(content="普通回答。")
+    await enforce_report_delivery_output(
+        ordinary,
+        RunContext(run_id="run", session_id="thread", session_state={}),
+        service,
+    )
+    assert ordinary.content == "普通回答。"
 
 
 @pytest.mark.anyio

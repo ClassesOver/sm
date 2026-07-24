@@ -9,6 +9,7 @@ from agno.run import RunContext
 from agno.run.agent import RunOutput
 from agno.run.requirement import RunRequirement
 from agno.session.agent import AgentSession
+from agno.tools.daytona import DaytonaTools
 
 from agentos_dev import app
 from agentos_dev.agents import create_coding_agent, create_report_agent
@@ -18,9 +19,10 @@ from agentos_dev.coding_tools import (
     CODEX_EXEC_SESSIONS_STATE_KEY,
     CODING_TOOLKIT_INSTRUCTIONS,
     DEFAULT_EXEC_TIMEOUT_SECONDS,
-    EMPTY_POLL_COOLDOWN_SECONDS,
+    HERMES_CODING_TOOLKIT_INSTRUCTIONS,
     MAX_CODEX_SESSION_HANDLES,
     CodingToolkit,
+    HermesCodingToolkit,
     parse_codex_patch,
 )
 from agentos_dev.instructions import build_coding_agent_instructions
@@ -100,7 +102,57 @@ def test_coding_tool_contract_uses_codex_names_and_json_patch(tmp_path):
     assert tools["stop_process"].parameters["required"] == ["session_id"]
     assert tools["apply_patch"].parameters["required"] == ["patch"]
     assert tools["apply_patch"].parameters["properties"]["patch"]["type"] == "string"
+    assert "apply_changes" not in tools
     assert all(tool.requires_confirmation is False for tool in tools.values())
+
+
+def test_hermes_coding_toolkit_is_independent_and_keeps_supported_contract(tmp_path):
+    coding = CodingToolkit(service(tmp_path))
+    toolkit = HermesCodingToolkit(coding)
+    tools = {**toolkit.functions, **toolkit.async_functions}
+
+    assert isinstance(coding, DaytonaTools)
+    assert isinstance(toolkit, DaytonaTools)
+    assert toolkit.name == "hermes_coding"
+    assert toolkit.coding is coding
+    assert set(tools) == {"terminal", "process", "patch"}
+    assert tools["terminal"].parameters["required"] == ["command"]
+    assert set(tools["terminal"].parameters["properties"]) == {
+        "command",
+        "background",
+        "timeout",
+        "workdir",
+        "pty",
+    }
+    assert tools["process"].parameters["properties"]["action"]["enum"] == [
+        "list",
+        "poll",
+        "wait",
+        "kill",
+        "write",
+        "submit",
+    ]
+    assert tools["process"].parameters["required"] == ["action"]
+    assert tools["patch"].parameters["required"] == ["mode"]
+    assert tools["patch"].parameters["properties"]["mode"]["enum"] == [
+        "replace",
+        "patch",
+    ]
+    assert all(tool.requires_confirmation is False for tool in tools.values())
+
+    forbidden_brand = "co" + "dex"
+    visible_tool_text = "\n".join(
+        [
+            HERMES_CODING_TOOLKIT_INSTRUCTIONS,
+            *[tool.description or "" for tool in tools.values()],
+            *[str(tool.parameters) for tool in tools.values()],
+        ]
+    )
+    assert forbidden_brand not in visible_tool_text.lower()
+    assert "patch 的 replace 模式" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
+    assert "未暴露的日志回溯、关闭 stdin 和异步通知能力不可假定存在" in (
+        HERMES_CODING_TOOLKIT_INSTRUCTIONS
+    )
 
 
 def test_coding_tool_contract_explains_limits_patch_format_and_persistent_services(tmp_path):
@@ -116,6 +168,9 @@ def test_coding_tool_contract_explains_limits_patch_format_and_persistent_servic
     assert "0 至 30000" in exec_schema["yield_time_ms"]["description"]
     assert "0 至 30000" in poll_schema["yield_time_ms"]["description"]
     assert "*** Add File: path" in patch_description
+    assert "包括空行" in patch_description
+    assert "heredoc" in patch_description
+    assert "首个 hunk 可省略 @@" in patch_description
     assert "禁止 ---/+++" in patch_description
     assert "独立 exec_command" in CODING_TOOLKIT_INSTRUCTIONS
     assert "按需或定时用 poll_process" in CODING_TOOLKIT_INSTRUCTIONS
@@ -137,35 +192,241 @@ def test_coding_tool_contract_explains_limits_patch_format_and_persistent_servic
     assert "0 至 30000" in CODING_TOOLKIT_INSTRUCTIONS
     assert "禁止使用 ---/+++" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不是 OS PID" in tools["exec_command"].description
+    assert "apply_patch 的兼容兜底" in tools["exec_command"].description
+    assert "apply_patch <<'PATCH'" in exec_schema["cmd"]["description"]
+    assert "不会在 Daytona 中查找或执行 apply_patch" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "不得附加其他 Shell 命令、workdir 或 PTY" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不是 OS PID" in poll_schema["session_id"]["description"]
+    forbidden_brand = "co" + "dex"
+    visible_tool_text = "\n".join(
+        [
+            CODING_TOOLKIT_INSTRUCTIONS,
+            *[tool.description or "" for tool in tools.values()],
+            *[str(tool.parameters) for tool in tools.values()],
+        ]
+    )
+    assert forbidden_brand not in visible_tool_text.lower()
 
 
 def test_report_agent_extends_unregistered_coding_agent(tmp_path):
     workspace_service = service(tmp_path)
-    coding_agent = create_coding_agent(app.assistant, workspace_service)
+    coding_agent = create_coding_agent(
+        app.assistant,
+        workspace_service,
+        app.coding_repository,
+    )
     report_agent = create_report_agent(
         coding_agent,
         workspace_service,
+        app.coding_repository,
         instructions=["测试报表"],
     )
 
     assert coding_agent.id == "coding-agent"
     assert coding_agent.instructions is build_coding_agent_instructions
     assert [skill.name for skill in coding_agent.skills.get_all_skills()] == ["sandbox-tooling"]
-    assert coding_agent not in app.assistant_team.members(
-        RunContext(run_id="run", session_id="thread", session_state={})
-    )
+    assert coding_agent.id in {
+        member.id
+        for member in app.assistant_team.members(
+            RunContext(run_id="run", session_id="thread", session_state={})
+        )
+    }
     assert report_agent.model is coding_agent.model
     assert report_agent.db is coding_agent.db
     assert report_agent.compression_manager is coding_agent.compression_manager
     assert report_agent.checkpoint == coding_agent.checkpoint == "tool-batch"
     assert report_agent.session_summary_manager is coding_agent.session_summary_manager
     assert [skill.name for skill in report_agent.skills.get_all_skills()] == ["sandbox-tooling"]
-    assert [tool.name for tool in report_agent.tools(run_context=context())] == [
-        "coding",
+    coding_tools = coding_agent.tools(run_context=context())
+    report_tools = report_agent.tools(run_context=context())
+    assert [tool.name for tool in coding_tools] == [
+        "workspace_coding",
+    ]
+    assert [tool.name for tool in report_tools] == [
+        "workspace_coding",
         "report_data_sources",
         "workspace_report",
     ]
+
+
+@pytest.mark.anyio
+async def test_hermes_terminal_maps_foreground_and_background_to_managed_commands(
+    tmp_path, monkeypatch
+):
+    coding = CodingToolkit(service(tmp_path))
+    toolkit = HermesCodingToolkit(coding)
+    calls = []
+
+    async def execute(command, **kwargs):
+        calls.append((command, kwargs))
+        return {"status": "completed", "output": "ok\n", "exit_code": 0}
+
+    monkeypatch.setattr(coding, "exec_command", execute)
+
+    foreground = await toolkit.terminal(
+        "python3 check.py",
+        timeout=120,
+        workdir="scripts",
+        pty=True,
+        run_context=context(),
+    )
+    await toolkit.terminal(
+        "python3 server.py",
+        background=True,
+        run_context=context(),
+    )
+
+    assert foreground["exit_code"] == 0
+    assert calls[0][0] == "python3 check.py"
+    assert calls[0][1]["timeout_seconds"] == 120
+    assert calls[0][1]["workdir"] == "scripts"
+    assert calls[0][1]["tty"] is True
+    assert calls[0][1]["yield_time_ms"] == 30000
+    assert calls[1][0] == "python3 server.py"
+    assert calls[1][1]["timeout_seconds"] == DEFAULT_EXEC_TIMEOUT_SECONDS
+    assert calls[1][1]["yield_time_ms"] == 0
+
+
+@pytest.mark.anyio
+async def test_hermes_process_lists_accepts_string_handle_and_manages_input(tmp_path):
+    current, coding = async_toolkit(tmp_path)
+    toolkit = HermesCodingToolkit(coding)
+    run_context = context()
+    started = await toolkit.terminal(
+        "python3 interactive.py",
+        background=True,
+        pty=True,
+        run_context=run_context,
+    )
+    handle = started["session_id"]
+
+    listed = await toolkit.process("list", run_context=run_context)
+    written = await toolkit.process(
+        "write",
+        session_id=str(handle),
+        data="answer",
+        run_context=run_context,
+    )
+    submitted = await toolkit.process(
+        "submit",
+        session_id=handle,
+        data="confirm",
+        run_context=run_context,
+    )
+    killed = await toolkit.process("kill", session_id=str(handle), run_context=run_context)
+    repeated = await toolkit.process("kill", session_id=handle, run_context=run_context)
+
+    assert listed["processes"] == [
+        {
+            "session_id": str(handle),
+            "status": "running",
+            "started_at": pytest.approx(listed["processes"][0]["started_at"]),
+            "timeout_seconds": DEFAULT_EXEC_TIMEOUT_SECONDS,
+        }
+    ]
+    assert written["session_id"] == handle
+    assert submitted["session_id"] == handle
+    process = current.sandbox_for("thread").process
+    assert process.input_calls[-2]["data"] == "answer"
+    assert process.input_calls[-1]["data"] == "confirm\n"
+    assert killed["status"] == repeated["status"] == "terminated"
+    assert repeated["status_is_cached"] is True
+
+
+@pytest.mark.anyio
+async def test_hermes_process_wait_collects_incremental_output(tmp_path, monkeypatch):
+    coding = CodingToolkit(service(tmp_path))
+    toolkit = HermesCodingToolkit(coding)
+    results = [
+        {"status": "running", "output": "first\n", "session_id": 1},
+        {"status": "completed", "output": "second\n", "exit_code": 0},
+    ]
+
+    async def poll_process(*_args, **_kwargs):
+        return results.pop(0)
+
+    monkeypatch.setattr(coding, "poll_process", poll_process)
+
+    result = await toolkit.process("wait", session_id="1", timeout=1, run_context=context())
+
+    assert result["status"] == "completed"
+    assert result["output"] == "first\nsecond\n"
+    assert results == []
+
+
+def test_hermes_patch_supports_replace_and_native_patch_modes(tmp_path):
+    current = service(tmp_path)
+    current.create_file("thread", "notes.txt", b"one two one\n")
+    toolkit = HermesCodingToolkit(CodingToolkit(current))
+    run_context = context()
+
+    replaced = toolkit.patch(
+        "replace",
+        path="notes.txt",
+        old_string="one",
+        new_string="three",
+        replace_all=True,
+        run_context=run_context,
+    )
+    patched = toolkit.patch(
+        "patch",
+        patch="""*** Begin Patch
+*** Update File: notes.txt
+@@
+-three two three
++done
+*** End Patch""",
+        run_context=run_context,
+    )
+
+    assert replaced["replacements"] == 2
+    assert patched["operations"] == 1
+    assert current.read_text("thread", "notes.txt") == "done\n"
+
+
+def test_hermes_patch_rejects_missing_or_mixed_mode_parameters(tmp_path):
+    toolkit = HermesCodingToolkit(CodingToolkit(service(tmp_path)))
+    run_context = context()
+
+    with pytest.raises(WorkspaceError, match="replace 模式"):
+        toolkit.patch("replace", path="notes.txt", run_context=run_context)
+    with pytest.raises(WorkspaceError, match="patch 模式"):
+        toolkit.patch(
+            "patch",
+            path="notes.txt",
+            patch="*** Begin Patch\n*** End Patch",
+            run_context=run_context,
+        )
+
+
+def test_hermes_replace_rechecks_sha_before_write(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    current.create_file("thread", "notes.txt", b"before\n")
+    toolkit = HermesCodingToolkit(CodingToolkit(current))
+    original_apply_patch = current.apply_patch
+
+    def race(thread, path, old_text, new_text, expected_sha256, replace_all=False):
+        current.replace_file(thread, path, b"concurrent\n")
+        return original_apply_patch(
+            thread,
+            path,
+            old_text,
+            new_text,
+            expected_sha256,
+            replace_all,
+        )
+
+    monkeypatch.setattr(current, "apply_patch", race)
+
+    with pytest.raises(WorkspacePathConflict, match="内容已变化"):
+        toolkit.patch(
+            "replace",
+            path="notes.txt",
+            old_string="before",
+            new_string="after",
+            run_context=context(),
+        )
+    assert current.read_text("thread", "notes.txt") == "concurrent\n"
 
 
 def test_apply_patch_add_update_delete_move_and_multiple_files(tmp_path):
@@ -212,6 +473,62 @@ def test_apply_patch_add_update_delete_move_and_multiple_files(tmp_path):
         current.read_text("thread", "archive/notes.txt")
 
 
+def test_apply_patch_accepts_safe_model_formatting_fallbacks(tmp_path):
+    current = service(tmp_path)
+
+    result = CodingToolkit(current).apply_patch(
+        """```patch
+*** Begin Patch
+*** Add File: notes.txt
++first
+
++last
+*** End Patch
+```""",
+        run_context=context(),
+    )
+
+    assert result["operations"] == 1
+    assert current.read_text("thread", "notes.txt") == "first\n\nlast\n"
+
+
+def test_apply_patch_supports_codex_update_semantics_and_heredoc_fallback(tmp_path):
+    current = service(tmp_path)
+    current.create_file(
+        "thread",
+        "module.py",
+        "def value():   \n    return 1\n\nmessage = “old”".encode(),
+    )
+    current.create_file("thread", "tail.txt", b"before\n")
+
+    result = CodingToolkit(current).apply_patch(
+        """<<'EOF'
+*** Begin Patch
+*** Update File: module.py
+ def value():
+-    return 1
++    return 2
+@@
+-message = "old"
++message = "new"
+*** Update File: tail.txt
+@@
+-before
++after
+*** End of File
+
+*** End Patch
+EOF""",
+        run_context=context(),
+    )
+
+    assert result["operations"] == 2
+    assert current.read_text("thread", "module.py") == (
+        'def value():\n    return 2\n\nmessage = "new"\n'
+    )
+    assert current.read_text("thread", "tail.txt") == "after\n"
+
+
 def test_apply_patch_move_with_update_is_atomic(tmp_path):
     current = service(tmp_path)
     current.create_file("thread", "before.py", b"value = 1\n")
@@ -243,6 +560,23 @@ def test_apply_patch_rejects_invalid_syntax_paths_symlinks_and_hunks(tmp_path):
         parse_codex_patch("*** Add File: bad.txt\n+bad")
     with pytest.raises(WorkspaceError, match="末行"):
         parse_codex_patch("*** Begin Patch\n*** Add File: bad.txt\n+bad")
+    with pytest.raises(WorkspaceError, match=r"每一行.*\+"):
+        toolkit.apply_patch(
+            "*** Begin Patch\n*** Add File: bad.txt\n+first\nmissing prefix\n*** End Patch",
+            run_context=run_context,
+        )
+    with pytest.raises(WorkspaceError, match="首行"):
+        parse_codex_patch("说明：\n*** Begin Patch\n*** Add File: bad.txt\n+bad\n*** End Patch")
+    with pytest.raises(WorkspaceError, match="首行"):
+        parse_codex_patch("--- /dev/null\n+++ b/bad.txt\n@@\n+bad")
+    with pytest.raises(WorkspaceError, match="首行"):
+        parse_codex_patch(
+            "```patch\n*** Begin Patch\n*** Add File: bad.txt\n+bad\n*** End Patch\n```\n说明"
+        )
+    with pytest.raises(WorkspaceError, match="首行"):
+        parse_codex_patch(
+            "<<'EOF'\n*** Begin Patch\n*** Add File: bad.txt\n+bad\n*** End Patch\nNOT_EOF"
+        )
     with pytest.raises(WorkspaceError, match="绝对路径"):
         toolkit.apply_patch(
             "*** Begin Patch\n*** Add File: /tmp/bad.txt\n+bad\n*** End Patch",
@@ -318,6 +652,187 @@ def test_apply_patch_rechecks_sha_and_keeps_multi_file_changes_atomic(tmp_path, 
         )
     with pytest.raises(WorkspaceError, match="不存在"):
         current.read_text("thread", "new.txt")
+
+
+@pytest.mark.anyio
+async def test_exec_command_intercepts_codex_apply_patch_without_remote_shell(
+    tmp_path, monkeypatch
+):
+    current, toolkit = async_toolkit(tmp_path)
+    current.create_file("thread", "existing.sh", b"echo before\n")
+
+    async def unexpected_exec(*_args, **_kwargs):
+        pytest.fail("apply_patch fallback reached the remote shell")
+
+    monkeypatch.setattr(toolkit._workspace, "sandbox_exec", unexpected_exec)
+    result = await toolkit.exec_command(
+        """apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: added.sh
++echo "A & B"
++sed -i 's/a/b/' example.txt
+*** Update File: existing.sh
+@@
+-echo before
++echo after
+*** End Patch
+PATCH""",
+        yield_time_ms=0,
+        run_context=context(),
+    )
+
+    assert result == {
+        "status": "completed",
+        "output": "补丁已应用。\n",
+        "exit_code": 0,
+        "outcome": "success",
+        "wall_time_seconds": 0.0,
+        "truncated": False,
+        "timeout_seconds": DEFAULT_EXEC_TIMEOUT_SECONDS,
+        "ok": True,
+        "message": "补丁已应用。",
+        "operations": 2,
+        "files": result["files"],
+        "intercepted_tool": "apply_patch",
+    }
+    assert [item["operation"] for item in result["files"]] == ["create", "update"]
+    assert current.read_text("thread", "added.sh") == (
+        "echo \"A & B\"\nsed -i 's/a/b/' example.txt\n"
+    )
+    assert current.read_text("thread", "existing.sh") == "echo after\n"
+
+
+@pytest.mark.anyio
+async def test_exec_command_intercepts_single_quoted_apply_patch_argument(tmp_path, monkeypatch):
+    current, toolkit = async_toolkit(tmp_path)
+
+    async def unexpected_exec(*_args, **_kwargs):
+        pytest.fail("quoted apply_patch fallback reached the remote shell")
+
+    monkeypatch.setattr(toolkit._workspace, "sandbox_exec", unexpected_exec)
+    result = await toolkit.exec_command(
+        """apply_patch '*** Begin Patch
+*** Add File: quoted.txt
++quoted fallback
+*** End Patch'""",
+        yield_time_ms=0,
+        run_context=context(),
+    )
+
+    assert result["status"] == "completed"
+    assert result["outcome"] == "success"
+    assert result["intercepted_tool"] == "apply_patch"
+    assert current.read_text("thread", "quoted.txt") == "quoted fallback\n"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "command",
+    [
+        """apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: rejected.txt
++missing delimiter
+*** End Patch""",
+        """apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: rejected.txt
++trailing command
+*** End Patch
+PATCH
+printf unsafe""",
+        """apply_patch <<'PATCH' && printf unsafe
+*** Begin Patch
+*** Add File: rejected.txt
++chained opener
+*** End Patch
+PATCH""",
+        """apply_patch '*** Begin Patch
+*** Add File: rejected.txt
++quoted chain
+*** End Patch' && printf unsafe""",
+        """apply_patch
+'*** Begin Patch
+*** Add File: rejected.txt
++separate command
+*** End Patch'""",
+    ],
+)
+async def test_exec_command_rejects_malformed_or_chained_apply_patch_without_writes(
+    tmp_path, monkeypatch, command
+):
+    current, toolkit = async_toolkit(tmp_path)
+
+    async def unexpected_exec(*_args, **_kwargs):
+        pytest.fail("malformed apply_patch reached the remote shell")
+
+    monkeypatch.setattr(toolkit._workspace, "sandbox_exec", unexpected_exec)
+    with pytest.raises(WorkspaceError, match="apply_patch"):
+        await toolkit.exec_command(command, yield_time_ms=0, run_context=context())
+
+    with pytest.raises(WorkspaceError, match="不存在"):
+        current.read_text("thread", "rejected.txt")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"workdir": "src"}, "workdir"),
+        ({"tty": True}, "PTY"),
+    ],
+)
+async def test_exec_command_apply_patch_fallback_rejects_ignored_execution_options(
+    tmp_path, options, message
+):
+    current, toolkit = async_toolkit(tmp_path)
+    command = """apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: rejected.txt
++content
+*** End Patch
+PATCH"""
+
+    with pytest.raises(WorkspaceError, match=message):
+        await toolkit.exec_command(
+            command,
+            yield_time_ms=0,
+            run_context=context(),
+            **options,
+        )
+
+    with pytest.raises(WorkspaceError, match="不存在"):
+        current.read_text("thread", "rejected.txt")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"login": 1}, "登录模式"),
+        ({"shell": "/bin/zsh"}, "shell"),
+        ({"tty": 1}, "伪终端标志"),
+        ({"timeout_seconds": True}, "执行超时"),
+        ({"yield_time_ms": True}, "命令等待时间"),
+        ({"max_output_tokens": True}, "输出 token"),
+    ],
+)
+async def test_exec_command_apply_patch_fallback_keeps_runtime_validation(
+    tmp_path, options, message
+):
+    current, toolkit = async_toolkit(tmp_path)
+    command = """apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: rejected.txt
++content
+*** End Patch
+PATCH"""
+
+    with pytest.raises(WorkspaceError, match=message):
+        await toolkit.exec_command(command, run_context=context(), **options)
+
+    with pytest.raises(WorkspaceError, match="不存在"):
+        current.read_text("thread", "rejected.txt")
 
 
 @pytest.mark.anyio
@@ -434,6 +949,56 @@ async def test_exec_command_rejects_feedback_loss_and_unmanaged_shell_patterns(t
         run_context=run_context,
     )
     assert result["status"] in {"running", "completed"}
+
+
+@pytest.mark.parametrize(
+    ("command", "shell"),
+    [
+        (
+            """cat <<'EOF'
+A & B
+nohup python3 server.py
+sed -i 's/a/b/' app.py
+pip install example | tail -1
+EOF""",
+            "/bin/sh",
+        ),
+        ("echo ok 2>&1", "/bin/sh"),
+        ("echo ok # A & B", "/bin/sh"),
+        ("echo ok &>status.log", "/bin/bash"),
+        ("false |& cat", "/bin/bash"),
+        ("echo $((1 & 2))", "/bin/bash"),
+    ],
+)
+def test_command_policy_ignores_non_background_ampersands(command, shell):
+    CodingToolkit._validate_command_policy(command, shell)
+
+
+def test_command_policy_still_checks_heredoc_opening_command():
+    command = "pip install example <<'EOF' | tail -1\ndata\nEOF"
+
+    with pytest.raises(WorkspaceError, match="pip 输出"):
+        CodingToolkit._validate_command_policy(command, "/bin/sh")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sleep 1 &",
+        "sleep 1 & echo done",
+        "(sleep 1 &)",
+        "if true; then sleep 1 & fi",
+        'echo "$(sleep 1 & echo done)"',
+    ],
+)
+def test_command_policy_rejects_nested_shell_background_operators(command):
+    with pytest.raises(WorkspaceError, match="后台符号"):
+        CodingToolkit._validate_command_policy(command, "/bin/bash")
+
+
+def test_command_policy_rejects_unclosed_heredoc():
+    with pytest.raises(WorkspaceError, match="Shell 命令语法"):
+        CodingToolkit._validate_command_policy("cat <<'EOF'\nunclosed", "/bin/sh")
 
 
 @pytest.mark.anyio
@@ -568,8 +1133,14 @@ async def test_stop_process_terminates_default_non_pty_command_and_closes_handle
     assert run_context.session_state[CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY]["1"]["reason"] == (
         "terminated"
     )
-    with pytest.raises(WorkspaceError, match="已经终止"):
-        await toolkit.stop_process(1, run_context=run_context)
+    repeated = await toolkit.stop_process(1, run_context=run_context)
+    assert repeated == {
+        "status": "terminated",
+        "outcome": "terminated",
+        "session_id": 1,
+        "status_is_cached": True,
+    }
+    assert process.deleted_sessions.count(entry["session_id"]) == 1
 
 
 @pytest.mark.anyio
@@ -775,20 +1346,19 @@ async def test_running_process_result_guides_persistent_service_health_check(tmp
 
 
 @pytest.mark.anyio
-async def test_poll_process_pauses_tight_polling_after_two_empty_results(tmp_path, monkeypatch):
+async def test_poll_process_refreshes_after_consecutive_empty_results(tmp_path, monkeypatch):
     _current, toolkit = async_toolkit(tmp_path)
     run_context = context()
     started = await toolkit.exec_command("long-running", yield_time_ms=0, run_context=run_context)
     poll_calls = 0
-    current_time = 1000.0
 
     async def empty_poll(_entry, *, offset, **_kwargs):
         nonlocal poll_calls
         poll_calls += 1
         return {
-            "status": "running",
+            "status": "completed" if poll_calls == 3 else "running",
             "output": "",
-            "exitCode": None,
+            "exitCode": 0 if poll_calls == 3 else None,
             "offset": offset,
             "nextOffset": offset,
             "totalBytes": offset,
@@ -797,7 +1367,6 @@ async def test_poll_process_pauses_tight_polling_after_two_empty_results(tmp_pat
         }
 
     monkeypatch.setattr(toolkit, "_poll_process", empty_poll)
-    monkeypatch.setattr("agentos_dev.coding_tools.time.time", lambda: current_time)
 
     first = await toolkit.poll_process(
         started["session_id"], yield_time_ms=0, run_context=run_context
@@ -805,29 +1374,38 @@ async def test_poll_process_pauses_tight_polling_after_two_empty_results(tmp_pat
     second = await toolkit.poll_process(
         started["session_id"], yield_time_ms=0, run_context=run_context
     )
-    paused = await toolkit.poll_process(
+    completed = await toolkit.poll_process(
         started["session_id"], yield_time_ms=0, run_context=run_context
     )
 
-    assert first["empty_poll_count"] == 1
-    assert "polling_paused" not in first
-    assert second["empty_poll_count"] == 2
-    assert second["polling_paused"] is True
-    assert second["retry_after_seconds"] == EMPTY_POLL_COOLDOWN_SECONDS
-    assert paused["polling_paused"] is True
-    assert paused["status_is_cached"] is True
-    assert paused["session_id"] == started["session_id"]
-    assert "本次没有访问远端" in paused["guidance"]
-    assert poll_calls == 2
-
-    current_time += EMPTY_POLL_COOLDOWN_SECONDS
-    resumed = await toolkit.poll_process(
-        started["session_id"], yield_time_ms=0, run_context=run_context
-    )
-
-    assert resumed["empty_poll_count"] == 1
-    assert "polling_paused" not in resumed
+    assert first["status"] == second["status"] == "running"
+    assert first["session_id"] == second["session_id"] == started["session_id"]
+    assert completed["status"] == "completed"
+    assert completed["outcome"] == "success"
+    assert "session_id" not in completed
     assert poll_calls == 3
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("yield_time_ms", [True, -1, 30001, 1.5])
+async def test_poll_process_rejects_invalid_yield_time_before_remote_call(
+    tmp_path, monkeypatch, yield_time_ms
+):
+    _current, toolkit = async_toolkit(tmp_path)
+    run_context = context()
+    started = await toolkit.exec_command("long-running", yield_time_ms=0, run_context=run_context)
+
+    async def unexpected_poll(*_args, **_kwargs):
+        pytest.fail("invalid yield_time_ms reached the remote poll")
+
+    monkeypatch.setattr(toolkit, "_poll_process", unexpected_poll)
+
+    with pytest.raises(WorkspaceError, match="命令等待时间"):
+        await toolkit.poll_process(
+            started["session_id"],
+            yield_time_ms=yield_time_ms,
+            run_context=run_context,
+        )
 
 
 @pytest.mark.anyio

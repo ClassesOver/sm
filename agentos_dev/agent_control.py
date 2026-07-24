@@ -101,20 +101,22 @@ def build_agent_tools(
 
 def build_coding_agent_tools(
     workspace_service: WorkspaceService,
+    coding_repository,
     *,
     run_context: RunContext,
     agent: Any | None = None,
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
 ) -> list[Toolkit]:
-    """Coding Agent 固定使用 Codex 风格工作区工具。"""
-    from .coding_tools import CodingToolkit
+    """Coding Agent 固定使用受约束的工作区工具。"""
+    from .coding.execution import WorkspaceCodingToolkit
 
-    return [CodingToolkit(workspace_service)]
+    return [WorkspaceCodingToolkit(workspace_service, coding_repository)]
 
 
 def build_report_agent_tools(
     workspace_service: WorkspaceService,
+    coding_repository,
     *,
     run_context: RunContext,
     agent: Any | None = None,
@@ -124,15 +126,30 @@ def build_report_agent_tools(
     database_url: str | None = None,
 ) -> list[Toolkit]:
     """ReportAgent 固定工具工厂；每个 run 重新解析当前引用和受控 session state。"""
-    from .coding_tools import CodingToolkit
+    from .coding.execution import WorkspaceCodingToolkit
 
     data_sources = ReportDataSourceToolkit(
         workspace_service,
         config_path=report_data_sources_file,
         excluded_database_url=database_url,
     )
+
+    async def validated_delivery(run_context: RunContext):
+        state = run_context.session_state if isinstance(run_context.session_state, dict) else {}
+        delivery = state.get("report_delivery")
+        delivery_id = delivery.get("deliveryId") if isinstance(delivery, dict) else None
+        if not isinstance(delivery_id, str):
+            return None
+        return await WorkspaceReportToolkit(workspace_service).validated_delivery(
+            delivery_id, run_context
+        )
+
     return [
-        CodingToolkit(workspace_service),
+        WorkspaceCodingToolkit(
+            workspace_service,
+            coding_repository,
+            completion_evidence=validated_delivery,
+        ),
         data_sources,
         WorkspaceReportToolkit(workspace_service, data_sources=data_sources),
     ]

@@ -3,6 +3,7 @@ from functools import partial
 from typing import Any
 
 from agno.agent import Agent
+from agno.db.base import AsyncBaseDb
 from agno.models.openai import OpenAIChat
 
 from ..agent_control import build_agent_tools
@@ -11,7 +12,6 @@ from ..context_management import (
     RollingSessionSummaryManager,
     clear_terminal_reasoning,
 )
-from ..database import SerializedAsyncPostgresDb
 from ..settings import AgentSettings
 from ..workspace import WorkspaceService
 
@@ -29,6 +29,7 @@ def create_assistant(
     primary_model: OpenAIChat,
     compression_model: OpenAIChat,
     summary_model: OpenAIChat,
+    database: AsyncBaseDb,
 ) -> Agent:
     assistant = Agent(
         id=ASSISTANT_ID,
@@ -44,7 +45,7 @@ def create_assistant(
             output_token_reserve=settings.output_token_reserve,
         ),
         cache_callables=False,
-        db=SerializedAsyncPostgresDb(db_url=settings.database_url),
+        db=database,
         checkpoint="tool-batch",
         add_history_to_context=False,
         enable_session_summaries=settings.enable_session_summaries,

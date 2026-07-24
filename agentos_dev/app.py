@@ -1,18 +1,33 @@
+import asyncio
 import json
 import logging
 import unicodedata
+from contextlib import suppress
+from datetime import timedelta
 from pathlib import PurePosixPath
+from typing import Any
 from urllib.parse import quote
+from uuid import uuid4
 
-from ag_ui.core import Context, EventType, RunAgentInput, RunErrorEvent
+from ag_ui.core import (
+    Context,
+    EventType,
+    RunAgentInput,
+    RunErrorEvent,
+    TextMessageContentEvent,
+    TextMessageEndEvent,
+    TextMessageStartEvent,
+)
 from ag_ui.encoder import EventEncoder
 from agno.agent import Agent
 from agno.models.message import Message
 from agno.os.interfaces.agui.input import extract_tool_messages, extract_user_input
 from agno.os.interfaces.agui.router import run_entity
+from agno.run import RunContext
 from agno.session.agent import AgentSession
 from agno.session.team import TeamSession
 from agno.team import Team
+from daytona.common.errors import DaytonaNotFoundError
 from fastapi import APIRouter, Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
@@ -34,6 +49,7 @@ from .agents import (
     create_assistants,
     is_odoo_command_name,
 )
+from .agui_coding_adapter import AguiCodingAdapter
 from .application import ApplicationContext, create_agentos_app
 from .branch import (
     BranchError,
@@ -41,6 +57,16 @@ from .branch import (
     parse_forwarded_props,
     run_branch,
     validate_branch_identity,
+)
+from .coding import AgnoCodingExecutor, CodingScope, CodingTaskSupervisor
+from .coding.adapters import create_team_coding_member
+from .coding.execution import CODING_TASK_DEPENDENCY, CodingExecutionKernel
+from .coding.repository import (
+    ACTIVE_TASK_STATUSES,
+    TERMINAL_EXECUTION_STATUSES,
+    CodingRepositoryError,
+    CodingTaskRepository,
+    utcnow,
 )
 from .coding_tools import (
     CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
@@ -52,7 +78,7 @@ from .context_management import (
     ProtectedCompressionManager,
     build_budgeted_history_context,
 )
-from .database import check_database
+from .database import check_database, create_agent_database
 from .instructions import (
     build_agent_instructions,
     build_odoo_command_instructions,
@@ -68,19 +94,24 @@ from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
 from .skills import load_skills, public_skill_metadata
 from .workspace import (
+    REPORT_DELIVERY_INCOMPLETE_MESSAGE,
+    REPORT_DELIVERY_STATE_KEY,
     REPORT_JOBS_STATE_KEY,
     WorkspaceError,
     WorkspacePathConflict,
+    WorkspaceReportToolkit,
     WorkspaceService,
+    report_delivery_content,
 )
 
 PROTOCOL = "agui.odoo.v2"
-BUNDLE_VERSION = "12.0.8.8.10"
+BUNDLE_VERSION = "12.0.8.8.11"
 COMMAND_CATALOG_HASH = "6529262bf0a1c05a61a1238c67415ed3734e0db58bc12dcd59cf6c534d2467f4"
 MAX_RUN_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 202 * 1024 * 1024
 WORKSPACE_FILE_BYTES = 200 * 1024 * 1024
 MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
+SSE_HEARTBEAT_SECONDS = 15
 SERVER_TOOL_SCHEMA_TOKEN_RESERVE = 16 * 1024
 REPORT_TOOL_MIGRATION_ERROR = "report_tool_migration_required"
 REMOVED_REPORT_TOOLS = frozenset(
@@ -143,6 +174,7 @@ SERVER_SESSION_STATE_KEYS = frozenset(
         AGENT_CONTINUATION_STATE_KEY,
         AGENT_LOADED_TOOLKITS_STATE_KEY,
         REPORT_DATASET_HANDLES_STATE_KEY,
+        REPORT_DELIVERY_STATE_KEY,
         REPORT_JOBS_STATE_KEY,
         CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
         CODEX_EXEC_SESSIONS_STATE_KEY,
@@ -166,11 +198,20 @@ class WorkspaceAttachmentPayload(BaseModel):
     workspace_path: str = Field(alias="workspacePath", min_length=1, max_length=1024)
 
 
+class CodingCancelPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    thread_id: str = Field(alias="threadId", min_length=1, max_length=256)
+    run_id: str = Field(alias="runId", min_length=1, max_length=128)
+
+
 settings = AgentSettings.from_environment()
 
 workspace_secret = settings.workspace_hmac_secret
 agent_skills = load_skills(settings.skills_dir)
-workspace_service = WorkspaceService(secret=workspace_secret)
+agent_database = create_agent_database(settings.database_url)
+coding_repository = CodingTaskRepository(agent_database.async_db)
+workspace_service = WorkspaceService(secret=workspace_secret, database=agent_database)
 router = APIRouter()
 
 
@@ -490,6 +531,8 @@ async def _entity_for_stored_run(
             agent_id = matching_agent_id
     if agent_id == context.report_agent.id:
         return context.report_agent
+    if context.coding_agent is not None and agent_id == context.coding_agent.id:
+        return context.coding_agent
     if (
         agent_id == context.odoo_command_assistant.id
         or agent_id in LEGACY_ODOO_COMMAND_ASSISTANT_IDS
@@ -582,6 +625,78 @@ async def _hide_team_delegation_events(source):
         yield event
 
 
+def _bind_report_delivery(run_input: RunAgentInput, delivery_id: str) -> RunAgentInput:
+    state = dict(run_input.state) if isinstance(run_input.state, dict) else {}
+    state[REPORT_DELIVERY_STATE_KEY] = {
+        "deliveryId": delivery_id,
+        "jobId": None,
+    }
+    return run_input.model_copy(update={"state": state})
+
+
+async def _guard_report_delivery(
+    source,
+    workspace_service: WorkspaceService,
+    thread_id: str,
+    delivery_id: str,
+):
+    buffered_messages: dict[str, list[Any]] = {}
+    message_order: list[str] = []
+    final_state: dict[str, Any] | None = None
+    async for event in source:
+        message_id = str(getattr(event, "message_id", "") or "")
+        if event.type == EventType.TEXT_MESSAGE_START:
+            if message_id not in buffered_messages:
+                buffered_messages[message_id] = []
+                message_order.append(message_id)
+            buffered_messages[message_id].append(event)
+            continue
+        if event.type in {EventType.TEXT_MESSAGE_CONTENT, EventType.TEXT_MESSAGE_END}:
+            if message_id not in buffered_messages:
+                buffered_messages[message_id] = []
+                message_order.append(message_id)
+            buffered_messages[message_id].append(event)
+            continue
+        if event.type == EventType.STATE_SNAPSHOT and isinstance(event.snapshot, dict):
+            final_state = event.snapshot
+        if event.type == EventType.TOOL_CALL_START:
+            parent_message_id = str(getattr(event, "parent_message_id", "") or "")
+            if parent_message_id in buffered_messages:
+                event = event.model_copy(update={"parent_message_id": None})
+        if event.type != EventType.RUN_FINISHED:
+            yield event
+            continue
+
+        evidence = None
+        if final_state is not None:
+            run_context = RunContext(
+                run_id=event.run_id,
+                session_id=thread_id,
+                session_state=final_state,
+            )
+            evidence = await WorkspaceReportToolkit(workspace_service).validated_delivery(
+                delivery_id,
+                run_context,
+            )
+        original_content = ""
+        final_message_id = message_order[-1] if message_order else str(uuid4())
+        if message_order:
+            original_content = "".join(
+                str(getattr(item, "delta", "") or "")
+                for item in buffered_messages[final_message_id]
+                if item.type == EventType.TEXT_MESSAGE_CONTENT
+            )
+        content = (
+            report_delivery_content(original_content, evidence)
+            if evidence is not None
+            else REPORT_DELIVERY_INCOMPLETE_MESSAGE
+        )
+        yield TextMessageStartEvent(message_id=final_message_id, role="assistant")
+        yield TextMessageContentEvent(message_id=final_message_id, delta=content)
+        yield TextMessageEndEvent(message_id=final_message_id)
+        yield event
+
+
 def _team_route_context(*member_ids: str | None) -> Context:
     normalized = [member_id for member_id in member_ids if member_id]
     if not normalized:
@@ -590,6 +705,42 @@ def _team_route_context(*member_ids: str | None) -> Context:
     return Context(
         description=TEAM_ROUTE_DEPENDENCY,
         value=json.dumps(route, ensure_ascii=True, separators=(",", ":")),
+    )
+
+
+def _coding_task_context(external_run_id: str, lease_owner: str) -> Context:
+    return Context(
+        description=CODING_TASK_DEPENDENCY,
+        value=json.dumps(
+            {"externalRunId": external_run_id, "leaseOwner": lease_owner},
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ),
+    )
+
+
+async def _ensure_report_task(
+    context: ApplicationContext,
+    run_input: RunAgentInput,
+    user_id: str,
+) -> None:
+    if context.coding_repository is None:
+        raise CodingRepositoryError("task_repository_unavailable", "编码任务仓储不可用。")
+    async with context.workspace_service._async_client() as client:
+        sandbox = await context.workspace_service._asandbox_for(client, run_input.thread_id)
+        sandbox_id = str(getattr(sandbox, "id", "") or "")
+    if not sandbox_id:
+        raise CodingRepositoryError("task_sandbox_missing", "编码任务工作区不可用。")
+    report_agent_id = context.report_agent.id
+    if not report_agent_id:
+        raise CodingRepositoryError("task_agent_missing", "报表智能体缺少稳定 ID。")
+    await context.coding_repository.create_task(
+        external_run_id=run_input.run_id,
+        owner_user_id=user_id,
+        thread_id=run_input.thread_id,
+        agent_id=report_agent_id,
+        sandbox_id=sandbox_id,
+        deadline_at=utcnow() + timedelta(hours=24),
     )
 
 
@@ -632,12 +783,34 @@ async def _run_error(message: str, code: str):
     yield RunErrorEvent(type=EventType.RUN_ERROR, message=message, code=code)
 
 
+async def _with_sse_heartbeats(source):
+    iterator = source.__aiter__()
+    pending = asyncio.create_task(iterator.__anext__())
+    try:
+        while True:
+            done, _pending = await asyncio.wait({pending}, timeout=SSE_HEARTBEAT_SECONDS)
+            if not done:
+                yield None
+                continue
+            try:
+                event = pending.result()
+            except StopAsyncIteration:
+                return
+            yield event
+            pending = asyncio.create_task(iterator.__anext__())
+    finally:
+        if not pending.done():
+            pending.cancel()
+            with suppress(asyncio.CancelledError):
+                await pending
+
+
 def _request_thread(request: Request) -> str:
     return str(request.headers.get("X-AGUI-Thread", "")).strip()
 
 
 def _request_limit(path: str, method: str) -> int | None:
-    if path == "/agui":
+    if path == "/agui" or (path == "/agui/cancel" and method == "POST"):
         return MAX_RUN_REQUEST_BYTES
     if path in {"/workspace/upload", "/workspace/files"} and method == "POST":
         return MAX_WORKSPACE_UPLOAD_REQUEST_BYTES
@@ -672,7 +845,7 @@ async def require_workspace_capability(request: Request, call_next):
     if len(path_parts) >= 3 and path_parts[0] in {"agents", "teams"} and path_parts[2] == "runs":
         resource = path_parts[0][:-1]
         return JSONResponse({"error": f"{resource}_run_route_disabled"}, status_code=404)
-    protected = path == "/agui" or path.startswith("/workspace")
+    protected = path in {"/agui", "/agui/cancel"} or path.startswith("/workspace")
     if not protected:
         return await call_next(request)
     thread = _request_thread(request)
@@ -740,7 +913,7 @@ def _readiness_checks(context: ApplicationContext):
         "hmac": len(context.settings.workspace_hmac_secret.encode("utf-8")) >= 32,
     }
     try:
-        check_database(context.settings.database_url)
+        check_database(context.database or context.settings.database_url)
         checks["postgresql"] = True
     except Exception:
         return checks
@@ -920,18 +1093,74 @@ async def workspace_destroy(request: Request, payload: dict = Body(...)):
     return {"ok": True, "deleted": True}
 
 
-assistant, odoo_command_assistant, report_agent = create_assistants(
+@router.post("/agui/cancel", include_in_schema=False)
+async def cancel_coding_task(request: Request, payload: CodingCancelPayload):
+    context = _application_context(request)
+    _check_thread(request, payload.thread_id)
+    if context.coding_repository is None:
+        raise HTTPException(status_code=404, detail="coding_task_not_found")
+    snapshot = await context.coding_repository.get_task_snapshot(payload.run_id)
+    if snapshot is not None and context.coding_supervisor is not None:
+        try:
+            task = await context.coding_supervisor.cancel_task(snapshot.scope)
+        except CodingRepositoryError as error:
+            raise HTTPException(status_code=409, detail=error.code) from error
+        return {"ok": True, "status": task.state.value}
+    legacy_task = await context.coding_repository.get_task(payload.run_id)
+    if legacy_task is None:
+        raise HTTPException(status_code=404, detail="coding_task_not_found")
+    try:
+        context.coding_repository._assert_scope(
+            legacy_task,
+            capability_user_id(request.state.capability),
+            payload.thread_id,
+        )
+    except CodingRepositoryError as error:
+        raise HTTPException(status_code=403, detail=error.code) from error
+    if legacy_task.status == "cancelled":
+        return {"ok": True, "status": "cancelled", "status_is_cached": True}
+    executions = await context.coding_repository.list_executions(payload.run_id)
+    async with context.workspace_service._async_client() as client:
+        sandbox = await context.workspace_service._asandbox_for(client, payload.thread_id)
+        if str(getattr(sandbox, "id", "") or "") != legacy_task.sandbox_id:
+            raise HTTPException(status_code=409, detail="coding_task_sandbox_mismatch")
+        await context.coding_repository.set_task_status(payload.run_id, "cancelled")
+        for execution in executions:
+            if execution.status in TERMINAL_EXECUTION_STATUSES or execution.retained_service:
+                continue
+            await context.coding_repository.update_execution(
+                execution.execution_id,
+                status="terminated",
+            )
+            with suppress(DaytonaNotFoundError):
+                await sandbox.process.delete_session(execution.daytona_session_id)
+    return {"ok": True, "status": "cancelled"}
+
+
+assistant, odoo_command_assistant, coding_agent, report_agent = create_assistants(
     settings,
     agent_skills,
     workspace_service,
     build_agent_instructions,
     build_odoo_command_instructions,
     build_report_agent_instructions,
+    agent_database,
+    coding_repository,
 )
+coding_supervisor = CodingTaskSupervisor(
+    coding_repository,
+    AgnoCodingExecutor(
+        lambda agent_id: report_agent if agent_id == report_agent.id else coding_agent
+    ),
+    execution_cleanup=CodingExecutionKernel(workspace_service, coding_repository),
+)
+team_coding_member = create_team_coding_member(coding_agent, coding_supervisor, workspace_service)
 assistant_team = create_assistant_team(
     assistant,
     odoo_command_assistant,
+    team_coding_member,
     report_agent,
+    workspace_service,
 )
 
 
@@ -945,6 +1174,8 @@ async def run_agui(request: Request, run_input: RunAgentInput):
 
     async def events():
         tool_names_by_call_id: dict[str, str] = {}
+        request_lease_owner = uuid4().hex
+        resumed_coding_task = None
         fresh_request = _is_fresh_user_request(run_input)
         existing_entity = None
         if fresh_request and not branch:
@@ -959,9 +1190,11 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                 context.assistant,
                 context.odoo_command_assistant,
                 context.report_agent,
+                context.coding_agent,
             )
         )
         report_selected = _selected_report_skill(run_input)
+        report_delivery_id = uuid4().hex if report_selected and not branch else None
         declared_odoo_commands = [
             tool.name for tool in (run_input.tools or []) if is_odoo_command_name(tool.name)
         ]
@@ -985,7 +1218,35 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             **audit_values,
         )
 
-        if branch:
+        supervisor_source = None
+        if (
+            not fresh_request
+            and not branch
+            and context.coding_supervisor is not None
+            and context.coding_repository is not None
+        ):
+            snapshot = await context.coding_repository.get_task_snapshot(run_input.run_id)
+            if snapshot is not None:
+                expected_scope = CodingScope(
+                    run_input.run_id,
+                    user_id,
+                    run_input.thread_id,
+                    snapshot.scope.sandbox_id,
+                    snapshot.scope.agent_id,
+                )
+                if snapshot.scope != expected_scope:
+                    supervisor_source = _run_error(
+                        "编码任务不属于当前用户、对话或工作区。",
+                        "task_scope_mismatch",
+                    )
+                else:
+                    supervisor_source = AguiCodingAdapter(context.coding_supervisor).resume_events(
+                        expected_scope
+                    )
+
+        if supervisor_source is not None:
+            source = supervisor_source
+        elif branch:
             if hasattr(branch, "source_thread_id") and hasattr(branch, "source_run_id"):
                 branch_agent = await _entity_for_stored_run(
                     context,
@@ -1019,12 +1280,32 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                 if legacy_agent_session:
                     history_entity = existing_entity
             else:
-                run_agent = await _entity_for_stored_run(
-                    context,
-                    run_input.thread_id,
-                    user_id,
-                    run_input.run_id,
-                )
+                if context.coding_repository is not None:
+                    resumed_coding_task = await context.coding_repository.get_task(run_input.run_id)
+                if resumed_coding_task is not None:
+                    try:
+                        assert context.coding_repository is not None
+                        context.coding_repository._assert_scope(
+                            resumed_coding_task,
+                            user_id,
+                            run_input.thread_id,
+                        )
+                    except CodingRepositoryError:
+                        resumed_coding_task = None
+                        run_agent = None
+                    else:
+                        run_agent = (
+                            context.report_agent
+                            if resumed_coding_task.agent_id == context.report_agent.id
+                            else context.coding_agent
+                        )
+                else:
+                    run_agent = await _entity_for_stored_run(
+                        context,
+                        run_input.thread_id,
+                        user_id,
+                        run_input.run_id,
+                    )
             if run_agent is None:
                 source = _run_error(
                     "无法确认原运行所属智能体，请刷新会话后重试。",
@@ -1063,6 +1344,15 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                             "当前消息附件未同步、已变化或不属于当前工作区，请重新选择附件。",
                             "report_attachment_invalid",
                         )
+                if not attachment_error and fresh_request and report_selected:
+                    try:
+                        await _ensure_report_task(context, run_input, user_id)
+                    except (CodingRepositoryError, WorkspaceError, DaytonaNotFoundError):
+                        attachment_error = True
+                        source = _run_error(
+                            "报表任务工作区或持久化状态不可用，请稍后重试。",
+                            "coding_task_unavailable",
+                        )
                 if not attachment_error:
                     if fresh_request and run_agent is context.assistant_team:
                         member_ids = (
@@ -1070,6 +1360,11 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                             if report_selected
                             else [
                                 context.assistant.id,
+                                *(
+                                    [context.coding_agent.id]
+                                    if context.coding_agent is not None
+                                    else []
+                                ),
                                 *(
                                     [context.odoo_command_assistant.id]
                                     if declared_odoo_commands
@@ -1086,6 +1381,18 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                             *(server_context or []),
                             _team_route_context(*member_ids),
                         ]
+                    if any(
+                        run_agent is entity
+                        for entity in (
+                            context.assistant_team,
+                            context.coding_agent,
+                            context.report_agent,
+                        )
+                    ):
+                        server_context = [
+                            *(server_context or []),
+                            _coding_task_context(run_input.run_id, request_lease_owner),
+                        ]
                     prepared_input = await _prepare_run_input(
                         run_agent,
                         _filter_client_tools_for_agent(run_input, run_agent),
@@ -1094,23 +1401,64 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                         server_context=server_context,
                         history_entity=history_entity,
                     )
+                    if run_agent is context.report_agent and report_delivery_id is None:
+                        report_delivery_id = uuid4().hex
+                    if report_delivery_id is not None:
+                        prepared_input = _bind_report_delivery(
+                            prepared_input,
+                            report_delivery_id,
+                        )
+                        if context.coding_repository is not None:
+                            await context.coding_repository.claim_lease(
+                                run_input.run_id, request_lease_owner
+                            )
                     source = run_entity(run_agent, prepared_input, user_id=user_id)
+                    if report_delivery_id is not None:
+                        source = _guard_report_delivery(
+                            source,
+                            context.workspace_service,
+                            prepared_input.thread_id,
+                            report_delivery_id,
+                        )
         source = _hide_team_delegation_events(source)
-        async for event in source:
-            if _is_raw_reasoning_event(event):
-                continue
-            if event.type == EventType.TOOL_CALL_START:
-                tool_call_id = str(getattr(event, "tool_call_id", "") or "")
-                tool_call_name = str(getattr(event, "tool_call_name", "") or "")
-                if tool_call_id and tool_call_name:
-                    tool_names_by_call_id[tool_call_id] = tool_call_name
-            elif event.type == EventType.TOOL_CALL_RESULT:
-                tool_call_id = str(getattr(event, "tool_call_id", "") or "")
-                if tool_names_by_call_id.get(
-                    tool_call_id
-                ) == "report_analyze_dataset" or _is_report_analysis_result(event):
-                    event = _redact_report_analysis_result(event)
-            yield encoder.encode(event)
+        try:
+            async for event in _with_sse_heartbeats(source):
+                if event is None:
+                    if report_selected and context.coding_repository is not None:
+                        if not await context.coding_repository.claim_lease(
+                            run_input.run_id, request_lease_owner
+                        ):
+                            yield encoder.encode(
+                                RunErrorEvent(
+                                    type=EventType.RUN_ERROR,
+                                    message="报表任务连接租约已失效，请重新连接。",
+                                    code="task_lease_lost",
+                                )
+                            )
+                            return
+                    yield ": heartbeat\n\n"
+                    continue
+                if _is_raw_reasoning_event(event):
+                    continue
+                if event.type == EventType.TOOL_CALL_START:
+                    tool_call_id = str(getattr(event, "tool_call_id", "") or "")
+                    tool_call_name = str(getattr(event, "tool_call_name", "") or "")
+                    if tool_call_id and tool_call_name:
+                        tool_names_by_call_id[tool_call_id] = tool_call_name
+                elif event.type == EventType.TOOL_CALL_RESULT:
+                    tool_call_id = str(getattr(event, "tool_call_id", "") or "")
+                    if tool_names_by_call_id.get(
+                        tool_call_id
+                    ) == "report_analyze_dataset" or _is_report_analysis_result(event):
+                        event = _redact_report_analysis_result(event)
+                yield encoder.encode(event)
+        finally:
+            if report_selected and context.coding_repository is not None:
+                task = await context.coding_repository.get_task(run_input.run_id)
+                if task is not None and task.status in ACTIVE_TASK_STATUSES:
+                    await context.coding_repository.suspend_task(
+                        run_input.run_id, request_lease_owner
+                    )
 
     return StreamingResponse(
         events(),
@@ -1138,6 +1486,10 @@ application_context = ApplicationContext(
     odoo_command_assistant,
     report_agent,
     assistant_team,
+    coding_agent=coding_agent,
+    database=agent_database,
+    coding_repository=coding_repository,
+    coding_supervisor=coding_supervisor,
 )
 base_app = create_base_app(application_context)
 agent_os, app = create_agentos_app(application_context, base_app)

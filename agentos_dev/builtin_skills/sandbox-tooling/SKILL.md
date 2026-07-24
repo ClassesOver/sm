@@ -3,12 +3,12 @@ name: sandbox-tooling
 description: 在当前 thread 隔离的 Daytona sandbox-tools 镜像中执行编码、代码检查、测试、文档处理、数据分析和数据库客户端任务；需要选择预装工具或判断能力边界时使用。
 compatibility: Daytona sandbox-tools custom Snapshot
 allowed-tools:
-  - exec_command
-  - poll_process
-  - write_stdin
-  - apply_patch
+  - terminal
+  - process
+  - patch
   - view_image
   - update_plan
+  - finish_task
 ---
 
 # Daytona 沙箱工具能力
@@ -20,7 +20,7 @@ allowed-tools:
 1. 任务涉及编码、测试、文档转换、数据分析、图表或数据库客户端时，优先复用下列预装能力。
 2. 只探测当前任务直接需要的命令或 Python 模块，例如 `command -v rg` 或 `python -c 'import pandas'`；不要枚举或输出完整环境。
 3. 下列名称表示镜像构建时安装的能力，不保证用户项目已配置、数据源可访问或运行时服务可用。外部服务和网络仍须以实际命令结果为准。
-4. 文件修改只使用 `apply_patch`。命令返回非零 `exit_code`、超时或后台进程仍在运行时，不得声称任务完成。
+4. 已有文件的小范围精确修改优先使用 `patch` 的 `mode="replace"`；新增、删除、移动或多文件变更使用 `patch` 的 `mode="patch"` 提交原生补丁。模型无法稳定生成补丁函数参数时，可改用 `terminal` 提交完整、独立的 `apply_patch <<'PATCH'` heredoc；服务端会按同一原子 Patch 语义拦截，不能附加其他命令、`workdir` 或 PTY。命令返回非零 `exit_code`、超时或进程仍在运行时不得交付；最后一次修改后必须重新验证，并以 `finish_task` 验收结果为准。
 
 ## 代码任务检查
 

@@ -3,6 +3,7 @@
 该应用提供两个 HRP 集成端点：
 
 - `POST /agui`：标准 AG-UI SSE 运行端点。
+- `POST /agui/cancel`：显式取消当前 capability/thread 绑定的 Coding 或 Report 任务。
 - `GET /config`：`agui.odoo.v2` 协议握手声明。
 
 启动：
@@ -16,6 +17,19 @@ uv venv --python 3.12 .venv-agent
 uv pip install --python .venv-agent/bin/python -r agentos_dev/requirements.txt
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app
 ```
+
+独立 Coding Agent CLI 不启动 FastAPI、Team 或 AG-UI 路由，可直接使用同一套模型、数据库和
+Daytona 工作区配置：
+
+```bash
+AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app_cli \
+  --session-id local-code "实现并验证当前编码任务"
+```
+
+CLI 当前要求把编码任务作为位置参数传入；省略 `--session-id` 时每次启动会创建新的随机任务和工作区。
+指定相同的 `--session-id` 和 `--user-id` 会通过 `CodingTaskSupervisor` 继续未完成任务，或为终态任务
+创建显式 successor。CLI 使用独立 `coding-agent-cli`，不会导入 `agentos_dev.app`，但与生产
+`/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
 
 开发检查与测试：
 
@@ -36,16 +50,22 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
 
 主 Assistant 通过 Agno callable tools factory 注册 `AgentControlToolkit` 和 `BaseToolkit`；
-Report Agent 固定注册 `CodingToolkit`、`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`。Base 层提供受限终端及
+Coding Agent 固定注册生产 `WorkspaceCodingToolkit`；Report Agent 在此基础上注册
+`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`。生产 Coding Toolkit 继承 Agno
+`DaytonaTools` 类型，但跳过其创建 sandbox 的初始化逻辑，通过共享 `CodingExecutionKernel` 和
+`WorkspaceService` 使用当前 thread 唯一 Daytona sandbox。旧 `CodingToolkit` 仅保留兼容与回归测试，
+不会与生产 Toolkit 同时提供给模型。
+Base 层提供受限终端及
 后台会话、基于 ripgrep 的文件/文本搜索、分段读取、文件统计、递归目录树、SHA-256、只读 Git、
 定位 hunk、单文件补丁、完整变更集、目录创建、文件复制、图片查看和 PDF 检查；报表层只提供能力发现、
 数据登记、多轮分析和 Markdown 转 PDF。BaseToolkit 的读取、检查和后台轮询无需确认，新建、覆盖、
-补丁、移动、删除、通用 `sandbox_exec`、后台输入及终止需要确认；CodingToolkit 的全部工具默认
-不要求确认。所有能力仍绑定当前 thread 的 Daytona
+补丁、移动、删除、通用 `sandbox_exec`、后台输入及终止需要确认；生产 Coding Toolkit 的六个工具
+`terminal`、`process`、`patch`、`view_image`、`update_plan`、`finish_task` 均不要求确认。
+所有能力仍绑定当前 thread 的 Daytona
 sandbox；实际安全边界包括 `network_block_all`、路径和符号链接校验、文件/结果大小限制以及
 前台命令最长 60 秒、后台命令最长 86400 秒；后台命令仍须设置明确时限。
 
-Base 层借鉴 Codex 的少量强工具和 Hermes 的分段读取、分页搜索、精确替换及陈旧文件检测，
+Base 层采用少量强工具，并提供分段读取、分页搜索、精确替换及陈旧文件检测，
 不直接挂载 Agno 的 `Workspace`、`FileTools` 或 `CodingTools`，因为这些工具操作 AgentOS 宿主目录，
 无法继承本项目的 Daytona/thread 隔离；`BaseToolkit` 是面向该边界的 coding agent 实现，覆盖 read、
 edit、write、shell 以及 grep/find/ls。文件和文本搜索在 Daytona sandbox 内通过服务端生成的
@@ -65,7 +85,7 @@ diff、log 和 show 同样使用固定只读参数，不开放任意 Git flags�
 失败输出会返回模型继续修正。单次完整文本读取限制为 64 KiB，更大文件必须分段读取。
 Agent 在每个工具批次后持久化 checkpoint；模型请求遇到临时失败时最多重试两次并指数退避。
 
-## Codex 对齐配置
+## Coding Agent 配置
 
 这里的“对齐”是让 report-agent 成为受 Daytona 隔离的 coding agent 扩展，同时保留数据源、
 Markdown/PDF 和 Odoo 导出的报表能力。当前采用以下配置：
@@ -107,15 +127,16 @@ assistant.num_history_runs = None
 ```
 
 运行入口只创建 ID 为 `hrp-assistant-team` 的一个 Agno `TeamMode.route` Team，成员为
-`assistant`、`odoo_command_assistant` 和 `report_agent`。普通 `assistant` 的 ID 是
+`assistant`、`coding_agent`、`odoo_command_assistant` 和 `report_agent`。普通 `assistant` 的 ID 是
 `general-assistant`，负责问答、非报表技能和工作区服务端工具，不获得任何 Odoo client command；
+`coding_agent` 的 ID 是 `coding-agent`，负责代码和工作区开发任务；
 `odoo_command_assistant` 的 ID 是 `odoo-command-assistant`，只获得本轮声明且属于固定宿主 command
 目录或合法 `odoo.business.<namespace>.<command>` 的工具，不获得工作区或报表工具；`report_agent`
 负责工作区编码、数据分析和报表工具，额外只允许 `odoo.export_current_view`。
 
-显式选择智能报表技能时，可信路由上下文只暴露 `report_agent`。其他新请求在存在合法 Odoo command
-能力时只暴露普通和 command 两个成员，由 Team 领导者按用户是否明确要求执行 Odoo 页面或业务操作
-选择；工具目录只表示能力可用，不能单独作为操作意图。没有合法 Odoo command 时只暴露普通成员。
+显式选择智能报表技能时，可信路由上下文只暴露 `report_agent`。其他新请求默认暴露普通和 Coding
+成员；存在合法 Odoo command 能力时再追加 command 成员，由 Team 领导者按用户意图选择。工具目录
+只表示能力可用，不能单独作为操作意图。
 客户端同名上下文会先被删除，不能伪造目标成员。Team 内部强制调用的
 `delegate_task_to_member` 只负责委派，不会作为 AG-UI 页面工具发送给浏览器；AgentOS 不再强制或
 检查成员的首个 Odoo 工具。自动生成的 `/agents/*/runs` 和 `/teams/*/runs` 运行入口统一禁用，
@@ -155,7 +176,7 @@ thinking。服务端不转发原始 reasoning delta，终态持久化前清除 r
 ### 计划、工具发现与上下文状态
 
 Agno 2.7.3 支持 `session_state`、AG-UI `STATE_DELTA`、callable tools factory 和固定步骤
-Workflow，但没有 Codex 风格的专用 `update_plan`。本项目因此提供受约束的计划工具：主 Assistant
+Workflow，但没有内置的专用 `update_plan`。本项目因此提供受约束的计划工具：主 Assistant
 继续使用 `agent_update_plan`，Coding/Report Agent 使用 `update_plan`；两者最多 20 步、最多一个
 `in_progress`，且只写保留键 `agentos_plan`。计划是任务进度，不是 Odoo 业务事实，也不得保存快照、
 授权或 modifiers。
@@ -169,16 +190,42 @@ Workflow，但没有 Codex 风格的专用 `update_plan`。本项目因此提供
 
 ### 泛化数据源与 ReportAgent
 
-`coding-agent` 是可独立构造但不注册为 Team 成员的基座，固定暴露 `exec_command`、`poll_process`、
-`write_stdin`、`stop_process`、`apply_patch`、`view_image` 和 `update_plan`，全部默认不要求确认。`report-agent` 从该基座派生，固定暴露
-`CodingToolkit`、`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`。它不使用固定 Workflow，
+`coding-agent` 是 Team 的正式成员，生产只暴露 `WorkspaceCodingToolkit` 的六个工具。
+`terminal` 将前台/后台语义映射到受管命令，并在远端 session 创建前写入持久 execution 预留记录；
+`process` 支持
+`list/poll/wait/kill/write/submit`，未暴露底层不能可靠保证的完整历史日志、关闭 stdin 和异步通知；
+`patch` 的 `replace` 模式使用服务端读取的 SHA-256 做唯一或全部精确替换，`patch` 模式复用原生补丁。
+`apply_patch` 支持 Add/Update/Delete/Move、多文件与多 hunk，并在工作区服务层原子提交；仅对完整
+Markdown/heredoc 外壳和 Add File 纯空行提供有限格式兼容。对于不能稳定生成补丁函数参数的兼容模型，
+`terminal` 还接受完整、独立的 `apply_patch <<'PATCH'` heredoc：服务端在进入远端 Shell 前拦截
+它并复用同一 Patch 解析与原子提交层，因此不依赖 Daytona 镜像安装同名命令；格式错误或夹带其他
+Shell 命令时拒绝且不写文件。供应商 API 已拒绝的畸形函数参数无法到达该 fallback，仍须由模型或
+供应商重试为有效工具调用。`report-agent` 从该基座派生，固定暴露生产 Coding Toolkit、
+`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`。它不使用固定 Workflow，
 模型自行决定分析命令、运行时长和迭代轮次；Report 层只保留数据源物化、输入绑定、Markdown/PDF
 渲染及验收。完整文件内容不会注入模型上下文；模型从数据源句柄取得工作区路径后使用 Coding 工具分析。
-复杂分析先通过 `exec_command` 检查文件，再用 `apply_patch` 在当前 thread 工作区创建或精确修改
-任意 Python 脚本，并用 `exec_command`、`poll_process`、`write_stdin`、`stop_process` 执行和持续管理；不再经过
-`report_analyze_dataset` 的二次命令封装。
-CodingToolkit 不设置 Agno HITL 确认，分析执行仍受 Daytona 网络隔离、路径、进程、超时和输出大小限制；
+复杂分析先通过 `terminal` 检查文件；已有文件的小范围修改优先使用 `patch(mode="replace")`，
+创建、删除、移动或多文件修改使用 `patch(mode="patch")`。命令使用 `terminal` 和 `process` 执行与
+持续管理，不再经过 `report_analyze_dataset` 的二次命令封装。生产 Coding Toolkit 不设置 Agno
+HITL 确认，分析执行仍受 Daytona 网络隔离、路径、进程、超时和输出大小限制；
 不新增 AgentOS 宿主机 Python 或绕过现有工作区边界的执行入口。
+
+Coding 任务统一由 `agentos_dev.coding.CodingTaskSupervisor` 编排：一个 `CodingTask` 表示完整目标，
+每次 Agno internal run 是一个 `Attempt`，terminal/process/patch 副作用保存为 `Execution`。AG-UI、
+Team member 和 CLI 只通过薄 adapter 调用 Supervisor；`agentos_dev.coding` 不导入 FastAPI、AG-UI、
+Team、Report 或 `agentos_dev.app`，也不通过工具名或 AG-UI 事件推进任务状态。
+
+客户端始终只看到原始 external `run_id`。断线恢复复用当前 Attempt 的同一 internal `run_id`，只增加
+`resume_count`；只有 continuation 才创建下一 Attempt。Attempt 0 不消耗预算，最多创建 Attempt 20，
+因此一个任务最多 21 个 Attempt；24 小时 deadline 从任务创建时计算，新指令和恢复均不重置。
+连续相同规范化错误三次后失败关闭。`TaskSession` 每 15 秒独立续租，租约 TTL 为 45 秒；断线取消
+本地 Agno coroutine，清理未保留 Execution，并把可恢复任务置为 `suspended`，不会在无连接时后台继续。
+
+`finish_task` 验证计划、产物 SHA、最后 mutation 后的成功 verification、活动进程、健康服务和 pending
+instruction 后先保存不可变 `finish_receipt`，把 Task 置为 `finishing`、Attempt 置为
+`finish_requested`；Agno run 到达终态后才原子完成 Task。最终消息 ID 固定为
+`<external_run_id>:final`，终态事件 ID 固定为 `<external_run_id>:terminal`，未验收的候选总结不会发布。
+Report 保持独立的既有交付回执门禁，不写入 Coding v2 的状态推进逻辑。
 
 工作区文件、目录、SQLite、DuckDB、Odoo 受控导出和服务端注册的只读 PostgreSQL 均通过
 `DatasetHandle` 进入报表工具。目录只列直接子项，文件变化会返回稳定的 `stale_dataset`，单个
@@ -240,13 +287,22 @@ System Snapshot。工具镜像更新后必须重新创建并激活该自定义 S
 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。可通过 `AGENT_ENV_FILE` 指向其他
 环境文件；已存在的进程环境变量优先于文件内容。
 
-开发会话和 workspace 注册表统一保存在 PostgreSQL。连接配置优先读取
+Agent、Team、Coding 任务和 workspace 注册表共享同一 Agno 数据库。连接配置优先读取
 `AGENT_DB_URL`，其次读取 `DATABASE_URL`；未提供完整 URL 时，根据
 `AGENT_POSTGRES_HOST`、`AGENT_POSTGRES_PORT`、`AGENT_POSTGRES_DB`、
 `AGENT_POSTGRES_USER` 和 `AGENT_POSTGRES_PASSWORD` 生成连接串。统一 Compose 将专用
 PostgreSQL 绑定到 `127.0.0.1:55432`，容器内 AgentOS 则通过 `agent-db:5432` 连接。
 外部 PostgreSQL 首次使用时仍可运行 `bash scripts/init_agent_db.sh` 安全创建数据库；
 认证沿用环境变量或 `.pgpass`。
+
+PostgreSQL 是多实例生产默认。文件型 SQLite 仅用于单实例开发兼容，支持
+`sqlite[+aiosqlite]:///`，启用 WAL、foreign keys 和 busy timeout，并拒绝内存数据库。任务、内部 run
+映射和 execution 回执使用可移植 SQLAlchemy 表与 Agno schema version；活动记录不清理，终态及有界
+模型可见输出保留 7 天后由数据库租约协调的惰性清理删除。
+
+Coding v2 采用协调停机迁移，不支持新旧实例并行双读双写。部署时先停止旧实例并备份数据库，再由
+新版本在 schema advisory lock 下完成加列、Instruction 表、唯一索引和回填，成功后只启动新版本。
+旧活动 Execution 以 epoch 0 导入；发现重复 Attempt 编号或无法判定的数据时迁移失败关闭，不静默修正。
 
 普通 `/agui` 请求只接收当前用户消息，页面工具续跑只接收末尾连续工具结果；fresh request
 由服务端从 AgentOS PostgreSQL 装配预算历史，续跑沿用原暂停 run，不重复注入。历史回答重生成使用受控 branch 元数据和源、
@@ -263,7 +319,7 @@ Skills 保持渐进披露：模型先看到名称和描述，再按需读取指�
 Toolkit instructions 注入各自的工具选择、迭代、失败恢复和完成校验规则；
 指令明确所有基础工具共享当前 thread 的同一 Daytona
 sandbox，独立只读探查可并行，存在依赖时串行，并在修改前后校验真实文件状态。
-这些 Hermes/Codex 对齐只改善能力发现和执行纪律，不会把工具执行移到 AgentOS 宿主机，
+这些工具对齐只改善能力发现和执行纪律，不会把工具执行移到 AgentOS 宿主机，
 也不会放宽确认、网络、路径、文件或超时边界。
 
 `coding-agent` 还固定加载随 AgentOS 镜像打包的 `agentos_dev/builtin_skills/sandbox-tooling` 系统

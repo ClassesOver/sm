@@ -70,9 +70,12 @@ def test_load_builtin_coding_skills_describes_sandbox_image_capabilities():
     assert "项目既有检查入口" in instructions
     assert "格式检查、lint、类型检查和测试" in instructions
     assert "git diff --check" in instructions
+    assert "apply_changes" not in instructions
+    assert '`patch` 的 `mode="replace"`' in instructions
     assert "未执行检查及原因" in instructions
     assert "image-source" not in instructions
     assert "镜像能力的权威来源" not in instructions
+    assert "co" + "dex" not in instructions.lower()
 
 
 def test_public_skill_metadata_uses_skill_name_as_id(tmp_path):

@@ -7,6 +7,7 @@ from agentos_dev.database import (
     DEFAULT_AGENT_DB_URL,
     SerializedAsyncPostgresDb,
     agent_db_url,
+    create_agent_database,
     psycopg_db_url,
 )
 
@@ -76,3 +77,19 @@ async def test_session_upsert_clears_terminal_reasoning_before_database_write(mo
     assert result is session
     assert run.reasoning_content is None
     assert captured == [(session, False)]
+
+
+def test_sqlite_database_factory_rejects_memory_and_enables_required_pragmas(tmp_path):
+    with pytest.raises(ValueError, match="不能使用内存数据库"):
+        create_agent_database("sqlite:///:memory:")
+
+    database = create_agent_database(f"sqlite:///{tmp_path / 'agent.db'}")
+    try:
+        assert database.backend == "sqlite"
+        assert database.async_db.db_engine is database.async_engine
+        with database.sync_engine.connect() as connection:
+            assert connection.exec_driver_sql("PRAGMA journal_mode").scalar_one() == "wal"
+            assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+            assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one() == 30_000
+    finally:
+        database.sync_engine.dispose()

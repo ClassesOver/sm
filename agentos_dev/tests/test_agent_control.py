@@ -4,6 +4,7 @@ import pytest
 from agno.models.message import Message
 from agno.run import RunContext
 
+from agentos_dev import app
 from agentos_dev.agent_control import (
     AGENT_CONTEXT_STATUS_DEPENDENCY,
     AGENT_CONTINUATION_STATE_KEY,
@@ -176,10 +177,11 @@ def test_report_toolkit_is_discoverable_but_requires_skill_route(tmp_path):
 
     report_tools = build_report_agent_tools(
         workspace_service,
+        app.coding_repository,
         run_context=SimpleNamespace(session_state=context.session_state, dependencies={}),
     )
     assert [tool.name for tool in report_tools] == [
-        "coding",
+        "workspace_coding",
         "report_data_sources",
         "workspace_report",
     ]
