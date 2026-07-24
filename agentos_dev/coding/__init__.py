@@ -1,4 +1,9 @@
-from .adapters import CliCodingAdapter, CodingMemberAdapter, create_team_coding_member
+from .adapters import (
+    AguiCodingAdapter,
+    CliCodingAdapter,
+    CodingMemberAdapter,
+    create_team_coding_member,
+)
 from .completion import CompletionGate
 from .executor import AgnoCodingExecutor, AgnoRunState
 from .models import (
@@ -24,6 +29,7 @@ __all__ = [
     "AttemptOutcome",
     "AttemptSnapshot",
     "AttemptState",
+    "AguiCodingAdapter",
     "AgnoCodingExecutor",
     "AgnoRunState",
     "CodingEvent",

@@ -2,8 +2,13 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from agentos_dev.agui_coding_adapter import AguiCodingAdapter
-from agentos_dev.coding import CodingEvent, CodingScope, InstructionReceipt, InstructionState
+from agentos_dev.coding import (
+    AguiCodingAdapter,
+    CodingEvent,
+    CodingScope,
+    InstructionReceipt,
+    InstructionState,
+)
 from agentos_dev.coding.adapters import CodingMemberAdapter
 
 

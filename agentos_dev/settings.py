@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 from dotenv import dotenv_values
 
-DEFAULT_ENV_FILE = "/home/junge/pros/agents_app/.env"
+DEFAULT_ENV_FILE = ".env"
 DEFAULT_MODEL_ID = "qwen3.6-35b-a3b"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_AGENT_DB_URL = "postgresql+psycopg://odoo@127.0.0.1:55432/dev"

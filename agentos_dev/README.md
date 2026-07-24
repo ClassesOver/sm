@@ -22,14 +22,13 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app
 Daytona 工作区配置：
 
 ```bash
-AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app_cli \
-  --session-id local-code "实现并验证当前编码任务"
+AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.cli
 ```
 
-CLI 当前要求把编码任务作为位置参数传入；省略 `--session-id` 时每次启动会创建新的随机任务和工作区。
-指定相同的 `--session-id` 和 `--user-id` 会通过 `CodingTaskSupervisor` 继续未完成任务，或为终态任务
-创建显式 successor。CLI 使用独立 `coding-agent-cli`，不会导入 `agentos_dev.app`，但与生产
-`/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
+CLI 不接收命令行参数，直接使用 Agno 2.7.3 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和
+退出控制。原生 CLI 面向只暴露 `run_coding_task` 的 facade Agent；该工具把完整目标交给
+`CodingTaskSupervisor`，底层 `coding-agent-cli` 才执行六工具闭环。因此 CLI 不导入
+`agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
 
 开发检查与测试：
 
@@ -212,8 +211,9 @@ HITL 确认，分析执行仍受 Daytona 网络隔离、路径、进程、超时
 
 Coding 任务统一由 `agentos_dev.coding.CodingTaskSupervisor` 编排：一个 `CodingTask` 表示完整目标，
 每次 Agno internal run 是一个 `Attempt`，terminal/process/patch 副作用保存为 `Execution`。AG-UI、
-Team member 和 CLI 只通过薄 adapter 调用 Supervisor；`agentos_dev.coding` 不导入 FastAPI、AG-UI、
-Team、Report 或 `agentos_dev.app`，也不通过工具名或 AG-UI 事件推进任务状态。
+Team member 和 CLI 只通过薄 adapter 调用 Supervisor；AG-UI adapter 位于 `agentos_dev.coding`，
+其余 Coding 核心模块不导入 FastAPI、Team、Report 或 `agentos_dev.app`，也不通过工具名或 AG-UI
+事件推进任务状态。
 
 客户端始终只看到原始 external `run_id`。断线恢复复用当前 Attempt 的同一 internal `run_id`，只增加
 `resume_count`；只有 continuation 才创建下一 Attempt。Attempt 0 不消耗预算，最多创建 Attempt 20，
@@ -283,7 +283,7 @@ sandbox 的 `/tmp/workspace-report-*` 仅用于一次渲染或验收的临时文
 System Snapshot。工具镜像更新后必须重新创建并激活该自定义 Snapshot；仅推送同名 Registry tag
 不会刷新既有 Snapshot 的固定镜像引用。
 
-应用默认读取 `/home/junge/pros/agents_app/.env`，复用其中的 `MODEL`、
+应用默认读取当前工作目录下的 `.env`，复用其中的 `MODEL`、
 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。可通过 `AGENT_ENV_FILE` 指向其他
 环境文件；已存在的进程环境变量优先于文件内容。
 

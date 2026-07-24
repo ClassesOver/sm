@@ -49,7 +49,6 @@ from .agents import (
     create_assistants,
     is_odoo_command_name,
 )
-from .agui_coding_adapter import AguiCodingAdapter
 from .application import ApplicationContext, create_agentos_app
 from .branch import (
     BranchError,
@@ -58,7 +57,7 @@ from .branch import (
     run_branch,
     validate_branch_identity,
 )
-from .coding import AgnoCodingExecutor, CodingScope, CodingTaskSupervisor
+from .coding import AgnoCodingExecutor, AguiCodingAdapter, CodingScope, CodingTaskSupervisor
 from .coding.adapters import create_team_coding_member
 from .coding.execution import CODING_TASK_DEPENDENCY, CodingExecutionKernel
 from .coding.repository import (

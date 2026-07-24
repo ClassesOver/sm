@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
 from dataclasses import dataclass
 from uuid import uuid4
@@ -8,6 +7,8 @@ from uuid import uuid4
 from agno.agent import Agent
 from agno.db.base import AsyncBaseDb
 from agno.models.openai import OpenAIChat
+from agno.run import RunContext
+from agno.tools import Function
 
 from ..agents import OPENAI_COMPATIBLE_ROLE_MAP
 from ..coding import (
@@ -15,7 +16,6 @@ from ..coding import (
     CodingScope,
     CodingTaskRepository,
     CodingTaskSupervisor,
-    TaskState,
 )
 from ..coding.adapters import CliCodingAdapter
 from ..coding.execution import CodingExecutionKernel, WorkspaceCodingToolkit
@@ -88,76 +88,83 @@ def create_cli_agent(context: CliContext) -> Agent:
     )
 
 
-async def run_cli_supervisor(
-    context: CliContext,
-    agent: Agent,
-    *,
-    message: str,
-    session_id: str,
-    user_id: str,
-) -> None:
-    async with context.workspace_service._async_client() as client:
-        sandbox = await context.workspace_service._asandbox_for(client, session_id)
-        sandbox_id = str(getattr(sandbox, "id", "") or "")
-    if not sandbox_id:
-        raise RuntimeError("CLI Daytona 工作区不可用。")
-    scope = CodingScope(session_id, user_id, session_id, sandbox_id, str(agent.id))
+def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
     supervisor = CodingTaskSupervisor(
         context.coding_repository,
-        AgnoCodingExecutor(lambda _agent_id: agent),
+        AgnoCodingExecutor(lambda _agent_id: coding_agent),
         execution_cleanup=CodingExecutionKernel(
             context.workspace_service, context.coding_repository
         ),
     )
     adapter = CliCodingAdapter(supervisor)
-    existing = await context.coding_repository.get_task_snapshot(session_id)
-    if existing is None:
-        events = await adapter.run(scope, message)
-    elif existing.state in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
-        successor_scope = CodingScope(
-            f"{session_id}:{uuid4().hex}",
+
+    async def run_coding_task(instruction: str, run_context: RunContext) -> str:
+        external_run_id = str(run_context.run_id or "")
+        session_id = str(run_context.session_id or "")
+        user_id = str(run_context.user_id or "")
+        if not external_run_id or not session_id or not user_id:
+            raise ValueError("task_context_missing")
+        async with context.workspace_service._async_client() as client:
+            sandbox = await context.workspace_service._asandbox_for(client, session_id)
+            sandbox_id = str(getattr(sandbox, "id", "") or "")
+        if not sandbox_id:
+            raise RuntimeError("CLI Daytona 工作区不可用。")
+        scope = CodingScope(
+            external_run_id,
             user_id,
             session_id,
             sandbox_id,
-            str(agent.id),
+            str(coding_agent.id),
         )
-        events = [
-            event
-            async for event in adapter.start(
-                successor_scope,
-                message,
-                predecessor_task_id=existing.scope.external_run_id,
-            )
-        ]
-    else:
-        await adapter.instruct(scope, uuid4().hex, message)
-        events = [event async for event in adapter.resume(scope)]
-    for event in events:
-        if event.type == "final_message":
-            print(str(event.data.get("content") or ""))
+        final = ""
+        for event in await adapter.run(scope, instruction):
+            if event.type == "final_message":
+                final = str(event.data.get("content") or "")
+            elif event.type == "terminal" and event.data.get("state") != "completed":
+                raise RuntimeError(str(event.data.get("code") or "coding_task_failed"))
+        return final
+
+    function = Function(
+        name="run_coding_task",
+        description="把完整编码目标交给 CodingTaskSupervisor 执行并返回验收结果。",
+        parameters={
+            "type": "object",
+            "properties": {"instruction": {"type": "string", "minLength": 1}},
+            "required": ["instruction"],
+            "additionalProperties": False,
+        },
+        entrypoint=run_coding_task,
+        stop_after_tool_call=True,
+    )
+    app_agent = coding_agent.deep_copy(
+        update={
+            "id": "coding-agent-cli-app",
+            "name": "Coding Agent CLI App",
+            "instructions": [
+                "必须把用户的完整编码目标原样传给 run_coding_task，并直接返回工具结果。"
+            ],
+            "tools": [function],
+            "tool_choice": {"type": "function", "function": {"name": "run_coding_task"}},
+            "skills": None,
+        }
+    )
+    return app_agent
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="启动独立 Coding Agent CLI。")
-    parser.add_argument("message", nargs="?", help="进入交互模式前先执行的任务。")
-    parser.add_argument("--session-id", default=None, help="复用指定 CLI 会话和工作区。")
-    parser.add_argument("--user-id", default="app-cli", help="会话持久化使用的用户标识。")
-    return parser
+async def run_cli_app(context: CliContext, coding_agent: Agent) -> None:
+    app_agent = create_cli_app_agent(context, coding_agent)
+    await app_agent.acli_app(
+        session_id=f"cli-{uuid4().hex}",
+        user_id="cli",
+        stream=True,
+        markdown=True,
+    )
 
 
-def main(argv: list[str] | None = None) -> None:
-    arguments = _parser().parse_args(argv)
+def main() -> None:
     context = create_cli_context()
     agent = create_cli_agent(context)
-    session_id = arguments.session_id or f"app-cli-{uuid4().hex}"
-    if arguments.message is None:
-        raise SystemExit("Supervisor CLI 当前要求提供一条编码任务消息。")
-    asyncio.run(
-        run_cli_supervisor(
-            context,
-            agent,
-            message=arguments.message,
-            session_id=session_id,
-            user_id=arguments.user_id,
-        )
-    )
+    try:
+        asyncio.run(run_cli_app(context, agent))
+    except KeyboardInterrupt:
+        pass

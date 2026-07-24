@@ -11,6 +11,7 @@ def settings(values=None, **overrides):
 
 def test_settings_defaults():
     current = settings()
+    assert current.env_file == ".env"
     assert current.port == 7777
     assert current.workers == 4
     assert current.database_url == DEFAULT_AGENT_DB_URL
