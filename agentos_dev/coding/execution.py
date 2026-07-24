@@ -939,9 +939,9 @@ class CodingExecutionKernel:
 
     async def finish_task(
         self,
-        summary: str,
-        artifact_paths: list[str],
-        verification_ids: list[str],
+        summary: str | None,
+        artifact_paths: list[str] | None,
+        verification_ids: list[str] | None,
         service_sessions: list[dict[str, str]],
         run_context: RunContext | None,
         finish_function: Function,
@@ -1169,9 +1169,9 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         )
 
         async def finish_entrypoint(
-            summary: str,
-            artifact_paths: list[str],
-            verification_ids: list[str],
+            summary: str | None = None,
+            artifact_paths: list[str] | None = None,
+            verification_ids: list[str] | None = None,
             service_sessions: list[dict[str, str]] | None = None,
             run_context: RunContext | None = None,
         ) -> dict[str, Any]:

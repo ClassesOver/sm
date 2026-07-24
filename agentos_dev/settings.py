@@ -7,6 +7,7 @@ from dotenv import dotenv_values
 
 DEFAULT_ENV_FILE = ".env"
 DEFAULT_MODEL_ID = "qwen3.6-35b-a3b"
+DEFAULT_WORKSPACE_SNAPSHOT = "sandbox-tools"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_AGENT_DB_URL = "postgresql+psycopg://odoo@127.0.0.1:55432/dev"
 DEFAULT_CORS_ORIGINS = (
@@ -86,6 +87,7 @@ class AgentSettings:
     skills_dir: str | None
     report_data_sources_file: str | None
     workspace_hmac_secret: str
+    workspace_snapshot: str
     enable_tool_result_compression: bool
     enable_session_summaries: bool
     enable_thinking: bool
@@ -149,6 +151,10 @@ class AgentSettings:
                 values.get("AGENT_REPORT_DATA_SOURCES_FILE", "").strip() or None
             ),
             workspace_hmac_secret=values.get("AGUI_WORKSPACE_HMAC_SECRET", ""),
+            workspace_snapshot=(
+                values.get("DAYTONA_DEFAULT_SNAPSHOT") or DEFAULT_WORKSPACE_SNAPSHOT
+            ).strip()
+            or DEFAULT_WORKSPACE_SNAPSHOT,
             enable_tool_result_compression=_flag(
                 values.get("AGENT_ENABLE_TOOL_RESULT_COMPRESSION"), default=True
             ),

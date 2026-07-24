@@ -1,6 +1,6 @@
 import pytest
 
-from agentos_dev.settings import DEFAULT_AGENT_DB_URL, AgentSettings
+from agentos_dev.settings import DEFAULT_AGENT_DB_URL, DEFAULT_WORKSPACE_SNAPSHOT, AgentSettings
 
 
 def settings(values=None, **overrides):
@@ -15,6 +15,7 @@ def test_settings_defaults():
     assert current.port == 7777
     assert current.workers == 4
     assert current.database_url == DEFAULT_AGENT_DB_URL
+    assert current.workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
     assert current.cors_allowed_origins == (
         "http://127.0.0.1:18069",
         "http://localhost:18069",
@@ -44,6 +45,13 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.history_token_budget == 32768
     assert current.context_token_budget == 131072
     assert current.output_token_reserve == 16384
+
+
+def test_workspace_snapshot_comes_from_environment():
+    assert settings(DAYTONA_DEFAULT_SNAPSHOT=" custom-snapshot ").workspace_snapshot == (
+        "custom-snapshot"
+    )
+    assert settings(DAYTONA_DEFAULT_SNAPSHOT=" ").workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
 
 
 def test_report_data_sources_file_is_trimmed():

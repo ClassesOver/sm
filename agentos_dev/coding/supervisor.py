@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
 from .executor import AgnoCodingExecutor, AgnoRunState
@@ -56,12 +57,20 @@ class CodingTaskSupervisor:
         )
 
     async def run_task(self, scope: CodingScope) -> AsyncIterator[CodingEvent]:
-        async for event in self._drive(scope):
-            yield event
+        stream = self._drive(scope)
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await stream.aclose()
 
     async def resume_task(self, scope: CodingScope) -> AsyncIterator[CodingEvent]:
-        async for event in self._drive(scope):
-            yield event
+        stream = self._drive(scope)
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await stream.aclose()
 
     async def submit_instruction(
         self,
@@ -77,7 +86,7 @@ class CodingTaskSupervisor:
             await self.execution_cleanup.cleanup_disconnect(scope, task.lease_epoch)
         return task
 
-    async def _drive(self, scope: CodingScope) -> AsyncIterator[CodingEvent]:
+    async def _drive(self, scope: CodingScope) -> AsyncGenerator[CodingEvent, None]:
         task = await self._task_for_scope(scope)
         if task.state is TaskState.COMPLETED:
             async for event in self._completion_events(task):
@@ -88,10 +97,8 @@ class CodingTaskSupervisor:
             return
 
         session = self.session_factory(self.repository, scope)
-        entered = False
         try:
-            async with session:
-                entered = True
+            async with session, self._disconnect_on_exit(scope, session):
                 if self.execution_cleanup is not None:
                     await self.execution_cleanup.cleanup_old_epoch(scope, session.lease.epoch)
                 while True:
@@ -185,8 +192,6 @@ class CodingTaskSupervisor:
                     yield self._terminal_event(task, decision.code)
                     return
         except asyncio.CancelledError:
-            if entered:
-                await self._disconnect(scope, session)
             raise
         except CodingRepositoryError as error:
             yield CodingEvent(
@@ -194,6 +199,13 @@ class CodingTaskSupervisor:
                 type="terminal",
                 data={"state": "failed", "code": error.code, "message": str(error)},
             )
+
+    @asynccontextmanager
+    async def _disconnect_on_exit(self, scope: CodingScope, session: TaskSession):
+        try:
+            yield
+        finally:
+            await self._disconnect(scope, session)
 
     async def _source(
         self,

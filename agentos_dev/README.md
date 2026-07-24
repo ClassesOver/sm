@@ -27,8 +27,11 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.cli
 
 CLI 不接收命令行参数，直接使用 Agno 2.7.3 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和
 退出控制。原生 CLI 面向只暴露 `run_coding_task` 的 facade Agent；该工具把完整目标交给
-`CodingTaskSupervisor`，底层 `coding-agent-cli` 才执行六工具闭环。因此 CLI 不导入
+`CodingTaskSupervisor`。facade 固定使用默认非思考的 `qwen-plus` 并强制调用该工具，且不发送
+`enable_thinking`；底层 `coding-agent-cli` 仍使用 `MODEL` 执行六工具闭环。因此 CLI 不导入
 `agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
+PostgreSQL 中 Coding Repository 使用独立的 `agentos_coding` schema 和版本表，不写入 Agno
+的 session、run 或 schema-version 表；SQLite 单实例开发仍使用默认 schema。
 
 开发检查与测试：
 
@@ -165,6 +168,7 @@ thinking。服务端不转发原始 reasoning delta，终态持久化前清除 r
 主模型 thinking；`AGENT_CONTEXT_TOKEN_BUDGET`、`AGENT_HISTORY_TOKEN_BUDGET` 和
 `AGENT_OUTPUT_TOKEN_RESERVE` 分别调整完整窗口、历史上限和输出余量。关闭任一能力都不会删除 PostgreSQL
 中的完整历史，也不会改变 `agui.odoo.v2`、命令确认、授权或 stale snapshot 校验。
+新建 Daytona 工作区使用 `DAYTONA_DEFAULT_SNAPSHOT` 指定的 snapshot，默认值为 `sandbox-tools`。
 为避免 provider reasoning 进入 Agno 调试日志，thinking 开启时 `AGENT_DEBUG` 不生效；需要模型级
 调试时必须先关闭 thinking，且不得在生产环境记录包含业务数据的请求或响应正文。
 

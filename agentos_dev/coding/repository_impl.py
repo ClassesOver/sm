@@ -48,6 +48,7 @@ from .models import (
 )
 
 TASK_SCHEMA_VERSION = "2.0.0"
+CODING_DB_SCHEMA = "agentos_coding"
 MAX_CONTINUATIONS = 20
 MAX_TERMINAL_OUTPUT_BYTES = 64 * 1024
 MAX_INSTRUCTION_ID_LENGTH = 128
@@ -176,8 +177,17 @@ def _execution_from_row(row: Any) -> CodingExecution:
 class CodingTaskRepository:
     def __init__(self, db: AsyncBaseDb):
         self.db = db
-        schema = getattr(db, "db_schema", None)
+        dialect = db.db_engine.dialect.name  # type: ignore[attr-defined]
+        schema = CODING_DB_SCHEMA if dialect == "postgresql" else None
+        self._legacy_schema = getattr(db, "db_schema", None) if schema else None
         self.metadata = MetaData(schema=schema)
+        self.schema_versions = Table(
+            "agentos_coding_schema_versions",
+            self.metadata,
+            Column("component", String(128), primary_key=True),
+            Column("version", String(32), nullable=False),
+            Column("updated_at", DateTime(timezone=True), nullable=False),
+        )
         self.tasks = Table(
             "agentos_coding_tasks",
             self.metadata,
@@ -331,12 +341,69 @@ class CodingTaskRepository:
             async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
                 if connection.dialect.name == "postgresql":
                     await connection.execute(text("SELECT pg_advisory_xact_lock(1735812441)"))
+                    await connection.execute(
+                        text(f'CREATE SCHEMA IF NOT EXISTS "{CODING_DB_SCHEMA}"')
+                    )
+                    await self._move_legacy_schema(connection)
                 await connection.run_sync(self.metadata.create_all)
                 await self._migrate_schema(connection)
-            await self.db.upsert_schema_version("agentos_coding_repository", TASK_SCHEMA_VERSION)
-            for table in (self.tasks, self.runs, self.executions, self.instructions):
-                await self.db.upsert_schema_version(table.name, TASK_SCHEMA_VERSION)
+                await connection.execute(delete(self.schema_versions))
+                await connection.execute(
+                    insert(self.schema_versions),
+                    [
+                        {
+                            "component": component,
+                            "version": TASK_SCHEMA_VERSION,
+                            "updated_at": utcnow(),
+                        }
+                        for component in (
+                            "agentos_coding_repository",
+                            self.tasks.name,
+                            self.runs.name,
+                            self.executions.name,
+                            self.instructions.name,
+                        )
+                    ],
+                )
             self._initialized = True
+
+    async def _move_legacy_schema(self, connection: Any) -> None:
+        source_schema = self._legacy_schema
+        target_schema = self.metadata.schema
+        if not source_schema or not target_schema or source_schema == target_schema:
+            return
+
+        def table_names(sync_connection: Any, schema: str) -> set[str]:
+            from sqlalchemy import inspect
+
+            return set(inspect(sync_connection).get_table_names(schema=schema))
+
+        source_tables = await connection.run_sync(table_names, source_schema)
+        target_tables = await connection.run_sync(table_names, target_schema)
+        coding_tables = [
+            self.tasks.name,
+            self.runs.name,
+            self.executions.name,
+            self.instructions.name,
+        ]
+        conflicts = (source_tables & target_tables).intersection(coding_tables)
+        if conflicts:
+            raise CodingRepositoryError(
+                "migration_schema_conflict",
+                "新旧 Coding schema 同时包含同名表，迁移已停止。",
+            )
+
+        preparer = connection.dialect.identifier_preparer
+        for table_name in coding_tables:
+            if table_name not in source_tables:
+                continue
+            await connection.execute(
+                text(
+                    f"ALTER TABLE {preparer.quote_schema(source_schema)}."
+                    f"{preparer.quote(table_name)} SET SCHEMA "
+                    f"{preparer.quote_schema(target_schema)}"
+                )
+            )
 
     async def _migrate_schema(self, connection: Any) -> None:
         """在协调停机窗口内把 1.x 三表升级为 2.x schema。"""
@@ -355,6 +422,11 @@ class CodingTaskRepository:
         run_columns = await connection.run_sync(columns, self.runs.name)
         execution_columns = await connection.run_sync(columns, self.executions.name)
         dialect = connection.dialect.name
+        identifier_preparer = connection.dialect.identifier_preparer
+        qualified_tables = {
+            table.name: identifier_preparer.format_table(table)
+            for table in (self.tasks, self.runs, self.executions)
+        }
         json_type = "JSONB" if dialect == "postgresql" else "JSON"
         timestamp_type = "TIMESTAMP WITH TIME ZONE" if dialect == "postgresql" else "DATETIME"
         additions = {
@@ -388,7 +460,10 @@ class CodingTaskRepository:
             for column_name, ddl in table_additions:
                 if column_name not in known[table_name]:
                     await connection.execute(
-                        text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {ddl}')
+                        text(
+                            f"ALTER TABLE {qualified_tables[table_name]} "
+                            f"ADD COLUMN {identifier_preparer.quote(column_name)} {ddl}"
+                        )
                     )
         await connection.execute(
             update(self.runs)
@@ -411,8 +486,10 @@ class CodingTaskRepository:
         await connection.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
-                "uq_agentos_coding_task_runs_attempt "
-                "ON agentos_coding_task_runs (external_run_id, continuation_index)"
+                f"{identifier_preparer.quote('uq_agentos_coding_task_runs_attempt')} "
+                f"ON {qualified_tables[self.runs.name]} "
+                f"({identifier_preparer.quote('external_run_id')}, "
+                f"{identifier_preparer.quote('continuation_index')})"
             )
         )
 

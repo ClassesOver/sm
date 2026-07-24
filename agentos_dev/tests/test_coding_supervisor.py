@@ -104,3 +104,18 @@ async def test_pending_instruction_is_applied_to_one_new_attempt(supervisor_runt
     assert task is not None and task.current_attempt_no == 1
     assert task.state is TaskState.COMPLETED
     assert events[-1].event_id == "external:terminal"
+
+
+@pytest.mark.anyio
+async def test_closing_event_stream_pauses_before_releasing_lease(supervisor_runtime):
+    repository, _executor, supervisor = supervisor_runtime
+    await supervisor.start_task(coding_scope(), "实现目标")
+    events = supervisor.run_task(coding_scope())
+
+    assert (await anext(events)).type == "agno_event"
+    await events.aclose()
+
+    task = await repository.get_task_snapshot("external")
+    assert task is not None and task.state is TaskState.SUSPENDED
+    attempt = await repository.get_attempt(task.current_internal_run_id)
+    assert attempt is not None and attempt.state.value == "paused"

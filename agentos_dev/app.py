@@ -210,7 +210,11 @@ workspace_secret = settings.workspace_hmac_secret
 agent_skills = load_skills(settings.skills_dir)
 agent_database = create_agent_database(settings.database_url)
 coding_repository = CodingTaskRepository(agent_database.async_db)
-workspace_service = WorkspaceService(secret=workspace_secret, database=agent_database)
+workspace_service = WorkspaceService(
+    secret=workspace_secret,
+    database=agent_database,
+    snapshot=settings.workspace_snapshot,
+)
 router = APIRouter()
 
 

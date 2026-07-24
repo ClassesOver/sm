@@ -14,6 +14,7 @@ from pypdf import PdfWriter
 
 import agentos_dev.workspace as workspace_module
 from agentos_dev.agents.report import enforce_report_delivery_output
+from agentos_dev.database import create_agent_database
 from agentos_dev.tests.workspace_fakes import (
     SECRET,
     AsyncFakeClient,
@@ -43,6 +44,7 @@ from agentos_dev.workspace import (
     REPORT_RUNTIME_TIMEOUT_SECONDS,
     WORKSPACE_ROOT,
     WORKSPACE_SNAPSHOT,
+    AsyncSandboxRegistry,
     BaseToolkit,
     DaytonaToolkit,
     SandboxRegistry,
@@ -63,7 +65,7 @@ def test_报表动作和工作区单文件边界统一为200mib():
 
 
 def test_每个对话使用独立持久沙箱且注册表可跨服务复用(tmp_path):
-    assert WORKSPACE_SNAPSHOT == "sandbox-tools-20260723"
+    assert WORKSPACE_SNAPSHOT == "sandbox-tools"
     client = FakeClient()
     first = service(tmp_path, client)
     one = first.sandbox_for("thread-one")
@@ -83,6 +85,15 @@ def test_每个对话使用独立持久沙箱且注册表可跨服务复用(tmp_
     restarted = WorkspaceService(SECRET, client=client, registry=first.registry)
     assert restarted.sandbox_for("thread-one").id == one.id
     assert len(client.created) == 2
+
+    configured = WorkspaceService(
+        SECRET,
+        client=client,
+        registry=first.registry,
+        snapshot="custom-snapshot",
+    )
+    configured.sandbox_for("thread-three")
+    assert client.created[-1].snapshot == "custom-snapshot"
 
 
 def test_路径大小符号链接和销毁边界均生效(tmp_path, monkeypatch):
@@ -154,6 +165,21 @@ def test_注册表直到首次使用才初始化(monkeypatch):
 
     with pytest.raises(RuntimeError, match="offline"):
         registry.ensure_initialized()
+
+
+@pytest.mark.anyio
+async def test_异步注册表连接只启动一次并正常归还(tmp_path):
+    database = create_agent_database(f"sqlite:///{tmp_path / 'registry.db'}")
+    registry = AsyncSandboxRegistry(database.async_db)
+
+    try:
+        async with registry.locked("thread") as transaction:
+            await transaction.set("thread", "sandbox-1")
+        async with registry.locked("thread") as transaction:
+            assert await transaction.get("thread") == "sandbox-1"
+    finally:
+        await database.async_engine.dispose()
+        database.sync_engine.dispose()
 
 
 def test_基础和报表工具集独立且确认边界符合策略(tmp_path):

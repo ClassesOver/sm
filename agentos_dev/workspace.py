@@ -34,7 +34,7 @@ from .database import AgentDatabase, create_agent_database
 from .security import thread_label
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
-WORKSPACE_SNAPSHOT = "sandbox-tools-20260723"
+WORKSPACE_SNAPSHOT = "sandbox-tools"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -231,8 +231,8 @@ class AsyncSandboxRegistry:
         self._initialized = False
         self._initialize_lock = asyncio.Lock()
 
-    async def _connect(self):
-        return await self.db.db_engine.connect()  # type: ignore[attr-defined,no-any-return]
+    def _connect(self):
+        return self.db.db_engine.connect()  # type: ignore[attr-defined,no-any-return]
 
     async def ensure_initialized(self):
         if self._initialized:
@@ -240,26 +240,25 @@ class AsyncSandboxRegistry:
         async with self._initialize_lock:
             if self._initialized:
                 return
-            connection = await self._connect()
-            async with connection, connection.begin():
-                if connection.dialect.name == "postgresql":
-                    if self.metadata.schema:
+            async with self._connect() as connection:
+                async with connection.begin():
+                    if connection.dialect.name == "postgresql":
+                        if self.metadata.schema:
+                            await connection.exec_driver_sql(
+                                f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"'
+                            )
                         await connection.exec_driver_sql(
-                            f'CREATE SCHEMA IF NOT EXISTS "{self.metadata.schema}"'
+                            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                            ("agui-workspace:initialize",),
                         )
-                    await connection.exec_driver_sql(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                        ("agui-workspace:initialize",),
-                    )
-                await connection.run_sync(self.metadata.create_all)
+                    await connection.run_sync(self.metadata.create_all)
             await self.db.upsert_schema_version(self.table.name, "1.0.0")
             self._initialized = True
 
     @asynccontextmanager
     async def locked(self, value: str):
         await self.ensure_initialized()
-        connection = await self._connect()
-        async with connection:
+        async with self._connect() as connection:
             if connection.dialect.name == "sqlite":
                 await connection.exec_driver_sql("BEGIN IMMEDIATE")
                 try:
@@ -318,8 +317,10 @@ class WorkspaceService:
         async_client: Any | None = None,
         async_registry: Any | None = None,
         database: AgentDatabase | None = None,
+        snapshot: str = WORKSPACE_SNAPSHOT,
     ):
         self.secret = secret
+        self.snapshot = snapshot
         self._client = client
         self.registry = registry or SandboxRegistry(database.sync_db if database else None)
         self._async_client_override = async_client
@@ -373,7 +374,7 @@ class WorkspaceService:
             if sandbox is None and create:
                 sandbox = self.client.create(
                     CreateSandboxFromSnapshotParams(
-                        snapshot=WORKSPACE_SNAPSHOT,
+                        snapshot=self.snapshot,
                         name=f"agui-{value[:20]}",
                         language="python",
                         labels={"agui-thread": value},
@@ -464,7 +465,7 @@ class WorkspaceService:
             if sandbox is None and create:
                 sandbox = await client.create(
                     CreateSandboxFromSnapshotParams(
-                        snapshot=WORKSPACE_SNAPSHOT,
+                        snapshot=self.snapshot,
                         name=f"agui-{value[:20]}",
                         language="python",
                         labels={"agui-thread": value},

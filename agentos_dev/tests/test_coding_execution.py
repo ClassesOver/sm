@@ -12,6 +12,7 @@ from agentos_dev.coding.execution import (
     CODING_EXECUTION_MIGRATION_STATE_KEY,
     CODING_TASK_DEPENDENCY,
     CodingExecutionKernel,
+    WorkspaceCodingToolkit,
 )
 from agentos_dev.coding.repository import CodingRepositoryError, CodingTaskRepository
 from agentos_dev.coding_tools import (
@@ -313,6 +314,23 @@ async def test_finish_task_enforces_plan_artifacts_verification_and_active_proce
     assert finish_function.stop_after_tool_call is True
     retained = await runtime.repository.get_execution(service["execution_id"])
     assert retained is not None and retained.retained_service is True
+
+
+@pytest.mark.anyio
+async def test_finish_entrypoint_returns_stable_error_when_required_argument_is_missing(
+    execution_runtime,
+):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    finish_function = toolkit.async_functions["finish_task"]
+
+    result = await finish_function.entrypoint(
+        summary="done",
+        artifact_paths=[],
+        run_context=runtime.context,
+    )
+
+    assert result["code"] == "finish_verification_missing"
 
 
 @pytest.mark.anyio

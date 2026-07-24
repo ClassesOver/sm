@@ -50,18 +50,22 @@ async def test_sqlite_repository_initializes_schema_versions_and_supports_cas(re
     assert running.current_internal_run_id == "internal-1"
     assert await current.increment_mutation(task.external_run_id) == 1
 
-    version_table = await database.async_db._get_table(  # type: ignore[attr-defined]
-        table_type="versions", create_table_if_not_found=False
-    )
-    assert version_table is not None
     async with database.async_engine.connect() as connection:
         versions = {
-            row.table_name: row.version
-            for row in (await connection.execute(select(version_table))).all()
+            row.component: row.version
+            for row in (await connection.execute(select(current.schema_versions))).all()
         }
+    assert versions["agentos_coding_repository"] == TASK_SCHEMA_VERSION
     assert versions["agentos_coding_tasks"] == TASK_SCHEMA_VERSION
     assert versions["agentos_coding_task_runs"] == TASK_SCHEMA_VERSION
     assert versions["agentos_coding_executions"] == TASK_SCHEMA_VERSION
+    assert versions["agentos_coding_task_instructions"] == TASK_SCHEMA_VERSION
+    assert (
+        await database.async_db._get_table(  # type: ignore[attr-defined]
+            table_type="versions", create_table_if_not_found=False
+        )
+        is None
+    )
 
 
 @pytest.mark.anyio

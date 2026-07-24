@@ -31,6 +31,7 @@ CLI_AGENT_INSTRUCTIONS = [
     "所有文件、命令和图片操作必须使用当前声明的工具，并以真实工具结果为准。",
     "修改后复查差异并运行与范围匹配的验证；最终准确说明改动、检查结果和未验证风险。",
 ]
+CLI_ROUTER_MODEL_ID = "qwen-plus"
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ def create_cli_context(settings: AgentSettings | None = None) -> CliContext:
     workspace_service = WorkspaceService(
         secret=current_settings.workspace_hmac_secret,
         database=database,
+        snapshot=current_settings.workspace_snapshot,
     )
     repository = CodingTaskRepository(database.async_db)
     return CliContext(
@@ -57,22 +59,24 @@ def create_cli_context(settings: AgentSettings | None = None) -> CliContext:
     )
 
 
-def create_cli_agent(context: CliContext) -> Agent:
-    settings = context.settings
-    model = OpenAIChat(
-        id=settings.model_id,
+def _create_cli_model(settings: AgentSettings, *, model_id: str | None = None) -> OpenAIChat:
+    return OpenAIChat(
+        id=model_id or settings.model_id,
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
-        extra_body={"enable_thinking": settings.enable_thinking},
         retries=2,
         exponential_backoff=True,
     )
+
+
+def create_cli_agent(context: CliContext) -> Agent:
+    settings = context.settings
     return Agent(
         id="coding-agent-cli",
         name="Coding Agent CLI",
         role="在当前 Daytona 工作区执行受控软件开发任务。",
-        model=model,
+        model=_create_cli_model(settings),
         instructions=CLI_AGENT_INSTRUCTIONS,
         skills=load_builtin_coding_skills(),
         tools=[WorkspaceCodingToolkit(context.workspace_service, context.coding_repository)],
@@ -140,11 +144,15 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
         update={
             "id": "coding-agent-cli-app",
             "name": "Coding Agent CLI App",
+            "model": _create_cli_model(context.settings, model_id=CLI_ROUTER_MODEL_ID),
             "instructions": [
                 "必须把用户的完整编码目标原样传给 run_coding_task，并直接返回工具结果。"
             ],
             "tools": [function],
-            "tool_choice": {"type": "function", "function": {"name": "run_coding_task"}},
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "run_coding_task"},
+            },
             "skills": None,
         }
     )
