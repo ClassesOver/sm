@@ -212,7 +212,9 @@ node scripts/agui_sse_load.js https://odoo.example.com/contract-review/agui 200
 AgentOS 的工作区智能报表依赖现有 `docker/sandbox-tools` 镜像，不支持基础 Daytona slim
 镜像。镜像必须保留 ripgrep、Git、util-linux `script`、coreutils、findutils、WeasyPrint 69、
 pypdf、Matplotlib、pandas、openpyxl、xlrd、Python 测试与静态检查工具，
-以及 Noto CJK 字体和 `/usr/bin/bash`；Daytona sandbox 必须继续启用 `network_block_all`。报表 job 的可信状态保存在
+以及 Noto CJK 字体和 `/usr/bin/bash`。Daytona sandbox 默认必须启用 `network_block_all`；仅当运维
+显式配置 `DAYTONA_NETWORK_ALLOW_LIST` 时，新建 sandbox 才改用最多 10 项的 IPv4 CIDR 白名单，
+且端口访问仍须由出口防火墙或目标服务 ACL 限制。报表 job 的可信状态保存在
 AgentOS/Agno session state，并绑定 thread、输入 SHA-256 和大小；sandbox `/tmp/workspace-report-*` 只能存放一次
 渲染或验收的临时文件，超时和失败由 AgentOS 精确清理。工作区文件和 PDF 的单文件上限为 200 MiB，PDF 最多 200 页；渲染、验收和数据转换动作各有 600 秒服务端预算。
 从工具镜像创建并激活自定义 Snapshot `sandbox-tools-20260723`，不要使用同名 System

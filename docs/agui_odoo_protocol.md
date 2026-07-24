@@ -334,6 +334,25 @@ Undo 执行及其失败结果会被存储以便幂等重放。
 每次请求仍完整发送工具声明、当前页面上下文和状态外层结构。独立菜单路径目录只在上文所述的无结果续跑中发送。
 AgentOS PostgreSQL 是对话历史权威，并加载最近 10 次运行。HRP `session/save` 继续持久化完整 UI 消息快照，用于恢复和版本合并。
 
+Coding 与 Report logical task 全程复用当前 thread 唯一 Daytona sandbox。浏览器始终使用原始外部
+`runId`；服务端 continuation 使用新的内部 Agno run ID，并将客户端事件的 `run_id` 和事件标识改写到
+外部 run 命名空间。任务最长 24 小时、最多 20 次 continuation，连续相同错误三次后熔断。普通问答、
+Odoo 页面命令、授权和业务命令不进入该任务驱动。
+
+Coding/Report SSE 空闲时每 15 秒发送注释心跳。网络失败或没有终态事件的 EOF 使用完全相同的
+`RunAgentInput` 和外部 `runId` 最多重连三次；HTTP 错误、非 SSE 响应、`RUN_ERROR` 和用户停止不重连。
+重连不得重复追加用户消息或工具结果。断线只保存 checkpoint 并暂停任务，不在无连接时后台续跑。
+用户停止先调用 capability/thread 绑定的 `POST /agui/cancel`，payload 为
+`{threadId, runId}`，再中止本地 SSE；取消会终止未声明保留的活动进程，并且重复调用幂等。
+
+模型正常结束但未通过 `finish_task` 时，候选最终文本不会发给浏览器；服务端继续同一 logical task。
+只有计划完成、产物仍属于当前 sandbox、验证回执对应最后 mutation、无未声明活动进程，且 Report 的
+PDF/交付证据有效时，服务端才生成最终 assistant 文本并发送唯一 `RUN_FINISHED`。预算耗尽、熔断、
+显式取消和稳定门禁错误使用唯一 `RUN_ERROR` 结束当前连接。
+模型配额不足、认证失败、无效请求或 provider 限流使用 `model_insufficient_quota`、
+`model_authentication_failed`、`model_invalid_request`、`model_rate_limited` 结束当前连接，但 Coding Task
+保持 `suspended`，不消耗自动恢复次数；外部条件恢复后可使用同一 external `runId` 显式恢复。
+
 每条最终 assistant 消息都在 `extra_data.agent_run_id` 保存 AgentOS run ID。同一轮的所有客户端工具续跑复用该 ID。
 普通运行的 `forwardedProps` 为空；分支运行只允许 `branch.sourceThreadId`、`branch.sourceRunId` 和 `branch.targetMessageId`。
 身份信息和任意后端参数绝不通过该字段转发。

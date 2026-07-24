@@ -6,6 +6,7 @@ from inspect import isawaitable
 from typing import Any
 
 from agno.agent import Agent
+from agno.exceptions import ModelAuthenticationError
 from agno.run.base import RunStatus
 
 from .models import AttemptSnapshot, CodingScope
@@ -18,6 +19,44 @@ class AgnoRunState:
     terminal: bool = False
     checkpoint_recoverable: bool = False
     output: str = ""
+    suspend_code: str | None = None
+
+
+def provider_error_suspend_code(error: BaseException | str) -> str | None:
+    if isinstance(error, ModelAuthenticationError):
+        return "model_authentication_failed"
+    normalized = str(error).lower()
+    if any(
+        marker in normalized
+        for marker in (
+            "insufficient_quota",
+            "exceeded your current quota",
+            "free quota exhausted",
+            "allocationquota.freetieronly",
+        )
+    ):
+        return "model_insufficient_quota"
+    if any(
+        marker in normalized
+        for marker in ("invalid_api_key", "authentication failed", "unauthorized")
+    ):
+        return "model_authentication_failed"
+    if any(
+        marker in normalized
+        for marker in (
+            "invalid_parameter_error",
+            "invalidrequesterror",
+            "invalid_request_error",
+            "invalidparameter",
+        )
+    ):
+        return "model_invalid_request"
+    if any(
+        marker in normalized
+        for marker in ("rate_limit_exceeded", "too many requests", "rate limit")
+    ):
+        return "model_rate_limited"
+    return None
 
 
 class AgnoCodingExecutor:
@@ -103,4 +142,9 @@ class AgnoCodingExecutor:
             terminal=terminal,
             checkpoint_recoverable=recoverable,
             output=str(content or ""),
+            suspend_code=(
+                provider_error_suspend_code(str(content or ""))
+                if status_value == RunStatus.error
+                else None
+            ),
         )

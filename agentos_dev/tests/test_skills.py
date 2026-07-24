@@ -78,6 +78,25 @@ def test_load_builtin_coding_skills_describes_sandbox_image_capabilities():
     assert "co" + "dex" not in instructions.lower()
 
 
+def test_load_builtin_coding_skills_appends_additional_directory(tmp_path):
+    create_skill(tmp_path)
+    skill_file = tmp_path / "review" / "SKILL.md"
+    skill_file.write_text(
+        skill_file.read_text(encoding="utf-8").replace(
+            "description: Review documents\n",
+            "description: Review documents\nversion: 1.0.0\nauthor: Example\n",
+        ),
+        encoding="utf-8",
+    )
+
+    skills = load_builtin_coding_skills(str(tmp_path))
+
+    assert [skill.name for skill in skills.get_all_skills()] == ["sandbox-tooling", "review"]
+    assert len(skills.loaders) == 2
+    assert skills.loaders[0].validate is True
+    assert skills.loaders[1].validate is False
+
+
 def test_public_skill_metadata_uses_skill_name_as_id(tmp_path):
     create_skill(tmp_path)
     skills = load_skills(str(tmp_path))

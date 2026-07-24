@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from agentos_dev.cli import CliContext, create_cli_agent, create_cli_app_agent, run_cli_app
@@ -55,23 +57,62 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert "extra_body" not in request_params
 
 
+def test_create_cli_agent_loads_configured_skills_directory(monkeypatch):
+    settings = AgentSettings.from_environment(
+        {"AGENT_SKILLS_DIR": "/opt/agent-skills"}, load_env_file=False
+    )
+    loaded_paths = []
+    original = cli_module.load_builtin_coding_skills
+
+    def load_skills(path):
+        loaded_paths.append(path)
+        return original()
+
+    monkeypatch.setattr(cli_module, "load_builtin_coding_skills", load_skills)
+    create_cli_agent(
+        CliContext(
+            settings=settings,
+            database=object(),
+            workspace_service=object(),
+            coding_repository=object(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert loaded_paths == ["/opt/agent-skills"]
+
+
 @pytest.mark.anyio
 async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch):
     calls = []
 
+    class AsyncClient:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    coding_client = AsyncClient()
+    app_client = AsyncClient()
+    database = AsyncClient()
+
     class NativeCliAgent:
+        model = type("Model", (), {"async_client": app_client})()
+
         async def acli_app(self, **kwargs):
             calls.append(kwargs)
 
+    coding_agent = type(
+        "CodingAgent", (), {"model": type("Model", (), {"async_client": coding_client})()}
+    )()
     monkeypatch.setattr(
         cli_module,
         "create_cli_app_agent",
         lambda _context, _agent: NativeCliAgent(),
     )
-    context = object()
-    agent = object()
+    context = type("Context", (), {"database": database})()
 
-    await run_cli_app(context, agent)  # type: ignore[arg-type]
+    await run_cli_app(context, coding_agent)  # type: ignore[arg-type]
 
     assert len(calls) == 1
     assert calls[0]["session_id"].startswith("cli-")
@@ -81,3 +122,41 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
         "stream": True,
         "markdown": True,
     }
+    assert coding_client.closed
+    assert app_client.closed
+    assert database.closed
+
+
+@pytest.mark.anyio
+async def test_cli_closes_resources_when_native_app_is_cancelled(monkeypatch):
+    closed = []
+
+    class AsyncClient:
+        def __init__(self, name):
+            self.name = name
+
+        async def close(self):
+            closed.append(self.name)
+
+    class NativeCliAgent:
+        model = type("Model", (), {"async_client": AsyncClient("app-model")})()
+
+        async def acli_app(self, **kwargs):
+            raise asyncio.CancelledError
+
+    coding_agent = type(
+        "CodingAgent",
+        (),
+        {"model": type("Model", (), {"async_client": AsyncClient("coding-model")})()},
+    )()
+    context = type("Context", (), {"database": AsyncClient("database")})()
+    monkeypatch.setattr(
+        cli_module,
+        "create_cli_app_agent",
+        lambda _context, _agent: NativeCliAgent(),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_cli_app(context, coding_agent)  # type: ignore[arg-type]
+
+    assert closed == ["app-model", "coding-model", "database"]

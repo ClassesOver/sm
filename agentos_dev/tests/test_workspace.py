@@ -95,6 +95,50 @@ def test_每个对话使用独立持久沙箱且注册表可跨服务复用(tmp_
     configured.sandbox_for("thread-three")
     assert client.created[-1].snapshot == "custom-snapshot"
 
+    networked = WorkspaceService(
+        SECRET,
+        client=client,
+        registry=first.registry,
+        network_allow_list="203.0.113.10/32",
+    )
+    networked.sandbox_for("thread-four")
+    assert client.created[-1].network_allow_list == "203.0.113.10/32"
+    assert client.created[-1].network_block_all is None
+
+
+@pytest.mark.anyio
+async def test_async_daytona_client_finishes_close_during_repeated_cancellation(monkeypatch):
+    close_started = asyncio.Event()
+    allow_close = asyncio.Event()
+    closed = False
+
+    class ClosingClient:
+        async def close(self):
+            nonlocal closed
+            close_started.set()
+            await allow_close.wait()
+            closed = True
+
+    monkeypatch.setattr(workspace_module, "AsyncDaytona", ClosingClient)
+    current = WorkspaceService(SECRET, async_registry=AsyncMemoryRegistry({}))
+    entered = asyncio.Event()
+
+    async def use_client():
+        async with current._async_client():
+            entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(use_client())
+    await entered.wait()
+    task.cancel()
+    await close_started.wait()
+    task.cancel()
+    allow_close.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed
+
 
 def test_路径大小符号链接和销毁边界均生效(tmp_path, monkeypatch):
     current = service(tmp_path)

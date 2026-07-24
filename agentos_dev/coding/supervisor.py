@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
-from .executor import AgnoCodingExecutor, AgnoRunState
+from .executor import AgnoCodingExecutor, AgnoRunState, provider_error_suspend_code
 from .models import (
     AttemptOutcome,
     AttemptSnapshot,
@@ -26,6 +26,11 @@ class ExecutionCleanup(Protocol):
     async def cleanup_old_epoch(self, scope: CodingScope, current_epoch: int) -> None: ...
 
     async def cleanup_disconnect(self, scope: CodingScope, current_epoch: int) -> None: ...
+
+
+class _TaskSuspended(Exception):
+    def __init__(self, code: str):
+        self.code = code
 
 
 class CodingTaskSupervisor:
@@ -134,6 +139,7 @@ class CodingTaskSupervisor:
                             status="ERROR",
                             terminal=True,
                             output=str(error),
+                            suspend_code=provider_error_suspend_code(error),
                         )
                     else:
                         run_state = await self.executor.state(scope, attempt)
@@ -169,7 +175,12 @@ class CodingTaskSupervisor:
                         attempt,
                         pending_instruction_count=len(pending),
                         checkpoint_recoverable=run_state.checkpoint_recoverable,
+                        suspend_code=run_state.suspend_code,
                     )
+                    if decision.action is ContinuationAction.SUSPEND:
+                        task = await self._pause_task(task, session, run_state.status)
+                        yield self._suspended_event(task, decision.code)
+                        return
                     if decision.action is ContinuationAction.RESUME:
                         task, attempt = await self.run_manager.resume_current(task, session.lease)
                         continue
@@ -193,6 +204,9 @@ class CodingTaskSupervisor:
                     return
         except asyncio.CancelledError:
             raise
+        except _TaskSuspended as suspended:
+            task = await self._task_for_scope(scope)
+            yield self._suspended_event(task, suspended.code)
         except CodingRepositoryError as error:
             yield CodingEvent(
                 event_id=f"{scope.external_run_id}:terminal",
@@ -251,7 +265,11 @@ class CodingTaskSupervisor:
                     attempt,
                     pending_instruction_count=len(pending),
                     checkpoint_recoverable=run_state.checkpoint_recoverable,
+                    suspend_code=run_state.suspend_code,
                 )
+                if decision.action is ContinuationAction.SUSPEND:
+                    await self._pause_task(task, session, run_state.status)
+                    raise _TaskSuspended(decision.code)
                 if decision.action is ContinuationAction.RESUME:
                     task, attempt = await self.run_manager.resume_current(task, session.lease)
                     instruction = await self.repository.attempt_instruction(
@@ -339,6 +357,7 @@ class CodingTaskSupervisor:
     async def _disconnect(self, scope: CodingScope, session: TaskSession) -> None:
         task = await self.repository.get_task_snapshot(scope.external_run_id)
         if task is None or task.state in {
+            TaskState.SUSPENDED,
             TaskState.COMPLETED,
             TaskState.FAILED,
             TaskState.CANCELLED,
@@ -352,6 +371,18 @@ class CodingTaskSupervisor:
             )
         except CodingRepositoryError:
             pass
+
+    async def _pause_task(
+        self, task: TaskSnapshot, session: TaskSession, agno_status: str | None
+    ) -> TaskSnapshot:
+        if self.execution_cleanup is not None:
+            await self.execution_cleanup.cleanup_disconnect(task.scope, session.lease.epoch)
+        return await self.repository.pause_and_release(
+            task.scope.external_run_id,
+            session.lease,
+            task.state_version,
+            agno_status=agno_status,
+        )
 
     async def _task_for_scope(self, scope: CodingScope) -> TaskSnapshot:
         task = await self.repository.get_task_snapshot(scope.external_run_id)
@@ -387,6 +418,14 @@ class CodingTaskSupervisor:
             event_id=f"{task.scope.external_run_id}:terminal",
             type="terminal",
             data={"state": task.state.value, **({"code": code} if code else {})},
+        )
+
+    @staticmethod
+    def _suspended_event(task: TaskSnapshot, code: str) -> CodingEvent:
+        return CodingEvent(
+            event_id=f"{task.scope.external_run_id}:suspended:{task.state_version}",
+            type="suspended",
+            data={"state": TaskState.SUSPENDED.value, "code": code},
         )
 
     @staticmethod

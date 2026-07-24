@@ -87,3 +87,36 @@ def test_policy_same_error_resume_and_continuation_paths():
         is ContinuationAction.RESUME
     )
     assert policy.decide(active, active_attempt).action is ContinuationAction.CONTINUE
+
+
+def test_policy_suspends_running_attempt_for_permanent_provider_error():
+    _now, task, attempt = snapshots()
+    attempt = AttemptSnapshot(
+        **{
+            **attempt.__dict__,
+            "state": AttemptState.RUNNING,
+        }
+    )
+
+    decision = ContinuationPolicy().decide(
+        task,
+        attempt,
+        checkpoint_recoverable=True,
+        suspend_code="model_insufficient_quota",
+    )
+
+    assert decision.action is ContinuationAction.SUSPEND
+    assert decision.code == "model_insufficient_quota"
+
+
+def test_policy_allows_explicit_resume_after_provider_error_was_suspended():
+    _now, task, attempt = snapshots()
+
+    decision = ContinuationPolicy().decide(
+        task,
+        attempt,
+        checkpoint_recoverable=True,
+        suspend_code="model_insufficient_quota",
+    )
+
+    assert decision.action is ContinuationAction.RESUME

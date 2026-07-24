@@ -214,6 +214,7 @@ workspace_service = WorkspaceService(
     secret=workspace_secret,
     database=agent_database,
     snapshot=settings.workspace_snapshot,
+    network_allow_list=settings.daytona_network_allow_list,
 )
 router = APIRouter()
 

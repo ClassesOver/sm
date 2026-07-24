@@ -109,6 +109,14 @@ class AguiCodingAdapter(CodingMemberAdapter):
                     code=str(event.data.get("code") or "coding_task_failed"),
                 )
             ]
+        if event.type == "suspended":
+            return [
+                RunErrorEvent(
+                    type=EventType.RUN_ERROR,
+                    message="编码任务已暂停，请在外部依赖恢复后继续。",
+                    code=str(event.data.get("code") or "coding_task_suspended"),
+                )
+            ]
         return []
 
 
@@ -142,6 +150,8 @@ def create_team_coding_member(
                 final = str(event.data.get("content") or "")
             elif event.type == "terminal" and event.data.get("state") != "completed":
                 raise RuntimeError(str(event.data.get("code") or "coding_task_failed"))
+            elif event.type == "suspended":
+                raise RuntimeError(str(event.data.get("code") or "coding_task_suspended"))
         return final
 
     function = Function(

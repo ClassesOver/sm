@@ -333,6 +333,18 @@ async def test_finish_entrypoint_returns_stable_error_when_required_argument_is_
     assert result["code"] == "finish_verification_missing"
 
 
+def test_update_plan_declares_schema_and_returns_stable_missing_argument_error():
+    toolkit = WorkspaceCodingToolkit(None, None)  # type: ignore[arg-type]
+    function = toolkit.functions["update_plan"]
+
+    assert function.parameters["required"] == ["plan"]
+    assert function.parameters["properties"]["plan"]["items"]["required"] == [
+        "step",
+        "status",
+    ]
+    assert function.entrypoint()["code"] == "plan_required"
+
+
 @pytest.mark.anyio
 async def test_finish_task_returns_stable_errors_for_invalid_services_and_state_race(
     execution_runtime,

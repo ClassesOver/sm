@@ -318,9 +318,11 @@ class WorkspaceService:
         async_registry: Any | None = None,
         database: AgentDatabase | None = None,
         snapshot: str = WORKSPACE_SNAPSHOT,
+        network_allow_list: str | None = None,
     ):
         self.secret = secret
         self.snapshot = snapshot
+        self.network_allow_list = network_allow_list
         self._client = client
         self.registry = registry or SandboxRegistry(database.sync_db if database else None)
         self._async_client_override = async_client
@@ -339,11 +341,19 @@ class WorkspaceService:
         if self._async_client_override is not None:
             yield self._async_client_override
             return
-        async with AsyncDaytona() as client:
+        client = AsyncDaytona()
+        try:
             yield client
+        finally:
+            await complete_cleanup(client.close())
 
     def _hash(self, thread: str) -> str:
         return thread_label(thread, self.secret)
+
+    def _sandbox_network_settings(self) -> dict[str, Any]:
+        if self.network_allow_list:
+            return {"network_allow_list": self.network_allow_list}
+        return {"network_block_all": True}
 
     def _find_existing(self, value: str, registry):
         sandbox_id = registry.get(value)
@@ -383,7 +393,7 @@ class WorkspaceService:
                         auto_stop_interval=60,
                         auto_archive_interval=0,
                         auto_delete_interval=-1,
-                        network_block_all=True,
+                        **self._sandbox_network_settings(),
                     )
                 )
                 registry.set(value, sandbox.id)
@@ -474,7 +484,7 @@ class WorkspaceService:
                         auto_stop_interval=60,
                         auto_archive_interval=0,
                         auto_delete_interval=-1,
-                        network_block_all=True,
+                        **self._sandbox_network_settings(),
                     )
                 )
                 await registry.set(value, sandbox.id)

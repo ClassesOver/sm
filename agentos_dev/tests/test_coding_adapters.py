@@ -67,3 +67,17 @@ async def test_agui_adapter_uses_deterministic_final_and_terminal_ids():
         "run:final",
     ]
     assert events[-1].run_id == "run"
+
+
+def test_agui_adapter_converts_suspension_to_connection_error():
+    converted = AguiCodingAdapter.convert(
+        CodingEvent(
+            "run:suspended:2",
+            "suspended",
+            {"state": "suspended", "code": "model_insufficient_quota"},
+        ),
+        scope(),
+    )
+
+    assert len(converted) == 1
+    assert converted[0].code == "model_insufficient_quota"

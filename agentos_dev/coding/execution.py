@@ -1250,7 +1250,42 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     entrypoint=self.patch,
                 ),
                 Function(name="view_image", entrypoint=self.view_image),
-                Function(name="update_plan", entrypoint=self.update_plan),
+                Function(
+                    name="update_plan",
+                    description="更新编码任务计划；最多 20 步且最多一个步骤处于 in_progress。",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "plan": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 20,
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["step", "status"],
+                                    "properties": {
+                                        "step": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 300,
+                                        },
+                                        "status": {
+                                            "type": "string",
+                                            "enum": ["pending", "in_progress", "completed"],
+                                        },
+                                    },
+                                },
+                            },
+                            "explanation": {
+                                "anyOf": [{"type": "string", "maxLength": 1000}, {"type": "null"}]
+                            },
+                        },
+                        "required": ["plan"],
+                        "additionalProperties": False,
+                    },
+                    entrypoint=self.update_plan,
+                ),
                 finish_function,
             ],
             instructions=HERMES_CODING_TOOLKIT_INSTRUCTIONS,
@@ -1317,8 +1352,14 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
 
     def update_plan(
         self,
-        plan: list[dict[str, str]],
+        plan: list[dict[str, str]] | None = None,
         explanation: str | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
+        if plan is None:
+            return {
+                "ok": False,
+                "code": "plan_required",
+                "message": "plan 必须包含 1 至 20 个步骤。",
+            }
         return self.kernel.plan.agent_update_plan(plan, explanation, run_context)

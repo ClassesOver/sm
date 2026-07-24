@@ -16,6 +16,7 @@ def test_settings_defaults():
     assert current.workers == 4
     assert current.database_url == DEFAULT_AGENT_DB_URL
     assert current.workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
+    assert current.daytona_network_allow_list is None
     assert current.cors_allowed_origins == (
         "http://127.0.0.1:18069",
         "http://localhost:18069",
@@ -52,6 +53,26 @@ def test_workspace_snapshot_comes_from_environment():
         "custom-snapshot"
     )
     assert settings(DAYTONA_DEFAULT_SNAPSHOT=" ").workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
+
+
+def test_daytona_network_allow_list_is_validated_and_normalized():
+    current = settings(DAYTONA_NETWORK_ALLOW_LIST=" 203.0.113.10/32, 192.168.1.0/24 ")
+
+    assert current.daytona_network_allow_list == "203.0.113.10/32,192.168.1.0/24"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "203.0.113.10",
+        "203.0.113.10/24",
+        "2001:db8::/32",
+        ",".join(f"10.0.0.{index}/32" for index in range(11)),
+    ],
+)
+def test_daytona_network_allow_list_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="DAYTONA_NETWORK_ALLOW_LIST"):
+        settings(DAYTONA_NETWORK_ALLOW_LIST=value)
 
 
 def test_report_data_sources_file_is_trimmed():

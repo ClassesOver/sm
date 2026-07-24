@@ -11,6 +11,7 @@ from agentos_dev.coding import (
     Lease,
     TaskState,
 )
+from agentos_dev.coding.executor import provider_error_suspend_code
 from agentos_dev.database import create_agent_database
 
 
@@ -72,6 +73,22 @@ def coding_scope() -> CodingScope:
     return CodingScope("external", "user", "thread", "sandbox", "coding-agent")
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("You exceeded your current quota", "model_insufficient_quota"),
+        (
+            "Free quota exhausted. Disable the use free tier only mode.",
+            "model_insufficient_quota",
+        ),
+        ("invalid_parameter_error: unsupported tool_choice", "model_invalid_request"),
+        ("429 Too many requests", "model_rate_limited"),
+    ],
+)
+def test_provider_errors_that_must_not_auto_resume_have_stable_codes(message, expected):
+    assert provider_error_suspend_code(message) == expected
+
+
 @pytest.mark.anyio
 async def test_supervisor_first_run_only_publishes_receipted_final(supervisor_runtime):
     repository, executor, supervisor = supervisor_runtime
@@ -119,3 +136,34 @@ async def test_closing_event_stream_pauses_before_releasing_lease(supervisor_run
     assert task is not None and task.state is TaskState.SUSPENDED
     attempt = await repository.get_attempt(task.current_internal_run_id)
     assert attempt is not None and attempt.state.value == "paused"
+
+
+@pytest.mark.anyio
+async def test_permanent_provider_error_suspends_without_automatic_resume(supervisor_runtime):
+    repository, executor, supervisor = supervisor_runtime
+    executor.finish_on_attempt = -1
+    await supervisor.start_task(coding_scope(), "实现目标")
+
+    async def quota_error_events(scope, attempt, dependencies):
+        executor.status_by_run[attempt.internal_run_id] = AgnoRunState(
+            exists=True,
+            status="ERROR",
+            terminal=True,
+            checkpoint_recoverable=True,
+            output="You exceeded your current quota",
+            suspend_code="model_insufficient_quota",
+        )
+        if False:
+            yield None
+
+    executor._events = quota_error_events
+
+    events = [event async for event in supervisor.run_task(coding_scope())]
+
+    task = await repository.get_task_snapshot("external")
+    assert task is not None and task.state is TaskState.SUSPENDED
+    attempt = await repository.get_attempt(task.current_internal_run_id)
+    assert attempt is not None and attempt.resume_count == 0
+    assert executor.calls == [("arun", attempt.internal_run_id)]
+    assert events[-1].type == "suspended"
+    assert events[-1].data["code"] == "model_insufficient_quota"

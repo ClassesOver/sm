@@ -169,6 +169,9 @@ thinking。服务端不转发原始 reasoning delta，终态持久化前清除 r
 `AGENT_OUTPUT_TOKEN_RESERVE` 分别调整完整窗口、历史上限和输出余量。关闭任一能力都不会删除 PostgreSQL
 中的完整历史，也不会改变 `agui.odoo.v2`、命令确认、授权或 stale snapshot 校验。
 新建 Daytona 工作区使用 `DAYTONA_DEFAULT_SNAPSHOT` 指定的 snapshot，默认值为 `sandbox-tools`。
+默认继续设置 `network_block_all=true`；运维可通过 `DAYTONA_NETWORK_ALLOW_LIST` 为新建 sandbox
+配置最多 10 个逗号分隔的 IPv4 CIDR，此时只发送 `network_allow_list`。白名单不支持端口约束，
+已有 sandbox 也不会自动变更网络策略；端口限制仍由出口防火墙或目标服务 ACL 承担。
 为避免 provider reasoning 进入 Agno 调试日志，thinking 开启时 `AGENT_DEBUG` 不生效；需要模型级
 调试时必须先关闭 thinking，且不得在生产环境记录包含业务数据的请求或响应正文。
 
@@ -224,6 +227,9 @@ Team member 和 CLI 只通过薄 adapter 调用 Supervisor；AG-UI adapter 位�
 因此一个任务最多 21 个 Attempt；24 小时 deadline 从任务创建时计算，新指令和恢复均不重置。
 连续相同规范化错误三次后失败关闭。`TaskSession` 每 15 秒独立续租，租约 TTL 为 45 秒；断线取消
 本地 Agno coroutine，清理未保留 Execution，并把可恢复任务置为 `suspended`，不会在无连接时后台继续。
+配额不足、认证失败、无效模型请求和 provider 限流分别返回 `model_insufficient_quota`、
+`model_authentication_failed`、`model_invalid_request` 和 `model_rate_limited`，暂停 Task 并释放租约，
+不自动增加 `resume_count` 或创建 continuation；外部条件恢复后由原 external run 显式恢复。
 
 `finish_task` 验证计划、产物 SHA、最后 mutation 后的成功 verification、活动进程、健康服务和 pending
 instruction 后先保存不可变 `finish_receipt`，把 Task 置为 `finishing`、Attempt 置为
@@ -328,6 +334,8 @@ sandbox，独立只读探查可并行，存在依赖时串行，并在修改前�
 
 `coding-agent` 还固定加载随 AgentOS 镜像打包的 `agentos_dev/builtin_skills/sandbox-tooling` 系统
 Skill，`report-agent` 从 coding 基座继承该 Skill。它按需披露当前 Daytona sandbox-tools
-镜像已预装和明确未预装的开发、文档、数据及数据库客户端能力，不受
-`AGENT_SKILLS_DIR` 配置影响，也不进入前端可选业务 Skill 列表。调整
+镜像已预装和明确未预装的开发、文档、数据及数据库客户端能力。生产 Coding Agent 不受
+`AGENT_SKILLS_DIR` 配置影响，也不进入前端可选业务 Skill 列表；原生 CLI Coding Agent 会在该
+内置 Skill 之后追加加载 `AGENT_SKILLS_DIR`，并以 Agno `LocalSkills(validate=False)` 兼容
+Hermes 扩展 frontmatter；内置 Skill 仍保持严格校验。调整
 `docker/sandbox-tools/Dockerfile` 或其 `requirements-*.in` 时必须同步更新该系统 Skill。

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from inspect import isawaitable
+from typing import Any
 from uuid import uuid4
 
 from agno.agent import Agent
@@ -11,6 +13,7 @@ from agno.run import RunContext
 from agno.tools import Function
 
 from ..agents import OPENAI_COMPATIBLE_ROLE_MAP
+from ..async_utils import complete_cleanup
 from ..coding import (
     AgnoCodingExecutor,
     CodingScope,
@@ -49,6 +52,7 @@ def create_cli_context(settings: AgentSettings | None = None) -> CliContext:
         secret=current_settings.workspace_hmac_secret,
         database=database,
         snapshot=current_settings.workspace_snapshot,
+        network_allow_list=current_settings.daytona_network_allow_list,
     )
     repository = CodingTaskRepository(database.async_db)
     return CliContext(
@@ -78,7 +82,7 @@ def create_cli_agent(context: CliContext) -> Agent:
         role="在当前 Daytona 工作区执行受控软件开发任务。",
         model=_create_cli_model(settings),
         instructions=CLI_AGENT_INSTRUCTIONS,
-        skills=load_builtin_coding_skills(),
+        skills=load_builtin_coding_skills(settings.skills_dir),
         tools=[WorkspaceCodingToolkit(context.workspace_service, context.coding_repository)],
         db=context.database,
         checkpoint="tool-batch",
@@ -126,6 +130,8 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
                 final = str(event.data.get("content") or "")
             elif event.type == "terminal" and event.data.get("state") != "completed":
                 raise RuntimeError(str(event.data.get("code") or "coding_task_failed"))
+            elif event.type == "suspended":
+                raise RuntimeError(str(event.data.get("code") or "coding_task_suspended"))
         return final
 
     function = Function(
@@ -161,12 +167,40 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
 
 async def run_cli_app(context: CliContext, coding_agent: Agent) -> None:
     app_agent = create_cli_app_agent(context, coding_agent)
-    await app_agent.acli_app(
-        session_id=f"cli-{uuid4().hex}",
-        user_id="cli",
-        stream=True,
-        markdown=True,
-    )
+    try:
+        await app_agent.acli_app(
+            session_id=f"cli-{uuid4().hex}",
+            user_id="cli",
+            stream=True,
+            markdown=True,
+        )
+    finally:
+        await complete_cleanup(_close_cli_resources(context, app_agent, coding_agent))
+
+
+async def _close_cli_resources(context: CliContext, *agents: Agent) -> None:
+    clients: list[Any] = []
+    seen: set[int] = set()
+    for agent in agents:
+        client = getattr(getattr(agent, "model", None), "async_client", None)
+        if client is not None and id(client) not in seen:
+            seen.add(id(client))
+            clients.append(client)
+    clients.append(context.database)
+    first_error: BaseException | None = None
+    for client in clients:
+        close = getattr(client, "close", None)
+        if not callable(close):
+            continue
+        try:
+            result = close()
+            if isawaitable(result):
+                await result
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise first_error
 
 
 def main() -> None:

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from .models import AttemptSnapshot, TaskSnapshot, utcnow
+from .models import AttemptSnapshot, AttemptState, TaskSnapshot, utcnow
 
 MAX_CONTINUATIONS = 20
 SAME_ERROR_LIMIT = 3
@@ -17,6 +17,7 @@ class ContinuationAction(StrEnum):
     FAIL_BUDGET = "fail_budget"
     APPLY_INSTRUCTIONS = "apply_instructions"
     FAIL_SAME_ERROR = "fail_same_error"
+    SUSPEND = "suspend"
     RESUME = "resume"
     CONTINUE = "continue"
 
@@ -37,6 +38,7 @@ class ContinuationPolicy:
         *,
         pending_instruction_count: int = 0,
         checkpoint_recoverable: bool = False,
+        suspend_code: str | None = None,
         cancel_requested: bool = False,
         now: datetime | None = None,
     ) -> ContinuationDecision:
@@ -57,6 +59,8 @@ class ContinuationPolicy:
             return ContinuationDecision(
                 ContinuationAction.APPLY_INSTRUCTIONS, "instruction_pending"
             )
+        if suspend_code is not None and attempt.state is not AttemptState.PAUSED:
+            return ContinuationDecision(ContinuationAction.SUSPEND, suspend_code)
         if task.same_error_count >= SAME_ERROR_LIMIT:
             return ContinuationDecision(
                 ContinuationAction.FAIL_SAME_ERROR, "coding_same_error_circuit_open"

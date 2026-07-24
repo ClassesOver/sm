@@ -1,6 +1,7 @@
 import os
 from collections.abc import MutableMapping
 from dataclasses import dataclass
+from ipaddress import IPv4Network, ip_network
 from urllib.parse import quote
 
 from dotenv import dotenv_values
@@ -70,6 +71,27 @@ def database_url_from_environment(
     return _database_url(values)
 
 
+def _daytona_network_allow_list(values: MutableMapping[str, str]) -> str | None:
+    raw = values.get("DAYTONA_NETWORK_ALLOW_LIST", "").strip()
+    if not raw:
+        return None
+    entries = [entry.strip() for entry in raw.split(",")]
+    if any(not entry for entry in entries) or len(entries) > 10:
+        raise ValueError("DAYTONA_NETWORK_ALLOW_LIST 必须包含 1 到 10 个 IPv4 CIDR")
+    networks: list[str] = []
+    for entry in entries:
+        if "/" not in entry:
+            raise ValueError("DAYTONA_NETWORK_ALLOW_LIST 必须使用 IPv4 CIDR")
+        try:
+            network = ip_network(entry, strict=True)
+        except ValueError as error:
+            raise ValueError("DAYTONA_NETWORK_ALLOW_LIST 包含无效 IPv4 CIDR") from error
+        if not isinstance(network, IPv4Network):
+            raise ValueError("DAYTONA_NETWORK_ALLOW_LIST 仅支持 IPv4 CIDR")
+        networks.append(str(network))
+    return ",".join(networks)
+
+
 @dataclass(frozen=True)
 class AgentSettings:
     env_file: str
@@ -88,6 +110,7 @@ class AgentSettings:
     report_data_sources_file: str | None
     workspace_hmac_secret: str
     workspace_snapshot: str
+    daytona_network_allow_list: str | None
     enable_tool_result_compression: bool
     enable_session_summaries: bool
     enable_thinking: bool
@@ -155,6 +178,7 @@ class AgentSettings:
                 values.get("DAYTONA_DEFAULT_SNAPSHOT") or DEFAULT_WORKSPACE_SNAPSHOT
             ).strip()
             or DEFAULT_WORKSPACE_SNAPSHOT,
+            daytona_network_allow_list=_daytona_network_allow_list(values),
             enable_tool_result_compression=_flag(
                 values.get("AGENT_ENABLE_TOOL_RESULT_COMPRESSION"), default=True
             ),

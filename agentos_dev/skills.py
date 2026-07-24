@@ -15,8 +15,12 @@ def load_skills(path: str | None = None) -> Skills:
     return Skills(loaders=loaders)
 
 
-def load_builtin_coding_skills() -> Skills:
-    return Skills(loaders=[LocalSkills(str(BUILTIN_CODING_SKILLS_DIR))])
+def load_builtin_coding_skills(additional_path: str | None = None) -> Skills:
+    loaders: list[SkillLoader] = [LocalSkills(str(BUILTIN_CODING_SKILLS_DIR))]
+    skills_path = (additional_path or "").strip()
+    if skills_path:
+        loaders.append(LocalSkills(skills_path, validate=False))
+    return Skills(loaders=loaders)
 
 
 def public_skill_metadata(skills: Skills) -> list[dict[str, str]]:
