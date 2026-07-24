@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from inspect import isawaitable
 from typing import Any
@@ -10,6 +11,7 @@ from agno.agent import Agent
 from agno.db.base import AsyncBaseDb
 from agno.models.openai import OpenAIChat
 from agno.run import RunContext
+from agno.run.agent import RunOutputEvent
 from agno.tools import Function
 
 from ..agents import OPENAI_COMPATIBLE_ROLE_MAP
@@ -106,7 +108,9 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
     )
     adapter = CliCodingAdapter(supervisor)
 
-    async def run_coding_task(instruction: str, run_context: RunContext) -> str:
+    async def run_coding_task(
+        instruction: str, run_context: RunContext
+    ) -> AsyncIterator[RunOutputEvent]:
         external_run_id = str(run_context.run_id or "")
         session_id = str(run_context.session_id or "")
         user_id = str(run_context.user_id or "")
@@ -124,15 +128,8 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
             sandbox_id,
             str(coding_agent.id),
         )
-        final = ""
-        for event in await adapter.run(scope, instruction):
-            if event.type == "final_message":
-                final = str(event.data.get("content") or "")
-            elif event.type == "terminal" and event.data.get("state") != "completed":
-                raise RuntimeError(str(event.data.get("code") or "coding_task_failed"))
-            elif event.type == "suspended":
-                raise RuntimeError(str(event.data.get("code") or "coding_task_suspended"))
-        return final
+        async for event in adapter.start_events(scope, instruction):
+            yield event
 
     function = Function(
         name="run_coding_task",
@@ -162,6 +159,10 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
             "skills": None,
         }
     )
+    app_agent.tool_choice = {
+        "type": "function",
+        "function": {"name": "run_coding_task"},
+    }
     return app_agent
 
 

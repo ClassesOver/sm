@@ -352,6 +352,10 @@ PDF/交付证据有效时，服务端才生成最终 assistant 文本并发送�
 模型配额不足、认证失败、无效请求或 provider 限流使用 `model_insufficient_quota`、
 `model_authentication_failed`、`model_invalid_request`、`model_rate_limited` 结束当前连接，但 Coding Task
 保持 `suspended`，不消耗自动恢复次数；外部条件恢复后可使用同一 external `runId` 显式恢复。
+Coding internal run 的工具调用使用 `<externalRunId>:<attemptNo>:internal:<agnoToolCallId>` 作为 call ID，
+并按 `TOOL_CALL_START`、`TOOL_CALL_ARGS`、`TOOL_CALL_END`、`TOOL_CALL_RESULT` 发送到 AG-UI；Team member
+和原生 CLI adapter 同样把该生命周期转换为 Agno tool-call 事件。参数在 Coding 域内脱敏并限制长度，
+result 只声明内部调用成功或失败，不发送工具结果正文。
 
 每条最终 assistant 消息都在 `extra_data.agent_run_id` 保存 AgentOS run ID。同一轮的所有客户端工具续跑复用该 ID。
 普通运行的 `forwardedProps` 为空；分支运行只允许 `branch.sourceThreadId`、`branch.sourceRunId` 和 `branch.targetMessageId`。

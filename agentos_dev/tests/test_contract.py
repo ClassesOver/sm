@@ -1,6 +1,7 @@
 import ast
 import hashlib
 import json
+from inspect import isasyncgenfunction
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -237,6 +238,7 @@ def test_team_members_bind_only_their_allowed_client_tools():
         "odoo.business.test.execute",
     }
     assert [tool.name for tool in coding_tools] == ["run_coding_task"]
+    assert isasyncgenfunction(coding_tools[0].entrypoint)
     assert [tool.name for tool in report_tools[:-1]] == [
         "workspace_coding",
         "report_data_sources",

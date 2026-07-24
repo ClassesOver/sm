@@ -337,5 +337,6 @@ Skill，`report-agent` 从 coding 基座继承该 Skill。它按需披露当前 
 镜像已预装和明确未预装的开发、文档、数据及数据库客户端能力。生产 Coding Agent 不受
 `AGENT_SKILLS_DIR` 配置影响，也不进入前端可选业务 Skill 列表；原生 CLI Coding Agent 会在该
 内置 Skill 之后追加加载 `AGENT_SKILLS_DIR`，并以 Agno `LocalSkills(validate=False)` 兼容
-Hermes 扩展 frontmatter；内置 Skill 仍保持严格校验。调整
+Hermes 扩展 frontmatter；内置 Skill 仍保持严格校验。CLI 执行期间把内部 Coding 工具转换为
+Agno 原生 tool-call 事件并显示在 `Tool Calls` 面板，参数有界且脱敏，不显示工具结果正文。调整
 `docker/sandbox-tools/Dockerfile` 或其 `requirements-*.in` 时必须同步更新该系统 Skill。

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import Any, Protocol
 
 from ag_ui.core import (
     BaseEvent,
@@ -11,9 +12,22 @@ from ag_ui.core import (
     TextMessageContentEvent,
     TextMessageEndEvent,
     TextMessageStartEvent,
+    ToolCallArgsEvent,
+    ToolCallEndEvent,
+    ToolCallResultEvent,
+    ToolCallStartEvent,
 )
 from agno.agent import Agent
+from agno.metrics import ToolCallMetrics
+from agno.models.response import ToolExecution
 from agno.run import RunContext
+from agno.run.agent import (
+    RunContentEvent,
+    RunOutputEvent,
+    ToolCallCompletedEvent,
+    ToolCallErrorEvent,
+    ToolCallStartedEvent,
+)
 from agno.tools import Function
 
 from ..workspace import WorkspaceService, _thread
@@ -62,11 +76,73 @@ class CodingMemberAdapter:
 
 
 class CliCodingAdapter(CodingMemberAdapter):
-    async def run(self, scope: CodingScope, instruction: str) -> list[CodingEvent]:
-        return [event async for event in self.start(scope, instruction)]
+    def __init__(self, supervisor: CodingTaskSupervisor):
+        super().__init__(supervisor)
+        self._tools: dict[str, ToolExecution] = {}
+        self._terminal_calls: set[str] = set()
+
+    async def start_events(
+        self, scope: CodingScope, instruction: str
+    ) -> AsyncIterator[RunOutputEvent]:
+        async for event in self.start(scope, instruction):
+            if event.type == "terminal" and event.data.get("state") != "completed":
+                raise RuntimeError(str(event.data.get("code") or "coding_task_failed"))
+            if event.type == "suspended":
+                raise RuntimeError(str(event.data.get("code") or "coding_task_suspended"))
+            for converted in self.convert(event, scope):
+                yield converted
+
+    def convert(self, event: CodingEvent, scope: CodingScope) -> list[RunOutputEvent]:
+        if event.type == "final_message":
+            return [
+                RunContentEvent(
+                    run_id=scope.external_run_id,
+                    content=str(event.data.get("content") or ""),
+                )
+            ]
+        tool_data = _tool_event_data(event)
+        if tool_data is None:
+            return []
+        call_id, tool_name, phase, arguments, duration = tool_data
+        if phase == "started":
+            tool = ToolExecution(
+                tool_call_id=call_id,
+                tool_name=tool_name,
+                tool_args=_tool_arguments(arguments),
+            )
+            self._tools[call_id] = tool
+            return [ToolCallStartedEvent(run_id=scope.external_run_id, tool=tool)]
+        if call_id in self._terminal_calls:
+            return []
+        self._terminal_calls.add(call_id)
+        tool = self._tools.setdefault(
+            call_id,
+            ToolExecution(tool_call_id=call_id, tool_name=tool_name),
+        )
+        if duration is not None:
+            tool.metrics = ToolCallMetrics(duration=duration)
+        tool.tool_call_error = phase == "error"
+        tool.result = json.dumps(
+            {"ok": phase == "completed", "internal": True}, separators=(",", ":")
+        )
+        completed = ToolCallCompletedEvent(run_id=scope.external_run_id, tool=tool)
+        if phase == "completed":
+            return [completed]
+        return [
+            completed,
+            ToolCallErrorEvent(
+                run_id=scope.external_run_id,
+                tool=tool,
+                error="internal_tool_failed",
+            ),
+        ]
 
 
 class AguiCodingAdapter(CodingMemberAdapter):
+    def __init__(self, supervisor: CodingTaskSupervisor):
+        super().__init__(supervisor)
+        self._terminal_calls: set[str] = set()
+
     async def start_events(
         self,
         scope: CodingScope,
@@ -83,8 +159,32 @@ class AguiCodingAdapter(CodingMemberAdapter):
             for converted in self.convert(event, scope):
                 yield converted
 
-    @staticmethod
-    def convert(event: CodingEvent, scope: CodingScope) -> list[BaseEvent]:
+    def convert(self, event: CodingEvent, scope: CodingScope) -> list[BaseEvent]:
+        tool_data = _tool_event_data(event)
+        if tool_data is not None:
+            call_id, tool_name, phase, arguments, duration = tool_data
+            if phase == "started":
+                return [
+                    ToolCallStartEvent(tool_call_id=call_id, tool_call_name=tool_name),
+                    ToolCallArgsEvent(tool_call_id=call_id, delta=arguments or "{}"),
+                    ToolCallEndEvent(tool_call_id=call_id),
+                ]
+            if call_id in self._terminal_calls:
+                return []
+            self._terminal_calls.add(call_id)
+            content: dict[str, Any] = {"ok": phase == "completed", "internal": True}
+            if duration is not None:
+                content["durationSeconds"] = duration
+            if phase == "error":
+                content["code"] = "internal_tool_failed"
+            return [
+                ToolCallResultEvent(
+                    message_id=f"{call_id}:result",
+                    tool_call_id=call_id,
+                    content=json.dumps(content, separators=(",", ":")),
+                    role="tool",
+                )
+            ]
         if event.type == "final_message":
             return [
                 TextMessageStartEvent(message_id=event.event_id, role="assistant"),
@@ -120,12 +220,46 @@ class AguiCodingAdapter(CodingMemberAdapter):
         return []
 
 
+def _tool_event_data(
+    event: CodingEvent,
+) -> tuple[str, str, str, str, float | None] | None:
+    if event.type != "agno_event":
+        return None
+    phase = event.data.get("phase")
+    tool_name = event.data.get("tool")
+    call_id = event.data.get("call_id")
+    if (
+        phase not in {"started", "completed", "error"}
+        or not isinstance(tool_name, str)
+        or not tool_name
+        or not isinstance(call_id, str)
+        or not call_id
+    ):
+        return None
+    arguments = str(event.data.get("arguments") or "")
+    duration_value = event.data.get("duration_seconds")
+    duration = float(duration_value) if isinstance(duration_value, int | float) else None
+    return call_id, tool_name, phase, arguments, duration
+
+
+def _tool_arguments(arguments: str) -> dict[str, Any]:
+    if not arguments:
+        return {}
+    try:
+        value = json.loads(arguments)
+    except json.JSONDecodeError:
+        return {"summary": arguments}
+    return value if isinstance(value, dict) else {"summary": arguments}
+
+
 def create_team_coding_member(
     base_agent: Agent,
     supervisor: CodingTaskSupervisor,
     workspace_service: WorkspaceService,
 ) -> Agent:
-    async def run_coding_task(instruction: str, run_context: RunContext) -> str:
+    async def run_coding_task(
+        instruction: str, run_context: RunContext
+    ) -> AsyncIterator[RunOutputEvent]:
         dependencies = (
             run_context.dependencies if isinstance(run_context.dependencies, dict) else {}
         )
@@ -144,15 +278,8 @@ def create_team_coding_member(
             sandbox_id,
             str(base_agent.id),
         )
-        final = ""
-        async for event in CodingMemberAdapter(supervisor).start(scope, instruction):
-            if event.type == "final_message":
-                final = str(event.data.get("content") or "")
-            elif event.type == "terminal" and event.data.get("state") != "completed":
-                raise RuntimeError(str(event.data.get("code") or "coding_task_failed"))
-            elif event.type == "suspended":
-                raise RuntimeError(str(event.data.get("code") or "coding_task_suspended"))
-        return final
+        async for event in CliCodingAdapter(supervisor).start_events(scope, instruction):
+            yield event
 
     function = Function(
         name="run_coding_task",
@@ -176,6 +303,7 @@ def create_team_coding_member(
             "skills": None,
         }
     )
+    member.tool_choice = {"type": "function", "function": {"name": "run_coding_task"}}
     member.num_history_runs = None
     return member
 

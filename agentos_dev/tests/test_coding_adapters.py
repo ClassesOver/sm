@@ -1,9 +1,16 @@
 from collections.abc import AsyncIterator
 
 import pytest
+from ag_ui.core import EventType
+from agno.run.agent import (
+    RunContentEvent,
+    ToolCallCompletedEvent,
+    ToolCallStartedEvent,
+)
 
 from agentos_dev.coding import (
     AguiCodingAdapter,
+    CliCodingAdapter,
     CodingEvent,
     CodingScope,
     InstructionReceipt,
@@ -70,7 +77,8 @@ async def test_agui_adapter_uses_deterministic_final_and_terminal_ids():
 
 
 def test_agui_adapter_converts_suspension_to_connection_error():
-    converted = AguiCodingAdapter.convert(
+    adapter = AguiCodingAdapter(FakeSupervisor())  # type: ignore[arg-type]
+    converted = adapter.convert(
         CodingEvent(
             "run:suspended:2",
             "suspended",
@@ -81,3 +89,53 @@ def test_agui_adapter_converts_suspension_to_connection_error():
 
     assert len(converted) == 1
     assert converted[0].code == "model_insufficient_quota"
+
+
+def tool_event(phase: str) -> CodingEvent:
+    return CodingEvent(
+        f"run:0:{phase}",
+        "agno_event",
+        {
+            "event": f"ToolCall{phase.title()}",
+            "phase": phase,
+            "tool": "terminal",
+            "call_id": "run:0:internal:call-1",
+            "arguments": '{"command":"pytest -q"}',
+            "duration_seconds": 1.25,
+        },
+    )
+
+
+def test_cli_adapter_converts_internal_tools_to_agno_tool_call_events():
+    adapter = CliCodingAdapter(FakeSupervisor())  # type: ignore[arg-type]
+
+    started = adapter.convert(tool_event("started"), scope())
+    completed = adapter.convert(tool_event("completed"), scope())
+    final = adapter.convert(CodingEvent("run:final", "final_message", {"content": "完成"}), scope())
+
+    assert isinstance(started[0], ToolCallStartedEvent)
+    assert started[0].tool.tool_name == "terminal"
+    assert started[0].tool.tool_args == {"command": "pytest -q"}
+    assert isinstance(completed[0], ToolCallCompletedEvent)
+    assert completed[0].tool is started[0].tool
+    assert completed[0].tool.tool_call_error is False
+    assert isinstance(final[0], RunContentEvent)
+    assert final[0].content == "完成"
+
+
+def test_agui_adapter_converts_internal_tools_to_standard_tool_call_events():
+    adapter = AguiCodingAdapter(FakeSupervisor())  # type: ignore[arg-type]
+
+    started = adapter.convert(tool_event("started"), scope())
+    completed = adapter.convert(tool_event("completed"), scope())
+
+    assert [event.type for event in started] == [
+        EventType.TOOL_CALL_START,
+        EventType.TOOL_CALL_ARGS,
+        EventType.TOOL_CALL_END,
+    ]
+    assert started[0].tool_call_id == "run:0:internal:call-1"
+    assert started[1].delta == '{"command":"pytest -q"}'
+    assert [event.type for event in completed] == [EventType.TOOL_CALL_RESULT]
+    assert completed[0].tool_call_id == "run:0:internal:call-1"
+    assert completed[0].content == '{"ok":true,"internal":true,"durationSeconds":1.25}'

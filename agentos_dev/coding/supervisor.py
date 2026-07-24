@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
@@ -20,6 +22,25 @@ from .policy import ContinuationAction, ContinuationPolicy
 from .repository import CodingRepositoryError, CodingTaskRepository
 from .run_manager import InternalRunManager
 from .session import TaskSession
+
+MAX_TOOL_EVENT_ARGUMENT_CHARS = 600
+MAX_TOOL_ARGUMENT_VALUE_CHARS = 240
+_SENSITIVE_ARGUMENT_MARKERS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "passwd",
+    "password",
+    "secret",
+    "token",
+)
+_SENSITIVE_VALUE_RE = re.compile(
+    r"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key|authorization)"
+    r"(\s*[=:]\s*|\s+)([^\s,;&]+)"
+)
+_URL_CREDENTIAL_RE = re.compile(r"(?i)([a-z][a-z0-9+.-]*://[^:/\s]+:)[^@\s]+(@)")
 
 
 class ExecutionCleanup(Protocol):
@@ -124,12 +145,19 @@ class CodingTaskSupervisor:
                             sequence += 1
                             event_type = self._event_type(raw_event)
                             if not self._candidate_text_event(event_type):
+                                data = self._agno_event_data(
+                                    raw_event,
+                                    event_type,
+                                    call_id_prefix=(
+                                        f"{scope.external_run_id}:{attempt.attempt_no}:internal"
+                                    ),
+                                )
                                 yield CodingEvent(
                                     event_id=(
                                         f"{scope.external_run_id}:{attempt.attempt_no}:{sequence}"
                                     ),
                                     type="agno_event",
-                                    data={"event": event_type},
+                                    data=data,
                                 )
                     except asyncio.CancelledError:
                         raise
@@ -432,6 +460,73 @@ class CodingTaskSupervisor:
     def _event_type(event: Any) -> str:
         value = getattr(event, "event", None) or getattr(event, "type", None)
         return str(getattr(value, "value", value) or type(event).__name__)
+
+    @classmethod
+    def _agno_event_data(
+        cls, event: Any, event_type: str, *, call_id_prefix: str
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"event": event_type}
+        phase = {
+            "toolcallstarted": "started",
+            "toolcallcompleted": "completed",
+            "toolcallerror": "error",
+        }.get(event_type.lower())
+        tool = getattr(event, "tool", None)
+        tool_name = getattr(tool, "tool_name", None)
+        if phase is None or not isinstance(tool_name, str) or not tool_name:
+            return data
+        if phase == "completed" and bool(getattr(tool, "tool_call_error", False)):
+            phase = "error"
+        raw_call_id = str(getattr(tool, "tool_call_id", "") or tool_name)
+        data.update(
+            {
+                "phase": phase,
+                "tool": tool_name,
+                "call_id": f"{call_id_prefix}:{raw_call_id}",
+            }
+        )
+        if phase == "started":
+            arguments = cls._safe_tool_arguments(getattr(tool, "tool_args", None))
+            if arguments:
+                data["arguments"] = arguments
+        duration = getattr(getattr(tool, "metrics", None), "duration", None)
+        if isinstance(duration, int | float) and duration >= 0:
+            data["duration_seconds"] = round(float(duration), 2)
+        return data
+
+    @classmethod
+    def _safe_tool_arguments(cls, arguments: Any) -> str:
+        if not isinstance(arguments, dict) or not arguments:
+            return ""
+        safe = {
+            str(key): cls._safe_argument_value(str(key), value) for key, value in arguments.items()
+        }
+        rendered = json.dumps(safe, ensure_ascii=False, separators=(",", ":"), default=str)
+        if len(rendered) <= MAX_TOOL_EVENT_ARGUMENT_CHARS:
+            return rendered
+        return rendered[: MAX_TOOL_EVENT_ARGUMENT_CHARS - 3] + "..."
+
+    @classmethod
+    def _safe_argument_value(cls, key: str, value: Any) -> Any:
+        normalized_key = key.lower().replace("-", "_")
+        if any(marker in normalized_key for marker in _SENSITIVE_ARGUMENT_MARKERS):
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            return {
+                str(child_key): cls._safe_argument_value(str(child_key), child_value)
+                for child_key, child_value in list(value.items())[:20]
+            }
+        if isinstance(value, list | tuple):
+            return [cls._safe_argument_value(key, item) for item in value[:20]]
+        if isinstance(value, str):
+            redacted = _SENSITIVE_VALUE_RE.sub(r"\1\2[REDACTED]", value)
+            redacted = _URL_CREDENTIAL_RE.sub(r"\1[REDACTED]\2", redacted)
+            if len(redacted) > MAX_TOOL_ARGUMENT_VALUE_CHARS:
+                return redacted[: MAX_TOOL_ARGUMENT_VALUE_CHARS - 3] + "..."
+            return redacted
+        if value is None or isinstance(value, bool | int | float):
+            return value
+        return str(value)[:MAX_TOOL_ARGUMENT_VALUE_CHARS]
 
     @staticmethod
     def _candidate_text_event(event_type: str) -> bool:

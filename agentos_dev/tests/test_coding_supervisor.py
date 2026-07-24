@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+from agno.models.response import ToolExecution
 
 from agentos_dev.coding import (
     AgnoRunState,
@@ -38,7 +39,21 @@ class FakeExecutor:
             yield event
 
     async def _events(self, scope, attempt, dependencies) -> AsyncIterator[Any]:
-        yield type("ToolEvent", (), {"event": "ToolCallStarted"})()
+        yield type(
+            "ToolEvent",
+            (),
+            {
+                "event": "ToolCallStarted",
+                "tool": ToolExecution(
+                    tool_call_id="call-terminal-12345678",
+                    tool_name="terminal",
+                    tool_args={
+                        "command": "mysql --password=top-secret db",
+                        "credentials": {"token": "private-token", "user": "analyst"},
+                    },
+                ),
+            },
+        )()
         if attempt.attempt_no == self.finish_on_attempt:
             task = await self.repository.get_task_snapshot(scope.external_run_id)
             assert task is not None
@@ -103,6 +118,13 @@ async def test_supervisor_first_run_only_publishes_receipted_final(supervisor_ru
     ]
     assert events[-2].data == {"content": "完成"}
     assert all("候选文本" not in str(event.data) for event in events)
+    tool_event = events[0]
+    assert tool_event.data["phase"] == "started"
+    assert tool_event.data["tool"] == "terminal"
+    assert tool_event.data["call_id"] == "external:0:internal:call-terminal-12345678"
+    assert "top-secret" not in tool_event.data["arguments"]
+    assert "private-token" not in tool_event.data["arguments"]
+    assert "[REDACTED]" in tool_event.data["arguments"]
     task = await repository.get_task_snapshot("external")
     assert task is not None and task.state is TaskState.COMPLETED
 

@@ -1,4 +1,5 @@
 import asyncio
+from inspect import isasyncgenfunction
 
 import pytest
 
@@ -44,6 +45,7 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert app_agent.model.id == CLI_ROUTER_MODEL_ID
     assert app_agent.model.extra_body is None
     assert [tool.name for tool in app_agent.tools] == ["run_coding_task"]
+    assert isasyncgenfunction(app_agent.tools[0].entrypoint)
     expected_tool_choice = {
         "type": "function",
         "function": {"name": "run_coding_task"},
