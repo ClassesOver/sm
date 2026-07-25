@@ -31,7 +31,7 @@ export default defineConfig({
       entry: 'src/file-viewer-entry.ts',
       formats: ['iife'],
       name: 'AguiFileViewerBundle',
-      fileName: () => 'agui_file_viewer.12.0.8.8.10.js'
+      fileName: () => 'agui_file_viewer.12.0.8.8.11.js'
     },
     rollupOptions: {
       external: ['react', 'react/jsx-runtime'],

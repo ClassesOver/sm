@@ -41,6 +41,7 @@ const DEFAULT_SESSION_NAME = '新对话'
 const MAX_SESSION_NAME_LENGTH = 30
 const MAX_WORKSPACE_PATH_COMPONENT_BYTES = 255
 const MAX_ATTACHMENT_ID_BYTES = 64
+const MAX_RUN_RECONNECTS = 3
 const UTF8_ENCODER = new TextEncoder()
 const CONTROL_CHARACTERS = /\p{C}+/gu
 
@@ -65,6 +66,10 @@ type RunContext = {
   currentRunId: string
   agentRunId: string
   currentRequestId: string
+  reconnectAttempts: number
+  capability: WorkspaceCapability | null
+  seenEventCounts: Map<string, number>
+  connectionEventCounts: Map<string, number>
   activeClientTools: Set<string>
   receivedTerminalEvent: boolean
   receivedRunStarted: boolean
@@ -323,7 +328,8 @@ export class ChatRuntime {
   }
 
   unmount(): void {
-    this.cancel()
+    const context = this.activeRunContext
+    if (context) this.cancelRun(context, false)
     if (this.saveTimer) {
       clearTimeout(this.saveTimer)
       this.saveTimer = null
@@ -332,7 +338,8 @@ export class ChatRuntime {
   }
 
   async newSession(): Promise<void> {
-    this.cancel()
+    const context = this.activeRunContext
+    if (context) this.cancelRun(context, false)
     this.loadingSessions = true
     this.emit()
     try {
@@ -344,7 +351,8 @@ export class ChatRuntime {
   }
 
   async loadSession(sessionId: string | number): Promise<void> {
-    this.cancel()
+    const context = this.activeRunContext
+    if (context) this.cancelRun(context, false)
     const bridge = this.props.hostBridge || {}
     if (!bridge.loadSession) {
       return
@@ -952,10 +960,13 @@ export class ChatRuntime {
     return `${runtime.slice(0, -'/agui'.length)}${path}`
   }
 
-  private workspaceHeaders(capability: WorkspaceCapability): Record<string, string> {
+  private workspaceHeaders(
+    capability: WorkspaceCapability,
+    threadId = this.threadId
+  ): Record<string, string> {
     return {
       'X-AGUI-Capability': capability.capability,
-      'X-AGUI-Thread': this.threadId
+      'X-AGUI-Thread': threadId
     }
   }
 
@@ -1295,7 +1306,8 @@ export class ChatRuntime {
   }
 
   private resetThread(threadId: string, messages: ChatMessage[]): void {
-    this.cancel()
+    const context = this.activeRunContext
+    if (context) this.cancelRun(context, false)
     this.threadId = threadId
     this.workspaceCapability = null
     this.currentRunId = ''
@@ -1381,6 +1393,10 @@ export class ChatRuntime {
       currentRunId: agentRunId,
       agentRunId,
       currentRequestId: '',
+      reconnectAttempts: 0,
+      capability: null,
+      seenEventCounts: new Map(),
+      connectionEventCounts: new Map(),
       activeClientTools: new Set(),
       receivedTerminalEvent: false,
       receivedRunStarted: false,
@@ -1464,12 +1480,31 @@ export class ChatRuntime {
     }
   }
 
-  private cancelRun(context: RunContext): void {
+  private cancelRun(context: RunContext, notifyServer = true): void {
     if (context.cancelled) return
     context.cancelled = true
+    if (notifyServer) void this.cancelRemoteRun(context)
     if (context.hasReasoning) this.finishReasoningStatus('分析未完成')
     if (!context.controller.signal.aborted) context.controller.abort()
     this.finalizeRun(context, 'cancelled')
+  }
+
+  private async cancelRemoteRun(context: RunContext): Promise<void> {
+    if (!context.capability) return
+    try {
+      await fetch(`${endpoint(this.props)}/cancel`, {
+        method: 'POST',
+        credentials: this.runtimeCredentials(),
+        headers: {
+          ...(this.props.headers || {}),
+          'Content-Type': 'application/json',
+          ...this.workspaceHeaders(context.capability, context.threadId)
+        },
+        body: JSON.stringify({ threadId: context.threadId, runId: context.agentRunId })
+      })
+    } catch (_error) {
+      // 本地停止必须立即生效；服务端也会在连接断开后暂停任务。
+    }
   }
 
   private finalizeRun(context: RunContext, state?: TransportState): Promise<void> | null {
@@ -1527,6 +1562,7 @@ export class ChatRuntime {
     await this.refreshMenuCatalog()
     this.throwIfRunCancelled(context)
     const capability = await this.ensureWorkspaceCapability()
+    context.capability = capability
     context.pendingHostBridgePromises = []
     context.hostBridgeFollowupNeeded = false
     const input = buildRunInput(
@@ -1543,42 +1579,62 @@ export class ChatRuntime {
     context.currentRunId = input.runId
     context.currentRequestId = input.requestId
     context.activeClientTools = new Set(input.tools.map((tool) => tool.name))
-    context.receivedTerminalEvent = false
-    context.upstreamError = ''
     this.currentRunId = input.runId
     this.currentRequestId = input.requestId
-    this.setTransportState('connecting')
-    const response = await fetch(endpoint(this.props), {
-      method: 'POST',
-      credentials:
-        this.props.credentials || (this.props.allowCrossOriginDev ? 'include' : 'same-origin'),
-      headers: {
-        ...(this.props.headers || {}),
-        Accept: 'text/event-stream',
-        'Content-Type': 'application/json',
-        'X-Request-ID': input.requestId,
-        ...(capability ? this.workspaceHeaders(capability) : {}),
-        ...(context.branch && !context.receivedRunStarted ? {
-          'X-AGUI-Source-Capability': context.branch.sourceCapability.capability
-        } : {})
-      },
-      body: JSON.stringify(input),
-      signal: context.controller.signal
-    })
-    if (!response.ok) {
-      throw transportError(response.status)
-    }
-    if (!(response.headers.get("content-type") || "").includes("text/event-stream")) {
-      throw new Error("AG-UI 运行服务必须返回 text/event-stream。")
-    }
-    if (!response.body) {
-      throw new Error("AG-UI SSE 响应没有正文。")
-    }
-    this.setTransportState("streaming")
-    await this.readSse(response.body, context)
-    this.throwIfRunCancelled(context)
-    if (!context.receivedTerminalEvent) {
-      throw new Error("AG-UI 数据流在 RUN_FINISHED 事件之前结束。")
+    for (;;) {
+      context.receivedTerminalEvent = false
+      context.upstreamError = ''
+      context.connectionEventCounts.clear()
+      this.setTransportState('connecting')
+      let response: Response
+      try {
+        response = await fetch(endpoint(this.props), {
+          method: 'POST',
+          credentials: this.runtimeCredentials(),
+          headers: {
+            ...(this.props.headers || {}),
+            Accept: 'text/event-stream',
+            'Content-Type': 'application/json',
+            'X-Request-ID': input.requestId,
+            ...(capability ? this.workspaceHeaders(capability, context.threadId) : {}),
+            ...(context.branch && !context.receivedRunStarted ? {
+              'X-AGUI-Source-Capability': context.branch.sourceCapability.capability
+            } : {})
+          },
+          body: JSON.stringify(input),
+          signal: context.controller.signal
+        })
+      } catch (error) {
+        this.throwIfRunCancelled(context)
+        if (context.reconnectAttempts >= MAX_RUN_RECONNECTS) throw error
+        context.reconnectAttempts += 1
+        continue
+      }
+      if (!response.ok) {
+        throw transportError(response.status)
+      }
+      if (!(response.headers.get('content-type') || '').includes('text/event-stream')) {
+        throw new Error('AG-UI 运行服务必须返回 text/event-stream。')
+      }
+      if (!response.body) {
+        throw new Error('AG-UI SSE 响应没有正文。')
+      }
+      this.setTransportState('streaming')
+      try {
+        await this.readSse(response.body, context)
+      } catch (error) {
+        this.throwIfRunCancelled(context)
+        if ((error as Error)?.message === 'SSE 事件超过配置的大小限制。' ||
+            context.reconnectAttempts >= MAX_RUN_RECONNECTS) throw error
+        context.reconnectAttempts += 1
+        continue
+      }
+      this.throwIfRunCancelled(context)
+      if (context.receivedTerminalEvent) break
+      if (context.reconnectAttempts >= MAX_RUN_RECONNECTS) {
+        throw new Error('AG-UI 数据流在 RUN_FINISHED 事件之前结束。')
+      }
+      context.reconnectAttempts += 1
     }
     if (context.upstreamError) {
       throw new Error(context.upstreamError)
@@ -1644,6 +1700,12 @@ export class ChatRuntime {
       this.props.onError?.(new Error('已忽略格式错误的 SSE 事件。'))
       return
     }
+    const signature = JSON.stringify(event)
+    const connectionCount = (context.connectionEventCounts.get(signature) || 0) + 1
+    context.connectionEventCounts.set(signature, connectionCount)
+    const seenCount = context.seenEventCounts.get(signature) || 0
+    if (context.reconnectAttempts > 0 && connectionCount <= seenCount) return
+    context.seenEventCounts.set(signature, Math.max(seenCount, connectionCount))
     this.applyEventForContext(event, context)
   }
 

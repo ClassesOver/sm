@@ -26126,7 +26126,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function canPreviewFile(type) {
     return PREVIEWABLE_TYPES.has(type.toLowerCase());
   }
-  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.10.js";
+  const FILE_VIEWER_SCRIPT_URL = "/agui_chat/static/lib/agui-chat-react/agui_file_viewer.12.0.8.8.11.js";
   const FILE_VIEWER_LOAD_TIMEOUT_MS = 15e3;
   const STATUS_ATTRIBUTE = "data-agui-file-viewer-status";
   let viewerModulePromise;
@@ -27801,6 +27801,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const MAX_SESSION_NAME_LENGTH = 30;
   const MAX_WORKSPACE_PATH_COMPONENT_BYTES = 255;
   const MAX_ATTACHMENT_ID_BYTES = 64;
+  const MAX_RUN_RECONNECTS = 3;
   const UTF8_ENCODER = new TextEncoder();
   const CONTROL_CHARACTERS = new RegExp("\\p{C}+", "gu");
   function truncateUtf8(value, maxBytes) {
@@ -27996,7 +27997,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (context) this.cancelRun(context);
     }
     unmount() {
-      this.cancel();
+      const context = this.activeRunContext;
+      if (context) this.cancelRun(context, false);
       if (this.saveTimer) {
         clearTimeout(this.saveTimer);
         this.saveTimer = null;
@@ -28004,7 +28006,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.clear();
     }
     async newSession() {
-      this.cancel();
+      const context = this.activeRunContext;
+      if (context) this.cancelRun(context, false);
       this.loadingSessions = true;
       this.emit();
       try {
@@ -28015,7 +28018,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     }
     async loadSession(sessionId) {
-      this.cancel();
+      const context = this.activeRunContext;
+      if (context) this.cancelRun(context, false);
       const bridge = this.props.hostBridge || {};
       if (!bridge.loadSession) {
         return;
@@ -28579,10 +28583,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const runtime = endpoint(this.props);
       return `${runtime.slice(0, -"/agui".length)}${path2}`;
     }
-    workspaceHeaders(capability) {
+    workspaceHeaders(capability, threadId = this.threadId) {
       return {
         "X-AGUI-Capability": capability.capability,
-        "X-AGUI-Thread": this.threadId
+        "X-AGUI-Thread": threadId
       };
     }
     async workspaceError(response) {
@@ -28895,7 +28899,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.emit();
     }
     resetThread(threadId, messages) {
-      this.cancel();
+      const context = this.activeRunContext;
+      if (context) this.cancelRun(context, false);
       this.threadId = threadId;
       this.workspaceCapability = null;
       this.currentRunId = "";
@@ -28976,6 +28981,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         currentRunId: agentRunId,
         agentRunId,
         currentRequestId: "",
+        reconnectAttempts: 0,
+        capability: null,
+        seenEventCounts: /* @__PURE__ */ new Map(),
+        connectionEventCounts: /* @__PURE__ */ new Map(),
         activeClientTools: /* @__PURE__ */ new Set(),
         receivedTerminalEvent: false,
         receivedRunStarted: false,
@@ -29050,12 +29059,29 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } catch (_callbackError) {
       }
     }
-    cancelRun(context) {
+    cancelRun(context, notifyServer = true) {
       if (context.cancelled) return;
       context.cancelled = true;
+      if (notifyServer) void this.cancelRemoteRun(context);
       if (context.hasReasoning) this.finishReasoningStatus("分析未完成");
       if (!context.controller.signal.aborted) context.controller.abort();
       this.finalizeRun(context, "cancelled");
+    }
+    async cancelRemoteRun(context) {
+      if (!context.capability) return;
+      try {
+        await fetch(`${endpoint(this.props)}/cancel`, {
+          method: "POST",
+          credentials: this.runtimeCredentials(),
+          headers: {
+            ...this.props.headers || {},
+            "Content-Type": "application/json",
+            ...this.workspaceHeaders(context.capability, context.threadId)
+          },
+          body: JSON.stringify({ threadId: context.threadId, runId: context.agentRunId })
+        });
+      } catch (_error) {
+      }
     }
     finalizeRun(context, state) {
       if (context.finalized) return context.savePromise;
@@ -29111,6 +29137,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       await this.refreshMenuCatalog();
       this.throwIfRunCancelled(context);
       const capability = await this.ensureWorkspaceCapability();
+      context.capability = capability;
       context.pendingHostBridgePromises = [];
       context.hostBridgeFollowupNeeded = false;
       const input = buildRunInput(
@@ -29132,41 +29159,61 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       context.currentRunId = input.runId;
       context.currentRequestId = input.requestId;
       context.activeClientTools = new Set(input.tools.map((tool) => tool.name));
-      context.receivedTerminalEvent = false;
-      context.upstreamError = "";
       this.currentRunId = input.runId;
       this.currentRequestId = input.requestId;
-      this.setTransportState("connecting");
-      const response = await fetch(endpoint(this.props), {
-        method: "POST",
-        credentials: this.props.credentials || (this.props.allowCrossOriginDev ? "include" : "same-origin"),
-        headers: {
-          ...this.props.headers || {},
-          Accept: "text/event-stream",
-          "Content-Type": "application/json",
-          "X-Request-ID": input.requestId,
-          ...capability ? this.workspaceHeaders(capability) : {},
-          ...context.branch && !context.receivedRunStarted ? {
-            "X-AGUI-Source-Capability": context.branch.sourceCapability.capability
-          } : {}
-        },
-        body: JSON.stringify(input),
-        signal: context.controller.signal
-      });
-      if (!response.ok) {
-        throw transportError(response.status);
-      }
-      if (!(response.headers.get("content-type") || "").includes("text/event-stream")) {
-        throw new Error("AG-UI 运行服务必须返回 text/event-stream。");
-      }
-      if (!response.body) {
-        throw new Error("AG-UI SSE 响应没有正文。");
-      }
-      this.setTransportState("streaming");
-      await this.readSse(response.body, context);
-      this.throwIfRunCancelled(context);
-      if (!context.receivedTerminalEvent) {
-        throw new Error("AG-UI 数据流在 RUN_FINISHED 事件之前结束。");
+      for (; ; ) {
+        context.receivedTerminalEvent = false;
+        context.upstreamError = "";
+        context.connectionEventCounts.clear();
+        this.setTransportState("connecting");
+        let response;
+        try {
+          response = await fetch(endpoint(this.props), {
+            method: "POST",
+            credentials: this.runtimeCredentials(),
+            headers: {
+              ...this.props.headers || {},
+              Accept: "text/event-stream",
+              "Content-Type": "application/json",
+              "X-Request-ID": input.requestId,
+              ...capability ? this.workspaceHeaders(capability, context.threadId) : {},
+              ...context.branch && !context.receivedRunStarted ? {
+                "X-AGUI-Source-Capability": context.branch.sourceCapability.capability
+              } : {}
+            },
+            body: JSON.stringify(input),
+            signal: context.controller.signal
+          });
+        } catch (error) {
+          this.throwIfRunCancelled(context);
+          if (context.reconnectAttempts >= MAX_RUN_RECONNECTS) throw error;
+          context.reconnectAttempts += 1;
+          continue;
+        }
+        if (!response.ok) {
+          throw transportError(response.status);
+        }
+        if (!(response.headers.get("content-type") || "").includes("text/event-stream")) {
+          throw new Error("AG-UI 运行服务必须返回 text/event-stream。");
+        }
+        if (!response.body) {
+          throw new Error("AG-UI SSE 响应没有正文。");
+        }
+        this.setTransportState("streaming");
+        try {
+          await this.readSse(response.body, context);
+        } catch (error) {
+          this.throwIfRunCancelled(context);
+          if ((error == null ? void 0 : error.message) === "SSE 事件超过配置的大小限制。" || context.reconnectAttempts >= MAX_RUN_RECONNECTS) throw error;
+          context.reconnectAttempts += 1;
+          continue;
+        }
+        this.throwIfRunCancelled(context);
+        if (context.receivedTerminalEvent) break;
+        if (context.reconnectAttempts >= MAX_RUN_RECONNECTS) {
+          throw new Error("AG-UI 数据流在 RUN_FINISHED 事件之前结束。");
+        }
+        context.reconnectAttempts += 1;
       }
       if (context.upstreamError) {
         throw new Error(context.upstreamError);
@@ -29227,6 +29274,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         (_b = (_a = this.props).onError) == null ? void 0 : _b.call(_a, new Error("已忽略格式错误的 SSE 事件。"));
         return;
       }
+      const signature = JSON.stringify(event);
+      const connectionCount = (context.connectionEventCounts.get(signature) || 0) + 1;
+      context.connectionEventCounts.set(signature, connectionCount);
+      const seenCount = context.seenEventCounts.get(signature) || 0;
+      if (context.reconnectAttempts > 0 && connectionCount <= seenCount) return;
+      context.seenEventCounts.set(signature, Math.max(seenCount, connectionCount));
       this.applyEventForContext(event, context);
     }
     async waitForHostBridge(context, depth) {
@@ -30008,7 +30061,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.listeners.forEach((listener) => listener());
     }
   }
-  const VERSION = "12.0.8.8.10";
+  const VERSION = "12.0.8.8.11";
   function mount(el, props) {
     const root2 = clientExports.createRoot(el);
     const runtime = new ChatRuntime(props);

@@ -52,7 +52,7 @@ describe('AguiChat public API', () => {
       threadId: 'thread-1'
     }))
 
-    expect(AguiChat.version).toBe('12.0.8.8.10')
+    expect(AguiChat.version).toBe('12.0.8.8.11')
     expect(handle.__runtime).toBeInstanceOf(ChatRuntime)
     expect((handle.__runtime as ChatRuntime).getSnapshot().threadId).toBe('thread-1')
 
@@ -993,6 +993,73 @@ describe('ChatRuntime protocol handling', () => {
     ])
   })
 
+  it('cancels the remote task before aborting and never reconnects after stop', async () => {
+    const requests: Array<{ url: string; input: any; headers: Headers }> = []
+    let runId = ''
+    vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => {
+      if (url.endsWith('/cancel')) {
+        requests.push({
+          url,
+          input: JSON.parse(String(init.body)),
+          headers: new Headers(init.headers)
+        })
+        return Promise.resolve(new Response('{}', {
+          status: 200, headers: { 'content-type': 'application/json' }
+        }))
+      }
+      runId = JSON.parse(String(init.body)).runId
+      const encoder = new TextEncoder()
+      return Promise.resolve(new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"type":"RUN_STARTED"}\n\n'))
+          init.signal?.addEventListener('abort', () => {
+            controller.error(new DOMException('Aborted', 'AbortError'))
+          })
+        }
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } }))
+    }))
+    const runtime = createRuntime({
+      runtimeUrl: '/runtime/run',
+      attachments: false,
+      session: {
+        id: 7,
+        name: 'cancel',
+        protocol: 'agui.odoo.v2',
+        thread_id: 'thread-cancel',
+        sessionRevision: 1,
+        messages: []
+      },
+      hostBridge: {
+        getWorkspaceCapability: async () => ({
+          ok: true,
+          capability: 'signed-capability',
+          threadId: 'thread-cancel',
+          expiresAt: Date.now() / 1000 + 300
+        })
+      }
+    })
+
+    const pending = runtime.send('start')
+    await vi.waitFor(() => expect(runtime.getSnapshot().transportState).toBe('streaming'))
+    runtime.stop()
+    await pending
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+
+    expect(requests[0]).toMatchObject({
+      url: '/runtime/run/cancel',
+      input: { threadId: 'thread-cancel', runId }
+    })
+    expect(Object.fromEntries(requests[0].headers.entries())).toMatchObject({
+      'content-type': 'application/json',
+      'x-agui-capability': 'signed-capability',
+      'x-agui-thread': 'thread-cancel'
+    })
+    expect(runtime.getSnapshot()).toMatchObject({
+      transportState: 'cancelled', error: ''
+    })
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/runtime/run')).toHaveLength(1)
+  })
+
   it('ends immediately on RUN_ERROR even when the SSE connection stays open', async () => {
     const cancelStream = vi.fn()
     vi.stubGlobal('fetch', vi.fn(() => {
@@ -1429,11 +1496,52 @@ describe('ChatRuntime protocol handling', () => {
     await runtime.send('no body')
     expect(runtime.getSnapshot().error).toBe('AG-UI SSE 响应没有正文。')
 
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(sseResponse([
+    const earlyEndFetch = vi.fn(() => Promise.resolve(sseResponse([
       { type: 'TEXT_MESSAGE_CONTENT', delta: 'partial' }
-    ]))))
+    ])))
+    vi.stubGlobal('fetch', earlyEndFetch)
     await runtime.send('early end')
     expect(runtime.getSnapshot().error).toBe('AG-UI 数据流在 RUN_FINISHED 事件之前结束。')
+    expect(earlyEndFetch).toHaveBeenCalledTimes(4)
+  })
+
+  it('reconnects an interrupted stream with the same run input without duplicating tools', async () => {
+    const requests: any[] = []
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {
+      requests.push(JSON.parse(String(init.body)))
+      if (requests.length < 3) {
+        return Promise.resolve(sseResponse([
+          { type: 'TEXT_MESSAGE_CONTENT', messageId: 'final-1', delta: 'partial ' },
+          {
+            type: 'TOOL_CALL_RESULT',
+            toolCallId: 'verification-1',
+            toolCallName: 'terminal',
+            content: JSON.stringify({ ok: true, execution_id: 'verification-1' })
+          }
+        ]))
+      }
+      return Promise.resolve(sseResponse([
+        { type: 'TEXT_MESSAGE_CONTENT', messageId: 'final-1', delta: 'partial ' },
+        { type: 'TEXT_MESSAGE_CONTENT', messageId: 'final-1', delta: 'done' },
+        { type: 'RUN_FINISHED' }
+      ]))
+    }))
+    const runtime = createRuntime({ runtimeUrl: '/runtime/run', attachments: false })
+
+    await runtime.send('retry')
+
+    expect(requests).toHaveLength(3)
+    expect(new Set(requests.map((input) => input.runId)).size).toBe(1)
+    expect(requests.map((input) => input.messages)).toEqual([
+      requests[0].messages,
+      requests[0].messages,
+      requests[0].messages
+    ])
+    const snapshot = runtime.getSnapshot()
+    expect(snapshot.transportState).toBe('completed')
+    expect(snapshot.messages.filter((message) => message.role === 'user')).toHaveLength(1)
+    expect(snapshot.messages.flatMap((message) => message.tool_calls || [])).toHaveLength(1)
+    expect(snapshot.messages.find((message) => message.id === 'final-1')?.content).toBe('partial done')
   })
 
   it('parses fragmented CRLF events, reports malformed events, and isolates run and thread ids', async () => {
