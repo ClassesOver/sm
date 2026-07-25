@@ -83,6 +83,7 @@ from .instructions import (
     build_odoo_command_instructions,
     build_report_agent_instructions,
 )
+from .observability import configure_tracing
 from .report_data_sources import (
     CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
     MAX_DATASET_FILE_BYTES,
@@ -209,6 +210,13 @@ settings = AgentSettings.from_environment()
 workspace_secret = settings.workspace_hmac_secret
 agent_skills = load_skills(settings.skills_dir)
 agent_database = create_agent_database(settings.database_url)
+configure_tracing(
+    agent_database.async_db,
+    enabled=settings.tracing_enabled,
+    phoenix_endpoint=settings.tracing_phoenix_endpoint,
+    phoenix_api_key=settings.tracing_phoenix_api_key,
+    phoenix_project_name=settings.tracing_phoenix_project_name,
+)
 coding_repository = CodingTaskRepository(agent_database.async_db)
 workspace_service = WorkspaceService(
     secret=workspace_secret,

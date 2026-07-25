@@ -24,6 +24,10 @@ def test_settings_defaults():
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
     assert current.enable_thinking is True
+    assert current.tracing_enabled is False
+    assert current.tracing_phoenix_endpoint is None
+    assert current.tracing_phoenix_api_key is None
+    assert current.tracing_phoenix_project_name == "agentos"
     assert current.context_token_budget == 262144
     assert current.history_token_budget == 196608
     assert current.output_token_reserve == 32768
@@ -46,6 +50,44 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.history_token_budget == 32768
     assert current.context_token_budget == 131072
     assert current.output_token_reserve == 16384
+
+
+def test_agent_tracing_can_be_enabled():
+    current = settings(
+        AGENT_TRACING_ENABLED="true",
+        AGENT_TRACING_PHOENIX_ENDPOINT=" http://phoenix:6006/ ",
+        AGENT_TRACING_PHOENIX_API_KEY=" secret ",
+        AGENT_TRACING_PHOENIX_PROJECT=" hrp ",
+    )
+
+    assert current.tracing_enabled is True
+    assert current.tracing_phoenix_endpoint == "http://phoenix:6006/v1/traces"
+    assert current.tracing_phoenix_api_key == "secret"
+    assert current.tracing_phoenix_project_name == "hrp"
+
+
+def test_phoenix_trace_endpoint_keeps_complete_trace_path():
+    current = settings(AGENT_TRACING_PHOENIX_ENDPOINT="https://example.test/org/v1/traces")
+
+    assert current.tracing_phoenix_endpoint == "https://example.test/org/v1/traces"
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "ftp://phoenix.example",
+        "https://user:password@phoenix.example",
+        "https://phoenix.example?token=secret",
+    ],
+)
+def test_phoenix_trace_endpoint_rejects_invalid_values(endpoint):
+    with pytest.raises(ValueError, match="AGENT_TRACING_PHOENIX_ENDPOINT"):
+        settings(AGENT_TRACING_PHOENIX_ENDPOINT=endpoint)
+
+
+def test_phoenix_project_rejects_empty_value():
+    with pytest.raises(ValueError, match="AGENT_TRACING_PHOENIX_PROJECT"):
+        settings(AGENT_TRACING_PHOENIX_PROJECT=" ")
 
 
 def test_workspace_snapshot_comes_from_environment():

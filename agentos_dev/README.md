@@ -105,6 +105,7 @@ Markdown/PDF 和 Odoo 导出的报表能力。当前采用以下配置：
 | `AGENT_CONTEXT_TOKEN_BUDGET` | `262144` | 模型完整上下文窗口上限 |
 | `AGENT_HISTORY_TOKEN_BUDGET` | `196608` | 历史装配上限，会按本轮强制上下文动态缩小 |
 | `AGENT_OUTPUT_TOKEN_RESERVE` | `32768` | 为模型输出和工具续跑保留的 token |
+| `AGENT_TRACING_ENABLED` | `false` | 将 Agent、模型和工具 OpenTelemetry trace 写入 AgentOS 数据库 |
 | `compress_tool_results` | `True` | 仅压缩历史分析工具的大结果 |
 | `enable_session_summaries` | `True` | 成功 run 后滚动更新非权威摘要 |
 | `enable_thinking` | `True` | 主模型启用；辅助模型关闭，客户端不接收原始 reasoning |
@@ -307,6 +308,22 @@ Agent、Team、Coding 任务和 workspace 注册表共享同一 Agno 数据库�
 PostgreSQL 绑定到 `127.0.0.1:55432`，容器内 AgentOS 则通过 `agent-db:5432` 连接。
 外部 PostgreSQL 首次使用时仍可运行 `bash scripts/init_agent_db.sh` 安全创建数据库；
 认证沿用环境变量或 `.pgpass`。
+
+OpenTelemetry tracing 默认关闭。设置 `AGENT_TRACING_ENABLED=true` 后，生产 AgentOS 和原生
+CLI 会通过 Agno OpenInference instrumentation 完整采集 Agent run、模型调用和工具执行，包括
+Prompt、模型输出、工具参数与工具结果，并写入同一数据库的 `agno_traces` 和 `agno_spans` 表。
+AgentOS API/UI 可从该数据库查询 trace；数据不写入 `agentos_coding` schema，也没有单独的清理
+任务。由于 trace 可能包含用户输入、业务数据和完整工具载荷，生产环境必须依赖现有数据库访问
+控制和备份策略保护这些内容。缺少 tracing 依赖或初始化失败时，启用状态下服务会拒绝启动。
+
+配置 `AGENT_TRACING_PHOENIX_ENDPOINT` 后，trace 会继续即时写入 Agno 数据库，同时通过 OTLP
+HTTP 批量发送到 Phoenix。地址可填写 collector 基址（例如 `http://127.0.0.1:6006`）或完整的
+`/v1/traces` 地址；Phoenix Cloud 使用 `AGENT_TRACING_PHOENIX_API_KEY`，项目名称通过
+`AGENT_TRACING_PHOENIX_PROJECT` 设置，默认 `agentos`。外发使用同一个全局 tracer provider，
+运行期间不支持动态切换；修改配置后必须重启所有 AgentOS/CLI 进程。外部 Phoenix 与数据库会
+各自保存完整载荷，必须分别配置访问控制、TLS、保留和删除策略。根 Compose 不启动 Phoenix；
+Phoenix 在宿主机运行时，AgentOS 容器应使用 `http://host.docker.internal:6006`，不能使用容器自身的
+`127.0.0.1`。
 
 PostgreSQL 是多实例生产默认。文件型 SQLite 仅用于单实例开发兼容，支持
 `sqlite[+aiosqlite]:///`，启用 WAL、foreign keys 和 busy timeout，并拒绝内存数据库。任务、内部 run

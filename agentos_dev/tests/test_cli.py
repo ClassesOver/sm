@@ -58,6 +58,45 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert request_params["extra_body"] == {"enable_thinking": False}
 
 
+def test_create_cli_context_configures_tracing_before_services(monkeypatch):
+    settings = AgentSettings.from_environment(
+        {
+            "AGENT_TRACING_ENABLED": "true",
+            "AGENT_TRACING_PHOENIX_ENDPOINT": "https://phoenix.example",
+            "AGENT_TRACING_PHOENIX_API_KEY": "secret",
+            "AGENT_TRACING_PHOENIX_PROJECT": "hrp",
+        },
+        load_env_file=False,
+    )
+    async_db = object()
+    database = type("Database", (), {"async_db": async_db})()
+    calls = []
+
+    monkeypatch.setattr(cli_module, "create_agent_database", lambda _url: database)
+    monkeypatch.setattr(
+        cli_module,
+        "configure_tracing",
+        lambda db, **values: calls.append((db, values)),
+    )
+    monkeypatch.setattr(cli_module, "WorkspaceService", lambda **_values: object())
+    monkeypatch.setattr(cli_module, "CodingTaskRepository", lambda _db: object())
+
+    context = cli_module.create_cli_context(settings)
+
+    assert calls == [
+        (
+            async_db,
+            {
+                "enabled": True,
+                "phoenix_endpoint": "https://phoenix.example/v1/traces",
+                "phoenix_api_key": "secret",
+                "phoenix_project_name": "hrp",
+            },
+        )
+    ]
+    assert context.database is async_db
+
+
 def test_create_cli_agent_loads_configured_skills_directory(monkeypatch):
     settings = AgentSettings.from_environment(
         {"AGENT_SKILLS_DIR": "/opt/agent-skills"}, load_env_file=False

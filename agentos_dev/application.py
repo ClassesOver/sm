@@ -47,6 +47,7 @@ def create_agentos_app(
         teams=[context.assistant_team],
         interfaces=[AGUI(team=context.assistant_team)],
         base_app=base_app,
+        db=context.database.async_db if context.database is not None else None,
         on_route_conflict="preserve_base_app",
         cors_allowed_origins=list(context.settings.cors_allowed_origins),
     )

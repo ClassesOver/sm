@@ -79,6 +79,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert second_app is second_base
     assert created[0].values["on_route_conflict"] == "preserve_base_app"
     assert created[0].values["cors_allowed_origins"] == list(settings.cors_allowed_origins)
+    assert created[0].values["db"] is None
     assert created[0].values["agents"] == [
         first_context.assistant,
         first_context.odoo_command_assistant,
@@ -87,6 +88,36 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert first_context.coding_agent not in created[0].values["agents"]
     assert created[0].values["teams"] == [first_context.assistant_team]
     assert created[0].values["interfaces"] == [("agui", {"team": first_context.assistant_team})]
+
+
+def test_application_passes_trace_database_to_agentos(monkeypatch):
+    captured = {}
+
+    class FakeAgentOS:
+        def __init__(self, **values):
+            captured.update(values)
+
+        def get_app(self):
+            return captured["base_app"]
+
+    database = type("Database", (), {"async_db": object()})()
+    monkeypatch.setattr("agentos_dev.application.AgentOS", FakeAgentOS)
+    monkeypatch.setattr("agentos_dev.application.AGUI", lambda **value: value)
+    settings = AgentSettings.from_environment({}, load_env_file=False)
+    context = ApplicationContext(
+        settings,
+        object(),
+        FakeSkills("test"),
+        FakeAssistant(),
+        FakeAssistant(),
+        FakeAssistant(),
+        FakeAssistant(),
+        database=database,
+    )
+
+    create_agentos_app(context, FastAPI())
+
+    assert captured["db"] is database.async_db
 
 
 def test_default_application_exposes_explicit_context():
@@ -100,6 +131,7 @@ def test_default_application_exposes_explicit_context():
     assert context.odoo_command_assistant is app_module.odoo_command_assistant
     assert context.report_agent is app_module.report_agent
     assert context.assistant_team is app_module.assistant_team
+    assert app_module.agent_os.db is app_module.agent_database.async_db
 
 
 @pytest.mark.anyio

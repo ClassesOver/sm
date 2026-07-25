@@ -1685,6 +1685,25 @@ openai==2.46.0 \
     # via
     #   -c agentos_dev/requirements.txt
     #   -r agentos_dev/requirements.in
+openinference-instrumentation==0.1.54 \
+    --hash=sha256:8bc991865c90c804ac9983ef93aa6081a7a2397dd113d3d38b5465cca17892bb \
+    --hash=sha256:9af9817bb38816ed32856fb4cd813c1a5d9f530ab589c3473b37e06cf406ab28
+    # via
+    #   -c agentos_dev/requirements.txt
+    #   openinference-instrumentation-agno
+openinference-instrumentation-agno==0.1.38 \
+    --hash=sha256:1f183ec374193c9d056e71b7b249c4a3858cccf0bfae8482ed7d1827b7f23d70 \
+    --hash=sha256:3d112fc1f4908c4fe704584c8aaba2366a1c88d191a71ba6411e37fada5ad28a
+    # via
+    #   -c agentos_dev/requirements.txt
+    #   -r agentos_dev/requirements.in
+openinference-semantic-conventions==0.1.30 \
+    --hash=sha256:36d946d3f95f699b7c4b12324ae9c1f02d6c7750df11eece56aa159cff430b3d \
+    --hash=sha256:81fece76e09c83789e35c393b8b30523481eeabf1008745b955631a53e3221d9
+    # via
+    #   -c agentos_dev/requirements.txt
+    #   openinference-instrumentation
+    #   openinference-instrumentation-agno
 openpyxl==3.1.5 \
     --hash=sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2 \
     --hash=sha256:cf0e3cf56142039133628b5acffe8ef0c12bc902d2aadd3e0fe5878dc08d1050
@@ -1697,6 +1716,8 @@ opentelemetry-api==1.44.0 \
     # via
     #   -c agentos_dev/requirements.txt
     #   daytona
+    #   openinference-instrumentation
+    #   openinference-instrumentation-agno
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-aiohttp-client
@@ -1713,12 +1734,14 @@ opentelemetry-exporter-otlp-proto-http==1.44.0 \
     --hash=sha256:c633d7270ad6b57cd4cfbe8b0007a9e2e7c0cb50bd6c50fe2a7b245f721a09d8
     # via
     #   -c agentos_dev/requirements.txt
+    #   -r agentos_dev/requirements.in
     #   daytona
 opentelemetry-instrumentation==0.65b0 \
     --hash=sha256:071d9d9eced9bd6460444ec3b0c77229870ed05a881c22c84fdede58e4eed09b \
     --hash=sha256:ea967a72b9939b5fcfdad572753b4306c59dcb99e3f382d95dae04286805e137
     # via
     #   -c agentos_dev/requirements.txt
+    #   openinference-instrumentation-agno
     #   opentelemetry-instrumentation-aiohttp-client
 opentelemetry-instrumentation-aiohttp-client==0.65b0 \
     --hash=sha256:3a060efa53fa44d02ba7372a7ed2b42cdfa6be6df81b089845067ad840e25729 \
@@ -1739,12 +1762,14 @@ opentelemetry-sdk==1.44.0 \
     # via
     #   -c agentos_dev/requirements.txt
     #   daytona
+    #   openinference-instrumentation
     #   opentelemetry-exporter-otlp-proto-http
 opentelemetry-semantic-conventions==0.65b0 \
     --hash=sha256:1cacde7b0ad306f84c5ef08c3dbe1bbaf20165bba6f8bff43b670e555a086bcb \
     --hash=sha256:f9b2b81e9d5b64f11bc952075e7e9c7fb0aab075c7fd1c46d597f1b919852d60
     # via
     #   -c agentos_dev/requirements.txt
+    #   openinference-instrumentation-agno
     #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-aiohttp-client
     #   opentelemetry-sdk
@@ -2627,6 +2652,7 @@ typing-extensions==4.16.0 \
     #   fastapi
     #   obstore
     #   openai
+    #   openinference-instrumentation-agno
     #   opentelemetry-api
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-sdk
@@ -3051,6 +3077,8 @@ wrapt==2.2.2 \
     # via
     #   -c agentos_dev/requirements.txt
     #   deprecated
+    #   openinference-instrumentation
+    #   openinference-instrumentation-agno
     #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-aiohttp-client
 wsproto==1.3.2 \

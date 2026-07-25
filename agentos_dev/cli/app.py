@@ -26,6 +26,7 @@ from ..coding.adapters import CliCodingAdapter
 from ..coding.execution import CodingExecutionKernel, WorkspaceCodingToolkit
 from ..context_management import clear_terminal_reasoning
 from ..database import create_agent_database
+from ..observability import configure_tracing
 from ..settings import AgentSettings
 from ..skills import load_builtin_coding_skills
 from ..workspace import WorkspaceService
@@ -49,6 +50,13 @@ class CliContext:
 def create_cli_context(settings: AgentSettings | None = None) -> CliContext:
     current_settings = settings or AgentSettings.from_environment()
     database = create_agent_database(current_settings.database_url)
+    configure_tracing(
+        database.async_db,
+        enabled=current_settings.tracing_enabled,
+        phoenix_endpoint=current_settings.tracing_phoenix_endpoint,
+        phoenix_api_key=current_settings.tracing_phoenix_api_key,
+        phoenix_project_name=current_settings.tracing_phoenix_project_name,
+    )
     workspace_service = WorkspaceService(
         secret=current_settings.workspace_hmac_secret,
         database=database,

@@ -179,6 +179,12 @@ AgentOS 容器通过 `host.docker.internal:33043` 访问 Daytona API，根目录
 密钥应单独保护；未执行迁移就丢失或轮换这些密钥，可能导致现有数据或能力不可用。依赖备份
 前，应使用相同的锁定版 `v0.189.0` 镜像验证恢复。
 
+OpenTelemetry tracing 默认关闭。启用 `AGENT_TRACING_ENABLED=true` 后，trace 保存在 AgentOS
+PostgreSQL；再配置 `AGENT_TRACING_PHOENIX_ENDPOINT` 时会同时通过 OTLP HTTP 批量发送到
+Phoenix。Phoenix Cloud 的 API Key 通过 `AGENT_TRACING_PHOENIX_API_KEY` 注入，不得写入 Compose
+或日志；自托管服务也应限制网络访问。两端都会保存完整 Prompt、模型输出和工具载荷，必须分别
+纳入访问控制、TLS、备份、保留和删除策略。
+
 ## 安全
 
 - 生产运行地址必须同源。绝对地址仅允许在显式开启开发标志且凭据化 CORS Origin 精确匹配
