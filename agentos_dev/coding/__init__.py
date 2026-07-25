@@ -2,7 +2,6 @@ from .adapters import (
     AguiCodingAdapter,
     CliCodingAdapter,
     CodingMemberAdapter,
-    create_team_coding_member,
 )
 from .completion import CompletionGate
 from .executor import AgnoCodingExecutor, AgnoRunState
@@ -51,5 +50,4 @@ __all__ = [
     "TaskSession",
     "TaskState",
     "CodingTaskSupervisor",
-    "create_team_coding_member",
 ]

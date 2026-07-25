@@ -5,7 +5,6 @@ import pytest
 
 from agentos_dev.cli import CliContext, create_cli_agent, create_cli_app_agent, run_cli_app
 from agentos_dev.cli import app as cli_module
-from agentos_dev.cli.app import CLI_ROUTER_MODEL_ID
 from agentos_dev.settings import AgentSettings
 
 
@@ -42,8 +41,8 @@ def test_create_cli_agent_is_independent_coding_agent():
     )
     assert app_agent.id == "coding-agent-cli-app"
     assert app_agent.model is not agent.model
-    assert app_agent.model.id == CLI_ROUTER_MODEL_ID
-    assert app_agent.model.extra_body is None
+    assert app_agent.model.id == settings.model_id
+    assert app_agent.model.extra_body == {"enable_thinking": False}
     assert [tool.name for tool in app_agent.tools] == ["run_coding_task"]
     assert isasyncgenfunction(app_agent.tools[0].entrypoint)
     expected_tool_choice = {
@@ -56,7 +55,7 @@ def test_create_cli_agent_is_independent_coding_agent():
         tool_choice=app_agent.tool_choice,
     )
     assert request_params["tool_choice"] == expected_tool_choice
-    assert "extra_body" not in request_params
+    assert request_params["extra_body"] == {"enable_thinking": False}
 
 
 def test_create_cli_agent_loads_configured_skills_directory(monkeypatch):

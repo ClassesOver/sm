@@ -42,7 +42,6 @@ def create_agentos_app(
         agents=[
             context.assistant,
             context.odoo_command_assistant,
-            *([context.coding_agent] if context.coding_agent is not None else []),
             context.report_agent,
         ],
         teams=[context.assistant_team],

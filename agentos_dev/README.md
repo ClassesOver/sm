@@ -27,8 +27,8 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.cli
 
 CLI 不接收命令行参数，直接使用 Agno 2.7.3 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和
 退出控制。原生 CLI 面向只暴露 `run_coding_task` 的 facade Agent；该工具把完整目标交给
-`CodingTaskSupervisor`。facade 固定使用默认非思考的 `qwen-plus` 并强制调用该工具，且不发送
-`enable_thinking`；底层 `coding-agent-cli` 仍使用 `MODEL` 执行六工具闭环。因此 CLI 不导入
+`CodingTaskSupervisor`。facade 与底层 `coding-agent-cli` 均使用 `MODEL`；facade 为兼容强制
+`tool_choice` 显式关闭 thinking，底层 Agent 保持模型默认模式执行六工具闭环。因此 CLI 不导入
 `agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
 PostgreSQL 中 Coding Repository 使用独立的 `agentos_coding` schema 和版本表，不写入 Agno
 的 session、run 或 schema-version 表；SQLite 单实例开发仍使用默认 schema。
@@ -129,9 +129,10 @@ assistant.num_history_runs = None
 ```
 
 运行入口只创建 ID 为 `hrp-assistant-team` 的一个 Agno `TeamMode.route` Team，成员为
-`assistant`、`coding_agent`、`odoo_command_assistant` 和 `report_agent`。普通 `assistant` 的 ID 是
+`assistant`、Coding facade、`odoo_command_assistant` 和 `report_agent`。普通 `assistant` 的 ID 是
 `general-assistant`，负责问答、非报表技能和工作区服务端工具，不获得任何 Odoo client command；
-`coding_agent` 的 ID 是 `coding-agent`，负责代码和工作区开发任务；
+Coding facade 的 ID 是 `coding-agent`，只通过 `run_coding_task` 调用 Supervisor；同 ID 的原始
+`coding_agent` 仅作为 Supervisor 内部执行器负责代码和工作区开发任务；
 `odoo_command_assistant` 的 ID 是 `odoo-command-assistant`，只获得本轮声明且属于固定宿主 command
 目录或合法 `odoo.business.<namespace>.<command>` 的工具，不获得工作区或报表工具；`report_agent`
 负责工作区编码、数据分析和报表工具，额外只允许 `odoo.export_current_view`。
@@ -196,7 +197,9 @@ Workflow，但没有内置的专用 `update_plan`。本项目因此提供受约�
 
 ### 泛化数据源与 ReportAgent
 
-`coding-agent` 是 Team 的正式成员，生产只暴露 `WorkspaceCodingToolkit` 的六个工具。
+`coding-agent` 的 Team 成员是只暴露 `run_coding_task` 的 facade，原始内部 Agent 不注册到
+AgentOS 的公开 agents 列表；Supervisor 仅在 Attempt 内调用原始 Agent 的
+`WorkspaceCodingToolkit` 六个工具。
 `terminal` 将前台/后台语义映射到受管命令，并在远端 session 创建前写入持久 execution 预留记录；
 `process` 支持
 `list/poll/wait/kill/write/submit`，未暴露底层不能可靠保证的完整历史日志、关闭 stdin 和异步通知；

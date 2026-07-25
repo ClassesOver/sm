@@ -12,7 +12,11 @@ from agno.session.agent import AgentSession
 from agno.tools.daytona import DaytonaTools
 
 from agentos_dev import app
-from agentos_dev.agents import create_coding_agent, create_report_agent
+from agentos_dev.agents import (
+    create_coding_agent,
+    create_coding_facade_agent,
+    create_report_agent,
+)
 from agentos_dev.coding_tools import (
     CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
     CODEX_EXEC_SESSION_TTL_SECONDS,
@@ -215,6 +219,11 @@ def test_report_agent_extends_unregistered_coding_agent(tmp_path):
         workspace_service,
         app.coding_repository,
     )
+    coding_facade = create_coding_facade_agent(
+        coding_agent,
+        app.coding_supervisor,
+        workspace_service,
+    )
     report_agent = create_report_agent(
         coding_agent,
         workspace_service,
@@ -223,6 +232,13 @@ def test_report_agent_extends_unregistered_coding_agent(tmp_path):
     )
 
     assert coding_agent.id == "coding-agent"
+    assert coding_facade is not coding_agent
+    assert coding_facade.id == coding_agent.id
+    assert coding_facade.model is not coding_agent.model
+    assert coding_facade.model.id == coding_agent.model.id
+    assert coding_facade.model.extra_body == {"enable_thinking": False}
+    assert coding_agent.model.extra_body == {"enable_thinking": True}
+    assert [tool.name for tool in coding_facade.tools] == ["run_coding_task"]
     assert coding_agent.instructions is build_coding_agent_instructions
     assert [skill.name for skill in coding_agent.skills.get_all_skills()] == ["sandbox-tooling"]
     assert coding_agent.id in {

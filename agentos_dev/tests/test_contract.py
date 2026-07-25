@@ -184,6 +184,9 @@ def test_assistant_team_routes_to_specialized_members():
         "type": "function",
         "function": {"name": "delegate_task_to_member"},
     }
+    assert app.assistant_team.model.id == app.assistant.model.id
+    assert app.assistant_team.model is not app.assistant.model
+    assert app.assistant_team.model.extra_body == {"enable_thinking": False}
     all_members = [
         app.assistant,
         app.odoo_command_assistant,

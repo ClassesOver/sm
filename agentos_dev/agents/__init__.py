@@ -1,4 +1,5 @@
 import re
+from copy import copy
 from dataclasses import replace
 from typing import Any
 
@@ -18,7 +19,7 @@ from .assistant import (
     AgentInstructions,
     create_assistant,
 )
-from .coding import create_coding_agent
+from .coding import create_coding_agent, create_coding_facade_agent
 from .odoo_command import (
     LEGACY_ODOO_COMMAND_ASSISTANT_IDS,
     ODOO_COMMAND_ASSISTANT_ID,
@@ -242,10 +243,17 @@ def create_assistant_team(
             for member in selected
         ]
 
+    if not isinstance(assistant.model, OpenAIChat):
+        raise TypeError("Assistant team requires OpenAIChat")
+    routing_model = copy(assistant.model)
+    routing_model.extra_body = {
+        **(getattr(assistant.model, "extra_body", None) or {}),
+        "enable_thinking": False,
+    }
     team = Team(
         id="hrp-assistant-team",
         name="HRP 助手团队",
-        model=assistant.model,
+        model=routing_model,
         mode=TeamMode.route,
         members=members_for_run,
         instructions=TEAM_INSTRUCTIONS,
@@ -286,6 +294,7 @@ __all__ = [
     "create_assistant_team",
     "create_assistants",
     "create_coding_agent",
+    "create_coding_facade_agent",
     "create_odoo_command_assistant",
     "create_report_agent",
     "is_odoo_command_name",

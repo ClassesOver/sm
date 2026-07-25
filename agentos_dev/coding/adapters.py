@@ -17,10 +17,8 @@ from ag_ui.core import (
     ToolCallResultEvent,
     ToolCallStartEvent,
 )
-from agno.agent import Agent
 from agno.metrics import ToolCallMetrics
 from agno.models.response import ToolExecution
-from agno.run import RunContext
 from agno.run.agent import (
     RunContentEvent,
     RunOutputEvent,
@@ -28,9 +26,7 @@ from agno.run.agent import (
     ToolCallErrorEvent,
     ToolCallStartedEvent,
 )
-from agno.tools import Function
 
-from ..workspace import WorkspaceService, _thread
 from .models import CodingEvent, CodingScope, InstructionReceipt
 from .supervisor import CodingTaskSupervisor
 
@@ -252,65 +248,8 @@ def _tool_arguments(arguments: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {"summary": arguments}
 
 
-def create_team_coding_member(
-    base_agent: Agent,
-    supervisor: CodingTaskSupervisor,
-    workspace_service: WorkspaceService,
-) -> Agent:
-    async def run_coding_task(
-        instruction: str, run_context: RunContext
-    ) -> AsyncIterator[RunOutputEvent]:
-        dependencies = (
-            run_context.dependencies if isinstance(run_context.dependencies, dict) else {}
-        )
-        binding = dependencies.get("AgentOS 编码任务")
-        external_run_id = binding.get("externalRunId") if isinstance(binding, dict) else None
-        if not isinstance(external_run_id, str) or not external_run_id:
-            raise ValueError("task_binding_missing")
-        thread_id = _thread(run_context)
-        async with workspace_service._async_client() as client:
-            sandbox = await workspace_service._asandbox_for(client, thread_id)
-            sandbox_id = str(getattr(sandbox, "id", "") or "")
-        scope = CodingScope(
-            external_run_id,
-            str(run_context.user_id),
-            thread_id,
-            sandbox_id,
-            str(base_agent.id),
-        )
-        async for event in CliCodingAdapter(supervisor).start_events(scope, instruction):
-            yield event
-
-    function = Function(
-        name="run_coding_task",
-        description="把完整编码目标交给受控 CodingTaskSupervisor 执行并返回验收结果。",
-        parameters={
-            "type": "object",
-            "properties": {"instruction": {"type": "string", "minLength": 1}},
-            "required": ["instruction"],
-            "additionalProperties": False,
-        },
-        entrypoint=run_coding_task,
-        stop_after_tool_call=True,
-    )
-    member = base_agent.deep_copy(
-        update={
-            "instructions": [
-                "必须把收到的完整用户编码目标原样传给 run_coding_task，并直接返回工具结果。"
-            ],
-            "tools": [function],
-            "tool_choice": {"type": "function", "function": {"name": "run_coding_task"}},
-            "skills": None,
-        }
-    )
-    member.tool_choice = {"type": "function", "function": {"name": "run_coding_task"}}
-    member.num_history_runs = None
-    return member
-
-
 __all__ = [
     "AguiCodingAdapter",
     "CliCodingAdapter",
     "CodingMemberAdapter",
-    "create_team_coding_member",
 ]

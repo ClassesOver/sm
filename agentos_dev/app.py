@@ -47,6 +47,7 @@ from .agents import (
     TEAM_ROUTE_DEPENDENCY,
     create_assistant_team,
     create_assistants,
+    create_coding_facade_agent,
     is_odoo_command_name,
 )
 from .application import ApplicationContext, create_agentos_app
@@ -58,7 +59,6 @@ from .branch import (
     validate_branch_identity,
 )
 from .coding import AgnoCodingExecutor, AguiCodingAdapter, CodingScope, CodingTaskSupervisor
-from .coding.adapters import create_team_coding_member
 from .coding.execution import CODING_TASK_DEPENDENCY, CodingExecutionKernel
 from .coding.repository import (
     ACTIVE_TASK_STATUSES,
@@ -1158,7 +1158,7 @@ coding_supervisor = CodingTaskSupervisor(
     ),
     execution_cleanup=CodingExecutionKernel(workspace_service, coding_repository),
 )
-team_coding_member = create_team_coding_member(coding_agent, coding_supervisor, workspace_service)
+team_coding_member = create_coding_facade_agent(coding_agent, coding_supervisor, workspace_service)
 assistant_team = create_assistant_team(
     assistant,
     odoo_command_assistant,

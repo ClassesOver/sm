@@ -1,13 +1,21 @@
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from copy import copy
 from functools import partial
 
 from agno.agent import Agent
+from agno.models.openai import OpenAIChat
+from agno.run import RunContext
+from agno.run.agent import RunOutputEvent
+from agno.tools import Function
 
 from ..agent_control import build_coding_agent_tools
+from ..coding.adapters import CliCodingAdapter
+from ..coding.models import CodingScope
 from ..coding.repository import CodingTaskRepository
+from ..coding.supervisor import CodingTaskSupervisor
 from ..instructions import build_coding_agent_instructions
 from ..skills import load_builtin_coding_skills
-from ..workspace import WorkspaceService
+from ..workspace import WorkspaceService, _thread
 
 AgentInstructions = str | list[str] | Callable[..., str | list[str]]
 
@@ -40,3 +48,68 @@ def create_coding_agent(
     )
     agent.num_history_runs = None
     return agent
+
+
+def create_coding_facade_agent(
+    internal_agent: Agent,
+    supervisor: CodingTaskSupervisor,
+    workspace_service: WorkspaceService,
+) -> Agent:
+    if not isinstance(internal_agent.model, OpenAIChat):
+        raise TypeError("Coding facade requires OpenAIChat")
+    facade_model = copy(internal_agent.model)
+    facade_model.extra_body = {
+        **(getattr(internal_agent.model, "extra_body", None) or {}),
+        "enable_thinking": False,
+    }
+
+    async def run_coding_task(
+        instruction: str, run_context: RunContext
+    ) -> AsyncIterator[RunOutputEvent]:
+        dependencies = (
+            run_context.dependencies if isinstance(run_context.dependencies, dict) else {}
+        )
+        binding = dependencies.get("AgentOS 编码任务")
+        external_run_id = binding.get("externalRunId") if isinstance(binding, dict) else None
+        if not isinstance(external_run_id, str) or not external_run_id:
+            raise ValueError("task_binding_missing")
+        thread_id = _thread(run_context)
+        async with workspace_service._async_client() as client:
+            sandbox = await workspace_service._asandbox_for(client, thread_id)
+            sandbox_id = str(getattr(sandbox, "id", "") or "")
+        scope = CodingScope(
+            external_run_id,
+            str(run_context.user_id),
+            thread_id,
+            sandbox_id,
+            str(internal_agent.id),
+        )
+        async for event in CliCodingAdapter(supervisor).start_events(scope, instruction):
+            yield event
+
+    function = Function(
+        name="run_coding_task",
+        description="把完整编码目标交给受控 CodingTaskSupervisor 执行并返回验收结果。",
+        parameters={
+            "type": "object",
+            "properties": {"instruction": {"type": "string", "minLength": 1}},
+            "required": ["instruction"],
+            "additionalProperties": False,
+        },
+        entrypoint=run_coding_task,
+        stop_after_tool_call=True,
+    )
+    facade = internal_agent.deep_copy(
+        update={
+            "instructions": [
+                "必须把收到的完整用户编码目标原样传给 run_coding_task，并直接返回工具结果。"
+            ],
+            "model": facade_model,
+            "tools": [function],
+            "tool_choice": {"type": "function", "function": {"name": "run_coding_task"}},
+            "skills": None,
+        }
+    )
+    facade.tool_choice = {"type": "function", "function": {"name": "run_coding_task"}}
+    facade.num_history_runs = None
+    return facade

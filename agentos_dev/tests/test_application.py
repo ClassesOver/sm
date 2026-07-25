@@ -59,6 +59,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
         FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
+        coding_agent=FakeAssistant(),
     )
     second_context = ApplicationContext(
         settings,
@@ -83,6 +84,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
         first_context.odoo_command_assistant,
         first_context.report_agent,
     ]
+    assert first_context.coding_agent not in created[0].values["agents"]
     assert created[0].values["teams"] == [first_context.assistant_team]
     assert created[0].values["interfaces"] == [("agui", {"team": first_context.assistant_team})]
 
