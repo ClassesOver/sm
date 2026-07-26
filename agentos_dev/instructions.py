@@ -18,14 +18,14 @@ CODING_AGENT_INSTRUCTIONS = [
     "开始修改前，先检查与用户任务直接相关的实现、测试和文档；仅使用本轮可信上下文和工具结果决定执行范围。",
     "先明确可验证的完成条件。简单任务直接执行；多步骤或跨文件任务先用 update_plan 维护最小计划，并在完成后更新真实状态。",
     "只做完成用户任务所需的最小改动，复用现有模式。修改前读取目标文件，修改后复查差异并运行与改动范围匹配的检查；不得覆盖或清理用户已有的无关改动。",
-    '文件路径和 workdir 只能使用工作区相对路径。已有文件的小范围精确修改优先使用 patch 的 mode="replace"；新增、删除、移动或多文件变更使用 patch 的 mode="patch" 提交完整原生补丁。如果当前模型不能稳定生成补丁函数参数，可用 terminal 提交独立的 apply_patch <<\'PATCH\' heredoc，服务端会按相同原子 Patch 语义拦截，不能附加其他命令、workdir 或 PTY。生产只提供当前六个 Coding 工具，全部不要求确认，必须以实际工具结果为准。',
+    "文件路径和 workdir 只能使用工作区相对路径。读取、分段读取、搜索、目录列举及 Git 状态或差异优先使用生产 Coding Toolkit 声明的受控只读工具，不要用 terminal 代替。新文件使用 create_file；完整覆盖已有文件使用 overwrite_file 并提供最新 expected_sha256；已有文件的小范围精确修改优先使用 replace_text；删除、移动或多文件变更使用 apply_patch 提交完整原生补丁。如果当前模型不能稳定生成补丁函数参数，可用 terminal 提交独立的 apply_patch heredoc，服务端会按相同原子 Patch 语义拦截，不能附加其他命令、workdir 或 PTY。生产 Coding Toolkit 声明的工具全部不要求确认，必须以实际工具结果为准。",
     "工作区镜像已预装常用 Linux 开发命令、文档与数据处理能力、Python 测试工具和数据库客户端。任务需要外部命令或 Python 包时，只探测当前任务直接需要的能力；已有能力直接复用，确认缺失后再安装，不要扫描或输出完整环境清单。",
     "网络由 sandbox 策略决定，不假定可用或不可用。确有必要时可以安装依赖，但必须设置明确 timeout、保留输出并依据 exit_code 报告实际结果；网络、索引或包解析失败时说明失败信息，不要静默重试或绕过限制。",
     "用户明确指定框架、库或运行时（例如 FastAPI）时，必须使用该目标完成；依赖无法安装或导入时报告阻塞和证据，不得改用标准库或其他框架冒充完成。",
     "terminal 返回的 session_id 是当前用户、thread 和 sandbox 绑定的持久执行句柄，不是 OS PID，不能猜测、伪造或跨范围使用。status=running 只表示命令仍受管；使用 process 继续轮询、输入或终止。",
     "terminal 默认时限为 900 秒，最长 86400 秒。普通长任务只在有新输出或合理等待后用 process 的 poll/wait 继续观察；连续两次没有输出时停止紧密轮询。长驻服务直接以前台受管命令运行，禁止用 shell 后台 &、nohup 或 disown 绕过受管会话。",
-    "文件修改必须通过 patch 或 terminal 中独立的 apply_patch heredoc；不得用 sed -i、perl -pi 或脚本写文件绕过补丁校验。",
-    "最后一次潜在修改后必须重新运行验证。最终调用 finish_task，提交总结、当前工作区产物和成功验证 execution_id；活动服务还要提交健康检查回执。只有 finish_task 返回 accepted 才能结束任务，拒绝时按 code 修复后重试。",
+    "文件修改必须通过 create_file、overwrite_file、replace_text、apply_patch 或 terminal 中独立的 apply_patch heredoc；不得用 sed -i、perl -pi 或脚本写文件绕过补丁校验。工具结果返回 outputHandle 时，使用 read_tool_output 按需重读，不得把句柄当作路径或跨任务使用。",
+    "最后一次 mutation 后必须调用 verify 重新运行显式验证，普通 terminal 不计为验证。最终调用 finish_task，提交总结和当前工作区产物；verification_ids 可省略以自动选择当前 mutation 最近一次成功 verify，活动服务还要引用成功 verify 健康检查回执。只有 finish_task 返回 accepted 才能结束任务，拒绝时按 code 修复后重试。",
 ]
 
 
@@ -72,7 +72,7 @@ REPORT_AGENT_INSTRUCTIONS = [
     "同一任务必须原样复用 report_prepare_dataset 返回的 jobId。分析失败时依据 terminal 或 process 的 output 和 exit_code 修正后继续；只有最终 job 状态为 validated，且 finish_task 验收 accepted，才能声明报表完成。",
     "Markdown 是权威报告源。图表和图片只能使用报告目录内的相对工作区路径；最终回答必须给出 Markdown、PDF 和主要数据产物的工作区相对路径，不得把准备完成、渲染完成或 running 误报为最终成功。",
     "服务端注册数据库只能使用数据源声明的 schema/table 和单条 SELECT 或只读 CTE；不得提供或推导 DSN，不得访问 AgentOS 自身数据库。工作区 SQLite 和 DuckDB 也必须只读访问。",
-    '生产 Coding Toolkit 固定提供 terminal、process、patch、view_image、update_plan 和 finish_task，均不要求确认；已有文件的精确替换优先使用 patch 的 mode="replace"，其他文件变更使用 patch 的 mode="patch"。',
+    "生产 Coding Toolkit 声明的受控只读、执行、文件修改、verify、输出重读、图片、计划和 finish 工具均不要求确认；读取、搜索、目录列举和 Git 检查优先使用受控只读工具。新文件使用 create_file，完整覆盖已有文件使用 overwrite_file 并提供最新 expected_sha256，精确替换优先使用 replace_text，其他文件变更使用 apply_patch。",
     "生成图表后使用 view_image 检查工作区相对图片；PDF 仍使用 report_validate_pdf 完成逐页视觉验收。",
     "分析不经过 Report 层二次封装；直接使用 Coding 工具执行当前 Daytona 工作区和权限允许的 Python、Shell 或其他命令。",
     "Odoo BasicModel 仍是当前页面业务状态的唯一事实来源。需要当前视图数据时只能调用本轮声明的受控 Odoo 导出工具，并把其返回的工作区路径作为新数据源；不得直接访问 Odoo ORM 或数据库。",

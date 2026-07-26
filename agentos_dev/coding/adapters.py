@@ -32,7 +32,14 @@ from .supervisor import CodingTaskSupervisor
 
 
 class SupervisorPort(Protocol):
-    async def start_task(self, scope, initial_instruction, predecessor_task_id=None): ...
+    async def start_task(
+        self,
+        scope,
+        initial_instruction,
+        predecessor_task_id=None,
+        *,
+        acceptance_contract=None,
+    ): ...
 
     def run_task(self, scope) -> AsyncIterator[CodingEvent]: ...
 
@@ -53,8 +60,14 @@ class CodingMemberAdapter:
         instruction: str,
         *,
         predecessor_task_id: str | None = None,
+        acceptance_contract: dict[str, Any] | None = None,
     ) -> AsyncIterator[CodingEvent]:
-        await self.supervisor.start_task(scope, instruction, predecessor_task_id)
+        await self.supervisor.start_task(
+            scope,
+            instruction,
+            predecessor_task_id,
+            acceptance_contract=acceptance_contract,
+        )
         async for event in self.supervisor.run_task(scope):
             yield event
 
@@ -78,9 +91,17 @@ class CliCodingAdapter(CodingMemberAdapter):
         self._terminal_calls: set[str] = set()
 
     async def start_events(
-        self, scope: CodingScope, instruction: str
+        self,
+        scope: CodingScope,
+        instruction: str,
+        *,
+        acceptance_contract: dict[str, Any] | None = None,
     ) -> AsyncIterator[RunOutputEvent]:
-        async for event in self.start(scope, instruction):
+        async for event in self.start(
+            scope,
+            instruction,
+            acceptance_contract=acceptance_contract,
+        ):
             if event.type == "terminal" and event.data.get("state") != "completed":
                 raise RuntimeError(str(event.data.get("code") or "coding_task_failed"))
             if event.type == "suspended":
@@ -145,8 +166,14 @@ class AguiCodingAdapter(CodingMemberAdapter):
         instruction: str,
         *,
         predecessor_task_id: str | None = None,
+        acceptance_contract: dict[str, Any] | None = None,
     ) -> AsyncIterator[BaseEvent]:
-        async for event in self.start(scope, instruction, predecessor_task_id=predecessor_task_id):
+        async for event in self.start(
+            scope,
+            instruction,
+            predecessor_task_id=predecessor_task_id,
+            acceptance_contract=acceptance_contract,
+        ):
             for converted in self.convert(event, scope):
                 yield converted
 

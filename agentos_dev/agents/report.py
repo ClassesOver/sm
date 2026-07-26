@@ -6,6 +6,7 @@ from agno.run import RunContext
 
 from ..agent_control import build_report_agent_tools
 from ..coding.repository import CodingTaskRepository
+from ..skills import SkillValidatorRegistry
 from ..workspace import (
     REPORT_DELIVERY_STATE_KEY,
     WorkspaceReportToolkit,
@@ -59,6 +60,7 @@ def create_report_agent(
     database_url: str | None = None,
 ) -> Agent:
     post_hooks = [*(base_agent.post_hooks or []), report_delivery_post_hook(workspace_service)]
+    validator_registry = SkillValidatorRegistry.from_skills(base_agent.skills)
     agent = base_agent.deep_copy(
         update={
             "id": "report-agent",
@@ -69,6 +71,7 @@ def create_report_agent(
                 build_report_agent_tools,
                 workspace_service,
                 coding_repository,
+                validator_registry=validator_registry,
                 context_token_budget=context_token_budget,
                 output_token_reserve=output_token_reserve,
                 report_data_sources_file=report_data_sources_file,

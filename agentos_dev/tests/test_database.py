@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -92,4 +93,22 @@ def test_sqlite_database_factory_rejects_memory_and_enables_required_pragmas(tmp
             assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
             assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one() == 30_000
     finally:
+        database.sync_engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_sqlite_async_engine_connects_with_required_pragmas_without_hanging(tmp_path):
+    database = create_agent_database(f"sqlite:///{tmp_path / 'agent.db'}")
+    try:
+        async with asyncio.timeout(5):
+            async with database.async_engine.connect() as connection:
+                assert (
+                    await connection.exec_driver_sql("PRAGMA journal_mode")
+                ).scalar_one() == "wal"
+                assert (await connection.exec_driver_sql("PRAGMA foreign_keys")).scalar_one() == 1
+                assert (
+                    await connection.exec_driver_sql("PRAGMA busy_timeout")
+                ).scalar_one() == 30_000
+    finally:
+        await database.async_engine.dispose()
         database.sync_engine.dispose()

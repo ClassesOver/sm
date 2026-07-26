@@ -118,7 +118,7 @@ Coding Agent 工具规则：
 - 复杂任务用 update_plan 维护可验证步骤；只有命令成功、文件已复查且测试通过后才能声称完成。
 """.strip()
 
-HERMES_CODING_TOOLKIT_INSTRUCTIONS = """
+LEGACY_HERMES_CODING_TOOLKIT_INSTRUCTIONS = """
 生产工作区工具规则：
 - 只使用 terminal、process、patch、view_image、update_plan 和 finish_task；它们共享当前 thread 唯一的 Daytona 工作区、受管进程和原子文件提交层。
 - 短命令使用 terminal 前台模式；长任务或服务使用 background=true，并用 process 的 poll 或 wait 查看增量输出，不能使用 shell 后台符号绕过受管进程。
@@ -128,6 +128,22 @@ HERMES_CODING_TOOLKIT_INSTRUCTIONS = """
 - 文件路径和 workdir 必须是工作区相对路径；所有工具直接执行，但不会扩大当前 thread、路径、网络、进程、超时或输出限制。
 - 多步骤任务用 update_plan 维护计划；完成前确保全部步骤为 completed，且交付产物仍存在。
 - 最后一次潜在修改后必须用 terminal 得到成功验证回执；存在活动进程时必须终止，或在 finish_task 的 service_sessions 中声明并提供当前 mutation 的成功健康检查回执。
+- 只有 finish_task 返回 accepted 才表示任务完成；门禁拒绝时按稳定 code 修复后再次调用，不得把候选总结当作最终交付。
+""".strip()
+
+HERMES_CODING_TOOLKIT_INSTRUCTIONS = """
+生产工作区工具规则：
+- 只使用当前生产 Coding Toolkit 声明的 terminal、process、create_file、overwrite_file、replace_text、apply_patch、verify、list_files、read_file、read_lines、search_text、tree、git_status、git_diff、read_tool_output、view_image、update_plan 和 finish_task；它们共享当前 thread 唯一的 Daytona 工作区、受管进程和原子文件提交层。
+- 普通文件读取、分段读取、文本搜索、目录列举及 Git 状态或差异优先使用对应受控只读工具；不要用 terminal 代替。独立只读调用可以并行，有数据依赖时必须串行。
+- 短命令使用 terminal 前台模式；长任务或服务使用 background=true，并用 process 的 poll 或 wait 查看增量输出，不能使用 shell 后台符号绕过受管进程。terminal 的 command 最多 32 KiB UTF-8 字节，不要用巨型 heredoc 传输文件内容。
+- process 支持 list、poll、wait、kill、write 和 submit；write 原样写入，submit 会在数据后追加换行。未暴露的日志回溯、关闭 stdin 和异步通知能力不可假定存在。
+- create_file 用于创建不存在的目标；overwrite_file 用于完整覆盖已有文件且必须提供最新 expected_sha256；replace_text 用于精确字符串替换，默认要求原文唯一，需要替换全部匹配时显式设置 replace_all=true。
+- apply_patch 使用完整的“*** Begin Patch / *** End Patch”补丁，支持 Add/Update/Delete/Move、多文件和多个 hunk；terminal 中独立的 apply_patch heredoc 进入同一原子补丁内核。禁止无条件覆盖和模糊匹配。
+- 文本工具结果被截断且返回 outputHandle 时，使用 read_tool_output(handle, offset, max_bytes) 按需重读；句柄是当前 Task/Attempt 的不透明标识，不得当作路径或跨任务使用。
+- 文件路径和 workdir 必须是工作区相对路径；所有工具直接执行，但不会扩大当前 thread、路径、网络、进程、超时或输出限制。
+- 多步骤任务用 update_plan 维护计划；完成前确保全部步骤为 completed，且交付产物仍存在。
+- 最后一次 mutation 后必须调用 verify 执行显式验证；普通 terminal 不计为验证。finish_task 的 verification_ids 可以省略，由服务端自动选择当前 mutation 最近一次成功的 verify；显式提供时只能引用当前 mutation 的成功验证回执。
+- 存在活动进程时必须终止，或在 finish_task 的 service_sessions 中声明并引用当前 mutation 的成功 verify 健康检查回执。
 - 只有 finish_task 返回 accepted 才表示任务完成；门禁拒绝时按稳定 code 修复后再次调用，不得把候选总结当作最终交付。
 """.strip()
 
@@ -1579,7 +1595,7 @@ class HermesCodingToolkit(_ManagedDaytonaTools):
                     entrypoint=self.patch,
                 ),
             ],
-            instructions=HERMES_CODING_TOOLKIT_INSTRUCTIONS,
+            instructions=LEGACY_HERMES_CODING_TOOLKIT_INSTRUCTIONS,
         )
 
     @staticmethod

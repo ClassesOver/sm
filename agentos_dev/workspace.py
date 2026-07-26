@@ -4,6 +4,7 @@ import difflib
 import hashlib
 import json
 import mimetypes
+import re
 import shlex
 import unicodedata
 import uuid
@@ -1509,6 +1510,32 @@ class WorkspaceService:
             raise WorkspaceError("工作区文件哈希结果无效，请稍后重试。") from error
         return {"path": relative, "size": size, "sha256": digest}
 
+    async def abatch_hash_files(self, thread: str, paths: list[str]) -> list[dict[str, Any]]:
+        if not isinstance(paths, list) or len(paths) > MAX_PATCH_FILES * 3:
+            raise WorkspaceError(f"批量哈希路径不能超过 {MAX_PATCH_FILES * 3} 个。")
+        normalized = [self.normalize_path(path, allow_root=False) for path in paths]
+        results: list[dict[str, Any]] = []
+        async with self._async_client() as client:
+            sandbox = await self._asandbox_for(client, thread)
+            for relative, remote in normalized:
+                try:
+                    await self._avalidate_existing_path(sandbox, relative)
+                    info = await self._ainfo(sandbox, remote)
+                    if not self._is_regular_file(info):
+                        raise DaytonaNotFoundError("not a regular file")
+                    content = await self._adownload_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
+                except (DaytonaNotFoundError, WorkspaceError):
+                    results.append({"path": relative, "missing": True})
+                    continue
+                results.append(
+                    {
+                        "path": relative,
+                        "size": len(content),
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                    }
+                )
+        return results
+
     async def astat(self, thread: str, path: str = "") -> dict[str, Any]:
         relative, remote = self.normalize_path(path)
         script = f"stat --printf='%F\\0%s\\0%Y\\0%a\\0' -- {shlex.quote(remote)}"
@@ -2941,12 +2968,16 @@ class DaytonaToolkit(Toolkit):
         wall_time_seconds: float | None = None,
         timeout_marker: str | None = None,
     ) -> dict[str, Any]:
-        output = getattr(value, "output", None)
-        if output in (None, ""):
-            stdout = str(getattr(value, "stdout", "") or "")
-            stderr = str(getattr(value, "stderr", "") or "")
-            if stdout or stderr:
-                output = stdout + (("\n" if stdout and stderr else "") + stderr)
+        stdout = str(getattr(value, "stdout", "") or "")
+        stderr = str(getattr(value, "stderr", "") or "")
+        if stdout or stderr:
+            output = stdout + (("\n" if stdout and stderr else "") + stderr)
+        else:
+            output = re.sub(
+                r"(?m)^(?:\x01{1,3}|\x02{1,3})",
+                "",
+                str(getattr(value, "output", "") or ""),
+            )
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise WorkspaceError("后台日志偏移必须是大于等于 0 的整数。")
         if (

@@ -24,11 +24,19 @@ from ..coding import (
 )
 from ..coding.adapters import CliCodingAdapter
 from ..coding.execution import CodingExecutionKernel, WorkspaceCodingToolkit
-from ..context_management import clear_terminal_reasoning
+from ..context_management import (
+    ContextBudgetController,
+    clear_terminal_reasoning,
+    projected_coding_model,
+)
 from ..database import create_agent_database
 from ..observability import configure_tracing
 from ..settings import AgentSettings
-from ..skills import load_builtin_coding_skills
+from ..skills import (
+    SkillValidatorRegistry,
+    load_builtin_coding_skills,
+    skill_script_receipt_hook,
+)
 from ..workspace import WorkspaceService
 
 CLI_AGENT_INSTRUCTIONS = [
@@ -88,20 +96,41 @@ def _create_cli_model(
 
 def create_cli_agent(context: CliContext) -> Agent:
     settings = context.settings
+    model = projected_coding_model(_create_cli_model(settings))
+    coding_skills = load_builtin_coding_skills(settings.skills_dir)
+    validator_registry = SkillValidatorRegistry.from_skills(coding_skills)
+    compression_manager = (
+        ContextBudgetController(
+            model=model,
+            context_token_budget=settings.context_token_budget,
+            output_token_reserve=settings.output_token_reserve,
+        )
+        if settings.enable_tool_result_compression
+        else None
+    )
     return Agent(
         id="coding-agent-cli",
         name="Coding Agent CLI",
         role="在当前 Daytona 工作区执行受控软件开发任务。",
-        model=_create_cli_model(settings),
+        model=model,
         instructions=CLI_AGENT_INSTRUCTIONS,
-        skills=load_builtin_coding_skills(settings.skills_dir),
-        tools=[WorkspaceCodingToolkit(context.workspace_service, context.coding_repository)],
+        skills=coding_skills,
+        tools=[
+            WorkspaceCodingToolkit(
+                context.workspace_service,
+                context.coding_repository,
+                validator_registry=validator_registry,
+            )
+        ],
         db=context.database,
         checkpoint="tool-batch",
         add_history_to_context=True,
         num_history_runs=5,
+        compress_tool_results=settings.enable_tool_result_compression,
+        compression_manager=compression_manager,
         retries=0,
         post_hooks=[clear_terminal_reasoning],
+        tool_hooks=[skill_script_receipt_hook],
         debug_mode=True,
         markdown=True,
         tool_choice="auto",
@@ -109,14 +138,19 @@ def create_cli_agent(context: CliContext) -> Agent:
 
 
 def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
+    validator_registry = SkillValidatorRegistry.from_skills(coding_agent.skills)
     supervisor = CodingTaskSupervisor(
         context.coding_repository,
         AgnoCodingExecutor(lambda _agent_id: coding_agent),
         execution_cleanup=CodingExecutionKernel(
             context.workspace_service, context.coding_repository
         ),
+        validator_registry=validator_registry,
     )
     adapter = CliCodingAdapter(supervisor)
+    facade_tool_hooks = [
+        hook for hook in (coding_agent.tool_hooks or []) if hook is not skill_script_receipt_hook
+    ]
 
     async def run_coding_task(
         instruction: str, run_context: RunContext
@@ -167,6 +201,7 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
                 "function": {"name": "run_coding_task"},
             },
             "skills": None,
+            "tool_hooks": facade_tool_hooks,
         }
     )
     app_agent.tool_choice = {
@@ -193,10 +228,15 @@ async def _close_cli_resources(context: CliContext, *agents: Agent) -> None:
     clients: list[Any] = []
     seen: set[int] = set()
     for agent in agents:
-        client = getattr(getattr(agent, "model", None), "async_client", None)
-        if client is not None and id(client) not in seen:
-            seen.add(id(client))
-            clients.append(client)
+        models = [
+            getattr(agent, "model", None),
+            getattr(getattr(agent, "compression_manager", None), "model", None),
+        ]
+        for model in models:
+            client = getattr(model, "async_client", None)
+            if client is not None and id(client) not in seen:
+                seen.add(id(client))
+                clients.append(client)
     clients.append(context.database)
     first_error: BaseException | None = None
     for client in clients:

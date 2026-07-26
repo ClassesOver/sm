@@ -6,6 +6,7 @@ from agno.models.response import ToolExecution
 
 from agentos_dev.coding import (
     AgnoRunState,
+    CodingRepositoryError,
     CodingScope,
     CodingTaskRepository,
     CodingTaskSupervisor,
@@ -22,6 +23,7 @@ class FakeExecutor:
         self.status_by_run: dict[str, AgnoRunState] = {}
         self.calls: list[tuple[str, str]] = []
         self.finish_on_attempt = 0
+        self.dependencies = None
 
     async def state(self, scope, attempt):
         return self.status_by_run.get(attempt.internal_run_id, AgnoRunState(exists=False))
@@ -39,6 +41,7 @@ class FakeExecutor:
             yield event
 
     async def _events(self, scope, attempt, dependencies) -> AsyncIterator[Any]:
+        self.dependencies = dependencies
         yield type(
             "ToolEvent",
             (),
@@ -112,6 +115,7 @@ async def test_supervisor_first_run_only_publishes_receipted_final(supervisor_ru
     events = [event async for event in supervisor.run_task(coding_scope())]
 
     assert executor.calls[0][0] == "arun"
+    assert executor.dependencies["AgentOS 编码任务"]["threadId"] == "thread"
     assert [event.event_id for event in events[-2:]] == [
         "external:final",
         "external:terminal",
@@ -127,6 +131,59 @@ async def test_supervisor_first_run_only_publishes_receipted_final(supervisor_ru
     assert "[REDACTED]" in tool_event.data["arguments"]
     task = await repository.get_task_snapshot("external")
     assert task is not None and task.state is TaskState.COMPLETED
+
+
+@pytest.mark.anyio
+async def test_supervisor_validates_and_persists_server_acceptance_contract(
+    supervisor_runtime,
+):
+    repository, executor, _supervisor = supervisor_runtime
+    acceptance_contract = {
+        "version": 1,
+        "requirements": [
+            {
+                "id": "report",
+                "validatorId": "analysis:report",
+                "parameters": {},
+                "artifactPatterns": ["reports/*.json"],
+            }
+        ],
+    }
+    observed = []
+
+    class Registry:
+        def validate_contract(self, contract):
+            observed.append(contract)
+            return acceptance_contract
+
+    supervisor = CodingTaskSupervisor(
+        repository,
+        executor,  # type: ignore[arg-type]
+        validator_registry=Registry(),
+    )
+
+    task = await supervisor.start_task(
+        coding_scope(),
+        "实现目标",
+        acceptance_contract=acceptance_contract,
+    )
+
+    assert observed == [acceptance_contract]
+    assert task.acceptance_contract == acceptance_contract
+
+
+@pytest.mark.anyio
+async def test_supervisor_rejects_contract_without_validator_registry(supervisor_runtime):
+    _repository, _executor, supervisor = supervisor_runtime
+
+    with pytest.raises(CodingRepositoryError) as rejected:
+        await supervisor.start_task(
+            coding_scope(),
+            "实现目标",
+            acceptance_contract={"version": 1, "requirements": []},
+        )
+
+    assert rejected.value.code == "acceptance_validator_unavailable"
 
 
 @pytest.mark.anyio

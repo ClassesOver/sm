@@ -13,8 +13,13 @@ from ..coding.adapters import CliCodingAdapter
 from ..coding.models import CodingScope
 from ..coding.repository import CodingTaskRepository
 from ..coding.supervisor import CodingTaskSupervisor
+from ..context_management import ContextBudgetController, projected_coding_model
 from ..instructions import build_coding_agent_instructions
-from ..skills import load_builtin_coding_skills
+from ..skills import (
+    SkillValidatorRegistry,
+    load_builtin_coding_skills,
+    skill_script_receipt_hook,
+)
 from ..workspace import WorkspaceService, _thread
 
 AgentInstructions = str | list[str] | Callable[..., str | list[str]]
@@ -29,24 +34,40 @@ def create_coding_agent(
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
 ) -> Agent:
+    tool_hooks = [*(base_agent.tool_hooks or []), skill_script_receipt_hook]
+    if not isinstance(base_agent.model, OpenAIChat):
+        raise TypeError("Coding Agent requires OpenAIChat")
+    coding_model = projected_coding_model(base_agent.model)
+    coding_skills = load_builtin_coding_skills()
+    validator_registry = SkillValidatorRegistry.from_skills(coding_skills)
     agent = base_agent.deep_copy(
         update={
             "id": "coding-agent",
             "name": "Coding Agent",
             "role": "在当前 Daytona 工作区执行受控软件开发任务。",
             "instructions": instructions,
-            "skills": load_builtin_coding_skills(),
+            "model": coding_model,
+            "skills": coding_skills,
             "tools": partial(
                 build_coding_agent_tools,
                 workspace_service,
                 coding_repository,
+                validator_registry=validator_registry,
                 context_token_budget=context_token_budget,
                 output_token_reserve=output_token_reserve,
             ),
             "tool_choice": "auto",
+            "tool_hooks": tool_hooks,
         }
     )
     agent.num_history_runs = None
+    if base_agent.compress_tool_results:
+        agent.compression_manager = ContextBudgetController(
+            model=agent.model,
+            context_token_budget=context_token_budget,
+            output_token_reserve=output_token_reserve,
+        )
+        agent.compress_tool_results = True
     return agent
 
 
@@ -62,6 +83,9 @@ def create_coding_facade_agent(
         **(getattr(internal_agent.model, "extra_body", None) or {}),
         "enable_thinking": False,
     }
+    facade_tool_hooks = [
+        hook for hook in (internal_agent.tool_hooks or []) if hook is not skill_script_receipt_hook
+    ]
 
     async def run_coding_task(
         instruction: str, run_context: RunContext
@@ -84,7 +108,16 @@ def create_coding_facade_agent(
             sandbox_id,
             str(internal_agent.id),
         )
-        async for event in CliCodingAdapter(supervisor).start_events(scope, instruction):
+        acceptance_contract = (
+            binding.get("acceptanceContract") if isinstance(binding, dict) else None
+        )
+        if acceptance_contract is not None and not isinstance(acceptance_contract, dict):
+            raise ValueError("task_acceptance_contract_invalid")
+        async for event in CliCodingAdapter(supervisor).start_events(
+            scope,
+            instruction,
+            acceptance_contract=acceptance_contract,
+        ):
             yield event
 
     function = Function(
@@ -108,6 +141,7 @@ def create_coding_facade_agent(
             "tools": [function],
             "tool_choice": {"type": "function", "function": {"name": "run_coding_task"}},
             "skills": None,
+            "tool_hooks": facade_tool_hooks,
         }
     )
     facade.tool_choice = {"type": "function", "function": {"name": "run_coding_task"}}

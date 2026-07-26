@@ -59,7 +59,15 @@ from .branch import (
     validate_branch_identity,
 )
 from .coding import AgnoCodingExecutor, AguiCodingAdapter, CodingScope, CodingTaskSupervisor
-from .coding.execution import CODING_TASK_DEPENDENCY, CodingExecutionKernel
+from .coding.execution import (
+    CODING_EXECUTION_MIGRATION_STATE_KEY,
+    CODING_FINISH_FAILURE_STATE_KEY,
+    CODING_FINISH_STATE_KEY,
+    CODING_TASK_DEPENDENCY,
+    CODING_TOOL_OUTPUT_STATE_KEY,
+    CODING_TOOL_PROGRESS_STATE_KEY,
+    CodingExecutionKernel,
+)
 from .coding.repository import (
     ACTIVE_TASK_STATUSES,
     TERMINAL_EXECUTION_STATUSES,
@@ -92,7 +100,7 @@ from .report_data_sources import (
 )
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
-from .skills import load_skills, public_skill_metadata
+from .skills import SkillValidatorRegistry, load_skills, public_skill_metadata
 from .workspace import (
     REPORT_DELIVERY_INCOMPLETE_MESSAGE,
     REPORT_DELIVERY_STATE_KEY,
@@ -179,6 +187,11 @@ SERVER_SESSION_STATE_KEYS = frozenset(
         CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
         CODEX_EXEC_SESSIONS_STATE_KEY,
         CODEX_EXEC_NEXT_SESSION_STATE_KEY,
+        CODING_EXECUTION_MIGRATION_STATE_KEY,
+        CODING_FINISH_FAILURE_STATE_KEY,
+        CODING_FINISH_STATE_KEY,
+        CODING_TOOL_OUTPUT_STATE_KEY,
+        CODING_TOOL_PROGRESS_STATE_KEY,
     }
 )
 logger = logging.getLogger(__name__)
@@ -249,6 +262,7 @@ def _sanitize_run_input(run_input: RunAgentInput) -> RunAgentInput:
         not in {
             HISTORY_CONTEXT_DESCRIPTION,
             AGENT_CONTEXT_STATUS_DEPENDENCY,
+            CODING_TASK_DEPENDENCY,
             CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
             TEAM_ROUTE_DEPENDENCY,
         }
@@ -1165,6 +1179,7 @@ coding_supervisor = CodingTaskSupervisor(
         lambda agent_id: report_agent if agent_id == report_agent.id else coding_agent
     ),
     execution_cleanup=CodingExecutionKernel(workspace_service, coding_repository),
+    validator_registry=SkillValidatorRegistry.from_skills(coding_agent.skills),
 )
 team_coding_member = create_coding_facade_agent(coding_agent, coding_supervisor, workspace_service)
 assistant_team = create_assistant_team(

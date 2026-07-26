@@ -85,6 +85,7 @@ class TaskSnapshot:
     same_error_count: int = 0
     error_fingerprint: str | None = None
     predecessor_task_id: str | None = None
+    acceptance_contract: dict[str, Any] | None = None
     finish_receipt: dict[str, Any] | None = None
     result_text: str | None = None
 

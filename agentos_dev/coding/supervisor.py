@@ -49,6 +49,10 @@ class ExecutionCleanup(Protocol):
     async def cleanup_disconnect(self, scope: CodingScope, current_epoch: int) -> None: ...
 
 
+class AcceptanceValidatorRegistry(Protocol):
+    def validate_contract(self, contract: Any) -> dict[str, Any]: ...
+
+
 class _TaskSuspended(Exception):
     def __init__(self, code: str):
         self.code = code
@@ -63,6 +67,7 @@ class CodingTaskSupervisor:
         policy: ContinuationPolicy | None = None,
         run_manager: InternalRunManager | None = None,
         execution_cleanup: ExecutionCleanup | None = None,
+        validator_registry: AcceptanceValidatorRegistry | None = None,
         session_factory: Callable[[CodingTaskRepository, CodingScope], TaskSession] = TaskSession,
     ):
         self.repository = repository
@@ -70,6 +75,7 @@ class CodingTaskSupervisor:
         self.policy = policy or ContinuationPolicy()
         self.run_manager = run_manager or InternalRunManager(repository)
         self.execution_cleanup = execution_cleanup
+        self.validator_registry = validator_registry
         self.session_factory = session_factory
 
     async def start_task(
@@ -77,9 +83,25 @@ class CodingTaskSupervisor:
         scope: CodingScope,
         initial_instruction: str,
         predecessor_task_id: str | None = None,
+        *,
+        acceptance_contract: dict[str, Any] | None = None,
     ) -> TaskSnapshot:
+        normalized_contract = None
+        if acceptance_contract is not None:
+            if self.validator_registry is None:
+                raise CodingRepositoryError(
+                    "acceptance_validator_unavailable",
+                    "编码任务验收契约没有可用的服务端 validator registry。",
+                )
+            try:
+                normalized_contract = self.validator_registry.validate_contract(acceptance_contract)
+            except ValueError as error:
+                raise CodingRepositoryError("acceptance_contract_invalid", str(error)) from error
         return await self.repository.create_task_with_initial_attempt(
-            scope, initial_instruction, predecessor_task_id
+            scope,
+            initial_instruction,
+            predecessor_task_id,
+            acceptance_contract=normalized_contract,
         )
 
     async def run_task(self, scope: CodingScope) -> AsyncIterator[CodingEvent]:
@@ -110,6 +132,7 @@ class CodingTaskSupervisor:
         task = await self.repository.cancel_and_reject(scope)
         if self.execution_cleanup is not None:
             await self.execution_cleanup.cleanup_disconnect(scope, task.lease_epoch)
+            await self._cleanup_task_outputs(scope)
         return task
 
     async def _drive(self, scope: CodingScope) -> AsyncGenerator[CodingEvent, None]:
@@ -119,6 +142,7 @@ class CodingTaskSupervisor:
                 yield event
             return
         if task.state in {TaskState.FAILED, TaskState.CANCELLED}:
+            await self._cleanup_task_outputs(scope)
             yield self._terminal_event(task)
             return
 
@@ -259,6 +283,7 @@ class CodingTaskSupervisor:
         dependencies = {
             "AgentOS 编码任务": {
                 "externalRunId": task.scope.external_run_id,
+                "threadId": task.scope.thread_id,
                 "sandboxId": task.scope.sandbox_id,
                 "leaseOwner": session.lease.owner,
                 "leaseEpoch": session.lease.epoch,
@@ -375,12 +400,14 @@ class CodingTaskSupervisor:
             raise CodingRepositoryError(
                 "finish_waiting_for_agno", "完成回执已保存，正在等待 Agno run 终态。"
             )
-        return await self.repository.finalize_finish(
+        completed = await self.repository.finalize_finish(
             task.scope.external_run_id,
             session.lease,
             task.state_version,
             agno_status=run_state.status or "lost",
         )
+        await self._cleanup_task_outputs(task.scope)
+        return completed
 
     async def _disconnect(self, scope: CodingScope, session: TaskSession) -> None:
         task = await self.repository.get_task_snapshot(scope.external_run_id)
@@ -427,9 +454,16 @@ class CodingTaskSupervisor:
         return attempt
 
     async def _fail_task(self, task: TaskSnapshot, code: str) -> TaskSnapshot:
-        return await self.repository.fail_closed_task(
+        failed = await self.repository.fail_closed_task(
             task.scope.external_run_id, task.state_version, code
         )
+        await self._cleanup_task_outputs(task.scope)
+        return failed
+
+    async def _cleanup_task_outputs(self, scope: CodingScope) -> None:
+        cleanup = getattr(self.execution_cleanup, "cleanup_task_outputs", None)
+        if callable(cleanup):
+            await cleanup(scope)
 
     async def _completion_events(self, task: TaskSnapshot) -> AsyncIterator[CodingEvent]:
         receipt = task.finish_receipt or {}

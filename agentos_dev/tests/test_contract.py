@@ -21,6 +21,7 @@ from agentos_dev.agents import (
     OPENAI_COMPATIBLE_ROLE_MAP,
     TEAM_ROUTE_DEPENDENCY,
 )
+from agentos_dev.context_management import ContextBudgetController, ProjectedOpenAIChat
 from agentos_dev.instructions import (
     BUSINESS_COMMAND_INSTRUCTIONS,
     CORE_INSTRUCTIONS,
@@ -156,7 +157,9 @@ def test_coding_agent_uses_trusted_per_run_instructions():
     )
 
     assert "当前可用工具、其 schema、确认要求" in text
-    assert "生产只提供当前六个 Coding 工具，全部不要求确认" in text
+    assert "生产 Coding Toolkit 声明的工具全部不要求确认" in text
+    assert "受控只读工具" in text
+    assert "普通 terminal 不计为验证" in text
     assert "确认缺失后再安装" in text
     assert "不要扫描或输出完整环境清单" in text
     assert "网络由 sandbox 策略决定" in text
@@ -388,7 +391,19 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
     assert coding_registered == {
         "terminal",
         "process",
-        "patch",
+        "create_file",
+        "overwrite_file",
+        "replace_text",
+        "apply_patch",
+        "verify",
+        "list_files",
+        "read_file",
+        "read_lines",
+        "search_text",
+        "tree",
+        "git_status",
+        "git_diff",
+        "read_tool_output",
         "view_image",
         "update_plan",
         "finish_task",
@@ -422,7 +437,14 @@ def test_toolkit_instructions_are_injected_by_agno():
 
     assert coding_toolkit.add_instructions is True
     assert "terminal" in coding_toolkit.instructions
-    assert "patch" in coding_toolkit.instructions
+    assert "create_file" in coding_toolkit.instructions
+    assert "overwrite_file" in coding_toolkit.instructions
+    assert "replace_text" in coding_toolkit.instructions
+    assert "apply_patch" in coding_toolkit.instructions
+    assert "verify" in coding_toolkit.instructions
+    assert "read_tool_output" in coding_toolkit.instructions
+    assert "受控只读工具" in coding_toolkit.instructions
+    assert "terminal 不计为验证" in coding_toolkit.instructions
     assert "apply_changes" not in coding_toolkit.instructions
     assert "process" in coding_toolkit.instructions
     assert "finish_task" in coding_toolkit.instructions
@@ -430,7 +452,6 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert data_source_toolkit.add_instructions is True
     assert "分析和长进程统一使用 Coding 工具" in report_toolkit.instructions
     assert "不另加 Report 层命令限制" in report_toolkit.instructions
-    assert "patch" in report_toolkit.instructions
     assert "apply_changes" not in report_toolkit.instructions
     assert "terminal" in report_toolkit.instructions
     assert "process" in report_toolkit.instructions
@@ -457,16 +478,35 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert parsed_terminal_schema["additionalProperties"] is False
     assert parsed_terminal_schema["properties"]["command"]["minLength"] == 1
     assert parsed_terminal_schema["properties"]["timeout"]["maximum"] == 86400
-    assert parsed_tools["patch"].parameters["properties"]["mode"]["enum"] == [
-        "replace",
-        "patch",
-    ]
+    assert "patch" not in parsed_tools
+    assert set(parsed_tools["read_lines"].parameters["properties"]) == {
+        "path",
+        "start_line",
+        "end_line",
+    }
+    assert set(parsed_tools["search_text"].parameters["properties"]) == {
+        "pattern",
+        "path",
+        "limit",
+    }
     assert all(
         parsed_tools[name].requires_confirmation is False
         for name in (
             "terminal",
             "process",
-            "patch",
+            "create_file",
+            "overwrite_file",
+            "replace_text",
+            "apply_patch",
+            "verify",
+            "list_files",
+            "read_file",
+            "read_lines",
+            "search_text",
+            "tree",
+            "git_status",
+            "git_diff",
+            "read_tool_output",
             "view_image",
             "update_plan",
             "finish_task",
@@ -481,13 +521,20 @@ def test_report_agent_instructions_support_iterative_python_scripts():
 
     assert resolved == [*build_coding_agent_instructions(context), *REPORT_AGENT_INSTRUCTIONS]
     assert "terminal" in instructions
+    assert "受控只读工具" in instructions
+    assert "verify" in instructions
+    assert "terminal 不计为验证" in instructions
     assert "finish_task" in instructions
-    assert 'patch 的 mode="replace"' in instructions
+    assert "新文件使用 create_file" in instructions
+    assert "完整覆盖已有文件使用 overwrite_file" in instructions
+    assert "精确替换优先使用 replace_text" in instructions
+    assert "其他文件变更使用 apply_patch" in instructions
     assert "apply_changes" not in instructions
     assert "process" in instructions
     assert "view_image" in instructions
     assert "Python、Shell 或其他命令" in instructions
     assert "分析不经过 Report 层二次封装" in instructions
+    assert "成功验证 execution_id" not in instructions
 
 
 def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
@@ -503,7 +550,13 @@ def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
         assert assistant.model.retries == 2
         assert assistant.model.exponential_backoff is True
         assert assistant.model.extra_body["enable_thinking"] is True
-        assert assistant.compression_manager.model.extra_body["enable_thinking"] is False
+        if assistant is app.report_agent:
+            assert isinstance(app.coding_agent.model, ProjectedOpenAIChat)
+            assert isinstance(assistant.model, ProjectedOpenAIChat)
+            assert isinstance(assistant.compression_manager, ContextBudgetController)
+            assert assistant.compression_manager.model is assistant.model
+        else:
+            assert assistant.compression_manager.model.extra_body["enable_thinking"] is False
         assert assistant.session_summary_manager.model.extra_body["enable_thinking"] is False
         assert assistant.compression_manager.model.retries == 2
         assert assistant.session_summary_manager.model.retries == 2
@@ -642,12 +695,17 @@ def test_智能报表技能统一使用工作区相对路径和报表工具():
     )
 
     assert "相对 `/home/daytona/workspace` 的工作区路径" in skill
-    assert "`terminal` 检查文件和可用依赖" in skill
-    assert "创建脚本或多文件修改使用 `patch`" in skill
-    assert '`patch` 的 `mode="replace"`' in skill
+    assert "受控只读工具检查文件" in skill
+    assert "多文件修改使用 `apply_patch`" in skill
+    assert "新脚本使用 `create_file`" in skill
+    assert "完整覆盖已有脚本使用 `overwrite_file`" in skill
+    assert "小范围修改优先使用 `replace_text`" in skill
     assert "`apply_changes`" not in skill
     assert "`process` 的 `poll/wait/write/submit/kill`" in skill
-    assert "生产 Coding Toolkit 的六个工具均不要求确认" in skill
+    assert "生产 Coding Toolkit 声明的工具均不要求确认" in skill
+    assert "`read_tool_output`" in skill
+    assert "`verify`" in skill
+    assert "普通 `terminal` 不计为验证" in skill
     assert "`view_image` 检查生成的图表" in skill
     assert "workspace_write_file" not in skill
     assert "workspace_apply_changes" not in skill

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -10,6 +11,11 @@ from agno.exceptions import ModelAuthenticationError
 from agno.run.base import RunStatus
 
 from .models import AttemptSnapshot, CodingScope
+
+
+def coding_session_id(scope: CodingScope) -> str:
+    digest = hashlib.sha256(f"{scope.thread_id}:{scope.external_run_id}".encode()).hexdigest()[:32]
+    return f"coding-{digest}"
 
 
 @dataclass(frozen=True)
@@ -78,7 +84,7 @@ class AgnoCodingExecutor:
             stream=True,
             stream_events=True,
             run_id=attempt.internal_run_id,
-            session_id=scope.thread_id,
+            session_id=coding_session_id(scope),
             user_id=scope.owner_user_id,
             dependencies=dependencies,
         )
@@ -102,7 +108,7 @@ class AgnoCodingExecutor:
             input=instruction,
             stream=True,
             stream_events=True,
-            session_id=scope.thread_id,
+            session_id=coding_session_id(scope),
             user_id=scope.owner_user_id,
             dependencies=dependencies,
         )
@@ -116,7 +122,7 @@ class AgnoCodingExecutor:
     async def state(self, scope: CodingScope, attempt: AttemptSnapshot) -> AgnoRunState:
         output = await self.agent_for_id(scope.agent_id).aget_run_output(
             run_id=attempt.internal_run_id,
-            session_id=scope.thread_id,
+            session_id=coding_session_id(scope),
             user_id=scope.owner_user_id,
         )
         if output is None:

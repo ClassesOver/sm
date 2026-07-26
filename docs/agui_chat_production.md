@@ -66,6 +66,17 @@ Agent 镜像安装 pandas、openpyxl、matplotlib 和 Plotly；Daytona sandbox-t
 `agentos_dev/requirements.txt` 变化后必须重建镜像，不要在运行中的生产容器内交互安装
 这些依赖。
 
+依赖变更后只重建并重新创建 AgentOS 服务：
+
+```bash
+docker compose up -d --build --force-recreate agent
+docker compose exec agent python -c 'from importlib.metadata import version; actual = version("agno"); assert actual == "2.8.2", actual; print(actual)'
+docker compose exec agent python -m pip check
+```
+
+版本命令必须输出 `2.8.2`，`pip check` 必须报告没有依赖冲突。本次升级继续复用现有
+`agent_db_data` PostgreSQL 数据卷，不涉及数据卷迁移，也不需要重建 Daytona 服务或 Snapshot。
+
 <a id="isolated-workspaces"></a>
 
 ## 隔离部署

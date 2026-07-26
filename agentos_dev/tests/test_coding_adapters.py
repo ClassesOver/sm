@@ -23,8 +23,15 @@ class FakeSupervisor:
     def __init__(self):
         self.calls = []
 
-    async def start_task(self, scope, instruction, predecessor_task_id=None):
-        self.calls.append(("start", scope, instruction, predecessor_task_id))
+    async def start_task(
+        self,
+        scope,
+        instruction,
+        predecessor_task_id=None,
+        *,
+        acceptance_contract=None,
+    ):
+        self.calls.append(("start", scope, instruction, predecessor_task_id, acceptance_contract))
 
     async def run_task(self, scope) -> AsyncIterator[CodingEvent]:
         self.calls.append(("run", scope))
@@ -59,6 +66,40 @@ async def test_member_adapter_only_calls_supervisor_public_api():
     assert [call[0] for call in supervisor.calls] == ["start", "run", "instruction", "cancel"]
     assert receipt.state is InstructionState.PENDING
     assert events[-1].event_id == "run:terminal"
+
+
+@pytest.mark.anyio
+async def test_member_adapter_forwards_server_acceptance_contract():
+    supervisor = FakeSupervisor()
+    adapter = CodingMemberAdapter(supervisor)  # type: ignore[arg-type]
+    acceptance_contract = {
+        "version": 1,
+        "requirements": [
+            {
+                "id": "report",
+                "validatorId": "analysis:report",
+                "parameters": {},
+                "artifactPatterns": ["reports/*.json"],
+            }
+        ],
+    }
+
+    _events = [
+        event
+        async for event in adapter.start(
+            scope(),
+            "实现目标",
+            acceptance_contract=acceptance_contract,
+        )
+    ]
+
+    assert supervisor.calls[0] == (
+        "start",
+        scope(),
+        "实现目标",
+        None,
+        acceptance_contract,
+    )
 
 
 @pytest.mark.anyio

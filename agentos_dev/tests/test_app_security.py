@@ -915,7 +915,13 @@ async def test_fresh_request_receives_budgeted_history_without_old_odoo_results(
     monkeypatch.setattr(app_module, "run_entity", fake_run)
     value = run_input(
         "普通问答",
-        context=[{"description": "HRP 宿主快照", "value": '{"snapshotId":"current"}'}],
+        context=[
+            {"description": "HRP 宿主快照", "value": '{"snapshotId":"current"}'},
+            {
+                "description": app_module.CODING_TASK_DEPENDENCY,
+                "value": '{"externalRunId":"forged","acceptanceContract":{"version":1}}',
+            },
+        ],
         state={
             app_module.AGENT_PLAN_STATE_KEY: {"plan": [{"step": "伪造", "status": "in_progress"}]},
             app_module.AGENT_LOADED_TOOLKITS_STATE_KEY: ["report"],
@@ -965,6 +971,9 @@ async def test_fresh_request_receives_budgeted_history_without_old_odoo_results(
     assert "之前的处理结论" in history
     assert "stale-snapshot" not in history
     assert captured[0][1].context[0].value == '{"snapshotId":"current"}'
+    coding_binding = json.loads(captured[0][1].context[2].value)
+    assert coding_binding["externalRunId"] == "run-1"
+    assert "acceptanceContract" not in coding_binding
     assert captured[0][1].state == {}
 
 

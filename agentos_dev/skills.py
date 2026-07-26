@@ -1,10 +1,224 @@
+import hashlib
+import json
 import os
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
+from inspect import isawaitable
 from pathlib import Path
+from typing import Any
 
+from agno.run import RunContext
 from agno.skills import LocalSkills, Skills
 from agno.skills.loaders.base import SkillLoader
 
+from .coding.acceptance import (
+    AcceptanceContractError,
+    normalize_acceptance_contract,
+    validate_artifact_pattern,
+)
+
 BUILTIN_CODING_SKILLS_DIR = Path(__file__).with_name("builtin_skills")
+CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY = "agentos_coding_skill_script_receipts"
+MAX_SKILL_SCRIPT_RECEIPTS = 64
+MAX_SKILL_VALIDATORS = 32
+MAX_SKILL_VALIDATOR_SCRIPT_BYTES = 1024 * 1024
+MAX_SKILL_VALIDATOR_TIMEOUT = 900
+_VALIDATOR_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\Z")
+
+
+class SkillAcceptanceError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class SkillValidator:
+    validator_id: str
+    skill_name: str
+    name: str
+    script_name: str
+    script_content: bytes
+    script_sha256: str
+    timeout: int
+    artifact_patterns: tuple[str, ...]
+
+    @property
+    def install_digest(self) -> str:
+        return hashlib.sha256(f"{self.validator_id}:{self.script_sha256}".encode()).hexdigest()
+
+
+class SkillValidatorRegistry:
+    def __init__(self, validators: dict[str, SkillValidator] | None = None):
+        self._validators = dict(validators or {})
+
+    @classmethod
+    def from_skills(cls, skills: Skills | None) -> "SkillValidatorRegistry":
+        if skills is None:
+            return cls()
+        validators: dict[str, SkillValidator] = {}
+        for skill in skills.get_all_skills():
+            metadata = skill.metadata or {}
+            if not isinstance(metadata, dict):
+                raise SkillAcceptanceError(f"Skill {skill.name} metadata 无效。")
+            agentos = metadata.get("agentos")
+            if agentos is None:
+                continue
+            if not isinstance(agentos, dict):
+                raise SkillAcceptanceError(f"Skill {skill.name} agentos metadata 无效。")
+            acceptance = agentos.get("acceptance")
+            if acceptance is None:
+                continue
+            if not isinstance(acceptance, dict) or set(acceptance) != {"validators"}:
+                raise SkillAcceptanceError(f"Skill {skill.name} acceptance metadata 无效。")
+            raw_validators = acceptance.get("validators")
+            if (
+                not isinstance(raw_validators, dict)
+                or not raw_validators
+                or len(raw_validators) > MAX_SKILL_VALIDATORS
+            ):
+                raise SkillAcceptanceError(
+                    f"Skill {skill.name} acceptance validators 必须包含 1 至 32 项。"
+                )
+            for name, config in raw_validators.items():
+                validator = cls._load_validator(skill, name, config)
+                if validator.validator_id in validators:
+                    raise SkillAcceptanceError(f"重复 validator ID: {validator.validator_id}")
+                validators[validator.validator_id] = validator
+        return cls(validators)
+
+    @staticmethod
+    def _load_validator(skill: Any, name: Any, config: Any) -> SkillValidator:
+        if not isinstance(name, str) or not _VALIDATOR_NAME_RE.fullmatch(name):
+            raise SkillAcceptanceError(f"Skill {skill.name} validator 名称无效。")
+        if not isinstance(config, dict) or set(config) != {
+            "script",
+            "timeout",
+            "artifactPatterns",
+        }:
+            raise SkillAcceptanceError(f"Skill {skill.name}:{name} validator 配置无效。")
+        script_name = config.get("script")
+        if (
+            not isinstance(script_name, str)
+            or not script_name.endswith(".py")
+            or Path(script_name).name != script_name
+            or script_name not in skill.scripts
+        ):
+            raise SkillAcceptanceError("acceptance validator 只允许 Skill scripts/*.py。")
+        timeout = config.get("timeout")
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, int)
+            or not 1 <= timeout <= MAX_SKILL_VALIDATOR_TIMEOUT
+        ):
+            raise SkillAcceptanceError(f"Skill {skill.name}:{name} timeout 必须是 1 至 900 秒。")
+        raw_patterns = config.get("artifactPatterns")
+        if (
+            not isinstance(raw_patterns, list)
+            or len(raw_patterns) > 16
+            or len(set(raw_patterns)) != len(raw_patterns)
+        ):
+            raise SkillAcceptanceError(f"Skill {skill.name}:{name} artifactPatterns 无效。")
+        try:
+            patterns = tuple(validate_artifact_pattern(pattern) for pattern in raw_patterns)
+        except AcceptanceContractError as error:
+            raise SkillAcceptanceError(
+                f"Skill {skill.name}:{name} artifactPatterns 无效。"
+            ) from error
+        script_path = Path(skill.source_path) / "scripts" / script_name
+        if script_path.is_symlink() or not script_path.is_file():
+            raise SkillAcceptanceError("acceptance validator 只允许 Skill scripts/*.py 普通文件。")
+        content = script_path.read_bytes()
+        if not content or len(content) > MAX_SKILL_VALIDATOR_SCRIPT_BYTES:
+            raise SkillAcceptanceError("acceptance validator 脚本必须介于 1 byte 与 1 MiB。")
+        return SkillValidator(
+            validator_id=f"{skill.name}:{name}",
+            skill_name=skill.name,
+            name=name,
+            script_name=script_name,
+            script_content=content,
+            script_sha256=hashlib.sha256(content).hexdigest(),
+            timeout=timeout,
+            artifact_patterns=patterns,
+        )
+
+    def require(self, validator_id: str) -> SkillValidator:
+        validator = self._validators.get(validator_id)
+        if validator is None:
+            raise SkillAcceptanceError(f"未知 acceptance validator: {validator_id}")
+        return validator
+
+    def validate_contract(self, contract: Any) -> dict[str, Any]:
+        try:
+            normalized = normalize_acceptance_contract(contract)
+        except AcceptanceContractError as error:
+            raise SkillAcceptanceError(str(error)) from error
+        for requirement in normalized["requirements"]:
+            validator = self.require(requirement["validatorId"])
+            unknown_patterns = sorted(
+                set(requirement["artifactPatterns"]) - set(validator.artifact_patterns)
+            )
+            if unknown_patterns:
+                raise SkillAcceptanceError(
+                    f"{validator.validator_id} 未注册契约产物规则: {unknown_patterns[0]}"
+                )
+        return normalized
+
+    def script_sha256(self) -> dict[str, str]:
+        return {
+            validator_id: validator.script_sha256
+            for validator_id, validator in self._validators.items()
+        }
+
+    def __len__(self) -> int:
+        return len(self._validators)
+
+
+async def skill_script_receipt_hook(
+    run_context: RunContext,
+    function_name: str,
+    function_call: Callable[..., Any],
+    arguments: dict[str, Any],
+) -> Any:
+    result: Any = function_call(**arguments)
+    if isawaitable(result):
+        result = await result
+    if function_name != "get_skill_script" or arguments.get("execute", False) is True:
+        return result
+    try:
+        payload = json.loads(result) if isinstance(result, str) else result
+    except (TypeError, ValueError):
+        return result
+    if not isinstance(payload, dict) or "error" in payload:
+        return result
+    skill = payload.get("skill_name")
+    path = payload.get("script_path")
+    content = payload.get("content")
+    if (
+        not isinstance(skill, str)
+        or not skill
+        or not isinstance(path, str)
+        or not path
+        or not isinstance(content, str)
+        or not content
+    ):
+        return result
+    if not isinstance(run_context.session_state, dict):
+        run_context.session_state = {}
+    receipts = run_context.session_state.setdefault(CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY, {})
+    if not isinstance(receipts, dict):
+        receipts = {}
+        run_context.session_state[CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY] = receipts
+    key = f"{skill}:{path}"
+    receipts.pop(key, None)
+    receipts[key] = {
+        "skill": skill,
+        "path": path,
+        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "chars": len(content),
+    }
+    while len(receipts) > MAX_SKILL_SCRIPT_RECEIPTS:
+        del receipts[next(iter(receipts))]
+    return result
 
 
 def load_skills(path: str | None = None) -> Skills:

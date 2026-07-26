@@ -25,10 +25,10 @@ Daytona 工作区配置：
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.cli
 ```
 
-CLI 不接收命令行参数，直接使用 Agno 2.7.3 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和
+CLI 不接收命令行参数，直接使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和
 退出控制。原生 CLI 面向只暴露 `run_coding_task` 的 facade Agent；该工具把完整目标交给
 `CodingTaskSupervisor`。facade 与底层 `coding-agent-cli` 均使用 `MODEL`；facade 为兼容强制
-`tool_choice` 显式关闭 thinking，底层 Agent 保持模型默认模式执行六工具闭环。因此 CLI 不导入
+`tool_choice` 显式关闭 thinking，底层 Agent 保持模型默认模式执行受控工具闭环。因此 CLI 不导入
 `agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
 PostgreSQL 中 Coding Repository 使用独立的 `agentos_coding` schema 和版本表，不写入 Agno
 的 session、run 或 schema-version 表；SQLite 单实例开发仍使用默认 schema。
@@ -61,8 +61,8 @@ Base 层提供受限终端及
 后台会话、基于 ripgrep 的文件/文本搜索、分段读取、文件统计、递归目录树、SHA-256、只读 Git、
 定位 hunk、单文件补丁、完整变更集、目录创建、文件复制、图片查看和 PDF 检查；报表层只提供能力发现、
 数据登记、多轮分析和 Markdown 转 PDF。BaseToolkit 的读取、检查和后台轮询无需确认，新建、覆盖、
-补丁、移动、删除、通用 `sandbox_exec`、后台输入及终止需要确认；生产 Coding Toolkit 的六个工具
-`terminal`、`process`、`patch`、`view_image`、`update_plan`、`finish_task` 均不要求确认。
+补丁、移动、删除、通用 `sandbox_exec`、后台输入及终止需要确认；生产 Coding Toolkit 的受控终端、
+进程、补丁、显式验证、只读检索、输出重读、图片、计划和验收工具均不要求确认。
 所有能力仍绑定当前 thread 的 Daytona
 sandbox；实际安全边界包括 `network_block_all`、路径和符号链接校验、文件/结果大小限制以及
 前台命令最长 60 秒、后台命令最长 86400 秒；后台命令仍须设置明确时限。
@@ -86,6 +86,7 @@ diff、log 和 show 同样使用固定只读参数，不开放任意 Git flags�
 每轮报表分析调用必须提供完整非空命令，
 失败输出会返回模型继续修正。单次完整文本读取限制为 64 KiB，更大文件必须分段读取。
 Agent 在每个工具批次后持久化 checkpoint；模型请求遇到临时失败时最多重试两次并指数退避。
+Coding `terminal.command` 以 UTF-8 字节计最多 32 KiB；大段文件内容必须通过文件修改工具传输。
 
 ## Coding Agent 配置
 
@@ -110,6 +111,13 @@ Markdown/PDF 和 Odoo 导出的报表能力。当前采用以下配置：
 | `enable_session_summaries` | `True` | 成功 run 后滚动更新非权威摘要 |
 | `enable_thinking` | `True` | 主模型启用；辅助模型关闭，客户端不接收原始 reasoning |
 
+Coding Agent 和原生 CLI 额外使用同一个 `ContextBudgetController`：有效上下文上限取
+`AGENT_CONTEXT_TOKEN_BUDGET` 与 96K token 的较小值，并至少保留 32K token 输出空间。未超预算时只在
+尾部追加消息，不按消息年龄改写已发送的模型前缀；超预算后再批量把旧 Coding 工具结果转换为包含工具、
+参数摘要、状态、SHA-256 和重读参数的确定性 receipt，必要时生成 `CODING_CHECKPOINT`。Skill 结果仍按
+最近 10 条窗口和 `SKILL_PRUNED` 规则选择，但在 Coding Agent 中与预算压缩批次一起生效。所有压缩只
+写入 `compressed_content`，不修改持久化消息的原始 `content`，也不调用压缩模型。
+
 等价的核心配置如下；三个成员共享模型、存储、检查点和历史预算配置，但身份、指令和工具能力相互独立：
 
 ```python
@@ -125,7 +133,7 @@ assistant = Agent(
 assistant.model.retries = 2
 assistant.model.exponential_backoff = True
 
-# Agno 2.7.3 会在构造时把 None 归一化为 3；这里恢复的是检索语义。
+# Agno 2.8.2 会在构造时把 None 归一化为 3；这里恢复的是检索语义。
 assistant.num_history_runs = None
 ```
 
@@ -183,7 +191,7 @@ thinking。服务端不转发原始 reasoning delta，终态持久化前清除 r
 
 ### 计划、工具发现与上下文状态
 
-Agno 2.7.3 支持 `session_state`、AG-UI `STATE_DELTA`、callable tools factory 和固定步骤
+Agno 2.8.2 支持 `session_state`、AG-UI `STATE_DELTA`、callable tools factory 和固定步骤
 Workflow，但没有内置的专用 `update_plan`。本项目因此提供受约束的计划工具：主 Assistant
 继续使用 `agent_update_plan`，Coding/Report Agent 使用 `update_plan`；两者最多 20 步、最多一个
 `in_progress`，且只写保留键 `agentos_plan`。计划是任务进度，不是 Odoo 业务事实，也不得保存快照、
@@ -200,11 +208,12 @@ Workflow，但没有内置的专用 `update_plan`。本项目因此提供受约�
 
 `coding-agent` 的 Team 成员是只暴露 `run_coding_task` 的 facade，原始内部 Agent 不注册到
 AgentOS 的公开 agents 列表；Supervisor 仅在 Attempt 内调用原始 Agent 的
-`WorkspaceCodingToolkit` 六个工具。
+`WorkspaceCodingToolkit` 固定工具集。
 `terminal` 将前台/后台语义映射到受管命令，并在远端 session 创建前写入持久 execution 预留记录；
 `process` 支持
 `list/poll/wait/kill/write/submit`，未暴露底层不能可靠保证的完整历史日志、关闭 stdin 和异步通知；
-`patch` 的 `replace` 模式使用服务端读取的 SHA-256 做唯一或全部精确替换，`patch` 模式复用原生补丁。
+`create_file` 要求目标不存在；`overwrite_file` 要求调用方提供当前 SHA-256；`replace_text`
+使用服务端读取的 SHA-256 做唯一或全部精确替换；`apply_patch` 复用原生补丁。
 `apply_patch` 支持 Add/Update/Delete/Move、多文件与多 hunk，并在工作区服务层原子提交；仅对完整
 Markdown/heredoc 外壳和 Add File 纯空行提供有限格式兼容。对于不能稳定生成补丁函数参数的兼容模型，
 `terminal` 还接受完整、独立的 `apply_patch <<'PATCH'` heredoc：服务端在进入远端 Shell 前拦截
@@ -214,14 +223,22 @@ Shell 命令时拒绝且不写文件。供应商 API 已拒绝的畸形函数参
 `ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`。它不使用固定 Workflow，
 模型自行决定分析命令、运行时长和迭代轮次；Report 层只保留数据源物化、输入绑定、Markdown/PDF
 渲染及验收。完整文件内容不会注入模型上下文；模型从数据源句柄取得工作区路径后使用 Coding 工具分析。
-复杂分析先通过 `terminal` 检查文件；已有文件的小范围修改优先使用 `patch(mode="replace")`，
-创建、删除、移动或多文件修改使用 `patch(mode="patch")`。命令使用 `terminal` 和 `process` 执行与
+复杂分析优先通过受控只读工具检查文件、搜索内容和查看 Git 状态或差异；新文件使用
+`create_file`，完整覆盖使用带最新 SHA-256 的 `overwrite_file`，已有文件的小范围修改优先使用
+`replace_text`，删除、移动或多文件修改使用 `apply_patch`。
+命令使用 `terminal` 和 `process` 执行与
 持续管理，不再经过 `report_analyze_dataset` 的二次命令封装。生产 Coding Toolkit 不设置 Agno
 HITL 确认，分析执行仍受 Daytona 网络隔离、路径、进程、超时和输出大小限制；
 不新增 AgentOS 宿主机 Python 或绕过现有工作区边界的执行入口。
 
+普通 `terminal` 保守计为潜在 mutation，但不再充当验证。`verify` 在当前工作区前台执行命令，
+把命令摘要、退出码、执行后的 mutation 和指定产物摘要写入验证回执；`finish_task` 未显式收到
+`verification_ids` 时，自动选择当前 mutation 最近一次成功的 `verify`。文本结果超过 48 KiB 时
+返回确定性的首尾预览和 `outputHandle`，完整结果在容量限制内保存在工作区根目录之外，并可用
+`read_tool_output` 按 UTF-8 字节偏移重读。
+
 Coding 任务统一由 `agentos_dev.coding.CodingTaskSupervisor` 编排：一个 `CodingTask` 表示完整目标，
-每次 Agno internal run 是一个 `Attempt`，terminal/process/patch 副作用保存为 `Execution`。AG-UI、
+每次 Agno internal run 是一个 `Attempt`，terminal/process/文件修改/verify 副作用保存为 `Execution`。AG-UI、
 Team member 和 CLI 只通过薄 adapter 调用 Supervisor；AG-UI adapter 位于 `agentos_dev.coding`，
 其余 Coding 核心模块不导入 FastAPI、Team、Report 或 `agentos_dev.app`，也不通过工具名或 AG-UI
 事件推进任务状态。
@@ -235,10 +252,21 @@ Team member 和 CLI 只通过薄 adapter 调用 Supervisor；AG-UI adapter 位�
 `model_authentication_failed`、`model_invalid_request` 和 `model_rate_limited`，暂停 Task 并释放租约，
 不自动增加 `resume_count` 或创建 continuation；外部条件恢复后由原 external run 显式恢复。
 
-`finish_task` 验证计划、产物 SHA、最后 mutation 后的成功 verification、活动进程、健康服务和 pending
+`finish_task` 使用单次 sandbox 上下文的批量哈希做两阶段产物校验，并验证计划、最后 mutation 后的
+成功显式 verification、活动进程、健康服务和 pending
 instruction 后先保存不可变 `finish_receipt`，把 Task 置为 `finishing`、Attempt 置为
 `finish_requested`；Agno run 到达终态后才原子完成 Task。最终消息 ID 固定为
 `<external_run_id>:final`，终态事件 ID 固定为 `<external_run_id>:terminal`，未验收的候选总结不会发布。
+
+Task 可选的 `acceptance_contract` 只从服务端可信 dependency 进入 Supervisor，不属于
+`run_coding_task` 的模型工具参数；客户端同名 context 会在请求准备阶段被清除。契约创建后不可修改，
+最多 64 KiB、32 个 requirement，每项引用 `<skill>:<validator>` 并声明固定参数和相对产物 glob。
+Skill 通过 `metadata.agentos.acceptance.validators` 注册 `scripts/*.py`、固定 timeout 和允许的
+`artifactPatterns`；服务启动时固定脚本内容与 SHA-256。`verify(validator_id=...)` 使用 `python3 -I`
+在 Daytona 中运行该固定脚本，请求和结果均为严格有界 JSON，回执绑定当前 mutation、validator 摘要及
+产物摘要。`finish_task` 缺少、失败或过期的语义证据时分别返回 `finish_acceptance_missing`、
+`finish_acceptance_failed` 或 `finish_acceptance_stale`；相同状态重复提交仍由 `finish_no_progress`
+短路。没有契约的既有 Coding/Report/CLI 任务保持原完成门禁，不会额外运行 validator。
 Report 保持独立的既有交付回执门禁，不写入 Coding v2 的状态推进逻辑。
 
 工作区文件、目录、SQLite、DuckDB、Odoo 受控导出和服务端注册的只读 PostgreSQL 均通过

@@ -17,6 +17,7 @@ from agentos_dev.agents import (
     create_coding_facade_agent,
     create_report_agent,
 )
+from agentos_dev.coding import CodingEvent
 from agentos_dev.coding_tools import (
     CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
     CODEX_EXEC_SESSION_TTL_SECONDS,
@@ -30,6 +31,7 @@ from agentos_dev.coding_tools import (
     parse_codex_patch,
 )
 from agentos_dev.instructions import build_coding_agent_instructions
+from agentos_dev.skills import SkillValidatorRegistry, skill_script_receipt_hook
 from agentos_dev.tests.workspace_fakes import (
     AsyncFakeClient,
     AsyncMemoryRegistry,
@@ -147,16 +149,22 @@ def test_hermes_coding_toolkit_is_independent_and_keeps_supported_contract(tmp_p
     forbidden_brand = "co" + "dex"
     visible_tool_text = "\n".join(
         [
-            HERMES_CODING_TOOLKIT_INSTRUCTIONS,
+            toolkit.instructions,
             *[tool.description or "" for tool in tools.values()],
             *[str(tool.parameters) for tool in tools.values()],
         ]
     )
     assert forbidden_brand not in visible_tool_text.lower()
-    assert "patch 的 replace 模式" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
-    assert "未暴露的日志回溯、关闭 stdin 和异步通知能力不可假定存在" in (
-        HERMES_CODING_TOOLKIT_INSTRUCTIONS
-    )
+    assert "patch 的 replace 模式" in toolkit.instructions
+    assert "未暴露的日志回溯、关闭 stdin 和异步通知能力不可假定存在" in (toolkit.instructions)
+    assert "read_tool_output" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
+    assert "受控只读工具" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
+    assert "create" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
+    assert "overwrite" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
+    assert "expected_sha256" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
+    assert "必须调用 verify" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
+    assert "terminal 不计为验证" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
+    assert "用 terminal 得到成功验证回执" not in HERMES_CODING_TOOLKIT_INSTRUCTIONS
 
 
 def test_coding_tool_contract_explains_limits_patch_format_and_persistent_services(tmp_path):
@@ -239,7 +247,15 @@ def test_report_agent_extends_unregistered_coding_agent(tmp_path):
     assert coding_facade.model.extra_body == {"enable_thinking": False}
     assert coding_agent.model.extra_body == {"enable_thinking": True}
     assert [tool.name for tool in coding_facade.tools] == ["run_coding_task"]
+    assert coding_facade.tools[0].parameters == {
+        "type": "object",
+        "properties": {"instruction": {"type": "string", "minLength": 1}},
+        "required": ["instruction"],
+        "additionalProperties": False,
+    }
+    assert skill_script_receipt_hook not in (coding_facade.tool_hooks or [])
     assert coding_agent.instructions is build_coding_agent_instructions
+    assert skill_script_receipt_hook in coding_agent.tool_hooks
     assert [skill.name for skill in coding_agent.skills.get_all_skills()] == ["sandbox-tooling"]
     assert coding_agent.id in {
         member.id
@@ -263,6 +279,86 @@ def test_report_agent_extends_unregistered_coding_agent(tmp_path):
         "report_data_sources",
         "workspace_report",
     ]
+    expected_validators = SkillValidatorRegistry.from_skills(coding_agent.skills)
+    assert app.coding_supervisor.validator_registry.script_sha256() == (
+        expected_validators.script_sha256()
+    )
+
+
+@pytest.mark.anyio
+async def test_coding_facade_only_forwards_acceptance_contract_from_dependency(tmp_path):
+    synchronous = service(tmp_path)
+    workspace_service = WorkspaceService(
+        synchronous.secret,
+        client=synchronous.client,
+        registry=synchronous.registry,
+        async_client=AsyncFakeClient(synchronous.client),
+        async_registry=AsyncMemoryRegistry(synchronous.registry.values),
+    )
+    captured = []
+
+    class Supervisor:
+        async def start_task(
+            self,
+            scope,
+            instruction,
+            predecessor_task_id=None,
+            *,
+            acceptance_contract=None,
+        ):
+            captured.append((scope, instruction, predecessor_task_id, acceptance_contract))
+
+        async def run_task(self, scope):
+            yield CodingEvent(
+                f"{scope.external_run_id}:final", "final_message", {"content": "完成"}
+            )
+            yield CodingEvent(
+                f"{scope.external_run_id}:terminal",
+                "terminal",
+                {"state": "completed"},
+            )
+
+    facade = create_coding_facade_agent(
+        app.coding_agent,
+        Supervisor(),  # type: ignore[arg-type]
+        workspace_service,
+    )
+    acceptance_contract = {
+        "version": 1,
+        "requirements": [
+            {
+                "id": "report",
+                "validatorId": "analysis:report",
+                "parameters": {},
+                "artifactPatterns": ["reports/*.json"],
+            }
+        ],
+    }
+    run_context = RunContext(
+        run_id="external",
+        session_id="thread",
+        user_id="user",
+        session_state={},
+        dependencies={
+            "AgentOS 编码任务": {
+                "externalRunId": "external",
+                "acceptanceContract": acceptance_contract,
+            }
+        },
+    )
+
+    _events = [
+        event
+        async for event in facade.tools[0].entrypoint(
+            instruction="实现目标",
+            run_context=run_context,
+        )
+    ]
+
+    assert facade.tools[0].parameters["properties"] == {
+        "instruction": {"type": "string", "minLength": 1}
+    }
+    assert captured[0][1:] == ("实现目标", None, acceptance_contract)
 
 
 @pytest.mark.anyio

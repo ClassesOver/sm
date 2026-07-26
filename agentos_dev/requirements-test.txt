@@ -6,9 +6,9 @@ ag-ui-protocol==0.1.19 \
     # via
     #   -c /tmp/old-agentos-requirements.txt
     #   -r agentos_dev/requirements.txt
-agno==2.7.3 \
-    --hash=sha256:6e54d62ed8bcc91faba4cb972bed12168e73080f6b616e99bfd37ebf6b108f27 \
-    --hash=sha256:b67d49c8006671344ea1ba9c790a115c2810634b2c38d46284aa5db685f03501
+agno==2.8.2 \
+    --hash=sha256:6c38cbfaafe3bfa67245c168d0db86836c9aa71ffa3c35a45e6f16c48362ca11 \
+    --hash=sha256:fd210cfb51436d509906baec84281826e06e251d19e49be4383f50ae511b4b03
     # via
     #   -c /tmp/old-agentos-requirements.txt
     #   -r agentos_dev/requirements.txt

@@ -214,6 +214,14 @@ class AsyncFakeFs:
     async def list_files(self, path):
         return self._fs.list_files(path)
 
+    async def delete_file(self, path, recursive=False):
+        if recursive:
+            for child in list(self._fs.entries):
+                if child == path or child.startswith(path.rstrip("/") + "/"):
+                    self._fs.entries.pop(child, None)
+            return None
+        return self._fs.delete_file(path, recursive=False)
+
 
 class AsyncFakeProcess:
     def __init__(self, process):

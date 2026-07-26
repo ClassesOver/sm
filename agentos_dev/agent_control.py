@@ -102,6 +102,7 @@ def build_agent_tools(
 def build_coding_agent_tools(
     workspace_service: WorkspaceService,
     coding_repository,
+    validator_registry=None,
     *,
     run_context: RunContext,
     agent: Any | None = None,
@@ -111,12 +112,19 @@ def build_coding_agent_tools(
     """Coding Agent 固定使用受约束的工作区工具。"""
     from .coding.execution import WorkspaceCodingToolkit
 
-    return [WorkspaceCodingToolkit(workspace_service, coding_repository)]
+    return [
+        WorkspaceCodingToolkit(
+            workspace_service,
+            coding_repository,
+            validator_registry=validator_registry,
+        )
+    ]
 
 
 def build_report_agent_tools(
     workspace_service: WorkspaceService,
     coding_repository,
+    validator_registry=None,
     *,
     run_context: RunContext,
     agent: Any | None = None,
@@ -149,6 +157,7 @@ def build_report_agent_tools(
             workspace_service,
             coding_repository,
             completion_evidence=validated_delivery,
+            validator_registry=validator_registry,
         ),
         data_sources,
         WorkspaceReportToolkit(workspace_service, data_sources=data_sources),

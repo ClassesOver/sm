@@ -35,6 +35,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import IntegrityError
 
+from .acceptance import AcceptanceContractError, normalize_acceptance_contract
 from .models import (
     AttemptOutcome,
     AttemptSnapshot,
@@ -47,7 +48,7 @@ from .models import (
     TaskState,
 )
 
-TASK_SCHEMA_VERSION = "2.0.0"
+TASK_SCHEMA_VERSION = "2.1.0"
 CODING_DB_SCHEMA = "agentos_coding"
 MAX_CONTINUATIONS = 20
 MAX_TERMINAL_OUTPUT_BYTES = 64 * 1024
@@ -102,6 +103,7 @@ class CodingTask:
     error_fingerprint: str | None
     deadline_at: datetime
     mutation_sequence: int
+    acceptance_contract: dict[str, Any] | None
     finish_payload: dict[str, Any] | None
     result_text: str | None
 
@@ -144,6 +146,7 @@ def _task_from_row(row: Any) -> CodingTask:
         error_fingerprint=value["error_fingerprint"],
         deadline_at=_as_utc(value["deadline_at"]),
         mutation_sequence=value["mutation_sequence"],
+        acceptance_contract=value["acceptance_contract"],
         finish_payload=value["finish_payload"],
         result_text=value["result_text"],
     )
@@ -208,6 +211,7 @@ class CodingTaskRepository:
             Column("lease_owner", String(128)),
             Column("lease_expires_at", DateTime(timezone=True)),
             Column("mutation_sequence", BigInteger, nullable=False, default=0),
+            Column("acceptance_contract", JSON),
             Column("finish_payload", JSON),
             Column("finish_receipt", JSON),
             Column("result_text", Text),
@@ -434,6 +438,7 @@ class CodingTaskRepository:
                 ("state_version", "BIGINT NOT NULL DEFAULT 0"),
                 ("lease_epoch", "BIGINT NOT NULL DEFAULT 0"),
                 ("instruction_sequence", "BIGINT NOT NULL DEFAULT 0"),
+                ("acceptance_contract", json_type),
                 ("finish_receipt", json_type),
                 ("predecessor_task_id", "VARCHAR(128)"),
             ),
@@ -502,8 +507,10 @@ class CodingTaskRepository:
         agent_id: str,
         sandbox_id: str,
         deadline_at: datetime,
+        acceptance_contract: dict[str, Any] | None = None,
     ) -> CodingTask:
         await self.initialize()
+        normalized_contract = self._normalize_acceptance_contract(acceptance_contract)
         now = utcnow()
         try:
             async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
@@ -519,6 +526,7 @@ class CodingTaskRepository:
                         same_error_count=0,
                         deadline_at=deadline_at,
                         mutation_sequence=0,
+                        acceptance_contract=normalized_contract,
                         created_at=now,
                         updated_at=now,
                     )
@@ -531,6 +539,10 @@ class CodingTaskRepository:
         self._assert_scope(task, owner_user_id, thread_id, sandbox_id)
         if task.agent_id != agent_id:
             raise CodingRepositoryError("task_agent_mismatch", "编码任务智能体绑定不一致。")
+        if task.acceptance_contract != normalized_contract:
+            raise CodingRepositoryError(
+                "task_acceptance_contract_conflict", "编码任务验收契约不可修改。"
+            )
         return task
 
     async def get_task(self, external_run_id: str) -> CodingTask | None:
@@ -1184,6 +1196,7 @@ class CodingTaskRepository:
             and execution.is_verification
             and execution.status == "completed"
             and execution.exit_code == 0
+            and (execution.operation_receipt or {}).get("valid", True) is not False
             and execution.mutation_sequence == mutation_sequence
         )
 
@@ -1277,6 +1290,7 @@ class CodingTaskRepository:
             same_error_count=int(value["same_error_count"] or 0),
             error_fingerprint=value["error_fingerprint"],
             predecessor_task_id=value["predecessor_task_id"],
+            acceptance_contract=value["acceptance_contract"],
             finish_receipt=value["finish_receipt"],
             result_text=value["result_text"],
         )
@@ -1335,9 +1349,12 @@ class CodingTaskRepository:
         scope: CodingScope,
         initial_instruction: str,
         predecessor_task_id: str | None = None,
+        *,
+        acceptance_contract: dict[str, Any] | None = None,
     ) -> TaskSnapshot:
         await self.initialize()
         self._validate_instruction("initial", initial_instruction)
+        normalized_contract = self._normalize_acceptance_contract(acceptance_contract)
         now = utcnow()
         internal_run_id = self.internal_run_id(scope.external_run_id, 0)
         content_bytes = len(initial_instruction.encode("utf-8"))
@@ -1380,6 +1397,7 @@ class CodingTaskRepository:
                         deadline_at=now + timedelta(hours=24),
                         mutation_sequence=0,
                         predecessor_task_id=predecessor_task_id,
+                        acceptance_contract=normalized_contract,
                         created_at=now,
                         updated_at=now,
                     )
@@ -1418,6 +1436,10 @@ class CodingTaskRepository:
                 raise CodingRepositoryError(
                     "task_scope_conflict", "外部 run 已绑定到其他编码任务。"
                 )
+            if existing.acceptance_contract != normalized_contract:
+                raise CodingRepositoryError(
+                    "task_acceptance_contract_conflict", "编码任务验收契约不可修改。"
+                )
             async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
                 stored_hash = (
                     await connection.execute(
@@ -1435,6 +1457,17 @@ class CodingTaskRepository:
         created = await self.get_task_snapshot(scope.external_run_id)
         assert created is not None
         return created
+
+    @staticmethod
+    def _normalize_acceptance_contract(
+        acceptance_contract: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if acceptance_contract is None:
+            return None
+        try:
+            return normalize_acceptance_contract(acceptance_contract)
+        except AcceptanceContractError as error:
+            raise CodingRepositoryError("acceptance_contract_invalid", str(error)) from error
 
     @staticmethod
     def _validate_instruction(instruction_id: str, content: str) -> None:

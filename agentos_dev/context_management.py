@@ -3,13 +3,16 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import AsyncIterator, Iterator
 from copy import deepcopy
+from dataclasses import fields
 from datetime import UTC, datetime
 from typing import Any
 
 from ag_ui.core import Context
 from agno.compression.manager import CompressionManager
 from agno.models.message import Message
+from agno.models.openai import OpenAIChat
 from agno.session.summary import SessionSummary, SessionSummaryManager
 from agno.session.team import TeamSession
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -17,6 +20,35 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 HISTORY_CONTEXT_DESCRIPTION = "AgentOS 预算历史（非权威）"
 MAX_SUMMARY_TOKENS = 4096
 MIN_COMPRESSION_CHARS = 2000
+SKILL_CONTENT_WINDOW = 10
+SKILL_PRUNE_MIN_CHARS = 5000
+SKILL_TOOL_NAMES = frozenset({"get_skill_instructions", "get_skill_reference", "get_skill_script"})
+CODING_CONTEXT_TOKEN_LIMIT = 96 * 1024
+CODING_OUTPUT_TOKEN_RESERVE = 32 * 1024
+CODING_RECENT_ASSISTANT_TURNS = 2
+CODING_TOOL_NAMES = frozenset(
+    {
+        "terminal",
+        "process",
+        "patch",
+        "create_file",
+        "overwrite_file",
+        "replace_text",
+        "apply_patch",
+        "verify",
+        "finish_task",
+        "update_plan",
+        "list_files",
+        "read_file",
+        "read_lines",
+        "search_text",
+        "tree",
+        "git_status",
+        "git_diff",
+        "read_tool_output",
+        "view_image",
+    }
+)
 SUMMARY_METADATA_KEY = "agentos_rolling_summary"
 COMPRESSIBLE_HISTORY_TOOLS = frozenset(
     {
@@ -71,6 +103,71 @@ _FORBIDDEN_SUMMARY_CONTENT = re.compile(
     re.IGNORECASE,
 )
 logger = logging.getLogger(__name__)
+
+
+def _skill_resource(message: Message) -> tuple[tuple[str, str, str], str, dict[str, Any]] | None:
+    if message.role != "tool" or message.tool_name not in SKILL_TOOL_NAMES:
+        return None
+    args = dict(message.tool_args) if isinstance(message.tool_args, dict) else {}
+    if message.tool_name == "get_skill_script" and args.get("execute") is True:
+        return None
+    try:
+        payload = (
+            json.loads(message.content) if isinstance(message.content, str) else message.content
+        )
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or "error" in payload:
+        return None
+    skill_name = payload.get("skill_name") or args.get("skill_name")
+    if not isinstance(skill_name, str) or not skill_name:
+        return None
+    path: Any
+    body: Any
+    if message.tool_name == "get_skill_instructions":
+        path = "SKILL.md"
+        body = payload.get("instructions")
+        reload_args = {**args, "skill_name": skill_name}
+    elif message.tool_name == "get_skill_reference":
+        path = payload.get("reference_path") or args.get("reference_path")
+        body = payload.get("content")
+        reload_args = {**args, "skill_name": skill_name, "reference_path": path}
+    else:
+        path = payload.get("script_path") or args.get("script_path")
+        body = payload.get("content")
+        reload_args = {
+            **args,
+            "skill_name": skill_name,
+            "script_path": path,
+            "execute": False,
+        }
+    if not isinstance(path, str) or not path or not isinstance(body, str):
+        return None
+    return (message.tool_name, skill_name, path), body, reload_args
+
+
+def _skill_pruned_content(message: Message, body: str, reload_args: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "marker": "SKILL_PRUNED",
+            "tool": message.tool_name,
+            "skill": reload_args["skill_name"],
+            "path": next(
+                (
+                    reload_args[key]
+                    for key in ("reference_path", "script_path")
+                    if key in reload_args
+                ),
+                "SKILL.md",
+            ),
+            "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            "chars": len(body),
+            "reload": reload_args,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 class ToolCompressionResponse(BaseModel):
@@ -133,6 +230,27 @@ def _normalized_run(run: Any) -> dict[str, Any] | None:
 
 def _fallback_token_count(value: str) -> int:
     return max(1, (len(value.encode("utf-8")) + 1) // 2)
+
+
+def _fallback_context_token_count(
+    messages: list[Message], tools: Any = None, response_format: Any = None
+) -> int:
+    parts: list[str] = []
+    for message in messages:
+        parts.extend(
+            (
+                str(message.role or ""),
+                str(message.compressed_content or message.content or ""),
+                str(message.tool_name or ""),
+                json.dumps(message.tool_calls or [], ensure_ascii=False, default=str),
+                json.dumps(message.tool_args or {}, ensure_ascii=False, default=str),
+            )
+        )
+    if tools is not None:
+        parts.append(json.dumps(tools, ensure_ascii=False, default=str))
+    if response_format is not None:
+        parts.append(json.dumps(response_format, ensure_ascii=False, default=str))
+    return _fallback_token_count("\n".join(parts))
 
 
 def _count_text_tokens(model: Any, value: str) -> int | None:
@@ -374,6 +492,40 @@ def _compressed_content(tool_result: Message, payload: ToolCompressionResponse) 
 
 
 class ProtectedCompressionManager(CompressionManager):
+    @staticmethod
+    def _compress_skill_results(messages: list[Message]) -> bool:
+        resources: list[tuple[int, Message, tuple[str, str, str], str, dict[str, Any]]] = []
+        for index, message in enumerate(messages):
+            parsed = _skill_resource(message)
+            if parsed is not None and message.compressed_content is None:
+                key, body, reload_args = parsed
+                resources.append((index, message, key, body, reload_args))
+        latest = {key: index for index, _message, key, _body, _args in resources}
+        window_start = max(0, len(messages) - SKILL_CONTENT_WINDOW)
+        changed = False
+        for index, message, key, body, reload_args in resources:
+            duplicate = latest[key] != index
+            expired = index < window_start and len(body) > SKILL_PRUNE_MIN_CHARS
+            if duplicate or expired:
+                message.compressed_content = _skill_pruned_content(message, body, reload_args)
+                changed = True
+        return changed
+
+    @staticmethod
+    def _has_skill_compression_candidate(messages: list[Message]) -> bool:
+        parsed = [(index, _skill_resource(message)) for index, message in enumerate(messages)]
+        latest = {resource[0]: index for index, resource in parsed if resource is not None}
+        window_start = max(0, len(messages) - SKILL_CONTENT_WINDOW)
+        return any(
+            resource is not None
+            and messages[index].compressed_content is None
+            and (
+                latest[resource[0]] != index
+                or (index < window_start and len(resource[1]) > SKILL_PRUNE_MIN_CHARS)
+            )
+            for index, resource in parsed
+        )
+
     def _eligible(self, message: Message) -> bool:
         return bool(
             message.role == "tool"
@@ -385,6 +537,8 @@ class ProtectedCompressionManager(CompressionManager):
     def should_compress(self, messages, tools=None, model=None, response_format=None):
         if not self.compress_tool_results:
             return False
+        if self._has_skill_compression_candidate(messages):
+            return True
         eligible = [message for message in messages if self._eligible(message)]
         if not eligible:
             return False
@@ -433,6 +587,7 @@ class ProtectedCompressionManager(CompressionManager):
         return _compressed_content(tool_result, payload) if payload is not None else None
 
     def compress(self, messages, run_metrics=None):
+        self._compress_skill_results(messages)
         for message in messages:
             if not self._eligible(message):
                 continue
@@ -441,6 +596,7 @@ class ProtectedCompressionManager(CompressionManager):
                 message.compressed_content = compressed
 
     async def acompress(self, messages, run_metrics=None):
+        self._compress_skill_results(messages)
         eligible = [message for message in messages if self._eligible(message)]
         compressed = await asyncio.gather(
             *(self._acompress_tool_result(message, run_metrics=run_metrics) for message in eligible)
@@ -457,6 +613,414 @@ class ProtectedCompressionManager(CompressionManager):
             if value:
                 candidate.compressed_content = value
         return candidate
+
+
+class ContextBudgetController(ProtectedCompressionManager):
+    def __init__(
+        self,
+        *,
+        model: Any,
+        context_token_budget: int,
+        output_token_reserve: int = CODING_OUTPUT_TOKEN_RESERVE,
+    ) -> None:
+        self.context_token_limit = min(context_token_budget, CODING_CONTEXT_TOKEN_LIMIT)
+        self.output_token_reserve = max(CODING_OUTPUT_TOKEN_RESERVE, output_token_reserve)
+        self.input_token_budget = max(1, self.context_token_limit - self.output_token_reserve)
+        super().__init__(
+            model=model,
+            compress_tool_results=True,
+            compress_token_limit=self.input_token_budget,
+        )
+
+    @staticmethod
+    def _protected_start(messages: list[Message]) -> int:
+        assistant_indexes = [
+            index
+            for index, message in enumerate(messages)
+            if message.role in {"assistant", "model"}
+        ]
+        if len(assistant_indexes) < CODING_RECENT_ASSISTANT_TURNS:
+            return 0
+        return assistant_indexes[-CODING_RECENT_ASSISTANT_TURNS]
+
+    @classmethod
+    def _protected_indexes(cls, messages: list[Message]) -> set[int]:
+        protected_start = cls._protected_start(messages)
+        protected = set(range(protected_start, len(messages)))
+        for role in ("user",):
+            latest = next(
+                (
+                    index
+                    for index in range(len(messages) - 1, -1, -1)
+                    if messages[index].role == role
+                ),
+                None,
+            )
+            if latest is not None:
+                protected.add(latest)
+        for tool_name in ("update_plan", "verify", "finish_task"):
+            latest = next(
+                (
+                    index
+                    for index in range(len(messages) - 1, -1, -1)
+                    if messages[index].role == "tool" and messages[index].tool_name == tool_name
+                ),
+                None,
+            )
+            if latest is not None:
+                protected.add(latest)
+        for index in range(max(0, len(messages) - SKILL_CONTENT_WINDOW), len(messages)):
+            if messages[index].tool_name in SKILL_TOOL_NAMES:
+                protected.add(index)
+        return protected
+
+    @staticmethod
+    def _coding_receipt(message: Message) -> str:
+        content = str(message.content or "")
+        args = dict(message.tool_args) if isinstance(message.tool_args, dict) else {}
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            payload = None
+        status = None
+        reload_args = None
+        state: dict[str, Any] = {}
+        if isinstance(payload, dict):
+            status = payload.get("status") or payload.get("code") or payload.get("exitCode")
+            handle = payload.get("outputHandle")
+            if isinstance(handle, str) and handle:
+                reload_args = {"handle": handle, "offset": 0, "max_bytes": 65536}
+            for key in (
+                "path",
+                "sha256",
+                "nextOffset",
+                "totalBytes",
+                "hasMore",
+                "mutation_sequence",
+                "mutationSequence",
+                "execution_id",
+                "exit_code",
+            ):
+                value = payload.get(key)
+                if isinstance(value, str | int | bool):
+                    state[key] = value
+            files = payload.get("files")
+            if isinstance(files, list):
+                state["files"] = [
+                    {
+                        key: item[key]
+                        for key in (
+                            "operation",
+                            "path",
+                            "size",
+                            "sha256",
+                            "before_sha256",
+                            "after_sha256",
+                        )
+                        if isinstance(item.get(key), str | int)
+                    }
+                    for item in files[:20]
+                    if isinstance(item, dict)
+                ]
+        args_json = json.dumps(
+            args, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+        )
+        arguments: Any = (
+            args
+            if len(args_json.encode("utf-8")) <= 512
+            else {
+                "keys": sorted(args),
+                "sha256": hashlib.sha256(args_json.encode("utf-8")).hexdigest(),
+            }
+        )
+        return json.dumps(
+            {
+                "marker": "CODING_TOOL_RECEIPT",
+                "tool": message.tool_name,
+                "arguments": arguments,
+                "status": status,
+                "state": state or None,
+                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "reload": reload_args,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @staticmethod
+    def _checkpoint(messages: list[Message]) -> str:
+        receipts = []
+        mutations = []
+        verifications = []
+        changed_files: list[str] = []
+        active_processes: list[dict[str, Any]] = []
+        skill_receipts: list[dict[str, Any]] = []
+        plan = None
+        for message in messages:
+            skill = _skill_resource(message)
+            if skill is not None:
+                key, body, reload_args = skill
+                skill_receipts.append(
+                    {
+                        "tool": key[0],
+                        "skill": key[1],
+                        "path": key[2],
+                        "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                        "reload": reload_args,
+                    }
+                )
+            if message.role != "tool" or message.tool_name not in CODING_TOOL_NAMES:
+                continue
+            content = str(message.content or "")
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError):
+                payload = None
+            if isinstance(payload, dict):
+                mutation = payload.get("mutation_sequence") or payload.get("mutationSequence")
+                if mutation is not None:
+                    mutations.append(mutation)
+                if message.tool_name == "verify":
+                    verifications.append(
+                        {
+                            "executionId": payload.get("execution_id"),
+                            "status": payload.get("status"),
+                            "exitCode": payload.get("exit_code"),
+                        }
+                    )
+                if message.tool_name == "update_plan":
+                    plan = payload
+                for item in (
+                    payload.get("files", []) if isinstance(payload.get("files"), list) else []
+                ):
+                    if isinstance(item, dict) and isinstance(item.get("path"), str):
+                        changed_files.append(item["path"])
+                if message.tool_name == "process" and isinstance(payload.get("processes"), list):
+                    active_processes = [
+                        {
+                            "executionId": item.get("execution_id"),
+                            "status": item.get("status"),
+                        }
+                        for item in payload["processes"]
+                        if isinstance(item, dict)
+                        and item.get("status")
+                        not in {"completed", "failed", "terminated", "lost", "cancelled"}
+                    ]
+            receipts.append(
+                {
+                    "tool": message.tool_name,
+                    "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                }
+            )
+        return json.dumps(
+            {
+                "marker": "CODING_CHECKPOINT",
+                "plan": plan,
+                "changedFiles": list(dict.fromkeys(changed_files)),
+                "mutation": mutations[-1] if mutations else None,
+                "verification": verifications[-1] if verifications else None,
+                "activeProcesses": active_processes,
+                "skillReceipts": skill_receipts,
+                "toolReceipts": receipts,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def _coding_candidates(self, messages: list[Message]) -> list[Message]:
+        protected = self._protected_indexes(messages)
+        return [
+            message
+            for index, message in enumerate(messages)
+            if index not in protected
+            and message.role == "tool"
+            and message.tool_name in CODING_TOOL_NAMES
+            and message.tool_name not in SKILL_TOOL_NAMES
+            and message.compressed_content is None
+        ]
+
+    def _effective_token_count(self, messages: list[Message]) -> int:
+        if self.model is None:
+            return _fallback_context_token_count(messages)
+        effective = []
+        for message in messages:
+            candidate = deepcopy(message)
+            if candidate.compressed_content is not None:
+                candidate.content = candidate.compressed_content
+            effective.append(candidate)
+        try:
+            return self.model.count_tokens(effective)
+        except Exception:
+            return _fallback_context_token_count(effective)
+
+    def should_compress(self, messages, tools=None, model=None, response_format=None):
+        counting_model = model or self.model
+        try:
+            return bool(
+                counting_model is not None
+                and counting_model.count_tokens(messages, tools, response_format)
+                > self.input_token_budget
+            )
+        except Exception:
+            return _fallback_context_token_count(messages, tools, response_format) > (
+                self.input_token_budget
+            )
+
+    async def ashould_compress(self, messages, tools=None, model=None, response_format=None):
+        return self.should_compress(messages, tools, model, response_format)
+
+    def compress(self, messages, run_metrics=None):
+        self._compress_skill_results(messages)
+        candidates = self._coding_candidates(messages)
+        for message in candidates:
+            message.compressed_content = self._coding_receipt(message)
+        token_count = self._effective_token_count(messages)
+        if token_count <= self.input_token_budget:
+            return
+        protected = self._protected_indexes(messages)
+        prunable = [
+            message
+            for index, message in enumerate(messages)
+            if index not in protected and message.tool_name not in SKILL_TOOL_NAMES
+        ]
+        if not prunable:
+            return
+        checkpoint = self._checkpoint(messages)
+        for message in prunable:
+            message.compressed_content = json.dumps(
+                {
+                    "marker": "CODING_HISTORY_PRUNED",
+                    "role": message.role,
+                    "sha256": hashlib.sha256(
+                        str(message.content or "").encode("utf-8")
+                    ).hexdigest(),
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        checkpoint_target = next(
+            (message for message in prunable if message.tool_name in CODING_TOOL_NAMES),
+            prunable[0],
+        )
+        checkpoint_target.compressed_content = checkpoint
+
+    async def acompress(self, messages, run_metrics=None):
+        self.compress(messages, run_metrics=run_metrics)
+
+    def prepare_context(self, messages: list[Message]) -> list[Message]:
+        prepared = deepcopy(messages)
+        if self.should_compress(prepared, model=self.model):
+            self.compress(prepared)
+        return prepared
+
+    async def compress_history_message(self, message: Message) -> Message:
+        candidate = deepcopy(message)
+        candidate.from_history = True
+        if candidate.role == "tool" and candidate.tool_name in CODING_TOOL_NAMES:
+            candidate.compressed_content = self._coding_receipt(candidate)
+        return candidate
+
+
+class CodingContextProjector:
+    _large_argument_fields = {
+        "terminal": frozenset({"command"}),
+        "verify": frozenset({"command"}),
+        "finish_task": frozenset({"summary"}),
+        "create_file": frozenset({"content"}),
+        "overwrite_file": frozenset({"content"}),
+        "replace_text": frozenset({"old_string", "new_string"}),
+        "apply_patch": frozenset({"patch"}),
+        "patch": frozenset({"content", "old_string", "new_string", "patch"}),
+    }
+    _min_argument_chars = 1024
+
+    @classmethod
+    def _compact_arguments(cls, tool_name: str, raw: Any) -> Any:
+        if not isinstance(raw, str):
+            return raw
+        try:
+            arguments = json.loads(raw)
+        except (TypeError, ValueError):
+            return raw
+        if not isinstance(arguments, dict):
+            return raw
+        changed = False
+        for field_name in cls._large_argument_fields.get(tool_name, frozenset()):
+            value = arguments.get(field_name)
+            if not isinstance(value, str) or len(value) <= cls._min_argument_chars:
+                continue
+            reload_path = arguments.get("path")
+            reload_suffix = (
+                f" reload=read_file(path={reload_path!r})"
+                if isinstance(reload_path, str) and reload_path
+                else ""
+            )
+            arguments[field_name] = (
+                "[CONTEXT_PRUNED"
+                f" chars={len(value)}"
+                f" sha256={hashlib.sha256(value.encode()).hexdigest()}"
+                f"{reload_suffix}]"
+            )
+            changed = True
+        return (
+            json.dumps(arguments, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+            if changed
+            else raw
+        )
+
+    @classmethod
+    def project(cls, messages: list[Message]) -> list[Message]:
+        projected = deepcopy(messages)
+        compact_call_ids = {
+            message.tool_call_id
+            for message in projected
+            if message.role == "tool"
+            and message.tool_name in CODING_TOOL_NAMES
+            and message.compressed_content is not None
+            and isinstance(message.tool_call_id, str)
+        }
+        for message in projected:
+            if message.role not in {"assistant", "model"} or not message.tool_calls:
+                continue
+            for tool_call in message.tool_calls:
+                if not isinstance(tool_call, dict) or tool_call.get("id") not in compact_call_ids:
+                    continue
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+                tool_name = function.get("name")
+                if not isinstance(tool_name, str):
+                    continue
+                function["arguments"] = cls._compact_arguments(tool_name, function.get("arguments"))
+        return projected
+
+
+class ProjectedOpenAIChat(OpenAIChat):
+    def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+        return super().invoke(CodingContextProjector.project(messages), *args, **kwargs)
+
+    async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+        return await super().ainvoke(CodingContextProjector.project(messages), *args, **kwargs)
+
+    def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
+        yield from super().invoke_stream(CodingContextProjector.project(messages), *args, **kwargs)
+
+    async def ainvoke_stream(
+        self, messages: list[Message], *args: Any, **kwargs: Any
+    ) -> AsyncIterator[Any]:
+        async for response in super().ainvoke_stream(
+            CodingContextProjector.project(messages), *args, **kwargs
+        ):
+            yield response
+
+
+def projected_coding_model(model: OpenAIChat) -> ProjectedOpenAIChat:
+    if isinstance(model, ProjectedOpenAIChat):
+        return model
+    values = {field.name: getattr(model, field.name) for field in fields(model)}
+    return ProjectedOpenAIChat(**values)
 
 
 async def build_budgeted_history_context(

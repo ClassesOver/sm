@@ -5,7 +5,9 @@ import pytest
 
 from agentos_dev.cli import CliContext, create_cli_agent, create_cli_app_agent, run_cli_app
 from agentos_dev.cli import app as cli_module
+from agentos_dev.context_management import ContextBudgetController, ProjectedOpenAIChat
 from agentos_dev.settings import AgentSettings
+from agentos_dev.skills import SkillValidatorRegistry, skill_script_receipt_hook
 
 
 def test_create_cli_agent_is_independent_coding_agent():
@@ -25,10 +27,17 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.id == "coding-agent-cli"
     assert agent.db is database
     assert agent.model.id == settings.model_id
+    assert isinstance(agent.model, ProjectedOpenAIChat)
     assert agent.model.base_url == settings.openai_base_url
     assert agent.model.extra_body is None
     assert agent.num_history_runs == 5
+    assert isinstance(agent.compression_manager, ContextBudgetController)
+    assert agent.compression_manager.context_token_limit == 96 * 1024
+    assert agent.compression_manager.input_token_budget == 64 * 1024
+    assert agent.compression_manager.model is agent.model
     assert agent.tools[0].kernel.service is workspace_service
+    assert isinstance(agent.tools[0].kernel.validator_registry, SkillValidatorRegistry)
+    assert agent.tool_hooks == [skill_script_receipt_hook]
 
     app_agent = create_cli_app_agent(
         CliContext(
@@ -44,6 +53,13 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert app_agent.model.id == settings.model_id
     assert app_agent.model.extra_body == {"enable_thinking": False}
     assert [tool.name for tool in app_agent.tools] == ["run_coding_task"]
+    assert app_agent.tools[0].parameters == {
+        "type": "object",
+        "properties": {"instruction": {"type": "string", "minLength": 1}},
+        "required": ["instruction"],
+        "additionalProperties": False,
+    }
+    assert skill_script_receipt_hook not in (app_agent.tool_hooks or [])
     assert isasyncgenfunction(app_agent.tools[0].entrypoint)
     expected_tool_choice = {
         "type": "function",
@@ -121,6 +137,39 @@ def test_create_cli_agent_loads_configured_skills_directory(monkeypatch):
     assert loaded_paths == ["/opt/agent-skills"]
 
 
+def test_cli_agents_inject_registry_built_from_internal_skills(monkeypatch):
+    settings = AgentSettings.from_environment({}, load_env_file=False)
+    context = CliContext(
+        settings=settings,
+        database=object(),
+        workspace_service=object(),
+        coding_repository=object(),  # type: ignore[arg-type]
+    )
+    registries = [object(), object()]
+    observed_skills = []
+    supervisor_kwargs = {}
+
+    class RegistryFactory:
+        @classmethod
+        def from_skills(cls, skills):
+            observed_skills.append(skills)
+            return registries[len(observed_skills) - 1]
+
+    class Supervisor:
+        def __init__(self, *_args, **kwargs):
+            supervisor_kwargs.update(kwargs)
+
+    monkeypatch.setattr(cli_module, "SkillValidatorRegistry", RegistryFactory)
+    monkeypatch.setattr(cli_module, "CodingTaskSupervisor", Supervisor)
+
+    coding_agent = create_cli_agent(context)
+    create_cli_app_agent(context, coding_agent)
+
+    assert coding_agent.tools[0].kernel.validator_registry is registries[0]
+    assert supervisor_kwargs["validator_registry"] is registries[1]
+    assert observed_skills == [coding_agent.skills, coding_agent.skills]
+
+
 @pytest.mark.anyio
 async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch):
     calls = []
@@ -133,17 +182,33 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
             self.closed = True
 
     coding_client = AsyncClient()
+    coding_compression_client = AsyncClient()
     app_client = AsyncClient()
+    app_compression_client = AsyncClient()
     database = AsyncClient()
 
     class NativeCliAgent:
         model = type("Model", (), {"async_client": app_client})()
+        compression_manager = type(
+            "CompressionManager",
+            (),
+            {"model": type("Model", (), {"async_client": app_compression_client})()},
+        )()
 
         async def acli_app(self, **kwargs):
             calls.append(kwargs)
 
     coding_agent = type(
-        "CodingAgent", (), {"model": type("Model", (), {"async_client": coding_client})()}
+        "CodingAgent",
+        (),
+        {
+            "model": type("Model", (), {"async_client": coding_client})(),
+            "compression_manager": type(
+                "CompressionManager",
+                (),
+                {"model": type("Model", (), {"async_client": coding_compression_client})()},
+            )(),
+        },
     )()
     monkeypatch.setattr(
         cli_module,
@@ -163,7 +228,9 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
         "markdown": True,
     }
     assert coding_client.closed
+    assert coding_compression_client.closed
     assert app_client.closed
+    assert app_compression_client.closed
     assert database.closed
 
 
@@ -180,6 +247,11 @@ async def test_cli_closes_resources_when_native_app_is_cancelled(monkeypatch):
 
     class NativeCliAgent:
         model = type("Model", (), {"async_client": AsyncClient("app-model")})()
+        compression_manager = type(
+            "CompressionManager",
+            (),
+            {"model": type("Model", (), {"async_client": AsyncClient("app-compression")})()},
+        )()
 
         async def acli_app(self, **kwargs):
             raise asyncio.CancelledError
@@ -187,7 +259,14 @@ async def test_cli_closes_resources_when_native_app_is_cancelled(monkeypatch):
     coding_agent = type(
         "CodingAgent",
         (),
-        {"model": type("Model", (), {"async_client": AsyncClient("coding-model")})()},
+        {
+            "model": type("Model", (), {"async_client": AsyncClient("coding-model")})(),
+            "compression_manager": type(
+                "CompressionManager",
+                (),
+                {"model": type("Model", (), {"async_client": AsyncClient("coding-compression")})()},
+            )(),
+        },
     )()
     context = type("Context", (), {"database": AsyncClient("database")})()
     monkeypatch.setattr(
@@ -199,4 +278,10 @@ async def test_cli_closes_resources_when_native_app_is_cancelled(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await run_cli_app(context, coding_agent)  # type: ignore[arg-type]
 
-    assert closed == ["app-model", "coding-model", "database"]
+    assert closed == [
+        "app-model",
+        "app-compression",
+        "coding-model",
+        "coding-compression",
+        "database",
+    ]

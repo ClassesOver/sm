@@ -1,4 +1,4 @@
-agno[agui]==2.7.3
+agno[agui]==2.8.2
 aiosqlite>=0.20,<1.0
 ag-ui-protocol>=0.1
 daytona==0.189.0

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -13,6 +14,9 @@ from agentos_dev.context_management import (
     COMPRESSIBLE_HISTORY_TOOLS,
     HISTORY_CONTEXT_DESCRIPTION,
     MAX_SUMMARY_TOKENS,
+    SKILL_PRUNE_MIN_CHARS,
+    CodingContextProjector,
+    ContextBudgetController,
     ProtectedCompressionManager,
     RollingSessionSummaryManager,
     RollingSummaryResponse,
@@ -230,6 +234,440 @@ def test_compression_tokenizer_failure_does_not_fail_main_run():
     analysis.from_history = True
 
     assert manager.should_compress([analysis], model=BrokenCountingModel()) is False
+
+
+def test_coding_context_controller_keeps_below_budget_history_uncompressed():
+    controller = ContextBudgetController(model=CountingModel(), context_token_budget=200_000)
+    old = Message(
+        role="tool",
+        tool_name="terminal",
+        tool_args={"command": "pytest"},
+        content=json.dumps({"status": "completed", "outputHandle": "opaque", "output": "x" * 1000}),
+    )
+    recent = Message(role="tool", tool_name="read_file", content='{"content":"latest"}')
+    messages = [
+        Message(role="assistant", content="first"),
+        old,
+        Message(role="assistant", content="second"),
+        recent,
+        Message(role="assistant", content="third"),
+    ]
+
+    prepared = controller.prepare_context(messages)
+
+    assert old.compressed_content is None
+    assert prepared[1].compressed_content is None
+    assert prepared[3].compressed_content is None
+    assert controller.context_token_limit == 96 * 1024
+    assert controller.input_token_budget == 64 * 1024
+
+
+def test_coding_context_projection_keeps_append_only_provider_prefix_stable():
+    create_args = json.dumps({"path": "report.md", "content": "x" * 2000})
+    messages = [
+        Message(
+            role="assistant",
+            tool_calls=[
+                {
+                    "id": "call-create",
+                    "type": "function",
+                    "function": {"name": "create_file", "arguments": create_args},
+                }
+            ],
+        ),
+        Message(
+            role="tool",
+            tool_name="create_file",
+            tool_call_id="call-create",
+            content='{"ok":true}',
+        ),
+        Message(role="assistant", content="继续检查"),
+    ]
+
+    first = CodingContextProjector.project(messages)
+    second = CodingContextProjector.project(
+        [*messages, Message(role="assistant", content="准备下一步")]
+    )
+
+    def provider_value(message):
+        return (
+            message.role,
+            message.get_content(use_compressed_content=True),
+            message.tool_call_id,
+            message.tool_calls,
+        )
+
+    assert [provider_value(message) for message in first] == [
+        provider_value(message) for message in second[: len(first)]
+    ]
+
+    messages[1].compressed_content = ContextBudgetController._coding_receipt(messages[1])
+    rebased_first = CodingContextProjector.project(messages)
+    rebased_second = CodingContextProjector.project(
+        [*messages, Message(role="assistant", content="压缩后继续")]
+    )
+
+    assert [provider_value(message) for message in rebased_first] == [
+        provider_value(message) for message in rebased_second[: len(rebased_first)]
+    ]
+
+
+def test_coding_context_controller_defers_skill_pruning_until_budget_rebase():
+    body = "x" * (SKILL_PRUNE_MIN_CHARS + 1)
+    old = skill_result(body)
+    messages = [old, *[Message(role="assistant", content=str(i)) for i in range(10)]]
+    controller = ContextBudgetController(model=CountingModel(), context_token_budget=200_000)
+
+    stable = controller.prepare_context(messages)
+
+    assert stable[0].compressed_content is None
+    assert old.compressed_content is None
+
+    constrained = ContextBudgetController(model=CountingModel(), context_token_budget=32_769)
+    rebased = constrained.prepare_context(messages)
+
+    assert json.loads(rebased[0].compressed_content)["marker"] == "SKILL_PRUNED"
+    assert old.compressed_content is None
+
+
+def test_coding_context_controller_emits_structured_checkpoint_when_over_budget():
+    controller = ContextBudgetController(model=CountingModel(), context_token_budget=32_769)
+    messages = [
+        Message(role="assistant", content="first"),
+        Message(role="tool", tool_name="terminal", content='{"output":"large"}'),
+        Message(
+            role="tool",
+            tool_name="patch",
+            content='{"mutation_sequence":3,"files":[{"path":"app.py"}]}',
+        ),
+        Message(
+            role="tool",
+            tool_name="process",
+            content='{"processes":[{"execution_id":"serve","status":"running"}]}',
+        ),
+        skill_result("rules", path="guide.md", tool_name="get_skill_reference"),
+        Message(role="assistant", content="second"),
+        Message(role="assistant", content="third"),
+    ]
+
+    prepared = controller.prepare_context(messages)
+
+    checkpoint = json.loads(prepared[1].compressed_content)
+    assert checkpoint["marker"] == "CODING_CHECKPOINT"
+    assert checkpoint["changedFiles"] == ["app.py"]
+    assert checkpoint["mutation"] == 3
+    assert checkpoint["activeProcesses"] == [{"executionId": "serve", "status": "running"}]
+    assert checkpoint["skillReceipts"][0]["path"] == "guide.md"
+    assert checkpoint["toolReceipts"][0]["tool"] == "terminal"
+
+
+def test_coding_context_controller_uses_fallback_count_when_tokenizer_fails():
+    controller = ContextBudgetController(model=BrokenCountingModel(), context_token_budget=32_769)
+    messages = [
+        Message(role="assistant", content="old " + "x" * 100),
+        Message(role="assistant", content="second"),
+        Message(role="assistant", content="third"),
+    ]
+
+    assert controller.should_compress(messages) is True
+
+    prepared = controller.prepare_context(messages)
+
+    assert json.loads(prepared[0].compressed_content)["marker"] == "CODING_CHECKPOINT"
+    assert messages[0].compressed_content is None
+
+
+def test_coding_context_projector_compacts_consumed_tool_pair_without_mutating_raw():
+    large_content = "x" * 5000
+    create_args = json.dumps({"path": "report.md", "content": large_content})
+    latest_args = json.dumps({"command": "python verify.py"})
+    messages = [
+        Message(
+            role="assistant",
+            content="create",
+            tool_calls=[
+                {
+                    "id": "call-create",
+                    "type": "function",
+                    "function": {"name": "create_file", "arguments": create_args},
+                }
+            ],
+        ),
+        Message(
+            role="tool",
+            tool_name="create_file",
+            tool_call_id="call-create",
+            tool_args={"path": "report.md", "content": large_content},
+            content=json.dumps(
+                {
+                    "ok": True,
+                    "files": [{"path": "report.md", "sha256": "a" * 64}],
+                    "mutation_sequence": 1,
+                }
+            ),
+        ),
+        Message(
+            role="assistant",
+            content="verify",
+            tool_calls=[
+                {
+                    "id": "call-latest",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": latest_args},
+                }
+            ],
+        ),
+        Message(
+            role="tool",
+            tool_name="terminal",
+            tool_call_id="call-latest",
+            tool_args={"command": "python verify.py"},
+            content=json.dumps({"status": "completed", "output": "ok"}),
+        ),
+        Message(role="assistant", content="continue"),
+    ]
+    receipt = ContextBudgetController._coding_receipt(messages[1])
+    messages[1].compressed_content = receipt
+
+    projected = CodingContextProjector.project(messages)
+
+    assert messages[0].tool_calls[0]["function"]["arguments"] == create_args
+    assert messages[1].compressed_content == receipt
+    compact_args = json.loads(projected[0].tool_calls[0]["function"]["arguments"])
+    assert compact_args["path"] == "report.md"
+    assert "CONTEXT_PRUNED" in compact_args["content"]
+    assert large_content not in projected[0].tool_calls[0]["function"]["arguments"]
+    assert json.loads(projected[1].compressed_content)["marker"] == "CODING_TOOL_RECEIPT"
+    assert projected[0].tool_calls[0]["id"] == projected[1].tool_call_id == "call-create"
+    assert projected[2].tool_calls[0]["function"]["arguments"] == latest_args
+    assert projected[3].compressed_content is None
+
+
+def test_coding_context_projector_keeps_recent_read_facts_after_another_tool_call():
+    facts = '{"path":"summary.json","content":"AUTHORITATIVE_FACTS"}'
+    messages = [
+        Message(
+            role="assistant",
+            tool_calls=[
+                {
+                    "id": "call-read",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path":"summary.json"}',
+                    },
+                }
+            ],
+        ),
+        Message(
+            role="tool",
+            tool_name="read_file",
+            tool_call_id="call-read",
+            content=facts,
+        ),
+        Message(
+            role="assistant",
+            tool_calls=[
+                {
+                    "id": "call-tree",
+                    "type": "function",
+                    "function": {"name": "tree", "arguments": '{"path":""}'},
+                }
+            ],
+        ),
+        Message(
+            role="tool",
+            tool_name="tree",
+            tool_call_id="call-tree",
+            content='{"files":["summary.json"]}',
+        ),
+    ]
+
+    projected = CodingContextProjector.project(messages)
+
+    assert projected[1].content == facts
+    assert projected[1].compressed_content is None
+    assert projected[3].compressed_content is None
+    assert messages[1].content == facts
+    assert messages[1].compressed_content is None
+
+
+def test_coding_context_projector_keeps_uncompressed_latest_mutation_arguments():
+    first_content = "first" * 1000
+    latest_content = "latest" * 1000
+    first_args = json.dumps({"path": "analysis.py", "content": first_content})
+    latest_args = json.dumps(
+        {
+            "path": "analysis.py",
+            "content": latest_content,
+            "expected_sha256": "a" * 64,
+        }
+    )
+    messages = [
+        Message(
+            role="assistant",
+            tool_calls=[
+                {
+                    "id": "call-create",
+                    "type": "function",
+                    "function": {"name": "create_file", "arguments": first_args},
+                }
+            ],
+        ),
+        Message(
+            role="tool",
+            tool_name="create_file",
+            tool_call_id="call-create",
+            content='{"ok":true}',
+        ),
+        Message(
+            role="assistant",
+            tool_calls=[
+                {
+                    "id": "call-overwrite",
+                    "type": "function",
+                    "function": {"name": "overwrite_file", "arguments": latest_args},
+                }
+            ],
+        ),
+        Message(
+            role="tool",
+            tool_name="overwrite_file",
+            tool_call_id="call-overwrite",
+            content='{"ok":true}',
+        ),
+        Message(role="assistant", content="continue"),
+    ]
+    messages[1].compressed_content = ContextBudgetController._coding_receipt(messages[1])
+
+    projected = CodingContextProjector.project(messages)
+
+    assert "CONTEXT_PRUNED" in projected[0].tool_calls[0]["function"]["arguments"]
+    assert projected[2].tool_calls[0]["function"]["arguments"] == latest_args
+    assert messages[0].tool_calls[0]["function"]["arguments"] == first_args
+    assert messages[2].tool_calls[0]["function"]["arguments"] == latest_args
+
+
+def test_coding_tool_receipt_preserves_bounded_continuation_state():
+    message = Message(
+        role="tool",
+        tool_name="overwrite_file",
+        tool_args={"path": "analysis.py", "content": "x" * 5000},
+        content=json.dumps(
+            {
+                "ok": True,
+                "execution_id": "execution-1",
+                "mutation_sequence": 7,
+                "files": [
+                    {
+                        "operation": "update",
+                        "path": "analysis.py",
+                        "size": 5000,
+                        "sha256": "b" * 64,
+                    }
+                ],
+            }
+        ),
+    )
+
+    receipt = json.loads(ContextBudgetController._coding_receipt(message))
+
+    assert receipt["state"] == {
+        "execution_id": "execution-1",
+        "mutation_sequence": 7,
+        "files": [
+            {
+                "operation": "update",
+                "path": "analysis.py",
+                "size": 5000,
+                "sha256": "b" * 64,
+            }
+        ],
+    }
+    assert receipt["arguments"] == {
+        "keys": ["content", "path"],
+        "sha256": hashlib.sha256(
+            json.dumps(
+                {"content": "x" * 5000, "path": "analysis.py"},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+    }
+
+
+def skill_result(
+    body: str,
+    *,
+    tool_name: str = "get_skill_instructions",
+    path: str | None = None,
+    execute: bool = False,
+) -> Message:
+    args = {"skill_name": "review"}
+    payload = {"skill_name": "review"}
+    if tool_name == "get_skill_instructions":
+        payload["instructions"] = body
+    elif tool_name == "get_skill_reference":
+        args["reference_path"] = path
+        payload.update(reference_path=path, content=body)
+    else:
+        args.update(script_path=path, execute=execute)
+        payload.update(script_path=path, content=body)
+    message = Message(
+        role="tool",
+        tool_name=tool_name,
+        tool_args=args,
+        content=json.dumps(payload),
+    )
+    return message
+
+
+def test_skill_compression_prunes_only_old_large_content_and_preserves_raw_result():
+    manager = ProtectedCompressionManager(model=CountingModel(), compress_tool_results_limit=100)
+    boundary = skill_result("x" * SKILL_PRUNE_MIN_CHARS)
+    old = skill_result(
+        "y" * (SKILL_PRUNE_MIN_CHARS + 1),
+        tool_name="get_skill_reference",
+        path="guide.md",
+    )
+    messages = [boundary, old, *[Message(role="assistant", content=str(i)) for i in range(10)]]
+    original = old.content
+
+    assert manager.should_compress(messages) is True
+    manager.compress(messages)
+
+    assert boundary.compressed_content is None
+    assert old.content == original
+    marker = json.loads(old.compressed_content)
+    assert marker == {
+        "chars": SKILL_PRUNE_MIN_CHARS + 1,
+        "marker": "SKILL_PRUNED",
+        "path": "guide.md",
+        "reload": {"reference_path": "guide.md", "skill_name": "review"},
+        "sha256": hashlib.sha256(("y" * 5001).encode()).hexdigest(),
+        "skill": "review",
+        "tool": "get_skill_reference",
+    }
+
+
+def test_skill_compression_prunes_duplicate_but_keeps_latest_and_exempts_executed_script():
+    manager = ProtectedCompressionManager(model=CountingModel(), compress_tool_results_limit=100)
+    first = skill_result("first")
+    latest = skill_result("latest")
+    executed = skill_result(
+        "script output",
+        tool_name="get_skill_script",
+        path="check.py",
+        execute=True,
+    )
+    messages = [first, Message(role="assistant", content="continue"), latest, executed]
+
+    manager.compress(messages)
+
+    assert json.loads(first.compressed_content)["marker"] == "SKILL_PRUNED"
+    assert latest.compressed_content is None
+    assert executed.compressed_content is None
 
 
 @pytest.mark.anyio

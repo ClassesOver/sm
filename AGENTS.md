@@ -23,7 +23,7 @@
 
 - `agui_chat/` 是 Odoo 12 核心模块，负责配置、权限、会话、页面宿主、业务命令和授权审计。
 - `agui_chat/react_widget/` 是 React 18、TypeScript strict、Vite 的 AG-UI 客户端。
-- `agentos_dev/` 是 Python 3.12、FastAPI、Agno 2.7.3 的 AgentOS 服务，负责智能体、AG-UI、持久化和 Daytona 工作区。
+- `agentos_dev/` 是 Python 3.12、FastAPI、Agno 2.8.2 的 AgentOS 服务，负责智能体、AG-UI、持久化和 Daytona 工作区。
 - `agui_chat_test/` 是本地 Odoo 集成测试夹具，不是产品业务实现。
 - Odoo `BasicModel` 是当前业务页面状态的唯一权威来源。React 和 AgentOS 只能消费宿主快照与 token，不得维护可绕过宿主的新业务真相。
 - 生产环境中，浏览器通过同源 AgentOS 端点运行 AG-UI SSE；Odoo 不代理 SSE。跨域 HTTP(S) 绝对地址仅限显式启用 `allow_cross_origin_dev` 的开发环境。不要新增绕过现有握手、鉴权或恢复流程的第二条传输链路。

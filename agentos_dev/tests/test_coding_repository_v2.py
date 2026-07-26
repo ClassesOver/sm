@@ -46,6 +46,44 @@ async def test_create_aggregate_is_idempotent_and_attempt_zero_is_free(repositor
 
 
 @pytest.mark.anyio
+async def test_acceptance_contract_is_persisted_and_immutable(repository_v2):
+    acceptance_contract = {
+        "version": 1,
+        "requirements": [
+            {
+                "id": "report",
+                "validatorId": "analysis:report",
+                "parameters": {"currency": "CNY"},
+                "artifactPatterns": ["reports/*.json"],
+            }
+        ],
+    }
+
+    task = await repository_v2.create_task_with_initial_attempt(
+        scope(),
+        "实现目标",
+        acceptance_contract=acceptance_contract,
+    )
+    duplicate = await repository_v2.create_task_with_initial_attempt(
+        scope(),
+        "实现目标",
+        acceptance_contract=acceptance_contract,
+    )
+
+    assert task.acceptance_contract == acceptance_contract
+    assert duplicate.acceptance_contract == acceptance_contract
+    acceptance_contract["requirements"][0]["parameters"]["currency"] = "USD"
+    assert (await repository_v2.get_task_snapshot("run")).acceptance_contract != acceptance_contract
+    with pytest.raises(CodingRepositoryError) as conflict:
+        await repository_v2.create_task_with_initial_attempt(
+            scope(),
+            "实现目标",
+            acceptance_contract=acceptance_contract,
+        )
+    assert conflict.value.code == "task_acceptance_contract_conflict"
+
+
+@pytest.mark.anyio
 async def test_legacy_terminal_task_is_not_exposed_as_v2_snapshot(repository_v2):
     legacy = await repository_v2.create_task(
         external_run_id="legacy",
