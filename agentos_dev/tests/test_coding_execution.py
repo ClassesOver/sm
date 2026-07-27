@@ -5,6 +5,7 @@ from copy import copy
 from types import SimpleNamespace
 
 import pytest
+from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.tools import Function
 from agno.tools.function import FunctionCall
@@ -16,9 +17,15 @@ from agentos_dev.coding import CodingScope, Lease
 from agentos_dev.coding.execution import (
     CODING_EXECUTION_MIGRATION_STATE_KEY,
     CODING_TASK_DEPENDENCY,
+    CODING_TOOL_FAILURE_STATE_KEY,
+    CODING_TOOL_OUTPUT_STATE_KEY,
+    CODING_TOOL_PROGRESS_STATE_KEY,
+    MAX_PARALLEL_READ_TOOLS,
     MAX_TERMINAL_COMMAND_BYTES,
     CodingExecutionKernel,
     WorkspaceCodingToolkit,
+    _task_tool_parallel_safe,
+    create_coding_tool_scheduler_hook,
 )
 from agentos_dev.coding.repository import CodingRepositoryError, CodingTaskRepository
 from agentos_dev.coding_tools import (
@@ -1052,6 +1059,198 @@ async def test_alternating_reads_are_blocked_when_they_repeat_without_progress(
     blocked = await toolkit.coding_list_files(run_context=runtime.context)
 
     assert blocked["code"] == "tool_no_progress"
+
+
+@pytest.mark.anyio
+async def test_agno_tool_batch_caps_reads_and_prioritizes_skill_script_execution(
+    execution_runtime,
+):
+    runtime = execution_runtime
+    hook = create_coding_tool_scheduler_hook(runtime.repository)
+    active_reads = 0
+    started_reads = 0
+    first_batch_started = asyncio.Event()
+    release_reads = asyncio.Event()
+    writer_started = asyncio.Event()
+    release_writer = asyncio.Event()
+
+    async def read_reference(reference_path: str):
+        nonlocal active_reads, started_reads
+        active_reads += 1
+        started_reads += 1
+        if active_reads == MAX_PARALLEL_READ_TOOLS:
+            first_batch_started.set()
+        await release_reads.wait()
+        active_reads -= 1
+        return {"reference": reference_path}
+
+    async def execute_script(script_path: str, execute: bool):
+        assert execute is True
+        writer_started.set()
+        await release_writer.wait()
+        return {"script": script_path}
+
+    read_function = Function(
+        name="get_skill_reference",
+        entrypoint=read_reference,
+        tool_hooks=[hook],
+    )
+    write_function = Function(
+        name="get_skill_script",
+        entrypoint=execute_script,
+        tool_hooks=[hook],
+    )
+    read_function._run_context = runtime.context
+    write_function._run_context = runtime.context
+    calls = [
+        FunctionCall(
+            function=read_function,
+            arguments={"reference_path": f"reference-{index}.md"},
+            call_id=f"read-{index}",
+        )
+        for index in range(MAX_PARALLEL_READ_TOOLS + 1)
+    ]
+    calls.append(
+        FunctionCall(
+            function=write_function,
+            arguments={"script_path": "validate.py", "execute": True},
+            call_id="write",
+        )
+    )
+    results = []
+
+    async def run_batch():
+        async for _event in OpenAIChat(id="test").arun_function_calls(
+            function_calls=calls,
+            function_call_results=results,
+        ):
+            pass
+
+    batch = asyncio.create_task(run_batch())
+    await asyncio.wait_for(first_batch_started.wait(), timeout=1)
+    assert active_reads == MAX_PARALLEL_READ_TOOLS
+    assert started_reads == MAX_PARALLEL_READ_TOOLS
+
+    release_reads.set()
+    await asyncio.wait_for(writer_started.wait(), timeout=1)
+    assert started_reads == MAX_PARALLEL_READ_TOOLS
+
+    release_writer.set()
+    await asyncio.wait_for(batch, timeout=1)
+
+    assert started_reads == MAX_PARALLEL_READ_TOOLS + 1
+    assert len(results) == MAX_PARALLEL_READ_TOOLS + 2
+
+
+@pytest.mark.anyio
+async def test_view_image_and_file_read_overlap(execution_runtime):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    active = 0
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read(name: str):
+        nonlocal active
+        active += 1
+        if active == 2:
+            both_started.set()
+        await release.wait()
+        active -= 1
+        return {"name": name}
+
+    file_read = asyncio.create_task(
+        toolkit._invoke(
+            "read_file",
+            {"path": "source.txt"},
+            lambda: read("file"),
+            runtime.context,
+        )
+    )
+    image_read = asyncio.create_task(
+        toolkit._invoke(
+            "view_image",
+            {"path": "chart.png", "detail": "high"},
+            lambda: read("image"),
+            runtime.context,
+        )
+    )
+
+    await asyncio.wait_for(both_started.wait(), timeout=1)
+    release.set()
+    assert await asyncio.gather(file_read, image_read) == [
+        {"name": "file"},
+        {"name": "image"},
+    ]
+
+
+@pytest.mark.anyio
+async def test_parallel_read_completion_merges_progress_failures_and_output_handles(
+    execution_runtime,
+):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    started = 0
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def failed_read(path: str):
+        nonlocal started
+        started += 1
+        if started == 2:
+            both_started.set()
+        await release.wait()
+        return {
+            "ok": False,
+            "exit_code": 1,
+            "output": f"cannot read {path}\n" + (path[-1] * (60 * 1024)),
+        }
+
+    calls = [
+        asyncio.create_task(
+            toolkit._invoke(
+                "terminal",
+                {"command": f"cat {path}"},
+                lambda path=path: failed_read(path),
+                runtime.context,
+            )
+        )
+        for path in ("/tmp/a", "/tmp/b")
+    ]
+    await asyncio.wait_for(both_started.wait(), timeout=1)
+    release.set()
+    results = await asyncio.gather(*calls)
+
+    progress = runtime.context.session_state[CODING_TOOL_PROGRESS_STATE_KEY]
+    failures = runtime.context.session_state[CODING_TOOL_FAILURE_STATE_KEY]
+    outputs = runtime.context.session_state[CODING_TOOL_OUTPUT_STATE_KEY]
+    assert len(progress["entries"]) == 2
+    assert {entry["resource"] for entry in failures["entries"]} == {"/tmp/a", "/tmp/b"}
+    assert len(outputs["handles"]) == 2
+    assert len(outputs["tasks"]["external-run"]["handles"]) == 2
+    assert len({result["outputHandle"] for result in results}) == 2
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "expected"),
+    [
+        ("get_skill_instructions", {}, True),
+        ("get_skill_reference", {}, True),
+        ("get_skill_script", {"execute": False}, True),
+        ("get_skill_script", {"execute": True}, False),
+        ("get_skill_script", {"execute": 0}, False),
+        ("report_list_data_sources", {}, True),
+        ("report_describe_data_source", {}, True),
+        ("report_materialize_dataset", {}, False),
+        ("report_prepare_dataset", {}, False),
+        ("report_job_status", {}, False),
+        ("report_render_markdown", {}, False),
+        ("report_validate_pdf", {}, False),
+        ("unknown_tool", {}, False),
+    ],
+)
+def test_skill_and_report_tool_scheduler_classification(tool_name, arguments, expected):
+    assert _task_tool_parallel_safe(tool_name, arguments) is expected
 
 
 @pytest.mark.anyio

@@ -18,6 +18,7 @@ from agentos_dev.agents import (
     create_report_agent,
 )
 from agentos_dev.coding import CodingEvent
+from agentos_dev.coding.execution import is_coding_tool_scheduler_hook
 from agentos_dev.coding_tools import (
     CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
     CODEX_EXEC_SESSION_TTL_SECONDS,
@@ -254,8 +255,10 @@ def test_report_agent_extends_unregistered_coding_agent(tmp_path):
         "additionalProperties": False,
     }
     assert skill_script_receipt_hook not in (coding_facade.tool_hooks or [])
+    assert not any(is_coding_tool_scheduler_hook(hook) for hook in coding_facade.tool_hooks or [])
     assert coding_agent.instructions is build_coding_agent_instructions
     assert skill_script_receipt_hook in coding_agent.tool_hooks
+    assert sum(is_coding_tool_scheduler_hook(hook) for hook in coding_agent.tool_hooks) == 1
     assert [skill.name for skill in coding_agent.skills.get_all_skills()] == ["sandbox-tooling"]
     assert coding_agent.id in {
         member.id
@@ -264,6 +267,9 @@ def test_report_agent_extends_unregistered_coding_agent(tmp_path):
         )
     }
     assert report_agent.model is coding_agent.model
+    assert report_agent.model.request_params == {"parallel_tool_calls": True}
+    assert app.assistant.model.request_params is None
+    assert sum(is_coding_tool_scheduler_hook(hook) for hook in report_agent.tool_hooks) == 1
     assert report_agent.db is coding_agent.db
     assert report_agent.compression_manager is coding_agent.compression_manager
     assert report_agent.checkpoint == coding_agent.checkpoint == "tool-batch"

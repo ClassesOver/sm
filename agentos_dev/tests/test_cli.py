@@ -5,6 +5,7 @@ import pytest
 
 from agentos_dev.cli import CliContext, create_cli_agent, create_cli_app_agent, run_cli_app
 from agentos_dev.cli import app as cli_module
+from agentos_dev.coding.execution import is_coding_tool_scheduler_hook
 from agentos_dev.context_management import ContextBudgetController, ProjectedOpenAIChat
 from agentos_dev.settings import AgentSettings
 from agentos_dev.skills import SkillValidatorRegistry, skill_script_receipt_hook
@@ -30,6 +31,7 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert isinstance(agent.model, ProjectedOpenAIChat)
     assert agent.model.base_url == settings.openai_base_url
     assert agent.model.extra_body is None
+    assert agent.model.request_params == {"parallel_tool_calls": True}
     assert agent.num_history_runs == 5
     assert isinstance(agent.compression_manager, ContextBudgetController)
     assert agent.compression_manager.context_token_limit == 96 * 1024
@@ -37,7 +39,8 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.compression_manager.model is agent.model
     assert agent.tools[0].kernel.service is workspace_service
     assert isinstance(agent.tools[0].kernel.validator_registry, SkillValidatorRegistry)
-    assert agent.tool_hooks == [skill_script_receipt_hook]
+    assert skill_script_receipt_hook in agent.tool_hooks
+    assert sum(is_coding_tool_scheduler_hook(hook) for hook in agent.tool_hooks) == 1
 
     app_agent = create_cli_app_agent(
         CliContext(
@@ -52,6 +55,7 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert app_agent.model is not agent.model
     assert app_agent.model.id == settings.model_id
     assert app_agent.model.extra_body == {"enable_thinking": False}
+    assert app_agent.model.request_params == {"parallel_tool_calls": True}
     assert [tool.name for tool in app_agent.tools] == ["run_coding_task"]
     assert app_agent.tools[0].parameters == {
         "type": "object",
@@ -60,6 +64,7 @@ def test_create_cli_agent_is_independent_coding_agent():
         "additionalProperties": False,
     }
     assert skill_script_receipt_hook not in (app_agent.tool_hooks or [])
+    assert not any(is_coding_tool_scheduler_hook(hook) for hook in app_agent.tool_hooks or [])
     assert isasyncgenfunction(app_agent.tools[0].entrypoint)
     expected_tool_choice = {
         "type": "function",
@@ -72,6 +77,7 @@ def test_create_cli_agent_is_independent_coding_agent():
     )
     assert request_params["tool_choice"] == expected_tool_choice
     assert request_params["extra_body"] == {"enable_thinking": False}
+    assert request_params["parallel_tool_calls"] is True
 
 
 def test_create_cli_context_configures_tracing_before_services(monkeypatch):

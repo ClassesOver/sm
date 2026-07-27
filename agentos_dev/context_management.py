@@ -1017,9 +1017,16 @@ class ProjectedOpenAIChat(OpenAIChat):
 
 
 def projected_coding_model(model: OpenAIChat) -> ProjectedOpenAIChat:
-    if isinstance(model, ProjectedOpenAIChat):
+    if (
+        isinstance(model, ProjectedOpenAIChat)
+        and (model.request_params or {}).get("parallel_tool_calls") is True
+    ):
         return model
     values = {field.name: getattr(model, field.name) for field in fields(model)}
+    values["request_params"] = {
+        **(model.request_params or {}),
+        "parallel_tool_calls": True,
+    }
     return ProjectedOpenAIChat(**values)
 
 

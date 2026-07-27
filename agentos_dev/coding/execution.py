@@ -8,9 +8,10 @@ import re
 import shlex
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from inspect import isawaitable
 from typing import Any
 
 from agno.run import RunContext
@@ -70,6 +71,7 @@ MAX_TOOL_PREVIEW_BYTES = 48 * 1024
 MAX_TOOL_OUTPUT_RESOURCE_BYTES = 16 * 1024 * 1024
 MAX_TASK_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_TOOL_OUTPUT_READ_BYTES = 64 * 1024
+MAX_PARALLEL_READ_TOOLS = 4
 CODING_TOOL_OUTPUT_STATE_KEY = "agentos_coding_tool_outputs"
 CODING_TOOL_PROGRESS_STATE_KEY = "agentos_coding_tool_progress"
 CODING_TOOL_FAILURE_STATE_KEY = "agentos_coding_tool_failures"
@@ -297,9 +299,21 @@ def _is_read_only_terminal_command(command: str) -> bool:
     return True
 
 
+_PARALLEL_SKILL_TOOLS = frozenset({"get_skill_instructions", "get_skill_reference"})
+_PARALLEL_REPORT_TOOLS = frozenset({"report_list_data_sources", "report_describe_data_source"})
+_CODING_TOOL_SCHEDULER_MARKER = "_agentos_coding_tool_scheduler"
+
+
+def _task_tool_parallel_safe(function_name: str, arguments: dict[str, Any]) -> bool:
+    if function_name in _PARALLEL_SKILL_TOOLS or function_name in _PARALLEL_REPORT_TOOLS:
+        return True
+    return function_name == "get_skill_script" and arguments.get("execute", False) is False
+
+
 class _AsyncRWLock:
     def __init__(self) -> None:
         self._condition = asyncio.Condition()
+        self._state_lock = asyncio.Lock()
         self._readers = 0
         self._writer = False
         self._waiting_writers = 0
@@ -307,7 +321,13 @@ class _AsyncRWLock:
     @asynccontextmanager
     async def read(self):
         async with self._condition:
-            await self._condition.wait_for(lambda: not self._writer and self._waiting_writers == 0)
+            await self._condition.wait_for(
+                lambda: (
+                    not self._writer
+                    and self._waiting_writers == 0
+                    and self._readers < MAX_PARALLEL_READ_TOOLS
+                )
+            )
             self._readers += 1
         try:
             yield
@@ -325,12 +345,78 @@ class _AsyncRWLock:
                 self._writer = True
             finally:
                 self._waiting_writers -= 1
+                self._condition.notify_all()
         try:
             yield
         finally:
             async with self._condition:
                 self._writer = False
                 self._condition.notify_all()
+
+    @asynccontextmanager
+    async def state(self):
+        async with self._state_lock:
+            yield
+
+
+_TASK_TOOL_SCHEDULERS: dict[tuple[int, str], _AsyncRWLock] = {}
+
+
+def _task_tool_scheduler(repository: Any, external_run_id: str) -> _AsyncRWLock:
+    return _TASK_TOOL_SCHEDULERS.setdefault(
+        (id(repository), external_run_id),
+        _AsyncRWLock(),
+    )
+
+
+def _bound_external_run_id(run_context: RunContext | None) -> str | None:
+    dependencies = (
+        run_context.dependencies
+        if run_context is not None and isinstance(run_context.dependencies, dict)
+        else {}
+    )
+    binding = dependencies.get(CODING_TASK_DEPENDENCY)
+    external_run_id = binding.get("externalRunId") if isinstance(binding, dict) else None
+    return external_run_id if isinstance(external_run_id, str) and external_run_id else None
+
+
+def create_coding_tool_scheduler_hook(
+    repository: CodingTaskRepository,
+) -> Callable[
+    [RunContext, str, Callable[..., Any], dict[str, Any]],
+    Coroutine[Any, Any, Any],
+]:
+    async def coding_tool_scheduler_hook(
+        run_context: RunContext,
+        function_name: str,
+        function_call: Callable[..., Any],
+        arguments: dict[str, Any],
+    ) -> Any:
+        async def invoke() -> Any:
+            result = function_call(**arguments)
+            return await result if isawaitable(result) else result
+
+        # WorkspaceCodingToolkit applies the same scheduler after it resolves the Task scope.
+        if function_name in TOOL_SPECS:
+            return await invoke()
+        external_run_id = _bound_external_run_id(run_context)
+        if external_run_id is None:
+            return await invoke()
+        scheduler = _task_tool_scheduler(repository, external_run_id)
+        lock = (
+            scheduler.read()
+            if _task_tool_parallel_safe(function_name, arguments)
+            else scheduler.write()
+        )
+        async with lock:
+            return await invoke()
+
+    setattr(coding_tool_scheduler_hook, _CODING_TOOL_SCHEDULER_MARKER, True)
+    return coding_tool_scheduler_hook
+
+
+def is_coding_tool_scheduler_hook(hook: Callable[..., Any]) -> bool:
+    return getattr(hook, _CODING_TOOL_SCHEDULER_MARKER, False) is True
 
 
 @dataclass(frozen=True)
@@ -348,7 +434,7 @@ class CodingTaskScope:
 
 
 class CodingExecutionKernel:
-    _task_locks: dict[tuple[int, str], _AsyncRWLock] = {}
+    _task_locks = _TASK_TOOL_SCHEDULERS
 
     def __init__(
         self,
@@ -368,7 +454,7 @@ class CodingExecutionKernel:
         self._migration_lock = asyncio.Lock()
 
     def task_lock(self, external_run_id: str) -> _AsyncRWLock:
-        return self._task_locks.setdefault((id(self.repository), external_run_id), _AsyncRWLock())
+        return _task_tool_scheduler(self.repository, external_run_id)
 
     @staticmethod
     def _preview_text(raw: bytes) -> str:
@@ -432,25 +518,31 @@ class CodingExecutionKernel:
                 "outputTruncated": True,
                 "outputStored": False,
             }
-        root = state.setdefault(CODING_TOOL_OUTPUT_STATE_KEY, {"handles": {}, "tasks": {}})
-        handles = root.setdefault("handles", {})
-        tasks = root.setdefault("tasks", {})
-        task_state = tasks.setdefault(scope.external_run_id, {"bytes": 0, "handles": []})
-        remaining = max(0, MAX_TASK_TOOL_OUTPUT_BYTES - int(task_state.get("bytes", 0)))
-        stored_bytes = min(len(raw), MAX_TOOL_OUTPUT_RESOURCE_BYTES, remaining)
+        scheduler = self.task_lock(scope.external_run_id)
         handle = uuid.uuid4().hex
         path = f"{TOOL_OUTPUT_ROOT}/{hashlib.sha256(scope.external_run_id.encode()).hexdigest()[:24]}/{handle}"
-        metadata = {
-            "task": scope.external_run_id,
-            "attempt": scope.attempt_no,
-            "path": path,
-            "bytes": len(raw),
-            "storedBytes": stored_bytes,
-            "sha256": hashlib.sha256(raw).hexdigest(),
-        }
-        handles[handle] = metadata
-        task_state["bytes"] = int(task_state.get("bytes", 0)) + stored_bytes
-        task_state.setdefault("handles", []).append(handle)
+        now = time.time()
+        async with scheduler.state():
+            root = state.setdefault(CODING_TOOL_OUTPUT_STATE_KEY, {"handles": {}, "tasks": {}})
+            handles = root.setdefault("handles", {})
+            tasks = root.setdefault("tasks", {})
+            task_state = tasks.setdefault(scope.external_run_id, {"bytes": 0, "handles": []})
+            remaining = max(0, MAX_TASK_TOOL_OUTPUT_BYTES - int(task_state.get("bytes", 0)))
+            stored_bytes = min(len(raw), MAX_TOOL_OUTPUT_RESOURCE_BYTES, remaining)
+            metadata = {
+                "task": scope.external_run_id,
+                "attempt": scope.attempt_no,
+                "path": path,
+                "bytes": len(raw),
+                "storedBytes": stored_bytes,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            }
+            handles[handle] = metadata
+            task_state["bytes"] = int(task_state.get("bytes", 0)) + stored_bytes
+            task_state.setdefault("handles", []).append(handle)
+            cleanup_due = now - float(root.get("lastCleanup", 0) or 0) >= 86_400
+            if cleanup_due:
+                root["lastCleanup"] = now
         try:
             if stored_bytes:
                 async for sandbox in self._sandbox(scope):
@@ -464,8 +556,7 @@ class CodingExecutionKernel:
                             await sandbox.fs.create_folder(directory, "700")
                         except Exception:
                             pass
-                    last_cleanup = float(root.get("lastCleanup", 0) or 0)
-                    if time.time() - last_cleanup >= 86_400:
+                    if cleanup_due:
                         await sandbox.process.exec(
                             "/bin/sh -c "
                             + shlex.quote(
@@ -474,12 +565,28 @@ class CodingExecutionKernel:
                             ),
                             timeout=60,
                         )
-                        root["lastCleanup"] = time.time()
                     await sandbox.fs.upload_file(raw[:stored_bytes], path)
         except Exception:
-            handles.pop(handle, None)
-            task_state["bytes"] = max(0, int(task_state.get("bytes", 0)) - stored_bytes)
-            task_state["handles"].remove(handle)
+            async with scheduler.state():
+                current_root = state.get(CODING_TOOL_OUTPUT_STATE_KEY, {})
+                current_handles = (
+                    current_root.get("handles", {}) if isinstance(current_root, dict) else {}
+                )
+                current_tasks = (
+                    current_root.get("tasks", {}) if isinstance(current_root, dict) else {}
+                )
+                current_task = (
+                    current_tasks.get(scope.external_run_id)
+                    if isinstance(current_tasks, dict)
+                    else None
+                )
+                if isinstance(current_handles, dict):
+                    current_handles.pop(handle, None)
+                if isinstance(current_task, dict):
+                    current_task["bytes"] = max(0, int(current_task.get("bytes", 0)) - stored_bytes)
+                    task_handles = current_task.get("handles")
+                    if isinstance(task_handles, list) and handle in task_handles:
+                        task_handles.remove(handle)
             raise
         return {
             **result,
@@ -3086,78 +3193,77 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             args_hash = hashlib.sha256(
                 json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str).encode()
             ).hexdigest()
-            progress = state.get(CODING_TOOL_PROGRESS_STATE_KEY) if state is not None else None
-            if (
-                not isinstance(progress, dict)
-                or progress.get("attempt") != scope.attempt_no
-                or progress.get("mutation") != mutation_before
-                or not isinstance(progress.get("entries"), list)
-            ):
-                progress = {
-                    "attempt": scope.attempt_no,
-                    "mutation": mutation_before,
-                    "entries": [],
-                }
-            entries = progress["entries"]
-            failure_state = state.get(CODING_TOOL_FAILURE_STATE_KEY) if state is not None else None
-            if (
-                not isinstance(failure_state, dict)
-                or failure_state.get("attempt") != scope.attempt_no
-                or not isinstance(failure_state.get("entries"), list)
-            ):
-                failure_state = {"attempt": scope.attempt_no, "entries": []}
-            failure_entries = failure_state["entries"]
-            argument_resources = _absolute_paths(arguments)
-            blocked_failure = next(
-                (
-                    entry
-                    for entry in reversed(failure_entries)
-                    if isinstance(entry, dict)
-                    and isinstance(entry.get("resource"), str)
-                    and any(
-                        _paths_related(entry["resource"], resource)
-                        for resource in argument_resources
-                    )
-                    and tool_name in {"terminal", "verify"}
-                ),
-                None,
-            )
-            if isinstance(blocked_failure, dict):
-                return {
-                    "ok": False,
-                    "code": "tool_no_progress",
-                    "message": "当前 Attempt 已确认该绝对路径不可用，本次未执行。",
-                    "details": {
-                        "failedResource": blocked_failure["resource"],
-                        "workspaceRoot": WORKSPACE_ROOT,
-                        "failureFingerprint": blocked_failure["fingerprint"],
-                    },
-                    "suggestedActions": [
-                        "使用工作区相对路径重新执行。",
-                        f"需要绝对路径时使用 {WORKSPACE_ROOT}。",
-                    ],
-                }
-            previous = next(
-                (
-                    entry
-                    for entry in reversed(entries)
-                    if isinstance(entry, dict)
-                    and entry.get("tool") == progress_name
-                    and entry.get("argsHash") == args_hash
-                ),
-                None,
-            )
             exempt = progress_name in NO_PROGRESS_EXEMPT_TOOLS or tool_name == "finish_task"
-            if not exempt and isinstance(previous, dict) and int(previous.get("count", 0)) >= 2:
-                return {
-                    "ok": False,
-                    "code": "tool_no_progress",
-                    "message": "相同工具和参数已连续两次返回相同结果，本次未执行。",
-                    "suggestedActions": [
-                        "修改参数或使用其他只读工具收集新证据。",
-                        "先完成真实工作区修改，再重试该调用。",
-                    ],
-                }
+            async with lock.state():
+                progress = state.get(CODING_TOOL_PROGRESS_STATE_KEY) if state is not None else None
+                entries = (
+                    list(progress["entries"])
+                    if isinstance(progress, dict)
+                    and progress.get("attempt") == scope.attempt_no
+                    and progress.get("mutation") == mutation_before
+                    and isinstance(progress.get("entries"), list)
+                    else []
+                )
+                failure_state = (
+                    state.get(CODING_TOOL_FAILURE_STATE_KEY) if state is not None else None
+                )
+                failure_entries = (
+                    list(failure_state["entries"])
+                    if isinstance(failure_state, dict)
+                    and failure_state.get("attempt") == scope.attempt_no
+                    and isinstance(failure_state.get("entries"), list)
+                    else []
+                )
+                argument_resources = _absolute_paths(arguments)
+                blocked_failure = next(
+                    (
+                        entry
+                        for entry in reversed(failure_entries)
+                        if isinstance(entry, dict)
+                        and isinstance(entry.get("resource"), str)
+                        and any(
+                            _paths_related(entry["resource"], resource)
+                            for resource in argument_resources
+                        )
+                        and tool_name in {"terminal", "verify"}
+                    ),
+                    None,
+                )
+                if isinstance(blocked_failure, dict):
+                    return {
+                        "ok": False,
+                        "code": "tool_no_progress",
+                        "message": "当前 Attempt 已确认该绝对路径不可用，本次未执行。",
+                        "details": {
+                            "failedResource": blocked_failure["resource"],
+                            "workspaceRoot": WORKSPACE_ROOT,
+                            "failureFingerprint": blocked_failure["fingerprint"],
+                        },
+                        "suggestedActions": [
+                            "使用工作区相对路径重新执行。",
+                            f"需要绝对路径时使用 {WORKSPACE_ROOT}。",
+                        ],
+                    }
+                previous = next(
+                    (
+                        entry
+                        for entry in reversed(entries)
+                        if isinstance(entry, dict)
+                        and entry.get("tool") == progress_name
+                        and entry.get("argsHash") == args_hash
+                    ),
+                    None,
+                )
+                if not exempt and isinstance(previous, dict) and int(previous.get("count", 0)) >= 2:
+                    return {
+                        "ok": False,
+                        "code": "tool_no_progress",
+                        "message": "相同工具和参数已连续两次返回相同结果，本次未执行。",
+                        "suggestedActions": [
+                            "修改参数或使用其他只读工具收集新证据。",
+                            "先完成真实工作区修改，再重试该调用。",
+                        ],
+                    }
             try:
                 result = await call()
             except WorkspacePathConflict as error:
@@ -3203,17 +3309,26 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                         default=str,
                     ).encode()
                 ).hexdigest()
-                for resource in failed_resources:
-                    failure_entries = [
-                        entry
-                        for entry in failure_entries
-                        if not isinstance(entry, dict) or entry.get("resource") != resource
-                    ]
-                    failure_entries.append({"resource": resource, "fingerprint": fingerprint})
-                state[CODING_TOOL_FAILURE_STATE_KEY] = {
-                    "attempt": scope.attempt_no,
-                    "entries": failure_entries[-MAX_TOOL_FAILURE_ENTRIES:],
-                }
+                async with lock.state():
+                    failure_state = state.get(CODING_TOOL_FAILURE_STATE_KEY)
+                    failure_entries = (
+                        list(failure_state["entries"])
+                        if isinstance(failure_state, dict)
+                        and failure_state.get("attempt") == scope.attempt_no
+                        and isinstance(failure_state.get("entries"), list)
+                        else []
+                    )
+                    for resource in failed_resources:
+                        failure_entries = [
+                            entry
+                            for entry in failure_entries
+                            if not isinstance(entry, dict) or entry.get("resource") != resource
+                        ]
+                        failure_entries.append({"resource": resource, "fingerprint": fingerprint})
+                    state[CODING_TOOL_FAILURE_STATE_KEY] = {
+                        "attempt": scope.attempt_no,
+                        "entries": failure_entries[-MAX_TOOL_FAILURE_ENTRIES:],
+                    }
             result_hash = hashlib.sha256(
                 json.dumps(
                     _stable_progress_result(result),
@@ -3239,29 +3354,47 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             if not exempt and state is not None:
                 task_after = await self.kernel.repository.get_task(scope.external_run_id)
                 mutation_after = task_after.mutation_sequence if task_after is not None else -1
-                same = bool(
-                    isinstance(previous, dict)
-                    and previous.get("resultHash") == result_hash
-                    and mutation_before == mutation_after
-                )
-                entry = {
-                    "attempt": scope.attempt_no,
-                    "tool": progress_name,
-                    "argsHash": args_hash,
-                    "resultHash": result_hash,
-                    "mutation": mutation_after,
-                    "count": int((previous or {}).get("count", 0)) + 1 if same else 1,
-                }
-                if mutation_after != mutation_before:
-                    entries = []
-                elif previous in entries:
-                    entries.remove(previous)
-                entries.append(entry)
-                state[CODING_TOOL_PROGRESS_STATE_KEY] = {
-                    "attempt": scope.attempt_no,
-                    "mutation": mutation_after,
-                    "entries": entries[-MAX_TOOL_PROGRESS_ENTRIES:],
-                }
+                async with lock.state():
+                    progress = state.get(CODING_TOOL_PROGRESS_STATE_KEY)
+                    entries = (
+                        list(progress["entries"])
+                        if isinstance(progress, dict)
+                        and progress.get("attempt") == scope.attempt_no
+                        and progress.get("mutation") == mutation_after
+                        and isinstance(progress.get("entries"), list)
+                        else []
+                    )
+                    previous = next(
+                        (
+                            entry
+                            for entry in reversed(entries)
+                            if isinstance(entry, dict)
+                            and entry.get("tool") == progress_name
+                            and entry.get("argsHash") == args_hash
+                        ),
+                        None,
+                    )
+                    same = bool(
+                        isinstance(previous, dict)
+                        and previous.get("resultHash") == result_hash
+                        and mutation_before == mutation_after
+                    )
+                    entry = {
+                        "attempt": scope.attempt_no,
+                        "tool": progress_name,
+                        "argsHash": args_hash,
+                        "resultHash": result_hash,
+                        "mutation": mutation_after,
+                        "count": int((previous or {}).get("count", 0)) + 1 if same else 1,
+                    }
+                    if previous in entries:
+                        entries.remove(previous)
+                    entries.append(entry)
+                    state[CODING_TOOL_PROGRESS_STATE_KEY] = {
+                        "attempt": scope.attempt_no,
+                        "mutation": mutation_after,
+                        "entries": entries[-MAX_TOOL_PROGRESS_ENTRIES:],
+                    }
             if tool_name == "finish_task" and isinstance(result, dict) and result.get("ok"):
                 await self.kernel.cleanup_tool_outputs(scope, run_context)
             return result

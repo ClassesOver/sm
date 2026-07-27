@@ -10,6 +10,10 @@ from agno.tools import Function
 
 from ..agent_control import build_coding_agent_tools
 from ..coding.adapters import CliCodingAdapter
+from ..coding.execution import (
+    create_coding_tool_scheduler_hook,
+    is_coding_tool_scheduler_hook,
+)
 from ..coding.models import CodingScope
 from ..coding.repository import CodingTaskRepository
 from ..coding.supervisor import CodingTaskSupervisor
@@ -34,7 +38,11 @@ def create_coding_agent(
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
 ) -> Agent:
-    tool_hooks = [*(base_agent.tool_hooks or []), skill_script_receipt_hook]
+    tool_hooks = [
+        *(base_agent.tool_hooks or []),
+        create_coding_tool_scheduler_hook(coding_repository),
+        skill_script_receipt_hook,
+    ]
     if not isinstance(base_agent.model, OpenAIChat):
         raise TypeError("Coding Agent requires OpenAIChat")
     coding_model = projected_coding_model(base_agent.model)
@@ -84,7 +92,9 @@ def create_coding_facade_agent(
         "enable_thinking": False,
     }
     facade_tool_hooks = [
-        hook for hook in (internal_agent.tool_hooks or []) if hook is not skill_script_receipt_hook
+        hook
+        for hook in (internal_agent.tool_hooks or [])
+        if hook is not skill_script_receipt_hook and not is_coding_tool_scheduler_hook(hook)
     ]
 
     async def run_coding_task(

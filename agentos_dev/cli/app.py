@@ -23,7 +23,12 @@ from ..coding import (
     CodingTaskSupervisor,
 )
 from ..coding.adapters import CliCodingAdapter
-from ..coding.execution import CodingExecutionKernel, WorkspaceCodingToolkit
+from ..coding.execution import (
+    CodingExecutionKernel,
+    WorkspaceCodingToolkit,
+    create_coding_tool_scheduler_hook,
+    is_coding_tool_scheduler_hook,
+)
 from ..context_management import (
     ContextBudgetController,
     clear_terminal_reasoning,
@@ -130,7 +135,10 @@ def create_cli_agent(context: CliContext) -> Agent:
         compression_manager=compression_manager,
         retries=0,
         post_hooks=[clear_terminal_reasoning],
-        tool_hooks=[skill_script_receipt_hook],
+        tool_hooks=[
+            create_coding_tool_scheduler_hook(context.coding_repository),
+            skill_script_receipt_hook,
+        ],
         debug_mode=True,
         markdown=True,
         tool_choice="auto",
@@ -149,7 +157,9 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
     )
     adapter = CliCodingAdapter(supervisor)
     facade_tool_hooks = [
-        hook for hook in (coding_agent.tool_hooks or []) if hook is not skill_script_receipt_hook
+        hook
+        for hook in (coding_agent.tool_hooks or [])
+        if hook is not skill_script_receipt_hook and not is_coding_tool_scheduler_hook(hook)
     ]
 
     async def run_coding_task(
@@ -191,7 +201,9 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
         update={
             "id": "coding-agent-cli-app",
             "name": "Coding Agent CLI App",
-            "model": _create_cli_model(context.settings, enable_thinking=False),
+            "model": projected_coding_model(
+                _create_cli_model(context.settings, enable_thinking=False)
+            ),
             "instructions": [
                 "必须把用户的完整编码目标原样传给 run_coding_task，并直接返回工具结果。"
             ],

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from agno.models.message import Message
+from agno.models.openai import OpenAIChat
 from agno.run.agent import RunOutput
 from agno.run.base import RunStatus
 from agno.run.team import TeamRunOutput
@@ -25,6 +26,7 @@ from agentos_dev.context_management import (
     build_history_context,
     clear_terminal_reasoning,
     clear_terminal_session_reasoning,
+    projected_coding_model,
 )
 
 
@@ -32,6 +34,26 @@ def test_coding_process_outputs_are_compressible_history():
     assert {"exec_command", "poll_process", "write_stdin", "stop_process"}.issubset(
         COMPRESSIBLE_HISTORY_TOOLS
     )
+
+
+def test_projected_coding_model_enables_parallel_calls_without_mutating_base_model():
+    base = OpenAIChat(
+        id="coding-model",
+        request_params={"temperature": 0},
+        extra_body={"enable_thinking": True},
+    )
+
+    projected = projected_coding_model(base)
+
+    assert projected is not base
+    assert projected.id == base.id
+    assert projected.extra_body == base.extra_body
+    assert projected.request_params == {
+        "temperature": 0,
+        "parallel_tool_calls": True,
+    }
+    assert base.request_params == {"temperature": 0}
+    assert projected.get_request_params()["parallel_tool_calls"] is True
 
 
 class CountingModel:
