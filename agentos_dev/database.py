@@ -31,7 +31,8 @@ def _normalized_database_urls(db_url: str) -> tuple[str, str, str]:
         raise ValueError("AGENT_DB_URL 不是有效的数据库地址。") from error
 
     if url.drivername in {"postgresql", "postgresql+psycopg"}:
-        normalized = str(url.set(drivername="postgresql+psycopg"))
+        _driver, separator, connection = db_url.partition("://")
+        normalized = f"postgresql+psycopg{separator}{connection}"
         return "postgresql", normalized, normalized
 
     if url.drivername in {"sqlite", "sqlite+aiosqlite"}:
