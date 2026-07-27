@@ -28,10 +28,8 @@ from ag_ui.core import (
     ToolCallStartEvent,
 )
 from agno.models.message import Message
-from agno.run.agent import RunOutput
 from agno.run.base import RunStatus
 from agno.run.team import TeamRunOutput
-from agno.session.agent import AgentSession
 from agno.session.team import TeamSession
 
 from agentos_dev import app as app_module
@@ -168,28 +166,11 @@ async def response_body(response):
     return b"".join(chunks).decode()
 
 
-def routed_member_ids(value):
-    routes = [
-        item for item in value.context or [] if item.description == app_module.TEAM_ROUTE_DEPENDENCY
-    ]
-    assert len(routes) == 1
-    route = json.loads(routes[0].value)
-    if "memberIds" in route:
-        return route["memberIds"]
-    return [route["memberId"]]
-
-
-def routed_member_id(value):
-    member_ids = routed_member_ids(value)
-    assert len(member_ids) == 1
-    return member_ids[0]
-
-
 @pytest.mark.anyio
 async def test_direct_agent_run_routes_are_disabled(client):
     for agent_id in (
         app_module.assistant.id,
-        app_module.odoo_command_assistant.id,
+        app_module.coding_agent.id,
         app_module.report_agent.id,
     ):
         response = await client.post(f"/agents/{agent_id}/runs", json={})
@@ -636,72 +617,7 @@ async def test_ready_reports_all_required_checks(monkeypatch, client):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("value", "expected_entity"),
-    [
-        (run_input("普通问答"), app_module.assistant_team),
-        (
-            run_input(
-                messages=[
-                    {"id": "user-1", "role": "user", "content": "编辑"},
-                    {
-                        "id": "tool-1",
-                        "role": "tool",
-                        "content": "{}",
-                        "toolCallId": "call-1",
-                    },
-                ]
-            ),
-            app_module.assistant,
-        ),
-    ],
-)
-async def test_legacy_fresh_request_migrates_to_team_and_resume_keeps_agent(
-    monkeypatch, value, expected_entity
-):
-    calls = []
-    session = AgentSession(
-        session_id="thread-1",
-        agent_id="odoo-assistant",
-        user_id="owner",
-        runs=[
-            RunOutput(
-                run_id="run-1",
-                session_id="thread-1",
-                agent_id="odoo-assistant",
-                status=RunStatus.paused,
-            )
-        ],
-    )
-
-    async def get_session(**_kwargs):
-        return session
-
-    async def agent_shaped_team_session(**_kwargs):
-        return TeamSession(session_id="thread-1", team_id=None, user_id="owner")
-
-    async def fake_run(entity, value, user_id=None):
-        calls.append((entity, value))
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
-    monkeypatch.setattr(
-        app_module.assistant_team,
-        "aget_session",
-        agent_shaped_team_session,
-    )
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    response = await app_module.run_agui(direct_request(), value)
-
-    await response_body(response)
-
-    assert calls[0][0] is expected_entity
-    if expected_entity is app_module.assistant_team:
-        assert routed_member_ids(calls[0][1]) == [app_module.assistant.id]
-
-
-@pytest.mark.anyio
-async def test_new_thread_fresh_request_uses_team(monkeypatch):
+async def test_agui_request_uses_single_team_and_ignores_forged_member_route(monkeypatch):
     calls = []
 
     async def no_session(**_kwargs):
@@ -712,16 +628,16 @@ async def test_new_thread_fresh_request_uses_team(monkeypatch):
         yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
 
     monkeypatch.setattr(app_module.assistant_team, "aget_session", no_session)
-    monkeypatch.setattr(app_module.assistant, "aget_session", no_session)
     monkeypatch.setattr(app_module, "run_entity", fake_run)
 
     response = await app_module.run_agui(
         direct_request(),
         run_input(
-            "普通问答",
+            "打开菜单",
+            tools=("odoo.navigate_menu", "odoo.unknown_command", "custom.browser_tool"),
             context=[
                 {
-                    "description": app_module.TEAM_ROUTE_DEPENDENCY,
+                    "description": "AgentOS 可信团队路由",
                     "value": json.dumps({"memberId": app_module.report_agent.id}),
                 }
             ],
@@ -730,143 +646,22 @@ async def test_new_thread_fresh_request_uses_team(monkeypatch):
     await response_body(response)
 
     assert calls[0][0] is app_module.assistant_team
-    assert routed_member_ids(calls[0][1]) == [app_module.assistant.id]
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("legacy_id", "tools", "expected_member_ids"),
-    [
-        (
-            "edit-mode-assistant",
-            ("odoo.navigate_menu",),
-            [
-                app_module.assistant.id,
-                app_module.odoo_command_assistant.id,
-            ],
-        ),
-        (
-            "menu-navigation-assistant",
-            ("odoo.navigate_menu",),
-            [
-                app_module.assistant.id,
-                app_module.odoo_command_assistant.id,
-            ],
-        ),
-        (
-            "report-agent",
-            (),
-            [app_module.assistant.id],
-        ),
-    ],
-)
-async def test_legacy_specialized_session_redispatches_fresh_request(
-    monkeypatch,
-    legacy_id,
-    tools,
-    expected_member_ids,
-):
-    session = AgentSession(
-        session_id="thread-1",
-        agent_id=legacy_id,
-        user_id="owner",
-        runs=[],
-    )
-    calls = []
-
-    async def get_session(**_kwargs):
-        return session
-
-    async def agent_shaped_team_session(**_kwargs):
-        return TeamSession(session_id="thread-1", team_id=None, user_id="owner")
-
-    async def fake_run(entity, value, user_id=None):
-        calls.append((entity, value))
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(
-        app_module.assistant_team,
-        "aget_session",
-        agent_shaped_team_session,
-    )
-    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-
-    response = await app_module.run_agui(direct_request(), run_input("处理后续请求", tools=tools))
-    await response_body(response)
-
-    assert calls[0][0] is app_module.assistant_team
-    assert routed_member_ids(calls[0][1]) == expected_member_ids
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("legacy_id", "command"),
-    [
-        ("edit-mode-assistant", "odoo.enter_edit_mode"),
-        ("menu-navigation-assistant", "odoo.navigate_menu"),
-    ],
-)
-async def test_legacy_specialized_paused_run_resumes_with_command_assistant(
-    monkeypatch,
-    legacy_id,
-    command,
-):
-    session = AgentSession(
-        session_id="thread-1",
-        agent_id=legacy_id,
-        user_id="owner",
-        runs=[
-            RunOutput(
-                run_id="run-1",
-                session_id="thread-1",
-                agent_id=legacy_id,
-                status=RunStatus.paused,
-            )
-        ],
-    )
-    calls = []
-
-    async def no_team_session(**_kwargs):
-        return None
-
-    async def get_session(**_kwargs):
-        return session
-
-    async def fake_run(entity, value, user_id=None):
-        calls.append((entity, value))
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module.assistant_team, "aget_session", no_team_session)
-    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    value = run_input(
-        messages=[
-            {"id": "user-1", "role": "user", "content": "继续"},
-            {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
-        ],
-        tools=(command, "odoo.unknown_command", "custom.browser_tool"),
-    )
-
-    response = await app_module.run_agui(direct_request(), value)
-    await response_body(response)
-
-    assert calls[0][0] is app_module.odoo_command_assistant
-    assert [tool.name for tool in calls[0][1].tools or []] == [command]
+    assert app_module.assistant_team.members == [app_module.assistant]
+    assert [tool.name for tool in calls[0][1].tools or []] == ["odoo.navigate_menu"]
 
 
 @pytest.mark.anyio
 async def test_fresh_request_receives_budgeted_history_without_old_odoo_results(monkeypatch):
-    session = AgentSession(
+    session = TeamSession(
         session_id="thread-1",
-        agent_id="odoo-assistant",
+        team_id=app_module.assistant_team.id,
         user_id="owner",
         session_data={},
         runs=[
-            RunOutput(
+            TeamRunOutput(
                 run_id="old-run",
                 session_id="thread-1",
-                agent_id="odoo-assistant",
+                team_id=app_module.assistant_team.id,
                 status=RunStatus.completed,
                 messages=[
                     Message(role="user", content="之前的报表请求"),
@@ -929,11 +724,9 @@ async def test_fresh_request_receives_budgeted_history_without_old_odoo_results(
     descriptions = [item.description for item in captured[0][1].context]
     assert descriptions == [
         "HRP 宿主快照",
-        app_module.TEAM_ROUTE_DEPENDENCY,
         app_module.HISTORY_CONTEXT_DESCRIPTION,
         app_module.AGENT_CONTEXT_STATUS_DEPENDENCY,
     ]
-    assert routed_member_ids(captured[0][1]) == [app_module.assistant.id]
     budget_status = json.loads(captured[0][1].context[-1].value)
     assert budget_status["historyTokenBudget"] == app_module.settings.history_token_budget
     assert budget_status["contextTokenBudget"] == 262144
@@ -952,30 +745,17 @@ async def test_fresh_request_receives_budgeted_history_without_old_odoo_results(
 async def test_resume_request_does_not_reload_or_reinject_budgeted_history(monkeypatch):
     loaded = False
     captured = []
-    session = AgentSession(
-        session_id="thread-1",
-        agent_id="odoo-assistant",
-        user_id="owner",
-        runs=[
-            RunOutput(
-                run_id="run-1",
-                session_id="thread-1",
-                agent_id="odoo-assistant",
-                status=RunStatus.paused,
-            )
-        ],
-    )
 
     async def get_session(**_kwargs):
         nonlocal loaded
         loaded = True
-        return session
+        return None
 
-    async def fake_run(_entity, value, user_id=None):
-        captured.append(value)
+    async def fake_run(entity, value, user_id=None):
+        captured.append((entity, value))
         yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
 
-    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
+    monkeypatch.setattr(app_module.assistant_team, "aget_session", get_session)
     monkeypatch.setattr(app_module, "run_entity", fake_run)
     value = run_input(
         messages=[
@@ -991,8 +771,9 @@ async def test_resume_request_does_not_reload_or_reinject_budgeted_history(monke
     response = await app_module.run_agui(direct_request(), value)
     await response_body(response)
 
-    assert loaded is True
-    assert [item.description for item in captured[0].context] == ["HRP 宿主快照"]
+    assert loaded is False
+    assert captured[0][0] is app_module.assistant_team
+    assert [item.description for item in captured[0][1].context] == ["HRP 宿主快照"]
 
 
 @pytest.mark.anyio
@@ -1018,7 +799,7 @@ async def test_selected_report_skill_does_not_expose_report_agent(monkeypatch):
     await response_body(response)
 
     assert calls[0][0] is app_module.assistant_team
-    assert routed_member_id(calls[0][1]) == app_module.assistant.id
+    assert app_module.assistant_team.members == [app_module.assistant]
 
 
 @pytest.mark.anyio
@@ -1199,118 +980,6 @@ async def test_non_report_route_keeps_streaming_text_unchanged(monkeypatch):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("experimental_agent_id", ["report-agent", "coding-agent"])
-async def test_experimental_agent_runs_cannot_resume(monkeypatch, experimental_agent_id):
-    session = AgentSession(
-        session_id="thread-1",
-        agent_id="odoo-assistant",
-        user_id="owner",
-        runs=[
-            RunOutput(
-                run_id="run-1",
-                session_id="thread-1",
-                agent_id=experimental_agent_id,
-                status=RunStatus.paused,
-            )
-        ],
-    )
-    called = False
-
-    async def get_session(**_kwargs):
-        return session
-
-    async def fake_run(_entity, _value, user_id=None):
-        del user_id
-        nonlocal called
-        called = True
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    value = run_input(
-        messages=[
-            {"id": "user-1", "role": "user", "content": "生成报表"},
-            {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
-        ]
-    )
-
-    response = await app_module.run_agui(direct_request(), value)
-    body = await response_body(response)
-
-    assert called is False
-    assert "run_agent_not_found" in body
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("team_id", ["hrp-assistant-team", "odoo-assistant-team"])
-async def test_team_resume_supports_current_and_legacy_team_ids(monkeypatch, team_id):
-    session = TeamSession(
-        session_id="thread-1",
-        team_id=team_id,
-        user_id="owner",
-        runs=[
-            TeamRunOutput(
-                run_id="run-1",
-                session_id="thread-1",
-                team_id=team_id,
-                status=RunStatus.paused,
-            )
-        ],
-    )
-    calls = []
-
-    async def get_session(**_kwargs):
-        return session
-
-    async def fake_run(entity, _value, user_id=None):
-        calls.append(entity)
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module.assistant_team, "aget_session", get_session)
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    value = run_input(
-        messages=[
-            {"id": "user-1", "role": "user", "content": "继续"},
-            {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
-        ]
-    )
-
-    response = await app_module.run_agui(direct_request(), value)
-    await response_body(response)
-
-    assert calls == [app_module.assistant_team]
-
-
-@pytest.mark.anyio
-async def test_resume_fails_closed_when_stored_run_agent_cannot_be_resolved(monkeypatch):
-    called = False
-
-    async def no_session(**_kwargs):
-        return None
-
-    async def fake_run(_entity, _value, user_id=None):
-        del user_id
-        nonlocal called
-        called = True
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module.assistant, "aget_session", no_session)
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    value = run_input(
-        messages=[
-            {"id": "user-1", "role": "user", "content": "生成报表"},
-            {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
-        ]
-    )
-
-    response = await app_module.run_agui(direct_request(), value)
-    body = await response_body(response)
-
-    assert called is False
-    assert "run_agent_not_found" in body
-
-
-@pytest.mark.anyio
 async def test_report_skill_does_not_override_production_team_candidates(monkeypatch):
     calls = []
 
@@ -1335,9 +1004,10 @@ async def test_report_skill_does_not_override_production_team_candidates(monkeyp
     await response_body(response)
 
     assert calls[0][0] is app_module.assistant_team
-    assert routed_member_ids(calls[0][1]) == [
-        app_module.assistant.id,
-        app_module.odoo_command_assistant.id,
+    assert app_module.assistant_team.members == [app_module.assistant]
+    assert [tool.name for tool in calls[0][1].tools or []] == [
+        "odoo.navigate_menu",
+        "odoo.export_current_view",
     ]
 
 
@@ -1371,32 +1041,24 @@ async def test_raw_reasoning_content_is_not_forwarded_to_sse(monkeypatch):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("tools", "expected_member_ids"),
+    ("tools", "expected_tools"),
     [
-        ((), [app_module.assistant.id]),
+        ((), []),
         (
             ("odoo.navigate_menu", "odoo.apply_filter", "odoo.export_current_view"),
-            [
-                app_module.assistant.id,
-                app_module.odoo_command_assistant.id,
-            ],
+            ["odoo.navigate_menu", "odoo.apply_filter", "odoo.export_current_view"],
         ),
         (
             ("odoo.business.expense.submit",),
-            [
-                app_module.assistant.id,
-                app_module.odoo_command_assistant.id,
-            ],
+            ["odoo.business.expense.submit"],
         ),
-        (("odoo.unknown_command",), [app_module.assistant.id]),
-        (("odoo.business.",), [app_module.assistant.id]),
-        (("odoo.business.invalid",), [app_module.assistant.id]),
-        (("custom.browser_tool",), [app_module.assistant.id]),
+        (("odoo.unknown_command",), []),
+        (("odoo.business.",), []),
+        (("odoo.business.invalid",), []),
+        (("custom.browser_tool",), []),
     ],
 )
-async def test_fresh_request_limits_team_candidates_by_declared_capabilities(
-    monkeypatch, tools, expected_member_ids
-):
+async def test_fresh_request_filters_team_client_tools(monkeypatch, tools, expected_tools):
     calls = []
 
     async def no_session(**_kwargs):
@@ -1407,7 +1069,6 @@ async def test_fresh_request_limits_team_candidates_by_declared_capabilities(
         yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
 
     monkeypatch.setattr(app_module.assistant_team, "aget_session", no_session)
-    monkeypatch.setattr(app_module.assistant, "aget_session", no_session)
     monkeypatch.setattr(app_module, "run_entity", fake_run)
     value = run_input("处理这个请求", tools=tools)
     response = await app_module.run_agui(direct_request(), value)
@@ -1415,24 +1076,10 @@ async def test_fresh_request_limits_team_candidates_by_declared_capabilities(
     await response_body(response)
 
     assert calls[0][0] is app_module.assistant_team
-    assert routed_member_ids(calls[0][1]) == expected_member_ids
+    assert [tool.name for tool in calls[0][1].tools or []] == expected_tools
 
 
-@pytest.mark.parametrize(
-    ("entity", "expected_tools"),
-    [
-        (app_module.assistant, []),
-        (
-            app_module.odoo_command_assistant,
-            [
-                "odoo.navigate_menu",
-                "odoo.export_current_view",
-                "odoo.business.expense.submit",
-            ],
-        ),
-    ],
-)
-def test_direct_agent_paths_filter_client_tools_by_member_boundary(entity, expected_tools):
+def test_team_client_tool_filter_rejects_unknown_and_custom_tools():
     value = run_input(
         tools=(
             "odoo.navigate_menu",
@@ -1444,9 +1091,13 @@ def test_direct_agent_paths_filter_client_tools_by_member_boundary(entity, expec
         )
     )
 
-    filtered = app_module._filter_client_tools_for_agent(value, entity)
+    filtered = app_module._filter_odoo_client_tools(value)
 
-    assert [tool.name for tool in filtered.tools or []] == expected_tools
+    assert [tool.name for tool in filtered.tools or []] == [
+        "odoo.navigate_menu",
+        "odoo.export_current_view",
+        "odoo.business.expense.submit",
+    ]
 
 
 @pytest.mark.anyio
@@ -1470,7 +1121,7 @@ async def test_branch_request_keeps_original_branch_path(monkeypatch):
     await response_body(response)
 
     assert calls[0][:4] == (
-        app_module.assistant,
+        app_module.assistant_team,
         app_module.workspace_service,
         value,
         branch,

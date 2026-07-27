@@ -4,6 +4,7 @@ import logging
 import unicodedata
 from contextlib import suppress
 from pathlib import PurePosixPath
+from typing import cast
 from urllib.parse import quote
 
 from ag_ui.core import (
@@ -15,6 +16,7 @@ from ag_ui.core import (
 from ag_ui.encoder import EventEncoder
 from agno.agent import Agent
 from agno.models.message import Message
+from agno.models.openai import OpenAIChat
 from agno.os.interfaces.agui.input import extract_tool_messages, extract_user_input
 from agno.os.interfaces.agui.router import run_entity
 from agno.session.agent import AgentSession
@@ -33,11 +35,6 @@ from .agent_control import (
     AGENT_PLAN_STATE_KEY,
 )
 from .agents import (
-    LEGACY_ASSISTANT_IDS,
-    LEGACY_ODOO_COMMAND_ASSISTANT_IDS,
-    LEGACY_TEAM_IDS,
-    ODOO_COMMAND_ASSISTANT_ID,
-    TEAM_ROUTE_DEPENDENCY,
     create_assistant_team,
     create_assistants,
     is_odoo_command_name,
@@ -222,7 +219,6 @@ def _sanitize_run_input(run_input: RunAgentInput) -> RunAgentInput:
             CODING_TASK_DEPENDENCY,
             CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
             REPORT_SOURCE_INTAKE_DEPENDENCY,
-            TEAM_ROUTE_DEPENDENCY,
         }
     ]
     state = run_input.state
@@ -240,7 +236,6 @@ async def _prepare_run_input(
     settings,
     *,
     server_context: list[Context] | None = None,
-    history_entity: Agent | Team | None = None,
 ):
     prepared = _sanitize_run_input(run_input)
     if server_context:
@@ -249,7 +244,7 @@ async def _prepare_run_input(
         )
     if not _is_fresh_user_request(prepared):
         return prepared
-    session_owner = history_entity or agent
+    session_owner = agent
     try:
         session = await session_owner.aget_session(
             session_id=prepared.thread_id,
@@ -369,7 +364,7 @@ def _is_raw_reasoning_event(event) -> bool:
     return event.type == EventType.RAW and _has_reasoning_key(getattr(event, "event", None))
 
 
-async def _entity_for_stored_run(
+async def _team_for_stored_run(
     context: ApplicationContext,
     thread_id: str,
     user_id: str,
@@ -381,38 +376,10 @@ async def _entity_for_stored_run(
         )
     except Exception as error:
         logger.warning("team_route_session_load_failed error_type=%s", type(error).__name__)
-        team_session = None
-    if isinstance(team_session, TeamSession) and team_session.team_id in {
-        context.assistant_team.id,
-        *LEGACY_TEAM_IDS,
-    }:
+        return None
+    if isinstance(team_session, TeamSession) and team_session.team_id == context.assistant_team.id:
         if not run_id or any(run.run_id == run_id for run in (team_session.runs or [])):
             return context.assistant_team
-    try:
-        session = await context.assistant.aget_session(session_id=thread_id, user_id=user_id)
-    except Exception as error:
-        logger.warning("agent_route_session_load_failed error_type=%s", type(error).__name__)
-        return None
-    if not isinstance(session, AgentSession):
-        return None
-    agent_id = session.agent_id
-    if run_id:
-        matching = next(
-            (run for run in reversed(session.runs or []) if run.run_id == run_id),
-            None,
-        )
-        if matching is None:
-            return None
-        matching_agent_id = getattr(matching, "agent_id", None)
-        if isinstance(matching_agent_id, str) and matching_agent_id:
-            agent_id = matching_agent_id
-    if (
-        agent_id == context.odoo_command_assistant.id
-        or agent_id in LEGACY_ODOO_COMMAND_ASSISTANT_IDS
-    ):
-        return context.odoo_command_assistant
-    if agent_id == context.assistant.id or agent_id in LEGACY_ASSISTANT_IDS:
-        return context.assistant
     return None
 
 
@@ -431,30 +398,9 @@ async def _hide_team_delegation_events(source):
         yield event
 
 
-def _team_route_context(*member_ids: str | None) -> Context:
-    normalized = [member_id for member_id in member_ids if member_id]
-    if not normalized:
-        raise RuntimeError("团队成员缺少稳定 ID。")
-    route = {"memberId": normalized[0]} if len(normalized) == 1 else {"memberIds": normalized}
-    return Context(
-        description=TEAM_ROUTE_DEPENDENCY,
-        value=json.dumps(route, ensure_ascii=True, separators=(",", ":")),
-    )
-
-
-def _filter_client_tools_for_agent(
-    run_input: RunAgentInput,
-    entity: Agent | Team,
-) -> RunAgentInput:
-    if isinstance(entity, Team):
-        return run_input
+def _filter_odoo_client_tools(run_input: RunAgentInput) -> RunAgentInput:
     declared_tools = list(run_input.tools or [])
-    if entity.id == ODOO_COMMAND_ASSISTANT_ID:
-        tools = [
-            tool for tool in declared_tools if is_odoo_command_name(getattr(tool, "name", None))
-        ]
-    else:
-        tools = []
+    tools = [tool for tool in declared_tools if is_odoo_command_name(getattr(tool, "name", None))]
     if len(tools) == len(declared_tools):
         return run_input
     return run_input.model_copy(update={"tools": tools})
@@ -854,12 +800,11 @@ async def cancel_coding_task(request: Request, payload: CodingCancelPayload):
     return {"ok": True, "status": "cancelled"}
 
 
-assistant, odoo_command_assistant = create_assistants(
+assistant = create_assistants(
     settings,
     agent_skills,
     workspace_service,
     build_agent_instructions,
-    build_odoo_command_instructions,
     agent_database,
 )
 coding_agent = create_coding_agent(
@@ -869,6 +814,13 @@ coding_agent = create_coding_agent(
     context_token_budget=settings.context_token_budget,
     output_token_reserve=settings.output_token_reserve,
 )
+# Coding/Report 不属于助手 Team，继续沿用各自原有的长任务执行配置。
+coding_agent.checkpoint = "tool-batch"
+coding_model = cast(OpenAIChat, coding_agent.model)
+coding_model.extra_body = {
+    **(coding_model.extra_body or {}),
+    "enable_thinking": settings.enable_thinking,
+}
 report_worker = create_report_worker(
     coding_agent,
     workspace_service,
@@ -915,7 +867,7 @@ coding_supervisor = CodingTaskSupervisor(
 )
 assistant_team = create_assistant_team(
     assistant,
-    odoo_command_assistant,
+    build_odoo_command_instructions,
 )
 
 
@@ -928,35 +880,12 @@ async def run_agui(request: Request, run_input: RunAgentInput):
     encoder = EventEncoder()
 
     async def events():
-        fresh_request = _is_fresh_user_request(run_input)
-        existing_entity = None
-        if fresh_request and not branch:
-            existing_entity = await _entity_for_stored_run(
-                context,
-                run_input.thread_id,
-                user_id,
-            )
-        legacy_agent_session = any(
-            existing_entity is agent
-            for agent in (
-                context.assistant,
-                context.odoo_command_assistant,
-            )
-        )
-        declared_odoo_commands = [
-            tool.name for tool in (run_input.tools or []) if is_odoo_command_name(tool.name)
-        ]
-        route_name = "stored_run"
-        if fresh_request:
-            if declared_odoo_commands:
-                route_name = "assistant_or_odoo_command_assistant"
-            else:
-                route_name = "assistant"
+        filtered_input = _filter_odoo_client_tools(run_input)
+        declared_odoo_commands = [tool.name for tool in (filtered_input.tools or [])]
         audit_values = {
-            "route": route_name,
+            "route": "assistant_team",
             "declared_odoo_commands": declared_odoo_commands,
             "report_route_selected": False,
-            "legacy_agent_session": legacy_agent_session,
         }
         _audit_tool_route(
             request,
@@ -966,66 +895,35 @@ async def run_agui(request: Request, run_input: RunAgentInput):
 
         if branch:
             if hasattr(branch, "source_thread_id") and hasattr(branch, "source_run_id"):
-                branch_agent = await _entity_for_stored_run(
+                branch_team = await _team_for_stored_run(
                     context,
                     branch.source_thread_id,
                     user_id,
                     branch.source_run_id,
                 )
             else:
-                branch_agent = context.assistant
-            if branch_agent is None:
+                branch_team = context.assistant_team
+            if branch_team is None:
                 source = _run_error(
-                    "无法确认源运行所属智能体，请刷新会话后重试。",
-                    "run_agent_not_found",
+                    "无法确认源运行所属团队，请刷新会话后重试。",
+                    "run_team_not_found",
                 )
             else:
                 source = run_branch(
-                    branch_agent,
+                    branch_team,
                     context.workspace_service,
-                    _filter_client_tools_for_agent(
-                        _sanitize_run_input(run_input),
-                        branch_agent,
-                    ),
+                    _sanitize_run_input(filtered_input),
                     branch,
                     user_id,
                 )
         else:
-            run_agent: Agent | Team | None
-            history_entity: Agent | Team | None = None
-            if fresh_request:
-                run_agent = context.assistant_team
-                if legacy_agent_session:
-                    history_entity = existing_entity
-            else:
-                run_agent = await _entity_for_stored_run(
-                    context,
-                    run_input.thread_id,
-                    user_id,
-                    run_input.run_id,
-                )
-            if run_agent is None:
-                source = _run_error(
-                    "无法确认原运行所属智能体，请刷新会话后重试。",
-                    "run_agent_not_found",
-                )
-            else:
-                server_context = None
-                if fresh_request and run_agent is context.assistant_team:
-                    member_ids = [
-                        context.assistant.id,
-                        *([context.odoo_command_assistant.id] if declared_odoo_commands else []),
-                    ]
-                    server_context = [_team_route_context(*member_ids)]
-                prepared_input = await _prepare_run_input(
-                    run_agent,
-                    _filter_client_tools_for_agent(run_input, run_agent),
-                    user_id,
-                    context.settings,
-                    server_context=server_context,
-                    history_entity=history_entity,
-                )
-                source = run_entity(run_agent, prepared_input, user_id=user_id)
+            prepared_input = await _prepare_run_input(
+                context.assistant_team,
+                filtered_input,
+                user_id,
+                context.settings,
+            )
+            source = run_entity(context.assistant_team, prepared_input, user_id=user_id)
         source = _hide_team_delegation_events(source)
         async for event in _with_sse_heartbeats(source):
             if event is None:
@@ -1058,7 +956,6 @@ application_context = ApplicationContext(
     workspace_service,
     agent_skills,
     assistant,
-    odoo_command_assistant,
     report_agent,
     assistant_team,
     coding_agent=coding_agent,

@@ -18,7 +18,6 @@ from ..workspace import WorkspaceService
 AgentInstructions = str | list[str] | Callable[..., str | list[str]]
 
 ASSISTANT_ID = "general-assistant"
-LEGACY_ASSISTANT_IDS = frozenset({"odoo-assistant"})
 
 
 def create_assistant(
@@ -46,7 +45,7 @@ def create_assistant(
         ),
         cache_callables=False,
         db=database,
-        checkpoint="tool-batch",
+        checkpoint="runs",
         add_history_to_context=False,
         enable_session_summaries=settings.enable_session_summaries,
         add_session_summary_to_context=False,

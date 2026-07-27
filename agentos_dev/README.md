@@ -108,7 +108,7 @@ diff、log 和 show 同样使用固定只读参数，不开放任意 Git flags�
 30 秒并返回耗时、原始字节数和日志游标；后台输入也可在写入后按同一游标直接等待新输出。
 每轮报表分析调用必须提供完整非空命令，
 失败输出会返回模型继续修正。单次完整文本读取限制为 64 KiB，更大文件必须分段读取。
-Agent 在每个工具批次后持久化 checkpoint；模型请求遇到临时失败时最多重试两次并指数退避。
+Coding Agent 与 `report-worker` 在每个工具批次后持久化 checkpoint；模型请求遇到临时失败时最多重试两次并指数退避。
 Coding `terminal.command` 以 UTF-8 字节计最多 32 KiB；大段文件内容必须通过文件修改工具传输。
 
 ## Coding Agent 配置
@@ -141,10 +141,10 @@ Coding Agent 和原生 CLI 额外使用同一个 `ContextBudgetController`：有
 最近 10 条窗口和 `SKILL_PRUNED` 规则选择，但在 Coding Agent 中与预算压缩批次一起生效。所有压缩只
 写入 `compressed_content`，不修改持久化消息的原始 `content`，也不调用压缩模型。
 
-等价的核心配置如下；三个成员共享模型、存储、检查点和历史预算配置，但身份、指令和工具能力相互独立：
+内部 Coding Agent 与 `report-worker` 继续共享模型、存储、检查点和历史预算配置，但身份、指令和工具能力相互独立：
 
 ```python
-assistant = Agent(
+coding_agent = Agent(
     tool_choice="auto",
     tool_call_limit=None,
     checkpoint="tool-batch",
@@ -153,35 +153,27 @@ assistant = Agent(
     compress_tool_results=True,
     enable_session_summaries=True,
 )
-assistant.model.retries = 2
-assistant.model.exponential_backoff = True
+coding_agent.model.retries = 2
+coding_agent.model.exponential_backoff = True
 
 # Agno 2.8.2 会在构造时把 None 归一化为 3；这里恢复的是检索语义。
-assistant.num_history_runs = None
+coding_agent.num_history_runs = None
 ```
 
-运行入口只创建 ID 为 `hrp-assistant-team` 的一个 Agno `TeamMode.route` Team，成员为
-`assistant`、Coding facade、`odoo_command_assistant` 和 `report_agent`。普通 `assistant` 的 ID 是
-`general-assistant`，负责问答、非报表技能和工作区服务端工具，不获得任何 Odoo client command；
-Coding facade 的 ID 是 `coding-agent`，只通过 `run_coding_task` 调用 Supervisor；同 ID 的原始
-`coding_agent` 仅作为 Supervisor 内部执行器负责代码和工作区开发任务；
-`odoo_command_assistant` 的 ID 是 `odoo-command-assistant`，只获得本轮声明且属于固定宿主 command
-目录或合法 `odoo.business.<namespace>.<command>` 的工具，不获得工作区或报表工具；`report_agent`
-只包装 Agno Workflow。来源校验、受限画像、取数、Coding 分析、PDF 验收和发布审核由 Workflow
-服务端步骤及未公开的 `report-worker` 完成。
+生产 `/agui` 只创建 ID 为 `hrp-assistant-team` 的一个 Agno `TeamMode.coordinate` Team，配置为
+`tool_choice="auto"`、`checkpoint="runs"`，静态成员只有 `general-assistant`。Team 领导者可直接
+回答普通问题；需要普通助手的技能或工作区服务端工具时才委派。Coding 与 Report 仍是独立的内部能力，
+暂不注册到综合 AgentOS，也不属于该 Team。
 
-显式选择智能报表技能时，可信路由上下文只暴露 `report_agent`。其他新请求默认暴露普通和 Coding
-成员；存在合法 Odoo command 能力时再追加 command 成员，由 Team 领导者按用户意图选择。工具目录
-只表示能力可用，不能单独作为操作意图。
-客户端同名上下文会先被删除，不能伪造目标成员。Team 内部强制调用的
-`delegate_task_to_member` 只负责委派，不会作为 AG-UI 页面工具发送给浏览器；AgentOS 不再强制或
-检查成员的首个 Odoo 工具。自动生成的 `/agents/*/runs` 和 `/teams/*/runs` 运行入口统一禁用，
-浏览器运行只能经过带 capability、输入清洗和可信候选成员上下文的 `/agui`。
+请求中合法的固定宿主 command 和 `odoo.business.<namespace>.<command>` 由 Agno AG-UI 路由写入
+Team 顶层 `RunContext.client_tools`，不会复制到成员。Team 领导者只在用户明确要求页面或业务操作时
+调用这些工具；工具目录本身只表示能力可用。`external_execution=True` 工具由 Agno 原生暂停 Team
+run，浏览器回传结果后通过官方 continue 流程续跑同一个 `run_id`。自动生成的 `/agents/*/runs` 和
+`/teams/*/runs` 运行入口统一禁用，浏览器只能经过带 capability 和输入清洗的 `/agui`。
 
-新会话使用 TeamSession。旧 `odoo-assistant-team` 仍可续跑；旧 `odoo-assistant` 映射到普通成员，
-旧 `edit-mode-assistant` 和 `menu-navigation-assistant` 在原 run 续跑时映射到 command 成员。旧
-standalone AgentSession 收到 fresh 用户消息时迁入 Team，从原会话注入预算化历史，并按当前消息重新
-筛选普通、command 和适用的 report 候选；原运行的工具续跑和 branch 仍按存储的原实体恢复。
+当前版本只支持 `hrp-assistant-team` 的 TeamSession 和 run。旧 `odoo-assistant-team`、旧 standalone
+AgentSession 以及旧 command member 的暂停 run 不做迁移或续跑兼容；升级后必须创建新 thread/run，
+不能向新入口提交旧工具暂停结果。branch 仅接受能在当前 TeamSession 中确认的源 run。
 
 PostgreSQL 仍永久保存完整 runs 和原始 `Message.content`。完整模型上下文上限为 256K tokens，
 预算装配器为输出预留 32K，并根据最新 HRP 宿主快照、当前用户输入和客户端工具 schema 的估算
@@ -193,8 +185,8 @@ modifiers 与最新 `BasicModel` 状态竞争；`sandbox_exec`、`sandbox_proces
 
 滚动摘要只包含用户目标、已确认决策、工作区产物、完成事项和待办事项，并标记为非权威历史。
 摘要和压缩都不能作为 Odoo 业务事实；需要记录值、筛选、权限或页面状态时，必须使用本轮最新
-宿主快照。主模型通过 `enable_thinking=true` 启用 Qwen Thinking，压缩和摘要辅助模型始终关闭
-thinking。Coding facade 的 Agno 官方 `arun(..., stream=True, stream_events=True)` 实时返回
+宿主快照。普通助手和 Team 领导者都显式设置 `enable_thinking=false`；压缩和摘要辅助模型也始终关闭
+thinking。内部 Coding Agent 与 `report-worker` 继续由 `AGENT_ENABLE_THINKING` 控制。Coding facade 的 Agno 官方 `arun(..., stream=True, stream_events=True)` 实时返回
 `ReasoningStarted`、原始 `ReasoningContentDelta` 和 `ReasoningCompleted`；只投影 reasoning 文本，
 不返回 provider 原始字段。终态持久化前仍清除 reasoning 字段，原始 reasoning 不进入 session 或
 数据库。AG-UI、自定义 SSE 和 React 不转发或展示原始 reasoning，前端只展示“正在分析当前请求”
@@ -202,7 +194,7 @@ thinking。Coding facade 的 Agno 官方 `arun(..., stream=True, stream_events=T
 
 相关环境变量可独立回退：`AGENT_ENABLE_TOOL_RESULT_COMPRESSION=false` 停止生成新压缩结果，
 `AGENT_ENABLE_SESSION_SUMMARIES=false` 停止更新和注入摘要，`AGENT_ENABLE_THINKING=false` 关闭
-主模型 thinking；`AGENT_CONTEXT_TOKEN_BUDGET`、`AGENT_HISTORY_TOKEN_BUDGET` 和
+内部 Coding/Report worker thinking；`AGENT_CONTEXT_TOKEN_BUDGET`、`AGENT_HISTORY_TOKEN_BUDGET` 和
 `AGENT_OUTPUT_TOKEN_RESERVE` 分别调整完整窗口、历史上限和输出余量。关闭任一能力都不会删除 PostgreSQL
 中的完整历史，也不会改变 `agui.odoo.v2`、命令确认、授权或 stale snapshot 校验。
 新建 Daytona 工作区使用 `DAYTONA_DEFAULT_SNAPSHOT` 指定的 snapshot，默认值为 `sandbox-tools`。
@@ -227,14 +219,14 @@ Workflow，但没有内置的专用 `update_plan`。本项目因此提供受约�
 `agent_tool_search` 搜索服务端 Toolkit 类别，`agent_load_toolkit` 只修改保留的加载状态。Agno
 在每个 run 开始时解析一次 callable tools，因此新 Toolkit 从下一 run 生效；这不需要用户确认，
 也不会绕过具体工具原有的确认策略。`cache_callables=False` 防止不同 thread 或不同加载状态复用
-错误的工具列表。搜索结果带 `routeSkill` 时只用于发现，不能通过 `agent_load_toolkit` 加载；选择
-智能报表 skill 时，服务端将新 run 路由到独立 `report-agent`，主助手不会动态加载报表 Toolkit。
-续跑、branch 和 regenerate 按源 run 的 Agent ID 保持同一 Agent；无法确认原 Agent 时失败关闭。
+错误的工具列表。搜索结果带 `routeSkill` 时只用于发现，不能通过 `agent_load_toolkit` 加载；当前综合
+入口不会因此把 Coding 或 Report 动态加入 Team。续跑和 regenerate 始终使用当前 Team；branch 的
+源 run 无法在当前 TeamSession 中确认时失败关闭。
 
 ### 泛化数据源与 ReportAgent
 
-`coding-agent` 的 Team 成员是只暴露 `run_coding_task` 的 facade，原始内部 Agent 不注册到
-AgentOS 的公开 agents 列表；Supervisor 仅在 Attempt 内调用原始 Agent 的
+`coding-agent` 不属于生产 Team，也不注册到综合 AgentOS 的公开 agents 列表；Supervisor 仅在
+Attempt 内调用原始 Agent 的
 `WorkspaceCodingToolkit` 固定工具集。
 `terminal` 将前台/后台语义映射到受管命令，并在远端 session 创建前写入持久 execution 预留记录；
 `process` 支持

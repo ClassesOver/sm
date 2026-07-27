@@ -1,29 +1,31 @@
 import ast
+import asyncio
 import hashlib
 import json
+from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
-from agno.agent import Agent
+import pytest
 from agno.agent._tools import parse_tools
+from agno.db.in_memory import InMemoryDb
+from agno.models.base import Model
 from agno.models.openai import OpenAIChat
+from agno.models.response import ModelResponse
 from agno.run import RunContext
-from agno.run.agent import RunOutput
-from agno.run.team import TeamRunOutput
-from agno.session.team import TeamSession
+from agno.run.base import RunStatus
 from agno.team import TeamMode
 from agno.tools.function import Function
-from agno.utils.callables import resolve_callable_members
 
 from agentos_dev import app
 from agentos_dev.agents import (
     ODOO_HOST_COMMAND_NAMES,
     OPENAI_COMPATIBLE_ROLE_MAP,
-    TEAM_ROUTE_DEPENDENCY,
     create_assistant_team,
 )
 from agentos_dev.agents.assistant import create_assistant
-from agentos_dev.agents.odoo_command import create_odoo_command_assistant
 from agentos_dev.coding.execution import is_coding_tool_scheduler_hook
 from agentos_dev.coding.reporting.instructions import (
     build_report_agent_instructions,
@@ -86,13 +88,7 @@ def instruction_context(*tools, dependencies=None):
     )
 
 
-def team_context(*tools, member_id=None, member_ids=None):
-    if member_id is not None:
-        dependencies = {TEAM_ROUTE_DEPENDENCY: {"memberId": member_id}}
-    elif member_ids is not None:
-        dependencies = {TEAM_ROUTE_DEPENDENCY: {"memberIds": member_ids}}
-    else:
-        dependencies = None
+def team_context(*tools):
     return RunContext(
         run_id="run-1",
         session_id="thread-1",
@@ -105,9 +101,36 @@ def team_context(*tools, member_id=None, member_ids=None):
             )
             for name in tools
         ],
-        dependencies=dependencies,
         session_state={},
     )
+
+
+@dataclass
+class ScriptedModel(Model):
+    responses: list[ModelResponse] = field(default_factory=list)
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def _next_response(self, **kwargs: Any) -> ModelResponse:
+        self.calls.append(kwargs)
+        return self.responses.pop(0)
+
+    def invoke(self, *args: Any, **kwargs: Any) -> ModelResponse:
+        return self._next_response(args=args, **kwargs)
+
+    async def ainvoke(self, *args: Any, **kwargs: Any) -> ModelResponse:
+        return self._next_response(args=args, **kwargs)
+
+    def invoke_stream(self, *args: Any, **kwargs: Any) -> Iterator[ModelResponse]:
+        yield self.invoke(*args, **kwargs)
+
+    async def ainvoke_stream(self, *args: Any, **kwargs: Any) -> AsyncIterator[ModelResponse]:
+        yield await self.ainvoke(*args, **kwargs)
+
+    def _parse_provider_response(self, response: Any, **_kwargs: Any) -> ModelResponse:
+        return response
+
+    def _parse_provider_response_delta(self, response: Any) -> ModelResponse:
+        return response
 
 
 def test_agentos_contract_matches_odoo_source():
@@ -122,7 +145,10 @@ def test_agentos_contract_matches_odoo_source():
 
 def test_agent_uses_dynamic_instructions_callable():
     assert app.assistant.instructions is build_agent_instructions
-    assert app.odoo_command_assistant.instructions is build_odoo_command_instructions
+    assert callable(app.assistant_team.instructions)
+    assert "每轮最多跟进四次客户端页面工具" in "\n".join(
+        app.assistant_team.instructions(team_context("odoo.navigate_menu"))
+    )
     assert app.report_worker.instructions is build_report_agent_instructions
     assert "report_workflow_start" in "\n".join(app.report_agent.instructions)
 
@@ -152,11 +178,9 @@ def test_production_assistant_debug_mode_is_independent_from_thinking():
         model,
         None,  # type: ignore[arg-type]
     )
-    command_assistant = create_odoo_command_assistant(assistant, [])
-    team = create_assistant_team(assistant, command_assistant)
+    team = create_assistant_team(assistant, lambda _run_context: [])
 
     assert assistant.debug_mode is True
-    assert command_assistant.debug_mode is True
     assert team.debug_mode is True
 
 
@@ -214,129 +238,179 @@ def test_coding_agent_uses_trusted_per_run_instructions():
     assert "当前会话没有可复用的任务计划" in "\n".join(invalid)
 
 
-def test_assistant_team_routes_only_to_production_members():
+def test_assistant_team_has_one_static_production_member():
     assert app.assistant.id == "general-assistant"
-    assert app.odoo_command_assistant.id == "odoo-command-assistant"
-    assert app.assistant_team.mode is TeamMode.route
+    assert app.assistant_team.mode is TeamMode.coordinate
     assert app.assistant_team.determine_input_for_members is False
-    assert app.assistant_team.tool_choice == {
-        "type": "function",
-        "function": {"name": "delegate_task_to_member"},
-    }
+    assert app.assistant_team.tool_choice == "auto"
     assert app.assistant_team.model.id == app.assistant.model.id
     assert app.assistant_team.model is not app.assistant.model
     assert app.assistant_team.model.extra_body == {"enable_thinking": False}
-    all_members = [
-        app.assistant,
-        app.odoo_command_assistant,
-    ]
-    assert callable(app.assistant_team.members)
-    resolved = app.assistant_team.members(team_context())
-    assert [member.id for member in resolved] == [member.id for member in all_members]
-    assert all(
-        member is not original for member, original in zip(resolved, all_members, strict=True)
-    )
-    for member in all_members:
-        resolved = app.assistant_team.members(team_context(member_id=member.id))
-        assert [current.id for current in resolved] == [member.id]
-        assert resolved[0] is not member
-    resolved = app.assistant_team.members(
-        team_context(member_ids=[app.assistant.id, app.odoo_command_assistant.id])
-    )
-    assert [member.id for member in resolved] == [
-        app.assistant.id,
-        app.odoo_command_assistant.id,
-    ]
-    assert app.assistant_team.members(team_context(member_id="unknown")) == []
+    assert app.assistant_team.members == [app.assistant]
     assert app.assistant_team.id == "hrp-assistant-team"
     assert app.assistant_team.cache_callables is False
-    assert app.assistant_team.members(team_context(member_id=app.coding_agent.id)) == []
-    assert app.assistant_team.members(team_context(member_id=app.report_agent.id)) == []
+    assert app.coding_agent not in app.assistant_team.members
+    assert app.report_agent not in app.assistant_team.members
 
 
-def test_team_members_bind_only_their_allowed_client_tools():
+def test_odoo_client_tools_remain_on_team_run_context():
     context = team_context(
         "odoo.navigate_menu",
         "odoo.apply_filter",
         "odoo.export_current_view",
         "odoo.business.test.execute",
-        "odoo.unknown_command",
-        "custom.browser_tool",
     )
 
-    members = {member.id: member for member in app.assistant_team.members(context)}
+    instructions = app.assistant_team.instructions(context)
 
-    assert context.client_tools is None
-    assistant_tools = members[app.assistant.id].tools
-    command_tools = members[app.odoo_command_assistant.id].tools
-    assert [tool.name for tool in assistant_tools] == ["agent_control", "base"]
-    assert {tool.name for tool in command_tools} == {
+    assert {tool.name for tool in context.client_tools or []} == {
         "odoo.navigate_menu",
         "odoo.apply_filter",
         "odoo.export_current_view",
         "odoo.business.test.execute",
     }
-    assert "odoo.unknown_command" not in {tool.name for tool in command_tools}
-    assert "custom.browser_tool" not in {tool.name for tool in command_tools}
+    assert "调用 odoo.navigate_menu" in "\n".join(instructions)
 
 
-def test_team_delegate_runs_command_member_with_only_odoo_commands(monkeypatch):
-    calls = []
-
-    def fake_run(member, *args, **kwargs):
-        calls.append(
-            (
-                member.id,
-                [tool.name for tool in member.tools or []],
-            )
-        )
-        return RunOutput(
-            run_id=kwargs["run_id"],
-            session_id=kwargs["session_id"],
-            agent_id=member.id,
-            content="ok",
-        )
-
-    monkeypatch.setattr(Agent, "run", fake_run)
-    context = team_context(
-        "odoo.navigate_menu",
-        "odoo.business.expense.submit",
-        "odoo.unknown_command",
-        "custom.browser_tool",
-        member_ids=[app.assistant.id, app.odoo_command_assistant.id],
+@pytest.mark.anyio
+async def test_team_top_level_client_tool_pauses_and_continues_same_run():
+    model = ScriptedModel(
+        id="scripted-team-model",
+        responses=[
+            ModelResponse(
+                tool_calls=[
+                    {
+                        "id": "call-navigation",
+                        "type": "function",
+                        "function": {
+                            "name": "odoo.navigate_menu",
+                            "arguments": json.dumps({"query": "入口看板"}),
+                        },
+                    }
+                ]
+            ),
+            ModelResponse(content="已打开入口看板。"),
+        ],
     )
-    resolve_callable_members(app.assistant_team, context)
-    delegate = app.assistant_team._get_delegate_task_function(
-        TeamRunOutput(
+    database = InMemoryDb()
+    team = app.assistant_team.deep_copy(
+        update={
+            "model": model,
+            "db": database,
+            "enable_session_summaries": False,
+            "session_summary_manager": None,
+            "compress_tool_results": False,
+            "compression_manager": None,
+            "post_hooks": [],
+            "telemetry": False,
+        }
+    )
+    context = RunContext(
+        run_id="run-navigation",
+        session_id="thread-navigation",
+        session_state={},
+        client_tools=[
+            Function(
+                name="odoo.navigate_menu",
+                description="打开 Odoo 菜单",
+                parameters={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+                external_execution=True,
+            )
+        ],
+    )
+
+    paused = await asyncio.wait_for(
+        team.arun(
+            "打开入口看板",
             run_id=context.run_id,
             session_id=context.session_id,
-            team_id=app.assistant_team.id,
+            run_context=context,
         ),
-        context,
-        TeamSession(session_id=context.session_id, team_id=app.assistant_team.id),
-        {},
-        input="提交费用单",
+        timeout=10,
     )
 
-    result = list(
-        delegate.entrypoint(
-            member_id=app.odoo_command_assistant.id,
-            task="提交费用单",
-        )
+    assert paused.status is RunStatus.paused
+    assert paused.run_id == "run-navigation"
+    assert len(paused.requirements or []) == 1
+    requirement = paused.requirements[0]
+    assert requirement.member_agent_id is None
+    assert requirement.tool_execution.tool_name == "odoo.navigate_menu"
+    requirement.set_external_execution_result('{"ok":true}')
+
+    completed = await asyncio.wait_for(
+        team.acontinue_run(
+            run_id=paused.run_id,
+            session_id=paused.session_id,
+            requirements=paused.requirements,
+            run_context=context,
+        ),
+        timeout=10,
     )
 
-    assert result == ["ok"]
-    assert calls == [
-        (
-            app.odoo_command_assistant.id,
-            ["odoo.navigate_menu", "odoo.business.expense.submit"],
+    assert completed.status is RunStatus.completed
+    assert completed.run_id == paused.run_id
+    assert completed.content == "已打开入口看板。"
+    assert len(model.calls) == 2
+    assert (
+        len(
+            [
+                tool
+                for call in model.calls
+                for tool in call.get("tools") or []
+                if tool.get("function", {}).get("name") == "odoo.navigate_menu"
+            ]
         )
-    ]
+        == 2
+    )
+
+
+@pytest.mark.anyio
+async def test_team_does_not_call_declared_odoo_tool_for_plain_question():
+    model = ScriptedModel(
+        id="scripted-plain-model",
+        responses=[ModelResponse(content="你好，我可以直接回答普通问题。")],
+    )
+    database = InMemoryDb()
+    team = app.assistant_team.deep_copy(
+        update={
+            "model": model,
+            "db": database,
+            "enable_session_summaries": False,
+            "session_summary_manager": None,
+            "compress_tool_results": False,
+            "compression_manager": None,
+            "post_hooks": [],
+            "telemetry": False,
+        }
+    )
+    context = team_context("odoo.navigate_menu")
+
+    completed = await asyncio.wait_for(
+        team.arun(
+            "你好",
+            run_id=context.run_id,
+            session_id=context.session_id,
+            run_context=context,
+        ),
+        timeout=10,
+    )
+
+    assert completed.status is RunStatus.completed
+    assert completed.content == "你好，我可以直接回答普通问题。"
+    assert completed.requirements is None
+    assert len(model.calls) == 1
+    assert any(
+        tool.get("function", {}).get("name") == "odoo.navigate_menu"
+        for tool in model.calls[0].get("tools") or []
+    )
 
 
 def test_agent_history_runs_are_not_truncated():
     assert app.assistant.num_history_runs is None
-    assert app.odoo_command_assistant.num_history_runs is None
     assert app.report_agent.num_history_runs is None
 
 
@@ -398,8 +472,6 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
             for index, left in enumerate(registered)
             for right in registered[index + 1 :]
         )
-
-    assert app.odoo_command_assistant.tools == []
 
     report_toolkits = app.report_agent.tools(
         run_context=RunContext(run_id="run", session_id="thread", session_state={})
@@ -484,25 +556,23 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert parsed_tools["report_workflow_approve"].requires_confirmation is True
 
 
-def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
+def test_team_and_internal_workers_keep_separate_execution_settings():
     for assistant in (
         app.assistant,
-        app.odoo_command_assistant,
+        app.coding_agent,
         app.report_worker,
     ):
-        assert assistant.checkpoint == "tool-batch"
         assert assistant.tool_call_limit is None
         assert assistant.retries == 0
         assert assistant.exponential_backoff is False
         assert assistant.model.retries == 2
         assert assistant.model.exponential_backoff is True
-        assert assistant.model.extra_body["enable_thinking"] is True
         if assistant is app.report_worker:
             assert isinstance(app.coding_agent.model, ProjectedOpenAIChat)
             assert isinstance(assistant.model, ProjectedOpenAIChat)
             assert isinstance(assistant.compression_manager, ContextBudgetController)
             assert assistant.compression_manager.model is assistant.model
-        else:
+        elif assistant is app.assistant:
             assert assistant.compression_manager.model.extra_body["enable_thinking"] is False
         assert assistant.session_summary_manager.model.extra_body["enable_thinking"] is False
         assert assistant.compression_manager.model.retries == 2
@@ -511,6 +581,14 @@ def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
         assert assistant.compress_tool_results is True
         assert assistant.enable_session_summaries is True
         assert assistant.post_hooks
+    assert app.assistant.checkpoint == "runs"
+    assert app.assistant.model.extra_body["enable_thinking"] is False
+    assert app.assistant_team.checkpoint == "runs"
+    assert app.assistant_team.tool_choice == "auto"
+    assert app.assistant_team.model.extra_body["enable_thinking"] is False
+    for worker in (app.coding_agent, app.report_worker):
+        assert worker.checkpoint == "tool-batch"
+        assert worker.model.extra_body["enable_thinking"] is app.settings.enable_thinking
     assert app.report_agent.model.extra_body["enable_thinking"] is False
     assert not any(
         is_coding_tool_scheduler_hook(hook) for hook in app.report_agent.tool_hooks or []
@@ -523,6 +601,9 @@ def test_plain_request_only_uses_core_instructions():
 
 def test_plain_command_request_only_uses_command_instructions():
     assert build_odoo_command_instructions(instruction_context()) == ODOO_COMMAND_INSTRUCTIONS
+    assert "页面操作必须通过对应工具调用实现，不能用文字代替执行" in "\n".join(
+        ODOO_COMMAND_INSTRUCTIONS
+    )
 
 
 def test_navigation_tools_only_add_navigation_policy():
@@ -532,6 +613,9 @@ def test_navigation_tools_only_add_navigation_policy():
     assert not set(FORM_EDIT_INSTRUCTIONS) & set(instructions)
     assert "stage_current_form" not in "\n".join(instructions)
     assert "requiredFirstTool" not in "\n".join(instructions)
+    assert "本轮必须实际调用 odoo.navigate_menu" in "\n".join(instructions)
+    assert "允许调用前简短说明" in "\n".join(instructions)
+    assert "不得用文字代替调用" in "\n".join(instructions)
 
 
 def test_list_view_tools_add_list_policy():

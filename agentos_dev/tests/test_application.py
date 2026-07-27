@@ -62,14 +62,12 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
         FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
-        FakeAssistant(),
         coding_agent=FakeAssistant(),
     )
     second_context = ApplicationContext(
         settings,
         object(),
         FakeSkills("second"),
-        FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
@@ -84,10 +82,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["on_route_conflict"] == "preserve_base_app"
     assert created[0].values["cors_allowed_origins"] == list(settings.cors_allowed_origins)
     assert created[0].values["db"] is None
-    assert created[0].values["agents"] == [
-        first_context.assistant,
-        first_context.odoo_command_assistant,
-    ]
+    assert created[0].values["agents"] == []
     assert first_context.report_agent not in created[0].values["agents"]
     assert first_context.coding_agent not in created[0].values["agents"]
     assert created[0].values["teams"] == [first_context.assistant_team]
@@ -112,7 +107,6 @@ def test_application_passes_trace_database_to_agentos(monkeypatch):
         settings,
         object(),
         FakeSkills("test"),
-        FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
@@ -146,7 +140,6 @@ async def test_application_lifespan_closes_workspace_service(monkeypatch):
         FakeAssistant(),
         FakeAssistant(),
         FakeAssistant(),
-        FakeAssistant(),
     )
 
     create_agentos_app(context, FastAPI())
@@ -163,7 +156,6 @@ def test_default_application_exposes_explicit_context():
     assert context.workspace_service is app_module.workspace_service
     assert context.skills is app_module.agent_skills
     assert context.assistant is app_module.assistant
-    assert context.odoo_command_assistant is app_module.odoo_command_assistant
     assert context.report_agent is app_module.report_agent
     assert context.assistant_team is app_module.assistant_team
     assert app_module.agent_os.db is app_module.agent_database.async_db
@@ -179,7 +171,6 @@ async def test_base_application_routes_use_their_own_context():
         workspace_service=FakeWorkspace("first-file"),
         skills=FakeSkills("first"),
         assistant=FakeAssistant(),
-        odoo_command_assistant=FakeAssistant(),
         report_agent=FakeAssistant(),
         assistant_team=FakeAssistant(),
     )
@@ -188,7 +179,6 @@ async def test_base_application_routes_use_their_own_context():
         workspace_service=FakeWorkspace("second-file"),
         skills=FakeSkills("second"),
         assistant=FakeAssistant(),
-        odoo_command_assistant=FakeAssistant(),
         report_agent=FakeAssistant(),
         assistant_team=FakeAssistant(),
     )

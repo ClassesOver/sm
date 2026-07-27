@@ -26,7 +26,6 @@ class ApplicationContext:
     workspace_service: WorkspaceService
     skills: Any
     assistant: Agent
-    odoo_command_assistant: Agent
     # Report/Coding 处于测试阶段，不注册到综合 AgentOS 或 assistant_team。
     report_agent: Agent
     assistant_team: Team
@@ -52,10 +51,7 @@ def create_agentos_app(
     agent_os = AgentOS(
         name="HRP开发服务",
         # Coding/Report 处于测试阶段，暂不通过综合服务对外提供。
-        agents=[
-            context.assistant,
-            context.odoo_command_assistant,
-        ],
+        agents=[],
         teams=[context.assistant_team],
         interfaces=[AGUI(team=context.assistant_team)],
         base_app=base_app,
