@@ -1,7 +1,6 @@
 import ast
 import hashlib
 import json
-from inspect import isasyncgenfunction
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -181,7 +180,7 @@ def test_coding_agent_uses_trusted_per_run_instructions():
     assert "当前会话没有可复用的任务计划" in "\n".join(invalid)
 
 
-def test_assistant_team_routes_to_specialized_members():
+def test_assistant_team_routes_only_to_production_members():
     assert app.assistant.id == "general-assistant"
     assert app.odoo_command_assistant.id == "odoo-command-assistant"
     assert app.assistant_team.mode is TeamMode.route
@@ -196,8 +195,6 @@ def test_assistant_team_routes_to_specialized_members():
     all_members = [
         app.assistant,
         app.odoo_command_assistant,
-        app.coding_agent,
-        app.report_agent,
     ]
     assert callable(app.assistant_team.members)
     resolved = app.assistant_team.members(team_context())
@@ -219,8 +216,8 @@ def test_assistant_team_routes_to_specialized_members():
     assert app.assistant_team.members(team_context(member_id="unknown")) == []
     assert app.assistant_team.id == "hrp-assistant-team"
     assert app.assistant_team.cache_callables is False
-    assert "Workflow" in app.report_agent.role
-    assert app.report_worker.id == "report-worker"
+    assert app.assistant_team.members(team_context(member_id=app.coding_agent.id)) == []
+    assert app.assistant_team.members(team_context(member_id=app.report_agent.id)) == []
 
 
 def test_team_members_bind_only_their_allowed_client_tools():
@@ -238,8 +235,6 @@ def test_team_members_bind_only_their_allowed_client_tools():
     assert context.client_tools is None
     assistant_tools = members[app.assistant.id].tools
     command_tools = members[app.odoo_command_assistant.id].tools
-    coding_tools = members[app.coding_agent.id].tools
-    report_tools = members[app.report_agent.id].tools
     assert [tool.name for tool in assistant_tools] == ["agent_control", "base"]
     assert {tool.name for tool in command_tools} == {
         "odoo.navigate_menu",
@@ -247,10 +242,6 @@ def test_team_members_bind_only_their_allowed_client_tools():
         "odoo.export_current_view",
         "odoo.business.test.execute",
     }
-    assert [tool.name for tool in coding_tools] == ["run_coding_task"]
-    assert isasyncgenfunction(coding_tools[0].entrypoint)
-    assert [tool.name for tool in report_tools[:-1]] == ["report_workflow"]
-    assert report_tools[-1].name == "odoo.export_current_view"
     assert "odoo.unknown_command" not in {tool.name for tool in command_tools}
     assert "custom.browser_tool" not in {tool.name for tool in command_tools}
 

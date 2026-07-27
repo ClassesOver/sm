@@ -3,34 +3,27 @@ import json
 import logging
 import unicodedata
 from contextlib import suppress
-from datetime import timedelta
 from pathlib import PurePosixPath
-from typing import Any
 from urllib.parse import quote
-from uuid import uuid4
 
 from ag_ui.core import (
     Context,
     EventType,
     RunAgentInput,
     RunErrorEvent,
-    TextMessageContentEvent,
-    TextMessageEndEvent,
-    TextMessageStartEvent,
 )
 from ag_ui.encoder import EventEncoder
 from agno.agent import Agent
 from agno.models.message import Message
 from agno.os.interfaces.agui.input import extract_tool_messages, extract_user_input
 from agno.os.interfaces.agui.router import run_entity
-from agno.run import RunContext
 from agno.session.agent import AgentSession
 from agno.session.team import TeamSession
 from agno.team import Team
 from daytona.common.errors import DaytonaNotFoundError
 from fastapi import APIRouter, Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.concurrency import run_in_threadpool
 
 from .agent_control import (
@@ -57,8 +50,8 @@ from .branch import (
     run_branch,
     validate_branch_identity,
 )
-from .coding import AgnoCodingExecutor, AguiCodingAdapter, CodingScope, CodingTaskSupervisor
-from .coding.agent import create_coding_agent, create_coding_facade_agent
+from .coding import AgnoCodingExecutor, CodingTaskSupervisor
+from .coding.agent import create_coding_agent
 from .coding.execution import (
     CODING_EXECUTION_MIGRATION_STATE_KEY,
     CODING_FINISH_FAILURE_STATE_KEY,
@@ -71,40 +64,31 @@ from .coding.execution import (
 from .coding.reporting.agent import (
     create_report_agent,
     create_report_worker,
-    report_delivery_post_hook,
 )
-from .coding.reporting.agui import REPORT_SOURCE_INTAKE_DEPENDENCY, prepare_agui_report_intake
+from .coding.reporting.agui import REPORT_SOURCE_INTAKE_DEPENDENCY
 from .coding.reporting.binding import TemporarySourceBindingService
 from .coding.reporting.controller import (
     REPORT_WORKFLOW_CONTROL_STATE_KEY,
-    REPORT_WORKFLOW_SCOPE_DEPENDENCY,
     ReportWorkflowController,
 )
 from .coding.reporting.credentials import TemporaryCredentialStore
 from .coding.reporting.data_sources import (
     CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
-    MAX_DATASET_FILE_BYTES,
-    MAX_REPORT_INPUTS,
     REPORT_DATASET_HANDLES_STATE_KEY,
     ReportDataSourceToolkit,
 )
 from .coding.reporting.instructions import build_report_agent_instructions
-from .coding.reporting.intake import ReportIntakeService
 from .coding.reporting.models import ReportingError
 from .coding.reporting.runtime import ReportWorkflowRuntime
 from .coding.reporting.starrocks import create_starrocks_client
 from .coding.reporting.workspace import (
-    REPORT_DELIVERY_INCOMPLETE_MESSAGE,
     REPORT_DELIVERY_STATE_KEY,
     REPORT_JOBS_STATE_KEY,
-    WorkspaceReportToolkit,
-    report_delivery_content,
 )
 from .coding.repository import (
     TERMINAL_EXECUTION_STATUSES,
     CodingRepositoryError,
     CodingTaskRepository,
-    utcnow,
 )
 from .coding.tools import (
     CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
@@ -140,53 +124,6 @@ WORKSPACE_FILE_BYTES = 200 * 1024 * 1024
 MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
 SSE_HEARTBEAT_SECONDS = 15
 SERVER_TOOL_SCHEMA_TOKEN_RESERVE = 16 * 1024
-REPORT_TOOL_MIGRATION_ERROR = "report_tool_migration_required"
-REMOVED_REPORT_TOOLS = frozenset(
-    {
-        "report_list_analysis_capabilities",
-        "report_profile_dataset",
-        "report_analyze_dataset",
-    }
-)
-LEGACY_REPORT_BASE_TOOLS = frozenset(
-    {
-        "agent_update_plan",
-        "agent_context_status",
-        "agent_prepare_continuation",
-        "agent_tool_search",
-        "agent_load_toolkit",
-        "sandbox_exec",
-        "sandbox_process_poll",
-        "sandbox_process_write",
-        "sandbox_process_interrupt",
-        "sandbox_process_stop",
-        "workspace_list_files",
-        "workspace_read_file",
-        "workspace_read_lines",
-        "workspace_stat",
-        "workspace_tree",
-        "workspace_search_files",
-        "workspace_search_text",
-        "workspace_hash_file",
-        "workspace_git_status",
-        "workspace_git_diff",
-        "workspace_git_log",
-        "workspace_git_show",
-        "workspace_write_file",
-        "workspace_replace_file",
-        "workspace_move_file",
-        "workspace_apply_patch",
-        "workspace_apply_patch_set",
-        "workspace_apply_hunks",
-        "workspace_apply_changes",
-        "workspace_create_directory",
-        "workspace_copy_file",
-        "workspace_delete_file",
-        "workspace_view_image",
-        "workspace_inspect_pdf",
-        *REMOVED_REPORT_TOOLS,
-    }
-)
 RAW_REASONING_EVENTS = frozenset(
     {
         EventType.THINKING_TEXT_MESSAGE_CONTENT,
@@ -215,7 +152,6 @@ SERVER_SESSION_STATE_KEYS = frozenset(
     }
 )
 logger = logging.getLogger(__name__)
-report_intake_service = ReportIntakeService()
 temporary_report_credentials = TemporaryCredentialStore()
 
 
@@ -225,12 +161,6 @@ class WorkspaceDeleteFilePayload(BaseModel):
     thread_id: str = Field(alias="threadId", min_length=1, max_length=256)
     path: str
     recursive: StrictBool = False
-
-
-class WorkspaceAttachmentPayload(BaseModel):
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    workspace_path: str = Field(alias="workspacePath", min_length=1, max_length=1024)
 
 
 class CodingCancelPayload(BaseModel):
@@ -301,54 +231,6 @@ def _sanitize_run_input(run_input: RunAgentInput) -> RunAgentInput:
     if len(context) == len(run_input.context or []) and state is run_input.state:
         return run_input
     return run_input.model_copy(update={"context": context, "state": state})
-
-
-async def _current_attachment_context(
-    run_input: RunAgentInput,
-    workspace_service: WorkspaceService,
-) -> Context | None:
-    attachments = None
-    for message in reversed(run_input.messages or []):
-        if message.role == "user":
-            attachments = getattr(message, "attachments", None)
-            break
-    if attachments is None:
-        return None
-    if not isinstance(attachments, list) or not 1 <= len(attachments) <= MAX_REPORT_INPUTS:
-        raise ValueError("当前消息附件数量无效。")
-    values = []
-    seen = set()
-    for raw in attachments:
-        attachment = WorkspaceAttachmentPayload.model_validate(raw)
-        relative = workspace_service.normalize_path(
-            attachment.workspace_path,
-            allow_root=False,
-        )[0]
-        if relative in seen:
-            continue
-        seen.add(relative)
-        stat = await workspace_service.astat(run_input.thread_id, relative)
-        if stat.get("type") != "file":
-            raise ValueError("当前消息附件不是普通文件。")
-        digest = await workspace_service.ahash_file(run_input.thread_id, relative)
-        size = int(digest.get("size", -1))
-        if size < 0 or size > MAX_DATASET_FILE_BYTES or size != int(stat.get("size", -2)):
-            raise ValueError("当前消息附件大小无效或已变化。")
-        sha256 = str(digest.get("sha256") or "")
-        if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
-            raise ValueError("当前消息附件哈希无效。")
-        values.append(
-            {
-                "path": relative,
-                "type": "file",
-                "size": size,
-                "sha256": sha256,
-            }
-        )
-    return Context(
-        description=CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
-        value=json.dumps(values, ensure_ascii=False, separators=(",", ":")),
-    )
 
 
 async def _prepare_run_input(
@@ -487,67 +369,6 @@ def _is_raw_reasoning_event(event) -> bool:
     return event.type == EventType.RAW and _has_reasoning_key(getattr(event, "event", None))
 
 
-def _redact_report_analysis_result(event):
-    try:
-        payload = json.loads(event.content)
-    except (AttributeError, TypeError, json.JSONDecodeError):
-        payload = {}
-    allowed = {
-        "exitCode",
-        "jobId",
-        "ok",
-        "roundCount",
-        "status",
-        "successfulRoundCount",
-        "truncated",
-    }
-    redacted = {key: payload[key] for key in allowed if key in payload}
-    redacted["outputRedacted"] = True
-    return event.model_copy(
-        update={
-            "content": json.dumps(redacted, ensure_ascii=False, separators=(",", ":")),
-            "raw_event": None,
-        }
-    )
-
-
-def _is_report_analysis_result(event) -> bool:
-    try:
-        payload = json.loads(event.content)
-    except (AttributeError, TypeError, json.JSONDecodeError):
-        return False
-    return isinstance(payload, dict) and {
-        "exitCode",
-        "jobId",
-        "output",
-        "roundCount",
-        "status",
-        "successfulRoundCount",
-    }.issubset(payload)
-
-
-def _selected_report_skill(run_input: RunAgentInput) -> bool:
-    for item in run_input.context or []:
-        if item.description != "已选智能体技能":
-            continue
-        try:
-            value = json.loads(item.value)
-        except (TypeError, ValueError):
-            continue
-        if isinstance(value, list) and any(
-            isinstance(skill, dict)
-            and (
-                skill.get("id")
-                in {"report", "workspace-smart-report", "intelligent-analysis-report"}
-                or skill.get("name")
-                in {"report", "workspace-smart-report", "intelligent-analysis-report"}
-            )
-            for skill in value
-        ):
-            return True
-    return False
-
-
 async def _entity_for_stored_run(
     context: ApplicationContext,
     thread_id: str,
@@ -585,10 +406,6 @@ async def _entity_for_stored_run(
         matching_agent_id = getattr(matching, "agent_id", None)
         if isinstance(matching_agent_id, str) and matching_agent_id:
             agent_id = matching_agent_id
-    if agent_id == context.report_agent.id:
-        return context.report_agent
-    if context.coding_agent is not None and agent_id == context.coding_agent.id:
-        return context.coding_agent
     if (
         agent_id == context.odoo_command_assistant.id
         or agent_id in LEGACY_ODOO_COMMAND_ASSISTANT_IDS
@@ -597,73 +414,6 @@ async def _entity_for_stored_run(
     if agent_id == context.assistant.id or agent_id in LEGACY_ASSISTANT_IDS:
         return context.assistant
     return None
-
-
-def _pending_legacy_report_tool(session: AgentSession, run_id: str | None) -> str | None:
-    runs = session.runs or []
-    run = next(
-        (item for item in reversed(runs) if run_id is None or item.run_id == run_id),
-        None,
-    )
-    if run is None:
-        return None
-    for requirement in run.requirements or []:
-        is_resolved = getattr(requirement, "is_resolved", None)
-        if callable(is_resolved) and is_resolved():
-            continue
-        execution = getattr(requirement, "tool_execution", None)
-        name = getattr(execution, "tool_name", None)
-        if name in LEGACY_REPORT_BASE_TOOLS:
-            return name
-    for execution in run.tools or []:
-        name = getattr(execution, "tool_name", None)
-        pending_confirmation = bool(getattr(execution, "requires_confirmation", False)) and (
-            getattr(execution, "confirmed", None) is None
-        )
-        pending_external = bool(getattr(execution, "external_execution_required", False)) and (
-            getattr(execution, "result", None) is None
-        )
-        pending_removed = (
-            name in REMOVED_REPORT_TOOLS and getattr(execution, "result", None) is None
-        )
-        if name in LEGACY_REPORT_BASE_TOOLS and (
-            pending_confirmation or pending_external or pending_removed
-        ):
-            return name
-        result = getattr(execution, "result", None)
-        if name not in LEGACY_REPORT_BASE_TOOLS or result is None:
-            continue
-        if isinstance(result, str):
-            try:
-                result = json.loads(result)
-            except (TypeError, ValueError):
-                continue
-        if (
-            isinstance(result, dict)
-            and result.get("status") == "running"
-            and isinstance(result.get("sessionId"), str)
-            and isinstance(result.get("commandId"), str)
-        ):
-            return name
-    return None
-
-
-async def _pending_legacy_report_tool_for_run(
-    agent: Agent,
-    thread_id: str,
-    user_id: str,
-    run_id: str | None,
-) -> str | None:
-    try:
-        session = await agent.aget_session(session_id=thread_id, user_id=user_id)
-    except Exception as error:
-        logger.warning(
-            "report_tool_migration_session_load_failed error_type=%s", type(error).__name__
-        )
-        return None
-    if not isinstance(session, AgentSession):
-        return None
-    return _pending_legacy_report_tool(session, run_id)
 
 
 async def _hide_team_delegation_events(source):
@@ -681,81 +431,6 @@ async def _hide_team_delegation_events(source):
         yield event
 
 
-def _bind_report_delivery(run_input: RunAgentInput, delivery_id: str) -> RunAgentInput:
-    state = dict(run_input.state) if isinstance(run_input.state, dict) else {}
-    state[REPORT_DELIVERY_STATE_KEY] = {
-        "deliveryId": delivery_id,
-        "jobId": None,
-    }
-    return run_input.model_copy(update={"state": state})
-
-
-async def _guard_report_delivery(
-    source,
-    workspace_service: WorkspaceService,
-    thread_id: str,
-    delivery_id: str | None = None,
-    evidence_loader=None,
-):
-    buffered_messages: dict[str, list[Any]] = {}
-    message_order: list[str] = []
-    final_state: dict[str, Any] | None = None
-    async for event in source:
-        message_id = str(getattr(event, "message_id", "") or "")
-        if event.type == EventType.TEXT_MESSAGE_START:
-            if message_id not in buffered_messages:
-                buffered_messages[message_id] = []
-                message_order.append(message_id)
-            buffered_messages[message_id].append(event)
-            continue
-        if event.type in {EventType.TEXT_MESSAGE_CONTENT, EventType.TEXT_MESSAGE_END}:
-            if message_id not in buffered_messages:
-                buffered_messages[message_id] = []
-                message_order.append(message_id)
-            buffered_messages[message_id].append(event)
-            continue
-        if event.type == EventType.STATE_SNAPSHOT and isinstance(event.snapshot, dict):
-            final_state = event.snapshot
-        if event.type == EventType.TOOL_CALL_START:
-            parent_message_id = str(getattr(event, "parent_message_id", "") or "")
-            if parent_message_id in buffered_messages:
-                event = event.model_copy(update={"parent_message_id": None})
-        if event.type != EventType.RUN_FINISHED:
-            yield event
-            continue
-
-        evidence = None
-        if evidence_loader is not None:
-            evidence = await evidence_loader()
-        if evidence is None and final_state is not None and delivery_id is not None:
-            run_context = RunContext(
-                run_id=event.run_id,
-                session_id=thread_id,
-                session_state=final_state,
-            )
-            evidence = await WorkspaceReportToolkit(workspace_service).validated_delivery(
-                delivery_id,
-                run_context,
-            )
-        original_content = ""
-        final_message_id = message_order[-1] if message_order else str(uuid4())
-        if message_order:
-            original_content = "".join(
-                str(getattr(item, "delta", "") or "")
-                for item in buffered_messages[final_message_id]
-                if item.type == EventType.TEXT_MESSAGE_CONTENT
-            )
-        content = (
-            report_delivery_content(original_content, evidence)
-            if evidence is not None
-            else REPORT_DELIVERY_INCOMPLETE_MESSAGE
-        )
-        yield TextMessageStartEvent(message_id=final_message_id, role="assistant")
-        yield TextMessageContentEvent(message_id=final_message_id, delta=content)
-        yield TextMessageEndEvent(message_id=final_message_id)
-        yield event
-
-
 def _team_route_context(*member_ids: str | None) -> Context:
     normalized = [member_id for member_id in member_ids if member_id]
     if not normalized:
@@ -764,53 +439,6 @@ def _team_route_context(*member_ids: str | None) -> Context:
     return Context(
         description=TEAM_ROUTE_DEPENDENCY,
         value=json.dumps(route, ensure_ascii=True, separators=(",", ":")),
-    )
-
-
-def _coding_task_context(external_run_id: str, lease_owner: str) -> Context:
-    return Context(
-        description=CODING_TASK_DEPENDENCY,
-        value=json.dumps(
-            {"externalRunId": external_run_id, "leaseOwner": lease_owner},
-            ensure_ascii=True,
-            separators=(",", ":"),
-        ),
-    )
-
-
-def _report_workflow_context(external_run_id: str) -> Context:
-    return Context(
-        description=REPORT_WORKFLOW_SCOPE_DEPENDENCY,
-        value=json.dumps(
-            {"externalRunId": external_run_id},
-            ensure_ascii=True,
-            separators=(",", ":"),
-        ),
-    )
-
-
-async def _ensure_report_task(
-    context: ApplicationContext,
-    run_input: RunAgentInput,
-    user_id: str,
-) -> None:
-    if context.coding_repository is None:
-        raise CodingRepositoryError("task_repository_unavailable", "编码任务仓储不可用。")
-    async with context.workspace_service._async_client() as client:
-        sandbox = await context.workspace_service._asandbox_for(client, run_input.thread_id)
-        sandbox_id = str(getattr(sandbox, "id", "") or "")
-    if not sandbox_id:
-        raise CodingRepositoryError("task_sandbox_missing", "编码任务工作区不可用。")
-    report_agent_id = context.report_agent.id
-    if not report_agent_id:
-        raise CodingRepositoryError("task_agent_missing", "报表智能体缺少稳定 ID。")
-    await context.coding_repository.create_task(
-        external_run_id=run_input.run_id,
-        owner_user_id=user_id,
-        thread_id=run_input.thread_id,
-        agent_id=report_agent_id,
-        sandbox_id=sandbox_id,
-        deadline_at=utcnow() + timedelta(hours=24),
     )
 
 
@@ -824,12 +452,6 @@ def _filter_client_tools_for_agent(
     if entity.id == ODOO_COMMAND_ASSISTANT_ID:
         tools = [
             tool for tool in declared_tools if is_odoo_command_name(getattr(tool, "name", None))
-        ]
-    elif entity.id == "report-agent":
-        tools = [
-            tool
-            for tool in declared_tools
-            if getattr(tool, "name", None) == "odoo.export_current_view"
         ]
     else:
         tools = []
@@ -1291,14 +913,9 @@ coding_supervisor = CodingTaskSupervisor(
     execution_cleanup=CodingExecutionKernel(workspace_service, coding_repository),
     validator_registry=SkillValidatorRegistry.from_skills(coding_agent.skills),
 )
-team_coding_member = create_coding_facade_agent(coding_agent, coding_supervisor, workspace_service)
 assistant_team = create_assistant_team(
     assistant,
     odoo_command_assistant,
-    team_coding_member,
-    report_agent,
-    workspace_service,
-    post_hooks=[report_delivery_post_hook(workspace_service)],
 )
 
 
@@ -1309,35 +926,8 @@ async def run_agui(request: Request, run_input: RunAgentInput):
     user_id = capability_user_id(claims)
     branch = getattr(request.state, "branch", None)
     encoder = EventEncoder()
-    intake_error: ReportingError | None = None
-    report_source_context: Context | None = None
-    if _is_fresh_user_request(run_input) and _selected_report_skill(run_input) and not branch:
-        try:
-            run_input = prepare_agui_report_intake(
-                run_input,
-                user_id=user_id,
-                service=report_intake_service,
-                binding_service=temporary_source_bindings,
-            )
-            report_source_context = next(
-                (
-                    item
-                    for item in run_input.context or []
-                    if item.description == REPORT_SOURCE_INTAKE_DEPENDENCY
-                ),
-                None,
-            )
-        except ReportingError as error:
-            intake_error = error
 
     async def events():
-        if intake_error is not None:
-            async for event in _run_error(intake_error.message, intake_error.code):
-                yield encoder.encode(event)
-            return
-        tool_names_by_call_id: dict[str, str] = {}
-        request_lease_owner = uuid4().hex
-        resumed_coding_task = None
         fresh_request = _is_fresh_user_request(run_input)
         existing_entity = None
         if fresh_request and not branch:
@@ -1351,27 +941,21 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             for agent in (
                 context.assistant,
                 context.odoo_command_assistant,
-                context.report_agent,
-                context.coding_agent,
             )
         )
-        report_selected = _selected_report_skill(run_input)
-        report_delivery_id = uuid4().hex if report_selected and not branch else None
         declared_odoo_commands = [
             tool.name for tool in (run_input.tools or []) if is_odoo_command_name(tool.name)
         ]
         route_name = "stored_run"
         if fresh_request:
-            if report_selected:
-                route_name = "report_agent"
-            elif declared_odoo_commands:
+            if declared_odoo_commands:
                 route_name = "assistant_or_odoo_command_assistant"
             else:
                 route_name = "assistant"
         audit_values = {
             "route": route_name,
             "declared_odoo_commands": declared_odoo_commands,
-            "report_route_selected": report_selected and fresh_request,
+            "report_route_selected": False,
             "legacy_agent_session": legacy_agent_session,
         }
         _audit_tool_route(
@@ -1380,35 +964,7 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             **audit_values,
         )
 
-        supervisor_source = None
-        if (
-            not fresh_request
-            and not branch
-            and context.coding_supervisor is not None
-            and context.coding_repository is not None
-        ):
-            snapshot = await context.coding_repository.get_task_snapshot(run_input.run_id)
-            if snapshot is not None:
-                expected_scope = CodingScope(
-                    run_input.run_id,
-                    user_id,
-                    run_input.thread_id,
-                    snapshot.scope.sandbox_id,
-                    snapshot.scope.agent_id,
-                )
-                if snapshot.scope != expected_scope:
-                    supervisor_source = _run_error(
-                        "编码任务不属于当前用户、对话或工作区。",
-                        "task_scope_mismatch",
-                    )
-                else:
-                    supervisor_source = AguiCodingAdapter(context.coding_supervisor).resume_events(
-                        expected_scope
-                    )
-
-        if supervisor_source is not None:
-            source = supervisor_source
-        elif branch:
+        if branch:
             if hasattr(branch, "source_thread_id") and hasattr(branch, "source_run_id"):
                 branch_agent = await _entity_for_stored_run(
                     context,
@@ -1442,32 +998,12 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                 if legacy_agent_session:
                     history_entity = existing_entity
             else:
-                if context.coding_repository is not None:
-                    resumed_coding_task = await context.coding_repository.get_task(run_input.run_id)
-                if resumed_coding_task is not None:
-                    try:
-                        assert context.coding_repository is not None
-                        context.coding_repository._assert_scope(
-                            resumed_coding_task,
-                            user_id,
-                            run_input.thread_id,
-                        )
-                    except CodingRepositoryError:
-                        resumed_coding_task = None
-                        run_agent = None
-                    else:
-                        run_agent = (
-                            context.report_agent
-                            if resumed_coding_task.agent_id == context.report_agent.id
-                            else context.coding_agent
-                        )
-                else:
-                    run_agent = await _entity_for_stored_run(
-                        context,
-                        run_input.thread_id,
-                        user_id,
-                        run_input.run_id,
-                    )
+                run_agent = await _entity_for_stored_run(
+                    context,
+                    run_input.thread_id,
+                    user_id,
+                    run_input.run_id,
+                )
             if run_agent is None:
                 source = _run_error(
                     "无法确认原运行所属智能体，请刷新会话后重试。",
@@ -1475,111 +1011,21 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                 )
             else:
                 server_context = None
-                attachment_error = False
-                legacy_report_tool = None
-                if not fresh_request and run_agent is context.report_agent:
-                    legacy_report_tool = await _pending_legacy_report_tool_for_run(
-                        context.report_agent,
-                        run_input.thread_id,
-                        user_id,
-                        run_input.run_id,
-                    )
-                if legacy_report_tool is not None:
-                    attachment_error = True
-                    source = _run_error(
-                        f"旧版报表工具 {legacy_report_tool} 的待处理调用不能在新工具集下续跑；"
-                        "请开始新的报表消息并重新执行该步骤。",
-                        REPORT_TOOL_MIGRATION_ERROR,
-                    )
-                if fresh_request and report_selected:
-                    try:
-                        attachment_context = await _current_attachment_context(
-                            run_input,
-                            context.workspace_service,
-                        )
-                        server_context = [
-                            *([report_source_context] if report_source_context is not None else []),
-                            *([attachment_context] if attachment_context is not None else []),
-                        ] or None
-                    except (ValidationError, ValueError, WorkspaceError):
-                        attachment_error = True
-                        source = _run_error(
-                            "当前消息附件未同步、已变化或不属于当前工作区，请重新选择附件。",
-                            "report_attachment_invalid",
-                        )
-                if not attachment_error:
-                    if fresh_request and run_agent is context.assistant_team:
-                        member_ids = (
-                            [context.report_agent.id]
-                            if report_selected
-                            else [
-                                context.assistant.id,
-                                *(
-                                    [context.coding_agent.id]
-                                    if context.coding_agent is not None
-                                    else []
-                                ),
-                                *(
-                                    [context.odoo_command_assistant.id]
-                                    if declared_odoo_commands
-                                    else []
-                                ),
-                                *(
-                                    [context.report_agent.id]
-                                    if existing_entity is context.report_agent
-                                    else []
-                                ),
-                            ]
-                        )
-                        server_context = [
-                            *(server_context or []),
-                            _team_route_context(*member_ids),
-                        ]
-                    if run_agent in (context.assistant_team, context.coding_agent):
-                        server_context = [
-                            *(server_context or []),
-                            _coding_task_context(run_input.run_id, request_lease_owner),
-                        ]
-                    if report_selected or run_agent is context.report_agent:
-                        server_context = [
-                            *(server_context or []),
-                            _report_workflow_context(run_input.run_id),
-                        ]
-                    prepared_input = await _prepare_run_input(
-                        run_agent,
-                        _filter_client_tools_for_agent(run_input, run_agent),
-                        user_id,
-                        context.settings,
-                        server_context=server_context,
-                        history_entity=history_entity,
-                    )
-                    if report_delivery_id is not None:
-                        prepared_input = _bind_report_delivery(
-                            prepared_input,
-                            report_delivery_id,
-                        )
-                    source = run_entity(run_agent, prepared_input, user_id=user_id)
-                    if report_selected and context.report_workflow_controller is not None:
-                        source = _guard_report_delivery(
-                            source,
-                            context.workspace_service,
-                            prepared_input.thread_id,
-                            report_delivery_id,
-                            evidence_loader=lambda: (
-                                context.report_workflow_controller.validated_external_delivery(
-                                    external_run_id=run_input.run_id,
-                                    thread_id=run_input.thread_id,
-                                    user_id=user_id,
-                                )
-                            ),
-                        )
-                    elif report_delivery_id is not None:
-                        source = _guard_report_delivery(
-                            source,
-                            context.workspace_service,
-                            prepared_input.thread_id,
-                            report_delivery_id,
-                        )
+                if fresh_request and run_agent is context.assistant_team:
+                    member_ids = [
+                        context.assistant.id,
+                        *([context.odoo_command_assistant.id] if declared_odoo_commands else []),
+                    ]
+                    server_context = [_team_route_context(*member_ids)]
+                prepared_input = await _prepare_run_input(
+                    run_agent,
+                    _filter_client_tools_for_agent(run_input, run_agent),
+                    user_id,
+                    context.settings,
+                    server_context=server_context,
+                    history_entity=history_entity,
+                )
+                source = run_entity(run_agent, prepared_input, user_id=user_id)
         source = _hide_team_delegation_events(source)
         async for event in _with_sse_heartbeats(source):
             if event is None:
@@ -1587,17 +1033,6 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                 continue
             if _is_raw_reasoning_event(event):
                 continue
-            if event.type == EventType.TOOL_CALL_START:
-                tool_call_id = str(getattr(event, "tool_call_id", "") or "")
-                tool_call_name = str(getattr(event, "tool_call_name", "") or "")
-                if tool_call_id and tool_call_name:
-                    tool_names_by_call_id[tool_call_id] = tool_call_name
-            elif event.type == EventType.TOOL_CALL_RESULT:
-                tool_call_id = str(getattr(event, "tool_call_id", "") or "")
-                if tool_names_by_call_id.get(
-                    tool_call_id
-                ) == "report_analyze_dataset" or _is_report_analysis_result(event):
-                    event = _redact_report_analysis_result(event)
             yield encoder.encode(event)
 
     return StreamingResponse(

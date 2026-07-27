@@ -19,7 +19,6 @@ from ag_ui.core import (
     RunAgentInput,
     RunFinishedEvent,
     RunStartedEvent,
-    StateSnapshotEvent,
     TextMessageContentEvent,
     TextMessageEndEvent,
     TextMessageStartEvent,
@@ -29,16 +28,14 @@ from ag_ui.core import (
     ToolCallStartEvent,
 )
 from agno.models.message import Message
-from agno.models.response import ToolExecution
 from agno.run.agent import RunOutput
 from agno.run.base import RunStatus
-from agno.run.requirement import RunRequirement
 from agno.run.team import TeamRunOutput
 from agno.session.agent import AgentSession
 from agno.session.team import TeamSession
 
 from agentos_dev import app as app_module
-from agentos_dev.coding.repository import CodingTaskRepository
+from agentos_dev.coding.repository import CodingTaskRepository, utcnow
 from agentos_dev.database import create_agent_database
 from agentos_dev.tests.workspace_fakes import (
     AsyncFakeClient,
@@ -66,10 +63,6 @@ def isolated_coding_repository(monkeypatch, tmp_path):
     monkeypatch.setattr(app_module, "application_context", context)
     monkeypatch.setattr(app_module.base_app.state, "agentos_context", context)
 
-    async def skip_task_creation(_context, _run_input, _user_id):
-        return None
-
-    monkeypatch.setattr(app_module, "_ensure_report_task", skip_task_creation)
     yield context
     database.sync_engine.dispose()
 
@@ -166,13 +159,6 @@ def direct_request(branch=None):
             state=SimpleNamespace(agentos_context=app_module.application_context),
         ),
     )
-
-
-def install_legacy_report_guard(monkeypatch, _workspace_service):
-    async def skip_task_creation(_context, _run_input, _user_id):
-        return None
-
-    monkeypatch.setattr(app_module, "_ensure_report_task", skip_task_creation)
 
 
 async def response_body(response):
@@ -711,10 +697,7 @@ async def test_legacy_fresh_request_migrates_to_team_and_resume_keeps_agent(
 
     assert calls[0][0] is expected_entity
     if expected_entity is app_module.assistant_team:
-        assert routed_member_ids(calls[0][1]) == [
-            app_module.assistant.id,
-            app_module.coding_agent.id,
-        ]
+        assert routed_member_ids(calls[0][1]) == [app_module.assistant.id]
 
 
 @pytest.mark.anyio
@@ -747,10 +730,7 @@ async def test_new_thread_fresh_request_uses_team(monkeypatch):
     await response_body(response)
 
     assert calls[0][0] is app_module.assistant_team
-    assert routed_member_ids(calls[0][1]) == [
-        app_module.assistant.id,
-        app_module.coding_agent.id,
-    ]
+    assert routed_member_ids(calls[0][1]) == [app_module.assistant.id]
 
 
 @pytest.mark.anyio
@@ -762,7 +742,6 @@ async def test_new_thread_fresh_request_uses_team(monkeypatch):
             ("odoo.navigate_menu",),
             [
                 app_module.assistant.id,
-                app_module.coding_agent.id,
                 app_module.odoo_command_assistant.id,
             ],
         ),
@@ -771,14 +750,13 @@ async def test_new_thread_fresh_request_uses_team(monkeypatch):
             ("odoo.navigate_menu",),
             [
                 app_module.assistant.id,
-                app_module.coding_agent.id,
                 app_module.odoo_command_assistant.id,
             ],
         ),
         (
             "report-agent",
             (),
-            [app_module.assistant.id, app_module.coding_agent.id, app_module.report_agent.id],
+            [app_module.assistant.id],
         ),
     ],
 )
@@ -952,14 +930,10 @@ async def test_fresh_request_receives_budgeted_history_without_old_odoo_results(
     assert descriptions == [
         "HRP 宿主快照",
         app_module.TEAM_ROUTE_DEPENDENCY,
-        app_module.CODING_TASK_DEPENDENCY,
         app_module.HISTORY_CONTEXT_DESCRIPTION,
         app_module.AGENT_CONTEXT_STATUS_DEPENDENCY,
     ]
-    assert routed_member_ids(captured[0][1]) == [
-        app_module.assistant.id,
-        app_module.coding_agent.id,
-    ]
+    assert routed_member_ids(captured[0][1]) == [app_module.assistant.id]
     budget_status = json.loads(captured[0][1].context[-1].value)
     assert budget_status["historyTokenBudget"] == app_module.settings.history_token_budget
     assert budget_status["contextTokenBudget"] == 262144
@@ -971,9 +945,6 @@ async def test_fresh_request_receives_budgeted_history_without_old_odoo_results(
     assert "之前的处理结论" in history
     assert "stale-snapshot" not in history
     assert captured[0][1].context[0].value == '{"snapshotId":"current"}'
-    coding_binding = json.loads(captured[0][1].context[2].value)
-    assert coding_binding["externalRunId"] == "run-1"
-    assert "acceptanceContract" not in coding_binding
     assert captured[0][1].state == {}
 
 
@@ -1025,7 +996,7 @@ async def test_resume_request_does_not_reload_or_reinject_budgeted_history(monke
 
 
 @pytest.mark.anyio
-async def test_selected_report_skill_routes_fresh_request_to_report_agent(monkeypatch):
+async def test_selected_report_skill_does_not_expose_report_agent(monkeypatch):
     calls = []
 
     async def fake_run(entity, value, user_id=None):
@@ -1047,11 +1018,11 @@ async def test_selected_report_skill_routes_fresh_request_to_report_agent(monkey
     await response_body(response)
 
     assert calls[0][0] is app_module.assistant_team
-    assert routed_member_id(calls[0][1]) == app_module.report_agent.id
+    assert routed_member_id(calls[0][1]) == app_module.assistant.id
 
 
 @pytest.mark.anyio
-async def test_report_candidate_text_requires_delivery_receipt(monkeypatch):
+async def test_selected_report_skill_does_not_enable_report_delivery_guard(monkeypatch):
     async def fake_run(_entity, _value, user_id=None):
         yield TextMessageStartEvent(message_id="candidate")
         yield TextMessageContentEvent(message_id="candidate", delta="unaccepted report")
@@ -1074,8 +1045,7 @@ async def test_report_candidate_text_requires_delivery_receipt(monkeypatch):
 
     body = await response_body(response)
 
-    assert "unaccepted report" not in body
-    assert app_module.REPORT_DELIVERY_INCOMPLETE_MESSAGE in body
+    assert "unaccepted report" in body
 
 
 @pytest.mark.anyio
@@ -1135,7 +1105,7 @@ async def test_cancel_endpoint_is_capability_bound_and_idempotent(
         thread_id="thread-1",
         agent_id="coding-agent",
         sandbox_id=sandbox.id,
-        deadline_at=app_module.utcnow() + timedelta(hours=24),
+        deadline_at=utcnow() + timedelta(hours=24),
     )
     task = await test_context.coding_repository.bind_initial_run(
         task.external_run_id,
@@ -1191,7 +1161,7 @@ async def test_cancel_endpoint_is_capability_bound_and_idempotent(
         thread_id="thread-1",
         agent_id="coding-agent",
         sandbox_id="different-sandbox",
-        deadline_at=app_module.utcnow() + timedelta(hours=24),
+        deadline_at=utcnow() + timedelta(hours=24),
     )
     mismatch_response = await client.post(
         "/agui/cancel",
@@ -1203,221 +1173,6 @@ async def test_cancel_endpoint_is_capability_bound_and_idempotent(
     unchanged = await test_context.coding_repository.get_task(mismatched.external_run_id)
     assert unchanged is not None and unchanged.status == "pending"
     assert workflow_probes == [False, False, False]
-
-
-@pytest.mark.anyio
-async def test_report_facade_does_not_create_legacy_outer_coding_task(monkeypatch):
-    called = False
-
-    async def create_report_task(_current, _value, _user_id):
-        nonlocal called
-        called = True
-
-    async def fake_run(_entity, _value, user_id=None):
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    async def no_delivery(**_kwargs):
-        return None
-
-    monkeypatch.setattr(app_module, "_ensure_report_task", create_report_task)
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    monkeypatch.setattr(
-        app_module.report_workflow_controller,
-        "validated_external_delivery",
-        no_delivery,
-    )
-    response = await app_module.run_agui(
-        direct_request(),
-        run_input(
-            "生成报表",
-            context=[
-                {
-                    "description": "已选智能体技能",
-                    "value": '[{"id":"report","name":"report"}]',
-                }
-            ],
-        ),
-    )
-
-    await response_body(response)
-
-    assert called is False
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("final_state", [{}, {app_module.REPORT_JOBS_STATE_KEY: {}}])
-async def test_report_route_blocks_unverified_success_text(monkeypatch, final_state):
-    install_legacy_report_guard(monkeypatch, app_module.workspace_service)
-
-    async def fake_run(entity, value, user_id=None):
-        assert entity is app_module.assistant_team
-        delivery = value.state[app_module.REPORT_DELIVERY_STATE_KEY]
-        state = {
-            **final_state,
-            app_module.REPORT_DELIVERY_STATE_KEY: delivery,
-        }
-        yield TextMessageStartEvent(message_id="assistant-1")
-        yield TextMessageContentEvent(message_id="assistant-1", delta="PDF 已生成：虚假.pdf")
-        yield TextMessageEndEvent(message_id="assistant-1")
-        yield StateSnapshotEvent(snapshot=state)
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    value = run_input(
-        "生成报表",
-        context=[
-            {
-                "description": "已选智能体技能",
-                "value": '[{"id":"report","name":"report"}]',
-            }
-        ],
-    )
-
-    response = await app_module.run_agui(direct_request(), value)
-    body = await response_body(response)
-
-    assert "PDF 已生成：虚假.pdf" not in body
-    assert app_module.REPORT_DELIVERY_INCOMPLETE_MESSAGE in body
-
-
-@pytest.mark.anyio
-async def test_report_route_rechecks_artifacts_before_releasing_success_text(monkeypatch):
-    job_id = "4662e53a-e97b-4438-a498-009537aa332d"
-
-    class FakeWorkspace:
-        entries = {
-            "数据/收入.csv": {"path": "数据/收入.csv", "size": 10, "sha256": "a" * 64},
-            "报表/收入.md": {"path": "报表/收入.md", "size": 20, "sha256": "b" * 64},
-            "报表/收入.pdf": {"path": "报表/收入.pdf", "size": 30, "sha256": "c" * 64},
-        }
-
-        async def ahash_file(self, _thread, path):
-            return dict(self.entries[path])
-
-    install_legacy_report_guard(monkeypatch, FakeWorkspace())
-
-    async def fake_run(entity, value, user_id=None):
-        assert entity is app_module.assistant_team
-        delivery = value.state[app_module.REPORT_DELIVERY_STATE_KEY]
-        delivery["jobId"] = job_id
-        state = {
-            app_module.REPORT_DELIVERY_STATE_KEY: delivery,
-            app_module.REPORT_JOBS_STATE_KEY: {
-                job_id: {
-                    "jobId": job_id,
-                    "_threadBinding": hashlib.sha256(b"thread-1").hexdigest(),
-                    "sources": [FakeWorkspace.entries["数据/收入.csv"]],
-                    "render": {
-                        "markdown": FakeWorkspace.entries["报表/收入.md"],
-                        "pdf": FakeWorkspace.entries["报表/收入.pdf"],
-                        "images": [],
-                    },
-                    "validation": {"ok": True, "pdfPath": "报表/收入.pdf"},
-                }
-            },
-        }
-        yield TextMessageStartEvent(message_id="assistant-1")
-        yield TextMessageContentEvent(message_id="assistant-1", delta="年度收入报表已完成。")
-        yield TextMessageEndEvent(message_id="assistant-1")
-        yield StateSnapshotEvent(snapshot=state)
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    request = direct_request()
-    request.app.state.agentos_context = replace(
-        app_module.application_context,
-        workspace_service=FakeWorkspace(),
-    )
-    value = run_input(
-        "生成报表",
-        context=[
-            {
-                "description": "已选智能体技能",
-                "value": '[{"id":"report","name":"report"}]',
-            }
-        ],
-    )
-
-    response = await app_module.run_agui(request, value)
-    body = await response_body(response)
-
-    assert "年度收入报表已完成。" in body
-    assert "报表/收入.md" in body
-    assert "报表/收入.pdf" in body
-    assert app_module.REPORT_DELIVERY_INCOMPLETE_MESSAGE not in body
-
-
-@pytest.mark.anyio
-async def test_report_route_blocks_validated_state_when_pdf_is_missing(monkeypatch):
-    job_id = "4662e53a-e97b-4438-a498-009537aa332d"
-
-    class MissingPdfWorkspace:
-        async def ahash_file(self, _thread, path):
-            if path == "报表/收入.pdf":
-                raise app_module.WorkspaceError("文件不存在")
-            return {
-                "path": path,
-                "size": 10,
-                "sha256": {"数据/收入.csv": "a", "报表/收入.md": "b"}[path] * 64,
-            }
-
-    install_legacy_report_guard(monkeypatch, MissingPdfWorkspace())
-
-    async def fake_run(_entity, value, user_id=None):
-        delivery = value.state[app_module.REPORT_DELIVERY_STATE_KEY]
-        delivery["jobId"] = job_id
-        yield TextMessageStartEvent(message_id="assistant-1")
-        yield TextMessageContentEvent(message_id="assistant-1", delta="PDF 已生成。")
-        yield TextMessageEndEvent(message_id="assistant-1")
-        yield StateSnapshotEvent(
-            snapshot={
-                app_module.REPORT_DELIVERY_STATE_KEY: delivery,
-                app_module.REPORT_JOBS_STATE_KEY: {
-                    job_id: {
-                        "jobId": job_id,
-                        "_threadBinding": hashlib.sha256(b"thread-1").hexdigest(),
-                        "sources": [{"path": "数据/收入.csv", "size": 10, "sha256": "a" * 64}],
-                        "render": {
-                            "markdown": {
-                                "path": "报表/收入.md",
-                                "size": 10,
-                                "sha256": "b" * 64,
-                            },
-                            "pdf": {
-                                "path": "报表/收入.pdf",
-                                "size": 30,
-                                "sha256": "c" * 64,
-                            },
-                            "images": [],
-                        },
-                        "validation": {"ok": True, "pdfPath": "报表/收入.pdf"},
-                    }
-                },
-            }
-        )
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    request = direct_request()
-    request.app.state.agentos_context = replace(
-        app_module.application_context,
-        workspace_service=MissingPdfWorkspace(),
-    )
-    value = run_input(
-        "生成报表",
-        context=[
-            {
-                "description": "已选智能体技能",
-                "value": '[{"id":"report","name":"report"}]',
-            }
-        ],
-    )
-
-    response = await app_module.run_agui(request, value)
-    body = await response_body(response)
-
-    assert "PDF 已生成。" not in body
-    assert app_module.REPORT_DELIVERY_INCOMPLETE_MESSAGE in body
 
 
 @pytest.mark.anyio
@@ -1441,146 +1196,11 @@ async def test_non_report_route_keeps_streaming_text_unchanged(monkeypatch):
     body = await response_body(response)
 
     assert "普通回答" in body
-    assert app_module.REPORT_DELIVERY_INCOMPLETE_MESSAGE not in body
 
 
 @pytest.mark.anyio
-async def test_report_attachment_context_is_server_derived_and_validated(monkeypatch):
-    captured = []
-
-    class FakeWorkspace:
-        @staticmethod
-        def normalize_path(path, allow_root=True):
-            del allow_root
-            return path, f"/home/daytona/workspace/{path}"
-
-        async def astat(self, thread, path):
-            assert thread == "thread-1"
-            assert path == "附件/收入.csv"
-            return {"path": path, "type": "file", "size": 18}
-
-        async def ahash_file(self, thread, path):
-            assert thread == "thread-1"
-            return {"path": path, "size": 18, "sha256": "a" * 64}
-
-    async def no_session(**_kwargs):
-        return None
-
-    async def fake_run(entity, value, user_id=None):
-        captured.append((entity, value, user_id))
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module.report_agent, "aget_session", no_session)
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    request = direct_request()
-    request.app.state.agentos_context = replace(
-        app_module.application_context,
-        workspace_service=FakeWorkspace(),
-    )
-    value = run_input(
-        "分析附件",
-        messages=[
-            {
-                "id": "user-1",
-                "role": "user",
-                "content": "分析附件",
-                "attachments": [
-                    {
-                        "workspacePath": "附件/收入.csv",
-                        "name": "伪造名称",
-                        "tool": "sandbox_exec",
-                    }
-                ],
-            }
-        ],
-        context=[
-            {
-                "description": "已选智能体技能",
-                "value": '[{"id":"report","name":"report"}]',
-            },
-            {
-                "description": app_module.CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
-                "value": '[{"path":"其他.csv","type":"file"}]',
-            },
-        ],
-    )
-
-    response = await app_module.run_agui(request, value)
-    await response_body(response)
-
-    attachment_context = next(
-        item
-        for item in captured[0][1].context
-        if item.description == app_module.CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY
-    )
-    assert json.loads(attachment_context.value) == [
-        {
-            "path": "附件/收入.csv",
-            "type": "file",
-            "size": 18,
-            "sha256": "a" * 64,
-        }
-    ]
-    assert "伪造名称" not in attachment_context.value
-    assert "sandbox_exec" not in attachment_context.value
-    assert routed_member_id(captured[0][1]) == app_module.report_agent.id
-
-
-@pytest.mark.anyio
-async def test_invalid_report_attachment_returns_stable_error_without_running_agent(monkeypatch):
-    called = False
-
-    class ChangedWorkspace:
-        @staticmethod
-        def normalize_path(path, allow_root=True):
-            del allow_root
-            return path, f"/home/daytona/workspace/{path}"
-
-        async def astat(self, _thread, path):
-            return {"path": path, "type": "file", "size": 18}
-
-        async def ahash_file(self, _thread, path):
-            return {"path": path, "size": 19, "sha256": "a" * 64}
-
-    async def fake_run(_entity, _value, user_id=None):
-        del user_id
-        nonlocal called
-        called = True
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    request = direct_request()
-    request.app.state.agentos_context = replace(
-        app_module.application_context,
-        workspace_service=ChangedWorkspace(),
-    )
-    value = run_input(
-        "分析附件",
-        messages=[
-            {
-                "id": "user-1",
-                "role": "user",
-                "content": "分析附件",
-                "attachments": [{"workspacePath": "附件/收入.csv"}],
-            }
-        ],
-        context=[
-            {
-                "description": "已选智能体技能",
-                "value": '[{"id":"report","name":"report"}]',
-            }
-        ],
-    )
-
-    response = await app_module.run_agui(request, value)
-    body = await response_body(response)
-
-    assert called is False
-    assert "report_attachment_invalid" in body
-
-
-@pytest.mark.anyio
-async def test_report_resume_uses_agent_from_stored_run(monkeypatch):
+@pytest.mark.parametrize("experimental_agent_id", ["report-agent", "coding-agent"])
+async def test_experimental_agent_runs_cannot_resume(monkeypatch, experimental_agent_id):
     session = AgentSession(
         session_id="thread-1",
         agent_id="odoo-assistant",
@@ -1589,18 +1209,20 @@ async def test_report_resume_uses_agent_from_stored_run(monkeypatch):
             RunOutput(
                 run_id="run-1",
                 session_id="thread-1",
-                agent_id="report-agent",
+                agent_id=experimental_agent_id,
                 status=RunStatus.paused,
             )
         ],
     )
-    calls = []
+    called = False
 
     async def get_session(**_kwargs):
         return session
 
-    async def fake_run(entity, value, user_id=None):
-        calls.append((entity, value))
+    async def fake_run(_entity, _value, user_id=None):
+        del user_id
+        nonlocal called
+        called = True
         yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
 
     monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
@@ -1613,14 +1235,10 @@ async def test_report_resume_uses_agent_from_stored_run(monkeypatch):
     )
 
     response = await app_module.run_agui(direct_request(), value)
-    await response_body(response)
+    body = await response_body(response)
 
-    assert calls[0][0] is app_module.report_agent
-    assert app_module.REPORT_DELIVERY_STATE_KEY not in calls[0][1].state
-    contexts = {item.description: item.value for item in calls[0][1].context}
-    assert json.loads(contexts[app_module.REPORT_WORKFLOW_SCOPE_DEPENDENCY]) == {
-        "externalRunId": "run-1"
-    }
+    assert called is False
+    assert "run_agent_not_found" in body
 
 
 @pytest.mark.anyio
@@ -1693,220 +1311,7 @@ async def test_resume_fails_closed_when_stored_run_agent_cannot_be_resolved(monk
 
 
 @pytest.mark.anyio
-async def test_report_resume_ignores_fresh_request_command_candidates(monkeypatch):
-    session = AgentSession(
-        session_id="thread-1",
-        agent_id="odoo-assistant",
-        user_id="owner",
-        runs=[
-            RunOutput(
-                run_id="run-1",
-                session_id="thread-1",
-                agent_id="report-agent",
-                status=RunStatus.paused,
-            )
-        ],
-    )
-    calls = []
-
-    async def get_session(**_kwargs):
-        return session
-
-    async def fake_run(entity, _value, user_id=None):
-        calls.append(entity)
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    value = run_input(
-        messages=[
-            {"id": "user-1", "role": "user", "content": "生成报表"},
-            {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
-        ],
-        tools=("odoo.navigate_menu",),
-    )
-
-    response = await app_module.run_agui(direct_request(), value)
-    await response_body(response)
-
-    assert calls == [app_module.report_agent]
-
-
-@pytest.mark.anyio
-async def test_legacy_report_pending_tool_returns_stable_migration_error(monkeypatch):
-    session = AgentSession(
-        session_id="thread-1",
-        agent_id="report-agent",
-        user_id="owner",
-        runs=[
-            RunOutput(
-                run_id="run-1",
-                session_id="thread-1",
-                agent_id="report-agent",
-                status=RunStatus.paused,
-                requirements=[
-                    RunRequirement(
-                        ToolExecution(
-                            tool_name="workspace_write_file",
-                            requires_confirmation=True,
-                        )
-                    )
-                ],
-            )
-        ],
-    )
-
-    async def no_team_session(**_kwargs):
-        return None
-
-    async def get_session(**_kwargs):
-        return session
-
-    async def unexpected_run(*_args, **_kwargs):
-        raise AssertionError("旧工具待处理调用不得进入新工具循环")
-        yield
-
-    monkeypatch.setattr(app_module.assistant_team, "aget_session", no_team_session)
-    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
-    monkeypatch.setattr(app_module.report_agent, "aget_session", get_session)
-    monkeypatch.setattr(app_module, "run_entity", unexpected_run)
-    value = run_input(
-        messages=[
-            {"id": "user-1", "role": "user", "content": "继续"},
-            {"id": "tool-1", "role": "tool", "content": "{}", "toolCallId": "call-1"},
-        ]
-    )
-
-    response = await app_module.run_agui(direct_request(), value)
-    body = await response_body(response)
-
-    assert app_module.REPORT_TOOL_MIGRATION_ERROR in body
-    assert "workspace_write_file" in body
-
-
-@pytest.mark.anyio
-async def test_report_analysis_traceback_is_redacted_from_agui_stream(monkeypatch):
-    async def fake_run(entity, _value, user_id=None):
-        assert entity is app_module.assistant_team
-        yield ToolCallStartEvent(
-            tool_call_id="analysis-call",
-            tool_call_name="report_analyze_dataset",
-        )
-        yield ToolCallResultEvent(
-            message_id="tool-message",
-            tool_call_id="analysis-call",
-            content=json.dumps(
-                {
-                    "ok": False,
-                    "status": "analysis_failed",
-                    "exitCode": 1,
-                    "output": "Traceback (most recent call last): secret-path",
-                }
-            ),
-            raw_event={"output": "Traceback: secret-path"},
-        )
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    value = run_input(
-        "生成报表",
-        context=[
-            {
-                "description": "已选智能体技能",
-                "value": '[{"id":"report","name":"report"}]',
-            }
-        ],
-    )
-
-    response = await app_module.run_agui(direct_request(), value)
-    body = await response_body(response)
-
-    assert "Traceback" not in body
-    assert "secret-path" not in body
-    assert "outputRedacted" in body
-    assert "analysis_failed" in body
-
-
-@pytest.mark.anyio
-async def test_report_analysis_traceback_is_redacted_without_start_event(monkeypatch):
-    async def fake_run(entity, _value, user_id=None):
-        assert entity is app_module.assistant_team
-        yield ToolCallResultEvent(
-            message_id="analysis-call",
-            tool_call_id="analysis-call",
-            content=json.dumps(
-                {
-                    "ok": False,
-                    "jobId": "job-1",
-                    "status": "analysis_failed",
-                    "roundCount": 1,
-                    "successfulRoundCount": 0,
-                    "exitCode": 1,
-                    "output": "Traceback (most recent call last): secret-path",
-                    "truncated": False,
-                }
-            ),
-            raw_event={"output": "Traceback: secret-path"},
-        )
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module, "run_entity", fake_run)
-    value = run_input(
-        "生成报表",
-        context=[
-            {
-                "description": "已选智能体技能",
-                "value": '[{"id":"report","name":"report"}]',
-            }
-        ],
-    )
-
-    response = await app_module.run_agui(direct_request(), value)
-    body = await response_body(response)
-
-    assert "Traceback" not in body
-    assert "secret-path" not in body
-    assert "outputRedacted" in body
-    assert "analysis_failed" in body
-
-
-@pytest.mark.anyio
-async def test_branch_uses_source_run_agent_instead_of_session_agent(monkeypatch):
-    branch = SimpleNamespace(source_thread_id="source-thread", source_run_id="source-run")
-    session = AgentSession(
-        session_id="source-thread",
-        agent_id="odoo-assistant",
-        user_id="owner",
-        runs=[
-            RunOutput(
-                run_id="source-run",
-                session_id="source-thread",
-                agent_id="report-agent",
-                status=RunStatus.completed,
-            )
-        ],
-    )
-    calls = []
-
-    async def get_session(**_kwargs):
-        return session
-
-    async def fake_branch(entity, workspace, value, spec, user_id):
-        calls.append((entity, workspace, value, spec, user_id))
-        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
-
-    monkeypatch.setattr(app_module.assistant, "aget_session", get_session)
-    monkeypatch.setattr(app_module, "run_branch", fake_branch)
-    request = direct_request(branch)
-
-    response = await app_module.run_agui(request, run_input())
-    await response_body(response)
-
-    assert calls[0][0] is app_module.report_agent
-
-
-@pytest.mark.anyio
-async def test_report_skill_takes_priority_over_declared_odoo_commands(monkeypatch):
+async def test_report_skill_does_not_override_production_team_candidates(monkeypatch):
     calls = []
 
     async def fake_run(entity, value, user_id=None):
@@ -1930,7 +1335,10 @@ async def test_report_skill_takes_priority_over_declared_odoo_commands(monkeypat
     await response_body(response)
 
     assert calls[0][0] is app_module.assistant_team
-    assert routed_member_id(calls[0][1]) == app_module.report_agent.id
+    assert routed_member_ids(calls[0][1]) == [
+        app_module.assistant.id,
+        app_module.odoo_command_assistant.id,
+    ]
 
 
 @pytest.mark.anyio
@@ -1965,12 +1373,11 @@ async def test_raw_reasoning_content_is_not_forwarded_to_sse(monkeypatch):
 @pytest.mark.parametrize(
     ("tools", "expected_member_ids"),
     [
-        ((), [app_module.assistant.id, app_module.coding_agent.id]),
+        ((), [app_module.assistant.id]),
         (
             ("odoo.navigate_menu", "odoo.apply_filter", "odoo.export_current_view"),
             [
                 app_module.assistant.id,
-                app_module.coding_agent.id,
                 app_module.odoo_command_assistant.id,
             ],
         ),
@@ -1978,14 +1385,13 @@ async def test_raw_reasoning_content_is_not_forwarded_to_sse(monkeypatch):
             ("odoo.business.expense.submit",),
             [
                 app_module.assistant.id,
-                app_module.coding_agent.id,
                 app_module.odoo_command_assistant.id,
             ],
         ),
-        (("odoo.unknown_command",), [app_module.assistant.id, app_module.coding_agent.id]),
-        (("odoo.business.",), [app_module.assistant.id, app_module.coding_agent.id]),
-        (("odoo.business.invalid",), [app_module.assistant.id, app_module.coding_agent.id]),
-        (("custom.browser_tool",), [app_module.assistant.id, app_module.coding_agent.id]),
+        (("odoo.unknown_command",), [app_module.assistant.id]),
+        (("odoo.business.",), [app_module.assistant.id]),
+        (("odoo.business.invalid",), [app_module.assistant.id]),
+        (("custom.browser_tool",), [app_module.assistant.id]),
     ],
 )
 async def test_fresh_request_limits_team_candidates_by_declared_capabilities(
@@ -2024,7 +1430,6 @@ async def test_fresh_request_limits_team_candidates_by_declared_capabilities(
                 "odoo.business.expense.submit",
             ],
         ),
-        (app_module.report_agent, ["odoo.export_current_view"]),
     ],
 )
 def test_direct_agent_paths_filter_client_tools_by_member_boundary(entity, expected_tools):

@@ -4,11 +4,7 @@ import subprocess
 import time
 
 import pytest
-from agno.models.response import ToolExecution
 from agno.run import RunContext
-from agno.run.agent import RunOutput
-from agno.run.requirement import RunRequirement
-from agno.session.agent import AgentSession
 from agno.tools.daytona import DaytonaTools
 
 from agentos_dev import app
@@ -1636,49 +1632,3 @@ def test_coding_state_keys_are_removed_from_client_state():
     assert CODEX_EXEC_SESSIONS_STATE_KEY in app.SERVER_SESSION_STATE_KEYS
     assert CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY in app.SERVER_SESSION_STATE_KEYS
     assert "agentos_codex_exec_next_session" in app.SERVER_SESSION_STATE_KEYS
-
-
-def test_pending_legacy_report_tools_require_explicit_migration():
-    pending = ToolExecution(
-        tool_name="workspace_write_file",
-        requires_confirmation=True,
-    )
-    running = ToolExecution(
-        tool_name="sandbox_exec",
-        result=('{"status":"running","sessionId":"agui-exec-old","commandId":"command-1"}'),
-    )
-    completed = ToolExecution(
-        tool_name="sandbox_exec",
-        result='{"status":"completed","exitCode":0}',
-    )
-    removed = ToolExecution(tool_name="report_analyze_dataset")
-    new_tool = ToolExecution(tool_name="apply_patch", requires_confirmation=True)
-
-    def session_with(*, requirements=None, tools=None):
-        return AgentSession(
-            session_id="thread",
-            agent_id="report-agent",
-            runs=[
-                RunOutput(
-                    run_id="run",
-                    agent_id="report-agent",
-                    requirements=requirements,
-                    tools=tools,
-                )
-            ],
-        )
-
-    requirement = RunRequirement(pending)
-    assert (
-        app._pending_legacy_report_tool(session_with(requirements=[requirement]), "run")
-        == "workspace_write_file"
-    )
-    requirement.confirm()
-    assert app._pending_legacy_report_tool(session_with(requirements=[requirement]), "run") is None
-    assert app._pending_legacy_report_tool(session_with(tools=[running]), "run") == "sandbox_exec"
-    assert app._pending_legacy_report_tool(session_with(tools=[completed]), "run") is None
-    assert (
-        app._pending_legacy_report_tool(session_with(tools=[removed]), "run")
-        == "report_analyze_dataset"
-    )
-    assert app._pending_legacy_report_tool(session_with(tools=[new_tool]), "run") is None

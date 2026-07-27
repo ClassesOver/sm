@@ -56,7 +56,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert sum(is_skill_script_hook(hook) for hook in coding_agent.tool_hooks) == 1
     assert sum(is_coding_tool_scheduler_hook(hook) for hook in coding_agent.tool_hooks) == 1
     assert [skill.name for skill in coding_agent.skills.get_all_skills()] == ["sandbox-tooling"]
-    assert coding_agent.id in {
+    assert coding_agent.id not in {
         member.id
         for member in app.assistant_team.members(
             RunContext(run_id="run", session_id="thread", session_state={})
