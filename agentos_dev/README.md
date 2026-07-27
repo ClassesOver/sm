@@ -209,8 +209,8 @@ thinking。Coding facade 的 Agno 官方 `arun(..., stream=True, stream_events=T
 默认继续设置 `network_block_all=true`；运维可通过 `DAYTONA_NETWORK_ALLOW_LIST` 为新建 sandbox
 配置最多 10 个逗号分隔的 IPv4 CIDR，此时只发送 `network_allow_list`。白名单不支持端口约束，
 已有 sandbox 也不会自动变更网络策略；端口限制仍由出口防火墙或目标服务 ACL 承担。
-为避免 provider reasoning 进入 Agno 调试日志，thinking 开启时 `AGENT_DEBUG` 不生效；需要模型级
-调试时必须先关闭 thinking，且不得在生产环境记录包含业务数据的请求或响应正文。
+`AGENT_DEBUG` 与 `AGENT_ENABLE_THINKING` 独立生效；两者同时开启时，Agno 调试日志可能包含
+provider reasoning。不得在生产环境记录包含业务数据的请求、响应正文或 reasoning。
 
 上述配置不改变能力边界。Odoo `BasicModel` 仍是业务页面状态的唯一事实来源；命令仍经过
 注册、策略、准备/确认和一次性授权链路；分析命令仍受 thread 隔离、Daytona、网络、路径、

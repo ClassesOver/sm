@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from agno.agent import Agent
 from agno.agent._tools import parse_tools
+from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.run.agent import RunOutput
 from agno.run.team import TeamRunOutput
@@ -19,7 +20,10 @@ from agentos_dev.agents import (
     ODOO_HOST_COMMAND_NAMES,
     OPENAI_COMPATIBLE_ROLE_MAP,
     TEAM_ROUTE_DEPENDENCY,
+    create_assistant_team,
 )
+from agentos_dev.agents.assistant import create_assistant
+from agentos_dev.agents.odoo_command import create_odoo_command_assistant
 from agentos_dev.coding.execution import is_coding_tool_scheduler_hook
 from agentos_dev.coding.reporting.instructions import (
     build_report_agent_instructions,
@@ -39,6 +43,7 @@ from agentos_dev.instructions import (
     build_coding_agent_instructions,
     build_odoo_command_instructions,
 )
+from agentos_dev.settings import AgentSettings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -124,6 +129,35 @@ def test_agent_uses_dynamic_instructions_callable():
 
 def test_openai_compatible_role_map_preserves_system_instructions():
     assert OPENAI_COMPATIBLE_ROLE_MAP["system"] == "system"
+
+
+def test_production_assistant_debug_mode_is_independent_from_thinking():
+    settings = AgentSettings.from_environment(
+        {
+            "AGENT_DEBUG": "true",
+            "AGENT_ENABLE_THINKING": "true",
+            "AGENT_ENABLE_TOOL_RESULT_COMPRESSION": "false",
+            "AGENT_ENABLE_SESSION_SUMMARIES": "false",
+        },
+        load_env_file=False,
+    )
+    model = OpenAIChat(id="test-model", api_key="test-key")
+    assistant = create_assistant(
+        settings,
+        None,
+        object(),  # type: ignore[arg-type]
+        [],
+        model,
+        model,
+        model,
+        None,  # type: ignore[arg-type]
+    )
+    command_assistant = create_odoo_command_assistant(assistant, [])
+    team = create_assistant_team(assistant, command_assistant)
+
+    assert assistant.debug_mode is True
+    assert command_assistant.debug_mode is True
+    assert team.debug_mode is True
 
 
 def test_coding_agent_uses_trusted_per_run_instructions():

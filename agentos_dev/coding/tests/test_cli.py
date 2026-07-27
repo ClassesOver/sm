@@ -92,9 +92,9 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert request_params["parallel_tool_calls"] is True
 
 
-def test_cli_debug_mode_requires_debug_enabled_and_thinking_disabled():
+def test_cli_debug_mode_is_independent_from_thinking():
     settings = AgentSettings.from_environment(
-        {"AGENT_DEBUG": "true", "AGENT_ENABLE_THINKING": "false"},
+        {"AGENT_DEBUG": "true", "AGENT_ENABLE_THINKING": "true"},
         load_env_file=False,
     )
     context = CliContext(

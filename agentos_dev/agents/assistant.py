@@ -62,7 +62,7 @@ def create_assistant(
         else None,
         retries=0,
         post_hooks=[clear_terminal_reasoning],
-        debug_mode=settings.debug and not settings.enable_thinking,
+        debug_mode=settings.debug,
         markdown=True,
         tool_choice="auto",
     )
