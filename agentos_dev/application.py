@@ -42,7 +42,6 @@ def create_agentos_app(
         agents=[
             context.assistant,
             context.odoo_command_assistant,
-            context.report_agent,
         ],
         teams=[context.assistant_team],
         interfaces=[AGUI(team=context.assistant_team)],

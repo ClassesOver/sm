@@ -47,7 +47,6 @@ from .agents import (
     TEAM_ROUTE_DEPENDENCY,
     create_assistant_team,
     create_assistants,
-    create_coding_facade_agent,
     is_odoo_command_name,
 )
 from .application import ApplicationContext, create_agentos_app
@@ -1181,12 +1180,9 @@ coding_supervisor = CodingTaskSupervisor(
     execution_cleanup=CodingExecutionKernel(workspace_service, coding_repository),
     validator_registry=SkillValidatorRegistry.from_skills(coding_agent.skills),
 )
-team_coding_member = create_coding_facade_agent(coding_agent, coding_supervisor, workspace_service)
 assistant_team = create_assistant_team(
     assistant,
     odoo_command_assistant,
-    team_coding_member,
-    report_agent,
     workspace_service,
 )
 
@@ -1303,7 +1299,7 @@ async def run_agui(request: Request, run_input: RunAgentInput):
             run_agent: Agent | Team | None
             history_entity: Agent | Team | None = None
             if fresh_request:
-                run_agent = context.assistant_team
+                run_agent = context.report_agent if report_selected else context.assistant_team
                 if legacy_agent_session:
                     history_entity = existing_entity
             else:
@@ -1382,28 +1378,14 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                         )
                 if not attachment_error:
                     if fresh_request and run_agent is context.assistant_team:
-                        member_ids = (
-                            [context.report_agent.id]
-                            if report_selected
-                            else [
-                                context.assistant.id,
-                                *(
-                                    [context.coding_agent.id]
-                                    if context.coding_agent is not None
-                                    else []
-                                ),
-                                *(
-                                    [context.odoo_command_assistant.id]
-                                    if declared_odoo_commands
-                                    else []
-                                ),
-                                *(
-                                    [context.report_agent.id]
-                                    if existing_entity is context.report_agent
-                                    else []
-                                ),
-                            ]
-                        )
+                        member_ids = [
+                            context.assistant.id,
+                            *(
+                                [context.odoo_command_assistant.id]
+                                if declared_odoo_commands
+                                else []
+                            ),
+                        ]
                         server_context = [
                             *(server_context or []),
                             _team_route_context(*member_ids),
