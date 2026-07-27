@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -21,7 +22,7 @@ from .coding.acceptance import (
 
 BUILTIN_CODING_SKILLS_DIR = Path(__file__).with_name("builtin_skills")
 CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY = "agentos_coding_skill_script_receipts"
-CODING_SKILL_SCRIPT_ROOT = "/home/.agentos/skill-scripts"
+CODING_SKILL_SCRIPT_ROOT = "/home/daytona/.agentos/skill-scripts"
 MAX_SKILL_SCRIPT_RECEIPTS = 64
 MAX_SKILL_VALIDATORS = 32
 MAX_SKILL_VALIDATOR_SCRIPT_BYTES = 1024 * 1024
@@ -33,6 +34,22 @@ _SKILL_SCRIPT_HOOK_MARKER = "_agentos_skill_script_hook"
 
 class SkillAcceptanceError(ValueError):
     pass
+
+
+async def lock_sandbox_paths(sandbox: Any, permissions: dict[str, str]) -> None:
+    if not permissions or any(
+        not path.startswith("/home/daytona/.agentos/") or mode not in {"444", "555"}
+        for path, mode in permissions.items()
+    ):
+        raise SkillAcceptanceError("只读脚本权限范围无效。")
+    commands = [shlex.join(["sudo", "chown", "root:root", "--", *permissions])]
+    for mode in sorted(set(permissions.values())):
+        paths = [path for path, path_mode in permissions.items() if path_mode == mode]
+        commands.append(shlex.join(["sudo", "chmod", mode, "--", *paths]))
+    command = " && ".join(commands)
+    result = await sandbox.process.exec(command, timeout=30)
+    if getattr(result, "exit_code", None) != 0:
+        raise SkillAcceptanceError("只读脚本所有权设置失败。")
 
 
 @dataclass(frozen=True)
@@ -223,38 +240,36 @@ async def skill_script_receipt_hook(
         install_digest = hashlib.sha256(f"{skill}:{path}:{digest}".encode()).hexdigest()
         install_dir = f"{CODING_SKILL_SCRIPT_ROOT}/{install_digest}"
         readonly_path = f"{install_dir}/{Path(path).name}"
+        lock_key = f"skill-script-install:{workspace_service._hash(thread_id)}"
         async with workspace_service._async_client() as client:
             sandbox = await workspace_service._asandbox_for(client, thread_id)
-            current = ""
-            directories: list[str] = []
-            for part in install_dir.strip("/").split("/"):
-                current = f"{current}/{part}"
-                directories.append(current)
+            async with workspace_service.async_registry.locked(lock_key):
+                current = ""
+                for part in install_dir.strip("/").split("/"):
+                    current = f"{current}/{part}"
+                    try:
+                        info = await sandbox.fs.get_file_info(current)
+                    except DaytonaNotFoundError:
+                        await sandbox.fs.create_folder(current, "755")
+                        continue
+                    if workspace_service._is_symlink(info) or not bool(
+                        getattr(info, "is_dir", False)
+                    ):
+                        raise SkillAcceptanceError("Skill 脚本安装目录不是安全普通目录。")
                 try:
-                    info = await sandbox.fs.get_file_info(current)
+                    info = await sandbox.fs.get_file_info(readonly_path)
                 except DaytonaNotFoundError:
-                    await sandbox.fs.create_folder(current, "755")
-                    continue
-                if workspace_service._is_symlink(info) or not bool(getattr(info, "is_dir", False)):
-                    raise SkillAcceptanceError("Skill 脚本安装目录不是安全普通目录。")
-            try:
-                info = await sandbox.fs.get_file_info(readonly_path)
-            except DaytonaNotFoundError:
-                await sandbox.fs.upload_file(encoded, readonly_path)
-            else:
-                if not workspace_service._is_regular_file(info):
-                    raise SkillAcceptanceError("Skill 脚本安装路径不是普通文件。")
-            installed = await sandbox.fs.download_file(readonly_path)
-            if hashlib.sha256(installed).hexdigest() != digest:
-                raise SkillAcceptanceError("Skill 脚本安装摘要验证失败。")
-            await sandbox.fs.set_file_permissions(
-                readonly_path, mode="555", owner="root", group="root"
-            )
-            for directory in reversed(directories):
-                if directory.startswith("/home/.agentos"):
-                    await sandbox.fs.set_file_permissions(
-                        directory, mode="555", owner="root", group="root"
-                    )
+                    await sandbox.fs.upload_file(encoded, readonly_path)
+                else:
+                    if not workspace_service._is_regular_file(info):
+                        raise SkillAcceptanceError("Skill 脚本安装路径不是普通文件。")
+                installed = await sandbox.fs.download_file(readonly_path)
+                if hashlib.sha256(installed).hexdigest() != digest:
+                    raise SkillAcceptanceError("Skill 脚本安装摘要验证失败。")
+                await lock_sandbox_paths(
+                    sandbox,
+                    {readonly_path: "555", install_dir: "555"},
+                )
         payload = {**payload, "readonly_path": readonly_path}
         result = json.dumps(payload, ensure_ascii=False) if isinstance(result, str) else payload
     if not isinstance(run_context.session_state, dict):

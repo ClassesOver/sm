@@ -35,6 +35,7 @@ from ..skills import (
     SkillAcceptanceError,
     SkillValidator,
     SkillValidatorRegistry,
+    lock_sandbox_paths,
 )
 from ..workspace import (
     MANAGED_PROCESS_PREFIX,
@@ -77,7 +78,8 @@ CODING_TOOL_OUTPUT_STATE_KEY = "agentos_coding_tool_outputs"
 CODING_TOOL_PROGRESS_STATE_KEY = "agentos_coding_tool_progress"
 CODING_TOOL_FAILURE_STATE_KEY = "agentos_coding_tool_failures"
 TOOL_OUTPUT_ROOT = "/home/daytona/.agentos/tool-output"
-VALIDATOR_ROOT = "/home/.agentos/validators"
+VALIDATOR_ROOT = "/home/daytona/.agentos/validators"
+READONLY_RUNTIME_ROOT = "/home/daytona/.agentos/runtime"
 MAX_VALIDATOR_REQUEST_BYTES = 256 * 1024
 MAX_VALIDATOR_RESULT_BYTES = 32 * 1024
 MAX_VALIDATOR_DETAIL_BYTES = 512
@@ -1132,6 +1134,9 @@ class CodingExecutionKernel:
         )
         if patch_changes is not None:
             self._reject_writable_skill_script_copy(patch_changes, run_context)
+        terminal_runtime = (
+            None if patch is not None else await self._install_terminal_runtime(scope)
+        )
         patch_receipt = self._patch_receipt(patch_changes) if patch_changes is not None else None
         read_only = (
             _read_only
@@ -1210,7 +1215,26 @@ class CodingExecutionKernel:
                     "intercepted_tool": "patch",
                 }
 
-        managed_command = self._managed_command(command, workdir, timeout, pty)
+        assert terminal_runtime is not None
+        protected_command = shlex.join(
+            [
+                "python3",
+                "-I",
+                "-B",
+                terminal_runtime,
+                "--write-root",
+                WORKSPACE_ROOT,
+                "--write-root",
+                "/tmp",
+                "--write-root",
+                "/home/daytona/.cache",
+                "--write-root",
+                "/home/daytona/.config",
+                "--shell-command",
+                command,
+            ]
+        )
+        managed_command = self._managed_command(protected_command, workdir, timeout, pty)
         try:
             async for sandbox in self._sandbox(scope):
                 session_id, command_id, _value = await self.workspace._start_managed_session(
@@ -1285,6 +1309,39 @@ class CodingExecutionKernel:
                 "code": code,
                 "message": message,
             }
+        raise AssertionError("Daytona 客户端上下文未返回 sandbox。")
+
+    async def _install_terminal_runtime(self, scope: CodingTaskScope) -> str:
+        runtime_dir = f"{READONLY_RUNTIME_ROOT}/{READONLY_SCRIPT_RUNTIME_SHA256}"
+        runtime_path = f"{runtime_dir}/readonly_script_runtime.py"
+        lock_key = f"readonly-runtime-install:{scope.sandbox_id}"
+        async for sandbox in self._sandbox(scope):
+            async with self.service.async_registry.locked(lock_key):
+                current = ""
+                for part in runtime_dir.strip("/").split("/"):
+                    current = f"{current}/{part}"
+                    try:
+                        info = await sandbox.fs.get_file_info(current)
+                    except DaytonaNotFoundError:
+                        await sandbox.fs.create_folder(current, "700")
+                        continue
+                    if self.service._is_symlink(info) or not bool(getattr(info, "is_dir", False)):
+                        raise WorkspaceError("只读执行 runtime 安装目录不是安全普通目录。")
+                try:
+                    info = await sandbox.fs.get_file_info(runtime_path)
+                except DaytonaNotFoundError:
+                    await sandbox.fs.upload_file(READONLY_SCRIPT_RUNTIME, runtime_path)
+                else:
+                    if not self.service._is_regular_file(info):
+                        raise WorkspaceError("只读执行 runtime 安装路径不是普通文件。")
+                installed = await sandbox.fs.download_file(runtime_path)
+                if hashlib.sha256(installed).hexdigest() != READONLY_SCRIPT_RUNTIME_SHA256:
+                    raise WorkspaceError("只读执行 runtime 摘要验证失败。")
+                await lock_sandbox_paths(
+                    sandbox,
+                    {runtime_path: "555", runtime_dir: "555"},
+                )
+                return runtime_path
         raise AssertionError("Daytona 客户端上下文未返回 sandbox。")
 
     async def poll(
@@ -2069,10 +2126,8 @@ class CodingExecutionKernel:
         runtime_path = f"{validator_dir}/readonly_script_runtime.py"
         async for sandbox in self._sandbox(scope):
             current = ""
-            directories: list[str] = []
             for part in validator_dir.strip("/").split("/"):
                 current = f"{current}/{part}"
-                directories.append(current)
                 try:
                     info = await sandbox.fs.get_file_info(current)
                 except DaytonaNotFoundError:
@@ -2090,15 +2145,15 @@ class CodingExecutionKernel:
                 content = await sandbox.fs.download_file(path)
                 if hashlib.sha256(content).hexdigest() != digest:
                     raise WorkspaceError("validator 只读脚本摘要验证失败。")
-                await sandbox.fs.set_file_permissions(path, mode="555", owner="root", group="root")
-            await sandbox.fs.set_file_permissions(
-                request_path, mode="444", owner="root", group="root"
+            await lock_sandbox_paths(
+                sandbox,
+                {
+                    script_path: "555",
+                    runtime_path: "555",
+                    request_path: "444",
+                    validator_dir: "555",
+                },
             )
-            for directory in reversed(directories):
-                if directory.startswith("/home/.agentos"):
-                    await sandbox.fs.set_file_permissions(
-                        directory, mode="555", owner="root", group="root"
-                    )
         return _InstalledValidator(
             directory=validator_dir,
             script_path=script_path,
@@ -2128,9 +2183,20 @@ class CodingExecutionKernel:
         return False
 
     async def _delete_validator_install(self, scope: CodingTaskScope, validator_dir: str) -> None:
+        if not validator_dir.startswith(f"{VALIDATOR_ROOT}/"):
+            return
         try:
             async for sandbox in self._sandbox(scope):
-                await sandbox.fs.delete_file(validator_dir, recursive=True)
+                result = await sandbox.process.exec(
+                    shlex.join(["sudo", "rm", "-rf", "--", validator_dir]),
+                    timeout=30,
+                )
+                if getattr(result, "exit_code", None) != 0:
+                    raise WorkspaceError("validator 临时目录清理失败。")
+                try:
+                    await sandbox.fs.delete_file(validator_dir, recursive=True)
+                except DaytonaNotFoundError:
+                    pass
         except (CodingRepositoryError, DaytonaNotFoundError, WorkspaceError):
             pass
 
