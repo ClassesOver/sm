@@ -27,6 +27,7 @@ class ApplicationContext:
     skills: Any
     assistant: Agent
     odoo_command_assistant: Agent
+    # Report/Coding 仅供综合服务内部调度，不注册为独立对外 AgentOS agent。
     report_agent: Agent
     assistant_team: Team
     coding_agent: Agent | None = None
@@ -50,10 +51,10 @@ def create_agentos_app(
 
     agent_os = AgentOS(
         name="HRP开发服务",
+        # Coding/Report 暂时只作为 assistant_team 内部成员使用。
         agents=[
             context.assistant,
             context.odoo_command_assistant,
-            context.report_agent,
         ],
         teams=[context.assistant_team],
         interfaces=[AGUI(team=context.assistant_team)],
