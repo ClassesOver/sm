@@ -39,6 +39,7 @@ class TaskSession:
         return self._lease
 
     async def __aenter__(self) -> TaskSession:
+        await self.repository.cleanup_expired(lease_owner=self._owner)
         claimed = await self.repository.claim_lease(
             self.scope.external_run_id, self._owner, ttl=self.lease_ttl
         )

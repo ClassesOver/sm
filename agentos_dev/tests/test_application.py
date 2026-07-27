@@ -25,9 +25,13 @@ class FakeSkills:
 class FakeWorkspace:
     def __init__(self, name):
         self.name = name
+        self.close_calls = 0
 
     def list_files(self, _thread_id, _path):
         return [{"name": self.name}]
+
+    async def aclose(self):
+        self.close_calls += 1
 
 
 @pytest.fixture
@@ -118,6 +122,37 @@ def test_application_passes_trace_database_to_agentos(monkeypatch):
     create_agentos_app(context, FastAPI())
 
     assert captured["db"] is database.async_db
+
+
+@pytest.mark.anyio
+async def test_application_lifespan_closes_workspace_service(monkeypatch):
+    captured = {}
+
+    class FakeAgentOS:
+        def __init__(self, **values):
+            captured.update(values)
+
+        def get_app(self):
+            return captured["base_app"]
+
+    monkeypatch.setattr("agentos_dev.application.AgentOS", FakeAgentOS)
+    monkeypatch.setattr("agentos_dev.application.AGUI", lambda **value: value)
+    settings = AgentSettings.from_environment({}, load_env_file=False)
+    workspace = FakeWorkspace("lifespan")
+    context = ApplicationContext(
+        settings,
+        workspace,
+        FakeSkills("test"),
+        FakeAssistant(),
+        FakeAssistant(),
+        FakeAssistant(),
+        FakeAssistant(),
+    )
+
+    create_agentos_app(context, FastAPI())
+    async with captured["lifespan"](FastAPI()):
+        assert workspace.close_calls == 0
+    assert workspace.close_calls == 1
 
 
 def test_default_application_exposes_explicit_context():

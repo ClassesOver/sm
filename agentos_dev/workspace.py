@@ -6,8 +6,10 @@ import json
 import mimetypes
 import re
 import shlex
+import threading
 import unicodedata
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, MutableMapping
 from contextlib import asynccontextmanager, contextmanager
 from io import BytesIO
@@ -66,6 +68,7 @@ MAX_BRANCH_FILES = 2000
 MAX_BRANCH_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_BRANCH_FILE_BYTES = 200 * 1024 * 1024
 MAX_INSPECT_PDF_PAGES = 200
+MAX_SANDBOX_ID_CACHE_ENTRIES = 1024
 IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 MANAGED_PROCESS_PREFIX = "agui-exec-"
 MANAGED_TIMEOUT_ENV = "AGUI_MANAGED_TIMEOUT_MARKER"
@@ -327,6 +330,12 @@ class WorkspaceService:
         self._client = client
         self.registry = registry or SandboxRegistry(database.sync_db if database else None)
         self._async_client_override = async_client
+        self._owned_async_client: Any | None = None
+        self._async_client_close_task: asyncio.Task[None] | None = None
+        self._async_client_closed = False
+        self._async_client_state_lock = threading.Lock()
+        self._sandbox_ids: OrderedDict[str, str] = OrderedDict()
+        self._sandbox_ids_lock = threading.Lock()
         self.async_registry = async_registry or AsyncSandboxRegistry(
             database.async_db if database else None
         )
@@ -342,11 +351,44 @@ class WorkspaceService:
         if self._async_client_override is not None:
             yield self._async_client_override
             return
-        client = AsyncDaytona()
-        try:
-            yield client
-        finally:
-            await complete_cleanup(client.close())
+        with self._async_client_state_lock:
+            if self._async_client_closed:
+                raise WorkspaceError("Daytona 客户端已经关闭。")
+            if self._owned_async_client is None:
+                self._owned_async_client = AsyncDaytona()
+            client = self._owned_async_client
+        yield client
+
+    async def aclose(self) -> None:
+        if self._async_client_override is not None:
+            return
+        with self._async_client_state_lock:
+            self._async_client_closed = True
+            close_task = self._async_client_close_task
+            if close_task is None and self._owned_async_client is not None:
+                close_task = asyncio.create_task(self._owned_async_client.close())
+                self._async_client_close_task = close_task
+        if close_task is not None:
+            await complete_cleanup(close_task)
+
+    def _cached_sandbox_id(self, value: str) -> str | None:
+        with self._sandbox_ids_lock:
+            sandbox_id = self._sandbox_ids.get(value)
+            if sandbox_id is not None:
+                self._sandbox_ids.move_to_end(value)
+            return sandbox_id
+
+    def _cache_sandbox_id(self, value: str, sandbox_id: str) -> None:
+        with self._sandbox_ids_lock:
+            self._sandbox_ids[value] = sandbox_id
+            self._sandbox_ids.move_to_end(value)
+            while len(self._sandbox_ids) > MAX_SANDBOX_ID_CACHE_ENTRIES:
+                self._sandbox_ids.popitem(last=False)
+
+    def _invalidate_sandbox_id(self, value: str, sandbox_id: str | None = None) -> None:
+        with self._sandbox_ids_lock:
+            if sandbox_id is None or self._sandbox_ids.get(value) == sandbox_id:
+                self._sandbox_ids.pop(value, None)
 
     def _hash(self, thread: str) -> str:
         return thread_label(thread, self.secret)
@@ -360,8 +402,11 @@ class WorkspaceService:
         sandbox_id = registry.get(value)
         if sandbox_id:
             try:
-                return self.client.get(sandbox_id)
+                sandbox = self.client.get(sandbox_id)
+                self._cache_sandbox_id(value, sandbox_id)
+                return sandbox
             except DaytonaNotFoundError:
+                self._invalidate_sandbox_id(value, sandbox_id)
                 registry.delete(value)
         matches = list(
             self.client.list(
@@ -375,54 +420,68 @@ class WorkspaceService:
             raise WorkspaceError("当前对话关联了多个运行环境，请联系管理员清理后重试。")
         if matches:
             registry.set(value, matches[0].id)
+            self._cache_sandbox_id(value, matches[0].id)
             return matches[0]
         return None
 
-    def sandbox_for(self, thread: str, create: bool = True):
-        value = self._hash(thread)
-        with self.registry.locked(value) as registry:
-            sandbox = self._find_existing(value, registry)
-            if sandbox is None and create:
-                sandbox = self.client.create(
-                    CreateSandboxFromSnapshotParams(
-                        snapshot=self.snapshot,
-                        name=f"agui-{value[:20]}",
-                        language="python",
-                        labels={"agui-thread": value},
-                        public=False,
-                        ephemeral=False,
-                        auto_stop_interval=60,
-                        auto_archive_interval=0,
-                        auto_delete_interval=-1,
-                        **self._sandbox_network_settings(),
-                    )
-                )
-                registry.set(value, sandbox.id)
-            if sandbox is None:
-                return None
+    def _ready_sandbox(self, sandbox: Any):
+        raw_state = getattr(sandbox, "state", "")
+        state = str(getattr(raw_state, "value", raw_state) or "").lower()
+        if state in {"stopped", "archived"}:
+            self.client.start(sandbox)
             raw_state = getattr(sandbox, "state", "")
             state = str(getattr(raw_state, "value", raw_state) or "").lower()
-            if state in {"stopped", "archived"}:
-                self.client.start(sandbox)
-                raw_state = getattr(sandbox, "state", "")
-                state = str(getattr(raw_state, "value", raw_state) or "").lower()
-            if state in {
-                "creating",
-                "restoring",
-                "starting",
-                "pending_build",
-                "building_snapshot",
-                "pulling_snapshot",
-                "resuming",
-            }:
-                raise WorkspaceError("当前工作区正在启动，请稍后重试。")
-            if state != "started":
-                raise WorkspaceError("当前工作区状态异常，请稍后重试；如问题持续，请联系管理员。")
-            self._ensure_directory(sandbox, WORKSPACE_ROOT)
-            return sandbox
+        if state in {
+            "creating",
+            "restoring",
+            "starting",
+            "pending_build",
+            "building_snapshot",
+            "pulling_snapshot",
+            "resuming",
+        }:
+            raise WorkspaceError("当前工作区正在启动，请稍后重试。")
+        if state != "started":
+            raise WorkspaceError("当前工作区状态异常，请稍后重试；如问题持续，请联系管理员。")
+        self._ensure_directory(sandbox, WORKSPACE_ROOT)
+        return sandbox
+
+    def sandbox_for(self, thread: str, create: bool = True):
+        value = self._hash(thread)
+        sandbox = None
+        sandbox_id = self._cached_sandbox_id(value)
+        if sandbox_id is not None:
+            try:
+                sandbox = self.client.get(sandbox_id)
+            except DaytonaNotFoundError:
+                self._invalidate_sandbox_id(value, sandbox_id)
+        if sandbox is None:
+            with self.registry.locked(value) as registry:
+                sandbox = self._find_existing(value, registry)
+                if sandbox is None and create:
+                    sandbox = self.client.create(
+                        CreateSandboxFromSnapshotParams(
+                            snapshot=self.snapshot,
+                            name=f"agui-{value[:20]}",
+                            language="python",
+                            labels={"agui-thread": value},
+                            public=False,
+                            ephemeral=False,
+                            auto_stop_interval=60,
+                            auto_archive_interval=0,
+                            auto_delete_interval=-1,
+                            **self._sandbox_network_settings(),
+                        )
+                    )
+                    registry.set(value, sandbox.id)
+                    self._cache_sandbox_id(value, sandbox.id)
+        if sandbox is None:
+            return None
+        return self._ready_sandbox(sandbox)
 
     def destroy(self, thread: str) -> bool:
         value = self._hash(thread)
+        self._invalidate_sandbox_id(value)
         with self.registry.locked(value) as registry:
             sandboxes = {}
             sandbox_id = registry.get(value)
@@ -444,14 +503,18 @@ class WorkspaceService:
                 except DaytonaNotFoundError:
                     pass
             registry.delete(value)
+            self._invalidate_sandbox_id(value)
             return bool(sandboxes)
 
     async def _afind_existing(self, client: Any, value: str, registry: Any):
         sandbox_id = await registry.get(value)
         if sandbox_id:
             try:
-                return await client.get(sandbox_id)
+                sandbox = await client.get(sandbox_id)
+                self._cache_sandbox_id(value, sandbox_id)
+                return sandbox
             except DaytonaNotFoundError:
+                self._invalidate_sandbox_id(value, sandbox_id)
                 await registry.delete(value)
         matches = [
             sandbox
@@ -466,54 +529,68 @@ class WorkspaceService:
             raise WorkspaceError("当前对话关联了多个运行环境，请联系管理员清理后重试。")
         if matches:
             await registry.set(value, matches[0].id)
+            self._cache_sandbox_id(value, matches[0].id)
             return matches[0]
         return None
 
-    async def _asandbox_for(self, client: Any, thread: str, create: bool = True):
-        value = self._hash(thread)
-        async with self.async_registry.locked(value) as registry:
-            sandbox = await self._afind_existing(client, value, registry)
-            if sandbox is None and create:
-                sandbox = await client.create(
-                    CreateSandboxFromSnapshotParams(
-                        snapshot=self.snapshot,
-                        name=f"agui-{value[:20]}",
-                        language="python",
-                        labels={"agui-thread": value},
-                        public=False,
-                        ephemeral=False,
-                        auto_stop_interval=60,
-                        auto_archive_interval=0,
-                        auto_delete_interval=-1,
-                        **self._sandbox_network_settings(),
-                    )
-                )
-                await registry.set(value, sandbox.id)
-            if sandbox is None:
-                return None
+    async def _aready_sandbox(self, client: Any, sandbox: Any):
+        raw_state = getattr(sandbox, "state", "")
+        state = str(getattr(raw_state, "value", raw_state) or "").lower()
+        if state in {"stopped", "archived"}:
+            await client.start(sandbox)
             raw_state = getattr(sandbox, "state", "")
             state = str(getattr(raw_state, "value", raw_state) or "").lower()
-            if state in {"stopped", "archived"}:
-                await client.start(sandbox)
-                raw_state = getattr(sandbox, "state", "")
-                state = str(getattr(raw_state, "value", raw_state) or "").lower()
-            if state in {
-                "creating",
-                "restoring",
-                "starting",
-                "pending_build",
-                "building_snapshot",
-                "pulling_snapshot",
-                "resuming",
-            }:
-                raise WorkspaceError("当前工作区正在启动，请稍后重试。")
-            if state != "started":
-                raise WorkspaceError("当前工作区状态异常，请稍后重试；如问题持续，请联系管理员。")
-            await self._aensure_directory(sandbox, WORKSPACE_ROOT)
-            return sandbox
+        if state in {
+            "creating",
+            "restoring",
+            "starting",
+            "pending_build",
+            "building_snapshot",
+            "pulling_snapshot",
+            "resuming",
+        }:
+            raise WorkspaceError("当前工作区正在启动，请稍后重试。")
+        if state != "started":
+            raise WorkspaceError("当前工作区状态异常，请稍后重试；如问题持续，请联系管理员。")
+        await self._aensure_directory(sandbox, WORKSPACE_ROOT)
+        return sandbox
+
+    async def _asandbox_for(self, client: Any, thread: str, create: bool = True):
+        value = self._hash(thread)
+        sandbox = None
+        sandbox_id = self._cached_sandbox_id(value)
+        if sandbox_id is not None:
+            try:
+                sandbox = await client.get(sandbox_id)
+            except DaytonaNotFoundError:
+                self._invalidate_sandbox_id(value, sandbox_id)
+        if sandbox is None:
+            async with self.async_registry.locked(value) as registry:
+                sandbox = await self._afind_existing(client, value, registry)
+                if sandbox is None and create:
+                    sandbox = await client.create(
+                        CreateSandboxFromSnapshotParams(
+                            snapshot=self.snapshot,
+                            name=f"agui-{value[:20]}",
+                            language="python",
+                            labels={"agui-thread": value},
+                            public=False,
+                            ephemeral=False,
+                            auto_stop_interval=60,
+                            auto_archive_interval=0,
+                            auto_delete_interval=-1,
+                            **self._sandbox_network_settings(),
+                        )
+                    )
+                    await registry.set(value, sandbox.id)
+                    self._cache_sandbox_id(value, sandbox.id)
+        if sandbox is None:
+            return None
+        return await self._aready_sandbox(client, sandbox)
 
     async def _adestroy(self, client: Any, thread: str) -> bool:
         value = self._hash(thread)
+        self._invalidate_sandbox_id(value)
         async with self.async_registry.locked(value) as registry:
             sandboxes = {}
             sandbox_id = await registry.get(value)
@@ -535,6 +612,7 @@ class WorkspaceService:
                 except DaytonaNotFoundError:
                     pass
             await registry.delete(value)
+            self._invalidate_sandbox_id(value)
             return bool(sandboxes)
 
     async def adestroy(self, thread: str) -> bool:

@@ -25,7 +25,7 @@ from .odoo_command import (
     ODOO_COMMAND_ASSISTANT_ID,
     create_odoo_command_assistant,
 )
-from .report import create_report_agent, report_delivery_post_hook
+from .report import create_report_agent, create_report_worker, report_delivery_post_hook
 
 OPENAI_COMPATIBLE_ROLE_MAP = {
     "system": "system",
@@ -57,6 +57,7 @@ ODOO_HOST_COMMAND_NAMES = frozenset(
         "odoo.discard_current_form",
     }
 )
+REPORT_CLIENT_COMMAND_NAMES = frozenset({"odoo.export_current_view"})
 LEGACY_TEAM_IDS = frozenset({"odoo-assistant-team"})
 ODOO_BUSINESS_COMMAND_PATTERN = re.compile(r"odoo\.business\.[a-z0-9_]+\.[a-z0-9_]+\Z")
 TEAM_DELEGATION_TOOL_CHOICE = {
@@ -67,7 +68,9 @@ TEAM_ROUTE_DEPENDENCY = "AgentOS 可信团队路由"
 
 TEAM_INSTRUCTIONS = [
     "服务端已按请求边界筛选本轮可用成员；必须委派给其中最匹配用户意图的一个成员，并直接返回其结果。",
-    "普通问答委派给 general-assistant；明确要求执行 Odoo 页面或业务操作时委派给 odoo-command-assistant。",
+    "普通问答和非开发类技能委派给 general-assistant；代码和工作区开发任务委派给 coding-agent；"
+    "明确要求执行 Odoo 页面或业务操作时委派给 odoo-command-assistant；显式报表技能委派给 "
+    "report-agent。",
     "不得改派给本轮不可用的成员，也不得仅因请求声明了 Odoo 工具就推断用户要求执行 Odoo 操作。",
 ]
 
@@ -177,25 +180,25 @@ def create_assistants(
         context_token_budget=settings.context_token_budget,
         output_token_reserve=settings.output_token_reserve,
     )
-    report_agent = create_report_agent(
+    report_worker = create_report_worker(
         coding_agent,
         workspace_service,
         coding_repository,
         instructions=report_instructions,
         context_token_budget=settings.context_token_budget,
         output_token_reserve=settings.output_token_reserve,
-        report_data_sources_file=settings.report_data_sources_file,
-        database_url=settings.database_url,
     )
-    return assistant, odoo_command_assistant, coding_agent, report_agent
+    return assistant, odoo_command_assistant, coding_agent, report_worker
 
 
 def create_assistant_team(
     assistant: Agent,
     odoo_command_assistant: Agent,
+    coding_agent: Agent,
+    report_agent: Agent,
     workspace_service: WorkspaceService,
 ) -> Team:
-    all_members = [assistant, odoo_command_assistant]
+    all_members = [assistant, odoo_command_assistant, coding_agent, report_agent]
     members_by_id = {member.id: member for member in all_members}
 
     def members_for_run(run_context: RunContext) -> list[Agent]:
@@ -203,9 +206,16 @@ def create_assistant_team(
         command_tools = [
             tool for tool in declared_client_tools if is_odoo_command_name(_tool_name(tool))
         ]
+        report_tools = [
+            tool
+            for tool in declared_client_tools
+            if _tool_name(tool) in REPORT_CLIENT_COMMAND_NAMES
+        ]
         allowed_by_member_id = {
             assistant.id: [],
             odoo_command_assistant.id: command_tools,
+            coding_agent.id: [],
+            report_agent.id: report_tools,
         }
 
         route = (run_context.dependencies or {}).get(TEAM_ROUTE_DEPENDENCY)
@@ -276,6 +286,7 @@ __all__ = [
     "ODOO_COMMAND_ASSISTANT_ID",
     "ODOO_HOST_COMMAND_NAMES",
     "OPENAI_COMPATIBLE_ROLE_MAP",
+    "REPORT_CLIENT_COMMAND_NAMES",
     "TEAM_DELEGATION_TOOL_CHOICE",
     "TEAM_INSTRUCTIONS",
     "TEAM_ROUTE_DEPENDENCY",
@@ -286,5 +297,6 @@ __all__ = [
     "create_coding_facade_agent",
     "create_odoo_command_assistant",
     "create_report_agent",
+    "create_report_worker",
     "is_odoo_command_name",
 ]

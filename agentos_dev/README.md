@@ -18,15 +18,25 @@ uv pip install --python .venv-agent/bin/python -r agentos_dev/requirements.txt
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app
 ```
 
-独立 Coding Agent CLI 不启动 FastAPI、Team 或 AG-UI 路由，可直接使用同一套模型、数据库和
-Daytona 工作区配置：
+独立 CLI 不启动 FastAPI、Team 或 AG-UI 路由，可直接使用同一套模型、数据库和 Daytona
+工作区配置。无参数时进入 Coding 模式：
 
 ```bash
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.cli
 ```
 
-CLI 不接收命令行参数，直接使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和
-退出控制。原生 CLI 面向只暴露 `run_coding_task` 的 facade Agent；该工具把完整目标交给
+报表模式使用同一个 `ReportWorkflowController` 和终端审核 adapter；输入报表目标、临时 StarRocks
+连接块和 DDL 后，以单独一行 `/run` 提交：
+
+```bash
+AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.cli report
+```
+
+报表 CLI 在服务和 tracing 初始化前完成连接块解析与脱敏，随后依次处理来源、提纲、按需 SQL 和发布
+审核；批准、带反馈拒绝和取消都恢复同一持久化 Workflow run。临时凭据只保留到本轮 CLI 会话结束。
+
+Coding 模式使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和退出控制。原生 CLI
+面向只暴露 `run_coding_task` 的 facade Agent；该工具把完整目标交给
 `CodingTaskSupervisor`。facade 与底层 `coding-agent-cli` 均使用 `MODEL`；facade 为兼容强制
 `tool_choice` 显式关闭 thinking，底层 Agent 使用 `reasoning_effort=medium` 执行受控工具闭环。
 因此 CLI 不导入
@@ -53,15 +63,17 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 `http://127.0.0.1:7777/agui` 并开启“允许跨域开发服务”。
 
 主 Assistant 通过 Agno callable tools factory 注册 `AgentControlToolkit` 和 `BaseToolkit`；
-Coding Agent 固定注册生产 `WorkspaceCodingToolkit`；Report Agent 在此基础上注册
-`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`。生产 Coding Toolkit 继承 Agno
+Coding Agent 固定注册生产 `WorkspaceCodingToolkit`。公开 `report-agent` 只注册
+`ReportWorkflowToolkit` 的启动、批准、拒绝和取消四个 facade 工具；未注册到 AgentOS 的
+`report-worker` 才持有 `WorkspaceCodingToolkit`、`ReportDataSourceToolkit` 和
+`WorkspaceReportToolkit`。生产 Coding Toolkit 继承 Agno
 `DaytonaTools` 类型，但跳过其创建 sandbox 的初始化逻辑，通过共享 `CodingExecutionKernel` 和
 `WorkspaceService` 使用当前 thread 唯一 Daytona sandbox。旧 `CodingToolkit` 仅保留兼容与回归测试，
 不会与生产 Toolkit 同时提供给模型。
 Base 层提供受限终端及
 后台会话、基于 ripgrep 的文件/文本搜索、分段读取、文件统计、递归目录树、SHA-256、只读 Git、
-定位 hunk、单文件补丁、完整变更集、目录创建、文件复制、图片查看和 PDF 检查；报表层只提供能力发现、
-数据登记、多轮分析和 Markdown 转 PDF。BaseToolkit 的读取、检查和后台轮询无需确认，新建、覆盖、
+定位 hunk、单文件补丁、完整变更集、目录创建、文件复制、图片查看和 PDF 检查；报表 worker 的内部
+工具提供数据登记、多轮分析和 Markdown 转 PDF。BaseToolkit 的读取、检查和后台轮询无需确认，新建、覆盖、
 补丁、移动、删除、通用 `sandbox_exec`、后台输入及终止需要确认；生产 Coding Toolkit 的受控终端、
 进程、补丁、显式验证、只读检索、输出重读、图片、计划和验收工具均不要求确认。
 所有能力仍绑定当前 thread 的 Daytona
@@ -91,8 +103,8 @@ Coding `terminal.command` 以 UTF-8 字节计最多 32 KiB；大段文件内容�
 
 ## Coding Agent 配置
 
-这里的“对齐”是让 report-agent 成为受 Daytona 隔离的 coding agent 扩展，同时保留数据源、
-Markdown/PDF 和 Odoo 导出的报表能力。当前采用以下配置：
+这里的“对齐”是让内部 `report-worker` 成为受 Daytona 隔离的 coding agent 扩展，同时让公开
+`report-agent` 保持轻量 Workflow facade。当前采用以下配置：
 
 | 配置 | 当前值 | 作用 |
 | --- | --- | --- |
@@ -145,7 +157,8 @@ Coding facade 的 ID 是 `coding-agent`，只通过 `run_coding_task` 调用 Sup
 `coding_agent` 仅作为 Supervisor 内部执行器负责代码和工作区开发任务；
 `odoo_command_assistant` 的 ID 是 `odoo-command-assistant`，只获得本轮声明且属于固定宿主 command
 目录或合法 `odoo.business.<namespace>.<command>` 的工具，不获得工作区或报表工具；`report_agent`
-负责工作区编码、数据分析和报表工具，额外只允许 `odoo.export_current_view`。
+只包装 Agno Workflow。来源校验、受限画像、取数、Coding 分析、PDF 验收和发布审核由 Workflow
+服务端步骤及未公开的 `report-worker` 完成。
 
 显式选择智能报表技能时，可信路由上下文只暴露 `report_agent`。其他新请求默认暴露普通和 Coding
 成员；存在合法 Odoo command 能力时再追加 command 成员，由 Team 领导者按用户意图选择。工具目录
@@ -223,10 +236,15 @@ Markdown/heredoc 外壳和 Add File 纯空行提供有限格式兼容。对于�
 `terminal` 还接受完整、独立的 `apply_patch <<'PATCH'` heredoc：服务端在进入远端 Shell 前拦截
 它并复用同一 Patch 解析与原子提交层，因此不依赖 Daytona 镜像安装同名命令；格式错误或夹带其他
 Shell 命令时拒绝且不写文件。供应商 API 已拒绝的畸形函数参数无法到达该 fallback，仍须由模型或
-供应商重试为有效工具调用。`report-agent` 从该基座派生，固定暴露生产 Coding Toolkit、
-`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`。它不使用固定 Workflow，
-模型自行决定分析命令、运行时长和迭代轮次；Report 层只保留数据源物化、输入绑定、Markdown/PDF
-渲染及验收。完整文件内容不会注入模型上下文；模型从数据源句柄取得工作区路径后使用 Coding 工具分析。
+供应商重试为有效工具调用。`report-worker` 从该基座派生，固定暴露生产 Coding Toolkit、
+`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`，但不注册为 AgentOS 公共 Agent 或 Team
+member。生产路由仍由公开 `report-agent` 接收，它只通过四个 `report_workflow_*` 工具调用
+`ReportWorkflowController`；`AgentOS` 不额外注册 Workflow，也不增加第二条传输链路。
+`agentos_dev.reporting` 的 Agno Workflow 依次处理来源确认、受限画像、提纲审核、分析计划、取数需求、
+SQL 候选与按需审核、不可变数据集物化、Coding 分析、PDF 验收和发布审核。AG-UI 和 CLI adapter
+只负责暂停、反馈、继续和取消。Report 层保留数据源物化、输入绑定、Markdown/PDF 渲染及验收。
+完整文件内容不会注入 facade 模型；内部 worker 只从 AnalysisPlan、DataRequirement 和
+DatasetHandle 取得分析输入，不持有数据库凭据。
 复杂分析优先通过受控只读工具检查文件、搜索内容和查看 Git 状态或差异；新文件使用
 `create_file`，完整覆盖使用带最新 SHA-256 的 `overwrite_file`，已有文件的小范围修改优先使用
 `replace_text`，删除、移动或多文件修改使用 `apply_patch`。
@@ -300,6 +318,13 @@ AgentOS 自身 PostgreSQL 会被拒绝。示例：
 }
 ```
 
+临时数据库只支持 StarRocks，并使用官方 `starrocks==1.3.3` SQLAlchemy dialect。`/agui` 在模型、
+session 和 run tracing 之前解析连接块，原始密码只进入进程内凭据仓，脱敏请求仅携带 opaque binding ID。
+首次连接必须经过来源确认，主机必须命中服务端 `AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST`
+（精确主机名、IP 或 CIDR，逗号分隔），`root`、管理员或无法证明目标表只读权限的
+账号会被拒绝。凭据按两小时无活动过期，会话关闭或进程重启后不可恢复；实际元数据与 DDL 不一致时
+必须重新确认来源。
+
 SQL 只允许单条 `SELECT` 或只读 CTE，并强制只读事务、超时、schema/table 白名单和结果
 分片限制。Compose 默认只读挂载仓库中的空配置 `deploy/agentos/report-data-sources.json`；
 生产环境通过 `AGENT_REPORT_DATA_SOURCES_FILE` 指向宿主机配置，并确保 `dsnEnv` 对应变量已
@@ -312,14 +337,15 @@ SQL 只允许单条 `SELECT` 或只读 CTE，并强制只读事务、超时、sc
 `agent_prepare_continuation` 保存摘要、待办和工作区相对产物路径；该工具只建立下一 run 可见的受控
 交接，不会递归启动 run，也不会绕过工具确认。计划全部完成时交接状态会被清除。
 
-智能报表先将数据源物化为当前 thread 绑定的 DatasetHandle，再以 SHA-256、大小和 thread 绑定创建
-服务端 job。模型随后直接使用 Coding Toolkit
-执行当前 Daytona 工作区允许的 Python、Shell 或其他分析命令；Report 层不再提供能力探测、固定剖析、
+智能报表 Workflow 先将数据源物化为当前 thread 绑定的 DatasetHandle，再以 SHA-256、大小和 thread
+绑定创建服务端 job。内部 `report-worker` 随后使用 Coding Toolkit
+执行当前 Daytona 工作区允许的 Python、Shell 或其他分析命令；公开 facade 不接收 DatasetHandle、
+SQL 或数据库凭据。Report 层不再提供能力探测、固定剖析、
 独立命令执行器、60 秒分析超时或成功轮次门槛。模型生成完整 Markdown 和本地图表后，将其渲染为
 不覆盖已有文件的新 PDF；渲染和 PDF 验收各自最多运行 600 秒。PDF 限制为 200 MiB 和 200 页，运行时使用
 Poppler 将 PDF 逐页栅格化，检查空白页、文本、图片数量和像素占比，并把 Markdown、图片、PDF 的
-路径、大小、SHA-256 和验收结果写入 AgentOS 的持久化 session state。只有 `report_job_status` 返回 `validated`
-且产物未变化才算完成。系统不再使用固定模板、`compile` 或 `blocks`。
+路径、大小、SHA-256 和验收结果写入 Workflow 持久化状态。只有 PDF 验收通过且最终发布审核获批，
+SSE 交付门禁才返回正式产物。系统不再使用固定模板、`compile` 或 `blocks`。
 sandbox 的 `/tmp/workspace-report-*` 仅用于一次渲染或验收的临时文件；超时和失败都会由 AgentOS 清理，
 不能作为 job 状态或验收依据。Markdown、图片和 PDF 输出到 `报表/生成结果/<job_id>/`。生产环境必须使用仓库现有
 `docker/sandbox-tools` 镜像，以提供 ripgrep、WeasyPrint 69、pypdf、数据分析库和 Noto CJK。镜像
@@ -385,7 +411,8 @@ sandbox，独立只读探查可并行，存在依赖时串行，并在修改前�
 也不会放宽确认、网络、路径、文件或超时边界。
 
 `coding-agent` 还固定加载随 AgentOS 镜像打包的 `agentos_dev/builtin_skills/sandbox-tooling` 系统
-Skill，`report-agent` 从 coding 基座继承该 Skill。它按需披露当前 Daytona sandbox-tools
+Skill，内部 `report-worker` 从 coding 基座继承该 Skill，公开 `report-agent` 不加载 Coding Skill。
+该系统 Skill 按需披露当前 Daytona sandbox-tools
 镜像已预装和明确未预装的开发、文档、数据及数据库客户端能力。生产 Coding Agent 不受
 `AGENT_SKILLS_DIR` 配置影响，也不进入前端可选业务 Skill 列表；原生 CLI Coding Agent 会在该
 内置 Skill 之后追加加载 `AGENT_SKILLS_DIR`，并以 Agno `LocalSkills(validate=False)` 兼容

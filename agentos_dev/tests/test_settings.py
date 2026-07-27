@@ -17,6 +17,7 @@ def test_settings_defaults():
     assert current.database_url == DEFAULT_AGENT_DB_URL
     assert current.workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
     assert current.daytona_network_allow_list is None
+    assert current.report_source_network_allow_list is None
     assert current.cors_allowed_origins == (
         "http://127.0.0.1:18069",
         "http://localhost:18069",
@@ -121,6 +122,27 @@ def test_report_data_sources_file_is_trimmed():
     assert settings(
         AGENT_REPORT_DATA_SOURCES_FILE=" /run/report-sources.json "
     ).report_data_sources_file == ("/run/report-sources.json")
+
+
+def test_report_source_network_allow_list支持主机名和cidr():
+    current = settings(
+        AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST=(
+            " sr.internal., 203.0.113.10, 192.168.1.0/24, SR.INTERNAL "
+        )
+    )
+
+    assert current.report_source_network_allow_list == (
+        "sr.internal,203.0.113.10/32,192.168.1.0/24"
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["*.internal", "https://sr.internal", "bad_host", ",sr.internal"],
+)
+def test_report_source_network_allow_list拒绝无效目标(value):
+    with pytest.raises(ValueError, match="AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST"):
+        settings(AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST=value)
 
 
 def test_context_budget_rejects_invalid_reserve():

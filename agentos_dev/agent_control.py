@@ -5,8 +5,7 @@ from typing import Any
 from agno.run import RunContext
 from agno.tools import Toolkit
 
-from .report_data_sources import ReportDataSourceToolkit
-from .workspace import BaseToolkit, WorkspaceReportToolkit, WorkspaceService
+from .workspace import BaseToolkit, WorkspaceService
 
 AGENT_PLAN_STATE_KEY = "agentos_plan"
 AGENT_CONTINUATION_STATE_KEY = "agentos_continuation"
@@ -121,7 +120,7 @@ def build_coding_agent_tools(
     ]
 
 
-def build_report_agent_tools(
+def build_report_worker_tools(
     workspace_service: WorkspaceService,
     coding_repository,
     validator_registry=None,
@@ -130,37 +129,16 @@ def build_report_agent_tools(
     agent: Any | None = None,
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
-    report_data_sources_file: str | None = None,
-    database_url: str | None = None,
 ) -> list[Toolkit]:
-    """ReportAgent 固定工具工厂；每个 run 重新解析当前引用和受控 session state。"""
+    """Report Worker 只执行 Coding 分析，不持有数据库或 SQL 工具。"""
     from .coding.execution import WorkspaceCodingToolkit
-
-    data_sources = ReportDataSourceToolkit(
-        workspace_service,
-        config_path=report_data_sources_file,
-        excluded_database_url=database_url,
-    )
-
-    async def validated_delivery(run_context: RunContext):
-        state = run_context.session_state if isinstance(run_context.session_state, dict) else {}
-        delivery = state.get("report_delivery")
-        delivery_id = delivery.get("deliveryId") if isinstance(delivery, dict) else None
-        if not isinstance(delivery_id, str):
-            return None
-        return await WorkspaceReportToolkit(workspace_service).validated_delivery(
-            delivery_id, run_context
-        )
 
     return [
         WorkspaceCodingToolkit(
             workspace_service,
             coding_repository,
-            completion_evidence=validated_delivery,
             validator_registry=validator_registry,
-        ),
-        data_sources,
-        WorkspaceReportToolkit(workspace_service, data_sources=data_sources),
+        )
     ]
 
 

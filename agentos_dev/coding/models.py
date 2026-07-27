@@ -88,6 +88,8 @@ class TaskSnapshot:
     acceptance_contract: dict[str, Any] | None = None
     finish_receipt: dict[str, Any] | None = None
     result_text: str | None = None
+    lease_owner: str | None = None
+    lease_expires_at: datetime | None = None
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,7 @@ from agentos_dev.agent_control import (
     AGENT_PLAN_STATE_KEY,
     AgentControlToolkit,
     build_agent_tools,
-    build_report_agent_tools,
+    build_report_worker_tools,
     validated_agent_plan,
 )
 from agentos_dev.tests.workspace_fakes import service
@@ -175,16 +175,12 @@ def test_report_toolkit_is_discoverable_but_requires_skill_route(tmp_path):
     )
     assert [tool.name for tool in tools] == ["agent_control", "base"]
 
-    report_tools = build_report_agent_tools(
+    report_tools = build_report_worker_tools(
         workspace_service,
         app.coding_repository,
         run_context=SimpleNamespace(session_state=context.session_state, dependencies={}),
     )
-    assert [tool.name for tool in report_tools] == [
-        "workspace_coding",
-        "report_data_sources",
-        "workspace_report",
-    ]
+    assert [tool.name for tool in report_tools] == ["workspace_coding"]
 
 
 def test_tool_factory_injects_model_budget_and_continuation(tmp_path):

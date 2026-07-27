@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import hashlib
 import inspect
@@ -8,6 +9,7 @@ import re
 import shlex
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 from uuid import uuid4
@@ -31,6 +33,8 @@ except ImportError:  # pragma: no cover - 仅用于依赖尚未安装的开发�
     exp = None
 
 REPORT_DATASET_HANDLES_STATE_KEY = "report_dataset_handles"
+REPORT_SOURCE_BINDING_STATE_KEY = "report_source_binding"
+REPORT_SOURCE_INTAKE_DEPENDENCY = "报表临时数据源绑定"
 CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY = "当前消息工作区附件"
 MAX_REPORT_INPUTS = 20
 MAX_DIRECTORY_ENTRIES = 200
@@ -580,6 +584,8 @@ class ReportDataSourceToolkit(Toolkit):
         config_path: str | None = None,
         environ: Mapping[str, str] | None = None,
         excluded_database_url: str | None = None,
+        temporary_source_bindings: Any | None = None,
+        temporary_report_credentials: Any | None = None,
     ):
         self.service = service
         self.registry = registry or ReportDataSourceRegistry(
@@ -588,20 +594,62 @@ class ReportDataSourceToolkit(Toolkit):
             environ=environ,
             excluded_database_url=excluded_database_url,
         )
+        self.temporary_source_bindings = temporary_source_bindings
+        self.temporary_report_credentials = temporary_report_credentials
+        tools: list[Any] = [
+            self.report_list_data_sources,
+            self.report_describe_data_source,
+            self.report_materialize_dataset,
+        ]
+        if temporary_source_bindings is not None and temporary_report_credentials is not None:
+            tools.insert(0, self.report_confirm_temporary_source)
         super().__init__(
             name="report_data_sources",
-            tools=[
-                self.report_list_data_sources,
-                self.report_describe_data_source,
-                self.report_materialize_dataset,
-            ],
+            tools=tools,
             instructions=(
                 "先用 report_list_data_sources 发现当前 thread 的文件引用和已注册只读数据库；"
                 "目录只描述直接子项，明确选择文件后再物化。后续报表准备只使用返回的 datasetId；"
                 "数据库 SQL 只能是服务端白名单内的单条 SELECT 或只读 CTE。"
             ),
             add_instructions=True,
+            requires_confirmation_tools=(
+                ["report_confirm_temporary_source"]
+                if temporary_source_bindings is not None
+                and temporary_report_credentials is not None
+                else []
+            ),
         )
+
+    async def report_confirm_temporary_source(
+        self,
+        confirmation_id: str,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        """确认当前消息中的脱敏 StarRocks 来源；批准后才首次连接并校验只读权限。"""
+        dependency = _temporary_source_intake(run_context)
+        assert dependency is not None
+        if dependency.get("confirmationId") != confirmation_id:
+            raise ReportDataSourceError(
+                "source_confirmation_scope_mismatch", "来源确认不属于当前消息。"
+            )
+        if self.temporary_source_bindings is None:
+            raise ReportDataSourceError("source_confirmation_unavailable", "临时来源确认不可用。")
+        try:
+            binding = await asyncio.to_thread(
+                self.temporary_source_bindings.approve,
+                confirmation_id,
+                user_id=_user(run_context),
+                thread_id=_thread(run_context),
+                session_id=_thread(run_context),
+            )
+        except Exception as error:
+            code = getattr(error, "code", "source_confirmation_failed")
+            message = getattr(error, "message", "临时来源确认失败。")
+            raise ReportDataSourceError(str(code), str(message)) from error
+        from .reporting.state import bind_report_source
+
+        bind_report_source(_session_state(run_context), binding)
+        return {"ok": True, "source": binding.public_dict()}
 
     async def report_list_data_sources(
         self,
@@ -627,6 +675,29 @@ class ReportDataSourceToolkit(Toolkit):
                 value["sha256"] = digest["sha256"]
             sources.append(value)
         sources.extend(source.public_dict() for source in self.registry.postgres_sources.values())
+        binding = _temporary_binding(run_context, required=False)
+        dependency = _temporary_source_intake(run_context, required=False)
+        if dependency and binding is None:
+            sources.append(
+                {
+                    "sourceId": f"pending:{dependency.get('confirmationId', '')}",
+                    "sourceType": "temporary_database_pending",
+                    "endpoint": dependency.get("endpoint"),
+                    "database": dependency.get("database"),
+                    "tables": dependency.get("ddlTables"),
+                    "capabilities": ["confirm"],
+                }
+            )
+        if binding is not None:
+            sources.append(
+                {
+                    "sourceId": binding.binding_id,
+                    "sourceType": "starrocks",
+                    "database": binding.database,
+                    "tables": list(binding.allowed_tables),
+                    "capabilities": ["describe", "query", "materialize"],
+                }
+            )
         return {"sources": sources}
 
     async def report_describe_data_source(
@@ -644,6 +715,24 @@ class ReportDataSourceToolkit(Toolkit):
                 "sourceType": "workspace",
                 "entries": entries[:MAX_DIRECTORY_ENTRIES],
                 "truncated": len(entries) > MAX_DIRECTORY_ENTRIES,
+            }
+        binding = _temporary_binding(run_context, required=False)
+        if binding is not None and source_id == binding.binding_id:
+            client = self._temporary_client(binding, run_context)
+            try:
+                description = await asyncio.to_thread(client.describe, binding.allowed_tables)
+            finally:
+                await asyncio.to_thread(client.close)
+            if description.metadata_fingerprint != binding.metadata_fingerprint:
+                raise ReportDataSourceError(
+                    "source_metadata_changed", "数据源元数据已变化，请重新确认。"
+                )
+            return {
+                "sourceId": binding.binding_id,
+                "sourceType": "starrocks",
+                "database": description.database,
+                "tables": description.tables,
+                "metadataFingerprint": description.metadata_fingerprint,
             }
         source = await self._resolve_source(source_id, run_context)
         if isinstance(source, WorkspaceDirectoryDataSource):
@@ -703,6 +792,13 @@ class ReportDataSourceToolkit(Toolkit):
             ]
             self._store_handles(handles, run_context)
             return {"datasets": [handle.public_dict() for handle in handles]}
+        binding = _temporary_binding(run_context, required=False)
+        if binding is not None and source_id == binding.binding_id:
+            if paths is not None or not sql:
+                raise ReportDataSourceError(
+                    "invalid_materialize_request", "StarRocks 数据源必须提供 sql。"
+                )
+            return await self._materialize_starrocks(binding, sql, output_format, run_context)
         source = await self._resolve_source(source_id, run_context)
         if isinstance(source, PostgresDataSource):
             if paths is not None or not sql:
@@ -741,6 +837,130 @@ class ReportDataSourceToolkit(Toolkit):
         self._store_handles(handles, run_context)
         return {"datasets": [handle.public_dict() for handle in handles]}
 
+    def _temporary_client(self, binding: Any, run_context: RunContext | None) -> Any:
+        if self.temporary_report_credentials is None:
+            raise ReportDataSourceError("connection_ref_invalid", "临时数据源引用无效。")
+        try:
+            request = self.temporary_report_credentials.resolve(
+                binding.binding_id,
+                user_id=_user(run_context),
+                thread_id=_thread(run_context),
+                session_id=_thread(run_context),
+            )
+            from .reporting.starrocks import create_starrocks_client
+
+            return create_starrocks_client(request.secret_payload())
+        except Exception as error:
+            code = getattr(error, "code", "connection_ref_invalid")
+            message = getattr(error, "message", "临时数据源引用无效。")
+            raise ReportDataSourceError(str(code), str(message)) from error
+
+    async def _materialize_starrocks(
+        self,
+        binding: Any,
+        sql: str,
+        output_format: str,
+        run_context: RunContext | None,
+    ) -> dict[str, Any]:
+        from .reporting.providers import validate_starrocks_read_only_sql
+
+        query = validate_starrocks_read_only_sql(
+            sql,
+            database=str(binding.database),
+            allowed_tables=binding.allowed_tables,
+        )
+        query_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()
+        materialization_id = self._materialization_id(binding.binding_id, query_hash, run_context)
+        csv_dir = f"报表/数据集/{materialization_id}/原始分片"
+        csv_paths: list[str] = []
+        client = self._temporary_client(binding, run_context)
+        try:
+            result = await asyncio.to_thread(
+                client.query,
+                query,
+                timeout_seconds=30,
+                max_rows=1_000_000,
+            )
+        finally:
+            await asyncio.to_thread(client.close)
+        if result.byte_count > 256 * 1024 * 1024:
+            raise ReportDataSourceError("dataset_too_large", "查询结果超过允许的数据量。")
+        header = self._csv_row(_deduplicate_columns(result.columns))
+        chunks: list[bytes] = []
+        current = bytearray(header)
+        current_rows = 0
+        for row in result.rows:
+            encoded = self._csv_row(row)
+            if len(encoded) + len(header) > MAX_MATERIALIZED_PART_BYTES:
+                raise ReportDataSourceError(
+                    "dataset_too_large", "查询结果包含超过单文件限制的记录。"
+                )
+            if current_rows and len(current) + len(encoded) > MAX_MATERIALIZED_PART_BYTES:
+                chunks.append(bytes(current))
+                current = bytearray(header)
+                current_rows = 0
+            current.extend(encoded)
+            current_rows += 1
+        if current_rows or not chunks:
+            chunks.append(bytes(current))
+        if len(chunks) > MAX_REPORT_INPUTS:
+            raise ReportDataSourceError("dataset_too_large", "查询结果分片数量超过限制。")
+        thread = _thread(run_context)
+        async with self.service._async_client() as workspace_client:
+            sandbox = await self.service._asandbox_for(workspace_client, thread)
+            _relative, csv_remote = self.service.normalize_path(csv_dir)
+            await self.service._aensure_directory(sandbox, csv_remote)
+            try:
+                for part, content in enumerate(chunks, start=1):
+                    csv_paths.append(
+                        await self._upload_postgres_part(sandbox, csv_dir, part, content)
+                    )
+            except BaseException:
+                await self._best_effort_delete(sandbox, csv_remote)
+                raise
+        output_dir = csv_dir
+        try:
+            if output_format == "parquet":
+                output_dir = f"报表/数据集/{materialization_id}/分片"
+                try:
+                    converted = await self._run_data_source_runtime(
+                        "convert_csv",
+                        {
+                            "paths": csv_paths,
+                            "output_dir": output_dir,
+                            "max_bytes": 256 * 1024 * 1024,
+                        },
+                        run_context,
+                    )
+                finally:
+                    async with self.service._async_client() as workspace_client:
+                        sandbox = await self.service._asandbox_for(workspace_client, thread)
+                        _relative, csv_remote = self.service.normalize_path(csv_dir)
+                        await self._best_effort_delete(sandbox, csv_remote)
+            else:
+                converted = {
+                    "paths": csv_paths,
+                    "rowCount": len(result.rows),
+                    "schema": {"columns": list(result.columns)},
+                }
+            return await self._store_materialized_handles(
+                source_id=binding.binding_id,
+                source_type="starrocks_materialized",
+                paths=converted.get("paths"),
+                file_format=output_format,
+                schema=converted.get("schema"),
+                row_count=converted.get("rowCount", len(result.rows)),
+                provenance={
+                    "bindingId": binding.binding_id,
+                    "querySha256": query_hash,
+                    "metadataFingerprint": binding.metadata_fingerprint,
+                },
+                run_context=run_context,
+            )
+        except BaseException:
+            await complete_cleanup(self._delete_materialized_output(output_dir, run_context))
+            raise
+
     async def resolve_dataset_paths(
         self,
         dataset_ids: Sequence[str],
@@ -766,6 +986,7 @@ class ReportDataSourceToolkit(Toolkit):
                 "workspace_database",
                 "odoo_export",
                 "postgresql_materialized",
+                "starrocks_materialized",
             }:
                 raise ReportDataSourceError("dataset_invalid", "数据集类型无效，请重新准备。")
             if handle.size > MAX_DATASET_FILE_BYTES:
@@ -1319,6 +1540,88 @@ def _thread(run_context: RunContext | None) -> str:
     return str(run_context.session_id)
 
 
+def _user(run_context: RunContext | None) -> str:
+    if run_context is None or not run_context.user_id:
+        raise ReportDataSourceError("user_required", "当前数据源操作没有绑定用户。")
+    return str(run_context.user_id)
+
+
+def _temporary_source_intake(
+    run_context: RunContext | None,
+    *,
+    required: bool = True,
+) -> dict[str, Any] | None:
+    dependency = (
+        run_context.dependencies.get(REPORT_SOURCE_INTAKE_DEPENDENCY)
+        if run_context is not None and isinstance(run_context.dependencies, Mapping)
+        else None
+    )
+    if dependency is None and not required:
+        return None
+    if isinstance(dependency, str):
+        try:
+            dependency = json.loads(dependency)
+        except json.JSONDecodeError as error:
+            raise ReportDataSourceError(
+                "source_confirmation_invalid", "待确认的数据源信息无效。"
+            ) from error
+    if not isinstance(dependency, Mapping):
+        raise ReportDataSourceError("source_confirmation_missing", "当前消息没有待确认的数据源。")
+    confirmation_id = dependency.get("confirmationId")
+    endpoint = dependency.get("endpoint")
+    database = dependency.get("database")
+    tables = dependency.get("ddlTables")
+    expires_at = dependency.get("expiresAt")
+    if (
+        not isinstance(confirmation_id, str)
+        or not confirmation_id.startswith("confirm_")
+        or not isinstance(endpoint, str)
+        or not endpoint
+        or not isinstance(database, str)
+        or not database
+        or not isinstance(tables, list)
+        or not tables
+        or any(not isinstance(table, str) or not table for table in tables)
+        or not isinstance(expires_at, str)
+        or dependency.get("requiresConfirmation") is not True
+    ):
+        raise ReportDataSourceError("source_confirmation_invalid", "待确认的数据源信息无效。")
+    try:
+        expiry = datetime.fromisoformat(expires_at)
+    except ValueError as error:
+        raise ReportDataSourceError(
+            "source_confirmation_invalid", "待确认的数据源信息无效。"
+        ) from error
+    if expiry.tzinfo is None or expiry.astimezone(UTC) <= datetime.now(UTC):
+        raise ReportDataSourceError("source_confirmation_expired", "来源确认已过期。")
+    return dict(dependency)
+
+
+def _temporary_binding(
+    run_context: RunContext | None,
+    *,
+    required: bool = True,
+) -> Any | None:
+    raw = _session_state(run_context).get(REPORT_SOURCE_BINDING_STATE_KEY)
+    if raw is None and not required:
+        return None
+    try:
+        from .reporting.models import ReportSourceBinding
+
+        binding = ReportSourceBinding.model_validate(raw)
+    except Exception as error:
+        raise ReportDataSourceError("source_binding_invalid", "临时数据源绑定无效。") from error
+    if (
+        binding.user_id != _user(run_context)
+        or binding.thread_id != _thread(run_context)
+        or binding.session_id != _thread(run_context)
+    ):
+        raise ReportDataSourceError("source_binding_scope_mismatch", "临时数据源不属于当前会话。")
+    if binding.expires_at <= datetime.now(UTC):
+        raise ReportDataSourceError("source_binding_expired", "临时数据源绑定已过期。")
+    return binding
+
+
 def _thread_binding(thread: str) -> str:
     return hashlib.sha256(thread.encode()).hexdigest()
 
@@ -1353,6 +1656,7 @@ async def rebind_report_dataset_handles(
             "workspace_database",
             "odoo_export",
             "postgresql_materialized",
+            "starrocks_materialized",
         }:
             raise ReportDataSourceError("dataset_invalid", "数据集状态无效，请重新准备。")
         if raw.get("_threadBinding") != expected_source_binding:

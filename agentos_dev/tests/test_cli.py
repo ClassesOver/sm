@@ -3,12 +3,61 @@ from inspect import isasyncgenfunction
 
 import pytest
 
-from agentos_dev.cli import CliContext, create_cli_agent, create_cli_app_agent, run_cli_app
+from agentos_dev.cli import (
+    CliContext,
+    create_cli_agent,
+    create_cli_app_agent,
+    read_report_request,
+    run_cli_app,
+    run_cli_report,
+)
 from agentos_dev.cli import app as cli_module
 from agentos_dev.coding.execution import is_coding_tool_scheduler_hook
 from agentos_dev.context_management import ContextBudgetController, ProjectedOpenAIChat
+from agentos_dev.reporting.models import ReportingError
 from agentos_dev.settings import AgentSettings
 from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
+
+
+def test_report_cli_uses_run_line_to_submit_multiline_input():
+    values = iter(["生成经营分析", "类型: StarRocks", "/run"])
+
+    result = read_report_request(read=lambda _prompt: next(values))
+
+    assert result == "生成经营分析\n类型: StarRocks"
+
+
+@pytest.mark.anyio
+async def test_report_cli_rejects_incomplete_intake_before_creating_traced_context(monkeypatch):
+    values = iter(["生成经营分析", "/run"])
+    monkeypatch.setattr(
+        cli_module,
+        "create_cli_context",
+        lambda *_args, **_kwargs: pytest.fail("不得在 intake 之前初始化 tracing"),
+    )
+
+    with pytest.raises(ReportingError) as error:
+        await run_cli_report(read=lambda _prompt: next(values), write=lambda _value: None)
+
+    assert error.value.code == "source_connection_incomplete"
+
+
+def test_main_report_subcommand_does_not_enter_legacy_coding_cli(monkeypatch):
+    calls = []
+
+    async def report():
+        calls.append("report")
+
+    monkeypatch.setattr(cli_module, "run_cli_report", report)
+    monkeypatch.setattr(
+        cli_module,
+        "create_cli_context",
+        lambda: pytest.fail("report 子命令不得进入无参数 Coding CLI"),
+    )
+
+    cli_module.main(["report"])
+
+    assert calls == ["report"]
 
 
 def test_create_cli_agent_is_independent_coding_agent():
@@ -217,6 +266,7 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
     coding_compression_client = AsyncClient()
     app_client = AsyncClient()
     app_compression_client = AsyncClient()
+    workspace = AsyncClient()
     database = AsyncClient()
 
     class NativeCliAgent:
@@ -248,7 +298,7 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
         "create_cli_app_agent",
         lambda _context, _agent: NativeCliAgent(),
     )
-    context = type("Context", (), {"database": database})()
+    context = type("Context", (), {"workspace_service": workspace, "database": database})()
 
     await run_cli_app(context, coding_agent)  # type: ignore[arg-type]
 
@@ -266,6 +316,7 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
     assert coding_compression_client.closed
     assert app_client.closed
     assert app_compression_client.closed
+    assert workspace.closed
     assert database.closed
 
 
@@ -332,7 +383,14 @@ async def test_cli_closes_resources_when_native_app_is_cancelled(monkeypatch):
             )(),
         },
     )()
-    context = type("Context", (), {"database": AsyncClient("database")})()
+    context = type(
+        "Context",
+        (),
+        {
+            "workspace_service": AsyncClient("workspace"),
+            "database": AsyncClient("database"),
+        },
+    )()
     monkeypatch.setattr(
         cli_module,
         "create_cli_app_agent",
@@ -347,5 +405,53 @@ async def test_cli_closes_resources_when_native_app_is_cancelled(monkeypatch):
         "app-compression",
         "coding-model",
         "coding-compression",
+        "workspace",
         "database",
     ]
+
+
+@pytest.mark.anyio
+async def test_cli_cleanup_continues_after_individual_close_failure(monkeypatch):
+    closed = []
+
+    class Client:
+        def __init__(self, name, *, fail=False):
+            self.name = name
+            self.fail = fail
+
+        async def close(self):
+            closed.append(self.name)
+            if self.fail:
+                raise RuntimeError(self.name)
+
+    class NativeCliAgent:
+        debug_mode = False
+        model = type("Model", (), {"async_client": Client("app", fail=True)})()
+        compression_manager = None
+
+        async def acli_app(self, **_kwargs):
+            return None
+
+    coding_agent = type(
+        "CodingAgent",
+        (),
+        {
+            "model": type("Model", (), {"async_client": Client("coding")})(),
+            "compression_manager": None,
+        },
+    )()
+    context = type(
+        "Context",
+        (),
+        {"workspace_service": Client("workspace"), "database": Client("database")},
+    )()
+    monkeypatch.setattr(
+        cli_module,
+        "create_cli_app_agent",
+        lambda _context, _agent: NativeCliAgent(),
+    )
+
+    with pytest.raises(RuntimeError, match="app"):
+        await run_cli_app(context, coding_agent)  # type: ignore[arg-type]
+
+    assert closed == ["app", "coding", "workspace", "database"]

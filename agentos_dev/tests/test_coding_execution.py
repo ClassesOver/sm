@@ -4,6 +4,8 @@ import json
 import subprocess
 import sys
 from copy import copy
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +28,7 @@ from agentos_dev.coding.execution import (
     MAX_PARALLEL_READ_TOOLS,
     MAX_TERMINAL_COMMAND_BYTES,
     CodingExecutionKernel,
+    CodingTaskScope,
     WorkspaceCodingToolkit,
     _task_tool_parallel_safe,
     create_coding_tool_scheduler_hook,
@@ -44,6 +47,7 @@ from agentos_dev.skills import (
 )
 from agentos_dev.tests.workspace_fakes import (
     AsyncFakeClient,
+    AsyncFakeFs,
     AsyncFakeProcess,
     AsyncMemoryRegistry,
     service,
@@ -101,6 +105,190 @@ async def execution_runtime(tmp_path):
     )
     await database.async_engine.dispose()
     database.sync_engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_hot_read_resolves_one_snapshot_without_lease_or_cleanup_queries(
+    execution_runtime,
+    monkeypatch,
+):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    snapshot_calls = 0
+    original_snapshot = runtime.repository.get_task_snapshot
+
+    async def counted_snapshot(external_run_id):
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return await original_snapshot(external_run_id)
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("热态只读工具不应领取租约或清理历史任务")
+
+    monkeypatch.setattr(runtime.repository, "get_task_snapshot", counted_snapshot)
+    monkeypatch.setattr(runtime.repository, "claim_lease", unexpected)
+    monkeypatch.setattr(runtime.repository, "cleanup_expired", unexpected)
+    monkeypatch.setattr(runtime.repository, "get_task", unexpected)
+
+    result = await toolkit.coding_list_files(run_context=runtime.context)
+
+    assert isinstance(result, list)
+    assert snapshot_calls == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("invalid", "expected_code"),
+    [
+        ("owner", "task_lease_binding_invalid"),
+        ("epoch", "task_lease_binding_invalid"),
+        ("epoch_type", "task_binding_invalid"),
+        ("expiry", "task_lease_binding_invalid"),
+        ("internal_run", "task_run_mismatch"),
+        ("sandbox", "task_scope_mismatch"),
+    ],
+)
+async def test_v2_scope_rejects_stale_or_mismatched_snapshot_bindings(
+    execution_runtime,
+    monkeypatch,
+    invalid,
+    expected_code,
+):
+    runtime = execution_runtime
+    context = copy(runtime.context)
+    context.dependencies = {
+        CODING_TASK_DEPENDENCY: dict(runtime.context.dependencies[CODING_TASK_DEPENDENCY])
+    }
+    snapshot = await runtime.repository.get_task_snapshot("external-run")
+    assert snapshot is not None
+    if invalid == "owner":
+        context.dependencies[CODING_TASK_DEPENDENCY]["leaseOwner"] = "other-owner"
+    elif invalid == "epoch":
+        context.dependencies[CODING_TASK_DEPENDENCY]["leaseEpoch"] += 1
+    elif invalid == "epoch_type":
+        context.dependencies[CODING_TASK_DEPENDENCY]["leaseEpoch"] = True
+    elif invalid == "expiry":
+        expired = replace(
+            snapshot, lease_expires_at=execution_module.utcnow() - timedelta(seconds=1)
+        )
+
+        async def expired_snapshot(_external_run_id):
+            return expired
+
+        monkeypatch.setattr(runtime.repository, "get_task_snapshot", expired_snapshot)
+    elif invalid == "internal_run":
+        context.run_id = "other-internal-run"
+    else:
+        context.dependencies[CODING_TASK_DEPENDENCY]["sandboxId"] = "other-sandbox"
+
+    async def unexpected_claim(*_args, **_kwargs):
+        raise AssertionError("v2 scope 不应重新领取租约")
+
+    monkeypatch.setattr(runtime.repository, "claim_lease", unexpected_claim)
+    with pytest.raises(CodingRepositoryError) as rejected:
+        await runtime.kernel.scope(context)
+    assert rejected.value.code == expected_code
+
+
+@pytest.mark.anyio
+async def test_legacy_scope_keeps_query_bind_and_claim_path(execution_runtime, monkeypatch):
+    runtime = execution_runtime
+    sandbox_id = str(runtime.synchronous.sandbox_for("thread").id)
+    await runtime.repository.create_task(
+        external_run_id="legacy-run",
+        owner_user_id="user",
+        thread_id="thread",
+        agent_id="coding-agent",
+        sandbox_id=sandbox_id,
+        deadline_at=execution_module.utcnow() + timedelta(minutes=5),
+    )
+    context = RunContext(
+        run_id="legacy-internal-run",
+        session_id="thread",
+        user_id="user",
+        session_state={},
+        dependencies={
+            CODING_TASK_DEPENDENCY: {
+                "externalRunId": "legacy-run",
+                "leaseOwner": "legacy-owner",
+                "sandboxId": sandbox_id,
+            }
+        },
+    )
+    claim_calls = 0
+    original_claim = runtime.repository.claim_lease
+
+    async def counted_claim(*args, **kwargs):
+        nonlocal claim_calls
+        claim_calls += 1
+        return await original_claim(*args, **kwargs)
+
+    async def unexpected_cleanup(*_args, **_kwargs):
+        raise AssertionError("工具 scope 不应执行历史任务清理")
+
+    monkeypatch.setattr(runtime.repository, "claim_lease", counted_claim)
+    monkeypatch.setattr(runtime.repository, "cleanup_expired", unexpected_cleanup)
+
+    scope = await runtime.kernel.scope(context)
+
+    assert scope.internal_run_id == "legacy-internal-run"
+    assert scope.lease is None
+    assert claim_calls == 1
+
+
+@pytest.mark.anyio
+async def test_terminal_runtime_install_is_concurrent_once_and_revalidates_after_lru_eviction(
+    execution_runtime,
+    monkeypatch,
+):
+    runtime = execution_runtime
+    scope = await runtime.kernel.scope(runtime.context)
+    uploads = []
+    original_upload = AsyncFakeFs.upload_file
+
+    async def counted_upload(fs, content, path):
+        if path.endswith("/readonly_script_runtime.py"):
+            uploads.append(path)
+        return await original_upload(fs, content, path)
+
+    monkeypatch.setattr(AsyncFakeFs, "upload_file", counted_upload)
+    first, concurrent = await asyncio.gather(
+        runtime.kernel._install_terminal_runtime(scope),
+        runtime.kernel._install_terminal_runtime(scope),
+    )
+    cached = await runtime.kernel._install_terminal_runtime(scope)
+    first_sandbox = runtime.synchronous.sandbox_for("thread")
+    assert first == concurrent == cached
+    assert first_sandbox.fs.download_calls.count(first) == 1
+    assert len(uploads) == 1
+    assert (
+        sum("sudo chown root:root" in call["command"] for call in first_sandbox.process.calls) == 1
+    )
+
+    monkeypatch.setattr(execution_module, "MAX_TERMINAL_RUNTIME_CACHE_ENTRIES", 1)
+    other_sandbox = runtime.synchronous.sandbox_for("other-thread")
+    other_scope = CodingTaskScope(
+        task=scope.task,
+        external_run_id=scope.external_run_id,
+        internal_run_id=scope.internal_run_id,
+        owner_user_id=scope.owner_user_id,
+        thread_id="other-thread",
+        sandbox_id=str(other_sandbox.id),
+        lease_owner=scope.lease_owner,
+        lease_epoch=scope.lease_epoch,
+        attempt_no=scope.attempt_no,
+        lease=scope.lease,
+    )
+    other_path = await runtime.kernel._install_terminal_runtime(other_scope)
+    revisited = await runtime.kernel._install_terminal_runtime(scope)
+
+    assert other_path == first == revisited
+    assert first_sandbox.fs.download_calls.count(first) == 2
+    assert other_sandbox.fs.download_calls.count(other_path) == 1
+    assert len(uploads) == 2
+    assert (
+        sum("sudo chown root:root" in call["command"] for call in first_sandbox.process.calls) == 2
+    )
 
 
 def remote_process(runtime):
@@ -1255,6 +1443,8 @@ async def test_agno_tool_batch_caps_reads_and_prioritizes_skill_script_execution
 
     batch = asyncio.create_task(run_batch())
     await asyncio.wait_for(first_batch_started.wait(), timeout=1)
+    scheduler_key = (id(runtime.repository), "external-run")
+    assert scheduler_key in execution_module._TASK_TOOL_SCHEDULERS
     assert active_reads == MAX_PARALLEL_READ_TOOLS
     assert started_reads == MAX_PARALLEL_READ_TOOLS
 
@@ -1267,6 +1457,21 @@ async def test_agno_tool_batch_caps_reads_and_prioritizes_skill_script_execution
 
     assert started_reads == MAX_PARALLEL_READ_TOOLS + 1
     assert len(results) == MAX_PARALLEL_READ_TOOLS + 2
+    assert scheduler_key not in execution_module._TASK_TOOL_SCHEDULERS
+
+
+@pytest.mark.anyio
+async def test_tool_scheduler_is_released_after_hook_failure(execution_runtime):
+    runtime = execution_runtime
+    hook = create_coding_tool_scheduler_hook(runtime.repository)
+
+    async def fail(reference_path: str):
+        raise RuntimeError(reference_path)
+
+    with pytest.raises(RuntimeError, match="broken.md"):
+        await hook(runtime.context, "get_skill_reference", fail, {"reference_path": "broken.md"})
+
+    assert (id(runtime.repository), "external-run") not in execution_module._TASK_TOOL_SCHEDULERS
 
 
 @pytest.mark.anyio
@@ -1290,7 +1495,7 @@ async def test_view_image_and_file_read_overlap(execution_runtime):
         toolkit._invoke(
             "read_file",
             {"path": "source.txt"},
-            lambda: read("file"),
+            lambda _scope: read("file"),
             runtime.context,
         )
     )
@@ -1298,7 +1503,7 @@ async def test_view_image_and_file_read_overlap(execution_runtime):
         toolkit._invoke(
             "view_image",
             {"path": "chart.png", "detail": "high"},
-            lambda: read("image"),
+            lambda _scope: read("image"),
             runtime.context,
         )
     )
@@ -1338,7 +1543,7 @@ async def test_parallel_read_completion_merges_progress_failures_and_output_hand
             toolkit._invoke(
                 "terminal",
                 {"command": f"cat {path}"},
-                lambda path=path: failed_read(path),
+                lambda _scope, path=path: failed_read(path),
                 runtime.context,
             )
         )
@@ -1714,10 +1919,10 @@ async def test_toolkit_returns_structured_workspace_errors(execution_runtime):
     runtime = execution_runtime
     toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
 
-    async def invalid_path():
+    async def invalid_path(_scope):
         raise WorkspaceError("工作区路径是绝对路径，请改用相对路径。")
 
-    async def conflict():
+    async def conflict(_scope):
         raise WorkspacePathConflict("文件内容已变化。")
 
     invalid = await toolkit._invoke(
@@ -1841,7 +2046,7 @@ async def test_tool_scheduler_allows_parallel_reads_and_serializes_write(executi
     active_reads = 0
     write_entered = False
 
-    async def read_call():
+    async def read_call(_scope):
         nonlocal active_reads
         active_reads += 1
         if active_reads == 2:
@@ -1850,7 +2055,7 @@ async def test_tool_scheduler_allows_parallel_reads_and_serializes_write(executi
         active_reads -= 1
         return {"status": "ok"}
 
-    async def write_call():
+    async def write_call(_scope):
         nonlocal write_entered
         write_entered = True
         assert active_reads == 0
@@ -1871,6 +2076,10 @@ async def test_tool_scheduler_allows_parallel_reads_and_serializes_write(executi
     release_reads.set()
     await asyncio.gather(*reads, writer)
     assert write_entered is True
+    assert (
+        id(runtime.repository),
+        "external-run",
+    ) not in execution_module._TASK_TOOL_SCHEDULERS
 
 
 @pytest.mark.anyio
@@ -1953,8 +2162,8 @@ async def test_verify_declares_and_forwards_bounded_timeout(execution_runtime, m
     function = toolkit.async_functions["verify"]
     captured = []
 
-    async def verify(command, artifact_paths, run_context, *, validator_id, timeout):
-        captured.append((command, validator_id, artifact_paths, run_context, timeout))
+    async def verify(command, artifact_paths, run_context, *, validator_id, timeout, _scope):
+        captured.append((command, validator_id, artifact_paths, run_context, timeout, _scope))
         return {"ok": True, "status": "completed", "exit_code": 0}
 
     monkeypatch.setattr(toolkit.kernel, "verify", verify)
@@ -1977,7 +2186,9 @@ async def test_verify_declares_and_forwards_bounded_timeout(execution_runtime, m
         {"required": ["validator_id"]},
     ]
     assert result["ok"] is True
-    assert captured == [("true", None, [], runtime.context, 17)]
+    assert len(captured) == 1
+    assert captured[0][:5] == ("true", None, [], runtime.context, 17)
+    assert isinstance(captured[0][5], CodingTaskScope)
 
     with pytest.raises(WorkspaceError, match="verify timeout"):
         await runtime.kernel.verify("true", [], runtime.context, timeout=0)

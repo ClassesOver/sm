@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import json
+import sys
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from inspect import isawaitable
 from typing import Any
@@ -16,6 +18,7 @@ from agno.tools import Function
 from rich.console import Console
 
 from ..agents import OPENAI_COMPATIBLE_ROLE_MAP
+from ..agents.report import create_report_worker
 from ..async_utils import complete_cleanup
 from ..coding import (
     AgnoCodingExecutor,
@@ -36,7 +39,21 @@ from ..context_management import (
     projected_coding_model,
 )
 from ..database import create_agent_database
+from ..instructions import build_report_agent_instructions
 from ..observability import configure_tracing
+from ..report_data_sources import ReportDataSourceToolkit
+from ..reporting.adapters import CliReviewAdapter
+from ..reporting.agui import REPORT_SOURCE_INTAKE_DEPENDENCY
+from ..reporting.binding import TemporarySourceBindingService
+from ..reporting.controller import (
+    REPORT_WORKFLOW_SCOPE_DEPENDENCY,
+    ReportWorkflowController,
+)
+from ..reporting.credentials import TemporaryCredentialStore
+from ..reporting.intake import ReportIntakeService
+from ..reporting.models import ReportingError
+from ..reporting.runtime import ReportWorkflowRuntime
+from ..reporting.starrocks import create_starrocks_client
 from ..settings import AgentSettings
 from ..skills import (
     SkillValidatorRegistry,
@@ -241,6 +258,125 @@ async def run_cli_app(context: CliContext, coding_agent: Agent) -> None:
         await complete_cleanup(_close_cli_resources(context, app_agent, coding_agent))
 
 
+def read_report_request(*, read: Callable[[str], str] = input) -> str:
+    lines: list[str] = []
+    while True:
+        line = read("" if lines else "报表目标、连接块和 DDL（单独输入 /run 提交）:\n")
+        if line.strip() == "/run":
+            break
+        lines.append(line)
+    value = "\n".join(lines).strip()
+    if not value:
+        raise ValueError("报表请求不能为空。")
+    return value
+
+
+async def run_cli_report(
+    *,
+    settings: AgentSettings | None = None,
+    read: Callable[[str], str] = input,
+    write: Callable[[str], None] = print,
+) -> None:
+    raw = read_report_request(read=read)
+    parsed = ReportIntakeService().parse(raw)
+    if parsed.source_request is None or not parsed.ddl_tables:
+        raise ReportingError(
+            "source_connection_incomplete",
+            "Report CLI 当前必须同时提供临时 StarRocks 连接块和目标表 DDL。",
+        )
+
+    context = create_cli_context(settings)
+    credentials = TemporaryCredentialStore()
+    bindings = TemporarySourceBindingService(
+        credentials,
+        create_starrocks_client,
+        network_allowlist=context.settings.report_source_network_allow_list,
+    )
+    session_id = f"cli-report-{uuid4().hex}"
+    confirmation = bindings.prepare(
+        parsed,
+        user_id="cli",
+        thread_id=session_id,
+        session_id=session_id,
+    )
+    coding_agent = create_cli_agent(context)
+    report_worker = create_report_worker(
+        coding_agent,
+        context.workspace_service,
+        context.coding_repository,
+        instructions=build_report_agent_instructions,
+        context_token_budget=context.settings.context_token_budget,
+        output_token_reserve=context.settings.output_token_reserve,
+    )
+    supervisor = CodingTaskSupervisor(
+        context.coding_repository,
+        AgnoCodingExecutor(lambda _agent_id: report_worker),
+        execution_cleanup=CodingExecutionKernel(
+            context.workspace_service, context.coding_repository
+        ),
+        validator_registry=SkillValidatorRegistry.from_skills(report_worker.skills),
+    )
+    data_sources = ReportDataSourceToolkit(
+        context.workspace_service,
+        config_path=context.settings.report_data_sources_file,
+        excluded_database_url=context.settings.database_url,
+        temporary_source_bindings=bindings,
+        temporary_report_credentials=credentials,
+    )
+    runtime = ReportWorkflowRuntime(
+        db=context.database,
+        planner=report_worker,
+        report_worker=report_worker,
+        supervisor=supervisor,
+        workspace_service=context.workspace_service,
+        binding_service=bindings,
+        credentials=credentials,
+        client_factory=create_starrocks_client,
+        data_sources=data_sources,
+    )
+    controller = ReportWorkflowController(
+        runtime.workflow,
+        cancel_cleanup=runtime.cleanup_cancelled,
+    )
+    external_run_id = uuid4().hex
+    run_context = RunContext(
+        run_id=external_run_id,
+        session_id=session_id,
+        user_id="cli",
+        session_state={},
+        dependencies={
+            REPORT_WORKFLOW_SCOPE_DEPENDENCY: {"externalRunId": external_run_id},
+            REPORT_SOURCE_INTAKE_DEPENDENCY: {
+                "confirmationId": confirmation.confirmation_id,
+                "sourceMode": "temporary_database",
+                "sourceType": "starrocks",
+                "endpoint": confirmation.endpoint,
+                "database": confirmation.database,
+                "ddlTables": list(parsed.ddl_tables),
+                "metadataFingerprint": parsed.metadata_fingerprint,
+                "expiresAt": confirmation.expires_at.isoformat(),
+                "requiresConfirmation": True,
+            },
+        },
+    )
+    adapter = CliReviewAdapter(read=read, write=write)
+    try:
+        result = await controller.start(parsed.sanitized_text, None, run_context)
+        while result.get("status") == "paused":
+            action, feedback = adapter.review_action(result.get("review") or {})
+            if action == "approve":
+                result = await controller.approve(run_context)
+            elif action == "reject":
+                assert feedback is not None
+                result = await controller.reject(feedback, run_context)
+            else:
+                result = await controller.cancel(run_context)
+        write(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    finally:
+        credentials.close_session(user_id="cli", thread_id=session_id, session_id=session_id)
+        await complete_cleanup(_close_cli_resources(context, report_worker, coding_agent))
+
+
 async def _close_cli_resources(context: CliContext, *agents: Agent) -> None:
     clients: list[Any] = []
     seen: set[int] = set()
@@ -254,10 +390,13 @@ async def _close_cli_resources(context: CliContext, *agents: Agent) -> None:
             if client is not None and id(client) not in seen:
                 seen.add(id(client))
                 clients.append(client)
+    workspace_service = getattr(context, "workspace_service", None)
+    if workspace_service is not None:
+        clients.append(workspace_service)
     clients.append(context.database)
     first_error: BaseException | None = None
     for client in clients:
-        close = getattr(client, "close", None)
+        close = getattr(client, "aclose", None) or getattr(client, "close", None)
         if not callable(close):
             continue
         try:
@@ -271,10 +410,16 @@ async def _close_cli_resources(context: CliContext, *agents: Agent) -> None:
         raise first_error
 
 
-def main() -> None:
-    context = create_cli_context()
-    agent = create_cli_agent(context)
+def main(argv: list[str] | None = None) -> None:
+    arguments = list(sys.argv[1:] if argv is None else argv)
     try:
+        if arguments == ["report"]:
+            asyncio.run(run_cli_report())
+            return
+        if arguments:
+            raise SystemExit("用法: python -m agentos_dev.cli [report]")
+        context = create_cli_context()
+        agent = create_cli_agent(context)
         asyncio.run(run_cli_app(context, agent))
     except KeyboardInterrupt:
         pass

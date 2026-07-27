@@ -1,0 +1,4 @@
+interface:
+  display_name: "企业智能运营报表"
+  short_description: "从受控数据源生成经过提纲与发布审核的企业智能运营分析报告"
+  default_prompt: "使用 $intelligent-analysis-report 从已确认数据源生成企业运营分析报告。"

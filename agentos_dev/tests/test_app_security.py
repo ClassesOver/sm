@@ -1109,6 +1109,17 @@ async def test_cancel_endpoint_is_capability_bound_and_idempotent(
         async_registry=AsyncMemoryRegistry(current.registry.values),
     )
     test_context = replace(context, workspace_service=workspace)
+    workflow_probes = []
+
+    async def cancel_report(**kwargs):
+        workflow_probes.append(kwargs["probe_storage"])
+        return None
+
+    monkeypatch.setattr(
+        test_context.report_workflow_controller,
+        "cancel_external",
+        cancel_report,
+    )
     monkeypatch.setattr(app_module.base_app.state, "agentos_context", test_context)
     owner = app_module.capability_user_id(
         SimpleNamespace(
@@ -1191,28 +1202,30 @@ async def test_cancel_endpoint_is_capability_bound_and_idempotent(
     assert mismatch_response.status_code == 409
     unchanged = await test_context.coding_repository.get_task(mismatched.external_run_id)
     assert unchanged is not None and unchanged.status == "pending"
+    assert workflow_probes == [False, False, False]
 
 
 @pytest.mark.anyio
-async def test_report_task_is_suspended_without_observed_tool_event(monkeypatch):
-    context = app_module.application_context
-    owner = app_module.capability_user_id(direct_request().state.capability)
+async def test_report_facade_does_not_create_legacy_outer_coding_task(monkeypatch):
+    called = False
 
-    async def create_report_task(current, value, user_id):
-        await current.coding_repository.create_task(
-            external_run_id=value.run_id,
-            owner_user_id=user_id,
-            thread_id=value.thread_id,
-            agent_id=current.report_agent.id,
-            sandbox_id="sandbox",
-            deadline_at=app_module.utcnow() + timedelta(hours=24),
-        )
+    async def create_report_task(_current, _value, _user_id):
+        nonlocal called
+        called = True
 
     async def fake_run(_entity, _value, user_id=None):
         yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
 
+    async def no_delivery(**_kwargs):
+        return None
+
     monkeypatch.setattr(app_module, "_ensure_report_task", create_report_task)
     monkeypatch.setattr(app_module, "run_entity", fake_run)
+    monkeypatch.setattr(
+        app_module.report_workflow_controller,
+        "validated_external_delivery",
+        no_delivery,
+    )
     response = await app_module.run_agui(
         direct_request(),
         run_input(
@@ -1228,10 +1241,7 @@ async def test_report_task_is_suspended_without_observed_tool_event(monkeypatch)
 
     await response_body(response)
 
-    task = await context.coding_repository.get_task("run-1")
-    assert task is not None
-    assert task.owner_user_id == owner
-    assert task.status == "suspended"
+    assert called is False
 
 
 @pytest.mark.anyio
@@ -1606,7 +1616,11 @@ async def test_report_resume_uses_agent_from_stored_run(monkeypatch):
     await response_body(response)
 
     assert calls[0][0] is app_module.report_agent
-    assert calls[0][1].state[app_module.REPORT_DELIVERY_STATE_KEY]["jobId"] is None
+    assert app_module.REPORT_DELIVERY_STATE_KEY not in calls[0][1].state
+    contexts = {item.description: item.value for item in calls[0][1].context}
+    assert json.loads(contexts[app_module.REPORT_WORKFLOW_SCOPE_DEPENDENCY]) == {
+        "externalRunId": "run-1"
+    }
 
 
 @pytest.mark.anyio

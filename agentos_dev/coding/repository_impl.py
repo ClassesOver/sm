@@ -1293,6 +1293,12 @@ class CodingTaskRepository:
             acceptance_contract=value["acceptance_contract"],
             finish_receipt=value["finish_receipt"],
             result_text=value["result_text"],
+            lease_owner=value["lease_owner"],
+            lease_expires_at=(
+                _as_utc(value["lease_expires_at"])
+                if value["lease_expires_at"] is not None
+                else None
+            ),
         )
 
     @staticmethod

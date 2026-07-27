@@ -21,6 +21,7 @@ from agentos_dev.agents import (
     OPENAI_COMPATIBLE_ROLE_MAP,
     TEAM_ROUTE_DEPENDENCY,
 )
+from agentos_dev.coding.execution import is_coding_tool_scheduler_hook
 from agentos_dev.context_management import ContextBudgetController, ProjectedOpenAIChat
 from agentos_dev.instructions import (
     BUSINESS_COMMAND_INSTRUCTIONS,
@@ -117,7 +118,8 @@ def test_agentos_contract_matches_odoo_source():
 def test_agent_uses_dynamic_instructions_callable():
     assert app.assistant.instructions is build_agent_instructions
     assert app.odoo_command_assistant.instructions is build_odoo_command_instructions
-    assert app.report_agent.instructions is build_report_agent_instructions
+    assert app.report_worker.instructions is build_report_agent_instructions
+    assert "report_workflow_start" in "\n".join(app.report_agent.instructions)
 
 
 def test_openai_compatible_role_map_preserves_system_instructions():
@@ -216,7 +218,8 @@ def test_assistant_team_routes_to_specialized_members():
     assert app.assistant_team.members(team_context(member_id="unknown")) == []
     assert app.assistant_team.id == "hrp-assistant-team"
     assert app.assistant_team.cache_callables is False
-    assert "Python 编码" in app.report_agent.role
+    assert "Workflow" in app.report_agent.role
+    assert app.report_worker.id == "report-worker"
 
 
 def test_team_members_bind_only_their_allowed_client_tools():
@@ -245,11 +248,7 @@ def test_team_members_bind_only_their_allowed_client_tools():
     }
     assert [tool.name for tool in coding_tools] == ["run_coding_task"]
     assert isasyncgenfunction(coding_tools[0].entrypoint)
-    assert [tool.name for tool in report_tools[:-1]] == [
-        "workspace_coding",
-        "report_data_sources",
-        "workspace_report",
-    ]
+    assert [tool.name for tool in report_tools[:-1]] == ["report_workflow"]
     assert report_tools[-1].name == "odoo.export_current_view"
     assert "odoo.unknown_command" not in {tool.name for tool in command_tools}
     assert "custom.browser_tool" not in {tool.name for tool in command_tools}
@@ -379,16 +378,34 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
     report_toolkits = app.report_agent.tools(
         run_context=RunContext(run_id="run", session_id="thread", session_state={})
     )
-    assert [toolkit.name for toolkit in report_toolkits] == [
-        "workspace_coding",
-        "report_data_sources",
-        "workspace_report",
-    ]
+    assert [toolkit.name for toolkit in report_toolkits] == ["report_workflow"]
     report_registered = [
         set(toolkit.functions) | set(toolkit.async_functions) for toolkit in report_toolkits
     ]
-    coding_registered = report_registered[0]
-    assert coding_registered == {
+    assert report_registered == [
+        {
+            "report_workflow_start",
+            "report_workflow_approve",
+            "report_workflow_reject",
+            "report_workflow_cancel",
+        }
+    ]
+    assert (
+        report_toolkits[0].async_functions["report_workflow_approve"].requires_confirmation is True
+    )
+    assert all(
+        report_toolkits[0].async_functions[name].requires_confirmation is False
+        for name in (
+            "report_workflow_start",
+            "report_workflow_reject",
+            "report_workflow_cancel",
+        )
+    )
+    worker_toolkits = app.report_worker.tools(
+        run_context=RunContext(run_id="run", session_id="thread", session_state={})
+    )
+    assert [toolkit.name for toolkit in worker_toolkits] == ["workspace_coding"]
+    assert set(worker_toolkits[0].functions) | set(worker_toolkits[0].async_functions) == {
         "terminal",
         "process",
         "create_file",
@@ -408,26 +425,10 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
         "update_plan",
         "finish_task",
     }
-    assert report_registered[1] == {
-        "report_list_data_sources",
-        "report_describe_data_source",
-        "report_materialize_dataset",
-    }
-    assert report_registered[2] == {
-        "report_prepare_dataset",
-        "report_job_status",
-        "report_render_markdown",
-        "report_validate_pdf",
-    }
-    assert all(
-        left.isdisjoint(right)
-        for index, left in enumerate(report_registered)
-        for right in report_registered[index + 1 :]
-    )
 
 
 def test_toolkit_instructions_are_injected_by_agno():
-    coding_toolkit, data_source_toolkit, report_toolkit = app.report_agent.tools(
+    (workflow_toolkit,) = app.report_agent.tools(
         run_context=RunContext(
             run_id="run",
             session_id="thread",
@@ -435,83 +436,26 @@ def test_toolkit_instructions_are_injected_by_agno():
         )
     )
 
-    assert coding_toolkit.add_instructions is True
-    assert "terminal" in coding_toolkit.instructions
-    assert "create_file" in coding_toolkit.instructions
-    assert "overwrite_file" in coding_toolkit.instructions
-    assert "replace_text" in coding_toolkit.instructions
-    assert "apply_patch" in coding_toolkit.instructions
-    assert "verify" in coding_toolkit.instructions
-    assert "read_tool_output" in coding_toolkit.instructions
-    assert "受控只读工具" in coding_toolkit.instructions
-    assert "terminal 不计为验证" in coding_toolkit.instructions
-    assert "apply_changes" not in coding_toolkit.instructions
-    assert "process" in coding_toolkit.instructions
-    assert "finish_task" in coding_toolkit.instructions
-    assert report_toolkit.add_instructions is True
-    assert data_source_toolkit.add_instructions is True
-    assert "分析和长进程统一使用 Coding 工具" in report_toolkit.instructions
-    assert "不另加 Report 层命令限制" in report_toolkit.instructions
-    assert "apply_changes" not in report_toolkit.instructions
-    assert "terminal" in report_toolkit.instructions
-    assert "process" in report_toolkit.instructions
-    assert "finish_task" in report_toolkit.instructions
-    assert "report_validate_pdf" in report_toolkit.instructions
-    forbidden_brand = "co" + "dex"
-    assert forbidden_brand not in coding_toolkit.instructions.lower()
-    assert forbidden_brand not in report_toolkit.instructions.lower()
+    assert workflow_toolkit.add_instructions is True
+    assert "report_workflow_start" in workflow_toolkit.instructions
+    assert "不得绕过 Workflow" in workflow_toolkit.instructions
 
-    toolkits = [coding_toolkit, data_source_toolkit, report_toolkit]
     parsed = parse_tools(
         app.report_agent,
-        toolkits,
+        [workflow_toolkit],
         app.report_agent.model,
         run_context=instruction_context(),
         async_mode=True,
     )
-
-    assert coding_toolkit.instructions in app.report_agent._tool_instructions
-    assert data_source_toolkit.instructions in app.report_agent._tool_instructions
-    assert report_toolkit.instructions in app.report_agent._tool_instructions
+    assert workflow_toolkit.instructions in app.report_agent._tool_instructions
     parsed_tools = {function.name: function for function in parsed if hasattr(function, "name")}
-    parsed_terminal_schema = parsed_tools["terminal"].parameters
-    assert parsed_terminal_schema["additionalProperties"] is False
-    assert parsed_terminal_schema["properties"]["command"]["minLength"] == 1
-    assert parsed_terminal_schema["properties"]["timeout"]["maximum"] == 86400
-    assert "patch" not in parsed_tools
-    assert set(parsed_tools["read_lines"].parameters["properties"]) == {
-        "path",
-        "start_line",
-        "end_line",
+    assert set(parsed_tools) == {
+        "report_workflow_start",
+        "report_workflow_approve",
+        "report_workflow_reject",
+        "report_workflow_cancel",
     }
-    assert set(parsed_tools["search_text"].parameters["properties"]) == {
-        "pattern",
-        "path",
-        "limit",
-    }
-    assert all(
-        parsed_tools[name].requires_confirmation is False
-        for name in (
-            "terminal",
-            "process",
-            "create_file",
-            "overwrite_file",
-            "replace_text",
-            "apply_patch",
-            "verify",
-            "list_files",
-            "read_file",
-            "read_lines",
-            "search_text",
-            "tree",
-            "git_status",
-            "git_diff",
-            "read_tool_output",
-            "view_image",
-            "update_plan",
-            "finish_task",
-        )
-    )
+    assert parsed_tools["report_workflow_approve"].requires_confirmation is True
 
 
 def test_report_agent_instructions_support_iterative_python_scripts():
@@ -541,7 +485,7 @@ def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
     for assistant in (
         app.assistant,
         app.odoo_command_assistant,
-        app.report_agent,
+        app.report_worker,
     ):
         assert assistant.checkpoint == "tool-batch"
         assert assistant.tool_call_limit is None
@@ -550,7 +494,7 @@ def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
         assert assistant.model.retries == 2
         assert assistant.model.exponential_backoff is True
         assert assistant.model.extra_body["enable_thinking"] is True
-        if assistant is app.report_agent:
+        if assistant is app.report_worker:
             assert isinstance(app.coding_agent.model, ProjectedOpenAIChat)
             assert isinstance(assistant.model, ProjectedOpenAIChat)
             assert isinstance(assistant.compression_manager, ContextBudgetController)
@@ -564,8 +508,10 @@ def test_agent_long_running_tool_loop_is_checkpointed_and_retried():
         assert assistant.compress_tool_results is True
         assert assistant.enable_session_summaries is True
         assert assistant.post_hooks
-    assert app.report_agent.post_hooks[-1].__name__ == "report_delivery_guard"
-    assert app.assistant_team.post_hooks[-1].__name__ == "report_delivery_guard"
+    assert app.report_agent.model.extra_body["enable_thinking"] is False
+    assert not any(
+        is_coding_tool_scheduler_hook(hook) for hook in app.report_agent.tool_hooks or []
+    )
 
 
 def test_plain_request_only_uses_core_instructions():

@@ -8,7 +8,8 @@ import re
 import shlex
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Coroutine
+from collections import OrderedDict
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -74,6 +75,7 @@ MAX_TOOL_OUTPUT_RESOURCE_BYTES = 16 * 1024 * 1024
 MAX_TASK_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_TOOL_OUTPUT_READ_BYTES = 64 * 1024
 MAX_PARALLEL_READ_TOOLS = 4
+MAX_TERMINAL_RUNTIME_CACHE_ENTRIES = 1024
 CODING_TOOL_OUTPUT_STATE_KEY = "agentos_coding_tool_outputs"
 CODING_TOOL_PROGRESS_STATE_KEY = "agentos_coding_tool_progress"
 CODING_TOOL_FAILURE_STATE_KEY = "agentos_coding_tool_failures"
@@ -331,6 +333,7 @@ class _AsyncRWLock:
         self._readers = 0
         self._writer = False
         self._waiting_writers = 0
+        self._leases = 0
 
     @asynccontextmanager
     async def read(self):
@@ -376,11 +379,19 @@ class _AsyncRWLock:
 _TASK_TOOL_SCHEDULERS: dict[tuple[int, str], _AsyncRWLock] = {}
 
 
-def _task_tool_scheduler(repository: Any, external_run_id: str) -> _AsyncRWLock:
-    return _TASK_TOOL_SCHEDULERS.setdefault(
-        (id(repository), external_run_id),
-        _AsyncRWLock(),
-    )
+@asynccontextmanager
+async def _task_tool_scheduler(
+    repository: Any, external_run_id: str
+) -> AsyncIterator[_AsyncRWLock]:
+    key = (id(repository), external_run_id)
+    scheduler = _TASK_TOOL_SCHEDULERS.setdefault(key, _AsyncRWLock())
+    scheduler._leases += 1
+    try:
+        yield scheduler
+    finally:
+        scheduler._leases -= 1
+        if scheduler._leases == 0 and _TASK_TOOL_SCHEDULERS.get(key) is scheduler:
+            del _TASK_TOOL_SCHEDULERS[key]
 
 
 def _bound_external_run_id(run_context: RunContext | None) -> str | None:
@@ -416,14 +427,14 @@ def create_coding_tool_scheduler_hook(
         external_run_id = _bound_external_run_id(run_context)
         if external_run_id is None:
             return await invoke()
-        scheduler = _task_tool_scheduler(repository, external_run_id)
-        lock = (
-            scheduler.read()
-            if _task_tool_parallel_safe(function_name, arguments)
-            else scheduler.write()
-        )
-        async with lock:
-            return await invoke()
+        async with _task_tool_scheduler(repository, external_run_id) as scheduler:
+            lock = (
+                scheduler.read()
+                if _task_tool_parallel_safe(function_name, arguments)
+                else scheduler.write()
+            )
+            async with lock:
+                return await invoke()
 
     setattr(coding_tool_scheduler_hook, _CODING_TOOL_SCHEDULER_MARKER, True)
     return coding_tool_scheduler_hook
@@ -466,9 +477,25 @@ class CodingExecutionKernel:
         self.workspace = WorkspaceToolkit(service)
         self.plan = AgentControlToolkit(service)
         self._migration_lock = asyncio.Lock()
+        self._terminal_runtimes: OrderedDict[tuple[str, str], str] = OrderedDict()
 
-    def task_lock(self, external_run_id: str) -> _AsyncRWLock:
+    def task_scheduler(self, external_run_id: str):
         return _task_tool_scheduler(self.repository, external_run_id)
+
+    @staticmethod
+    def bound_external_run_id(run_context: RunContext | None) -> str:
+        if run_context is None or not run_context.run_id or not run_context.user_id:
+            raise CodingRepositoryError("task_context_missing", "缺少编码任务运行上下文。")
+        dependencies = (
+            run_context.dependencies
+            if run_context is not None and isinstance(run_context.dependencies, dict)
+            else {}
+        )
+        binding = dependencies.get(CODING_TASK_DEPENDENCY)
+        external_run_id = binding.get("externalRunId") if isinstance(binding, dict) else None
+        if not isinstance(external_run_id, str) or not external_run_id:
+            raise CodingRepositoryError("task_binding_missing", "当前运行没有绑定编码任务。")
+        return external_run_id
 
     @staticmethod
     def _preview_text(raw: bytes) -> str:
@@ -532,76 +559,78 @@ class CodingExecutionKernel:
                 "outputTruncated": True,
                 "outputStored": False,
             }
-        scheduler = self.task_lock(scope.external_run_id)
-        handle = uuid.uuid4().hex
-        path = f"{TOOL_OUTPUT_ROOT}/{hashlib.sha256(scope.external_run_id.encode()).hexdigest()[:24]}/{handle}"
-        now = time.time()
-        async with scheduler.state():
-            root = state.setdefault(CODING_TOOL_OUTPUT_STATE_KEY, {"handles": {}, "tasks": {}})
-            handles = root.setdefault("handles", {})
-            tasks = root.setdefault("tasks", {})
-            task_state = tasks.setdefault(scope.external_run_id, {"bytes": 0, "handles": []})
-            remaining = max(0, MAX_TASK_TOOL_OUTPUT_BYTES - int(task_state.get("bytes", 0)))
-            stored_bytes = min(len(raw), MAX_TOOL_OUTPUT_RESOURCE_BYTES, remaining)
-            metadata = {
-                "task": scope.external_run_id,
-                "attempt": scope.attempt_no,
-                "path": path,
-                "bytes": len(raw),
-                "storedBytes": stored_bytes,
-                "sha256": hashlib.sha256(raw).hexdigest(),
-            }
-            handles[handle] = metadata
-            task_state["bytes"] = int(task_state.get("bytes", 0)) + stored_bytes
-            task_state.setdefault("handles", []).append(handle)
-            cleanup_due = now - float(root.get("lastCleanup", 0) or 0) >= 86_400
-            if cleanup_due:
-                root["lastCleanup"] = now
-        try:
-            if stored_bytes:
-                async for sandbox in self._sandbox(scope):
-                    parent = path.rsplit("/", 1)[0]
-                    for directory in (
-                        "/home/daytona/.agentos",
-                        TOOL_OUTPUT_ROOT,
-                        parent,
-                    ):
-                        try:
-                            await sandbox.fs.create_folder(directory, "700")
-                        except Exception:
-                            pass
-                    if cleanup_due:
-                        await sandbox.process.exec(
-                            "/bin/sh -c "
-                            + shlex.quote(
-                                f"find {shlex.quote(TOOL_OUTPUT_ROOT)} -mindepth 1 -maxdepth 1 "
-                                "-type d -mtime +7 -exec rm -rf -- {} +"
-                            ),
-                            timeout=60,
-                        )
-                    await sandbox.fs.upload_file(raw[:stored_bytes], path)
-        except Exception:
+        async with self.task_scheduler(scope.external_run_id) as scheduler:
+            handle = uuid.uuid4().hex
+            path = f"{TOOL_OUTPUT_ROOT}/{hashlib.sha256(scope.external_run_id.encode()).hexdigest()[:24]}/{handle}"
+            now = time.time()
             async with scheduler.state():
-                current_root = state.get(CODING_TOOL_OUTPUT_STATE_KEY, {})
-                current_handles = (
-                    current_root.get("handles", {}) if isinstance(current_root, dict) else {}
-                )
-                current_tasks = (
-                    current_root.get("tasks", {}) if isinstance(current_root, dict) else {}
-                )
-                current_task = (
-                    current_tasks.get(scope.external_run_id)
-                    if isinstance(current_tasks, dict)
-                    else None
-                )
-                if isinstance(current_handles, dict):
-                    current_handles.pop(handle, None)
-                if isinstance(current_task, dict):
-                    current_task["bytes"] = max(0, int(current_task.get("bytes", 0)) - stored_bytes)
-                    task_handles = current_task.get("handles")
-                    if isinstance(task_handles, list) and handle in task_handles:
-                        task_handles.remove(handle)
-            raise
+                root = state.setdefault(CODING_TOOL_OUTPUT_STATE_KEY, {"handles": {}, "tasks": {}})
+                handles = root.setdefault("handles", {})
+                tasks = root.setdefault("tasks", {})
+                task_state = tasks.setdefault(scope.external_run_id, {"bytes": 0, "handles": []})
+                remaining = max(0, MAX_TASK_TOOL_OUTPUT_BYTES - int(task_state.get("bytes", 0)))
+                stored_bytes = min(len(raw), MAX_TOOL_OUTPUT_RESOURCE_BYTES, remaining)
+                metadata = {
+                    "task": scope.external_run_id,
+                    "attempt": scope.attempt_no,
+                    "path": path,
+                    "bytes": len(raw),
+                    "storedBytes": stored_bytes,
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                }
+                handles[handle] = metadata
+                task_state["bytes"] = int(task_state.get("bytes", 0)) + stored_bytes
+                task_state.setdefault("handles", []).append(handle)
+                cleanup_due = now - float(root.get("lastCleanup", 0) or 0) >= 86_400
+                if cleanup_due:
+                    root["lastCleanup"] = now
+            try:
+                if stored_bytes:
+                    async for sandbox in self._sandbox(scope):
+                        parent = path.rsplit("/", 1)[0]
+                        for directory in (
+                            "/home/daytona/.agentos",
+                            TOOL_OUTPUT_ROOT,
+                            parent,
+                        ):
+                            try:
+                                await sandbox.fs.create_folder(directory, "700")
+                            except Exception:
+                                pass
+                        if cleanup_due:
+                            await sandbox.process.exec(
+                                "/bin/sh -c "
+                                + shlex.quote(
+                                    f"find {shlex.quote(TOOL_OUTPUT_ROOT)} -mindepth 1 -maxdepth 1 "
+                                    "-type d -mtime +7 -exec rm -rf -- {} +"
+                                ),
+                                timeout=60,
+                            )
+                        await sandbox.fs.upload_file(raw[:stored_bytes], path)
+            except Exception:
+                async with scheduler.state():
+                    current_root = state.get(CODING_TOOL_OUTPUT_STATE_KEY, {})
+                    current_handles = (
+                        current_root.get("handles", {}) if isinstance(current_root, dict) else {}
+                    )
+                    current_tasks = (
+                        current_root.get("tasks", {}) if isinstance(current_root, dict) else {}
+                    )
+                    current_task = (
+                        current_tasks.get(scope.external_run_id)
+                        if isinstance(current_tasks, dict)
+                        else None
+                    )
+                    if isinstance(current_handles, dict):
+                        current_handles.pop(handle, None)
+                    if isinstance(current_task, dict):
+                        current_task["bytes"] = max(
+                            0, int(current_task.get("bytes", 0)) - stored_bytes
+                        )
+                        task_handles = current_task.get("handles")
+                        if isinstance(task_handles, list) and handle in task_handles:
+                            task_handles.remove(handle)
+                raise
         return {
             **result,
             key: self._preview_text(raw),
@@ -619,6 +648,8 @@ class CodingExecutionKernel:
         offset: int,
         max_bytes: int,
         run_context: RunContext | None,
+        *,
+        _scope: CodingTaskScope | None = None,
     ) -> dict[str, Any]:
         if not isinstance(handle, str) or not handle:
             raise WorkspaceError("output handle 无效。")
@@ -632,7 +663,7 @@ class CodingExecutionKernel:
             raise WorkspaceError(
                 f"output max_bytes 必须是 1 至 {MAX_TOOL_OUTPUT_READ_BYTES} 之间的整数。"
             )
-        scope = await self.scope(run_context)
+        scope = _scope or await self.scope(run_context)
         state = run_context.session_state if run_context is not None else None
         root = state.get(CODING_TOOL_OUTPUT_STATE_KEY, {}) if isinstance(state, dict) else {}
         metadata = root.get("handles", {}).get(handle) if isinstance(root, dict) else None
@@ -782,10 +813,21 @@ class CodingExecutionKernel:
         bound_sandbox_id = binding.get("sandboxId")
         if (
             not isinstance(external_run_id, str)
+            or not external_run_id
             or not isinstance(lease_owner, str)
-            or (lease_epoch is not None and not isinstance(lease_epoch, int))
-            or (bound_thread_id is not None and not isinstance(bound_thread_id, str))
-            or (bound_sandbox_id is not None and not isinstance(bound_sandbox_id, str))
+            or not lease_owner
+            or (
+                lease_epoch is not None
+                and (isinstance(lease_epoch, bool) or not isinstance(lease_epoch, int))
+            )
+            or (
+                bound_thread_id is not None
+                and (not isinstance(bound_thread_id, str) or not bound_thread_id)
+            )
+            or (
+                bound_sandbox_id is not None
+                and (not isinstance(bound_sandbox_id, str) or not bound_sandbox_id)
+            )
         ):
             raise CodingRepositoryError("task_binding_invalid", "当前编码任务绑定无效。")
         snapshot = await self.repository.get_task_snapshot(external_run_id)
@@ -794,8 +836,12 @@ class CodingExecutionKernel:
             task = await self.repository.get_task(external_run_id)
         if task is None:
             raise CodingRepositoryError("task_not_found", "编码任务必须由 Supervisor 创建。")
-        sandbox_id = task.scope.sandbox_id if isinstance(task, TaskSnapshot) else task.sandbox_id
+        task_sandbox_id = (
+            task.scope.sandbox_id if isinstance(task, TaskSnapshot) else task.sandbox_id
+        )
+        sandbox_id = bound_sandbox_id or task_sandbox_id
         thread_id = bound_thread_id or _thread(run_context)
+        active_lease: Lease | None
         if isinstance(task, TaskSnapshot):
             if (
                 task.scope.owner_user_id != str(run_context.user_id)
@@ -812,15 +858,21 @@ class CodingExecutionKernel:
             raise CodingRepositoryError(
                 "task_run_mismatch", "当前内部运行不是编码任务的活动 checkpoint。"
             )
-        claimed = await self.repository.claim_lease(external_run_id, lease_owner)
-        if not claimed:
-            raise CodingRepositoryError("task_lease_conflict", "编码任务正在由另一连接处理。")
-        active_lease = claimed if isinstance(claimed, Lease) else None
-        if isinstance(task, TaskSnapshot) and (
-            active_lease is None or lease_epoch != active_lease.epoch
-        ):
-            raise CodingRepositoryError("task_lease_binding_invalid", "编码任务 epoch 绑定无效。")
-        await self.repository.cleanup_expired(lease_owner=lease_owner)
+        if isinstance(task, TaskSnapshot):
+            if (
+                lease_epoch is None
+                or task.lease_owner != lease_owner
+                or task.lease_epoch != lease_epoch
+                or task.lease_expires_at is None
+                or task.lease_expires_at <= utcnow()
+            ):
+                raise CodingRepositoryError("task_lease_binding_invalid", "编码任务租约绑定无效。")
+            active_lease = Lease(lease_owner, lease_epoch, task.lease_expires_at)
+        else:
+            claimed = await self.repository.claim_lease(external_run_id, lease_owner)
+            if not claimed:
+                raise CodingRepositoryError("task_lease_conflict", "编码任务正在由另一连接处理。")
+            active_lease = claimed if isinstance(claimed, Lease) else None
         scope = CodingTaskScope(
             task=task,
             external_run_id=external_run_id,
@@ -988,8 +1040,9 @@ class CodingExecutionKernel:
         self,
         execution_id: str,
         run_context: RunContext | None,
+        scope: CodingTaskScope | None = None,
     ) -> tuple[CodingTaskScope, CodingExecution]:
-        scope = await self.scope(run_context)
+        scope = scope or await self.scope(run_context)
         execution = await self.repository.scoped_execution(
             execution_id,
             owner_user_id=scope.owner_user_id,
@@ -1120,13 +1173,14 @@ class CodingExecutionKernel:
         _verification: bool = False,
         _artifact_paths: list[str] | None = None,
         _read_only: bool | None = None,
+        _scope: CodingTaskScope | None = None,
     ) -> dict[str, Any]:
         patch = _extract_apply_patch_command(command) if isinstance(command, str) else None
         if patch is None:
             self._validate_terminal_arguments(command, background, timeout, pty)
         elif workdir not in (None, "") or pty:
             raise WorkspaceError("apply_patch heredoc 不支持 workdir 或 PTY。")
-        scope = await self.scope(run_context)
+        scope = _scope or await self.scope(run_context)
         patch_changes = (
             await asyncio.to_thread(build_workspace_changes, self.service, scope.thread_id, patch)
             if patch is not None
@@ -1144,10 +1198,7 @@ class CodingExecutionKernel:
             else patch is None and _is_read_only_terminal_command(command)
         )
         if read_only:
-            task = await self.repository.get_task(scope.external_run_id)
-            if task is None:
-                raise CodingRepositoryError("task_not_found", "编码任务必须由 Supervisor 创建。")
-            mutation_sequence = task.mutation_sequence
+            mutation_sequence = scope.task.mutation_sequence
         else:
             mutation_sequence = await self.repository.increment_mutation(
                 scope.external_run_id,
@@ -1314,9 +1365,18 @@ class CodingExecutionKernel:
     async def _install_terminal_runtime(self, scope: CodingTaskScope) -> str:
         runtime_dir = f"{READONLY_RUNTIME_ROOT}/{READONLY_SCRIPT_RUNTIME_SHA256}"
         runtime_path = f"{runtime_dir}/readonly_script_runtime.py"
+        cache_key = (scope.sandbox_id, READONLY_SCRIPT_RUNTIME_SHA256)
+        cached = self._terminal_runtimes.get(cache_key)
+        if cached is not None:
+            self._terminal_runtimes.move_to_end(cache_key)
+            return cached
         lock_key = f"readonly-runtime-install:{scope.sandbox_id}"
         async for sandbox in self._sandbox(scope):
             async with self.service.async_registry.locked(lock_key):
+                cached = self._terminal_runtimes.get(cache_key)
+                if cached is not None:
+                    self._terminal_runtimes.move_to_end(cache_key)
+                    return cached
                 current = ""
                 for part in runtime_dir.strip("/").split("/"):
                     current = f"{current}/{part}"
@@ -1341,6 +1401,10 @@ class CodingExecutionKernel:
                     sandbox,
                     {runtime_path: "555", runtime_dir: "555"},
                 )
+                self._terminal_runtimes[cache_key] = runtime_path
+                self._terminal_runtimes.move_to_end(cache_key)
+                while len(self._terminal_runtimes) > MAX_TERMINAL_RUNTIME_CACHE_ENTRIES:
+                    self._terminal_runtimes.popitem(last=False)
                 return runtime_path
         raise AssertionError("Daytona 客户端上下文未返回 sandbox。")
 
@@ -1350,8 +1414,9 @@ class CodingExecutionKernel:
         run_context: RunContext | None,
         *,
         wait_ms: int = 0,
+        _scope: CodingTaskScope | None = None,
     ) -> dict[str, Any]:
-        scope, execution = await self._scoped_execution(execution_id, run_context)
+        scope, execution = await self._scoped_execution(execution_id, run_context, _scope)
         if execution.status in TERMINAL_EXECUTION_STATUSES:
             return self._public_execution(execution, cached=True)
         if execution.command_id is None:
@@ -1387,8 +1452,10 @@ class CodingExecutionKernel:
         data: str,
         timeout: int,
         run_context: RunContext | None,
+        *,
+        _scope: CodingTaskScope | None = None,
     ) -> dict[str, Any]:
-        scope = await self.scope(run_context)
+        scope = _scope or await self.scope(run_context)
         if action == "list":
             executions = await self.repository.list_executions(scope.external_run_id)
             return {
@@ -1406,7 +1473,7 @@ class CodingExecutionKernel:
         if not isinstance(execution_id, str) or not execution_id:
             raise WorkspaceError("process 操作必须提供 terminal 返回的 session_id。")
         if action == "poll":
-            return await self.poll(execution_id, run_context)
+            return await self.poll(execution_id, run_context, _scope=scope)
         if action == "wait":
             if (
                 isinstance(timeout, bool)
@@ -1421,10 +1488,11 @@ class CodingExecutionKernel:
                     execution_id,
                     run_context,
                     wait_ms=min(30_000, int(remaining * 1000)),
+                    _scope=scope,
                 )
                 if result["status"] in TERMINAL_EXECUTION_STATUSES or remaining <= 0:
                     return result
-        scope, execution = await self._scoped_execution(execution_id, run_context)
+        scope, execution = await self._scoped_execution(execution_id, run_context, scope)
         if action == "kill":
             if execution.status in TERMINAL_EXECUTION_STATUSES:
                 return self._public_execution(execution, cached=True)
@@ -1598,8 +1666,9 @@ class CodingExecutionKernel:
         *,
         content: str | None = None,
         expected_sha256: str | None = None,
+        _scope: CodingTaskScope | None = None,
     ) -> dict[str, Any]:
-        scope = await self.scope(run_context)
+        scope = _scope or await self.scope(run_context)
         if mode == "patch":
             if not isinstance(patch, str) or not patch.strip():
                 raise WorkspaceError("patch 模式必须提供完整补丁。")
@@ -1724,7 +1793,9 @@ class CodingExecutionKernel:
         *,
         validator_id: str | None = None,
         timeout: int = DEFAULT_TERMINAL_TIMEOUT,
+        _scope: CodingTaskScope | None = None,
     ) -> dict[str, Any]:
+        scope = _scope or await self.scope(run_context)
         if (
             isinstance(timeout, bool)
             or not isinstance(timeout, int)
@@ -1749,11 +1820,11 @@ class CodingExecutionKernel:
             raise WorkspaceError("verify artifact_paths 不能超过 50 项且不能重复。")
         if validator_mode:
             assert validator_id is not None
-            return await self._verify_validator(validator_id, artifact_paths, run_context)
+            return await self._verify_validator(validator_id, artifact_paths, run_context, scope)
         assert command is not None
         if isinstance(command, str) and _extract_apply_patch_command(command) is not None:
             raise WorkspaceError("verify 不接受 apply_patch；请提交真实验证命令。")
-        provenance_error = await self._skill_script_verification_error(command, run_context)
+        provenance_error = await self._skill_script_verification_error(command, run_context, scope)
         if provenance_error is not None:
             return provenance_error
         result = await self.terminal(
@@ -1763,6 +1834,7 @@ class CodingExecutionKernel:
             run_context=run_context,
             _verification=True,
             _artifact_paths=artifact_paths,
+            _scope=scope,
         )
         if result["status"] not in TERMINAL_EXECUTION_STATUSES:
             result = await self.process(
@@ -1771,8 +1843,8 @@ class CodingExecutionKernel:
                 "",
                 timeout,
                 run_context,
+                _scope=scope,
             )
-        scope = await self.scope(run_context)
         artifacts = (
             await self.service.abatch_hash_files(scope.thread_id, artifact_paths)
             if artifact_paths
@@ -1820,8 +1892,9 @@ class CodingExecutionKernel:
         validator_id: str,
         artifact_paths: list[str],
         run_context: RunContext | None,
+        scope: CodingTaskScope | None = None,
     ) -> dict[str, Any]:
-        scope = await self.scope(run_context)
+        scope = scope or await self.scope(run_context)
         task = await self.repository.get_task(scope.external_run_id)
         if task is None:
             raise CodingRepositoryError("task_not_found", "编码任务不存在。")
@@ -1962,6 +2035,7 @@ class CodingExecutionKernel:
                 _verification=True,
                 _artifact_paths=artifact_paths,
                 _read_only=True,
+                _scope=scope,
             )
             if result["status"] not in TERMINAL_EXECUTION_STATUSES:
                 result = await self.process(
@@ -1970,6 +2044,7 @@ class CodingExecutionKernel:
                     "",
                     validator.timeout,
                     run_context,
+                    _scope=scope,
                 )
         finally:
             try:
@@ -2312,7 +2387,9 @@ class CodingExecutionKernel:
         self,
         command: str,
         run_context: RunContext | None,
+        scope: CodingTaskScope | None = None,
     ) -> dict[str, Any] | None:
+        scope = scope or await self.scope(run_context)
         state = (
             run_context.session_state
             if run_context is not None and isinstance(run_context.session_state, dict)
@@ -2325,7 +2402,6 @@ class CodingExecutionKernel:
             tokens = shlex.split(command)
         except ValueError:
             return None
-        scope = await self.scope(run_context)
         receipts_by_name: dict[str, list[dict[str, Any]]] = {}
         for receipt in receipts.values():
             if not isinstance(receipt, dict):
@@ -2381,8 +2457,10 @@ class CodingExecutionKernel:
         service_sessions: list[dict[str, str]],
         run_context: RunContext | None,
         finish_function: Function,
+        *,
+        _scope: CodingTaskScope | None = None,
     ) -> dict[str, Any]:
-        scope = await self.scope(run_context)
+        scope = _scope or await self.scope(run_context)
         if isinstance(scope.task, TaskSnapshot) and scope.task.finish_receipt is not None:
             finish_function.stop_after_tool_call = True
             return {"ok": True, "status": "accepted", **scope.task.finish_receipt}
@@ -3002,13 +3080,14 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     "verification_ids": verification_ids,
                     "service_sessions": service_sessions or [],
                 },
-                lambda: self.kernel.finish_task(
+                lambda scope: self.kernel.finish_task(
                     summary,
                     artifact_paths,
                     verification_ids,
                     service_sessions or [],
                     run_context,
                     finish_function,
+                    _scope=scope,
                 ),
                 run_context,
             )
@@ -3345,10 +3424,10 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         self,
         tool_name: str,
         arguments: dict[str, Any],
-        call: Callable[[], Awaitable[Any]],
+        call: Callable[[CodingTaskScope], Awaitable[Any]],
         run_context: RunContext | None,
     ) -> Any:
-        scope = await self.kernel.scope(run_context)
+        external_run_id = self.kernel.bound_external_run_id(run_context)
         progress_name = (
             f"process:{arguments.get('action')}" if tool_name == "process" else tool_name
         )
@@ -3359,16 +3438,17 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             str(arguments.get("command") or "")
         ):
             spec = ToolSpec("read", True)
-        lock = self.kernel.task_lock(scope.external_run_id)
-        lock_context = lock.read() if spec.parallel_safe else lock.write()
-        async with lock_context:
+        async with (
+            self.kernel.task_scheduler(external_run_id) as lock,
+            lock.read() if spec.parallel_safe else lock.write(),
+        ):
+            scope = await self.kernel.scope(run_context)
             state = (
                 run_context.session_state
                 if run_context is not None and isinstance(run_context.session_state, dict)
                 else None
             )
-            task = await self.kernel.repository.get_task(scope.external_run_id)
-            mutation_before = task.mutation_sequence if task is not None else -1
+            mutation_before = scope.task.mutation_sequence
             args_hash = hashlib.sha256(
                 json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str).encode()
             ).hexdigest()
@@ -3444,7 +3524,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                         ],
                     }
             try:
-                result = await call()
+                result = await call(scope)
             except WorkspacePathConflict as error:
                 details: dict[str, Any] = {"tool": tool_name}
                 suggested_path = _suggested_workspace_path(arguments)
@@ -3531,8 +3611,18 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     result["execution_id"], operation_receipt=receipt
                 )
             if not exempt and state is not None:
-                task_after = await self.kernel.repository.get_task(scope.external_run_id)
-                mutation_after = task_after.mutation_sequence if task_after is not None else -1
+                if spec.effect == "read":
+                    mutation_after = mutation_before
+                else:
+                    latest_snapshot = await self.kernel.repository.get_task_snapshot(
+                        scope.external_run_id
+                    )
+                    latest_task: TaskSnapshot | CodingTask | None = latest_snapshot
+                    if latest_task is None:
+                        latest_task = await self.kernel.repository.get_task(scope.external_run_id)
+                    mutation_after = (
+                        latest_task.mutation_sequence if latest_task is not None else -1
+                    )
                 async with lock.state():
                     progress = state.get(CODING_TOOL_PROGRESS_STATE_KEY)
                     entries = (
@@ -3596,13 +3686,14 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 "workdir": workdir,
                 "pty": pty,
             },
-            lambda: self.kernel.terminal(
+            lambda scope: self.kernel.terminal(
                 command,
                 background=background,
                 timeout=timeout,
                 workdir=workdir,
                 pty=pty,
                 run_context=run_context,
+                _scope=scope,
             ),
             run_context,
         )
@@ -3616,7 +3707,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         return await self._invoke(
             "create_file",
             {"path": path, "content": content},
-            lambda: self.kernel.patch(
+            lambda scope: self.kernel.patch(
                 "create",
                 path,
                 None,
@@ -3625,6 +3716,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 None,
                 run_context,
                 content=content,
+                _scope=scope,
             ),
             run_context,
         )
@@ -3643,7 +3735,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 "content": content,
                 "expected_sha256": expected_sha256,
             },
-            lambda: self.kernel.patch(
+            lambda scope: self.kernel.patch(
                 "overwrite",
                 path,
                 None,
@@ -3653,6 +3745,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 run_context,
                 content=content,
                 expected_sha256=expected_sha256,
+                _scope=scope,
             ),
             run_context,
         )
@@ -3673,7 +3766,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 "new_string": new_string,
                 "replace_all": replace_all,
             },
-            lambda: self.kernel.patch(
+            lambda scope: self.kernel.patch(
                 "replace",
                 path,
                 old_string,
@@ -3681,6 +3774,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 replace_all,
                 None,
                 run_context,
+                _scope=scope,
             ),
             run_context,
         )
@@ -3693,7 +3787,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         return await self._invoke(
             "apply_patch",
             {"patch": patch},
-            lambda: self.kernel.patch(
+            lambda scope: self.kernel.patch(
                 "patch",
                 None,
                 None,
@@ -3701,6 +3795,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 False,
                 patch,
                 run_context,
+                _scope=scope,
             ),
             run_context,
         )
@@ -3716,7 +3811,9 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         return await self._invoke(
             "process",
             {"action": action, "session_id": session_id, "data": data, "timeout": timeout},
-            lambda: self.kernel.process(action, session_id, data, timeout, run_context),
+            lambda scope: self.kernel.process(
+                action, session_id, data, timeout, run_context, _scope=scope
+            ),
             run_context,
         )
 
@@ -3744,7 +3841,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 "content": content,
                 "expected_sha256": expected_sha256,
             },
-            lambda: self.kernel.patch(
+            lambda scope: self.kernel.patch(
                 mode,
                 path,
                 old_string,
@@ -3754,6 +3851,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 run_context,
                 content=content,
                 expected_sha256=expected_sha256,
+                _scope=scope,
             ),
             run_context,
         )
@@ -3775,12 +3873,13 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 "artifact_paths": artifact_paths or [],
                 "timeout": timeout,
             },
-            lambda: self.kernel.verify(
+            lambda scope: self.kernel.verify(
                 command,
                 artifact_paths or [],
                 run_context,
                 validator_id=validator_id,
                 timeout=timeout,
+                _scope=scope,
             ),
             run_context,
         )
@@ -3788,8 +3887,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
     async def coding_list_files(
         self, path: str = "", run_context: RunContext | None = None
     ) -> list[dict[str, Any]]:
-        async def call():
-            scope = await self.kernel.scope(run_context)
+        async def call(scope: CodingTaskScope):
             return await self.kernel.service.alist_files(scope.thread_id, path)
 
         return await self._invoke("list_files", {"path": path}, call, run_context)
@@ -3810,8 +3908,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         ):
             raise WorkspaceError("read_file max_bytes 必须是 1 至 65536 之间的整数。")
 
-        async def call():
-            scope = await self.kernel.scope(run_context)
+        async def call(scope: CodingTaskScope):
             content, _mime = await asyncio.to_thread(
                 self.kernel.service.file_bytes, scope.thread_id, path
             )
@@ -3853,8 +3950,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             raise WorkspaceError("read_lines end_line 必须大于等于 start_line。")
         line_count = 200 if end_line is None else end_line - start_line + 1
 
-        async def call():
-            scope = await self.kernel.scope(run_context)
+        async def call(scope: CodingTaskScope):
             return await self.kernel.service.aread_lines(
                 scope.thread_id, path, start_line, line_count
             )
@@ -3873,8 +3969,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         limit: int = 100,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        async def call():
-            scope = await self.kernel.scope(run_context)
+        async def call(scope: CodingTaskScope):
             return await self.kernel.service.asearch_text(
                 scope.thread_id, pattern, path=path, limit=limit
             )
@@ -3893,8 +3988,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         limit: int = 200,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        async def call():
-            scope = await self.kernel.scope(run_context)
+        async def call(scope: CodingTaskScope):
             return await self.kernel.service.atree(scope.thread_id, path, max_depth, limit)
 
         return await self._invoke(
@@ -3904,8 +3998,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
     async def git_status(
         self, repo_path: str = "", run_context: RunContext | None = None
     ) -> dict[str, Any]:
-        async def call():
-            scope = await self.kernel.scope(run_context)
+        async def call(scope: CodingTaskScope):
             return await self.kernel.service.agit_status(scope.thread_id, repo_path)
 
         return await self._invoke("git_status", {"repo_path": repo_path}, call, run_context)
@@ -3918,8 +4011,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         file_path: str | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        async def call():
-            scope = await self.kernel.scope(run_context)
+        async def call(scope: CodingTaskScope):
             return await self.kernel.service.agit_diff(
                 scope.thread_id, repo_path, staged, revision, file_path
             )
@@ -3946,7 +4038,9 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         return await self._invoke(
             "read_tool_output",
             {"handle": handle, "offset": offset, "max_bytes": max_bytes},
-            lambda: self.kernel.read_tool_output(handle, offset, max_bytes, run_context),
+            lambda scope: self.kernel.read_tool_output(
+                handle, offset, max_bytes, run_context, _scope=scope
+            ),
             run_context,
         )
 
@@ -3959,8 +4053,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         if detail not in {"high", "original"}:
             raise WorkspaceError("图片 detail 必须是 high 或 original。")
 
-        async def call():
-            scope = await self.kernel.scope(run_context)
+        async def call(scope: CodingTaskScope):
             return await asyncio.to_thread(self.kernel.service.view_image, scope.thread_id, path)
 
         return await self._invoke("view_image", {"path": path, "detail": detail}, call, run_context)
@@ -3978,7 +4071,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 "message": "plan 必须包含 1 至 20 个步骤。",
             }
 
-        async def call():
+        async def call(_scope: CodingTaskScope):
             return self.kernel.plan.agent_update_plan(plan, explanation, run_context)
 
         return await self._invoke(

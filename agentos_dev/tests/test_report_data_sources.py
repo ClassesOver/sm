@@ -15,6 +15,8 @@ from agentos_dev.report_data_sources import (
     MAX_DIRECTORY_ENTRIES,
     REPORT_DATA_RUNTIME_TIMEOUT_SECONDS,
     REPORT_DATASET_HANDLES_STATE_KEY,
+    REPORT_SOURCE_BINDING_STATE_KEY,
+    REPORT_SOURCE_INTAKE_DEPENDENCY,
     PostgresDataSource,
     PostgresSourceConfig,
     ReportDataSourceError,
@@ -24,6 +26,13 @@ from agentos_dev.report_data_sources import (
     validate_local_read_only_query,
     validate_read_only_query,
 )
+from agentos_dev.reporting import (
+    ReportingError,
+    TemporaryCredentialStore,
+    TemporarySourceBindingService,
+)
+from agentos_dev.reporting.intake import ReportIntakeService
+from agentos_dev.reporting.providers import SourceDescription, metadata_fingerprint
 
 
 class FakeWorkspaceService:
@@ -84,6 +93,217 @@ def context(references, attachments=None):
         dependencies=dependencies,
         session_state={},
     )
+
+
+class _FakeStarRocksClient:
+    def __init__(self, *, read_only=True):
+        self.read_only = read_only
+        self.closed = False
+
+    def verify_read_only(self, _allowed_tables):
+        return self.read_only
+
+    def describe(self, allowed_tables):
+        tables = {table: ({"name": "month", "type": "DATE"},) for table in allowed_tables}
+        return SourceDescription("hospital", tables, metadata_fingerprint(tables))
+
+    def close(self):
+        self.closed = True
+
+
+def temporary_source_context(binding_service):
+    intake = ReportIntakeService().parse(
+        "类型: StarRocks\nhost: sr.internal\nport: 9030\nuser: report_reader\n"
+        "pwd: secret\ndb: hospital\nCREATE TABLE hospital.revenue (month DATE);"
+    )
+    confirmation = binding_service.prepare(
+        intake,
+        user_id="user-1",
+        thread_id="thread",
+        session_id="thread",
+    )
+    dependency = {
+        "confirmationId": confirmation.confirmation_id,
+        "sourceMode": "temporary_database",
+        "sourceType": "starrocks",
+        "endpoint": confirmation.endpoint,
+        "database": confirmation.database,
+        "ddlTables": list(confirmation.allowed_tables),
+        "expiresAt": confirmation.expires_at.isoformat(),
+        "requiresConfirmation": True,
+    }
+    return confirmation, RunContext(
+        run_id="run",
+        session_id="thread",
+        user_id="user-1",
+        dependencies={
+            REPORT_SOURCE_INTAKE_DEPENDENCY: json.dumps(
+                dependency, ensure_ascii=True, separators=(",", ":")
+            )
+        },
+        session_state={},
+    )
+
+
+@pytest.mark.anyio
+async def test_临时来源必须通过原生工具确认后才写入会话绑定(monkeypatch):
+    clients = []
+
+    def client_factory(_credentials):
+        client = _FakeStarRocksClient()
+        clients.append(client)
+        return client
+
+    store = TemporaryCredentialStore()
+    binding_service = TemporarySourceBindingService(
+        store,
+        client_factory,
+        network_allowlist="sr.internal",
+    )
+    confirmation, run_context = temporary_source_context(binding_service)
+    toolkit = ReportDataSourceToolkit(
+        FakeWorkspaceService(),
+        temporary_source_bindings=binding_service,
+        temporary_report_credentials=store,
+    )
+
+    async def inline_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(report_data_sources.asyncio, "to_thread", inline_to_thread)
+
+    assert toolkit.async_functions["report_confirm_temporary_source"].requires_confirmation is True
+    pending = await toolkit.report_list_data_sources(run_context=run_context)
+    assert pending["sources"][-1]["sourceType"] == "temporary_database_pending"
+    assert clients == []
+
+    result = await toolkit.report_confirm_temporary_source(
+        confirmation.confirmation_id,
+        run_context=run_context,
+    )
+
+    assert result["source"]["bindingId"].startswith("src_")
+    assert run_context.session_state[REPORT_SOURCE_BINDING_STATE_KEY] == result["source"]
+    assert clients[0].closed is True
+    sources = await toolkit.report_list_data_sources(run_context=run_context)
+    assert sources["sources"][-1]["sourceType"] == "starrocks"
+    assert all(
+        source["sourceType"] != "temporary_database_pending" for source in sources["sources"]
+    )
+    serialized = json.dumps(run_context.session_state)
+    assert "secret" not in serialized
+    assert "connectionRef" not in serialized
+
+
+@pytest.mark.anyio
+async def test_临时来源确认拒绝串用id和非只读账号(monkeypatch):
+    store = TemporaryCredentialStore()
+    clients = []
+
+    def client_factory(_credentials):
+        client = _FakeStarRocksClient(read_only=False)
+        clients.append(client)
+        return client
+
+    binding_service = TemporarySourceBindingService(
+        store,
+        client_factory,
+        network_allowlist="sr.internal",
+    )
+    confirmation, run_context = temporary_source_context(binding_service)
+    toolkit = ReportDataSourceToolkit(
+        FakeWorkspaceService(),
+        temporary_source_bindings=binding_service,
+        temporary_report_credentials=store,
+    )
+
+    async def inline_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(report_data_sources.asyncio, "to_thread", inline_to_thread)
+
+    with pytest.raises(ReportDataSourceError) as mismatch:
+        await toolkit.report_confirm_temporary_source("confirm_other", run_context=run_context)
+    assert mismatch.value.code == "source_confirmation_scope_mismatch"
+    assert clients == []
+
+    with pytest.raises(ReportDataSourceError) as denied:
+        await toolkit.report_confirm_temporary_source(
+            confirmation.confirmation_id,
+            run_context=run_context,
+        )
+    assert denied.value.code == "source_account_not_read_only"
+    assert REPORT_SOURCE_BINDING_STATE_KEY not in run_context.session_state
+    assert clients[0].closed is True
+
+
+@pytest.mark.anyio
+async def test_starrocks物化校验表范围且血缘不含凭据(monkeypatch):
+    store = TemporaryCredentialStore()
+    binding_service = TemporarySourceBindingService(
+        store,
+        lambda _credentials: _FakeStarRocksClient(),
+        network_allowlist="sr.internal",
+    )
+    confirmation, run_context = temporary_source_context(binding_service)
+    workspace = _FakePostgresWorkspace()
+    toolkit = ReportDataSourceToolkit(
+        workspace,
+        temporary_source_bindings=binding_service,
+        temporary_report_credentials=store,
+    )
+
+    async def inline_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(report_data_sources.asyncio, "to_thread", inline_to_thread)
+    confirmed = await toolkit.report_confirm_temporary_source(
+        confirmation.confirmation_id,
+        run_context=run_context,
+    )
+    source_id = confirmed["source"]["bindingId"]
+    query_client = SimpleNamespace(
+        query=lambda *_args, **_kwargs: SimpleNamespace(
+            columns=("month", "amount"),
+            rows=(("2026-01-01", 100),),
+            byte_count=32,
+        ),
+        close=lambda: None,
+    )
+    captured = {}
+
+    async def store_handles(**values):
+        captured.update(values)
+        return {"datasets": [{"datasetId": "dataset-1"}]}
+
+    monkeypatch.setattr(toolkit, "_temporary_client", lambda *_args: query_client)
+    monkeypatch.setattr(toolkit, "_store_materialized_handles", store_handles)
+
+    with pytest.raises(ReportingError) as denied:
+        await toolkit.report_materialize_dataset(
+            source_id,
+            sql="SELECT * FROM hospital.cost",
+            output_format="csv",
+            run_context=run_context,
+        )
+    assert getattr(denied.value, "code", None) == "sql_table_denied"
+
+    result = await toolkit.report_materialize_dataset(
+        source_id,
+        sql="SELECT month, amount FROM hospital.revenue",
+        output_format="csv",
+        run_context=run_context,
+    )
+
+    assert result == {"datasets": [{"datasetId": "dataset-1"}]}
+    assert captured["source_type"] == "starrocks_materialized"
+    assert set(captured["provenance"]) == {
+        "bindingId",
+        "querySha256",
+        "metadataFingerprint",
+    }
+    assert "secret" not in json.dumps(captured["provenance"])
+    assert len(workspace.fs.uploads) == 1
 
 
 @pytest.mark.anyio

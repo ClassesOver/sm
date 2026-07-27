@@ -1,4 +1,5 @@
 import os
+import re
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from ipaddress import IPv4Network, ip_network
@@ -92,6 +93,34 @@ def _daytona_network_allow_list(values: MutableMapping[str, str]) -> str | None:
     return ",".join(networks)
 
 
+def _report_source_network_allow_list(values: MutableMapping[str, str]) -> str | None:
+    raw = values.get("AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST", "").strip()
+    if not raw:
+        return None
+    entries = [entry.strip().lower().rstrip(".") for entry in raw.split(",")]
+    if any(not entry for entry in entries) or len(entries) > 50:
+        raise ValueError(
+            "AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST 必须包含 1 到 50 个主机名、IP 或 CIDR"
+        )
+    normalized: list[str] = []
+    hostname_pattern = re.compile(
+        r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    )
+    for entry in entries:
+        try:
+            network = ip_network(entry, strict=False)
+        except ValueError:
+            if not hostname_pattern.fullmatch(entry):
+                raise ValueError(
+                    "AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST 包含无效主机名、IP 或 CIDR"
+                ) from None
+            normalized.append(entry)
+        else:
+            normalized.append(str(network))
+    return ",".join(dict.fromkeys(normalized))
+
+
 def _phoenix_endpoint(values: MutableMapping[str, str]) -> str | None:
     raw = values.get("AGENT_TRACING_PHOENIX_ENDPOINT", "").strip()
     if not raw:
@@ -140,6 +169,7 @@ class AgentSettings:
     workspace_hmac_secret: str
     workspace_snapshot: str
     daytona_network_allow_list: str | None
+    report_source_network_allow_list: str | None
     enable_tool_result_compression: bool
     enable_session_summaries: bool
     enable_thinking: bool
@@ -212,6 +242,7 @@ class AgentSettings:
             ).strip()
             or DEFAULT_WORKSPACE_SNAPSHOT,
             daytona_network_allow_list=_daytona_network_allow_list(values),
+            report_source_network_allow_list=_report_source_network_allow_list(values),
             enable_tool_result_compression=_flag(
                 values.get("AGENT_ENABLE_TOOL_RESULT_COMPRESSION"), default=True
             ),

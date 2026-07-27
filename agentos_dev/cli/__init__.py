@@ -4,7 +4,9 @@ from .app import (
     create_cli_app_agent,
     create_cli_context,
     main,
+    read_report_request,
     run_cli_app,
+    run_cli_report,
 )
 
 __all__ = [
@@ -13,5 +15,7 @@ __all__ = [
     "create_cli_app_agent",
     "create_cli_context",
     "main",
+    "read_report_request",
     "run_cli_app",
+    "run_cli_report",
 ]

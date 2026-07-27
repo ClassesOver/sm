@@ -4,6 +4,7 @@ import json
 import shlex
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager, contextmanager
 from io import BytesIO
 
 import pytest
@@ -107,37 +108,146 @@ def test_每个对话使用独立持久沙箱且注册表可跨服务复用(tmp_
 
 
 @pytest.mark.anyio
-async def test_async_daytona_client_finishes_close_during_repeated_cancellation(monkeypatch):
+async def test_async_daytona_client_is_shared_and_shutdown_resists_repeated_cancellation(
+    monkeypatch,
+):
     close_started = asyncio.Event()
     allow_close = asyncio.Event()
-    closed = False
+    instances = []
+    close_calls = 0
 
     class ClosingClient:
+        def __init__(self):
+            instances.append(self)
+
         async def close(self):
-            nonlocal closed
+            nonlocal close_calls
+            close_calls += 1
             close_started.set()
             await allow_close.wait()
-            closed = True
 
     monkeypatch.setattr(workspace_module, "AsyncDaytona", ClosingClient)
     current = WorkspaceService(SECRET, async_registry=AsyncMemoryRegistry({}))
-    entered = asyncio.Event()
+    async with current._async_client() as first:
+        pass
+    async with current._async_client() as second:
+        pass
+    assert first is second
+    assert len(instances) == 1
 
-    async def use_client():
+    async def cancelled_request():
         async with current._async_client():
-            entered.set()
             await asyncio.Event().wait()
 
-    task = asyncio.create_task(use_client())
-    await entered.wait()
-    task.cancel()
-    await close_started.wait()
-    task.cancel()
-    allow_close.set()
-
+    request = asyncio.create_task(cancelled_request())
+    await asyncio.sleep(0)
+    request.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await task
-    assert closed
+        await request
+    assert not close_started.is_set()
+
+    shutdown = asyncio.create_task(current.aclose())
+    await close_started.wait()
+    shutdown.cancel()
+    await asyncio.sleep(0)
+    shutdown.cancel()
+    allow_close.set()
+    await shutdown
+    await current.aclose()
+    assert close_calls == 1
+
+
+def test_sandbox_id_cache_skips_registry_and_recovers_from_not_found(tmp_path, monkeypatch):
+    client = FakeClient()
+    current = service(tmp_path, client)
+    lock_calls = 0
+    original_locked = current.registry.locked
+
+    @contextmanager
+    def counted_locked(value):
+        nonlocal lock_calls
+        lock_calls += 1
+        with original_locked(value) as registry:
+            yield registry
+
+    monkeypatch.setattr(current.registry, "locked", counted_locked)
+    first = current.sandbox_for("thread")
+    assert current.sandbox_for("thread") is first
+    assert lock_calls == 1
+
+    client.sandboxes.pop(first.id)
+    client.sandboxes["unrelated"] = FakeSandbox("unrelated", {})
+    rebuilt = current.sandbox_for("thread")
+    assert rebuilt.id != first.id
+    assert lock_calls == 2
+
+    assert current.destroy("thread") is True
+    assert current._cached_sandbox_id(current._hash("thread")) is None
+
+
+def test_sandbox_id_cache_is_bounded_lru(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    monkeypatch.setattr(workspace_module, "MAX_SANDBOX_ID_CACHE_ENTRIES", 2)
+    values = [current._hash(f"thread-{index}") for index in range(3)]
+    for index, value in enumerate(values):
+        current._cache_sandbox_id(value, f"sandbox-{index}")
+    assert current._cached_sandbox_id(values[0]) is None
+    assert list(current._sandbox_ids) == values[1:]
+
+
+@pytest.mark.anyio
+async def test_async_sandbox_cache_hits_overlap_without_registry_lock(tmp_path):
+    synchronous = service(tmp_path)
+    sandbox = synchronous.sandbox_for("thread")
+
+    class CountingRegistry(AsyncMemoryRegistry):
+        def __init__(self, values):
+            super().__init__(values)
+            self.lock_calls = 0
+
+        @asynccontextmanager
+        async def locked(self, value):
+            self.lock_calls += 1
+            async with super().locked(value) as registry:
+                yield registry
+
+    class OverlapClient(AsyncFakeClient):
+        def __init__(self, client):
+            super().__init__(client)
+            self.active = 0
+            self.max_active = 0
+
+        async def get(self, sandbox_id):
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0)
+            try:
+                return await super().get(sandbox_id)
+            finally:
+                self.active -= 1
+
+    registry = CountingRegistry(synchronous.registry.values)
+    client = OverlapClient(synchronous.client)
+    current = WorkspaceService(
+        SECRET,
+        client=synchronous.client,
+        registry=synchronous.registry,
+        async_client=client,
+        async_registry=registry,
+    )
+    first = await current._asandbox_for(client, "thread")
+    assert first.id == sandbox.id
+    assert registry.lock_calls == 1
+
+    results = await asyncio.gather(
+        current._asandbox_for(client, "thread"),
+        current._asandbox_for(client, "thread"),
+    )
+    assert [result.id for result in results] == [sandbox.id, sandbox.id]
+    assert registry.lock_calls == 1
+    assert client.max_active == 2
+    assert await current.adestroy("thread") is True
+    assert current._cached_sandbox_id(current._hash("thread")) is None
 
 
 def test_路径大小符号链接和销毁边界均生效(tmp_path, monkeypatch):
@@ -1927,6 +2037,7 @@ async def test_异步分支工作区复制失败会清理目标(tmp_path):
         await async_service.acopy_branch("source", "target")
 
     assert current.sandbox_for("target", create=False) is None
+    assert async_service._cached_sandbox_id(async_service._hash("target")) is None
 
 
 @pytest.mark.anyio
@@ -1957,6 +2068,7 @@ async def test_异步分支工作区复制被取消也会清理目标(tmp_path, 
         await copy_task
 
     assert current.sandbox_for("target", create=False) is None
+    assert async_service._cached_sandbox_id(async_service._hash("target")) is None
 
 
 @pytest.mark.integration
