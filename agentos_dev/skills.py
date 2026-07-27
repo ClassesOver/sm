@@ -11,6 +11,7 @@ from typing import Any
 from agno.run import RunContext
 from agno.skills import LocalSkills, Skills
 from agno.skills.loaders.base import SkillLoader
+from daytona.common.errors import DaytonaNotFoundError
 
 from .coding.acceptance import (
     AcceptanceContractError,
@@ -20,11 +21,14 @@ from .coding.acceptance import (
 
 BUILTIN_CODING_SKILLS_DIR = Path(__file__).with_name("builtin_skills")
 CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY = "agentos_coding_skill_script_receipts"
+CODING_SKILL_SCRIPT_ROOT = "/home/.agentos/skill-scripts"
 MAX_SKILL_SCRIPT_RECEIPTS = 64
 MAX_SKILL_VALIDATORS = 32
 MAX_SKILL_VALIDATOR_SCRIPT_BYTES = 1024 * 1024
 MAX_SKILL_VALIDATOR_TIMEOUT = 900
 _VALIDATOR_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\Z")
+_SKILL_PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_SKILL_SCRIPT_HOOK_MARKER = "_agentos_skill_script_hook"
 
 
 class SkillAcceptanceError(ValueError):
@@ -178,6 +182,8 @@ async def skill_script_receipt_hook(
     function_name: str,
     function_call: Callable[..., Any],
     arguments: dict[str, Any],
+    *,
+    workspace_service: Any | None = None,
 ) -> Any:
     result: Any = function_call(**arguments)
     if isawaitable(result):
@@ -202,6 +208,55 @@ async def skill_script_receipt_hook(
         or not content
     ):
         return result
+    encoded = content.encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    readonly_path: str | None = None
+    if workspace_service is not None:
+        if (
+            _SKILL_PATH_SEGMENT_RE.fullmatch(skill) is None
+            or _SKILL_PATH_SEGMENT_RE.fullmatch(Path(path).name) is None
+        ):
+            return result
+        thread_id = str(run_context.session_id or "")
+        if not thread_id:
+            return result
+        install_digest = hashlib.sha256(f"{skill}:{path}:{digest}".encode()).hexdigest()
+        install_dir = f"{CODING_SKILL_SCRIPT_ROOT}/{install_digest}"
+        readonly_path = f"{install_dir}/{Path(path).name}"
+        async with workspace_service._async_client() as client:
+            sandbox = await workspace_service._asandbox_for(client, thread_id)
+            current = ""
+            directories: list[str] = []
+            for part in install_dir.strip("/").split("/"):
+                current = f"{current}/{part}"
+                directories.append(current)
+                try:
+                    info = await sandbox.fs.get_file_info(current)
+                except DaytonaNotFoundError:
+                    await sandbox.fs.create_folder(current, "755")
+                    continue
+                if workspace_service._is_symlink(info) or not bool(getattr(info, "is_dir", False)):
+                    raise SkillAcceptanceError("Skill 脚本安装目录不是安全普通目录。")
+            try:
+                info = await sandbox.fs.get_file_info(readonly_path)
+            except DaytonaNotFoundError:
+                await sandbox.fs.upload_file(encoded, readonly_path)
+            else:
+                if not workspace_service._is_regular_file(info):
+                    raise SkillAcceptanceError("Skill 脚本安装路径不是普通文件。")
+            installed = await sandbox.fs.download_file(readonly_path)
+            if hashlib.sha256(installed).hexdigest() != digest:
+                raise SkillAcceptanceError("Skill 脚本安装摘要验证失败。")
+            await sandbox.fs.set_file_permissions(
+                readonly_path, mode="555", owner="root", group="root"
+            )
+            for directory in reversed(directories):
+                if directory.startswith("/home/.agentos"):
+                    await sandbox.fs.set_file_permissions(
+                        directory, mode="555", owner="root", group="root"
+                    )
+        payload = {**payload, "readonly_path": readonly_path}
+        result = json.dumps(payload, ensure_ascii=False) if isinstance(result, str) else payload
     if not isinstance(run_context.session_state, dict):
         run_context.session_state = {}
     receipts = run_context.session_state.setdefault(CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY, {})
@@ -213,12 +268,36 @@ async def skill_script_receipt_hook(
     receipts[key] = {
         "skill": skill,
         "path": path,
-        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "sha256": digest,
         "chars": len(content),
+        **({"readonlyPath": readonly_path} if readonly_path is not None else {}),
     }
     while len(receipts) > MAX_SKILL_SCRIPT_RECEIPTS:
         del receipts[next(iter(receipts))]
     return result
+
+
+def create_skill_script_hook(workspace_service: Any) -> Callable[..., Any]:
+    async def hook(
+        run_context: RunContext,
+        function_name: str,
+        function_call: Callable[..., Any],
+        arguments: dict[str, Any],
+    ) -> Any:
+        return await skill_script_receipt_hook(
+            run_context,
+            function_name,
+            function_call,
+            arguments,
+            workspace_service=workspace_service,
+        )
+
+    setattr(hook, _SKILL_SCRIPT_HOOK_MARKER, True)
+    return hook
+
+
+def is_skill_script_hook(hook: Callable[..., Any]) -> bool:
+    return getattr(hook, _SKILL_SCRIPT_HOOK_MARKER, False) is True
 
 
 def load_skills(path: str | None = None) -> Skills:

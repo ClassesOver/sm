@@ -8,7 +8,7 @@ from agentos_dev.cli import app as cli_module
 from agentos_dev.coding.execution import is_coding_tool_scheduler_hook
 from agentos_dev.context_management import ContextBudgetController, ProjectedOpenAIChat
 from agentos_dev.settings import AgentSettings
-from agentos_dev.skills import SkillValidatorRegistry, skill_script_receipt_hook
+from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
 
 
 def test_create_cli_agent_is_independent_coding_agent():
@@ -41,7 +41,7 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.compression_manager.model is agent.model
     assert agent.tools[0].kernel.service is workspace_service
     assert isinstance(agent.tools[0].kernel.validator_registry, SkillValidatorRegistry)
-    assert skill_script_receipt_hook in agent.tool_hooks
+    assert sum(is_skill_script_hook(hook) for hook in agent.tool_hooks) == 1
     assert sum(is_coding_tool_scheduler_hook(hook) for hook in agent.tool_hooks) == 1
 
     app_agent = create_cli_app_agent(
@@ -66,7 +66,7 @@ def test_create_cli_agent_is_independent_coding_agent():
         "required": ["instruction"],
         "additionalProperties": False,
     }
-    assert skill_script_receipt_hook not in (app_agent.tool_hooks or [])
+    assert not any(is_skill_script_hook(hook) for hook in app_agent.tool_hooks or [])
     assert not any(is_coding_tool_scheduler_hook(hook) for hook in app_agent.tool_hooks or [])
     assert isasyncgenfunction(app_agent.tools[0].entrypoint)
     expected_tool_choice = {

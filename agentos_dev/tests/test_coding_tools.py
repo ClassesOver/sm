@@ -32,7 +32,7 @@ from agentos_dev.coding_tools import (
     parse_codex_patch,
 )
 from agentos_dev.instructions import build_coding_agent_instructions
-from agentos_dev.skills import SkillValidatorRegistry, skill_script_receipt_hook
+from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
 from agentos_dev.tests.workspace_fakes import (
     AsyncFakeClient,
     AsyncMemoryRegistry,
@@ -257,10 +257,10 @@ def test_report_agent_extends_unregistered_coding_agent(tmp_path):
         "required": ["instruction"],
         "additionalProperties": False,
     }
-    assert skill_script_receipt_hook not in (coding_facade.tool_hooks or [])
+    assert not any(is_skill_script_hook(hook) for hook in coding_facade.tool_hooks or [])
     assert not any(is_coding_tool_scheduler_hook(hook) for hook in coding_facade.tool_hooks or [])
     assert coding_agent.instructions is build_coding_agent_instructions
-    assert skill_script_receipt_hook in coding_agent.tool_hooks
+    assert sum(is_skill_script_hook(hook) for hook in coding_agent.tool_hooks) == 1
     assert sum(is_coding_tool_scheduler_hook(hook) for hook in coding_agent.tool_hooks) == 1
     assert [skill.name for skill in coding_agent.skills.get_all_skills()] == ["sandbox-tooling"]
     assert coding_agent.id in {

@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from inspect import isawaitable
+from pathlib import Path
 from typing import Any
 
 from agno.run import RunContext
@@ -76,10 +77,12 @@ CODING_TOOL_OUTPUT_STATE_KEY = "agentos_coding_tool_outputs"
 CODING_TOOL_PROGRESS_STATE_KEY = "agentos_coding_tool_progress"
 CODING_TOOL_FAILURE_STATE_KEY = "agentos_coding_tool_failures"
 TOOL_OUTPUT_ROOT = "/home/daytona/.agentos/tool-output"
-VALIDATOR_ROOT = "/home/daytona/.agentos/validators"
+VALIDATOR_ROOT = "/home/.agentos/validators"
 MAX_VALIDATOR_REQUEST_BYTES = 256 * 1024
 MAX_VALIDATOR_RESULT_BYTES = 32 * 1024
 MAX_VALIDATOR_DETAIL_BYTES = 512
+READONLY_SCRIPT_RUNTIME = Path(__file__).with_name("readonly_script_runtime.py").read_bytes()
+READONLY_SCRIPT_RUNTIME_SHA256 = hashlib.sha256(READONLY_SCRIPT_RUNTIME).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,15 @@ class ToolSpec:
     effect: str
     parallel_safe: bool
     output_policy: str = "bounded_text"
+
+
+@dataclass(frozen=True)
+class _InstalledValidator:
+    directory: str
+    script_path: str
+    request_path: str
+    runtime_path: str
+    runtime_sha256: str
 
 
 TOOL_SPECS = {
@@ -1118,6 +1130,8 @@ class CodingExecutionKernel:
             if patch is not None
             else None
         )
+        if patch_changes is not None:
+            self._reject_writable_skill_script_copy(patch_changes, run_context)
         patch_receipt = self._patch_receipt(patch_changes) if patch_changes is not None else None
         read_only = (
             _read_only
@@ -1461,6 +1475,33 @@ class CodingExecutionKernel:
         return {**result, "ok": True, "message": "补丁已应用。"}
 
     @staticmethod
+    def _reject_writable_skill_script_copy(
+        changes: list[dict[str, Any]], run_context: RunContext | None
+    ) -> None:
+        state = (
+            run_context.session_state
+            if run_context is not None and isinstance(run_context.session_state, dict)
+            else {}
+        )
+        receipts = state.get(CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY)
+        if not isinstance(receipts, dict):
+            return
+        script_digests = {
+            receipt.get("sha256")
+            for receipt in receipts.values()
+            if isinstance(receipt, dict) and isinstance(receipt.get("sha256"), str)
+        }
+        for change in changes:
+            content = change.get("content")
+            if not isinstance(content, str):
+                continue
+            if hashlib.sha256(content.encode("utf-8")).hexdigest() in script_digests:
+                raise WorkspaceError(
+                    "Skill 脚本只能使用 get_skill_script 返回的 readonly_path，"
+                    "不能在项目目录创建可写副本。"
+                )
+
+    @staticmethod
     def _patch_receipt(changes: list[dict[str, Any]]) -> dict[str, Any]:
         files: list[dict[str, Any]] = []
         for change in changes:
@@ -1560,6 +1601,7 @@ class CodingExecutionKernel:
             ]
         else:
             raise WorkspaceError("patch mode 只支持 create、overwrite、replace 或 patch。")
+        self._reject_writable_skill_script_copy(changes, run_context)
         mutation_sequence = await self.repository.increment_mutation(
             scope.external_run_id,
             lease=scope.lease,
@@ -1838,15 +1880,22 @@ class CodingExecutionKernel:
                 retryable=False,
             )
 
-        request_path = await self._install_validator(scope, validator, request_bytes)
+        installed = await self._install_validator(scope, validator, request_bytes)
         command = shlex.join(
             [
                 "python3",
                 "-I",
-                f"{VALIDATOR_ROOT}/{validator.install_digest}/validator.py",
-                request_path,
+                "-B",
+                installed.runtime_path,
+                "--write-root",
+                WORKSPACE_ROOT,
+                "--write-root",
+                "/tmp",
+                installed.script_path,
+                installed.request_path,
             ]
         )
+        scripts_unchanged = False
         try:
             result = await self.terminal(
                 command,
@@ -1866,7 +1915,37 @@ class CodingExecutionKernel:
                     run_context,
                 )
         finally:
-            await self._delete_validator_request(scope, request_path)
+            try:
+                scripts_unchanged = await self._validator_scripts_unchanged(
+                    scope, installed, validator.script_sha256
+                )
+            finally:
+                await self._delete_validator_install(scope, installed.directory)
+
+        if not scripts_unchanged:
+            receipt = {
+                "validator_id": validator_id,
+                "validator_sha256": validator.script_sha256,
+                "request_sha256": hashlib.sha256(request_bytes).hexdigest(),
+                "exit_code": result.get("exit_code"),
+                "mutation_sequence": result["mutation_sequence"],
+                "timeout": validator.timeout,
+                "artifacts": artifacts,
+                "valid": False,
+                "failure_code": "validator_script_modified",
+            }
+            execution = await self.repository.update_execution(
+                result["execution_id"], operation_receipt=receipt
+            )
+            return {
+                **self._public_execution(execution),
+                **self._verification_error(
+                    "verification_validator_script_modified",
+                    "服务端 validator 或只读执行 runtime 的摘要发生变化。",
+                    required_actions=["修复 Daytona 只读脚本保护后重新验证。"],
+                    retryable=False,
+                ),
+            }
 
         current_artifacts = (
             await self.service.abatch_hash_files(scope.thread_id, normalized_paths)
@@ -1983,41 +2062,75 @@ class CodingExecutionKernel:
         scope: CodingTaskScope,
         validator: SkillValidator,
         request: bytes,
-    ) -> str:
-        validator_dir = f"{VALIDATOR_ROOT}/{validator.install_digest}"
-        request_path = f"{validator_dir}/request-{uuid.uuid4().hex}.json"
+    ) -> _InstalledValidator:
+        validator_dir = f"{VALIDATOR_ROOT}/{validator.install_digest}/{uuid.uuid4().hex}"
+        request_path = f"{validator_dir}/request.json"
         script_path = f"{validator_dir}/validator.py"
+        runtime_path = f"{validator_dir}/readonly_script_runtime.py"
         async for sandbox in self._sandbox(scope):
             current = ""
+            directories: list[str] = []
             for part in validator_dir.strip("/").split("/"):
                 current = f"{current}/{part}"
+                directories.append(current)
                 try:
                     info = await sandbox.fs.get_file_info(current)
                 except DaytonaNotFoundError:
-                    await sandbox.fs.create_folder(current, "700")
+                    await sandbox.fs.create_folder(current, "755")
                     continue
                 if self.service._is_symlink(info) or not bool(getattr(info, "is_dir", False)):
                     raise WorkspaceError("validator 安装目录不是安全普通目录。")
-            try:
-                info = await sandbox.fs.get_file_info(script_path)
-            except DaytonaNotFoundError:
-                await sandbox.fs.upload_file(validator.script_content, script_path)
-            else:
-                if not self.service._is_regular_file(info):
-                    raise WorkspaceError("validator 安装路径不是普通文件。")
-                installed = await sandbox.fs.download_file(script_path)
-                if hashlib.sha256(installed).hexdigest() != validator.script_sha256:
-                    raise WorkspaceError("validator 安装脚本摘要冲突。")
-            installed = await sandbox.fs.download_file(script_path)
-            if hashlib.sha256(installed).hexdigest() != validator.script_sha256:
-                raise WorkspaceError("validator 安装脚本摘要验证失败。")
+            await sandbox.fs.upload_file(validator.script_content, script_path)
+            await sandbox.fs.upload_file(READONLY_SCRIPT_RUNTIME, runtime_path)
             await sandbox.fs.upload_file(request, request_path)
-        return request_path
+            for path, digest in (
+                (script_path, validator.script_sha256),
+                (runtime_path, READONLY_SCRIPT_RUNTIME_SHA256),
+            ):
+                content = await sandbox.fs.download_file(path)
+                if hashlib.sha256(content).hexdigest() != digest:
+                    raise WorkspaceError("validator 只读脚本摘要验证失败。")
+                await sandbox.fs.set_file_permissions(path, mode="555", owner="root", group="root")
+            await sandbox.fs.set_file_permissions(
+                request_path, mode="444", owner="root", group="root"
+            )
+            for directory in reversed(directories):
+                if directory.startswith("/home/.agentos"):
+                    await sandbox.fs.set_file_permissions(
+                        directory, mode="555", owner="root", group="root"
+                    )
+        return _InstalledValidator(
+            directory=validator_dir,
+            script_path=script_path,
+            request_path=request_path,
+            runtime_path=runtime_path,
+            runtime_sha256=READONLY_SCRIPT_RUNTIME_SHA256,
+        )
 
-    async def _delete_validator_request(self, scope: CodingTaskScope, request_path: str) -> None:
+    async def _validator_scripts_unchanged(
+        self,
+        scope: CodingTaskScope,
+        installed: _InstalledValidator,
+        script_sha256: str,
+    ) -> bool:
         try:
             async for sandbox in self._sandbox(scope):
-                await sandbox.fs.delete_file(request_path)
+                for path, digest in (
+                    (installed.script_path, script_sha256),
+                    (installed.runtime_path, installed.runtime_sha256),
+                ):
+                    content = await sandbox.fs.download_file(path)
+                    if hashlib.sha256(content).hexdigest() != digest:
+                        return False
+                return True
+        except (CodingRepositoryError, DaytonaNotFoundError, WorkspaceError):
+            return False
+        return False
+
+    async def _delete_validator_install(self, scope: CodingTaskScope, validator_dir: str) -> None:
+        try:
+            async for sandbox in self._sandbox(scope):
+                await sandbox.fs.delete_file(validator_dir, recursive=True)
         except (CodingRepositoryError, DaytonaNotFoundError, WorkspaceError):
             pass
 

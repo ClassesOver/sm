@@ -21,8 +21,9 @@ from ..context_management import ContextBudgetController, projected_coding_model
 from ..instructions import build_coding_agent_instructions
 from ..skills import (
     SkillValidatorRegistry,
+    create_skill_script_hook,
+    is_skill_script_hook,
     load_builtin_coding_skills,
-    skill_script_receipt_hook,
 )
 from ..workspace import WorkspaceService, _thread
 
@@ -41,7 +42,7 @@ def create_coding_agent(
     tool_hooks = [
         *(base_agent.tool_hooks or []),
         create_coding_tool_scheduler_hook(coding_repository),
-        skill_script_receipt_hook,
+        create_skill_script_hook(workspace_service),
     ]
     if not isinstance(base_agent.model, OpenAIChat):
         raise TypeError("Coding Agent requires OpenAIChat")
@@ -96,7 +97,7 @@ def create_coding_facade_agent(
     facade_tool_hooks = [
         hook
         for hook in (internal_agent.tool_hooks or [])
-        if hook is not skill_script_receipt_hook and not is_coding_tool_scheduler_hook(hook)
+        if not is_skill_script_hook(hook) and not is_coding_tool_scheduler_hook(hook)
     ]
 
     async def run_coding_task(

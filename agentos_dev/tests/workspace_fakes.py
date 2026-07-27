@@ -17,6 +17,8 @@ class Info:
         self.modified_at = "2026-07-17T00:00:00Z"
         self.mod_time = self.modified_at
         self.additional_properties = {}
+        self.owner = None
+        self.group = None
 
 
 class FakeFs:
@@ -63,6 +65,13 @@ class FakeFs:
 
     def move_files(self, source, destination):
         self.entries[destination] = self.entries.pop(source)
+
+    def set_file_permissions(self, path, mode=None, owner=None, group=None):
+        info = self.entries[path][0]
+        if mode is not None:
+            info.mode = mode
+        info.owner = owner
+        info.group = group
 
 
 class FakeProcess:
@@ -221,6 +230,9 @@ class AsyncFakeFs:
                     self._fs.entries.pop(child, None)
             return None
         return self._fs.delete_file(path, recursive=False)
+
+    async def set_file_permissions(self, path, mode=None, owner=None, group=None):
+        return self._fs.set_file_permissions(path, mode=mode, owner=owner, group=group)
 
 
 class AsyncFakeProcess:

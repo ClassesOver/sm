@@ -1,7 +1,10 @@
 import asyncio
 import hashlib
 import json
+import subprocess
+import sys
 from copy import copy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -33,7 +36,12 @@ from agentos_dev.coding_tools import (
     CODEX_EXEC_SESSIONS_STATE_KEY,
 )
 from agentos_dev.database import create_agent_database
-from agentos_dev.skills import SkillValidatorRegistry, load_builtin_coding_skills
+from agentos_dev.skills import (
+    CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
+    SkillValidatorRegistry,
+    load_builtin_coding_skills,
+    skill_script_receipt_hook,
+)
 from agentos_dev.tests.workspace_fakes import (
     AsyncFakeClient,
     AsyncFakeProcess,
@@ -399,7 +407,7 @@ async def acceptance_runtime(runtime, tmp_path):
     )
 
 
-async def completed_validator(runtime, acceptance, *, passed=None, output=None):
+async def completed_validator(runtime, acceptance, *, passed=None, output=None, tamper=None):
     pending = asyncio.create_task(
         acceptance.kernel.verify(
             None,
@@ -429,6 +437,8 @@ async def completed_validator(runtime, acceptance, *, passed=None, output=None):
             session = process.sessions[f"{MANAGED_PROCESS_PREFIX}{execution_id}"]
             command = session.commands[0]
             command_text = command.command
+            if tamper is not None:
+                tamper(command_text)
             if output is None:
                 assert isinstance(passed, bool)
                 output = json.dumps(
@@ -470,8 +480,9 @@ async def test_validator_verify_uses_pinned_script_fixed_timeout_and_strict_rece
 
     validator = acceptance.registry.require("analysis:report")
     execution = await runtime.repository.get_execution(execution_id)
-    assert command is not None and "python3 -I" in command
-    assert f"validators/{validator.install_digest}/validator.py" in command
+    assert command is not None and "python3 -I -B" in command
+    assert "readonly_script_runtime.py" in command
+    assert f"validators/{validator.install_digest}/" in command
     assert "17s" in command
     assert result["status"] == "completed"
     assert result["acceptance"]["requirements"][0]["passed"] is True
@@ -481,11 +492,129 @@ async def test_validator_verify_uses_pinned_script_fixed_timeout_and_strict_rece
     assert execution.operation_receipt["valid"] is True
     assert acceptance.script.read_bytes() == original_script
     internal_files = runtime.synchronous.sandbox_for("thread").fs.entries
-    assert any(
-        path.endswith(f"validators/{validator.install_digest}/validator.py")
-        for path in internal_files
+    assert not any(f"validators/{validator.install_digest}/" in path for path in internal_files)
+
+
+@pytest.mark.anyio
+async def test_skill_script_is_installed_readonly_and_writable_copy_is_rejected(
+    execution_runtime,
+):
+    runtime = execution_runtime
+    body = "print('trusted')\n"
+
+    async def read_script(**_kwargs):
+        return json.dumps({"skill_name": "report", "script_path": "validate.py", "content": body})
+
+    raw = await skill_script_receipt_hook(
+        runtime.context,
+        "get_skill_script",
+        read_script,
+        {"skill_name": "report", "script_path": "validate.py", "execute": False},
+        workspace_service=runtime.workspace,
     )
-    assert not any(path.endswith("request.json") for path in internal_files)
+
+    result = json.loads(raw)
+    readonly_path = result["readonly_path"]
+    sandbox = runtime.synchronous.sandbox_for("thread")
+    info, installed = sandbox.fs.entries[readonly_path]
+    assert installed == body.encode()
+    assert info.mode == "555"
+    assert info.owner == "root"
+    assert info.group == "root"
+    receipt = runtime.context.session_state[CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY][
+        "report:validate.py"
+    ]
+    assert receipt["readonlyPath"] == readonly_path
+
+    with pytest.raises(WorkspaceError, match="readonly_path"):
+        await runtime.kernel.patch(
+            "create",
+            "validate.py",
+            None,
+            None,
+            False,
+            None,
+            runtime.context,
+            content=body,
+        )
+    assert await runtime.repository.list_executions("external-run") == []
+
+
+def test_readonly_script_runtime_blocks_self_mutation_but_allows_workspace_write(tmp_path):
+    protected = tmp_path / "protected"
+    workspace = tmp_path / "workspace"
+    protected.mkdir()
+    workspace.mkdir()
+    script = protected / "validator.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "target = Path(__file__)\n"
+        "blocked = []\n"
+        "for operation in (\n"
+        "    lambda: target.write_text('changed'),\n"
+        "    lambda: target.unlink(),\n"
+        "    lambda: target.rename(target.with_suffix('.moved')),\n"
+        "):\n"
+        "    try:\n"
+        "        operation()\n"
+        "    except PermissionError:\n"
+        "        blocked.append(True)\n"
+        f"Path({str(workspace / 'result.txt')!r}).write_text('ok')\n"
+        "print(len(blocked))\n",
+        encoding="utf-8",
+    )
+    original = script.read_bytes()
+    runtime = Path(execution_module.__file__).with_name("readonly_script_runtime.py")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(runtime),
+            "--write-root",
+            str(workspace),
+            str(script),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "3"
+    assert script.read_bytes() == original
+    assert (workspace / "result.txt").read_text(encoding="utf-8") == "ok"
+
+
+@pytest.mark.anyio
+async def test_validator_rejects_runtime_digest_change_and_cleans_install(
+    execution_runtime,
+    tmp_path,
+):
+    runtime = execution_runtime
+    acceptance = await acceptance_runtime(runtime, tmp_path)
+    sandbox = runtime.synchronous.sandbox_for("thread")
+
+    def tamper(_command: str) -> None:
+        runtime_path = next(
+            path for path in sandbox.fs.entries if path.endswith("readonly_script_runtime.py")
+        )
+        info, _content = sandbox.fs.entries[runtime_path]
+        sandbox.fs.entries[runtime_path] = (info, b"changed")
+
+    execution_id, _command, result = await completed_validator(
+        runtime,
+        acceptance,
+        passed=True,
+        tamper=tamper,
+    )
+
+    execution = await runtime.repository.get_execution(execution_id)
+    assert result["code"] == "verification_validator_script_modified"
+    assert execution is not None
+    assert execution.operation_receipt["failure_code"] == "validator_script_modified"
+    validator = acceptance.registry.require("analysis:report")
+    assert not any(f"validators/{validator.install_digest}/" in path for path in sandbox.fs.entries)
 
 
 @pytest.mark.anyio

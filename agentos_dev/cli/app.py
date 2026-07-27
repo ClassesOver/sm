@@ -39,8 +39,9 @@ from ..observability import configure_tracing
 from ..settings import AgentSettings
 from ..skills import (
     SkillValidatorRegistry,
+    create_skill_script_hook,
+    is_skill_script_hook,
     load_builtin_coding_skills,
-    skill_script_receipt_hook,
 )
 from ..workspace import WorkspaceService
 
@@ -138,7 +139,7 @@ def create_cli_agent(context: CliContext) -> Agent:
         post_hooks=[clear_terminal_reasoning],
         tool_hooks=[
             create_coding_tool_scheduler_hook(context.coding_repository),
-            skill_script_receipt_hook,
+            create_skill_script_hook(context.workspace_service),
         ],
         debug_mode=True,
         markdown=True,
@@ -160,7 +161,7 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
     facade_tool_hooks = [
         hook
         for hook in (coding_agent.tool_hooks or [])
-        if hook is not skill_script_receipt_hook and not is_coding_tool_scheduler_hook(hook)
+        if not is_skill_script_hook(hook) and not is_coding_tool_scheduler_hook(hook)
     ]
 
     async def run_coding_task(
