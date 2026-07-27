@@ -47,8 +47,6 @@ from .agents import (
     TEAM_ROUTE_DEPENDENCY,
     create_assistant_team,
     create_assistants,
-    create_coding_facade_agent,
-    create_report_agent,
     is_odoo_command_name,
 )
 from .application import ApplicationContext, create_agentos_app
@@ -60,6 +58,7 @@ from .branch import (
     validate_branch_identity,
 )
 from .coding import AgnoCodingExecutor, AguiCodingAdapter, CodingScope, CodingTaskSupervisor
+from .coding.agent import create_coding_agent, create_coding_facade_agent
 from .coding.execution import (
     CODING_EXECUTION_MIGRATION_STATE_KEY,
     CODING_FINISH_FAILURE_STATE_KEY,
@@ -69,13 +68,45 @@ from .coding.execution import (
     CODING_TOOL_PROGRESS_STATE_KEY,
     CodingExecutionKernel,
 )
+from .coding.reporting.agent import (
+    create_report_agent,
+    create_report_worker,
+    report_delivery_post_hook,
+)
+from .coding.reporting.agui import REPORT_SOURCE_INTAKE_DEPENDENCY, prepare_agui_report_intake
+from .coding.reporting.binding import TemporarySourceBindingService
+from .coding.reporting.controller import (
+    REPORT_WORKFLOW_CONTROL_STATE_KEY,
+    REPORT_WORKFLOW_SCOPE_DEPENDENCY,
+    ReportWorkflowController,
+)
+from .coding.reporting.credentials import TemporaryCredentialStore
+from .coding.reporting.data_sources import (
+    CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
+    MAX_DATASET_FILE_BYTES,
+    MAX_REPORT_INPUTS,
+    REPORT_DATASET_HANDLES_STATE_KEY,
+    ReportDataSourceToolkit,
+)
+from .coding.reporting.instructions import build_report_agent_instructions
+from .coding.reporting.intake import ReportIntakeService
+from .coding.reporting.models import ReportingError
+from .coding.reporting.runtime import ReportWorkflowRuntime
+from .coding.reporting.starrocks import create_starrocks_client
+from .coding.reporting.workspace import (
+    REPORT_DELIVERY_INCOMPLETE_MESSAGE,
+    REPORT_DELIVERY_STATE_KEY,
+    REPORT_JOBS_STATE_KEY,
+    WorkspaceReportToolkit,
+    report_delivery_content,
+)
 from .coding.repository import (
     TERMINAL_EXECUTION_STATUSES,
     CodingRepositoryError,
     CodingTaskRepository,
     utcnow,
 )
-from .coding_tools import (
+from .coding.tools import (
     CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
     CODEX_EXEC_NEXT_SESSION_STATE_KEY,
     CODEX_EXEC_SESSIONS_STATE_KEY,
@@ -89,40 +120,15 @@ from .database import check_database, create_agent_database
 from .instructions import (
     build_agent_instructions,
     build_odoo_command_instructions,
-    build_report_agent_instructions,
 )
 from .observability import configure_tracing
-from .report_data_sources import (
-    CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
-    MAX_DATASET_FILE_BYTES,
-    MAX_REPORT_INPUTS,
-    REPORT_DATASET_HANDLES_STATE_KEY,
-    ReportDataSourceToolkit,
-)
-from .reporting.agui import REPORT_SOURCE_INTAKE_DEPENDENCY, prepare_agui_report_intake
-from .reporting.binding import TemporarySourceBindingService
-from .reporting.controller import (
-    REPORT_WORKFLOW_CONTROL_STATE_KEY,
-    REPORT_WORKFLOW_SCOPE_DEPENDENCY,
-    ReportWorkflowController,
-)
-from .reporting.credentials import TemporaryCredentialStore
-from .reporting.intake import ReportIntakeService
-from .reporting.models import ReportingError
-from .reporting.runtime import ReportWorkflowRuntime
-from .reporting.starrocks import create_starrocks_client
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
 from .skills import SkillValidatorRegistry, load_skills, public_skill_metadata
 from .workspace import (
-    REPORT_DELIVERY_INCOMPLETE_MESSAGE,
-    REPORT_DELIVERY_STATE_KEY,
-    REPORT_JOBS_STATE_KEY,
     WorkspaceError,
     WorkspacePathConflict,
-    WorkspaceReportToolkit,
     WorkspaceService,
-    report_delivery_content,
 )
 
 PROTOCOL = "agui.odoo.v2"
@@ -1226,15 +1232,28 @@ async def cancel_coding_task(request: Request, payload: CodingCancelPayload):
     return {"ok": True, "status": "cancelled"}
 
 
-assistant, odoo_command_assistant, coding_agent, report_worker = create_assistants(
+assistant, odoo_command_assistant = create_assistants(
     settings,
     agent_skills,
     workspace_service,
     build_agent_instructions,
     build_odoo_command_instructions,
-    build_report_agent_instructions,
     agent_database,
+)
+coding_agent = create_coding_agent(
+    assistant,
+    workspace_service,
     coding_repository,
+    context_token_budget=settings.context_token_budget,
+    output_token_reserve=settings.output_token_reserve,
+)
+report_worker = create_report_worker(
+    coding_agent,
+    workspace_service,
+    coding_repository,
+    instructions=build_report_agent_instructions,
+    context_token_budget=settings.context_token_budget,
+    output_token_reserve=settings.output_token_reserve,
 )
 report_supervisor = CodingTaskSupervisor(
     coding_repository,
@@ -1279,6 +1298,7 @@ assistant_team = create_assistant_team(
     team_coding_member,
     report_agent,
     workspace_service,
+    post_hooks=[report_delivery_post_hook(workspace_service)],
 )
 
 

@@ -18,19 +18,29 @@ uv pip install --python .venv-agent/bin/python -r agentos_dev/requirements.txt
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app
 ```
 
-独立 CLI 不启动 FastAPI、Team 或 AG-UI 路由，可直接使用同一套模型、数据库和 Daytona
-工作区配置。无参数时进入 Coding 模式：
+Coding 与 Report 的内部入口在包和资源生命周期上相互独立，仍可使用同一套模型、数据库和 Daytona
+工作区配置。独立 CLI 不启动 FastAPI、Team 或 AG-UI 路由：
 
 ```bash
-AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.cli
+AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.cli
 ```
 
 报表模式使用同一个 `ReportWorkflowController` 和终端审核 adapter；输入报表目标、临时 StarRocks
 连接块和 DDL 后，以单独一行 `/run` 提交：
 
 ```bash
-AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.cli report
+AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting.cli
 ```
+
+仅运行内部 facade AgentOS 时使用：
+
+```bash
+AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding
+AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting
+```
+
+两者都只注册由 Supervisor 或 Workflow 控制的 facade，不公开底层 worker。生产浏览器仍只访问
+综合 `agentos_dev.app`。
 
 报表 CLI 在服务和 tracing 初始化前完成连接块解析与脱敏，随后依次处理来源、提纲、按需 SQL 和发布
 审核；批准、带反馈拒绝和取消都恢复同一持久化 Workflow run。临时凭据只保留到本轮 CLI 会话结束。
@@ -240,7 +250,7 @@ Shell 命令时拒绝且不写文件。供应商 API 已拒绝的畸形函数参
 `ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`，但不注册为 AgentOS 公共 Agent 或 Team
 member。生产路由仍由公开 `report-agent` 接收，它只通过四个 `report_workflow_*` 工具调用
 `ReportWorkflowController`；`AgentOS` 不额外注册 Workflow，也不增加第二条传输链路。
-`agentos_dev.reporting` 的 Agno Workflow 依次处理来源确认、受限画像、提纲审核、分析计划、取数需求、
+`agentos_dev.coding.reporting` 的 Agno Workflow 依次处理来源确认、受限画像、提纲审核、分析计划、取数需求、
 SQL 候选与按需审核、不可变数据集物化、Coding 分析、PDF 验收和发布审核。AG-UI 和 CLI adapter
 只负责暂停、反馈、继续和取消。Report 层保留数据源物化、输入绑定、Markdown/PDF 渲染及验收。
 完整文件内容不会注入 facade 模型；内部 worker 只从 AnalysisPlan、DataRequirement 和

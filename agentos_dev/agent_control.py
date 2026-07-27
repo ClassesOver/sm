@@ -120,28 +120,6 @@ def build_coding_agent_tools(
     ]
 
 
-def build_report_worker_tools(
-    workspace_service: WorkspaceService,
-    coding_repository,
-    validator_registry=None,
-    *,
-    run_context: RunContext,
-    agent: Any | None = None,
-    context_token_budget: int = 262144,
-    output_token_reserve: int = 32768,
-) -> list[Toolkit]:
-    """Report Worker 只执行 Coding 分析，不持有数据库或 SQL 工具。"""
-    from .coding.execution import WorkspaceCodingToolkit
-
-    return [
-        WorkspaceCodingToolkit(
-            workspace_service,
-            coding_repository,
-            validator_registry=validator_registry,
-        )
-    ]
-
-
 class AgentControlToolkit(Toolkit):
     def __init__(
         self,

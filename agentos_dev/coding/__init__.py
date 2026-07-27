@@ -24,6 +24,19 @@ from .run_manager import InternalRunManager
 from .session import TaskSession
 from .supervisor import CodingTaskSupervisor
 
+
+def create_agentos(settings=None):
+    from .agentos import create_agentos as factory
+
+    return factory(settings)
+
+
+def main() -> None:
+    from .agentos import main as run
+
+    run()
+
+
 __all__ = [
     "AttemptOutcome",
     "AttemptSnapshot",
@@ -50,4 +63,6 @@ __all__ = [
     "TaskSession",
     "TaskState",
     "CodingTaskSupervisor",
+    "create_agentos",
+    "main",
 ]

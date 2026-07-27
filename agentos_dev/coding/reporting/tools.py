@@ -1,0 +1,29 @@
+"""Report worker 工具装配。"""
+
+from typing import Any
+
+from agno.run import RunContext
+from agno.tools import Toolkit
+
+from ...workspace import WorkspaceService
+from ..execution import WorkspaceCodingToolkit
+
+
+def build_report_worker_tools(
+    workspace_service: WorkspaceService,
+    coding_repository: Any,
+    validator_registry: Any = None,
+    *,
+    run_context: RunContext,
+    agent: Any | None = None,
+    context_token_budget: int = 262144,
+    output_token_reserve: int = 32768,
+) -> list[Toolkit]:
+    """Report Worker 只执行 Coding 分析，不持有数据库或 SQL 工具。"""
+    return [
+        WorkspaceCodingToolkit(
+            workspace_service,
+            coding_repository,
+            validator_registry=validator_registry,
+        )
+    ]

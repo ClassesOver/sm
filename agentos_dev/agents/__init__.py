@@ -8,7 +8,6 @@ from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.team import Team, TeamMode
 
-from ..coding.repository import CodingTaskRepository
 from ..context_management import clear_terminal_reasoning
 from ..database import AgentDatabase
 from ..settings import AgentSettings
@@ -19,13 +18,11 @@ from .assistant import (
     AgentInstructions,
     create_assistant,
 )
-from .coding import create_coding_agent, create_coding_facade_agent
 from .odoo_command import (
     LEGACY_ODOO_COMMAND_ASSISTANT_IDS,
     ODOO_COMMAND_ASSISTANT_ID,
     create_odoo_command_assistant,
 )
-from .report import create_report_agent, create_report_worker, report_delivery_post_hook
 
 OPENAI_COMPATIBLE_ROLE_MAP = {
     "system": "system",
@@ -128,10 +125,8 @@ def create_assistants(
     workspace_service: WorkspaceService,
     instructions: AgentInstructions,
     command_instructions: AgentInstructions,
-    report_instructions: AgentInstructions,
     database: AgentDatabase,
-    coding_repository: CodingTaskRepository,
-) -> tuple[Agent, Agent, Agent, Agent]:
+) -> tuple[Agent, Agent]:
     primary_model = OpenAIChat(
         id=settings.model_id,
         base_url=settings.openai_base_url,
@@ -173,22 +168,7 @@ def create_assistants(
         assistant,
         command_instructions,
     )
-    coding_agent = create_coding_agent(
-        assistant,
-        workspace_service,
-        coding_repository,
-        context_token_budget=settings.context_token_budget,
-        output_token_reserve=settings.output_token_reserve,
-    )
-    report_worker = create_report_worker(
-        coding_agent,
-        workspace_service,
-        coding_repository,
-        instructions=report_instructions,
-        context_token_budget=settings.context_token_budget,
-        output_token_reserve=settings.output_token_reserve,
-    )
-    return assistant, odoo_command_assistant, coding_agent, report_worker
+    return assistant, odoo_command_assistant
 
 
 def create_assistant_team(
@@ -197,6 +177,8 @@ def create_assistant_team(
     coding_agent: Agent,
     report_agent: Agent,
     workspace_service: WorkspaceService,
+    *,
+    post_hooks: list[Any] | None = None,
 ) -> Team:
     all_members = [assistant, odoo_command_assistant, coding_agent, report_agent]
     members_by_id = {member.id: member for member in all_members}
@@ -267,7 +249,7 @@ def create_assistant_team(
         session_summary_manager=assistant.session_summary_manager,
         compress_tool_results=assistant.compress_tool_results,
         compression_manager=assistant.compression_manager,
-        post_hooks=[clear_terminal_reasoning, report_delivery_post_hook(workspace_service)],
+        post_hooks=[clear_terminal_reasoning, *(post_hooks or [])],
         retries=0,
         stream_member_events=True,
         cache_callables=False,
@@ -293,10 +275,6 @@ __all__ = [
     "create_assistant",
     "create_assistant_team",
     "create_assistants",
-    "create_coding_agent",
-    "create_coding_facade_agent",
     "create_odoo_command_assistant",
-    "create_report_agent",
-    "create_report_worker",
     "is_odoo_command_name",
 ]
