@@ -1094,9 +1094,22 @@ def _parse_rolling_summary(response: Any) -> RollingSummaryResponse | None:
     parsed = getattr(response, "parsed", None)
     if isinstance(parsed, RollingSummaryResponse):
         return parsed
+    if isinstance(parsed, dict):
+        try:
+            return RollingSummaryResponse.model_validate(parsed)
+        except ValidationError:
+            pass
     content = getattr(response, "content", None)
     if not isinstance(content, str):
         return None
+    content = content.strip()
+    fenced = re.fullmatch(
+        r"```(?:json)?[ \t]*\r?\n(?P<body>.*)\r?\n```",
+        content,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if fenced is not None:
+        content = fenced.group("body").strip()
     try:
         return RollingSummaryResponse.model_validate_json(content)
     except ValidationError:
@@ -1213,7 +1226,11 @@ class RollingSessionSummaryManager(SessionSummaryManager):
             logger.warning("rolling_summary_failed error_type=%s", type(error).__name__)
             return getattr(session, "summary", None)
         if payload is None:
-            logger.warning("rolling_summary_invalid")
+            logger.warning(
+                "rolling_summary_invalid parsed_type=%s content_type=%s",
+                type(getattr(response, "parsed", None)).__name__,
+                type(getattr(response, "content", None)).__name__,
+            )
             return getattr(session, "summary", None)
         return self._apply_summary(
             session,
@@ -1240,7 +1257,11 @@ class RollingSessionSummaryManager(SessionSummaryManager):
             logger.warning("rolling_summary_failed error_type=%s", type(error).__name__)
             return getattr(session, "summary", None)
         if payload is None:
-            logger.warning("rolling_summary_invalid")
+            logger.warning(
+                "rolling_summary_invalid parsed_type=%s content_type=%s",
+                type(getattr(response, "parsed", None)).__name__,
+                type(getattr(response, "content", None)).__name__,
+            )
             return getattr(session, "summary", None)
         return self._apply_summary(
             session,

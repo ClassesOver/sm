@@ -22,6 +22,7 @@ from agentos_dev.context_management import (
     RollingSessionSummaryManager,
     RollingSummaryResponse,
     ToolCompressionResponse,
+    _parse_rolling_summary,
     build_budgeted_history_context,
     build_history_context,
     clear_terminal_reasoning,
@@ -68,8 +69,9 @@ class CountingModel:
 class SummaryModel(CountingModel):
     supports_native_structured_outputs = True
 
-    def __init__(self, parsed=None, error=None):
+    def __init__(self, parsed=None, content=None, error=None):
         self.parsed = parsed
+        self.content = content
         self.error = error
         self.requests = []
 
@@ -77,7 +79,7 @@ class SummaryModel(CountingModel):
         self.requests.append(messages)
         if self.error:
             raise self.error
-        return SimpleNamespace(content=None, parsed=self.parsed)
+        return SimpleNamespace(content=self.content, parsed=self.parsed)
 
     async def aresponse(self, messages, response_format=None, **kwargs):
         return self.response(messages, response_format=response_format, **kwargs)
@@ -865,6 +867,48 @@ async def test_rolling_summary_uses_previous_summary_and_only_new_messages():
     metadata = session.session_data["agentos_rolling_summary"]
     assert metadata["version"] == 2
     assert metadata["lastSourceRunId"] == "run-2"
+
+
+def test_rolling_summary_accepts_structured_dict():
+    response = SimpleNamespace(
+        parsed={
+            "goal": "生成员工报表",
+            "decisions": ["输出 PDF"],
+            "artifacts": [],
+            "completed": [],
+            "pending": [],
+        },
+        content=None,
+    )
+
+    result = _parse_rolling_summary(response)
+
+    assert result is not None
+    assert result.goal == "生成员工报表"
+
+
+def test_rolling_summary_accepts_complete_json_fence():
+    content = """```json
+{"goal":"生成员工报表","decisions":[],"artifacts":[],"completed":[],"pending":[]}
+```"""
+
+    result = _parse_rolling_summary(SimpleNamespace(parsed=None, content=content))
+
+    assert result is not None
+    assert result.goal == "生成员工报表"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '摘要如下：{"goal":"目标"}',
+        '{"goal":"目标","unexpected":true}',
+    ],
+)
+def test_rolling_summary_rejects_prose_and_unknown_fields(content):
+    response = SimpleNamespace(parsed=None, content=content)
+
+    assert _parse_rolling_summary(response) is None
 
 
 @pytest.mark.anyio
