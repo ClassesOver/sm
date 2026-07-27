@@ -43,6 +43,25 @@ class FakeExecutor:
     async def _events(self, scope, attempt, dependencies) -> AsyncIterator[Any]:
         self.dependencies = dependencies
         yield type(
+            "ReasoningEvent",
+            (),
+            {
+                "event": "RunContent",
+                "reasoning_content": "先检查",
+                "model_provider_data": {"thinking": "不得透传"},
+            },
+        )()
+        yield type(
+            "ReasoningEvent",
+            (),
+            {"event": "RunContent", "reasoning_content": "，再修改"},
+        )()
+        yield type(
+            "ReasoningEvent",
+            (),
+            {"event": "RunContent", "reasoning_content": ""},
+        )()
+        yield type(
             "ToolEvent",
             (),
             {
@@ -122,7 +141,14 @@ async def test_supervisor_first_run_only_publishes_receipted_final(supervisor_ru
     ]
     assert events[-2].data == {"content": "完成"}
     assert all("候选文本" not in str(event.data) for event in events)
-    tool_event = events[0]
+    assert [event.data for event in events[:4]] == [
+        {"event": "ReasoningStarted"},
+        {"event": "ReasoningContentDelta", "reasoning_content": "先检查"},
+        {"event": "ReasoningContentDelta", "reasoning_content": "，再修改"},
+        {"event": "ReasoningCompleted"},
+    ]
+    assert "不得透传" not in str(events)
+    tool_event = events[4]
     assert tool_event.data["phase"] == "started"
     assert tool_event.data["tool"] == "terminal"
     assert tool_event.data["call_id"] == "external:0:internal:call-terminal-12345678"

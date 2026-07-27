@@ -20,6 +20,9 @@ from ag_ui.core import (
 from agno.metrics import ToolCallMetrics
 from agno.models.response import ToolExecution
 from agno.run.agent import (
+    ReasoningCompletedEvent,
+    ReasoningContentDeltaEvent,
+    ReasoningStartedEvent,
     RunContentEvent,
     RunOutputEvent,
     ToolCallCompletedEvent,
@@ -117,6 +120,22 @@ class CliCodingAdapter(CodingMemberAdapter):
                     content=str(event.data.get("content") or ""),
                 )
             ]
+        if event.type == "agno_event":
+            event_type = str(event.data.get("event") or "")
+            if event_type == "ReasoningStarted":
+                return [ReasoningStartedEvent(run_id=scope.external_run_id)]
+            if event_type == "ReasoningContentDelta":
+                reasoning_content = event.data.get("reasoning_content")
+                if isinstance(reasoning_content, str) and reasoning_content:
+                    return [
+                        ReasoningContentDeltaEvent(
+                            run_id=scope.external_run_id,
+                            reasoning_content=reasoning_content,
+                        )
+                    ]
+                return []
+            if event_type == "ReasoningCompleted":
+                return [ReasoningCompletedEvent(run_id=scope.external_run_id)]
         tool_data = _tool_event_data(event)
         if tool_data is None:
             return []

@@ -163,26 +163,70 @@ class CodingTaskSupervisor:
 
                     source, task, attempt = await self._source(task, attempt, session)
                     sequence = 0
+                    reasoning_open = False
                     try:
                         async for raw_event in source:
                             session.assert_alive()
                             sequence += 1
                             event_type = self._event_type(raw_event)
-                            if not self._candidate_text_event(event_type):
-                                data = self._agno_event_data(
-                                    raw_event,
-                                    event_type,
-                                    call_id_prefix=(
-                                        f"{scope.external_run_id}:{attempt.attempt_no}:internal"
-                                    ),
-                                )
+                            event_id = f"{scope.external_run_id}:{attempt.attempt_no}:{sequence}"
+                            native_reasoning = self._native_reasoning_content(raw_event, event_type)
+                            if native_reasoning is not None:
+                                if not reasoning_open:
+                                    yield CodingEvent(
+                                        event_id=f"{event_id}:reasoning-started",
+                                        type="agno_event",
+                                        data={"event": "ReasoningStarted"},
+                                    )
+                                    reasoning_open = True
                                 yield CodingEvent(
-                                    event_id=(
-                                        f"{scope.external_run_id}:{attempt.attempt_no}:{sequence}"
-                                    ),
+                                    event_id=f"{event_id}:reasoning-delta",
                                     type="agno_event",
-                                    data=data,
+                                    data={
+                                        "event": "ReasoningContentDelta",
+                                        "reasoning_content": native_reasoning,
+                                    },
                                 )
+                                continue
+                            if reasoning_open and not self._reasoning_event(event_type):
+                                yield CodingEvent(
+                                    event_id=f"{event_id}:reasoning-completed",
+                                    type="agno_event",
+                                    data={"event": "ReasoningCompleted"},
+                                )
+                                reasoning_open = False
+                            if self._candidate_text_event(event_type) and not self._reasoning_event(
+                                event_type
+                            ):
+                                continue
+                            data = self._agno_event_data(
+                                raw_event,
+                                event_type,
+                                call_id_prefix=(
+                                    f"{scope.external_run_id}:{attempt.attempt_no}:internal"
+                                ),
+                            )
+                            if data is None:
+                                continue
+                            normalized_event_type = event_type.lower()
+                            if normalized_event_type == "reasoningstarted":
+                                reasoning_open = True
+                            elif normalized_event_type == "reasoningcompleted":
+                                reasoning_open = False
+                            yield CodingEvent(
+                                event_id=event_id,
+                                type="agno_event",
+                                data=data,
+                            )
+                        if reasoning_open:
+                            yield CodingEvent(
+                                event_id=(
+                                    f"{scope.external_run_id}:{attempt.attempt_no}:"
+                                    f"{sequence + 1}:reasoning-completed"
+                                ),
+                                type="agno_event",
+                                data={"event": "ReasoningCompleted"},
+                            )
                     except asyncio.CancelledError:
                         raise
                     except Exception as error:
@@ -498,8 +542,16 @@ class CodingTaskSupervisor:
     @classmethod
     def _agno_event_data(
         cls, event: Any, event_type: str, *, call_id_prefix: str
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         data: dict[str, Any] = {"event": event_type}
+        if event_type.lower() == "reasoningcontentdelta":
+            reasoning_content = getattr(event, "reasoning_content", None)
+            if not isinstance(reasoning_content, str) or not reasoning_content:
+                return None
+            data["reasoning_content"] = reasoning_content
+            return data
+        if cls._reasoning_event(event_type):
+            return data
         phase = {
             "toolcallstarted": "started",
             "toolcallcompleted": "completed",
@@ -566,6 +618,23 @@ class CodingTaskSupervisor:
     def _candidate_text_event(event_type: str) -> bool:
         normalized = event_type.lower()
         return "content" in normalized or "message" in normalized or "response" in normalized
+
+    @staticmethod
+    def _native_reasoning_content(event: Any, event_type: str) -> str | None:
+        if event_type.lower() != "runcontent":
+            return None
+        reasoning_content = getattr(event, "reasoning_content", None)
+        if isinstance(reasoning_content, str) and reasoning_content:
+            return reasoning_content
+        return None
+
+    @staticmethod
+    def _reasoning_event(event_type: str) -> bool:
+        return event_type.lower() in {
+            "reasoningstarted",
+            "reasoningcontentdelta",
+            "reasoningcompleted",
+        }
 
     @staticmethod
     def _project_error(task: TaskSnapshot, error: str | None) -> TaskSnapshot:

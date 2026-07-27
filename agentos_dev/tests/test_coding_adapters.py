@@ -3,6 +3,9 @@ from collections.abc import AsyncIterator
 import pytest
 from ag_ui.core import EventType
 from agno.run.agent import (
+    ReasoningCompletedEvent,
+    ReasoningContentDeltaEvent,
+    ReasoningStartedEvent,
     RunContentEvent,
     ToolCallCompletedEvent,
     ToolCallStartedEvent,
@@ -162,6 +165,43 @@ def test_cli_adapter_converts_internal_tools_to_agno_tool_call_events():
     assert completed[0].tool.tool_call_error is False
     assert isinstance(final[0], RunContentEvent)
     assert final[0].content == "完成"
+
+
+def test_cli_adapter_converts_reasoning_to_official_stream_events():
+    adapter = CliCodingAdapter(FakeSupervisor())  # type: ignore[arg-type]
+    events = [
+        CodingEvent("run:0:1", "agno_event", {"event": "ReasoningStarted"}),
+        CodingEvent(
+            "run:0:2",
+            "agno_event",
+            {"event": "ReasoningContentDelta", "reasoning_content": "先检查"},
+        ),
+        CodingEvent(
+            "run:0:3",
+            "agno_event",
+            {"event": "ReasoningContentDelta", "reasoning_content": "，再修改"},
+        ),
+        CodingEvent(
+            "run:0:4",
+            "agno_event",
+            {"event": "ReasoningContentDelta", "reasoning_content": ""},
+        ),
+        CodingEvent("run:0:5", "agno_event", {"event": "ReasoningCompleted"}),
+    ]
+
+    converted = [item for event in events for item in adapter.convert(event, scope())]
+
+    assert [type(event) for event in converted] == [
+        ReasoningStartedEvent,
+        ReasoningContentDeltaEvent,
+        ReasoningContentDeltaEvent,
+        ReasoningCompletedEvent,
+    ]
+    assert [event.run_id for event in converted] == ["run"] * 4
+    assert isinstance(converted[1], ReasoningContentDeltaEvent)
+    assert converted[1].reasoning_content == "先检查"
+    assert isinstance(converted[2], ReasoningContentDeltaEvent)
+    assert converted[2].reasoning_content == "，再修改"
 
 
 def test_agui_adapter_converts_internal_tools_to_standard_tool_call_events():

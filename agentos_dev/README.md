@@ -171,8 +171,11 @@ modifiers 与最新 `BasicModel` 状态竞争；`sandbox_exec`、`sandbox_proces
 滚动摘要只包含用户目标、已确认决策、工作区产物、完成事项和待办事项，并标记为非权威历史。
 摘要和压缩都不能作为 Odoo 业务事实；需要记录值、筛选、权限或页面状态时，必须使用本轮最新
 宿主快照。主模型通过 `enable_thinking=true` 启用 Qwen Thinking，压缩和摘要辅助模型始终关闭
-thinking。服务端不转发原始 reasoning delta，终态持久化前清除 reasoning 字段；前端只展示
-“正在分析当前请求”或“正在整理工具结果”等确定性状态。
+thinking。Coding facade 的 Agno 官方 `arun(..., stream=True, stream_events=True)` 实时返回
+`ReasoningStarted`、原始 `ReasoningContentDelta` 和 `ReasoningCompleted`；只投影 reasoning 文本，
+不返回 provider 原始字段。终态持久化前仍清除 reasoning 字段，原始 reasoning 不进入 session 或
+数据库。AG-UI、自定义 SSE 和 React 不转发或展示原始 reasoning，前端只展示“正在分析当前请求”
+或“正在整理工具结果”等确定性状态。
 
 相关环境变量可独立回退：`AGENT_ENABLE_TOOL_RESULT_COMPRESSION=false` 停止生成新压缩结果，
 `AGENT_ENABLE_SESSION_SUMMARIES=false` 停止更新和注入摘要，`AGENT_ENABLE_THINKING=false` 关闭
