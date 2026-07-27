@@ -34,7 +34,8 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.model.reasoning_effort == "medium"
     assert agent.model.get_request_params()["reasoning_effort"] == "medium"
     assert agent.model.request_params == {"parallel_tool_calls": True}
-    assert agent.num_history_runs == 5
+    assert agent.add_history_to_context is False
+    assert agent.debug_mode is False
     assert isinstance(agent.compression_manager, ContextBudgetController)
     assert agent.compression_manager.context_token_limit == 96 * 1024
     assert agent.compression_manager.input_token_budget == 64 * 1024
@@ -59,6 +60,9 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert app_agent.model.extra_body == {"enable_thinking": False}
     assert app_agent.model.reasoning_effort is None
     assert app_agent.model.request_params == {"parallel_tool_calls": True}
+    assert app_agent.add_history_to_context is True
+    assert app_agent.num_history_runs == 5
+    assert app_agent.debug_mode is False
     assert [tool.name for tool in app_agent.tools] == ["run_coding_task"]
     assert app_agent.tools[0].parameters == {
         "type": "object",
@@ -81,6 +85,25 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert request_params["tool_choice"] == expected_tool_choice
     assert request_params["extra_body"] == {"enable_thinking": False}
     assert request_params["parallel_tool_calls"] is True
+
+
+def test_cli_debug_mode_requires_debug_enabled_and_thinking_disabled():
+    settings = AgentSettings.from_environment(
+        {"AGENT_DEBUG": "true", "AGENT_ENABLE_THINKING": "false"},
+        load_env_file=False,
+    )
+    context = CliContext(
+        settings=settings,
+        database=object(),
+        workspace_service=object(),
+        coding_repository=object(),  # type: ignore[arg-type]
+    )
+
+    coding_agent = create_cli_agent(context)
+    app_agent = create_cli_app_agent(context, coding_agent)
+
+    assert coding_agent.debug_mode is True
+    assert app_agent.debug_mode is True
 
 
 def test_create_cli_context_configures_tracing_before_services(monkeypatch):
@@ -197,6 +220,7 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
     database = AsyncClient()
 
     class NativeCliAgent:
+        debug_mode = False
         model = type("Model", (), {"async_client": app_client})()
         compression_manager = type(
             "CompressionManager",
@@ -230,6 +254,8 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
 
     assert len(calls) == 1
     assert calls[0]["session_id"].startswith("cli-")
+    console = calls[0].pop("console")
+    assert console.is_interactive is False
     assert calls[0] == {
         "session_id": calls[0]["session_id"],
         "user_id": "cli",
@@ -244,6 +270,34 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
 
 
 @pytest.mark.anyio
+async def test_cli_debug_mode_keeps_rich_dynamic_rendering(monkeypatch):
+    calls = []
+
+    class NativeCliAgent:
+        debug_mode = True
+        model = None
+        compression_manager = None
+
+        async def acli_app(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(
+        cli_module,
+        "create_cli_app_agent",
+        lambda _context, _agent: NativeCliAgent(),
+    )
+    context = type(
+        "Context",
+        (),
+        {"workspace_service": object(), "database": object()},
+    )()
+
+    await run_cli_app(context, object())  # type: ignore[arg-type]
+
+    assert calls[0]["console"].is_interactive is True
+
+
+@pytest.mark.anyio
 async def test_cli_closes_resources_when_native_app_is_cancelled(monkeypatch):
     closed = []
 
@@ -255,6 +309,7 @@ async def test_cli_closes_resources_when_native_app_is_cancelled(monkeypatch):
             closed.append(self.name)
 
     class NativeCliAgent:
+        debug_mode = False
         model = type("Model", (), {"async_client": AsyncClient("app-model")})()
         compression_manager = type(
             "CompressionManager",

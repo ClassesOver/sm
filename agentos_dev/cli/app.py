@@ -13,6 +13,7 @@ from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.run.agent import RunOutputEvent
 from agno.tools import Function
+from rich.console import Console
 
 from ..agents import OPENAI_COMPATIBLE_ROLE_MAP
 from ..async_utils import complete_cleanup
@@ -131,8 +132,7 @@ def create_cli_agent(context: CliContext) -> Agent:
         ],
         db=context.database,
         checkpoint="tool-batch",
-        add_history_to_context=True,
-        num_history_runs=5,
+        add_history_to_context=False,
         compress_tool_results=settings.enable_tool_result_compression,
         compression_manager=compression_manager,
         retries=0,
@@ -141,7 +141,7 @@ def create_cli_agent(context: CliContext) -> Agent:
             create_coding_tool_scheduler_hook(context.coding_repository),
             create_skill_script_hook(context.workspace_service),
         ],
-        debug_mode=True,
+        debug_mode=settings.debug and not settings.enable_thinking,
         markdown=True,
         tool_choice="auto",
     )
@@ -209,6 +209,8 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
             "instructions": [
                 "必须把用户的完整编码目标原样传给 run_coding_task，并直接返回工具结果。"
             ],
+            "add_history_to_context": True,
+            "num_history_runs": 5,
             "tools": [function],
             "tool_choice": {
                 "type": "function",
@@ -233,6 +235,7 @@ async def run_cli_app(context: CliContext, coding_agent: Agent) -> None:
             user_id="cli",
             stream=True,
             markdown=True,
+            console=Console(force_interactive=bool(app_agent.debug_mode)),
         )
     finally:
         await complete_cleanup(_close_cli_resources(context, app_agent, coding_agent))
