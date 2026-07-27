@@ -31,6 +31,8 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert isinstance(agent.model, ProjectedOpenAIChat)
     assert agent.model.base_url == settings.openai_base_url
     assert agent.model.extra_body is None
+    assert agent.model.reasoning_effort == "medium"
+    assert agent.model.get_request_params()["reasoning_effort"] == "medium"
     assert agent.model.request_params == {"parallel_tool_calls": True}
     assert agent.num_history_runs == 5
     assert isinstance(agent.compression_manager, ContextBudgetController)
@@ -55,6 +57,7 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert app_agent.model is not agent.model
     assert app_agent.model.id == settings.model_id
     assert app_agent.model.extra_body == {"enable_thinking": False}
+    assert app_agent.model.reasoning_effort is None
     assert app_agent.model.request_params == {"parallel_tool_calls": True}
     assert [tool.name for tool in app_agent.tools] == ["run_coding_task"]
     assert app_agent.tools[0].parameters == {

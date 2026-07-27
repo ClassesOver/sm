@@ -46,6 +46,7 @@ def create_coding_agent(
     if not isinstance(base_agent.model, OpenAIChat):
         raise TypeError("Coding Agent requires OpenAIChat")
     coding_model = projected_coding_model(base_agent.model)
+    coding_model.reasoning_effort = "medium"
     coding_skills = load_builtin_coding_skills()
     validator_registry = SkillValidatorRegistry.from_skills(coding_skills)
     agent = base_agent.deep_copy(
@@ -91,6 +92,7 @@ def create_coding_facade_agent(
         **(getattr(internal_agent.model, "extra_body", None) or {}),
         "enable_thinking": False,
     }
+    facade_model.reasoning_effort = None
     facade_tool_hooks = [
         hook
         for hook in (internal_agent.tool_hooks or [])

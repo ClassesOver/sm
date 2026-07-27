@@ -28,7 +28,8 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.cli
 CLI 不接收命令行参数，直接使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和
 退出控制。原生 CLI 面向只暴露 `run_coding_task` 的 facade Agent；该工具把完整目标交给
 `CodingTaskSupervisor`。facade 与底层 `coding-agent-cli` 均使用 `MODEL`；facade 为兼容强制
-`tool_choice` 显式关闭 thinking，底层 Agent 保持模型默认模式执行受控工具闭环。因此 CLI 不导入
+`tool_choice` 显式关闭 thinking，底层 Agent 使用 `reasoning_effort=medium` 执行受控工具闭环。
+因此 CLI 不导入
 `agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
 PostgreSQL 中 Coding Repository 使用独立的 `agentos_coding` schema 和版本表，不写入 Agno
 的 session、run 或 schema-version 表；SQLite 单实例开发仍使用默认 schema。

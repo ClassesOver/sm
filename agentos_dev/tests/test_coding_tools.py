@@ -246,6 +246,9 @@ def test_report_agent_extends_unregistered_coding_agent(tmp_path):
     assert coding_facade.model is not coding_agent.model
     assert coding_facade.model.id == coding_agent.model.id
     assert coding_facade.model.extra_body == {"enable_thinking": False}
+    assert coding_facade.model.reasoning_effort is None
+    assert coding_agent.model.reasoning_effort == "medium"
+    assert coding_agent.model.get_request_params()["reasoning_effort"] == "medium"
     assert coding_agent.model.extra_body == {"enable_thinking": True}
     assert [tool.name for tool in coding_facade.tools] == ["run_coding_task"]
     assert coding_facade.tools[0].parameters == {

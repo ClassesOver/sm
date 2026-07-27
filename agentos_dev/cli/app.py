@@ -102,6 +102,7 @@ def _create_cli_model(
 def create_cli_agent(context: CliContext) -> Agent:
     settings = context.settings
     model = projected_coding_model(_create_cli_model(settings))
+    model.reasoning_effort = "medium"
     coding_skills = load_builtin_coding_skills(settings.skills_dir)
     validator_registry = SkillValidatorRegistry.from_skills(coding_skills)
     compression_manager = (
