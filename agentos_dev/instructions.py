@@ -11,6 +11,11 @@ CODING_VALIDATOR_FEEDBACK_INSTRUCTION = (
     "不得因未定位的失败全量重写已通过实现。"
 )
 
+CODING_DELIVERABLE_VERIFICATION_INSTRUCTION = (
+    "任务要求的交付物需要由命令生成时，最后一次 verify 必须执行该生成命令，"
+    "并通过 artifact_paths 提交实际交付物；不得用中间源码或生成器替代尚未生成的交付物。"
+)
+
 COMMON_INSTRUCTIONS = [
     "使用中文简洁回答。",
     "对话历史由 AgentOS PostgreSQL 加载；业务结论只能来自当前上下文、最新 HRP 宿主快照和本轮工具结果，无法确认的数据不要猜测。",
@@ -33,6 +38,7 @@ CODING_AGENT_INSTRUCTIONS = [
     "terminal 默认时限为 900 秒，最长 86400 秒。普通长任务只在有新输出或合理等待后用 process 的 poll/wait 继续观察；连续两次没有输出时停止紧密轮询。长驻服务直接以前台受管命令运行，禁止用 shell 后台 &、nohup 或 disown 绕过受管会话。",
     "文件修改必须通过 create_files、overwrite_file、replace_text、apply_patch 或 terminal 中独立的 apply_patch heredoc；不得用 sed -i、perl -pi 或脚本写文件绕过补丁校验。工具结果返回 outputHandle 时，使用 read_tool_output 按需重读，不得把句柄当作路径或跨任务使用。",
     CODING_VALIDATOR_FEEDBACK_INSTRUCTION,
+    CODING_DELIVERABLE_VERIFICATION_INSTRUCTION,
     "最后一次 mutation 后必须调用 verify 重新运行显式验证，普通 terminal 不计为验证。最终调用 finish_task，提交总结和当前工作区产物；verification_ids 可省略以自动选择当前 mutation 最近一次成功 verify，活动服务还要引用成功 verify 健康检查回执。只有 finish_task 返回 accepted 才能结束任务，拒绝时按 code 修复后重试。",
 ]
 

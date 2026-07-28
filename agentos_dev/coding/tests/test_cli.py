@@ -19,6 +19,7 @@ from agentos_dev.coding.cli import (
 from agentos_dev.coding.execution import _create_files_patch, is_coding_tool_scheduler_hook
 from agentos_dev.context_management import ContextBudgetController, ProjectedOpenAIChat
 from agentos_dev.instructions import (
+    CODING_DELIVERABLE_VERIFICATION_INSTRUCTION,
     CODING_VALIDATOR_FEEDBACK_INSTRUCTION,
     PURE_CODING_PARALLEL_READ_INSTRUCTIONS,
 )
@@ -142,6 +143,7 @@ def test_cli_instructions_prefer_direct_verify_and_batch_patch():
     assert 'list_files(path="")' in instructions
     assert "禁止把 /workspace" in instructions
     assert CODING_VALIDATOR_FEEDBACK_INSTRUCTION in cli_module.CLI_AGENT_INSTRUCTIONS
+    assert CODING_DELIVERABLE_VERIFICATION_INSTRUCTION in cli_module.CLI_AGENT_INSTRUCTIONS
     assert cli_module.CLI_AGENT_INSTRUCTIONS[-len(PURE_CODING_PARALLEL_READ_INSTRUCTIONS) :] == (
         PURE_CODING_PARALLEL_READ_INSTRUCTIONS
     )
@@ -443,8 +445,11 @@ async def test_cli_passes_multiline_initial_input_verbatim(monkeypatch):
         model = None
         compression_manager = None
 
-        async def acli_app(self, **kwargs):
-            calls.append(kwargs)
+        async def aprint_response(self, instruction, **kwargs):
+            calls.append((instruction, kwargs))
+
+        async def acli_app(self, **_kwargs):
+            raise AssertionError("stdin 模式不应进入交互循环")
 
     monkeypatch.setattr(
         cli_module,
@@ -460,7 +465,11 @@ async def test_cli_passes_multiline_initial_input_verbatim(monkeypatch):
 
     await run_cli(context, object(), initial_input=instruction)  # type: ignore[arg-type]
 
-    assert calls[0]["input"] == instruction
+    assert calls[0][0] == instruction
+    assert calls[0][1]["session_id"].startswith("cli-")
+    assert calls[0][1]["user_id"] == "cli"
+    assert calls[0][1]["stream"] is True
+    assert calls[0][1]["markdown"] is True
 
 
 @pytest.mark.anyio

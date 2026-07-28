@@ -25,6 +25,7 @@ from ..context_management import (
 )
 from ..database import create_agent_database
 from ..instructions import (
+    CODING_DELIVERABLE_VERIFICATION_INSTRUCTION,
     CODING_VALIDATOR_FEEDBACK_INSTRUCTION,
     PURE_CODING_PARALLEL_READ_INSTRUCTIONS,
 )
@@ -61,6 +62,7 @@ CLI_AGENT_INSTRUCTIONS = [
     '探测工作区根目录时调用 list_files(path="")，禁止把 /workspace 或 /home/daytona/workspace 作为工具路径。',
     "明确需要创建多个文件时，必须一次调用 create_files 并传入所有文件；混合创建和修改时使用一次 apply_patch，新文件格式为 *** Add File: path 且正文每行以 + 开头，禁止使用 ---/+++ 或 /dev/null。",
     CODING_VALIDATOR_FEEDBACK_INSTRUCTION,
+    CODING_DELIVERABLE_VERIFICATION_INSTRUCTION,
     "修改后复查差异并运行与范围匹配的验证；最终准确说明改动、检查结果和未验证风险。",
     *PURE_CODING_PARALLEL_READ_INSTRUCTIONS,
 ]
@@ -299,17 +301,29 @@ async def run_cli(
         context = create_cli_context(settings)
     coding_agent = coding_agent or create_cli_agent(context)
     app_agent = create_cli_app_agent(context, coding_agent)
+    session_id = f"cli-{uuid4().hex}"
+    console = Console(force_interactive=bool(app_agent.debug_mode))
     try:
         try:
-            await app_agent.acli_app(
-                input=initial_input,
-                session_id=f"cli-{uuid4().hex}",
-                user_id="cli",
-                stream=True,
-                markdown=True,
-                exit_on=["exit", "quit", "bye", "/exit", "/quit"],
-                console=Console(force_interactive=bool(app_agent.debug_mode)),
-            )
+            if initial_input is not None:
+                await app_agent.aprint_response(
+                    initial_input,
+                    session_id=session_id,
+                    user_id="cli",
+                    stream=True,
+                    markdown=True,
+                    console=console,
+                )
+            else:
+                await app_agent.acli_app(
+                    input=None,
+                    session_id=session_id,
+                    user_id="cli",
+                    stream=True,
+                    markdown=True,
+                    exit_on=["exit", "quit", "bye", "/exit", "/quit"],
+                    console=console,
+                )
         except EOFError:
             pass
     finally:
