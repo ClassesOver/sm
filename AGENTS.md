@@ -25,6 +25,9 @@
 - `agui_chat/react_widget/` 是 React 18、TypeScript strict、Vite 的 AG-UI 客户端。
 - `agentos_dev/` 是 Python 3.12、FastAPI、Agno 2.8.2 的 AgentOS 服务，负责智能体、AG-UI、持久化和 Daytona 工作区。
 - `agui_chat_test/` 是本地 Odoo 集成测试夹具，不是产品业务实现。
+- 纯 Coding Agent 定位为领域无关的通用软件工程执行能力，只依据用户目标、当前工作区和通用工具完成编码、运行与验证；可以按任务编写任意领域代码，但不得内置特定业务领域的流程、知识、工具或验收规则。
+- Report Agent 与纯 Coding Agent 是独立产品边界，必须保持解耦。两者不得相互导入或复用对方的领域指令、工具集、状态机、控制器、验收契约、运行入口或持久化状态；纯 Coding Agent 中禁止加入报表、取数、数据源或特定任务类型的规则。
+- 两类 Agent 仅可依赖领域无关且接口稳定的底层能力，例如模型适配、工作区原语、通用执行记录和可观测性。共享能力应下沉到中立模块并由双方单向依赖，不得通过条件分支、反向导入或兼容层把两条运行链路重新耦合；相关测试和入口必须能够独立运行。
 - Odoo `BasicModel` 是当前业务页面状态的唯一权威来源。React 和 AgentOS 只能消费宿主快照与 token，不得维护可绕过宿主的新业务真相。
 - 生产环境中，浏览器通过同源 AgentOS 端点运行 AG-UI SSE；Odoo 不代理 SSE。跨域 HTTP(S) 绝对地址仅限显式启用 `allow_cross_origin_dev` 的开发环境。不要新增绕过现有握手、鉴权或恢复流程的第二条传输链路。
 - 协议以实现、类型和 `docs/agui_odoo_protocol.md` 共同约束。修改事件、请求头、工具 schema、错误码、状态机或版本握手时，必须同步前后端、测试和协议文档。
