@@ -1,5 +1,6 @@
 import asyncio
 from inspect import isasyncgenfunction
+from io import StringIO
 
 import pytest
 from agno.agent.protocol import AgentProtocol
@@ -23,6 +24,28 @@ from agentos_dev.instructions import (
 )
 from agentos_dev.settings import AgentSettings
 from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
+
+
+def test_cli_main_reads_complete_stdin_without_rewriting(monkeypatch):
+    captured = []
+    instruction = "第一行\n第二行\n"
+
+    async def capture_run_cli(*, initial_input=None):
+        captured.append(initial_input)
+
+    monkeypatch.setattr(cli_module.sys, "stdin", StringIO(instruction))
+    monkeypatch.setattr(cli_module, "run_cli", capture_run_cli)
+
+    cli_module.main(["--stdin"])
+
+    assert captured == [instruction]
+
+
+def test_cli_main_rejects_empty_stdin(monkeypatch):
+    monkeypatch.setattr(cli_module.sys, "stdin", StringIO(" \n"))
+
+    with pytest.raises(SystemExit, match="coding_cli_input_empty"):
+        cli_module.main(["--stdin"])
 
 
 def test_create_cli_agent_is_independent_coding_agent():
@@ -396,6 +419,7 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
     console = calls[0].pop("console")
     assert console.is_interactive is False
     assert calls[0] == {
+        "input": None,
         "session_id": calls[0]["session_id"],
         "user_id": "cli",
         "stream": True,
@@ -408,6 +432,35 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
     assert app_compression_client.closed
     assert workspace.closed
     assert database.closed
+
+
+@pytest.mark.anyio
+async def test_cli_passes_multiline_initial_input_verbatim(monkeypatch):
+    calls = []
+
+    class NativeCliAgent:
+        debug_mode = False
+        model = None
+        compression_manager = None
+
+        async def acli_app(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(
+        cli_module,
+        "create_cli_app_agent",
+        lambda _context, _agent: NativeCliAgent(),
+    )
+    context = type(
+        "Context",
+        (),
+        {"workspace_service": object(), "database": object()},
+    )()
+    instruction = "第一行\n第二行\n"
+
+    await run_cli(context, object(), initial_input=instruction)  # type: ignore[arg-type]
+
+    assert calls[0]["input"] == instruction
 
 
 @pytest.mark.anyio

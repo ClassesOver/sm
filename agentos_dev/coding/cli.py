@@ -287,6 +287,8 @@ def create_cli_app_agent(context: CliContext, coding_agent: Agent) -> Agent:
 async def run_cli(
     context: CliContext | None = None,
     coding_agent: Agent | None = None,
+    *,
+    initial_input: str | None = None,
 ) -> None:
     if context is None:
         settings = replace(
@@ -300,6 +302,7 @@ async def run_cli(
     try:
         try:
             await app_agent.acli_app(
+                input=initial_input,
                 session_id=f"cli-{uuid4().hex}",
                 user_id="cli",
                 stream=True,
@@ -357,9 +360,12 @@ async def _close_cli_resources(context: CliContext, *agents: Agent) -> None:
 def main(argv: list[str] | None = None) -> None:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
-        if arguments:
-            raise SystemExit("用法: python -m agentos_dev.coding.cli")
-        asyncio.run(run_cli())
+        if arguments not in ([], ["--stdin"]):
+            raise SystemExit("用法: python -m agentos_dev.coding.cli [--stdin]")
+        initial_input = sys.stdin.read() if arguments else None
+        if initial_input is not None and not initial_input.strip():
+            raise SystemExit("coding_cli_input_empty")
+        asyncio.run(run_cli(initial_input=initial_input))
     except KeyboardInterrupt:
         pass
 
