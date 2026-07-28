@@ -80,7 +80,7 @@ def test_load_builtin_coding_skills_describes_sandbox_image_capabilities():
     assert "read_tool_output" in instructions
     assert "verify" in instructions
     assert "terminal` 不计为验证" in instructions
-    assert "新文件使用 `create_file`" in instructions
+    assert "新文件使用一次 `create_files`" in instructions
     assert "完整覆盖已有文件使用 `overwrite_file`" in instructions
     assert "小范围精确修改优先使用 `replace_text`" in instructions
     assert "多文件变更使用 `apply_patch`" in instructions

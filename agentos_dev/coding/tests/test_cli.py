@@ -2,16 +2,25 @@ import asyncio
 from inspect import isasyncgenfunction
 
 import pytest
+from agno.agent.protocol import AgentProtocol
+from agno.os.interfaces.agui import AGUI
+from agno.run import RunContext
+from agno.run.agent import RunContentEvent
 
 from agentos_dev.coding import cli as cli_module
 from agentos_dev.coding.cli import (
     CliContext,
+    DirectCodingAgent,
     create_cli_agent,
     create_cli_app_agent,
     run_cli,
 )
-from agentos_dev.coding.execution import is_coding_tool_scheduler_hook
+from agentos_dev.coding.execution import _create_files_patch, is_coding_tool_scheduler_hook
 from agentos_dev.context_management import ContextBudgetController, ProjectedOpenAIChat
+from agentos_dev.instructions import (
+    CODING_VALIDATOR_FEEDBACK_INSTRUCTION,
+    PURE_CODING_PARALLEL_READ_INSTRUCTIONS,
+)
 from agentos_dev.settings import AgentSettings
 from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
 
@@ -35,7 +44,7 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.model.id == settings.model_id
     assert isinstance(agent.model, ProjectedOpenAIChat)
     assert agent.model.base_url == settings.openai_base_url
-    assert agent.model.extra_body is None
+    assert agent.model.extra_body == {"enable_thinking": True}
     assert agent.model.reasoning_effort == "medium"
     assert agent.model.get_request_params()["reasoning_effort"] == "medium"
     assert agent.model.request_params == {"parallel_tool_calls": True}
@@ -47,6 +56,8 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.compression_manager.model is agent.model
     assert agent.tools[0].kernel.service is workspace_service
     assert isinstance(agent.tools[0].kernel.validator_registry, SkillValidatorRegistry)
+    assert "create_file" not in agent.tools[0].get_async_functions()
+    assert "create_files" in agent.tools[0].get_async_functions()
     assert sum(is_skill_script_hook(hook) for hook in agent.tool_hooks) == 1
     assert sum(is_coding_tool_scheduler_hook(hook) for hook in agent.tool_hooks) == 1
 
@@ -60,13 +71,19 @@ def test_create_cli_agent_is_independent_coding_agent():
         agent,
     )
     assert app_agent.id == "coding-agent-cli-app"
-    assert app_agent.model is not agent.model
+    assert isinstance(app_agent, DirectCodingAgent)
+    assert isinstance(app_agent, AgentProtocol)
+    assert {route.path for route in AGUI(agent=app_agent).get_router().routes} == {
+        "/agui",
+        "/status",
+    }
+    assert app_agent.model is agent.model
     assert app_agent.model.id == settings.model_id
-    assert app_agent.model.extra_body == {"enable_thinking": False}
-    assert app_agent.model.reasoning_effort is None
+    assert app_agent.model.extra_body == {"enable_thinking": True}
+    assert app_agent.model.reasoning_effort == "medium"
     assert app_agent.model.request_params == {"parallel_tool_calls": True}
-    assert app_agent.add_history_to_context is True
-    assert app_agent.num_history_runs == 5
+    assert app_agent.add_history_to_context is False
+    assert app_agent.num_history_runs is None
     assert app_agent.debug_mode is False
     assert [tool.name for tool in app_agent.tools] == ["run_coding_task"]
     assert app_agent.tools[0].parameters == {
@@ -88,8 +105,121 @@ def test_create_cli_agent_is_independent_coding_agent():
         tool_choice=app_agent.tool_choice,
     )
     assert request_params["tool_choice"] == expected_tool_choice
-    assert request_params["extra_body"] == {"enable_thinking": False}
     assert request_params["parallel_tool_calls"] is True
+
+
+def test_cli_instructions_prefer_direct_verify_and_batch_patch():
+    instructions = "\n".join(cli_module.CLI_AGENT_INSTRUCTIONS)
+
+    assert "首次" in instructions and "verify" in instructions
+    assert "一次调用 create_files" in instructions and "一次 apply_patch" in instructions
+    assert "*** Add File: path" in instructions and "/dev/null" in instructions
+    assert "两次" in instructions and "计划" in instructions
+    assert "cd /workspace" in instructions
+    assert 'list_files(path="")' in instructions
+    assert "禁止把 /workspace" in instructions
+    assert CODING_VALIDATOR_FEEDBACK_INSTRUCTION in cli_module.CLI_AGENT_INSTRUCTIONS
+    assert cli_module.CLI_AGENT_INSTRUCTIONS[-len(PURE_CODING_PARALLEL_READ_INSTRUCTIONS) :] == (
+        PURE_CODING_PARALLEL_READ_INSTRUCTIONS
+    )
+
+
+def test_cli_agent_explicitly_honors_thinking_setting():
+    settings = AgentSettings.from_environment(
+        {"AGENT_ENABLE_THINKING": "false"}, load_env_file=False
+    )
+    agent = create_cli_agent(
+        CliContext(
+            settings=settings,
+            database=object(),
+            workspace_service=object(),
+            coding_repository=object(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert agent.model.extra_body == {"enable_thinking": False}
+    assert agent.model.reasoning_effort == "medium"
+
+
+def test_create_files_patch_builds_one_native_multi_file_patch():
+    patch = _create_files_patch(
+        [
+            {"path": "calculator.py", "content": "def add(a, b):\n    return a + b\n"},
+            {"path": "test_calculator.py", "content": "def test_add():\n    assert True\n"},
+        ]
+    )
+
+    assert patch.count("*** Begin Patch") == 1
+    assert patch.count("*** Add File:") == 2
+    assert patch.endswith("*** End Patch")
+    assert "---" not in patch and "/dev/null" not in patch
+
+
+@pytest.mark.anyio
+async def test_cli_app_agent_routes_exact_input_without_facade_model(monkeypatch):
+    captured: list[tuple] = []
+
+    class ClientContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Workspace:
+        def _async_client(self):
+            return ClientContext()
+
+        async def _asandbox_for(self, _client, thread_id):
+            captured.append(("sandbox", thread_id))
+            return type("Sandbox", (), {"id": "sandbox-1"})()
+
+    class Adapter:
+        def __init__(self, supervisor):
+            captured.append(("supervisor", supervisor))
+
+        async def start_events(self, scope, instruction):
+            captured.append(("task", scope, instruction))
+            yield RunContentEvent(run_id=scope.external_run_id, content="完成")
+
+    supervisor = object()
+    monkeypatch.setattr(cli_module, "CodingTaskSupervisor", lambda *_args, **_kwargs: supervisor)
+    monkeypatch.setattr(cli_module, "CliCodingAdapter", Adapter)
+    settings = AgentSettings.from_environment({}, load_env_file=False)
+    context = CliContext(
+        settings=settings,
+        database=object(),
+        workspace_service=Workspace(),  # type: ignore[arg-type]
+        coding_repository=object(),  # type: ignore[arg-type]
+    )
+    worker = create_cli_agent(context)
+    app_agent = create_cli_app_agent(context, worker)
+
+    events = [
+        event
+        async for event in app_agent.arun(
+            "原样实现目标",
+            stream=True,
+            run_context=RunContext(
+                run_id="run-1",
+                session_id="thread-1",
+                user_id="user-1",
+            ),
+        )
+    ]
+
+    assert [event.content for event in events] == ["完成"]
+    assert captured[0] == ("supervisor", supervisor)
+    assert captured[1] == ("sandbox", "thread-1")
+    _, scope, instruction = captured[2]
+    assert instruction == "原样实现目标"
+    assert (
+        scope.external_run_id,
+        scope.owner_user_id,
+        scope.thread_id,
+        scope.sandbox_id,
+        scope.agent_id,
+    ) == ("run-1", "user-1", "thread-1", "sandbox-1", "coding-agent-cli")
 
 
 def test_cli_debug_mode_is_independent_from_thinking():
@@ -122,7 +252,8 @@ def test_create_cli_context_configures_tracing_before_services(monkeypatch):
         load_env_file=False,
     )
     async_db = object()
-    database = type("Database", (), {"async_db": async_db})()
+    sync_db = object()
+    database = type("Database", (), {"async_db": async_db, "sync_db": sync_db})()
     calls = []
 
     monkeypatch.setattr(cli_module, "create_agent_database", lambda _url: database)
@@ -138,9 +269,10 @@ def test_create_cli_context_configures_tracing_before_services(monkeypatch):
 
     assert calls == [
         (
-            async_db,
+            sync_db,
             {
                 "enabled": True,
+                "batch_processing": True,
                 "phoenix_endpoint": "https://phoenix.example/v1/traces",
                 "phoenix_api_key": "secret",
                 "phoenix_project_name": "hrp",
@@ -148,6 +280,7 @@ def test_create_cli_context_configures_tracing_before_services(monkeypatch):
         )
     ]
     assert context.database is async_db
+    assert context.trace_database is sync_db
 
 
 def test_create_cli_agent_loads_configured_skills_directory(monkeypatch):
@@ -267,6 +400,7 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
         "user_id": "cli",
         "stream": True,
         "markdown": True,
+        "exit_on": ["exit", "quit", "bye", "/exit", "/quit"],
     }
     assert coding_client.closed
     assert coding_compression_client.closed
@@ -274,6 +408,39 @@ async def test_cli_uses_agno_native_async_app_without_initial_input(monkeypatch)
     assert app_compression_client.closed
     assert workspace.closed
     assert database.closed
+
+
+@pytest.mark.anyio
+async def test_cli_treats_eof_as_normal_exit_and_closes_resources(monkeypatch):
+    closed = []
+
+    class Client:
+        async def close(self):
+            closed.append(True)
+
+    class NativeCliAgent:
+        debug_mode = False
+        model = None
+        compression_manager = None
+
+        async def acli_app(self, **_kwargs):
+            raise EOFError
+
+    monkeypatch.setattr(
+        cli_module,
+        "create_cli_app_agent",
+        lambda _context, _agent: NativeCliAgent(),
+    )
+    monkeypatch.setattr(cli_module, "flush_tracing", lambda: True)
+    context = type(
+        "Context",
+        (),
+        {"workspace_service": Client(), "database": Client()},
+    )()
+
+    await run_cli(context, object())  # type: ignore[arg-type]
+
+    assert closed == [True, True]
 
 
 @pytest.mark.anyio
@@ -302,6 +469,49 @@ async def test_cli_debug_mode_keeps_rich_dynamic_rendering(monkeypatch):
     await run_cli(context, object())  # type: ignore[arg-type]
 
     assert calls[0]["console"].is_interactive is True
+
+
+@pytest.mark.anyio
+async def test_cli_default_context_always_enables_debug_and_tracing(monkeypatch):
+    configured = AgentSettings.from_environment({}, load_env_file=False)
+    captured_settings = []
+
+    class NativeCliAgent:
+        debug_mode = True
+        model = None
+        compression_manager = None
+
+        async def acli_app(self, **_kwargs):
+            return None
+
+    context = type(
+        "Context",
+        (),
+        {"workspace_service": object(), "database": object()},
+    )()
+    monkeypatch.setattr(
+        cli_module.AgentSettings,
+        "from_environment",
+        lambda: configured,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "create_cli_context",
+        lambda settings: captured_settings.append(settings) or context,
+    )
+    monkeypatch.setattr(cli_module, "create_cli_agent", lambda _context: object())
+    monkeypatch.setattr(
+        cli_module,
+        "create_cli_app_agent",
+        lambda _context, _agent: NativeCliAgent(),
+    )
+
+    await run_cli()
+
+    assert configured.debug is False
+    assert configured.tracing_enabled is False
+    assert captured_settings[0].debug is True
+    assert captured_settings[0].tracing_enabled is True
 
 
 @pytest.mark.anyio
@@ -352,11 +562,13 @@ async def test_cli_closes_resources_when_native_app_is_cancelled(monkeypatch):
         "create_cli_app_agent",
         lambda _context, _agent: NativeCliAgent(),
     )
+    monkeypatch.setattr(cli_module, "flush_tracing", lambda: closed.append("tracing") or True)
 
     with pytest.raises(asyncio.CancelledError):
         await run_cli(context, coding_agent)  # type: ignore[arg-type]
 
     assert closed == [
+        "tracing",
         "app-model",
         "app-compression",
         "coding-model",
@@ -406,8 +618,51 @@ async def test_cli_cleanup_continues_after_individual_close_failure(monkeypatch)
         "create_cli_app_agent",
         lambda _context, _agent: NativeCliAgent(),
     )
+    monkeypatch.setattr(cli_module, "flush_tracing", lambda: closed.append("tracing") or True)
 
     with pytest.raises(RuntimeError, match="app"):
         await run_cli(context, coding_agent)  # type: ignore[arg-type]
 
-    assert closed == ["app", "coding", "workspace", "database"]
+    assert closed == ["tracing", "app", "coding", "workspace", "database"]
+
+
+@pytest.mark.anyio
+async def test_cli_flush_failure_is_reported_after_all_resources_close(monkeypatch):
+    closed = []
+
+    class Client:
+        def __init__(self, name):
+            self.name = name
+
+        async def close(self):
+            closed.append(self.name)
+
+    class NativeCliAgent:
+        debug_mode = False
+        model = None
+        compression_manager = None
+
+        async def acli_app(self, **_kwargs):
+            return None
+
+    coding_agent = type("CodingAgent", (), {"model": None, "compression_manager": None})()
+    context = type(
+        "Context",
+        (),
+        {
+            "workspace_service": Client("workspace"),
+            "database": Client("database"),
+            "trace_database": Client("trace-database"),
+        },
+    )()
+    monkeypatch.setattr(
+        cli_module,
+        "create_cli_app_agent",
+        lambda _context, _agent: NativeCliAgent(),
+    )
+    monkeypatch.setattr(cli_module, "flush_tracing", lambda: False)
+
+    with pytest.raises(RuntimeError, match="agent_tracing_flush_failed"):
+        await run_cli(context, coding_agent)  # type: ignore[arg-type]
+
+    assert closed == ["workspace", "database", "trace-database"]

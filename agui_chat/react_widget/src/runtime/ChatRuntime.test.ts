@@ -1750,28 +1750,41 @@ describe('ChatRuntime protocol handling', () => {
   })
 
   it('binds an ordinal reply to the matching menu candidate from the previous run', async () => {
-    const options = [
-      {
-        menuId: 1444, actionId: 44, name: '报销单查询',
-        path: ['费用报销', '费用报销', '报销单查询'],
-        fullPath: '费用报销 / 费用报销 / 报销单查询'
-      },
-      {
-        menuId: 1265, actionId: 65, name: '报销单查询',
-        path: ['费用报销', '单据查询', '报销单查询'],
-        fullPath: '费用报销 / 单据查询 / 报销单查询'
-      },
-      {
-        menuId: 1777, actionId: 77, name: '报销单查询',
-        path: ['费用报销', '历史单据', '报销单查询'],
-        fullPath: '费用报销 / 历史单据 / 报销单查询'
-      }
-    ]
-    for (const [reply, expected] of [
+    const options = Array.from({ length: 8 }, (_value, index) => ({
+      menuId: 1401 + index,
+      actionId: 41 + index,
+      name: '报销单查询',
+      path: ['费用报销', `候选${index + 1}`, '报销单查询'],
+      fullPath: `费用报销 / 候选${index + 1} / 报销单查询`
+    }))
+    const ordinalReplies = [
+      ...options.map((option, index) => [String(index + 1), option] as const),
+      ...Array.from('一二三四五六七八', (value, index) => [value, options[index]] as const),
+      ['1.', options[0]],
+      ['1、', options[0]],
+      ['(1)', options[0]],
+      ['（一）', options[0]],
+      ['2号', options[1]],
+      ['选2', options[1]],
+      ['选择 2', options[1]],
+      ['我选第二个', options[1]],
+      ['我想选择第二项', options[1]],
+      ['就选第2个菜单', options[1]],
+      ['选择选项2', options[1]],
+      ['我选选项2', options[1]],
       ['第一个', options[0]],
-      ['第二个', options[1]],
-      ['第3个', options[2]]
-    ] as const) {
+      ['第二个菜单', options[1]],
+      ['第二个选项', options[1]],
+      ['我要第二个', options[1]],
+      ['我想要第二个', options[1]],
+      ['就要第二个', options[1]],
+      ['第二个吧', options[1]],
+      ['打开第二个', options[1]],
+      ['进入第二项', options[1]],
+      ['选第 3 个', options[2]],
+      ['3。', options[2]]
+    ] as const
+    for (const [reply, expected] of ordinalReplies) {
       const requests: any[] = []
       const executeTool = vi.fn(() => ({
         ok: true, operation: 'odoo.navigate_menu', navigated: true
@@ -1804,11 +1817,11 @@ describe('ChatRuntime protocol handling', () => {
           {
             id: 'menu-search-result', role: 'tool', name: 'odoo.navigate_menu',
             toolCallId: 'search-menu-1', content: JSON.stringify({
-              query: '报销单查询', matchType: 'exact', matchCount: 3, truncated: false,
+              query: '报销单查询', matchType: 'exact', matchCount: options.length, truncated: false,
               candidates: options, catalogId: 'catalog-test-1', catalogRevision: 1
             })
           },
-          { id: 'menu-prompt', role: 'assistant', content: '请选择第一个、第二个或第三个。' }
+          { id: 'menu-prompt', role: 'assistant', content: '请选择第一个至第八个。' }
         ],
         hostBridge: { executeTool }
       })
@@ -1843,7 +1856,15 @@ describe('ChatRuntime protocol handling', () => {
     ]
     for (const testCase of [
       { reply: '第一个', catalogId: 'catalog-stale' },
-      { reply: '第三个', catalogId: 'catalog-test-1' }
+      { reply: '0', catalogId: 'catalog-test-1' },
+      { reply: '3', catalogId: 'catalog-test-1' },
+      { reply: '第九个', catalogId: 'catalog-test-1' },
+      { reply: '1,2', catalogId: 'catalog-test-1' },
+      { reply: '1 和 2', catalogId: 'catalog-test-1' },
+      { reply: '第一、第二个', catalogId: 'catalog-test-1' },
+      { reply: '先选1再选2', catalogId: 'catalog-test-1' },
+      { reply: '第二个并打开客户', catalogId: 'catalog-test-1' },
+      { reply: '随便选一个', catalogId: 'catalog-test-1' }
     ]) {
       let body: any
       vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => {

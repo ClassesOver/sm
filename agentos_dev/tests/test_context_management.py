@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from types import SimpleNamespace
@@ -5,19 +6,26 @@ from types import SimpleNamespace
 import pytest
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
+from agno.models.response import ModelResponse
 from agno.run.agent import RunOutput
 from agno.run.base import RunStatus
 from agno.run.team import TeamRunOutput
 from agno.session.summary import SessionSummary
 from agno.session.team import TeamSession
+from agno.tools import Function
+from agno.tools.function import FunctionCall
 
+import agentos_dev.context_management as context_management_module
 from agentos_dev.context_management import (
+    CODING_CHECKPOINT_MAX_BYTES,
     COMPRESSIBLE_HISTORY_TOOLS,
     HISTORY_CONTEXT_DESCRIPTION,
     MAX_SUMMARY_TOKENS,
     SKILL_PRUNE_MIN_CHARS,
+    CodingContextHardLimitError,
     CodingContextProjector,
     ContextBudgetController,
+    ProjectedOpenAIChat,
     ProtectedCompressionManager,
     RollingSessionSummaryManager,
     RollingSummaryResponse,
@@ -347,15 +355,18 @@ def test_coding_context_controller_defers_skill_pruning_until_budget_rebase():
     assert stable[0].compressed_content is None
     assert old.compressed_content is None
 
-    constrained = ContextBudgetController(model=CountingModel(), context_token_budget=32_769)
-    rebased = constrained.prepare_context(messages)
+    rebased = CodingContextProjector.project(messages, model=CountingModel(), hard_cap=2_000)
 
-    assert json.loads(rebased[0].compressed_content)["marker"] == "SKILL_PRUNED"
+    checkpoint = next(
+        json.loads(message.content)
+        for message in rebased
+        if isinstance(message.content, str) and "CODING_CHECKPOINT" in message.content
+    )
+    assert checkpoint["skillReceipts"][0]["path"] == "SKILL.md"
     assert old.compressed_content is None
 
 
 def test_coding_context_controller_emits_structured_checkpoint_when_over_budget():
-    controller = ContextBudgetController(model=CountingModel(), context_token_budget=32_769)
     messages = [
         Message(role="assistant", content="first"),
         Message(role="tool", tool_name="terminal", content='{"output":"large"}'),
@@ -372,33 +383,357 @@ def test_coding_context_controller_emits_structured_checkpoint_when_over_budget(
         skill_result("rules", path="guide.md", tool_name="get_skill_reference"),
         Message(role="assistant", content="second"),
         Message(role="assistant", content="third"),
+        Message(role="assistant", content="padding " + "x" * 2_000),
     ]
 
-    prepared = controller.prepare_context(messages)
+    prepared = CodingContextProjector.project(messages, model=CountingModel(), hard_cap=1_500)
 
-    checkpoint = json.loads(prepared[1].compressed_content)
+    checkpoint = next(
+        json.loads(message.content)
+        for message in prepared
+        if isinstance(message.content, str) and "CODING_CHECKPOINT" in message.content
+    )
     assert checkpoint["marker"] == "CODING_CHECKPOINT"
-    assert checkpoint["changedFiles"] == ["app.py"]
+    assert checkpoint["version"] == 2
+    assert checkpoint["changedFiles"] == [{"path": "app.py"}]
     assert checkpoint["mutation"] == 3
     assert checkpoint["activeProcesses"] == [{"executionId": "serve", "status": "running"}]
     assert checkpoint["skillReceipts"][0]["path"] == "guide.md"
-    assert checkpoint["toolReceipts"][0]["tool"] == "terminal"
+    assert "toolReceipts" not in checkpoint
 
 
 def test_coding_context_controller_uses_fallback_count_when_tokenizer_fails():
     controller = ContextBudgetController(model=BrokenCountingModel(), context_token_budget=32_769)
     messages = [
-        Message(role="assistant", content="old " + "x" * 100),
+        Message(role="assistant", content="old " + "x" * 1_000),
         Message(role="assistant", content="second"),
         Message(role="assistant", content="third"),
     ]
 
     assert controller.should_compress(messages) is True
 
-    prepared = controller.prepare_context(messages)
+    prepared = CodingContextProjector.project(messages, model=BrokenCountingModel(), hard_cap=400)
 
-    assert json.loads(prepared[0].compressed_content)["marker"] == "CODING_CHECKPOINT"
+    assert any(
+        json.loads(message.content).get("marker") == "CODING_CHECKPOINT"
+        for message in prepared
+        if isinstance(message.content, str) and message.content.startswith("{")
+    )
     assert messages[0].compressed_content is None
+
+
+def _tool_round(index: int, content: str = "result") -> list[Message]:
+    call_id = f"call-{index}"
+    return [
+        Message(
+            role="assistant",
+            content=f"round {index}",
+            tool_calls=[
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": json.dumps({"path": f"file-{index}.txt"}),
+                    },
+                }
+            ],
+        ),
+        Message(
+            role="tool",
+            tool_name="read_file",
+            tool_call_id=call_id,
+            content=content,
+        ),
+    ]
+
+
+def test_coding_context_projector_rebases_1000_rounds_without_mutating_canonical_history():
+    messages = [Message(role="system", content="system"), Message(role="user", content="goal")]
+    for index in range(1_000):
+        messages.extend(_tool_round(index, "x" * 100))
+    canonical = [message.model_dump() for message in messages]
+
+    projected = CodingContextProjector.project(messages, model=CountingModel(), hard_cap=64 * 1024)
+
+    assert [message.model_dump() for message in messages] == canonical
+    assert CountingModel().count_tokens(projected) <= 64 * 1024
+    assert CodingContextProjector.last_metrics["canonical_message_count"] == len(messages)
+    assert CodingContextProjector.last_metrics["window_rebased"] is True
+    assert CodingContextProjector.last_metrics["dropped_complete_rounds"] > 0
+    checkpoint_message = next(
+        message
+        for message in projected
+        if isinstance(message.content, str)
+        and '"version":2' in message.content
+        and "CODING_CHECKPOINT" in message.content
+    )
+    checkpoint = json.loads(checkpoint_message.content)
+    assert len(checkpoint_message.content.encode()) <= CODING_CHECKPOINT_MAX_BYTES
+    assert "toolReceipts" not in checkpoint
+    assistant_call_ids = {
+        call["id"]
+        for message in projected
+        for call in (message.tool_calls or [])
+        if message.role in {"assistant", "model"}
+    }
+    assert all(
+        message.tool_call_id in assistant_call_ids
+        for message in projected
+        if message.role == "tool"
+    )
+
+
+def test_coding_context_projector_counts_tool_schema_and_rejects_irreducible_prefix():
+    class SchemaCountingModel(CountingModel):
+        def count_tokens(self, messages, tools=None, output_schema=None):
+            return super().count_tokens(messages) + len(json.dumps(tools or []))
+
+    messages = [Message(role="system", content="required"), Message(role="user", content="goal")]
+
+    with pytest.raises(CodingContextHardLimitError) as rejected:
+        CodingContextProjector.project(
+            messages,
+            model=SchemaCountingModel(),
+            tools=[{"name": "large", "description": "x" * 1_000}],
+            hard_cap=100,
+        )
+
+    assert rejected.value.code == "coding_context_hard_limit_exceeded"
+
+
+def test_coding_checkpoint_v2_reads_v1_state_and_stays_bounded():
+    v1 = {
+        "marker": "CODING_CHECKPOINT",
+        "plan": {"step": "latest"},
+        "changedFiles": ["legacy.py"],
+        "mutation": 7,
+        "verification": {"executionId": "verify-7", "exitCode": 0},
+        "activeProcesses": [{"executionId": "serve", "status": "running"}],
+        "skillReceipts": [],
+        "toolReceipts": [{"tool": "terminal"}],
+    }
+    messages = [
+        Message(role="system", content="system"),
+        Message(role="user", content=json.dumps(v1)),
+        Message(role="assistant", content="x" * 4_000),
+    ]
+
+    projected = CodingContextProjector.project(messages, model=CountingModel(), hard_cap=2_000)
+    checkpoint_message = next(
+        message
+        for message in projected
+        if isinstance(message.content, str)
+        and '"version":2' in message.content
+        and "CODING_CHECKPOINT" in message.content
+    )
+    checkpoint = json.loads(checkpoint_message.content)
+
+    assert checkpoint["version"] == 2
+    assert checkpoint["mutation"] == 7
+    assert checkpoint["changedFiles"] == [{"path": "legacy.py"}]
+    assert "toolReceipts" not in checkpoint
+    assert len(checkpoint_message.content.encode()) <= CODING_CHECKPOINT_MAX_BYTES
+
+
+def test_runtime_feedback_replaces_older_failure_with_latest_success_state():
+    messages = [
+        Message(
+            role="tool",
+            tool_name="verify",
+            content=json.dumps(
+                {
+                    "mutation_sequence": 3,
+                    "exit_code": 1,
+                    "error": {
+                        "code": "verification_failed",
+                        "requiredActions": ["fix"],
+                    },
+                }
+            ),
+        ),
+        Message(
+            role="tool",
+            tool_name="verify",
+            content=json.dumps({"mutation_sequence": 3, "exit_code": 0}),
+        ),
+    ]
+
+    projected = CodingContextProjector.project(messages, model=CountingModel())
+    feedback = json.loads(projected[-1].content)
+
+    assert feedback["marker"] == "CODING_RUNTIME_FEEDBACK"
+    assert feedback["code"] == "coding_finish_required"
+
+
+def _function_call(name, entrypoint, index, arguments=None):
+    return FunctionCall(
+        function=Function(name=name, entrypoint=entrypoint),
+        arguments=arguments or {},
+        call_id=f"call-{index}",
+    )
+
+
+@pytest.mark.anyio
+async def test_projected_model_runs_four_safe_reads_in_parallel_and_keeps_result_order():
+    model = ProjectedOpenAIChat(id="test")
+    entered = 0
+    all_entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read_file(path):
+        nonlocal entered
+        entered += 1
+        if entered == 4:
+            all_entered.set()
+        await release.wait()
+        return path
+
+    calls = [
+        _function_call("read_file", read_file, index, {"path": str(index)}) for index in range(4)
+    ]
+    results = []
+
+    async def run_batch():
+        async for _event in model.arun_function_calls(calls, results):
+            pass
+
+    task = asyncio.create_task(run_batch())
+    await asyncio.wait_for(all_entered.wait(), timeout=1)
+    release.set()
+    await asyncio.wait_for(task, timeout=1)
+
+    assert [message.tool_call_id for message in results] == [f"call-{index}" for index in range(4)]
+
+
+@pytest.mark.anyio
+async def test_projected_model_writes_request_and_batch_metrics_inside_model_stream(
+    monkeypatch,
+):
+    stream_active = False
+    captured = []
+
+    async def model_stream(_self, _messages, *_args, **_kwargs):
+        nonlocal stream_active
+        stream_active = True
+        _self.get_request_params()
+        yield ModelResponse(
+            tool_calls=[
+                SimpleNamespace(
+                    index=0,
+                    function=SimpleNamespace(name="read_file", arguments='{"path":"a"}'),
+                ),
+                SimpleNamespace(
+                    index=1,
+                    function=SimpleNamespace(name="apply_patch", arguments="{}"),
+                ),
+            ]
+        )
+        stream_active = False
+
+    def capture(attributes):
+        assert stream_active is True
+        captured.append(attributes)
+
+    monkeypatch.setattr(OpenAIChat, "ainvoke_stream", model_stream)
+    monkeypatch.setattr(context_management_module, "_set_current_span_attributes", capture)
+    model = ProjectedOpenAIChat(id="test")
+
+    async for _response in model.ainvoke_stream(
+        [Message(role="system", content="system"), Message(role="user", content="goal")],
+        Message(role="assistant"),
+    ):
+        pass
+
+    assert len(captured) == 2
+    assert captured[0]["canonical_message_count"] == 2
+    assert captured[0]["projected_message_count"] == 2
+    assert captured[1]["tool_batch_size"] == 2
+    assert captured[1]["tool_batch_admission"] == "rejected"
+    assert captured[1]["tool_batch_rejection_code"] == "coding_tool_batch_rejected"
+
+
+@pytest.mark.anyio
+async def test_projected_model_writes_metrics_inside_non_stream_model_call(monkeypatch):
+    call_active = False
+    captured = []
+
+    async def model_call(self, _messages, *_args, **_kwargs):
+        nonlocal call_active
+        call_active = True
+        self.get_request_params()
+        call_active = False
+        return ModelResponse(content="done")
+
+    def capture(attributes):
+        assert call_active is True
+        captured.append(attributes)
+
+    monkeypatch.setattr(OpenAIChat, "ainvoke", model_call)
+    monkeypatch.setattr(context_management_module, "_set_current_span_attributes", capture)
+    model = ProjectedOpenAIChat(id="test")
+
+    await model.ainvoke(
+        [Message(role="system", content="system"), Message(role="user", content="goal")],
+        Message(role="assistant"),
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["canonical_message_count"] == 2
+    assert captured[0]["projected_message_count"] == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "names",
+    [
+        ["read_file"] * 5,
+        ["read_file", "apply_patch"],
+        ["verify", "finish_task"],
+    ],
+)
+async def test_projected_model_rejects_entire_invalid_tool_batch_without_entrypoint_calls(
+    names, monkeypatch
+):
+    model = ProjectedOpenAIChat(id="test")
+    entrypoint_calls = 0
+
+    async def entrypoint():
+        nonlocal entrypoint_calls
+        entrypoint_calls += 1
+        return "unexpected"
+
+    calls = [_function_call(name, entrypoint, index) for index, name in enumerate(names)]
+    results = []
+
+    async for _event in model.arun_function_calls(calls, results):
+        pass
+
+    assert entrypoint_calls == 0
+    assert len(results) == len(calls)
+    assert all(
+        json.loads(message.content)["code"] == "coding_tool_batch_rejected" for message in results
+    )
+
+
+@pytest.mark.anyio
+async def test_projected_model_allows_one_exclusive_tool_call():
+    model = ProjectedOpenAIChat(id="test")
+    calls = 0
+
+    async def apply_patch():
+        nonlocal calls
+        calls += 1
+        return "done"
+
+    results = []
+    async for _event in model.arun_function_calls(
+        [_function_call("apply_patch", apply_patch, 1)], results
+    ):
+        pass
+
+    assert calls == 1
+    assert len(results) == 1
 
 
 def test_coding_context_projector_compacts_consumed_tool_pair_without_mutating_raw():
@@ -465,6 +800,26 @@ def test_coding_context_projector_compacts_consumed_tool_pair_without_mutating_r
     assert projected[0].tool_calls[0]["id"] == projected[1].tool_call_id == "call-create"
     assert projected[2].tool_calls[0]["function"]["arguments"] == latest_args
     assert projected[3].compressed_content is None
+
+
+def test_coding_context_projector_compacts_create_files_content_without_mutating_raw():
+    large_content = "x" * 5000
+    arguments = json.dumps(
+        {
+            "files": [
+                {"path": "a.py", "content": large_content},
+                {"path": "b.py", "content": "small"},
+            ]
+        }
+    )
+
+    compacted = CodingContextProjector._compact_arguments("create_files", arguments)
+
+    payload = json.loads(compacted)
+    assert json.loads(arguments)["files"][0]["content"] == large_content
+    assert "CONTEXT_PRUNED" in payload["files"][0]["content"]
+    assert "reload=read_file(path='a.py')" in payload["files"][0]["content"]
+    assert payload["files"][1]["content"] == "small"
 
 
 def test_coding_context_projector_keeps_recent_read_facts_after_another_tool_call():

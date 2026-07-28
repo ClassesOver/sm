@@ -25,6 +25,7 @@ from agentos_dev.tests.workspace_fakes import (
     service,
 )
 from agentos_dev.workspace import (
+    MAX_BATCH_HASH_CONCURRENCY,
     MAX_DOWNLOAD_BYTES,
     MAX_MANAGED_PROCESSES,
     MAX_PATH_BYTES,
@@ -1298,14 +1299,22 @@ def test_完整变更集预检冲突零写入且执行失败会回滚(tmp_path, 
     assert current.read_text("thread", "b.txt") == "before b\n"
 
     b_hash = current.hash_file("thread", "b.txt")["sha256"]
-    original_replace = current.replace_file
+    original_store = current._store_file_in_sandbox
+    original_sandbox_for = current.sandbox_for
+    sandbox_calls = 0
 
-    def fail_second_update(thread, path, content):
-        if path == "b.txt" and content == b"after b\n":
+    def count_sandbox_for(thread):
+        nonlocal sandbox_calls
+        sandbox_calls += 1
+        return original_sandbox_for(thread)
+
+    def fail_second_update(sandbox, path, remote, content, mode):
+        if path == "b.txt" and content == b"after b\n" and mode == "replace":
             raise RuntimeError("write failed")
-        return original_replace(thread, path, content)
+        return original_store(sandbox, path, remote, content, mode)
 
-    monkeypatch.setattr(current, "replace_file", fail_second_update)
+    monkeypatch.setattr(current, "sandbox_for", count_sandbox_for)
+    monkeypatch.setattr(current, "_store_file_in_sandbox", fail_second_update)
     with pytest.raises(RuntimeError, match="write failed"):
         tool.entrypoint(
             changes=[
@@ -1324,8 +1333,48 @@ def test_完整变更集预检冲突零写入且执行失败会回滚(tmp_path, 
             ],
             run_context=context,
         )
+    assert sandbox_calls == 1
     assert current.read_text("thread", "a.txt") == "before a\n"
     assert current.read_text("thread", "b.txt") == "before b\n"
+    assert sandbox_calls == 3
+
+
+@pytest.mark.anyio
+async def test_批量哈希限制并发且保持输入顺序和缺失语义(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    paths = [f"file-{index}.txt" for index in range(MAX_BATCH_HASH_CONCURRENCY + 2)]
+    for index, path in enumerate(paths):
+        current.create_file("thread", path, str(index).encode())
+
+    active_downloads = 0
+    max_active_downloads = 0
+    original_download = AsyncFakeFs.download_file
+
+    async def tracked_download(fake_fs, path):
+        nonlocal active_downloads, max_active_downloads
+        active_downloads += 1
+        max_active_downloads = max(max_active_downloads, active_downloads)
+        try:
+            await asyncio.sleep(0)
+            return await original_download(fake_fs, path)
+        finally:
+            active_downloads -= 1
+
+    monkeypatch.setattr(AsyncFakeFs, "download_file", tracked_download)
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+    requested = [paths[-1], "missing.txt", *paths[:-1]]
+
+    results = await async_service.abatch_hash_files("thread", requested)
+
+    assert [item["path"] for item in results] == requested
+    assert results[1] == {"path": "missing.txt", "missing": True}
+    assert 1 < max_active_downloads <= MAX_BATCH_HASH_CONCURRENCY
 
 
 def test_create_file_locked_serializes_same_thread_and_path(tmp_path):

@@ -38,12 +38,14 @@ from agentos_dev.instructions import (
     LIST_VIEW_INSTRUCTIONS,
     NAVIGATION_INSTRUCTIONS,
     ODOO_COMMAND_INSTRUCTIONS,
+    PURE_CODING_PARALLEL_READ_INSTRUCTIONS,
     SELECTED_SKILL_INSTRUCTIONS,
     VIEW_CONTROL_INSTRUCTIONS,
     X2MANY_INSTRUCTIONS,
     build_agent_instructions,
     build_coding_agent_instructions,
     build_odoo_command_instructions,
+    build_pure_coding_agent_instructions,
 )
 from agentos_dev.settings import AgentSettings
 
@@ -149,6 +151,10 @@ def test_agent_uses_dynamic_instructions_callable():
     assert "每轮最多跟进四次客户端页面工具" in "\n".join(
         app.assistant_team.instructions(team_context("odoo.navigate_menu"))
     )
+    assert "不得向用户输出内部推理、执行计划" in "\n".join(
+        app.assistant_team.instructions(team_context("odoo.navigate_menu"))
+    )
+    assert app.coding_agent.instructions is build_pure_coding_agent_instructions
     assert app.report_worker.instructions is build_report_agent_instructions
     assert "report_workflow_start" in "\n".join(app.report_agent.instructions)
 
@@ -227,6 +233,8 @@ def test_coding_agent_uses_trusted_per_run_instructions():
     assert "禁止用 shell 后台 &" in text
     assert "不得用 sed -i" in text
     assert "不是 OS PID" in text
+    assert "只围绕 failedRequirements 定位和修复" in text
+    assert "保护 passedRequirements 已通过行为" in text
     assert "只有 finish_task 返回 accepted 才能结束任务" in text
     assert "当前会话没有可复用的任务计划" in text
     resumed_text = "\n".join(resumed)
@@ -236,6 +244,37 @@ def test_coding_agent_uses_trusted_per_run_instructions():
     assert "已完成代码检查" in resumed_text
     assert "snapshotId" not in resumed_text
     assert "当前会话没有可复用的任务计划" in "\n".join(invalid)
+
+
+def test_pure_coding_agent_batches_only_independent_reads():
+    context = instruction_context()
+    base = build_coding_agent_instructions(context)
+    instructions = build_pure_coding_agent_instructions(context)
+    text = "\n".join(instructions)
+
+    assert instructions == [*base, *PURE_CODING_PARALLEL_READ_INSTRUCTIONS]
+    assert "2 到 4 个只读操作" in text
+    assert "同一次模型响应中并行调用" in text
+    assert "彼此独立且服务于同一当前步骤" in text
+    assert "路径未知" in text and "数据依赖的读取必须串行" in text
+    assert "不得批量调用无关读取、超大范围读取" in text
+    for tool_name in (
+        "list_files",
+        "read_file",
+        "read_lines",
+        "search_text",
+        "tree",
+        "git_status",
+        "git_diff",
+        "read_tool_output",
+        "view_image",
+    ):
+        assert tool_name in text
+    assert "非执行型 Skill 读取" in text
+    assert (
+        "并行批次不得包含 terminal、process、update_plan、任何 mutation、verify 或 finish_task"
+        in text
+    )
 
 
 def test_assistant_team_has_one_static_production_member():
@@ -506,7 +545,7 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
     assert set(worker_toolkits[0].functions) | set(worker_toolkits[0].async_functions) == {
         "terminal",
         "process",
-        "create_file",
+        "create_files",
         "overwrite_file",
         "replace_text",
         "apply_patch",
@@ -613,9 +652,11 @@ def test_navigation_tools_only_add_navigation_policy():
     assert not set(FORM_EDIT_INSTRUCTIONS) & set(instructions)
     assert "stage_current_form" not in "\n".join(instructions)
     assert "requiredFirstTool" not in "\n".join(instructions)
-    assert "本轮必须实际调用 odoo.navigate_menu" in "\n".join(instructions)
-    assert "允许调用前简短说明" in "\n".join(instructions)
+    assert "本轮必须直接调用 odoo.navigate_menu" in "\n".join(instructions)
+    assert "不得在调用前输出说明、计划或确认文字" in "\n".join(instructions)
+    assert "允许调用前简短说明" not in "\n".join(instructions)
     assert "不得用文字代替调用" in "\n".join(instructions)
+    assert "输入包含多个序号时不得调用工具或自行取舍" in "\n".join(instructions)
 
 
 def test_list_view_tools_add_list_policy():

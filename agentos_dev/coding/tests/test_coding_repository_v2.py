@@ -46,6 +46,28 @@ async def test_create_aggregate_is_idempotent_and_attempt_zero_is_free(repositor
 
 
 @pytest.mark.anyio
+async def test_new_attempt_instruction_keeps_initial_goal_and_latest_supplement(repository_v2):
+    task = await repository_v2.create_task_with_initial_attempt(scope(), "不可变目标")
+    await repository_v2.submit_instruction(scope(), "first", "较早补充")
+    await repository_v2.submit_instruction(scope(), "latest", "最新补充")
+    lease = await repository_v2.claim_lease("run", "worker")
+    assert isinstance(lease, Lease)
+    continued = await repository_v2.close_and_decide(
+        "run",
+        lease,
+        task.state_version + 2,
+        outcome=AttemptOutcome.NO_FINISH,
+        agno_status="COMPLETED",
+        create_next=True,
+    )
+
+    assert (
+        await repository_v2.attempt_instruction("run", continued.current_attempt_no)
+        == "不可变目标\n\n最新补充"
+    )
+
+
+@pytest.mark.anyio
 async def test_acceptance_contract_is_persisted_and_immutable(repository_v2):
     acceptance_contract = {
         "version": 1,

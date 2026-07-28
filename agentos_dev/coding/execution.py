@@ -32,6 +32,7 @@ from ..skills import (
 from ..workspace import (
     MANAGED_PROCESS_PREFIX,
     MAX_BACKGROUND_EXECUTION_TIMEOUT,
+    MAX_PATCH_FILES,
     MAX_PROCESS_INPUT_BYTES,
     MAX_TOOL_OUTPUT_BYTES,
     WORKSPACE_ROOT,
@@ -43,6 +44,7 @@ from ..workspace import (
     _thread,
 )
 from .acceptance import AcceptancePolicy, requirement_digest
+from .executor import CODING_FINISH_FAILURE_STATE_KEY
 from .models import CodingScope, Lease, TaskSnapshot
 from .repository_impl import (
     TERMINAL_EXECUTION_STATUSES,
@@ -55,7 +57,7 @@ from .repository_impl import (
 from .tools import (
     CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
     CODEX_EXEC_SESSIONS_STATE_KEY,
-    HERMES_CODING_TOOLKIT_INSTRUCTIONS,
+    PURE_CODING_TOOLKIT_INSTRUCTIONS,
     CodingToolkit,
     _extract_apply_patch_command,
     _ManagedDaytonaTools,
@@ -64,7 +66,6 @@ from .tools import (
 
 CODING_TASK_DEPENDENCY = "AgentOS 编码任务"
 CODING_FINISH_STATE_KEY = "agentos_coding_finish"
-CODING_FINISH_FAILURE_STATE_KEY = "agentos_coding_finish_failure"
 CODING_EXECUTION_MIGRATION_STATE_KEY = "agentos_coding_execution_migrated"
 DEFAULT_TERMINAL_TIMEOUT = 900
 MAX_FINISH_ARTIFACTS = 50
@@ -89,6 +90,16 @@ READONLY_SCRIPT_RUNTIME = Path(__file__).with_name("readonly_script_runtime.py")
 READONLY_SCRIPT_RUNTIME_SHA256 = hashlib.sha256(READONLY_SCRIPT_RUNTIME).hexdigest()
 
 
+def _create_files_patch(files: list[dict[str, str]]) -> str:
+    lines = ["*** Begin Patch"]
+    for item in files:
+        lines.append(f"*** Add File: {item['path']}")
+        content_lines = item["content"].replace("\r\n", "\n").replace("\r", "\n").splitlines()
+        lines.extend(f"+{line}" for line in (content_lines or [""]))
+    lines.append("*** End Patch")
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     effect: str
@@ -109,6 +120,7 @@ TOOL_SPECS = {
     "terminal": ToolSpec("workspace_write", False),
     "process": ToolSpec("process_control", False),
     "create_file": ToolSpec("workspace_write", False),
+    "create_files": ToolSpec("workspace_write", False),
     "overwrite_file": ToolSpec("workspace_write", False),
     "replace_text": ToolSpec("workspace_write", False),
     "apply_patch": ToolSpec("workspace_write", False),
@@ -1197,7 +1209,16 @@ class CodingExecutionKernel:
             if _read_only is not None
             else patch is None and _is_read_only_terminal_command(command)
         )
-        if read_only:
+        deferred_mutation = bool(
+            patch is None and not read_only and not background and not _verification
+        )
+        fingerprint_before: str | None = None
+        if deferred_mutation:
+            try:
+                fingerprint_before = await self.service.aworkspace_fingerprint(scope.thread_id)
+            except WorkspaceError:
+                pass
+        if read_only or deferred_mutation or _verification:
             mutation_sequence = scope.task.mutation_sequence
         else:
             mutation_sequence = await self.repository.increment_mutation(
@@ -1281,6 +1302,8 @@ class CodingExecutionKernel:
                 "/home/daytona/.cache",
                 "--write-root",
                 "/home/daytona/.config",
+                "--write-root",
+                "/dev/null",
                 "--shell-command",
                 command,
             ]
@@ -1312,6 +1335,10 @@ class CodingExecutionKernel:
                 )
                 execution = await self._persist_result(sandbox.process, execution, result)
                 await self._check_fence(scope, execution_id)
+                if deferred_mutation:
+                    execution = await self._record_terminal_mutation(
+                        scope, execution, fingerprint_before
+                    )
                 return self._public_execution(execution)
         except Exception as error:
             current = await self.repository.get_execution(execution_id)
@@ -1346,6 +1373,8 @@ class CodingExecutionKernel:
                     except (CodingRepositoryError, DaytonaNotFoundError, WorkspaceError):
                         pass
             assert current is not None
+            if deferred_mutation and current.mutation_sequence == scope.task.mutation_sequence:
+                current = await self._record_terminal_mutation(scope, current, fingerprint_before)
             if current.status not in {"failed", "lost"}:
                 return self._public_execution(current, cached=True)
             code = "execution_lost" if current.status == "lost" else "execution_failed"
@@ -1361,6 +1390,31 @@ class CodingExecutionKernel:
                 "message": message,
             }
         raise AssertionError("Daytona 客户端上下文未返回 sandbox。")
+
+    async def _record_terminal_mutation(
+        self,
+        scope: CodingTaskScope,
+        execution: CodingExecution,
+        fingerprint_before: str | None,
+    ) -> CodingExecution:
+        fingerprint_after: str | None = None
+        if execution.status in TERMINAL_EXECUTION_STATUSES:
+            try:
+                fingerprint_after = await self.service.aworkspace_fingerprint(scope.thread_id)
+            except WorkspaceError:
+                pass
+        if fingerprint_before is not None and fingerprint_after == fingerprint_before:
+            return execution
+        await self.repository.record_execution_mutation(
+            scope.external_run_id,
+            execution.execution_id,
+            execution.mutation_sequence,
+            lease=scope.lease,
+            internal_run_id=scope.internal_run_id,
+        )
+        updated = await self.repository.get_execution(execution.execution_id)
+        assert updated is not None
+        return updated
 
     async def _install_terminal_runtime(self, scope: CodingTaskScope) -> str:
         runtime_dir = f"{READONLY_RUNTIME_ROOT}/{READONLY_SCRIPT_RUNTIME_SHA256}"
@@ -2173,6 +2227,23 @@ class CodingExecutionKernel:
             result["execution_id"], operation_receipt=receipt
         )
         passed = all(item["passed"] is True for item in validator_results)
+        failed_requirements = []
+        for item in validator_results:
+            if item["passed"] is True:
+                continue
+            message = item.get("message")
+            failed_requirements.append(
+                {
+                    "id": item["id"],
+                    "message": (
+                        message if isinstance(message, str) and message else "requirement 未通过。"
+                    ),
+                    **({"details": item["details"]} if "details" in item else {}),
+                }
+            )
+        passed_requirements = [
+            {"id": item["id"]} for item in validator_results if item["passed"] is True
+        ]
         return {
             **self._public_execution(execution),
             "ok": passed,
@@ -2183,7 +2254,14 @@ class CodingExecutionKernel:
                 else {
                     "code": "verification_acceptance_failed",
                     "message": "validator 已执行，但至少一个 requirement 未通过。",
-                    "requiredActions": ["修复失败 requirement 后重新运行 validator_id。"],
+                    "failedRequirements": failed_requirements,
+                    "passedRequirements": passed_requirements,
+                    "requiredActions": [
+                        "仅修复 failedRequirements 列出的失败能力；"
+                        "保持 passedRequirements 已通过行为不变。",
+                        "先运行与失败项对应的公开测试或局部验证，再重新运行 "
+                        f"validator_id={validator_id}。",
+                    ],
                     "retryable": True,
                 }
             ),
@@ -2693,7 +2771,10 @@ class CodingExecutionKernel:
                 "finish_artifact_missing",
                 "交付产物不存在或已发生变化。",
                 details={"missingPaths": missing_paths[:MAX_FINISH_ARTIFACTS]},
-                required_actions=["创建或恢复 details.missingPaths 中的交付产物。"],
+                required_actions=[
+                    "调用 verify 运行产物生成命令，并将 details.missingPaths 作为 "
+                    "artifact_paths；验证成功后重新调用 finish_task。"
+                ],
                 progress_state={"missingPaths": missing_paths},
             )
         artifacts = [item for item in artifacts if not item.get("missing")]
@@ -3015,6 +3096,22 @@ class CodingExecutionKernel:
 
 
 class WorkspaceCodingToolkit(_ManagedDaytonaTools):
+    _FILE_MUTATION_TOOLS = frozenset(
+        {"create_file", "create_files", "overwrite_file", "replace_text", "apply_patch", "patch"}
+    )
+    _PROCESS_OBSERVE_OR_CLEANUP_ACTIONS = frozenset({"list", "poll", "wait", "kill"})
+    _FINISH_FILE_REPAIR_CODES = frozenset(
+        {
+            "finish_artifact_missing",
+            "finish_artifact_changed",
+            "finish_report_unverified",
+            "finish_verification_missing",
+            "finish_verification_failed",
+            "finish_verification_stale",
+            "finish_service_unhealthy",
+        }
+    )
+
     def __init__(
         self,
         service: WorkspaceService,
@@ -3151,17 +3248,30 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     entrypoint=self.process,
                 ),
                 Function(
-                    name="create_file",
+                    name="create_files",
+                    description="在一次原子补丁中创建一个或多个不存在的文件。",
                     parameters={
                         "type": "object",
                         "properties": {
-                            "path": {"type": "string", "minLength": 1},
-                            "content": {"type": "string"},
+                            "files": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": MAX_PATCH_FILES,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "path": {"type": "string", "minLength": 1},
+                                        "content": {"type": "string"},
+                                    },
+                                    "required": ["path", "content"],
+                                    "additionalProperties": False,
+                                },
+                            }
                         },
-                        "required": ["path", "content"],
+                        "required": ["files"],
                         "additionalProperties": False,
                     },
-                    entrypoint=self.coding_create_file,
+                    entrypoint=self.create_files,
                 ),
                 Function(
                     name="overwrite_file",
@@ -3238,9 +3348,20 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="list_files",
+                    description=(
+                        "列出当前工作区的直属文件和目录。路径必须相对工作区根目录；"
+                        '列出根目录时 path 传空字符串 ""，禁止传 /workspace 或 '
+                        "/home/daytona/workspace。"
+                    ),
                     parameters={
                         "type": "object",
-                        "properties": {"path": {"type": "string", "default": ""}},
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": ('工作区相对目录；根目录必须传空字符串 ""。'),
+                                "default": "",
+                            }
+                        },
                         "additionalProperties": False,
                     },
                     entrypoint=self.coding_list_files,
@@ -3417,7 +3538,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 finish_function,
             ],
-            instructions=HERMES_CODING_TOOLKIT_INSTRUCTIONS,
+            instructions=PURE_CODING_TOOLKIT_INSTRUCTIONS,
         )
 
     async def _invoke(
@@ -3449,6 +3570,14 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 else None
             )
             mutation_before = scope.task.mutation_sequence
+            admission_rejection = await self._state_admission_rejection(
+                scope,
+                tool_name,
+                arguments,
+                state,
+            )
+            if admission_rejection is not None:
+                return admission_rejection
             args_hash = hashlib.sha256(
                 json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str).encode()
             ).hexdigest()
@@ -3668,6 +3797,163 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 await self.kernel.cleanup_tool_outputs(scope, run_context)
             return result
 
+    async def _state_admission_rejection(
+        self,
+        scope: CodingTaskScope,
+        tool_name: str,
+        arguments: dict[str, Any],
+        state: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        mutation_sequence = scope.task.mutation_sequence
+        if tool_name == "process" and arguments.get("action") in (
+            self._PROCESS_OBSERVE_OR_CLEANUP_ACTIONS
+        ):
+            return None
+
+        finish_failure = state.get(CODING_FINISH_FAILURE_STATE_KEY) if state is not None else None
+        raw_finish_failure_details = (
+            finish_failure.get("details") if isinstance(finish_failure, dict) else None
+        )
+        finish_failure_details: dict[str, Any] = (
+            dict(raw_finish_failure_details) if isinstance(raw_finish_failure_details, dict) else {}
+        )
+        repairing_finish_failure = bool(
+            finish_failure_details.get("mutationSequence") == mutation_sequence
+        )
+        if mutation_sequence == 0 and not repairing_finish_failure:
+            return None
+
+        executions = await self.kernel.repository.list_executions(scope.external_run_id)
+        verification = next(
+            (
+                execution
+                for execution in reversed(executions)
+                if execution.is_verification
+                and execution.mutation_sequence == mutation_sequence
+                and execution.status == "completed"
+                and execution.exit_code == 0
+                and (execution.operation_receipt or {}).get("valid", True) is not False
+            ),
+            None,
+        )
+        if verification is None:
+            if (
+                TOOL_SPECS[tool_name].effect == "read"
+                or tool_name in self._FILE_MUTATION_TOOLS
+                or tool_name == "verify"
+            ):
+                return None
+            failed_verification = next(
+                (
+                    execution
+                    for execution in reversed(executions)
+                    if execution.is_verification
+                    and execution.mutation_sequence == mutation_sequence
+                    and (
+                        execution.status in TERMINAL_EXECUTION_STATUSES
+                        or (execution.operation_receipt or {}).get("valid") is False
+                    )
+                ),
+                None,
+            )
+            return {
+                "ok": False,
+                "status": "rejected",
+                "code": "coding_verification_required",
+                "message": "当前工作区修改尚未通过验证，本次工具调用未执行。",
+                "details": {
+                    "mutationSequence": mutation_sequence,
+                    **(
+                        {"failedVerificationId": failed_verification.execution_id}
+                        if failed_verification is not None
+                        else {}
+                    ),
+                },
+                "requiredActions": [
+                    "如验证失败，仅修改失败项，然后调用 verify 重新验证。",
+                    "如尚未验证，立即调用 verify 执行与本次修改对应的检查。",
+                ],
+                "retryable": True,
+            }
+
+        if tool_name == "finish_task":
+            return None
+        if repairing_finish_failure and isinstance(finish_failure, dict):
+            failure_code = str(finish_failure.get("code") or "finish_rejected")
+            repair_with_files = failure_code in self._FINISH_FILE_REPAIR_CODES or (
+                failure_code.startswith("finish_acceptance_")
+            )
+            if failure_code == "finish_plan_incomplete" and tool_name == "update_plan":
+                return None
+            if repair_with_files and (
+                TOOL_SPECS[tool_name].effect == "read"
+                or tool_name in self._FILE_MUTATION_TOOLS
+                or tool_name == "verify"
+            ):
+                return None
+            allowed_tools = (
+                ["finish_task", "update_plan"]
+                if failure_code == "finish_plan_incomplete"
+                else [
+                    "finish_task",
+                    "verify",
+                    "create_files",
+                    "overwrite_file",
+                    "replace_text",
+                    "apply_patch",
+                    "view_image",
+                    "read_tool_output",
+                    "list_files",
+                    "read_file",
+                    "read_lines",
+                    "search_text",
+                    "tree",
+                    "git_status",
+                    "git_diff",
+                ]
+                if repair_with_files
+                else ["finish_task"]
+            )
+            return {
+                "ok": False,
+                "status": "rejected",
+                "code": "coding_finish_repair_required",
+                "message": "上次 finish_task 未通过；本次工具与失败项修复无关，未执行。",
+                "details": {
+                    **finish_failure_details,
+                    "mutationSequence": mutation_sequence,
+                    "verificationId": verification.execution_id,
+                    "finishFailureCode": failure_code,
+                    "allowedTools": allowed_tools,
+                },
+                "requiredActions": list(finish_failure.get("requiredActions") or [])[:10],
+                "retryable": True,
+            }
+        if tool_name == "update_plan":
+            return None
+        return {
+            "ok": False,
+            "status": "rejected",
+            "code": "coding_finish_required",
+            "message": "当前工作区修改已通过验证，应提交任务验收，本次工具调用未执行。",
+            "details": {
+                "mutationSequence": mutation_sequence,
+                "verificationId": verification.execution_id,
+                "allowedTools": ["finish_task", "update_plan"],
+                **(
+                    {"finishFailureCode": finish_failure.get("code")}
+                    if repairing_finish_failure and isinstance(finish_failure, dict)
+                    else {}
+                ),
+            },
+            "requiredActions": (
+                list(finish_failure.get("requiredActions") or [])[:10]
+                if repairing_finish_failure and isinstance(finish_failure, dict)
+                else ["更新计划完成状态后调用 finish_task。"]
+            ),
+            "retryable": True,
+        }
+
     async def terminal(
         self,
         command: str,
@@ -3787,6 +4073,28 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         return await self._invoke(
             "apply_patch",
             {"patch": patch},
+            lambda scope: self.kernel.patch(
+                "patch",
+                None,
+                None,
+                None,
+                False,
+                patch,
+                run_context,
+                _scope=scope,
+            ),
+            run_context,
+        )
+
+    async def create_files(
+        self,
+        files: list[dict[str, str]],
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        patch = _create_files_patch(files)
+        return await self._invoke(
+            "create_files",
+            {"files": files},
             lambda scope: self.kernel.patch(
                 "patch",
                 None,

@@ -22,8 +22,8 @@ from agentos_dev.coding.tools import (
     CODEX_EXEC_SESSIONS_STATE_KEY,
     CODING_TOOLKIT_INSTRUCTIONS,
     DEFAULT_EXEC_TIMEOUT_SECONDS,
-    HERMES_CODING_TOOLKIT_INSTRUCTIONS,
     MAX_CODEX_SESSION_HANDLES,
+    PURE_CODING_TOOLKIT_INSTRUCTIONS,
     CodingToolkit,
     HermesCodingToolkit,
     parse_codex_patch,
@@ -147,14 +147,14 @@ def test_hermes_coding_toolkit_is_independent_and_keeps_supported_contract(tmp_p
     assert forbidden_brand not in visible_tool_text.lower()
     assert "patch 的 replace 模式" in toolkit.instructions
     assert "未暴露的日志回溯、关闭 stdin 和异步通知能力不可假定存在" in (toolkit.instructions)
-    assert "read_tool_output" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
-    assert "受控只读工具" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
-    assert "create" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
-    assert "overwrite" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
-    assert "expected_sha256" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
-    assert "必须调用 verify" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
-    assert "terminal 不计为验证" in HERMES_CODING_TOOLKIT_INSTRUCTIONS
-    assert "用 terminal 得到成功验证回执" not in HERMES_CODING_TOOLKIT_INSTRUCTIONS
+    assert "read_tool_output" in PURE_CODING_TOOLKIT_INSTRUCTIONS
+    assert "受控只读工具" in PURE_CODING_TOOLKIT_INSTRUCTIONS
+    assert "create" in PURE_CODING_TOOLKIT_INSTRUCTIONS
+    assert "overwrite" in PURE_CODING_TOOLKIT_INSTRUCTIONS
+    assert "expected_sha256" in PURE_CODING_TOOLKIT_INSTRUCTIONS
+    assert "必须调用 verify" in PURE_CODING_TOOLKIT_INSTRUCTIONS
+    assert "terminal 不计为验证" in PURE_CODING_TOOLKIT_INSTRUCTIONS
+    assert "用 terminal 得到成功验证回执" not in PURE_CODING_TOOLKIT_INSTRUCTIONS
 
 
 def test_coding_tool_contract_explains_limits_patch_format_and_persistent_services(tmp_path):

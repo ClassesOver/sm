@@ -6,6 +6,7 @@ const login = process.env.ODOO_E2E_LOGIN || 'admin'
 const password = process.env.ODOO_E2E_PASSWORD || 'admin'
 const workspaceSecret = process.env.AGUI_WORKSPACE_HMAC_SECRET || ''
 const realAgentOsTest = process.env.AGENTOS_E2E_REAL_MODEL === '1' ? test : test.skip
+const agentOsBrowserUrl = (process.env.AGENTOS_E2E_BROWSER_URL || '').replace(/\/+$/, '')
 
 interface ToolResult {
   result?: Record<string, unknown>
@@ -194,6 +195,70 @@ async function rpc<T>(page: Page, model: string, method: string, args: unknown[]
       kwargs: keyword
     })
   }, { modelName: model, methodName: method, positional: args, keyword: kwargs })
+}
+
+async function ensureDuplicateNavigationMenus(page: Page): Promise<number[]> {
+  const source = await rpc<Array<{ action: string | false }>>(
+    page,
+    'ir.ui.menu',
+    'search_read',
+    [[['name', '=', '入口看板']]],
+    { fields: ['action'], limit: 1 }
+  )
+  if (!source[0]?.action) throw new Error('未找到入口看板菜单 action')
+
+  const leafIds: number[] = []
+  for (const parentName of ['AG-UI 同名菜单甲', 'AG-UI 同名菜单乙']) {
+    const existingParents = await rpc<number[]>(
+      page,
+      'ir.ui.menu',
+      'search',
+      [[['name', '=', parentName], ['parent_id', '=', false]]],
+      { limit: 1 }
+    )
+    const parentId = existingParents[0] || await rpc<number>(
+      page,
+      'ir.ui.menu',
+      'create',
+      [{ name: parentName }]
+    )
+    const existingLeaves = await rpc<number[]>(
+      page,
+      'ir.ui.menu',
+      'search',
+      [[['name', '=', '同名入口看板'], ['parent_id', '=', parentId]]],
+      { limit: 1 }
+    )
+    leafIds.push(existingLeaves[0] || await rpc<number>(
+      page,
+      'ir.ui.menu',
+      'create',
+      [{ name: '同名入口看板', parent_id: parentId, action: source[0].action }]
+    ))
+  }
+  return leafIds
+}
+
+async function configureRealAgentOs(page: Page) {
+  const configIds = await rpc<number[]>(
+    page,
+    'agui.chat.config',
+    'search',
+    [[['active', '=', true]]],
+    { limit: 1 }
+  )
+  if (!configIds[0]) throw new Error('未找到启用的 AG-UI 配置')
+  await rpc(page, 'agui.chat.config', 'write', [[configIds[0]], {
+    runtime_url: `${agentOsBrowserUrl}/agui`,
+    agentos_internal_url: agentOsBrowserUrl,
+    allow_cross_origin_dev: true
+  }])
+  await page.reload()
+  await expect(page.locator('.o_web_client')).toBeVisible()
+  await page.waitForFunction(() => {
+    const webClient = (globalThis as any).odoo?.__DEBUG__?.services?.['web.web_client']
+    return Boolean(webClient?.aguiChatSurfaceManager?.bridge?.config?.agent)
+  })
 }
 
 async function sessionIds(page: Page): Promise<number[]> {
@@ -414,6 +479,9 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
       })
     }
     await loginToOdoo(page)
+    if (process.env.AGENTOS_E2E_REAL_MODEL === '1' && agentOsBrowserUrl) {
+      await configureRealAgentOs(page)
+    }
     if (workspaceSecret) {
       await rpc(page, 'ir.config_parameter', 'set_param', [
         'agui_chat.workspace_hmac_secret', workspaceSecret
@@ -432,7 +500,7 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     await openAssistant(page)
     await page.getByRole('button', { name: '新建对话' }).click()
 
-    const input = page.getByPlaceholder('输入消息，@ 选择记录、菜单或技能')
+    const input = page.getByPlaceholder(/^输入消息，@ 选择/)
     await input.fill('打开入口看板')
     await page.getByRole('button', { name: '发送消息', exact: true }).click()
     await expect(page.getByRole('button', { name: '停止生成' })).toBeVisible()
@@ -459,6 +527,91 @@ test.describe.serial('Odoo 与 AgentOS 多场景通信', () => {
     await expect(page.getByRole('button', { name: '停止生成' })).toBeHidden({
       timeout: 120_000
     })
+  })
+
+  realAgentOsTest('同名菜单选择第二个后只显示最终导航结果', async ({ page }) => {
+    await openPartnerList(page)
+    const existingSessionIds = await sessionIds(page)
+    const menuIds = await ensureDuplicateNavigationMenus(page)
+    expect(new Set(menuIds).size).toBe(2)
+    await page.reload()
+    await expect(page.locator('.o_web_client')).toBeVisible()
+    await page.waitForFunction(() => {
+      const webClient = (globalThis as any).odoo?.__DEBUG__?.services?.['web.web_client']
+      return Boolean(webClient?.aguiChatSurfaceManager?.bridge?.catalog?.length)
+    })
+    const duplicateMenus = await page.evaluate(() => {
+      const webClient = (globalThis as any).odoo.__DEBUG__.services['web.web_client']
+      const manager = webClient.aguiChatSurfaceManager
+      return manager.call('agui_host', 'getMenuCatalog').entries
+        .filter((entry: any) => entry.name === '同名入口看板')
+        .map((entry: any) => ({
+          fullPath: entry.fullPath,
+          menuId: entry.menuId,
+          actionId: entry.actionId
+        }))
+    })
+    expect(duplicateMenus).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fullPath: 'AG-UI 同名菜单甲 / 同名入口看板' }),
+      expect.objectContaining({ fullPath: 'AG-UI 同名菜单乙 / 同名入口看板' })
+    ]))
+    expect(duplicateMenus).toHaveLength(2)
+
+    await openPartnerList(page)
+    await openAssistant(page)
+    await page.getByRole('button', { name: '新建对话' }).click()
+    const input = page.getByPlaceholder(/^输入消息，@ 选择/)
+
+    await input.fill('打开同名入口看板')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(page.getByRole('button', { name: '停止生成' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '停止生成' })).toBeHidden({
+      timeout: 120_000
+    })
+
+    await input.fill('2')
+    await page.getByRole('button', { name: '发送消息', exact: true }).click()
+    await expect(page.getByRole('button', { name: '停止生成' })).toBeVisible()
+    await expect(page.locator('.o_kanban_view')).toBeVisible({ timeout: 120_000 })
+    await expect.poll(() => currentHostState(page).then((state) => state.model), {
+      timeout: 120_000
+    }).toBe('agui.chat.test.option')
+    await expect(page.getByRole('button', { name: '停止生成' })).toBeHidden({
+      timeout: 120_000
+    })
+
+    await expect.poll(async () => page.evaluate(async (knownIds) => {
+      const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
+      const result = await Promise.resolve(manager.bridge.listSessions())
+      const session = result.sessions.find((item: any) => !knownIds.includes(item.id))
+      if (!session) return null
+      const loaded = await Promise.resolve(manager.bridge.loadSession(session.id))
+      return loaded.session
+    }, existingSessionIds), { timeout: 30_000 }).not.toBeNull()
+    const session = await page.evaluate(async (knownIds) => {
+      const manager = (globalThis as any).odoo.__DEBUG__.services['web.web_client'].aguiChatSurfaceManager
+      const result = await Promise.resolve(manager.bridge.listSessions())
+      const created = result.sessions.find((item: any) => !knownIds.includes(item.id))
+      return (await Promise.resolve(manager.bridge.loadSession(created.id))).session
+    }, existingSessionIds)
+    const assistantMessages = session.messages.filter((message: any) => message.role === 'assistant')
+    const navigationCalls = assistantMessages.flatMap(
+      (message: any) => (message.tool_calls || []).filter(
+        (call: any) => call.name === 'odoo.navigate_menu'
+      )
+    )
+    expect(navigationCalls.length).toBeGreaterThanOrEqual(2)
+    expect(navigationCalls.at(-1)).toMatchObject({ status: 'ok', result: { ok: true } })
+    const secondMenu = duplicateMenus.find(
+      (menu: any) => menu.fullPath === 'AG-UI 同名菜单乙 / 同名入口看板'
+    )
+    expect(secondMenu).toBeDefined()
+    expect(navigationCalls.at(-1)?.args).toMatchObject({
+      menuId: secondMenu!.menuId,
+      actionId: secondMenu!.actionId
+    })
+    expect(assistantMessages.map((message: any) => String(message.content || '')).join('\n'))
+      .not.toMatch(/用户输入\s*["“][12]|我需要调用|收到\s*stale_snapshot|需要使用最新.*快照重试|让我(?:先|来)?(?:完成)?导航|让我打开/)
   })
 
   test('精简目录、幂等重放和过期快照均 fail closed', async ({ page }) => {

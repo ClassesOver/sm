@@ -967,6 +967,62 @@ class CodingTaskRepository:
             raise CodingRepositoryError("task_not_active", "编码任务已结束，不能继续修改。")
         return int(value)
 
+    async def record_execution_mutation(
+        self,
+        external_run_id: str,
+        execution_id: str,
+        expected_mutation_sequence: int,
+        *,
+        lease: Lease | None,
+        internal_run_id: str,
+    ) -> int:
+        await self.initialize()
+        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
+            conditions = [
+                self.tasks.c.external_run_id == external_run_id,
+                self.tasks.c.current_internal_run_id == internal_run_id,
+                self.tasks.c.mutation_sequence == expected_mutation_sequence,
+                self.tasks.c.status.in_([TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED]),
+            ]
+            if lease is not None:
+                conditions.extend(
+                    [
+                        self.tasks.c.lease_owner == lease.owner,
+                        self.tasks.c.lease_epoch == lease.epoch,
+                        self.tasks.c.lease_expires_at > utcnow(),
+                    ]
+                )
+            value = (
+                await connection.execute(
+                    update(self.tasks)
+                    .where(*conditions)
+                    .values(
+                        mutation_sequence=self.tasks.c.mutation_sequence + 1,
+                        updated_at=utcnow(),
+                    )
+                    .returning(self.tasks.c.mutation_sequence)
+                )
+            ).scalar_one_or_none()
+            if value is None:
+                raise CodingRepositoryError(
+                    "execution_mutation_conflict", "Execution mutation 序号已变化。"
+                )
+            execution = await connection.execute(
+                update(self.executions)
+                .where(
+                    self.executions.c.execution_id == execution_id,
+                    self.executions.c.external_run_id == external_run_id,
+                    self.executions.c.internal_run_id == internal_run_id,
+                    self.executions.c.mutation_sequence == expected_mutation_sequence,
+                )
+                .values(mutation_sequence=value, updated_at=utcnow())
+            )
+            if execution.rowcount != 1:
+                raise CodingRepositoryError(
+                    "execution_mutation_conflict", "Execution mutation 绑定已变化。"
+                )
+        return int(value)
+
     async def reserve_execution(
         self,
         *,
@@ -1619,18 +1675,31 @@ class CodingTaskRepository:
     async def attempt_instruction(self, external_run_id: str, attempt_no: int) -> str:
         await self.initialize()
         async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
-            rows = (
+            initial = (
+                await connection.execute(
+                    select(self.instructions.c.content).where(
+                        self.instructions.c.external_run_id == external_run_id,
+                        self.instructions.c.status == InstructionState.APPLIED,
+                        self.instructions.c.instruction_id == "initial",
+                    )
+                )
+            ).scalar_one_or_none()
+            supplemental = (
                 await connection.execute(
                     select(self.instructions.c.content)
                     .where(
                         self.instructions.c.external_run_id == external_run_id,
                         self.instructions.c.status == InstructionState.APPLIED,
                         self.instructions.c.applied_attempt_no == attempt_no,
+                        self.instructions.c.instruction_id != "initial",
                     )
-                    .order_by(self.instructions.c.sequence)
+                    .order_by(self.instructions.c.sequence.desc())
+                    .limit(1)
                 )
-            ).all()
-        return "\n\n".join(str(row.content) for row in rows)
+            ).scalar_one_or_none()
+        return "\n\n".join(
+            str(content) for content in (initial, supplemental) if content is not None
+        )
 
     async def open_initial(
         self,

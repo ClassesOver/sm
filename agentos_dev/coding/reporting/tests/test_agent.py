@@ -6,7 +6,7 @@ from agentos_dev.coding.execution import is_coding_tool_scheduler_hook
 from agentos_dev.coding.reporting.agent import create_report_agent, create_report_worker
 from agentos_dev.coding.reporting.controller import ReportWorkflowController
 from agentos_dev.coding.reporting.tests.workspace_fakes import service
-from agentos_dev.instructions import build_coding_agent_instructions
+from agentos_dev.instructions import build_pure_coding_agent_instructions
 from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
 
 
@@ -42,7 +42,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert coding_facade.model.reasoning_effort is None
     assert coding_agent.model.reasoning_effort == "medium"
     assert coding_agent.model.get_request_params()["reasoning_effort"] == "medium"
-    assert coding_agent.model.extra_body == {"enable_thinking": True}
+    assert coding_agent.model.extra_body == app.assistant.model.extra_body
     assert [tool.name for tool in coding_facade.tools] == ["run_coding_task"]
     assert coding_facade.tools[0].parameters == {
         "type": "object",
@@ -52,16 +52,11 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     }
     assert not any(is_skill_script_hook(hook) for hook in coding_facade.tool_hooks or [])
     assert not any(is_coding_tool_scheduler_hook(hook) for hook in coding_facade.tool_hooks or [])
-    assert coding_agent.instructions is build_coding_agent_instructions
+    assert coding_agent.instructions is build_pure_coding_agent_instructions
     assert sum(is_skill_script_hook(hook) for hook in coding_agent.tool_hooks) == 1
     assert sum(is_coding_tool_scheduler_hook(hook) for hook in coding_agent.tool_hooks) == 1
     assert [skill.name for skill in coding_agent.skills.get_all_skills()] == ["sandbox-tooling"]
-    assert coding_agent.id not in {
-        member.id
-        for member in app.assistant_team.members(
-            RunContext(run_id="run", session_id="thread", session_state={})
-        )
-    }
+    assert coding_agent.id not in {member.id for member in app.assistant_team.members}
     assert report_worker.id == "report-worker"
     assert report_agent.id == "report-agent"
     assert report_agent.model is not report_worker.model

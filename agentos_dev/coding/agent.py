@@ -10,7 +10,7 @@ from agno.tools import Function
 
 from ..agent_control import build_coding_agent_tools
 from ..context_management import ContextBudgetController, projected_coding_model
-from ..instructions import build_coding_agent_instructions
+from ..instructions import build_pure_coding_agent_instructions
 from ..skills import (
     SkillValidatorRegistry,
     create_skill_script_hook,
@@ -35,7 +35,7 @@ def create_coding_agent(
     workspace_service: WorkspaceService,
     coding_repository: CodingTaskRepository,
     *,
-    instructions: AgentInstructions = build_coding_agent_instructions,
+    instructions: AgentInstructions = build_pure_coding_agent_instructions,
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
 ) -> Agent:
@@ -58,6 +58,7 @@ def create_coding_agent(
             "instructions": instructions,
             "model": coding_model,
             "skills": coding_skills,
+            "checkpoint": "tool-batch",
             "tools": partial(
                 build_coding_agent_tools,
                 workspace_service,

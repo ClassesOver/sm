@@ -46,9 +46,9 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting
 审核；批准、带反馈拒绝和取消都恢复同一持久化 Workflow run。临时凭据只保留到本轮 CLI 会话结束。
 
 Coding 模式使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和退出控制。原生 CLI
-面向只暴露 `run_coding_task` 的 facade Agent；该工具把完整目标交给
-`CodingTaskSupervisor`。facade 与底层 `coding-agent-cli` 均使用 `MODEL`；facade 为兼容强制
-`tool_choice` 显式关闭 thinking，底层 Agent 使用 `reasoning_effort=medium` 执行受控工具闭环。
+面向保留 Agno Agent 接口的确定性转交实体；其 `arun` 不调用模型，而是把完整目标直接交给
+`CodingTaskSupervisor`。只有底层 `coding-agent-cli` 使用 `MODEL`，并按
+`AGENT_ENABLE_THINKING` 传递 `enable_thinking`、使用 `reasoning_effort=medium` 执行受控工具闭环。
 因此 CLI 不导入
 `agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
 PostgreSQL 中 Coding Repository 使用独立的 `agentos_coding` schema 和版本表，不写入 Agno
@@ -231,7 +231,7 @@ Attempt 内调用原始 Agent 的
 `terminal` 将前台/后台语义映射到受管命令，并在远端 session 创建前写入持久 execution 预留记录；
 `process` 支持
 `list/poll/wait/kill/write/submit`，未暴露底层不能可靠保证的完整历史日志、关闭 stdin 和异步通知；
-`create_file` 要求目标不存在；`overwrite_file` 要求调用方提供当前 SHA-256；`replace_text`
+`create_files` 在一次原子补丁中创建一个或多个不存在的目标；`overwrite_file` 要求调用方提供当前 SHA-256；`replace_text`
 使用服务端读取的 SHA-256 做唯一或全部精确替换；`apply_patch` 复用原生补丁。
 `apply_patch` 支持 Add/Update/Delete/Move、多文件与多 hunk，并在工作区服务层原子提交；仅对完整
 Markdown/heredoc 外壳和 Add File 纯空行提供有限格式兼容。对于不能稳定生成补丁函数参数的兼容模型，
@@ -248,7 +248,7 @@ SQL 候选与按需审核、不可变数据集物化、Coding 分析、PDF 验�
 完整文件内容不会注入 facade 模型；内部 worker 只从 AnalysisPlan、DataRequirement 和
 DatasetHandle 取得分析输入，不持有数据库凭据。
 复杂分析优先通过受控只读工具检查文件、搜索内容和查看 Git 状态或差异；新文件使用
-`create_file`，完整覆盖使用带最新 SHA-256 的 `overwrite_file`，已有文件的小范围修改优先使用
+一次创建一个或多个新文件使用 `create_files`，完整覆盖使用带最新 SHA-256 的 `overwrite_file`，已有文件的小范围修改优先使用
 `replace_text`，删除、移动或多文件修改使用 `apply_patch`。
 命令使用 `terminal` 和 `process` 执行与
 持续管理，不再经过 `report_analyze_dataset` 的二次命令封装。生产 Coding Toolkit 不设置 Agno
@@ -288,7 +288,8 @@ Task 可选的 `acceptance_contract` 只从服务端可信 dependency 进入 Sup
 Skill 通过 `metadata.agentos.acceptance.validators` 注册 `scripts/*.py`、固定 timeout 和允许的
 `artifactPatterns`；服务启动时固定脚本内容与 SHA-256。`verify(validator_id=...)` 使用 `python3 -I`
 在 Daytona 中运行该固定脚本，请求和结果均为严格有界 JSON，回执绑定当前 mutation、validator 摘要及
-产物摘要。`finish_task` 缺少、失败或过期的语义证据时分别返回 `finish_acceptance_missing`、
+产物摘要。validator 未通过时额外返回有界的 `failedRequirements`、`passedRequirements` 和定向
+`requiredActions`，供 Coding Agent 只修失败能力并保护已通过行为。`finish_task` 缺少、失败或过期的语义证据时分别返回 `finish_acceptance_missing`、
 `finish_acceptance_failed` 或 `finish_acceptance_stale`；相同状态重复提交仍由 `finish_no_progress`
 短路。没有契约的既有 Coding/Report/CLI 任务保持原完成门禁，不会额外运行 validator。
 Report 保持独立的既有交付回执门禁，不写入 Coding v2 的状态推进逻辑。
@@ -372,6 +373,8 @@ PostgreSQL 绑定到 `127.0.0.1:55432`，容器内 AgentOS 则通过 `agent-db:5
 OpenTelemetry tracing 默认关闭。设置 `AGENT_TRACING_ENABLED=true` 后，生产 AgentOS 和原生
 CLI 会通过 Agno OpenInference instrumentation 完整采集 Agent run、模型调用和工具执行，包括
 Prompt、模型输出、工具参数与工具结果，并写入同一数据库的 `agno_traces` 和 `agno_spans` 表。
+生产 AgentOS 保持即时数据库导出；原生 CLI 使用批量导出降低工具闭环中的写库开销，并在关闭
+模型、工作区和数据库连接前同步 flush，确保正常退出时已排队的 span 落库。
 AgentOS API/UI 可从该数据库查询 trace；数据不写入 `agentos_coding` schema，也没有单独的清理
 任务。由于 trace 可能包含用户输入、业务数据和完整工具载荷，生产环境必须依赖现有数据库访问
 控制和备份策略保护这些内容。缺少 tracing 依赖或初始化失败时，启用状态下服务会拒绝启动。

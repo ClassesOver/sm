@@ -5,7 +5,7 @@ compatibility: Daytona sandbox-tools custom Snapshot
 allowed-tools:
   - terminal
   - process
-  - create_file
+  - create_files
   - overwrite_file
   - replace_text
   - apply_patch
@@ -33,7 +33,7 @@ allowed-tools:
 2. 只探测当前任务直接需要的命令或 Python 模块，例如 `command -v rg` 或 `python -c 'import pandas'`；不要枚举或输出完整环境。
 3. 下列名称表示镜像构建时安装的能力，不保证用户项目已配置、数据源可访问或运行时服务可用。外部服务和网络仍须以实际命令结果为准。
 4. 普通文件读取、分段读取、文本搜索、目录列举及 Git 状态或差异优先使用对应受控只读工具，不要用 `terminal` 代替。独立只读调用可以并行，有数据依赖时串行。
-5. 新文件使用 `create_file`；完整覆盖已有文件使用 `overwrite_file` 并提供最新 `expected_sha256`；已有文件的小范围精确修改优先使用 `replace_text`；删除、移动或多文件变更使用 `apply_patch` 提交原生补丁。模型无法稳定生成补丁函数参数时，可改用 `terminal` 提交完整、独立的 `apply_patch <<'PATCH'` heredoc；服务端会按同一原子 Patch 语义拦截，不能附加其他命令、`workdir` 或 PTY。
+5. 一个或多个新文件使用一次 `create_files`；完整覆盖已有文件使用 `overwrite_file` 并提供最新 `expected_sha256`；已有文件的小范围精确修改优先使用 `replace_text`；多文件变更使用 `apply_patch`，删除、移动或混合创建与修改也使用 `apply_patch` 提交原生补丁。模型无法稳定生成补丁函数参数时，可改用 `terminal` 提交完整、独立的 `apply_patch <<'PATCH'` heredoc；服务端会按同一原子 Patch 语义拦截，不能附加其他命令、`workdir` 或 PTY。
 6. 文本工具结果被截断且返回 `outputHandle` 时，使用 `read_tool_output` 按需重读；句柄不是路径，不能跨 Task/Attempt 使用。
 7. 最后一次 mutation 后必须调用 `verify`；普通 `terminal` 不计为验证。命令返回非零 `exit_code`、超时或进程仍在运行时不得交付，并以 `finish_task` 的验收结果为准。`verification_ids` 可省略，由服务端自动选择当前 mutation 最近一次成功的显式验证。
 

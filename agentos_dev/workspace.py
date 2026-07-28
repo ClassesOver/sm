@@ -53,6 +53,7 @@ MAX_SEARCH_CONTEXT_LINES = 5
 MAX_SEARCH_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_PATCH_FILES = 20
 MAX_PATCH_EDITS = 50
+MAX_BATCH_HASH_CONCURRENCY = 8
 MAX_PATH_BYTES = 1024
 MAX_PATH_COMPONENT_BYTES = 255
 MAX_PATH_DEPTH = 32
@@ -895,6 +896,16 @@ class WorkspaceService:
         self._validate_content(content)
         relative, remote = self.normalize_path(path, allow_root=False)
         sandbox = self.sandbox_for(thread)
+        return self._store_file_in_sandbox(sandbox, relative, remote, content, mode)
+
+    def _store_file_in_sandbox(
+        self,
+        sandbox: Any,
+        relative: str,
+        remote: str,
+        content: bytes,
+        mode: str,
+    ) -> dict[str, Any]:
         parent = remote.rsplit("/", 1)[0]
         self._ensure_directory(sandbox, parent)
         info = self._validate_destination(sandbox, relative, remote)
@@ -930,6 +941,11 @@ class WorkspaceService:
     def file_bytes(self, thread: str, path: str) -> tuple[bytes, str]:
         relative, remote = self.normalize_path(path, allow_root=False)
         sandbox = self.sandbox_for(thread)
+        return self._file_bytes_from_sandbox(sandbox, relative, remote)
+
+    def _file_bytes_from_sandbox(
+        self, sandbox: Any, relative: str, remote: str
+    ) -> tuple[bytes, str]:
         self._validate_existing_path(sandbox, relative)
         info = self._info(sandbox, remote)
         if info.is_dir:
@@ -1567,30 +1583,50 @@ class WorkspaceService:
             raise WorkspaceError("工作区文件哈希结果无效，请稍后重试。") from error
         return {"path": relative, "size": size, "sha256": digest}
 
+    async def aworkspace_fingerprint(self, thread: str) -> str:
+        script = "LC_ALL=C find . -xdev -printf '%P\\0%y\\0%s\\0%T@\\0' | sort -z | sha256sum"
+        output, truncated = await self._arun_workspace_command(
+            thread,
+            "",
+            WORKSPACE_ROOT,
+            self._shell_command(script, pipefail=True),
+            expected_type="directory",
+            failure_message="工作区变更指纹计算失败，请稍后重试。",
+            output_limit=128,
+        )
+        digest = output.split(maxsplit=1)[0] if not truncated else ""
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise WorkspaceError("工作区变更指纹结果无效，请稍后重试。")
+        return digest
+
     async def abatch_hash_files(self, thread: str, paths: list[str]) -> list[dict[str, Any]]:
         if not isinstance(paths, list) or len(paths) > MAX_PATCH_FILES * 3:
             raise WorkspaceError(f"批量哈希路径不能超过 {MAX_PATCH_FILES * 3} 个。")
         normalized = [self.normalize_path(path, allow_root=False) for path in paths]
-        results: list[dict[str, Any]] = []
         async with self._async_client() as client:
             sandbox = await self._asandbox_for(client, thread)
-            for relative, remote in normalized:
-                try:
-                    await self._avalidate_existing_path(sandbox, relative)
-                    info = await self._ainfo(sandbox, remote)
-                    if not self._is_regular_file(info):
-                        raise DaytonaNotFoundError("not a regular file")
-                    content = await self._adownload_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
-                except (DaytonaNotFoundError, WorkspaceError):
-                    results.append({"path": relative, "missing": True})
-                    continue
-                results.append(
-                    {
+
+            semaphore = asyncio.Semaphore(MAX_BATCH_HASH_CONCURRENCY)
+
+            async def hash_file(relative: str, remote: str) -> dict[str, Any]:
+                async with semaphore:
+                    try:
+                        await self._avalidate_existing_path(sandbox, relative)
+                        info = await self._ainfo(sandbox, remote)
+                        if not self._is_regular_file(info):
+                            raise DaytonaNotFoundError("not a regular file")
+                        content = await self._adownload_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
+                    except (DaytonaNotFoundError, WorkspaceError):
+                        return {"path": relative, "missing": True}
+                    return {
                         "path": relative,
                         "size": len(content),
                         "sha256": hashlib.sha256(content).hexdigest(),
                     }
-                )
+
+            results = await asyncio.gather(
+                *(hash_file(relative, remote) for relative, remote in normalized)
+            )
         return results
 
     async def astat(self, thread: str, path: str = "") -> dict[str, Any]:
@@ -2260,13 +2296,16 @@ class WorkspaceService:
                     )
                 if not isinstance(change.get("path"), str):
                     raise WorkspaceError("变更集路径必须是工作区相对路径字符串。")
-                relative = self.normalize_path(change["path"], allow_root=False)[0]
+                relative, remote = self.normalize_path(change["path"], allow_root=False)
                 destinations = [relative]
                 destination = None
+                destination_remote = None
                 if operation == "move":
                     if not isinstance(change.get("destination"), str):
                         raise WorkspaceError("移动目标必须是工作区相对路径字符串。")
-                    destination = self.normalize_path(change["destination"], allow_root=False)[0]
+                    destination, destination_remote = self.normalize_path(
+                        change["destination"], allow_root=False
+                    )
                     if destination == relative:
                         raise WorkspaceError("移动源路径和目标路径不能相同。")
                     destinations.append(destination)
@@ -2288,16 +2327,17 @@ class WorkspaceService:
                         {
                             "operation": operation,
                             "path": relative,
+                            "remote": remote,
                             "updated": updated,
                         }
                     )
                     continue
 
                 self._validate_existing_path(sandbox, relative)
-                info = self._info(sandbox, f"{WORKSPACE_ROOT}/{relative}")
+                info = self._info(sandbox, remote)
                 if not self._is_regular_file(info):
                     raise WorkspaceError("变更集只能更新、删除或移动普通文件。")
-                original, _mime_type = self.file_bytes(thread, relative)
+                original, _mime_type = self._file_bytes_from_sandbox(sandbox, relative, remote)
                 if operation == "delete" and len(original) > MAX_UPLOAD_BYTES:
                     raise WorkspaceError(
                         "变更集不能删除超过 200 MiB 的文件；请使用独立删除工具并确认。"
@@ -2310,6 +2350,7 @@ class WorkspaceService:
                 item: dict[str, Any] = {
                     "operation": operation,
                     "path": relative,
+                    "remote": remote,
                     "original": original,
                     "sha256": expected_sha256,
                 }
@@ -2320,13 +2361,14 @@ class WorkspaceService:
                     item["updated"] = content.encode("utf-8")
                     self._validate_content(item["updated"])
                 elif operation == "move":
-                    if destination is None:
+                    if destination is None or destination_remote is None:
                         raise WorkspaceError("移动目标必须是工作区相对路径字符串。")
                     if self._inspect_destination_without_writes(sandbox, destination) is not None:
                         raise WorkspacePathConflict(
                             f"移动目标“{destination}”已经存在，请更换路径后重试。"
                         )
                     item["destination"] = destination
+                    item["destination_remote"] = destination_remote
                 prepared.append(item)
 
             completed: list[dict[str, Any]] = []
@@ -2334,21 +2376,43 @@ class WorkspaceService:
                 for item in prepared:
                     operation = item["operation"]
                     if operation == "create":
-                        self.create_file(thread, item["path"], item["updated"])
+                        self._store_file_in_sandbox(
+                            sandbox,
+                            item["path"],
+                            item["remote"],
+                            item["updated"],
+                            "create",
+                        )
                     elif operation == "update":
-                        self.replace_file(thread, item["path"], item["updated"])
+                        self._store_file_in_sandbox(
+                            sandbox,
+                            item["path"],
+                            item["remote"],
+                            item["updated"],
+                            "replace",
+                        )
                     elif operation == "delete":
-                        self.delete_file(thread, item["path"])
+                        self._delete_file_from_sandbox(sandbox, item["path"], item["remote"])
                     else:
-                        self.move_file(thread, item["path"], item["destination"])
+                        self._move_file_in_sandbox(
+                            sandbox,
+                            item["path"],
+                            item["remote"],
+                            item["destination"],
+                            item["destination_remote"],
+                        )
                     completed.append(item)
 
                     if operation in {"create", "update"}:
-                        persisted, _mime_type = self.file_bytes(thread, item["path"])
+                        persisted, _mime_type = self._file_bytes_from_sandbox(
+                            sandbox, item["path"], item["remote"]
+                        )
                         if persisted != item["updated"]:
                             raise WorkspaceError("变更集落盘校验失败，请重新检查目标文件。")
                     elif operation == "move":
-                        persisted, _mime_type = self.file_bytes(thread, item["destination"])
+                        persisted, _mime_type = self._file_bytes_from_sandbox(
+                            sandbox, item["destination"], item["destination_remote"]
+                        )
                         if persisted != item["original"]:
                             raise WorkspaceError("变更集移动校验失败，请重新检查目标文件。")
             except Exception as error:
@@ -2357,13 +2421,31 @@ class WorkspaceService:
                     try:
                         operation = item["operation"]
                         if operation == "create":
-                            self.delete_file(thread, item["path"])
+                            self._delete_file_from_sandbox(sandbox, item["path"], item["remote"])
                         elif operation == "update":
-                            self.replace_file(thread, item["path"], item["original"])
+                            self._store_file_in_sandbox(
+                                sandbox,
+                                item["path"],
+                                item["remote"],
+                                item["original"],
+                                "replace",
+                            )
                         elif operation == "delete":
-                            self.create_file(thread, item["path"], item["original"])
+                            self._store_file_in_sandbox(
+                                sandbox,
+                                item["path"],
+                                item["remote"],
+                                item["original"],
+                                "create",
+                            )
                         else:
-                            self.move_file(thread, item["destination"], item["path"])
+                            self._move_file_in_sandbox(
+                                sandbox,
+                                item["destination"],
+                                item["destination_remote"],
+                                item["path"],
+                                item["remote"],
+                            )
                     except Exception:
                         rollback_failed = True
                 if rollback_failed:
@@ -2460,6 +2542,15 @@ class WorkspaceService:
     def delete_file(self, thread: str, path: str, recursive: bool = False):
         relative, remote = self.normalize_path(path, allow_root=False)
         sandbox = self.sandbox_for(thread)
+        self._delete_file_from_sandbox(sandbox, relative, remote, recursive)
+
+    def _delete_file_from_sandbox(
+        self,
+        sandbox: Any,
+        relative: str,
+        remote: str,
+        recursive: bool = False,
+    ) -> None:
         self._validate_existing_path(sandbox, relative)
         info = self._info(sandbox, remote)
         if info.is_dir and not recursive:
@@ -2534,6 +2625,22 @@ class WorkspaceService:
             destination, allow_root=False
         )
         sandbox = self.sandbox_for(thread)
+        self._move_file_in_sandbox(
+            sandbox,
+            source_relative,
+            source_remote,
+            destination_relative,
+            destination_remote,
+        )
+
+    def _move_file_in_sandbox(
+        self,
+        sandbox: Any,
+        source_relative: str,
+        source_remote: str,
+        destination_relative: str,
+        destination_remote: str,
+    ) -> None:
         self._validate_existing_path(sandbox, source_relative)
         source_info = self._info(sandbox, source_remote)
         if source_info.is_dir and (

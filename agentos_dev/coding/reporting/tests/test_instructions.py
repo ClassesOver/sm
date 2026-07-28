@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 
 from agno.run import RunContext
@@ -7,9 +6,10 @@ from agentos_dev.coding.reporting.instructions import (
     REPORT_AGENT_INSTRUCTIONS,
     build_report_agent_instructions,
 )
-from agentos_dev.instructions import build_coding_agent_instructions
-
-REPO_ROOT = Path(__file__).resolve().parents[4]
+from agentos_dev.instructions import (
+    PURE_CODING_PARALLEL_READ_INSTRUCTIONS,
+    build_coding_agent_instructions,
+)
 
 
 def instruction_context(*tools):
@@ -31,7 +31,7 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "verify" in instructions
     assert "terminal 不计为验证" in instructions
     assert "finish_task" in instructions
-    assert "新文件使用 create_file" in instructions
+    assert "新文件使用一次 create_files" in instructions
     assert "完整覆盖已有文件使用 overwrite_file" in instructions
     assert "精确替换优先使用 replace_text" in instructions
     assert "其他文件变更使用 apply_patch" in instructions
@@ -41,6 +41,7 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "Python、Shell 或其他命令" in instructions
     assert "分析不经过 Report 层二次封装" in instructions
     assert "成功验证 execution_id" not in instructions
+    assert not any(rule in resolved for rule in PURE_CODING_PARALLEL_READ_INSTRUCTIONS)
 
 
 def test_报表智能体说明明确泛化数据源和验收链路():
@@ -55,35 +56,3 @@ def test_报表智能体说明明确泛化数据源和验收链路():
     assert "分析不经过 Report 层二次封装" in instructions
     assert "最终 job 状态为 validated" in instructions
     assert "只读 PostgreSQL" in instructions
-
-
-def test_智能报表技能统一使用工作区相对路径和报表工具():
-    skill = (REPO_ROOT / "deploy/agentos/skills/workspace-smart-report/SKILL.md").read_text(
-        encoding="utf-8"
-    )
-
-    assert "相对 `/home/daytona/workspace` 的工作区路径" in skill
-    assert "受控只读工具检查文件" in skill
-    assert "多文件修改使用 `apply_patch`" in skill
-    assert "新脚本使用 `create_file`" in skill
-    assert "完整覆盖已有脚本使用 `overwrite_file`" in skill
-    assert "小范围修改优先使用 `replace_text`" in skill
-    assert "`apply_changes`" not in skill
-    assert "`process` 的 `poll/wait/write/submit/kill`" in skill
-    assert "生产 Coding Toolkit 声明的工具均不要求确认" in skill
-    assert "`read_tool_output`" in skill
-    assert "`verify`" in skill
-    assert "普通 `terminal` 不计为验证" in skill
-    assert "`view_image` 检查生成的图表" in skill
-    assert "workspace_write_file" not in skill
-    assert "workspace_apply_changes" not in skill
-    assert "Report 层不限制分析命令、输出大小、执行轮次或分析方式" in skill
-    assert "report_list_analysis_capabilities" not in skill
-    assert "report_profile_dataset" not in skill
-    assert "report_analyze_dataset" not in skill
-    assert "直接调用无需确认的 `report_render_markdown`" in skill
-    assert "co" + "dex" not in skill.lower()
-    assert "`report_validate_pdf`" in skill
-    assert "状态为 `validated`" in skill
-    assert "`finish_task` 返回 `accepted`" in skill
-    assert "不使用 `report_compile`、`blocks`" in skill

@@ -2311,10 +2311,15 @@ export class ChatRuntime {
   }
 
   private resolveMenuReplySelection(value: string): MenuMention | undefined {
-    const reply = value.trim().replace(/[。！？!?；;，,]+$/g, '').replace(/\s+/g, '')
-    const matched = /^(?:选|选择)?第([一二三四五六七八1-8])个(?:菜单)?$/.exec(reply)
-    if (!matched) return undefined
-    const ordinal = Number(matched[1]) || '一二三四五六七八'.indexOf(matched[1]) + 1
+    const reply = value.trim().replace(/[。！？!?；;，,、.]+$/g, '').replace(/\s+/g, '')
+    const ordinalText = [
+      /^[（(]?([一二三四五六七八1-8])[）)]?(?:号)?$/,
+      /^(?:选|选择|我选|我选择|我想选|我想选择|就选|就选择)(?:第)?([一二三四五六七八1-8])(?:个|项|条|号)?(?:菜单|选项)?$/,
+      /^(?:选择|我选|我选择|我想选|我想选择|就选|就选择)?选项([一二三四五六七八1-8])$/,
+      /^(?:我要|我想要|就要|打开|进入)?第([一二三四五六七八1-8])(?:个|项|条|号)?(?:菜单|选项)?(?:吧)?$/
+    ].map((pattern) => pattern.exec(reply)?.[1]).find(Boolean)
+    if (!ordinalText) return undefined
+    const ordinal = Number(ordinalText) || '一二三四五六七八'.indexOf(ordinalText) + 1
 
     let userIndex = -1
     for (let index = this.messages.length - 1; index >= 0; index -= 1) {

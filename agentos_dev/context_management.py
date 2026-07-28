@@ -4,10 +4,11 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator, Iterator
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import fields
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from ag_ui.core import Context
 from agno.compression.manager import CompressionManager
@@ -26,12 +27,17 @@ SKILL_TOOL_NAMES = frozenset({"get_skill_instructions", "get_skill_reference", "
 CODING_CONTEXT_TOKEN_LIMIT = 96 * 1024
 CODING_OUTPUT_TOKEN_RESERVE = 32 * 1024
 CODING_RECENT_ASSISTANT_TURNS = 2
+CODING_CHECKPOINT_MAX_BYTES = 32 * 1024
+CODING_CONTEXT_REBASE_THRESHOLD = 0.75
+CODING_CONTEXT_REBASE_TARGET = 0.50
+CODING_TOOL_BATCH_LIMIT = 4
 CODING_TOOL_NAMES = frozenset(
     {
         "terminal",
         "process",
         "patch",
         "create_file",
+        "create_files",
         "overwrite_file",
         "replace_text",
         "apply_patch",
@@ -750,26 +756,53 @@ class ContextBudgetController(ProtectedCompressionManager):
 
     @staticmethod
     def _checkpoint(messages: list[Message]) -> str:
-        receipts = []
         mutations = []
         verifications = []
-        changed_files: list[str] = []
-        active_processes: list[dict[str, Any]] = []
-        skill_receipts: list[dict[str, Any]] = []
+        changed_files: dict[str, dict[str, Any]] = {}
+        active_processes: dict[str, dict[str, Any]] = {}
+        skill_receipts: dict[tuple[str, str, str], dict[str, Any]] = {}
         plan = None
+        completion = None
+        validator = None
         for message in messages:
+            checkpoint_payload = _checkpoint_payload(message)
+            if checkpoint_payload is not None:
+                plan = checkpoint_payload.get("plan", plan)
+                completion = checkpoint_payload.get("completion", completion)
+                validator = checkpoint_payload.get("validator", validator)
+                mutation = checkpoint_payload.get("mutation")
+                if isinstance(mutation, int):
+                    mutations.append(mutation)
+                for item in checkpoint_payload.get("changedFiles", []):
+                    if isinstance(item, str):
+                        changed_files[item] = {"path": item}
+                    elif isinstance(item, dict) and isinstance(item.get("path"), str):
+                        changed_files[item["path"]] = item
+                if isinstance(checkpoint_payload.get("activeProcesses"), list):
+                    for item in checkpoint_payload["activeProcesses"][:20]:
+                        if isinstance(item, dict) and isinstance(item.get("executionId"), str):
+                            active_processes[item["executionId"]] = item
+                for item in checkpoint_payload.get("skillReceipts", []):
+                    if not isinstance(item, dict):
+                        continue
+                    key = (
+                        str(item.get("tool", "")),
+                        str(item.get("skill", "")),
+                        str(item.get("path", "")),
+                    )
+                    skill_receipts.pop(key, None)
+                    skill_receipts[key] = item
             skill = _skill_resource(message)
             if skill is not None:
                 key, body, reload_args = skill
-                skill_receipts.append(
-                    {
-                        "tool": key[0],
-                        "skill": key[1],
-                        "path": key[2],
-                        "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
-                        "reload": reload_args,
-                    }
-                )
+                skill_receipts.pop(key, None)
+                skill_receipts[key] = {
+                    "tool": key[0],
+                    "skill": key[1],
+                    "path": key[2],
+                    "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                    "reload": reload_args,
+                }
             if message.role != "tool" or message.tool_name not in CODING_TOOL_NAMES:
                 continue
             content = str(message.content or "")
@@ -789,45 +822,90 @@ class ContextBudgetController(ProtectedCompressionManager):
                             "exitCode": payload.get("exit_code"),
                         }
                     )
+                    validator = payload.get("error") or payload
                 if message.tool_name == "update_plan":
                     plan = payload
+                if message.tool_name == "finish_task":
+                    completion = payload.get("error") or payload
                 for item in (
                     payload.get("files", []) if isinstance(payload.get("files"), list) else []
                 ):
                     if isinstance(item, dict) and isinstance(item.get("path"), str):
-                        changed_files.append(item["path"])
-                if message.tool_name == "process" and isinstance(payload.get("processes"), list):
-                    active_processes = [
-                        {
-                            "executionId": item.get("execution_id"),
-                            "status": item.get("status"),
+                        changed_files[item["path"]] = {
+                            key: item[key]
+                            for key in ("path", "sha256", "before_sha256", "after_sha256")
+                            if isinstance(item.get(key), str)
                         }
-                        for item in payload["processes"]
-                        if isinstance(item, dict)
-                        and item.get("status")
-                        not in {"completed", "failed", "terminated", "lost", "cancelled"}
-                    ]
-            receipts.append(
-                {
-                    "tool": message.tool_name,
-                    "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                }
-            )
-        return json.dumps(
-            {
-                "marker": "CODING_CHECKPOINT",
-                "plan": plan,
-                "changedFiles": list(dict.fromkeys(changed_files)),
-                "mutation": mutations[-1] if mutations else None,
-                "verification": verifications[-1] if verifications else None,
-                "activeProcesses": active_processes,
-                "skillReceipts": skill_receipts,
-                "toolReceipts": receipts,
-            },
+                if message.tool_name == "process" and isinstance(payload.get("processes"), list):
+                    for item in payload["processes"]:
+                        if not isinstance(item, dict) or not isinstance(
+                            item.get("execution_id"), str
+                        ):
+                            continue
+                        execution_id = item["execution_id"]
+                        if item.get("status") in {
+                            "completed",
+                            "failed",
+                            "terminated",
+                            "lost",
+                            "cancelled",
+                        }:
+                            active_processes.pop(execution_id, None)
+                        else:
+                            active_processes[execution_id] = {
+                                "executionId": execution_id,
+                                "status": item.get("status"),
+                            }
+                execution_id = payload.get("execution_id")
+                if isinstance(execution_id, str):
+                    if payload.get("status") in {
+                        "completed",
+                        "failed",
+                        "terminated",
+                        "lost",
+                        "cancelled",
+                    }:
+                        active_processes.pop(execution_id, None)
+                    elif payload.get("status") in {"running", "starting"}:
+                        active_processes[execution_id] = {
+                            "executionId": execution_id,
+                            "status": payload.get("status"),
+                        }
+        payload = {
+            "marker": "CODING_CHECKPOINT",
+            "version": 2,
+            "plan": plan,
+            "changedFiles": list(changed_files.values())[-50:],
+            "mutation": mutations[-1] if mutations else None,
+            "verification": verifications[-1] if verifications else None,
+            "validator": validator,
+            "completion": completion,
+            "activeProcesses": list(active_processes.values())[-20:],
+            "skillReceipts": list(skill_receipts.values())[-10:],
+        }
+        encoded = json.dumps(
+            payload,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
         )
+        if len(encoded.encode("utf-8")) <= CODING_CHECKPOINT_MAX_BYTES:
+            return encoded
+        payload["plan"] = _bounded_json_value(plan, 4096)
+        payload["validator"] = _bounded_json_value(validator, 4096)
+        payload["completion"] = _bounded_json_value(completion, 4096)
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        for field in ("skillReceipts", "changedFiles", "activeProcesses"):
+            values = payload[field]
+            while values and len(encoded.encode("utf-8")) > CODING_CHECKPOINT_MAX_BYTES:
+                values.pop(0)
+                encoded = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+        return encoded
 
     def _coding_candidates(self, messages: list[Message]) -> list[Message]:
         protected = self._protected_indexes(messages)
@@ -872,48 +950,18 @@ class ContextBudgetController(ProtectedCompressionManager):
         return self.should_compress(messages, tools, model, response_format)
 
     def compress(self, messages, run_metrics=None):
-        self._compress_skill_results(messages)
-        candidates = self._coding_candidates(messages)
-        for message in candidates:
-            message.compressed_content = self._coding_receipt(message)
-        token_count = self._effective_token_count(messages)
-        if token_count <= self.input_token_budget:
-            return
-        protected = self._protected_indexes(messages)
-        prunable = [
-            message
-            for index, message in enumerate(messages)
-            if index not in protected and message.tool_name not in SKILL_TOOL_NAMES
-        ]
-        if not prunable:
-            return
-        checkpoint = self._checkpoint(messages)
-        for message in prunable:
-            message.compressed_content = json.dumps(
-                {
-                    "marker": "CODING_HISTORY_PRUNED",
-                    "role": message.role,
-                    "sha256": hashlib.sha256(
-                        str(message.content or "").encode("utf-8")
-                    ).hexdigest(),
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-        checkpoint_target = next(
-            (message for message in prunable if message.tool_name in CODING_TOOL_NAMES),
-            prunable[0],
-        )
-        checkpoint_target.compressed_content = checkpoint
+        # Canonical Agno messages must remain untouched. Projection happens in the model wrapper.
+        return None
 
     async def acompress(self, messages, run_metrics=None):
         self.compress(messages, run_metrics=run_metrics)
 
     def prepare_context(self, messages: list[Message]) -> list[Message]:
-        prepared = deepcopy(messages)
-        if self.should_compress(prepared, model=self.model):
-            self.compress(prepared)
-        return prepared
+        return CodingContextProjector.project(
+            messages,
+            model=self.model,
+            hard_cap=self.input_token_budget,
+        )
 
     async def compress_history_message(self, message: Message) -> Message:
         candidate = deepcopy(message)
@@ -921,6 +969,41 @@ class ContextBudgetController(ProtectedCompressionManager):
         if candidate.role == "tool" and candidate.tool_name in CODING_TOOL_NAMES:
             candidate.compressed_content = self._coding_receipt(candidate)
         return candidate
+
+
+def _json_payload(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _checkpoint_payload(message: Message) -> dict[str, Any] | None:
+    for value in (message.compressed_content, message.content):
+        payload = _json_payload(value)
+        if payload is not None and payload.get("marker") == "CODING_CHECKPOINT":
+            return payload
+    return None
+
+
+def _bounded_json_value(value: Any, max_bytes: int) -> Any:
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    if len(encoded.encode("utf-8")) <= max_bytes:
+        return value
+    return {
+        "truncated": True,
+        "sha256": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        "bytes": len(encoded.encode("utf-8")),
+    }
+
+
+class CodingContextHardLimitError(RuntimeError):
+    code = "coding_context_hard_limit_exceeded"
 
 
 class CodingContextProjector:
@@ -947,6 +1030,30 @@ class CodingContextProjector:
         if not isinstance(arguments, dict):
             return raw
         changed = False
+        if tool_name == "create_files" and isinstance(arguments.get("files"), list):
+            compacted_files = []
+            for item in arguments["files"]:
+                if not isinstance(item, dict):
+                    compacted_files.append(item)
+                    continue
+                compacted = dict(item)
+                content = compacted.get("content")
+                if isinstance(content, str) and len(content) > cls._min_argument_chars:
+                    path = compacted.get("path")
+                    reload_suffix = (
+                        f" reload=read_file(path={path!r})"
+                        if isinstance(path, str) and path
+                        else ""
+                    )
+                    compacted["content"] = (
+                        "[CONTEXT_PRUNED"
+                        f" chars={len(content)}"
+                        f" sha256={hashlib.sha256(content.encode()).hexdigest()}"
+                        f"{reload_suffix}]"
+                    )
+                    changed = True
+                compacted_files.append(compacted)
+            arguments["files"] = compacted_files
         for field_name in cls._large_argument_fields.get(tool_name, frozenset()):
             value = arguments.get(field_name)
             if not isinstance(value, str) or len(value) <= cls._min_argument_chars:
@@ -970,8 +1077,127 @@ class CodingContextProjector:
             else raw
         )
 
+    last_metrics: ClassVar[dict[str, int | bool]] = {}
+
+    @staticmethod
+    def _token_count(
+        messages: list[Message], model: Any, tools: Any = None, response_format: Any = None
+    ) -> int:
+        try:
+            return int(model.count_tokens(messages, tools, response_format))
+        except Exception:
+            return _fallback_context_token_count(messages, tools, response_format)
+
+    @staticmethod
+    def _complete_rounds(messages: list[Message]) -> list[list[Message]]:
+        rounds: list[list[Message]] = []
+        index = 0
+        while index < len(messages):
+            assistant = messages[index]
+            if assistant.role not in {"assistant", "model"}:
+                index += 1
+                continue
+            if not assistant.tool_calls:
+                rounds.append([assistant])
+                index += 1
+                continue
+            call_ids = {
+                call.get("id")
+                for call in assistant.tool_calls
+                if isinstance(call, dict) and isinstance(call.get("id"), str)
+            }
+            results: list[Message] = []
+            cursor = index + 1
+            while cursor < len(messages) and messages[cursor].role == "tool":
+                if messages[cursor].tool_call_id in call_ids:
+                    results.append(messages[cursor])
+                cursor += 1
+            result_ids = {message.tool_call_id for message in results}
+            if call_ids and call_ids.issubset(result_ids):
+                rounds.append([assistant, *results])
+            index = cursor
+        return rounds
+
+    @staticmethod
+    def _runtime_feedback(messages: list[Message]) -> Message | None:
+        mutation: int | None = None
+        verified_mutation: int | None = None
+        failure: dict[str, Any] | None = None
+        finish_accepted = False
+        for message in messages:
+            checkpoint = _checkpoint_payload(message)
+            payload = checkpoint or (
+                _json_payload(message.content) if message.role == "tool" else None
+            )
+            if payload is None:
+                continue
+            candidate = payload.get("mutation_sequence", payload.get("mutationSequence"))
+            if candidate is None and checkpoint is not None:
+                candidate = checkpoint.get("mutation")
+            if isinstance(candidate, int):
+                mutation = candidate
+            tool_name = message.tool_name
+            if tool_name == "verify" or checkpoint is not None:
+                verification = checkpoint.get("verification") if checkpoint is not None else payload
+                if isinstance(verification, dict):
+                    success = verification.get("exitCode", verification.get("exit_code")) == 0
+                    if success and isinstance(mutation, int):
+                        verified_mutation = mutation
+                        failure = None
+            if tool_name == "finish_task" and payload.get("ok") is True:
+                finish_accepted = True
+            error = payload.get("error")
+            if isinstance(error, dict) or payload.get("code") in {
+                "coding_tool_batch_rejected",
+                "verification_acceptance_failed",
+            }:
+                failure = error if isinstance(error, dict) else payload
+        if finish_accepted:
+            return None
+        feedback: dict[str, Any]
+        if failure is not None:
+            feedback = {
+                "marker": "CODING_RUNTIME_FEEDBACK",
+                "version": 1,
+                "code": failure.get("code", "coding_runtime_action_required"),
+                "mutation": mutation,
+                "failedItems": failure.get("failedRequirements", []),
+                "passedItems": failure.get("passedRequirements", []),
+                "requiredActions": failure.get("requiredActions", []),
+            }
+        elif mutation is not None and verified_mutation != mutation:
+            feedback = {
+                "marker": "CODING_RUNTIME_FEEDBACK",
+                "version": 1,
+                "code": "coding_verification_required",
+                "mutation": mutation,
+                "requiredActions": ["在当前 mutation 上执行与改动范围匹配的验证。"],
+            }
+        elif mutation is not None:
+            feedback = {
+                "marker": "CODING_RUNTIME_FEEDBACK",
+                "version": 1,
+                "code": "coding_finish_required",
+                "mutation": mutation,
+                "requiredActions": ["当前 mutation 已验证；调用 finish_task 提交完成回执。"],
+            }
+        else:
+            return None
+        return Message(
+            role="user",
+            content=json.dumps(feedback, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        )
+
     @classmethod
-    def project(cls, messages: list[Message]) -> list[Message]:
+    def project(
+        cls,
+        messages: list[Message],
+        *,
+        model: Any = None,
+        tools: Any = None,
+        response_format: Any = None,
+        hard_cap: int = CODING_CONTEXT_TOKEN_LIMIT - CODING_OUTPUT_TOKEN_RESERVE,
+    ) -> list[Message]:
         projected = deepcopy(messages)
         compact_call_ids = {
             message.tool_call_id
@@ -994,26 +1220,290 @@ class CodingContextProjector:
                 if not isinstance(tool_name, str):
                     continue
                 function["arguments"] = cls._compact_arguments(tool_name, function.get("arguments"))
-        return projected
+        counting_model = model or OpenAIChat(id="token-counter")
+        canonical_tokens = cls._token_count(projected, counting_model, tools, response_format)
+        feedback = cls._runtime_feedback(projected)
+        if feedback is not None:
+            projected.append(feedback)
+        threshold = max(1, int(hard_cap * CODING_CONTEXT_REBASE_THRESHOLD))
+        projected_tokens = cls._token_count(projected, counting_model, tools, response_format)
+        if canonical_tokens <= threshold and projected_tokens <= hard_cap:
+            cls.last_metrics = {
+                "canonical_message_count": len(messages),
+                "projected_message_count": len(projected),
+                "canonical_estimated_tokens": canonical_tokens,
+                "projected_estimated_tokens": projected_tokens,
+                "checkpoint_bytes": 0,
+                "dropped_complete_rounds": 0,
+                "window_rebased": False,
+            }
+            return projected
+
+        system_messages = [message for message in projected if message.role == "system"]
+        user_messages = [
+            message
+            for message in projected
+            if message.role == "user"
+            and not str(message.content or "").startswith('{"marker":"CODING_RUNTIME_FEEDBACK"')
+        ]
+        prefix = [*system_messages]
+        if user_messages:
+            prefix.append(user_messages[0])
+            if user_messages[-1] is not user_messages[0]:
+                prefix.append(user_messages[-1])
+        checkpoint = ContextBudgetController._checkpoint(projected)
+        checkpoint_message = Message(role="user", content=checkpoint)
+        rounds = cls._complete_rounds(projected)
+        selected_rounds = rounds[-CODING_RECENT_ASSISTANT_TURNS:]
+        candidate = [*prefix, checkpoint_message]
+        for round_messages in selected_rounds:
+            candidate.extend(round_messages)
+        if feedback is not None:
+            candidate.append(feedback)
+
+        target = max(1, int(hard_cap * CODING_CONTEXT_REBASE_TARGET))
+        while (
+            selected_rounds
+            and cls._token_count(candidate, counting_model, tools, response_format) > target
+        ):
+            removed = selected_rounds.pop(0)
+            start = next(index for index, message in enumerate(candidate) if message is removed[0])
+            del candidate[start : start + len(removed)]
+        projected_tokens = cls._token_count(candidate, counting_model, tools, response_format)
+        if projected_tokens > hard_cap:
+            raise CodingContextHardLimitError(
+                "不可约简的编码上下文前缀与工具 schema 超过模型输入 hard cap。"
+            )
+        cls.last_metrics = {
+            "canonical_message_count": len(messages),
+            "projected_message_count": len(candidate),
+            "canonical_estimated_tokens": canonical_tokens,
+            "projected_estimated_tokens": projected_tokens,
+            "checkpoint_bytes": len(checkpoint.encode("utf-8")),
+            "dropped_complete_rounds": len(rounds) - len(selected_rounds),
+            "window_rebased": True,
+        }
+        return candidate
+
+
+_PARALLEL_SAFE_READ_TOOLS = frozenset(
+    {
+        "list_files",
+        "read_file",
+        "read_lines",
+        "search_text",
+        "tree",
+        "git_status",
+        "git_diff",
+        "read_tool_output",
+        "view_image",
+        "get_skill_instructions",
+        "get_skill_reference",
+        "report_list_data_sources",
+        "report_describe_data_source",
+    }
+)
+
+
+def _parallel_safe_tool_call(function_call: Any) -> bool:
+    name = str(getattr(getattr(function_call, "function", None), "name", "") or "")
+    arguments = getattr(function_call, "arguments", None)
+    return _parallel_safe_tool(name, arguments)
+
+
+def _parallel_safe_tool(name: str, arguments: Any) -> bool:
+    if name in _PARALLEL_SAFE_READ_TOOLS:
+        return True
+    return bool(
+        name == "get_skill_script"
+        and isinstance(arguments, dict)
+        and arguments.get("execute", False) is False
+    )
+
+
+def _tool_batch_admission(function_calls: list[Any]) -> tuple[bool, str]:
+    size = len(function_calls)
+    if size <= 1:
+        return True, "single"
+    if size <= CODING_TOOL_BATCH_LIMIT and all(
+        _parallel_safe_tool_call(function_call) for function_call in function_calls
+    ):
+        return True, "parallel_safe_read"
+    return False, "rejected"
+
+
+def _tool_batch_attributes(size: int, admitted: bool, admission: str) -> dict[str, Any]:
+    return {
+        "tool_batch_size": size,
+        "tool_batch_admission": admission,
+        "tool_batch_rejection_code": "" if admitted else "coding_tool_batch_rejected",
+    }
+
+
+def _stream_value(value: Any, key: str, default: Any = None) -> Any:
+    return value.get(key, default) if isinstance(value, dict) else getattr(value, key, default)
+
+
+def _update_stream_tool_calls(response: Any, calls: dict[int, dict[str, Any]]) -> None:
+    for fallback_index, tool_call in enumerate(getattr(response, "tool_calls", None) or []):
+        raw_index = _stream_value(tool_call, "index", fallback_index)
+        index = raw_index if isinstance(raw_index, int) else fallback_index
+        current = calls.setdefault(index, {"name": "", "arguments": ""})
+        function = _stream_value(tool_call, "function")
+        if function is None:
+            continue
+        name = _stream_value(function, "name")
+        if name:
+            current["name"] = str(name)
+        arguments = _stream_value(function, "arguments")
+        if isinstance(arguments, str):
+            current["arguments"] += arguments
+        elif isinstance(arguments, dict):
+            current["arguments"] = arguments
+
+
+def _stream_tool_batch_attributes(calls: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    parsed_calls = []
+    for call in calls.values():
+        arguments = call["arguments"]
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments or "{}")
+            except json.JSONDecodeError:
+                arguments = {}
+        parsed_calls.append((str(call["name"]), arguments))
+    size = len(parsed_calls)
+    admitted = size <= 1 or (
+        size <= CODING_TOOL_BATCH_LIMIT
+        and all(_parallel_safe_tool(name, arguments) for name, arguments in parsed_calls)
+    )
+    admission = "single" if size <= 1 else "parallel_safe_read" if admitted else "rejected"
+    return _tool_batch_attributes(size, admitted, admission)
+
+
+def _set_current_span_attributes(attributes: dict[str, Any]) -> None:
+    try:
+        from opentelemetry import trace as trace_api
+
+        span = trace_api.get_current_span()
+        for key, value in attributes.items():
+            span.set_attribute(key, value)
+    except Exception:
+        return
+
+
+_CODING_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar(
+    "coding_request_metrics", default=None
+)
 
 
 class ProjectedOpenAIChat(OpenAIChat):
+    def _project(self, messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]):
+        response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
+        tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
+        projected = CodingContextProjector.project(
+            messages,
+            model=self,
+            tools=tools,
+            response_format=response_format,
+        )
+        return projected, dict(CodingContextProjector.last_metrics)
+
+    def get_request_params(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        params = super().get_request_params(*args, **kwargs)
+        metrics = _CODING_REQUEST_METRICS.get()
+        if metrics is not None:
+            _set_current_span_attributes(metrics)
+        return params
+
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        return super().invoke(CodingContextProjector.project(messages), *args, **kwargs)
+        projected, metrics = self._project(messages, args, kwargs)
+        token = _CODING_REQUEST_METRICS.set(metrics)
+        try:
+            return super().invoke(projected, *args, **kwargs)
+        finally:
+            _CODING_REQUEST_METRICS.reset(token)
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        return await super().ainvoke(CodingContextProjector.project(messages), *args, **kwargs)
+        projected, metrics = self._project(messages, args, kwargs)
+        token = _CODING_REQUEST_METRICS.set(metrics)
+        try:
+            return await super().ainvoke(projected, *args, **kwargs)
+        finally:
+            _CODING_REQUEST_METRICS.reset(token)
 
     def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
-        yield from super().invoke_stream(CodingContextProjector.project(messages), *args, **kwargs)
+        projected, metrics = self._project(messages, args, kwargs)
+        tool_calls: dict[int, dict[str, Any]] = {}
+        token = _CODING_REQUEST_METRICS.set(metrics)
+        try:
+            for response in super().invoke_stream(projected, *args, **kwargs):
+                _update_stream_tool_calls(response, tool_calls)
+                if tool_calls:
+                    _set_current_span_attributes(_stream_tool_batch_attributes(tool_calls))
+                yield response
+        finally:
+            _CODING_REQUEST_METRICS.reset(token)
 
     async def ainvoke_stream(
         self, messages: list[Message], *args: Any, **kwargs: Any
     ) -> AsyncIterator[Any]:
-        async for response in super().ainvoke_stream(
-            CodingContextProjector.project(messages), *args, **kwargs
+        projected, metrics = self._project(messages, args, kwargs)
+        tool_calls: dict[int, dict[str, Any]] = {}
+        token = _CODING_REQUEST_METRICS.set(metrics)
+        try:
+            async for response in super().ainvoke_stream(projected, *args, **kwargs):
+                _update_stream_tool_calls(response, tool_calls)
+                if tool_calls:
+                    _set_current_span_attributes(_stream_tool_batch_attributes(tool_calls))
+                yield response
+        finally:
+            _CODING_REQUEST_METRICS.reset(token)
+
+    @staticmethod
+    def _reject_tool_batch(function_calls: list[Any], function_call_results: list[Message]) -> None:
+        payload = json.dumps(
+            {
+                "ok": False,
+                "code": "coding_tool_batch_rejected",
+                "batchSize": len(function_calls),
+                "allowed": "单个调用，或 2 至 4 个 parallel_safe_read 调用",
+                "requiredActions": ["把写入、验证或 finish 调用拆成单个批次后重试。"],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        for function_call in function_calls:
+            function_call_results.append(
+                Message(
+                    role="tool",
+                    content=payload,
+                    tool_call_id=function_call.call_id,
+                    tool_name=function_call.function.name,
+                    tool_args=function_call.arguments,
+                    tool_call_error=True,
+                )
+            )
+
+    def run_function_calls(self, function_calls, function_call_results, *args, **kwargs):
+        admitted, _admission = _tool_batch_admission(function_calls)
+        if not admitted:
+            self._reject_tool_batch(function_calls, function_call_results)
+            return
+        yield from super().run_function_calls(
+            function_calls, function_call_results, *args, **kwargs
+        )
+
+    async def arun_function_calls(self, function_calls, function_call_results, *args, **kwargs):
+        admitted, _admission = _tool_batch_admission(function_calls)
+        if not admitted:
+            self._reject_tool_batch(function_calls, function_call_results)
+            return
+        async for event in super().arun_function_calls(
+            function_calls, function_call_results, *args, **kwargs
         ):
-            yield response
+            yield event
 
 
 def projected_coding_model(model: OpenAIChat) -> ProjectedOpenAIChat:

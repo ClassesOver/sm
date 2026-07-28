@@ -13,6 +13,7 @@ def configure_tracing(
     database: AsyncBaseDb | BaseDb,
     *,
     enabled: bool,
+    batch_processing: bool = False,
     phoenix_endpoint: str | None = None,
     phoenix_api_key: str | None = None,
     phoenix_project_name: str = "agentos",
@@ -24,13 +25,17 @@ def configure_tracing(
         if phoenix_endpoint is None:
             from agno.tracing import setup_tracing
 
-            setup_tracing(db=database)
+            if batch_processing:
+                setup_tracing(db=database, batch_processing=True)
+            else:
+                setup_tracing(db=database)
         else:
             _configure_phoenix_tracing(
                 database,
                 endpoint=phoenix_endpoint,
                 api_key=phoenix_api_key,
                 project_name=phoenix_project_name,
+                batch_processing=batch_processing,
             )
     except ImportError as error:
         raise TracingConfigurationError("agent_tracing_dependency_missing") from error
@@ -44,6 +49,7 @@ def _configure_phoenix_tracing(
     endpoint: str,
     api_key: str | None,
     project_name: str,
+    batch_processing: bool,
 ) -> None:
     from agno.tracing.exporter import DatabaseSpanExporter
     from openinference.instrumentation.agno import AgnoInstrumentor
@@ -60,10 +66,20 @@ def _configure_phoenix_tracing(
     provider = TracerProvider(
         resource=Resource.create({"openinference.project.name": project_name})
     )
-    provider.add_span_processor(SimpleSpanProcessor(DatabaseSpanExporter(db=database)))
+    database_processor = BatchSpanProcessor if batch_processing else SimpleSpanProcessor
+    provider.add_span_processor(database_processor(DatabaseSpanExporter(db=database)))
     headers = {"api_key": api_key} if api_key is not None else None
     provider.add_span_processor(
         BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, headers=headers))
     )
     trace_api.set_tracer_provider(provider)
     AgnoInstrumentor().instrument(tracer_provider=provider)
+
+
+def flush_tracing(timeout_millis: int = 30_000) -> bool:
+    from opentelemetry import trace as trace_api
+
+    force_flush = getattr(trace_api.get_tracer_provider(), "force_flush", None)
+    if not callable(force_flush):
+        return True
+    return bool(force_flush(timeout_millis))

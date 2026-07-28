@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
@@ -336,9 +337,7 @@ class CodingTaskSupervisor:
         }
         if attempt.state is AttemptState.CREATED and not run_state.exists:
             task, attempt = await self.run_manager.open_initial(task, session.lease)
-            instruction = await self.repository.attempt_instruction(
-                task.scope.external_run_id, attempt.attempt_no
-            )
+            instruction = await self._attempt_instruction(task, attempt)
             return (
                 self.executor.arun(task.scope, attempt, instruction, dependencies=dependencies),
                 task,
@@ -369,9 +368,7 @@ class CodingTaskSupervisor:
                     raise _TaskSuspended(decision.code)
                 if decision.action is ContinuationAction.RESUME:
                     task, attempt = await self.run_manager.resume_current(task, session.lease)
-                    instruction = await self.repository.attempt_instruction(
-                        task.scope.external_run_id, attempt.attempt_no
-                    )
+                    instruction = await self._attempt_instruction(task, attempt)
                     return (
                         self.executor.acontinue_run(
                             task.scope,
@@ -424,9 +421,7 @@ class CodingTaskSupervisor:
                     raise CodingRepositoryError(decision.code, "编码任务无法继续。")
                 return await self._source(task, await self._current_attempt(task), session)
             task, attempt = await self.run_manager.resume_current(task, session.lease)
-            instruction = await self.repository.attempt_instruction(
-                task.scope.external_run_id, attempt.attempt_no
-            )
+            instruction = await self._attempt_instruction(task, attempt)
             return (
                 self.executor.acontinue_run(
                     task.scope, attempt, instruction or None, dependencies=dependencies
@@ -435,6 +430,100 @@ class CodingTaskSupervisor:
                 attempt,
             )
         raise CodingRepositoryError("attempt_not_runnable", "当前 Attempt 不可运行。")
+
+    async def _attempt_instruction(self, task: TaskSnapshot, attempt: AttemptSnapshot) -> str:
+        instruction = await self.repository.attempt_instruction(
+            task.scope.external_run_id, attempt.attempt_no
+        )
+        if attempt.attempt_no == 0:
+            return instruction
+        previous_run_id = self.repository.internal_run_id(
+            task.scope.external_run_id, attempt.attempt_no - 1
+        )
+        source_attempt = await self.repository.get_attempt(previous_run_id)
+        if source_attempt is None or source_attempt.outcome is not AttemptOutcome.NO_FINISH:
+            return instruction
+        source_run_state = await self.executor.state(task.scope, source_attempt)
+        feedback = await self._runtime_feedback(task, source_attempt, source_run_state)
+        return f"{instruction}\n\n{feedback}" if feedback else instruction
+
+    async def _runtime_feedback(
+        self,
+        task: TaskSnapshot,
+        source_attempt: AttemptSnapshot,
+        source_run_state: AgnoRunState,
+    ) -> str:
+        executions = await self.repository.list_executions(task.scope.external_run_id)
+        current_verifications = [
+            execution
+            for execution in executions
+            if execution.is_verification and execution.mutation_sequence == task.mutation_sequence
+        ]
+        latest_verification = current_verifications[-1] if current_verifications else None
+        latest_succeeded = bool(
+            latest_verification is not None
+            and latest_verification.status == "completed"
+            and latest_verification.exit_code == 0
+            and (latest_verification.operation_receipt or {}).get("valid", True) is not False
+        )
+        successful = latest_verification if latest_succeeded else None
+        failed = (
+            latest_verification
+            if latest_verification is not None and not latest_succeeded
+            else None
+        )
+        finish_failure = source_run_state.finish_failure
+        finish_failure_details = (
+            finish_failure.get("details") if isinstance(finish_failure, dict) else None
+        )
+        current_finish_failure = bool(
+            isinstance(finish_failure_details, dict)
+            and finish_failure_details.get("mutationSequence") == task.mutation_sequence
+        )
+        if current_finish_failure and isinstance(finish_failure, dict):
+            code = str(finish_failure.get("code") or "finish_rejected")
+            required_actions = list(finish_failure.get("requiredActions") or [])[:10]
+            failed_items = [{"code": code, "details": finish_failure_details}]
+        elif failed is not None:
+            receipt = failed.operation_receipt or {}
+            code = str(receipt.get("failure_code") or "coding_verification_failed")
+            required_actions = ["仅修复失败验证项，并在当前 mutation 上重新运行验证。"]
+            failed_items = [{"executionId": failed.execution_id, "code": code}]
+        elif successful is not None:
+            code = "coding_finish_required"
+            required_actions = ["当前 mutation 已验证；调用 finish_task 提交完成回执。"]
+            failed_items = []
+        elif task.mutation_sequence > 0:
+            code = "coding_verification_required"
+            required_actions = ["在当前 mutation 上执行与改动范围匹配的验证。"]
+            failed_items = []
+        else:
+            code = "coding_runtime_action_required"
+            required_actions = ["继续完成初始任务；完成后验证并调用 finish_task。"]
+            failed_items = []
+        failed_items_fingerprint = hashlib.sha256(
+            json.dumps(
+                failed_items, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            ).encode()
+        ).hexdigest()
+        fingerprint_source = (
+            f"{source_attempt.internal_run_id}:{code}:{task.mutation_sequence}:"
+            f"{failed_items_fingerprint}"
+        )
+        payload = {
+            "marker": "CODING_RUNTIME_FEEDBACK",
+            "version": 1,
+            "code": code,
+            "sourceAttempt": source_attempt.attempt_no,
+            "fingerprint": hashlib.sha256(fingerprint_source.encode()).hexdigest(),
+            "mutation": task.mutation_sequence,
+            "failedItems": failed_items,
+            "passedItems": (
+                [{"executionId": successful.execution_id}] if successful is not None else []
+            ),
+            "requiredActions": required_actions,
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
     async def _coordinate_finish(
         self, task: TaskSnapshot, attempt: AttemptSnapshot, session: TaskSession

@@ -12,6 +12,8 @@ from agno.run.base import RunStatus
 
 from .models import AttemptSnapshot, CodingScope
 
+CODING_FINISH_FAILURE_STATE_KEY = "agentos_coding_finish_failure"
+
 
 def coding_session_id(scope: CodingScope) -> str:
     digest = hashlib.sha256(f"{scope.thread_id}:{scope.external_run_id}".encode()).hexdigest()[:32]
@@ -26,6 +28,7 @@ class AgnoRunState:
     checkpoint_recoverable: bool = False
     output: str = ""
     suspend_code: str | None = None
+    finish_failure: dict[str, Any] | None = None
 
 
 def provider_error_suspend_code(error: BaseException | str) -> str | None:
@@ -142,6 +145,12 @@ class AgnoCodingExecutor:
             or getattr(output, "last_checkpoint_at_message_index", None) is not None
         )
         content = getattr(output, "content", "")
+        session_state = getattr(output, "session_state", None)
+        raw_finish_failure = (
+            session_state.get(CODING_FINISH_FAILURE_STATE_KEY)
+            if isinstance(session_state, dict)
+            else None
+        )
         return AgnoRunState(
             exists=True,
             status=status or None,
@@ -152,5 +161,8 @@ class AgnoCodingExecutor:
                 provider_error_suspend_code(str(content or ""))
                 if status_value == RunStatus.error
                 else None
+            ),
+            finish_failure=(
+                dict(raw_finish_failure) if isinstance(raw_finish_failure, dict) else None
             ),
         )

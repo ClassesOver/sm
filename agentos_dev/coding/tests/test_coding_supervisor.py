@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -22,7 +23,9 @@ class FakeExecutor:
         self.repository = repository
         self.status_by_run: dict[str, AgnoRunState] = {}
         self.calls: list[tuple[str, str]] = []
+        self.instructions: list[str | None] = []
         self.finish_on_attempt = 0
+        self.finish_failure: dict[str, Any] | None = None
         self.dependencies = None
 
     async def state(self, scope, attempt):
@@ -30,6 +33,7 @@ class FakeExecutor:
 
     async def arun(self, scope, attempt, instruction, *, dependencies) -> AsyncIterator[Any]:
         self.calls.append(("arun", attempt.internal_run_id))
+        self.instructions.append(instruction)
         async for event in self._events(scope, attempt, dependencies):
             yield event
 
@@ -37,6 +41,7 @@ class FakeExecutor:
         self, scope, attempt, instruction, *, dependencies
     ) -> AsyncIterator[Any]:
         self.calls.append(("acontinue_run", attempt.internal_run_id))
+        self.instructions.append(instruction)
         async for event in self._events(scope, attempt, dependencies):
             yield event
 
@@ -90,7 +95,11 @@ class FakeExecutor:
                 retained_execution_ids=[],
             )
         self.status_by_run[attempt.internal_run_id] = AgnoRunState(
-            exists=True, status="COMPLETED", terminal=True, output="候选文本"
+            exists=True,
+            status="COMPLETED",
+            terminal=True,
+            output="候选文本",
+            finish_failure=(self.finish_failure if attempt.attempt_no == 0 else None),
         )
         yield type("TextEvent", (), {"event": "RunContent", "content": "候选文本"})()
 
@@ -219,12 +228,57 @@ async def test_pending_instruction_is_applied_to_one_new_attempt(supervisor_runt
     await supervisor.start_task(coding_scope(), "实现目标")
     await supervisor.submit_instruction(coding_scope(), "follow-up", "补充失败测试")
 
-    events = [event async for event in supervisor.run_task(coding_scope())]
+    async def collect_events():
+        return [event async for event in supervisor.run_task(coding_scope())]
+
+    try:
+        events = await asyncio.wait_for(collect_events(), timeout=2)
+    except TimeoutError:
+        task = await repository.get_task_snapshot("external")
+        pytest.fail(f"supervisor timeout: calls={executor.calls}, task={task}")
 
     assert [call[0] for call in executor.calls] == ["arun", "arun"]
+    assert executor.instructions[0] == "实现目标"
+    assert "实现目标\n\n补充失败测试" in executor.instructions[1]
+    assert '"marker":"CODING_RUNTIME_FEEDBACK"' in executor.instructions[1]
+    assert '"sourceAttempt":0' in executor.instructions[1]
     task = await repository.get_task_snapshot("external")
     assert task is not None and task.current_attempt_no == 1
     assert task.state is TaskState.COMPLETED
+    assert events[-1].event_id == "external:terminal"
+
+    repeated = [event async for event in supervisor.resume_task(coding_scope())]
+    assert executor.calls == [
+        ("arun", CodingTaskRepository.internal_run_id("external", 0)),
+        ("arun", CodingTaskRepository.internal_run_id("external", 1)),
+    ]
+    assert repeated[-1].event_id == "external:terminal"
+
+
+@pytest.mark.anyio
+async def test_new_attempt_keeps_latest_finish_failure_feedback(supervisor_runtime):
+    repository, executor, supervisor = supervisor_runtime
+    executor.finish_on_attempt = 1
+    executor.finish_failure = {
+        "code": "finish_artifact_missing",
+        "details": {
+            "mutationSequence": 0,
+            "missingPaths": ["reports/ruijin-2025.pdf"],
+        },
+        "requiredActions": [
+            "调用 verify 运行产物生成命令，并将 details.missingPaths 作为 artifact_paths；"
+            "验证成功后重新调用 finish_task。"
+        ],
+    }
+    await supervisor.start_task(coding_scope(), "生成报告")
+
+    events = [event async for event in supervisor.run_task(coding_scope())]
+
+    feedback = executor.instructions[1]
+    assert feedback is not None
+    assert '"code":"finish_artifact_missing"' in feedback
+    assert '"missingPaths":["reports/ruijin-2025.pdf"]' in feedback
+    assert "将 details.missingPaths 作为 artifact_paths" in feedback
     assert events[-1].event_id == "external:terminal"
 
 

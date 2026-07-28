@@ -4,6 +4,7 @@ import argparse
 import ctypes
 import os
 import platform
+import stat
 import sys
 from pathlib import Path
 
@@ -84,7 +85,13 @@ def restrict_writes(write_roots: list[str]) -> None:
         for root in write_roots:
             path_fd = os.open(root, os.O_PATH | os.O_CLOEXEC)
             try:
-                path_attr = _PathBeneathAttr(HANDLED_WRITE_ACCESS, path_fd)
+                mode = os.fstat(path_fd).st_mode
+                allowed_access = (
+                    HANDLED_WRITE_ACCESS
+                    if stat.S_ISDIR(mode)
+                    else LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_TRUNCATE
+                )
+                path_attr = _PathBeneathAttr(allowed_access, path_fd)
                 if (
                     libc.syscall(
                         add_rule,

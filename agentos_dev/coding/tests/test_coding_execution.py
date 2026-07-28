@@ -33,6 +33,7 @@ from agentos_dev.coding.execution import (
     _task_tool_parallel_safe,
     create_coding_tool_scheduler_hook,
 )
+from agentos_dev.coding.executor import CODING_FINISH_FAILURE_STATE_KEY
 from agentos_dev.coding.repository import CodingRepositoryError, CodingTaskRepository
 from agentos_dev.coding.tests.workspace_fakes import (
     AsyncFakeClient,
@@ -534,11 +535,12 @@ def create_acceptance_registry(tmp_path):
     return registry, script
 
 
-async def acceptance_runtime(runtime, tmp_path):
+async def acceptance_runtime(runtime, tmp_path, *, requirements=None):
     registry, script = create_acceptance_registry(tmp_path)
     contract = {
         "version": 1,
-        "requirements": [
+        "requirements": requirements
+        or [
             {
                 "id": "report",
                 "validatorId": "analysis:report",
@@ -684,6 +686,78 @@ async def test_validator_verify_uses_pinned_script_fixed_timeout_and_strict_rece
 
 
 @pytest.mark.anyio
+async def test_validator_failure_returns_directional_bounded_requirements(
+    execution_runtime,
+    tmp_path,
+):
+    runtime = execution_runtime
+    acceptance = await acceptance_runtime(
+        runtime,
+        tmp_path,
+        requirements=[
+            {
+                "id": "graph",
+                "validatorId": "analysis:report",
+                "parameters": {},
+                "artifactPatterns": ["reports/*.json"],
+            },
+            {
+                "id": "events",
+                "validatorId": "analysis:report",
+                "parameters": {},
+                "artifactPatterns": ["reports/*.json"],
+            },
+        ],
+    )
+    output = json.dumps(
+        {
+            "version": 1,
+            "requirements": [
+                {
+                    "id": "graph",
+                    "passed": True,
+                    "message": "graph checks passed",
+                    "details": {"failedTests": []},
+                },
+                {
+                    "id": "events",
+                    "passed": False,
+                    "message": "events checks failed",
+                    "details": {
+                        "check": "invalid_event_keeps_state",
+                        "observed": "event id consumed",
+                    },
+                },
+            ],
+        },
+        separators=(",", ":"),
+    )
+
+    _execution_id, _command, result = await completed_validator(
+        runtime,
+        acceptance,
+        output=output,
+    )
+
+    assert result["code"] == "verification_acceptance_failed"
+    assert result["failedRequirements"] == [
+        {
+            "id": "events",
+            "message": "events checks failed",
+            "details": {
+                "check": "invalid_event_keeps_state",
+                "observed": "event id consumed",
+            },
+        }
+    ]
+    assert result["passedRequirements"] == [{"id": "graph"}]
+    assert result["requiredActions"] == [
+        "仅修复 failedRequirements 列出的失败能力；保持 passedRequirements 已通过行为不变。",
+        "先运行与失败项对应的公开测试或局部验证，再重新运行 validator_id=analysis:report。",
+    ]
+
+
+@pytest.mark.anyio
 async def test_skill_script_is_installed_readonly_and_writable_copy_is_rejected(
     execution_runtime,
 ):
@@ -746,6 +820,7 @@ def test_readonly_script_runtime_blocks_self_mutation_but_allows_workspace_write
         "    except PermissionError:\n"
         "        blocked.append(True)\n"
         f"Path({str(workspace / 'result.txt')!r}).write_text('ok')\n"
+        "Path('/dev/null').write_text('discarded')\n"
         "print(len(blocked))\n",
         encoding="utf-8",
     )
@@ -758,6 +833,8 @@ def test_readonly_script_runtime_blocks_self_mutation_but_allows_workspace_write
             str(runtime),
             "--write-root",
             str(workspace),
+            "--write-root",
+            "/dev/null",
             str(script),
         ],
         check=False,
@@ -976,7 +1053,7 @@ async def test_finish_task_enforces_plan_artifacts_verification_and_active_proce
     )
     assert missing["code"] == "finish_artifact_missing"
     assert missing["details"]["missingPaths"] == ["missing.txt"]
-    assert missing["details"]["mutationSequence"] == 1
+    assert missing["details"]["mutationSequence"] == 0
     assert missing["requiredActions"]
     assert missing["retryable"] is True
 
@@ -1475,6 +1552,22 @@ async def test_tool_scheduler_is_released_after_hook_failure(execution_runtime):
 
 
 @pytest.mark.anyio
+async def test_create_files_defers_scheduling_to_atomic_patch_kernel():
+    repository = object()
+    hook = create_coding_tool_scheduler_hook(repository)  # type: ignore[arg-type]
+    context = RunContext(run_id="run", session_id="thread", user_id="user")
+    scheduler_key = (id(repository), "external-run")
+
+    async def create_files(files):
+        assert scheduler_key not in execution_module._TASK_TOOL_SCHEDULERS
+        return files
+
+    files = [{"path": "one.py", "content": "value = 1\n"}]
+
+    assert await hook(context, "create_files", create_files, {"files": files}) == files
+
+
+@pytest.mark.anyio
 async def test_view_image_and_file_read_overlap(execution_runtime):
     runtime = execution_runtime
     toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
@@ -1611,6 +1704,229 @@ async def test_read_only_terminal_does_not_increment_mutation(execution_runtime)
 
 
 @pytest.mark.anyio
+async def test_verify_reuses_current_mutation_and_allows_dev_null(execution_runtime, monkeypatch):
+    runtime = execution_runtime
+    commands = []
+    original_managed_command = runtime.kernel._managed_command
+
+    def managed_command(command, workdir, timeout, pty):
+        commands.append(command)
+        return original_managed_command(command, workdir, timeout, pty)
+
+    monkeypatch.setattr(runtime.kernel, "_managed_command", managed_command)
+    await runtime.kernel.patch(
+        "create",
+        "result.txt",
+        None,
+        None,
+        False,
+        None,
+        runtime.context,
+        content="done\n",
+    )
+    before = await runtime.repository.get_task("external-run")
+
+    verification_id = await completed_verification(runtime, "python -m pytest -q")
+
+    after = await runtime.repository.get_task("external-run")
+    execution = await runtime.repository.get_execution(verification_id)
+    assert before is not None and after is not None and execution is not None
+    assert execution.mutation_sequence == before.mutation_sequence
+    assert after.mutation_sequence == before.mutation_sequence
+    assert any("--write-root /dev/null" in command for command in commands)
+
+
+@pytest.mark.anyio
+async def test_unknown_foreground_terminal_only_records_real_workspace_mutation(
+    execution_runtime,
+    monkeypatch,
+):
+    runtime = execution_runtime
+    fingerprints = iter(["before-read", "before-read", "before-write", "after-write"])
+
+    async def fingerprint(_thread_id):
+        return next(fingerprints)
+
+    async def wait_for_terminal_execution(previous_count):
+        for _attempt in range(100):
+            await asyncio.sleep(0)
+            executions = await runtime.repository.list_executions("external-run")
+            if len(executions) > previous_count and executions[-1].command_id is not None:
+                return executions[-1]
+        raise AssertionError("terminal execution 未启动")
+
+    monkeypatch.setattr(runtime.workspace, "aworkspace_fingerprint", fingerprint)
+
+    read_task = asyncio.create_task(
+        runtime.kernel.terminal("python3 query.py", run_context=runtime.context)
+    )
+    read_execution = await wait_for_terminal_execution(0)
+    finish_remote_execution(runtime, read_execution.execution_id)
+    read = await read_task
+
+    write_task = asyncio.create_task(
+        runtime.kernel.terminal("python3 generate.py", run_context=runtime.context)
+    )
+    write_execution = await wait_for_terminal_execution(1)
+    finish_remote_execution(runtime, write_execution.execution_id)
+    write = await write_task
+    task = await runtime.repository.get_task("external-run")
+
+    assert task is not None
+    assert read["mutation_sequence"] == 0
+    assert write["mutation_sequence"] == 1
+    assert task.mutation_sequence == 1
+
+
+@pytest.mark.anyio
+async def test_validation_state_rejects_terminal_without_side_effects(execution_runtime):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    created = await toolkit.coding_create_file("result.txt", "draft", runtime.context)
+    executions_before = await runtime.repository.list_executions("external-run")
+    process_calls_before = len(runtime.synchronous.sandbox_for("thread").process.sessions)
+
+    blocked = await toolkit.terminal("python3 query.py", run_context=runtime.context)
+    executions_after = await runtime.repository.list_executions("external-run")
+    process_calls_after = len(runtime.synchronous.sandbox_for("thread").process.sessions)
+
+    assert created["mutation_sequence"] == 1
+    assert blocked["code"] == "coding_verification_required"
+    assert blocked["details"]["mutationSequence"] == 1
+    assert executions_after == executions_before
+    assert process_calls_after == process_calls_before
+
+
+@pytest.mark.anyio
+async def test_validation_state_rejects_intermediate_plan_update(execution_runtime):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    await toolkit.coding_create_file("result.txt", "draft", runtime.context)
+
+    blocked = await toolkit.update_plan(
+        [{"step": "验证", "status": "in_progress"}],
+        run_context=runtime.context,
+    )
+
+    assert blocked["code"] == "coding_verification_required"
+    assert AGENT_PLAN_STATE_KEY not in runtime.context.session_state
+
+
+@pytest.mark.anyio
+async def test_verified_state_rejects_reads_and_requires_finish_but_keeps_plan_available(
+    execution_runtime,
+):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    await toolkit.coding_create_file("result.txt", "done", runtime.context)
+    verification_task = asyncio.create_task(toolkit.verify("verify", run_context=runtime.context))
+    verification_id = None
+    for _attempt in range(100):
+        await asyncio.sleep(0)
+        executions = await runtime.repository.list_executions("external-run")
+        verification_id = next(
+            (
+                execution.execution_id
+                for execution in reversed(executions)
+                if execution.is_verification and execution.command_id is not None
+            ),
+            None,
+        )
+        if verification_id is not None:
+            break
+    assert verification_id is not None
+    finish_remote_execution(runtime, verification_id)
+    verification = await verification_task
+    assert verification["status"] == "completed"
+
+    blocked = await toolkit.terminal("python3 query.py", run_context=runtime.context)
+    blocked_read = await toolkit.coding_list_files(run_context=runtime.context)
+    plan = await toolkit.update_plan(
+        [{"step": "完成", "status": "completed"}],
+        run_context=runtime.context,
+    )
+
+    assert blocked["code"] == "coding_finish_required"
+    assert blocked["details"]["verificationId"] == verification_id
+    assert blocked_read["code"] == "coding_finish_required"
+    assert blocked_read["details"]["allowedTools"] == ["finish_task", "update_plan"]
+    assert plan["ok"] is True
+
+
+@pytest.mark.anyio
+async def test_finish_artifact_failure_returns_complete_repair_gate(execution_runtime):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    await toolkit.coding_create_file("generate_report.py", "print('report')", runtime.context)
+    verification_id = await completed_verification(runtime)
+    runtime.context.session_state[AGENT_PLAN_STATE_KEY] = {
+        "plan": [{"step": "生成报告", "status": "completed"}]
+    }
+    failure = await runtime.kernel.finish_task(
+        "done",
+        ["reports/ruijin-2025.pdf"],
+        [verification_id],
+        [],
+        runtime.context,
+        Function(name="finish_task"),
+    )
+    executions_before = await runtime.repository.list_executions("external-run")
+
+    blocked_terminal = await toolkit.terminal(
+        "python3 generate_report.py", run_context=runtime.context
+    )
+    blocked_plan = await toolkit.update_plan(
+        [{"step": "重新开始", "status": "in_progress"}],
+        run_context=runtime.context,
+    )
+    repair_read = await toolkit.coding_read_file("generate_report.py", run_context=runtime.context)
+    scope = await runtime.kernel.scope(runtime.context)
+    verify_admission = await toolkit._state_admission_rejection(
+        scope,
+        "verify",
+        {
+            "command": "python3 generate_report.py",
+            "artifact_paths": ["reports/ruijin-2025.pdf"],
+        },
+        runtime.context.session_state,
+    )
+    executions_after = await runtime.repository.list_executions("external-run")
+
+    assert failure["code"] == "finish_artifact_missing"
+    assert blocked_terminal["code"] == "coding_finish_repair_required"
+    assert blocked_terminal["details"]["finishFailureCode"] == "finish_artifact_missing"
+    assert blocked_terminal["details"]["missingPaths"] == ["reports/ruijin-2025.pdf"]
+    assert "read_file" in blocked_terminal["details"]["allowedTools"]
+    assert blocked_terminal["requiredActions"] == [
+        "调用 verify 运行产物生成命令，并将 details.missingPaths 作为 artifact_paths；"
+        "验证成功后重新调用 finish_task。"
+    ]
+    assert blocked_plan["code"] == "coding_finish_repair_required"
+    assert "print('report')" in repair_read["content"]
+    assert runtime.context.session_state[AGENT_PLAN_STATE_KEY]["plan"] == [
+        {"step": "生成报告", "status": "completed"}
+    ]
+    assert verify_admission is None
+    assert executions_after == executions_before
+
+
+@pytest.mark.anyio
+async def test_mutation_zero_finish_failure_still_requires_verification(execution_runtime):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    runtime.context.session_state[CODING_FINISH_FAILURE_STATE_KEY] = {
+        "code": "finish_artifact_missing",
+        "details": {"mutationSequence": 0, "missingPaths": ["report.pdf"]},
+        "requiredActions": ["生成缺失产物并验证。"],
+    }
+
+    blocked = await toolkit.terminal("python3 generate.py", run_context=runtime.context)
+
+    assert blocked["code"] == "coding_verification_required"
+    assert await runtime.repository.list_executions("external-run") == []
+
+
+@pytest.mark.anyio
 async def test_repeated_read_only_terminal_is_blocked_without_new_execution(execution_runtime):
     runtime = execution_runtime
     toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
@@ -1691,13 +2007,18 @@ def test_workspace_coding_tools_have_explicit_schemas_and_split_mutations():
     toolkit = WorkspaceCodingToolkit(None, None)  # type: ignore[arg-type]
     tools = {**toolkit.functions, **toolkit.async_functions}
 
+    assert 'list_files(path="")' in toolkit.instructions
+    assert "禁止传 /workspace" in toolkit.instructions
     assert "patch" not in tools
+    assert "create_file" not in tools
     assert {
-        "create_file",
+        "create_files",
         "overwrite_file",
         "replace_text",
         "apply_patch",
     }.issubset(tools)
+    create_files = tools["create_files"]
+    assert create_files.parameters["properties"]["files"]["minItems"] == 1
     for name in (
         "list_files",
         "read_file",
@@ -1712,6 +2033,10 @@ def test_workspace_coding_tools_have_explicit_schemas_and_split_mutations():
         assert schema["type"] == "object"
         assert schema["properties"]
         assert schema["additionalProperties"] is False
+
+    list_files = tools["list_files"]
+    assert 'path 传空字符串 ""' in list_files.description
+    assert '根目录必须传空字符串 ""' in list_files.parameters["properties"]["path"]["description"]
 
     assert set(tools["read_lines"].parameters["properties"]) == {
         "path",
@@ -2038,9 +2363,32 @@ async def test_skill_script_verification_uses_server_receipt_without_database(mo
 
 
 @pytest.mark.anyio
-async def test_tool_scheduler_allows_parallel_reads_and_serializes_write(execution_runtime):
+@pytest.mark.parametrize(
+    ("writer_tool", "writer_arguments"),
+    [
+        ("patch", {"mode": "test"}),
+        ("terminal", {"command": "touch generated.txt"}),
+        ("verify", {"validator_id": "analysis:report"}),
+    ],
+)
+async def test_tool_scheduler_allows_parallel_reads_and_serializes_write(
+    execution_runtime,
+    monkeypatch,
+    writer_tool,
+    writer_arguments,
+):
     runtime = execution_runtime
     toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    scope = SimpleNamespace(
+        external_run_id="external-run",
+        attempt_no=0,
+        task=SimpleNamespace(mutation_sequence=0),
+    )
+
+    async def resolve_scope(_run_context):
+        return scope
+
+    monkeypatch.setattr(toolkit.kernel, "scope", resolve_scope)
     both_reads_entered = asyncio.Event()
     release_reads = asyncio.Event()
     active_reads = 0
@@ -2069,7 +2417,7 @@ async def test_tool_scheduler_allows_parallel_reads_and_serializes_write(executi
     ]
     await both_reads_entered.wait()
     writer = asyncio.create_task(
-        toolkit._invoke("patch", {"mode": "test"}, write_call, runtime.context)
+        toolkit._invoke(writer_tool, writer_arguments, write_call, runtime.context)
     )
     await asyncio.sleep(0)
     assert write_entered is False
@@ -2080,6 +2428,52 @@ async def test_tool_scheduler_allows_parallel_reads_and_serializes_write(executi
         id(runtime.repository),
         "external-run",
     ) not in execution_module._TASK_TOOL_SCHEDULERS
+
+
+@pytest.mark.anyio
+async def test_workspace_tool_scheduler_caps_parallel_reads(execution_runtime, monkeypatch):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    scope = SimpleNamespace(
+        external_run_id="external-run",
+        attempt_no=0,
+        task=SimpleNamespace(mutation_sequence=0),
+    )
+
+    async def resolve_scope(_run_context):
+        return scope
+
+    monkeypatch.setattr(toolkit.kernel, "scope", resolve_scope)
+    active_reads = 0
+    started_reads = 0
+    first_batch_started = asyncio.Event()
+    release_reads = asyncio.Event()
+
+    async def read_call(_scope):
+        nonlocal active_reads, started_reads
+        active_reads += 1
+        started_reads += 1
+        if active_reads == MAX_PARALLEL_READ_TOOLS:
+            first_batch_started.set()
+        await release_reads.wait()
+        active_reads -= 1
+        return {"status": "ok"}
+
+    reads = [
+        asyncio.create_task(
+            toolkit._invoke("read_file", {"path": f"{index}.txt"}, read_call, runtime.context)
+        )
+        for index in range(MAX_PARALLEL_READ_TOOLS + 1)
+    ]
+
+    await asyncio.wait_for(first_batch_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert active_reads == MAX_PARALLEL_READ_TOOLS
+    assert started_reads == MAX_PARALLEL_READ_TOOLS
+
+    release_reads.set()
+    await asyncio.wait_for(asyncio.gather(*reads), timeout=1)
+    assert started_reads == MAX_PARALLEL_READ_TOOLS + 1
 
 
 @pytest.mark.anyio
