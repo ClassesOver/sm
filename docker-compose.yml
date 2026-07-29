@@ -44,13 +44,14 @@ services:
       DAYTONA_API_URL: ${AGENT_DAYTONA_API_URL:-http://host.docker.internal:33043/api}
       DAYTONA_API_KEY: ${DAYTONA_API_KEY:-}
       DAYTONA_NETWORK_ALLOW_LIST: ${DAYTONA_NETWORK_ALLOW_LIST:-}
-      AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST: ${AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST:-}
       AGUI_WORKSPACE_HMAC_SECRET: ${AGUI_WORKSPACE_HMAC_SECRET:?必须与 Odoo agui_chat.workspace_hmac_secret 一致}
       AGENT_SKILLS_DIR: /opt/agent-skills
-      AGENT_REPORT_DATA_SOURCES_FILE: /run/agentos/report-data-sources.json
+      AGENT_REPORT_DATA_SOURCES_DIR: /run/agentos/reporting
+      AGENT_REPORT_METADATA_URL: ${AGENT_REPORT_METADATA_URL:-}
+      AGENT_REPORT_METADATA_TOKEN: ${AGENT_REPORT_METADATA_TOKEN:-}
     volumes:
       - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
-      - ${AGENT_REPORT_DATA_SOURCES_FILE:-./deploy/agentos/report-data-sources.json}:/run/agentos/report-data-sources.json:ro
+      - ${AGENT_REPORT_DATA_SOURCES_DIR:-./deploy/agentos/reporting}:/run/agentos/reporting:ro
     depends_on:
       agent-db:
         condition: service_healthy

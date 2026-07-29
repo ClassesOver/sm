@@ -11,7 +11,8 @@ from agno.tools import Toolkit
 from agno.workflow import OnReject
 from pydantic import BaseModel
 
-from .agui import REPORT_SOURCE_INTAKE_DEPENDENCY
+from .contract import ReportRequestEnvelope
+from .entrypoints import current_server_envelope
 from .models import (
     ReportingError,
     ReportReviewSnapshot,
@@ -23,7 +24,7 @@ REPORT_WORKFLOW_SCOPE_DEPENDENCY = "AgentOS 报表工作流"
 _WORKFLOW_ID = "enterprise-reporting-workflow-v1"
 _ACTIVE_STATUSES = frozenset({"running", "paused"})
 ReportWorkflowStatus = Literal["running", "paused", "completed", "cancelled", "failed"]
-ReviewStage = Literal["source", "outline", "query", "publication"]
+ReviewStage = Literal["agent", "source", "outline", "query", "publication"]
 
 
 class ReviewableWorkflow(Protocol):
@@ -41,6 +42,7 @@ class ReviewableWorkflow(Protocol):
 WorkflowFactory = Callable[[], ReviewableWorkflow]
 CancelCleanup = Callable[[dict[str, str], str, str], Awaitable[None]]
 DeliveryValidator = Callable[[dict[str, str], str, str], Awaitable[dict[str, Any] | None]]
+PublicationIssuer = Callable[[dict[str, str], str, str, Any], Awaitable[dict[str, Any]]]
 
 
 class ReportWorkflowController:
@@ -52,22 +54,24 @@ class ReportWorkflowController:
         *,
         cancel_cleanup: CancelCleanup | None = None,
         delivery_validator: DeliveryValidator | None = None,
+        publication_issuer: PublicationIssuer | None = None,
     ):
         self._workflow_factory = workflow_factory
         self._cancel_cleanup = cancel_cleanup
         self._delivery_validator = delivery_validator
+        self._publication_issuer = publication_issuer
         self._active_external: set[tuple[str, str, str]] = set()
 
     async def start(
         self,
-        report_goal: str,
-        source_ids: list[str] | None,
+        envelope: ReportRequestEnvelope | dict[str, Any],
         run_context: RunContext | None,
     ) -> dict[str, Any]:
-        goal = str(report_goal or "").strip()
-        if not goal or len(goal) > 20_000:
-            raise ReportingError("report_goal_invalid", "报表目标必须为 1 至 20000 个字符。")
-        normalized_sources = self._source_ids(source_ids)
+        request = (
+            envelope
+            if isinstance(envelope, ReportRequestEnvelope)
+            else ReportRequestEnvelope.from_untrusted(envelope)
+        )
         scope = self._scope(run_context)
         state = self._state(run_context)
         assert run_context is not None
@@ -78,10 +82,7 @@ class ReportWorkflowController:
 
         workflow = self._workflow()
         workflow_session_id, workflow_run_id = self._workflow_ids(scope)
-        source = (run_context.dependencies or {}).get(REPORT_SOURCE_INTAKE_DEPENDENCY)
-        payload: dict[str, Any] = {"reportGoal": goal, "sourceIds": normalized_sources}
-        if isinstance(source, dict):
-            payload["source"] = dict(source)
+        payload = request.model_dump(mode="json", by_alias=True, exclude_none=True)
         scope_key = self._external_scope_key(scope)
         self._active_external.add(scope_key)
         try:
@@ -95,12 +96,7 @@ class ReportWorkflowController:
                         "externalRunId": scope["external_run_id"],
                         "threadId": scope["thread_id"],
                         "userId": scope["user_id"],
-                    },
-                    **(
-                        {REPORT_SOURCE_INTAKE_DEPENDENCY: dict(source)}
-                        if isinstance(source, dict)
-                        else {}
-                    ),
+                    }
                 },
                 stream=False,
             )
@@ -122,7 +118,56 @@ class ReportWorkflowController:
             raise ReportingError(
                 "review_feedback_invalid", "拒绝时必须提供 1 至 4000 个字符的意见。"
             )
+        state = self._state(run_context)
+        control = self._control(state)
+        if control is not None and control.review is not None:
+            if control.review.stage == "agent":
+                raise ReportingError(
+                    "report_agent_selection_required", "当前审核项必须明确选择报表 Agent。"
+                )
+            if control.review.stage == "source":
+                return await self.cancel(run_context)
         return await self._continue(run_context, approve=False, feedback=normalized)
+
+    async def select_agent(self, agent_id: str, run_context: RunContext | None) -> dict[str, Any]:
+        normalized = str(agent_id or "").strip()
+        if not normalized or len(normalized) > 128:
+            raise ReportingError("report_agent_invalid", "所选报表 Agent 无效。")
+        scope = self._scope(run_context)
+        state = self._state(run_context)
+        control = self._control(state)
+        assert control is not None
+        self._assert_scope(control, scope)
+        if control.review is None or control.review.stage != "agent":
+            raise ReportingError("report_agent_selection_not_pending", "当前不等待选择报表 Agent。")
+        agents = control.review.preview.get("agents")
+        allowed = (
+            {
+                item.get("code")
+                for item in agents
+                if isinstance(item, dict) and isinstance(item.get("code"), str)
+            }
+            if isinstance(agents, list)
+            else set()
+        )
+        if normalized not in allowed:
+            raise ReportingError("report_agent_invalid", "所选报表 Agent 不存在或未启用。")
+        output = await self._load(control)
+        requirement = self._active_requirement(output)
+        requirement.reject(feedback=f"agentId:{normalized}")
+        output = await self._workflow().acontinue_run(
+            run_response=output,
+            step_requirements=list(getattr(output, "step_requirements", None) or []),
+            stream=False,
+        )
+        updated = self._control_from_output(
+            output,
+            scope,
+            control.workflow_session_id,
+            control.workflow_run_id,
+        )
+        state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = updated.public_dict()
+        return self._result(updated, output)
 
     async def cancel(self, run_context: RunContext | None) -> dict[str, Any]:
         scope = self._scope(run_context)
@@ -241,6 +286,7 @@ class ReportWorkflowController:
         if self._status(getattr(output, "status", None)) != "paused":
             raise ReportingError("report_workflow_not_paused", "报表工作流当前不等待审核。")
         requirement = self._active_requirement(output)
+        review_stage = control.review.stage if control.review is not None else None
         if approve:
             requirement.confirm()
         else:
@@ -257,6 +303,15 @@ class ReportWorkflowController:
             control.workflow_session_id,
             control.workflow_run_id,
         )
+        if review_stage == "publication" and updated.status == "completed":
+            if self._publication_issuer is None:
+                raise ReportingError("report_publication_unavailable", "报表发布服务未配置。")
+            output.content = await self._publication_issuer(
+                scope,
+                control.workflow_session_id,
+                control.workflow_run_id,
+                output,
+            )
         await self._cleanup_cancelled(updated, scope)
         if updated.status not in _ACTIVE_STATUSES:
             self._active_external.discard(self._external_scope_key(scope))
@@ -418,10 +473,17 @@ class ReportWorkflowController:
         requirement = self._active_requirement(output)
         name = str(getattr(requirement, "step_name", "") or "")
         stage: ReviewStage
-        if "来源" in name:
+        content = getattr(getattr(requirement, "step_output", None), "content", None)
+        if isinstance(content, BaseModel):
+            content = content.model_dump(mode="json", by_alias=True)
+        if "来源" in name and isinstance(content, dict) and isinstance(content.get("agents"), list):
+            stage = "agent"
+            title = "选择报表 Agent"
+            allowed = {"agents"}
+        elif "来源" in name:
             stage = "source"
             title = "确认数据来源"
-            allowed = {"sourceType", "endpoint", "database", "allowedTables", "ddlTables"}
+            allowed = {"sources"}
         elif "提纲" in name:
             stage = "outline"
             title = "审核报告提纲"
@@ -429,20 +491,13 @@ class ReportWorkflowController:
         elif "取数" in name or "查询" in name:
             stage = "query"
             title = "审核取数方案"
-            allowed = {"requirements", "generators", "approvalReason"}
+            allowed = {"queries"}
         elif "发布" in name:
             stage = "publication"
             title = "审核最终报告"
-            allowed = {"status", "jobId", "markdownPath", "pdfPath", "validation"}
+            allowed = {"status", "jobId", "revision", "validation"}
         else:
             raise ReportingError("report_workflow_review_invalid", "报表工作流出现未知审核阶段。")
-        content = getattr(getattr(requirement, "step_output", None), "content", None)
-        if stage == "source":
-            step_payload = getattr(getattr(requirement, "step_input", None), "input", None)
-            if isinstance(step_payload, dict) and isinstance(step_payload.get("source"), dict):
-                content = step_payload["source"]
-        if isinstance(content, BaseModel):
-            content = content.model_dump(mode="json", by_alias=True)
         preview = (
             {key: content[key] for key in allowed if key in content}
             if isinstance(content, dict)
@@ -465,8 +520,10 @@ class ReportWorkflowController:
             if isinstance(content, BaseModel):
                 content = content.model_dump(mode="json", by_alias=True)
             if isinstance(content, dict):
-                allowed = {"status", "jobId", "markdownPath", "pdfPath", "validation"}
-                result["report"] = {key: content[key] for key in allowed if key in content}
+                allowed = {"reportId", "revision", "pdf", "path", "size", "sha256"}
+                report = {key: content[key] for key in allowed if key in content}
+                if report:
+                    result["report"] = report
         return result
 
 
@@ -477,12 +534,14 @@ class ReportWorkflowToolkit(Toolkit):
             name="report_workflow",
             tools=[
                 self.report_workflow_start,
+                self.report_workflow_select_agent,
                 self.report_workflow_approve,
                 self.report_workflow_reject,
                 self.report_workflow_cancel,
             ],
             instructions=(
-                "新报表只调用 report_workflow_start。工具返回 paused 后，批准调用 "
+                "新报表只调用 report_workflow_start。需要选择 Agent 时调用 "
+                "report_workflow_select_agent；其他 paused 审核批准调用 "
                 "report_workflow_approve，拒绝调用 report_workflow_reject；用户明确取消时调用 "
                 "report_workflow_cancel。不得绕过 Workflow 审核或自行执行取数和 Coding 分析。"
             ),
@@ -492,18 +551,34 @@ class ReportWorkflowToolkit(Toolkit):
 
     async def report_workflow_start(
         self,
-        report_goal: str,
-        source_ids: list[str] | None = None,
+        envelope: dict[str, Any] | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        """启动企业智能运营报表 Workflow；source_ids 省略时使用当前消息绑定来源。"""
-        return await self.controller.start(report_goal, source_ids, run_context)
+        """使用严格 ReportRequestEnvelope v1 启动企业智能运营报表 Workflow。"""
+        if envelope is None:
+            bound = current_server_envelope()
+            envelope = (
+                bound.model_dump(mode="json", by_alias=True, exclude_none=True)
+                if bound is not None
+                else None
+            )
+        if not isinstance(envelope, dict):
+            raise ReportingError("report_request_invalid", "当前消息缺少报表 Envelope。")
+        return await self.controller.start(envelope, run_context)
 
     async def report_workflow_approve(
         self, run_context: RunContext | None = None
     ) -> dict[str, Any]:
         """批准当前报表 Workflow 审核项并继续执行。"""
         return await self.controller.approve(run_context)
+
+    async def report_workflow_select_agent(
+        self,
+        agent_id: str,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        """选择当前 Workflow 暂停项列出的报表 Agent。"""
+        return await self.controller.select_agent(agent_id, run_context)
 
     async def report_workflow_reject(
         self,

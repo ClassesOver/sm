@@ -17,7 +17,6 @@ def test_settings_defaults():
     assert current.database_url == DEFAULT_AGENT_DB_URL
     assert current.workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
     assert current.daytona_network_allow_list is None
-    assert current.report_source_network_allow_list is None
     assert current.cors_allowed_origins == (
         "http://127.0.0.1:18069",
         "http://localhost:18069",
@@ -32,7 +31,9 @@ def test_settings_defaults():
     assert current.context_token_budget == 262144
     assert current.history_token_budget == 196608
     assert current.output_token_reserve == 32768
-    assert current.report_data_sources_file is None
+    assert current.report_data_sources_dir is None
+    assert current.report_metadata_url is None
+    assert current.report_metadata_token is None
 
 
 def test_agent_feature_flags_can_be_disabled():
@@ -118,31 +119,29 @@ def test_daytona_network_allow_list_rejects_invalid_values(value):
         settings(DAYTONA_NETWORK_ALLOW_LIST=value)
 
 
-def test_report_data_sources_file_is_trimmed():
+def test_report_data_sources_dir_is_trimmed():
     assert settings(
-        AGENT_REPORT_DATA_SOURCES_FILE=" /run/report-sources.json "
-    ).report_data_sources_file == ("/run/report-sources.json")
+        AGENT_REPORT_DATA_SOURCES_DIR=" /run/agentos/reporting "
+    ).report_data_sources_dir == ("/run/agentos/reporting")
 
 
-def test_report_source_network_allow_list支持主机名和cidr():
+def test_report_metadata_config_is_normalized():
     current = settings(
-        AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST=(
-            " sr.internal., 203.0.113.10, 192.168.1.0/24, SR.INTERNAL "
-        )
+        AGENT_REPORT_METADATA_URL=" https://metadata.internal/ ",
+        AGENT_REPORT_METADATA_TOKEN=" token ",
     )
 
-    assert current.report_source_network_allow_list == (
-        "sr.internal,203.0.113.10/32,192.168.1.0/24"
-    )
+    assert current.report_metadata_url == "https://metadata.internal"
+    assert current.report_metadata_token == "token"
 
 
 @pytest.mark.parametrize(
     "value",
-    ["*.internal", "https://sr.internal", "bad_host", ",sr.internal"],
+    ["ftp://metadata.internal", "https://user@metadata.internal", "https://metadata/x?q=1"],
 )
-def test_report_source_network_allow_list拒绝无效目标(value):
-    with pytest.raises(ValueError, match="AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST"):
-        settings(AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST=value)
+def test_report_metadata_url_rejects_unsafe_values(value):
+    with pytest.raises(ValueError, match="AGENT_REPORT_METADATA_URL"):
+        settings(AGENT_REPORT_METADATA_URL=value)
 
 
 def test_context_budget_rejects_invalid_reserve():

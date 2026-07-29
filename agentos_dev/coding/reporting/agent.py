@@ -114,8 +114,10 @@ def create_report_agent(
             "role": "通过受控 Workflow 编排来源确认、分析、验收和发布审核。",
             "model": facade_model,
             "instructions": [
-                "新报表必须调用 report_workflow_start；不得自行取数、执行 Coding 或生成报告。",
+                "新报表必须调用不带参数的 report_workflow_start；请求 Envelope 已由服务端绑定，"
+                "不得自行取数、执行 Coding 或生成报告。",
                 "工具返回 paused 时准确展示当前审核预览。用户批准后调用 report_workflow_approve；"
+                "审核阶段为 agent 时必须调用 report_workflow_select_agent 并传入列表中的 code；"
                 "用户拒绝时把完整反馈传给 report_workflow_reject；明确取消时调用 "
                 "report_workflow_cancel。",
                 "工具返回 completed 后只返回其正式报告产物；不得把 paused、running 或 failed "

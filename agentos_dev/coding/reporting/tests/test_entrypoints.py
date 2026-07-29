@@ -51,18 +51,14 @@ def test_report_agentos_registers_only_facade(monkeypatch):
     )
     monkeypatch.setattr(report_agentos, "CodingTaskSupervisor", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(report_agentos, "CodingExecutionKernel", lambda *_args: object())
-    monkeypatch.setattr(
-        report_agentos, "ReportDataSourceToolkit", lambda *_args, **_kwargs: object()
-    )
     monkeypatch.setattr(report_agentos, "ReportWorkflowRuntime", FakeRuntime)
     monkeypatch.setattr(
         report_agentos, "ReportWorkflowController", lambda *_args, **_kwargs: object()
     )
     monkeypatch.setattr(report_agentos, "create_report_agent", lambda *_args: facade)
-    monkeypatch.setattr(report_agentos, "TemporaryCredentialStore", lambda: object())
     monkeypatch.setattr(
         report_agentos,
-        "TemporarySourceBindingService",
+        "load_configured_report_source_registry",
         lambda *_args, **_kwargs: object(),
     )
     monkeypatch.setattr(
@@ -71,7 +67,7 @@ def test_report_agentos_registers_only_facade(monkeypatch):
         lambda _skills: object(),
     )
     monkeypatch.setattr(report_agentos, "AgentOS", FakeAgentOS)
-    monkeypatch.setattr(report_agentos, "AGUI", lambda **kwargs: kwargs)
+    monkeypatch.setattr(report_agentos, "ReportAGUI", lambda **kwargs: kwargs)
 
     report_agentos.create_agentos(settings)
 

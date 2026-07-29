@@ -14,7 +14,7 @@ def test_report_cli_uses_run_line_to_submit_multiline_input():
 
 
 @pytest.mark.anyio
-async def test_report_cli_rejects_incomplete_intake_before_creating_traced_context(monkeypatch):
+async def test_report_cli_rejects_invalid_envelope_before_creating_traced_context(monkeypatch):
     values = iter(["生成经营分析", "/run"])
     monkeypatch.setattr(
         cli_module,
@@ -25,7 +25,7 @@ async def test_report_cli_rejects_incomplete_intake_before_creating_traced_conte
     with pytest.raises(ReportingError) as error:
         await run_cli(read=lambda _prompt: next(values), write=lambda _value: None)
 
-    assert error.value.code == "source_connection_incomplete"
+    assert error.value.code == "report_request_invalid"
 
 
 def test_report_cli_rejects_arguments():

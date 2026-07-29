@@ -450,6 +450,7 @@ class WorkspaceReportToolkit(Toolkit):
         self,
         job_id: str,
         pdf_path: str,
+        artifact_manifest: dict[str, Any] | None = None,
         run_context: RunContext | None = None,
     ):
         """栅格化检查当前 job 已登记 PDF 的空白页、文本和图片完整性；无需用户确认。"""
@@ -466,6 +467,7 @@ class WorkspaceReportToolkit(Toolkit):
                     "job": job,
                     "pdf_path": pdf_path,
                     "temporary_directory": temporary_directory,
+                    "artifact_manifest": artifact_manifest,
                 },
                 run_context,
             )

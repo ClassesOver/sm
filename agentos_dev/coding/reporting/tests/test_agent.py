@@ -78,6 +78,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert [tool.name for tool in report_tools] == ["report_workflow"]
     assert set(report_tools[0].async_functions) == {
         "report_workflow_start",
+        "report_workflow_select_agent",
         "report_workflow_approve",
         "report_workflow_reject",
         "report_workflow_cancel",

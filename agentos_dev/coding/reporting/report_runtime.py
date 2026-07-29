@@ -316,6 +316,7 @@ class ReportRuntime:
         state: dict[str, Any],
         pdf_path: str,
         temporary_directory: str,
+        artifact_manifest: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
             import pypdf
@@ -373,9 +374,11 @@ class ReportRuntime:
                 )
                 if process.returncode != 0 or len(rendered_pages) != len(reader.pages):
                     raise ReportFailure("PDF 视觉验收栅格化失败")
+                extracted_text = ""
                 for index, (page, rendered_page) in enumerate(
                     zip(reader.pages, rendered_pages, strict=True), start=1
                 ):
+                    extracted_text += page.extract_text() or ""
                     with Image.open(rendered_page) as image:
                         grayscale = image.convert("L")
                         samples = grayscale.tobytes()
@@ -401,6 +404,11 @@ class ReportRuntime:
                     )
             markdown_image_count = int(render.get("imageCount") or 0)
             missing_images = max(0, markdown_image_count - rendered_image_count)
+            chart_ids, citation_ids, section_ids = self._validate_manifest_markers(
+                artifact_manifest,
+                render=render,
+                extracted_text=extracted_text,
+            )
             ok = bool(pages) and not blank_pages and missing_images == 0
             validation = {
                 "ok": ok,
@@ -411,6 +419,9 @@ class ReportRuntime:
                 "markdownImageCount": markdown_image_count,
                 "renderedImageCount": rendered_image_count,
                 "missingImageCount": missing_images,
+                "chartIds": chart_ids,
+                "citationIds": citation_ids,
+                "sectionIds": section_ids,
                 "blankPages": blank_pages,
                 "pages": pages,
             }
@@ -420,6 +431,57 @@ class ReportRuntime:
         finally:
             if temp_path is not None:
                 shutil.rmtree(temp_path, ignore_errors=True)
+
+    def _validate_manifest_markers(
+        self,
+        manifest: dict[str, Any] | None,
+        *,
+        render: dict[str, Any],
+        extracted_text: str,
+    ) -> tuple[list[str], list[str], list[str]]:
+        if manifest is None:
+            return [], [], []
+        charts = manifest.get("charts")
+        citations = manifest.get("citations")
+        sections = manifest.get("sections")
+        if (
+            not isinstance(charts, list)
+            or not isinstance(citations, list)
+            or not isinstance(sections, list)
+        ):
+            raise ReportFailure("报告产物清单无效")
+        chart_paths = {
+            item.get("path")
+            for item in charts
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
+        rendered_paths = {
+            item.get("path")
+            for item in render.get("images", [])
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
+        if len(chart_paths) != len(charts) or chart_paths != rendered_paths:
+            raise ReportFailure("PDF 图表与产物清单不一致")
+        chart_ids: list[str] = []
+        for item in charts:
+            value = item.get("chartId") if isinstance(item, dict) else None
+            if isinstance(value, str):
+                chart_ids.append(value)
+        citation_ids: list[str] = []
+        for item in citations:
+            value = item.get("citationId") if isinstance(item, dict) else None
+            if isinstance(value, str):
+                citation_ids.append(value)
+        if len(citation_ids) != len(citations) or any(
+            f"[[citation:{item}]]" not in extracted_text for item in citation_ids
+        ):
+            raise ReportFailure("PDF 缺少数据引用标识")
+        section_ids = [item for item in sections if isinstance(item, str)]
+        if len(section_ids) != len(sections) or any(
+            f"[[section:{item}]]" not in extracted_text for item in section_ids
+        ):
+            raise ReportFailure("PDF 缺少关键章节标识")
+        return chart_ids, citation_ids, section_ids
 
     @staticmethod
     def _check_pdf_bounds(path: Path) -> None:
@@ -454,7 +516,10 @@ def main(arguments: list[str] | None = None) -> int:
             )
         elif action == "validate_pdf":
             result = runtime.validate_pdf(
-                payload["job"], payload["pdf_path"], payload["temporary_directory"]
+                payload["job"],
+                payload["pdf_path"],
+                payload["temporary_directory"],
+                payload.get("artifact_manifest"),
             )
         else:
             raise ReportFailure("未知报表操作")
