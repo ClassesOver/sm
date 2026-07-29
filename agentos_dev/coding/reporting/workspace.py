@@ -350,6 +350,21 @@ class WorkspaceReportToolkit(Toolkit):
         self._touch_job(job["jobId"], run_context)
         return await self._job_status(job, run_context)
 
+    async def bind_page_layout(
+        self,
+        job_id: str,
+        page_layout: dict[str, str],
+        run_context: RunContext | None = None,
+    ) -> None:
+        """由 Workflow 绑定服务端页面版式；该方法不注册为 Agent 工具。"""
+        if not isinstance(page_layout, dict):
+            raise WorkspaceError("PDF 页面格式无效。")
+        job = self._load_job(job_id, run_context)
+        if "_pageLayout" in job:
+            raise WorkspaceError("PDF 页面格式已经绑定。")
+        job["_pageLayout"] = dict(page_layout)
+        self._store_job(job, run_context)
+
     async def report_render_markdown(
         self,
         job_id: str,
@@ -357,7 +372,7 @@ class WorkspaceReportToolkit(Toolkit):
         output_path: str,
         run_context: RunContext | None = None,
     ):
-        """将工作区 Markdown 渲染为 PDF；图片使用相对路径；无需用户确认。"""
+        """按服务端页面版式将 Markdown 渲染为 PDF；无需用户确认。"""
         job = self._load_job(job_id, run_context)
         self._touch_job(job["jobId"], run_context)
         await self._job_status(job, run_context)
@@ -390,6 +405,7 @@ class WorkspaceReportToolkit(Toolkit):
                     "markdown_path": markdown_path,
                     "output_path": output_path,
                     "temporary_path": temporary_pdf,
+                    "page_layout": job.get("_pageLayout"),
                 },
                 run_context,
             )

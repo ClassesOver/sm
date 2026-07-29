@@ -129,6 +129,14 @@ class CodingTaskSupervisor:
     ) -> InstructionReceipt:
         return await self.repository.submit_instruction(scope, instruction_id, content)
 
+    async def revise_task(
+        self,
+        scope: CodingScope,
+        instruction_id: str,
+        content: str,
+    ) -> TaskSnapshot:
+        return await self.repository.revise_completed_task(scope, instruction_id, content)
+
     async def cancel_task(self, scope: CodingScope) -> TaskSnapshot:
         task = await self.repository.cancel_and_reject(scope)
         if self.execution_cleanup is not None:

@@ -1,17 +1,28 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from collections.abc import Callable
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
+from sqlglot import exp, parse
 
 from .contract import (
-    AgentQueryRequest,
     AgentQueryResponse,
-    ModelTermsRequest,
+    MetadataAgentResponse,
+    MetadataModelResponse,
+    ModelTable,
+    ModelTerm,
     ModelTermsResponse,
     ReportingAgent,
+    SourceRef,
+    parse_ddl,
+    schema_hash,
 )
+from .data_source.models import DataSourceConfig
 from .models import ReportingError
 
 MAX_METADATA_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -31,38 +42,44 @@ class ReportingMetadataClient:
         self.timeout_seconds = timeout_seconds
         self.client_factory = client_factory
 
-    async def query_agents(self, source_ids: tuple[str, ...]) -> AgentQueryResponse:
-        request = AgentQueryRequest(sourceIds=source_ids)
-        payload = await self._post("/api/reporting/v1/agents/query", request)
-        return self._validate(AgentQueryResponse, payload, "report_metadata_agents_invalid")
+    async def query_agents(self, _source_ids: tuple[str, ...] = ()) -> AgentQueryResponse:
+        payload = await self._post("/get_agent_json", {})
+        response = self._validate(MetadataAgentResponse, payload, "report_metadata_agents_invalid")
+        ids = [item.id for item in response.agent]
+        if len(ids) != len(set(ids)):
+            raise ReportingError("report_metadata_agents_invalid", "报表 Agent id 重复。")
+        return AgentQueryResponse(
+            agents=tuple(
+                ReportingAgent(
+                    code=str(item.id),
+                    name=item.name,
+                    description=item.desc,
+                    enabled=True,
+                )
+                for item in response.agent
+            )
+        )
 
     async def query_model(
         self,
         *,
         agent_id: str,
-        source_ids: tuple[str, ...],
-        expected_revision: str,
+        sources: tuple[DataSourceConfig, ...],
     ) -> ModelTermsResponse:
-        request = ModelTermsRequest(agentId=agent_id, sourceIds=source_ids)
-        for attempt in range(2):
-            payload = await self._post("/api/reporting/v1/model-terms/query", request)
-            response = self._validate(ModelTermsResponse, payload, "report_metadata_model_invalid")
-            if response.revision == expected_revision:
-                return response
-            if attempt == 0:
-                agents = await self.query_agents(source_ids)
-                selected = next(
-                    (item for item in agents.agents if item.enabled and item.code == agent_id), None
-                )
-                if selected is None:
-                    break
-                expected_revision = selected.model_revision
-                continue
-        raise ReportingError(
-            "report_metadata_revision_changed", "报表元数据 revision 在获取期间发生变化。"
-        )
+        if not re.fullmatch(r"[1-9][0-9]*", agent_id):
+            raise ReportingError("report_agent_invalid", "报表 Agent code 必须是正整数。")
+        payload = await self._post("/get_model_ddl_term_json", {"agent_id": int(agent_id)})
+        response = self._validate(MetadataModelResponse, payload, "report_metadata_model_invalid")
+        try:
+            return _adapt_model_response(response, sources)
+        except ReportingError:
+            raise
+        except Exception as error:
+            raise ReportingError(
+                "report_metadata_model_invalid", "报表元数据响应不符合 DDL/term 契约。"
+            ) from error
 
-    async def _post(self, path: str, request: Any) -> Any:
+    async def _post(self, path: str, request: BaseModel | dict[str, Any]) -> Any:
         headers = {"Accept": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
@@ -72,12 +89,13 @@ class ReportingMetadataClient:
             if owns_client
             else self._provided_client()
         )
+        body = (
+            request.model_dump(mode="json", by_alias=True)
+            if isinstance(request, BaseModel)
+            else request
+        )
         try:
-            response = await client.post(
-                path,
-                headers=headers,
-                json=request.model_dump(mode="json", by_alias=True),
-            )
+            response = await client.post(path, headers=headers, json=body)
         except httpx.TimeoutException as error:
             raise ReportingError("report_metadata_timeout", "报表元数据服务请求超时。") from error
         except httpx.HTTPError as error:
@@ -105,11 +123,98 @@ class ReportingMetadataClient:
         try:
             return model.model_validate(payload)
         except Exception as error:
-            raise ReportingError(code, "报表元数据响应不符合 v1 契约。") from error
+            raise ReportingError(code, "报表元数据响应不符合接口契约。") from error
 
     def _provided_client(self) -> httpx.AsyncClient:
         assert self.client_factory is not None
         return self.client_factory()
+
+
+def _adapt_model_response(
+    response: MetadataModelResponse,
+    sources: tuple[DataSourceConfig, ...],
+) -> ModelTermsResponse:
+    ddl_ids = [item.id for item in response.ddl]
+    term_ids = [item.id for item in response.term]
+    term_keys = [item.key for item in response.term]
+    if (
+        len(ddl_ids) != len(set(ddl_ids))
+        or len(term_ids) != len(set(term_ids))
+        or len(term_keys) != len(set(term_keys))
+    ):
+        raise ReportingError("report_metadata_model_invalid", "DDL id 或术语 id/key 重复。")
+
+    tables: list[ModelTable] = []
+    seen_tables: set[tuple[str, str, str]] = set()
+    for raw in response.ddl:
+        source = _bind_ddl_source(raw.ddl, sources)
+        parsed = parse_ddl(raw.ddl, source_id=source.id, default_database=source.database)
+        if len(parsed) != 1:
+            raise ReportingError("report_metadata_model_invalid", "每个 DDL 模型必须只包含一张表。")
+        table = parsed[0]
+        key = (table.source_id.lower(), table.database.lower(), table.name.lower())
+        if key in seen_tables:
+            raise ReportingError("report_metadata_model_invalid", "DDL 包含重复数据表。")
+        seen_tables.add(key)
+        tables.append(table)
+
+    terms = tuple(
+        ModelTerm(
+            code=str(item.id),
+            name=item.key,
+            description=item.value,
+            kind="definition",
+        )
+        for item in response.term
+    )
+    revision_payload = {
+        "ddl": [item.model_dump(mode="json", by_alias=True) for item in response.ddl],
+        "term": [item.model_dump(mode="json", by_alias=True) for item in response.term],
+    }
+    revision = hashlib.sha256(
+        json.dumps(
+            revision_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    source_ids = {table.source_id for table in tables}
+    return ModelTermsResponse(
+        revision=revision,
+        schemaHash=schema_hash(tables),
+        sourceRefs=tuple(
+            SourceRef(sourceId=source.id) for source in sources if source.id in source_ids
+        ),
+        ddlModels=response.ddl,
+        tables=tuple(tables),
+        terms=terms,
+    )
+
+
+def _bind_ddl_source(ddl: str, sources: tuple[DataSourceConfig, ...]) -> DataSourceConfig:
+    try:
+        statements = parse(ddl, read="mysql")
+    except Exception as error:
+        raise ReportingError("report_ddl_invalid", "DDL 语法无效。") from error
+    if len(statements) != 1 or not isinstance(statements[0], exp.Create):
+        raise ReportingError("report_ddl_invalid", "每个模型只接受一条 CREATE TABLE DDL。")
+    schema = statements[0].this
+    if not isinstance(schema, exp.Schema) or not isinstance(schema.this, exp.Table):
+        raise ReportingError("report_ddl_invalid", "DDL 必须包含明确的表和字段。")
+    table = schema.this
+    if table.catalog:
+        raise ReportingError("report_schema_not_allowed", "DDL 不允许使用 catalog 限定名。")
+    name = str(table.name or "").lower()
+    database = str(table.db or "").lower()
+    matches = []
+    for source in sources:
+        qualified = f"{source.database.lower()}.{name}"
+        if (not database or database == source.database.lower()) and qualified in {
+            item.lower() for item in source.tables
+        }:
+            matches.append(source)
+    if len(matches) != 1:
+        code = "report_schema_source_ambiguous" if len(matches) > 1 else "report_schema_not_allowed"
+        raise ReportingError(code, "DDL 数据表无法唯一绑定到已配置数据源白名单。")
+    return matches[0]
 
 
 def select_reporting_agent(
@@ -118,6 +223,8 @@ def select_reporting_agent(
 ) -> ReportingAgent | tuple[ReportingAgent, ...] | None:
     enabled = tuple(item for item in response.agents if item.enabled)
     if requested_agent_id is not None:
+        if not re.fullmatch(r"[1-9][0-9]*", requested_agent_id):
+            raise ReportingError("report_agent_invalid", "报表 Agent code 必须是正整数。")
         selected = next((item for item in enabled if item.code == requested_agent_id), None)
         if selected is None:
             raise ReportingError("report_agent_invalid", "所选报表 Agent 不存在或未启用。")

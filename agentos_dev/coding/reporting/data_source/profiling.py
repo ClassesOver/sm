@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 
@@ -34,9 +34,11 @@ _BOUNDED_TYPES = re.compile(
 async def collect_data_shape(
     adapter: DataSourceAdapter,
     *,
+    catalog_scope: tuple[CatalogTable, ...],
     period_start: date,
     period_end: date,
     period_columns: Mapping[str, str],
+    period_granularities: Mapping[str, Literal["date", "year"]] | None = None,
     metadata_revision: str,
     schema_hash: str,
     global_limiter: anyio.CapacityLimiter | None = None,
@@ -46,12 +48,18 @@ async def collect_data_shape(
     try:
         catalog = await adapter.catalog()
         _validate_catalog(adapter, catalog)
+        catalog = _catalog_scope(adapter, catalog, catalog_scope)
         for table in catalog:
             period_column = period_columns.get(table.qualified_name)
             if not period_column or period_column not in {item.name for item in table.columns}:
                 raise ReportingError(
                     "report_period_column_missing",
                     f"数据表 {table.qualified_name} 缺少有效的期间字段映射。",
+                )
+            granularity = (period_granularities or {}).get(table.qualified_name, "date")
+            if granularity not in {"date", "year"}:
+                raise ReportingError(
+                    "report_period_granularity_invalid", "数据表期间粒度配置无效。"
                 )
         source_limiter = anyio.CapacityLimiter(adapter.config.limits.profile_concurrency)
         results: list[tuple[TableDataShape, int] | None] = [None] * len(catalog)
@@ -61,6 +69,7 @@ async def collect_data_shape(
                 adapter,
                 table,
                 period_column=period_columns[table.qualified_name],
+                period_granularity=(period_granularities or {}).get(table.qualified_name, "date"),
                 period_start=period_start,
                 period_end=period_end,
                 source_limiter=source_limiter,
@@ -99,6 +108,7 @@ async def _profile_table(
     table: CatalogTable,
     *,
     period_column: str,
+    period_granularity: Literal["date", "year"],
     period_start: date,
     period_end: date,
     source_limiter: anyio.CapacityLimiter,
@@ -111,10 +121,16 @@ async def _profile_table(
             f"数据表 {table.qualified_name} 不包含期间字段 {period_column}。",
         )
     period_identifier = _identifier(period_column)
-    period_filter = (
-        f"{period_identifier} >= '{period_start.isoformat()}' AND "
-        f"{period_identifier} <= '{period_end.isoformat()}'"
-    )
+    if period_granularity == "year":
+        period_filter = (
+            f"{period_identifier} >= {period_start.year} AND "
+            f"{period_identifier} <= {period_end.year}"
+        )
+    else:
+        period_filter = (
+            f"{period_identifier} >= '{period_start.isoformat()}' AND "
+            f"{period_identifier} <= '{period_end.isoformat()}'"
+        )
     qualified = f"{_identifier(table.database)}.{_identifier(table.name)}"
     base_aliases = (
         "total_row_count",
@@ -171,27 +187,42 @@ async def _profile_table(
         batches.append((tuple(aliases), sql))
 
     batch_values: list[tuple[Any, ...] | None] = [None] * len(batches)
-    month_result: QueryResult | None = None
+    coverage_result: QueryResult | None = None
 
     async def profile_batch(index: int, aliases: tuple[str, ...], sql: str) -> None:
         batch_values[index] = _single_row(
             await _limited_query(adapter, sql, source_limiter, global_limiter), aliases
         )
 
-    month_sql = (
-        f"SELECT DATE_FORMAT({period_identifier}, '%Y-%m') AS month, "
-        f"COUNT(*) AS month_count FROM {qualified} WHERE {period_filter} "
-        "GROUP BY month ORDER BY month"
-    )
+    if period_granularity == "year":
+        coverage_sql = (
+            f"SELECT CAST({period_identifier} AS CHAR) AS year, "
+            f"COUNT(*) AS year_count FROM {qualified} WHERE {period_filter} "
+            "GROUP BY year ORDER BY year"
+        )
+        coverage_columns = ("year", "year_count")
+        expected_periods = tuple(
+            str(year) for year in range(period_start.year, period_end.year + 1)
+        )
+    else:
+        coverage_sql = (
+            f"SELECT DATE_FORMAT({period_identifier}, '%Y-%m') AS month, "
+            f"COUNT(*) AS month_count FROM {qualified} WHERE {period_filter} "
+            "GROUP BY month ORDER BY month"
+        )
+        coverage_columns = ("month", "month_count")
+        expected_periods = _expected_months(period_start, period_end)
 
-    async def profile_months() -> None:
-        nonlocal month_result
-        month_result = await _limited_query(adapter, month_sql, source_limiter, global_limiter)
+    async def profile_coverage() -> None:
+        nonlocal coverage_result
+        coverage_result = await _limited_query(
+            adapter, coverage_sql, source_limiter, global_limiter
+        )
 
     async with anyio.create_task_group() as task_group:
         for index, (batch_aliases, sql) in enumerate(batches):
             task_group.start_soon(profile_batch, index, batch_aliases, sql)
-        task_group.start_soon(profile_months)
+        task_group.start_soon(profile_coverage)
 
     for (batch_aliases, _sql), values in zip(batches, batch_values, strict=True):
         if values is None:
@@ -199,13 +230,12 @@ async def _profile_table(
         for alias, value in zip(batch_aliases, values, strict=True):
             index = int(alias.split("_", 1)[0][1:])
             raw_statistics.setdefault(index, {})[alias.split("_", 1)[1]] = value
-    if month_result is None:
-        raise ReportingError("report_data_shape_failed", "月份覆盖结果缺失。")
+    if coverage_result is None:
+        raise ReportingError("report_data_shape_failed", "期间覆盖结果缺失。")
     query_count = 2 + len(batches)
-    if month_result.columns != ("month", "month_count"):
-        raise ReportingError("report_data_shape_failed", "月份覆盖聚合字段无效。")
-    month_coverage = _month_coverage(month_result, period_start, period_end, period_row_count)
-    expected_months = _expected_months(period_start, period_end)
+    if coverage_result.columns != coverage_columns:
+        raise ReportingError("report_data_shape_failed", "期间覆盖聚合字段无效。")
+    period_coverage = _period_coverage(coverage_result, expected_periods, period_row_count)
 
     column_shapes = [
         _column_shape(
@@ -247,7 +277,8 @@ async def _profile_table(
         column_shapes[index] = column_shapes[index].model_copy(update={"top_values": top_values})
         query_count += 1
 
-    covered = set(month_coverage)
+    covered = set(period_coverage)
+    missing_periods = tuple(item for item in expected_periods if item not in covered)
     return (
         TableDataShape(
             sourceId=table.source_id,
@@ -260,8 +291,9 @@ async def _profile_table(
             firstEffectiveDate=first_effective_date,
             lastEffectiveDate=last_effective_date,
             columnCount=len(table.columns),
-            monthCoverage=month_coverage,
-            missingMonths=tuple(month for month in expected_months if month not in covered),
+            periodGranularity=period_granularity,
+            periodCoverage=period_coverage,
+            missingPeriods=missing_periods,
             columns=tuple(column_shapes),
         ),
         query_count,
@@ -391,26 +423,25 @@ def _single_row(result: QueryResult, aliases: tuple[str, ...]) -> tuple[Any, ...
     return values
 
 
-def _month_coverage(
+def _period_coverage(
     result: QueryResult,
-    period_start: date,
-    period_end: date,
+    expected_periods: tuple[str, ...],
     period_row_count: int,
 ) -> tuple[str, ...]:
-    expected = set(_expected_months(period_start, period_end))
-    months: list[str] = []
+    expected = set(expected_periods)
+    periods: list[str] = []
     counted_rows = 0
     for row in result.rows:
         if len(row) != 2 or row[0] is None:
             raise ReportingError("report_data_shape_failed", "月份覆盖聚合结果无效。")
-        month = str(row[0])
+        period = str(row[0])
         counted_rows += _integer(row[1])
-        if month not in expected or month in months:
-            raise ReportingError("report_data_shape_failed", "月份覆盖聚合结果无效。")
-        months.append(month)
+        if period not in expected or period in periods:
+            raise ReportingError("report_data_shape_failed", "期间覆盖聚合结果无效。")
+        periods.append(period)
     if counted_rows != period_row_count:
-        raise ReportingError("report_data_shape_failed", "月份覆盖行数与期间行数不一致。")
-    return tuple(sorted(months))
+        raise ReportingError("report_data_shape_failed", "期间覆盖行数与期间行数不一致。")
+    return tuple(sorted(periods))
 
 
 def _top_values(result: QueryResult, row_count: int, *, limit: int) -> tuple[TopValue, ...]:
@@ -454,6 +485,60 @@ def _validate_catalog(adapter: DataSourceAdapter, catalog: tuple[CatalogTable, .
         seen.add(qualified)
     if seen != allowed:
         raise ReportingError("report_catalog_drift", "实时 catalog 缺少允许的数据表。")
+
+
+def _catalog_scope(
+    adapter: DataSourceAdapter,
+    catalog: tuple[CatalogTable, ...],
+    requested: tuple[CatalogTable, ...],
+) -> tuple[CatalogTable, ...]:
+    actual = {table.qualified_name.lower(): table for table in catalog}
+    seen: set[str] = set()
+    scoped: list[CatalogTable] = []
+    for expected in requested:
+        qualified = expected.qualified_name.lower()
+        if (
+            expected.source_id != adapter.config.id
+            or expected.database.lower() != adapter.config.database.lower()
+            or qualified in seen
+            or not expected.columns
+        ):
+            raise ReportingError("report_catalog_drift", "结构快照范围无效。")
+        current = actual.get(qualified)
+        if current is None:
+            raise ReportingError("report_catalog_drift", "实时 catalog 缺少结构快照数据表。")
+        current_columns = {column.name.lower(): column for column in current.columns}
+        selected: list[CatalogColumn] = []
+        selected_names: set[str] = set()
+        for expected_column in expected.columns:
+            name = expected_column.name.lower()
+            current_column = current_columns.get(name)
+            if (
+                current_column is None
+                or name in selected_names
+                or _normalized_type(current_column.data_type)
+                != _normalized_type(expected_column.data_type)
+                or current_column.nullable != expected_column.nullable
+            ):
+                raise ReportingError("report_catalog_drift", "实时 catalog 与结构快照不一致。")
+            selected.append(current_column)
+            selected_names.add(name)
+        scoped.append(
+            CatalogTable(
+                source_id=current.source_id,
+                database=current.database,
+                name=current.name,
+                columns=tuple(selected),
+            )
+        )
+        seen.add(qualified)
+    if not scoped:
+        raise ReportingError("report_catalog_drift", "结构快照范围不能为空。")
+    return tuple(scoped)
+
+
+def _normalized_type(value: str) -> str:
+    return re.sub(r"\s+", "", value).upper()
 
 
 def _expected_months(period_start: date, period_end: date) -> tuple[str, ...]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import date, timedelta
 from typing import Any
 
@@ -191,11 +192,33 @@ def resolve_schema_snapshot(
         if ddl_tables is not None and schema_hash(ddl_tables) != schema_hash(metadata_tables):
             raise ReportingError("report_schema_conflict", "API 模型与输入 DDL 的结构不一致。")
         requested = metadata_tables
+        source_prefix = f"{source.id}.".lower()
+        source_terms = tuple(
+            term.model_copy(
+                update={
+                    "field_refs": tuple(
+                        field_ref
+                        for field_ref in term.field_refs
+                        if field_ref.lower().startswith(source_prefix)
+                    )
+                }
+            )
+            for term in metadata.terms
+            if not term.field_refs
+            or any(field_ref.lower().startswith(source_prefix) for field_ref in term.field_refs)
+        )
+        source_ddl_models = tuple(
+            raw
+            for raw, table in zip(metadata.ddl_models, metadata.tables, strict=True)
+            if table.source_id == source.id
+        )
         snapshot = SourceSchemaSnapshot(
             source="metadata_api",
             revision=metadata.revision,
             schemaHash=schema_hash(requested),
+            ddlModels=source_ddl_models,
             tables=requested,
+            terms=source_terms,
         )
     else:
         assert ddl_tables is not None
@@ -218,6 +241,7 @@ def approve_query_batch(
     queries: list[dict[str, str]],
     *,
     sources: dict[str, StarRocksSourceConfig],
+    snapshots: tuple[SourceSchemaSnapshot, ...],
     envelope: ReportRequestEnvelope,
     requirements: tuple[QueryRequirement, ...],
 ) -> tuple[ApprovedQuery, ...]:
@@ -228,6 +252,7 @@ def approve_query_batch(
     requirement_map = {item.requirement_id: item for item in requirements}
     if not requirements or len(requirement_map) != len(requirements):
         raise ReportingError("report_query_batch_invalid", "SQL requirements 不能为空或重复。")
+    snapshot_tables = _snapshot_tables(snapshots)
     for item in queries:
         if set(item) != {"requirementId", "sourceId", "sql"}:
             raise ReportingError("report_query_batch_invalid", "SQL 批次字段无效。")
@@ -240,14 +265,26 @@ def approve_query_batch(
             raise ReportingError(
                 "report_query_batch_invalid", "SQL 与 requirement 或 source 不匹配。"
             )
+        scoped_tables = snapshot_tables.get(source.id)
+        if scoped_tables is None:
+            raise ReportingError("report_query_scope_invalid", "SQL 数据源缺少结构快照。")
+        _validate_requirement_scope(
+            requirement,
+            database=source.database,
+            snapshot_tables=scoped_tables,
+        )
         sql = validate_starrocks_read_only_sql(
-            item["sql"], database=source.database, allowed_tables=source.tables
+            item["sql"],
+            database=source.database,
+            allowed_tables=tuple(scoped_tables),
         )
         _validate_query_contract(
             sql,
             database=source.database,
             requirement=requirement,
             period=envelope.period,
+            period_granularities=source.period_granularities,
+            snapshot_tables=scoped_tables,
         )
         result.append(
             ApprovedQuery(
@@ -263,19 +300,67 @@ def approve_query_batch(
     return tuple(result)
 
 
+def _snapshot_tables(
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> dict[str, dict[str, ModelTable]]:
+    result: dict[str, dict[str, ModelTable]] = {}
+    for snapshot in snapshots:
+        source_ids = {table.source_id for table in snapshot.tables}
+        if len(source_ids) != 1:
+            raise ReportingError("report_query_scope_invalid", "结构快照数据源范围无效。")
+        source_id = next(iter(source_ids))
+        if source_id in result:
+            raise ReportingError("report_query_scope_invalid", "结构快照数据源重复。")
+        tables: dict[str, ModelTable] = {}
+        for table in snapshot.tables:
+            qualified = f"{table.database.lower()}.{table.name.lower()}"
+            if qualified in tables:
+                raise ReportingError("report_query_scope_invalid", "结构快照数据表重复。")
+            tables[qualified] = table
+        result[source_id] = tables
+    return result
+
+
+def _validate_requirement_scope(
+    requirement: QueryRequirement,
+    *,
+    database: str,
+    snapshot_tables: dict[str, ModelTable],
+) -> None:
+    available_dimensions: set[str] = set()
+    for requested in requirement.tables:
+        qualified = _qualified_requirement_table(requested.table, database)
+        table = snapshot_tables.get(qualified)
+        if table is None:
+            raise ReportingError("report_query_scope_invalid", "取数需求引用了结构快照外的数据表。")
+        columns = {column.name.lower() for column in table.columns}
+        required = {
+            requested.period_column.lower(),
+            *requested.measure_columns,
+            *requirement.grain_columns,
+        }
+        if required - columns:
+            raise ReportingError("report_query_scope_invalid", "取数需求引用了结构快照外的字段。")
+        available_dimensions.update(columns)
+    if set(requirement.dimension_columns) - available_dimensions:
+        raise ReportingError("report_query_scope_invalid", "取数需求维度不在结构快照内。")
+
+
 def _validate_query_contract(
     sql: str,
     *,
     database: str,
     requirement: QueryRequirement,
     period: ReportPeriod,
+    period_granularities: Mapping[str, str],
+    snapshot_tables: dict[str, ModelTable],
 ) -> None:
     statement = parse_one(sql, read="mysql")
     scopes = tuple(traverse_scope(statement))
     expected_tables = {
         _qualified_requirement_table(item.table, database): item for item in requirement.tables
     }
-    physical_scopes: list[tuple[Scope, str, RequirementTable]] = []
+    physical_scopes: list[tuple[Scope, str, RequirementTable, ModelTable]] = []
     actual_tables: set[str] = set()
     for scope in scopes:
         physical_sources = [
@@ -292,20 +377,25 @@ def _validate_query_contract(
             qualified = _qualified_sql_table(table, database)
             actual_tables.add(qualified)
             table_requirement = expected_tables.get(qualified)
-            if table_requirement is None:
+            snapshot_table = snapshot_tables.get(qualified)
+            if table_requirement is None or snapshot_table is None:
                 raise ReportingError(
                     "report_query_batch_invalid", "SQL 读取表与 requirement 不一致。"
                 )
-            physical_scopes.append((scope, alias, table_requirement))
+            physical_scopes.append((scope, alias, table_requirement, snapshot_table))
     if actual_tables != set(expected_tables):
         raise ReportingError("report_query_batch_invalid", "SQL 未覆盖 requirement 声明的全部表。")
 
-    for scope, alias, table_requirement in physical_scopes:
+    for scope, alias, table_requirement, snapshot_table in physical_scopes:
+        _validate_scope_columns(scope, alias=alias, table=snapshot_table)
         if not _has_complete_period_filter(
             scope.expression,
             alias=alias,
             column=table_requirement.period_column.lower(),
             period=period,
+            granularity=period_granularities.get(
+                _qualified_requirement_table(table_requirement.table, database), "date"
+            ),
         ):
             raise ReportingError(
                 "report_query_period_invalid", "SQL 必须对每张表包含完整且精确的报表期间约束。"
@@ -329,6 +419,15 @@ def _validate_query_contract(
                     "report_query_join_grain_invalid", "跨表查询禁止在聚合前连接物理表。"
                 )
             _validate_aggregated_joins(scope.expression, requirement.grain_columns)
+
+
+def _validate_scope_columns(scope: Scope, *, alias: str, table: ModelTable) -> None:
+    allowed = {column.name.lower() for column in table.columns}
+    qualifiers = {"", alias.lower(), table.name.lower()}
+    for column in scope.columns:
+        qualifier = str(column.table or "").lower()
+        if qualifier in qualifiers and str(column.name).lower() not in allowed:
+            raise ReportingError("report_query_scope_invalid", "SQL 引用了结构快照外的字段。")
 
 
 def _qualified_requirement_table(table: str, database: str) -> str:
@@ -365,6 +464,7 @@ def _has_complete_period_filter(
     alias: str,
     column: str,
     period: ReportPeriod,
+    granularity: str,
 ) -> bool:
     where = expression.args.get("where")
     if where is None:
@@ -373,30 +473,33 @@ def _has_complete_period_filter(
     upper = False
     for predicate in _and_predicates(where.this):
         if isinstance(predicate, exp.Between) and _matches_column(predicate.this, alias, column):
-            if (
-                _literal_date(predicate.args.get("low")) != period.start
-                or _literal_date(predicate.args.get("high")) != period.end
-            ):
+            if granularity == "year":
+                valid = (
+                    _literal_year(predicate.args.get("low")) == period.start.year
+                    and _literal_year(predicate.args.get("high")) == period.end.year
+                )
+            else:
+                valid = (
+                    _literal_date(predicate.args.get("low")) == period.start
+                    and _literal_date(predicate.args.get("high")) == period.end
+                )
+            if not valid:
                 return False
             lower = True
             upper = True
         elif isinstance(predicate, (exp.GTE, exp.GT, exp.LTE, exp.LT)):
             left, right = predicate.this, predicate.expression
             if _matches_column(left, alias, column):
-                value = _literal_date(right)
-                valid_lower = isinstance(predicate, exp.GTE) and value == period.start
-                valid_upper = (isinstance(predicate, exp.LTE) and value == period.end) or (
-                    isinstance(predicate, exp.LT) and value == period.end + timedelta(days=1)
+                valid_lower, valid_upper = _period_bounds(
+                    predicate, right, period=period, granularity=granularity
                 )
                 if not valid_lower and not valid_upper:
                     return False
                 lower = lower or valid_lower
                 upper = upper or valid_upper
             elif _matches_column(right, alias, column):
-                value = _literal_date(left)
-                valid_lower = isinstance(predicate, exp.LTE) and value == period.start
-                valid_upper = (isinstance(predicate, exp.GTE) and value == period.end) or (
-                    isinstance(predicate, exp.GT) and value == period.end + timedelta(days=1)
+                valid_lower, valid_upper = _reverse_period_bounds(
+                    predicate, left, period=period, granularity=granularity
                 )
                 if not valid_lower and not valid_upper:
                     return False
@@ -427,6 +530,59 @@ def _literal_date(expression: exp.Expression | None) -> date | None:
         return date.fromisoformat(str(expression.this))
     except ValueError:
         return None
+
+
+def _literal_year(expression: exp.Expression | None) -> int | None:
+    if not isinstance(expression, exp.Literal) or expression.is_string:
+        return None
+    try:
+        return int(str(expression.this))
+    except ValueError:
+        return None
+
+
+def _period_bounds(
+    predicate: exp.Expression,
+    value_expression: exp.Expression | None,
+    *,
+    period: ReportPeriod,
+    granularity: str,
+) -> tuple[bool, bool]:
+    if granularity == "year":
+        year_value = _literal_year(value_expression)
+        return (
+            isinstance(predicate, exp.GTE) and year_value == period.start.year,
+            (isinstance(predicate, exp.LTE) and year_value == period.end.year)
+            or (isinstance(predicate, exp.LT) and year_value == period.end.year + 1),
+        )
+    date_value = _literal_date(value_expression)
+    return (
+        isinstance(predicate, exp.GTE) and date_value == period.start,
+        (isinstance(predicate, exp.LTE) and date_value == period.end)
+        or (isinstance(predicate, exp.LT) and date_value == period.end + timedelta(days=1)),
+    )
+
+
+def _reverse_period_bounds(
+    predicate: exp.Expression,
+    value_expression: exp.Expression | None,
+    *,
+    period: ReportPeriod,
+    granularity: str,
+) -> tuple[bool, bool]:
+    if granularity == "year":
+        year_value = _literal_year(value_expression)
+        return (
+            isinstance(predicate, exp.LTE) and year_value == period.start.year,
+            (isinstance(predicate, exp.GTE) and year_value == period.end.year)
+            or (isinstance(predicate, exp.GT) and year_value == period.end.year + 1),
+        )
+    date_value = _literal_date(value_expression)
+    return (
+        isinstance(predicate, exp.LTE) and date_value == period.start,
+        (isinstance(predicate, exp.GTE) and date_value == period.end)
+        or (isinstance(predicate, exp.GT) and date_value == period.end + timedelta(days=1)),
+    )
 
 
 def _validate_aggregated_joins(expression: exp.Expression, grain_columns: tuple[str, ...]) -> None:

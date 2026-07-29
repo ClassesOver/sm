@@ -76,6 +76,7 @@ from .coding.reporting.entrypoints import ReportServerIdentity
 from .coding.reporting.instructions import build_report_agent_instructions
 from .coding.reporting.metadata import ReportingMetadataClient
 from .coding.reporting.models import ReportingError
+from .coding.reporting.profile import load_configured_reporting_profiles
 from .coding.reporting.publishing import (
     ReportDownloadCallerScope,
     ReportDownloadGrantService,
@@ -917,6 +918,7 @@ report_runtime = ReportWorkflowRuntime(
     supervisor=report_supervisor,
     workspace_service=workspace_service,
     registry=report_source_registry,
+    profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
     metadata_client=(
         ReportingMetadataClient(
             settings.report_metadata_url,

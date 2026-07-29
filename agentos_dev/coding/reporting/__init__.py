@@ -24,6 +24,14 @@ from .models import (
     ReportReviewSnapshot,
     ReportWorkflowControl,
 )
+from .profile import (
+    CapabilitySet,
+    EffectiveReportingProfile,
+    ReconciliationShape,
+    ReportingProfileRegistry,
+    load_configured_reporting_profiles,
+    resolve_reporting_profile,
+)
 from .workflow_v1 import (
     ApprovedQuery,
     DatasetLineage,
@@ -54,6 +62,7 @@ __all__ = [
     "Citation",
     "DatasetLineage",
     "DataSourceConfig",
+    "EffectiveReportingProfile",
     "PdfArtifactManifest",
     "QueryRequirement",
     "QueryLimits",
@@ -63,6 +72,9 @@ __all__ = [
     "ReportSourceRegistryConfig",
     "ReportWorkflowControl",
     "ReportingError",
+    "ReportingProfileRegistry",
+    "CapabilitySet",
+    "ReconciliationShape",
     "RequirementRelation",
     "RequirementTable",
     "SourceSchemaSnapshot",
@@ -71,7 +83,9 @@ __all__ = [
     "dataset_snapshot_hash",
     "discover_config_paths",
     "load_report_source_registry",
+    "load_configured_reporting_profiles",
     "main",
     "require_sources",
+    "resolve_reporting_profile",
     "validate_rendered_artifacts",
 ]

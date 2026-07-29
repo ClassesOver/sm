@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+import json
+from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
+from typing import Any, cast
 
 import httpx
 import pytest
 
-from agentos_dev.coding.reporting.contract import (
-    AgentQueryResponse,
-    ModelColumn,
-    ModelTable,
-    schema_hash,
-)
+from agentos_dev.coding.reporting.contract import AgentQueryResponse, SourceSchemaSnapshot
+from agentos_dev.coding.reporting.data_source.models import DataSourceConfig
 from agentos_dev.coding.reporting.metadata import (
     MAX_METADATA_RESPONSE_BYTES,
     ReportingMetadataClient,
@@ -22,36 +20,39 @@ from agentos_dev.coding.reporting.models import ReportingError
 SOURCE_IDS = ("operations",)
 
 
-def _agent_payload(*, revision: str = "model-r1", code: str = "operations-agent") -> dict[str, Any]:
-    return {
-        "code": code,
-        "name": "运营分析",
-        "description": "运营模型",
-        "enabled": True,
-        "modelRevision": revision,
-    }
-
-
-def _model_payload(*, revision: str = "model-r1") -> dict[str, Any]:
-    tables = (
-        ModelTable(
-            sourceId="operations",
+def _source() -> DataSourceConfig:
+    return cast(
+        DataSourceConfig,
+        SimpleNamespace(
+            id="operations",
             database="reporting",
-            name="income",
-            columns=(ModelColumn(name="month", dataType="DATE", nullable=False),),
+            tables=("reporting.income",),
         ),
     )
+
+
+def _agent_payload(*, agent_id: int = 1) -> dict[str, Any]:
+    return {"id": agent_id, "name": "运营分析", "desc": "运营模型"}
+
+
+def _model_payload(*, amount_type: str = "DECIMAL(18, 2)") -> dict[str, Any]:
     return {
-        "revision": revision,
-        "schemaHash": schema_hash(tables),
-        "sourceRefs": [{"sourceId": "operations"}],
-        "tables": [table.model_dump(mode="json", by_alias=True) for table in tables],
-        "terms": [],
+        "ddl": [
+            {
+                "id": 10,
+                "modelName": "income",
+                "modelDesc": "收入模型",
+                "ddl": (
+                    f"CREATE TABLE reporting.income (month DATE NOT NULL, amount {amount_type})"
+                ),
+            }
+        ],
+        "term": [{"id": 20, "key": "actual_income", "value": "实际收入"}],
     }
 
 
 def _service(
-    handler: Callable[[httpx.Request], httpx.Response],
+    handler: Callable[[httpx.Request], httpx.Response | Awaitable[httpx.Response]],
 ) -> tuple[ReportingMetadataClient, httpx.AsyncClient]:
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler), base_url="https://metadata.internal"
@@ -63,34 +64,34 @@ def _service(
 
 
 @pytest.mark.anyio
-async def test_两阶段请求都发送契约版本和严格字段():
+async def test_两阶段请求使用既定路由和严格字段():
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path.endswith("/agents/query"):
-            return httpx.Response(200, json={"revision": "agents-r1", "agents": [_agent_payload()]})
+        if request.url.path == "/get_agent_json":
+            return httpx.Response(200, json={"agent": [_agent_payload()]})
         return httpx.Response(200, json=_model_payload())
 
     service, client = _service(handler)
     try:
         agents = await service.query_agents(SOURCE_IDS)
-        await service.query_model(
+        model = await service.query_model(
             agent_id=agents.agents[0].code,
-            source_ids=SOURCE_IDS,
-            expected_revision=agents.agents[0].model_revision,
+            sources=(_source(),),
         )
     finally:
         await client.aclose()
 
     assert [request.url.path for request in requests] == [
-        "/api/reporting/v1/agents/query",
-        "/api/reporting/v1/model-terms/query",
+        "/get_agent_json",
+        "/get_model_ddl_term_json",
     ]
-    assert requests[0].read().decode() == '{"contractVersion":"1","sourceIds":["operations"]}'
-    assert requests[1].read().decode() == (
-        '{"contractVersion":"1","agentId":"operations-agent","sourceIds":["operations"]}'
-    )
+    assert json.loads(requests[0].read()) == {}
+    assert json.loads(requests[1].read()) == {"agent_id": 1}
+    assert model.tables[0].name == "income"
+    assert model.ddl_models[0].model_name == "income"
+    assert model.terms[0].name == "actual_income"
 
 
 @pytest.mark.anyio
@@ -147,18 +148,13 @@ async def test_metadata超时返回稳定错误():
 @pytest.mark.parametrize(
     "payload",
     [
-        {"revision": "agents-r1", "agents": [], "unexpected": True},
-        {
-            "revision": "agents-r1",
-            "agents": [_agent_payload(code=f"agent-{index}") for index in range(101)],
-        },
-        {
-            "revision": "agents-r1",
-            "agents": [_agent_payload() | {"description": "x" * 2_001}],
-        },
+        {"agent": [], "unexpected": True},
+        {"agent": [_agent_payload(agent_id=index + 1) for index in range(101)]},
+        {"agent": [_agent_payload() | {"desc": "x" * 2_001}]},
+        {"agent": [_agent_payload(), _agent_payload()]},
     ],
 )
-async def test_agent响应超出结构或数量限制时拒绝(payload):
+async def test_agent响应超出结构数量或唯一性限制时拒绝(payload):
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payload)
 
@@ -173,105 +169,238 @@ async def test_agent响应超出结构或数量限制时拒绝(payload):
 
 
 @pytest.mark.anyio
-async def test_revision漂移后完整重取且刷新结果一致才成功():
-    paths: list[str] = []
+async def test_model_revision由规范化响应确定性计算():
+    current_payload = _model_payload()
 
-    async def handler(request: httpx.Request) -> httpx.Response:
-        paths.append(request.url.path)
-        if request.url.path.endswith("/agents/query"):
-            return httpx.Response(
-                200,
-                json={"revision": "agents-r2", "agents": [_agent_payload(revision="model-r2")]},
-            )
-        revision = "model-r1-stale" if paths.count(request.url.path) == 1 else "model-r2"
-        return httpx.Response(200, json=_model_payload(revision=revision))
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=current_payload)
 
     service, client = _service(handler)
     try:
-        response = await service.query_model(
-            agent_id="operations-agent",
-            source_ids=SOURCE_IDS,
-            expected_revision="model-r1",
-        )
+        first = await service.query_model(agent_id="1", sources=(_source(),))
+        second = await service.query_model(agent_id="1", sources=(_source(),))
+        current_payload = _model_payload(amount_type="DECIMAL(20, 2)")
+        changed = await service.query_model(agent_id="1", sources=(_source(),))
     finally:
         await client.aclose()
 
-    assert response.revision == "model-r2"
-    assert paths == [
-        "/api/reporting/v1/model-terms/query",
-        "/api/reporting/v1/agents/query",
-        "/api/reporting/v1/model-terms/query",
-    ]
+    assert first.revision == second.revision
+    assert changed.revision != first.revision
+    assert changed.schema_hash != first.schema_hash
 
 
 @pytest.mark.anyio
-async def test_revision完整重取后仍不一致则返回稳定错误():
-    model_calls = 0
+async def test_model说明或term变化也会改变revision():
+    current_payload = _model_payload()
 
-    async def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal model_calls
-        if request.url.path.endswith("/agents/query"):
-            return httpx.Response(
-                200,
-                json={"revision": "agents-r2", "agents": [_agent_payload(revision="model-r2")]},
-            )
-        model_calls += 1
-        return httpx.Response(200, json=_model_payload(revision=f"model-stale-{model_calls}"))
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=current_payload)
 
     service, client = _service(handler)
     try:
-        with pytest.raises(ReportingError) as captured:
-            await service.query_model(
-                agent_id="operations-agent",
-                source_ids=SOURCE_IDS,
-                expected_revision="model-r1",
-            )
+        original = await service.query_model(agent_id="1", sources=(_source(),))
+        current_payload = _model_payload()
+        current_payload["ddl"][0]["modelDesc"] = "另一模型说明"
+        description_changed = await service.query_model(agent_id="1", sources=(_source(),))
+        current_payload = _model_payload()
+        current_payload["term"][0]["value"] = "另一术语定义"
+        term_changed = await service.query_model(agent_id="1", sources=(_source(),))
     finally:
         await client.aclose()
 
-    assert captured.value.code == "report_metadata_revision_changed"
-    assert model_calls == 2
+    assert original.revision != description_changed.revision
+    assert original.revision != term_changed.revision
 
 
 @pytest.mark.anyio
-async def test_revision漂移后agent消失则失败关闭且不再请求模型():
-    model_calls = 0
+async def test_原始ddl逐字保留且可从workflow快照状态恢复():
+    raw_ddl = (
+        "CREATE TABLE reporting.income ("
+        "month DATE NULL COMMENT '月份', amount DECIMAL(18, 2) NOT NULL"
+        ") COMMENT='收入表'"
+    )
+    payload = _model_payload()
+    payload["ddl"][0]["ddl"] = raw_ddl
 
-    async def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal model_calls
-        if request.url.path.endswith("/agents/query"):
-            return httpx.Response(200, json={"revision": "agents-r2", "agents": []})
-        model_calls += 1
-        return httpx.Response(200, json=_model_payload(revision="model-stale"))
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
 
     service, client = _service(handler)
     try:
-        with pytest.raises(ReportingError) as captured:
-            await service.query_model(
-                agent_id="operations-agent",
-                source_ids=SOURCE_IDS,
-                expected_revision="model-r1",
-            )
+        model = await service.query_model(agent_id="1", sources=(_source(),))
     finally:
         await client.aclose()
 
-    assert captured.value.code == "report_metadata_revision_changed"
-    assert model_calls == 1
+    snapshot = SourceSchemaSnapshot(
+        source="metadata_api",
+        revision=model.revision,
+        schemaHash=model.schema_hash,
+        ddlModels=model.ddl_models,
+        tables=model.tables,
+        terms=model.terms,
+    )
+    restored = SourceSchemaSnapshot.model_validate(snapshot.model_dump(mode="json", by_alias=True))
+    assert restored.ddl_models[0].ddl == raw_ddl
+    assert restored.tables[0].description == "收入表"
+    assert restored.tables[0].columns[0].description == "月份"
+    assert restored.tables[0].columns[0].nullable is True
+    assert restored.tables[0].columns[1].nullable is False
 
 
-def test_显式agent选择只接受已启用且存在的code():
+@pytest.mark.anyio
+async def test_真实数量形态接收六项ddl和四项term():
+    table_names = (
+        "dwd_income_budget_view",
+        "dwd_expenditure_budget_view",
+        "dwd_project_budget_view",
+        "dwd_hdc_income_summary_view",
+        "dwd_hdc_cost_table_view",
+        "dm_hdc_gongzuoliang_view",
+    )
+    payload = {
+        "ddl": [
+            {
+                "id": index,
+                "modelName": name,
+                "modelDesc": f"模型 {index}",
+                "ddl": f"CREATE TABLE {name} (data_date DATE NULL)",
+            }
+            for index, name in enumerate(table_names, start=1)
+        ],
+        "term": [
+            {"id": index, "key": f"术语 {index}", "value": f"定义 {index}"} for index in range(1, 5)
+        ],
+    }
+    source = cast(
+        DataSourceConfig,
+        SimpleNamespace(
+            id="rj",
+            database="rj",
+            tables=tuple(f"rj.{name}" for name in table_names),
+        ),
+    )
+    service, client = _service(lambda _request: httpx.Response(200, json=payload))
+    try:
+        model = await service.query_model(agent_id="1", sources=(source,))
+    finally:
+        await client.aclose()
+
+    assert len(model.ddl_models) == len(model.tables) == 6
+    assert len(model.terms) == 4
+    assert [item.kind for item in model.terms] == ["definition"] * 4
+
+
+@pytest.mark.anyio
+async def test_model只允许绑定到配置白名单内的唯一数据源():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_model_payload())
+
+    service, client = _service(handler)
+    disallowed = cast(
+        DataSourceConfig,
+        SimpleNamespace(
+            id="operations",
+            database="reporting",
+            tables=("reporting.cost",),
+        ),
+    )
+    try:
+        with pytest.raises(ReportingError) as captured:
+            await service.query_model(agent_id="1", sources=(disallowed,))
+    finally:
+        await client.aclose()
+
+    assert captured.value.code == "report_schema_not_allowed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        (
+            lambda payload: payload["ddl"].append(dict(payload["ddl"][0])),
+            "report_metadata_model_invalid",
+        ),
+        (
+            lambda payload: payload["term"].append(dict(payload["term"][0])),
+            "report_metadata_model_invalid",
+        ),
+        (
+            lambda payload: payload["ddl"][0].update(ddl="SELECT 1"),
+            "report_ddl_invalid",
+        ),
+        (
+            lambda payload: payload["ddl"][0].update(ddl="CREATE TABLE broken ("),
+            "report_ddl_invalid",
+        ),
+    ],
+)
+async def test_model重复或非法ddl整体拒绝(mutation, expected_code):
+    payload = _model_payload()
+    mutation(payload)
+    service, client = _service(lambda _request: httpx.Response(200, json=payload))
+    try:
+        with pytest.raises(ReportingError) as captured:
+            await service.query_model(agent_id="1", sources=(_source(),))
+    finally:
+        await client.aclose()
+    assert captured.value.code == expected_code
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("agent_id", ("", "0", "-1", "1.0", "agent"))
+async def test_model请求只接受正整数agent_code(agent_id: str):
+    service, client = _service(lambda _request: httpx.Response(500))
+    try:
+        with pytest.raises(ReportingError) as captured:
+            await service.query_model(agent_id=agent_id, sources=(_source(),))
+    finally:
+        await client.aclose()
+    assert captured.value.code == "report_agent_invalid"
+
+
+@pytest.mark.anyio
+async def test_未限定同名表匹配多个数据源时拒绝():
+    payload = _model_payload()
+    payload["ddl"][0]["ddl"] = "CREATE TABLE income (month DATE NOT NULL)"
+    duplicate = cast(
+        DataSourceConfig,
+        SimpleNamespace(id="other", database="other", tables=("other.income",)),
+    )
+    service, client = _service(lambda _request: httpx.Response(200, json=payload))
+    try:
+        with pytest.raises(ReportingError) as captured:
+            await service.query_model(agent_id="1", sources=(_source(), duplicate))
+    finally:
+        await client.aclose()
+    assert captured.value.code == "report_schema_source_ambiguous"
+
+
+@pytest.mark.anyio
+async def test_单项ddl按utf8字节限制为一mib():
+    payload = _model_payload()
+    payload["ddl"][0]["ddl"] = "表" * 400_000
+    service, client = _service(lambda _request: httpx.Response(200, json=payload))
+    try:
+        with pytest.raises(ReportingError) as captured:
+            await service.query_model(agent_id="1", sources=(_source(),))
+    finally:
+        await client.aclose()
+    assert captured.value.code == "report_metadata_model_invalid"
+
+
+def test_显式agent选择只接受已启用且存在的数字code():
     response = AgentQueryResponse.model_validate(
         {
-            "revision": "agents-r1",
             "agents": [
-                _agent_payload(code="enabled"),
-                _agent_payload(code="disabled") | {"enabled": False},
-            ],
+                {"code": "1", "name": "启用", "description": "", "enabled": True},
+                {"code": "2", "name": "停用", "description": "", "enabled": False},
+            ]
         }
     )
 
-    assert select_reporting_agent(response, "enabled").code == "enabled"  # type: ignore[union-attr]
-    for requested in ("disabled", "missing"):
+    assert select_reporting_agent(response, "1").code == "1"  # type: ignore[union-attr]
+    for requested in ("2", "3", "invalid"):
         with pytest.raises(ReportingError) as captured:
             select_reporting_agent(response, requested)
         assert captured.value.code == "report_agent_invalid"

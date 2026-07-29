@@ -21,6 +21,8 @@ from .artifacts_v1 import (
 )
 from .contract import ModelColumn, ModelTable, ReportRequestEnvelope, SourceSchemaSnapshot
 from .data_source import (
+    CatalogColumn,
+    CatalogTable,
     DataShape,
     ReportSourceRegistryConfig,
     StarRocksDataSourceAdapter,
@@ -32,6 +34,19 @@ from .data_sources import ReportDatasetStore
 from .entrypoints import current_server_identity
 from .metadata import ReportingMetadataClient, select_reporting_agent
 from .models import ReportingError
+from .profile import (
+    CapabilitySet,
+    EffectiveReportingProfile,
+    ReconciliationShape,
+    ReportingProfileRegistry,
+    build_outline_shape_view,
+    collect_reconciliation_shapes,
+    parse_field_ref,
+    resolve_reporting_profile,
+)
+from .profile import (
+    resolve_capabilities as resolve_profile_capabilities,
+)
 from .publishing import (
     ReportDownloadGrantService,
     ReportDownloadScope,
@@ -53,6 +68,10 @@ from .workspace import WorkspaceReportToolkit
 REPORT_WORKFLOW_INPUT_STATE_KEY = "report_workflow_input"
 REPORT_SCHEMA_SNAPSHOTS_STATE_KEY = "report_schema_snapshots"
 REPORT_DATA_SHAPES_STATE_KEY = "report_data_shapes"
+REPORT_EFFECTIVE_PROFILE_STATE_KEY = "report_effective_profile"
+REPORT_CAPABILITIES_STATE_KEY = "report_capabilities"
+REPORT_RECONCILIATIONS_STATE_KEY = "report_reconciliations"
+REPORT_OUTLINE_CONTEXT_STATE_KEY = "report_outline_context"
 REPORT_OUTLINE_STATE_KEY = "report_outline"
 REPORT_ANALYSIS_PLAN_STATE_KEY = "report_analysis_plan"
 REPORT_DATA_REQUIREMENTS_STATE_KEY = "report_data_requirements"
@@ -105,6 +124,7 @@ class ReportWorkflowRuntime:
         supervisor: CodingTaskSupervisor,
         workspace_service: WorkspaceService,
         registry: ReportSourceRegistryConfig,
+        profiles: ReportingProfileRegistry,
         metadata_client: ReportingMetadataClient | None = None,
         download_grants: ReportDownloadGrantService | None = None,
     ):
@@ -113,6 +133,7 @@ class ReportWorkflowRuntime:
         self.supervisor = supervisor
         self.workspace_service = workspace_service
         self.registry = registry
+        self.profiles = profiles
         self.metadata_client = metadata_client
         self.download_grants = download_grants
         self.datasets = ReportDatasetStore(workspace_service)
@@ -149,6 +170,8 @@ class ReportWorkflowRuntime:
             db=self.db,
             confirm_source=self.confirm_source,
             profile_source=self.profile_source,
+            resolve_capabilities=self.resolve_capabilities,
+            reconcile_sources=self.reconcile_sources,
             generate_outline=self.generate_outline,
             generate_analysis_plan=self.generate_analysis_plan,
             generate_query_candidates=self.generate_query_candidates,
@@ -161,16 +184,14 @@ class ReportWorkflowRuntime:
     async def cleanup_cancelled(
         self, scope: dict[str, str], _workflow_session_id: str, workflow_run_id: str
     ) -> None:
-        prefix = coding_task_key(workflow_run_id)
-        for revision in range(4):
-            task_id = prefix if revision == 0 else f"{prefix}-revision-{revision}"
-            task = await self.supervisor.repository.get_task_snapshot(task_id)
-            if task is not None and task.state not in {
-                TaskState.COMPLETED,
-                TaskState.FAILED,
-                TaskState.CANCELLED,
-            }:
-                await self.supervisor.cancel_task(task.scope)
+        task_id = coding_task_key(workflow_run_id)
+        task = await self.supervisor.repository.get_task_snapshot(task_id)
+        if task is not None and task.state not in {
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+        }:
+            await self.supervisor.cancel_task(task.scope)
 
     async def issue_http_publication(
         self,
@@ -229,6 +250,7 @@ class ReportWorkflowRuntime:
         source_ids = envelope.source_ids or self.registry.require_defaults()
         configured = require_sources(self.registry.sources, source_ids)
         sources = tuple(self._starrocks_source(item) for item in configured)
+        profile = self._resolve_profile(sources)
         metadata = None
         selected_agent = None
         if self.metadata_client is not None:
@@ -246,8 +268,7 @@ class ReportWorkflowRuntime:
             if selected_agent is not None:
                 metadata = await self.metadata_client.query_model(
                     agent_id=selected_agent.code,
-                    source_ids=source_ids,
-                    expected_revision=selected_agent.model_revision,
+                    sources=configured,
                 )
 
         snapshots: list[SourceSchemaSnapshot] = []
@@ -274,6 +295,8 @@ class ReportWorkflowRuntime:
                     "allowedTables": list(source.tables),
                     "metadataRevision": snapshot.revision,
                     "schemaHash": snapshot.schema_hash,
+                    "reportingProfile": profile.profile_id,
+                    "effectiveProfileHash": profile.effective_profile_hash,
                 }
             )
 
@@ -286,6 +309,7 @@ class ReportWorkflowRuntime:
         state[REPORT_SCHEMA_SNAPSHOTS_STATE_KEY] = [
             item.model_dump(mode="json", by_alias=True) for item in snapshots
         ]
+        state[REPORT_EFFECTIVE_PROFILE_STATE_KEY] = profile.model_dump(mode="json", by_alias=True)
         if selected_agent is not None:
             state[REPORT_WORKFLOW_INPUT_STATE_KEY]["agentId"] = selected_agent.code
         self._assert_state_safe(state)
@@ -311,9 +335,11 @@ class ReportWorkflowRuntime:
             try:
                 shapes[index] = await collect_data_shape(
                     adapter,
+                    catalog_scope=_catalog_scope(snapshot),
                     period_start=envelope.period.start,
                     period_end=envelope.period.end,
                     period_columns=source.period_columns,
+                    period_granularities=source.period_granularities,
                     metadata_revision=snapshot.revision,
                     schema_hash=snapshot.schema_hash,
                     global_limiter=global_limiter,
@@ -342,28 +368,76 @@ class ReportWorkflowRuntime:
         self._assert_state_safe(state)
         return StepOutput(content={"dataShapes": state[REPORT_DATA_SHAPES_STATE_KEY]})
 
+    async def resolve_capabilities(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        capabilities = resolve_profile_capabilities(
+            self._profile(run_context),
+            self._snapshots(run_context),
+            self._data_shapes(run_context),
+        )
+        state = self._state(run_context)
+        state[REPORT_CAPABILITIES_STATE_KEY] = capabilities.model_dump(mode="json", by_alias=True)
+        self._assert_state_safe(state)
+        return StepOutput(content=capabilities)
+
+    async def reconcile_sources(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        profile = self._profile(run_context)
+        if not profile.reconciliations:
+            state = self._state(run_context)
+            state[REPORT_RECONCILIATIONS_STATE_KEY] = []
+            return StepOutput(content={"reconciliations": []})
+        sources = {item.id: item for item in self._sources(run_context)}
+        adapters = {
+            source_id: StarRocksDataSourceAdapter(source) for source_id, source in sources.items()
+        }
+        try:
+            shapes = await collect_reconciliation_shapes(
+                profile,
+                self._capabilities(run_context),
+                adapters=adapters,
+                sources=sources,
+                period=self._envelope(run_context).period,
+            )
+        finally:
+            for adapter in adapters.values():
+                await adapter.aclose()
+        state = self._state(run_context)
+        state[REPORT_RECONCILIATIONS_STATE_KEY] = [
+            item.model_dump(mode="json", by_alias=True) for item in shapes
+        ]
+        self._assert_state_safe(state)
+        return StepOutput(content={"reconciliations": state[REPORT_RECONCILIATIONS_STATE_KEY]})
+
     async def generate_outline(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
+        state = self._state(run_context)
+        outline_context = build_outline_shape_view(
+            self._profile(run_context),
+            self._capabilities(run_context),
+            self._snapshots(run_context),
+            self._data_shapes(run_context),
+            self._reconciliations(run_context),
+        )
+        state[REPORT_OUTLINE_CONTEXT_STATE_KEY] = outline_context
         payload = {
             "reportGoal": self._envelope(run_context).report_goal,
-            "schemas": self._state(run_context)[REPORT_SCHEMA_SNAPSHOTS_STATE_KEY],
-            "dataShapes": self._state(run_context)[REPORT_DATA_SHAPES_STATE_KEY],
-            "requiredSections": [
-                "管理摘要",
-                "月度趋势",
-                "院区对比",
-                "科室排名",
-                "预算偏差",
-                "收入结构",
-                "成本收入比",
-                "结余率",
-                "工作量效率",
-                "异常归因",
-                "管理建议",
-            ],
+            "period": self._envelope(run_context).period.model_dump(mode="json"),
+            "outlineContext": outline_context,
+            "schemas": state[REPORT_SCHEMA_SNAPSHOTS_STATE_KEY],
             "feedback": self._feedback(step_input),
         }
         outline = await self._run_planner(self._outline_agent, payload, run_context)
-        state = self._state(run_context)
+        assert isinstance(outline, ReportOutline)
+        capability_map = self._capabilities(run_context).by_code()
+        required_titles = {
+            section.title
+            for section in self._profile(run_context).sections
+            if section.required and capability_map[section.code].available
+        }
+        if required_titles - set(outline.sections):
+            raise ReportingError("report_outline_invalid", "报告提纲缺少 Profile 必选章节。")
         state[REPORT_OUTLINE_STATE_KEY] = outline.model_dump(mode="json", by_alias=True)
         return StepOutput(content=outline)
 
@@ -376,18 +450,23 @@ class ReportWorkflowRuntime:
             {
                 "reportGoal": self._envelope(run_context).report_goal,
                 "outline": state[REPORT_OUTLINE_STATE_KEY],
+                "outlineContext": state[REPORT_OUTLINE_CONTEXT_STATE_KEY],
                 "schemas": state[REPORT_SCHEMA_SNAPSHOTS_STATE_KEY],
-                "dataShapes": state[REPORT_DATA_SHAPES_STATE_KEY],
                 "rules": [
                     "一次返回完整分析计划和全部 requirements",
                     "每项 requirement 显式声明维度、指标、共同粒度和表关系",
-                    "跨表先按月份、院区、一级科室共同粒度聚合再关联",
-                    "披露差异、缺失月份、零分母和口径限制，不静默年化",
+                    "跨表必须按 requirement 声明的全部共同粒度预聚合后再关联",
+                    "披露数据差异、期间缺失、零分母和口径限制，不做未授权推算",
                 ],
             },
             run_context,
         )
         assert isinstance(bundle, AnalysisBundle)
+        _validate_profile_requirements(
+            bundle.requirements,
+            profile=self._profile(run_context),
+            capabilities=self._capabilities(run_context),
+        )
         requirement_ids = {item.requirement_id for item in bundle.requirements}
         if any(set(item.requirement_ids) - requirement_ids for item in bundle.analyses):
             raise ReportingError("report_analysis_plan_invalid", "分析计划引用了未知 requirement。")
@@ -426,6 +505,7 @@ class ReportWorkflowRuntime:
         approved = approve_query_batch(
             [item.model_dump(mode="json", by_alias=True) for item in generated.queries],
             sources={item.id: item for item in self._sources(run_context)},
+            snapshots=self._snapshots(run_context),
             envelope=self._envelope(run_context),
             requirements=requirements,
         )
@@ -454,6 +534,11 @@ class ReportWorkflowRuntime:
         prepared = await self.report_tools.report_prepare_dataset(
             [item.dataset_id for item in handles], run_context=self._tool_context(run_context)
         )
+        await self.report_tools.bind_page_layout(
+            str(prepared["jobId"]),
+            self._profile(run_context).page_layout.model_dump(mode="json", by_alias=True),
+            run_context=self._tool_context(run_context),
+        )
         state = self._state(run_context)
         datasets = [item.public_dict() for item in handles]
         state[REPORT_DATASET_LINEAGE_STATE_KEY] = [
@@ -481,8 +566,7 @@ class ReportWorkflowRuntime:
             sandbox_id = str(getattr(sandbox, "id", "") or "")
         if not sandbox_id or not self.report_worker.id:
             raise ReportingError("report_worker_unavailable", "报表 Coding 工作区不可用。")
-        root_key = coding_task_key(str(run_context.run_id or "report"))
-        task_id = root_key if revision == 0 else f"{root_key}-revision-{revision}"
+        task_id = coding_task_key(str(run_context.run_id or "report"))
         coding_scope = CodingScope(
             task_id,
             scope["userId"],
@@ -502,6 +586,9 @@ class ReportWorkflowRuntime:
                 "task": "revise" if feedback else "analyze",
                 "reportGoal": self._envelope(run_context).report_goal,
                 "outline": state[REPORT_OUTLINE_STATE_KEY],
+                "effectiveProfile": state[REPORT_EFFECTIVE_PROFILE_STATE_KEY],
+                "capabilities": state[REPORT_CAPABILITIES_STATE_KEY],
+                "reconciliations": state[REPORT_RECONCILIATIONS_STATE_KEY],
                 "analysisPlan": state[REPORT_ANALYSIS_PLAN_STATE_KEY],
                 "dataRequirements": state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
                 "datasets": result["datasets"],
@@ -512,6 +599,7 @@ class ReportWorkflowRuntime:
                 "revision": revision + 1,
                 "codingTaskKey": task_id,
                 "datasetSnapshotHash": dataset_snapshot_hash(lineage),
+                "effectiveProfileHash": self._profile(run_context).effective_profile_hash,
                 "reviewFeedback": feedback,
                 "constraints": [
                     "只读取 Workflow 提交的不可变数据集，不连接数据库",
@@ -527,6 +615,12 @@ class ReportWorkflowRuntime:
         existing = await self.supervisor.repository.get_task_snapshot(task_id)
         if existing is None:
             await self.supervisor.start_task(coding_scope, instruction)
+        elif feedback:
+            await self.supervisor.revise_task(
+                coding_scope,
+                f"report-revision-{revision + 1}",
+                instruction,
+            )
         completed = False
         async for event in self.supervisor.run_task(coding_scope):
             if event.type == "terminal":
@@ -582,7 +676,10 @@ class ReportWorkflowRuntime:
                 "report_artifact_manifest_invalid", "报告产物清单状态无效。"
             ) from error
         await self.report_tools.report_render_markdown(
-            str(result["jobId"]), str(result["markdownPath"]), pdf_path, run_context=context
+            str(result["jobId"]),
+            str(result["markdownPath"]),
+            pdf_path,
+            run_context=context,
         )
         validation = await self.report_tools.report_validate_pdf(
             str(result["jobId"]),
@@ -669,10 +766,21 @@ class ReportWorkflowRuntime:
             or manifest.revision != revision
             or manifest.coding_task_key != task_id
             or manifest.dataset_snapshot_hash != dataset_snapshot_hash(lineage)
+            or manifest.effective_profile_hash != self._profile(run_context).effective_profile_hash
             or manifest.markdown.path != markdown_path
         ):
             raise ReportingError(
                 "report_artifact_manifest_invalid", "报告产物清单与当前任务不一致。"
+            )
+        capability_map = self._capabilities(run_context).by_code()
+        required_sections = {
+            section.code
+            for section in self._profile(run_context).sections
+            if section.required and capability_map[section.code].available
+        }
+        if required_sections - set(manifest.sections):
+            raise ReportingError(
+                "report_artifact_manifest_invalid", "报告产物缺少 Profile 必选章节。"
             )
         for artifact in (manifest.markdown, *manifest.charts):
             current = await self.workspace_service.ahash_file(scope["threadId"], artifact.path)
@@ -713,6 +821,53 @@ class ReportWorkflowRuntime:
             )
         except Exception as error:
             raise ReportingError("report_schema_snapshot_invalid", "结构快照状态无效。") from error
+
+    def _profile(self, run_context: RunContext) -> EffectiveReportingProfile:
+        try:
+            return EffectiveReportingProfile.model_validate(
+                self._state(run_context)[REPORT_EFFECTIVE_PROFILE_STATE_KEY]
+            )
+        except Exception as error:
+            raise ReportingError(
+                "report_profile_state_invalid", "有效 Profile 状态无效。"
+            ) from error
+
+    def _capabilities(self, run_context: RunContext) -> CapabilitySet:
+        try:
+            return CapabilitySet.model_validate(
+                self._state(run_context)[REPORT_CAPABILITIES_STATE_KEY]
+            )
+        except Exception as error:
+            raise ReportingError("report_capability_state_invalid", "报表能力状态无效。") from error
+
+    def _data_shapes(self, run_context: RunContext) -> tuple[DataShape, ...]:
+        try:
+            return tuple(
+                DataShape.model_validate(item)
+                for item in self._state(run_context)[REPORT_DATA_SHAPES_STATE_KEY]
+            )
+        except Exception as error:
+            raise ReportingError("report_data_shape_state_invalid", "数据画像状态无效。") from error
+
+    def _reconciliations(self, run_context: RunContext) -> tuple[ReconciliationShape, ...]:
+        try:
+            return tuple(
+                ReconciliationShape.model_validate(item)
+                for item in self._state(run_context)[REPORT_RECONCILIATIONS_STATE_KEY]
+            )
+        except Exception as error:
+            raise ReportingError("report_reconciliation_state_invalid", "对账状态无效。") from error
+
+    def _resolve_profile(
+        self, sources: tuple[StarRocksSourceConfig, ...]
+    ) -> EffectiveReportingProfile:
+        profile_ids = {source.reporting_profile for source in sources}
+        if len(profile_ids) != 1:
+            raise ReportingError("report_profile_conflict", "本次数据源未绑定同一个报表 Profile。")
+        try:
+            return resolve_reporting_profile(self.profiles, next(iter(profile_ids)))
+        except ValueError as error:
+            raise ReportingError("report_profile_invalid", "报表 Profile 无效。") from error
 
     def _sources(self, run_context: RunContext) -> tuple[StarRocksSourceConfig, ...]:
         return tuple(self._source(item) for item in self._envelope(run_context).source_ids or ())
@@ -807,3 +962,80 @@ def _model_table(table: Any) -> ModelTable:
             for item in table.columns
         ),
     )
+
+
+def _catalog_scope(snapshot: SourceSchemaSnapshot) -> tuple[CatalogTable, ...]:
+    return tuple(
+        CatalogTable(
+            source_id=table.source_id,
+            database=table.database,
+            name=table.name,
+            columns=tuple(
+                CatalogColumn(
+                    name=column.name,
+                    data_type=column.data_type,
+                    nullable=column.nullable,
+                )
+                for column in table.columns
+            ),
+        )
+        for table in snapshot.tables
+    )
+
+
+def _validate_profile_requirements(
+    requirements: tuple[QueryRequirement, ...],
+    *,
+    profile: EffectiveReportingProfile,
+    capabilities: CapabilitySet,
+) -> None:
+    if profile.profile_id == "builtin-generic":
+        return
+    available = {item.code for item in capabilities.capabilities if item.available}
+    dimension_fields = {
+        (parsed.source_id, parsed.qualified_table, parsed.column)
+        for dimension in profile.dimensions
+        if dimension.code in available
+        for value in dimension.field_refs
+        for parsed in (parse_field_ref(value),)
+    }
+    metric_fields = {
+        (parsed.source_id, parsed.qualified_table, parsed.column)
+        for metric in profile.metrics
+        if metric.code in available and metric.field_ref is not None
+        for parsed in (parse_field_ref(metric.field_ref),)
+    }
+    for requirement in requirements:
+        for table in requirement.tables:
+            qualified = (
+                table.table
+                if "." in table.table
+                else next(
+                    (
+                        current[1]
+                        for current in dimension_fields | metric_fields
+                        if current[0] == requirement.source_id
+                        and current[1].endswith(f".{table.table}")
+                    ),
+                    table.table,
+                )
+            )
+            allowed_dimensions = {
+                column
+                for source_id, current_table, column in dimension_fields
+                if source_id == requirement.source_id and current_table == qualified
+            }
+            allowed_metrics = {
+                column
+                for source_id, current_table, column in metric_fields
+                if source_id == requirement.source_id and current_table == qualified
+            }
+            if (
+                table.period_column not in allowed_dimensions
+                or set(requirement.grain_columns) - allowed_dimensions
+                or set(table.measure_columns) - allowed_metrics
+            ):
+                raise ReportingError(
+                    "report_analysis_capability_invalid",
+                    "分析计划引用了不可用或未配置的 Profile capability。",
+                )

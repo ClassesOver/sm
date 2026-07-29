@@ -36,6 +36,7 @@ def draft() -> ReportArtifactManifest:
         revision=1,
         codingTaskKey="report-coding-stable",
         datasetSnapshotHash=dataset_snapshot_hash(lineage()),
+        effectiveProfileHash="f" * 64,
         markdown=ArtifactFile(
             path="reports/revision-1/report.md",
             mediaType="text/markdown",
@@ -83,13 +84,32 @@ def test_产物清单绑定不可变数据集图表引用和revision():
     validate_rendered_artifacts(current, rendered, lineage=lineage())
 
 
+def test_报告产物只要求领域无关的通用章节():
+    assert REQUIRED_REPORT_SECTIONS == {
+        "executive_summary",
+        "scope_and_methodology",
+        "key_findings",
+        "limitations",
+        "recommendations",
+    }
+    assert (
+        not {
+            "campus_comparison",
+            "department_ranking",
+            "budget_variance",
+            "income_structure",
+        }
+        & REQUIRED_REPORT_SECTIONS
+    )
+
+
 @pytest.mark.parametrize(
     ("update", "code"),
     [
         ({"revision": 2}, "report_artifact_revision_mismatch"),
         ({"renderedChartIds": ()}, "report_artifact_chart_missing"),
         ({"citationIds": ()}, "report_artifact_citation_missing"),
-        ({"sections": ("management_summary",)}, "report_artifact_section_missing"),
+        ({"sections": ("executive_summary",)}, "report_artifact_section_missing"),
     ],
 )
 def test_pdf验收拒绝revision或图表引用章节缺失(update: dict[str, object], code: str):

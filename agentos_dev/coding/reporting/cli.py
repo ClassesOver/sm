@@ -23,6 +23,7 @@ from .data_source import load_configured_report_source_registry
 from .entrypoints import parse_cli_envelope
 from .instructions import build_report_agent_instructions
 from .metadata import ReportingMetadataClient
+from .profile import load_configured_reporting_profiles
 from .runtime import ReportWorkflowRuntime
 
 
@@ -72,6 +73,7 @@ async def run_cli(
         supervisor=supervisor,
         workspace_service=context.workspace_service,
         registry=load_configured_report_source_registry(context.settings.report_data_sources_dir),
+        profiles=load_configured_reporting_profiles(context.settings.report_data_sources_dir),
         metadata_client=(
             ReportingMetadataClient(
                 context.settings.report_metadata_url,

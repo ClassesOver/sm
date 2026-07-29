@@ -5,7 +5,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 from pydantic import SecretStr
@@ -26,6 +26,7 @@ _SOURCE_FIELDS = frozenset(
         "database",
         "tables",
         "periodColumns",
+        "periodGranularities",
         "statementTimeoutSeconds",
         "maxRows",
         "maxBytes",
@@ -35,6 +36,7 @@ _SOURCE_FIELDS = frozenset(
         "topValuesLimit",
         "profileConcurrency",
         "queryConcurrency",
+        "reportingProfile",
     }
 )
 _ALLOWED_GRANT_PRIVILEGES = frozenset({"SELECT", "USAGE"})
@@ -50,6 +52,8 @@ class StarRocksSourceConfig:
     database: str
     tables: tuple[str, ...]
     period_columns: dict[str, str]
+    period_granularities: dict[str, Literal["date", "year"]]
+    reporting_profile: str | None
     limits: QueryLimits
     source_type: str = "starrocks"
 
@@ -73,6 +77,8 @@ class StarRocksSourceConfig:
             "database": self.database,
             "tables": list(self.tables),
             "periodColumns": dict(self.period_columns),
+            "periodGranularities": dict(self.period_granularities),
+            "reportingProfile": self.reporting_profile,
             "limits": self.limits.public_dict(),
         }
 
@@ -99,6 +105,7 @@ def parse_starrocks_source(
         raise ValueError(f"报表数据源 {source_id} 的 database 无效。")
     tables = _tables(raw.get("tables"), database)
     period_columns = _period_columns(raw.get("periodColumns"), tables)
+    period_granularities = _period_granularities(raw.get("periodGranularities"), tables)
     dsn = str(environ.get(dsn_env) or "").strip()
     if not dsn:
         raise ValueError(f"报表数据源 {source_id} 缺少环境变量 {dsn_env}。")
@@ -118,6 +125,8 @@ def parse_starrocks_source(
         database=database.lower(),
         tables=tables,
         period_columns=period_columns,
+        period_granularities=period_granularities,
+        reporting_profile=_optional_id(raw.get("reportingProfile"), source_id),
         limits=QueryLimits(
             statement_timeout_seconds=_bounded(raw.get("statementTimeoutSeconds"), 30, 1, 300),
             max_rows=_bounded(raw.get("maxRows"), 1_000_000, 1, 5_000_000),
@@ -267,6 +276,14 @@ def _name(value: Any, source_id: str) -> str:
     return value.strip()
 
 
+def _optional_id(value: Any, source_id: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
+        raise ValueError(f"报表数据源 {source_id} 的 reportingProfile 无效。")
+    return value
+
+
 def _tables(value: Any, database: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not value or len(value) > 200:
         raise ValueError("报表数据源 tables 必须是非空数组。")
@@ -295,6 +312,18 @@ def _period_columns(value: Any, tables: tuple[str, ...]) -> dict[str, str]:
             raise ValueError(f"报表数据源 {table} 的期间字段无效。")
         result[table] = column
     return result
+
+
+def _period_granularities(
+    value: Any, tables: tuple[str, ...]
+) -> dict[str, Literal["date", "year"]]:
+    if value is None:
+        return {table: "date" for table in tables}
+    if not isinstance(value, dict) or set(value) != set(tables):
+        raise ValueError("报表数据源 periodGranularities 必须完整覆盖 tables。")
+    if any(item not in {"date", "year"} for item in value.values()):
+        raise ValueError("报表数据源 periodGranularities 只支持 date 或 year。")
+    return {table: item for table, item in value.items()}
 
 
 def _bounded(value: Any, default: int, minimum: int, maximum: int) -> int:

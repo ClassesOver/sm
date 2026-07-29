@@ -153,12 +153,14 @@ def test_公开配置不包含dsn或凭据(tmp_path: Path):
         environ={"REPORT_DSN": "starrocks://reader:private@db.internal:9030/reporting"},
     )
 
-    public = registry.sources["operations"].public_dict()
+    source = registry.sources["operations"]
+    public = source.public_dict()
 
     assert "dsn" not in repr(public).lower()
     assert "private" not in repr(public)
     assert "db.internal" not in repr(public)
     assert "private" not in repr(registry.sources["operations"])
+    assert source.reporting_profile is None
     assert public["limits"] == {
         "statementTimeoutSeconds": 30,
         "maxRows": 1_000_000,
@@ -170,6 +172,20 @@ def test_公开配置不包含dsn或凭据(tmp_path: Path):
         "profileConcurrency": 3,
         "queryConcurrency": 2,
     }
+
+
+def test_数据源只保存profile引用(tmp_path: Path):
+    raw = starrocks_source("operations", dsn_env="REPORT_DSN")
+    raw["reportingProfile"] = "hospital-operations"
+    write_config(tmp_path, {"version": "1", "sources": [raw]})
+
+    registry = load_report_source_registry(
+        tmp_path,
+        tmp_path,
+        environ={"REPORT_DSN": "starrocks://reader:private@db.internal:9030/reporting"},
+    )
+
+    assert registry.sources["operations"].reporting_profile == "hospital-operations"
 
 
 def test_查找拒绝越界和配置符号链接(tmp_path: Path):

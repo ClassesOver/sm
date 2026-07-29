@@ -1,5 +1,38 @@
 {
   "version": "1",
-  "defaultSourceIds": [],
-  "sources": []
+  "defaultSourceIds": ["rj"],
+  "sources": [
+    {
+      "id": "rj",
+      "type": "starrocks",
+      "name": "瑞金经营分析",
+      "dsnEnv": "REPORT_RJ_STARROCKS_DSN",
+      "database": "rj",
+      "reportingProfile": "base",
+      "tables": [
+        "rj.dwd_income_budget_view",
+        "rj.dwd_expenditure_budget_view",
+        "rj.dwd_project_budget_view",
+        "rj.dwd_hdc_income_summary_view",
+        "rj.dwd_hdc_cost_table_view",
+        "rj.dm_hdc_gongzuoliang_view"
+      ],
+      "periodColumns": {
+        "rj.dwd_income_budget_view": "data_date",
+        "rj.dwd_expenditure_budget_view": "data_date",
+        "rj.dwd_project_budget_view": "period_year",
+        "rj.dwd_hdc_income_summary_view": "data_date",
+        "rj.dwd_hdc_cost_table_view": "data_date",
+        "rj.dm_hdc_gongzuoliang_view": "data_date"
+      },
+      "periodGranularities": {
+        "rj.dwd_income_budget_view": "date",
+        "rj.dwd_expenditure_budget_view": "date",
+        "rj.dwd_project_budget_view": "year",
+        "rj.dwd_hdc_income_summary_view": "date",
+        "rj.dwd_hdc_cost_table_view": "date",
+        "rj.dm_hdc_gongzuoliang_view": "date"
+      }
+    }
+  ]
 }

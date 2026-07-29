@@ -1,28 +1,38 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
 from ag_ui.core import RunAgentInput
 from agno.run import RunContext
-from agno.workflow.types import StepInput
+from agno.workflow.types import StepInput, StepOutput
 
 from agentos_dev.coding.reporting.contract import (
     AgentQueryResponse,
     ModelColumn,
     ModelTable,
+    ModelTerm,
     ModelTermsResponse,
+    RawDdlModel,
     ReportRequestEnvelope,
+    SourceSchemaSnapshot,
     schema_hash,
 )
 from agentos_dev.coding.reporting.data_source import CONFIG_FILE_NAME, load_report_source_registry
 from agentos_dev.coding.reporting.entrypoints import prepare_agui_envelope
 from agentos_dev.coding.reporting.metadata import ReportingMetadataClient, select_reporting_agent
 from agentos_dev.coding.reporting.models import ReportingError
+from agentos_dev.coding.reporting.profile import (
+    ReportingProfileRegistry,
+    resolve_capabilities,
+    resolve_reporting_profile,
+)
 from agentos_dev.coding.reporting.publishing import (
     InMemoryDownloadGrantRepository,
     ReportDownloadGrantService,
@@ -31,10 +41,16 @@ from agentos_dev.coding.reporting.publishing import (
     publication_result,
 )
 from agentos_dev.coding.reporting.runtime import (
+    REPORT_CAPABILITIES_STATE_KEY,
+    REPORT_DATA_SHAPES_STATE_KEY,
+    REPORT_EFFECTIVE_PROFILE_STATE_KEY,
+    REPORT_RECONCILIATIONS_STATE_KEY,
     REPORT_SCHEMA_SNAPSHOTS_STATE_KEY,
     REPORT_WORKFLOW_INPUT_STATE_KEY,
+    ReportOutline,
     ReportWorkflowRuntime,
 )
+from agentos_dev.coding.reporting.workflow import _requires_source_review
 from agentos_dev.coding.reporting.workflow_v1 import (
     QueryRequirement,
     approve_query_batch,
@@ -65,6 +81,17 @@ def tables(*, nullable: bool = False):
     )
 
 
+def raw_ddl_models() -> tuple[RawDdlModel, ...]:
+    return (
+        RawDdlModel(
+            id=1,
+            modelName="income",
+            modelDesc="收入模型",
+            ddl="CREATE TABLE reporting.income (month DATE NOT NULL)",
+        ),
+    )
+
+
 def source_config(tmp_path: Path):
     config = {
         "version": "1",
@@ -90,6 +117,83 @@ def source_config(tmp_path: Path):
         environ={"REPORT_DSN": "starrocks://reader:secret@db:9030/reporting"},
     )
     return registry.sources["operations"]
+
+
+def approval_snapshots() -> tuple[SourceSchemaSnapshot, ...]:
+    columns = (
+        ModelColumn(name="month", dataType="DATE", nullable=False),
+        ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),
+        ModelColumn(name="campus", dataType="VARCHAR(100)", nullable=True),
+    )
+    values = (
+        ModelTable(
+            sourceId="operations",
+            database="reporting",
+            name=name,
+            columns=columns,
+        )
+        for name in ("income", "cost")
+    )
+    model_tables = tuple(values)
+    return (
+        SourceSchemaSnapshot(
+            source="metadata_api",
+            revision="m1",
+            schemaHash=schema_hash(model_tables),
+            tables=model_tables,
+        ),
+    )
+
+
+@pytest.mark.anyio
+async def test_提纲要求使用领域无关的通用章节():
+    captured: dict[str, object] = {}
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._outline_agent = object()
+
+    async def run_planner(_agent, payload, _run_context):
+        captured.update(payload)
+        return ReportOutline(
+            title="通用分析报告",
+            sections=("执行摘要", "分析范围与方法", "关键发现", "局限性", "建议"),
+        )
+
+    runtime._run_planner = run_planner
+    profile_registry = ReportingProfileRegistry(documents={}, config_paths=())
+    profile = resolve_reporting_profile(profile_registry, None)
+    capabilities = resolve_capabilities(profile, (), ())
+    context = RunContext(
+        run_id="workflow-run",
+        session_id="workflow-session",
+        user_id="user-1",
+        session_state={
+            REPORT_WORKFLOW_INPUT_STATE_KEY: envelope().workflow_payload(
+                default_source_ids=("operations",)
+            ),
+            REPORT_SCHEMA_SNAPSHOTS_STATE_KEY: [],
+            REPORT_DATA_SHAPES_STATE_KEY: [],
+            REPORT_EFFECTIVE_PROFILE_STATE_KEY: profile.model_dump(mode="json", by_alias=True),
+            REPORT_CAPABILITIES_STATE_KEY: capabilities.model_dump(mode="json", by_alias=True),
+            REPORT_RECONCILIATIONS_STATE_KEY: [],
+        },
+    )
+
+    await runtime.generate_outline(StepInput(input=envelope()), context)
+
+    assert set(captured) == {"reportGoal", "period", "outlineContext", "schemas", "feedback"}
+    outline_context = captured["outlineContext"]
+    assert isinstance(outline_context, dict)
+    assert captured["schemas"] == []
+    sections = outline_context["profile"]["sections"]
+    assert [item["title"] for item in sections] == [
+        "执行摘要",
+        "分析范围与方法",
+        "关键发现",
+        "局限性",
+        "建议",
+    ]
+    required_sections = "\n".join(item["title"] for item in sections)
+    assert all(term not in required_sections for term in ("院区", "科室", "预算", "收入"))
 
 
 @pytest.mark.parametrize("field", ["host", "username", "password", "dsn", "databaseUrl"])
@@ -128,31 +232,40 @@ def test_agui提取envelope和ddl后从模型上下文删除():
 
 
 def test_agent分流覆盖零个一个多个和显式选择():
-    empty = AgentQueryResponse(revision="r1", agents=())
+    empty = AgentQueryResponse(agents=())
     assert select_reporting_agent(empty, None) is None
     one = AgentQueryResponse.model_validate(
         {
-            "revision": "r1",
             "agents": [
                 {
-                    "code": "a",
+                    "code": "1",
                     "name": "A",
                     "description": "",
                     "enabled": True,
-                    "modelRevision": "m1",
                 }
             ],
         }
     )
-    assert select_reporting_agent(one, None).code == "a"  # type: ignore[union-attr]
+    assert select_reporting_agent(one, None).code == "1"  # type: ignore[union-attr]
     multiple = AgentQueryResponse(
-        revision="r1",
-        agents=one.agents + (one.agents[0].model_copy(update={"code": "b", "name": "B"}),),
+        agents=one.agents + (one.agents[0].model_copy(update={"code": "2", "name": "B"}),),
     )
-    selected = select_reporting_agent(multiple, "b")
-    assert selected.code == "b"  # type: ignore[union-attr]
+    selected = select_reporting_agent(multiple, "2")
+    assert selected.code == "2"  # type: ignore[union-attr]
     pending = select_reporting_agent(multiple, None)
     assert isinstance(pending, tuple) and len(pending) == 2
+
+
+def test_来源唯一时不审核仅多个agent时审核():
+    assert (
+        _requires_source_review(StepOutput(content={"sources": [{"sourceId": "operations"}]}))
+        is False
+    )
+    assert _requires_source_review(StepOutput(content={"agents": [{"code": "1"}]})) is False
+    assert (
+        _requires_source_review(StepOutput(content={"agents": [{"code": "1"}, {"code": "2"}]}))
+        is True
+    )
 
 
 @pytest.mark.anyio
@@ -179,6 +292,7 @@ def test_api与ddl冲突以及catalog漂移都失败关闭(tmp_path: Path):
         revision="m1",
         schemaHash=schema_hash(api_tables),
         sourceRefs=({"sourceId": "operations"},),
+        ddlModels=raw_ddl_models(),
         tables=api_tables,
         terms=(),
     )
@@ -201,6 +315,51 @@ def test_api与ddl冲突以及catalog漂移都失败关闭(tmp_path: Path):
             catalog=tables(nullable=True),
         )
     assert drift.value.code == "report_catalog_drift"
+
+    catalog_with_extra = (
+        api_tables[0].model_copy(
+            update={
+                "columns": api_tables[0].columns
+                + (ModelColumn(name="unexpected", dataType="INT", nullable=True),)
+            }
+        ),
+    )
+    with pytest.raises(ReportingError) as extra:
+        resolve_schema_snapshot(
+            valid,
+            source=source,
+            metadata=metadata,
+            catalog=catalog_with_extra,
+        )
+    assert extra.value.code == "report_catalog_drift"
+
+
+def test_metadata术语保存在通用结构快照(tmp_path: Path):
+    source = source_config(tmp_path)
+    api_tables = tables()
+    term = ModelTerm(
+        code="actual_amount",
+        name="实际金额",
+        kind="measure",
+        fieldRefs=("operations.reporting.income.month",),
+    )
+    metadata = ModelTermsResponse(
+        revision="m1",
+        schemaHash=schema_hash(api_tables),
+        sourceRefs=({"sourceId": "operations"},),
+        ddlModels=raw_ddl_models(),
+        tables=api_tables,
+        terms=(term,),
+    )
+
+    snapshot = resolve_schema_snapshot(
+        envelope(),
+        source=source,
+        metadata=metadata,
+        catalog=api_tables,
+    )
+
+    assert snapshot.terms == (term,)
 
 
 @pytest.mark.anyio
@@ -235,6 +394,7 @@ async def test_ddl解析后不进入workflow_state(tmp_path: Path, monkeypatch):
     runtime.registry = SimpleNamespace(
         sources={"operations": source}, default_source_ids=("operations",)
     )
+    runtime.profiles = ReportingProfileRegistry(documents={}, config_paths=())
     runtime.metadata_client = None
     state = {}
     context = RunContext(
@@ -260,16 +420,14 @@ async def test_多个metadata_agent先暂停展示再在同一步继续(tmp_path
     model_tables = tables()
     agents = AgentQueryResponse.model_validate(
         {
-            "revision": "agents-r1",
             "agents": [
                 {
                     "code": code,
                     "name": name,
                     "description": "",
                     "enabled": True,
-                    "modelRevision": "model-r1",
                 }
-                for code, name in (("a", "Agent A"), ("b", "Agent B"))
+                for code, name in (("1", "Agent A"), ("2", "Agent B"))
             ],
         }
     )
@@ -277,6 +435,7 @@ async def test_多个metadata_agent先暂停展示再在同一步继续(tmp_path
         revision="model-r1",
         schemaHash=schema_hash(model_tables),
         sourceRefs=({"sourceId": "operations"},),
+        ddlModels=raw_ddl_models(),
         tables=model_tables,
         terms=(),
     )
@@ -285,10 +444,9 @@ async def test_多个metadata_agent先暂停展示再在同一步继续(tmp_path
         async def query_agents(self, _source_ids):
             return agents
 
-        async def query_model(self, *, agent_id, source_ids, expected_revision):
-            assert agent_id == "b"
-            assert source_ids == ("operations",)
-            assert expected_revision == "model-r1"
+        async def query_model(self, *, agent_id, sources):
+            assert agent_id == "2"
+            assert tuple(item.id for item in sources) == ("operations",)
             return metadata
 
     class FakeAdapter:
@@ -318,6 +476,7 @@ async def test_多个metadata_agent先暂停展示再在同一步继续(tmp_path
     runtime.registry = SimpleNamespace(
         sources={"operations": source}, default_source_ids=("operations",)
     )
+    runtime.profiles = ReportingProfileRegistry(documents={}, config_paths=())
     runtime.metadata_client = FakeMetadata()
     state = {}
     context = RunContext(
@@ -331,14 +490,14 @@ async def test_多个metadata_agent先暂停展示再在同一步继续(tmp_path
     confirmed = await runtime.confirm_source(
         StepInput(
             input=envelope(),
-            additional_data={"rejection_feedback": "agentId:b"},
+            additional_data={"rejection_feedback": "agentId:2"},
         ),
         context,
     )
 
-    assert [item["code"] for item in pending.content["agents"]] == ["a", "b"]
+    assert [item["code"] for item in pending.content["agents"]] == ["1", "2"]
     assert confirmed.content["sources"][0]["sourceId"] == "operations"
-    assert state[REPORT_WORKFLOW_INPUT_STATE_KEY]["agentId"] == "b"
+    assert state[REPORT_WORKFLOW_INPUT_STATE_KEY]["agentId"] == "2"
 
 
 def test_sql审核后只允许执行完全相同的原文(tmp_path: Path):
@@ -370,6 +529,7 @@ def test_sql审核后只允许执行完全相同的原文(tmp_path: Path):
             }
         ],
         sources={"operations": source},
+        snapshots=approval_snapshots(),
         envelope=envelope(),
         requirements=(requirement,),
     )
@@ -378,6 +538,65 @@ def test_sql审核后只允许执行完全相同的原文(tmp_path: Path):
     with pytest.raises(ReportingError) as changed:
         require_approved_sql(approved, f"{approved.sql};")
     assert changed.value.code == "report_sql_hash_mismatch"
+
+
+def test_sql审核年度期间使用完整整数年份边界(tmp_path: Path):
+    source = replace(
+        source_config(tmp_path),
+        tables=("reporting.income",),
+        period_columns={"reporting.income": "period_year"},
+        period_granularities={"reporting.income": "year"},
+    )
+    table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="income",
+        columns=(
+            ModelColumn(name="period_year", dataType="INT", nullable=False),
+            ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),
+        ),
+    )
+    snapshot = SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="m1",
+        schemaHash=schema_hash((table,)),
+        tables=(table,),
+    )
+    requirement = QueryRequirement.model_validate(
+        {
+            "requirementId": "annual-income",
+            "sourceId": "operations",
+            "tables": [
+                {
+                    "table": "reporting.income",
+                    "periodColumn": "period_year",
+                    "measureColumns": ["amount"],
+                }
+            ],
+            "dimensionColumns": ["period_year"],
+            "grainColumns": ["period_year"],
+        }
+    )
+    annual_envelope = envelope(period={"start": "2024-06-01", "end": "2025-03-31"})
+
+    (approved,) = approve_query_batch(
+        [
+            {
+                "requirementId": "annual-income",
+                "sourceId": "operations",
+                "sql": (
+                    "SELECT period_year, SUM(amount) AS amount FROM reporting.income "
+                    "WHERE period_year BETWEEN 2024 AND 2025 GROUP BY period_year"
+                ),
+            }
+        ],
+        sources={"operations": source},
+        snapshots=(snapshot,),
+        envelope=annual_envelope,
+        requirements=(requirement,),
+    )
+
+    assert "BETWEEN 2024 AND 2025" in approved.sql
 
 
 def query_requirement(*, tables=None, grain_columns=("month",)):
@@ -416,9 +635,75 @@ def approve_sql(tmp_path: Path, sql: str, *, requirement=None):
             }
         ],
         sources={"operations": source_config(tmp_path)},
+        snapshots=approval_snapshots(),
         envelope=envelope(),
         requirements=(requirement or query_requirement(),),
     )
+
+
+@pytest.mark.parametrize(
+    ("requirement", "sql"),
+    [
+        (
+            query_requirement(
+                tables=[
+                    {
+                        "table": "reporting.cost",
+                        "periodColumn": "month",
+                        "measureColumns": ["amount"],
+                    }
+                ]
+            ),
+            "SELECT month, SUM(amount) FROM reporting.cost "
+            "WHERE month BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY month",
+        ),
+        (
+            query_requirement(
+                tables=[
+                    {
+                        "table": "reporting.income",
+                        "periodColumn": "month",
+                        "measureColumns": ["amount"],
+                    }
+                ]
+            ),
+            "SELECT month, SUM(amount) FROM reporting.income "
+            "WHERE month BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY month",
+        ),
+    ],
+)
+def test_sql审核拒绝服务端白名单内但结构快照外的表和字段(
+    tmp_path: Path, requirement: QueryRequirement, sql: str
+):
+    snapshot_table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="income",
+        columns=(ModelColumn(name="month", dataType="DATE", nullable=False),),
+    )
+    snapshot = SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="m1",
+        schemaHash=schema_hash((snapshot_table,)),
+        tables=(snapshot_table,),
+    )
+
+    with pytest.raises(ReportingError) as captured:
+        approve_query_batch(
+            [
+                {
+                    "requirementId": requirement.requirement_id,
+                    "sourceId": "operations",
+                    "sql": sql,
+                }
+            ],
+            sources={"operations": source_config(tmp_path)},
+            snapshots=(snapshot,),
+            envelope=envelope(),
+            requirements=(requirement,),
+        )
+
+    assert captured.value.code == "report_query_scope_invalid"
 
 
 @pytest.mark.parametrize(
@@ -465,6 +750,53 @@ def test_sql审核拒绝未聚合声明指标字段(tmp_path: Path):
         approve_sql(tmp_path, sql)
 
     assert captured.value.code == "report_query_measure_invalid"
+
+
+def test_sql审核按数据源年度粒度校验期间(tmp_path: Path):
+    source = replace(
+        source_config(tmp_path),
+        period_columns={"reporting.income": "period_year"},
+        period_granularities={"reporting.income": "year"},
+    )
+    table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="income",
+        columns=(
+            ModelColumn(name="period_year", dataType="INT", nullable=False),
+            ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),
+        ),
+    )
+    snapshot = SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="m1",
+        schemaHash=schema_hash((table,)),
+        tables=(table,),
+    )
+    requirement = query_requirement(
+        tables=[
+            {
+                "table": "reporting.income",
+                "periodColumn": "period_year",
+                "measureColumns": ["amount"],
+            }
+        ],
+        grain_columns=("period_year",),
+    )
+    sql = (
+        "SELECT period_year, SUM(amount) FROM reporting.income "
+        "WHERE period_year BETWEEN 2025 AND 2025 GROUP BY period_year"
+    )
+
+    approved = approve_query_batch(
+        [{"requirementId": "income-monthly", "sourceId": "operations", "sql": sql}],
+        sources={"operations": source},
+        snapshots=(snapshot,),
+        envelope=envelope(),
+        requirements=(requirement,),
+    )
+
+    assert approved[0].sql == sql
 
 
 def test_sql审核拒绝跨表明细连接放大(tmp_path: Path):

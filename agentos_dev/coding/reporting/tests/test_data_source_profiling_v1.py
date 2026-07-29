@@ -91,6 +91,14 @@ class FakeAdapter:
                 ),
                 20,
             )
+        if "AS year_count" in sql:
+            if self.period_row_count == 0:
+                return QueryResult(("year", "year_count"), (), 2)
+            return QueryResult(
+                ("year", "year_count"),
+                (("2024", self.month_counts[0]), ("2025", self.month_counts[1])),
+                20,
+            )
         if "AS value_count" in sql:
             assert "GROUP BY" in sql and "LIMIT 5" in sql
             return QueryResult(
@@ -163,6 +171,7 @@ async def test_datashape覆盖完整质量分布血缘且不读取样本行():
 
     shape = await collect_data_shape(
         adapter,
+        catalog_scope=await adapter.catalog(),
         period_start=date(2025, 1, 1),
         period_end=date(2025, 12, 31),
         period_columns={
@@ -187,8 +196,9 @@ async def test_datashape覆盖完整质量分布血缘且不读取样本行():
     assert table.period_null_count == 1
     assert table.first_effective_date == "2025-01-01"
     assert table.last_effective_date == "2025-02-28"
-    assert table.month_coverage == ("2025-01", "2025-02")
-    assert table.missing_months == tuple(f"2025-{month:02d}" for month in range(3, 13))
+    assert table.period_granularity == "date"
+    assert table.period_coverage == ("2025-01", "2025-02")
+    assert table.missing_periods == tuple(f"2025-{month:02d}" for month in range(3, 13))
     assert amount.null_rate == 0.1
     assert amount.cardinality_rate == 0.9
     assert amount.unique is None
@@ -212,6 +222,7 @@ async def test_datashape小表使用精确distinct且宽表按配置分批():
 
     shape = await collect_data_shape(
         adapter,
+        catalog_scope=await adapter.catalog(),
         period_start=date(2025, 1, 1),
         period_end=date(2025, 12, 31),
         period_columns={"reporting.income": "month", "reporting.budget": "month"},
@@ -228,11 +239,34 @@ async def test_datashape小表使用精确distinct且宽表按配置分批():
 
 
 @pytest.mark.anyio
+async def test_datashape年度期间使用整数年份过滤并统计年度覆盖():
+    adapter = FakeAdapter()
+
+    shape = await collect_data_shape(
+        adapter,
+        catalog_scope=await adapter.catalog(),
+        period_start=date(2024, 6, 1),
+        period_end=date(2025, 3, 31),
+        period_columns={"reporting.income": "month", "reporting.budget": "month"},
+        period_granularities={"reporting.income": "year", "reporting.budget": "year"},
+        metadata_revision="model-r7",
+        schema_hash="a" * 64,
+    )
+
+    table = shape.tables[0]
+    assert table.period_granularity == "year"
+    assert table.period_coverage == ("2024", "2025")
+    assert table.missing_periods == ()
+    assert all("`month` >= 2024 AND `month` <= 2025" in sql for sql in adapter.queries)
+
+
+@pytest.mark.anyio
 async def test_datashape按配置有界并行且结果顺序稳定():
     adapter = ConcurrentFakeAdapter()
 
     shape = await collect_data_shape(
         adapter,
+        catalog_scope=await adapter.catalog(),
         period_start=date(2025, 1, 1),
         period_end=date(2025, 12, 31),
         period_columns={"reporting.income": "month", "reporting.budget": "month"},
@@ -245,12 +279,71 @@ async def test_datashape按配置有界并行且结果顺序稳定():
 
 
 @pytest.mark.anyio
+async def test_datashape只画像结构快照批准的表和字段():
+    adapter = FakeAdapter()
+    scope = (
+        CatalogTable(
+            "operations",
+            "reporting",
+            "income",
+            (
+                CatalogColumn("month", "DATE", False),
+                CatalogColumn("amount", "DECIMAL(18,2)", True),
+            ),
+        ),
+    )
+
+    shape = await collect_data_shape(
+        adapter,
+        catalog_scope=scope,
+        period_start=date(2025, 1, 1),
+        period_end=date(2025, 12, 31),
+        period_columns={"reporting.income": "month", "reporting.budget": "month"},
+        metadata_revision="model-r7",
+        schema_hash="a" * 64,
+    )
+
+    assert [table.table for table in shape.tables] == ["income"]
+    assert [column.name for column in shape.tables[0].columns] == ["month", "amount"]
+    assert all("`budget`" not in sql for sql in adapter.queries)
+    assert all("`department`" not in sql for sql in adapter.queries)
+
+
+@pytest.mark.anyio
+async def test_datashape结构快照字段与实时catalog不一致时失败关闭():
+    adapter = FakeAdapter()
+    scope = (
+        CatalogTable(
+            "operations",
+            "reporting",
+            "income",
+            (CatalogColumn("month", "DATE", True),),
+        ),
+    )
+
+    with pytest.raises(ReportingError) as captured:
+        await collect_data_shape(
+            adapter,
+            catalog_scope=scope,
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 12, 31),
+            period_columns={"reporting.income": "month", "reporting.budget": "month"},
+            metadata_revision="model-r7",
+            schema_hash="a" * 64,
+        )
+
+    assert captured.value.code == "report_data_shape_failed"
+    assert adapter.queries == []
+
+
+@pytest.mark.anyio
 async def test_datashape任一表失败即终止且返回稳定错误():
     adapter = FakeAdapter(fail_table="budget")
 
     with pytest.raises(ReportingError) as captured:
         await collect_data_shape(
             adapter,
+            catalog_scope=await adapter.catalog(),
             period_start=date(2025, 1, 1),
             period_end=date(2025, 12, 31),
             period_columns={"reporting.income": "month", "reporting.budget": "month"},
@@ -269,6 +362,7 @@ async def test_datashape月份聚合与期间行数不一致时失败关闭():
     with pytest.raises(ReportingError) as captured:
         await collect_data_shape(
             adapter,
+            catalog_scope=await adapter.catalog(),
             period_start=date(2025, 1, 1),
             period_end=date(2025, 12, 31),
             period_columns={"reporting.income": "month", "reporting.budget": "month"},
@@ -292,6 +386,7 @@ async def test_datashape期间零行仍返回完整列画像且不生成top查�
 
     shape = await collect_data_shape(
         adapter,
+        catalog_scope=await adapter.catalog(),
         period_start=date(2025, 1, 1),
         period_end=date(2025, 12, 31),
         period_columns={"reporting.income": "month", "reporting.budget": "month"},
@@ -306,7 +401,6 @@ async def test_datashape期间零行仍返回完整列画像且不生成top查�
     assert table.period_null_count == 1
     assert table.first_effective_date is None
     assert table.last_effective_date is None
-    assert table.month_coverage == ()
     assert len(table.columns) == 3
     assert all(column.null_rate == 0 for column in table.columns)
     assert all(column.distinct_count == 0 for column in table.columns)
@@ -328,6 +422,7 @@ async def test_datashape拒绝不自洽的聚合结果(overrides: dict[str, obje
     with pytest.raises(ReportingError) as captured:
         await collect_data_shape(
             adapter,
+            catalog_scope=await adapter.catalog(),
             period_start=date(2025, 1, 1),
             period_end=date(2025, 12, 31),
             period_columns={"reporting.income": "month", "reporting.budget": "month"},
@@ -345,6 +440,7 @@ async def test_datashape拒绝catalog返回其他数据源():
     with pytest.raises(ReportingError) as captured:
         await collect_data_shape(
             adapter,
+            catalog_scope=await adapter.catalog(),
             period_start=date(2025, 1, 1),
             period_end=date(2025, 12, 31),
             period_columns={"reporting.income": "month", "reporting.budget": "month"},
@@ -362,6 +458,7 @@ async def test_datashape期间列必须显式配置且存在于catalog():
     with pytest.raises(ReportingError) as missing:
         await collect_data_shape(
             adapter,
+            catalog_scope=await adapter.catalog(),
             period_start=date(2025, 1, 1),
             period_end=date(2025, 12, 31),
             period_columns={"reporting.income": "month"},
@@ -373,6 +470,7 @@ async def test_datashape期间列必须显式配置且存在于catalog():
     with pytest.raises(ReportingError) as unknown:
         await collect_data_shape(
             adapter,
+            catalog_scope=await adapter.catalog(),
             period_start=date(2025, 1, 1),
             period_end=date(2025, 12, 31),
             period_columns={"reporting.income": "unknown", "reporting.budget": "month"},

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -56,6 +56,12 @@ class DataSourceConfig(Protocol):
 
     @property
     def period_columns(self) -> dict[str, str]: ...
+
+    @property
+    def period_granularities(self) -> dict[str, Literal["date", "year"]]: ...
+
+    @property
+    def reporting_profile(self) -> str | None: ...
 
     @property
     def limits(self) -> QueryLimits: ...
@@ -145,8 +151,9 @@ class TableDataShape(ShapeModel):
     first_effective_date: str | None = Field(default=None, alias="firstEffectiveDate")
     last_effective_date: str | None = Field(default=None, alias="lastEffectiveDate")
     column_count: int = Field(alias="columnCount", ge=1)
-    month_coverage: tuple[str, ...] = Field(default=(), alias="monthCoverage", max_length=1200)
-    missing_months: tuple[str, ...] = Field(default=(), alias="missingMonths", max_length=1200)
+    period_granularity: Literal["date", "year"] = Field(default="date", alias="periodGranularity")
+    period_coverage: tuple[str, ...] = Field(default=(), alias="periodCoverage", max_length=1200)
+    missing_periods: tuple[str, ...] = Field(default=(), alias="missingPeriods", max_length=1200)
     columns: tuple[ColumnShape, ...] = Field(min_length=1, max_length=500)
 
     @model_validator(mode="after")
@@ -161,7 +168,7 @@ class TableDataShape(ShapeModel):
         if self.period_row_count == 0 and (
             self.first_effective_date is not None
             or self.last_effective_date is not None
-            or self.month_coverage
+            or self.period_coverage
         ):
             raise ValueError("空期间不得包含日期覆盖")
         if self.period_row_count > 0 and (

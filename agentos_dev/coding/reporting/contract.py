@@ -6,13 +6,19 @@ import re
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator, model_validator
 from sqlglot import exp, parse
 
 from .models import ReportingError
 
 CONTRACT_VERSION = "1"
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
+FIELD_REF_PATTERN = (
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\."
+    r"[A-Za-z_][A-Za-z0-9_$]{0,127}\."
+    r"[A-Za-z_][A-Za-z0-9_$]{0,127}\."
+    r"[A-Za-z_][A-Za-z0-9_$]{0,127}$"
+)
 _CONNECTION_KEYS = frozenset(
     {
         "connection",
@@ -109,23 +115,45 @@ class ReportingAgent(StrictModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=2_000)
     enabled: bool
-    model_revision: str = Field(alias="modelRevision", min_length=1, max_length=128)
 
 
-class AgentQueryRequest(StrictModel):
-    contract_version: Literal["1"] = Field(default="1", alias="contractVersion")
-    source_ids: tuple[str, ...] = Field(alias="sourceIds", min_length=1, max_length=20)
+class MetadataAgent(StrictModel):
+    id: PositiveInt
+    name: str = Field(min_length=1, max_length=200)
+    desc: str = Field(default="", max_length=2_000)
+
+
+class MetadataAgentResponse(StrictModel):
+    agent: tuple[MetadataAgent, ...] = Field(max_length=100)
 
 
 class AgentQueryResponse(StrictModel):
-    revision: str = Field(min_length=1, max_length=128)
     agents: tuple[ReportingAgent, ...] = Field(max_length=100)
 
 
-class ModelTermsRequest(StrictModel):
-    contract_version: Literal["1"] = Field(default="1", alias="contractVersion")
-    agent_id: str = Field(alias="agentId", min_length=1, max_length=128)
-    source_ids: tuple[str, ...] = Field(alias="sourceIds", min_length=1, max_length=20)
+class RawDdlModel(StrictModel):
+    id: PositiveInt
+    model_name: str = Field(alias="modelName", min_length=1, max_length=200)
+    model_desc: str = Field(default="", alias="modelDesc", max_length=4_000)
+    ddl: str = Field(min_length=1, max_length=1_048_576)
+
+    @field_validator("ddl")
+    @classmethod
+    def validate_ddl_bytes(cls, value: str) -> str:
+        if len(value.encode()) > 1_048_576:
+            raise ValueError("单项 DDL 不得超过 1 MiB")
+        return value
+
+
+class MetadataTerm(StrictModel):
+    id: PositiveInt
+    key: str = Field(min_length=1, max_length=200)
+    value: str = Field(default="", max_length=4_000)
+
+
+class MetadataModelResponse(StrictModel):
+    ddl: tuple[RawDdlModel, ...] = Field(min_length=1, max_length=200)
+    term: tuple[MetadataTerm, ...] = Field(default=(), max_length=1_000)
 
 
 class SourceRef(StrictModel):
@@ -154,11 +182,21 @@ class ModelTerm(StrictModel):
     description: str = Field(default="", max_length=4_000)
     field_refs: tuple[str, ...] = Field(default=(), alias="fieldRefs", max_length=100)
 
+    @field_validator("field_refs")
+    @classmethod
+    def validate_field_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value) or any(
+            not re.fullmatch(FIELD_REF_PATTERN, item) for item in value
+        ):
+            raise ValueError("fieldRefs 包含重复或无效引用")
+        return value
+
 
 class ModelTermsResponse(StrictModel):
     revision: str = Field(min_length=1, max_length=128)
     schema_hash: str = Field(alias="schemaHash", pattern=SHA256_PATTERN)
     source_refs: tuple[SourceRef, ...] = Field(alias="sourceRefs", min_length=1, max_length=20)
+    ddl_models: tuple[RawDdlModel, ...] = Field(alias="ddlModels", min_length=1, max_length=200)
     tables: tuple[ModelTable, ...] = Field(min_length=1, max_length=200)
     terms: tuple[ModelTerm, ...] = Field(default=(), max_length=1_000)
 
@@ -166,6 +204,24 @@ class ModelTermsResponse(StrictModel):
     def validate_schema_hash(self) -> ModelTermsResponse:
         if schema_hash(self.tables) != self.schema_hash:
             raise ValueError("schemaHash 与 tables 不一致")
+        if len(self.ddl_models) != len(self.tables):
+            raise ValueError("ddlModels 与 tables 数量不一致")
+        source_ids = {item.source_id for item in self.source_refs}
+        table_sources = {item.source_id for item in self.tables}
+        if len(source_ids) != len(self.source_refs) or source_ids != table_sources:
+            raise ValueError("sourceRefs 与 tables 数据源不一致")
+        codes = [item.code for item in self.terms]
+        available = {
+            f"{table.source_id}.{table.database}.{table.name}.{column.name}".lower()
+            for table in self.tables
+            for column in table.columns
+        }
+        if len(codes) != len(set(codes)) or any(
+            field_ref.lower() not in available
+            for term in self.terms
+            for field_ref in term.field_refs
+        ):
+            raise ValueError("terms 包含重复 code 或未知 fieldRef")
         return self
 
 
@@ -173,7 +229,9 @@ class SourceSchemaSnapshot(StrictModel):
     source: Literal["metadata_api", "ddl"]
     revision: str
     schema_hash: str = Field(alias="schemaHash", pattern=SHA256_PATTERN)
+    ddl_models: tuple[RawDdlModel, ...] = Field(default=(), alias="ddlModels", max_length=200)
     tables: tuple[ModelTable, ...]
+    terms: tuple[ModelTerm, ...] = Field(default=(), max_length=1_000)
 
 
 def schema_hash(tables: tuple[ModelTable, ...] | list[ModelTable]) -> str:
@@ -240,11 +298,29 @@ def parse_ddl(ddl: str, *, source_id: str, default_database: str) -> tuple[Model
             constraints = tuple(item.args.get("constraints") or ())
             nullable = not any(
                 isinstance(constraint.args.get("kind"), exp.NotNullColumnConstraint)
+                and not bool(constraint.args["kind"].args.get("allow_null"))
                 for constraint in constraints
                 if isinstance(constraint, exp.ColumnConstraint)
             )
+            description = next(
+                (
+                    str(comment_kind.this.this)
+                    for constraint in constraints
+                    if isinstance(constraint, exp.ColumnConstraint)
+                    and isinstance(
+                        (comment_kind := constraint.args.get("kind")), exp.CommentColumnConstraint
+                    )
+                    and isinstance(comment_kind.this, exp.Literal)
+                ),
+                "",
+            )
             columns.append(
-                ModelColumn(name=column_name, dataType=kind.sql(dialect="mysql"), nullable=nullable)
+                ModelColumn(
+                    name=column_name,
+                    dataType=kind.sql(dialect="mysql"),
+                    nullable=nullable,
+                    description=description,
+                )
             )
             column_names.add(column_name)
         if not columns:
@@ -254,6 +330,7 @@ def parse_ddl(ddl: str, *, source_id: str, default_database: str) -> tuple[Model
                 sourceId=source_id,
                 database=database,
                 name=name,
+                description=_table_comment(statement),
                 columns=tuple(columns),
             )
         )
@@ -279,6 +356,11 @@ def validate_catalog(
         if current is None:
             raise ReportingError("report_catalog_drift", f"实时 catalog 缺少数据表 {qualified}。")
         current_columns = {column.name.lower(): column for column in current.columns}
+        requested_columns = {column.name.lower() for column in table.columns}
+        if set(current_columns) != requested_columns:
+            raise ReportingError(
+                "report_catalog_drift", f"实时 catalog 数据表 {qualified} 字段已变化。"
+            )
         for column in table.columns:
             actual_column = current_columns.get(column.name.lower())
             if actual_column is None or (
@@ -292,6 +374,16 @@ def validate_catalog(
 
 def _normalize_type(value: str) -> str:
     return re.sub(r"\s+", "", value).upper()
+
+
+def _table_comment(statement: exp.Create) -> str:
+    properties = statement.args.get("properties")
+    if not isinstance(properties, exp.Properties):
+        return ""
+    for item in properties.expressions:
+        if isinstance(item, exp.SchemaCommentProperty) and isinstance(item.this, exp.Literal):
+            return str(item.this.this)
+    return ""
 
 
 def _find_connection_input(value: Any) -> set[str]:

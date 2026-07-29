@@ -413,6 +413,7 @@ def test_基础和报表工具集独立且确认边界符合策略(tmp_path):
     assert report_tools["report_validate_pdf"].requires_confirmation is False
     assert report_tools["report_prepare_dataset"].parameters["required"] == ["dataset_ids"]
     assert "paths" not in report_tools["report_prepare_dataset"].parameters["properties"]
+    assert "page_layout" not in report_tools["report_render_markdown"].parameters["properties"]
     base_tools["workspace_apply_patch"].process_entrypoint()
     assert set(base_tools["workspace_apply_patch"].parameters["required"]) == {
         "path",

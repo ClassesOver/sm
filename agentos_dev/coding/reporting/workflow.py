@@ -17,6 +17,8 @@ def create_reporting_workflow(
     db: BaseDb | Any,
     confirm_source: StepExecutor,
     profile_source: StepExecutor,
+    resolve_capabilities: StepExecutor,
+    reconcile_sources: StepExecutor,
     generate_outline: StepExecutor,
     generate_analysis_plan: StepExecutor,
     generate_query_candidates: StepExecutor,
@@ -34,16 +36,18 @@ def create_reporting_workflow(
         db=db,
         steps=[
             Step(
-                name="确认数据来源",
+                name="解析数据来源与 Schema",
                 executor=confirm_source,
                 human_review=HumanReview(
-                    requires_output_review=True,
-                    output_review_message="选择报表 Agent，或确认数据源、数据库和允许表。",
+                    requires_output_review=_requires_source_review,
+                    output_review_message="请选择报表 Agent。",
                     on_reject=OnReject.retry,
                     max_retries=3,
                 ),
             ),
             Step(name="受限数据画像", executor=profile_source),
+            Step(name="解析报表能力", executor=resolve_capabilities),
+            Step(name="执行跨表对账", executor=reconcile_sources),
             Step(
                 name="生成报告提纲",
                 executor=generate_outline,
@@ -90,3 +94,11 @@ def _requires_query_review(output: StepOutput) -> bool:
         content = content.model_dump(mode="json", by_alias=True)
     queries = content.get("queries") if isinstance(content, dict) else None
     return isinstance(queries, list) and bool(queries)
+
+
+def _requires_source_review(output: StepOutput) -> bool:
+    content = output.content
+    if isinstance(content, BaseModel):
+        content = content.model_dump(mode="json", by_alias=True)
+    agents = content.get("agents") if isinstance(content, dict) else None
+    return isinstance(agents, list) and len(agents) > 1

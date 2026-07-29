@@ -13,17 +13,11 @@ from .workflow_v1 import DatasetLineage
 
 REQUIRED_REPORT_SECTIONS = frozenset(
     {
-        "management_summary",
-        "monthly_trend",
-        "campus_comparison",
-        "department_ranking",
-        "budget_variance",
-        "income_structure",
-        "cost_income_ratio",
-        "balance_margin",
-        "workload_efficiency",
-        "anomaly_attribution",
-        "management_recommendations",
+        "executive_summary",
+        "scope_and_methodology",
+        "key_findings",
+        "limitations",
+        "recommendations",
     }
 )
 
@@ -71,6 +65,7 @@ class ReportArtifactManifest(StrictModel):
     revision: int = Field(ge=1)
     coding_task_key: str = Field(alias="codingTaskKey", min_length=1, max_length=128)
     dataset_snapshot_hash: str = Field(alias="datasetSnapshotHash", pattern=SHA256_PATTERN)
+    effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
     markdown: ArtifactFile
     charts: tuple[ChartArtifact, ...] = Field(default=(), max_length=100)
     citations: tuple[Citation, ...] = Field(min_length=1, max_length=2_000)

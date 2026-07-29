@@ -17,6 +17,7 @@ from .data_source import load_configured_report_source_registry
 from .instructions import build_report_agent_instructions
 from .interface import ReportAGUI
 from .metadata import ReportingMetadataClient
+from .profile import load_configured_reporting_profiles
 from .runtime import ReportWorkflowRuntime
 
 
@@ -49,6 +50,7 @@ def create_report_agentos_components(
         supervisor=supervisor,
         workspace_service=context.workspace_service,
         registry=registry,
+        profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
         metadata_client=(
             ReportingMetadataClient(
                 settings.report_metadata_url,
