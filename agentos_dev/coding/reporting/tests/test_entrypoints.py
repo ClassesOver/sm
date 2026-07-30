@@ -25,7 +25,13 @@ def test_report_entrypoints_import_independently():
 
 
 def test_report_agentos_registers_only_facade(monkeypatch):
-    settings = AgentSettings.from_environment({}, load_env_file=False)
+    settings = AgentSettings.from_environment(
+        {
+            "AGENT_CODING_ENABLE_THINKING": "true",
+            "AGENT_REPORT_ENABLE_THINKING": "false",
+        },
+        load_env_file=False,
+    )
     database = object()
     context = type(
         "Context",
@@ -40,6 +46,7 @@ def test_report_agentos_registers_only_facade(monkeypatch):
     report_worker = type("Agent", (), {"skills": object()})()
     facade = object()
     captured = {}
+    worker_kwargs = {}
 
     class FakeRuntime:
         workflow = object()
@@ -54,9 +61,12 @@ def test_report_agentos_registers_only_facade(monkeypatch):
 
     monkeypatch.setattr(report_agentos, "create_cli_context", lambda _settings: context)
     monkeypatch.setattr(report_agentos, "create_cli_agent", lambda _context: coding_worker)
-    monkeypatch.setattr(
-        report_agentos, "create_report_worker", lambda *_args, **_kwargs: report_worker
-    )
+
+    def create_report_worker(*_args, **kwargs):
+        worker_kwargs.update(kwargs)
+        return report_worker
+
+    monkeypatch.setattr(report_agentos, "create_report_worker", create_report_worker)
     monkeypatch.setattr(report_agentos, "CodingTaskSupervisor", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(report_agentos, "CodingExecutionKernel", lambda *_args: object())
     monkeypatch.setattr(report_agentos, "ReportWorkflowRuntime", FakeRuntime)
@@ -83,6 +93,7 @@ def test_report_agentos_registers_only_facade(monkeypatch):
     assert report_worker not in captured["agents"]
     assert coding_worker not in captured["agents"]
     assert captured["interfaces"] == [{"agent": facade}]
+    assert worker_kwargs["report_enable_thinking"] is False
 
 
 def test_report_agentos_main_uses_import_string_for_workers_and_reload(monkeypatch):

@@ -60,7 +60,7 @@ def create_report_worker(
     coding_repository: CodingTaskRepository,
     *,
     instructions: AgentInstructions,
-    coding_enable_thinking: bool = True,
+    report_enable_thinking: bool = True,
     report_enable_vision: bool = False,
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
@@ -72,7 +72,7 @@ def create_report_worker(
     worker_model = copy(base_agent.model)
     worker_model.extra_body = {
         **(getattr(base_agent.model, "extra_body", None) or {}),
-        "enable_thinking": coding_enable_thinking,
+        "enable_thinking": report_enable_thinking,
     }
     worker_compression_manager = (
         ContextBudgetController(

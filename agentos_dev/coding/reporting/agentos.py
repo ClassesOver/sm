@@ -31,7 +31,7 @@ def create_report_agentos_components(
         context.workspace_service,
         context.coding_repository,
         instructions=build_report_agent_instructions,
-        coding_enable_thinking=settings.coding_enable_thinking,
+        report_enable_thinking=settings.report_enable_thinking,
         report_enable_vision=settings.report_enable_vision,
         context_token_budget=settings.context_token_budget,
         output_token_reserve=settings.output_token_reserve,

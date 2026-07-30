@@ -34,7 +34,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
         workspace_service,
         app.coding_repository,
         instructions=["测试报表"],
-        coding_enable_thinking=False,
+        report_enable_thinking=False,
     )
     report_agent = create_report_agent(
         report_worker,
@@ -165,7 +165,7 @@ def test_report_planner_uses_report_thinking_without_mutating_coding_worker():
     assert any("不得把 correction" in instruction for instruction in planner.instructions)
     assert all(instruction in planner.instructions for instruction in stage_instructions)
     assert (
-        app.report_worker.model.extra_body["enable_thinking"] is app.settings.coding_enable_thinking
+        app.report_worker.model.extra_body["enable_thinking"] is app.settings.report_enable_thinking
     )
     assert any(
         "非聚合 SELECT 列和 GROUP BY 列必须逐项等于 grainColumns" in instruction

@@ -1,8 +1,11 @@
+from types import SimpleNamespace
+
 import pytest
 
 from agentos_dev.coding.reporting import cli as cli_module
 from agentos_dev.coding.reporting.cli import read_report_request, run_cli
 from agentos_dev.coding.reporting.models import ReportingError
+from agentos_dev.settings import AgentSettings
 
 
 def test_report_cli_uses_run_line_to_submit_multiline_input():
@@ -26,6 +29,45 @@ async def test_report_cli_rejects_invalid_envelope_before_creating_traced_contex
         await run_cli(read=lambda _prompt: next(values), write=lambda _value: None)
 
     assert error.value.code == "report_request_invalid"
+
+
+@pytest.mark.anyio
+async def test_report_cli_uses_independent_report_thinking_setting(monkeypatch):
+    settings = AgentSettings.from_environment(
+        {
+            "AGENT_CODING_ENABLE_THINKING": "true",
+            "AGENT_REPORT_ENABLE_THINKING": "false",
+        },
+        load_env_file=False,
+    )
+    context = SimpleNamespace(
+        settings=settings,
+        workspace_service=object(),
+        coding_repository=object(),
+    )
+    captured = {}
+
+    class WorkerCaptured(Exception):
+        pass
+
+    def capture_worker(*_args, **kwargs):
+        captured.update(kwargs)
+        raise WorkerCaptured
+
+    monkeypatch.setattr(cli_module, "parse_cli_envelope", lambda _value: object())
+    monkeypatch.setattr(cli_module, "create_cli_context", lambda _settings: context)
+    monkeypatch.setattr(cli_module, "create_cli_agent", lambda _context: object())
+    monkeypatch.setattr(cli_module, "create_report_worker", capture_worker)
+
+    values = iter(["{}", "/run"])
+    with pytest.raises(WorkerCaptured):
+        await run_cli(
+            settings=settings,
+            read=lambda _prompt: next(values),
+            write=lambda _value: None,
+        )
+
+    assert captured["report_enable_thinking"] is False
 
 
 def test_report_cli_rejects_arguments():

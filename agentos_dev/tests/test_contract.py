@@ -674,7 +674,7 @@ def test_team_and_internal_workers_keep_separate_execution_settings():
         app.coding_agent.model.extra_body["enable_thinking"] is app.settings.coding_enable_thinking
     )
     assert (
-        app.report_worker.model.extra_body["enable_thinking"] is app.settings.coding_enable_thinking
+        app.report_worker.model.extra_body["enable_thinking"] is app.settings.report_enable_thinking
     )
     assert (
         app.report_runtime._analysis_agent.model.extra_body["enable_thinking"]
