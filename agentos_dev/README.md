@@ -45,33 +45,6 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting
 自然语言原文不在路由层改写，由 `report-agent` 模型生成 ISO 起止日期并调用强类型 Workflow 工具；
 `reportGoal` 必须逐字保留用户输入，期间不明确时由模型询问用户，不允许程序猜测。
 
-## 独立 Playground 联调
-
-仓库根目录的开发 Compose override 会复用主 Compose 的 AgentOS 和 PostgreSQL 定义，启动一个同时注册
-`coding-agent-cli-app` 和 `report-agent` facade 的 AgentOS，以及 sibling 仓库
-`/home/junge/pros/agui_chat_playground`。Playground Gateway 通过容器网络访问 AgentOS，浏览器只访问
-Gateway 提供的 AG-UI 路由：
-
-```bash
-# 先确保 .env 已初始化，并已填写模型与 Daytona 配置
-scripts/dev_playground.sh
-```
-
-脚本默认以前台方式启动并输出 `http://127.0.0.1:8080`、用户名 `agno` 和本轮随机口令。也可以透传
-Compose 子命令：
-
-```bash
-scripts/dev_playground.sh up -d --build
-scripts/dev_playground.sh logs -f agent playground
-scripts/dev_playground.sh down
-```
-
-通过 `AGUI_CHAT_PLAYGROUND_DIR` 可覆盖 sibling 仓库路径，通过现有 `AGENT_OS_PORT` 和
-`PLAYGROUND_PORT` 可覆盖宿主端口。该开发栈使用独立项目名和
-`agentos_playground_agent_db_data` 数据卷，不复用生产 AgentOS 数据卷。Playground 当前会把模型选择
-作为 `factory_input` 转发，但两个 facade 仍是固定 Agent；实际模型继续由 AgentOS `.env` 中的
-`MODEL`、`OPENAI_BASE_URL` 和 `OPENAI_API_KEY` 决定。
-
 报表 CLI 在服务和 tracing 初始化前校验 `ReportRequestEnvelope`，随后依次处理来源、提纲、批量 SQL
 和发布审核；批准、带反馈拒绝和取消都恢复同一持久化 Workflow run。数据库连接只从服务端注册表加载。
 

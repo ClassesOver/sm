@@ -559,8 +559,7 @@ def _has_complete_period_filter(
                 )
             else:
                 valid = (
-                    period.start == period.end
-                    and _literal_date(value_expression) == period.start
+                    period.start == period.end and _literal_date(value_expression) == period.start
                 )
             if not valid:
                 return False

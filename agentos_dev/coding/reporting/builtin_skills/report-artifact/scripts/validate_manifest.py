@@ -25,16 +25,20 @@ def _validate(requirement: dict[str, Any]) -> dict[str, Any]:
 
     manifest_artifact = by_path.get(manifest_path)
     markdown_artifact = by_path.get(markdown_path)
-    _issue(details, "missingArtifactPaths", [
-        path
-        for path, artifact in (
-            (manifest_path, manifest_artifact),
-            (markdown_path, markdown_artifact),
-        )
-        if artifact is None
-    ])
-    if details:
-        return {"id": requirement_id, "passed": False, "details": details}
+    if manifest_artifact is None or markdown_artifact is None:
+        missing_paths = [
+            path
+            for path, artifact in (
+                (manifest_path, manifest_artifact),
+                (markdown_path, markdown_artifact),
+            )
+            if artifact is None
+        ]
+        return {
+            "id": requirement_id,
+            "passed": False,
+            "details": {"missingArtifactPaths": missing_paths},
+        }
 
     try:
         manifest = json.loads(Path(manifest_artifact["absolutePath"]).read_text(encoding="utf-8"))
@@ -88,7 +92,11 @@ def _validate(requirement: dict[str, Any]) -> dict[str, Any]:
     changed_paths = []
     for item in declared:
         actual = by_path.get(item["path"])
-        if actual is None or actual.get("size") != item["size"] or actual.get("sha256") != item["sha256"]:
+        if (
+            actual is None
+            or actual.get("size") != item["size"]
+            or actual.get("sha256") != item["sha256"]
+        ):
             changed_paths.append(item["path"])
     _issue(details, "changedArtifactPaths", changed_paths)
 
@@ -103,7 +111,7 @@ def _validate(requirement: dict[str, Any]) -> dict[str, Any]:
             [
                 item["citationId"]
                 for item in manifest["citations"]
-                if f'[[citation:{item["citationId"]}]]' not in markdown
+                if f"[[citation:{item['citationId']}]]" not in markdown
             ],
         )
         _issue(
