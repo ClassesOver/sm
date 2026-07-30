@@ -99,7 +99,7 @@ def main() -> None:
     settings = AgentSettings.from_environment()
     agent_os = create_agentos(settings)
     agent_os.serve(
-        app=agent_os.get_app(),
+        app="agentos_dev.coding.reporting.server:app",
         host=settings.host,
         port=settings.port,
         workers=settings.workers,

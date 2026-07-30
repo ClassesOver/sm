@@ -85,6 +85,28 @@ def test_report_agentos_registers_only_facade(monkeypatch):
     assert captured["interfaces"] == [{"agent": facade}]
 
 
+def test_report_agentos_main_uses_import_string_for_workers_and_reload(monkeypatch):
+    settings = AgentSettings.from_environment({}, load_env_file=False)
+    captured = {}
+
+    class FakeAgentOS:
+        def serve(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        report_agentos.AgentSettings,
+        "from_environment",
+        lambda: settings,
+    )
+    monkeypatch.setattr(report_agentos, "create_agentos", lambda _settings: FakeAgentOS())
+
+    report_agentos.main()
+
+    assert captured["app"] == "agentos_dev.coding.reporting.server:app"
+    assert captured["workers"] == settings.workers
+    assert captured["reload"] == settings.reload
+
+
 @pytest.mark.anyio
 async def test_report_workflow_start只消费服务端绑定envelope():
     captured = {}
