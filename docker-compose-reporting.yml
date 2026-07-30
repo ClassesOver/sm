@@ -2,18 +2,65 @@ name: agentos-reporting
 
 services:
   reporting-os:
-    extends:
-      file: docker-compose.yml
-      service: agent
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-docker.m.daocloud.io/library/python:3.12-slim}
+        APT_MIRROR_HOST: ${APT_MIRROR_HOST:-mirrors.aliyun.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+    env_file:
+      - path: .env
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "proxy.localhost:host-gateway"
     command: ["python", "-m", "agentos_dev.coding.reporting"]
-    ports: !override
+    ports:
       - "33046:7777"
+    environment:
+      AGENT_DB_URL: postgresql+psycopg://reporting-db:5432
+      PGDATABASE: ${AGENT_POSTGRES_DB:-dev}
+      PGUSER: ${AGENT_POSTGRES_USER:-odoo}
+      PGPASSWORD: ${AGENT_POSTGRES_PASSWORD:?必须设置}
+      AGENT_DAYTONA_API_URL: ${AGENT_DAYTONA_API_URL:-http://host.docker.internal:33043/api}
+      DAYTONA_API_URL: ${AGENT_DAYTONA_API_URL:-http://host.docker.internal:33043/api}
+      DAYTONA_API_KEY: ${DAYTONA_API_KEY:-}
+      DAYTONA_NETWORK_ALLOW_LIST: ${DAYTONA_NETWORK_ALLOW_LIST:-}
+      AGUI_WORKSPACE_HMAC_SECRET: ${AGUI_WORKSPACE_HMAC_SECRET:?必须与 Odoo agui_chat.workspace_hmac_secret 一致}
+      AGENT_SKILLS_DIR: /opt/agent-skills
+      AGENT_REPORT_DATA_SOURCES_DIR: /run/agentos/reporting
+      AGENT_REPORT_METADATA_URL: ${AGENT_REPORT_METADATA_URL:-}
+      AGENT_REPORT_METADATA_TOKEN: ${AGENT_REPORT_METADATA_TOKEN:-}
+      REPORT_STARROCKS_DSN: ${REPORT_STARROCKS_DSN:-}
+    volumes:
+      - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
+      - ${AGENT_REPORT_DATA_SOURCES_DIR:-./deploy/agentos/reporting}:/run/agentos/reporting:ro
+    depends_on:
+      reporting-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.getenv('AGENT_OS_PORT', '7777') + '/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
 
-  agent-db:
-    extends:
-      file: docker-compose.yml
-      service: agent-db
-    ports: !override []
+  reporting-db:
+    image: docker.io/library/postgres:18.0-alpine
+    environment:
+      POSTGRES_DB: ${AGENT_POSTGRES_DB:-dev}
+      POSTGRES_USER: ${AGENT_POSTGRES_USER:-odoo}
+      POSTGRES_PASSWORD: ${AGENT_POSTGRES_PASSWORD:?必须设置}
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - reporting_db_data:/var/lib/postgresql
+    restart: unless-stopped
 
 volumes:
-  agent_db_data:
+  reporting_db_data:
