@@ -13,6 +13,7 @@ services:
     extends:
       file: docker-compose.yml
       service: agent-db
+    ports: !override []
 
 volumes:
   agent_db_data:
