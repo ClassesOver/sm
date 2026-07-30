@@ -176,7 +176,7 @@ async def test_report_workflow自然语言由模型参数转换且保留输入�
     goal = "出一份瑞金医院2025年整体运营分析报告，涵盖收入，预算，成本，工作量的分析"
     run_context = RunContext(run_id="run-text", session_id="thread-text", session_state={})
 
-    result = await toolkit.report_workflow_start_from_text(
+    result = await toolkit.report_workflow_start_from_prompt(
         report_goal=goal,
         period_start="2025-01-01",
         period_end="2025-12-31",

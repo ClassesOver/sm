@@ -560,22 +560,20 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
     assert report_registered == [
         {
             "report_workflow_start",
-            "report_workflow_start_from_text",
+            "report_workflow_start_from_prompt",
             "report_workflow_select_agent",
             "report_workflow_approve",
             "report_workflow_reject",
             "report_workflow_cancel",
         }
     ]
-    assert (
-        report_toolkits[0].async_functions["report_workflow_approve"].requires_confirmation is True
-    )
     assert all(
         report_toolkits[0].async_functions[name].requires_confirmation is False
         for name in (
             "report_workflow_start",
-            "report_workflow_start_from_text",
+            "report_workflow_start_from_prompt",
             "report_workflow_select_agent",
+            "report_workflow_approve",
             "report_workflow_reject",
             "report_workflow_cancel",
         )
@@ -629,7 +627,7 @@ def test_toolkit_instructions_are_injected_by_agno():
     parsed_tools = {function.name: function for function in parsed if hasattr(function, "name")}
     assert set(parsed_tools) == {
         "report_workflow_start",
-        "report_workflow_start_from_text",
+        "report_workflow_start_from_prompt",
         "report_workflow_select_agent",
         "report_workflow_approve",
         "report_workflow_reject",

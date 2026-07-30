@@ -153,9 +153,11 @@ def create_report_agent(
             "compression_manager": facade_compression_manager,
             "instructions": [
                 "新报表输入为 Envelope 时调用不带参数的 report_workflow_start；输入为自然语言时调用 "
-                "report_workflow_start_from_text，由你把明确期间转换为 period_start/period_end。"
-                "report_goal 必须逐字复制用户输入全文，不得改写、摘要或补充；期间不明确时先询问用户，"
-                "不得猜测。不得自行取数、执行 Coding 或生成报告。",
+                "report_workflow_start_from_prompt，由你把明确期间转换为 period_start/period_end。"
+                "单个明确日历年份已构成明确期间，必须转换为该年1月1日至12月31日，不得因用户未写出"
+                "起止日期而追问。report_goal 必须逐字复制包含业务目标的用户输入全文，不得改写、摘要"
+                "或补充；若用户在追问后仅补充期间，复用本会话最近一条尚未启动的业务目标原文。只有"
+                "期间确实缺失或冲突时才询问用户，不得猜测。不得自行取数、执行 Coding 或生成报告。",
                 "工具返回 paused 时准确展示当前审核预览。用户批准后调用 report_workflow_approve；"
                 "审核阶段为 agent 时必须调用 report_workflow_select_agent 并传入列表中的 code；"
                 "用户拒绝时把完整反馈传给 report_workflow_reject；明确取消时调用 "

@@ -77,6 +77,10 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert report_worker.model.extra_body["enable_thinking"] is False
     assert coding_agent.model.extra_body == app.assistant.model.extra_body
     assert report_agent.id == "report-agent"
+    facade_instructions = "\n".join(report_agent.instructions)
+    assert "单个明确日历年份" in facade_instructions
+    assert "该年1月1日至12月31日" in facade_instructions
+    assert "不得因用户未写出起止日期而追问" in facade_instructions
     assert report_agent.model is not report_worker.model
     assert report_agent.model.extra_body == {"enable_thinking": False}
     assert report_worker.compression_manager.model is report_worker.model
@@ -111,7 +115,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert [tool.name for tool in report_tools_without_injected_context] == ["report_workflow"]
     assert set(report_tools[0].async_functions) == {
         "report_workflow_start",
-        "report_workflow_start_from_text",
+        "report_workflow_start_from_prompt",
         "report_workflow_select_agent",
         "report_workflow_approve",
         "report_workflow_reject",

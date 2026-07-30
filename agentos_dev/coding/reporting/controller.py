@@ -549,7 +549,7 @@ class ReportWorkflowToolkit(Toolkit):
             name="report_workflow",
             tools=[
                 self.report_workflow_start,
-                self.report_workflow_start_from_text,
+                self.report_workflow_start_from_prompt,
                 self.report_workflow_select_agent,
                 self.report_workflow_approve,
                 self.report_workflow_reject,
@@ -557,14 +557,13 @@ class ReportWorkflowToolkit(Toolkit):
             ],
             instructions=(
                 "已有服务端 Envelope 的新报表调用 report_workflow_start；自然语言新报表调用 "
-                "report_workflow_start_from_text，并保持 report_goal 与用户输入原文完全一致。"
+                "report_workflow_start_from_prompt，并保持 report_goal 与用户输入原文完全一致。"
                 "需要选择 Agent 时调用 "
                 "report_workflow_select_agent；其他 paused 审核批准调用 "
                 "report_workflow_approve，拒绝调用 report_workflow_reject；用户明确取消时调用 "
                 "report_workflow_cancel。不得绕过 Workflow 审核或自行执行取数和 Coding 分析。"
             ),
             add_instructions=True,
-            requires_confirmation_tools=["report_workflow_approve"],
         )
 
     async def report_workflow_start(
@@ -577,7 +576,7 @@ class ReportWorkflowToolkit(Toolkit):
             raise ReportingError("report_request_invalid", "当前消息缺少报表 Envelope。")
         return await self.controller.start(envelope, run_context)
 
-    async def report_workflow_start_from_text(
+    async def report_workflow_start_from_prompt(
         self,
         report_goal: str,
         period_start: IsoDate,
@@ -589,8 +588,8 @@ class ReportWorkflowToolkit(Toolkit):
 
         Args:
             report_goal: 完整复制用户输入原文，不得改写、摘要或补充。
-            period_start: 用户要求的分析期间起始日期。
-            period_end: 用户要求的分析期间结束日期。
+            period_start: 用户要求的分析期间起始日期；单个日历年份使用该年1月1日。
+            period_end: 用户要求的分析期间结束日期；单个日历年份使用该年12月31日。
             source_ids: 仅在用户明确指定数据源 ID 时填写，否则留空。
         """
         envelope = ReportRequestEnvelope.from_untrusted(
