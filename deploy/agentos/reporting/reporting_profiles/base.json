@@ -1,0 +1,18 @@
+{
+  "version": "1",
+  "profileId": "base",
+  "revision": "1",
+  "pageLayout": {
+    "headerLeft": "上海鼎医信息技术有限公司",
+    "headerRight": "{title}",
+    "footerLeft": "企业智能运营报表",
+    "footerRight": "第 {page} / {pages} 页"
+  },
+  "sections": [
+    {"code": "executive_summary", "title": "执行摘要", "required": true},
+    {"code": "scope_and_methodology", "title": "分析范围与方法", "required": true},
+    {"code": "key_findings", "title": "关键发现", "required": true},
+    {"code": "limitations", "title": "局限性", "required": true},
+    {"code": "recommendations", "title": "建议", "required": true}
+  ]
+}

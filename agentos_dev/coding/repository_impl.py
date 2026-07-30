@@ -1657,6 +1657,136 @@ class CodingTaskRepository:
             )
         return InstructionReceipt(instruction_id, sequence, InstructionState.PENDING)
 
+    async def revise_completed_task(
+        self,
+        scope: CodingScope,
+        instruction_id: str,
+        content: str,
+        *,
+        acceptance_contract: dict[str, Any] | None = None,
+    ) -> TaskSnapshot:
+        """在同一任务内为已完成结果开启下一个修订 Attempt。"""
+
+        await self.initialize()
+        self._validate_instruction(instruction_id, content)
+        normalized_contract = (
+            self._normalize_acceptance_contract(acceptance_contract)
+            if acceptance_contract is not None
+            else None
+        )
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        content_bytes = len(content.encode("utf-8"))
+        now = utcnow()
+        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
+            task = (
+                await connection.execute(
+                    select(self.tasks).where(self.tasks.c.external_run_id == scope.external_run_id)
+                )
+            ).first()
+            if task is None:
+                raise CodingRepositoryError("task_not_found", "编码任务不存在。")
+            value = task._mapping
+            if any(
+                value[key] != expected
+                for key, expected in (
+                    ("owner_user_id", scope.owner_user_id),
+                    ("thread_id", scope.thread_id),
+                    ("sandbox_id", scope.sandbox_id),
+                    ("agent_id", scope.agent_id),
+                )
+            ):
+                raise CodingRepositoryError("task_scope_mismatch", "编码任务范围不匹配。")
+            existing = (
+                await connection.execute(
+                    select(self.instructions).where(
+                        self.instructions.c.external_run_id == scope.external_run_id,
+                        self.instructions.c.instruction_id == instruction_id,
+                    )
+                )
+            ).first()
+            if existing is not None:
+                if existing._mapping["content_hash"] != content_hash:
+                    raise CodingRepositoryError(
+                        "instruction_id_conflict", "instruction_id 已绑定到不同内容。"
+                    )
+            else:
+                if value["status"] != TaskState.COMPLETED:
+                    raise CodingRepositoryError(
+                        "task_revision_not_ready", "只能修订已完成的编码任务。"
+                    )
+                if _as_utc(value["deadline_at"]) <= now:
+                    raise CodingRepositoryError(
+                        "task_deadline_exceeded", "编码任务已达到 24 小时时限。"
+                    )
+                next_attempt_no = int(value["continuation_count"] or 0) + 1
+                if next_attempt_no > MAX_CONTINUATIONS:
+                    raise CodingRepositoryError(
+                        "task_continuation_exhausted", "编码任务已达到续跑上限。"
+                    )
+                next_run_id = self.internal_run_id(scope.external_run_id, next_attempt_no)
+                sequence = int(value["instruction_sequence"] or 0) + 1
+                next_lease_epoch = int(value["lease_epoch"] or 0) + 1
+                await connection.execute(
+                    insert(self.runs).values(
+                        internal_run_id=next_run_id,
+                        external_run_id=scope.external_run_id,
+                        continuation_index=next_attempt_no,
+                        status=AttemptState.CREATED,
+                        resume_count=0,
+                        lease_epoch=next_lease_epoch,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                await connection.execute(
+                    insert(self.instructions).values(
+                        external_run_id=scope.external_run_id,
+                        instruction_id=instruction_id,
+                        sequence=sequence,
+                        content=content,
+                        content_hash=content_hash,
+                        content_bytes=content_bytes,
+                        status=InstructionState.APPLIED,
+                        applied_attempt_no=next_attempt_no,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                result = await connection.execute(
+                    update(self.tasks)
+                    .where(
+                        self.tasks.c.external_run_id == scope.external_run_id,
+                        self.tasks.c.state_version == value["state_version"],
+                        self.tasks.c.status == TaskState.COMPLETED,
+                    )
+                    .values(
+                        status=TaskState.NEW,
+                        current_internal_run_id=next_run_id,
+                        continuation_count=next_attempt_no,
+                        instruction_sequence=sequence,
+                        state_version=self.tasks.c.state_version + 1,
+                        lease_epoch=next_lease_epoch,
+                        lease_owner=None,
+                        lease_expires_at=None,
+                        finish_receipt=None,
+                        result_text=None,
+                        same_error_count=0,
+                        error_fingerprint=None,
+                        **(
+                            {"acceptance_contract": normalized_contract}
+                            if normalized_contract is not None
+                            else {}
+                        ),
+                        completed_at=None,
+                        updated_at=now,
+                    )
+                )
+                if result.rowcount != 1:
+                    raise CodingRepositoryError("task_cas_conflict", "任务状态已发生变化。")
+        updated = await self.get_task_snapshot(scope.external_run_id)
+        assert updated is not None
+        return updated
+
     async def pending_instructions(self, external_run_id: str) -> list[tuple[int, str]]:
         await self.initialize()
         async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]

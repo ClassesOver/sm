@@ -14,16 +14,19 @@ def build_report_worker_tools(
     coding_repository: Any,
     validator_registry: Any = None,
     *,
-    run_context: RunContext,
+    run_context: RunContext | None = None,
     agent: Any | None = None,
+    enable_vision: bool = False,
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
 ) -> list[Toolkit]:
     """Report Worker 只执行 Coding 分析，不持有数据库或 SQL 工具。"""
-    return [
-        WorkspaceCodingToolkit(
-            workspace_service,
-            coding_repository,
-            validator_registry=validator_registry,
-        )
-    ]
+    toolkit = WorkspaceCodingToolkit(
+        workspace_service,
+        coding_repository,
+        validator_registry=validator_registry,
+    )
+    if not enable_vision:
+        toolkit.functions.pop("view_image", None)
+        toolkit.async_functions.pop("view_image", None)
+    return [toolkit]

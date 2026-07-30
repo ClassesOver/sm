@@ -50,7 +50,9 @@ def test_cli_main_rejects_empty_stdin(monkeypatch):
 
 
 def test_create_cli_agent_is_independent_coding_agent():
-    settings = AgentSettings.from_environment({}, load_env_file=False)
+    settings = AgentSettings.from_environment(
+        {"AGENT_MODEL_TIMEOUT_SECONDS": "123"}, load_env_file=False
+    )
     database = object()
     workspace_service = object()
 
@@ -68,6 +70,8 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.model.id == settings.model_id
     assert isinstance(agent.model, ProjectedOpenAIChat)
     assert agent.model.base_url == settings.openai_base_url
+    assert agent.model.timeout == 123
+    assert agent.model.max_retries == 0
     assert agent.model.extra_body == {"enable_thinking": True}
     assert agent.model.reasoning_effort == "medium"
     assert agent.model.get_request_params()["reasoning_effort"] == "medium"
@@ -75,8 +79,8 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.add_history_to_context is False
     assert agent.debug_mode is False
     assert isinstance(agent.compression_manager, ContextBudgetController)
-    assert agent.compression_manager.context_token_limit == 96 * 1024
-    assert agent.compression_manager.input_token_budget == 64 * 1024
+    assert agent.compression_manager.context_token_limit == 256 * 1024
+    assert agent.compression_manager.input_token_budget == 224 * 1024
     assert agent.compression_manager.model is agent.model
     assert agent.tools[0].kernel.service is workspace_service
     assert isinstance(agent.tools[0].kernel.validator_registry, SkillValidatorRegistry)
@@ -151,7 +155,7 @@ def test_cli_instructions_prefer_direct_verify_and_batch_patch():
 
 def test_cli_agent_explicitly_honors_thinking_setting():
     settings = AgentSettings.from_environment(
-        {"AGENT_ENABLE_THINKING": "false"}, load_env_file=False
+        {"AGENT_CODING_ENABLE_THINKING": "false"}, load_env_file=False
     )
     agent = create_cli_agent(
         CliContext(
@@ -249,7 +253,7 @@ async def test_cli_app_agent_routes_exact_input_without_facade_model(monkeypatch
 
 def test_cli_debug_mode_is_independent_from_thinking():
     settings = AgentSettings.from_environment(
-        {"AGENT_DEBUG": "true", "AGENT_ENABLE_THINKING": "true"},
+        {"AGENT_DEBUG": "true", "AGENT_CODING_ENABLE_THINKING": "true"},
         load_env_file=False,
     )
     context = CliContext(

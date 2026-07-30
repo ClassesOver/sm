@@ -9,6 +9,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
+from string import Formatter
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -22,6 +23,14 @@ MAX_PDF_BYTES = 200 * 1024 * 1024
 MAX_PDF_PAGES = 200
 PDF_VALIDATION_TIMEOUT_SECONDS = 540
 IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+DEFAULT_PAGE_LAYOUT = {
+    "headerLeft": "上海鼎医信息技术有限公司",
+    "headerRight": "{title}",
+    "footerLeft": "企业智能运营报表",
+    "footerRight": "第 {page} / {pages} 页",
+}
+PAGE_LAYOUT_FIELDS = frozenset(DEFAULT_PAGE_LAYOUT)
+PAGE_LAYOUT_PLACEHOLDERS = frozenset({"title", "page", "pages"})
 
 
 class ReportFailure(ValueError):
@@ -133,6 +142,89 @@ def _check_image_signature(path: Path) -> None:
         raise ReportFailure("Markdown 图片格式或文件签名无效")
 
 
+def _page_layout(value: Any) -> dict[str, str]:
+    if value is None:
+        return dict(DEFAULT_PAGE_LAYOUT)
+    if not isinstance(value, dict) or set(value) - PAGE_LAYOUT_FIELDS:
+        raise ReportFailure("PDF 页面格式无效")
+    layout = dict(DEFAULT_PAGE_LAYOUT)
+    for key, item in value.items():
+        if not isinstance(item, str) or len(item) > 200:
+            raise ReportFailure("PDF 页面格式无效")
+        if any(ord(character) < 32 and character != "\t" for character in item):
+            raise ReportFailure("PDF 页面格式包含控制字符")
+        try:
+            parsed = tuple(Formatter().parse(item))
+        except ValueError as error:
+            raise ReportFailure("PDF 页面格式无效") from error
+        if any(
+            field_name not in PAGE_LAYOUT_PLACEHOLDERS or format_spec or conversion
+            for _literal, field_name, format_spec, conversion in parsed
+            if field_name is not None
+        ):
+            raise ReportFailure("PDF 页面格式包含不受支持的占位符")
+        layout[key] = item
+    footer = f"{layout['footerLeft']}\n{layout['footerRight']}"
+    if "{page}" not in footer or "{pages}" not in footer:
+        raise ReportFailure("PDF 页脚必须包含当前页和总页数")
+    return layout
+
+
+def _css_string(value: str) -> str:
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("<", "\\3c ")
+        .replace(">", "\\3e ")
+        .replace("\n", "\\a ")
+    )
+    return f'"{escaped}"'
+
+
+def _css_content(value: str) -> str:
+    parts: list[str] = []
+    for literal, field_name, _format_spec, _conversion in Formatter().parse(value):
+        if literal:
+            parts.append(_css_string(literal))
+        if field_name == "title":
+            parts.append("string(report-title)")
+        elif field_name == "page":
+            parts.append("counter(page)")
+        elif field_name == "pages":
+            parts.append("counter(pages)")
+    return " ".join(parts) or '""'
+
+
+def _markdown_title(tokens: list[Any]) -> str:
+    for index, token in enumerate(tokens[:-1]):
+        if token.type == "heading_open" and token.tag == "h1":
+            title = str(getattr(tokens[index + 1], "content", "") or "").strip()
+            if title:
+                return title[:300]
+    return "智能运营报表"
+
+
+def _formatted_page_text(template: str, *, title: str, page: int, pages: int) -> str:
+    return template.format(title=title, page=page, pages=pages)
+
+
+def _has_page_layout(
+    text: str,
+    layout: dict[str, str],
+    *,
+    title: str,
+    page: int,
+    pages: int,
+) -> bool:
+    compact = "".join(text.split())
+    expected = (
+        _formatted_page_text(value, title=title, page=page, pages=pages)
+        for value in layout.values()
+        if value
+    )
+    return all("".join(value.split()) in compact for value in expected)
+
+
 class ReportRuntime:
     def __init__(self, workspace: str | Path):
         self.workspace = Path(workspace).resolve()
@@ -208,6 +300,7 @@ class ReportRuntime:
         markdown_path: str,
         output_path: str,
         temporary_path: str,
+        page_layout: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         try:
             import pypdf
@@ -230,6 +323,8 @@ class ReportRuntime:
 
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
             tokens = parser.parse(markdown)
+            layout = _page_layout(page_layout)
+            title = _markdown_title(tokens)
             allowed_images = self._images(source, tokens)
             source_artifact = self._artifact(source)
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
@@ -250,17 +345,32 @@ class ReportRuntime:
             document = (
                 "<meta charset='utf-8'>"
                 "<style>"
-                "@page{size:A4;margin:18mm}"
+                "@page{size:A4;margin:20mm 18mm 22mm;"
+                f"@top-left{{content:{_css_content(layout['headerLeft'])};color:#667085;"
+                "font-size:8pt;line-height:1.2;}"
+                f"@top-right{{content:{_css_content(layout['headerRight'])};color:#667085;"
+                "font-size:8pt;line-height:1.2;}"
+                f"@bottom-left{{content:{_css_content(layout['footerLeft'])};color:#667085;"
+                "font-size:8pt;line-height:1.2;border-top:0.5pt solid #d0d5dd;padding-top:2mm;}"
+                f"@bottom-right{{content:{_css_content(layout['footerRight'])};color:#667085;"
+                "font-size:8pt;line-height:1.2;border-top:0.5pt solid #d0d5dd;padding-top:2mm;}"
+                "}"
                 "body{font-family:'Noto Sans CJK SC','Noto Sans CJK JP',sans-serif;"
-                "font-size:10.5pt;line-height:1.65;color:#202124}"
-                "h1{font-size:24pt}h2{font-size:17pt}h3{font-size:13pt}"
-                "h1,h2,h3{page-break-after:avoid}"
+                "font-size:10.5pt;line-height:1.65;color:#1d2939}"
+                "h1{font-size:23pt;color:#101828;border-bottom:1.5pt solid #175cd3;"
+                "padding-bottom:5mm;margin-bottom:8mm;string-set:report-title content();}"
+                "h2{font-size:16pt;color:#1849a9;border-left:3pt solid #2e90fa;padding-left:3mm;}"
+                "h3{font-size:12.5pt;color:#344054}"
+                "h1,h2,h3{page-break-after:avoid;break-after:avoid}"
+                "p,li{orphans:3;widows:3}"
                 "table{width:100%;border-collapse:collapse;margin:10px 0}"
-                "th,td{border:1px solid #c7c9cc;padding:5px 7px;text-align:left}"
-                "th{background:#f1f3f4}"
-                "img{display:block;max-width:100%;height:auto;margin:12px auto}"
+                "thead{display:table-header-group}tr{break-inside:avoid}"
+                "th,td{border:0.6pt solid #d0d5dd;padding:5px 7px;text-align:left}"
+                "th{background:#eef4ff;color:#194185}tbody tr:nth-child(even){background:#f9fafb}"
+                "img{display:block;max-width:100%;height:auto;margin:12px auto;break-inside:avoid}"
                 "pre,code{white-space:pre-wrap;overflow-wrap:anywhere}"
-                "blockquote{border-left:3px solid #9aa0a6;margin-left:0;padding-left:12px}"
+                "blockquote{border-left:3px solid #84adff;background:#f5f8ff;margin-left:0;"
+                "padding:3mm 4mm;color:#344054}"
                 "</style>"
                 f"{body}"
             )
@@ -294,6 +404,8 @@ class ReportRuntime:
                 "images": image_artifacts,
                 "pageCount": page_count,
                 "imageCount": len(allowed_images),
+                "pageLayout": layout,
+                "reportTitle": title,
             }
             result = {
                 "status": "rendered",
@@ -316,6 +428,7 @@ class ReportRuntime:
         state: dict[str, Any],
         pdf_path: str,
         temporary_directory: str,
+        artifact_manifest: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
             import pypdf
@@ -344,6 +457,7 @@ class ReportRuntime:
                 raise ReportFailure("PDF 产物发生变化，请重新渲染后验收")
             pages = []
             blank_pages = []
+            missing_page_layout = []
             rendered_image_count = 0
             temp_path = _validation_directory(temporary_directory)
             with _cleanup_directory(temp_path):
@@ -373,18 +487,32 @@ class ReportRuntime:
                 )
                 if process.returncode != 0 or len(rendered_pages) != len(reader.pages):
                     raise ReportFailure("PDF 视觉验收栅格化失败")
+                extracted_text = ""
+                layout = _page_layout(render.get("pageLayout"))
+                title = str(render.get("reportTitle") or "智能运营报表")
                 for index, (page, rendered_page) in enumerate(
                     zip(reader.pages, rendered_pages, strict=True), start=1
                 ):
+                    page_text = page.extract_text() or ""
+                    extracted_text += page_text
                     with Image.open(rendered_page) as image:
                         grayscale = image.convert("L")
                         samples = grayscale.tobytes()
                         width, height = grayscale.size
                     non_white = sum(value < 250 for value in samples)
                     ratio = round(non_white / len(samples), 6) if samples else 0.0
-                    text_char_count = len("".join((page.extract_text() or "").split()))
+                    text_char_count = len("".join(page_text.split()))
                     image_count = len(page.images)
                     rendered_image_count += image_count
+                    layout_present = _has_page_layout(
+                        page_text,
+                        layout,
+                        title=title,
+                        page=index,
+                        pages=len(reader.pages),
+                    )
+                    if not layout_present:
+                        missing_page_layout.append(index)
                     blank = ratio < 0.0005 and text_char_count == 0 and image_count == 0
                     if blank:
                         blank_pages.append(index)
@@ -396,12 +524,18 @@ class ReportRuntime:
                             "nonWhiteRatio": ratio,
                             "textCharCount": text_char_count,
                             "imageCount": image_count,
+                            "pageLayoutPresent": layout_present,
                             "blank": blank,
                         }
                     )
             markdown_image_count = int(render.get("imageCount") or 0)
             missing_images = max(0, markdown_image_count - rendered_image_count)
-            ok = bool(pages) and not blank_pages and missing_images == 0
+            chart_ids, citation_ids, section_ids = self._validate_manifest_markers(
+                artifact_manifest,
+                render=render,
+                extracted_text=extracted_text,
+            )
+            ok = bool(pages) and not blank_pages and not missing_page_layout and missing_images == 0
             validation = {
                 "ok": ok,
                 "status": "validated" if ok else "validation_failed",
@@ -411,7 +545,11 @@ class ReportRuntime:
                 "markdownImageCount": markdown_image_count,
                 "renderedImageCount": rendered_image_count,
                 "missingImageCount": missing_images,
+                "chartIds": chart_ids,
+                "citationIds": citation_ids,
+                "sectionIds": section_ids,
                 "blankPages": blank_pages,
+                "missingPageLayoutPages": missing_page_layout,
                 "pages": pages,
             }
             if _sha256(path) != current["sha256"] or path.stat().st_size != current["size"]:
@@ -420,6 +558,57 @@ class ReportRuntime:
         finally:
             if temp_path is not None:
                 shutil.rmtree(temp_path, ignore_errors=True)
+
+    def _validate_manifest_markers(
+        self,
+        manifest: dict[str, Any] | None,
+        *,
+        render: dict[str, Any],
+        extracted_text: str,
+    ) -> tuple[list[str], list[str], list[str]]:
+        if manifest is None:
+            return [], [], []
+        charts = manifest.get("charts")
+        citations = manifest.get("citations")
+        sections = manifest.get("sections")
+        if (
+            not isinstance(charts, list)
+            or not isinstance(citations, list)
+            or not isinstance(sections, list)
+        ):
+            raise ReportFailure("报告产物清单无效")
+        chart_paths = {
+            item.get("path")
+            for item in charts
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
+        rendered_paths = {
+            item.get("path")
+            for item in render.get("images", [])
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
+        if len(chart_paths) != len(charts) or chart_paths != rendered_paths:
+            raise ReportFailure("PDF 图表与产物清单不一致")
+        chart_ids: list[str] = []
+        for item in charts:
+            value = item.get("chartId") if isinstance(item, dict) else None
+            if isinstance(value, str):
+                chart_ids.append(value)
+        citation_ids: list[str] = []
+        for item in citations:
+            value = item.get("citationId") if isinstance(item, dict) else None
+            if isinstance(value, str):
+                citation_ids.append(value)
+        if len(citation_ids) != len(citations) or any(
+            f"[[citation:{item}]]" not in extracted_text for item in citation_ids
+        ):
+            raise ReportFailure("PDF 缺少数据引用标识")
+        section_ids = [item for item in sections if isinstance(item, str)]
+        if len(section_ids) != len(sections) or any(
+            f"[[section:{item}]]" not in extracted_text for item in section_ids
+        ):
+            raise ReportFailure("PDF 缺少关键章节标识")
+        return chart_ids, citation_ids, section_ids
 
     @staticmethod
     def _check_pdf_bounds(path: Path) -> None:
@@ -451,10 +640,14 @@ def main(arguments: list[str] | None = None) -> int:
                 payload["markdown_path"],
                 payload["output_path"],
                 payload["temporary_path"],
+                payload.get("page_layout"),
             )
         elif action == "validate_pdf":
             result = runtime.validate_pdf(
-                payload["job"], payload["pdf_path"], payload["temporary_directory"]
+                payload["job"],
+                payload["pdf_path"],
+                payload["temporary_directory"],
+                payload.get("artifact_manifest"),
             )
         else:
             raise ReportFailure("未知报表操作")

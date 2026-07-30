@@ -2,42 +2,39 @@
 
 from contextlib import asynccontextmanager
 
+from agno.agent import Agent
 from agno.os import AgentOS
-from agno.os.interfaces.agui import AGUI
 from fastapi import FastAPI
 
 from ...settings import AgentSettings
 from ...skills import SkillValidatorRegistry
 from .. import AgnoCodingExecutor, CodingTaskSupervisor
-from ..cli import _close_cli_resources, create_cli_agent, create_cli_context
+from ..cli import CliContext, _close_cli_resources, create_cli_agent, create_cli_context
 from ..execution import CodingExecutionKernel
 from .agent import create_report_agent, create_report_worker
-from .binding import TemporarySourceBindingService
 from .controller import ReportWorkflowController
-from .credentials import TemporaryCredentialStore
-from .data_sources import ReportDataSourceToolkit
+from .data_source import load_configured_report_source_registry
 from .instructions import build_report_agent_instructions
+from .interface import ReportAGUI
+from .metadata import ReportingMetadataClient
+from .profile import load_configured_reporting_profiles
 from .runtime import ReportWorkflowRuntime
-from .starrocks import create_starrocks_client
 
 
-def create_agentos(settings: AgentSettings | None = None) -> AgentOS:
-    current_settings = settings or AgentSettings.from_environment()
-    context = create_cli_context(current_settings)
-    coding_worker = create_cli_agent(context)
+def create_report_agentos_components(
+    context: CliContext,
+    coding_worker: Agent,
+    settings: AgentSettings,
+) -> tuple[Agent, Agent]:
     report_worker = create_report_worker(
         coding_worker,
         context.workspace_service,
         context.coding_repository,
         instructions=build_report_agent_instructions,
-        context_token_budget=current_settings.context_token_budget,
-        output_token_reserve=current_settings.output_token_reserve,
-    )
-    credentials = TemporaryCredentialStore()
-    bindings = TemporarySourceBindingService(
-        credentials,
-        create_starrocks_client,
-        network_allowlist=current_settings.report_source_network_allow_list,
+        coding_enable_thinking=settings.coding_enable_thinking,
+        report_enable_vision=settings.report_enable_vision,
+        context_token_budget=settings.context_token_budget,
+        output_token_reserve=settings.output_token_reserve,
     )
     supervisor = CodingTaskSupervisor(
         context.coding_repository,
@@ -47,42 +44,51 @@ def create_agentos(settings: AgentSettings | None = None) -> AgentOS:
         ),
         validator_registry=SkillValidatorRegistry.from_skills(report_worker.skills),
     )
-    data_sources = ReportDataSourceToolkit(
-        context.workspace_service,
-        config_path=current_settings.report_data_sources_file,
-        excluded_database_url=current_settings.database_url,
-        temporary_source_bindings=bindings,
-        temporary_report_credentials=credentials,
-    )
+    registry = load_configured_report_source_registry(settings.report_data_sources_dir)
     runtime = ReportWorkflowRuntime(
         db=context.database,
         planner=report_worker,
         report_worker=report_worker,
         supervisor=supervisor,
         workspace_service=context.workspace_service,
-        binding_service=bindings,
-        credentials=credentials,
-        client_factory=create_starrocks_client,
-        data_sources=data_sources,
+        registry=registry,
+        profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
+        planner_enable_thinking=settings.report_enable_thinking,
+        metadata_client=(
+            ReportingMetadataClient(
+                settings.report_metadata_url,
+                token=settings.report_metadata_token,
+            )
+            if settings.report_metadata_url
+            else None
+        ),
     )
     controller = ReportWorkflowController(
         runtime.workflow,
         cancel_cleanup=runtime.cleanup_cancelled,
     )
-    facade = create_report_agent(report_worker, controller)
+    return create_report_agent(report_worker, controller), report_worker
+
+
+def create_agentos(settings: AgentSettings | None = None) -> AgentOS:
+    current_settings = settings or AgentSettings.from_environment()
+    context = create_cli_context(current_settings)
+    coding_worker = create_cli_agent(context)
+    facade, report_worker = create_report_agentos_components(
+        context, coding_worker, current_settings
+    )
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
         try:
             yield
         finally:
-            credentials.close_all()
             await _close_cli_resources(context, facade, report_worker, coding_worker)
 
     return AgentOS(
         name="Report AgentOS",
         agents=[facade],
-        interfaces=[AGUI(agent=facade)],
+        interfaces=[ReportAGUI(agent=facade)],
         db=context.database,
         cors_allowed_origins=list(current_settings.cors_allowed_origins),
         lifespan=lifespan,
@@ -93,7 +99,7 @@ def main() -> None:
     settings = AgentSettings.from_environment()
     agent_os = create_agentos(settings)
     agent_os.serve(
-        app=agent_os.get_app(),
+        app="agentos_dev.coding.reporting.server:app",
         host=settings.host,
         port=settings.port,
         workers=settings.workers,

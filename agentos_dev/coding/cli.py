@@ -111,6 +111,8 @@ def _create_cli_model(
         id=settings.model_id,
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
+        timeout=settings.model_timeout_seconds,
+        max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
         extra_body=({"enable_thinking": enable_thinking} if enable_thinking is not None else None),
         retries=2,
@@ -121,7 +123,7 @@ def _create_cli_model(
 def create_cli_agent(context: CliContext) -> Agent:
     settings = context.settings
     model = projected_coding_model(
-        _create_cli_model(settings, enable_thinking=settings.enable_thinking)
+        _create_cli_model(settings, enable_thinking=settings.coding_enable_thinking)
     )
     model.reasoning_effort = "medium"
     coding_skills = load_builtin_coding_skills(settings.skills_dir)

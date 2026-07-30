@@ -290,8 +290,8 @@ def test_coding_context_controller_keeps_below_budget_history_uncompressed():
     assert old.compressed_content is None
     assert prepared[1].compressed_content is None
     assert prepared[3].compressed_content is None
-    assert controller.context_token_limit == 96 * 1024
-    assert controller.input_token_budget == 64 * 1024
+    assert controller.context_token_limit == 200_000
+    assert controller.input_token_budget == 200_000 - 32 * 1024
 
 
 def test_coding_context_projection_keeps_append_only_provider_prefix_stable():
@@ -564,6 +564,39 @@ def test_runtime_feedback_replaces_older_failure_with_latest_success_state():
 
     assert feedback["marker"] == "CODING_RUNTIME_FEEDBACK"
     assert feedback["code"] == "coding_finish_required"
+
+
+def test_runtime_feedback_keeps_incomplete_plan_in_working_state_after_verification():
+    messages = [
+        Message(
+            role="tool",
+            tool_name="update_plan",
+            content=json.dumps(
+                {
+                    "ok": True,
+                    "plan": [
+                        {"step": "生成报告", "status": "completed"},
+                        {"step": "生成清单", "status": "in_progress"},
+                    ],
+                }
+            ),
+        ),
+        Message(
+            role="tool",
+            tool_name="verify",
+            content=json.dumps({"mutation_sequence": 3, "exit_code": 0}),
+        ),
+    ]
+
+    projected = CodingContextProjector.project(messages, model=CountingModel())
+    feedback = json.loads(projected[-1].content)
+
+    assert feedback["marker"] == "CODING_RUNTIME_FEEDBACK"
+    assert feedback["code"] == "coding_runtime_action_required"
+    assert feedback["pendingSteps"] == ["生成清单"]
+    assert feedback["requiredActions"] == [
+        "继续完成 pendingSteps；全部完成后在最后一次 mutation 上重新验证并调用 finish_task。"
+    ]
 
 
 def _function_call(name, entrypoint, index, arguments=None):

@@ -34,3 +34,12 @@ def test_report_toolkit_is_discoverable_but_requires_skill_route(tmp_path):
         run_context=SimpleNamespace(session_state=context.session_state, dependencies={}),
     )
     assert [tool.name for tool in report_tools] == ["workspace_coding"]
+    assert "view_image" not in report_tools[0].async_functions
+
+    vision_tools = build_report_worker_tools(
+        workspace_service,
+        app.coding_repository,
+        enable_vision=True,
+        run_context=SimpleNamespace(session_state=context.session_state, dependencies={}),
+    )
+    assert "view_image" in vision_tools[0].async_functions

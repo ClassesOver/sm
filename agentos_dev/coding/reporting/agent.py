@@ -7,10 +7,12 @@ from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 
 from ...agents.assistant import AgentInstructions
+from ...context_management import ContextBudgetController
 from ...skills import SkillValidatorRegistry, is_skill_script_hook
 from ...workspace import WorkspaceService
 from ..execution import is_coding_tool_scheduler_hook
 from ..repository import CodingTaskRepository
+from .acceptance import load_reporting_skills
 from .controller import ReportWorkflowController, ReportWorkflowToolkit
 from .tools import build_report_worker_tools
 from .workspace import (
@@ -58,21 +60,46 @@ def create_report_worker(
     coding_repository: CodingTaskRepository,
     *,
     instructions: AgentInstructions,
+    coding_enable_thinking: bool = True,
+    report_enable_vision: bool = False,
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
 ) -> Agent:
-    validator_registry = SkillValidatorRegistry.from_skills(base_agent.skills)
+    if not isinstance(base_agent.model, OpenAIChat):
+        raise TypeError("Report worker requires OpenAIChat")
+    reporting_skills = load_reporting_skills(base_agent.skills)
+    validator_registry = SkillValidatorRegistry.from_skills(reporting_skills)
+    worker_model = copy(base_agent.model)
+    worker_model.extra_body = {
+        **(getattr(base_agent.model, "extra_body", None) or {}),
+        "enable_thinking": coding_enable_thinking,
+    }
+    worker_compression_manager = (
+        ContextBudgetController(
+            model=worker_model,
+            context_token_budget=context_token_budget,
+            output_token_reserve=output_token_reserve,
+        )
+        if base_agent.compress_tool_results
+        else None
+    )
     worker = base_agent.deep_copy(
         update={
             "id": "report-worker",
             "name": "智能报表 Worker",
             "role": "根据已批准的分析计划和不可变数据集执行受控 Coding 分析。",
+            "model": worker_model,
+            "compression_manager": worker_compression_manager,
             "instructions": instructions,
+            "use_instruction_tags": True,
+            "skills": reporting_skills,
+            "send_media_to_model": report_enable_vision,
             "tools": partial(
                 build_report_worker_tools,
                 workspace_service,
                 coding_repository,
                 validator_registry=validator_registry,
+                enable_vision=report_enable_vision,
                 context_token_budget=context_token_budget,
                 output_token_reserve=output_token_reserve,
             ),
@@ -96,6 +123,15 @@ def create_report_agent(
         "enable_thinking": False,
     }
     facade_model.reasoning_effort = None
+    facade_compression_manager = None
+    if report_worker.compress_tool_results:
+        if not isinstance(report_worker.compression_manager, ContextBudgetController):
+            raise TypeError("Report worker requires ContextBudgetController")
+        facade_compression_manager = ContextBudgetController(
+            model=facade_model,
+            context_token_budget=report_worker.compression_manager.context_token_limit,
+            output_token_reserve=report_worker.compression_manager.output_token_reserve,
+        )
     facade_tool_hooks = [
         hook
         for hook in (report_worker.tool_hooks or [])
@@ -103,8 +139,9 @@ def create_report_agent(
     ]
 
     def workflow_tools(
-        *, run_context: RunContext, agent: Agent | None = None
+        *, run_context: RunContext | None = None, agent: Agent | None = None
     ) -> list[ReportWorkflowToolkit]:
+        _ = run_context, agent
         return [ReportWorkflowToolkit(controller)]
 
     facade = report_worker.deep_copy(
@@ -113,9 +150,14 @@ def create_report_agent(
             "name": "智能报表",
             "role": "通过受控 Workflow 编排来源确认、分析、验收和发布审核。",
             "model": facade_model,
+            "compression_manager": facade_compression_manager,
             "instructions": [
-                "新报表必须调用 report_workflow_start；不得自行取数、执行 Coding 或生成报告。",
+                "新报表输入为 Envelope 时调用不带参数的 report_workflow_start；输入为自然语言时调用 "
+                "report_workflow_start_from_text，由你把明确期间转换为 period_start/period_end。"
+                "report_goal 必须逐字复制用户输入全文，不得改写、摘要或补充；期间不明确时先询问用户，"
+                "不得猜测。不得自行取数、执行 Coding 或生成报告。",
                 "工具返回 paused 时准确展示当前审核预览。用户批准后调用 report_workflow_approve；"
+                "审核阶段为 agent 时必须调用 report_workflow_select_agent 并传入列表中的 code；"
                 "用户拒绝时把完整反馈传给 report_workflow_reject；明确取消时调用 "
                 "report_workflow_cancel。",
                 "工具返回 completed 后只返回其正式报告产物；不得把 paused、running 或 failed "

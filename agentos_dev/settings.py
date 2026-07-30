@@ -1,5 +1,4 @@
 import os
-import re
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from ipaddress import IPv4Network, ip_network
@@ -9,6 +8,7 @@ from dotenv import dotenv_values
 
 DEFAULT_ENV_FILE = ".env"
 DEFAULT_MODEL_ID = "qwen3.6-35b-a3b"
+DEFAULT_MODEL_TIMEOUT_SECONDS = 900
 DEFAULT_WORKSPACE_SNAPSHOT = "sandbox-tools"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_AGENT_DB_URL = "postgresql+psycopg://odoo@127.0.0.1:55432/dev"
@@ -93,34 +93,6 @@ def _daytona_network_allow_list(values: MutableMapping[str, str]) -> str | None:
     return ",".join(networks)
 
 
-def _report_source_network_allow_list(values: MutableMapping[str, str]) -> str | None:
-    raw = values.get("AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST", "").strip()
-    if not raw:
-        return None
-    entries = [entry.strip().lower().rstrip(".") for entry in raw.split(",")]
-    if any(not entry for entry in entries) or len(entries) > 50:
-        raise ValueError(
-            "AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST 必须包含 1 到 50 个主机名、IP 或 CIDR"
-        )
-    normalized: list[str] = []
-    hostname_pattern = re.compile(
-        r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
-        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
-    )
-    for entry in entries:
-        try:
-            network = ip_network(entry, strict=False)
-        except ValueError:
-            if not hostname_pattern.fullmatch(entry):
-                raise ValueError(
-                    "AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST 包含无效主机名、IP 或 CIDR"
-                ) from None
-            normalized.append(entry)
-        else:
-            normalized.append(str(network))
-    return ",".join(dict.fromkeys(normalized))
-
-
 def _phoenix_endpoint(values: MutableMapping[str, str]) -> str | None:
     raw = values.get("AGENT_TRACING_PHOENIX_ENDPOINT", "").strip()
     if not raw:
@@ -143,6 +115,25 @@ def _phoenix_endpoint(values: MutableMapping[str, str]) -> str | None:
     return endpoint
 
 
+def _report_metadata_url(values: MutableMapping[str, str]) -> str | None:
+    raw = values.get("AGENT_REPORT_METADATA_URL", "").strip()
+    if not raw:
+        return None
+    if len(raw) > 2048:
+        raise ValueError("AGENT_REPORT_METADATA_URL 长度不能超过 2048")
+    parsed = urlsplit(raw)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("AGENT_REPORT_METADATA_URL 必须是有效的 HTTP(S) 地址")
+    return raw.rstrip("/")
+
+
 def _phoenix_project_name(values: MutableMapping[str, str]) -> str:
     name = values.get("AGENT_TRACING_PHOENIX_PROJECT", "agentos").strip()
     if not name or len(name) > 128:
@@ -154,6 +145,7 @@ def _phoenix_project_name(values: MutableMapping[str, str]) -> str:
 class AgentSettings:
     env_file: str
     model_id: str
+    model_timeout_seconds: int
     openai_base_url: str
     openai_api_key: str | None
     host: str
@@ -165,14 +157,18 @@ class AgentSettings:
     cors_allowed_origins: tuple[str, ...]
     database_url: str
     skills_dir: str | None
-    report_data_sources_file: str | None
+    report_data_sources_dir: str | None
+    report_metadata_url: str | None
+    report_metadata_token: str | None
     workspace_hmac_secret: str
     workspace_snapshot: str
     daytona_network_allow_list: str | None
-    report_source_network_allow_list: str | None
     enable_tool_result_compression: bool
     enable_session_summaries: bool
-    enable_thinking: bool
+    assistant_enable_thinking: bool
+    coding_enable_thinking: bool
+    report_enable_thinking: bool
+    report_enable_vision: bool
     tracing_enabled: bool
     tracing_phoenix_endpoint: str | None
     tracing_phoenix_api_key: str | None
@@ -222,6 +218,12 @@ class AgentSettings:
         return cls(
             env_file=env_file,
             model_id=values.get("MODEL", DEFAULT_MODEL_ID),
+            model_timeout_seconds=_positive_int(
+                values,
+                "AGENT_MODEL_TIMEOUT_SECONDS",
+                DEFAULT_MODEL_TIMEOUT_SECONDS,
+                maximum=3600,
+            ),
             openai_base_url=values.get("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL),
             openai_api_key=values.get("OPENAI_API_KEY"),
             host=values.get("AGENT_OS_HOST", "127.0.0.1"),
@@ -233,23 +235,29 @@ class AgentSettings:
             cors_allowed_origins=origins,
             database_url=database_url_from_environment(values),
             skills_dir=values.get("AGENT_SKILLS_DIR"),
-            report_data_sources_file=(
-                values.get("AGENT_REPORT_DATA_SOURCES_FILE", "").strip() or None
+            report_data_sources_dir=(
+                values.get("AGENT_REPORT_DATA_SOURCES_DIR", "").strip() or None
             ),
+            report_metadata_url=_report_metadata_url(values),
+            report_metadata_token=(values.get("AGENT_REPORT_METADATA_TOKEN", "").strip() or None),
             workspace_hmac_secret=values.get("AGUI_WORKSPACE_HMAC_SECRET", ""),
             workspace_snapshot=(
                 values.get("DAYTONA_DEFAULT_SNAPSHOT") or DEFAULT_WORKSPACE_SNAPSHOT
             ).strip()
             or DEFAULT_WORKSPACE_SNAPSHOT,
             daytona_network_allow_list=_daytona_network_allow_list(values),
-            report_source_network_allow_list=_report_source_network_allow_list(values),
             enable_tool_result_compression=_flag(
                 values.get("AGENT_ENABLE_TOOL_RESULT_COMPRESSION"), default=True
             ),
             enable_session_summaries=_flag(
                 values.get("AGENT_ENABLE_SESSION_SUMMARIES"), default=True
             ),
-            enable_thinking=_flag(values.get("AGENT_ENABLE_THINKING"), default=True),
+            assistant_enable_thinking=_flag(
+                values.get("AGENT_ASSISTANT_ENABLE_THINKING"), default=False
+            ),
+            coding_enable_thinking=_flag(values.get("AGENT_CODING_ENABLE_THINKING"), default=True),
+            report_enable_thinking=_flag(values.get("AGENT_REPORT_ENABLE_THINKING"), default=True),
+            report_enable_vision=_flag(values.get("AGENT_REPORT_ENABLE_VISION"), default=False),
             tracing_enabled=_flag(values.get("AGENT_TRACING_ENABLED")),
             tracing_phoenix_endpoint=_phoenix_endpoint(values),
             tracing_phoenix_api_key=(

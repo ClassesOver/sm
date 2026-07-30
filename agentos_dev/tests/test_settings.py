@@ -17,14 +17,17 @@ def test_settings_defaults():
     assert current.database_url == DEFAULT_AGENT_DB_URL
     assert current.workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
     assert current.daytona_network_allow_list is None
-    assert current.report_source_network_allow_list is None
     assert current.cors_allowed_origins == (
         "http://127.0.0.1:18069",
         "http://localhost:18069",
     )
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
-    assert current.enable_thinking is True
+    assert current.assistant_enable_thinking is False
+    assert current.coding_enable_thinking is True
+    assert current.report_enable_thinking is True
+    assert current.report_enable_vision is False
+    assert current.model_timeout_seconds == 900
     assert current.tracing_enabled is False
     assert current.tracing_phoenix_endpoint is None
     assert current.tracing_phoenix_api_key is None
@@ -32,14 +35,19 @@ def test_settings_defaults():
     assert current.context_token_budget == 262144
     assert current.history_token_budget == 196608
     assert current.output_token_reserve == 32768
-    assert current.report_data_sources_file is None
+    assert current.report_data_sources_dir is None
+    assert current.report_metadata_url is None
+    assert current.report_metadata_token is None
 
 
 def test_agent_feature_flags_can_be_disabled():
     current = settings(
         AGENT_ENABLE_TOOL_RESULT_COMPRESSION="false",
         AGENT_ENABLE_SESSION_SUMMARIES="0",
-        AGENT_ENABLE_THINKING="off",
+        AGENT_ASSISTANT_ENABLE_THINKING="true",
+        AGENT_CODING_ENABLE_THINKING="off",
+        AGENT_REPORT_ENABLE_THINKING="false",
+        AGENT_REPORT_ENABLE_VISION="true",
         AGENT_HISTORY_TOKEN_BUDGET="32768",
         AGENT_CONTEXT_TOKEN_BUDGET="131072",
         AGENT_OUTPUT_TOKEN_RESERVE="16384",
@@ -47,10 +55,23 @@ def test_agent_feature_flags_can_be_disabled():
 
     assert current.enable_tool_result_compression is False
     assert current.enable_session_summaries is False
-    assert current.enable_thinking is False
+    assert current.assistant_enable_thinking is True
+    assert current.coding_enable_thinking is False
+    assert current.report_enable_thinking is False
+    assert current.report_enable_vision is True
     assert current.history_token_budget == 32768
     assert current.context_token_budget == 131072
     assert current.output_token_reserve == 16384
+
+
+def test_model_timeout_comes_from_environment():
+    assert settings(AGENT_MODEL_TIMEOUT_SECONDS="3600").model_timeout_seconds == 3600
+
+
+@pytest.mark.parametrize("value", ["invalid", "0", "3601"])
+def test_model_timeout_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="AGENT_MODEL_TIMEOUT_SECONDS"):
+        settings(AGENT_MODEL_TIMEOUT_SECONDS=value)
 
 
 def test_agent_tracing_can_be_enabled():
@@ -118,31 +139,29 @@ def test_daytona_network_allow_list_rejects_invalid_values(value):
         settings(DAYTONA_NETWORK_ALLOW_LIST=value)
 
 
-def test_report_data_sources_file_is_trimmed():
+def test_report_data_sources_dir_is_trimmed():
     assert settings(
-        AGENT_REPORT_DATA_SOURCES_FILE=" /run/report-sources.json "
-    ).report_data_sources_file == ("/run/report-sources.json")
+        AGENT_REPORT_DATA_SOURCES_DIR=" /run/agentos/reporting "
+    ).report_data_sources_dir == ("/run/agentos/reporting")
 
 
-def test_report_source_network_allow_list支持主机名和cidr():
+def test_report_metadata_config_is_normalized():
     current = settings(
-        AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST=(
-            " sr.internal., 203.0.113.10, 192.168.1.0/24, SR.INTERNAL "
-        )
+        AGENT_REPORT_METADATA_URL=" https://metadata.internal/ ",
+        AGENT_REPORT_METADATA_TOKEN=" token ",
     )
 
-    assert current.report_source_network_allow_list == (
-        "sr.internal,203.0.113.10/32,192.168.1.0/24"
-    )
+    assert current.report_metadata_url == "https://metadata.internal"
+    assert current.report_metadata_token == "token"
 
 
 @pytest.mark.parametrize(
     "value",
-    ["*.internal", "https://sr.internal", "bad_host", ",sr.internal"],
+    ["ftp://metadata.internal", "https://user@metadata.internal", "https://metadata/x?q=1"],
 )
-def test_report_source_network_allow_list拒绝无效目标(value):
-    with pytest.raises(ValueError, match="AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST"):
-        settings(AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST=value)
+def test_report_metadata_url_rejects_unsafe_values(value):
+    with pytest.raises(ValueError, match="AGENT_REPORT_METADATA_URL"):
+        settings(AGENT_REPORT_METADATA_URL=value)
 
 
 def test_context_budget_rejects_invalid_reserve():

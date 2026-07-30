@@ -25,8 +25,9 @@ Coding 与 Report 的内部入口在包和资源生命周期上相互独立，�
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.cli
 ```
 
-报表模式使用同一个 `ReportWorkflowController` 和终端审核 adapter；输入报表目标、临时 StarRocks
-连接块和 DDL 后，以单独一行 `/run` 提交：
+报表模式使用同一个 `ReportWorkflowController` 和终端审核 adapter；输入严格的
+`ReportRequestEnvelope` JSON 后，以单独一行 `/run` 提交。连接信息只能来自服务端数据源注册表，
+DDL 仅用于 metadata 明确返回零个 Agent 时的 schema fallback：
 
 ```bash
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting.cli
@@ -40,15 +41,47 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting
 ```
 
 两者都只注册由 Supervisor 或 Workflow 控制的 facade，不公开底层 worker。生产浏览器仍只访问
-综合 `agentos_dev.app`。
+综合 `agentos_dev.app`。Reporting AgentOS 的 `/agui` 同时接受严格 Envelope JSON 和自然语言：
+自然语言原文不在路由层改写，由 `report-agent` 模型生成 ISO 起止日期并调用强类型 Workflow 工具；
+`reportGoal` 必须逐字保留用户输入，期间不明确时由模型询问用户，不允许程序猜测。
 
-报表 CLI 在服务和 tracing 初始化前完成连接块解析与脱敏，随后依次处理来源、提纲、按需 SQL 和发布
-审核；批准、带反馈拒绝和取消都恢复同一持久化 Workflow run。临时凭据只保留到本轮 CLI 会话结束。
+## 独立 Playground 联调
+
+仓库根目录的开发 Compose override 会复用主 Compose 的 AgentOS 和 PostgreSQL 定义，启动一个同时注册
+`coding-agent-cli-app` 和 `report-agent` facade 的 AgentOS，以及 sibling 仓库
+`/home/junge/pros/agui_chat_playground`。Playground Gateway 通过容器网络访问 AgentOS，浏览器只访问
+Gateway 提供的 AG-UI 路由：
+
+```bash
+# 先确保 .env 已初始化，并已填写模型与 Daytona 配置
+scripts/dev_playground.sh
+```
+
+脚本默认以前台方式启动并输出 `http://127.0.0.1:8080`、用户名 `agno` 和本轮随机口令。也可以透传
+Compose 子命令：
+
+```bash
+scripts/dev_playground.sh up -d --build
+scripts/dev_playground.sh logs -f agent playground
+scripts/dev_playground.sh down
+```
+
+通过 `AGUI_CHAT_PLAYGROUND_DIR` 可覆盖 sibling 仓库路径，通过现有 `AGENT_OS_PORT` 和
+`PLAYGROUND_PORT` 可覆盖宿主端口。该开发栈使用独立项目名和
+`agentos_playground_agent_db_data` 数据卷，不复用生产 AgentOS 数据卷。Playground 当前会把模型选择
+作为 `factory_input` 转发，但两个 facade 仍是固定 Agent；实际模型继续由 AgentOS `.env` 中的
+`MODEL`、`OPENAI_BASE_URL` 和 `OPENAI_API_KEY` 决定。
+
+报表 CLI 在服务和 tracing 初始化前校验 `ReportRequestEnvelope`，随后依次处理来源、提纲、批量 SQL
+和发布审核；批准、带反馈拒绝和取消都恢复同一持久化 Workflow run。数据库连接只从服务端注册表加载。
 
 Coding 模式使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和退出控制。原生 CLI
 面向保留 Agno Agent 接口的确定性转交实体；其 `arun` 不调用模型，而是把完整目标直接交给
 `CodingTaskSupervisor`。只有底层 `coding-agent-cli` 使用 `MODEL`，并按
-`AGENT_ENABLE_THINKING` 传递 `enable_thinking`、使用 `reasoning_effort=medium` 执行受控工具闭环。
+`AGENT_CODING_ENABLE_THINKING` 传递 `enable_thinking`、使用 `reasoning_effort=medium` 执行受控工具闭环。
+Reporting Coding worker 和结构化 planner 默认由独立的
+`AGENT_REPORT_ENABLE_THINKING=true` 开启 thinking；普通 Assistant/Team 由
+`AGENT_ASSISTANT_ENABLE_THINKING=false` 独立控制，公开 facade 始终关闭 thinking。
 因此 CLI 不导入
 `agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
 PostgreSQL 中 Coding Repository 使用独立的 `agentos_coding` schema 和版本表，不写入 Agno
@@ -75,8 +108,8 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 主 Assistant 通过 Agno callable tools factory 注册 `AgentControlToolkit` 和 `BaseToolkit`；
 Coding Agent 固定注册生产 `WorkspaceCodingToolkit`。公开 `report-agent` 只注册
 `ReportWorkflowToolkit` 的启动、批准、拒绝和取消四个 facade 工具；未注册到 AgentOS 的
-`report-worker` 才持有 `WorkspaceCodingToolkit`、`ReportDataSourceToolkit` 和
-`WorkspaceReportToolkit`。生产 Coding Toolkit 继承 Agno
+`report-worker` 才持有 `WorkspaceCodingToolkit` 和 `WorkspaceReportToolkit`；它只能读取 Workflow
+提交的不可变数据集。生产 Coding Toolkit 继承 Agno
 `DaytonaTools` 类型，但跳过其创建 sandbox 的初始化逻辑，通过共享 `CodingExecutionKernel` 和
 `WorkspaceService` 使用当前 thread 唯一 Daytona sandbox。旧 `CodingToolkit` 仅保留兼容与回归测试，
 不会与生产 Toolkit 同时提供给模型。
@@ -132,7 +165,10 @@ Coding `terminal.command` 以 UTF-8 字节计最多 32 KiB；大段文件内容�
 | `AGENT_TRACING_ENABLED` | `false` | 将 Agent、模型和工具 OpenTelemetry trace 写入 AgentOS 数据库 |
 | `compress_tool_results` | `True` | 仅压缩历史分析工具的大结果 |
 | `enable_session_summaries` | `True` | 成功 run 后滚动更新非权威摘要 |
-| `enable_thinking` | `True` | 主模型启用；辅助模型关闭，客户端不接收原始 reasoning |
+| `AGENT_ASSISTANT_ENABLE_THINKING` | `false` | 控制普通 Assistant/Team thinking |
+| `AGENT_CODING_ENABLE_THINKING` | `true` | 控制纯 Coding worker thinking |
+| `AGENT_REPORT_ENABLE_THINKING` | `true` | 控制 Report Coding worker 和 Reporting planner thinking |
+| `AGENT_REPORT_ENABLE_VISION` | `false` | 控制 Report Worker 是否暴露图片检查工具并向模型发送媒体 |
 
 Coding Agent 和原生 CLI 额外使用同一个 `ContextBudgetController`：有效上下文上限取
 `AGENT_CONTEXT_TOKEN_BUDGET` 与 96K token 的较小值，并至少保留 32K token 输出空间。未超预算时只在
@@ -185,23 +221,28 @@ modifiers 与最新 `BasicModel` 状态竞争；`sandbox_exec`、`sandbox_proces
 
 滚动摘要只包含用户目标、已确认决策、工作区产物、完成事项和待办事项，并标记为非权威历史。
 摘要和压缩都不能作为 Odoo 业务事实；需要记录值、筛选、权限或页面状态时，必须使用本轮最新
-宿主快照。普通助手和 Team 领导者都显式设置 `enable_thinking=false`；压缩和摘要辅助模型也始终关闭
-thinking。内部 Coding Agent 与 `report-worker` 继续由 `AGENT_ENABLE_THINKING` 控制。Coding facade 的 Agno 官方 `arun(..., stream=True, stream_events=True)` 实时返回
+宿主快照。压缩和摘要辅助模型始终关闭 thinking。普通 Assistant/Team 由
+`AGENT_ASSISTANT_ENABLE_THINKING` 控制，内部 Coding Agent 由
+`AGENT_CODING_ENABLE_THINKING` 控制，`report-worker` 和 Reporting planner 由
+`AGENT_REPORT_ENABLE_THINKING` 独立控制。Coding facade 的 Agno 官方 `arun(..., stream=True, stream_events=True)` 实时返回
 `ReasoningStarted`、原始 `ReasoningContentDelta` 和 `ReasoningCompleted`；只投影 reasoning 文本，
 不返回 provider 原始字段。终态持久化前仍清除 reasoning 字段，原始 reasoning 不进入 session 或
 数据库。AG-UI、自定义 SSE 和 React 不转发或展示原始 reasoning，前端只展示“正在分析当前请求”
 或“正在整理工具结果”等确定性状态。
 
 相关环境变量可独立回退：`AGENT_ENABLE_TOOL_RESULT_COMPRESSION=false` 停止生成新压缩结果，
-`AGENT_ENABLE_SESSION_SUMMARIES=false` 停止更新和注入摘要，`AGENT_ENABLE_THINKING=false` 关闭
-内部 Coding/Report worker thinking；`AGENT_CONTEXT_TOKEN_BUDGET`、`AGENT_HISTORY_TOKEN_BUDGET` 和
+`AGENT_ENABLE_SESSION_SUMMARIES=false` 停止更新和注入摘要，
+`AGENT_ASSISTANT_ENABLE_THINKING=false`、`AGENT_CODING_ENABLE_THINKING=false` 和
+`AGENT_REPORT_ENABLE_THINKING=false` 分别关闭普通 Assistant/Team、纯 Coding worker 和
+Report Coding worker/Reporting planner thinking；`AGENT_CONTEXT_TOKEN_BUDGET`、
+`AGENT_HISTORY_TOKEN_BUDGET` 和
 `AGENT_OUTPUT_TOKEN_RESERVE` 分别调整完整窗口、历史上限和输出余量。关闭任一能力都不会删除 PostgreSQL
 中的完整历史，也不会改变 `agui.odoo.v2`、命令确认、授权或 stale snapshot 校验。
 新建 Daytona 工作区使用 `DAYTONA_DEFAULT_SNAPSHOT` 指定的 snapshot，默认值为 `sandbox-tools`。
 默认继续设置 `network_block_all=true`；运维可通过 `DAYTONA_NETWORK_ALLOW_LIST` 为新建 sandbox
 配置最多 10 个逗号分隔的 IPv4 CIDR，此时只发送 `network_allow_list`。白名单不支持端口约束，
 已有 sandbox 也不会自动变更网络策略；端口限制仍由出口防火墙或目标服务 ACL 承担。
-`AGENT_DEBUG` 与 `AGENT_ENABLE_THINKING` 独立生效；两者同时开启时，Agno 调试日志可能包含
+`AGENT_DEBUG` 与三套 thinking 开关独立生效；同时开启 debug 和任一 thinking 时，Agno 调试日志可能包含
 provider reasoning。不得在生产环境记录包含业务数据的请求、响应正文或 reasoning。
 
 上述配置不改变能力边界。Odoo `BasicModel` 仍是业务页面状态的唯一事实来源；命令仍经过
@@ -238,13 +279,14 @@ Markdown/heredoc 外壳和 Add File 纯空行提供有限格式兼容。对于�
 `terminal` 还接受完整、独立的 `apply_patch <<'PATCH'` heredoc：服务端在进入远端 Shell 前拦截
 它并复用同一 Patch 解析与原子提交层，因此不依赖 Daytona 镜像安装同名命令；格式错误或夹带其他
 Shell 命令时拒绝且不写文件。供应商 API 已拒绝的畸形函数参数无法到达该 fallback，仍须由模型或
-供应商重试为有效工具调用。`report-worker` 从该基座派生，固定暴露生产 Coding Toolkit、
-`ReportDataSourceToolkit` 和 `WorkspaceReportToolkit`，但不注册为 AgentOS 公共 Agent 或 Team
+供应商重试为有效工具调用。`report-worker` 从该基座派生，固定暴露生产 Coding Toolkit 和
+`WorkspaceReportToolkit`，但不注册为 AgentOS 公共 Agent 或 Team
 member。生产路由仍由公开 `report-agent` 接收，它只通过四个 `report_workflow_*` 工具调用
 `ReportWorkflowController`；`AgentOS` 不额外注册 Workflow，也不增加第二条传输链路。
-`agentos_dev.coding.reporting` 的 Agno Workflow 依次处理来源确认、受限画像、提纲审核、分析计划、取数需求、
+`agentos_dev.coding.reporting` 的 Agno Workflow 依次处理来源解析、受限画像、提纲审核、分析计划、取数需求、
 SQL 候选与按需审核、不可变数据集物化、Coding 分析、PDF 验收和发布审核。AG-UI 和 CLI adapter
 只负责暂停、反馈、继续和取消。Report 层保留数据源物化、输入绑定、Markdown/PDF 渲染及验收。
+来源和 Schema 唯一确定时直接继续，仅在多个报表 Agent 需要用户选择时暂停。
 完整文件内容不会注入 facade 模型；内部 worker 只从 AnalysisPlan、DataRequirement 和
 DatasetHandle 取得分析输入，不持有数据库凭据。
 复杂分析优先通过受控只读工具检查文件、搜索内容和查看 Git 状态或差异；新文件使用
@@ -294,45 +336,58 @@ Skill 通过 `metadata.agentos.acceptance.validators` 注册 `scripts/*.py`、�
 短路。没有契约的既有 Coding/Report/CLI 任务保持原完成门禁，不会额外运行 validator。
 Report 保持独立的既有交付回执门禁，不写入 Coding v2 的状态推进逻辑。
 
-工作区文件、目录、SQLite、DuckDB、Odoo 受控导出和服务端注册的只读 PostgreSQL 均通过
-`DatasetHandle` 进入报表工具。目录只列直接子项，文件变化会返回稳定的 `stale_dataset`，单个
-任务最多 20 个输入；单文件不超过 200 MiB，数据库物化总量不超过 256 MiB。Odoo 导出仍必须
-经过现有导出、确认和一次性授权链路，ReportAgent 不访问 Odoo ORM 或数据库。
-
-外部 PostgreSQL 数据源由 `AGENT_REPORT_DATA_SOURCES_FILE` 指向的 JSON 配置注册。配置只保存
-数据源 ID、`dsnEnv`、允许的 schema/table 和限额，DSN 从同名环境变量读取，不能由模型提供；
-AgentOS 自身 PostgreSQL 会被拒绝。示例：
+Report v1 只接受服务端注册的 StarRocks 数据源。`AGENT_REPORT_DATA_SOURCES_DIR` 指向配置边界目录；
+加载器从边界到当前目录逐层查找 `report-data-sources.json`，同 ID 数据源由子层整项覆盖。
+配置只保存 source ID、可选 `reportingProfile` 引用、`dsnEnv`、数据库和查询限额，DSN 只从同名服务端环境变量读取。表范围来自 metadata DDL；期间字段和粒度由模型的数据理解计划声明。
+请求、模型上下文和 Workflow state 均不接受连接字段。示例：
 
 ```json
 {
+  "version": "1",
+  "defaultSourceIds": ["operations"],
   "sources": [
     {
-      "id": "finance",
-      "name": "财务只读库",
-      "type": "postgresql",
-      "dsnEnv": "REPORT_FINANCE_DSN",
-      "schemas": ["reporting"],
-      "tables": ["reporting.revenue"],
-      "statementTimeoutMs": 30000,
+      "id": "operations",
+      "name": "运营数据",
+      "type": "starrocks",
+      "dsnEnv": "REPORT_STARROCKS_DSN",
+      "database": "reporting",
+      "statementTimeoutSeconds": 30,
       "maxRows": 1000000,
-      "maxBytes": 268435456
+      "maxBytes": 268435456,
+      "profileConcurrency": 4,
+      "queryConcurrency": 2
     }
   ]
 }
 ```
 
-临时数据库只支持 StarRocks，并使用官方 `starrocks==1.3.3` SQLAlchemy dialect。`/agui` 在模型、
-session 和 run tracing 之前解析连接块，原始密码只进入进程内凭据仓，脱敏请求仅携带 opaque binding ID。
-首次连接必须经过来源确认，主机必须命中服务端 `AGENT_REPORT_SOURCE_NETWORK_ALLOWLIST`
-（精确主机名、IP 或 CIDR，逗号分隔），`root`、管理员或无法证明目标表只读权限的
-账号会被拒绝。凭据按两小时无活动过期，会话关闭或进程重启后不可恢复；实际元数据与 DDL 不一致时
-必须重新确认来源。
+同一配置边界下的 `reporting_profiles/**/*.json` 使用显式 `profileId`/`extends` 组织平台、行业、集团、
+医院和模板层。目录名不产生隐式继承；有效 Profile 按稳定 code 合并并计算 hash。Profile 只能通过
+结构化字段引用、受限聚合和对账规则缩小 Snapshot，不能包含 SQL、表达式或连接信息。未绑定 Profile
+的数据源使用内置领域无关章节。
 
-SQL 只允许单条 `SELECT` 或只读 CTE，并强制只读事务、超时、schema/table 白名单和结果
-分片限制。Compose 默认只读挂载仓库中的空配置 `deploy/agentos/report-data-sources.json`；
-生产环境通过 `AGENT_REPORT_DATA_SOURCES_FILE` 指向宿主机配置，并确保 `dsnEnv` 对应变量已
-注入 AgentOS 容器。工作区 SQLite 使用只读 URI，DuckDB 使用只读连接，sandbox-tools 镜像
-包含 DuckDB 运行时依赖。
+StarRocks 使用官方 `starrocks==1.3.3` SQLAlchemy dialect。数据源账号权限不作为启动门禁；
+API/DDL 模型仍必须与实时 catalog 一致。
+
+SQL 只允许单条 `SELECT` 或只读 CTE，并强制只读事务、超时、Snapshot 表字段白名单和结果
+分片限制。Compose 默认只读挂载仓库中的 `rj` 配置，固定允许 6 张经营视图，并从
+`REPORT_STARROCKS_DSN` 注入连接；生产环境也可通过 `AGENT_REPORT_DATA_SOURCES_DIR` 指向宿主机
+配置目录。metadata 只能缩小该白名单，不能动态扩大。
+`AGENT_REPORT_METADATA_URL` 配置外部 metadata 服务基址，`AGENT_REPORT_METADATA_TOKEN` 配置其
+Bearer token；未配置 URL 表示明确禁用 metadata 服务，而网络、鉴权、5xx 或响应契约错误均失败关闭，
+不会降级为零 Agent。
+
+综合 AgentOS 在启动时创建 `report_download_grants_v1`；正式部署应以等价数据库迁移预建该表。
+最终发布审核批准前不签发下载 grant。批准后返回的同源
+`GET /reports/v1/download/{opaqueGrant}` 必须携带现有 `X-AGUI-Thread` 和
+`X-AGUI-Capability`，并继续校验数据库、用户、公司、Odoo session、thread、Workflow run、
+report revision 与 PDF hash。应用会脱敏 Uvicorn access log 中的 grant 路径；反向代理、网关和
+APM 也必须将 `/reports/v1/download/*` 记录为固定占位路径，禁止采集原始 URL。
+
+独立 Report AgentOS 没有 Odoo capability 提供的数据库、公司和 session scope，因此默认不装配 HTTP
+发布 issuer；最终发布审核会以 `report_publication_unavailable` 失败关闭。只有上游认证中间件能提供
+同等完整且已验证的身份时才能启用 HTTP 下载，不能使用空值或固定占位身份。
 
 `agent_context_status` 使用 Agno 模型的 `count_tokens(messages, tools, output_schema)` 估算本轮完整
 上下文，返回 256K 上限、估算已用、扣除输出预留后的余量、预算历史和计数可靠性；计数器不可用时
@@ -346,9 +401,12 @@ SQL 只允许单条 `SELECT` 或只读 CTE，并强制只读事务、超时、sc
 SQL 或数据库凭据。Report 层不再提供能力探测、固定剖析、
 独立命令执行器、60 秒分析超时或成功轮次门槛。模型生成完整 Markdown 和本地图表后，将其渲染为
 不覆盖已有文件的新 PDF；渲染和 PDF 验收各自最多运行 600 秒。PDF 限制为 200 MiB 和 200 页，运行时使用
-Poppler 将 PDF 逐页栅格化，检查空白页、文本、图片数量和像素占比，并把 Markdown、图片、PDF 的
+Poppler 将 PDF 逐页栅格化，检查空白页、页眉页脚、页码、文本、图片数量和像素占比，并把 Markdown、图片、PDF 的
 路径、大小、SHA-256 和验收结果写入 Workflow 持久化状态。只有 PDF 验收通过且最终发布审核获批，
 SSE 交付门禁才返回正式产物。系统不再使用固定模板、`compile` 或 `blocks`。
+Markdown 必须包含与 manifest 一致的 `[[citation:<citationId>]]` 引用标记和
+`[[section:<sectionCode>]]` 关键章节标记；图表路径、Markdown、PDF、数据集 snapshot、CodingTask key
+和 report revision 通过 `ReportArtifactManifest`/`PdfArtifactManifest` 的大小与 SHA-256 绑定。
 sandbox 的 `/tmp/workspace-report-*` 仅用于一次渲染或验收的临时文件；超时和失败都会由 AgentOS 清理，
 不能作为 job 状态或验收依据。Markdown、图片和 PDF 输出到 `报表/生成结果/<job_id>/`。生产环境必须使用仓库现有
 `docker/sandbox-tools` 镜像，以提供 ripgrep、WeasyPrint 69、pypdf、数据分析库和 Noto CJK。镜像

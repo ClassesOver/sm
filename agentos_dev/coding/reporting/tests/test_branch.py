@@ -103,16 +103,18 @@ def report_dataset_session_data():
             REPORT_DATASET_HANDLES_STATE_KEY: {
                 dataset_id: {
                     "datasetId": dataset_id,
-                    "sourceId": "workspace:income",
-                    "sourceType": "workspace_file",
+                    "sourceId": "operations",
+                    "sourceType": "starrocks_materialized",
                     "path": "收入.csv",
                     "format": "csv",
                     "schema": None,
-                    "rowCount": None,
+                    "rowCount": 1,
                     "size": 12,
                     "sha256": "a" * 64,
-                    "sampled": False,
-                    "provenance": {"workspacePath": "收入.csv"},
+                    "provenance": {
+                        "requirementId": "income",
+                        "sqlHash": "b" * 64,
+                    },
                     "_threadBinding": hashlib.sha256(b"source-thread").hexdigest(),
                 }
             },

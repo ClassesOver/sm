@@ -70,6 +70,21 @@ class CliReviewAdapter:
 
     def review_action(self, snapshot: dict[str, Any]) -> tuple[str, str | None]:
         self._write(str(snapshot))
+        if snapshot.get("stage") == "agent":
+            agents = (snapshot.get("preview") or {}).get("agents")
+            allowed = (
+                {
+                    item.get("code")
+                    for item in agents
+                    if isinstance(item, dict) and isinstance(item.get("code"), str)
+                }
+                if isinstance(agents, list)
+                else set()
+            )
+            agent_id = self._read("选择 Agent code: ").strip()
+            if agent_id not in allowed:
+                raise ValueError("所选报表 Agent 不在候选列表中。")
+            return "select_agent", agent_id
         action = self._read("批准 [a] / 拒绝 [r] / 取消 [c]: ").strip().lower()
         if action == "a":
             return "approve", None

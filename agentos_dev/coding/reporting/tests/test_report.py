@@ -51,7 +51,7 @@ def prepare_job(runtime, paths):
     }
 
 
-def render_job(runtime, job, markdown_path, output_path):
+def render_job(runtime, job, markdown_path, output_path, page_layout=None):
     temporary_root = Path("/tmp") / f"workspace-report-{uuid.uuid4().hex}-render"
     temporary = temporary_root / "render.pdf"
     try:
@@ -60,6 +60,7 @@ def render_job(runtime, job, markdown_path, output_path):
             markdown_path,
             output_path,
             str(temporary),
+            page_layout,
         )
         render = result.pop("render")
         os.link(temporary, runtime.workspace / output_path)
@@ -186,6 +187,12 @@ def test_markdown_正文表格和多图完整渲染为_pdf(runtime):
     assert rendered["imageCount"] == 2
     assert "医院人力资源报告" in text
     assert "外科" in text
+    for index, page in enumerate(reader.pages, start=1):
+        page_text = "".join((page.extract_text() or "").split())
+        assert "上海鼎医信息技术有限公司" in page_text
+        assert "医院人力资源报告" in page_text
+        assert "企业智能运营报表" in page_text
+        assert f"第{index}/{len(reader.pages)}页" in page_text
     assert sum(len(page.images) for page in reader.pages) >= 2
 
     validation = validate_job(runtime, job, rendered["pdfPath"])
@@ -194,6 +201,8 @@ def test_markdown_正文表格和多图完整渲染为_pdf(runtime):
     assert validation["pageCount"] == rendered["pageCount"]
     assert validation["markdownImageCount"] == 2
     assert validation["renderedImageCount"] >= 2
+    assert validation["missingPageLayoutPages"] == []
+    assert all(page["pageLayoutPresent"] for page in validation["pages"])
     assert all(page["nonWhiteRatio"] > 0 for page in validation["pages"])
 
     pdf.write_bytes(pdf.read_bytes() + b"\n% changed")
@@ -223,6 +232,19 @@ def test_pdf_视觉验收识别空白页且不把失败当作完成(runtime, mon
     assert validation["status"] == "validation_failed"
     assert validation["blankPages"] == [1]
     assert validation["pages"][0]["nonWhiteRatio"] == 0
+
+
+def test_pdf_视觉验收拒绝缺少页面版式(runtime, monkeypatch):
+    (runtime.workspace / "data.csv").write_text("value\n1\n", encoding="utf-8")
+    (runtime.workspace / "report.md").write_text("# 报表", encoding="utf-8")
+    job = prepare_job(runtime, ["data.csv"])
+    rendered = render_job(runtime, job, "report.md", "report.pdf")
+    monkeypatch.setattr(report_runtime, "_has_page_layout", lambda *_args, **_kwargs: False)
+
+    validation = validate_job(runtime, job, rendered["pdfPath"])
+
+    assert validation["ok"] is False
+    assert validation["missingPageLayoutPages"] == list(range(1, validation["pageCount"] + 1))
 
 
 def test_pdf_视觉验收只接受当前任务记录的产物(runtime):

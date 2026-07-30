@@ -119,6 +119,10 @@ def coding_scope() -> CodingScope:
     return CodingScope("external", "user", "thread", "sandbox", "coding-agent")
 
 
+async def _collect(source) -> list:
+    return [event async for event in source]
+
+
 @pytest.mark.parametrize(
     ("message", "expected"),
     [
@@ -169,6 +173,69 @@ async def test_supervisor_first_run_only_publishes_receipted_final(supervisor_ru
 
 
 @pytest.mark.anyio
+async def test_completed_task_revision_reuses_task_and_creates_next_attempt(supervisor_runtime):
+    repository, executor, supervisor = supervisor_runtime
+    current_scope = coding_scope()
+    await supervisor.start_task(current_scope, "生成报告")
+    await asyncio.wait_for(
+        _collect(supervisor.run_task(current_scope)),
+        timeout=2,
+    )
+    first = await repository.get_task_snapshot(current_scope.external_run_id)
+    assert first is not None and first.state is TaskState.COMPLETED
+
+    executor.finish_on_attempt = 1
+    revised = await supervisor.revise_task(
+        current_scope,
+        "report-revision-2",
+        "根据审核意见修订报告",
+    )
+    events = await asyncio.wait_for(
+        _collect(supervisor.run_task(current_scope)),
+        timeout=2,
+    )
+
+    completed = await repository.get_task_snapshot(current_scope.external_run_id)
+    assert revised.scope.external_run_id == first.scope.external_run_id == "external"
+    assert revised.current_attempt_no == first.current_attempt_no + 1
+    assert completed is not None and completed.state is TaskState.COMPLETED
+    assert completed.current_attempt_no == 1
+    assert executor.instructions[-1] == "生成报告\n\n根据审核意见修订报告"
+    assert events[-1].event_id == "external:terminal"
+
+
+@pytest.mark.anyio
+async def test_task_revision_requires_completed_task_and_rejects_instruction_conflict(
+    supervisor_runtime,
+):
+    _repository, _executor, supervisor = supervisor_runtime
+    current_scope = coding_scope()
+    await supervisor.start_task(current_scope, "生成报告")
+
+    with pytest.raises(CodingRepositoryError) as not_ready:
+        await supervisor.revise_task(
+            current_scope,
+            "report-revision-2",
+            "根据审核意见修订报告",
+        )
+    assert not_ready.value.code == "task_revision_not_ready"
+
+    await asyncio.wait_for(_collect(supervisor.run_task(current_scope)), timeout=2)
+    await supervisor.revise_task(
+        current_scope,
+        "report-revision-2",
+        "根据审核意见修订报告",
+    )
+    with pytest.raises(CodingRepositoryError) as conflict:
+        await supervisor.revise_task(
+            current_scope,
+            "report-revision-2",
+            "替换为不同的修订要求",
+        )
+    assert conflict.value.code == "instruction_id_conflict"
+
+
+@pytest.mark.anyio
 async def test_supervisor_validates_and_persists_server_acceptance_contract(
     supervisor_runtime,
 ):
@@ -205,6 +272,59 @@ async def test_supervisor_validates_and_persists_server_acceptance_contract(
 
     assert observed == [acceptance_contract]
     assert task.acceptance_contract == acceptance_contract
+
+
+@pytest.mark.anyio
+async def test_completed_task_revision_replaces_acceptance_contract_atomically(
+    supervisor_runtime,
+):
+    repository, executor, _supervisor = supervisor_runtime
+
+    class Registry:
+        def validate_contract(self, contract):
+            return contract
+
+    supervisor = CodingTaskSupervisor(
+        repository,
+        executor,  # type: ignore[arg-type]
+        validator_registry=Registry(),
+    )
+    first_contract = {
+        "version": 1,
+        "requirements": [
+            {
+                "id": "report",
+                "validatorId": "analysis:report",
+                "parameters": {"revision": 1},
+                "artifactPatterns": ["reports/*.json"],
+            }
+        ],
+    }
+    revised_contract = {
+        **first_contract,
+        "requirements": [
+            {
+                **first_contract["requirements"][0],
+                "parameters": {"revision": 2},
+            }
+        ],
+    }
+    await supervisor.start_task(
+        coding_scope(),
+        "生成初稿",
+        acceptance_contract=first_contract,
+    )
+    await asyncio.wait_for(_collect(supervisor.run_task(coding_scope())), timeout=2)
+
+    revised = await supervisor.revise_task(
+        coding_scope(),
+        "report-revision-2",
+        "根据审核意见修订",
+        acceptance_contract=revised_contract,
+    )
+
+    assert revised.acceptance_contract == revised_contract
+    assert revised.finish_receipt is None
 
 
 @pytest.mark.anyio

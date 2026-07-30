@@ -30,6 +30,7 @@ from ag_ui.core import (
 from agno.models.message import Message
 from agno.run.base import RunStatus
 from agno.run.team import TeamRunOutput
+from agno.session.agent import AgentSession
 from agno.session.team import TeamSession
 
 from agentos_dev import app as app_module
@@ -777,7 +778,7 @@ async def test_resume_request_does_not_reload_or_reinject_budgeted_history(monke
 
 
 @pytest.mark.anyio
-async def test_selected_report_skill_does_not_expose_report_agent(monkeypatch):
+async def test_selected_report_skill_routes_to_report_agent(monkeypatch):
     calls = []
 
     async def fake_run(entity, value, user_id=None):
@@ -786,7 +787,13 @@ async def test_selected_report_skill_does_not_expose_report_agent(monkeypatch):
 
     monkeypatch.setattr(app_module, "run_entity", fake_run)
     value = run_input(
-        "生成报表",
+        json.dumps(
+            {
+                "version": "1",
+                "reportGoal": "生成报表",
+                "period": {"start": "2025-01-01", "end": "2025-12-31"},
+            }
+        ),
         context=[
             {
                 "description": "已选智能体技能",
@@ -798,12 +805,13 @@ async def test_selected_report_skill_does_not_expose_report_agent(monkeypatch):
     response = await app_module.run_agui(direct_request(), value)
     await response_body(response)
 
-    assert calls[0][0] is app_module.assistant_team
+    assert calls[0][0] is app_module.report_agent
     assert app_module.assistant_team.members == [app_module.assistant]
+    assert calls[0][1].messages[-1].content == "生成报表"
 
 
 @pytest.mark.anyio
-async def test_selected_report_skill_does_not_enable_report_delivery_guard(monkeypatch):
+async def test_selected_report_skill_keeps_report_streaming_events(monkeypatch):
     async def fake_run(_entity, _value, user_id=None):
         yield TextMessageStartEvent(message_id="candidate")
         yield TextMessageContentEvent(message_id="candidate", delta="unaccepted report")
@@ -814,7 +822,13 @@ async def test_selected_report_skill_does_not_enable_report_delivery_guard(monke
     response = await app_module.run_agui(
         direct_request(),
         run_input(
-            "生成报表",
+            json.dumps(
+                {
+                    "version": "1",
+                    "reportGoal": "生成报表",
+                    "period": {"start": "2025-01-01", "end": "2025-12-31"},
+                }
+            ),
             context=[
                 {
                     "description": "已选智能体技能",
@@ -980,7 +994,7 @@ async def test_non_report_route_keeps_streaming_text_unchanged(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_report_skill_does_not_override_production_team_candidates(monkeypatch):
+async def test_report_skill_does_not_expose_odoo_client_tools(monkeypatch):
     calls = []
 
     async def fake_run(entity, value, user_id=None):
@@ -991,7 +1005,13 @@ async def test_report_skill_does_not_override_production_team_candidates(monkeyp
     response = await app_module.run_agui(
         direct_request(),
         run_input(
-            "生成当前页面报表",
+            json.dumps(
+                {
+                    "version": "1",
+                    "reportGoal": "生成当前页面报表",
+                    "period": {"start": "2025-01-01", "end": "2025-12-31"},
+                }
+            ),
             tools=("odoo.navigate_menu", "odoo.export_current_view"),
             context=[
                 {
@@ -1003,12 +1023,38 @@ async def test_report_skill_does_not_override_production_team_candidates(monkeyp
     )
     await response_body(response)
 
-    assert calls[0][0] is app_module.assistant_team
+    assert calls[0][0] is app_module.report_agent
     assert app_module.assistant_team.members == [app_module.assistant]
-    assert [tool.name for tool in calls[0][1].tools or []] == [
-        "odoo.navigate_menu",
-        "odoo.export_current_view",
-    ]
+    assert calls[0][1].tools == []
+
+
+@pytest.mark.anyio
+async def test_active_report_workflow_routes_without_repeating_envelope(monkeypatch):
+    calls = []
+
+    async def active_session(**_kwargs):
+        return AgentSession(
+            session_id="thread-1",
+            agent_id=app_module.report_agent.id,
+            session_data={
+                "session_state": {
+                    app_module.REPORT_WORKFLOW_CONTROL_STATE_KEY: {"status": "paused"}
+                }
+            },
+        )
+
+    async def fake_run(entity, value, user_id=None):
+        calls.append((entity, value))
+        yield RunFinishedEvent(thread_id="thread-1", run_id="run-1")
+
+    monkeypatch.setattr(app_module.report_agent, "aget_session", active_session)
+    monkeypatch.setattr(app_module, "run_entity", fake_run)
+
+    response = await app_module.run_agui(direct_request(), run_input("批准"))
+    await response_body(response)
+
+    assert calls[0][0] is app_module.report_agent
+    assert calls[0][1].messages[-1].content == "批准"
 
 
 @pytest.mark.anyio

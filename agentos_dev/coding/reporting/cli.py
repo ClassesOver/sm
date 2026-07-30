@@ -18,22 +18,19 @@ from ..cli import _close_cli_resources, create_cli_agent, create_cli_context
 from ..execution import CodingExecutionKernel
 from .adapters import CliReviewAdapter
 from .agent import create_report_worker
-from .agui import REPORT_SOURCE_INTAKE_DEPENDENCY
-from .binding import TemporarySourceBindingService
 from .controller import REPORT_WORKFLOW_SCOPE_DEPENDENCY, ReportWorkflowController
-from .credentials import TemporaryCredentialStore
-from .data_sources import ReportDataSourceToolkit
+from .data_source import load_configured_report_source_registry
+from .entrypoints import parse_cli_envelope
 from .instructions import build_report_agent_instructions
-from .intake import ReportIntakeService
-from .models import ReportingError
+from .metadata import ReportingMetadataClient
+from .profile import load_configured_reporting_profiles
 from .runtime import ReportWorkflowRuntime
-from .starrocks import create_starrocks_client
 
 
 def read_report_request(*, read: Callable[[str], str] = input) -> str:
     lines: list[str] = []
     while True:
-        line = read("" if lines else "报表目标、连接块和 DDL（单独输入 /run 提交）:\n")
+        line = read("" if lines else "ReportRequestEnvelope JSON（单独输入 /run 提交）:\n")
         if line.strip() == "/run":
             break
         lines.append(line)
@@ -49,34 +46,17 @@ async def run_cli(
     read: Callable[[str], str] = input,
     write: Callable[[str], None] = print,
 ) -> None:
-    raw = read_report_request(read=read)
-    parsed = ReportIntakeService().parse(raw)
-    if parsed.source_request is None or not parsed.ddl_tables:
-        raise ReportingError(
-            "source_connection_incomplete",
-            "Report CLI 当前必须同时提供临时 StarRocks 连接块和目标表 DDL。",
-        )
-
+    envelope = parse_cli_envelope(read_report_request(read=read))
     context = create_cli_context(settings)
-    credentials = TemporaryCredentialStore()
-    bindings = TemporarySourceBindingService(
-        credentials,
-        create_starrocks_client,
-        network_allowlist=context.settings.report_source_network_allow_list,
-    )
     session_id = f"cli-report-{uuid4().hex}"
-    confirmation = bindings.prepare(
-        parsed,
-        user_id="cli",
-        thread_id=session_id,
-        session_id=session_id,
-    )
     coding_agent = create_cli_agent(context)
     report_worker = create_report_worker(
         coding_agent,
         context.workspace_service,
         context.coding_repository,
         instructions=build_report_agent_instructions,
+        coding_enable_thinking=context.settings.coding_enable_thinking,
+        report_enable_vision=context.settings.report_enable_vision,
         context_token_budget=context.settings.context_token_budget,
         output_token_reserve=context.settings.output_token_reserve,
     )
@@ -88,27 +68,28 @@ async def run_cli(
         ),
         validator_registry=SkillValidatorRegistry.from_skills(report_worker.skills),
     )
-    data_sources = ReportDataSourceToolkit(
-        context.workspace_service,
-        config_path=context.settings.report_data_sources_file,
-        excluded_database_url=context.settings.database_url,
-        temporary_source_bindings=bindings,
-        temporary_report_credentials=credentials,
-    )
     runtime = ReportWorkflowRuntime(
         db=context.database,
         planner=report_worker,
         report_worker=report_worker,
         supervisor=supervisor,
         workspace_service=context.workspace_service,
-        binding_service=bindings,
-        credentials=credentials,
-        client_factory=create_starrocks_client,
-        data_sources=data_sources,
+        registry=load_configured_report_source_registry(context.settings.report_data_sources_dir),
+        profiles=load_configured_reporting_profiles(context.settings.report_data_sources_dir),
+        planner_enable_thinking=context.settings.report_enable_thinking,
+        metadata_client=(
+            ReportingMetadataClient(
+                context.settings.report_metadata_url,
+                token=context.settings.report_metadata_token,
+            )
+            if context.settings.report_metadata_url
+            else None
+        ),
     )
     controller = ReportWorkflowController(
         runtime.workflow,
         cancel_cleanup=runtime.cleanup_cancelled,
+        publication_issuer=runtime.issue_cli_publication,
     )
     external_run_id = uuid4().hex
     run_context = RunContext(
@@ -118,26 +99,18 @@ async def run_cli(
         session_state={},
         dependencies={
             REPORT_WORKFLOW_SCOPE_DEPENDENCY: {"externalRunId": external_run_id},
-            REPORT_SOURCE_INTAKE_DEPENDENCY: {
-                "confirmationId": confirmation.confirmation_id,
-                "sourceMode": "temporary_database",
-                "sourceType": "starrocks",
-                "endpoint": confirmation.endpoint,
-                "database": confirmation.database,
-                "ddlTables": list(parsed.ddl_tables),
-                "metadataFingerprint": parsed.metadata_fingerprint,
-                "expiresAt": confirmation.expires_at.isoformat(),
-                "requiresConfirmation": True,
-            },
         },
     )
     adapter = CliReviewAdapter(read=read, write=write)
     try:
-        result = await controller.start(parsed.sanitized_text, None, run_context)
+        result = await controller.start(envelope, run_context)
         while result.get("status") == "paused":
             action, feedback = adapter.review_action(result.get("review") or {})
             if action == "approve":
                 result = await controller.approve(run_context)
+            elif action == "select_agent":
+                assert feedback is not None
+                result = await controller.select_agent(feedback, run_context)
             elif action == "reject":
                 assert feedback is not None
                 result = await controller.reject(feedback, run_context)
@@ -145,7 +118,6 @@ async def run_cli(
                 result = await controller.cancel(run_context)
         write(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     finally:
-        credentials.close_session(user_id="cli", thread_id=session_id, session_id=session_id)
         await complete_cleanup(_close_cli_resources(context, report_worker, coding_agent))
 
 

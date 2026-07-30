@@ -1,0 +1,13 @@
+{
+  "version": "1",
+  "defaultSourceIds": ["rj"],
+  "sources": [
+    {
+      "id": "rj",
+      "type": "starrocks",
+      "name": "瑞金经营分析",
+      "dsnEnv": "REPORT_STARROCKS_DSN",
+      "database": "rj"
+    }
+  ]
+}

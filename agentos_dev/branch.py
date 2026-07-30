@@ -27,9 +27,9 @@ from agno.team import Team
 from .async_utils import complete_cleanup
 from .coding.reporting.data_sources import (
     REPORT_DATASET_HANDLES_STATE_KEY,
-    ReportDataSourceError,
     rebind_report_dataset_handles,
 )
+from .coding.reporting.models import ReportingError
 from .security import CapabilityClaims
 from .workspace import WorkspaceService
 
@@ -343,7 +343,7 @@ async def run_branch(
             run_state=state_snapshot,
         ):
             yield event
-    except (BranchError, ReportDataSourceError) as error:
+    except (BranchError, ReportingError) as error:
         if prepared and not started:
             try:
                 await cleanup_branch(agent, workspace, run_input.thread_id, user_id)
@@ -352,7 +352,7 @@ async def run_branch(
         yield RunErrorEvent(
             type=EventType.RUN_ERROR,
             message="无法基于所选消息创建分支。",
-            code=error.code if isinstance(error, ReportDataSourceError) else str(error),
+            code=error.code if isinstance(error, ReportingError) else str(error),
         )
     except Exception as error:
         logger.error("branch_failed error_type=%s", type(error).__name__)

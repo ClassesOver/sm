@@ -62,22 +62,30 @@ from .coding.reporting.agent import (
     create_report_agent,
     create_report_worker,
 )
-from .coding.reporting.agui import REPORT_SOURCE_INTAKE_DEPENDENCY
-from .coding.reporting.binding import TemporarySourceBindingService
+from .coding.reporting.agui import bind_server_request, prepare_agui_envelope
 from .coding.reporting.controller import (
     REPORT_WORKFLOW_CONTROL_STATE_KEY,
     ReportWorkflowController,
 )
-from .coding.reporting.credentials import TemporaryCredentialStore
+from .coding.reporting.data_source import load_configured_report_source_registry
 from .coding.reporting.data_sources import (
     CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
     REPORT_DATASET_HANDLES_STATE_KEY,
-    ReportDataSourceToolkit,
 )
+from .coding.reporting.entrypoints import ReportServerIdentity
 from .coding.reporting.instructions import build_report_agent_instructions
+from .coding.reporting.metadata import ReportingMetadataClient
 from .coding.reporting.models import ReportingError
+from .coding.reporting.profile import load_configured_reporting_profiles
+from .coding.reporting.publishing import (
+    ReportDownloadCallerScope,
+    ReportDownloadGrantService,
+    SqlAlchemyDownloadGrantRepository,
+    WorkspaceReportDownloadHttpService,
+    create_workspace_report_download_router,
+    install_report_download_access_log_filter,
+)
 from .coding.reporting.runtime import ReportWorkflowRuntime
-from .coding.reporting.starrocks import create_starrocks_client
 from .coding.reporting.workspace import (
     REPORT_DELIVERY_STATE_KEY,
     REPORT_JOBS_STATE_KEY,
@@ -149,7 +157,7 @@ SERVER_SESSION_STATE_KEYS = frozenset(
     }
 )
 logger = logging.getLogger(__name__)
-temporary_report_credentials = TemporaryCredentialStore()
+REPORT_SKILL_CONTEXT_DESCRIPTION = "已选智能体技能"
 
 
 class WorkspaceDeleteFilePayload(BaseModel):
@@ -168,12 +176,6 @@ class CodingCancelPayload(BaseModel):
 
 
 settings = AgentSettings.from_environment()
-temporary_source_bindings = TemporarySourceBindingService(
-    temporary_report_credentials,
-    create_starrocks_client,
-    network_allowlist=settings.report_source_network_allow_list,
-)
-
 workspace_secret = settings.workspace_hmac_secret
 agent_skills = load_skills(settings.skills_dir)
 agent_database = create_agent_database(settings.database_url)
@@ -191,6 +193,9 @@ workspace_service = WorkspaceService(
     snapshot=settings.workspace_snapshot,
     network_allow_list=settings.daytona_network_allow_list,
 )
+report_download_repository = SqlAlchemyDownloadGrantRepository(agent_database.async_engine)
+report_download_grants = ReportDownloadGrantService(report_download_repository)
+report_downloads = WorkspaceReportDownloadHttpService(report_download_grants, workspace_service)
 router = APIRouter()
 
 
@@ -218,7 +223,6 @@ def _sanitize_run_input(run_input: RunAgentInput) -> RunAgentInput:
             AGENT_CONTEXT_STATUS_DEPENDENCY,
             CODING_TASK_DEPENDENCY,
             CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY,
-            REPORT_SOURCE_INTAKE_DEPENDENCY,
         }
     ]
     state = run_input.state
@@ -383,6 +387,42 @@ async def _team_for_stored_run(
     return None
 
 
+def _report_skill_selected(run_input: RunAgentInput) -> bool:
+    for item in run_input.context or []:
+        if item.description != REPORT_SKILL_CONTEXT_DESCRIPTION:
+            continue
+        try:
+            selected = json.loads(item.value)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(selected, list):
+            continue
+        for skill in selected:
+            if not isinstance(skill, dict):
+                continue
+            identifiers = {str(skill.get(key) or "").strip().lower() for key in ("id", "name")}
+            if "report" in identifiers:
+                return True
+    return False
+
+
+async def _has_active_report_workflow(agent: Agent, thread_id: str, user_id: str) -> bool:
+    try:
+        session = await agent.aget_session(session_id=thread_id, user_id=user_id)
+    except Exception as error:
+        logger.warning("report_route_session_load_failed error_type=%s", type(error).__name__)
+        return False
+    if not isinstance(session, AgentSession) or not isinstance(session.session_data, dict):
+        return False
+    state = session.session_data.get("session_state")
+    if not isinstance(state, dict):
+        state = getattr(session, "session_state", None)
+    if not isinstance(state, dict):
+        return False
+    control = state.get(REPORT_WORKFLOW_CONTROL_STATE_KEY)
+    return isinstance(control, dict) and control.get("status") in {"running", "paused"}
+
+
 async def _hide_team_delegation_events(source):
     hidden_call_ids: set[str] = set()
     async for event in source:
@@ -419,6 +459,23 @@ def _audit_tool_route(request: Request, run_input: RunAgentInput, **values) -> N
 
 async def _run_error(message: str, code: str):
     yield RunErrorEvent(type=EventType.RUN_ERROR, message=message, code=code)
+
+
+async def _run_report_entity(
+    agent: Agent,
+    run_input: RunAgentInput,
+    envelope,
+    user_id: str,
+    identity: ReportServerIdentity,
+):
+    source = run_entity(agent, run_input, user_id=user_id).__aiter__()
+    while True:
+        with bind_server_request(envelope, identity):
+            try:
+                event = await source.__anext__()
+            except StopAsyncIteration:
+                return
+        yield event
 
 
 async def _with_sse_heartbeats(source):
@@ -483,7 +540,11 @@ async def require_workspace_capability(request: Request, call_next):
     if len(path_parts) >= 3 and path_parts[0] in {"agents", "teams"} and path_parts[2] == "runs":
         resource = path_parts[0][:-1]
         return JSONResponse({"error": f"{resource}_run_route_disabled"}, status_code=404)
-    protected = path in {"/agui", "/agui/cancel"} or path.startswith("/workspace")
+    protected = (
+        path in {"/agui", "/agui/cancel"}
+        or path.startswith("/workspace")
+        or path.startswith("/reports/v1/download/")
+    )
     if not protected:
         return await call_next(request)
     thread = _request_thread(request)
@@ -577,6 +638,20 @@ def _check_thread(request: Request, thread_id: str):
     claims = getattr(request.state, "capability", None)
     if not claims or claims.thread != thread_id or _request_thread(request) != thread_id:
         raise HTTPException(status_code=403, detail="capability_thread_mismatch")
+
+
+async def _report_download_scope(request: Request) -> ReportDownloadCallerScope:
+    claims = getattr(request.state, "capability", None)
+    thread = _request_thread(request)
+    if claims is None or claims.thread != thread:
+        raise HTTPException(status_code=403, detail="capability_thread_mismatch")
+    return ReportDownloadCallerScope(
+        database=claims.database,
+        user_id=str(claims.user),
+        company_id=str(claims.company),
+        session_id=claims.odoo_session,
+        thread_id=thread,
+    )
 
 
 def _workspace_error(error: Exception):
@@ -819,13 +894,15 @@ coding_agent.checkpoint = "tool-batch"
 coding_model = cast(OpenAIChat, coding_agent.model)
 coding_model.extra_body = {
     **(coding_model.extra_body or {}),
-    "enable_thinking": settings.enable_thinking,
+    "enable_thinking": settings.coding_enable_thinking,
 }
 report_worker = create_report_worker(
     coding_agent,
     workspace_service,
     coding_repository,
     instructions=build_report_agent_instructions,
+    coding_enable_thinking=settings.coding_enable_thinking,
+    report_enable_vision=settings.report_enable_vision,
     context_token_budget=settings.context_token_budget,
     output_token_reserve=settings.output_token_reserve,
 )
@@ -835,28 +912,30 @@ report_supervisor = CodingTaskSupervisor(
     execution_cleanup=CodingExecutionKernel(workspace_service, coding_repository),
     validator_registry=SkillValidatorRegistry.from_skills(report_worker.skills),
 )
-report_data_sources = ReportDataSourceToolkit(
-    workspace_service,
-    config_path=settings.report_data_sources_file,
-    excluded_database_url=settings.database_url,
-    temporary_source_bindings=temporary_source_bindings,
-    temporary_report_credentials=temporary_report_credentials,
-)
+report_source_registry = load_configured_report_source_registry(settings.report_data_sources_dir)
 report_runtime = ReportWorkflowRuntime(
     db=agent_database.async_db,
     planner=report_worker,
     report_worker=report_worker,
     supervisor=report_supervisor,
     workspace_service=workspace_service,
-    binding_service=temporary_source_bindings,
-    credentials=temporary_report_credentials,
-    client_factory=create_starrocks_client,
-    data_sources=report_data_sources,
+    registry=report_source_registry,
+    profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
+    planner_enable_thinking=settings.report_enable_thinking,
+    metadata_client=(
+        ReportingMetadataClient(
+            settings.report_metadata_url,
+            token=settings.report_metadata_token,
+        )
+        if settings.report_metadata_url
+        else None
+    ),
+    download_grants=report_download_grants,
 )
 report_workflow_controller = ReportWorkflowController(
     report_runtime.workflow,
     cancel_cleanup=report_runtime.cleanup_cancelled,
-    delivery_validator=report_runtime.validated_delivery,
+    publication_issuer=report_runtime.issue_http_publication,
 )
 report_agent = create_report_agent(report_worker, report_workflow_controller)
 coding_supervisor = CodingTaskSupervisor(
@@ -882,10 +961,19 @@ async def run_agui(request: Request, run_input: RunAgentInput):
     async def events():
         filtered_input = _filter_odoo_client_tools(run_input)
         declared_odoo_commands = [tool.name for tool in (filtered_input.tools or [])]
+        report_selected = _report_skill_selected(filtered_input)
+        report_active = False
+        if not branch:
+            report_active = await _has_active_report_workflow(
+                context.report_agent,
+                filtered_input.thread_id,
+                user_id,
+            )
+        report_route = not branch and (report_selected or report_active)
         audit_values = {
-            "route": "assistant_team",
+            "route": "report_agent" if report_route else "assistant_team",
             "declared_odoo_commands": declared_odoo_commands,
-            "report_route_selected": False,
+            "report_route_selected": report_route,
         }
         _audit_tool_route(
             request,
@@ -916,6 +1004,37 @@ async def run_agui(request: Request, run_input: RunAgentInput):
                     branch,
                     user_id,
                 )
+        elif report_route:
+            try:
+                report_identity = ReportServerIdentity(
+                    database=claims.database,
+                    user_id=str(claims.user),
+                    company_id=str(claims.company),
+                    session_id=claims.odoo_session,
+                    thread_id=filtered_input.thread_id,
+                )
+                routed_input = filtered_input
+                envelope = None
+                if not report_active:
+                    prepared_report = prepare_agui_envelope(filtered_input)
+                    routed_input = prepared_report.run_input
+                    envelope = prepared_report.envelope
+                routed_input = routed_input.model_copy(update={"tools": []})
+                prepared_input = await _prepare_run_input(
+                    context.report_agent,
+                    routed_input,
+                    user_id,
+                    context.settings,
+                )
+                source = _run_report_entity(
+                    context.report_agent,
+                    prepared_input,
+                    envelope,
+                    user_id,
+                    report_identity,
+                )
+            except ReportingError as error:
+                source = _run_error(error.message, error.code)
         else:
             prepared_input = await _prepare_run_input(
                 context.assistant_team,
@@ -948,6 +1067,14 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.state.agentos_context = context
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
+    application.include_router(
+        create_workspace_report_download_router(
+            report_downloads,
+            scope_dependency=_report_download_scope,
+        )
+    )
+    application.router.add_event_handler("startup", install_report_download_access_log_filter)
+    application.router.add_event_handler("startup", report_download_repository.create_schema)
     return application
 
 

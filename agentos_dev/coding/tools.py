@@ -141,6 +141,7 @@ PURE_CODING_TOOLKIT_INSTRUCTIONS = """
 - apply_patch 使用完整的“*** Begin Patch / *** End Patch”补丁，支持 Add/Update/Delete/Move、多文件和多个 hunk；terminal 中独立的 apply_patch heredoc 进入同一原子补丁内核。禁止无条件覆盖和模糊匹配。
 - 文本工具结果被截断且返回 outputHandle 时，使用 read_tool_output(handle, offset, max_bytes) 按需重读；句柄是当前 Task/Attempt 的不透明标识，不得当作路径或跨任务使用。
 - 文件路径和 workdir 必须是工作区相对路径；探测工作区根目录时调用 list_files(path="")，禁止传 /workspace 或 /home/daytona/workspace。所有工具直接执行，但不会扩大当前 thread、路径、网络、进程、超时或输出限制。
+- terminal 默认从工作区根目录执行；设置 workdir 后，命令中的每个相对路径都以该 workdir 为基准。命令引用工作区根目录相对路径时保持 workdir 为空，不得同时设置子目录 workdir 后重复拼接根目录相对路径。
 - 多步骤任务用 update_plan 维护计划；完成前确保全部步骤为 completed，且交付产物仍存在。
 - 最后一次 mutation 后必须调用 verify 执行显式验证；普通 terminal 不计为验证。finish_task 的 verification_ids 可以省略，由服务端自动选择当前 mutation 最近一次成功的 verify；显式提供时只能引用当前 mutation 的成功验证回执。
 - 存在活动进程时必须终止，或在 finish_task 的 service_sessions 中声明并引用当前 mutation 的成功 verify 健康检查回执。
