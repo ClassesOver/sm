@@ -34,8 +34,14 @@ services:
       AGENT_REPORT_METADATA_TOKEN: ${AGENT_REPORT_METADATA_TOKEN:-}
       REPORT_STARROCKS_DSN: ${REPORT_STARROCKS_DSN:-}
     volumes:
-      - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
-      - ${AGENT_REPORT_DATA_SOURCES_DIR:-./deploy/agentos/reporting}:/run/agentos/reporting:ro
+      - type: bind
+        source: ./deploy/agentos/skills
+        target: /opt/agent-skills
+        read_only: true
+      - type: bind
+        source: ./deploy/agentos/reporting
+        target: /run/agentos/reporting
+        read_only: true
     depends_on:
       reporting-db:
         condition: service_healthy
