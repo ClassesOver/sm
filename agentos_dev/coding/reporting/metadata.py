@@ -45,7 +45,7 @@ class ReportingMetadataClient:
     async def query_agents(self, _source_ids: tuple[str, ...] = ()) -> AgentQueryResponse:
         payload = await self._post("/get_agent_json", {})
         response = self._validate(MetadataAgentResponse, payload, "report_metadata_agents_invalid")
-        ids = [item.id for item in response.agent]
+        ids = [item.id for item in response.agent_list]
         if len(ids) != len(set(ids)):
             raise ReportingError("report_metadata_agents_invalid", "报表 Agent id 重复。")
         return AgentQueryResponse(
@@ -56,7 +56,7 @@ class ReportingMetadataClient:
                     description=item.desc,
                     enabled=True,
                 )
-                for item in response.agent
+                for item in response.agent_list
             )
         )
 
@@ -202,18 +202,14 @@ def _bind_ddl_source(ddl: str, sources: tuple[DataSourceConfig, ...]) -> DataSou
     table = schema.this
     if table.catalog:
         raise ReportingError("report_schema_not_allowed", "DDL 不允许使用 catalog 限定名。")
-    name = str(table.name or "").lower()
     database = str(table.db or "").lower()
     matches = []
     for source in sources:
-        qualified = f"{source.database.lower()}.{name}"
-        if (not database or database == source.database.lower()) and qualified in {
-            item.lower() for item in source.tables
-        }:
+        if not database or database == source.database.lower():
             matches.append(source)
     if len(matches) != 1:
         code = "report_schema_source_ambiguous" if len(matches) > 1 else "report_schema_not_allowed"
-        raise ReportingError(code, "DDL 数据表无法唯一绑定到已配置数据源白名单。")
+        raise ReportingError(code, "DDL 数据表无法唯一绑定到已配置数据源数据库。")
     return matches[0]
 
 

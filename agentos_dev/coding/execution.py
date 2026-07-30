@@ -21,7 +21,7 @@ from agno.tools import Function
 from daytona import SessionExecuteRequest
 from daytona.common.errors import DaytonaNotFoundError
 
-from ..agent_control import AGENT_PLAN_STATE_KEY, AgentControlToolkit
+from ..agent_control import AGENT_PLAN_STATE_KEY, AgentControlToolkit, validated_agent_plan
 from ..skills import (
     CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
@@ -80,6 +80,7 @@ MAX_TERMINAL_RUNTIME_CACHE_ENTRIES = 1024
 CODING_TOOL_OUTPUT_STATE_KEY = "agentos_coding_tool_outputs"
 CODING_TOOL_PROGRESS_STATE_KEY = "agentos_coding_tool_progress"
 CODING_TOOL_FAILURE_STATE_KEY = "agentos_coding_tool_failures"
+CODING_REWORK_STATE_KEY = "agentos_coding_rework"
 TOOL_OUTPUT_ROOT = "/home/daytona/.agentos/tool-output"
 VALIDATOR_ROOT = "/home/daytona/.agentos/validators"
 READONLY_RUNTIME_ROOT = "/home/daytona/.agentos/runtime"
@@ -144,7 +145,7 @@ NO_PROGRESS_EXEMPT_TOOLS = frozenset(
 )
 MAX_TOOL_PROGRESS_ENTRIES = 16
 MAX_TOOL_FAILURE_ENTRIES = 16
-ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_.-])/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+")
+ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.-])/(?:[\w.-]+/)*[\w.-]+")
 COMMAND_NOT_FOUND_RE = re.compile(
     r"(?im)^(?:/bin/)?(?:ba)?sh:\s*\d+:\s*[^:\n]+:\s*(?:command\s+)?not found\s*$"
 )
@@ -2750,7 +2751,10 @@ class CodingExecutionKernel:
                 "finish_plan_incomplete",
                 "仍有计划步骤未完成。",
                 details={"incompleteSteps": incomplete_steps},
-                required_actions=["完成所有计划步骤并更新计划状态。"],
+                required_actions=[
+                    "根据工作区证据更新计划：保留已完成步骤，只将下一真实未完成步骤标为 "
+                    "in_progress；完成后再标为 completed，不得为通过验收虚报完成。"
+                ],
                 progress_state={"incompleteSteps": incomplete_steps},
             )
         artifacts: list[dict[str, Any]] = []
@@ -2772,8 +2776,8 @@ class CodingExecutionKernel:
                 "交付产物不存在或已发生变化。",
                 details={"missingPaths": missing_paths[:MAX_FINISH_ARTIFACTS]},
                 required_actions=[
-                    "调用 verify 运行产物生成命令，并将 details.missingPaths 作为 "
-                    "artifact_paths；验证成功后重新调用 finish_task。"
+                    "核对 details.missingPaths：若路径声明错误，下一次 finish_task 使用实际存在的 "
+                    "artifact_paths；若确为必需产物，生成后调用 verify，再用实际存在路径重新提交。"
                 ],
                 progress_state={"missingPaths": missing_paths},
             )
@@ -3627,10 +3631,11 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                             "workspaceRoot": WORKSPACE_ROOT,
                             "failureFingerprint": blocked_failure["fingerprint"],
                         },
-                        "suggestedActions": [
+                        "requiredActions": [
                             "使用工作区相对路径重新执行。",
                             f"需要绝对路径时使用 {WORKSPACE_ROOT}。",
                         ],
+                        "retryable": True,
                     }
                 previous = next(
                     (
@@ -3647,10 +3652,11 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                         "ok": False,
                         "code": "tool_no_progress",
                         "message": "相同工具和参数已连续两次返回相同结果，本次未执行。",
-                        "suggestedActions": [
+                        "requiredActions": [
                             "修改参数或使用其他只读工具收集新证据。",
                             "先完成真实工作区修改，再重试该调用。",
                         ],
+                        "retryable": True,
                     }
             try:
                 result = await call(scope)
@@ -3823,6 +3829,22 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         if mutation_sequence == 0 and not repairing_finish_failure:
             return None
 
+        current_plan = (
+            validated_agent_plan(state.get(AGENT_PLAN_STATE_KEY))
+            if isinstance(state, dict)
+            else None
+        )
+        if (
+            not repairing_finish_failure
+            and current_plan is not None
+            and any(item["status"] != "completed" for item in current_plan["plan"])
+        ):
+            return None
+
+        rework = state.get(CODING_REWORK_STATE_KEY) if state is not None else None
+        if isinstance(rework, dict) and rework.get("mutationSequence") == mutation_sequence:
+            return None
+
         executions = await self.kernel.repository.list_executions(scope.external_run_id)
         verification = next(
             (
@@ -3888,7 +3910,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             if repair_with_files and (
                 TOOL_SPECS[tool_name].effect == "read"
                 or tool_name in self._FILE_MUTATION_TOOLS
-                or tool_name == "verify"
+                or tool_name in {"verify", "update_plan"}
             ):
                 return None
             allowed_tools = (
@@ -3896,6 +3918,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 if failure_code == "finish_plan_incomplete"
                 else [
                     "finish_task",
+                    "update_plan",
                     "verify",
                     "create_files",
                     "overwrite_file",
@@ -3949,7 +3972,10 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             "requiredActions": (
                 list(finish_failure.get("requiredActions") or [])[:10]
                 if repairing_finish_failure and isinstance(finish_failure, dict)
-                else ["更新计划完成状态后调用 finish_task。"]
+                else [
+                    "若工作已全部完成，更新计划为 completed 后调用 finish_task；"
+                    "若仍需工作，先用 update_plan 标记下一真实步骤为 in_progress。"
+                ]
             ),
             "retryable": True,
         }
@@ -4379,8 +4405,17 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 "message": "plan 必须包含 1 至 20 个步骤。",
             }
 
-        async def call(_scope: CodingTaskScope):
-            return self.kernel.plan.agent_update_plan(plan, explanation, run_context)
+        async def call(scope: CodingTaskScope):
+            result = self.kernel.plan.agent_update_plan(plan, explanation, run_context)
+            state = run_context.session_state if run_context is not None else None
+            if isinstance(state, dict) and result.get("ok") is True:
+                if any(item.get("status") != "completed" for item in result.get("plan", [])):
+                    state[CODING_REWORK_STATE_KEY] = {
+                        "mutationSequence": scope.task.mutation_sequence
+                    }
+                else:
+                    state.pop(CODING_REWORK_STATE_KEY, None)
+            return result
 
         return await self._invoke(
             "update_plan", {"plan": plan, "explanation": explanation}, call, run_context

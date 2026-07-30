@@ -5,7 +5,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Literal
+from typing import Any
 
 import anyio
 from pydantic import SecretStr
@@ -24,9 +24,6 @@ _SOURCE_FIELDS = frozenset(
         "name",
         "dsnEnv",
         "database",
-        "tables",
-        "periodColumns",
-        "periodGranularities",
         "statementTimeoutSeconds",
         "maxRows",
         "maxBytes",
@@ -39,8 +36,6 @@ _SOURCE_FIELDS = frozenset(
         "reportingProfile",
     }
 )
-_ALLOWED_GRANT_PRIVILEGES = frozenset({"SELECT", "USAGE"})
-_ADMIN_USERS = frozenset({"root", "admin", "administrator"})
 
 
 @dataclass(frozen=True)
@@ -50,9 +45,6 @@ class StarRocksSourceConfig:
     dsn_env: str
     dsn: SecretStr
     database: str
-    tables: tuple[str, ...]
-    period_columns: dict[str, str]
-    period_granularities: dict[str, Literal["date", "year"]]
     reporting_profile: str | None
     limits: QueryLimits
     source_type: str = "starrocks"
@@ -75,9 +67,6 @@ class StarRocksSourceConfig:
             "sourceType": self.source_type,
             "name": self.name,
             "database": self.database,
-            "tables": list(self.tables),
-            "periodColumns": dict(self.period_columns),
-            "periodGranularities": dict(self.period_granularities),
             "reportingProfile": self.reporting_profile,
             "limits": self.limits.public_dict(),
         }
@@ -103,9 +92,6 @@ def parse_starrocks_source(
         raise ValueError(f"报表数据源 {source_id} 的 dsnEnv 无效。")
     if not isinstance(database, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", database):
         raise ValueError(f"报表数据源 {source_id} 的 database 无效。")
-    tables = _tables(raw.get("tables"), database)
-    period_columns = _period_columns(raw.get("periodColumns"), tables)
-    period_granularities = _period_granularities(raw.get("periodGranularities"), tables)
     dsn = str(environ.get(dsn_env) or "").strip()
     if not dsn:
         raise ValueError(f"报表数据源 {source_id} 缺少环境变量 {dsn_env}。")
@@ -123,9 +109,6 @@ def parse_starrocks_source(
         dsn_env=dsn_env,
         dsn=SecretStr(dsn),
         database=database.lower(),
-        tables=tables,
-        period_columns=period_columns,
-        period_granularities=period_granularities,
         reporting_profile=_optional_id(raw.get("reportingProfile"), source_id),
         limits=QueryLimits(
             statement_timeout_seconds=_bounded(raw.get("statementTimeoutSeconds"), 30, 1, 300),
@@ -146,12 +129,15 @@ def parse_starrocks_source(
 class StarRocksDataSourceAdapter:
     """StarRocks 同步驱动的异步边界；公开结果不包含连接信息。"""
 
-    def __init__(self, config: StarRocksSourceConfig):
+    def __init__(
+        self,
+        config: StarRocksSourceConfig,
+        *,
+        allowed_tables: tuple[str, ...] = (),
+    ):
         self.config = config
+        self.allowed_tables = _runtime_tables(allowed_tables, config.database)
         try:
-            parsed = make_url(config.connection_dsn())
-            if str(parsed.username or "").lower() in _ADMIN_USERS:
-                raise ReportingError("source_account_privileged", "报表数据源不能使用管理员账号。")
             self._engine: Engine = create_engine(
                 config.connection_dsn(),
                 pool_pre_ping=True,
@@ -162,19 +148,10 @@ class StarRocksDataSourceAdapter:
                 max_overflow=0,
                 connect_args={"connect_timeout": 10, "read_timeout": 30, "write_timeout": 30},
             )
-        except ReportingError:
-            raise
         except Exception as error:
             raise ReportingError(
                 "starrocks_driver_unavailable", "StarRocks 数据源驱动不可用。"
             ) from error
-
-    async def verify_read_only(self) -> None:
-        valid = await anyio.to_thread.run_sync(self._verify_read_only)
-        if not valid:
-            raise ReportingError(
-                "source_account_not_read_only", "无法证明数据库账号仅具有允许表的只读权限。"
-            )
 
     async def catalog(self) -> tuple[CatalogTable, ...]:
         return await anyio.to_thread.run_sync(self._catalog)
@@ -183,38 +160,18 @@ class StarRocksDataSourceAdapter:
         normalized = validate_starrocks_read_only_sql(
             sql,
             database=self.config.database,
-            allowed_tables=self.config.tables,
+            allowed_tables=self.allowed_tables,
         )
         return await anyio.to_thread.run_sync(partial(self._query, normalized))
 
     async def aclose(self) -> None:
         await anyio.to_thread.run_sync(self._engine.dispose)
 
-    def _verify_read_only(self) -> bool:
-        try:
-            with self._engine.connect() as connection:
-                rows = connection.execute(text("SHOW GRANTS")).fetchall()
-        except SQLAlchemyError:
-            return False
-        grants = [str(value) for row in rows for value in row if isinstance(value, str)]
-        normalized = "\n".join(grants).upper().replace("`", "")
-        if not normalized or " ALL " in f" {normalized} " or "*.*" in normalized:
-            return False
-        for line in normalized.splitlines():
-            if "GRANT " not in line or " ON " not in line:
-                continue
-            privileges = line.split("GRANT ", 1)[1].split(" ON ", 1)[0]
-            if {item.strip() for item in privileges.split(",")} - _ALLOWED_GRANT_PRIVILEGES:
-                return False
-        return "SELECT" in normalized and all(
-            table.upper() in normalized for table in self.config.tables
-        )
-
     def _catalog(self) -> tuple[CatalogTable, ...]:
         inspector = inspect(self._engine)
         result: list[CatalogTable] = []
         try:
-            for qualified in self.config.tables:
+            for qualified in self.allowed_tables:
                 database, table = qualified.split(".", 1)
                 columns = inspector.get_columns(table, schema=database)
                 if not columns:
@@ -284,46 +241,21 @@ def _optional_id(value: Any, source_id: str) -> str | None:
     return value
 
 
-def _tables(value: Any, database: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or not value or len(value) > 200:
-        raise ValueError("报表数据源 tables 必须是非空数组。")
+def _runtime_tables(value: tuple[str, ...], database: str) -> tuple[str, ...]:
+    if len(value) > 200:
+        raise ValueError("DDL 数据表不能超过 200 项。")
     result: list[str] = []
     for item in value:
         if not isinstance(item, str) or not re.fullmatch(
             r"[A-Za-z_][A-Za-z0-9_$]*\.[A-Za-z_][A-Za-z0-9_$]*", item
         ):
-            raise ValueError("报表数据源 table 无效。")
+            raise ValueError("DDL 数据表无效。")
         if item.split(".", 1)[0].lower() != database.lower():
-            raise ValueError("报表数据源 table 必须属于固定数据库。")
+            raise ValueError("DDL 数据表必须属于数据源数据库。")
         result.append(item.lower())
     if len(set(result)) != len(result):
-        raise ValueError("报表数据源 table 不能重复。")
+        raise ValueError("DDL 数据表不能重复。")
     return tuple(result)
-
-
-def _period_columns(value: Any, tables: tuple[str, ...]) -> dict[str, str]:
-    if not isinstance(value, dict) or set(value) != set(tables):
-        raise ValueError("报表数据源 periodColumns 必须完整覆盖 tables。")
-    result: dict[str, str] = {}
-    for table, column in value.items():
-        if not isinstance(column, str) or not re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_$]{0,127}", column
-        ):
-            raise ValueError(f"报表数据源 {table} 的期间字段无效。")
-        result[table] = column
-    return result
-
-
-def _period_granularities(
-    value: Any, tables: tuple[str, ...]
-) -> dict[str, Literal["date", "year"]]:
-    if value is None:
-        return {table: "date" for table in tables}
-    if not isinstance(value, dict) or set(value) != set(tables):
-        raise ValueError("报表数据源 periodGranularities 必须完整覆盖 tables。")
-    if any(item not in {"date", "year"} for item in value.values()):
-        raise ValueError("报表数据源 periodGranularities 只支持 date 或 year。")
-    return {table: item for table, item in value.items()}
 
 
 def _bounded(value: Any, default: int, minimum: int, maximum: int) -> int:

@@ -154,6 +154,8 @@ def test_hermes_coding_toolkit_is_independent_and_keeps_supported_contract(tmp_p
     assert "expected_sha256" in PURE_CODING_TOOLKIT_INSTRUCTIONS
     assert "必须调用 verify" in PURE_CODING_TOOLKIT_INSTRUCTIONS
     assert "terminal 不计为验证" in PURE_CODING_TOOLKIT_INSTRUCTIONS
+    assert "terminal 默认从工作区根目录执行" in PURE_CODING_TOOLKIT_INSTRUCTIONS
+    assert "每个相对路径都以该 workdir 为基准" in PURE_CODING_TOOLKIT_INSTRUCTIONS
     assert "用 terminal 得到成功验证回执" not in PURE_CODING_TOOLKIT_INSTRUCTIONS
 
 

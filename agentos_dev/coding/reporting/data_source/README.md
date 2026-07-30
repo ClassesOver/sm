@@ -17,16 +17,6 @@ Report Agent 从调用方提供的 `boundary_dir` 到 `start_dir`，按目录层
       "name": "运营数据",
       "dsnEnv": "REPORT_OPERATIONS_DSN",
       "database": "reporting",
-      "tables": ["reporting.income", "reporting.workload"],
-      "periodColumns": {
-        "reporting.income": "month",
-        "reporting.workload": "month"
-      },
-      "periodGranularities": {
-        "reporting.income": "date",
-        "reporting.workload": "date"
-      },
-      "reportingProfile": "hospital-operations",
       "statementTimeoutSeconds": 30,
       "maxRows": 1000000,
       "maxBytes": 268435456,
@@ -51,11 +41,10 @@ Report Agent 从调用方提供的 `boundary_dir` 到 `start_dir`，按目录层
 6. 所有未知字段均拒绝。当前仅实现 `starrocks`，其他类型通过注册独立 parser 扩展。
 
 连接信息只能来自 `dsnEnv` 指向的服务端环境变量。请求、公开配置、模型上下文和 Workflow state
-不得保存或返回 DSN、host、用户名或密码。StarRocks 的 `database` 必须与 DSN 一致，`tables` 必须使用
-同一数据库下的完整限定名。
-`periodColumns` 必须逐项覆盖 `tables`，键为完整表名，值为期间字段；`periodGranularities` 可显式为
-每张表声明 `date` 或 `year`，省略时使用 `date`。日期模式按完整日期过滤并统计月份覆盖，年度模式按
-整数年份过滤并统计年度覆盖；均不得由字段命名猜测。
+不得保存或返回 DSN、host、用户名或密码。StarRocks 的 `database` 必须与 DSN 一致。可用表来自所选
+metadata Agent 的 DDL，并固化为本次运行的结构快照；配置文件不重复维护表白名单。
+模型必须通过结构化数据理解计划选择表、期间字段及 `date`/`year` 粒度，程序只校验引用属于 DDL
+快照。日期模式按完整日期过滤并统计月份覆盖，年度模式按整数年份过滤并统计年度覆盖。
 `reportingProfile` 是可选的服务端 Profile ID，不包含任何 Profile 内容或连接信息。一次运行选择的所有
 数据源必须绑定相同 ID；省略时使用内置领域无关 Profile。Profile 规约见
 [`../profile/README.md`](../profile/README.md)。
@@ -72,7 +61,7 @@ DataShape 统计规约：
 5. 全部查询只返回聚合结果，不读取样本行。任一表、任一统计批次失败，整次 DataShape 采集失败。
 6. DataShape 记录 source ID、metadata revision、schema hash、统计版本及实际查询数；表级
    `periodGranularity`、`periodCoverage` 和 `missingPeriods` 精确描述日期或年度覆盖。期间字段必须由
-   调用方按完整表名显式配置，不根据字段名猜测。
+   数据理解计划显式声明，不由程序根据字段名猜测。
 7. `profileConcurrency` 限制单数据源 DataShape 查询并发数；多数据源运行时以所有源中的
    最小值作为 Workflow 总上限，避免 source/table/batch 多层并发相乘。
 8. `queryConcurrency` 限制审核 SQL 物化并发数；同一 source 使用自身上限，整批使用相关

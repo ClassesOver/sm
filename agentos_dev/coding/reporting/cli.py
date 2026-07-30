@@ -55,6 +55,8 @@ async def run_cli(
         context.workspace_service,
         context.coding_repository,
         instructions=build_report_agent_instructions,
+        coding_enable_thinking=context.settings.coding_enable_thinking,
+        report_enable_vision=context.settings.report_enable_vision,
         context_token_budget=context.settings.context_token_budget,
         output_token_reserve=context.settings.output_token_reserve,
     )
@@ -74,6 +76,7 @@ async def run_cli(
         workspace_service=context.workspace_service,
         registry=load_configured_report_source_registry(context.settings.report_data_sources_dir),
         profiles=load_configured_reporting_profiles(context.settings.report_data_sources_dir),
+        planner_enable_thinking=context.settings.report_enable_thinking,
         metadata_client=(
             ReportingMetadataClient(
                 context.settings.report_metadata_url,

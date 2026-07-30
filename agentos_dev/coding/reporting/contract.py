@@ -124,7 +124,7 @@ class MetadataAgent(StrictModel):
 
 
 class MetadataAgentResponse(StrictModel):
-    agent: tuple[MetadataAgent, ...] = Field(max_length=100)
+    agent_list: tuple[MetadataAgent, ...] = Field(max_length=100)
 
 
 class AgentQueryResponse(StrictModel):
@@ -258,6 +258,10 @@ def schema_hash(tables: tuple[ModelTable, ...] | list[ModelTable]) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def _normalize_type(value: str) -> str:
+    return re.sub(r"\s+", "", value).upper()
+
+
 def parse_ddl(ddl: str, *, source_id: str, default_database: str) -> tuple[ModelTable, ...]:
     if not isinstance(ddl, str) or not ddl.strip() or len(ddl.encode()) > 1_048_576:
         raise ReportingError("report_ddl_invalid", "DDL 必须为非空且不超过 1 MiB。")
@@ -343,37 +347,41 @@ def validate_catalog(
     catalog: tuple[ModelTable, ...],
     *,
     allowed_tables: tuple[str, ...],
-) -> None:
+) -> tuple[ModelTable, ...]:
     allowed = {item.lower() for item in allowed_tables}
     actual = {(table.database.lower(), table.name.lower()): table for table in catalog}
+    resolved: list[ModelTable] = []
     for table in requested:
         qualified = f"{table.database.lower()}.{table.name.lower()}"
         if qualified not in allowed:
             raise ReportingError(
-                "report_schema_not_allowed", f"数据表 {qualified} 不在服务端白名单。"
+                "report_schema_not_allowed", f"数据表 {qualified} 不在本次 DDL 快照范围。"
             )
         current = actual.get((table.database.lower(), table.name.lower()))
         if current is None:
             raise ReportingError("report_catalog_drift", f"实时 catalog 缺少数据表 {qualified}。")
         current_columns = {column.name.lower(): column for column in current.columns}
         requested_columns = {column.name.lower() for column in table.columns}
-        if set(current_columns) != requested_columns:
+        if not requested_columns.issubset(current_columns):
             raise ReportingError(
                 "report_catalog_drift", f"实时 catalog 数据表 {qualified} 字段已变化。"
             )
-        for column in table.columns:
-            actual_column = current_columns.get(column.name.lower())
-            if actual_column is None or (
-                _normalize_type(actual_column.data_type) != _normalize_type(column.data_type)
-                or actual_column.nullable != column.nullable
-            ):
-                raise ReportingError(
-                    "report_catalog_drift", f"实时 catalog 字段 {qualified}.{column.name} 已变化。"
-                )
-
-
-def _normalize_type(value: str) -> str:
-    return re.sub(r"\s+", "", value).upper()
+        resolved.append(
+            table.model_copy(
+                update={
+                    "columns": tuple(
+                        column.model_copy(
+                            update={
+                                "data_type": current_columns[column.name.lower()].data_type,
+                                "nullable": current_columns[column.name.lower()].nullable,
+                            }
+                        )
+                        for column in table.columns
+                    )
+                }
+            )
+        )
+    return tuple(resolved)
 
 
 def _table_comment(statement: exp.Create) -> str:

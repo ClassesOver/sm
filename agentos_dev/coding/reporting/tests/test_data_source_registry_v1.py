@@ -7,6 +7,7 @@ import pytest
 
 from agentos_dev.coding.reporting.data_source import (
     CONFIG_FILE_NAME,
+    StarRocksDataSourceAdapter,
     discover_config_paths,
     load_report_source_registry,
 )
@@ -24,18 +25,14 @@ def starrocks_source(
     *,
     dsn_env: str,
     database: str = "reporting",
-    tables: list[str] | None = None,
     profiling_limits: dict[str, int] | None = None,
 ) -> dict[str, object]:
-    configured_tables = tables or [f"{database}.income"]
     source: dict[str, object] = {
         "id": source_id,
         "type": "starrocks",
         "name": f"{source_id} 数据源",
         "dsnEnv": dsn_env,
         "database": database,
-        "tables": configured_tables,
-        "periodColumns": {table: "month" for table in configured_tables},
     }
     source.update(profiling_limits or {})
     return source
@@ -76,7 +73,6 @@ def test_配置从边界向当前目录递归加载且子层整项覆盖(tmp_pat
     assert registry.default_source_ids == ("operations",)
     assert set(registry.sources) == {"operations", "shared"}
     assert registry.sources["operations"].database == "child"
-    assert registry.sources["operations"].tables == ("child.income",)
 
 
 def test_子层可以禁用继承源并显式清空默认源(tmp_path: Path):
@@ -159,6 +155,7 @@ def test_公开配置不包含dsn或凭据(tmp_path: Path):
     assert "dsn" not in repr(public).lower()
     assert "private" not in repr(public)
     assert "db.internal" not in repr(public)
+    assert not {"tables", "periodColumns", "periodGranularities"} & set(public)
     assert "private" not in repr(registry.sources["operations"])
     assert source.reporting_profile is None
     assert public["limits"] == {
@@ -174,6 +171,20 @@ def test_公开配置不包含dsn或凭据(tmp_path: Path):
     }
 
 
+@pytest.mark.parametrize("field", ("tables", "periodColumns", "periodGranularities"))
+def test_表范围和期间语义不再接受静态配置(tmp_path: Path, field: str):
+    raw = starrocks_source("operations", dsn_env="REPORT_DSN")
+    raw[field] = [] if field == "tables" else {}
+    write_config(tmp_path, {"version": "1", "sources": [raw]})
+
+    with pytest.raises(ValueError, match="未知字段"):
+        load_report_source_registry(
+            tmp_path,
+            tmp_path,
+            environ={"REPORT_DSN": "starrocks://reader:secret@db:9030/reporting"},
+        )
+
+
 def test_数据源只保存profile引用(tmp_path: Path):
     raw = starrocks_source("operations", dsn_env="REPORT_DSN")
     raw["reportingProfile"] = "hospital-operations"
@@ -186,6 +197,30 @@ def test_数据源只保存profile引用(tmp_path: Path):
     )
 
     assert registry.sources["operations"].reporting_profile == "hospital-operations"
+
+
+def test_管理员账号dsn可以创建适配器(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    write_config(
+        tmp_path,
+        {
+            "version": "1",
+            "sources": [starrocks_source("operations", dsn_env="REPORT_DSN")],
+        },
+    )
+    source = load_report_source_registry(
+        tmp_path,
+        tmp_path,
+        environ={"REPORT_DSN": "starrocks://root:secret@db.internal:9030/reporting"},
+    ).sources["operations"]
+    engine = object()
+    monkeypatch.setattr(
+        "agentos_dev.coding.reporting.data_source.starrocks.create_engine",
+        lambda *_args, **_kwargs: engine,
+    )
+
+    adapter = StarRocksDataSourceAdapter(source)
+
+    assert adapter._engine is engine
 
 
 def test_查找拒绝越界和配置符号链接(tmp_path: Path):

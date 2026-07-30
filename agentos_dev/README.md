@@ -41,7 +41,9 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting
 ```
 
 两者都只注册由 Supervisor 或 Workflow 控制的 facade，不公开底层 worker。生产浏览器仍只访问
-综合 `agentos_dev.app`。
+综合 `agentos_dev.app`。Reporting AgentOS 的 `/agui` 同时接受严格 Envelope JSON 和自然语言：
+自然语言原文不在路由层改写，由 `report-agent` 模型生成 ISO 起止日期并调用强类型 Workflow 工具；
+`reportGoal` 必须逐字保留用户输入，期间不明确时由模型询问用户，不允许程序猜测。
 
 ## 独立 Playground 联调
 
@@ -76,7 +78,10 @@ scripts/dev_playground.sh down
 Coding 模式使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和退出控制。原生 CLI
 面向保留 Agno Agent 接口的确定性转交实体；其 `arun` 不调用模型，而是把完整目标直接交给
 `CodingTaskSupervisor`。只有底层 `coding-agent-cli` 使用 `MODEL`，并按
-`AGENT_ENABLE_THINKING` 传递 `enable_thinking`、使用 `reasoning_effort=medium` 执行受控工具闭环。
+`AGENT_CODING_ENABLE_THINKING` 传递 `enable_thinking`、使用 `reasoning_effort=medium` 执行受控工具闭环。
+Reporting Coding worker 和结构化 planner 默认由独立的
+`AGENT_REPORT_ENABLE_THINKING=true` 开启 thinking；普通 Assistant/Team 由
+`AGENT_ASSISTANT_ENABLE_THINKING=false` 独立控制，公开 facade 始终关闭 thinking。
 因此 CLI 不导入
 `agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
 PostgreSQL 中 Coding Repository 使用独立的 `agentos_coding` schema 和版本表，不写入 Agno
@@ -160,7 +165,10 @@ Coding `terminal.command` 以 UTF-8 字节计最多 32 KiB；大段文件内容�
 | `AGENT_TRACING_ENABLED` | `false` | 将 Agent、模型和工具 OpenTelemetry trace 写入 AgentOS 数据库 |
 | `compress_tool_results` | `True` | 仅压缩历史分析工具的大结果 |
 | `enable_session_summaries` | `True` | 成功 run 后滚动更新非权威摘要 |
-| `enable_thinking` | `True` | 主模型启用；辅助模型关闭，客户端不接收原始 reasoning |
+| `AGENT_ASSISTANT_ENABLE_THINKING` | `false` | 控制普通 Assistant/Team thinking |
+| `AGENT_CODING_ENABLE_THINKING` | `true` | 控制纯 Coding worker thinking |
+| `AGENT_REPORT_ENABLE_THINKING` | `true` | 控制 Report Coding worker 和 Reporting planner thinking |
+| `AGENT_REPORT_ENABLE_VISION` | `false` | 控制 Report Worker 是否暴露图片检查工具并向模型发送媒体 |
 
 Coding Agent 和原生 CLI 额外使用同一个 `ContextBudgetController`：有效上下文上限取
 `AGENT_CONTEXT_TOKEN_BUDGET` 与 96K token 的较小值，并至少保留 32K token 输出空间。未超预算时只在
@@ -213,23 +221,28 @@ modifiers 与最新 `BasicModel` 状态竞争；`sandbox_exec`、`sandbox_proces
 
 滚动摘要只包含用户目标、已确认决策、工作区产物、完成事项和待办事项，并标记为非权威历史。
 摘要和压缩都不能作为 Odoo 业务事实；需要记录值、筛选、权限或页面状态时，必须使用本轮最新
-宿主快照。普通助手和 Team 领导者都显式设置 `enable_thinking=false`；压缩和摘要辅助模型也始终关闭
-thinking。内部 Coding Agent 与 `report-worker` 继续由 `AGENT_ENABLE_THINKING` 控制。Coding facade 的 Agno 官方 `arun(..., stream=True, stream_events=True)` 实时返回
+宿主快照。压缩和摘要辅助模型始终关闭 thinking。普通 Assistant/Team 由
+`AGENT_ASSISTANT_ENABLE_THINKING` 控制，内部 Coding Agent 由
+`AGENT_CODING_ENABLE_THINKING` 控制，`report-worker` 和 Reporting planner 由
+`AGENT_REPORT_ENABLE_THINKING` 独立控制。Coding facade 的 Agno 官方 `arun(..., stream=True, stream_events=True)` 实时返回
 `ReasoningStarted`、原始 `ReasoningContentDelta` 和 `ReasoningCompleted`；只投影 reasoning 文本，
 不返回 provider 原始字段。终态持久化前仍清除 reasoning 字段，原始 reasoning 不进入 session 或
 数据库。AG-UI、自定义 SSE 和 React 不转发或展示原始 reasoning，前端只展示“正在分析当前请求”
 或“正在整理工具结果”等确定性状态。
 
 相关环境变量可独立回退：`AGENT_ENABLE_TOOL_RESULT_COMPRESSION=false` 停止生成新压缩结果，
-`AGENT_ENABLE_SESSION_SUMMARIES=false` 停止更新和注入摘要，`AGENT_ENABLE_THINKING=false` 关闭
-内部 Coding/Report worker thinking；`AGENT_CONTEXT_TOKEN_BUDGET`、`AGENT_HISTORY_TOKEN_BUDGET` 和
+`AGENT_ENABLE_SESSION_SUMMARIES=false` 停止更新和注入摘要，
+`AGENT_ASSISTANT_ENABLE_THINKING=false`、`AGENT_CODING_ENABLE_THINKING=false` 和
+`AGENT_REPORT_ENABLE_THINKING=false` 分别关闭普通 Assistant/Team、纯 Coding worker 和
+Report Coding worker/Reporting planner thinking；`AGENT_CONTEXT_TOKEN_BUDGET`、
+`AGENT_HISTORY_TOKEN_BUDGET` 和
 `AGENT_OUTPUT_TOKEN_RESERVE` 分别调整完整窗口、历史上限和输出余量。关闭任一能力都不会删除 PostgreSQL
 中的完整历史，也不会改变 `agui.odoo.v2`、命令确认、授权或 stale snapshot 校验。
 新建 Daytona 工作区使用 `DAYTONA_DEFAULT_SNAPSHOT` 指定的 snapshot，默认值为 `sandbox-tools`。
 默认继续设置 `network_block_all=true`；运维可通过 `DAYTONA_NETWORK_ALLOW_LIST` 为新建 sandbox
 配置最多 10 个逗号分隔的 IPv4 CIDR，此时只发送 `network_allow_list`。白名单不支持端口约束，
 已有 sandbox 也不会自动变更网络策略；端口限制仍由出口防火墙或目标服务 ACL 承担。
-`AGENT_DEBUG` 与 `AGENT_ENABLE_THINKING` 独立生效；两者同时开启时，Agno 调试日志可能包含
+`AGENT_DEBUG` 与三套 thinking 开关独立生效；同时开启 debug 和任一 thinking 时，Agno 调试日志可能包含
 provider reasoning。不得在生产环境记录包含业务数据的请求、响应正文或 reasoning。
 
 上述配置不改变能力边界。Odoo `BasicModel` 仍是业务页面状态的唯一事实来源；命令仍经过
@@ -325,7 +338,7 @@ Report 保持独立的既有交付回执门禁，不写入 Coding v2 的状态�
 
 Report v1 只接受服务端注册的 StarRocks 数据源。`AGENT_REPORT_DATA_SOURCES_DIR` 指向配置边界目录；
 加载器从边界到当前目录逐层查找 `report-data-sources.json`，同 ID 数据源由子层整项覆盖。
-配置只保存 source ID、可选 `reportingProfile` 引用、`dsnEnv`、数据库、表、期间字段和查询限额，DSN 只从同名服务端环境变量读取。
+配置只保存 source ID、可选 `reportingProfile` 引用、`dsnEnv`、数据库和查询限额，DSN 只从同名服务端环境变量读取。表范围来自 metadata DDL；期间字段和粒度由模型的数据理解计划声明。
 请求、模型上下文和 Workflow state 均不接受连接字段。示例：
 
 ```json
@@ -339,10 +352,6 @@ Report v1 只接受服务端注册的 StarRocks 数据源。`AGENT_REPORT_DATA_S
       "type": "starrocks",
       "dsnEnv": "REPORT_STARROCKS_DSN",
       "database": "reporting",
-      "tables": ["reporting.revenue"],
-      "periodColumns": {"reporting.revenue": "month"},
-      "periodGranularities": {"reporting.revenue": "date"},
-      "reportingProfile": "hospital-operations",
       "statementTimeoutSeconds": 30,
       "maxRows": 1000000,
       "maxBytes": 268435456,
@@ -358,12 +367,12 @@ Report v1 只接受服务端注册的 StarRocks 数据源。`AGENT_REPORT_DATA_S
 结构化字段引用、受限聚合和对账规则缩小 Snapshot，不能包含 SQL、表达式或连接信息。未绑定 Profile
 的数据源使用内置领域无关章节。
 
-StarRocks 使用官方 `starrocks==1.3.3` SQLAlchemy dialect。`root`、管理员或无法证明允许表只读权限的
-账号会被拒绝；API/DDL 模型还必须与实时 catalog 一致。
+StarRocks 使用官方 `starrocks==1.3.3` SQLAlchemy dialect。数据源账号权限不作为启动门禁；
+API/DDL 模型仍必须与实时 catalog 一致。
 
 SQL 只允许单条 `SELECT` 或只读 CTE，并强制只读事务、超时、Snapshot 表字段白名单和结果
 分片限制。Compose 默认只读挂载仓库中的 `rj` 配置，固定允许 6 张经营视图，并从
-`REPORT_RJ_STARROCKS_DSN` 注入连接；生产环境也可通过 `AGENT_REPORT_DATA_SOURCES_DIR` 指向宿主机
+`REPORT_STARROCKS_DSN` 注入连接；生产环境也可通过 `AGENT_REPORT_DATA_SOURCES_DIR` 指向宿主机
 配置目录。metadata 只能缩小该白名单，不能动态扩大。
 `AGENT_REPORT_METADATA_URL` 配置外部 metadata 服务基址，`AGENT_REPORT_METADATA_TOKEN` 配置其
 Bearer token；未配置 URL 表示明确禁用 metadata 服务，而网络、鉴权、5xx 或响应契约错误均失败关闭，

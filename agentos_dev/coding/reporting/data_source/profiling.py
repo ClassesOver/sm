@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from datetime import date
-from typing import Any, Literal
+from typing import Any
 
 import anyio
 
@@ -18,6 +18,7 @@ from .models import (
     TableDataShape,
     TopValue,
 )
+from .period import PeriodGranularity, normalized_period_sql, period_filter_sql
 
 STATISTICS_VERSION = "1"
 _NUMERIC_TYPES = re.compile(
@@ -38,7 +39,7 @@ async def collect_data_shape(
     period_start: date,
     period_end: date,
     period_columns: Mapping[str, str],
-    period_granularities: Mapping[str, Literal["date", "year"]] | None = None,
+    period_granularities: Mapping[str, PeriodGranularity] | None = None,
     metadata_revision: str,
     schema_hash: str,
     global_limiter: anyio.CapacityLimiter | None = None,
@@ -57,7 +58,7 @@ async def collect_data_shape(
                     f"数据表 {table.qualified_name} 缺少有效的期间字段映射。",
                 )
             granularity = (period_granularities or {}).get(table.qualified_name, "date")
-            if granularity not in {"date", "year"}:
+            if granularity not in {"date", "month", "year"}:
                 raise ReportingError(
                     "report_period_granularity_invalid", "数据表期间粒度配置无效。"
                 )
@@ -108,7 +109,7 @@ async def _profile_table(
     table: CatalogTable,
     *,
     period_column: str,
-    period_granularity: Literal["date", "year"],
+    period_granularity: PeriodGranularity,
     period_start: date,
     period_end: date,
     source_limiter: anyio.CapacityLimiter,
@@ -121,16 +122,10 @@ async def _profile_table(
             f"数据表 {table.qualified_name} 不包含期间字段 {period_column}。",
         )
     period_identifier = _identifier(period_column)
-    if period_granularity == "year":
-        period_filter = (
-            f"{period_identifier} >= {period_start.year} AND "
-            f"{period_identifier} <= {period_end.year}"
-        )
-    else:
-        period_filter = (
-            f"{period_identifier} >= '{period_start.isoformat()}' AND "
-            f"{period_identifier} <= '{period_end.isoformat()}'"
-        )
+    normalized_period = normalized_period_sql(period_identifier, period_granularity)
+    period_filter = period_filter_sql(
+        period_identifier, period_granularity, period_start, period_end
+    )
     qualified = f"{_identifier(table.database)}.{_identifier(table.name)}"
     base_aliases = (
         "total_row_count",
@@ -196,7 +191,7 @@ async def _profile_table(
 
     if period_granularity == "year":
         coverage_sql = (
-            f"SELECT CAST({period_identifier} AS CHAR) AS year, "
+            f"SELECT {normalized_period} AS year, "
             f"COUNT(*) AS year_count FROM {qualified} WHERE {period_filter} "
             "GROUP BY year ORDER BY year"
         )
@@ -206,7 +201,8 @@ async def _profile_table(
         )
     else:
         coverage_sql = (
-            f"SELECT DATE_FORMAT({period_identifier}, '%Y-%m') AS month, "
+            f"SELECT CONCAT(SUBSTRING({normalized_period}, 1, 4), '-', "
+            f"SUBSTRING({normalized_period}, 5, 2)) AS month, "
             f"COUNT(*) AS month_count FROM {qualified} WHERE {period_filter} "
             "GROUP BY month ORDER BY month"
         )
@@ -470,7 +466,7 @@ def _top_values(result: QueryResult, row_count: int, *, limit: int) -> tuple[Top
 
 
 def _validate_catalog(adapter: DataSourceAdapter, catalog: tuple[CatalogTable, ...]) -> None:
-    allowed = {table.lower() for table in adapter.config.tables}
+    allowed = {table.lower() for table in adapter.allowed_tables}
     seen: set[str] = set()
     for table in catalog:
         qualified = table.qualified_name.lower()

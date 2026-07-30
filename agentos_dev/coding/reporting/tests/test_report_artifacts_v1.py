@@ -10,6 +10,7 @@ from agentos_dev.coding.reporting.artifacts_v1 import (
     PdfArtifactManifest,
     ReportArtifactManifest,
     dataset_snapshot_hash,
+    validate_markdown_markers,
     validate_rendered_artifacts,
 )
 from agentos_dev.coding.reporting.models import ReportingError
@@ -101,6 +102,46 @@ def test_报告产物只要求领域无关的通用章节():
         }
         & REQUIRED_REPORT_SECTIONS
     )
+
+
+def test_报告产物schema使用模型收到的别名且禁止额外字段():
+    schema = ReportArtifactManifest.model_json_schema(by_alias=True)
+
+    assert schema["additionalProperties"] is False
+    properties = schema["properties"]
+    assert "codingTaskKey" in properties
+    assert "datasetSnapshotHash" in properties
+    assert "effectiveProfileHash" in properties
+    assert "markdown" in properties
+    assert "charts" in properties
+    assert "citations" in properties
+    assert "sections" in properties
+    assert "markdownPath" not in properties
+    assert "artifacts" not in properties
+    assert "datasets" not in properties
+
+
+@pytest.mark.parametrize(
+    ("markdown", "code", "missing_id"),
+    [
+        (
+            "\n".join(f"[[section:{item}]]" for item in sorted(REQUIRED_REPORT_SECTIONS)),
+            "report_artifact_citation_missing",
+            "citation-income",
+        ),
+        (
+            "[[citation:citation-income]]",
+            "report_artifact_section_missing",
+            "executive_summary",
+        ),
+    ],
+)
+def test_markdown验收在pdf渲染前反馈缺失标识(markdown: str, code: str, missing_id: str):
+    with pytest.raises(ReportingError) as captured:
+        validate_markdown_markers(draft(), markdown)
+
+    assert captured.value.code == code
+    assert missing_id in captured.value.message
 
 
 @pytest.mark.parametrize(

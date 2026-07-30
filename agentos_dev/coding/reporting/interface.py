@@ -47,7 +47,7 @@ class ReportAGUI(AGUI):
             client_user_id = (
                 run_input.forwarded_props.get("user_id") if run_input.forwarded_props else None
             )
-            user_id = resolve_run_user_id(request, client_user_id)
+            user_id = resolve_run_user_id(request, client_user_id) or "reporting-os"
 
             async def events() -> AsyncIterator[str]:
                 try:
@@ -55,13 +55,19 @@ class ReportAGUI(AGUI):
                     if active or extract_tool_messages(run_input.messages or []):
                         source = run_entity(agent, run_input, user_id=user_id)
                     else:
-                        prepared = prepare_agui_envelope(run_input)
-                        source = _run_bound(
-                            agent,
-                            prepared.run_input,
-                            prepared.envelope,
-                            user_id,
-                        )
+                        try:
+                            prepared = prepare_agui_envelope(run_input)
+                        except ReportingError as error:
+                            if error.code != "report_request_invalid":
+                                raise
+                            source = run_entity(agent, run_input, user_id=user_id)
+                        else:
+                            source = _run_bound(
+                                agent,
+                                prepared.run_input,
+                                prepared.envelope,
+                                user_id,
+                            )
                 except ReportingError as error:
                     source = _run_error(error)
                 async for event in source:

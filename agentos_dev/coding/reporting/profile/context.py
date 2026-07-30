@@ -185,21 +185,10 @@ def build_outline_shape_view(
         for shape in data_shapes
         for table in shape.tables
     }
-    relevant = _relevant_fields(profile)
     tables: list[dict[str, Any]] = []
-    remaining_columns = 500
     for snapshot in snapshots:
         for table in snapshot.tables:
             shape = shape_map.get((table.source_id, table.database.lower(), table.name.lower()))
-            selected = [
-                column
-                for column in table.columns
-                if not relevant
-                or f"{table.source_id}.{table.database.lower()}.{table.name.lower()}.{column.name.lower()}"
-                in relevant
-            ][:remaining_columns]
-            remaining_columns -= len(selected)
-            shape_columns = {item.name.lower(): item for item in shape.columns} if shape else {}
             tables.append(
                 {
                     "sourceId": table.source_id,
@@ -209,20 +198,6 @@ def build_outline_shape_view(
                     "periodGranularity": shape.period_granularity if shape else None,
                     "periodCoverage": list(shape.period_coverage) if shape else [],
                     "missingPeriods": list(shape.missing_periods) if shape else [],
-                    "columns": [
-                        {
-                            "name": column.name,
-                            "dataType": column.data_type,
-                            "description": column.description,
-                            "nullRate": (
-                                shape_columns[column.name.lower()].null_rate
-                                if column.name.lower() in shape_columns
-                                else None
-                            ),
-                        }
-                        for column in selected
-                    ],
-                    "omittedColumnCount": max(0, len(table.columns) - len(selected)),
                 }
             )
     capability_values = [
@@ -265,11 +240,3 @@ def _missing_fields(
         elif period_rows.get(f"{parsed.source_id}.{parsed.database}.{parsed.table}", 0) == 0:
             result.append(f"报告期间没有数据: {parsed.source_id}.{parsed.qualified_table}")
     return tuple(result)
-
-
-def _relevant_fields(profile: EffectiveReportingProfile) -> set[str]:
-    values = {value.lower() for dimension in profile.dimensions for value in dimension.field_refs}
-    values.update(
-        metric.field_ref.lower() for metric in profile.metrics if metric.field_ref is not None
-    )
-    return values

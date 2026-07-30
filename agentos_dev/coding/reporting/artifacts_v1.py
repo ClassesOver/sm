@@ -122,6 +122,27 @@ def dataset_snapshot_hash(lineage: tuple[DatasetLineage, ...]) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def validate_markdown_markers(draft: ReportArtifactManifest, markdown: str) -> None:
+    missing_citations = [
+        item.citation_id
+        for item in draft.citations
+        if f"[[citation:{item.citation_id}]]" not in markdown
+    ]
+    if missing_citations:
+        raise ReportingError(
+            "report_artifact_citation_missing",
+            f"Markdown 缺少数据引用标识：{', '.join(missing_citations)}。",
+        )
+    missing_sections = [
+        section for section in draft.sections if f"[[section:{section}]]" not in markdown
+    ]
+    if missing_sections:
+        raise ReportingError(
+            "report_artifact_section_missing",
+            f"Markdown 缺少关键章节标识：{', '.join(missing_sections)}。",
+        )
+
+
 def validate_rendered_artifacts(
     draft: ReportArtifactManifest,
     rendered: PdfArtifactManifest,

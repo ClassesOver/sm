@@ -26,7 +26,6 @@ def _source() -> DataSourceConfig:
         SimpleNamespace(
             id="operations",
             database="reporting",
-            tables=("reporting.income",),
         ),
     )
 
@@ -70,7 +69,7 @@ async def test_两阶段请求使用既定路由和严格字段():
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if request.url.path == "/get_agent_json":
-            return httpx.Response(200, json={"agent": [_agent_payload()]})
+            return httpx.Response(200, json={"agent_list": [_agent_payload()]})
         return httpx.Response(200, json=_model_payload())
 
     service, client = _service(handler)
@@ -148,10 +147,11 @@ async def test_metadata超时返回稳定错误():
 @pytest.mark.parametrize(
     "payload",
     [
-        {"agent": [], "unexpected": True},
-        {"agent": [_agent_payload(agent_id=index + 1) for index in range(101)]},
-        {"agent": [_agent_payload() | {"desc": "x" * 2_001}]},
-        {"agent": [_agent_payload(), _agent_payload()]},
+        {"agent_list": [], "unexpected": True},
+        {"agent_list": [_agent_payload(agent_id=index + 1) for index in range(101)]},
+        {"agent_list": [_agent_payload() | {"desc": "x" * 2_001}]},
+        {"agent_list": [_agent_payload(), _agent_payload()]},
+        {"agent": [_agent_payload()]},
     ],
 )
 async def test_agent响应超出结构数量或唯一性限制时拒绝(payload):
@@ -276,7 +276,6 @@ async def test_真实数量形态接收六项ddl和四项term():
         SimpleNamespace(
             id="rj",
             database="rj",
-            tables=tuple(f"rj.{name}" for name in table_names),
         ),
     )
     service, client = _service(lambda _request: httpx.Response(200, json=payload))
@@ -291,7 +290,7 @@ async def test_真实数量形态接收六项ddl和四项term():
 
 
 @pytest.mark.anyio
-async def test_model只允许绑定到配置白名单内的唯一数据源():
+async def test_model只允许绑定到唯一数据源数据库():
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=_model_payload())
 
@@ -300,8 +299,7 @@ async def test_model只允许绑定到配置白名单内的唯一数据源():
         DataSourceConfig,
         SimpleNamespace(
             id="operations",
-            database="reporting",
-            tables=("reporting.cost",),
+            database="other",
         ),
     )
     try:
@@ -365,7 +363,7 @@ async def test_未限定同名表匹配多个数据源时拒绝():
     payload["ddl"][0]["ddl"] = "CREATE TABLE income (month DATE NOT NULL)"
     duplicate = cast(
         DataSourceConfig,
-        SimpleNamespace(id="other", database="other", tables=("other.income",)),
+        SimpleNamespace(id="other", database="other"),
     )
     service, client = _service(lambda _request: httpx.Response(200, json=payload))
     try:

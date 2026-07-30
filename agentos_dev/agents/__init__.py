@@ -74,8 +74,10 @@ def create_assistants(
         id=settings.model_id,
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
+        timeout=settings.model_timeout_seconds,
+        max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
-        extra_body={"enable_thinking": False},
+        extra_body={"enable_thinking": settings.assistant_enable_thinking},
         retries=2,
         exponential_backoff=True,
     )
@@ -83,6 +85,8 @@ def create_assistants(
         id=settings.model_id,
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
+        timeout=settings.model_timeout_seconds,
+        max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
         extra_body={"enable_thinking": False},
         retries=2,
@@ -92,6 +96,8 @@ def create_assistants(
         id=settings.model_id,
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
+        timeout=settings.model_timeout_seconds,
+        max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
         extra_body={"enable_thinking": False},
         retries=2,
@@ -126,10 +132,6 @@ def create_assistant_team(
     if not isinstance(assistant.model, OpenAIChat):
         raise TypeError("Assistant team requires OpenAIChat")
     routing_model = copy(assistant.model)
-    routing_model.extra_body = {
-        **(getattr(assistant.model, "extra_body", None) or {}),
-        "enable_thinking": False,
-    }
     team = Team(
         id="hrp-assistant-team",
         name="HRP 助手团队",

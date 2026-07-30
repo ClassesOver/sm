@@ -3,11 +3,13 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
+from typing import cast
 
 import anyio
 
 from ..contract import ReportPeriod
-from ..data_source import DataSourceAdapter, QueryResult, StarRocksSourceConfig
+from ..data_source import DataSourceAdapter, QueryResult
+from ..data_source.period import PeriodGranularity, period_filter_sql
 from ..models import ReportingError
 from .context import CapabilitySet, ReconciliationShape
 from .models import (
@@ -24,7 +26,7 @@ async def collect_reconciliation_shapes(
     capabilities: CapabilitySet,
     *,
     adapters: Mapping[str, DataSourceAdapter],
-    sources: Mapping[str, StarRocksSourceConfig],
+    period_semantics: Mapping[tuple[str, str], tuple[str, str]],
     period: ReportPeriod,
 ) -> tuple[ReconciliationShape, ...]:
     capability_map = capabilities.by_code()
@@ -63,7 +65,7 @@ async def collect_reconciliation_shapes(
                     left_ref,
                     left_grain,
                     adapters=adapters,
-                    sources=sources,
+                    period_semantics=period_semantics,
                     period=period,
                 )
             except Exception as error:
@@ -77,7 +79,7 @@ async def collect_reconciliation_shapes(
                     right_ref,
                     right_grain,
                     adapters=adapters,
-                    sources=sources,
+                    period_semantics=period_semantics,
                     period=period,
                 )
             except Exception as error:
@@ -160,17 +162,19 @@ async def _query_side(
     grain: tuple[FieldReference, ...],
     *,
     adapters: Mapping[str, DataSourceAdapter],
-    sources: Mapping[str, StarRocksSourceConfig],
+    period_semantics: Mapping[tuple[str, str], tuple[str, str]],
     period: ReportPeriod,
 ) -> dict[tuple[str, ...], Decimal]:
     adapter = adapters.get(metric_ref.source_id)
-    source = sources.get(metric_ref.source_id)
-    if adapter is None or source is None:
+    if adapter is None:
         raise ReportingError("report_reconciliation_invalid", "对账指标数据源不存在。")
-    period_column = source.period_columns.get(metric_ref.qualified_table)
-    if period_column is None:
+    period_semantic = period_semantics.get((metric_ref.source_id, metric_ref.qualified_table))
+    if period_semantic is None:
         raise ReportingError("report_reconciliation_invalid", "对账指标表缺少期间字段。")
-    period_granularity = source.period_granularities.get(metric_ref.qualified_table, "date")
+    period_column, raw_period_granularity = period_semantic
+    if raw_period_granularity not in {"date", "month", "year"}:
+        raise ReportingError("report_reconciliation_invalid", "对账指标表期间语义无效。")
+    period_granularity = cast(PeriodGranularity, raw_period_granularity)
     aliases = tuple(f"g{index}" for index in range(len(grain)))
     dimensions = ", ".join(
         f"{_identifier(item.column)} AS {alias}" for item, alias in zip(grain, aliases, strict=True)
@@ -178,16 +182,9 @@ async def _query_side(
     value = _identifier(metric_ref.column)
     aggregate = f"SUM({value})" if metric.aggregation == "sum" else f"COUNT({value})"
     group = ", ".join(_identifier(item.column) for item in grain)
-    if period_granularity == "year":
-        period_filter = (
-            f"{_identifier(period_column)} >= {period.start.year} "
-            f"AND {_identifier(period_column)} <= {period.end.year}"
-        )
-    else:
-        period_filter = (
-            f"{_identifier(period_column)} >= '{period.start.isoformat()}' "
-            f"AND {_identifier(period_column)} <= '{period.end.isoformat()}'"
-        )
+    period_filter = period_filter_sql(
+        _identifier(period_column), period_granularity, period.start, period.end
+    )
     sql = (
         f"SELECT {dimensions}, {aggregate} AS metric_value "
         f"FROM {_identifier(metric_ref.database)}.{_identifier(metric_ref.table)} "

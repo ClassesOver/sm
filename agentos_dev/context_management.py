@@ -24,7 +24,7 @@ MIN_COMPRESSION_CHARS = 2000
 SKILL_CONTENT_WINDOW = 10
 SKILL_PRUNE_MIN_CHARS = 5000
 SKILL_TOOL_NAMES = frozenset({"get_skill_instructions", "get_skill_reference", "get_skill_script"})
-CODING_CONTEXT_TOKEN_LIMIT = 96 * 1024
+CODING_CONTEXT_TOKEN_LIMIT = 256 * 1024
 CODING_OUTPUT_TOKEN_RESERVE = 32 * 1024
 CODING_RECENT_ASSISTANT_TURNS = 2
 CODING_CHECKPOINT_MAX_BYTES = 32 * 1024
@@ -1124,6 +1124,7 @@ class CodingContextProjector:
         verified_mutation: int | None = None
         failure: dict[str, Any] | None = None
         finish_accepted = False
+        pending_steps: list[str] | None = None
         for message in messages:
             checkpoint = _checkpoint_payload(message)
             payload = checkpoint or (
@@ -1137,6 +1138,16 @@ class CodingContextProjector:
             if isinstance(candidate, int):
                 mutation = candidate
             tool_name = message.tool_name
+            if tool_name == "update_plan" and payload.get("ok") is True:
+                plan = payload.get("plan")
+                if isinstance(plan, list):
+                    pending_steps = [
+                        str(item.get("step"))
+                        for item in plan
+                        if isinstance(item, dict)
+                        and item.get("status") != "completed"
+                        and isinstance(item.get("step"), str)
+                    ]
             if tool_name == "verify" or checkpoint is not None:
                 verification = checkpoint.get("verification") if checkpoint is not None else payload
                 if isinstance(verification, dict):
@@ -1164,6 +1175,18 @@ class CodingContextProjector:
                 "failedItems": failure.get("failedRequirements", []),
                 "passedItems": failure.get("passedRequirements", []),
                 "requiredActions": failure.get("requiredActions", []),
+            }
+        elif pending_steps:
+            feedback = {
+                "marker": "CODING_RUNTIME_FEEDBACK",
+                "version": 1,
+                "code": "coding_runtime_action_required",
+                "mutation": mutation,
+                "pendingSteps": pending_steps,
+                "requiredActions": [
+                    "继续完成 pendingSteps；全部完成后在最后一次 mutation 上重新验证并调用 "
+                    "finish_task。"
+                ],
             }
         elif mutation is not None and verified_mutation != mutation:
             feedback = {

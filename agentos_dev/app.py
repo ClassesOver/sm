@@ -894,13 +894,15 @@ coding_agent.checkpoint = "tool-batch"
 coding_model = cast(OpenAIChat, coding_agent.model)
 coding_model.extra_body = {
     **(coding_model.extra_body or {}),
-    "enable_thinking": settings.enable_thinking,
+    "enable_thinking": settings.coding_enable_thinking,
 }
 report_worker = create_report_worker(
     coding_agent,
     workspace_service,
     coding_repository,
     instructions=build_report_agent_instructions,
+    coding_enable_thinking=settings.coding_enable_thinking,
+    report_enable_vision=settings.report_enable_vision,
     context_token_budget=settings.context_token_budget,
     output_token_reserve=settings.output_token_reserve,
 )
@@ -919,6 +921,7 @@ report_runtime = ReportWorkflowRuntime(
     workspace_service=workspace_service,
     registry=report_source_registry,
     profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
+    planner_enable_thinking=settings.report_enable_thinking,
     metadata_client=(
         ReportingMetadataClient(
             settings.report_metadata_url,

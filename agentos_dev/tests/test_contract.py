@@ -19,6 +19,7 @@ from agno.run.base import RunStatus
 from agno.team import TeamMode
 from agno.tools.function import Function
 
+from agentos_dev import agents as agents_module
 from agentos_dev import app
 from agentos_dev.agents import (
     ODOO_HOST_COMMAND_NAMES,
@@ -163,17 +164,52 @@ def test_openai_compatible_role_map_preserves_system_instructions():
     assert OPENAI_COMPATIBLE_ROLE_MAP["system"] == "system"
 
 
+def test_assistant_models_receive_configured_timeout(monkeypatch):
+    configured = AgentSettings.from_environment(
+        {
+            "AGENT_MODEL_TIMEOUT_SECONDS": "123",
+            "AGENT_ASSISTANT_ENABLE_THINKING": "true",
+        },
+        load_env_file=False,
+    )
+    captured = {}
+    assistant = object()
+
+    def capture_create_assistant(*args):
+        captured["models"] = args[4:7]
+        return assistant
+
+    monkeypatch.setattr(agents_module, "create_assistant", capture_create_assistant)
+
+    result = agents_module.create_assistants(
+        configured,
+        None,
+        object(),
+        [],
+        SimpleNamespace(async_db=object()),
+    )
+
+    assert result is assistant
+    assert [model.timeout for model in captured["models"]] == [123, 123, 123]
+    assert [model.max_retries for model in captured["models"]] == [0, 0, 0]
+    assert [model.extra_body for model in captured["models"]] == [
+        {"enable_thinking": True},
+        {"enable_thinking": False},
+        {"enable_thinking": False},
+    ]
+
+
 def test_production_assistant_debug_mode_is_independent_from_thinking():
     settings = AgentSettings.from_environment(
         {
             "AGENT_DEBUG": "true",
-            "AGENT_ENABLE_THINKING": "true",
+            "AGENT_ASSISTANT_ENABLE_THINKING": "true",
             "AGENT_ENABLE_TOOL_RESULT_COMPRESSION": "false",
             "AGENT_ENABLE_SESSION_SUMMARIES": "false",
         },
         load_env_file=False,
     )
-    model = OpenAIChat(id="test-model", api_key="test-key")
+    model = OpenAIChat(id="test-model", api_key="test-key", extra_body={"enable_thinking": True})
     assistant = create_assistant(
         settings,
         None,
@@ -188,6 +224,7 @@ def test_production_assistant_debug_mode_is_independent_from_thinking():
 
     assert assistant.debug_mode is True
     assert team.debug_mode is True
+    assert team.model.extra_body == {"enable_thinking": True}
 
 
 def test_coding_agent_uses_trusted_per_run_instructions():
@@ -236,6 +273,7 @@ def test_coding_agent_uses_trusted_per_run_instructions():
     assert "只围绕 failedRequirements 定位和修复" in text
     assert "保护 passedRequirements 已通过行为" in text
     assert "只有 finish_task 返回 accepted 才能结束任务" in text
+    assert "不得因中间验证或上下文压缩重置计划" in text
     assert "当前会话没有可复用的任务计划" in text
     resumed_text = "\n".join(resumed)
     assert "当前会话保存了以下服务端任务计划" in resumed_text
@@ -522,6 +560,7 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
     assert report_registered == [
         {
             "report_workflow_start",
+            "report_workflow_start_from_text",
             "report_workflow_select_agent",
             "report_workflow_approve",
             "report_workflow_reject",
@@ -535,6 +574,7 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
         report_toolkits[0].async_functions[name].requires_confirmation is False
         for name in (
             "report_workflow_start",
+            "report_workflow_start_from_text",
             "report_workflow_select_agent",
             "report_workflow_reject",
             "report_workflow_cancel",
@@ -560,7 +600,6 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
         "git_status",
         "git_diff",
         "read_tool_output",
-        "view_image",
         "update_plan",
         "finish_task",
     }
@@ -590,6 +629,7 @@ def test_toolkit_instructions_are_injected_by_agno():
     parsed_tools = {function.name: function for function in parsed if hasattr(function, "name")}
     assert set(parsed_tools) == {
         "report_workflow_start",
+        "report_workflow_start_from_text",
         "report_workflow_select_agent",
         "report_workflow_approve",
         "report_workflow_reject",
@@ -630,7 +670,16 @@ def test_team_and_internal_workers_keep_separate_execution_settings():
     assert app.assistant_team.model.extra_body["enable_thinking"] is False
     for worker in (app.coding_agent, app.report_worker):
         assert worker.checkpoint == "tool-batch"
-        assert worker.model.extra_body["enable_thinking"] is app.settings.enable_thinking
+    assert (
+        app.coding_agent.model.extra_body["enable_thinking"] is app.settings.coding_enable_thinking
+    )
+    assert (
+        app.report_worker.model.extra_body["enable_thinking"] is app.settings.coding_enable_thinking
+    )
+    assert (
+        app.report_runtime._analysis_agent.model.extra_body["enable_thinking"]
+        is app.settings.report_enable_thinking
+    )
     assert app.report_agent.model.extra_body["enable_thinking"] is False
     assert not any(
         is_coding_tool_scheduler_hook(hook) for hook in app.report_agent.tool_hooks or []

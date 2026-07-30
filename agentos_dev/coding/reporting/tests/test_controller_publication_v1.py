@@ -48,6 +48,7 @@ class _PublicationWorkflow:
 
     def __init__(self, *, reject_status: str = "PAUSED") -> None:
         self.requirement = _PublicationRequirement()
+        self.continue_kwargs: dict[str, Any] | None = None
         self.output = SimpleNamespace(
             status="PAUSED",
             user_id="user-1",
@@ -63,6 +64,7 @@ class _PublicationWorkflow:
         return self.output
 
     async def acontinue_run(self, *args: Any, **kwargs: Any) -> Any:
+        self.continue_kwargs = kwargs
         assert kwargs["run_response"] is self.output
         if self.requirement.action == "approve":
             self.output.status = "COMPLETED"
@@ -154,6 +156,14 @@ async def test_publication只在批准且workflow完成后签发且隐藏内部�
     result = await controller.approve(_context())
 
     assert len(issued) == 1
+    assert workflow.continue_kwargs is not None
+    assert workflow.continue_kwargs["dependencies"] == {
+        REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
+            "externalRunId": "external-run-1",
+            "threadId": "thread-1",
+            "userId": "user-1",
+        }
+    }
     assert result == {"ok": True, "status": "completed", "report": issued[0]}
     assert "pdfPath" not in repr(result)
     assert "markdownPath" not in repr(result)

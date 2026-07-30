@@ -39,6 +39,8 @@ CODING_AGENT_INSTRUCTIONS = [
     "文件修改必须通过 create_files、overwrite_file、replace_text、apply_patch 或 terminal 中独立的 apply_patch heredoc；不得用 sed -i、perl -pi 或脚本写文件绕过补丁校验。工具结果返回 outputHandle 时，使用 read_tool_output 按需重读，不得把句柄当作路径或跨任务使用。",
     CODING_VALIDATOR_FEEDBACK_INSTRUCTION,
     CODING_DELIVERABLE_VERIFICATION_INSTRUCTION,
+    "多步骤任务在计划仍有未完成项时继续实际工作；保留已完成步骤，只推进下一真实待办，"
+    "不得因中间验证或上下文压缩重置计划、重读相同证据或重做已有产物。",
     "最后一次 mutation 后必须调用 verify 重新运行显式验证，普通 terminal 不计为验证。最终调用 finish_task，提交总结和当前工作区产物；verification_ids 可省略以自动选择当前 mutation 最近一次成功 verify，活动服务还要引用成功 verify 健康检查回执。只有 finish_task 返回 accepted 才能结束任务，拒绝时按 code 修复后重试。",
 ]
 

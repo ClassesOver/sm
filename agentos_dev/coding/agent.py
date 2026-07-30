@@ -56,6 +56,7 @@ def create_coding_agent(
             "name": "Coding Agent",
             "role": "在当前 Daytona 工作区执行受控软件开发任务。",
             "instructions": instructions,
+            "use_instruction_tags": True,
             "model": coding_model,
             "skills": coding_skills,
             "checkpoint": "tool-batch",

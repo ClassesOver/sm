@@ -23,7 +23,11 @@ def test_settings_defaults():
     )
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
-    assert current.enable_thinking is True
+    assert current.assistant_enable_thinking is False
+    assert current.coding_enable_thinking is True
+    assert current.report_enable_thinking is True
+    assert current.report_enable_vision is False
+    assert current.model_timeout_seconds == 900
     assert current.tracing_enabled is False
     assert current.tracing_phoenix_endpoint is None
     assert current.tracing_phoenix_api_key is None
@@ -40,7 +44,10 @@ def test_agent_feature_flags_can_be_disabled():
     current = settings(
         AGENT_ENABLE_TOOL_RESULT_COMPRESSION="false",
         AGENT_ENABLE_SESSION_SUMMARIES="0",
-        AGENT_ENABLE_THINKING="off",
+        AGENT_ASSISTANT_ENABLE_THINKING="true",
+        AGENT_CODING_ENABLE_THINKING="off",
+        AGENT_REPORT_ENABLE_THINKING="false",
+        AGENT_REPORT_ENABLE_VISION="true",
         AGENT_HISTORY_TOKEN_BUDGET="32768",
         AGENT_CONTEXT_TOKEN_BUDGET="131072",
         AGENT_OUTPUT_TOKEN_RESERVE="16384",
@@ -48,10 +55,23 @@ def test_agent_feature_flags_can_be_disabled():
 
     assert current.enable_tool_result_compression is False
     assert current.enable_session_summaries is False
-    assert current.enable_thinking is False
+    assert current.assistant_enable_thinking is True
+    assert current.coding_enable_thinking is False
+    assert current.report_enable_thinking is False
+    assert current.report_enable_vision is True
     assert current.history_token_budget == 32768
     assert current.context_token_budget == 131072
     assert current.output_token_reserve == 16384
+
+
+def test_model_timeout_comes_from_environment():
+    assert settings(AGENT_MODEL_TIMEOUT_SECONDS="3600").model_timeout_seconds == 3600
+
+
+@pytest.mark.parametrize("value", ["invalid", "0", "3601"])
+def test_model_timeout_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="AGENT_MODEL_TIMEOUT_SECONDS"):
+        settings(AGENT_MODEL_TIMEOUT_SECONDS=value)
 
 
 def test_agent_tracing_can_be_enabled():

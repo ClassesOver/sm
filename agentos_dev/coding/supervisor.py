@@ -134,8 +134,26 @@ class CodingTaskSupervisor:
         scope: CodingScope,
         instruction_id: str,
         content: str,
+        *,
+        acceptance_contract: dict[str, Any] | None = None,
     ) -> TaskSnapshot:
-        return await self.repository.revise_completed_task(scope, instruction_id, content)
+        normalized_contract = None
+        if acceptance_contract is not None:
+            if self.validator_registry is None:
+                raise CodingRepositoryError(
+                    "acceptance_validator_unavailable",
+                    "编码任务验收契约没有可用的服务端 validator registry。",
+                )
+            try:
+                normalized_contract = self.validator_registry.validate_contract(acceptance_contract)
+            except ValueError as error:
+                raise CodingRepositoryError("acceptance_contract_invalid", str(error)) from error
+        return await self.repository.revise_completed_task(
+            scope,
+            instruction_id,
+            content,
+            acceptance_contract=normalized_contract,
+        )
 
     async def cancel_task(self, scope: CodingScope) -> TaskSnapshot:
         task = await self.repository.cancel_and_reject(scope)

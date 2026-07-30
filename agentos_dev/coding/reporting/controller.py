@@ -3,13 +3,13 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
 from agno.run import RunContext
 from agno.run.base import RunStatus
 from agno.tools import Toolkit
 from agno.workflow import OnReject
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .contract import ReportRequestEnvelope
 from .entrypoints import current_server_envelope
@@ -21,10 +21,12 @@ from .models import (
 
 REPORT_WORKFLOW_CONTROL_STATE_KEY = "report_workflow_control"
 REPORT_WORKFLOW_SCOPE_DEPENDENCY = "AgentOS 报表工作流"
+REPORT_WORKFLOW_SCOPE_STATE_KEY = "report_workflow_scope"
 _WORKFLOW_ID = "enterprise-reporting-workflow-v1"
 _ACTIVE_STATUSES = frozenset({"running", "paused"})
 ReportWorkflowStatus = Literal["running", "paused", "completed", "cancelled", "failed"]
 ReviewStage = Literal["agent", "source", "outline", "query", "publication"]
+IsoDate = Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 
 
 class ReviewableWorkflow(Protocol):
@@ -91,13 +93,12 @@ class ReportWorkflowController:
                 run_id=workflow_run_id,
                 session_id=workflow_session_id,
                 user_id=scope["user_id"],
-                dependencies={
-                    REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
-                        "externalRunId": scope["external_run_id"],
-                        "threadId": scope["thread_id"],
-                        "userId": scope["user_id"],
-                    }
+                session_state={
+                    REPORT_WORKFLOW_SCOPE_STATE_KEY: self._workflow_dependencies(scope)[
+                        REPORT_WORKFLOW_SCOPE_DEPENDENCY
+                    ]
                 },
+                dependencies=self._workflow_dependencies(scope),
                 stream=False,
             )
             control = self._control_from_output(output, scope, workflow_session_id, workflow_run_id)
@@ -158,6 +159,7 @@ class ReportWorkflowController:
         output = await self._workflow().acontinue_run(
             run_response=output,
             step_requirements=list(getattr(output, "step_requirements", None) or []),
+            dependencies=self._workflow_dependencies(scope),
             stream=False,
         )
         updated = self._control_from_output(
@@ -185,6 +187,7 @@ class ReportWorkflowController:
             output = await workflow.acontinue_run(
                 run_response=output,
                 step_requirements=list(getattr(output, "step_requirements", None) or []),
+                dependencies=self._workflow_dependencies(scope),
                 stream=False,
             )
         elif status == "running":
@@ -238,6 +241,7 @@ class ReportWorkflowController:
             output = await workflow.acontinue_run(
                 run_response=output,
                 step_requirements=list(getattr(output, "step_requirements", None) or []),
+                dependencies=self._workflow_dependencies(scope),
                 stream=False,
             )
         elif status == "running":
@@ -295,6 +299,7 @@ class ReportWorkflowController:
         output = await workflow.acontinue_run(
             run_response=output,
             step_requirements=list(getattr(output, "step_requirements", None) or []),
+            dependencies=self._workflow_dependencies(scope),
             stream=False,
         )
         updated = self._control_from_output(
@@ -392,6 +397,16 @@ class ReportWorkflowController:
             f"{scope['user_id']}:{scope['thread_id']}:{scope['external_run_id']}".encode()
         ).hexdigest()[:32]
         return f"report-session-{session_digest}", f"report-run-{run_digest}"
+
+    @staticmethod
+    def _workflow_dependencies(scope: dict[str, str]) -> dict[str, dict[str, str]]:
+        return {
+            REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
+                "externalRunId": scope["external_run_id"],
+                "threadId": scope["thread_id"],
+                "userId": scope["user_id"],
+            }
+        }
 
     @staticmethod
     def _external_scope_key(scope: dict[str, str]) -> tuple[str, str, str]:
@@ -534,13 +549,16 @@ class ReportWorkflowToolkit(Toolkit):
             name="report_workflow",
             tools=[
                 self.report_workflow_start,
+                self.report_workflow_start_from_text,
                 self.report_workflow_select_agent,
                 self.report_workflow_approve,
                 self.report_workflow_reject,
                 self.report_workflow_cancel,
             ],
             instructions=(
-                "新报表只调用 report_workflow_start。需要选择 Agent 时调用 "
+                "已有服务端 Envelope 的新报表调用 report_workflow_start；自然语言新报表调用 "
+                "report_workflow_start_from_text，并保持 report_goal 与用户输入原文完全一致。"
+                "需要选择 Agent 时调用 "
                 "report_workflow_select_agent；其他 paused 审核批准调用 "
                 "report_workflow_approve，拒绝调用 report_workflow_reject；用户明确取消时调用 "
                 "report_workflow_cancel。不得绕过 Workflow 审核或自行执行取数和 Coding 分析。"
@@ -551,19 +569,37 @@ class ReportWorkflowToolkit(Toolkit):
 
     async def report_workflow_start(
         self,
-        envelope: dict[str, Any] | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         """使用严格 ReportRequestEnvelope v1 启动企业智能运营报表 Workflow。"""
+        envelope = current_server_envelope()
         if envelope is None:
-            bound = current_server_envelope()
-            envelope = (
-                bound.model_dump(mode="json", by_alias=True, exclude_none=True)
-                if bound is not None
-                else None
-            )
-        if not isinstance(envelope, dict):
             raise ReportingError("report_request_invalid", "当前消息缺少报表 Envelope。")
+        return await self.controller.start(envelope, run_context)
+
+    async def report_workflow_start_from_text(
+        self,
+        report_goal: str,
+        period_start: IsoDate,
+        period_end: IsoDate,
+        source_ids: list[str] | None = None,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        """将自然语言请求转换为严格 Envelope 后启动报表 Workflow。
+
+        Args:
+            report_goal: 完整复制用户输入原文，不得改写、摘要或补充。
+            period_start: 用户要求的分析期间起始日期。
+            period_end: 用户要求的分析期间结束日期。
+            source_ids: 仅在用户明确指定数据源 ID 时填写，否则留空。
+        """
+        envelope = ReportRequestEnvelope.from_untrusted(
+            {
+                "reportGoal": report_goal,
+                "period": {"start": period_start, "end": period_end},
+                "sourceIds": source_ids,
+            }
+        )
         return await self.controller.start(envelope, run_context)
 
     async def report_workflow_approve(

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 from sqlglot import exp, parse_one
@@ -71,7 +70,13 @@ class DatasetLineage(StrictModel):
 class RequirementTable(StrictModel):
     table: str = Field(min_length=1, max_length=256)
     period_column: str = Field(alias="periodColumn", pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
-    measure_columns: tuple[str, ...] = Field(alias="measureColumns", min_length=1, max_length=100)
+    period_granularity: Literal["date", "month", "year"] = Field(alias="periodGranularity")
+    measure_columns: tuple[str, ...] = Field(
+        alias="measureColumns",
+        min_length=1,
+        max_length=100,
+        description="需要聚合的物理数值字段，每个字段只出现一次；maxItems 只是上限。",
+    )
 
     @field_validator("table")
     @classmethod
@@ -116,8 +121,16 @@ class QueryRequirement(StrictModel):
     requirement_id: str = Field(alias="requirementId", min_length=1, max_length=128)
     source_id: str = Field(alias="sourceId", min_length=1, max_length=64)
     tables: tuple[RequirementTable, ...] = Field(min_length=1, max_length=20)
-    dimension_columns: tuple[str, ...] = Field(alias="dimensionColumns", max_length=30)
-    grain_columns: tuple[str, ...] = Field(alias="grainColumns", max_length=30)
+    dimension_columns: tuple[str, ...] = Field(
+        alias="dimensionColumns",
+        max_length=30,
+        description="分析维度物理字段，每个字段只出现一次；maxItems 只是上限。",
+    )
+    grain_columns: tuple[str, ...] = Field(
+        alias="grainColumns",
+        max_length=30,
+        description="物化共同粒度字段，每个字段只出现一次；maxItems 只是上限。",
+    )
     relations: tuple[RequirementRelation, ...] = Field(default=(), max_length=100)
 
     @field_validator("dimension_columns", "grain_columns")
@@ -145,8 +158,6 @@ class QueryRequirement(StrictModel):
                 edge = frozenset((relation.left_table, relation.right_table))
                 if edge in edges:
                     raise ValueError("relations 不能重复")
-                if set(relation.join_columns) != set(self.grain_columns):
-                    raise ValueError("relation.joinColumns 必须覆盖完整共同粒度")
                 edges.add(edge)
             while True:
                 expanded = connected | {
@@ -233,8 +244,16 @@ def resolve_schema_snapshot(
             raise ReportingError(
                 "report_schema_conflict", "schemaInput.schemaHash 与实际结构不一致。"
             )
-    validate_catalog(snapshot.tables, catalog, allowed_tables=source.tables)
-    return snapshot
+    resolved_tables = validate_catalog(
+        snapshot.tables,
+        catalog,
+        allowed_tables=tuple(
+            f"{table.database.lower()}.{table.name.lower()}" for table in snapshot.tables
+        ),
+    )
+    return snapshot.model_copy(
+        update={"tables": resolved_tables, "schema_hash": schema_hash(resolved_tables)}
+    )
 
 
 def approve_query_batch(
@@ -283,7 +302,6 @@ def approve_query_batch(
             database=source.database,
             requirement=requirement,
             period=envelope.period,
-            period_granularities=source.period_granularities,
             snapshot_tables=scoped_tables,
         )
         result.append(
@@ -328,6 +346,7 @@ def _validate_requirement_scope(
     snapshot_tables: dict[str, ModelTable],
 ) -> None:
     available_dimensions: set[str] = set()
+    table_columns: dict[str, set[str]] = {}
     for requested in requirement.tables:
         qualified = _qualified_requirement_table(requested.table, database)
         table = snapshot_tables.get(qualified)
@@ -341,9 +360,17 @@ def _validate_requirement_scope(
         }
         if required - columns:
             raise ReportingError("report_query_scope_invalid", "取数需求引用了结构快照外的字段。")
+        table_columns[requested.table] = columns
         available_dimensions.update(columns)
     if set(requirement.dimension_columns) - available_dimensions:
         raise ReportingError("report_query_scope_invalid", "取数需求维度不在结构快照内。")
+    for relation in requirement.relations:
+        join_columns = set(relation.join_columns)
+        if (
+            join_columns - table_columns[relation.left_table]
+            or join_columns - table_columns[relation.right_table]
+        ):
+            raise ReportingError("report_query_scope_invalid", "表关系引用了结构快照外的连接字段。")
 
 
 def _validate_query_contract(
@@ -352,7 +379,6 @@ def _validate_query_contract(
     database: str,
     requirement: QueryRequirement,
     period: ReportPeriod,
-    period_granularities: Mapping[str, str],
     snapshot_tables: dict[str, ModelTable],
 ) -> None:
     statement = parse_one(sql, read="mysql")
@@ -393,9 +419,7 @@ def _validate_query_contract(
             alias=alias,
             column=table_requirement.period_column.lower(),
             period=period,
-            granularity=period_granularities.get(
-                _qualified_requirement_table(table_requirement.table, database), "date"
-            ),
+            granularity=table_requirement.period_granularity,
         ):
             raise ReportingError(
                 "report_query_period_invalid", "SQL 必须对每张表包含完整且精确的报表期间约束。"
@@ -418,7 +442,7 @@ def _validate_query_contract(
                 raise ReportingError(
                     "report_query_join_grain_invalid", "跨表查询禁止在聚合前连接物理表。"
                 )
-            _validate_aggregated_joins(scope.expression, requirement.grain_columns)
+            _validate_aggregated_joins(scope.expression, requirement.relations)
 
 
 def _validate_scope_columns(scope: Scope, *, alias: str, table: ModelTable) -> None:
@@ -478,6 +502,14 @@ def _has_complete_period_filter(
                     _literal_year(predicate.args.get("low")) == period.start.year
                     and _literal_year(predicate.args.get("high")) == period.end.year
                 )
+            elif granularity == "month":
+                valid = _literal_month(predicate.args.get("low")) == (
+                    period.start.year,
+                    period.start.month,
+                ) and _literal_month(predicate.args.get("high")) == (
+                    period.end.year,
+                    period.end.month,
+                )
             else:
                 valid = (
                     _literal_date(predicate.args.get("low")) == period.start
@@ -505,6 +537,35 @@ def _has_complete_period_filter(
                     return False
                 lower = lower or valid_lower
                 upper = upper or valid_upper
+        elif isinstance(predicate, exp.EQ) and (
+            _matches_column(predicate.this, alias, column)
+            or _matches_column(predicate.expression, alias, column)
+        ):
+            value_expression = (
+                predicate.expression
+                if _matches_column(predicate.this, alias, column)
+                else predicate.this
+            )
+            if granularity == "year":
+                valid = (
+                    period.start.year == period.end.year
+                    and _literal_year(value_expression) == period.start.year
+                )
+            elif granularity == "month":
+                start_month = (period.start.year, period.start.month)
+                valid = (
+                    start_month == (period.end.year, period.end.month)
+                    and _literal_month(value_expression) == start_month
+                )
+            else:
+                valid = (
+                    period.start == period.end
+                    and _literal_date(value_expression) == period.start
+                )
+            if not valid:
+                return False
+            lower = True
+            upper = True
         elif any(_matches_column(item, alias, column) for item in predicate.find_all(exp.Column)):
             return False
     return lower and upper
@@ -526,19 +587,37 @@ def _matches_column(expression: exp.Expression | None, alias: str, column: str) 
 def _literal_date(expression: exp.Expression | None) -> date | None:
     if not isinstance(expression, exp.Literal) or not expression.is_string:
         return None
+    normalized = str(expression.this).replace("/", "").replace("-", "")
+    if len(normalized) != 8 or not normalized.isdigit():
+        return None
     try:
-        return date.fromisoformat(str(expression.this))
+        return date(int(normalized[:4]), int(normalized[4:6]), int(normalized[6:]))
     except ValueError:
         return None
 
 
 def _literal_year(expression: exp.Expression | None) -> int | None:
-    if not isinstance(expression, exp.Literal) or expression.is_string:
+    if not isinstance(expression, exp.Literal):
         return None
-    try:
-        return int(str(expression.this))
-    except ValueError:
+    value = str(expression.this)
+    if len(value) != 4 or not value.isdigit():
         return None
+    return int(value)
+
+
+def _literal_month(expression: exp.Expression | None) -> tuple[int, int] | None:
+    if not isinstance(expression, exp.Literal):
+        return None
+    normalized = str(expression.this).replace("/", "").replace("-", "")
+    if len(normalized) != 6 or not normalized.isdigit():
+        return None
+    year, month = int(normalized[:4]), int(normalized[4:])
+    return (year, month) if 1 <= month <= 12 else None
+
+
+def _next_month(value: tuple[int, int]) -> tuple[int, int]:
+    year, month = value
+    return (year + 1, 1) if month == 12 else (year, month + 1)
 
 
 def _period_bounds(
@@ -554,6 +633,15 @@ def _period_bounds(
             isinstance(predicate, exp.GTE) and year_value == period.start.year,
             (isinstance(predicate, exp.LTE) and year_value == period.end.year)
             or (isinstance(predicate, exp.LT) and year_value == period.end.year + 1),
+        )
+    if granularity == "month":
+        month_value = _literal_month(value_expression)
+        end_month = (period.end.year, period.end.month)
+        return (
+            isinstance(predicate, exp.GTE)
+            and month_value == (period.start.year, period.start.month),
+            (isinstance(predicate, exp.LTE) and month_value == end_month)
+            or (isinstance(predicate, exp.LT) and month_value == _next_month(end_month)),
         )
     date_value = _literal_date(value_expression)
     return (
@@ -577,6 +665,15 @@ def _reverse_period_bounds(
             (isinstance(predicate, exp.GTE) and year_value == period.end.year)
             or (isinstance(predicate, exp.GT) and year_value == period.end.year + 1),
         )
+    if granularity == "month":
+        month_value = _literal_month(value_expression)
+        end_month = (period.end.year, period.end.month)
+        return (
+            isinstance(predicate, exp.LTE)
+            and month_value == (period.start.year, period.start.month),
+            (isinstance(predicate, exp.GTE) and month_value == end_month)
+            or (isinstance(predicate, exp.GT) and month_value == _next_month(end_month)),
+        )
     date_value = _literal_date(value_expression)
     return (
         isinstance(predicate, exp.LTE) and date_value == period.start,
@@ -585,7 +682,9 @@ def _reverse_period_bounds(
     )
 
 
-def _validate_aggregated_joins(expression: exp.Expression, grain_columns: tuple[str, ...]) -> None:
+def _validate_aggregated_joins(
+    expression: exp.Expression, relations: tuple[RequirementRelation, ...]
+) -> None:
     for join in expression.args.get("joins") or ():
         right_alias = str(join.this.alias_or_name or "").lower()
         keys: set[str] = set()
@@ -604,10 +703,10 @@ def _validate_aggregated_joins(expression: exp.Expression, grain_columns: tuple[
                     and str(left.table).lower() != str(right.table).lower()
                 ):
                     keys.add(str(left.name).lower())
-        if not set(grain_columns).issubset(keys):
+        if not any(set(relation.join_columns).issubset(keys) for relation in relations):
             raise ReportingError(
                 "report_query_join_grain_invalid",
-                "跨表聚合结果必须按 requirement 的全部共同粒度键等值连接。",
+                "跨表聚合结果必须按 requirement 声明的 relation 键等值连接。",
             )
 
 

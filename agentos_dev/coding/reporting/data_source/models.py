@@ -52,15 +52,6 @@ class DataSourceConfig(Protocol):
     def database(self) -> str: ...
 
     @property
-    def tables(self) -> tuple[str, ...]: ...
-
-    @property
-    def period_columns(self) -> dict[str, str]: ...
-
-    @property
-    def period_granularities(self) -> dict[str, Literal["date", "year"]]: ...
-
-    @property
     def reporting_profile(self) -> str | None: ...
 
     @property
@@ -99,7 +90,8 @@ class DataSourceAdapter(Protocol):
     @property
     def config(self) -> DataSourceConfig: ...
 
-    async def verify_read_only(self) -> None: ...
+    @property
+    def allowed_tables(self) -> tuple[str, ...]: ...
 
     async def catalog(self) -> tuple[CatalogTable, ...]: ...
 
@@ -151,7 +143,9 @@ class TableDataShape(ShapeModel):
     first_effective_date: str | None = Field(default=None, alias="firstEffectiveDate")
     last_effective_date: str | None = Field(default=None, alias="lastEffectiveDate")
     column_count: int = Field(alias="columnCount", ge=1)
-    period_granularity: Literal["date", "year"] = Field(default="date", alias="periodGranularity")
+    period_granularity: Literal["date", "month", "year"] = Field(
+        default="date", alias="periodGranularity"
+    )
     period_coverage: tuple[str, ...] = Field(default=(), alias="periodCoverage", max_length=1200)
     missing_periods: tuple[str, ...] = Field(default=(), alias="missingPeriods", max_length=1200)
     columns: tuple[ColumnShape, ...] = Field(min_length=1, max_length=500)

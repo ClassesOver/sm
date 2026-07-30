@@ -275,6 +275,59 @@ async def test_supervisor_validates_and_persists_server_acceptance_contract(
 
 
 @pytest.mark.anyio
+async def test_completed_task_revision_replaces_acceptance_contract_atomically(
+    supervisor_runtime,
+):
+    repository, executor, _supervisor = supervisor_runtime
+
+    class Registry:
+        def validate_contract(self, contract):
+            return contract
+
+    supervisor = CodingTaskSupervisor(
+        repository,
+        executor,  # type: ignore[arg-type]
+        validator_registry=Registry(),
+    )
+    first_contract = {
+        "version": 1,
+        "requirements": [
+            {
+                "id": "report",
+                "validatorId": "analysis:report",
+                "parameters": {"revision": 1},
+                "artifactPatterns": ["reports/*.json"],
+            }
+        ],
+    }
+    revised_contract = {
+        **first_contract,
+        "requirements": [
+            {
+                **first_contract["requirements"][0],
+                "parameters": {"revision": 2},
+            }
+        ],
+    }
+    await supervisor.start_task(
+        coding_scope(),
+        "生成初稿",
+        acceptance_contract=first_contract,
+    )
+    await asyncio.wait_for(_collect(supervisor.run_task(coding_scope())), timeout=2)
+
+    revised = await supervisor.revise_task(
+        coding_scope(),
+        "report-revision-2",
+        "根据审核意见修订",
+        acceptance_contract=revised_contract,
+    )
+
+    assert revised.acceptance_contract == revised_contract
+    assert revised.finish_receipt is None
+
+
+@pytest.mark.anyio
 async def test_supervisor_rejects_contract_without_validator_registry(supervisor_runtime):
     _repository, _executor, supervisor = supervisor_runtime
 

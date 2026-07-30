@@ -31,6 +31,8 @@ def create_report_agentos_components(
         context.workspace_service,
         context.coding_repository,
         instructions=build_report_agent_instructions,
+        coding_enable_thinking=settings.coding_enable_thinking,
+        report_enable_vision=settings.report_enable_vision,
         context_token_budget=settings.context_token_budget,
         output_token_reserve=settings.output_token_reserve,
     )
@@ -51,6 +53,7 @@ def create_report_agentos_components(
         workspace_service=context.workspace_service,
         registry=registry,
         profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
+        planner_enable_thinking=settings.report_enable_thinking,
         metadata_client=(
             ReportingMetadataClient(
                 settings.report_metadata_url,

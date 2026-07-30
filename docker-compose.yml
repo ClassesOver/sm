@@ -49,7 +49,7 @@ services:
       AGENT_REPORT_DATA_SOURCES_DIR: /run/agentos/reporting
       AGENT_REPORT_METADATA_URL: ${AGENT_REPORT_METADATA_URL:-}
       AGENT_REPORT_METADATA_TOKEN: ${AGENT_REPORT_METADATA_TOKEN:-}
-      REPORT_RJ_STARROCKS_DSN: ${REPORT_RJ_STARROCKS_DSN:-}
+      REPORT_STARROCKS_DSN: ${REPORT_STARROCKS_DSN:-}
     volumes:
       - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
       - ${AGENT_REPORT_DATA_SOURCES_DIR:-./deploy/agentos/reporting}:/run/agentos/reporting:ro

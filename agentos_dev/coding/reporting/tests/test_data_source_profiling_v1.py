@@ -36,7 +36,6 @@ class FakeAdapter:
         self.config = SimpleNamespace(
             id="operations",
             database="reporting",
-            tables=("reporting.income", "reporting.budget"),
             limits=QueryLimits(
                 statement_timeout_seconds=30,
                 max_rows=1_000_000,
@@ -49,15 +48,13 @@ class FakeAdapter:
                 query_concurrency=2,
             ),
         )
+        self.allowed_tables = ("reporting.income", "reporting.budget")
         self.fail_table = fail_table
         self.month_counts = month_counts
         self.period_row_count = period_row_count
         self.base_overrides = base_overrides or {}
         self.catalog_source_id = catalog_source_id
         self.queries: list[str] = []
-
-    async def verify_read_only(self) -> None:
-        return None
 
     async def catalog(self) -> tuple[CatalogTable, ...]:
         columns = (
@@ -104,7 +101,7 @@ class FakeAdapter:
             return QueryResult(
                 ("value", "value_count"), (("内科", 5), ("外科", 3), ("其他", 2)), 40
             )
-        aliases = tuple(re.findall(r"\bAS\s+([a-z0-9_]+)", sql, re.IGNORECASE))
+        aliases = tuple(re.findall(r"\bAS\s+(?!CHAR\b)([a-z0-9_]+)", sql, re.IGNORECASE))
         if self.period_row_count == 0:
             zero_values: dict[str, object] = {
                 alias: None
@@ -165,6 +162,32 @@ class ConcurrentFakeAdapter(FakeAdapter):
             self.active_queries -= 1
 
 
+class StringMonthFakeAdapter(FakeAdapter):
+    async def catalog(self) -> tuple[CatalogTable, ...]:
+        columns = (
+            CatalogColumn("period_code", "VARCHAR(7)", False),
+            CatalogColumn("amount", "DECIMAL(18,2)", True),
+            CatalogColumn("department", "VARCHAR(100)", True),
+        )
+        return (
+            CatalogTable(self.catalog_source_id, "reporting", "income", columns),
+            CatalogTable(self.catalog_source_id, "reporting", "budget", columns),
+        )
+
+
+class StringDateFakeAdapter(StringMonthFakeAdapter):
+    async def catalog(self) -> tuple[CatalogTable, ...]:
+        columns = (
+            CatalogColumn("data_date", "VARCHAR(10)", False),
+            CatalogColumn("amount", "DECIMAL(18,2)", True),
+            CatalogColumn("department", "VARCHAR(100)", True),
+        )
+        return (
+            CatalogTable(self.catalog_source_id, "reporting", "income", columns),
+            CatalogTable(self.catalog_source_id, "reporting", "budget", columns),
+        )
+
+
 @pytest.mark.anyio
 async def test_datashape覆盖完整质量分布血缘且不读取样本行():
     adapter = FakeAdapter()
@@ -211,7 +234,7 @@ async def test_datashape覆盖完整质量分布血缘且不读取样本行():
     assert department.top_values[0].value == "内科"
     assert department.top_values[0].count == 5
     assert department.top_values[0].ratio == 0.5
-    assert all("2025-01-01" in sql and "2025-12-31" in sql for sql in adapter.queries)
+    assert all("'20250101'" in sql and "'20251231'" in sql for sql in adapter.queries)
     assert sum("APPROX_COUNT_DISTINCT" in sql for sql in adapter.queries) == 4
     assert sum("COUNT(DISTINCT" in sql for sql in adapter.queries) == 0
 
@@ -239,7 +262,7 @@ async def test_datashape小表使用精确distinct且宽表按配置分批():
 
 
 @pytest.mark.anyio
-async def test_datashape年度期间使用整数年份过滤并统计年度覆盖():
+async def test_datashape年度期间统一转为字符串过滤并统计年度覆盖():
     adapter = FakeAdapter()
 
     shape = await collect_data_shape(
@@ -257,7 +280,68 @@ async def test_datashape年度期间使用整数年份过滤并统计年度覆�
     assert table.period_granularity == "year"
     assert table.period_coverage == ("2024", "2025")
     assert table.missing_periods == ()
-    assert all("`month` >= 2024 AND `month` <= 2025" in sql for sql in adapter.queries)
+    assert all(
+        "SUBSTRING(REPLACE(REPLACE(CAST(`month` AS CHAR)" in sql
+        and "'2024'" in sql
+        and "'2025'" in sql
+        for sql in adapter.queries
+    )
+
+
+@pytest.mark.anyio
+async def test_datashape字符串月份统一规范化后过滤和统计覆盖():
+    adapter = StringMonthFakeAdapter()
+
+    shape = await collect_data_shape(
+        adapter,
+        catalog_scope=await adapter.catalog(),
+        period_start=date(2025, 1, 1),
+        period_end=date(2025, 12, 31),
+        period_columns={
+            "reporting.income": "period_code",
+            "reporting.budget": "period_code",
+        },
+        period_granularities={
+            "reporting.income": "month",
+            "reporting.budget": "month",
+        },
+        metadata_revision="model-r7",
+        schema_hash="a" * 64,
+    )
+
+    table = shape.tables[0]
+    assert table.period_granularity == "month"
+    assert table.period_coverage == ("2025-01", "2025-02")
+    assert any("REPLACE(REPLACE(CAST(`period_code` AS CHAR)" in sql for sql in adapter.queries)
+    assert all("'202501'" in sql and "'202512'" in sql for sql in adapter.queries)
+
+
+@pytest.mark.anyio
+async def test_datashape字符串日期统一规范化后过滤和统计覆盖():
+    adapter = StringDateFakeAdapter()
+
+    shape = await collect_data_shape(
+        adapter,
+        catalog_scope=await adapter.catalog(),
+        period_start=date(2025, 1, 1),
+        period_end=date(2025, 12, 31),
+        period_columns={
+            "reporting.income": "data_date",
+            "reporting.budget": "data_date",
+        },
+        period_granularities={
+            "reporting.income": "date",
+            "reporting.budget": "date",
+        },
+        metadata_revision="model-r7",
+        schema_hash="a" * 64,
+    )
+
+    table = shape.tables[0]
+    assert table.period_granularity == "date"
+    assert table.period_coverage == ("2025-01", "2025-02")
+    assert any("CAST(`data_date` AS CHAR)" in sql for sql in adapter.queries)
+    assert all("'20250101'" in sql and "'20251231'" in sql for sql in adapter.queries)
 
 
 @pytest.mark.anyio

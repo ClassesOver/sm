@@ -30,6 +30,7 @@ from agentos_dev.coding.execution import (
     CodingExecutionKernel,
     CodingTaskScope,
     WorkspaceCodingToolkit,
+    _absolute_paths,
     _task_tool_parallel_safe,
     create_coding_tool_scheduler_hook,
 )
@@ -1430,6 +1431,8 @@ async def test_third_identical_read_is_blocked_until_real_progress(execution_run
 
     assert first == second
     assert blocked["code"] == "tool_no_progress"
+    assert blocked["requiredActions"]
+    assert blocked["retryable"] is True
 
     await toolkit.patch("create", path="progress.txt", content="done", run_context=runtime.context)
     progressed = await toolkit.coding_list_files(run_context=runtime.context)
@@ -1813,6 +1816,57 @@ async def test_validation_state_rejects_intermediate_plan_update(execution_runti
 
 
 @pytest.mark.anyio
+async def test_incomplete_plan_keeps_iteration_open_until_plan_is_completed(
+    execution_runtime,
+):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    await toolkit.update_plan(
+        [
+            {"step": "生成中间产物", "status": "in_progress"},
+            {"step": "验证最终产物", "status": "pending"},
+        ],
+        run_context=runtime.context,
+    )
+    await toolkit.coding_create_file("result.txt", "draft", runtime.context)
+    scope = await runtime.kernel.scope(runtime.context)
+
+    admission = await toolkit._state_admission_rejection(
+        scope,
+        "terminal",
+        {"command": "python3 generate.py"},
+        runtime.context.session_state,
+    )
+    advanced = await toolkit.update_plan(
+        [
+            {"step": "生成中间产物", "status": "completed"},
+            {"step": "验证最终产物", "status": "in_progress"},
+        ],
+        run_context=runtime.context,
+    )
+    completed = await toolkit.update_plan(
+        [
+            {"step": "生成中间产物", "status": "completed"},
+            {"step": "验证最终产物", "status": "completed"},
+        ],
+        run_context=runtime.context,
+    )
+    completed_scope = await runtime.kernel.scope(runtime.context)
+    blocked = await toolkit._state_admission_rejection(
+        completed_scope,
+        "terminal",
+        {"command": "python3 generate.py"},
+        runtime.context.session_state,
+    )
+
+    assert admission is None
+    assert advanced["ok"] is True
+    assert completed["ok"] is True
+    assert blocked is not None
+    assert blocked["code"] == "coding_verification_required"
+
+
+@pytest.mark.anyio
 async def test_verified_state_rejects_reads_and_requires_finish_but_keeps_plan_available(
     execution_runtime,
 ):
@@ -1854,6 +1908,33 @@ async def test_verified_state_rejects_reads_and_requires_finish_but_keeps_plan_a
 
 
 @pytest.mark.anyio
+async def test_verified_state_in_progress_plan_reopens_work_and_invalidates_old_verification(
+    execution_runtime,
+):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    await toolkit.coding_create_file("result.txt", "done", runtime.context)
+    verification_id = await completed_verification(runtime)
+
+    reopened = await toolkit.update_plan(
+        [{"step": "修正异常结果", "status": "in_progress"}],
+        run_context=runtime.context,
+    )
+    readable = await toolkit.coding_read_file("result.txt", run_context=runtime.context)
+    changed = await toolkit.replace_text(
+        "result.txt", "done", "corrected", run_context=runtime.context
+    )
+    blocked = await toolkit.terminal("python3 verify.py", run_context=runtime.context)
+
+    assert reopened["ok"] is True
+    assert readable["content"] == "done"
+    assert changed["mutation_sequence"] == 2
+    assert blocked["code"] == "coding_verification_required"
+    assert blocked["details"]["mutationSequence"] == 2
+    assert blocked["details"].get("failedVerificationId") != verification_id
+
+
+@pytest.mark.anyio
 async def test_finish_artifact_failure_returns_complete_repair_gate(execution_runtime):
     runtime = execution_runtime
     toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
@@ -1875,8 +1956,8 @@ async def test_finish_artifact_failure_returns_complete_repair_gate(execution_ru
     blocked_terminal = await toolkit.terminal(
         "python3 generate_report.py", run_context=runtime.context
     )
-    blocked_plan = await toolkit.update_plan(
-        [{"step": "重新开始", "status": "in_progress"}],
+    reopened_plan = await toolkit.update_plan(
+        [{"step": "修复缺失报告路径", "status": "in_progress"}],
         run_context=runtime.context,
     )
     repair_read = await toolkit.coding_read_file("generate_report.py", run_context=runtime.context)
@@ -1898,13 +1979,13 @@ async def test_finish_artifact_failure_returns_complete_repair_gate(execution_ru
     assert blocked_terminal["details"]["missingPaths"] == ["reports/ruijin-2025.pdf"]
     assert "read_file" in blocked_terminal["details"]["allowedTools"]
     assert blocked_terminal["requiredActions"] == [
-        "调用 verify 运行产物生成命令，并将 details.missingPaths 作为 artifact_paths；"
-        "验证成功后重新调用 finish_task。"
+        "核对 details.missingPaths：若路径声明错误，下一次 finish_task 使用实际存在的 "
+        "artifact_paths；若确为必需产物，生成后调用 verify，再用实际存在路径重新提交。"
     ]
-    assert blocked_plan["code"] == "coding_finish_repair_required"
+    assert reopened_plan["ok"] is True
     assert "print('report')" in repair_read["content"]
     assert runtime.context.session_state[AGENT_PLAN_STATE_KEY]["plan"] == [
-        {"step": "生成报告", "status": "completed"}
+        {"step": "修复缺失报告路径", "status": "in_progress"}
     ]
     assert verify_admission is None
     assert executions_after == executions_before
@@ -1981,8 +2062,23 @@ async def test_failed_absolute_path_is_blocked_across_terminal_and_verify(
     assert blocked["code"] == "tool_no_progress"
     assert blocked["details"]["failedResource"] == "/workspace"
     assert blocked["details"]["workspaceRoot"] == "/home/daytona/workspace"
+    assert blocked["requiredActions"]
+    assert blocked["retryable"] is True
     assert recovered["status"] == "completed"
     assert len(await runtime.repository.list_executions("external-run")) == 2
+
+
+def test_absolute_paths_distinguishes_unicode_relative_and_absolute_paths():
+    relative = "python3 \u62a5\u8868/\u667a\u80fd\u5206\u6790/report-run-1/analysis.py"
+    absolute = (
+        'File "/home/daytona/workspace/\u62a5\u8868/\u667a\u80fd\u5206\u6790/'
+        'report-run-1/analysis.py", line 1'
+    )
+
+    assert _absolute_paths(relative) == set()
+    assert _absolute_paths(absolute) == {
+        "/home/daytona/workspace/\u62a5\u8868/\u667a\u80fd\u5206\u6790/report-run-1/analysis.py"
+    }
 
 
 @pytest.mark.parametrize(

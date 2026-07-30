@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,16 +13,14 @@ from agentos_dev.coding.reporting.contract import (
     schema_hash,
 )
 from agentos_dev.coding.reporting.data_source import DataShape, QueryResult
-from agentos_dev.coding.reporting.models import ReportingError
 from agentos_dev.coding.reporting.profile import (
     ReportingProfileRegistry,
+    build_outline_shape_view,
     collect_reconciliation_shapes,
     load_configured_reporting_profiles,
     resolve_capabilities,
     resolve_reporting_profile,
 )
-from agentos_dev.coding.reporting.runtime import _validate_profile_requirements
-from agentos_dev.coding.reporting.workflow_v1 import QueryRequirement
 
 
 def _write_profile(root, relative: str, payload: dict[str, Any]) -> None:
@@ -315,38 +312,42 @@ def test_capability由snapshot和datashape确定性缩小(tmp_path):
     assert capabilities["budget-analysis"].available is False
 
 
-def test_analysis_requirement只能使用可用profile字段(tmp_path):
+def test_提纲上下文保留事实但不携带完整列画像(tmp_path):
     profile = resolve_reporting_profile(_documents(tmp_path), "hospital-a")
-    snapshot, shape = _snapshot_and_shape(include_budget=False)
+    snapshot, shape = _snapshot_and_shape()
     capabilities = resolve_capabilities(profile, (snapshot,), (shape,))
 
-    valid = QueryRequirement.model_validate(
-        {
-            "requirementId": "actual",
-            "sourceId": "operations",
-            "tables": [
-                {
-                    "table": "reporting.income",
-                    "periodColumn": "month",
-                    "measureColumns": ["amount"],
-                }
-            ],
-            "dimensionColumns": ["month"],
-            "grainColumns": ["month"],
-        }
-    )
-    invalid = valid.model_copy(
-        update={"tables": (valid.tables[0].model_copy(update={"table": "reporting.budget"}),)}
-    )
+    context = build_outline_shape_view(profile, capabilities, (snapshot,), (shape,), ())
 
-    _validate_profile_requirements((valid,), profile=profile, capabilities=capabilities)
-    with pytest.raises(ReportingError) as captured:
-        _validate_profile_requirements((invalid,), profile=profile, capabilities=capabilities)
-    assert captured.value.code == "report_analysis_capability_invalid"
+    assert context["profile"]["sections"]
+    assert context["capabilities"]
+    assert context["tables"] == [
+        {
+            "sourceId": "operations",
+            "table": f"reporting.{name}",
+            "description": "",
+            "periodRowCount": 2,
+            "periodGranularity": "date",
+            "periodCoverage": ["2025-01", "2025-02"],
+            "missingPeriods": [],
+        }
+        for name in ("income", "budget")
+    ]
+    assert all("columns" not in table for table in context["tables"])
 
 
 @pytest.mark.anyio
-async def test_reconciliation按profile共同粒度聚合并输出差异(tmp_path):
+@pytest.mark.parametrize(
+    ("period_granularity", "expected_bounds"),
+    [
+        ("date", ("'20250101'", "'20251231'")),
+        ("month", ("'202501'", "'202512'")),
+        ("year", ("'2025'", "'2025'")),
+    ],
+)
+async def test_reconciliation按profile共同粒度和期间语义聚合并输出差异(
+    tmp_path, period_granularity, expected_bounds
+):
     profile = resolve_reporting_profile(_documents(tmp_path), "hospital-a")
     snapshot, shape = _snapshot_and_shape()
     capabilities = resolve_capabilities(profile, (snapshot,), (shape,))
@@ -360,21 +361,14 @@ async def test_reconciliation按profile共同粒度聚合并输出差异(tmp_pat
                 return QueryResult(("g0", "metric_value"), (("2025-01", 120), ("2025-02", 80)), 10)
             return QueryResult(("g0", "metric_value"), (("2025-01", 100), ("2025-03", 90)), 10)
 
-    source: Any = SimpleNamespace(
-        period_columns={
-            "reporting.income": "month",
-            "reporting.budget": "month",
-        },
-        period_granularities={
-            "reporting.income": "year",
-            "reporting.budget": "year",
-        },
-    )
     shapes = await collect_reconciliation_shapes(
         profile,
         capabilities,
         adapters={"operations": Adapter()},
-        sources={"operations": source},
+        period_semantics={
+            ("operations", "reporting.income"): ("month", period_granularity),
+            ("operations", "reporting.budget"): ("month", period_granularity),
+        },
         period=ReportPeriod(start="2025-01-01", end="2025-12-31"),
     )
 
@@ -384,4 +378,5 @@ async def test_reconciliation按profile共同粒度聚合并输出差异(tmp_pat
     assert shapes[0].common_key_count == 1
     assert shapes[0].left_only_key_count == 1
     assert shapes[0].right_only_key_count == 1
-    assert all("WHERE `month` >= 2025 AND `month` <= 2025" in sql for sql in queries)
+    assert all("SUBSTRING(REPLACE(REPLACE(CAST(`month` AS CHAR)" in sql for sql in queries)
+    assert all(expected_bounds[0] in sql and expected_bounds[1] in sql for sql in queries)

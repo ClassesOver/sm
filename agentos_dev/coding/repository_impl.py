@@ -1662,11 +1662,18 @@ class CodingTaskRepository:
         scope: CodingScope,
         instruction_id: str,
         content: str,
+        *,
+        acceptance_contract: dict[str, Any] | None = None,
     ) -> TaskSnapshot:
         """在同一任务内为已完成结果开启下一个修订 Attempt。"""
 
         await self.initialize()
         self._validate_instruction(instruction_id, content)
+        normalized_contract = (
+            self._normalize_acceptance_contract(acceptance_contract)
+            if acceptance_contract is not None
+            else None
+        )
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         content_bytes = len(content.encode("utf-8"))
         now = utcnow()
@@ -1765,6 +1772,11 @@ class CodingTaskRepository:
                         result_text=None,
                         same_error_count=0,
                         error_fingerprint=None,
+                        **(
+                            {"acceptance_contract": normalized_contract}
+                            if normalized_contract is not None
+                            else {}
+                        ),
                         completed_at=None,
                         updated_at=now,
                     )
