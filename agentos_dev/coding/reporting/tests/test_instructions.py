@@ -4,6 +4,7 @@ from agno.run import RunContext
 
 from agentos_dev.coding.reporting.instructions import (
     REPORT_AGENT_INSTRUCTIONS,
+    REPORT_ARTIFACT_MANIFEST_SCHEMA,
     build_report_agent_instructions,
 )
 from agentos_dev.instructions import (
@@ -49,8 +50,10 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "只调用一次服务端最终 verify" in instructions
     assert "manifest 声明的全部图表实际路径" in instructions
     assert "validator_id=report-artifact:manifest" in instructions
-    assert "ReportArtifactManifest JSON Schema" not in instructions
-    assert "additionalProperties" not in instructions
+    assert "ReportArtifactManifest JSON Schema（与运行时验收同源）" in instructions
+    assert REPORT_ARTIFACT_MANIFEST_SCHEMA in instructions
+    assert '"sections":{"items":{"type":"string"}' in instructions
+    assert '"additionalProperties":false' in instructions
     assert "observedDataFacts" in instructions
     assert "事实来源" in instructions
     assert "analysisPlan.description" in instructions

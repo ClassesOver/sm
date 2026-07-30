@@ -86,7 +86,7 @@ VALIDATOR_ROOT = "/home/daytona/.agentos/validators"
 READONLY_RUNTIME_ROOT = "/home/daytona/.agentos/runtime"
 MAX_VALIDATOR_REQUEST_BYTES = 256 * 1024
 MAX_VALIDATOR_RESULT_BYTES = 32 * 1024
-MAX_VALIDATOR_DETAIL_BYTES = 512
+MAX_VALIDATOR_DETAIL_BYTES = 8 * 1024
 READONLY_SCRIPT_RUNTIME = Path(__file__).with_name("readonly_script_runtime.py").read_bytes()
 READONLY_SCRIPT_RUNTIME_SHA256 = hashlib.sha256(READONLY_SCRIPT_RUNTIME).hexdigest()
 

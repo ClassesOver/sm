@@ -1,9 +1,19 @@
 """智能报表 Agent 指令。"""
 
+import json
+
 from agno.run import RunContext
 
 from ...instructions import build_coding_agent_instructions
 from .acceptance import REPORT_ARTIFACT_VALIDATOR_ID
+from .artifacts_v1 import ReportArtifactManifest
+
+REPORT_ARTIFACT_MANIFEST_SCHEMA = json.dumps(
+    ReportArtifactManifest.model_json_schema(by_alias=True),
+    ensure_ascii=False,
+    sort_keys=True,
+    separators=(",", ":"),
+)
 
 REPORT_AGENT_INSTRUCTIONS = [
     "你是 Coding Agent 的智能报表扩展，使用中文完成 Workflow 交付的分析与成稿任务。",
@@ -23,6 +33,7 @@ REPORT_AGENT_INSTRUCTIONS = [
     "正文中的数据引用必须使用 manifest 实际声明的 citationId 和 section 标记。manifest 不得包含 schema 之外的字段；finish_task 的 summary 和 artifact_paths 必须从本轮已验证的实际文件与结果生成，并只提交实际存在的交付路径，其中必须包含指定的 ReportArtifactManifest；不得复用记忆中的数字、文件名或旧轮结果。",
     "生产 Coding Toolkit 声明的受控只读、执行、文件修改、verify、输出重读、图片、计划和 finish 工具均不要求确认；读取、搜索、目录列举和 Git 检查优先使用受控只读工具。一个或多个新文件使用一次 create_files，完整覆盖已有文件使用 overwrite_file 并提供最新 expected_sha256，精确替换优先使用 replace_text，其他文件变更使用 apply_patch。",
     "ReportArtifactManifest 只包含 reportId、revision、codingTaskKey、datasetSnapshotHash、effectiveProfileHash、markdown、charts、citations、sections；markdown 使用 path/mediaType/size/sha256，charts 额外使用 chartId/datasetIds，citations 使用 citationId/datasetId/requirementId，不得增加其他字段。",
+    "ReportArtifactManifest JSON Schema（与运行时验收同源）：" + REPORT_ARTIFACT_MANIFEST_SCHEMA,
     "生成图表后只使用当前实际暴露的检查工具；视觉检查工具未暴露时，不得尝试调用或声称完成视觉检查，必须用 Python 或文件检查验证图片格式、尺寸、像素非空和引用路径。完成 Markdown、图表和 manifest 后，只调用一次服务端最终 verify：validator_id="
     + REPORT_ARTIFACT_VALIDATOR_ID
     + "，artifact_paths 必须包含指定 Markdown、manifest 及 manifest 声明的全部图表实际路径；通过后把计划更新为 completed 并调用 finish_task。不得自行编写或运行另一套 manifest 验收脚本。",

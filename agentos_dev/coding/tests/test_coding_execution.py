@@ -759,6 +759,58 @@ async def test_validator_failure_returns_directional_bounded_requirements(
 
 
 @pytest.mark.anyio
+async def test_validator_failure_preserves_bounded_schema_details(
+    execution_runtime,
+    tmp_path,
+):
+    runtime = execution_runtime
+    acceptance = await acceptance_runtime(runtime, tmp_path)
+    details = {
+        "schemaErrors": [
+            {
+                "path": f"sections.{index}",
+                "message": "对象不符合契约；期望 string，实际为 object。",
+            }
+            for index in range(12)
+        ]
+    }
+    details_size = len(
+        json.dumps(details, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+    assert 512 < details_size < execution_module.MAX_VALIDATOR_DETAIL_BYTES
+    output = json.dumps(
+        {
+            "version": 1,
+            "requirements": [
+                {
+                    "id": "report",
+                    "passed": False,
+                    "message": "ReportArtifactManifest 不符合 JSON Schema。",
+                    "details": details,
+                }
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    _execution_id, _command, result = await completed_validator(
+        runtime,
+        acceptance,
+        output=output,
+    )
+
+    assert result["code"] == "verification_acceptance_failed"
+    assert result["failedRequirements"] == [
+        {
+            "id": "report",
+            "message": "ReportArtifactManifest 不符合 JSON Schema。",
+            "details": details,
+        }
+    ]
+
+
+@pytest.mark.anyio
 async def test_skill_script_is_installed_readonly_and_writable_copy_is_rejected(
     execution_runtime,
 ):
