@@ -1,7 +1,9 @@
+import json
 from types import SimpleNamespace
 
 from agno.run import RunContext
 
+from agentos_dev.coding.reporting.artifacts_v1 import REQUIRED_REPORT_SECTIONS
 from agentos_dev.coding.reporting.instructions import (
     REPORT_AGENT_INSTRUCTIONS,
     REPORT_ARTIFACT_MANIFEST_SCHEMA,
@@ -52,7 +54,11 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "validator_id=report-artifact:manifest" in instructions
     assert "ReportArtifactManifest JSON Schema（与运行时验收同源）" in instructions
     assert REPORT_ARTIFACT_MANIFEST_SCHEMA in instructions
-    assert '"sections":{"items":{"type":"string"}' in instructions
+    sections_schema = json.loads(REPORT_ARTIFACT_MANIFEST_SCHEMA)["properties"]["sections"]
+    assert sections_schema["items"] == {"type": "string"}
+    assert {
+        constraint["contains"]["const"] for constraint in sections_schema["allOf"]
+    } == REQUIRED_REPORT_SECTIONS
     assert '"additionalProperties":false' in instructions
     assert "observedDataFacts" in instructions
     assert "事实来源" in instructions

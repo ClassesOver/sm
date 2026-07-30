@@ -13,6 +13,17 @@ def _issue(details: dict[str, Any], key: str, value: Any) -> None:
         details[key] = value
 
 
+def _schema_issue(error: Any) -> dict[str, Any]:
+    issue = {
+        "path": ".".join(str(item) for item in error.absolute_path) or "$",
+        "message": error.message[:512],
+    }
+    contains = error.schema.get("contains") if isinstance(error.schema, dict) else None
+    if isinstance(contains, dict) and isinstance(contains.get("const"), str):
+        issue["expectedContains"] = contains["const"]
+    return issue
+
+
 def _validate(requirement: dict[str, Any]) -> dict[str, Any]:
     requirement_id = requirement["id"]
     parameters = requirement["parameters"]
@@ -56,13 +67,7 @@ def _validate(requirement: dict[str, Any]) -> dict[str, Any]:
     _issue(
         details,
         "schemaErrors",
-        [
-            {
-                "path": ".".join(str(item) for item in error.absolute_path) or "$",
-                "message": error.message[:512],
-            }
-            for error in schema_errors[:20]
-        ],
+        [_schema_issue(error) for error in schema_errors[:20]],
     )
     if schema_errors:
         return {"id": requirement_id, "passed": False, "details": details}

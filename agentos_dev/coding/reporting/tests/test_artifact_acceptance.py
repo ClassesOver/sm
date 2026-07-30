@@ -44,7 +44,13 @@ def _identity(path: Path, root: Path) -> dict[str, object]:
     }
 
 
-def _request(tmp_path: Path, *, include_citation: bool = True, extra_artifact: bool = False):
+def _request(
+    tmp_path: Path,
+    *,
+    include_citation: bool = True,
+    extra_artifact: bool = False,
+    sections: list[str] | None = None,
+):
     markdown = tmp_path / "report.md"
     manifest = tmp_path / "report.manifest.json"
     citation = "[[citation:income]]" if include_citation else ""
@@ -84,7 +90,7 @@ def _request(tmp_path: Path, *, include_citation: bool = True, extra_artifact: b
                         "requirementId": "income",
                     }
                 ],
-                "sections": sorted(REQUIRED_REPORT_SECTIONS),
+                "sections": (sorted(REQUIRED_REPORT_SECTIONS) if sections is None else sections),
             },
             ensure_ascii=False,
         ),
@@ -172,6 +178,22 @@ def test_reporting服务端validator接受正式manifest契约(tmp_path: Path):
         "version": 1,
         "requirements": [{"id": "report-artifact", "passed": True}],
     }
+
+
+def test_reporting服务端validator在coding阶段拒绝缺少固定code的sections(tmp_path: Path):
+    result = _validate(
+        tmp_path,
+        _request(
+            tmp_path,
+            sections=["执行摘要", "分析范围与方法", "关键发现", "局限性", "建议"],
+        ),
+    )
+
+    requirement = result["requirements"][0]
+    assert requirement["passed"] is False
+    assert {
+        issue["expectedContains"] for issue in requirement["details"]["schemaErrors"]
+    } == REQUIRED_REPORT_SECTIONS
 
 
 @pytest.mark.anyio

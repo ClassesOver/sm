@@ -69,7 +69,15 @@ class ReportArtifactManifest(StrictModel):
     markdown: ArtifactFile
     charts: tuple[ChartArtifact, ...] = Field(default=(), max_length=100)
     citations: tuple[Citation, ...] = Field(min_length=1, max_length=2_000)
-    sections: tuple[str, ...] = Field(min_length=1, max_length=100)
+    sections: tuple[str, ...] = Field(
+        min_length=1,
+        max_length=100,
+        json_schema_extra={
+            "allOf": [
+                {"contains": {"const": section}} for section in sorted(REQUIRED_REPORT_SECTIONS)
+            ]
+        },
+    )
 
     @model_validator(mode="after")
     def validate_manifest(self) -> ReportArtifactManifest:
