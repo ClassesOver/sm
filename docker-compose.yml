@@ -33,7 +33,7 @@ services:
       - "host.docker.internal:host-gateway"
       - "proxy.localhost:host-gateway"
     ports:
-      - "${AGENT_OS_BIND:-127.0.0.1}:${AGENT_OS_PORT:-7777}:${AGENT_OS_PORT:-7777}"
+      - "33042:7777"
     environment:
       AGENT_POSTGRES_HOST: agent-db
       AGENT_POSTGRES_PORT: "5432"
