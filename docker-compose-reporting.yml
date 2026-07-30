@@ -5,7 +5,7 @@ services:
     extends:
       file: docker-compose.yml
       service: agent
-    command: ["python", "-m", "agentos_dev.coding.reporting.agentos"]
+    command: ["python", "-m", "agentos_dev.coding.reporting"]
     ports: !override
       - "33046:7777"
 
