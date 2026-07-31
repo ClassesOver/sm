@@ -9,7 +9,6 @@ from agno.os.middleware.user_scope import resolve_run_user_id
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from ...agentos_auth import agentos_authorization_config
 from ...execution_context import (
     ExecutionContext,
     close_execution_resources,
@@ -107,7 +106,7 @@ def create_report_agentos_components(
 
 def create_agentos(settings: AgentSettings | None = None) -> AgentOS:
     current_settings = settings or AgentSettings.from_environment()
-    authorization_config = agentos_authorization_config(current_settings)
+    # TODO: DEV 调试结束后恢复独立 Reporting AgentOS 的 JWT 鉴权。
     context = create_execution_context(current_settings)
     download_repository = SqlAlchemyDownloadGrantRepository(getattr(context.database, "db_engine"))
     download_grants = ReportDownloadGrantService(download_repository)
@@ -137,8 +136,7 @@ def create_agentos(settings: AgentSettings | None = None) -> AgentOS:
         workflows=[workflow],
         interfaces=[ReportAGUI(agent=reporting_agent)],
         db=context.database,
-        authorization=True,
-        authorization_config=authorization_config,
+        authorization=False,
         cors_allowed_origins=list(current_settings.cors_allowed_origins),
         lifespan=lifespan,
         base_app=base_app,
