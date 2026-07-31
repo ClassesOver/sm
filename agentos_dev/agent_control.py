@@ -109,7 +109,7 @@ def build_coding_agent_tools(
     output_token_reserve: int = 32768,
 ) -> list[Toolkit]:
     """Coding Agent 固定使用受约束的工作区工具。"""
-    from .coding.execution import WorkspaceCodingToolkit
+    from .task_execution.execution import WorkspaceCodingToolkit
 
     return [
         WorkspaceCodingToolkit(

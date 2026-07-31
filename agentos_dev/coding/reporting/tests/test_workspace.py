@@ -2,18 +2,14 @@ import json
 import uuid
 
 import pytest
-from agno.models.message import Message
 from agno.run import RunContext
-from agno.run.agent import RunOutput
 
-from agentos_dev.coding.reporting.agent import enforce_report_delivery_output
 from agentos_dev.coding.reporting.tests.workspace_fakes import (
     AsyncFakeClient,
     AsyncMemoryRegistry,
     service,
 )
 from agentos_dev.coding.reporting.workspace import (
-    REPORT_DELIVERY_INCOMPLETE_MESSAGE,
     REPORT_DELIVERY_STATE_KEY,
     REPORT_JOBS_STATE_KEY,
     REPORT_RUNTIME_TIMEOUT_SECONDS,
@@ -174,67 +170,6 @@ async def test_报表工具把本轮实际触达的job绑定到交付门禁():
         "deliveryId": "delivery-1",
         "jobId": prepared["jobId"],
     }
-
-
-@pytest.mark.anyio
-async def test_报表post_hook同步修正持久化内容并补充真实路径():
-    service = _ReportStateService()
-    service.entries.update(
-        {
-            "报表/结果.md": {"path": "报表/结果.md", "size": 20, "sha256": "b" * 64},
-            "报表/结果.pdf": {"path": "报表/结果.pdf", "size": 30, "sha256": "c" * 64},
-        }
-    )
-    toolkit = WorkspaceReportToolkit(service)
-    job_id = str(uuid.uuid4())
-    context = RunContext(
-        run_id="member-run",
-        session_id="thread",
-        session_state={
-            REPORT_DELIVERY_STATE_KEY: {"deliveryId": "delivery-1", "jobId": job_id},
-            REPORT_JOBS_STATE_KEY: {
-                job_id: {
-                    "jobId": job_id,
-                    "_threadBinding": toolkit._thread_binding("thread"),
-                    "sources": [service.entries["报表/数据集/收入.csv"]],
-                    "render": {
-                        "markdown": service.entries["报表/结果.md"],
-                        "pdf": service.entries["报表/结果.pdf"],
-                        "images": [],
-                    },
-                    "validation": {"ok": True, "pdfPath": "报表/结果.pdf"},
-                }
-            },
-        },
-    )
-    output = RunOutput(
-        content="报表完成。",
-        messages=[Message(role="assistant", content="报表完成。")],
-    )
-
-    await enforce_report_delivery_output(output, context, service)
-
-    assert "报表/结果.md" in output.content
-    assert "报表/结果.pdf" in output.content
-    assert output.messages[-1].content == output.content
-
-    del service.entries["报表/结果.pdf"]
-    failed = RunOutput(
-        content="PDF 已生成。",
-        messages=[Message(role="assistant", content="PDF 已生成。")],
-    )
-    await enforce_report_delivery_output(failed, context, service)
-
-    assert failed.content == REPORT_DELIVERY_INCOMPLETE_MESSAGE
-    assert failed.messages[-1].content == REPORT_DELIVERY_INCOMPLETE_MESSAGE
-
-    ordinary = RunOutput(content="普通回答。")
-    await enforce_report_delivery_output(
-        ordinary,
-        RunContext(run_id="run", session_id="thread", session_state={}),
-        service,
-    )
-    assert ordinary.content == "普通回答。"
 
 
 @pytest.mark.anyio

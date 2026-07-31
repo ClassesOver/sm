@@ -23,6 +23,8 @@ def load_reporting_skills(base_skills: Skills | None) -> Skills:
 
 def build_report_artifact_acceptance_contract(
     expected_identity: dict[str, Any],
+    *,
+    validation_context_file: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "version": 1,
@@ -32,9 +34,30 @@ def build_report_artifact_acceptance_contract(
                 "validatorId": REPORT_ARTIFACT_VALIDATOR_ID,
                 "parameters": {
                     "expectedIdentity": dict(expected_identity),
-                    "manifestSchema": ReportArtifactManifest.model_json_schema(by_alias=True),
+                    "validationContextFile": dict(validation_context_file),
                 },
                 "artifactPatterns": [REPORT_ARTIFACT_PATTERN],
             }
         ],
+    }
+
+
+def build_report_artifact_validation_context(
+    *,
+    forbidden_visible_terms: tuple[str, ...] = (),
+    observed_data_facts: list[dict[str, Any]] | None = None,
+    expected_sections: tuple[str, ...] = (),
+    expected_citation_bindings: tuple[tuple[str, str], ...] = (),
+) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "forbiddenVisibleTerms": sorted(set(forbidden_visible_terms)),
+        "observedDataFacts": list(observed_data_facts or []),
+        "prohibitDerivedValues": True,
+        "expectedSections": list(expected_sections),
+        "expectedCitationBindings": [
+            {"datasetId": dataset_id, "requirementId": requirement_id}
+            for dataset_id, requirement_id in expected_citation_bindings
+        ],
+        "manifestSchema": ReportArtifactManifest.model_json_schema(by_alias=True),
     }

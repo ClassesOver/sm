@@ -2,7 +2,6 @@ from agno.run import RunContext
 
 from agentos_dev import app
 from agentos_dev.coding.agent import create_coding_agent, create_coding_facade_agent
-from agentos_dev.coding.execution import is_coding_tool_scheduler_hook
 from agentos_dev.coding.reporting.agent import create_report_agent, create_report_worker
 from agentos_dev.coding.reporting.controller import ReportWorkflowController
 from agentos_dev.coding.reporting.runtime import (
@@ -15,6 +14,7 @@ from agentos_dev.coding.reporting.runtime import (
 from agentos_dev.coding.reporting.tests.workspace_fakes import service
 from agentos_dev.instructions import build_pure_coding_agent_instructions
 from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
+from agentos_dev.task_execution.execution import is_coding_tool_scheduler_hook
 
 
 def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
@@ -30,11 +30,12 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
         workspace_service,
     )
     report_worker = create_report_worker(
-        coding_agent,
+        app.settings,
+        app.agent_database.async_db,
         workspace_service,
         app.coding_repository,
         instructions=["测试报表"],
-        report_enable_thinking=False,
+        report_coding_enable_thinking=False,
     )
     report_agent = create_report_agent(
         report_worker,
@@ -48,9 +49,13 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert coding_facade.model.id == coding_agent.model.id
     assert coding_facade.model.extra_body == {"enable_thinking": False}
     assert coding_facade.model.reasoning_effort is None
-    assert coding_agent.model.reasoning_effort == "medium"
-    assert coding_agent.model.get_request_params()["reasoning_effort"] == "medium"
-    assert coding_agent.model.extra_body == app.assistant.model.extra_body
+    assert coding_agent.model.reasoning_effort == app.settings.coding_reasoning_effort
+    assert (
+        coding_agent.model.get_request_params()["reasoning_effort"]
+        == app.settings.coding_reasoning_effort
+    )
+    assert coding_agent.model.extra_body["enable_thinking"] is True
+    assert coding_agent.model.extra_body["thinking_budget"] == 16384
     assert [tool.name for tool in coding_facade.tools] == ["run_coding_task"]
     assert coding_facade.tools[0].parameters == {
         "type": "object",
@@ -74,13 +79,16 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert report_worker.use_instruction_tags is True
     assert report_worker.send_media_to_model is False
     assert report_worker.model is not coding_agent.model
+    assert report_worker.model.max_tokens == 32768
+    assert coding_agent.model.max_tokens is None
     assert report_worker.model.extra_body["enable_thinking"] is False
-    assert coding_agent.model.extra_body == app.assistant.model.extra_body
+    assert "thinking_budget" not in report_worker.model.extra_body
+    assert report_worker.model.reasoning_effort == app.settings.report_coding_reasoning_effort
     assert report_agent.id == "report-agent"
     facade_instructions = "\n".join(report_agent.instructions)
-    assert "单个明确日历年份" in facade_instructions
-    assert "该年1月1日至12月31日" in facade_instructions
-    assert "不得因用户未写出起止日期而追问" in facade_instructions
+    assert "不得自行解析期间" in facade_instructions
+    assert "Workflow 首步" in facade_instructions
+    assert "HumanReview retry" in facade_instructions
     assert report_agent.model is not report_worker.model
     assert report_agent.model.extra_body == {"enable_thinking": False}
     assert report_worker.compression_manager.model is report_worker.model
@@ -92,7 +100,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert app.assistant.model.request_params is None
     assert sum(is_coding_tool_scheduler_hook(hook) for hook in report_worker.tool_hooks) == 1
     assert not any(is_coding_tool_scheduler_hook(hook) for hook in report_agent.tool_hooks or [])
-    assert report_worker.db is coding_agent.db
+    assert report_worker.db is app.agent_database.async_db
     assert report_agent.db is report_worker.db
     assert report_worker.checkpoint == coding_agent.checkpoint == "tool-batch"
     assert report_agent.skills is None
@@ -129,14 +137,9 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
 
 def test_report_worker_exposes_image_tool_only_when_vision_is_enabled(tmp_path):
     workspace_service = service(tmp_path)
-    coding_agent = create_coding_agent(
-        app.assistant,
-        workspace_service,
-        app.coding_repository,
-    )
-
     report_worker = create_report_worker(
-        coding_agent,
+        app.settings,
+        app.agent_database.async_db,
         workspace_service,
         app.coding_repository,
         instructions=["测试报表"],
@@ -164,12 +167,13 @@ def test_report_planner_uses_report_thinking_without_mutating_coding_worker():
     assert planner.model.extra_body["enable_thinking"] is app.settings.report_enable_thinking
     assert planner.model.reasoning_effort is None
     assert planner.model.timeout == app.settings.model_timeout_seconds
-    assert planner.parse_response is False
+    assert planner.parse_response is True
     assert any("不得写占位符" in instruction for instruction in planner.instructions)
     assert any("不得把 correction" in instruction for instruction in planner.instructions)
     assert all(instruction in planner.instructions for instruction in stage_instructions)
     assert (
-        app.report_worker.model.extra_body["enable_thinking"] is app.settings.report_enable_thinking
+        app.report_worker.model.extra_body["enable_thinking"]
+        is app.settings.report_coding_enable_thinking
     )
     assert any(
         "非聚合 SELECT 列和 GROUP BY 列必须逐项等于 grainColumns" in instruction

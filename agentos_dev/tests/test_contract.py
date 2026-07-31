@@ -27,7 +27,6 @@ from agentos_dev.agents import (
     create_assistant_team,
 )
 from agentos_dev.agents.assistant import create_assistant
-from agentos_dev.coding.execution import is_coding_tool_scheduler_hook
 from agentos_dev.coding.reporting.instructions import (
     build_report_agent_instructions,
 )
@@ -49,6 +48,7 @@ from agentos_dev.instructions import (
     build_pure_coding_agent_instructions,
 )
 from agentos_dev.settings import AgentSettings
+from agentos_dev.task_execution.execution import is_coding_tool_scheduler_hook
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -291,7 +291,7 @@ def test_pure_coding_agent_batches_only_independent_reads():
     text = "\n".join(instructions)
 
     assert instructions == [*base, *PURE_CODING_PARALLEL_READ_INSTRUCTIONS]
-    assert "2 到 4 个只读操作" in text
+    assert "2 到 10 个只读操作" in text
     assert "同一次模型响应中并行调用" in text
     assert "彼此独立且服务于同一当前步骤" in text
     assert "路径未知" in text and "数据依赖的读取必须串行" in text
@@ -567,13 +567,15 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
             "report_workflow_cancel",
         }
     ]
+    assert (
+        report_toolkits[0].async_functions["report_workflow_approve"].requires_confirmation is True
+    )
     assert all(
         report_toolkits[0].async_functions[name].requires_confirmation is False
         for name in (
             "report_workflow_start",
             "report_workflow_start_from_prompt",
             "report_workflow_select_agent",
-            "report_workflow_approve",
             "report_workflow_reject",
             "report_workflow_cancel",
         )
@@ -634,6 +636,9 @@ def test_toolkit_instructions_are_injected_by_agno():
         "report_workflow_cancel",
     }
     assert parsed_tools["report_workflow_approve"].requires_confirmation is True
+    assert set(parsed_tools["report_workflow_start_from_prompt"].parameters["properties"]) == {
+        "prompt"
+    }
 
 
 def test_team_and_internal_workers_keep_separate_execution_settings():
@@ -672,7 +677,8 @@ def test_team_and_internal_workers_keep_separate_execution_settings():
         app.coding_agent.model.extra_body["enable_thinking"] is app.settings.coding_enable_thinking
     )
     assert (
-        app.report_worker.model.extra_body["enable_thinking"] is app.settings.report_enable_thinking
+        app.report_worker.model.extra_body["enable_thinking"]
+        is app.settings.report_coding_enable_thinking
     )
     assert (
         app.report_runtime._analysis_agent.model.extra_body["enable_thinking"]

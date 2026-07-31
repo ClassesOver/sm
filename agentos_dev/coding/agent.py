@@ -17,14 +17,14 @@ from ..skills import (
     is_skill_script_hook,
     load_builtin_coding_skills,
 )
-from ..workspace import WorkspaceService, _thread
-from .adapters import CliCodingAdapter
-from .execution import (
+from ..task_execution.execution import (
     create_coding_tool_scheduler_hook,
     is_coding_tool_scheduler_hook,
 )
-from .models import CodingScope
-from .repository import CodingTaskRepository
+from ..task_execution.models import CodingScope
+from ..task_execution.repository import CodingTaskRepository
+from ..workspace import WorkspaceService, _thread
+from .adapters import CliCodingAdapter
 from .supervisor import CodingTaskSupervisor
 
 AgentInstructions = str | list[str] | Callable[..., str | list[str]]
@@ -38,6 +38,9 @@ def create_coding_agent(
     instructions: AgentInstructions = build_pure_coding_agent_instructions,
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
+    enable_thinking: bool = True,
+    reasoning_effort: str = "max",
+    thinking_budget: int = 16384,
 ) -> Agent:
     tool_hooks = [
         *(base_agent.tool_hooks or []),
@@ -47,7 +50,15 @@ def create_coding_agent(
     if not isinstance(base_agent.model, OpenAIChat):
         raise TypeError("Coding Agent requires OpenAIChat")
     coding_model = projected_coding_model(base_agent.model)
-    coding_model.reasoning_effort = "medium"
+    coding_model.reasoning_effort = reasoning_effort
+    coding_model.extra_body = {
+        **(coding_model.extra_body or {}),
+        "enable_thinking": enable_thinking,
+    }
+    if enable_thinking:
+        coding_model.extra_body["thinking_budget"] = thinking_budget
+    else:
+        coding_model.extra_body.pop("thinking_budget", None)
     coding_skills = load_builtin_coding_skills()
     validator_registry = SkillValidatorRegistry.from_skills(coding_skills)
     agent = base_agent.deep_copy(
@@ -95,6 +106,7 @@ def create_coding_facade_agent(
         **(getattr(internal_agent.model, "extra_body", None) or {}),
         "enable_thinking": False,
     }
+    facade_model.extra_body.pop("thinking_budget", None)
     facade_model.reasoning_effort = None
     facade_tool_hooks = [
         hook

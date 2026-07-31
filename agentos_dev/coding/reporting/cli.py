@@ -11,16 +11,16 @@ from uuid import uuid4
 from agno.run import RunContext
 
 from ...async_utils import complete_cleanup
+from ...execution_context import close_execution_resources, create_execution_context
 from ...settings import AgentSettings
-from ...skills import SkillValidatorRegistry
-from .. import AgnoCodingExecutor, CodingTaskSupervisor
-from ..cli import _close_cli_resources, create_cli_agent, create_cli_context
-from ..execution import CodingExecutionKernel
+from ...task_execution import TaskExecutionRepository
+from ...task_execution.execution import TaskExecutionKernel
 from .adapters import CliReviewAdapter
 from .agent import create_report_worker
 from .controller import REPORT_WORKFLOW_SCOPE_DEPENDENCY, ReportWorkflowController
 from .data_source import load_configured_report_source_registry
 from .entrypoints import parse_cli_envelope
+from .execution import ReportTaskRunner
 from .instructions import build_report_agent_instructions
 from .metadata import ReportingMetadataClient
 from .profile import load_configured_reporting_profiles
@@ -47,32 +47,30 @@ async def run_cli(
     write: Callable[[str], None] = print,
 ) -> None:
     envelope = parse_cli_envelope(read_report_request(read=read))
-    context = create_cli_context(settings)
+    context = create_execution_context(settings)
+    task_repository = TaskExecutionRepository(context.database)
     session_id = f"cli-report-{uuid4().hex}"
-    coding_agent = create_cli_agent(context)
     report_worker = create_report_worker(
-        coding_agent,
+        context.settings,
+        context.database,
         context.workspace_service,
-        context.coding_repository,
+        task_repository,
         instructions=build_report_agent_instructions,
-        report_enable_thinking=context.settings.report_enable_thinking,
+        report_coding_enable_thinking=context.settings.report_coding_enable_thinking,
         report_enable_vision=context.settings.report_enable_vision,
         context_token_budget=context.settings.context_token_budget,
         output_token_reserve=context.settings.output_token_reserve,
     )
-    supervisor = CodingTaskSupervisor(
-        context.coding_repository,
-        AgnoCodingExecutor(lambda _agent_id: report_worker),
-        execution_cleanup=CodingExecutionKernel(
-            context.workspace_service, context.coding_repository
-        ),
-        validator_registry=SkillValidatorRegistry.from_skills(report_worker.skills),
+    task_runner = ReportTaskRunner(
+        task_repository,
+        report_worker,
+        TaskExecutionKernel(context.workspace_service, task_repository),
     )
     runtime = ReportWorkflowRuntime(
         db=context.database,
         planner=report_worker,
         report_worker=report_worker,
-        supervisor=supervisor,
+        task_runner=task_runner,
         workspace_service=context.workspace_service,
         registry=load_configured_report_source_registry(context.settings.report_data_sources_dir),
         profiles=load_configured_reporting_profiles(context.settings.report_data_sources_dir),
@@ -87,9 +85,8 @@ async def run_cli(
         ),
     )
     controller = ReportWorkflowController(
-        runtime.workflow,
+        lambda: runtime.workflow(publication_issuer=runtime.issue_cli_publication),
         cancel_cleanup=runtime.cleanup_cancelled,
-        publication_issuer=runtime.issue_cli_publication,
     )
     external_run_id = uuid4().hex
     run_context = RunContext(
@@ -118,7 +115,7 @@ async def run_cli(
                 result = await controller.cancel(run_context)
         write(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     finally:
-        await complete_cleanup(_close_cli_resources(context, report_worker, coding_agent))
+        await complete_cleanup(close_execution_resources(context, report_worker))
 
 
 def main(argv: list[str] | None = None) -> None:

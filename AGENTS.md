@@ -7,6 +7,7 @@
 - 修改前先阅读相关实现、测试和文档，明确假设、影响范围与可验证的成功标准；存在会改变方案的歧义时先询问。
 - 只修改完成任务所需的代码。不要顺带重构、改名、格式化无关文件，也不要删除既有但与任务无关的代码。
 - 优先复用现有实现；不为单次使用增加抽象、配置项、兼容层或推测性的错误处理。
+- Coding Agent 在设计、编码、修复和评审时必须遵循强反馈、强契约、强工具和强规范化；涉及 Agno 时必须优先使用锁定版本的官方公共实现，不得重复造轮子。
 - 修复缺陷时先添加或确认能复现问题的测试，再做最小修复；每一处改动都应能追溯到任务或对应测试。
 - 工作区可能包含用户的未提交改动。不得覆盖、回退或清理这些改动；发现无关问题时只在交付说明中指出。
 
@@ -75,8 +76,9 @@
 ## 测试与验证
 
 - 新增行为覆盖正常路径和与改动直接相关的失败路径。鉴权、幂等、重放、过期、跨用户/公司/thread 和输入边界变更必须有负向测试。
-- 默认运行与改动范围匹配的最小测试集。除非用户明确要求，或变更确实跨越完整服务流程，否则不运行全量端到端测试。
-- 修改 `agentos_dev/` 的 Python 实现、测试或依赖时，在仓库根目录运行 `bash scripts/check_agentos.sh`；该脚本统一检查 Ruff format、Ruff lint、Mypy 和非集成 pytest。
+- 默认先运行与改动直接对应的定点测试节点或最小测试文件，不得用整个目录、全部单元测试或端到端测试代替定点验证。只有定点测试无法覆盖跨模块契约、改动确实跨越完整服务流程或用户明确要求时，才按风险逐级扩大测试范围。
+- 修改 `agentos_dev/` 的 Python 实现、测试或依赖时，默认运行定点 pytest，并对改动文件运行 Ruff format、Ruff lint 和必要的 Mypy；只有跨模块影响需要完整非集成回归或用户明确要求全量检查时，才在仓库根目录运行 `bash scripts/check_agentos.sh`。
+- 沙箱内运行异步 SQLite 测试时，若 `aiosqlite` worker 已完成操作但 asyncio self-pipe 唤醒报 `PermissionError: [Errno 1] Operation not permitted`，表现为首次连接或 fixture 假死，应将其识别为沙箱限制而非业务死锁；在获得权限后于沙箱外重跑相同检查，不得为绕过该环境限制修改业务实现。
 - Python 单元测试使用小而明确的 fixture、`tmp_path`、`monkeypatch`/mock 和异步测试；不得访问真实网络或共享用户目录。外部 PostgreSQL/Daytona 场景标记为 `integration`。
 - 修改 React 组件、状态或协议适配时，在 `agui_chat/react_widget/` 运行 `pnpm typecheck`、`pnpm test` 和 `pnpm build`。组件状态、渲染和纯协议逻辑优先用 Vitest 与 Testing Library。
 - 只有修改 Odoo 宿主交互、AG-UI/SSE 契约、断线恢复、关键浏览器流程或视觉布局时，才运行对应 Playwright：`pnpm test:e2e:odoo` 或 `pnpm test:visual`。

@@ -45,7 +45,7 @@ CODING_AGENT_INSTRUCTIONS = [
 ]
 
 PURE_CODING_PARALLEL_READ_INSTRUCTIONS = [
-    "当 2 到 4 个只读操作的参数和目标均已知、彼此独立且服务于同一当前步骤时，必须在同一次模型响应中并行调用；不要为凑批次延迟当前工作。",
+    "当 2 到 10 个只读操作的参数和目标均已知、彼此独立且服务于同一当前步骤时，必须在同一次模型响应中并行调用；不要为凑批次延迟当前工作。",
     "并行只读操作仅限 list_files、read_file、read_lines、search_text、tree、git_status、git_diff、read_tool_output、view_image 和非执行型 Skill 读取。",
     "路径未知、需要依据前一个结果决定参数或存在其他数据依赖的读取必须串行；不得批量调用无关读取、超大范围读取或可能产生过量输出的读取。",
     "并行批次不得包含 terminal、process、update_plan、任何 mutation、verify 或 finish_task；这些操作必须单独调用。",

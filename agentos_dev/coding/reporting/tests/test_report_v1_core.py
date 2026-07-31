@@ -58,6 +58,7 @@ from agentos_dev.coding.reporting.runtime import (
     REPORT_WORKFLOW_INPUT_STATE_KEY,
     REPORT_WORKFLOW_SCOPE_STATE_KEY,
     AnalysisBundle,
+    AnalysisItem,
     DataUnderstandingPlan,
     DataUnderstandingTable,
     GeneratedQueryBatch,
@@ -70,12 +71,14 @@ from agentos_dev.coding.reporting.runtime import (
     _analysis_validation_issues,
     _coding_observed_data_facts,
     _compact_validation_feedback,
+    _outline_section_issues,
     _PlannerOutputValidationError,
     _planning_schema_payload,
     _validate_data_understanding,
 )
 from agentos_dev.coding.reporting.workflow import _requires_source_review
 from agentos_dev.coding.reporting.workflow_v1 import (
+    DatasetLineage,
     QueryRequirement,
     approve_query_batch,
     require_approved_sql,
@@ -137,8 +140,36 @@ def test_coding任务携带数据画像确认的期间事实():
         }
     )
 
-    assert _coding_observed_data_facts((shape,)) == [
+    requirement = QueryRequirement.model_validate(
         {
+            "requirementId": "income-monthly",
+            "sourceId": "operations",
+            "tables": [
+                {
+                    "table": "reporting.income",
+                    "periodColumn": "period_code",
+                    "periodGranularity": "date",
+                    "measureColumns": ["income_amount"],
+                }
+            ],
+            "dimensionColumns": ["period_code"],
+            "grainColumns": ["period_code"],
+        }
+    )
+    lineage = DatasetLineage(
+        datasetId="income-monthly-dataset",
+        sourceId="operations",
+        requirementId="income-monthly",
+        sqlHash="b" * 64,
+        rowCount=30,
+        size=2048,
+        sha256="c" * 64,
+    )
+
+    assert _coding_observed_data_facts((shape,), (requirement,), (lineage,)) == [
+        {
+            "datasetId": "income-monthly-dataset",
+            "requirementId": "income-monthly",
             "sourceId": "operations",
             "table": "reporting.income",
             "periodGranularity": "date",
@@ -285,6 +316,26 @@ def test_hitl恢复从workflow状态恢复可信作用域():
     with pytest.raises(ReportingError) as rejected:
         ReportWorkflowRuntime._scope(resumed)
     assert rejected.value.code == "report_workflow_context_missing"
+
+
+def test_原生workflow从agno_runcontext建立作用域():
+    context = RunContext(
+        run_id="workflow-run",
+        session_id="workflow-session",
+        user_id="user-1",
+        session_state={},
+    )
+
+    assert ReportWorkflowRuntime._scope(context) == {
+        "externalRunId": "workflow-run",
+        "threadId": "workflow-session",
+        "userId": "user-1",
+    }
+    assert context.session_state[REPORT_WORKFLOW_SCOPE_STATE_KEY] == {
+        "externalRunId": "workflow-run",
+        "threadId": "workflow-session",
+        "userId": "user-1",
+    }
 
 
 def test_数据理解输入输出复用相同规范表引用契约():
@@ -727,7 +778,8 @@ async def test_分析计划结构错误会携带强反馈纠错且不盲重试()
     assert len(captured) == 2
     correction = captured[1]["correction"]
     assert correction["attempt"] == 2
-    assert "previousOutput" not in correction
+    assert correction["previousOutput"] == invalid_output
+    assert correction["allowedMutationPaths"] == ["requirements[0]"]
     assert correction["validationFeedback"]["issues"][0]["path"] == "requirements[0]"
     assert "grainColumns" in correction["validationFeedback"]["issues"][0]["reason"]
     assert state[REPORT_ANALYSIS_PLAN_STATE_KEY][0]["code"] == "income"
@@ -1179,6 +1231,138 @@ def test_分析计划允许期间语义和完整共同粒度一致的多表requi
     assert _analysis_bundle_semantic_issues(bundle, understanding, approval_snapshots()) == []
 
 
+def test_分析计划将快照外维度和粒度定点反馈给模型():
+    requirement = query_requirement(grain_columns=("month", "company"))
+    bundle = AnalysisBundle.model_validate(
+        {
+            "analyses": [
+                {
+                    "code": "income",
+                    "description": "收入分析",
+                    "requirementIds": [requirement.requirement_id],
+                }
+            ],
+            "requirements": [requirement.model_dump(mode="json", by_alias=True)],
+        }
+    )
+    understanding = DataUnderstandingPlan.model_validate(valid_data_understanding_output())
+
+    issues = _analysis_bundle_semantic_issues(bundle, understanding, approval_snapshots())
+
+    assert issues == [
+        {
+            "path": "requirements[0].dimensionColumns",
+            "rejectedValue": ["company"],
+            "reason": "dimensionColumns 引用了 requirement 数据表结构快照中不存在的字段",
+            "allowedValues": ["amount", "campus", "month"],
+            "requiredAction": "删除或替换 rejectedValue，保留其他有效维度",
+        },
+        {
+            "path": "requirements[0].grainColumns",
+            "rejectedValue": ["company"],
+            "reason": "grainColumns 引用了当前表结构快照中不存在的字段",
+            "allowedValues": ["amount", "campus", "month"],
+            "requiredAction": "删除或替换 rejectedValue，保留其他有效粒度",
+        },
+    ]
+    assert _analysis_allowed_mutation_paths(issues) == (
+        "requirements[0].dimensionColumns",
+        "requirements[0].grainColumns",
+    )
+
+
+@pytest.mark.anyio
+async def test_分析计划快照外字段纠错只允许修改对应维度和粒度():
+    invalid_requirement = query_requirement(grain_columns=("month", "company"))
+    valid_requirement = invalid_requirement.model_copy(
+        update={"dimension_columns": ("month",), "grain_columns": ("month",)}
+    )
+    invalid = AnalysisBundle.model_validate(
+        {
+            "analyses": [
+                {
+                    "code": "income",
+                    "description": "收入分析",
+                    "requirementIds": [invalid_requirement.requirement_id],
+                }
+            ],
+            "requirements": [invalid_requirement.model_dump(mode="json", by_alias=True)],
+        }
+    )
+    valid = invalid.model_copy(update={"requirements": (valid_requirement,)})
+    captured: list[dict[str, object]] = []
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._analysis_agent = SimpleNamespace(id="analysis-planner")
+
+    async def run_planner(_agent, payload, _run_context):
+        captured.append(payload)
+        return invalid if len(captured) == 1 else valid
+
+    runtime._run_planner = run_planner
+    context = data_understanding_context()
+    state = context.session_state
+    state[REPORT_OUTLINE_STATE_KEY] = {
+        "title": "运营分析",
+        "sections": ["收入分析"],
+        "assumptions": [],
+    }
+    state[REPORT_OUTLINE_CONTEXT_STATE_KEY] = {}
+    state[REPORT_DATA_UNDERSTANDING_STATE_KEY] = valid_data_understanding_output()
+
+    await runtime.generate_analysis_plan(StepInput(input=envelope()), context)
+
+    correction = captured[1]["correction"]
+    assert correction["previousOutput"] == invalid.model_dump(mode="json", by_alias=True)
+    assert correction["allowedMutationPaths"] == [
+        "requirements[0].dimensionColumns",
+        "requirements[0].grainColumns",
+    ]
+    assert [issue["rejectedValue"] for issue in correction["validationFeedback"]["issues"]] == [
+        ["company"],
+        ["company"],
+    ]
+    assert state[REPORT_DATA_REQUIREMENTS_STATE_KEY] == [
+        valid_requirement.model_dump(mode="json", by_alias=True)
+    ]
+
+
+def test_分析计划将快照外指标定点反馈给模型():
+    requirement = query_requirement(
+        tables=[
+            {
+                "table": "reporting.income",
+                "periodColumn": "month",
+                "measureColumns": ["amount", "invented_amount"],
+            }
+        ]
+    )
+    bundle = AnalysisBundle.model_validate(
+        {
+            "analyses": [
+                {
+                    "code": "income",
+                    "description": "收入分析",
+                    "requirementIds": [requirement.requirement_id],
+                }
+            ],
+            "requirements": [requirement.model_dump(mode="json", by_alias=True)],
+        }
+    )
+    understanding = DataUnderstandingPlan.model_validate(valid_data_understanding_output())
+
+    issues = _analysis_bundle_semantic_issues(bundle, understanding, approval_snapshots())
+
+    assert issues == [
+        {
+            "path": "requirements[0].tables[0].measureColumns",
+            "rejectedValue": ["invented_amount"],
+            "reason": "measureColumns 引用了当前表结构快照中不存在的字段",
+            "allowedValues": ["amount"],
+            "requiredAction": "删除 rejectedValue，或从 allowedValues 选择真实数值指标字段",
+        }
+    ]
+
+
 def test_分析计划将非数值指标定点反馈给模型():
     requirement = QueryRequirement.model_validate(
         {
@@ -1218,6 +1402,52 @@ def test_分析计划将非数值指标定点反馈给模型():
     assert issues[0]["rejectedValue"] == [{"column": "campus", "dataType": "VARCHAR(100)"}]
     assert issues[0]["allowedValues"] == ["amount"]
     assert "可聚合数值字段" in issues[0]["requiredAction"]
+
+
+def test_分析计划将数值指标与维度重叠定点反馈到维度路径():
+    requirement = QueryRequirement.model_validate(
+        {
+            "requirementId": "income-monthly",
+            "sourceId": "operations",
+            "tables": [
+                {
+                    "table": "reporting.income",
+                    "periodColumn": "month",
+                    "periodGranularity": "date",
+                    "measureColumns": ["amount"],
+                }
+            ],
+            "dimensionColumns": ["month", "campus", "amount"],
+            "grainColumns": ["month", "campus"],
+            "relations": [],
+        }
+    )
+    bundle = AnalysisBundle.model_validate(
+        {
+            "analyses": [
+                {
+                    "code": "income",
+                    "description": "收入分析",
+                    "requirementIds": [requirement.requirement_id],
+                }
+            ],
+            "requirements": [requirement.model_dump(mode="json", by_alias=True)],
+        }
+    )
+    understanding = DataUnderstandingPlan.model_validate(valid_data_understanding_output())
+
+    issues = _analysis_bundle_semantic_issues(bundle, understanding, approval_snapshots())
+
+    assert issues == [
+        {
+            "path": "requirements[0].dimensionColumns",
+            "rejectedValue": ["amount"],
+            "reason": "数值指标不能同时声明为 measureColumns 和 dimensionColumns",
+            "allowedValues": ["month", "campus"],
+            "requiredAction": "从 dimensionColumns 删除 rejectedValue，保留原有其他维度",
+        }
+    ]
+    assert _analysis_allowed_mutation_paths(issues) == ("requirements[0].dimensionColumns",)
 
 
 @pytest.mark.anyio
@@ -1467,7 +1697,10 @@ async def test_提纲结构错误会携带强反馈纠错而不是盲重试():
                     }
                 ],
             )
-        return ReportOutline(title="运营分析报告", sections=("执行摘要", "关键发现"))
+        return ReportOutline(
+            title="运营分析报告",
+            sections=("执行摘要", "分析范围与方法", "关键发现", "局限性", "建议"),
+        )
 
     runtime._run_planner = run_planner
     profile_registry = ReportingProfileRegistry(documents={}, config_paths=())
@@ -1498,6 +1731,130 @@ async def test_提纲结构错误会携带强反馈纠错而不是盲重试():
     assert "previousOutput" not in correction
     assert correction["validationFeedback"]["issues"][0]["path"] == "sections"
     assert "自然语言章节标题" in correction["instruction"]
+
+
+def test_提纲允许在profile必选章节之间增加中文章节():
+    profile = resolve_reporting_profile(
+        ReportingProfileRegistry(documents={}, config_paths=()), None
+    )
+    outline = ReportOutline(
+        title="运营分析报告",
+        sections=(
+            "执行摘要",
+            "分析范围与方法",
+            "收入与预算执行分析",
+            "关键发现",
+            "局限性",
+            "建议",
+        ),
+    )
+
+    assert _outline_section_issues(outline, profile) == []
+
+
+@pytest.mark.parametrize(
+    ("sections", "reason"),
+    (
+        (
+            ("执行摘要", "分析范围与方法", "关键发现", "建议"),
+            "必须使用原始 title",
+        ),
+        (
+            ("摘要", "分析范围与方法", "关键发现", "局限性", "建议"),
+            "必须使用原始 title",
+        ),
+        (
+            ("分析范围与方法", "执行摘要", "关键发现", "局限性", "建议"),
+            "相对顺序",
+        ),
+    ),
+)
+def test_提纲拒绝删除改名或打乱profile必选章节(sections: tuple[str, ...], reason: str):
+    profile = resolve_reporting_profile(
+        ReportingProfileRegistry(documents={}, config_paths=()), None
+    )
+
+    issues = _outline_section_issues(
+        ReportOutline(title="运营分析报告", sections=sections), profile
+    )
+
+    assert len(issues) == 1
+    assert issues[0]["path"] == "sections"
+    assert issues[0]["requiredTitles"] == [section.title for section in profile.sections]
+    assert reason in issues[0]["reason"]
+
+
+def test_提纲必选章节只使用自定义profile_title():
+    profile = resolve_reporting_profile(
+        ReportingProfileRegistry(documents={}, config_paths=()), None
+    )
+    custom_sections = tuple(
+        section.model_copy(update={"title": "管理层摘要"})
+        if section.code == "executive_summary"
+        else section
+        for section in profile.sections
+    )
+    custom_profile = profile.model_copy(update={"sections": custom_sections})
+    outline = ReportOutline(
+        title="运营分析报告",
+        sections=("管理层摘要", "分析范围与方法", "关键发现", "局限性", "建议"),
+    )
+
+    assert _outline_section_issues(outline, custom_profile) == []
+    issues = _outline_section_issues(
+        ReportOutline(
+            title="运营分析报告",
+            sections=("执行摘要", "分析范围与方法", "关键发现", "局限性", "建议"),
+        ),
+        custom_profile,
+    )
+    assert issues[0]["missingTitles"] == ["管理层摘要"]
+
+
+@pytest.mark.anyio
+async def test_提纲未保留profile章节时携带精确标题纠错():
+    captured: list[dict[str, object]] = []
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._outline_agent = object()
+
+    async def run_planner(_agent, payload, _run_context):
+        captured.append(payload)
+        sections = (
+            ("执行摘要", "收入分析")
+            if len(captured) == 1
+            else ("执行摘要", "分析范围与方法", "收入分析", "关键发现", "局限性", "建议")
+        )
+        return ReportOutline(title="运营分析报告", sections=sections)
+
+    runtime._run_planner = run_planner
+    profile = resolve_reporting_profile(
+        ReportingProfileRegistry(documents={}, config_paths=()), None
+    )
+    capabilities = resolve_capabilities(profile, (), ())
+    context = RunContext(
+        run_id="workflow-run",
+        session_id="workflow-session",
+        user_id="user-1",
+        session_state={
+            REPORT_WORKFLOW_INPUT_STATE_KEY: envelope().workflow_payload(
+                default_source_ids=("operations",)
+            ),
+            REPORT_SCHEMA_SNAPSHOTS_STATE_KEY: [],
+            REPORT_DATA_SHAPES_STATE_KEY: [],
+            REPORT_EFFECTIVE_PROFILE_STATE_KEY: profile.model_dump(mode="json", by_alias=True),
+            REPORT_CAPABILITIES_STATE_KEY: capabilities.model_dump(mode="json", by_alias=True),
+            REPORT_RECONCILIATIONS_STATE_KEY: [],
+        },
+    )
+
+    output = await runtime.generate_outline(StepInput(input=envelope()), context)
+
+    assert output.content.sections[2] == "收入分析"
+    correction = captured[1]["correction"]
+    issue = correction["validationFeedback"]["issues"][0]
+    assert issue["requiredTitles"] == [section.title for section in profile.sections]
+    assert issue["missingTitles"] == ["分析范围与方法", "关键发现", "局限性", "建议"]
+    assert "可以根据报告目标和真实数据增加其他中文章节" in correction["instruction"]
 
 
 def test_模型纠错反馈限制拒绝值大小但保留允许值和修复动作():
@@ -1570,6 +1927,37 @@ def test_提纲假设拒绝填补缺失数据但允许如实披露():
     )
 
     assert outline.assumptions == ("2025年12月数据缺失，报告仅披露可用期间，不进行估算。",)
+
+
+@pytest.mark.parametrize(
+    "assumption",
+    (
+        "应完成收入基于去年同期收入与预算的比例推算。",
+        "将全年结果年化后展示。",
+        "对月度波动进行平滑处理。",
+        "采用拟合值补齐尚未发生的月份。",
+    ),
+)
+def test_提纲假设拒绝任何派生或拟合数据(assumption: str):
+    with pytest.raises(ValueError, match="不得拟合、估算、推算、插值、外推、年化、平滑或补齐数据"):
+        ReportOutline(
+            title="运营分析报告",
+            sections=("数据限制",),
+            assumptions=(assumption,),
+        )
+
+
+def test_分析描述拒绝派生数据但允许否定披露():
+    with pytest.raises(ValueError, match="不得拟合、估算、推算、插值、外推、年化、平滑或补齐数据"):
+        AnalysisItem(code="income", description="根据去年同期比例推算收入", requirementIds=("r1",))
+
+    item = AnalysisItem(
+        code="income",
+        description="只分析观测值，不进行估算或年化",
+        requirementIds=("r1",),
+    )
+
+    assert item.description == "只分析观测值，不进行估算或年化"
 
 
 @pytest.mark.parametrize(

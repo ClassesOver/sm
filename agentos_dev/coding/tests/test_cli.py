@@ -16,7 +16,6 @@ from agentos_dev.coding.cli import (
     create_cli_app_agent,
     run_cli,
 )
-from agentos_dev.coding.execution import _create_files_patch, is_coding_tool_scheduler_hook
 from agentos_dev.context_management import ContextBudgetController, ProjectedOpenAIChat
 from agentos_dev.instructions import (
     CODING_DELIVERABLE_VERIFICATION_INSTRUCTION,
@@ -25,6 +24,7 @@ from agentos_dev.instructions import (
 )
 from agentos_dev.settings import AgentSettings
 from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
+from agentos_dev.task_execution.execution import _create_files_patch, is_coding_tool_scheduler_hook
 
 
 def test_cli_main_reads_complete_stdin_without_rewriting(monkeypatch):
@@ -72,9 +72,9 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.model.base_url == settings.openai_base_url
     assert agent.model.timeout == 123
     assert agent.model.max_retries == 0
-    assert agent.model.extra_body == {"enable_thinking": True}
-    assert agent.model.reasoning_effort == "medium"
-    assert agent.model.get_request_params()["reasoning_effort"] == "medium"
+    assert agent.model.extra_body == {"enable_thinking": True, "thinking_budget": 16384}
+    assert agent.model.reasoning_effort == "max"
+    assert agent.model.get_request_params()["reasoning_effort"] == "max"
     assert agent.model.request_params == {"parallel_tool_calls": True}
     assert agent.add_history_to_context is False
     assert agent.debug_mode is False
@@ -107,8 +107,8 @@ def test_create_cli_agent_is_independent_coding_agent():
     }
     assert app_agent.model is agent.model
     assert app_agent.model.id == settings.model_id
-    assert app_agent.model.extra_body == {"enable_thinking": True}
-    assert app_agent.model.reasoning_effort == "medium"
+    assert app_agent.model.extra_body == {"enable_thinking": True, "thinking_budget": 16384}
+    assert app_agent.model.reasoning_effort == "max"
     assert app_agent.model.request_params == {"parallel_tool_calls": True}
     assert app_agent.add_history_to_context is False
     assert app_agent.num_history_runs is None
@@ -167,7 +167,7 @@ def test_cli_agent_explicitly_honors_thinking_setting():
     )
 
     assert agent.model.extra_body == {"enable_thinking": False}
-    assert agent.model.reasoning_effort == "medium"
+    assert agent.model.reasoning_effort == "max"
 
 
 def test_create_files_patch_builds_one_native_multi_file_patch():

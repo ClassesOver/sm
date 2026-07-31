@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from .models import AttemptSnapshot, AttemptState, TaskSnapshot, utcnow
+from ..task_execution.models import AttemptSnapshot, AttemptState, TaskSnapshot, utcnow
 
 MAX_CONTINUATIONS = 20
 SAME_ERROR_LIMIT = 3

@@ -4,7 +4,6 @@ import logging
 import unicodedata
 from contextlib import suppress
 from pathlib import PurePosixPath
-from typing import cast
 from urllib.parse import quote
 
 from ag_ui.core import (
@@ -16,7 +15,6 @@ from ag_ui.core import (
 from ag_ui.encoder import EventEncoder
 from agno.agent import Agent
 from agno.models.message import Message
-from agno.models.openai import OpenAIChat
 from agno.os.interfaces.agui.input import extract_tool_messages, extract_user_input
 from agno.os.interfaces.agui.router import run_entity
 from agno.session.agent import AgentSession
@@ -49,15 +47,6 @@ from .branch import (
 )
 from .coding import AgnoCodingExecutor, CodingTaskSupervisor
 from .coding.agent import create_coding_agent
-from .coding.execution import (
-    CODING_EXECUTION_MIGRATION_STATE_KEY,
-    CODING_FINISH_FAILURE_STATE_KEY,
-    CODING_FINISH_STATE_KEY,
-    CODING_TASK_DEPENDENCY,
-    CODING_TOOL_OUTPUT_STATE_KEY,
-    CODING_TOOL_PROGRESS_STATE_KEY,
-    CodingExecutionKernel,
-)
 from .coding.reporting.agent import (
     create_report_agent,
     create_report_worker,
@@ -73,6 +62,7 @@ from .coding.reporting.data_sources import (
     REPORT_DATASET_HANDLES_STATE_KEY,
 )
 from .coding.reporting.entrypoints import ReportServerIdentity
+from .coding.reporting.execution import ReportTaskRunner
 from .coding.reporting.instructions import build_report_agent_instructions
 from .coding.reporting.metadata import ReportingMetadataClient
 from .coding.reporting.models import ReportingError
@@ -90,16 +80,6 @@ from .coding.reporting.workspace import (
     REPORT_DELIVERY_STATE_KEY,
     REPORT_JOBS_STATE_KEY,
 )
-from .coding.repository import (
-    TERMINAL_EXECUTION_STATUSES,
-    CodingRepositoryError,
-    CodingTaskRepository,
-)
-from .coding.tools import (
-    CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
-    CODEX_EXEC_NEXT_SESSION_STATE_KEY,
-    CODEX_EXEC_SESSIONS_STATE_KEY,
-)
 from .context_management import (
     HISTORY_CONTEXT_DESCRIPTION,
     ProtectedCompressionManager,
@@ -114,6 +94,26 @@ from .observability import configure_tracing
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
 from .skills import SkillValidatorRegistry, load_skills, public_skill_metadata
+from .task_execution.execution import (
+    CODING_EXECUTION_MIGRATION_STATE_KEY,
+    CODING_FINISH_FAILURE_STATE_KEY,
+    CODING_FINISH_STATE_KEY,
+    CODING_TASK_DEPENDENCY,
+    CODING_TOOL_OUTPUT_STATE_KEY,
+    CODING_TOOL_PROGRESS_STATE_KEY,
+    CodingExecutionKernel,
+    TaskExecutionKernel,
+)
+from .task_execution.repository import (
+    TERMINAL_EXECUTION_STATUSES,
+    CodingRepositoryError,
+    CodingTaskRepository,
+)
+from .task_execution.tools import (
+    CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
+    CODEX_EXEC_NEXT_SESSION_STATE_KEY,
+    CODEX_EXEC_SESSIONS_STATE_KEY,
+)
 from .workspace import (
     WorkspaceError,
     WorkspacePathConflict,
@@ -888,36 +888,34 @@ coding_agent = create_coding_agent(
     coding_repository,
     context_token_budget=settings.context_token_budget,
     output_token_reserve=settings.output_token_reserve,
+    enable_thinking=settings.coding_enable_thinking,
+    reasoning_effort=settings.coding_reasoning_effort,
+    thinking_budget=settings.coding_thinking_budget,
 )
 # Coding/Report 不属于助手 Team，继续沿用各自原有的长任务执行配置。
 coding_agent.checkpoint = "tool-batch"
-coding_model = cast(OpenAIChat, coding_agent.model)
-coding_model.extra_body = {
-    **(coding_model.extra_body or {}),
-    "enable_thinking": settings.coding_enable_thinking,
-}
 report_worker = create_report_worker(
-    coding_agent,
+    settings,
+    agent_database.async_db,
     workspace_service,
     coding_repository,
     instructions=build_report_agent_instructions,
-    report_enable_thinking=settings.report_enable_thinking,
+    report_coding_enable_thinking=settings.report_coding_enable_thinking,
     report_enable_vision=settings.report_enable_vision,
     context_token_budget=settings.context_token_budget,
     output_token_reserve=settings.output_token_reserve,
 )
-report_supervisor = CodingTaskSupervisor(
+report_task_runner = ReportTaskRunner(
     coding_repository,
-    AgnoCodingExecutor(lambda _agent_id: report_worker),
-    execution_cleanup=CodingExecutionKernel(workspace_service, coding_repository),
-    validator_registry=SkillValidatorRegistry.from_skills(report_worker.skills),
+    report_worker,
+    TaskExecutionKernel(workspace_service, coding_repository),
 )
 report_source_registry = load_configured_report_source_registry(settings.report_data_sources_dir)
 report_runtime = ReportWorkflowRuntime(
     db=agent_database.async_db,
     planner=report_worker,
     report_worker=report_worker,
-    supervisor=report_supervisor,
+    task_runner=report_task_runner,
     workspace_service=workspace_service,
     registry=report_source_registry,
     profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
@@ -935,7 +933,6 @@ report_runtime = ReportWorkflowRuntime(
 report_workflow_controller = ReportWorkflowController(
     report_runtime.workflow,
     cancel_cleanup=report_runtime.cleanup_cancelled,
-    publication_issuer=report_runtime.issue_http_publication,
 )
 report_agent = create_report_agent(report_worker, report_workflow_controller)
 coding_supervisor = CodingTaskSupervisor(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -46,7 +47,9 @@ class _PublicationRequirement:
 class _PublicationWorkflow:
     id = "enterprise-reporting-workflow-v1"
 
-    def __init__(self, *, reject_status: str = "PAUSED") -> None:
+    def __init__(
+        self, *, reject_status: str = "PAUSED", completed_content: dict[str, Any] | None = None
+    ) -> None:
         self.requirement = _PublicationRequirement()
         self.continue_kwargs: dict[str, Any] | None = None
         self.output = SimpleNamespace(
@@ -57,6 +60,16 @@ class _PublicationWorkflow:
             step_requirements=[self.requirement],
         )
         self.reject_status = reject_status
+        self.completed_content = completed_content or {
+            "reportId": "report-1",
+            "revision": 1,
+            "pdf": {
+                "downloadUrl": "/reports/v1/download/opaque",
+                "expiresAt": "2026-07-29T00:00:00+00:00",
+                "size": 123,
+                "sha256": "a" * 64,
+            },
+        }
 
     async def aget_run(self, run_id: str, session_id: str | None = None) -> Any:
         assert run_id == "workflow-run-1"
@@ -68,12 +81,7 @@ class _PublicationWorkflow:
         assert kwargs["run_response"] is self.output
         if self.requirement.action == "approve":
             self.output.status = "COMPLETED"
-            self.output.content = {
-                "reportId": "report-1",
-                "revision": 1,
-                "pdfPath": "reports/internal.pdf",
-                "markdownPath": "reports/internal.md",
-            }
+            self.output.content = self.completed_content
             self.output.active_step_requirements = []
             return self.output
         self.output.status = self.reject_status
@@ -91,7 +99,68 @@ class _PublicationWorkflow:
         raise AssertionError(f"本测试不取消 Workflow: {run_id}")
 
 
-def _context() -> RunContext:
+class _BlockingWorkflow:
+    id = "enterprise-reporting-workflow-v1"
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.arun_calls = 0
+        self.cancelled_run_ids: list[str] = []
+        self.output: Any = None
+
+    async def arun(self, *_args: Any, **_kwargs: Any) -> Any:
+        self.arun_calls += 1
+        if self.arun_calls > 1:
+            return SimpleNamespace(
+                status="COMPLETED",
+                user_id="user-1",
+                content=None,
+                active_step_requirements=[],
+                step_requirements=[],
+            )
+        self.started.set()
+        await self.release.wait()
+        self.output = SimpleNamespace(
+            status="CANCELLED" if self.cancelled_run_ids else "COMPLETED",
+            user_id="user-1",
+            content=None,
+            active_step_requirements=[],
+            step_requirements=[],
+        )
+        return self.output
+
+    async def aget_run(self, _run_id: str, session_id: str | None = None) -> Any:
+        _ = session_id
+        return self.output
+
+    async def acontinue_run(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(f"本测试不恢复 Workflow: {args!r} {kwargs!r}")
+
+    async def acancel_run(self, run_id: str) -> bool:
+        self.cancelled_run_ids.append(run_id)
+        return True
+
+
+def _start_context() -> RunContext:
+    return RunContext(
+        run_id="external-run-1",
+        session_id="thread-1",
+        user_id="user-1",
+        session_state={},
+    )
+
+
+def _workflow_input() -> dict[str, str]:
+    return {"version": "1", "prompt": "分析 2025 年经营情况"}
+
+
+def _context(
+    *,
+    run_id: str = "external-run-1",
+    dependencies: bool = True,
+    review_stage: str = "publication",
+) -> RunContext:
     control = ReportWorkflowControl(
         workflowId="enterprise-reporting-workflow-v1",
         workflowRunId="workflow-run-1",
@@ -101,61 +170,38 @@ def _context() -> RunContext:
         userId="user-1",
         status="paused",
         review=ReportReviewSnapshot(
-            stage="publication",
+            stage=review_stage,
             title="审核最终报告",
             message="请审核",
             preview={"revision": 1},
         ),
     )
     return RunContext(
-        run_id="external-run-1",
+        run_id=run_id,
         session_id="thread-1",
         user_id="user-1",
         session_state={REPORT_WORKFLOW_CONTROL_STATE_KEY: control.public_dict()},
-        dependencies={
-            REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
-                "externalRunId": "external-run-1",
-                "threadId": "thread-1",
-                "userId": "user-1",
+        dependencies=(
+            {
+                REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
+                    "externalRunId": "external-run-1",
+                    "threadId": "thread-1",
+                    "userId": "user-1",
+                }
             }
-        },
+            if dependencies
+            else None
+        ),
     )
 
 
 @pytest.mark.anyio
-async def test_publication只在批准且workflow完成后签发且隐藏内部路径():
+async def test_controller返回workflow正式发布结果且隐藏内部路径():
     workflow = _PublicationWorkflow()
-    issued: list[dict[str, Any]] = []
-
-    async def issue(
-        scope: dict[str, str],
-        workflow_session_id: str,
-        workflow_run_id: str,
-        output: Any,
-    ) -> dict[str, Any]:
-        assert scope["thread_id"] == "thread-1"
-        assert workflow_session_id == "workflow-session-1"
-        assert workflow_run_id == "workflow-run-1"
-        assert output.status == "COMPLETED"
-        result = {
-            "reportId": "report-1",
-            "revision": 1,
-            "pdf": {
-                "downloadUrl": "/reports/v1/download/opaque",
-                "expiresAt": "2026-07-29T00:00:00+00:00",
-                "size": 123,
-                "sha256": "a" * 64,
-            },
-        }
-        issued.append(result)
-        return result
-
-    controller = ReportWorkflowController(lambda: workflow, publication_issuer=issue)
-    assert issued == []
+    controller = ReportWorkflowController(lambda: workflow)
 
     result = await controller.approve(_context())
 
-    assert len(issued) == 1
     assert workflow.continue_kwargs is not None
     assert workflow.continue_kwargs["dependencies"] == {
         REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
@@ -164,7 +210,7 @@ async def test_publication只在批准且workflow完成后签发且隐藏内部�
             "userId": "user-1",
         }
     }
-    assert result == {"ok": True, "status": "completed", "report": issued[0]}
+    assert result == {"ok": True, "status": "completed", "report": workflow.completed_content}
     assert "pdfPath" not in repr(result)
     assert "markdownPath" not in repr(result)
 
@@ -172,18 +218,10 @@ async def test_publication只在批准且workflow完成后签发且隐藏内部�
 @pytest.mark.anyio
 async def test_publication拒绝并进入新revision时不签发旧grant():
     workflow = _PublicationWorkflow()
-    issued = False
-
-    async def issue(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        nonlocal issued
-        issued = True
-        return {}
-
-    controller = ReportWorkflowController(lambda: workflow, publication_issuer=issue)
+    controller = ReportWorkflowController(lambda: workflow)
 
     result = await controller.reject("补充异常归因", _context())
 
-    assert issued is False
     assert result["status"] == "paused"
     assert result["review"]["stage"] == "publication"
     assert result["review"]["preview"]["revision"] == 2
@@ -191,14 +229,10 @@ async def test_publication拒绝并进入新revision时不签发旧grant():
 
 @pytest.mark.anyio
 async def test_cli_publication结果只返回本地文件身份():
-    workflow = _PublicationWorkflow()
+    published = {"path": "reports/result.pdf", "size": 123, "sha256": "b" * 64}
+    workflow = _PublicationWorkflow(completed_content=published)
 
-    async def issue(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {"path": "reports/result.pdf", "size": 123, "sha256": "b" * 64}
-
-    result = await ReportWorkflowController(lambda: workflow, publication_issuer=issue).approve(
-        _context()
-    )
+    result = await ReportWorkflowController(lambda: workflow).approve(_context())
 
     assert result == {
         "ok": True,
@@ -209,11 +243,103 @@ async def test_cli_publication结果只返回本地文件身份():
 
 
 @pytest.mark.anyio
-async def test_publication未配置issuer时失败关闭():
+async def test_hitl跨agent回合沿用已持久化workflow作用域():
+    workflow = _PublicationWorkflow()
+    controller = ReportWorkflowController(lambda: workflow)
+
+    result = await controller.approve(_context(run_id="next-agent-run", dependencies=False))
+
+    assert result["status"] == "completed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("stage", "code"),
+    [
+        ("request", "report_request_clarification_required"),
+        ("agent", "report_agent_selection_required"),
+    ],
+)
+async def test_request和agent审核阶段拒绝通用批准(stage, code):
     workflow = _PublicationWorkflow()
     controller = ReportWorkflowController(lambda: workflow)
 
     with pytest.raises(ReportingError) as captured:
-        await controller.approve(_context())
+        await controller.approve(_context(review_stage=stage))
 
-    assert captured.value.code == "report_publication_unavailable"
+    assert captured.value.code == code
+    assert workflow.requirement.action is None
+    assert workflow.continue_kwargs is None
+
+
+@pytest.mark.anyio
+async def test_controller拒绝相同scope并发启动workflow():
+    workflow = _BlockingWorkflow()
+    controller = ReportWorkflowController(lambda: workflow)
+    first = asyncio.create_task(controller.start(_workflow_input(), _start_context()))
+    await workflow.started.wait()
+    try:
+        with pytest.raises(ReportingError) as captured:
+            await controller.start(_workflow_input(), _start_context())
+
+        assert captured.value.code == "report_workflow_active"
+        assert workflow.arun_calls == 1
+    finally:
+        workflow.release.set()
+        await first
+
+
+@pytest.mark.anyio
+async def test_controller在活跃run尚未持久化时接受外部取消():
+    workflow = _BlockingWorkflow()
+    cleanup_calls: list[tuple[dict[str, str], str, str]] = []
+
+    async def cleanup(scope: dict[str, str], session_id: str, run_id: str) -> None:
+        cleanup_calls.append((scope, session_id, run_id))
+
+    controller = ReportWorkflowController(lambda: workflow, cancel_cleanup=cleanup)
+    running = asyncio.create_task(controller.start(_workflow_input(), _start_context()))
+    await workflow.started.wait()
+
+    try:
+        result = await controller.cancel_external(
+            external_run_id="external-run-1",
+            thread_id="thread-1",
+            user_id="user-1",
+        )
+
+        assert result == {"ok": True, "status": "cancelling"}
+        assert len(workflow.cancelled_run_ids) == 1
+        assert len(cleanup_calls) == 1
+    finally:
+        workflow.release.set()
+        await running
+
+
+@pytest.mark.anyio
+async def test_controller接受仍处于running状态的协作式取消():
+    workflow = _BlockingWorkflow()
+    workflow.output = SimpleNamespace(
+        status="RUNNING",
+        user_id="user-1",
+        content=None,
+        active_step_requirements=[],
+        step_requirements=[],
+    )
+    cleanup_calls: list[tuple[dict[str, str], str, str]] = []
+
+    async def cleanup(scope: dict[str, str], session_id: str, run_id: str) -> None:
+        cleanup_calls.append((scope, session_id, run_id))
+
+    controller = ReportWorkflowController(lambda: workflow, cancel_cleanup=cleanup)
+
+    result = await controller.cancel_external(
+        external_run_id="external-run-1",
+        thread_id="thread-1",
+        user_id="user-1",
+        probe_storage=True,
+    )
+
+    assert result == {"ok": True, "status": "cancelling"}
+    assert len(workflow.cancelled_run_ids) == 1
+    assert len(cleanup_calls) == 1

@@ -30,7 +30,7 @@ CODING_RECENT_ASSISTANT_TURNS = 2
 CODING_CHECKPOINT_MAX_BYTES = 32 * 1024
 CODING_CONTEXT_REBASE_THRESHOLD = 0.75
 CODING_CONTEXT_REBASE_TARGET = 0.50
-CODING_TOOL_BATCH_LIMIT = 4
+CODING_TOOL_BATCH_LIMIT = 10
 CODING_TOOL_NAMES = frozenset(
     {
         "terminal",
@@ -1490,8 +1490,11 @@ class ProjectedOpenAIChat(OpenAIChat):
                 "ok": False,
                 "code": "coding_tool_batch_rejected",
                 "batchSize": len(function_calls),
-                "allowed": "单个调用，或 2 至 4 个 parallel_safe_read 调用",
-                "requiredActions": ["把写入、验证或 finish 调用拆成单个批次后重试。"],
+                "allowed": f"单个调用，或 2 至 {CODING_TOOL_BATCH_LIMIT} 个 parallel_safe_read 调用",
+                "requiredActions": [
+                    f"只读调用按每批最多 {CODING_TOOL_BATCH_LIMIT} 个拆分；"
+                    "terminal、process、update_plan、文件修改、verify 和 finish_task 各自单独调用。"
+                ],
             },
             ensure_ascii=False,
             separators=(",", ":"),

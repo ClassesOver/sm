@@ -16,10 +16,25 @@ from agno.tools import Function
 from agno.tools.function import FunctionCall
 from daytona.common.errors import DaytonaNotFoundError
 
-import agentos_dev.coding.execution as execution_module
+import agentos_dev.task_execution.execution as execution_module
 from agentos_dev.agent_control import AGENT_PLAN_STATE_KEY
 from agentos_dev.coding import CodingScope, Lease
-from agentos_dev.coding.execution import (
+from agentos_dev.coding.executor import CODING_FINISH_FAILURE_STATE_KEY
+from agentos_dev.coding.tests.workspace_fakes import (
+    AsyncFakeClient,
+    AsyncFakeFs,
+    AsyncFakeProcess,
+    AsyncMemoryRegistry,
+    service,
+)
+from agentos_dev.database import create_agent_database
+from agentos_dev.skills import (
+    CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
+    SkillValidatorRegistry,
+    load_builtin_coding_skills,
+    skill_script_receipt_hook,
+)
+from agentos_dev.task_execution.execution import (
     CODING_EXECUTION_MIGRATION_STATE_KEY,
     CODING_TASK_DEPENDENCY,
     CODING_TOOL_FAILURE_STATE_KEY,
@@ -34,25 +49,10 @@ from agentos_dev.coding.execution import (
     _task_tool_parallel_safe,
     create_coding_tool_scheduler_hook,
 )
-from agentos_dev.coding.executor import CODING_FINISH_FAILURE_STATE_KEY
-from agentos_dev.coding.repository import CodingRepositoryError, CodingTaskRepository
-from agentos_dev.coding.tests.workspace_fakes import (
-    AsyncFakeClient,
-    AsyncFakeFs,
-    AsyncFakeProcess,
-    AsyncMemoryRegistry,
-    service,
-)
-from agentos_dev.coding.tools import (
+from agentos_dev.task_execution.repository import CodingRepositoryError, CodingTaskRepository
+from agentos_dev.task_execution.tools import (
     CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
     CODEX_EXEC_SESSIONS_STATE_KEY,
-)
-from agentos_dev.database import create_agent_database
-from agentos_dev.skills import (
-    CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
-    SkillValidatorRegistry,
-    load_builtin_coding_skills,
-    skill_script_receipt_hook,
 )
 from agentos_dev.workspace import (
     MANAGED_PROCESS_PREFIX,
@@ -1513,6 +1513,7 @@ async def test_agno_tool_batch_caps_reads_and_prioritizes_skill_script_execution
     execution_runtime,
 ):
     runtime = execution_runtime
+    assert MAX_PARALLEL_READ_TOOLS == 10
     hook = create_coding_tool_scheduler_hook(runtime.repository)
     active_reads = 0
     started_reads = 0
@@ -1984,6 +1985,39 @@ async def test_verified_state_in_progress_plan_reopens_work_and_invalidates_old_
     assert blocked["code"] == "coding_verification_required"
     assert blocked["details"]["mutationSequence"] == 2
     assert blocked["details"].get("failedVerificationId") != verification_id
+
+
+@pytest.mark.anyio
+async def test_replace_text内容不变时不记录mutation(tmp_path):
+    workspace = service(tmp_path)
+    workspace.create_file("thread", "result.txt", b"done")
+    kernel = CodingExecutionKernel(workspace, SimpleNamespace())
+    scope = CodingTaskScope(
+        task=SimpleNamespace(mutation_sequence=7),
+        external_run_id="external-run",
+        internal_run_id="internal-run",
+        owner_user_id="user",
+        thread_id="thread",
+        sandbox_id=str(workspace.sandbox_for("thread").id),
+        lease_owner="lease",
+        lease_epoch=1,
+        attempt_no=0,
+    )
+
+    result = await kernel.patch(
+        "replace",
+        "result.txt",
+        "done",
+        "done",
+        False,
+        None,
+        None,
+        _scope=scope,
+    )
+
+    assert result["code"] == "tool_no_progress"
+    assert result["details"]["mutationSequence"] == 7
+    assert workspace.file_bytes("thread", "result.txt")[0] == b"done"
 
 
 @pytest.mark.anyio

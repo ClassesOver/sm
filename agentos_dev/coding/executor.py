@@ -10,7 +10,7 @@ from agno.agent import Agent
 from agno.exceptions import ModelAuthenticationError
 from agno.run.base import RunStatus
 
-from .models import AttemptSnapshot, CodingScope
+from ..task_execution.models import AttemptSnapshot, CodingScope
 
 CODING_FINISH_FAILURE_STATE_KEY = "agentos_coding_finish_failure"
 

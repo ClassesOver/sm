@@ -6,14 +6,14 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import delete, select
 
-from agentos_dev.coding.repository import (
+from agentos_dev.database import create_agent_database
+from agentos_dev.task_execution.repository import (
     MAX_TERMINAL_OUTPUT_BYTES,
     TASK_SCHEMA_VERSION,
     CodingRepositoryError,
     CodingTaskRepository,
     utcnow,
 )
-from agentos_dev.database import create_agent_database
 
 
 @pytest.fixture

@@ -8,8 +8,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
-from .executor import AgnoCodingExecutor, AgnoRunState, provider_error_suspend_code
-from .models import (
+from ..task_execution.models import (
     AttemptOutcome,
     AttemptSnapshot,
     AttemptState,
@@ -19,10 +18,11 @@ from .models import (
     TaskSnapshot,
     TaskState,
 )
+from ..task_execution.repository import CodingRepositoryError, CodingTaskRepository
+from ..task_execution.session import TaskSession
+from .executor import AgnoCodingExecutor, AgnoRunState, provider_error_suspend_code
 from .policy import ContinuationAction, ContinuationPolicy
-from .repository import CodingRepositoryError, CodingTaskRepository
 from .run_manager import InternalRunManager
-from .session import TaskSession
 
 MAX_TOOL_EVENT_ARGUMENT_CHARS = 600
 MAX_TOOL_ARGUMENT_VALUE_CHARS = 240
@@ -757,7 +757,7 @@ class CodingTaskSupervisor:
             return task
         from dataclasses import replace
 
-        from .repository import error_fingerprint
+        from ..task_execution.repository import error_fingerprint
 
         fingerprint = error_fingerprint(error)
         count = task.same_error_count + 1 if task.error_fingerprint == fingerprint else 1

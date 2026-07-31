@@ -35,6 +35,7 @@ services:
     ports:
       - "33042:7777"
     environment:
+      AGENT_OS_WORKERS: "1"
       AGENT_POSTGRES_HOST: agent-db
       AGENT_POSTGRES_PORT: "5432"
       AGENT_POSTGRES_DB: ${AGENT_POSTGRES_DB:-dev}

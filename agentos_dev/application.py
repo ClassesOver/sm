@@ -10,9 +10,9 @@ from agno.os.interfaces.agui import AGUI
 from agno.team import Team
 from fastapi import FastAPI
 
-from .coding.repository import CodingTaskRepository
 from .database import AgentDatabase
 from .settings import AgentSettings
+from .task_execution.repository import CodingTaskRepository
 from .workspace import WorkspaceService
 
 if TYPE_CHECKING:

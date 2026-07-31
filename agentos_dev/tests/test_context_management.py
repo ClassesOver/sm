@@ -18,6 +18,7 @@ from agno.tools.function import FunctionCall
 import agentos_dev.context_management as context_management_module
 from agentos_dev.context_management import (
     CODING_CHECKPOINT_MAX_BYTES,
+    CODING_TOOL_BATCH_LIMIT,
     COMPRESSIBLE_HISTORY_TOOLS,
     HISTORY_CONTEXT_DESCRIPTION,
     MAX_SUMMARY_TOKENS,
@@ -608,8 +609,9 @@ def _function_call(name, entrypoint, index, arguments=None):
 
 
 @pytest.mark.anyio
-async def test_projected_model_runs_four_safe_reads_in_parallel_and_keeps_result_order():
+async def test_projected_model_runs_ten_safe_reads_in_parallel_and_keeps_result_order():
     model = ProjectedOpenAIChat(id="test")
+    assert CODING_TOOL_BATCH_LIMIT == 10
     entered = 0
     all_entered = asyncio.Event()
     release = asyncio.Event()
@@ -617,13 +619,14 @@ async def test_projected_model_runs_four_safe_reads_in_parallel_and_keeps_result
     async def read_file(path):
         nonlocal entered
         entered += 1
-        if entered == 4:
+        if entered == CODING_TOOL_BATCH_LIMIT:
             all_entered.set()
         await release.wait()
         return path
 
     calls = [
-        _function_call("read_file", read_file, index, {"path": str(index)}) for index in range(4)
+        _function_call("read_file", read_file, index, {"path": str(index)})
+        for index in range(CODING_TOOL_BATCH_LIMIT)
     ]
     results = []
 
@@ -636,7 +639,9 @@ async def test_projected_model_runs_four_safe_reads_in_parallel_and_keeps_result
     release.set()
     await asyncio.wait_for(task, timeout=1)
 
-    assert [message.tool_call_id for message in results] == [f"call-{index}" for index in range(4)]
+    assert [message.tool_call_id for message in results] == [
+        f"call-{index}" for index in range(CODING_TOOL_BATCH_LIMIT)
+    ]
 
 
 @pytest.mark.anyio
@@ -720,7 +725,7 @@ async def test_projected_model_writes_metrics_inside_non_stream_model_call(monke
 @pytest.mark.parametrize(
     "names",
     [
-        ["read_file"] * 5,
+        ["read_file"] * 11,
         ["read_file", "apply_patch"],
         ["verify", "finish_task"],
     ],
@@ -747,6 +752,10 @@ async def test_projected_model_rejects_entire_invalid_tool_batch_without_entrypo
     assert all(
         json.loads(message.content)["code"] == "coding_tool_batch_rejected" for message in results
     )
+    if names == ["read_file"] * 11:
+        feedback = json.loads(results[0].content)
+        assert feedback["allowed"] == "单个调用，或 2 至 10 个 parallel_safe_read 调用"
+        assert "每批最多 10 个" in feedback["requiredActions"][0]
 
 
 @pytest.mark.anyio

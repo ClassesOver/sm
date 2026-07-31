@@ -43,6 +43,13 @@ def _positive_int(
     return value
 
 
+def _reasoning_effort(values: MutableMapping[str, str], name: str, default: str = "max") -> str:
+    value = values.get(name, default).strip().lower()
+    if value not in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+        raise ValueError(f"{name} 必须是 minimal、low、medium、high、xhigh 或 max")
+    return value
+
+
 def _database_url(values: MutableMapping[str, str]) -> str:
     configured = values.get("AGENT_DB_URL") or values.get("DATABASE_URL")
     if configured:
@@ -153,6 +160,9 @@ class AgentSettings:
     workers: int
     reload: bool
     access_log: bool
+    agentos_jwt_verification_key: str | None
+    agentos_jwt_algorithm: str
+    agentos_jwt_audience: str | None
     debug: bool
     cors_allowed_origins: tuple[str, ...]
     database_url: str
@@ -167,6 +177,11 @@ class AgentSettings:
     enable_session_summaries: bool
     assistant_enable_thinking: bool
     coding_enable_thinking: bool
+    coding_reasoning_effort: str
+    coding_thinking_budget: int
+    report_coding_enable_thinking: bool
+    report_coding_reasoning_effort: str
+    report_coding_thinking_budget: int
     report_enable_thinking: bool
     report_enable_vision: bool
     tracing_enabled: bool
@@ -228,9 +243,12 @@ class AgentSettings:
             openai_api_key=values.get("OPENAI_API_KEY"),
             host=values.get("AGENT_OS_HOST", "127.0.0.1"),
             port=_positive_int(values, "AGENT_OS_PORT", 7777, maximum=65535),
-            workers=_positive_int(values, "AGENT_OS_WORKERS", 4),
+            workers=_positive_int(values, "AGENT_OS_WORKERS", 1, maximum=1),
             reload=_flag(values.get("AGENT_OS_RELOAD")),
             access_log=_flag(values.get("AGENT_OS_ACCESS_LOG")),
+            agentos_jwt_verification_key=(values.get("JWT_VERIFICATION_KEY", "").strip() or None),
+            agentos_jwt_algorithm=(values.get("JWT_ALGORITHM", "HS256").strip() or "HS256"),
+            agentos_jwt_audience=(values.get("JWT_AUDIENCE", "").strip() or None),
             debug=_flag(values.get("AGENT_DEBUG")),
             cors_allowed_origins=origins,
             database_url=database_url_from_environment(values),
@@ -256,6 +274,19 @@ class AgentSettings:
                 values.get("AGENT_ASSISTANT_ENABLE_THINKING"), default=False
             ),
             coding_enable_thinking=_flag(values.get("AGENT_CODING_ENABLE_THINKING"), default=True),
+            coding_reasoning_effort=_reasoning_effort(values, "AGENT_CODING_REASONING_EFFORT"),
+            coding_thinking_budget=_positive_int(
+                values, "AGENT_CODING_THINKING_BUDGET", 16384, maximum=131072
+            ),
+            report_coding_enable_thinking=_flag(
+                values.get("AGENT_REPORT_CODING_ENABLE_THINKING"), default=True
+            ),
+            report_coding_reasoning_effort=_reasoning_effort(
+                values, "AGENT_REPORT_CODING_REASONING_EFFORT"
+            ),
+            report_coding_thinking_budget=_positive_int(
+                values, "AGENT_REPORT_CODING_THINKING_BUDGET", 16384, maximum=131072
+            ),
             report_enable_thinking=_flag(values.get("AGENT_REPORT_ENABLE_THINKING"), default=True),
             report_enable_vision=_flag(values.get("AGENT_REPORT_ENABLE_VISION"), default=False),
             tracing_enabled=_flag(values.get("AGENT_TRACING_ENABLED")),

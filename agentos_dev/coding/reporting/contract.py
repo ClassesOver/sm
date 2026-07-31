@@ -6,7 +6,15 @@ import re
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PositiveInt,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from sqlglot import exp, parse
 
 from .models import ReportingError
@@ -51,6 +59,10 @@ class ReportPeriod(StrictModel):
         if self.start > self.end:
             raise ValueError("period.start 不能晚于 period.end")
         return self
+
+    @field_serializer("start", "end")
+    def serialize_date(self, value: date) -> str:
+        return value.isoformat()
 
 
 class SchemaInput(StrictModel):
@@ -108,6 +120,58 @@ class ReportRequestEnvelope(StrictModel):
         payload = self.model_dump(mode="json", by_alias=True, exclude_none=True)
         payload["sourceIds"] = list(self.source_ids or default_source_ids)
         return payload
+
+
+class ReportPromptInput(StrictModel):
+    version: Literal["1"] = "1"
+    prompt: str = Field(min_length=1, max_length=20_000)
+
+    @field_validator("prompt")
+    @classmethod
+    def strip_prompt(cls, value: str) -> str:
+        return value.strip()
+
+
+class ReportingWorkflowInput(StrictModel):
+    """AgentOS 可校验的 Workflow 顶层联合输入。"""
+
+    version: Literal["1"] = "1"
+    prompt: str | None = Field(default=None, min_length=1, max_length=20_000)
+    report_goal: str | None = Field(
+        default=None, alias="reportGoal", min_length=1, max_length=20_000
+    )
+    period: ReportPeriod | None = None
+    source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
+    agent_id: str | None = Field(default=None, alias="agentId", min_length=1, max_length=128)
+    schema_input: SchemaInput | None = Field(default=None, alias="schemaInput")
+
+    @model_validator(mode="after")
+    def validate_variant(self) -> ReportingWorkflowInput:
+        if self.prompt is not None:
+            if any(
+                value is not None
+                for value in (
+                    self.report_goal,
+                    self.period,
+                    self.source_ids,
+                    self.agent_id,
+                    self.schema_input,
+                )
+            ):
+                raise ValueError("prompt 输入不能混用 Envelope 字段")
+            return self
+        if self.report_goal is None or self.period is None:
+            raise ValueError("必须提供 prompt 或完整 ReportRequestEnvelope")
+        ReportRequestEnvelope.from_untrusted(
+            self.model_dump(mode="json", by_alias=True, exclude_none=True)
+        )
+        return self
+
+    def request(self) -> ReportPromptInput | ReportRequestEnvelope:
+        payload = self.model_dump(mode="json", by_alias=True, exclude_none=True)
+        if self.prompt is not None:
+            return ReportPromptInput.model_validate(payload)
+        return ReportRequestEnvelope.from_untrusted(payload)
 
 
 class ReportingAgent(StrictModel):

@@ -2,13 +2,13 @@ import hashlib
 
 import pytest
 
-from agentos_dev.coding.acceptance import (
+from agentos_dev.task_execution.acceptance import (
     AcceptanceContractError,
     AcceptancePolicy,
     normalize_acceptance_contract,
     requirement_digest,
 )
-from agentos_dev.coding.repository_impl import CodingExecution
+from agentos_dev.task_execution.repository_impl import CodingExecution
 
 
 def contract(*requirements):
@@ -37,6 +37,7 @@ def execution(
     passed=True,
     validator_sha256="a" * 64,
     requirement_value=None,
+    artifacts=None,
 ):
     current_requirement = requirement_value or requirement()
     return CodingExecution(
@@ -63,7 +64,11 @@ def execution(
                 "validatorId": current_requirement["validatorId"],
                 "validatorSha256": validator_sha256,
                 "mutationSequence": mutation_sequence,
-                "artifacts": [{"path": "reports/result.json", "size": 2, "sha256": "b" * 64}],
+                "artifacts": (
+                    artifacts
+                    if artifacts is not None
+                    else [{"path": "reports/result.json", "size": 2, "sha256": "b" * 64}]
+                ),
                 "requirements": [
                     {
                         "id": current_requirement["id"],
@@ -167,6 +172,26 @@ def test_acceptance_policy_rejects_evidence_not_bound_to_final_artifact_hash():
         [execution("passed")],
         3,
         [{"path": "reports/result.json", "size": 3, "sha256": hashlib.sha256(b"bad").hexdigest()}],
+        {"analysis:report": "a" * 64},
+    )
+
+    assert decision.code == "finish_acceptance_failed"
+    assert decision.details["requirements"][0]["status"] == "failed"
+
+
+def test_acceptance_policy_rejects_final_artifacts_that_drop_part_of_validator_evidence():
+    current_requirement = requirement(artifact_patterns=["reports/*"])
+    current_contract = normalize_acceptance_contract(contract(current_requirement))
+    evidence = [
+        {"path": "reports/result.json", "size": 2, "sha256": "b" * 64},
+        {"path": "reports/chart.png", "size": 3, "sha256": "c" * 64},
+    ]
+
+    decision = AcceptancePolicy().evaluate(
+        current_contract,
+        [execution("passed", requirement_value=current_requirement, artifacts=evidence)],
+        3,
+        [evidence[0]],
         {"analysis:report": "a" * 64},
     )
 

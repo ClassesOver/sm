@@ -14,7 +14,7 @@ from agno.skills import LocalSkills, Skills
 from agno.skills.loaders.base import SkillLoader
 from daytona.common.errors import DaytonaNotFoundError
 
-from .coding.acceptance import (
+from .task_execution.acceptance import (
     AcceptanceContractError,
     normalize_acceptance_contract,
     validate_artifact_pattern,
@@ -323,12 +323,16 @@ def load_skills(path: str | None = None) -> Skills:
     return Skills(loaders=loaders)
 
 
-def load_builtin_coding_skills(additional_path: str | None = None) -> Skills:
+def load_sandbox_execution_skills(additional_path: str | None = None) -> Skills:
     loaders: list[SkillLoader] = [LocalSkills(str(BUILTIN_CODING_SKILLS_DIR))]
     skills_path = (additional_path or "").strip()
     if skills_path:
         loaders.append(LocalSkills(skills_path, validate=False))
     return Skills(loaders=loaders)
+
+
+def load_builtin_coding_skills(additional_path: str | None = None) -> Skills:
+    return load_sandbox_execution_skills(additional_path)
 
 
 def public_skill_metadata(skills: Skills) -> list[dict[str, str]]:

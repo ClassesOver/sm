@@ -33,27 +33,47 @@ DDL 仅用于 metadata 明确返回零个 Agent 时的 schema fallback：
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting.cli
 ```
 
-仅运行内部 facade AgentOS 时使用：
+`cli_v2` 直接执行已注册到独立 Reporting AgentOS 的同款顶层 Workflow，不经过
+`ReportWorkflowController`。它接受自然语言或 `ReportRequestEnvelope` JSON，以单独一行 `/run`
+提交；暂停后修改最后一个未解决 requirement，并通过 Agno `acontinue_run` 提交完整
+`step_requirements`：
+
+```bash
+AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting.cli_v2
+```
+
+仅运行独立 AgentOS 时使用：
 
 ```bash
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting
 ```
 
-两者都只注册由 Supervisor 或 Workflow 控制的 facade，不公开底层 worker。生产浏览器仍只访问
-综合 `agentos_dev.app`。Reporting AgentOS 的 `/agui` 同时接受严格 Envelope JSON 和自然语言：
-自然语言原文不在路由层改写，由 `report-agent` 模型生成 ISO 起止日期并调用强类型 Workflow 工具；
+Coding AgentOS 只注册由 Supervisor 控制的 facade；Reporting AgentOS 注册公开 `report-agent` 和其
+驱动的 `enterprise-reporting-workflow-v1`，不公开底层 worker。Report worker 由报表配置和中立运行
+资源独立构造，不复制 Coding Agent，也不导入 Coding CLI/AgentOS 产品入口。AG-UI 与 AgentOS Agent API 都进入
+同一个 `report-agent`，CLI v2 则直接驱动同一个 Workflow。生产浏览器仍只访问综合
+`agentos_dev.app`。Reporting AgentOS 的 `/agui` 同时接受严格 Envelope JSON 和自然语言：自然语言
+原文作为唯一 `prompt` 原样交给 Workflow 首步的无工具结构化模型归一化，facade 不解析期间；期间
+缺失或冲突时通过官方 output review 暂停；
+批准、拒绝与恢复使用 `/workflows/{workflow_id}/runs/{run_id}/continue` 和 `/resume`。
 `reportGoal` 必须逐字保留用户输入，期间不明确时由模型询问用户，不允许程序猜测。
 
-报表 CLI 在服务和 tracing 初始化前校验 `ReportRequestEnvelope`，随后依次处理来源、提纲、批量 SQL
-和发布审核；批准、带反馈拒绝和取消都恢复同一持久化 Workflow run。数据库连接只从服务端注册表加载。
+两个报表 CLI 都在服务和 tracing 初始化前校验输入，随后依次处理来源、提纲、批量 SQL 和发布审核；
+批准、带反馈拒绝和取消都恢复同一持久化 Workflow run。旧 CLI 只接受 Envelope 并保留 Controller
+兼容链路；`cli_v2` 使用顶层 Workflow 的自然语言归一化和官方 requirements。数据库连接只从服务端
+注册表加载。
 
 Coding 模式使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和退出控制。原生 CLI
 面向保留 Agno Agent 接口的确定性转交实体；其 `arun` 不调用模型，而是把完整目标直接交给
 `CodingTaskSupervisor`。只有底层 `coding-agent-cli` 使用 `MODEL`，并按
-`AGENT_CODING_ENABLE_THINKING` 传递 `enable_thinking`、使用 `reasoning_effort=medium` 执行受控工具闭环。
-Reporting Coding worker 和结构化 planner 默认由独立的
-`AGENT_REPORT_ENABLE_THINKING=true` 开启 thinking；普通 Assistant/Team 由
+`AGENT_CODING_ENABLE_THINKING` 传递 `enable_thinking`，默认使用独立配置的
+`AGENT_CODING_REASONING_EFFORT=max` 和 `AGENT_CODING_THINKING_BUDGET=16384`
+执行受控工具闭环。Reporting Coding worker 默认由独立的
+`AGENT_REPORT_CODING_ENABLE_THINKING=true` 开启，并使用
+`AGENT_REPORT_CODING_REASONING_EFFORT=max` 和
+`AGENT_REPORT_CODING_THINKING_BUDGET=16384`；两条 Coding 链路互不共享配置。
+thinking，结构化 planner 由 `AGENT_REPORT_ENABLE_THINKING=true` 控制；普通 Assistant/Team 由
 `AGENT_ASSISTANT_ENABLE_THINKING=false` 独立控制，公开 facade 始终关闭 thinking。
 因此 CLI 不导入
 `agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
@@ -140,7 +160,12 @@ Coding `terminal.command` 以 UTF-8 字节计最多 32 KiB；大段文件内容�
 | `enable_session_summaries` | `True` | 成功 run 后滚动更新非权威摘要 |
 | `AGENT_ASSISTANT_ENABLE_THINKING` | `false` | 控制普通 Assistant/Team thinking |
 | `AGENT_CODING_ENABLE_THINKING` | `true` | 控制纯 Coding worker thinking |
-| `AGENT_REPORT_ENABLE_THINKING` | `true` | 控制 Report Coding worker 和 Reporting planner thinking |
+| `AGENT_CODING_REASONING_EFFORT` | `max` | 控制纯 Coding worker 推理强度 |
+| `AGENT_CODING_THINKING_BUDGET` | `16384` | 控制纯 Coding worker thinking token 预算 |
+| `AGENT_REPORT_CODING_ENABLE_THINKING` | `true` | 控制 Report Coding worker thinking |
+| `AGENT_REPORT_CODING_REASONING_EFFORT` | `max` | 控制 Report Coding worker 推理强度 |
+| `AGENT_REPORT_CODING_THINKING_BUDGET` | `16384` | 控制 Report Coding worker thinking token 预算 |
+| `AGENT_REPORT_ENABLE_THINKING` | `true` | 控制 Reporting planner thinking |
 | `AGENT_REPORT_ENABLE_VISION` | `false` | 控制 Report Worker 是否暴露图片检查工具并向模型发送媒体 |
 
 Coding Agent 和原生 CLI 额外使用同一个 `ContextBudgetController`：有效上下文上限取
@@ -196,8 +221,9 @@ modifiers 与最新 `BasicModel` 状态竞争；`sandbox_exec`、`sandbox_proces
 摘要和压缩都不能作为 Odoo 业务事实；需要记录值、筛选、权限或页面状态时，必须使用本轮最新
 宿主快照。压缩和摘要辅助模型始终关闭 thinking。普通 Assistant/Team 由
 `AGENT_ASSISTANT_ENABLE_THINKING` 控制，内部 Coding Agent 由
-`AGENT_CODING_ENABLE_THINKING` 控制，`report-worker` 和 Reporting planner 由
-`AGENT_REPORT_ENABLE_THINKING` 独立控制。Coding facade 的 Agno 官方 `arun(..., stream=True, stream_events=True)` 实时返回
+`AGENT_CODING_ENABLE_THINKING` 控制，`report-worker` 由
+`AGENT_REPORT_CODING_ENABLE_THINKING` 控制，Reporting planner 由
+`AGENT_REPORT_ENABLE_THINKING` 控制。Coding facade 的 Agno 官方 `arun(..., stream=True, stream_events=True)` 实时返回
 `ReasoningStarted`、原始 `ReasoningContentDelta` 和 `ReasoningCompleted`；只投影 reasoning 文本，
 不返回 provider 原始字段。终态持久化前仍清除 reasoning 字段，原始 reasoning 不进入 session 或
 数据库。AG-UI、自定义 SSE 和 React 不转发或展示原始 reasoning，前端只展示“正在分析当前请求”
@@ -205,9 +231,10 @@ modifiers 与最新 `BasicModel` 状态竞争；`sandbox_exec`、`sandbox_proces
 
 相关环境变量可独立回退：`AGENT_ENABLE_TOOL_RESULT_COMPRESSION=false` 停止生成新压缩结果，
 `AGENT_ENABLE_SESSION_SUMMARIES=false` 停止更新和注入摘要，
-`AGENT_ASSISTANT_ENABLE_THINKING=false`、`AGENT_CODING_ENABLE_THINKING=false` 和
-`AGENT_REPORT_ENABLE_THINKING=false` 分别关闭普通 Assistant/Team、纯 Coding worker 和
-Report Coding worker/Reporting planner thinking；`AGENT_CONTEXT_TOKEN_BUDGET`、
+`AGENT_ASSISTANT_ENABLE_THINKING=false`、`AGENT_CODING_ENABLE_THINKING=false`、
+`AGENT_REPORT_CODING_ENABLE_THINKING=false` 和 `AGENT_REPORT_ENABLE_THINKING=false`
+分别关闭普通 Assistant/Team、纯 Coding worker、Report Coding worker 和 Reporting planner
+thinking；`AGENT_CONTEXT_TOKEN_BUDGET`、
 `AGENT_HISTORY_TOKEN_BUDGET` 和
 `AGENT_OUTPUT_TOKEN_RESERVE` 分别调整完整窗口、历史上限和输出余量。关闭任一能力都不会删除 PostgreSQL
 中的完整历史，也不会改变 `agui.odoo.v2`、命令确认、授权或 stale snapshot 校验。
@@ -358,9 +385,10 @@ Bearer token；未配置 URL 表示明确禁用 metadata 服务，而网络、�
 report revision 与 PDF hash。应用会脱敏 Uvicorn access log 中的 grant 路径；反向代理、网关和
 APM 也必须将 `/reports/v1/download/*` 记录为固定占位路径，禁止采集原始 URL。
 
-独立 Report AgentOS 没有 Odoo capability 提供的数据库、公司和 session scope，因此默认不装配 HTTP
-发布 issuer；最终发布审核会以 `report_publication_unavailable` 失败关闭。只有上游认证中间件能提供
-同等完整且已验证的身份时才能启用 HTTP 下载，不能使用空值或固定占位身份。
+独立 Report AgentOS 使用 Agno JWT 中已验证的 `user_id` 和当前 Workflow thread 构造独立的
+`reporting` 发布作用域，并装配自己的下载 grant repository、发布 issuer 与同源下载 router。下载时
+再次通过 Agno 用户作用域解析当前身份，并校验 grant 归属；不会复用或伪造 Odoo capability 的数据库、
+公司与 session scope。
 
 `agent_context_status` 使用 Agno 模型的 `count_tokens(messages, tools, output_schema)` 估算本轮完整
 上下文，返回 256K 上限、估算已用、扣除输出预留后的余量、预算历史和计数可靠性；计数器不可用时

@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from agentos_dev.coding import AgnoCodingExecutor, CodingScope
-from agentos_dev.coding.models import AttemptSnapshot, AttemptState
+from agentos_dev.task_execution.models import AttemptSnapshot, AttemptState
 
 
 class RecordingAgent:

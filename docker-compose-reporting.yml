@@ -19,6 +19,7 @@ services:
     ports:
       - "33046:7777"
     environment:
+      AGENT_OS_WORKERS: "1"
       AGENT_DB_URL: postgresql+psycopg://reporting-db:5432
       PGDATABASE: ${AGENT_POSTGRES_DB:-dev}
       PGUSER: ${AGENT_POSTGRES_USER:-odoo}

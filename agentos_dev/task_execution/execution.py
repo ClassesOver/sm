@@ -44,7 +44,6 @@ from ..workspace import (
     _thread,
 )
 from .acceptance import AcceptancePolicy, requirement_digest
-from .executor import CODING_FINISH_FAILURE_STATE_KEY
 from .models import CodingScope, Lease, TaskSnapshot
 from .repository_impl import (
     TERMINAL_EXECUTION_STATUSES,
@@ -65,6 +64,7 @@ from .tools import (
 )
 
 CODING_TASK_DEPENDENCY = "AgentOS 编码任务"
+CODING_FINISH_FAILURE_STATE_KEY = "agentos_coding_finish_failure"
 CODING_FINISH_STATE_KEY = "agentos_coding_finish"
 CODING_EXECUTION_MIGRATION_STATE_KEY = "agentos_coding_execution_migrated"
 DEFAULT_TERMINAL_TIMEOUT = 900
@@ -75,7 +75,7 @@ MAX_TOOL_PREVIEW_BYTES = 48 * 1024
 MAX_TOOL_OUTPUT_RESOURCE_BYTES = 16 * 1024 * 1024
 MAX_TASK_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_TOOL_OUTPUT_READ_BYTES = 64 * 1024
-MAX_PARALLEL_READ_TOOLS = 4
+MAX_PARALLEL_READ_TOOLS = 10
 MAX_TERMINAL_RUNTIME_CACHE_ENTRIES = 1024
 CODING_TOOL_OUTPUT_STATE_KEY = "agentos_coding_tool_outputs"
 CODING_TOOL_PROGRESS_STATE_KEY = "agentos_coding_tool_progress"
@@ -1750,6 +1750,8 @@ class CodingExecutionKernel:
                         "old_string 在目标文件中不唯一；请扩大上下文或启用 replace_all。"
                     )
                 updated = original.replace(old_string, new_string, -1 if replace_all else 1)
+                if updated == original:
+                    return [], 0
                 return (
                     [
                         {
@@ -1782,6 +1784,16 @@ class CodingExecutionKernel:
             ]
         else:
             raise WorkspaceError("patch mode 只支持 create、overwrite、replace 或 patch。")
+        if not changes:
+            return {
+                "ok": False,
+                "status": "rejected",
+                "code": "tool_no_progress",
+                "message": "替换后的文件内容没有变化，本次未记录 mutation。",
+                "details": {"mutationSequence": scope.task.mutation_sequence},
+                "requiredActions": ["不要重写该文件；继续执行下一项未完成工作或正式验证。"],
+                "retryable": True,
+            }
         self._reject_writable_skill_script_copy(changes, run_context)
         mutation_sequence = await self.repository.increment_mutation(
             scope.external_run_id,
@@ -3834,14 +3846,15 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             if isinstance(state, dict)
             else None
         )
+        rework = state.get(CODING_REWORK_STATE_KEY) if state is not None else None
         if (
             not repairing_finish_failure
+            and not isinstance(rework, dict)
             and current_plan is not None
             and any(item["status"] != "completed" for item in current_plan["plan"])
         ):
             return None
 
-        rework = state.get(CODING_REWORK_STATE_KEY) if state is not None else None
         if isinstance(rework, dict) and rework.get("mutationSequence") == mutation_sequence:
             return None
 
@@ -4410,9 +4423,21 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             state = run_context.session_state if run_context is not None else None
             if isinstance(state, dict) and result.get("ok") is True:
                 if any(item.get("status") != "completed" for item in result.get("plan", [])):
-                    state[CODING_REWORK_STATE_KEY] = {
-                        "mutationSequence": scope.task.mutation_sequence
-                    }
+                    executions = await self.kernel.repository.list_executions(scope.external_run_id)
+                    verified = any(
+                        execution.is_verification
+                        and execution.mutation_sequence == scope.task.mutation_sequence
+                        and execution.status == "completed"
+                        and execution.exit_code == 0
+                        and (execution.operation_receipt or {}).get("valid", True) is not False
+                        for execution in executions
+                    )
+                    if verified:
+                        state[CODING_REWORK_STATE_KEY] = {
+                            "mutationSequence": scope.task.mutation_sequence
+                        }
+                    else:
+                        state.pop(CODING_REWORK_STATE_KEY, None)
                 else:
                     state.pop(CODING_REWORK_STATE_KEY, None)
             return result
@@ -4420,3 +4445,11 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         return await self._invoke(
             "update_plan", {"plan": plan, "explanation": explanation}, call, run_context
         )
+
+
+# 中立名称供不同产品边界复用；旧名称仅保留在 Coding 入口内部。
+TASK_EXECUTION_DEPENDENCY = CODING_TASK_DEPENDENCY
+TaskExecutionKernel = CodingExecutionKernel
+WorkspaceTaskToolkit = WorkspaceCodingToolkit
+create_task_tool_scheduler_hook = create_coding_tool_scheduler_hook
+is_task_tool_scheduler_hook = is_coding_tool_scheduler_hook

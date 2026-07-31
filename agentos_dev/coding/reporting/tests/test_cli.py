@@ -21,7 +21,7 @@ async def test_report_cli_rejects_invalid_envelope_before_creating_traced_contex
     values = iter(["生成经营分析", "/run"])
     monkeypatch.setattr(
         cli_module,
-        "create_cli_context",
+        "create_execution_context",
         lambda *_args, **_kwargs: pytest.fail("不得在 intake 之前初始化 tracing"),
     )
 
@@ -36,14 +36,15 @@ async def test_report_cli_uses_independent_report_thinking_setting(monkeypatch):
     settings = AgentSettings.from_environment(
         {
             "AGENT_CODING_ENABLE_THINKING": "true",
-            "AGENT_REPORT_ENABLE_THINKING": "false",
+            "AGENT_REPORT_CODING_ENABLE_THINKING": "false",
+            "AGENT_REPORT_ENABLE_THINKING": "true",
         },
         load_env_file=False,
     )
     context = SimpleNamespace(
         settings=settings,
+        database=object(),
         workspace_service=object(),
-        coding_repository=object(),
     )
     captured = {}
 
@@ -55,8 +56,8 @@ async def test_report_cli_uses_independent_report_thinking_setting(monkeypatch):
         raise WorkerCaptured
 
     monkeypatch.setattr(cli_module, "parse_cli_envelope", lambda _value: object())
-    monkeypatch.setattr(cli_module, "create_cli_context", lambda _settings: context)
-    monkeypatch.setattr(cli_module, "create_cli_agent", lambda _context: object())
+    monkeypatch.setattr(cli_module, "create_execution_context", lambda _settings: context)
+    monkeypatch.setattr(cli_module, "TaskExecutionRepository", lambda _database: object())
     monkeypatch.setattr(cli_module, "create_report_worker", capture_worker)
 
     values = iter(["{}", "/run"])
@@ -67,7 +68,7 @@ async def test_report_cli_uses_independent_report_thinking_setting(monkeypatch):
             write=lambda _value: None,
         )
 
-    assert captured["report_enable_thinking"] is False
+    assert captured["report_coding_enable_thinking"] is False
 
 
 def test_report_cli_rejects_arguments():

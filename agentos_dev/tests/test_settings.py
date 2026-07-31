@@ -13,7 +13,7 @@ def test_settings_defaults():
     current = settings()
     assert current.env_file == ".env"
     assert current.port == 7777
-    assert current.workers == 4
+    assert current.workers == 1
     assert current.database_url == DEFAULT_AGENT_DB_URL
     assert current.workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
     assert current.daytona_network_allow_list is None
@@ -25,6 +25,11 @@ def test_settings_defaults():
     assert current.enable_session_summaries is True
     assert current.assistant_enable_thinking is False
     assert current.coding_enable_thinking is True
+    assert current.coding_reasoning_effort == "max"
+    assert current.coding_thinking_budget == 16384
+    assert current.report_coding_enable_thinking is True
+    assert current.report_coding_reasoning_effort == "max"
+    assert current.report_coding_thinking_budget == 16384
     assert current.report_enable_thinking is True
     assert current.report_enable_vision is False
     assert current.model_timeout_seconds == 900
@@ -38,6 +43,21 @@ def test_settings_defaults():
     assert current.report_data_sources_dir is None
     assert current.report_metadata_url is None
     assert current.report_metadata_token is None
+    assert current.agentos_jwt_verification_key is None
+    assert current.agentos_jwt_algorithm == "HS256"
+    assert current.agentos_jwt_audience is None
+
+
+def test_agentos_jwt_config_is_loaded():
+    current = settings(
+        JWT_VERIFICATION_KEY=" secret ",
+        JWT_ALGORITHM="RS256",
+        JWT_AUDIENCE=" report-agent-os ",
+    )
+
+    assert current.agentos_jwt_verification_key == "secret"
+    assert current.agentos_jwt_algorithm == "RS256"
+    assert current.agentos_jwt_audience == "report-agent-os"
 
 
 def test_agent_feature_flags_can_be_disabled():
@@ -46,6 +66,11 @@ def test_agent_feature_flags_can_be_disabled():
         AGENT_ENABLE_SESSION_SUMMARIES="0",
         AGENT_ASSISTANT_ENABLE_THINKING="true",
         AGENT_CODING_ENABLE_THINKING="off",
+        AGENT_CODING_REASONING_EFFORT="high",
+        AGENT_CODING_THINKING_BUDGET="8192",
+        AGENT_REPORT_CODING_ENABLE_THINKING="no",
+        AGENT_REPORT_CODING_REASONING_EFFORT="medium",
+        AGENT_REPORT_CODING_THINKING_BUDGET="4096",
         AGENT_REPORT_ENABLE_THINKING="false",
         AGENT_REPORT_ENABLE_VISION="true",
         AGENT_HISTORY_TOKEN_BUDGET="32768",
@@ -57,6 +82,11 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.enable_session_summaries is False
     assert current.assistant_enable_thinking is True
     assert current.coding_enable_thinking is False
+    assert current.coding_reasoning_effort == "high"
+    assert current.coding_thinking_budget == 8192
+    assert current.report_coding_enable_thinking is False
+    assert current.report_coding_reasoning_effort == "medium"
+    assert current.report_coding_thinking_budget == 4096
     assert current.report_enable_thinking is False
     assert current.report_enable_vision is True
     assert current.history_token_budget == 32768
@@ -66,6 +96,25 @@ def test_agent_feature_flags_can_be_disabled():
 
 def test_model_timeout_comes_from_environment():
     assert settings(AGENT_MODEL_TIMEOUT_SECONDS="3600").model_timeout_seconds == 3600
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["AGENT_CODING_REASONING_EFFORT", "AGENT_REPORT_CODING_REASONING_EFFORT"],
+)
+def test_invalid_coding_reasoning_effort_is_rejected(name):
+    with pytest.raises(ValueError, match=name):
+        settings(**{name: "unbounded"})
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["AGENT_CODING_THINKING_BUDGET", "AGENT_REPORT_CODING_THINKING_BUDGET"],
+)
+@pytest.mark.parametrize("value", ["invalid", "0", "131073"])
+def test_invalid_coding_thinking_budget_is_rejected(name, value):
+    with pytest.raises(ValueError, match=name):
+        settings(**{name: value})
 
 
 @pytest.mark.parametrize("value", ["invalid", "0", "3601"])
@@ -192,6 +241,7 @@ def test_environment_precedes_file_and_file_populates_missing_values(tmp_path):
         ("AGENT_OS_PORT", "0"),
         ("AGENT_OS_PORT", "65536"),
         ("AGENT_OS_WORKERS", "-1"),
+        ("AGENT_OS_WORKERS", "2"),
     ],
 )
 def test_invalid_port_and_workers(name, value):

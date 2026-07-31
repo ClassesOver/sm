@@ -18,7 +18,7 @@ from .entrypoints import bind_server_envelope, prepare_agui_envelope
 from .models import ReportingError
 
 
-async def _run_bound(agent: Agent, run_input: RunAgentInput, envelope, user_id: str | None):
+async def _run_bound(agent: Agent, run_input: RunAgentInput, envelope: Any, user_id: str | None):
     source = run_entity(agent, run_input, user_id=user_id).__aiter__()
     while True:
         with bind_server_envelope(envelope):
@@ -30,7 +30,7 @@ async def _run_bound(agent: Agent, run_input: RunAgentInput, envelope, user_id: 
 
 
 class ReportAGUI(AGUI):
-    """对 ReportRequestEnvelope 做服务端清洗后再进入 Agno。"""
+    """清洗报表请求后，通过与 AgentOS 对齐的 Reporting Agent 进入 Workflow。"""
 
     def __init__(self, *, agent: Agent, prefix: str = "", tags: list[str] | None = None):
         super().__init__(agent=agent, prefix=prefix, tags=tags)

@@ -4,8 +4,9 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from copy import copy
+from datetime import date
 from difflib import SequenceMatcher
 from typing import Any, Literal
 
@@ -15,13 +16,20 @@ from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.workflow.types import StepInput, StepOutput
 from openai import APITimeoutError
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+)
 
+from ...task_execution import TaskScope, TaskState
 from ...workspace import WorkspaceService
-from .. import CodingScope, CodingTaskSupervisor, TaskState
 from .acceptance import (
     REPORT_ARTIFACT_VALIDATOR_ID,
     build_report_artifact_acceptance_contract,
+    build_report_artifact_validation_context,
 )
 from .artifacts_v1 import (
     ArtifactFile,
@@ -34,6 +42,9 @@ from .contract import (
     ModelColumn,
     ModelTable,
     ModelTermsResponse,
+    ReportingWorkflowInput,
+    ReportPeriod,
+    ReportPromptInput,
     ReportRequestEnvelope,
     SourceSchemaSnapshot,
     parse_ddl,
@@ -49,7 +60,8 @@ from .data_source import (
     require_sources,
 )
 from .data_sources import ReportDatasetStore
-from .entrypoints import current_server_identity
+from .entrypoints import ReportServerIdentity, current_server_identity
+from .execution import ReportTaskRunner
 from .metadata import ReportingMetadataClient, select_reporting_agent
 from .models import ReportingError
 from .profile import (
@@ -99,10 +111,19 @@ REPORT_APPROVED_QUERIES_STATE_KEY = "report_approved_queries"
 REPORT_DATASET_LINEAGE_STATE_KEY = "report_dataset_lineage"
 REPORT_WORKFLOW_RESULT_STATE_KEY = "report_workflow_result"
 REPORT_ARTIFACTS_STATE_KEY = "report_artifacts"
+PublicationIssuer = Callable[[dict[str, str], str, str, Any], Awaitable[dict[str, Any]]]
+ServerIdentityFactory = Callable[[dict[str, str]], ReportServerIdentity]
 
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+
+class NormalizedReportPrompt(_StrictModel):
+    period: ReportPeriod | None = None
+    clarification_question: str | None = Field(
+        default=None, alias="clarificationQuestion", min_length=1, max_length=1000
+    )
 
 
 _SERIALIZED_MEMBER_PATTERN = re.compile(
@@ -112,13 +133,9 @@ _SERIALIZED_MEMBER_PATTERN = re.compile(
 _JSON_FENCE_PATTERN = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.IGNORECASE | re.DOTALL)
 _SNAKE_CASE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+$")
 _LEADING_PUNCTUATION_PREFIX_PATTERN = re.compile(r"^[^\w\s]+\s+")
-_MISSING_DATA_PATTERN = re.compile(
-    r"(?:缺失|缺少|缺口|未提供|不可用|空缺|missing|unavailable|null)",
-    re.IGNORECASE,
-)
-_MISSING_DATA_FABRICATION_PATTERN = re.compile(
-    r"(?:估算|估计|推算|插值|外推|填补|补齐|视为(?:未发生|零|0)|"
-    r"imput(?:e|ed|ation)|interpolat\w*|extrapolat\w*|estimat\w*)",
+_FORBIDDEN_DERIVATION_PATTERN = re.compile(
+    r"(?:拟合|估算|估计|推算|插值|外推|年化|平滑|填补|补齐|视为(?:未发生|零|0)|"
+    r"imput(?:e|ed|ation)|interpolat\w*|extrapolat\w*|estimat\w*|annualiz\w*|smooth\w*)",
     re.IGNORECASE,
 )
 _FABRICATION_NEGATION_PATTERN = re.compile(
@@ -129,6 +146,53 @@ _NUMERIC_MEASURE_TYPE_PATTERN = re.compile(
     r"^(?:TINYINT|SMALLINT|INT|INTEGER|BIGINT|LARGEINT|FLOAT|DOUBLE|DECIMAL)",
     re.IGNORECASE,
 )
+_VISIBLE_MACHINE_SCALAR_KEYS = frozenset(
+    {
+        "code",
+        "datasetId",
+        "leftTable",
+        "periodColumn",
+        "requirementId",
+        "rightTable",
+        "sourceId",
+        "table",
+    }
+)
+_VISIBLE_MACHINE_LIST_KEYS = frozenset(
+    {"dimensionColumns", "grainColumns", "joinColumns", "measureColumns"}
+)
+
+
+def _report_machine_terms(*values: Any) -> tuple[str, ...]:
+    terms: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if key in _VISIBLE_MACHINE_SCALAR_KEYS and isinstance(item, str):
+                    terms.add(item)
+                elif key in _VISIBLE_MACHINE_LIST_KEYS and isinstance(item, (list, tuple)):
+                    terms.update(part for part in item if isinstance(part, str))
+                visit(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+
+    for value in values:
+        visit(value)
+    return tuple(sorted(terms))
+
+
+def _single_explicit_year(prompt: str, feedback: str | None) -> ReportPeriod | None:
+    value = f"{prompt}\n{feedback or ''}"
+    years = set(re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", value))
+    if len(years) != 1:
+        return None
+    raw_year = years.pop()
+    if re.search(rf"{raw_year}\s*年\s*\d{{1,2}}\s*月|{raw_year}[-/.]\d{{1,2}}", value):
+        return None
+    year = int(raw_year)
+    return ReportPeriod(start=date(year, 1, 1), end=date(year, 12, 31))
 
 
 def _looks_like_serialized_structure(value: str) -> bool:
@@ -192,30 +256,120 @@ def _validate_natural_language_items(value: tuple[str, ...], *, label: str) -> t
     return value
 
 
-def _contains_missing_data_fabrication(value: str) -> bool:
-    if not _MISSING_DATA_PATTERN.search(value):
-        return False
-    for match in _MISSING_DATA_FABRICATION_PATTERN.finditer(value):
+def _contains_forbidden_derivation(value: str) -> bool:
+    for match in _FORBIDDEN_DERIVATION_PATTERN.finditer(value):
         if not _FABRICATION_NEGATION_PATTERN.search(value[: match.start()]):
             return True
     return False
 
 
-def _coding_observed_data_facts(data_shapes: tuple[DataShape, ...]) -> list[dict[str, Any]]:
-    return [
-        {
-            "sourceId": table.source_id,
-            "table": f"{table.database}.{table.table}",
-            "periodGranularity": table.period_granularity,
-            "firstEffectiveDate": table.first_effective_date,
-            "lastEffectiveDate": table.last_effective_date,
-            "periodCoverage": list(table.period_coverage),
-            "missingPeriods": list(table.missing_periods),
-            "periodRowCount": table.period_row_count,
-        }
-        for shape in data_shapes
-        for table in shape.tables
-    ]
+def _coding_observed_data_facts(
+    data_shapes: tuple[DataShape, ...],
+    requirements: tuple[QueryRequirement, ...],
+    lineage: tuple[DatasetLineage, ...],
+) -> list[dict[str, Any]]:
+    lineage_by_requirement = {(item.source_id, item.requirement_id): item for item in lineage}
+    facts: list[dict[str, Any]] = []
+    for requirement in requirements:
+        binding = lineage_by_requirement.get((requirement.source_id, requirement.requirement_id))
+        if binding is None:
+            raise ReportingError(
+                "report_observed_facts_binding_invalid", "期间事实缺少数据集绑定。"
+            )
+        for required_table in requirement.tables:
+            candidates = [
+                table
+                for shape in data_shapes
+                for table in shape.tables
+                if table.source_id == requirement.source_id
+                and required_table.table
+                in {table.table.lower(), f"{table.database}.{table.table}".lower()}
+            ]
+            if len(candidates) != 1:
+                raise ReportingError(
+                    "report_observed_facts_binding_invalid", "期间事实无法唯一绑定数据表。"
+                )
+            table = candidates[0]
+            facts.append(
+                {
+                    "datasetId": binding.dataset_id,
+                    "requirementId": binding.requirement_id,
+                    "sourceId": table.source_id,
+                    "table": f"{table.database}.{table.table}",
+                    "periodGranularity": table.period_granularity,
+                    "firstEffectiveDate": table.first_effective_date,
+                    "lastEffectiveDate": table.last_effective_date,
+                    "periodCoverage": list(table.period_coverage),
+                    "missingPeriods": list(table.missing_periods),
+                    "periodRowCount": table.period_row_count,
+                }
+            )
+    return facts
+
+
+def _observed_data_fact_cards(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for fact in facts:
+        grouped.setdefault((str(fact["datasetId"]), str(fact["requirementId"])), []).append(fact)
+    cards: list[dict[str, Any]] = []
+    for (dataset_id, requirement_id), items in sorted(grouped.items()):
+        coverage = sorted(
+            {
+                str(period)
+                for item in items
+                for period in item.get("periodCoverage", [])
+                if isinstance(period, str)
+            }
+        )
+        missing = sorted(
+            {
+                str(period)
+                for item in items
+                for period in item.get("missingPeriods", [])
+                if isinstance(period, str)
+            }
+        )
+        fully_missing = sorted(set(missing) - set(coverage))
+        mixed_coverage = sorted(set(missing) & set(coverage))
+        cards.append(
+            {
+                "datasetId": dataset_id,
+                "requirementId": requirement_id,
+                "tableCount": len(items),
+                "periodRowCount": sum(int(item.get("periodRowCount", 0)) for item in items),
+                "coverageStart": coverage[0] if coverage else None,
+                "coverageEnd": coverage[-1] if coverage else None,
+                "missingPeriodCount": len(fully_missing),
+                "missingPeriods": fully_missing[:24],
+                "missingPeriodsTruncated": len(fully_missing) > 24,
+                "mixedCoveragePeriodCount": len(mixed_coverage),
+                "mixedCoveragePeriods": mixed_coverage[:24],
+                "mixedCoveragePeriodsTruncated": len(mixed_coverage) > 24,
+            }
+        )
+    return cards
+
+
+def _accepted_artifacts_match_manifest(
+    manifest: ReportArtifactManifest,
+    manifest_path: str,
+    accepted_artifacts: list[dict[str, Any]],
+) -> bool:
+    accepted = {
+        item.get("path"): item
+        for item in accepted_artifacts
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    if len(accepted) != len(accepted_artifacts):
+        return False
+    declared = [manifest.markdown, *manifest.charts]
+    if set(accepted) != {manifest_path, *(item.path for item in declared)}:
+        return False
+    return all(
+        accepted[item.path].get("size") == item.size
+        and accepted[item.path].get("sha256") == item.sha256
+        for item in declared
+    )
 
 
 def _analysis_context_payload(outline_context: Any) -> dict[str, Any]:
@@ -271,6 +425,8 @@ class ReportOutline(_StrictModel):
         max_length=30,
         description=(
             "按报告阅读顺序排列的自然语言章节标题；每项只能是一个章节标题，"
+            "必须保留 outlineContext.profile.sections 中的全部 title 及其相对顺序，"
+            "并可根据报告目标和真实数据增加其他中文章节；"
             "必须包含有效文字或数字且不得重复；不得包含 JSON、键值配置、页面布局、"
             "模板、snake_case 配置标识或转义后的序列化片段。"
         ),
@@ -280,8 +436,8 @@ class ReportOutline(_StrictModel):
         max_length=30,
         description=(
             "报告成立所需的自然语言假设；每项必须包含有效文字或数字且不得重复；"
-            "不得使用 snake_case 配置标识；不得填补、估算、插值或外推缺失数据，"
-            "缺失数据只能如实披露为限制；没有假设时返回空数组。"
+            "不得使用 snake_case 配置标识；不得拟合、估算、推算、插值、外推、年化、"
+            "平滑或补齐任何数据；缺失数据只能如实披露为限制；没有假设时返回空数组。"
         ),
     )
 
@@ -303,8 +459,8 @@ class ReportOutline(_StrictModel):
     @classmethod
     def validate_assumptions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         validated = _validate_natural_language_items(value, label="报告假设")
-        if any(_contains_missing_data_fabrication(item) for item in validated):
-            raise ValueError("报告假设不得填补、估算、插值或外推缺失数据，只能如实披露限制")
+        if any(_contains_forbidden_derivation(item) for item in validated):
+            raise ValueError("报告假设不得拟合、估算、推算、插值、外推、年化、平滑或补齐数据")
         return validated
 
 
@@ -386,6 +542,13 @@ class AnalysisItem(_StrictModel):
             raise ValueError("requirementIds 不能重复")
         return value
 
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str) -> str:
+        if _contains_forbidden_derivation(value):
+            raise ValueError("分析描述不得拟合、估算、推算、插值、外推、年化、平滑或补齐数据")
+        return value
+
 
 class AnalysisBundle(_StrictModel):
     analyses: tuple[AnalysisItem, ...] = Field(min_length=1, max_length=100)
@@ -418,24 +581,38 @@ class ReportWorkflowRuntime:
         db: Any,
         planner: Agent,
         report_worker: Agent,
-        supervisor: CodingTaskSupervisor,
+        task_runner: ReportTaskRunner,
         workspace_service: WorkspaceService,
         registry: ReportSourceRegistryConfig,
         profiles: ReportingProfileRegistry,
         planner_enable_thinking: bool,
         metadata_client: ReportingMetadataClient | None = None,
         download_grants: ReportDownloadGrantService | None = None,
+        server_identity_factory: ServerIdentityFactory | None = None,
     ):
         self.db = db
         self.report_worker = report_worker
-        self.supervisor = supervisor
+        self.task_runner = task_runner
         self.workspace_service = workspace_service
         self.registry = registry
         self.profiles = profiles
         self.metadata_client = metadata_client
         self.download_grants = download_grants
+        self.server_identity_factory = server_identity_factory
         self.datasets = ReportDatasetStore(workspace_service)
         self.report_tools = WorkspaceReportToolkit(workspace_service, data_sources=self.datasets)
+        self._request_normalizer = self._planning_agent(
+            planner,
+            "report-request-normalizer",
+            NormalizedReportPrompt,
+            enable_thinking=planner_enable_thinking,
+            stage_instructions=(
+                "只归一化分析期间；不得推断或返回数据源、Agent、医院或系统标识",
+                "单个明确日历年份转换为该年1月1日至12月31日",
+                "期间缺失、存在多个互相冲突的期间或无法唯一判断时，只返回一个简短 clarificationQuestion",
+                "不得改写或返回用户原始报告目标",
+            ),
+        )
         self._data_understanding_agent = self._planning_agent(
             planner,
             "report-data-understanding-planner",
@@ -463,6 +640,11 @@ class ReportWorkflowRuntime:
             "report-outline-planner",
             ReportOutline,
             enable_thinking=planner_enable_thinking,
+            stage_instructions=(
+                "sections 必须保留 outlineContext.profile.sections[].title 并保持相对顺序",
+                "可以根据报告目标和真实数据增加其他简体中文章节",
+                "不得删除、改名、打乱或用扩展章节替代 Profile 章节",
+            ),
         )
         self._analysis_agent = self._planning_agent(
             planner,
@@ -542,16 +724,38 @@ class ReportWorkflowRuntime:
                 "skills": None,
                 "tool_choice": None,
                 "output_schema": output_schema,
-                "parse_response": False,
+                "parse_response": True,
                 "post_hooks": [],
             }
         )
         agent.num_history_runs = None
         return agent
 
-    def workflow(self):
+    def workflow(self, *, publication_issuer: PublicationIssuer | None = None):
+        issuer = publication_issuer or self.issue_http_publication
+
+        async def finalize_publication(
+            step_input: StepInput, run_context: RunContext
+        ) -> StepOutput:
+            content = step_input.previous_step_content
+            if not isinstance(content, dict):
+                raise ReportingError("report_publication_invalid", "报表发布产物无效。")
+            scope = self._scope(run_context)
+            published = await issuer(
+                {
+                    "external_run_id": scope["externalRunId"],
+                    "thread_id": scope["threadId"],
+                    "user_id": scope["userId"],
+                },
+                run_context.session_id,
+                run_context.run_id,
+                content,
+            )
+            return StepOutput(content=published)
+
         return create_reporting_workflow(
             db=self.db,
+            normalize_report_request=self.normalize_report_request,
             confirm_source=self.confirm_source,
             plan_data_scope=self.plan_data_scope,
             profile_source=self.profile_source,
@@ -564,19 +768,53 @@ class ReportWorkflowRuntime:
             run_coding_analysis=self.run_coding_analysis,
             validate_report=self.validate_report,
             publish_report=self.publish_report,
+            finalize_publication=finalize_publication,
+        )
+
+    async def normalize_report_request(
+        self, step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        workflow_input = ReportingWorkflowInput.model_validate(step_input.input)
+        request = workflow_input.request()
+        if isinstance(request, ReportRequestEnvelope):
+            return StepOutput(
+                content=request.model_dump(mode="json", by_alias=True, exclude_none=True)
+            )
+
+        assert isinstance(request, ReportPromptInput)
+        feedback = self._feedback(step_input)
+        prompt_payload: dict[str, Any] = {"prompt": request.prompt}
+        if feedback:
+            prompt_payload["supplement"] = feedback
+        normalized = await self._run_planner(self._request_normalizer, prompt_payload, run_context)
+        assert isinstance(normalized, NormalizedReportPrompt)
+        period = _single_explicit_year(request.prompt, feedback) or normalized.period
+        if period is None:
+            if normalized.clarification_question is None:
+                raise ReportingError("report_request_invalid", "报表分析期间无法确定。")
+            return StepOutput(content={"clarificationQuestion": normalized.clarification_question})
+        envelope = ReportRequestEnvelope.from_untrusted(
+            {
+                "version": "1",
+                "reportGoal": request.prompt,
+                "period": period.model_dump(mode="json"),
+            }
+        )
+        return StepOutput(
+            content=envelope.model_dump(mode="json", by_alias=True, exclude_none=True)
         )
 
     async def cleanup_cancelled(
         self, scope: dict[str, str], _workflow_session_id: str, workflow_run_id: str
     ) -> None:
         task_id = coding_task_key(workflow_run_id)
-        task = await self.supervisor.repository.get_task_snapshot(task_id)
+        task = await self.task_runner.repository.get_task_snapshot(task_id)
         if task is not None and task.state not in {
             TaskState.COMPLETED,
             TaskState.FAILED,
             TaskState.CANCELLED,
         }:
-            await self.supervisor.cancel_task(task.scope)
+            await self.task_runner.cancel(task.scope)
 
     async def issue_http_publication(
         self,
@@ -588,10 +826,13 @@ class ReportWorkflowRuntime:
         if self.download_grants is None:
             raise ReportingError("report_publication_unavailable", "报表下载授权服务未配置。")
         identity = current_server_identity()
+        if identity is None and self.server_identity_factory is not None:
+            identity = self.server_identity_factory(scope)
         if identity is None or identity.thread_id != scope["thread_id"]:
             raise ReportingError("report_publication_scope_missing", "报表发布作用域缺失。")
         content = self._publication_content(output)
         current = await self.workspace_service.ahash_file(scope["thread_id"], content["pdfPath"])
+        self._require_pdf_identity(content, current)
         download_scope = ReportDownloadScope(
             database=identity.database,
             user_id=identity.user_id,
@@ -605,8 +846,8 @@ class ReportWorkflowRuntime:
             report_id=content["reportId"],
             revision=content["revision"],
             pdf_path=content["pdfPath"],
-            pdf_size=int(current["size"]),
-            pdf_sha256=str(current["sha256"]),
+            pdf_size=content["pdfSize"],
+            pdf_sha256=content["pdfSha256"],
         )
         return publication_result(
             report_id=content["reportId"],
@@ -624,14 +865,19 @@ class ReportWorkflowRuntime:
     ) -> dict[str, Any]:
         content = self._publication_content(output)
         current = await self.workspace_service.ahash_file(scope["thread_id"], content["pdfPath"])
+        self._require_pdf_identity(content, current)
         return cli_result(
             path=content["pdfPath"],
-            size=int(current["size"]),
-            sha256=str(current["sha256"]),
+            size=content["pdfSize"],
+            sha256=content["pdfSha256"],
         )
 
     async def confirm_source(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
-        envelope = ReportRequestEnvelope.from_untrusted(step_input.input)
+        envelope = ReportRequestEnvelope.from_untrusted(
+            step_input.previous_step_content
+            if step_input.previous_step_content is not None
+            else step_input.input
+        )
         source_ids = envelope.source_ids or self.registry.require_defaults()
         configured = require_sources(self.registry.sources, source_ids)
         sources = tuple(self._starrocks_source(item) for item in configured)
@@ -847,8 +1093,9 @@ class ReportWorkflowRuntime:
 
     async def generate_outline(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
         state = self._state(run_context)
+        profile = self._profile(run_context)
         outline_context = build_outline_shape_view(
-            self._profile(run_context),
+            profile,
             self._capabilities(run_context),
             self._snapshots(run_context),
             self._data_shapes(run_context),
@@ -876,6 +1123,9 @@ class ReportWorkflowRuntime:
                         "可直接展示的自然语言假设或空数组；不得返回 snake_case 字段名、默认占位值、"
                         "纯标点、孤立标点前缀或重复项；缺失数据只能如实披露为限制，不得填补、"
                         "估算、插值或外推；直接替换错误值，不把修正说明或标记写入字段；"
+                        "必须保留 effectiveProfile.sections[].title 并保持相对顺序，"
+                        "可以根据报告目标和真实数据增加其他中文章节，但不得删除、改名、"
+                        "打乱或用扩展章节替代必选章节；"
                         "不返回章节正文、解释或 Markdown"
                     ),
                 }
@@ -889,6 +1139,14 @@ class ReportWorkflowRuntime:
                 }
                 continue
             assert isinstance(output, ReportOutline)
+            issues = _outline_section_issues(output, profile)
+            if issues:
+                validation_feedback = {
+                    "code": "report_outline_invalid",
+                    "summary": "报告提纲未保留 Profile 必选章节",
+                    "issues": issues,
+                }
+                continue
             outline = output
             break
         if outline is None:
@@ -967,6 +1225,9 @@ class ReportWorkflowRuntime:
                     "summary": "分析计划不符合严格输出契约",
                     "issues": issues,
                 }
+                if isinstance(error.output, Mapping):
+                    previous_output = dict(error.output)
+                    allowed_mutation_paths = _analysis_allowed_mutation_paths(issues)
                 continue
             assert isinstance(output, AnalysisBundle)
             output_payload = output.model_dump(mode="json", by_alias=True)
@@ -1154,6 +1415,37 @@ class ReportWorkflowRuntime:
     ) -> StepOutput:
         return StepOutput(content=await self._run_coding(run_context, feedback=None))
 
+    async def _write_artifact_validation_context(
+        self,
+        thread_id: str,
+        path: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        content = json.dumps(
+            context,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        self.workspace_service._validate_content(content)
+        relative, remote = self.workspace_service.normalize_path(path, allow_root=False)
+        async with self.workspace_service._async_client() as client:
+            sandbox = await self.workspace_service._asandbox_for(client, thread_id)
+            await self.workspace_service._aensure_directory(sandbox, remote.rsplit("/", 1)[0])
+            await sandbox.fs.upload_file(content, remote)
+            stored = await self.workspace_service._adownload_file(sandbox, remote, len(content))
+        if stored != content:
+            raise ReportingError(
+                "report_artifact_validation_context_changed",
+                "报告验收上下文写入后发生变化。",
+            )
+        return {
+            "path": relative,
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+
     async def _run_coding(self, run_context: RunContext, *, feedback: str | None) -> dict[str, Any]:
         state = self._state(run_context)
         result = self._workflow_result(state)
@@ -1165,7 +1457,7 @@ class ReportWorkflowRuntime:
         if not sandbox_id or not self.report_worker.id:
             raise ReportingError("report_worker_unavailable", "报表 Coding 工作区不可用。")
         task_id = coding_task_key(str(run_context.run_id or "report"))
-        coding_scope = CodingScope(
+        coding_scope = TaskScope(
             task_id,
             scope["userId"],
             scope["threadId"],
@@ -1179,6 +1471,34 @@ class ReportWorkflowRuntime:
         lineage = tuple(
             DatasetLineage.model_validate(item) for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
         )
+        requirements = tuple(
+            QueryRequirement.model_validate(item)
+            for item in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
+        )
+        observed_data_facts = _coding_observed_data_facts(
+            self._data_shapes(run_context), requirements, lineage
+        )
+        validation_context = build_report_artifact_validation_context(
+            forbidden_visible_terms=_report_machine_terms(
+                state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
+                state[REPORT_DATASET_LINEAGE_STATE_KEY],
+                state[REPORT_EFFECTIVE_PROFILE_STATE_KEY],
+            ),
+            observed_data_facts=observed_data_facts,
+            expected_sections=tuple(
+                section.code for section in self._profile(run_context).sections
+            ),
+            expected_citation_bindings=tuple(
+                (item.dataset_id, item.requirement_id) for item in lineage
+            ),
+        )
+        validation_context_path = (
+            f"报表/智能分析/{run_context.run_id}/"
+            f"report-revision-{revision + 1}.validation-context.json"
+        )
+        validation_context_file = await self._write_artifact_validation_context(
+            scope["threadId"], validation_context_path, validation_context
+        )
         expected_manifest_identity = {
             "reportId": str(run_context.run_id),
             "revision": revision + 1,
@@ -1188,7 +1508,10 @@ class ReportWorkflowRuntime:
             "markdownPath": markdown_path,
             "artifactManifestPath": manifest_path,
         }
-        acceptance_contract = build_report_artifact_acceptance_contract(expected_manifest_identity)
+        acceptance_contract = build_report_artifact_acceptance_contract(
+            expected_manifest_identity,
+            validation_context_file=validation_context_file,
+        )
         instruction = json.dumps(
             {
                 "reportGoal": self._envelope(run_context).report_goal,
@@ -1198,7 +1521,8 @@ class ReportWorkflowRuntime:
                 "analysisPlan": state[REPORT_ANALYSIS_PLAN_STATE_KEY],
                 "dataRequirements": state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
                 "datasets": result["datasets"],
-                "observedDataFacts": _coding_observed_data_facts(self._data_shapes(run_context)),
+                "observedDataFactCards": _observed_data_fact_cards(observed_data_facts),
+                "observedDataFactsFile": validation_context_file,
                 "reportId": str(run_context.run_id),
                 "codingTaskKey": task_id,
                 "datasetSnapshotHash": dataset_snapshot_hash(lineage),
@@ -1217,33 +1541,21 @@ class ReportWorkflowRuntime:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        existing = await self.supervisor.repository.get_task_snapshot(task_id)
+        existing = await self.task_runner.repository.get_task_snapshot(task_id)
         if existing is None:
-            await self.supervisor.start_task(
+            await self.task_runner.start(
                 coding_scope,
                 instruction,
                 acceptance_contract=acceptance_contract,
             )
         elif feedback:
-            await self.supervisor.revise_task(
+            await self.task_runner.revise(
                 coding_scope,
                 f"report-revision-{revision + 1}",
                 instruction,
                 acceptance_contract=acceptance_contract,
             )
-        completed = False
-        async for event in self.supervisor.run_task(coding_scope):
-            if event.type == "terminal":
-                completed = event.data.get("state") == "completed"
-            elif event.type == "suspended":
-                raise ReportingError(
-                    str(event.data.get("code") or "report_worker_suspended"),
-                    "报表 Coding 分析已暂停。",
-                )
-        if not completed:
-            raise ReportingError("report_worker_failed", "报表 Coding 分析未完成。")
-        completed_task = await self.supervisor.repository.get_task_snapshot(task_id)
-        finish_receipt = completed_task.finish_receipt if completed_task is not None else None
+        finish_receipt = await self.task_runner.run(coding_scope)
         accepted_artifacts = (
             finish_receipt.get("artifacts") if isinstance(finish_receipt, dict) else None
         )
@@ -1264,6 +1576,11 @@ class ReportWorkflowRuntime:
             accepted_artifacts=accepted_artifacts,
             run_context=run_context,
         )
+        if not _accepted_artifacts_match_manifest(manifest, manifest_path, accepted_artifacts):
+            raise ReportingError(
+                "report_artifact_acceptance_incomplete",
+                "正式产物验收回执未精确绑定 Markdown、manifest 和全部图表。",
+            )
         result.update(
             {
                 "markdownPath": markdown_path,
@@ -1315,6 +1632,15 @@ class ReportWorkflowRuntime:
         pdf_identity = await self.workspace_service.ahash_file(
             self._scope(run_context)["threadId"], pdf_path
         )
+        validated_pdf_sha256 = validation.get("pdfSha256")
+        if (
+            not isinstance(validated_pdf_sha256, str)
+            or pdf_identity.get("sha256") != validated_pdf_sha256
+        ):
+            raise ReportingError(
+                "report_pdf_changed",
+                "PDF 在验收后发生变化，必须重新渲染并验收。",
+            )
         rendered = PdfArtifactManifest(
             reportId=draft.report_id,
             revision=draft.revision,
@@ -1330,7 +1656,15 @@ class ReportWorkflowRuntime:
             sections=tuple(validation.get("sectionIds") or ()),
         )
         validate_rendered_artifacts(draft, rendered, lineage=lineage)
-        result.update({"pdfPath": pdf_path, "validation": validation, "status": "validated"})
+        result.update(
+            {
+                "pdfPath": pdf_path,
+                "pdfSize": int(pdf_identity["size"]),
+                "pdfSha256": str(pdf_identity["sha256"]),
+                "validation": validation,
+                "status": "validated",
+            }
+        )
         state[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
         state[REPORT_ARTIFACTS_STATE_KEY] = {
             "draft": draft.model_dump(mode="json", by_alias=True),
@@ -1358,6 +1692,8 @@ class ReportWorkflowRuntime:
                 "revision": int(result.get("revision", 0)) + 1,
                 "markdownPath": result["markdownPath"],
                 "pdfPath": result["pdfPath"],
+                "pdfSize": result["pdfSize"],
+                "pdfSha256": result["pdfSha256"],
                 "validation": result["validation"],
             }
         )
@@ -1609,17 +1945,26 @@ class ReportWorkflowRuntime:
         state = ReportWorkflowRuntime._state(run_context)
         value = (run_context.dependencies or {}).get("AgentOS 报表工作流")
         if isinstance(value, dict):
-            state[REPORT_WORKFLOW_SCOPE_STATE_KEY] = dict(value)
+            scope = {
+                key: str(value.get(key) or "") for key in ("externalRunId", "threadId", "userId")
+            }
         else:
             value = state.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
-        if not isinstance(value, dict):
-            raise ReportingError("report_workflow_context_missing", "报表工作流作用域缺失。")
-        scope = {key: str(value.get(key) or "") for key in ("externalRunId", "threadId", "userId")}
+            scope = (
+                {key: str(value.get(key) or "") for key in ("externalRunId", "threadId", "userId")}
+                if isinstance(value, dict)
+                else {
+                    "externalRunId": str(run_context.run_id or ""),
+                    "threadId": str(run_context.session_id or ""),
+                    "userId": str(run_context.user_id or ""),
+                }
+            )
         if (
             any(not item for item in scope.values())
             or str(run_context.user_id or "") != scope["userId"]
         ):
             raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")
+        state[REPORT_WORKFLOW_SCOPE_STATE_KEY] = dict(scope)
         return scope
 
     @staticmethod
@@ -1631,21 +1976,38 @@ class ReportWorkflowRuntime:
 
     @staticmethod
     def _publication_content(output: Any) -> dict[str, Any]:
-        content = getattr(output, "content", None)
+        content = output if isinstance(output, dict) else getattr(output, "content", None)
         if not isinstance(content, dict):
             raise ReportingError("report_publication_invalid", "报表发布产物无效。")
         values = {
             "reportId": content.get("reportId"),
             "revision": content.get("revision"),
             "pdfPath": content.get("pdfPath"),
+            "pdfSize": content.get("pdfSize"),
+            "pdfSha256": content.get("pdfSha256"),
         }
         if (
             not isinstance(values["reportId"], str)
             or not isinstance(values["revision"], int)
             or not isinstance(values["pdfPath"], str)
+            or not isinstance(values["pdfSize"], int)
+            or values["pdfSize"] <= 0
+            or not isinstance(values["pdfSha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", values["pdfSha256"]) is None
         ):
             raise ReportingError("report_publication_invalid", "报表发布产物无效。")
         return values
+
+    @staticmethod
+    def _require_pdf_identity(expected: dict[str, Any], current: dict[str, Any]) -> None:
+        if (
+            current.get("size") != expected["pdfSize"]
+            or current.get("sha256") != expected["pdfSha256"]
+        ):
+            raise ReportingError(
+                "report_pdf_changed",
+                "PDF 在验收或审核后发生变化，必须重新验收。",
+            )
 
     def _tool_context(self, run_context: RunContext) -> RunContext:
         scope = self._scope(run_context)
@@ -2234,6 +2596,38 @@ def _compact_validation_feedback(value: dict[str, Any] | None) -> dict[str, Any]
     return compact
 
 
+def _outline_section_issues(
+    outline: ReportOutline,
+    profile: EffectiveReportingProfile,
+) -> list[dict[str, Any]]:
+    required_titles = [section.title for section in profile.sections]
+    actual_titles = list(outline.sections)
+    missing_titles = [title for title in required_titles if title not in actual_titles]
+    if missing_titles:
+        return [
+            {
+                "path": "sections",
+                "rejectedValue": actual_titles,
+                "requiredTitles": required_titles,
+                "missingTitles": missing_titles,
+                "reason": "Profile 必选章节必须使用原始 title 并保持相对顺序",
+                "requiredAction": "保留 requiredTitles，并可按报告目标和真实数据增加其他中文章节",
+            }
+        ]
+    required_positions = [actual_titles.index(title) for title in required_titles]
+    if required_positions != sorted(required_positions):
+        return [
+            {
+                "path": "sections",
+                "rejectedValue": actual_titles,
+                "requiredTitles": required_titles,
+                "reason": "Profile 必选章节的相对顺序与 effectiveProfile.sections 不一致",
+                "requiredAction": "按 requiredTitles 的相对顺序排列必选章节，扩展章节可插入任意位置",
+            }
+        ]
+    return []
+
+
 def _validation_issue(
     *,
     path: str,
@@ -2570,6 +2964,7 @@ def _analysis_bundle_semantic_issues(
             }
         )
     for index, requirement in enumerate(bundle.requirements):
+        issues.extend(_requirement_column_issues(requirement, index, snapshots))
         issues.extend(_measure_column_issues(requirement, index, snapshots))
         issues.extend(_multi_table_requirement_issues(requirement, index, snapshots))
     requirement_ids = {item.requirement_id for item in bundle.requirements}
@@ -2591,14 +2986,86 @@ def _analysis_bundle_semantic_issues(
     return issues
 
 
+def _requirement_column_issues(
+    requirement: QueryRequirement,
+    requirement_index: int,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> list[dict[str, Any]]:
+    available_tables = _available_tables(snapshots)
+    table_columns: list[set[str]] = []
+    issues: list[dict[str, Any]] = []
+    for table_index, table in enumerate(requirement.tables):
+        matches = [
+            model
+            for (source_id, qualified), model in available_tables.items()
+            if source_id == requirement.source_id
+            and (qualified == table.table or qualified.endswith(f".{table.table}"))
+        ]
+        if len(matches) != 1:
+            continue
+        model = matches[0]
+        columns = {column.name.lower() for column in model.columns}
+        table_columns.append(columns)
+        unknown_measures = sorted(set(table.measure_columns) - columns)
+        if unknown_measures:
+            allowed = sorted(
+                column.name
+                for column in model.columns
+                if _NUMERIC_MEASURE_TYPE_PATTERN.match(column.data_type) is not None
+                and column.name.lower() != table.period_column
+            )
+            issues.append(
+                {
+                    "path": (
+                        f"requirements[{requirement_index}].tables[{table_index}].measureColumns"
+                    ),
+                    "rejectedValue": unknown_measures,
+                    "reason": "measureColumns 引用了当前表结构快照中不存在的字段",
+                    "allowedValues": allowed,
+                    "requiredAction": "删除 rejectedValue，或从 allowedValues 选择真实数值指标字段",
+                }
+            )
+
+    if not table_columns:
+        return issues
+    dimension_columns = set().union(*table_columns)
+    unknown_dimensions = sorted(set(requirement.dimension_columns) - dimension_columns)
+    if unknown_dimensions:
+        issues.append(
+            {
+                "path": f"requirements[{requirement_index}].dimensionColumns",
+                "rejectedValue": unknown_dimensions,
+                "reason": "dimensionColumns 引用了 requirement 数据表结构快照中不存在的字段",
+                "allowedValues": sorted(dimension_columns),
+                "requiredAction": "删除或替换 rejectedValue，保留其他有效维度",
+            }
+        )
+
+    if len(requirement.tables) == 1:
+        grain_columns = table_columns[0]
+        unknown_grain = sorted(set(requirement.grain_columns) - grain_columns)
+        if unknown_grain:
+            issues.append(
+                {
+                    "path": f"requirements[{requirement_index}].grainColumns",
+                    "rejectedValue": unknown_grain,
+                    "reason": "grainColumns 引用了当前表结构快照中不存在的字段",
+                    "allowedValues": sorted(grain_columns),
+                    "requiredAction": "删除或替换 rejectedValue，保留其他有效粒度",
+                }
+            )
+    return issues
+
+
 def _measure_column_issues(
     requirement: QueryRequirement,
     requirement_index: int,
     snapshots: tuple[SourceSchemaSnapshot, ...],
 ) -> list[dict[str, Any]]:
     available_tables = _available_tables(snapshots)
-    issues: list[dict[str, Any]] = []
     dimensions = set(requirement.dimension_columns)
+    overlapping_dimensions: set[str] = set()
+    measure_issues: list[dict[str, Any]] = []
     for table_index, table in enumerate(requirement.tables):
         matches = [
             model
@@ -2610,6 +3077,14 @@ def _measure_column_issues(
             continue
         model = matches[0]
         columns = {column.name.lower(): column for column in model.columns}
+        overlapping_dimensions.update(
+            name
+            for name in table.measure_columns
+            if name in dimensions
+            and name in columns
+            and _NUMERIC_MEASURE_TYPE_PATTERN.match(columns[name].data_type) is not None
+            and name != table.period_column
+        )
         invalid = [
             columns[name]
             for name in table.measure_columns
@@ -2617,7 +3092,6 @@ def _measure_column_issues(
             and (
                 _NUMERIC_MEASURE_TYPE_PATTERN.match(columns[name].data_type) is None
                 or name == table.period_column
-                or name in dimensions
             )
         ]
         if not invalid:
@@ -2629,7 +3103,7 @@ def _measure_column_issues(
             and column.name.lower() != table.period_column
             and column.name.lower() not in dimensions
         )
-        issues.append(
+        measure_issues.append(
             {
                 "path": (f"requirements[{requirement_index}].tables[{table_index}].measureColumns"),
                 "rejectedValue": [
@@ -2645,7 +3119,42 @@ def _measure_column_issues(
                 ),
             }
         )
-    return issues
+    issues: list[dict[str, Any]] = []
+    if overlapping_dimensions:
+        rejected = [
+            column for column in requirement.dimension_columns if column in overlapping_dimensions
+        ]
+        issues.append(
+            {
+                "path": f"requirements[{requirement_index}].dimensionColumns",
+                "rejectedValue": rejected,
+                "reason": "数值指标不能同时声明为 measureColumns 和 dimensionColumns",
+                "allowedValues": [
+                    column
+                    for column in requirement.dimension_columns
+                    if column not in overlapping_dimensions
+                ],
+                "requiredAction": "从 dimensionColumns 删除 rejectedValue，保留原有其他维度",
+            }
+        )
+        overlapping_grain = [
+            column for column in requirement.grain_columns if column in overlapping_dimensions
+        ]
+        if overlapping_grain:
+            issues.append(
+                {
+                    "path": f"requirements[{requirement_index}].grainColumns",
+                    "rejectedValue": overlapping_grain,
+                    "reason": "聚合数值指标不能作为分组粒度",
+                    "allowedValues": [
+                        column
+                        for column in requirement.grain_columns
+                        if column not in overlapping_dimensions
+                    ],
+                    "requiredAction": "从 grainColumns 删除 rejectedValue，保留原有其他粒度",
+                }
+            )
+    return [*issues, *measure_issues]
 
 
 def _multi_table_requirement_issues(

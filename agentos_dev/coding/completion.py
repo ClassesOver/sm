@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from .models import AttemptSnapshot, TaskSnapshot, utcnow
+from ..task_execution.models import AttemptSnapshot, TaskSnapshot, utcnow
 
 
 class CompletionGate:

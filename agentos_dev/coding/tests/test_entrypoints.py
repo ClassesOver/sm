@@ -3,6 +3,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 
 from agentos_dev.coding import agentos as coding_agentos
@@ -30,7 +31,9 @@ print(json.dumps(sorted(name for name in sys.modules if name.startswith('agentos
 
 
 def test_coding_agentos_registers_only_facade(monkeypatch):
-    settings = AgentSettings.from_environment({}, load_env_file=False)
+    settings = AgentSettings.from_environment(
+        {"JWT_VERIFICATION_KEY": "test-key"}, load_env_file=False
+    )
     context = SimpleNamespace(database=object())
     worker = SimpleNamespace(id="worker")
     facade = SimpleNamespace(id="facade")
@@ -58,3 +61,15 @@ def test_coding_agentos_registers_only_facade(monkeypatch):
     assert captured["agents"] == [facade]
     assert worker not in captured["agents"]
     assert captured["interfaces"] == [{"agent": facade}]
+    assert captured["authorization"] is True
+    assert captured["authorization_config"].user_isolation is True
+
+
+def test_coding_agentos缺少jwt密钥时拒绝启动(monkeypatch):
+    settings = AgentSettings.from_environment({}, load_env_file=False)
+    monkeypatch.setattr(coding_agentos, "create_cli_context", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr(coding_agentos, "create_cli_agent", lambda _context: object())
+    monkeypatch.setattr(coding_agentos, "create_cli_app_agent", lambda _context, _worker: object())
+
+    with pytest.raises(ValueError, match="JWT_VERIFICATION_KEY"):
+        coding_agentos.create_agentos(settings)

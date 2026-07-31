@@ -4,12 +4,10 @@ import asyncio
 import sys
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
-from inspect import isawaitable
 from typing import Any
 from uuid import uuid4
 
 from agno.agent import Agent
-from agno.db.base import AsyncBaseDb, BaseDb
 from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.run.agent import RunOutput, RunOutputEvent
@@ -24,6 +22,11 @@ from ..context_management import (
     projected_coding_model,
 )
 from ..database import create_agent_database
+from ..execution_context import (
+    ExecutionContext,
+    close_execution_resources,
+    create_execution_context,
+)
 from ..instructions import (
     CODING_DELIVERABLE_VERIFICATION_INSTRUCTION,
     CODING_VALIDATOR_FEEDBACK_INSTRUCTION,
@@ -37,6 +40,12 @@ from ..skills import (
     is_skill_script_hook,
     load_builtin_coding_skills,
 )
+from ..task_execution.execution import (
+    CodingExecutionKernel,
+    WorkspaceCodingToolkit,
+    create_coding_tool_scheduler_hook,
+    is_coding_tool_scheduler_hook,
+)
 from ..workspace import WorkspaceService
 from . import (
     AgnoCodingExecutor,
@@ -45,12 +54,6 @@ from . import (
     CodingTaskSupervisor,
 )
 from .adapters import CliCodingAdapter
-from .execution import (
-    CodingExecutionKernel,
-    WorkspaceCodingToolkit,
-    create_coding_tool_scheduler_hook,
-    is_coding_tool_scheduler_hook,
-)
 
 CLI_AGENT_INSTRUCTIONS = [
     "你是独立运行的 Coding Agent。使用中文简洁交付，只操作当前会话隔离的 Daytona 工作区。",
@@ -69,38 +72,23 @@ CLI_AGENT_INSTRUCTIONS = [
 
 
 @dataclass(frozen=True)
-class CliContext:
-    settings: AgentSettings
-    database: AsyncBaseDb
-    workspace_service: WorkspaceService
-    coding_repository: CodingTaskRepository
-    trace_database: BaseDb | None = None
+class CliContext(ExecutionContext):
+    coding_repository: CodingTaskRepository | Any = None
 
 
 def create_cli_context(settings: AgentSettings | None = None) -> CliContext:
-    current_settings = settings or AgentSettings.from_environment()
-    database = create_agent_database(current_settings.database_url)
-    configure_tracing(
-        database.sync_db,
-        enabled=current_settings.tracing_enabled,
-        batch_processing=True,
-        phoenix_endpoint=current_settings.tracing_phoenix_endpoint,
-        phoenix_api_key=current_settings.tracing_phoenix_api_key,
-        phoenix_project_name=current_settings.tracing_phoenix_project_name,
+    context = create_execution_context(
+        settings,
+        database_factory=create_agent_database,
+        tracing_configurer=configure_tracing,
+        workspace_factory=WorkspaceService,
     )
-    workspace_service = WorkspaceService(
-        secret=current_settings.workspace_hmac_secret,
-        database=database,
-        snapshot=current_settings.workspace_snapshot,
-        network_allow_list=current_settings.daytona_network_allow_list,
-    )
-    repository = CodingTaskRepository(database.async_db)
     return CliContext(
-        settings=current_settings,
-        database=database.async_db,
-        workspace_service=workspace_service,
-        coding_repository=repository,
-        trace_database=database.sync_db,
+        settings=context.settings,
+        database=context.database,
+        workspace_service=context.workspace_service,
+        trace_database=context.trace_database,
+        coding_repository=CodingTaskRepository(context.database),
     )
 
 
@@ -125,7 +113,13 @@ def create_cli_agent(context: CliContext) -> Agent:
     model = projected_coding_model(
         _create_cli_model(settings, enable_thinking=settings.coding_enable_thinking)
     )
-    model.reasoning_effort = "medium"
+    model.reasoning_effort = settings.coding_reasoning_effort
+    extra_body = dict(model.extra_body or {})
+    if settings.coding_enable_thinking:
+        extra_body["thinking_budget"] = settings.coding_thinking_budget
+    else:
+        extra_body.pop("thinking_budget", None)
+    model.extra_body = extra_body
     coding_skills = load_builtin_coding_skills(settings.skills_dir)
     validator_registry = SkillValidatorRegistry.from_skills(coding_skills)
     compression_manager = (
@@ -333,44 +327,7 @@ async def run_cli(
 
 
 async def _close_cli_resources(context: CliContext, *agents: Agent) -> None:
-    clients: list[Any] = []
-    seen: set[int] = set()
-    for agent in agents:
-        models = [
-            getattr(agent, "model", None),
-            getattr(getattr(agent, "compression_manager", None), "model", None),
-        ]
-        for model in models:
-            client = getattr(model, "async_client", None)
-            if client is not None and id(client) not in seen:
-                seen.add(id(client))
-                clients.append(client)
-    workspace_service = getattr(context, "workspace_service", None)
-    if workspace_service is not None:
-        clients.append(workspace_service)
-    clients.append(context.database)
-    trace_database = getattr(context, "trace_database", None)
-    if trace_database is not None:
-        clients.append(trace_database)
-    first_error: BaseException | None = None
-    try:
-        if not flush_tracing():
-            first_error = RuntimeError("agent_tracing_flush_failed")
-    except BaseException as error:
-        first_error = error
-    for client in clients:
-        close = getattr(client, "aclose", None) or getattr(client, "close", None)
-        if not callable(close):
-            continue
-        try:
-            result = close()
-            if isawaitable(result):
-                await result
-        except BaseException as error:
-            if first_error is None:
-                first_error = error
-    if first_error is not None:
-        raise first_error
+    await close_execution_resources(context, *agents, tracing_flusher=flush_tracing)
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -3,15 +3,15 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from agno.run import RunContext
 from agno.run.base import RunStatus
 from agno.tools import Toolkit
 from agno.workflow import OnReject
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from .contract import ReportRequestEnvelope
+from .contract import ReportingWorkflowInput, ReportRequestEnvelope
 from .entrypoints import current_server_envelope
 from .models import (
     ReportingError,
@@ -25,8 +25,7 @@ REPORT_WORKFLOW_SCOPE_STATE_KEY = "report_workflow_scope"
 _WORKFLOW_ID = "enterprise-reporting-workflow-v1"
 _ACTIVE_STATUSES = frozenset({"running", "paused"})
 ReportWorkflowStatus = Literal["running", "paused", "completed", "cancelled", "failed"]
-ReviewStage = Literal["agent", "source", "outline", "query", "publication"]
-IsoDate = Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+ReviewStage = Literal["request", "agent", "source", "outline", "query", "publication"]
 
 
 class ReviewableWorkflow(Protocol):
@@ -43,8 +42,6 @@ class ReviewableWorkflow(Protocol):
 
 WorkflowFactory = Callable[[], ReviewableWorkflow]
 CancelCleanup = Callable[[dict[str, str], str, str], Awaitable[None]]
-DeliveryValidator = Callable[[dict[str, str], str, str], Awaitable[dict[str, Any] | None]]
-PublicationIssuer = Callable[[dict[str, str], str, str, Any], Awaitable[dict[str, Any]]]
 
 
 class ReportWorkflowController:
@@ -55,24 +52,24 @@ class ReportWorkflowController:
         workflow_factory: WorkflowFactory,
         *,
         cancel_cleanup: CancelCleanup | None = None,
-        delivery_validator: DeliveryValidator | None = None,
-        publication_issuer: PublicationIssuer | None = None,
     ):
         self._workflow_factory = workflow_factory
         self._cancel_cleanup = cancel_cleanup
-        self._delivery_validator = delivery_validator
-        self._publication_issuer = publication_issuer
         self._active_external: set[tuple[str, str, str]] = set()
 
     async def start(
         self,
-        envelope: ReportRequestEnvelope | dict[str, Any],
+        workflow_input: ReportingWorkflowInput | ReportRequestEnvelope | dict[str, Any],
         run_context: RunContext | None,
     ) -> dict[str, Any]:
         request = (
-            envelope
-            if isinstance(envelope, ReportRequestEnvelope)
-            else ReportRequestEnvelope.from_untrusted(envelope)
+            workflow_input
+            if isinstance(workflow_input, ReportingWorkflowInput)
+            else ReportingWorkflowInput.model_validate(
+                workflow_input.model_dump(mode="json", by_alias=True, exclude_none=True)
+                if isinstance(workflow_input, ReportRequestEnvelope)
+                else workflow_input
+            )
         )
         scope = self._scope(run_context)
         state = self._state(run_context)
@@ -86,6 +83,8 @@ class ReportWorkflowController:
         workflow_session_id, workflow_run_id = self._workflow_ids(scope)
         payload = request.model_dump(mode="json", by_alias=True, exclude_none=True)
         scope_key = self._external_scope_key(scope)
+        if scope_key in self._active_external:
+            raise ReportingError("report_workflow_active", "当前运行已有未完成的报表工作流。")
         self._active_external.add(scope_key)
         try:
             output = await workflow.arun(
@@ -134,10 +133,10 @@ class ReportWorkflowController:
         normalized = str(agent_id or "").strip()
         if not normalized or len(normalized) > 128:
             raise ReportingError("report_agent_invalid", "所选报表 Agent 无效。")
-        scope = self._scope(run_context)
         state = self._state(run_context)
         control = self._control(state)
         assert control is not None
+        scope = self._scope(run_context, external_run_id=control.external_run_id)
         self._assert_scope(control, scope)
         if control.review is None or control.review.stage != "agent":
             raise ReportingError("report_agent_selection_not_pending", "当前不等待选择报表 Agent。")
@@ -168,14 +167,17 @@ class ReportWorkflowController:
             control.workflow_session_id,
             control.workflow_run_id,
         )
+        await self._cleanup_cancelled(updated, scope)
+        if updated.status not in _ACTIVE_STATUSES:
+            self._active_external.discard(self._external_scope_key(scope))
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = updated.public_dict()
         return self._result(updated, output)
 
     async def cancel(self, run_context: RunContext | None) -> dict[str, Any]:
-        scope = self._scope(run_context)
         state = self._state(run_context)
         control = self._control(state)
         assert control is not None
+        scope = self._scope(run_context, external_run_id=control.external_run_id)
         self._assert_scope(control, scope)
         output = await self._load(control)
         status = self._status(getattr(output, "status", None))
@@ -222,14 +224,19 @@ class ReportWorkflowController:
             "user_id": user_id,
         }
         scope_key = self._external_scope_key(scope)
-        if scope_key not in self._active_external and not probe_storage:
+        known_active = scope_key in self._active_external
+        if not known_active and not probe_storage:
             return None
         workflow_session_id, workflow_run_id = self._workflow_ids(scope)
         workflow = self._workflow()
         output = await workflow.aget_run(workflow_run_id, session_id=workflow_session_id)
         if output is None:
-            self._active_external.discard(scope_key)
-            return None
+            if not known_active:
+                return None
+            await workflow.acancel_run(workflow_run_id)
+            if self._cancel_cleanup is not None:
+                await self._cancel_cleanup(scope, workflow_session_id, workflow_run_id)
+            return {"ok": True, "status": "cancelling"}
         stored_user = getattr(output, "user_id", None)
         if stored_user is not None and str(stored_user) != user_id:
             return None
@@ -246,33 +253,18 @@ class ReportWorkflowController:
             )
         elif status == "running":
             await workflow.acancel_run(workflow_run_id)
-            output = await workflow.aget_run(workflow_run_id, session_id=workflow_session_id)
+            if self._cancel_cleanup is not None:
+                await self._cancel_cleanup(scope, workflow_session_id, workflow_run_id)
+            refreshed = await workflow.aget_run(workflow_run_id, session_id=workflow_session_id)
+            if refreshed is not None:
+                output = refreshed
         status = self._status(getattr(output, "status", None))
         if status in _ACTIVE_STATUSES:
-            raise ReportingError("report_workflow_cancel_failed", "报表工作流未进入取消终态。")
+            return {"ok": True, "status": "cancelling"}
         self._active_external.discard(scope_key)
         if status == "cancelled" and self._cancel_cleanup is not None:
             await self._cancel_cleanup(scope, workflow_session_id, workflow_run_id)
         return {"ok": True, "status": status}
-
-    async def validated_external_delivery(
-        self, *, external_run_id: str, thread_id: str, user_id: str
-    ) -> dict[str, Any] | None:
-        if self._delivery_validator is None:
-            return None
-        scope = {
-            "external_run_id": external_run_id,
-            "thread_id": thread_id,
-            "user_id": user_id,
-        }
-        workflow_session_id, workflow_run_id = self._workflow_ids(scope)
-        output = await self._workflow().aget_run(workflow_run_id, session_id=workflow_session_id)
-        if output is None or self._status(getattr(output, "status", None)) != "completed":
-            return None
-        stored_user = getattr(output, "user_id", None)
-        if stored_user is not None and str(stored_user) != user_id:
-            return None
-        return await self._delivery_validator(scope, workflow_session_id, workflow_run_id)
 
     async def _continue(
         self,
@@ -281,16 +273,25 @@ class ReportWorkflowController:
         approve: bool,
         feedback: str | None = None,
     ) -> dict[str, Any]:
-        scope = self._scope(run_context)
         state = self._state(run_context)
         control = self._control(state)
         assert control is not None
+        scope = self._scope(run_context, external_run_id=control.external_run_id)
         self._assert_scope(control, scope)
+        if approve and control.review is not None and control.review.stage == "request":
+            raise ReportingError(
+                "report_request_clarification_required",
+                "当前审核项必须补充报表分析期间。",
+            )
+        if approve and control.review is not None and control.review.stage == "agent":
+            raise ReportingError(
+                "report_agent_selection_required",
+                "当前审核项必须明确选择报表 Agent。",
+            )
         output = await self._load(control)
         if self._status(getattr(output, "status", None)) != "paused":
             raise ReportingError("report_workflow_not_paused", "报表工作流当前不等待审核。")
         requirement = self._active_requirement(output)
-        review_stage = control.review.stage if control.review is not None else None
         if approve:
             requirement.confirm()
         else:
@@ -308,15 +309,6 @@ class ReportWorkflowController:
             control.workflow_session_id,
             control.workflow_run_id,
         )
-        if review_stage == "publication" and updated.status == "completed":
-            if self._publication_issuer is None:
-                raise ReportingError("report_publication_unavailable", "报表发布服务未配置。")
-            output.content = await self._publication_issuer(
-                scope,
-                control.workflow_session_id,
-                control.workflow_run_id,
-                output,
-            )
         await self._cleanup_cancelled(updated, scope)
         if updated.status not in _ACTIVE_STATUSES:
             self._active_external.discard(self._external_scope_key(scope))
@@ -372,15 +364,19 @@ class ReportWorkflowController:
         return run_context.session_state
 
     @staticmethod
-    def _scope(run_context: RunContext | None) -> dict[str, str]:
+    def _scope(
+        run_context: RunContext | None, *, external_run_id: str | None = None
+    ) -> dict[str, str]:
         if run_context is None:
             raise ReportingError("report_workflow_context_missing", "报表工作流缺少运行上下文。")
         dependency = (run_context.dependencies or {}).get(REPORT_WORKFLOW_SCOPE_DEPENDENCY)
-        external_run_id = (
-            dependency.get("externalRunId") if isinstance(dependency, dict) else run_context.run_id
+        resolved_external_run_id = (
+            external_run_id
+            or (dependency.get("externalRunId") if isinstance(dependency, dict) else None)
+            or run_context.run_id
         )
         values = {
-            "external_run_id": str(external_run_id or ""),
+            "external_run_id": str(resolved_external_run_id or ""),
             "thread_id": str(run_context.session_id or ""),
             "user_id": str(run_context.user_id or ""),
         }
@@ -491,7 +487,13 @@ class ReportWorkflowController:
         content = getattr(getattr(requirement, "step_output", None), "content", None)
         if isinstance(content, BaseModel):
             content = content.model_dump(mode="json", by_alias=True)
-        if "来源" in name and isinstance(content, dict) and isinstance(content.get("agents"), list):
+        if "规范化报表请求" in name:
+            stage = "request"
+            title = "补充分析期间"
+            allowed = {"clarificationQuestion"}
+        elif (
+            "来源" in name and isinstance(content, dict) and isinstance(content.get("agents"), list)
+        ):
             stage = "agent"
             title = "选择报表 Agent"
             allowed = {"agents"}
@@ -555,13 +557,15 @@ class ReportWorkflowToolkit(Toolkit):
                 self.report_workflow_reject,
                 self.report_workflow_cancel,
             ],
+            requires_confirmation_tools=[self.report_workflow_approve.__name__],
             instructions=(
                 "已有服务端 Envelope 的新报表调用 report_workflow_start；自然语言新报表调用 "
-                "report_workflow_start_from_prompt，并保持 report_goal 与用户输入原文完全一致。"
+                "report_workflow_start_from_prompt，并保持 prompt 与用户输入原文完全一致。"
                 "需要选择 Agent 时调用 "
                 "report_workflow_select_agent；其他 paused 审核批准调用 "
                 "report_workflow_approve，拒绝调用 report_workflow_reject；用户明确取消时调用 "
-                "report_workflow_cancel。不得绕过 Workflow 审核或自行执行取数和 Coding 分析。"
+                "report_workflow_cancel。request 阶段需要用户补充期间时，把补充原文作为 feedback 调用 "
+                "report_workflow_reject。不得绕过 Workflow 审核或自行执行取数和 Coding 分析。"
             ),
             add_instructions=True,
         )
@@ -578,28 +582,16 @@ class ReportWorkflowToolkit(Toolkit):
 
     async def report_workflow_start_from_prompt(
         self,
-        report_goal: str,
-        period_start: IsoDate,
-        period_end: IsoDate,
-        source_ids: list[str] | None = None,
+        prompt: str,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        """将自然语言请求转换为严格 Envelope 后启动报表 Workflow。
+        """将自然语言原文交给报表 Workflow 首步统一归一化。
 
         Args:
-            report_goal: 完整复制用户输入原文，不得改写、摘要或补充。
-            period_start: 用户要求的分析期间起始日期；单个日历年份使用该年1月1日。
-            period_end: 用户要求的分析期间结束日期；单个日历年份使用该年12月31日。
-            source_ids: 仅在用户明确指定数据源 ID 时填写，否则留空。
+            prompt: 完整复制用户输入原文，不得改写、摘要、解析期间或补充。
         """
-        envelope = ReportRequestEnvelope.from_untrusted(
-            {
-                "reportGoal": report_goal,
-                "period": {"start": period_start, "end": period_end},
-                "sourceIds": source_ids,
-            }
-        )
-        return await self.controller.start(envelope, run_context)
+        workflow_input = ReportingWorkflowInput.model_validate({"version": "1", "prompt": prompt})
+        return await self.controller.start(workflow_input, run_context)
 
     async def report_workflow_approve(
         self, run_context: RunContext | None = None

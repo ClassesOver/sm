@@ -12,8 +12,8 @@ from agentos_dev.coding import (
     Lease,
     TaskState,
 )
-from agentos_dev.coding.repository import utcnow
 from agentos_dev.database import create_agent_database
+from agentos_dev.task_execution.repository import utcnow
 
 
 @pytest.fixture

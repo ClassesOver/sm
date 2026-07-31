@@ -3,8 +3,8 @@ from typing import Any, cast
 
 import pytest
 
-from agentos_dev.coding.models import CodingScope, Lease, utcnow
-from agentos_dev.coding.session import TaskSession
+from agentos_dev.task_execution.models import CodingScope, Lease, utcnow
+from agentos_dev.task_execution.session import TaskSession
 
 
 @pytest.fixture

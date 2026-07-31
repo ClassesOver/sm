@@ -12,3 +12,4 @@ def test_reporting_compose_uses_package_entrypoint():
         "-m",
         "agentos_dev.coding.reporting",
     ]
+    assert compose["services"]["reporting-os"]["environment"]["AGENT_OS_WORKERS"] == "1"

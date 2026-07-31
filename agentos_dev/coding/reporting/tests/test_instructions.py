@@ -65,7 +65,18 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "analysisPlan.description" in instructions
     assert "不是数据事实来源" in instructions
     assert "工作区根目录" in instructions
+    assert "不得使用 /workspace" in instructions
+    assert "/home/daytona/workspace" in instructions
     assert "不得再拼接工作区根相对路径" in instructions
+    assert "Noto Sans CJK SC" in instructions
+    assert "才创建一次 ReportArtifactManifest" in instructions
+    assert "不得重写、覆盖或重复计算相同哈希" in instructions
+    assert "2 到 10 个" in instructions
+    assert "一次 apply_patch" in instructions
+    assert "不得重新读取完整 Markdown 或 manifest" in instructions
+    assert "从工作区根目录执行" in instructions
+    assert "6000 个 UTF-8 字节" in instructions
+    assert "优先保证全部章节完整" in instructions
     assert "citationId 和 section 标记" in instructions
     assert "schema 之外的字段" in instructions
     assert "只提交实际存在的交付路径" in instructions
@@ -88,3 +99,30 @@ def test_报表智能体说明只包含workflow已准备的分析边界():
     assert "report_render_markdown" not in instructions
     assert "report_validate_pdf" not in instructions
     assert "report_job_status" not in instructions
+
+
+def test_报表用户可见内容使用中文且机器标记保持稳定():
+    instructions = "\n".join(build_report_agent_instructions(instruction_context()))
+
+    assert "用户可见内容必须使用简体中文" in instructions
+    assert "图表标题、坐标轴、图例、表头" in instructions
+    assert "不得用英文机器 ID 代替中文标题" in instructions
+    assert "只展示中文业务名称" in instructions
+    assert "charts 清单必须与 Markdown 实际引用的图片路径完全一致" in instructions
+    assert "不得声明未展示的图表" in instructions
+    assert "effectiveProfile.sections" in instructions
+    assert "[[section:{section.code}]]" in instructions
+    assert "## {section.title}" in instructions
+    assert "title 是必选章节展示的唯一事实来源" in instructions
+    assert "按 outline.sections 的顺序生成章节" in instructions
+    assert "## 扩展章节标题" in instructions
+    assert "扩展章节不得删除、改名、替代或打乱必选章节" in instructions
+    assert "不得加入 manifest 的 sections" in instructions
+    assert "manifest 的 sections 仍只按 effectiveProfile.sections 保存 section.code" in instructions
+    assert "[[citation:income_detail_1]]" in instructions
+    assert "禁止直接执行 validator 脚本" in instructions
+    assert "只处理 failedRequirements" in instructions
+    assert "重新计算 Markdown 的 size 和 SHA-256" in instructions
+    assert "visibleMachineTerms" in instructions
+    assert "missingMarkdownChartPaths" in instructions
+    assert "最多再调用一次 verify" in instructions

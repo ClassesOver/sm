@@ -18,7 +18,7 @@ class ReportReviewSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    stage: Literal["agent", "source", "outline", "query", "publication"]
+    stage: Literal["request", "agent", "source", "outline", "query", "publication"]
     title: str = Field(min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=1000)
     preview: dict[str, Any] = Field(default_factory=dict)

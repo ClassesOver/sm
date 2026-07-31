@@ -11,10 +11,10 @@ from daytona import AsyncDaytona, CreateSandboxFromSnapshotParams
 from daytona.common.errors import DaytonaNotFoundError
 
 from agentos_dev.coding import CodingScope, Lease
-from agentos_dev.coding.execution import CODING_TASK_DEPENDENCY, CodingExecutionKernel
-from agentos_dev.coding.repository import CodingTaskRepository
 from agentos_dev.database import create_agent_database
 from agentos_dev.skills import skill_script_receipt_hook
+from agentos_dev.task_execution.execution import CODING_TASK_DEPENDENCY, CodingExecutionKernel
+from agentos_dev.task_execution.repository import CodingTaskRepository
 from agentos_dev.workspace import (
     WORKSPACE_ROOT,
     WORKSPACE_SNAPSHOT,

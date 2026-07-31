@@ -30,7 +30,7 @@ from agno.run.agent import (
     ToolCallStartedEvent,
 )
 
-from .models import CodingEvent, CodingScope, InstructionReceipt
+from ..task_execution.models import CodingEvent, CodingScope, InstructionReceipt
 from .supervisor import CodingTaskSupervisor
 
 

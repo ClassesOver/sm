@@ -16,7 +16,7 @@ from agentos_dev.coding.tests.workspace_fakes import (
     Info,
     service,
 )
-from agentos_dev.coding.tools import (
+from agentos_dev.task_execution.tools import (
     CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
     CODEX_EXEC_SESSION_TTL_SECONDS,
     CODEX_EXEC_SESSIONS_STATE_KEY,

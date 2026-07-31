@@ -34,8 +34,8 @@ from agno.session.agent import AgentSession
 from agno.session.team import TeamSession
 
 from agentos_dev import app as app_module
-from agentos_dev.coding.repository import CodingTaskRepository, utcnow
 from agentos_dev.database import create_agent_database
+from agentos_dev.task_execution.repository import CodingTaskRepository, utcnow
 from agentos_dev.tests.workspace_fakes import (
     AsyncFakeClient,
     AsyncMemoryRegistry,

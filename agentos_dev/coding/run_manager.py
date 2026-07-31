@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from .models import AttemptOutcome, AttemptSnapshot, Lease, TaskSnapshot
-from .repository import CodingTaskRepository
+from ..task_execution.models import AttemptOutcome, AttemptSnapshot, Lease, TaskSnapshot
+from ..task_execution.repository import CodingTaskRepository
 
 
 class InternalRunManager:

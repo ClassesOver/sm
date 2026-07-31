@@ -331,17 +331,26 @@ class AcceptancePolicy:
             for item in evidence_artifacts
             if isinstance(item, dict)
             and isinstance(item.get("path"), str)
+            and isinstance(item.get("size"), int)
             and isinstance(item.get("sha256"), str)
         ]
-        for pattern in requirement["artifactPatterns"]:
-            matched = False
-            for item in evidence:
-                if not fnmatch.fnmatchcase(item["path"], pattern):
-                    continue
-                final = final_artifacts.get(item["path"])
-                if final is not None and final.get("sha256") == item["sha256"]:
-                    matched = True
-                    break
-            if not matched:
+        patterns = requirement["artifactPatterns"]
+        if any(
+            not any(fnmatch.fnmatchcase(item["path"], pattern) for item in evidence)
+            for pattern in patterns
+        ):
+            return False
+        matched_evidence = [
+            item
+            for item in evidence
+            if any(fnmatch.fnmatchcase(item["path"], pattern) for pattern in patterns)
+        ]
+        for item in matched_evidence:
+            final = final_artifacts.get(item["path"])
+            if (
+                final is None
+                or final.get("size") != item["size"]
+                or final.get("sha256") != item["sha256"]
+            ):
                 return False
-        return True
+        return bool(matched_evidence)
