@@ -100,7 +100,8 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 
 主 Assistant 通过 Agno callable tools factory 注册 `AgentControlToolkit` 和 `BaseToolkit`；
 Coding Agent 固定注册生产 `WorkspaceCodingToolkit`。公开 `report-agent` 只注册
-`ReportWorkflowToolkit` 的启动、批准、拒绝和取消四个 facade 工具；未注册到 AgentOS 的
+`ReportWorkflowToolkit` 的两个启动工具和一个 `requires_user_input` 审核桥；审核动作、反馈和
+Agent 选择只能由 AgentOS 用户输入提供。未注册到 AgentOS 的
 `report-worker` 才持有 `WorkspaceCodingToolkit` 和 `WorkspaceReportToolkit`；它只能读取 Workflow
 提交的不可变数据集。生产 Coding Toolkit 继承 Agno
 `DaytonaTools` 类型，但跳过其创建 sandbox 的初始化逻辑，通过共享 `CodingExecutionKernel` 和
@@ -281,8 +282,10 @@ Markdown/heredoc 外壳和 Add File 纯空行提供有限格式兼容。对于�
 Shell 命令时拒绝且不写文件。供应商 API 已拒绝的畸形函数参数无法到达该 fallback，仍须由模型或
 供应商重试为有效工具调用。`report-worker` 从该基座派生，固定暴露生产 Coding Toolkit 和
 `WorkspaceReportToolkit`，但不注册为 AgentOS 公共 Agent 或 Team
-member。生产路由仍由公开 `report-agent` 接收，它只通过四个 `report_workflow_*` 工具调用
-`ReportWorkflowController`；`AgentOS` 不额外注册 Workflow，也不增加第二条传输链路。
+member。生产路由仍由公开 `report-agent` 接收，它通过两个启动工具和
+`report_workflow_review` 审核桥调用 `ReportWorkflowController`；审核桥把 AgentOS 原生用户输入
+确定性地映射为同一持久化 Workflow run 的批准、带反馈拒绝、Agent 选择或取消，
+不增加第二条传输链路。
 `agentos_dev.coding.reporting` 的 Agno Workflow 依次处理来源解析、受限画像、提纲审核、分析计划、取数需求、
 SQL 候选与按需审核、不可变数据集物化、Coding 分析、PDF 验收和发布审核。AG-UI 和 CLI adapter
 只负责暂停、反馈、继续和取消。Report 层保留数据源物化、输入绑定、Markdown/PDF 渲染及验收。

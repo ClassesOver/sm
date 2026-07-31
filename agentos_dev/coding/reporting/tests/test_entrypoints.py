@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from agno.run import RunContext
@@ -372,6 +373,68 @@ async def test_report_workflow_start缺少服务端绑定envelope时返回稳定
 
     assert captured.value.code == "report_request_invalid"
     assert captured.value.message == "当前消息缺少报表 Envelope。"
+
+
+def test_report_workflow_review由用户输入而非模型决定():
+    toolkit = ReportWorkflowToolkit(cast(ReportWorkflowController, object()))
+    review = toolkit.async_functions["report_workflow_review"]
+
+    assert toolkit.requires_confirmation_tools == []
+    assert review.requires_confirmation is False
+    assert review.requires_user_input is True
+    assert review.user_input_fields == ["action", "feedback", "agent_id"]
+    assert review.parameters == {"type": "object", "properties": {}, "required": []}
+    assert [field.name for field in review.user_input_schema or []] == [
+        "action",
+        "feedback",
+        "agent_id",
+    ]
+    fields = {field.name: field for field in review.user_input_schema or []}
+    assert fields["action"].value is None
+    assert fields["feedback"].value == ""
+    assert fields["agent_id"].value == ""
+
+
+@pytest.mark.anyio
+async def test_report_workflow_review把结构化决策交给controller():
+    calls = []
+
+    class FakeController:
+        async def approve(self, run_context):
+            calls.append(("approve", None, run_context))
+            return {"status": "paused"}
+
+        async def reject(self, feedback, run_context):
+            calls.append(("reject", feedback, run_context))
+            return {"status": "paused"}
+
+        async def select_agent(self, agent_id, run_context):
+            calls.append(("select_agent", agent_id, run_context))
+            return {"status": "paused"}
+
+        async def cancel(self, run_context):
+            calls.append(("cancel", None, run_context))
+            return {"status": "cancelled"}
+
+    toolkit = ReportWorkflowToolkit(cast(ReportWorkflowController, FakeController()))
+    entrypoint = toolkit.async_functions["report_workflow_review"].entrypoint
+    assert entrypoint is not None
+    run_context = RunContext(run_id="run-review", session_id="thread", user_id="user")
+
+    assert await entrypoint(action="approve", run_context=run_context) == {"status": "paused"}
+    assert await entrypoint(action="reject", feedback="补充异常归因", run_context=run_context) == {
+        "status": "paused"
+    }
+    assert await entrypoint(action="select_agent", agent_id="finance", run_context=run_context) == {
+        "status": "paused"
+    }
+    assert await entrypoint(action="cancel", run_context=run_context) == {"status": "cancelled"}
+    assert calls == [
+        ("approve", None, run_context),
+        ("reject", "补充异常归因", run_context),
+        ("select_agent", "finance", run_context),
+        ("cancel", None, run_context),
+    ]
 
 
 @pytest.mark.anyio

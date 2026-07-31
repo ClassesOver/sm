@@ -78,7 +78,10 @@ DDL、模型说明和 term 计算 SHA-256。原始 DDL 与 SQLGlot 结构化结�
 worker Agent。Report worker 直接由报表配置和中立运行资源构造，不复制 Coding Agent，也不依赖
 Coding CLI/AgentOS 产品入口。`/agui` 与 AgentOS Agent API 都通过原生 Agno Agent 入口执行；自然
 语言只作为 `prompt` 原样进入 Workflow 首步，facade 不解析期间，内部审核、查询和恢复
-仍使用同一个 Agno Workflow。原生 Workflow API 未提供项目私有 dependency 时，作用域直接来自 Agno
+仍使用同一个 Agno Workflow。Workflow 暂停后，facade 必须调用标记为
+`requires_user_input` 的 `report_workflow_review`；`action`、`feedback` 和 `agent_id` 由 AgentOS
+收集而不暴露给模型，工具再恢复同一持久化 Workflow run。原生 Workflow API 未提供项目私有
+dependency 时，作用域直接来自 Agno
 `RunContext.run_id/session_id/user_id`；恢复时使用 Workflow state。独立服务使用已验证的 Agno
 `user_id` 和 Workflow thread 构造 `reporting` 发布作用域，并通过独立的 grant repository、发布
 issuer 和同源下载 router 签发及校验 HTTP grant，不复用 Odoo capability scope；

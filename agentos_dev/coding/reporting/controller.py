@@ -7,7 +7,7 @@ from typing import Any, Literal, Protocol
 
 from agno.run import RunContext
 from agno.run.base import RunStatus
-from agno.tools import Toolkit
+from agno.tools import Toolkit, tool
 from agno.workflow import OnReject
 from pydantic import BaseModel
 
@@ -552,23 +552,22 @@ class ReportWorkflowToolkit(Toolkit):
             tools=[
                 self.report_workflow_start,
                 self.report_workflow_start_from_prompt,
-                self.report_workflow_select_agent,
-                self.report_workflow_approve,
-                self.report_workflow_reject,
-                self.report_workflow_cancel,
+                self.report_workflow_review,
             ],
-            requires_confirmation_tools=[self.report_workflow_approve.__name__],
             instructions=(
                 "已有服务端 Envelope 的新报表调用 report_workflow_start；自然语言新报表调用 "
                 "report_workflow_start_from_prompt，并保持 prompt 与用户输入原文完全一致。"
-                "需要选择 Agent 时调用 "
-                "report_workflow_select_agent；其他 paused 审核批准调用 "
-                "report_workflow_approve，拒绝调用 report_workflow_reject；用户明确取消时调用 "
-                "report_workflow_cancel。request 阶段需要用户补充期间时，把补充原文作为 feedback 调用 "
-                "report_workflow_reject。不得绕过 Workflow 审核或自行执行取数和 Coding 分析。"
+                "任一工具返回 paused 时，准确展示 review 后必须立即调用 "
+                "report_workflow_review，由 AgentOS 收集用户的 action、feedback 或 agent_id；"
+                "不得在文本回答中代替用户审批，不得绕过 Workflow 审核或自行执行取数和 "
+                "Coding 分析。"
             ),
             add_instructions=True,
         )
+        review = self.async_functions["report_workflow_review"]
+        for field in review.user_input_schema or []:
+            if field.name in {"feedback", "agent_id"}:
+                field.value = ""
 
     async def report_workflow_start(
         self,
@@ -593,28 +592,29 @@ class ReportWorkflowToolkit(Toolkit):
         workflow_input = ReportingWorkflowInput.model_validate({"version": "1", "prompt": prompt})
         return await self.controller.start(workflow_input, run_context)
 
-    async def report_workflow_approve(
-        self, run_context: RunContext | None = None
-    ) -> dict[str, Any]:
-        """批准当前报表 Workflow 审核项并继续执行。"""
-        return await self.controller.approve(run_context)
-
-    async def report_workflow_select_agent(
+    @tool(
+        requires_user_input=True,
+        user_input_fields=["action", "feedback", "agent_id"],
+    )
+    async def report_workflow_review(
         self,
-        agent_id: str,
+        action: Literal["approve", "reject", "select_agent", "cancel"],
+        feedback: str = "",
+        agent_id: str = "",
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        """选择当前 Workflow 暂停项列出的报表 Agent。"""
-        return await self.controller.select_agent(agent_id, run_context)
+        """审核当前暂停的报表 Workflow。
 
-    async def report_workflow_reject(
-        self,
-        feedback: str,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        """拒绝当前审核项并提供修改意见。"""
-        return await self.controller.reject(feedback, run_context)
-
-    async def report_workflow_cancel(self, run_context: RunContext | None = None) -> dict[str, Any]:
-        """取消当前报表 Workflow，并推进到持久化终态。"""
+        Args:
+            action: 审核动作：approve 批准，reject 拒绝，select_agent 选择 Agent，
+                cancel 取消。
+            feedback: 拒绝或补充信息时必填的完整意见。
+            agent_id: 选择 Agent 时必填的候选 code。
+        """
+        if action == "approve":
+            return await self.controller.approve(run_context)
+        if action == "reject":
+            return await self.controller.reject(feedback, run_context)
+        if action == "select_agent":
+            return await self.controller.select_agent(agent_id, run_context)
         return await self.controller.cancel(run_context)

@@ -170,12 +170,12 @@ def create_report_agent(
                 "新报表输入为 Envelope 时调用不带参数的 report_workflow_start；输入为自然语言时调用 "
                 "report_workflow_start_from_prompt，并把用户输入全文逐字复制到 prompt。不得自行解析期间、"
                 "改写目标、取数、执行 Coding 或生成报告。Workflow 返回 request 阶段 paused 时，向用户"
-                "展示 clarificationQuestion；用户补充期间后调用 report_workflow_reject，并把补充原文"
-                "完整放入 feedback，使 Workflow 首步按官方 HumanReview retry 继续归一化。",
-                "工具返回 paused 时准确展示当前审核预览。用户批准后调用 report_workflow_approve；"
-                "审核阶段为 agent 时必须调用 report_workflow_select_agent 并传入列表中的 code；"
-                "用户拒绝时把完整反馈传给 report_workflow_reject；明确取消时调用 "
-                "report_workflow_cancel。",
+                "展示 clarificationQuestion，并由 report_workflow_review 的 AgentOS 用户输入收集补充原文，"
+                "使 Workflow 首步按官方 HumanReview retry 继续归一化。",
+                "任一报表工具返回 paused 时，准确展示当前 review 预览，并在同一 run 中立即调用 "
+                "report_workflow_review。action、feedback 和 agent_id 必须由 AgentOS 用户输入提供；"
+                "不得在文本回答中询问审批、猜测审批动作或宣称没有进行中的 Workflow。"
+                "report_workflow_review 返回 paused 时重复本流程。",
                 "工具返回 completed 后只返回其正式报告产物；不得把 paused、running 或 failed "
                 "描述为完成。",
             ],

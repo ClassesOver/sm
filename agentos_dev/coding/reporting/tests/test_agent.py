@@ -124,10 +124,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert set(report_tools[0].async_functions) == {
         "report_workflow_start",
         "report_workflow_start_from_prompt",
-        "report_workflow_select_agent",
-        "report_workflow_approve",
-        "report_workflow_reject",
-        "report_workflow_cancel",
+        "report_workflow_review",
     }
     expected_validators = SkillValidatorRegistry.from_skills(coding_agent.skills)
     assert app.coding_supervisor.validator_registry.script_sha256() == (

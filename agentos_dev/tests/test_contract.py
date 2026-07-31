@@ -6,9 +6,10 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from agno.agent import Agent
 from agno.agent._tools import parse_tools
 from agno.db.in_memory import InMemoryDb
 from agno.models.base import Model
@@ -27,6 +28,10 @@ from agentos_dev.agents import (
     create_assistant_team,
 )
 from agentos_dev.agents.assistant import create_assistant
+from agentos_dev.coding.reporting.controller import (
+    ReportWorkflowController,
+    ReportWorkflowToolkit,
+)
 from agentos_dev.coding.reporting.instructions import (
     build_report_agent_instructions,
 )
@@ -446,6 +451,68 @@ async def test_team_top_level_client_tool_pauses_and_continues_same_run():
 
 
 @pytest.mark.anyio
+async def test_report_review_tool暂停agent并用用户反馈继续同run():
+    calls = []
+
+    class FakeController:
+        async def reject(self, feedback, run_context):
+            calls.append((feedback, run_context.session_id))
+            return {"ok": True, "status": "completed"}
+
+    model = ScriptedModel(
+        id="scripted-report-review-model",
+        responses=[
+            ModelResponse(
+                tool_calls=[
+                    {
+                        "id": "call-report-review",
+                        "type": "function",
+                        "function": {
+                            "name": "report_workflow_review",
+                            "arguments": "{}",
+                        },
+                    }
+                ]
+            ),
+            ModelResponse(content="已按修改意见继续报表工作流。"),
+        ],
+    )
+    agent = Agent(
+        id="report-review-test",
+        model=model,
+        tools=[ReportWorkflowToolkit(cast(ReportWorkflowController, FakeController()))],
+        db=InMemoryDb(),
+        telemetry=False,
+    )
+
+    paused = await agent.arun(
+        "审核当前提纲",
+        run_id="run-report-review",
+        session_id="thread-report-review",
+        user_id="user-report-review",
+    )
+
+    assert paused.status is RunStatus.paused
+    assert len(paused.active_requirements) == 1
+    requirement = paused.active_requirements[0]
+    assert requirement.needs_user_input is True
+    fields = {field.name: field for field in requirement.user_input_schema or []}
+    fields["action"].value = "reject"
+    fields["feedback"].value = "补充异常原因和改进责任人"
+
+    completed = await agent.acontinue_run(
+        run_id=paused.run_id,
+        session_id=paused.session_id,
+        requirements=paused.requirements,
+    )
+
+    assert completed.status is RunStatus.completed
+    assert completed.run_id == paused.run_id
+    assert completed.content == "已按修改意见继续报表工作流。"
+    assert calls == [("补充异常原因和改进责任人", "thread-report-review")]
+
+
+@pytest.mark.anyio
 async def test_team_does_not_call_declared_odoo_tool_for_plain_question():
     model = ScriptedModel(
         id="scripted-plain-model",
@@ -561,23 +628,18 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
         {
             "report_workflow_start",
             "report_workflow_start_from_prompt",
-            "report_workflow_select_agent",
-            "report_workflow_approve",
-            "report_workflow_reject",
-            "report_workflow_cancel",
+            "report_workflow_review",
         }
     ]
-    assert (
-        report_toolkits[0].async_functions["report_workflow_approve"].requires_confirmation is True
-    )
+    review_tool = report_toolkits[0].async_functions["report_workflow_review"]
+    assert review_tool.requires_user_input is True
+    assert review_tool.user_input_fields == ["action", "feedback", "agent_id"]
     assert all(
         report_toolkits[0].async_functions[name].requires_confirmation is False
         for name in (
             "report_workflow_start",
             "report_workflow_start_from_prompt",
-            "report_workflow_select_agent",
-            "report_workflow_reject",
-            "report_workflow_cancel",
+            "report_workflow_review",
         )
     )
     worker_toolkits = app.report_worker.tools(
@@ -630,12 +692,9 @@ def test_toolkit_instructions_are_injected_by_agno():
     assert set(parsed_tools) == {
         "report_workflow_start",
         "report_workflow_start_from_prompt",
-        "report_workflow_select_agent",
-        "report_workflow_approve",
-        "report_workflow_reject",
-        "report_workflow_cancel",
+        "report_workflow_review",
     }
-    assert parsed_tools["report_workflow_approve"].requires_confirmation is True
+    assert parsed_tools["report_workflow_review"].requires_user_input is True
     assert set(parsed_tools["report_workflow_start_from_prompt"].parameters["properties"]) == {
         "prompt"
     }
