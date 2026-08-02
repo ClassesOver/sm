@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import re
-import shlex
+import hashlib
+import json
 from typing import Any
 
 from .acceptance import REPORT_ARTIFACT_VALIDATOR_ID
 
 REPORT_REPAIR_STATE_KEY = "agentos_reporting_repair_guard"
 
-_PATCH_PATH = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.MULTILINE)
-_JSON_FIELD = re.compile(r'^\s*[+-]\s*"([^"\\]+)"\s*:')
 _WRITE_TOOLS = frozenset(
     {
         "terminal",
@@ -20,9 +18,15 @@ _WRITE_TOOLS = frozenset(
         "replace_text",
         "apply_patch",
         "patch",
+        "register_report_charts",
+        "render_report_draft",
+        "resume_report_draft",
+        "repair_report_draft",
     }
 )
-_READ_ONLY_REPAIR_COMMANDS = frozenset({"sha256sum", "stat", "wc"})
+_POST_VERIFY_ALLOWED_TOOLS = frozenset(
+    {"repair_report_draft", "verify", "read_tool_output", "update_plan", "finish_task"}
+)
 
 
 def _rejection(
@@ -41,8 +45,8 @@ def _rejection(
         "message": message,
         "details": {
             "repairTarget": state.get("repairTarget"),
-            "authorizedManifestMutationPaths": state.get("authorizedManifestMutationPaths", []),
             "verifyCount": state.get("verifyCount", 0),
+            "requiredIssueIds": state.get("requiredIssueIds", []),
             **(extra_details or {}),
         },
         "requiredActions": actions,
@@ -50,50 +54,38 @@ def _rejection(
     }
 
 
-def _patch_paths(arguments: dict[str, Any]) -> set[str]:
-    patch = arguments.get("patch")
-    return set(_PATCH_PATH.findall(patch)) if isinstance(patch, str) else set()
-
-
-def _manifest_patch_fields(arguments: dict[str, Any]) -> set[str] | None:
-    patch = arguments.get("patch")
-    if not isinstance(patch, str):
-        return None
-    fields: set[str] = set()
-    for line in patch.splitlines():
-        if not line.startswith(("+", "-")) or line.startswith(("+++", "---")):
-            continue
-        match = _JSON_FIELD.match(line)
-        if match is None:
-            return None
-        fields.add(match.group(1))
-    return fields
-
-
-def _is_read_only_repair_command(command: Any, repair_target: Any) -> bool:
-    if not isinstance(command, str) or not isinstance(repair_target, str):
-        return False
-    try:
-        arguments = shlex.split(command)
-    except ValueError:
-        return False
-    if not arguments or arguments[0].rsplit("/", 1)[-1] not in _READ_ONLY_REPAIR_COMMANDS:
-        return False
-    return repair_target in arguments and not any(
-        marker in command for marker in (";", "&&", "||", "|", ">", "<", "\n", "\r")
-    )
-
-
 class ReportRepairGuard:
-    """将报告 validator 反馈收敛为一次性、定点的工具授权。"""
+    """把报告验收收敛为服务端渲染和最多一次结构化定点修复。"""
 
     @staticmethod
     def _state(session_state: dict[str, Any]) -> dict[str, Any]:
         value = session_state.get(REPORT_REPAIR_STATE_KEY)
         if not isinstance(value, dict):
-            value = {"verifyCount": 0, "phase": "generation"}
+            value = {
+                "verifyCount": 0,
+                "phase": "generation",
+                "draftRendered": False,
+                "draftRepairApplied": False,
+            }
             session_state[REPORT_REPAIR_STATE_KEY] = value
         return value
+
+    def record_draft_rendered(
+        self,
+        session_state: dict[str, Any],
+        *,
+        markdown_path: str,
+        markdown_sha256: str,
+    ) -> None:
+        state = self._state(session_state)
+        state.update(
+            {
+                "draftRendered": True,
+                "phase": "rendered",
+                "markdownPath": markdown_path,
+                "markdownSha256": markdown_sha256,
+            }
+        )
 
     def admission_rejection(
         self,
@@ -107,7 +99,7 @@ class ReportRepairGuard:
         phase = state.get("phase")
 
         if tool_name == "verify" and arguments.get("validator_id") == REPORT_ARTIFACT_VALIDATOR_ID:
-            if state["verifyCount"] >= 2:
+            if int(state.get("verifyCount", 0)) >= 2:
                 return _rejection(
                     "report_verify_limit_reached",
                     "报告正式验收最多执行两次，本次未执行。",
@@ -115,23 +107,39 @@ class ReportRepairGuard:
                     ["保留第二次验收反馈并结束当前 Coding Attempt，不得继续修改产物。"],
                     retryable=False,
                 )
-            if phase == "repair" and not self._repair_complete(state):
+            if state.get("draftRendered") is not True:
+                return _rejection(
+                    "report_draft_not_rendered",
+                    "报告尚未经过服务端结构化渲染，本次验收未执行。",
+                    state,
+                    ["调用 render_report_draft 生成服务端 Markdown 后再执行 verify。"],
+                )
+            if phase == "repair" and state.get("draftRepairApplied") is not True:
                 return _rejection(
                     "report_repair_incomplete",
-                    "定点修复及 manifest 元数据同步尚未完成，本次验收未执行。",
+                    "结构化定点修复尚未完成，本次验收未执行。",
                     state,
-                    self._remaining_actions(state),
+                    self._remaining_actions(),
                 )
             return None
 
-        if phase not in {"repair", "exhausted", "passed"} or tool_name not in _WRITE_TOOLS:
+        if phase not in {"rendered", "repair", "exhausted", "passed"}:
             return None
-        if phase in {"exhausted", "passed"}:
+        if phase == "repair" and tool_name not in _POST_VERIFY_ALLOWED_TOOLS:
+            return _rejection(
+                "report_repair_tool_forbidden",
+                "首次验收失败后只允许 issueId 定点修复、第二次验收和失败详情读取。",
+                state,
+                self._remaining_actions(),
+            )
+        if tool_name not in _WRITE_TOOLS:
+            return None
+        if phase in {"rendered", "exhausted", "passed"}:
             return _rejection(
                 "report_repair_closed",
-                "报告修复窗口已经关闭，本次写操作未执行。",
+                "报告服务端渲染后写入窗口已经关闭，本次写操作未执行。",
                 state,
-                ["不得继续修改产物；使用已有验收结果结束当前任务。"],
+                ["不得继续修改产物；渲染后只执行正式 verify，验收通过后提交任务。"],
                 retryable=False,
             )
         if not isinstance(state.get("repairTarget"), str):
@@ -142,124 +150,60 @@ class ReportRepairGuard:
                 ["保留 failedRequirements 并结束当前 Attempt，由契约或程序修复后重试。"],
                 retryable=False,
             )
-        if tool_name == "terminal" and _is_read_only_repair_command(
-            arguments.get("command"), state["repairTarget"]
-        ):
-            return None
-        if tool_name != "apply_patch":
+        if tool_name != "repair_report_draft":
             return _rejection(
                 "report_repair_tool_forbidden",
-                "验收失败后只允许一次性 apply_patch 定点修复，本次工具未执行。",
+                "验收失败后只允许一次结构化草稿定点修复，本次工具未执行。",
                 state,
-                self._remaining_actions(state),
+                self._remaining_actions(),
             )
-        return self._patch_rejection(arguments, state)
-
-    def _patch_rejection(
-        self, arguments: dict[str, Any], state: dict[str, Any]
-    ) -> dict[str, Any] | None:
-        paths = _patch_paths(arguments)
-        repair_target = state["repairTarget"]
-        manifest_target = state.get("manifestTarget")
-        if paths == {repair_target}:
-            flag = (
-                "manifestPatchApplied"
-                if repair_target == manifest_target
-                else "markdownPatchApplied"
+        if state.get("draftRepairApplied") is True:
+            return _rejection(
+                "report_repair_already_applied",
+                "结构化草稿已经完成一次定点修复，拒绝重复修改。",
+                state,
+                ["只再执行一次正式 validator。"],
             )
-            if state.get(flag):
-                return _rejection(
-                    "report_repair_already_applied",
-                    "repairTarget 已完成一次补丁，拒绝重复散改。",
-                    state,
-                    self._remaining_actions(state),
-                )
-            if repair_target == manifest_target:
-                return self._manifest_field_rejection(arguments, state)
-            return self._markdown_patch_rejection(arguments, state)
-        if paths == {manifest_target} and state.get("markdownPatchApplied"):
-            if state.get("manifestPatchApplied"):
-                return _rejection(
-                    "report_repair_already_applied",
-                    "manifest 元数据已经同步一次，拒绝再次修改。",
-                    state,
-                    self._remaining_actions(state),
-                )
-            return self._manifest_field_rejection(arguments, state)
-        return _rejection(
-            "report_repair_path_forbidden",
-            "补丁路径不属于 validator 授权的定点修复范围。",
-            state,
-            self._remaining_actions(state),
-        )
+        return self._repair_changes_rejection(arguments, state)
 
     @staticmethod
-    def _markdown_patch_rejection(
+    def _repair_changes_rejection(
         arguments: dict[str, Any], state: dict[str, Any]
     ) -> dict[str, Any] | None:
-        patch = arguments.get("patch")
-        if not isinstance(patch, str):
-            additions = ""
-            removals = ""
-        else:
-            additions = "\n".join(
-                line[1:]
-                for line in patch.splitlines()
-                if line.startswith("+") and not line.startswith("+++")
-            )
-            removals = "\n".join(
-                line[1:]
-                for line in patch.splitlines()
-                if line.startswith("-") and not line.startswith("---")
-            )
-        unresolved = [
-            item for item in state.get("requiredPatchAdditions", []) if item not in additions
-        ]
-        unresolved.extend(
-            item for item in state.get("requiredPatchRemovals", []) if item not in removals
-        )
-        if unresolved:
+        changes = arguments.get("changes")
+        covered: set[str] = set()
+        invalid = not isinstance(changes, list) or not changes
+        if isinstance(changes, list):
+            for item in changes:
+                if not isinstance(item, dict) or set(item) != {"issueId", "newText"}:
+                    invalid = True
+                    continue
+                issue_id = item.get("issueId")
+                new_text = item.get("newText")
+                if (
+                    not isinstance(issue_id, str)
+                    or not issue_id
+                    or not isinstance(new_text, str)
+                    or not new_text
+                    or issue_id in covered
+                ):
+                    invalid = True
+                    continue
+                covered.add(issue_id)
+        required = set(state.get("requiredIssueIds", []))
+        unresolved = sorted(required - covered)
+        unexpected = sorted(covered - required)
+        if invalid or unresolved or unexpected:
             return _rejection(
-                "report_repair_patch_incomplete",
-                "补丁尚未覆盖 validator 列出的全部失败项，未写入工作区。",
+                "report_repair_changes_incomplete",
+                "结构化修复必须一次覆盖 validator 列出的全部 issueId，未写入工作区。",
                 state,
-                ["在同一个 apply_patch 中处理 unresolvedFeedback 的全部项目后重新提交。"],
-                extra_details={"unresolvedFeedback": unresolved[:50]},
+                ReportRepairGuard._remaining_actions(),
+                extra_details={
+                    "unresolvedIssueIds": unresolved,
+                    **({"unknownIssueIds": unexpected} if unexpected else {}),
+                },
             )
-        return None
-
-    @staticmethod
-    def _manifest_field_rejection(
-        arguments: dict[str, Any], state: dict[str, Any]
-    ) -> dict[str, Any] | None:
-        authorized = set(state.get("authorizedManifestMutationPaths") or [])
-        if not authorized:
-            return _rejection(
-                "report_manifest_mutation_forbidden",
-                "validator 没有提供可执行的 manifest 字段授权，补丁未写入工作区。",
-                state,
-                ["保留 schemaErrors 并修复 validator 契约，不得猜测性修改 manifest。"],
-                retryable=False,
-            )
-        if authorized == {"markdown.size", "markdown.sha256"}:
-            fields = _manifest_patch_fields(arguments)
-            if fields != {"size", "sha256"}:
-                return _rejection(
-                    "report_manifest_mutation_forbidden",
-                    "manifest 补丁只能同时更新 markdown.size 和 markdown.sha256。",
-                    state,
-                    ["重新计算 Markdown 的 size 和 SHA-256，并在一个补丁中只更新这两个字段。"],
-                )
-        elif all("." in path for path in authorized):
-            fields = _manifest_patch_fields(arguments)
-            allowed_fields = {path.rsplit(".", 1)[-1] for path in authorized}
-            if fields is None or not fields or not fields <= allowed_fields:
-                return _rejection(
-                    "report_manifest_mutation_forbidden",
-                    "manifest 补丁包含 authorizedManifestMutationPaths 之外的字段。",
-                    state,
-                    ["只修改授权路径的末级字段，并在同一个 apply_patch 中完成。"],
-                )
         return None
 
     def record_result(
@@ -272,18 +216,12 @@ class ReportRepairGuard:
         if session_state is None or not isinstance(result, dict):
             return
         state = self._state(session_state)
-        if (
-            tool_name == "apply_patch"
-            and result.get("ok") is True
-            and state.get("phase") == "repair"
-        ):
-            paths = _patch_paths(arguments)
-            if paths == {state.get("manifestTarget")}:
-                state["manifestPatchApplied"] = True
-            if paths == {state.get("repairTarget")} and state.get("repairTarget") != state.get(
-                "manifestTarget"
-            ):
-                state["markdownPatchApplied"] = True
+        if tool_name == "repair_report_draft" and result.get("ok") is True:
+            state["phase"] = "repair"
+            state["draftRepairApplied"] = True
+            markdown_sha256 = result.get("markdownSha256")
+            if isinstance(markdown_sha256, str):
+                state["markdownSha256"] = markdown_sha256
             return
         if tool_name != "verify" or arguments.get("validator_id") != REPORT_ARTIFACT_VALIDATOR_ID:
             return
@@ -299,88 +237,53 @@ class ReportRepairGuard:
         if not isinstance(failed, list) or not failed:
             state["phase"] = "passed"
             return
-        details: list[dict[str, Any]] = []
-        for item in failed:
-            if not isinstance(item, dict):
-                continue
-            item_details = item.get("details")
-            if isinstance(item_details, dict):
-                details.append(item_details)
+
+        details = [
+            item["details"]
+            for item in failed
+            if isinstance(item, dict) and isinstance(item.get("details"), dict)
+        ]
         repair_targets = {
             item["repairTarget"] for item in details if isinstance(item.get("repairTarget"), str)
         }
-        manifest_targets = {
-            path
-            for path in arguments.get("artifact_paths", [])
-            if isinstance(path, str) and path.endswith(".manifest.json")
-        }
+        required_issues: list[dict[str, Any]] = []
+        for item in details:
+            for issue in item.get("contradictoryPeriodClaims", []):
+                if not isinstance(issue, dict) or not isinstance(issue.get("claim"), str):
+                    continue
+                normalized = dict(issue)
+                issue_id = normalized.get("issueId")
+                if not isinstance(issue_id, str) or not issue_id:
+                    payload = json.dumps(
+                        {
+                            "claim": normalized["claim"],
+                            "observedPeriods": normalized.get("observedPeriods", []),
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    issue_id = "period_claim_" + hashlib.sha256(payload.encode()).hexdigest()[:16]
+                    normalized["issueId"] = issue_id
+                required_issues.append(normalized)
+        required_ids = [item["issueId"] for item in required_issues]
+        duplicate_ids = len(required_ids) != len(set(required_ids))
+        if duplicate_ids:
+            required_issues = []
+            required_ids = []
         state.update(
             {
-                "phase": "exhausted" if state["verifyCount"] >= 2 else "repair",
+                "phase": (
+                    "exhausted" if state["verifyCount"] >= 2 or not required_issues else "repair"
+                ),
                 "failedRequirements": failed,
                 "repairTarget": next(iter(repair_targets)) if len(repair_targets) == 1 else None,
-                "manifestTarget": next(iter(manifest_targets))
-                if len(manifest_targets) == 1
-                else None,
-                "authorizedManifestMutationPaths": sorted(
-                    {
-                        path
-                        for item in details
-                        for path in item.get("authorizedManifestMutationPaths", [])
-                        if isinstance(path, str)
-                    }
-                ),
-                "requiredPatchAdditions": sorted(
-                    {
-                        value
-                        for item in details
-                        for key in (
-                            "missingCitationMarkers",
-                            "missingSectionMarkers",
-                            "missingMarkdownChartPaths",
-                        )
-                        for value in item.get(key, [])
-                        if isinstance(value, str)
-                    }
-                ),
-                "requiredPatchRemovals": sorted(
-                    {
-                        value
-                        for item in details
-                        for key in ("visibleMachineTerms", "forbiddenDerivedClaims")
-                        for value in item.get(key, [])
-                        if isinstance(value, str)
-                    }
-                    | {
-                        issue["claim"]
-                        for item in details
-                        for key in ("contradictoryPeriodClaims", "unboundPeriodClaims")
-                        for issue in item.get(key, [])
-                        if isinstance(issue, dict) and isinstance(issue.get("claim"), str)
-                    }
-                ),
-                "markdownPatchApplied": False,
-                "manifestPatchApplied": False,
+                "requiredIssues": required_issues,
+                "requiredIssueIds": sorted(required_ids),
+                "draftRepairApplied": False,
             }
         )
 
     @staticmethod
-    def _repair_complete(state: dict[str, Any]) -> bool:
-        if state.get("repairTarget") == state.get("manifestTarget"):
-            return state.get("manifestPatchApplied") is True
-        return (
-            state.get("markdownPatchApplied") is True and state.get("manifestPatchApplied") is True
-        )
-
-    @staticmethod
-    def _remaining_actions(state: dict[str, Any]) -> list[str]:
-        actions = []
-        if state.get("repairTarget") != state.get("manifestTarget") and not state.get(
-            "markdownPatchApplied"
-        ):
-            actions.append(f"使用一次 apply_patch 修复 {state.get('repairTarget')} 的全部失败项。")
-        if not state.get("manifestPatchApplied"):
-            actions.append(
-                f"使用一次 apply_patch 仅更新 {state.get('manifestTarget')} 中授权的 manifest 路径。"
-            )
-        return actions or ["完成修复后只再执行一次正式 validator。"]
+    def _remaining_actions() -> list[str]:
+        return ["调用一次 repair_report_draft，并在 changes 中覆盖全部 requiredIssueIds。"]

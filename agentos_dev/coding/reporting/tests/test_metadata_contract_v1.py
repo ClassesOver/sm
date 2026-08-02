@@ -7,8 +7,16 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
-from agentos_dev.coding.reporting.contract import AgentQueryResponse, SourceSchemaSnapshot
+from agentos_dev.coding.reporting.contract import (
+    AgentQueryResponse,
+    MeasureSemantic,
+    ModelColumn,
+    ModelTable,
+    SourceSchemaSnapshot,
+    schema_hash,
+)
 from agentos_dev.coding.reporting.data_source.models import DataSourceConfig
 from agentos_dev.coding.reporting.metadata import (
     MAX_METADATA_RESPONSE_BYTES,
@@ -18,6 +26,29 @@ from agentos_dev.coding.reporting.metadata import (
 from agentos_dev.coding.reporting.models import ReportingError
 
 SOURCE_IDS = ("operations",)
+
+
+def test_结构快照拒绝未知语义字段避免workflow状态绕过元数据校验():
+    table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="income",
+        columns=(ModelColumn(name="amount", dataType="DECIMAL", nullable=False),),
+    )
+
+    with pytest.raises(ValidationError, match="未知 fieldRef"):
+        SourceSchemaSnapshot(
+            source="metadata_api",
+            revision="m1",
+            schemaHash=schema_hash((table,)),
+            tables=(table,),
+            measureSemantics=(
+                MeasureSemantic(
+                    fieldRef="operations.reporting.income.forged_amount",
+                    aggregation="sum",
+                ),
+            ),
+        )
 
 
 def _source() -> DataSourceConfig:
@@ -42,11 +73,22 @@ def _model_payload(*, amount_type: str = "DECIMAL(18, 2)") -> dict[str, Any]:
                 "modelName": "income",
                 "modelDesc": "收入模型",
                 "ddl": (
-                    f"CREATE TABLE reporting.income (month DATE NOT NULL, amount {amount_type})"
+                    "CREATE TABLE reporting.income (month DATE NOT NULL, "
+                    f"income_nature VARCHAR(20), amount {amount_type})"
                 ),
             }
         ],
         "term": [{"id": 20, "key": "actual_income", "value": "实际收入"}],
+        "measureSemantics": [
+            {
+                "fieldRef": "operations.reporting.income.amount",
+                "aggregation": "sum",
+                "additiveAcross": ["month"],
+                "exclusiveScope": {"income_nature": "开单收入"},
+                "reconcileWith": "operations.reporting.income.amount",
+                "tolerance": 0.01,
+            }
+        ],
     }
 
 
@@ -91,6 +133,8 @@ async def test_两阶段请求使用既定路由和严格字段():
     assert model.tables[0].name == "income"
     assert model.ddl_models[0].model_name == "income"
     assert model.terms[0].name == "actual_income"
+    assert model.measure_semantics[0].aggregation == "sum"
+    assert model.measure_semantics[0].exclusive_scope == {"income_nature": "开单收入"}
 
 
 @pytest.mark.anyio
@@ -221,6 +265,7 @@ async def test_原始ddl逐字保留且可从workflow快照状态恢复():
     )
     payload = _model_payload()
     payload["ddl"][0]["ddl"] = raw_ddl
+    payload["measureSemantics"][0]["exclusiveScope"] = {}
 
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payload)

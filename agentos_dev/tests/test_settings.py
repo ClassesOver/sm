@@ -25,10 +25,10 @@ def test_settings_defaults():
     assert current.enable_session_summaries is True
     assert current.assistant_enable_thinking is False
     assert current.coding_enable_thinking is True
-    assert current.coding_reasoning_effort == "max"
+    assert current.coding_reasoning_effort == "medium"
     assert current.coding_thinking_budget == 16384
     assert current.report_coding_enable_thinking is True
-    assert current.report_coding_reasoning_effort == "max"
+    assert current.report_coding_reasoning_effort == "medium"
     assert current.report_coding_thinking_budget == 16384
     assert current.report_enable_thinking is True
     assert current.report_enable_vision is False

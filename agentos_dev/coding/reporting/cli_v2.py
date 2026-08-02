@@ -95,6 +95,10 @@ def resolve_requirement(
         requirement.reject(feedback=f"agentId:{agent_id}")
         return "continue"
 
+    if str(getattr(requirement, "step_id", "")) != "generate-outline":
+        requirement.confirm()
+        return "continue"
+
     action = read("批准 [a] / 拒绝 [r] / 取消 [c]: ").strip().lower()
     if action == "a":
         requirement.confirm()

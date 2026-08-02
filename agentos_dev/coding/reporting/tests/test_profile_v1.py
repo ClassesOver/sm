@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -213,6 +214,77 @@ def test_profile显式继承按code覆盖停用且hash稳定(tmp_path):
     tampered["sections"][0]["title"] = "被修改"
     with pytest.raises(ValueError, match="effectiveProfileHash"):
         type(first).model_validate(tampered)
+
+
+def test_profile指标语义按field_ref继承覆盖并进入有效hash(tmp_path):
+    base_sections = [
+        {"code": "executive_summary", "title": "执行摘要"},
+        {"code": "scope_and_methodology", "title": "分析范围与方法"},
+        {"code": "key_findings", "title": "关键发现"},
+        {"code": "limitations", "title": "局限性"},
+        {"code": "recommendations", "title": "建议"},
+    ]
+    field_ref = "operations.reporting.income.amount"
+    _write_profile(
+        tmp_path,
+        "base.json",
+        {
+            "version": "1",
+            "profileId": "base",
+            "revision": "1",
+            "measureSemantics": [{"fieldRef": field_ref, "aggregation": "sum"}],
+            "sections": base_sections,
+        },
+    )
+    _write_profile(
+        tmp_path,
+        "hospital.json",
+        {
+            "version": "1",
+            "profileId": "hospital",
+            "revision": "2",
+            "extends": ["base"],
+            "measureSemantics": [{"fieldRef": field_ref, "aggregation": "average"}],
+        },
+    )
+
+    registry = load_configured_reporting_profiles(tmp_path)
+    base = resolve_reporting_profile(registry, "base")
+    hospital = resolve_reporting_profile(registry, "hospital")
+
+    assert hospital.measure_semantics[0].aggregation == "average"
+    assert hospital.effective_profile_hash != base.effective_profile_hash
+
+
+def test_部署默认profile覆盖医院院区条线和模板分层():
+    root = Path(__file__).resolve().parents[4] / "deploy" / "agentos" / "reporting"
+    registry = load_configured_reporting_profiles(root)
+
+    assert set(registry.documents) == {
+        "base",
+        "ruijin",
+        "ruijin-north",
+        "finance",
+        "monthly-operation",
+        "budget-execution",
+    }
+    ruijin = resolve_reporting_profile(registry, "ruijin")
+    north = resolve_reporting_profile(registry, "ruijin-north")
+    finance = resolve_reporting_profile(registry, "finance")
+    monthly = resolve_reporting_profile(registry, "monthly-operation")
+
+    assert [item.profile_id for item in ruijin.layers] == ["base", "ruijin"]
+    assert len(ruijin.dimensions) == 12
+    assert ruijin.metrics == ()
+    assert ruijin.measure_semantics == ()
+    assert north.scope_filters[0].value == "北部院区"
+    assert north.scope_filters[0].required_for_all_tables is True
+    assert "service_workload" not in {item.code for item in finance.sections}
+    assert [item.code for item in monthly.sections][-3:] == [
+        "key_findings",
+        "limitations",
+        "recommendations",
+    ]
 
 
 def test_不同医院profile在同一契约下解析出不同章节(tmp_path):

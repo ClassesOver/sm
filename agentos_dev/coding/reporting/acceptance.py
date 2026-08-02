@@ -25,6 +25,7 @@ def build_report_artifact_acceptance_contract(
     expected_identity: dict[str, Any],
     *,
     validation_context_file: dict[str, Any],
+    render_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "version": 1,
@@ -35,6 +36,11 @@ def build_report_artifact_acceptance_contract(
                 "parameters": {
                     "expectedIdentity": dict(expected_identity),
                     "validationContextFile": dict(validation_context_file),
+                    **(
+                        {"renderContract": dict(render_contract)}
+                        if render_contract is not None
+                        else {}
+                    ),
                 },
                 "artifactPatterns": [REPORT_ARTIFACT_PATTERN],
             }
@@ -48,6 +54,7 @@ def build_report_artifact_validation_context(
     observed_data_facts: list[dict[str, Any]] | None = None,
     expected_sections: tuple[str, ...] = (),
     expected_citation_bindings: tuple[tuple[str, str], ...] = (),
+    expected_citations: tuple[tuple[str, str, str], ...] = (),
 ) -> dict[str, Any]:
     return {
         "version": 1,
@@ -58,6 +65,14 @@ def build_report_artifact_validation_context(
         "expectedCitationBindings": [
             {"datasetId": dataset_id, "requirementId": requirement_id}
             for dataset_id, requirement_id in expected_citation_bindings
+        ],
+        "expectedCitations": [
+            {
+                "citationId": citation_id,
+                "datasetId": dataset_id,
+                "requirementId": requirement_id,
+            }
+            for citation_id, dataset_id, requirement_id in expected_citations
         ],
         "manifestSchema": ReportArtifactManifest.model_json_schema(by_alias=True),
     }

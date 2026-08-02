@@ -13,6 +13,7 @@ from markdown_it import MarkdownIt
 
 _PROTOCOL_MARKER = re.compile(r"\[\[(?:citation|section):[^\]\r\n]+\]\]")
 _CITATION_MARKER = re.compile(r"\[\[citation:([^\]\r\n]+)\]\]")
+_REPAIR_WARNING_MARKER = re.compile(r"<!--\s*repair-warning:(period_claim_[a-f0-9]{16})\s*-->")
 _MARKDOWN_LINK_TARGET = re.compile(r"\]\([^\)\r\n]*\)")
 _FORBIDDEN_DERIVATION = re.compile(
     r"(?:拟合|估算|估计|推算|插值|外推|年化|平滑|填补|补齐|视为(?:未发生|零|0))"
@@ -36,6 +37,10 @@ _MONTH_RANGE = re.compile(r"(?<!\d)(\d{1,2})\s*月?\s*[-至到~～—]\s*(\d{1,2
 def _issue(details: dict[str, Any], key: str, value: Any) -> None:
     if value:
         details[key] = value
+
+
+def _warning(details: dict[str, Any], value: dict[str, Any]) -> None:
+    details.setdefault("warnings", []).append(value)
 
 
 def _schema_issue(error: Any) -> dict[str, Any]:
@@ -145,7 +150,7 @@ def _period_claim_issues(
     markdown: str,
     observed_data_facts: list[dict[str, Any]],
     citations: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     facts_by_binding: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for fact in observed_data_facts:
         if not isinstance(fact, dict):
@@ -161,6 +166,7 @@ def _period_claim_issues(
     }
     contradictions: list[dict[str, Any]] = []
     unbound: list[dict[str, Any]] = []
+    ambiguous: list[dict[str, Any]] = []
     for claim, citation_ids in _visible_claim_records(markdown):
         missing_matches = list(_MISSING_CLAIM.finditer(claim))
         if not missing_matches or all(
@@ -180,38 +186,103 @@ def _period_claim_issues(
         selected_facts = [
             fact for binding in bindings for fact in facts_by_binding.get(binding, [])
         ]
-        observed_facts: list[dict[str, Any]] = []
-        for fact in selected_facts:
-            observed_periods = {
-                str(period) for period in fact.get("periodCoverage", []) if isinstance(period, str)
-            }
-            missing_periods = {
-                str(period) for period in fact.get("missingPeriods", []) if isinstance(period, str)
-            }
-            contradicted = sorted(
-                _claimed_periods(claim, observed_periods | missing_periods)
-                & (observed_periods - missing_periods)
+        all_periods = {
+            str(period)
+            for fact in selected_facts
+            for key in ("periodCoverage", "missingPeriods")
+            for period in fact.get(key, [])
+            if isinstance(period, str)
+        }
+        claimed_periods = _claimed_periods(claim, all_periods)
+        if not claimed_periods:
+            continue
+        if len(bindings) != 1:
+            ambiguous.append(
+                {
+                    "claim": claim,
+                    "citationIds": list(citation_ids),
+                    "claimedPeriods": sorted(claimed_periods),
+                    "reason": "multiple_citation_bindings",
+                }
             )
-            if contradicted:
-                observed_facts.append(
-                    {
-                        "sourceId": fact.get("sourceId"),
-                        "table": fact.get("table"),
-                        "observedPeriods": contradicted,
-                    }
-                )
-        if observed_facts:
+            continue
+        hard_periods: list[str] = []
+        ambiguous_periods: list[str] = []
+        observed_facts: list[dict[str, Any]] = []
+        for period in sorted(claimed_periods):
+            statuses: list[str] = []
+            period_facts: list[dict[str, Any]] = []
+            for fact in selected_facts:
+                coverage = {
+                    str(value) for value in fact.get("periodCoverage", []) if isinstance(value, str)
+                }
+                missing = {
+                    str(value) for value in fact.get("missingPeriods", []) if isinstance(value, str)
+                }
+                if period in coverage and period not in missing:
+                    statuses.append("observed")
+                    period_facts.append(
+                        {
+                            "sourceId": fact.get("sourceId"),
+                            "table": fact.get("table"),
+                            "observedPeriods": [period],
+                        }
+                    )
+                elif period in missing and period not in coverage:
+                    statuses.append("missing")
+                elif period in coverage or period in missing:
+                    statuses.append("mixed")
+                else:
+                    statuses.append("unknown")
+            if statuses and all(status == "observed" for status in statuses):
+                hard_periods.append(period)
+                observed_facts.extend(period_facts)
+            elif "observed" in statuses or "mixed" in statuses:
+                ambiguous_periods.append(period)
+        if hard_periods:
+            grouped_facts: dict[tuple[Any, Any], set[str]] = {}
+            for fact in observed_facts:
+                key = (fact.get("sourceId"), fact.get("table"))
+                grouped_facts.setdefault(key, set()).update(fact["observedPeriods"])
+            observed_facts = [
+                {
+                    "sourceId": source_id,
+                    "table": table,
+                    "observedPeriods": sorted(periods),
+                }
+                for (source_id, table), periods in grouped_facts.items()
+            ]
+            issue_payload = json.dumps(
+                {
+                    "claim": claim,
+                    "citationIds": list(citation_ids),
+                    "observedPeriods": hard_periods,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             issue: dict[str, Any] = {
+                "issueId": "period_claim_"
+                + hashlib.sha256(issue_payload.encode()).hexdigest()[:16],
                 "claim": claim,
-                "observedPeriods": sorted(
-                    {period for fact in observed_facts for period in fact["observedPeriods"]}
-                ),
+                "observedPeriods": hard_periods,
                 "observedFacts": observed_facts,
+                "suggestedAction": "改为有效观测描述",
             }
             if citation_ids:
                 issue["citationIds"] = list(citation_ids)
             contradictions.append(issue)
-    return contradictions, unbound
+        if ambiguous_periods:
+            ambiguous.append(
+                {
+                    "claim": claim,
+                    "citationIds": list(citation_ids),
+                    "claimedPeriods": ambiguous_periods,
+                    "reason": "mixed_table_coverage",
+                }
+            )
+    return contradictions, unbound, ambiguous
 
 
 def _load_validation_context(
@@ -255,13 +326,147 @@ def _load_validation_context(
         "expectedCitationBindings",
         "manifestSchema",
     }
+    extended_keys = expected_keys | {"expectedCitations"}
     if (
         not isinstance(context, dict)
-        or set(context) != expected_keys
+        or frozenset(context) not in {frozenset(expected_keys), frozenset(extended_keys)}
         or context.get("version") != 1
     ):
         return None, "content_invalid"
     return context, None
+
+
+def _server_manifest(
+    expected: dict[str, Any],
+    validation_context: dict[str, Any],
+    artifacts: dict[str, dict[str, Any]],
+    markdown: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    markdown_path = expected["markdownPath"]
+    markdown_artifact = artifacts[markdown_path]
+    citations = validation_context.get("expectedCitations") or [
+        {
+            "citationId": f"citation_{index:03d}",
+            "datasetId": item["datasetId"],
+            "requirementId": item["requirementId"],
+        }
+        for index, item in enumerate(
+            validation_context.get("expectedCitationBindings", []), start=1
+        )
+    ]
+    citation_datasets = {item["citationId"]: item["datasetId"] for item in citations}
+    lines = markdown.splitlines()
+    parent = PurePosixPath(markdown_path).parent
+    bindings: dict[str, set[str]] = {}
+    invalid_targets: list[str] = []
+    unbound_paths: list[str] = []
+    unknown_citations: set[str] = set()
+    for token in MarkdownIt("commonmark").parse(markdown):
+        images = [item for item in token.children or () if item.type == "image"]
+        if not images:
+            continue
+        start, end = token.map or (0, len(lines))
+        marker_ids = set(_CITATION_MARKER.findall("\n".join(lines[start:end])))
+        unknown_citations.update(marker_ids - set(citation_datasets))
+        for image in images:
+            source = str(image.attrGet("src") or "")
+            parsed = urlsplit(source)
+            decoded = unquote(parsed.path)
+            relative = PurePosixPath(decoded)
+            if (
+                parsed.scheme
+                or parsed.netloc
+                or parsed.query
+                or parsed.fragment
+                or not decoded
+                or "\\" in decoded
+                or relative.is_absolute()
+                or ".." in relative.parts
+            ):
+                invalid_targets.append(source)
+                continue
+            path = parent.joinpath(relative).as_posix()
+            valid_ids = marker_ids & set(citation_datasets)
+            if not valid_ids:
+                unbound_paths.append(path)
+                continue
+            bindings.setdefault(path, set()).update(citation_datasets[item] for item in valid_ids)
+    details: dict[str, Any] = {}
+    _issue(details, "invalidMarkdownImageTargets", sorted(set(invalid_targets)))
+    _issue(details, "unboundMarkdownChartPaths", sorted(set(unbound_paths)))
+    _issue(details, "unknownChartCitationIds", sorted(unknown_citations))
+    artifact_paths = set(artifacts) - {markdown_path}
+    image_paths = {
+        path
+        for path in artifact_paths
+        if PurePosixPath(path).suffix.lower() in {".png", ".jpg", ".jpeg"}
+    }
+    _issue(details, "missingArtifactPaths", sorted(set(bindings) - image_paths))
+    _issue(details, "invalidChartArtifactPaths", sorted(artifact_paths - image_paths))
+    media_types: dict[str, str] = {}
+    for path in image_paths:
+        suffix = PurePosixPath(path).suffix.lower()
+        if suffix == ".png":
+            media_types[path] = "image/png"
+        elif suffix in {".jpg", ".jpeg"}:
+            media_types[path] = "image/jpeg"
+    unused_paths = sorted(image_paths - set(bindings))
+    if details:
+        details.update(
+            {
+                "repairTarget": markdown_path,
+                "repairInstructions": [
+                    "只修改报告 Markdown：每个图表使用安全相对路径，并在同一段落放置至少一个 Workflow citation marker；不得创建或修改 manifest。"
+                ],
+            }
+        )
+        return None, details
+    report_details: dict[str, Any] = {}
+    if unused_paths:
+        _warning(
+            report_details,
+            {
+                "code": "unused_artifacts",
+                "paths": unused_paths,
+                "message": "未被 Markdown 引用的图表不会进入发布包。",
+            },
+        )
+        report_details["autoFixes"] = [
+            {
+                "code": "unused_artifacts_excluded",
+                "paths": unused_paths,
+            }
+        ]
+    charts = [
+        {
+            "path": path,
+            "mediaType": media_types[path],
+            "size": artifacts[path]["size"],
+            "sha256": artifacts[path]["sha256"],
+            "chartId": f"chart_{index:03d}",
+            "datasetIds": sorted(bindings[path]),
+        }
+        for index, path in enumerate(sorted(bindings), start=1)
+    ]
+    return (
+        {
+            "reportId": expected["reportId"],
+            "revision": expected["revision"],
+            "codingTaskKey": expected["codingTaskKey"],
+            "datasetSnapshotHash": expected["datasetSnapshotHash"],
+            "effectiveProfileHash": expected["effectiveProfileHash"],
+            "markdown": {
+                "path": markdown_path,
+                "mediaType": "text/markdown",
+                "size": markdown_artifact["size"],
+                "sha256": markdown_artifact["sha256"],
+            },
+            "charts": charts,
+            "citations": citations,
+            "sections": validation_context["expectedSections"],
+        },
+        report_details,
+    )
 
 
 def _manifest_invariant_errors(manifest: dict[str, Any]) -> list[str]:
@@ -327,6 +532,7 @@ def _validate(requirement: dict[str, Any], *, workspace_root: str) -> dict[str, 
     manifest_path = expected["artifactManifestPath"]
     markdown_path = expected["markdownPath"]
     details: dict[str, Any] = {}
+    server_generated = expected.get("manifestAuthority") == "server"
 
     validation_context, context_error = _load_validation_context(
         workspace_root, parameters.get("validationContextFile")
@@ -338,31 +544,65 @@ def _validate(requirement: dict[str, Any], *, workspace_root: str) -> dict[str, 
             "details": {"validationContextError": context_error or "content_invalid"},
         }
 
-    manifest_artifact = by_path.get(manifest_path)
     markdown_artifact = by_path.get(markdown_path)
-    if manifest_artifact is None or markdown_artifact is None:
-        missing_paths = [
-            path
-            for path, artifact in (
-                (manifest_path, manifest_artifact),
-                (markdown_path, markdown_artifact),
-            )
-            if artifact is None
-        ]
+    manifest_artifact = by_path.get(manifest_path)
+    if markdown_artifact is None or (not server_generated and manifest_artifact is None):
+        required_artifacts = [(markdown_path, markdown_artifact)]
+        if not server_generated:
+            required_artifacts.append((manifest_path, manifest_artifact))
+        missing_paths = [path for path, artifact in required_artifacts if artifact is None]
         return {
             "id": requirement_id,
             "passed": False,
             "details": {"missingArtifactPaths": missing_paths},
         }
 
-    try:
-        manifest = json.loads(Path(manifest_artifact["absolutePath"]).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as error:
-        return {
-            "id": requirement_id,
-            "passed": False,
-            "details": {"manifestError": type(error).__name__},
-        }
+    if server_generated:
+        if manifest_artifact is not None:
+            return {
+                "id": requirement_id,
+                "passed": False,
+                "message": "manifest 只能由服务端生成。",
+                "details": {
+                    "unexpectedArtifactPaths": [manifest_path],
+                    "repairInstructions": [
+                        "从 verify 和 finish_task 的 artifact_paths 删除 manifest。"
+                    ],
+                },
+            }
+        try:
+            markdown_for_manifest = Path(markdown_artifact["absolutePath"]).read_text(
+                encoding="utf-8"
+            )
+        except (OSError, UnicodeError) as error:
+            return {
+                "id": requirement_id,
+                "passed": False,
+                "details": {"markdownError": type(error).__name__},
+            }
+        manifest, server_details = _server_manifest(
+            expected, validation_context, by_path, markdown_for_manifest
+        )
+        if manifest is None:
+            return {
+                "id": requirement_id,
+                "passed": False,
+                "message": "报告 Markdown 与图表引用契约不一致，请只修复 Markdown。",
+                "details": server_details,
+            }
+        details.update(server_details)
+    else:
+        assert manifest_artifact is not None
+        try:
+            manifest = json.loads(
+                Path(manifest_artifact["absolutePath"]).read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, ValueError) as error:
+            return {
+                "id": requirement_id,
+                "passed": False,
+                "details": {"manifestError": type(error).__name__},
+            }
 
     schema_errors = sorted(
         Draft202012Validator(validation_context["manifestSchema"]).iter_errors(manifest),
@@ -420,6 +660,7 @@ def _validate(requirement: dict[str, Any], *, workspace_root: str) -> dict[str, 
         "effectiveProfileHash": manifest["effectiveProfileHash"],
         "markdownPath": manifest["markdown"]["path"],
         "artifactManifestPath": manifest_path,
+        **({"manifestAuthority": "server"} if server_generated else {}),
     }
     _issue(
         details,
@@ -482,10 +723,17 @@ def _validate(requirement: dict[str, Any], *, workspace_root: str) -> dict[str, 
 
     declared = [manifest["markdown"], *manifest.get("charts", [])]
     declared_paths = {item["path"] for item in declared}
-    expected_paths = declared_paths | {manifest_path}
+    expected_paths = declared_paths | (set() if server_generated else {manifest_path})
     submitted_paths = set(by_path)
     _issue(details, "missingArtifactPaths", sorted(expected_paths - submitted_paths))
-    _issue(details, "unexpectedArtifactPaths", sorted(submitted_paths - expected_paths))
+    unexpected_paths = submitted_paths - expected_paths
+    if server_generated:
+        unexpected_paths = {
+            path
+            for path in unexpected_paths
+            if PurePosixPath(path).suffix.lower() not in {".png", ".jpg", ".jpeg"}
+        }
+    _issue(details, "unexpectedArtifactPaths", sorted(unexpected_paths))
 
     changed_paths = []
     for item in declared:
@@ -532,50 +780,78 @@ def _validate(requirement: dict[str, Any], *, workspace_root: str) -> dict[str, 
                         f"[[section:{item}]]" for item in missing_section_ids
                     ],
                     "repairInstructions": [
-                        f"只在 {markdown_path} 中补齐上述协议标记，不要改写 manifest 的 citations 或 sections 清单。",
-                        "标记应紧邻对应中文结论或章节标题；章节标题继续使用 effectiveProfile 中的中文 title。",
-                        "修改后重新计算 Markdown 的 size 和 SHA-256，并更新 manifest 的 markdown 元数据。",
+                        f"只在 {markdown_path} 中补齐上述协议标记，不得创建或修改 manifest。",
+                        "标记应紧邻对应中文结论或章节标题；章节标题继续使用 effectiveProfile 中的中文 title。服务端会自动重算 Markdown 元数据。",
                     ],
-                    "authorizedManifestMutationPaths": ["markdown.size", "markdown.sha256"],
                 }
             )
         machine_terms = _visible_machine_terms(
             markdown,
             validation_context.get("forbiddenVisibleTerms", []),
         )
-        _issue(details, "visibleMachineTerms", machine_terms)
         if machine_terms:
-            details["repairTarget"] = markdown_path
-            instructions = details.setdefault("repairInstructions", [])
-            instructions.append(
-                "将 visibleMachineTerms 对应的可见文字改为中文业务名称；不要修改协议标记、"
-                "citations 或 sections 清单。修改后重新计算 Markdown 的 size 和 SHA-256，"
-                "并仅更新 manifest 的 markdown 元数据。"
+            _warning(
+                details,
+                {
+                    "code": "visible_machine_terms",
+                    "items": machine_terms,
+                    "message": "可见正文包含机器字段名；有中文 metadata 映射时应自动替换，否则进入发布审核。",
+                },
             )
-            details["authorizedManifestMutationPaths"] = ["markdown.size", "markdown.sha256"]
         derived_claims = (
             _forbidden_derived_claims(markdown)
             if validation_context.get("prohibitDerivedValues") is True
             else []
         )
-        _issue(details, "forbiddenDerivedClaims", derived_claims)
         if derived_claims:
-            details["repairTarget"] = markdown_path
-            instructions = details.setdefault("repairInstructions", [])
-            instructions.append(
-                "删除 forbiddenDerivedClaims 中的拟合、估算、推算、插值、外推、年化、"
-                "平滑或补齐结果，只保留不可变数据集中的观测值；不要修改数据集、citations、"
-                "sections 或 charts 清单。修改后重新计算 Markdown 的 size 和 SHA-256，"
-                "并仅更新 manifest 的 markdown 元数据。"
+            _warning(
+                details,
+                {
+                    "code": "derived_value_keywords",
+                    "items": derived_claims,
+                    "message": "正文包含估算或推算关键词；正则命中只进入发布审核，不单独阻断验收。",
+                },
             )
-            details["authorizedManifestMutationPaths"] = ["markdown.size", "markdown.sha256"]
-        period_claims, unbound_period_claims = _period_claim_issues(
+        period_claims, unbound_period_claims, ambiguous_period_claims = _period_claim_issues(
             markdown,
             validation_context.get("observedDataFacts", []),
             manifest["citations"],
         )
+        repair_warning_ids = set(_REPAIR_WARNING_MARKER.findall(markdown))
+        unresolved_repair_claims = [
+            item for item in period_claims if item.get("issueId") in repair_warning_ids
+        ]
+        period_claims = [
+            item for item in period_claims if item.get("issueId") not in repair_warning_ids
+        ]
         _issue(details, "contradictoryPeriodClaims", period_claims)
-        _issue(details, "unboundPeriodClaims", unbound_period_claims)
+        if unresolved_repair_claims:
+            _warning(
+                details,
+                {
+                    "code": "unresolved_repair_issues",
+                    "items": unresolved_repair_claims,
+                    "message": "期间表述未能由受限修复工具自动改写，已写入报告发布审核提示。",
+                },
+            )
+        if unbound_period_claims:
+            _warning(
+                details,
+                {
+                    "code": "unbound_period_claims",
+                    "items": unbound_period_claims,
+                    "message": "期间描述没有唯一 citation 绑定，交由发布审核判断。",
+                },
+            )
+        if ambiguous_period_claims:
+            _warning(
+                details,
+                {
+                    "code": "period_binding_ambiguous",
+                    "items": ambiguous_period_claims,
+                    "message": "期间结论存在多 citation 或多表覆盖歧义，交由发布审核判断。",
+                },
+            )
         if period_claims:
             details["repairTarget"] = markdown_path
             instructions = details.setdefault("repairInstructions", [])
@@ -584,15 +860,6 @@ def _validate(requirement: dict[str, Any], *, workspace_root: str) -> dict[str, 
                 "已覆盖期间不得写成无记录、缺失、未提供或未出数，零值也必须按有效观测披露。"
                 "不要修改数据集或 manifest 清单；修改后重新计算 Markdown 的 size 和 SHA-256，"
                 "并仅更新 manifest 的 markdown 元数据。"
-            )
-            details["authorizedManifestMutationPaths"] = ["markdown.size", "markdown.sha256"]
-        if unbound_period_claims:
-            details["repairTarget"] = markdown_path
-            instructions = details.setdefault("repairInstructions", [])
-            instructions.append(
-                "为 unboundPeriodClaims 中的期间结论在同一行补充唯一 citation marker；"
-                "不得使用其他数据集的缺失期间解释当前结论。修改后重新计算 Markdown 的 size 和 "
-                "SHA-256，并仅更新 manifest 的 markdown 元数据。"
             )
             details["authorizedManifestMutationPaths"] = ["markdown.size", "markdown.sha256"]
         markdown_chart_paths, invalid_image_targets = _markdown_image_paths(
@@ -617,11 +884,23 @@ def _validate(requirement: dict[str, Any], *, workspace_root: str) -> dict[str, 
             )
             details["authorizedManifestMutationPaths"] = ["markdown.size", "markdown.sha256"]
 
-    if details:
+    blocking_details = {
+        key: value for key, value in details.items() if key not in {"warnings", "autoFixes"}
+    }
+    if server_generated and blocking_details.get("repairTarget") == markdown_path:
+        details.pop("authorizedManifestMutationPaths", None)
+        details["repairInstructions"] = [
+            f"只修改 {markdown_path} 中 failedRequirements 明确列出的内容；不得创建或修改 manifest。",
+            "修改后重新提交 Markdown 及其中实际引用的图表；服务端会自动重算 size、SHA-256 并生成 manifest。",
+        ]
+        blocking_details = {
+            key: value for key, value in details.items() if key not in {"warnings", "autoFixes"}
+        }
+    if blocking_details:
         details["submittedArtifactPaths"] = sorted(submitted_paths)
     return {
         "id": requirement_id,
-        "passed": not details,
+        "passed": not blocking_details,
         **(
             {
                 "message": (
@@ -643,7 +922,7 @@ def _validate(requirement: dict[str, Any], *, workspace_root: str) -> dict[str, 
                     )
                 )
             }
-            if "repairTarget" in details
+            if "repairTarget" in blocking_details
             else {}
         ),
         **({"details": details} if details else {}),

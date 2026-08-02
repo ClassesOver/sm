@@ -1,0 +1,25 @@
+{
+  "version": "1",
+  "profileId": "ruijin-north",
+  "revision": "1",
+  "extends": ["ruijin"],
+  "scopeFilters": [
+    {
+      "code": "north-campus",
+      "description": "六张经营主题表运行时必须限定为实际探测确认的北部院区枚举。",
+      "fieldRefs": [
+        "rj.rj.dwd_income_budget_view.area",
+        "rj.rj.dwd_expenditure_budget_view.area",
+        "rj.rj.dwd_project_budget_view.area",
+        "rj.rj.dwd_hdc_income_summary_view.area",
+        "rj.rj.dwd_hdc_cost_table_view.area",
+        "rj.rj.dm_hdc_gongzuoliang_view.area"
+      ],
+      "value": "北部院区",
+      "requiredForAllTables": true
+    }
+  ],
+  "pageLayout": {
+    "headerRight": "{title} · 北部院区"
+  }
+}

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Any, Literal
+from urllib.parse import unquote, urlsplit
 
+from markdown_it import MarkdownIt
 from pydantic import Field, field_validator, model_validator
 
 from .contract import SHA256_PATTERN, StrictModel
@@ -97,6 +100,161 @@ class ReportArtifactManifest(StrictModel):
         if not REQUIRED_REPORT_SECTIONS.issubset(self.sections):
             raise ValueError("报告缺少关键章节")
         return self
+
+
+def authoritative_citations(lineage: tuple[DatasetLineage, ...]) -> tuple[Citation, ...]:
+    ordered = sorted(lineage, key=lambda item: (item.requirement_id, item.dataset_id))
+    return tuple(
+        Citation(
+            citationId=f"citation_{index:03d}",
+            datasetId=item.dataset_id,
+            requirementId=item.requirement_id,
+        )
+        for index, item in enumerate(ordered, start=1)
+    )
+
+
+def build_authoritative_manifest(
+    *,
+    report_id: str,
+    revision: int,
+    coding_task_key: str,
+    effective_profile_hash: str,
+    markdown_path: str,
+    markdown: str,
+    accepted_artifacts: list[dict[str, Any]],
+    lineage: tuple[DatasetLineage, ...],
+    sections: tuple[str, ...],
+) -> ReportArtifactManifest:
+    artifacts: dict[str, dict[str, Any]] = {
+        path: item
+        for item in accepted_artifacts
+        if isinstance(item, dict) and isinstance(path := item.get("path"), str)
+    }
+    if len(artifacts) != len(accepted_artifacts):
+        raise ReportingError(
+            "report_artifact_acceptance_incomplete", "正式产物回执包含重复或无效路径。"
+        )
+    markdown_artifact = artifacts.get(markdown_path)
+    if markdown_artifact is None:
+        raise ReportingError(
+            "report_artifact_acceptance_missing", "正式产物回执缺少报告 Markdown。"
+        )
+
+    citations = authoritative_citations(lineage)
+    citation_datasets = {item.citation_id: item.dataset_id for item in citations}
+    image_bindings = _markdown_image_bindings(markdown, markdown_path, citation_datasets)
+    extra_paths = set(artifacts) - {markdown_path}
+    submitted_images = {
+        path
+        for path in extra_paths
+        if PurePosixPath(path).suffix.lower() in {".png", ".jpg", ".jpeg"}
+    }
+    if submitted_images != extra_paths or not set(image_bindings).issubset(submitted_images):
+        raise ReportingError(
+            "report_artifact_acceptance_incomplete",
+            "正式产物回执必须包含 Markdown 引用的全部图表，且不能包含非图片附加产物。",
+        )
+
+    charts = tuple(
+        ChartArtifact(
+            path=path,
+            mediaType=_image_media_type(path),
+            size=_artifact_size(artifacts[path]),
+            sha256=_artifact_sha256(artifacts[path]),
+            chartId=f"chart_{index:03d}",
+            datasetIds=image_bindings[path],
+        )
+        for index, path in enumerate(sorted(image_bindings), start=1)
+    )
+    return ReportArtifactManifest(
+        reportId=report_id,
+        revision=revision,
+        codingTaskKey=coding_task_key,
+        datasetSnapshotHash=dataset_snapshot_hash(lineage),
+        effectiveProfileHash=effective_profile_hash,
+        markdown=ArtifactFile(
+            path=markdown_path,
+            mediaType="text/markdown",
+            size=_artifact_size(markdown_artifact),
+            sha256=_artifact_sha256(markdown_artifact),
+        ),
+        charts=charts,
+        citations=citations,
+        sections=sections,
+    )
+
+
+def _artifact_size(artifact: dict[str, Any]) -> int:
+    value = artifact.get("size")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ReportingError("report_artifact_acceptance_incomplete", "正式产物回执缺少有效 size。")
+    return value
+
+
+def _artifact_sha256(artifact: dict[str, Any]) -> str:
+    value = artifact.get("sha256")
+    if not isinstance(value, str) or not re.fullmatch(SHA256_PATTERN, value):
+        raise ReportingError(
+            "report_artifact_acceptance_incomplete", "正式产物回执缺少有效 SHA-256。"
+        )
+    return value
+
+
+def _image_media_type(path: str) -> Literal["image/png", "image/jpeg"]:
+    suffix = PurePosixPath(path).suffix.lower()
+    if suffix == ".png":
+        return "image/png"
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    raise ReportingError("report_artifact_chart_invalid", "图表产物只允许 PNG 或 JPEG。")
+
+
+def _markdown_image_bindings(
+    markdown: str,
+    markdown_path: str,
+    citation_datasets: dict[str, str],
+) -> dict[str, tuple[str, ...]]:
+    lines = markdown.splitlines()
+    parent = PurePosixPath(markdown_path).parent
+    bindings: dict[str, set[str]] = {}
+    for token in MarkdownIt("commonmark").parse(markdown):
+        images = [item for item in token.children or () if item.type == "image"]
+        if not images:
+            continue
+        start, end = token.map or (0, len(lines))
+        citation_ids = set(
+            re.findall(r"\[\[citation:([^\]\r\n]+)\]\]", "\n".join(lines[start:end]))
+        )
+        unknown = citation_ids - set(citation_datasets)
+        if unknown or not citation_ids:
+            raise ReportingError(
+                "report_artifact_chart_citation_invalid",
+                "每个图表必须在同一 Markdown 段落绑定至少一个 Workflow citation marker。",
+            )
+        for image in images:
+            source = str(image.attrGet("src") or "")
+            parsed = urlsplit(source)
+            decoded = unquote(parsed.path)
+            relative = PurePosixPath(decoded)
+            if (
+                parsed.scheme
+                or parsed.netloc
+                or parsed.query
+                or parsed.fragment
+                or not decoded
+                or "\\" in decoded
+                or relative.is_absolute()
+                or ".." in relative.parts
+            ):
+                raise ReportingError(
+                    "report_artifact_chart_invalid", "Markdown 图表必须使用安全相对路径。"
+                )
+            path = parent.joinpath(relative).as_posix()
+            bindings.setdefault(path, set()).update(
+                citation_datasets[item] for item in citation_ids
+            )
+    return {path: tuple(sorted(dataset_ids)) for path, dataset_ids in bindings.items()}
 
 
 class PdfArtifactManifest(StrictModel):

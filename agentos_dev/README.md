@@ -54,13 +54,13 @@ Coding AgentOS 只注册由 Supervisor 控制的 facade；Reporting AgentOS 注�
 资源独立构造，不复制 Coding Agent，也不导入 Coding CLI/AgentOS 产品入口。AG-UI 与 AgentOS Agent API 都进入
 同一个 `report-agent`，CLI v2 则直接驱动同一个 Workflow。生产浏览器仍只访问综合
 `agentos_dev.app`。Reporting AgentOS 的 `/agui` 同时接受严格 Envelope JSON 和自然语言：自然语言
-原文作为唯一 `prompt` 原样交给 Workflow 首步的无工具结构化模型归一化，facade 不解析期间；期间
-缺失或冲突时通过官方 output review 暂停；
-批准、拒绝与恢复使用 `/workflows/{workflow_id}/runs/{run_id}/continue` 和 `/resume`。
-`reportGoal` 必须逐字保留用户输入，期间不明确时由模型询问用户，不允许程序猜测。
+原文作为唯一 `prompt` 原样交给 Workflow 首步的无工具结构化模型归一化，facade 不解析期间。
+`reportGoal` 必须逐字保留用户输入；期间不明确时失败关闭并要求提交明确期间，不允许程序猜测。
+Workflow 只有提纲使用官方 output review 暂停，批准、拒绝与恢复使用
+`/workflows/{workflow_id}/runs/{run_id}/continue` 和 `/resume`。
 
-两个报表 CLI 都在服务和 tracing 初始化前校验输入，随后依次处理来源、提纲、批量 SQL 和发布审核；
-批准、带反馈拒绝和取消都恢复同一持久化 Workflow run。旧 CLI 只接受 Envelope 并保留 Controller
+两个报表 CLI 都在服务和 tracing 初始化前校验输入，随后依次处理来源、提纲、批量 SQL 和发布；
+只有提纲的批准、带反馈拒绝和取消会恢复同一持久化 Workflow run。旧 CLI 只接受 Envelope 并保留 Controller
 兼容链路；`cli_v2` 使用顶层 Workflow 的自然语言归一化和官方 requirements。数据库连接只从服务端
 注册表加载。
 
@@ -68,12 +68,16 @@ Coding 模式使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入�
 面向保留 Agno Agent 接口的确定性转交实体；其 `arun` 不调用模型，而是把完整目标直接交给
 `CodingTaskSupervisor`。只有底层 `coding-agent-cli` 使用 `MODEL`，并按
 `AGENT_CODING_ENABLE_THINKING` 传递 `enable_thinking`，默认使用独立配置的
-`AGENT_CODING_REASONING_EFFORT=max` 和 `AGENT_CODING_THINKING_BUDGET=16384`
+`AGENT_CODING_REASONING_EFFORT=medium` 和 `AGENT_CODING_THINKING_BUDGET=16384`
 执行受控工具闭环。Reporting Coding worker 默认由独立的
 `AGENT_REPORT_CODING_ENABLE_THINKING=true` 开启，并使用
-`AGENT_REPORT_CODING_REASONING_EFFORT=max` 和
+`AGENT_REPORT_CODING_REASONING_EFFORT=medium` 和
 `AGENT_REPORT_CODING_THINKING_BUDGET=16384`；两条 Coding 链路互不共享配置。
-thinking，结构化 planner 由 `AGENT_REPORT_ENABLE_THINKING=true` 控制；普通 Assistant/Team 由
+三项参数沿用 OpenAI-compatible Chat Completions 请求：`reasoning_effort` 为顶层字段，
+`enable_thinking` 和 `thinking_budget` 由 SDK 从 `extra_body` 合并到请求体，因此可用于
+SiliconFlow、千问 DashScope 兼容端点和暴露对应扩展字段的 vLLM 服务。默认值不代表任意模型都支持
+`max`；部署时仍须选择支持 thinking budget 和相应 reasoning effort 的模型，或通过上述独立变量覆盖。
+结构化 planner 由 `AGENT_REPORT_ENABLE_THINKING=true` 控制；普通 Assistant/Team 由
 `AGENT_ASSISTANT_ENABLE_THINKING=false` 独立控制，公开 facade 始终关闭 thinking。
 因此 CLI 不导入
 `agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
@@ -100,8 +104,9 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 
 主 Assistant 通过 Agno callable tools factory 注册 `AgentControlToolkit` 和 `BaseToolkit`；
 Coding Agent 固定注册生产 `WorkspaceCodingToolkit`。公开 `report-agent` 只注册
-`ReportWorkflowToolkit` 的两个启动工具和一个 `requires_user_input` 审核桥；审核动作、反馈和
-Agent 选择只能由 AgentOS 用户输入提供。未注册到 AgentOS 的
+`ReportWorkflowToolkit` 的单一启动工具和一个审核桥；只有提纲的审核动作与反馈来自 AgentOS
+用户输入，期间和 Agent 必须在启动输入中唯一确定。facade 专用模型适配器在提纲返回 `paused` 时
+确定性生成审核桥调用，不依赖供应商模型决定是否进入 HITL。未注册到 AgentOS 的
 `report-worker` 才持有 `WorkspaceCodingToolkit` 和 `WorkspaceReportToolkit`；它只能读取 Workflow
 提交的不可变数据集。生产 Coding Toolkit 继承 Agno
 `DaytonaTools` 类型，但跳过其创建 sandbox 的初始化逻辑，通过共享 `CodingExecutionKernel` 和
@@ -161,10 +166,10 @@ Coding `terminal.command` 以 UTF-8 字节计最多 32 KiB；大段文件内容�
 | `enable_session_summaries` | `True` | 成功 run 后滚动更新非权威摘要 |
 | `AGENT_ASSISTANT_ENABLE_THINKING` | `false` | 控制普通 Assistant/Team thinking |
 | `AGENT_CODING_ENABLE_THINKING` | `true` | 控制纯 Coding worker thinking |
-| `AGENT_CODING_REASONING_EFFORT` | `max` | 控制纯 Coding worker 推理强度 |
+| `AGENT_CODING_REASONING_EFFORT` | `medium` | 控制纯 Coding worker 推理强度 |
 | `AGENT_CODING_THINKING_BUDGET` | `16384` | 控制纯 Coding worker thinking token 预算 |
 | `AGENT_REPORT_CODING_ENABLE_THINKING` | `true` | 控制 Report Coding worker thinking |
-| `AGENT_REPORT_CODING_REASONING_EFFORT` | `max` | 控制 Report Coding worker 推理强度 |
+| `AGENT_REPORT_CODING_REASONING_EFFORT` | `medium` | 控制 Report Coding worker 推理强度 |
 | `AGENT_REPORT_CODING_THINKING_BUDGET` | `16384` | 控制 Report Coding worker thinking token 预算 |
 | `AGENT_REPORT_ENABLE_THINKING` | `true` | 控制 Reporting planner thinking |
 | `AGENT_REPORT_ENABLE_VISION` | `false` | 控制 Report Worker 是否暴露图片检查工具并向模型发送媒体 |
@@ -282,14 +287,14 @@ Markdown/heredoc 外壳和 Add File 纯空行提供有限格式兼容。对于�
 Shell 命令时拒绝且不写文件。供应商 API 已拒绝的畸形函数参数无法到达该 fallback，仍须由模型或
 供应商重试为有效工具调用。`report-worker` 从该基座派生，固定暴露生产 Coding Toolkit 和
 `WorkspaceReportToolkit`，但不注册为 AgentOS 公共 Agent 或 Team
-member。生产路由仍由公开 `report-agent` 接收，它通过两个启动工具和
-`report_workflow_review` 审核桥调用 `ReportWorkflowController`；审核桥把 AgentOS 原生用户输入
-确定性地映射为同一持久化 Workflow run 的批准、带反馈拒绝、Agent 选择或取消，
-不增加第二条传输链路。
+member。生产路由仍由公开 `report-agent` 接收，它通过单一启动工具和审核桥调用
+`ReportWorkflowController`；只有提纲使用 `report_workflow_approve` 的 AgentOS 原生确认，拒绝时把
+`confirmation_note` 原样交给 Workflow。期间和 Agent 选择必须在输入中唯一确定，否则失败关闭。
+恢复仍使用同一持久化 Workflow run，不增加第二条传输链路。
 `agentos_dev.coding.reporting` 的 Agno Workflow 依次处理来源解析、受限画像、提纲审核、分析计划、取数需求、
-SQL 候选与按需审核、不可变数据集物化、Coding 分析、PDF 验收和发布审核。AG-UI 和 CLI adapter
-只负责暂停、反馈、继续和取消。Report 层保留数据源物化、输入绑定、Markdown/PDF 渲染及验收。
-来源和 Schema 唯一确定时直接继续，仅在多个报表 Agent 需要用户选择时暂停。
+SQL 候选校验、不可变数据集物化、Coding 分析、PDF 验收和发布。AG-UI 和 CLI adapter
+只对提纲负责暂停、反馈、继续和取消。Report 层保留数据源物化、输入绑定、Markdown/PDF 渲染及验收。
+来源和 Schema 必须唯一确定；多个报表 Agent 未显式选择时失败关闭。
 完整文件内容不会注入 facade 模型；内部 worker 只从 AnalysisPlan、DataRequirement 和
 DatasetHandle 取得分析输入，不持有数据库凭据。
 复杂分析优先通过受控只读工具检查文件、搜索内容和查看 Git 状态或差异；新文件使用
@@ -382,7 +387,7 @@ Bearer token；未配置 URL 表示明确禁用 metadata 服务，而网络、�
 不会降级为零 Agent。
 
 综合 AgentOS 在启动时创建 `report_download_grants_v1`；正式部署应以等价数据库迁移预建该表。
-最终发布审核批准前不签发下载 grant。批准后返回的同源
+PDF 验收和发布步骤完成前不签发下载 grant。完成后返回的同源
 `GET /reports/v1/download/{opaqueGrant}` 必须携带现有 `X-AGUI-Thread` 和
 `X-AGUI-Capability`，并继续校验数据库、用户、公司、Odoo session、thread、Workflow run、
 report revision 与 PDF hash。应用会脱敏 Uvicorn access log 中的 grant 路径；反向代理、网关和
@@ -403,20 +408,27 @@ APM 也必须将 `/reports/v1/download/*` 记录为固定占位路径，禁止�
 绑定创建服务端 job。内部 `report-worker` 随后使用 Coding Toolkit
 执行当前 Daytona 工作区允许的 Python、Shell 或其他分析命令；公开 facade 不接收 DatasetHandle、
 SQL 或数据库凭据。Report 层不再提供能力探测、固定剖析、
-独立命令执行器、60 秒分析超时或成功轮次门槛。模型生成完整 Markdown 和本地图表后，将其渲染为
+独立命令执行器、60 秒分析超时或成功轮次门槛。模型先登记本地图表源文件，再为每个 Attempt 提交
+一次完整结构化 `ReportDraft`；服务端归档正文实际引用的图表并生成权威 Markdown，图表机械错误使用
+已保存 Draft 恢复，不要求重传正文。随后将 Markdown 渲染为
 不覆盖已有文件的新 PDF；渲染和 PDF 验收各自最多运行 600 秒。PDF 限制为 200 MiB 和 200 页，运行时使用
 Poppler 将 PDF 逐页栅格化，检查空白页、页眉页脚、页码、文本、图片数量和像素占比，并把 Markdown、图片、PDF 的
-路径、大小、SHA-256 和验收结果写入 Workflow 持久化状态。只有 PDF 验收通过且最终发布审核获批，
+路径、大小、SHA-256 和验收结果写入 Workflow 持久化状态。只有 PDF 验收通过且发布步骤完成，
 SSE 交付门禁才返回正式产物。系统不再使用固定模板、`compile` 或 `blocks`。
-Markdown 必须包含与 manifest 一致的 `[[citation:<citationId>]]` 引用标记和
+权威 Markdown 必须包含 Workflow 指定的 `[[citation:<citationId>]]` 引用标记和
 `[[section:<sectionCode>]]` 关键章节标记；图表路径、Markdown、PDF、数据集 snapshot、CodingTask key
 和 report revision 通过 `ReportArtifactManifest`/`PdfArtifactManifest` 的大小与 SHA-256 绑定。
+模型不创建或修改 `ReportArtifactManifest`；Workflow 在正式 Markdown/图表验收通过后根据真实文件
+和持久化状态生成。PDF 正文只显示 `[引用 NNN]`，不显示 raw citation marker；末尾“实际引用附录”由
+服务端按 manifest citation 顺序生成中文业务名称和真实期间覆盖，且不展示数据集、需求、数据源、表、
+字段或章节机器标识。metadata 的每个可用指标必须通过全限定 `fieldRef` 提供 `measureSemantics`，缺少
+聚合、可加维度或固定口径语义时，规划和 SQL 审核失败关闭。
 sandbox 的 `/tmp/workspace-report-*` 仅用于一次渲染或验收的临时文件；超时和失败都会由 AgentOS 清理，
 不能作为 job 状态或验收依据。Markdown、图片和 PDF 输出到 `报表/生成结果/<job_id>/`。生产环境必须使用仓库现有
 `docker/sandbox-tools` 镜像，以提供 ripgrep、WeasyPrint 69、pypdf、数据分析库和 Noto CJK。镜像
 同时安装 `matplotlibrc`，将 Matplotlib/Seaborn 默认字体固定为 Noto CJK，避免中文图表在生成 PNG
 时已经丢失字形；不要在分析命令中改回仅含 DejaVu 的字体配置。
-部署时从该镜像创建并激活自定义 Snapshot `sandbox-tools-20260723`；不要复用不可删除的
+部署时从该镜像创建并激活自定义 Snapshot `sandbox-tools-20260722`；不要复用不可删除的
 System Snapshot。工具镜像更新后必须重新创建并激活该自定义 Snapshot；仅推送同名 Registry tag
 不会刷新既有 Snapshot 的固定镜像引用。
 

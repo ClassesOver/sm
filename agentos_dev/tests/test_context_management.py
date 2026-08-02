@@ -687,8 +687,8 @@ async def test_projected_model_writes_request_and_batch_metrics_inside_model_str
     assert captured[0]["canonical_message_count"] == 2
     assert captured[0]["projected_message_count"] == 2
     assert captured[1]["tool_batch_size"] == 2
-    assert captured[1]["tool_batch_admission"] == "rejected"
-    assert captured[1]["tool_batch_rejection_code"] == "coding_tool_batch_rejected"
+    assert captured[1]["tool_batch_admission"] == "serialized"
+    assert captured[1]["tool_batch_rejection_code"] == ""
 
 
 @pytest.mark.anyio
@@ -730,32 +730,58 @@ async def test_projected_model_writes_metrics_inside_non_stream_model_call(monke
         ["verify", "finish_task"],
     ],
 )
-async def test_projected_model_rejects_entire_invalid_tool_batch_without_entrypoint_calls(
-    names, monkeypatch
-):
+async def test_projected_model_serializes_unsafe_or_oversized_tool_batches(names, monkeypatch):
     model = ProjectedOpenAIChat(id="test")
-    entrypoint_calls = 0
+    entrypoint_calls = []
 
-    async def entrypoint():
-        nonlocal entrypoint_calls
-        entrypoint_calls += 1
-        return "unexpected"
+    async def entrypoint(index):
+        entrypoint_calls.append(index)
+        return index
 
-    calls = [_function_call(name, entrypoint, index) for index, name in enumerate(names)]
+    calls = [
+        _function_call(name, entrypoint, index, {"index": index})
+        for index, name in enumerate(names)
+    ]
     results = []
 
     async for _event in model.arun_function_calls(calls, results):
         pass
 
-    assert entrypoint_calls == 0
+    assert entrypoint_calls == list(range(len(names)))
     assert len(results) == len(calls)
-    assert all(
-        json.loads(message.content)["code"] == "coding_tool_batch_rejected" for message in results
-    )
-    if names == ["read_file"] * 11:
-        feedback = json.loads(results[0].content)
-        assert feedback["allowed"] == "单个调用，或 2 至 10 个 parallel_safe_read 调用"
-        assert "每批最多 10 个" in feedback["requiredActions"][0]
+    assert [message.tool_call_id for message in results] == [
+        f"call-{index}" for index in range(len(names))
+    ]
+
+
+@pytest.mark.anyio
+async def test_projected_model混合批次按原顺序执行且不返回重试错误():
+    model = ProjectedOpenAIChat(id="test")
+    executed = []
+
+    async def entrypoint(**arguments):
+        executed.append(arguments)
+        return arguments
+
+    calls = [
+        _function_call(
+            "terminal",
+            entrypoint,
+            0,
+            {"command": "python3 -m pytest -q", "timeout": 120},
+        ),
+        _function_call("update_plan", entrypoint, 1, {"plan": []}),
+    ]
+    results = []
+
+    async for _event in model.arun_function_calls(calls, results):
+        pass
+
+    assert executed == [
+        {"command": "python3 -m pytest -q", "timeout": 120},
+        {"plan": []},
+    ]
+    assert all("coding_tool_batch_rejected" not in str(message.content) for message in results)
 
 
 @pytest.mark.anyio

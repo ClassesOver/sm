@@ -37,6 +37,7 @@ from agentos_dev.skills import (
 from agentos_dev.task_execution.execution import (
     CODING_EXECUTION_MIGRATION_STATE_KEY,
     CODING_TASK_DEPENDENCY,
+    CODING_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
     CODING_TOOL_FAILURE_STATE_KEY,
     CODING_TOOL_OUTPUT_STATE_KEY,
     CODING_TOOL_PROGRESS_STATE_KEY,
@@ -48,6 +49,7 @@ from agentos_dev.task_execution.execution import (
     _absolute_paths,
     _task_tool_parallel_safe,
     create_coding_tool_scheduler_hook,
+    normalize_coding_function_call_arguments,
 )
 from agentos_dev.task_execution.repository import CodingRepositoryError, CodingTaskRepository
 from agentos_dev.task_execution.tools import (
@@ -658,8 +660,11 @@ async def completed_validator(runtime, acceptance, *, passed=None, output=None, 
 async def test_validator_verify_uses_pinned_script_fixed_timeout_and_strict_receipt(
     execution_runtime,
     tmp_path,
+    monkeypatch,
 ):
     runtime = execution_runtime
+    debug_messages = []
+    monkeypatch.setattr(execution_module, "log_debug", debug_messages.append)
     acceptance = await acceptance_runtime(runtime, tmp_path)
     original_script = acceptance.script.read_bytes()
 
@@ -682,8 +687,60 @@ async def test_validator_verify_uses_pinned_script_fixed_timeout_and_strict_rece
     assert execution.operation_receipt["validator_sha256"] == validator.script_sha256
     assert execution.operation_receipt["valid"] is True
     assert acceptance.script.read_bytes() == original_script
-    internal_files = runtime.synchronous.sandbox_for("thread").fs.entries
+    sandbox_fs = runtime.synchronous.sandbox_for("thread").fs
+    assert not any("/validators/" in path for path in sandbox_fs.download_calls)
+    assert sum("/validators/" in path for path in sandbox_fs.stream_download_calls) == 4
+    phases = [
+        message.split("phase=", 1)[1].split()[0]
+        for message in debug_messages
+        if message.startswith("coding_validator_verify phase=")
+    ]
+    assert phases == [
+        "artifact_hash_started",
+        "artifact_hash_completed",
+        "validator_install_started",
+        "validator_install_completed",
+        "validator_execution_started",
+        "validator_execution_completed",
+        "validator_integrity_started",
+        "validator_integrity_completed",
+        "validator_cleanup_started",
+        "validator_cleanup_completed",
+        "artifact_rehash_started",
+        "artifact_rehash_completed",
+        "completed",
+    ]
+    internal_files = sandbox_fs.entries
     assert not any(f"validators/{validator.install_digest}/" in path for path in internal_files)
+
+
+@pytest.mark.anyio
+async def test_validator_install流式下载无响应时按阶段超时失败关闭(
+    execution_runtime,
+    tmp_path,
+    monkeypatch,
+):
+    runtime = execution_runtime
+    acceptance = await acceptance_runtime(runtime, tmp_path)
+    scope = await acceptance.kernel.scope(acceptance.context)
+    validator = acceptance.registry.require("analysis:report")
+    original_download = AsyncFakeFs.download_file_stream
+
+    async def blocking_download(fs, path, timeout=30 * 60):
+        if "/validators/" not in path:
+            return await original_download(fs, path, timeout=timeout)
+
+        async def stream():
+            await asyncio.Event().wait()
+            yield b"unreachable"
+
+        return stream()
+
+    monkeypatch.setattr(AsyncFakeFs, "download_file_stream", blocking_download)
+    monkeypatch.setattr(execution_module, "MAX_VALIDATOR_STAGE_TIMEOUT", 0.01)
+
+    with pytest.raises(WorkspaceError, match="validator 安装超时"):
+        await acceptance.kernel._install_validator(scope, validator, b"{}")
 
 
 @pytest.mark.anyio
@@ -1608,6 +1665,28 @@ async def test_tool_scheduler_is_released_after_hook_failure(execution_runtime):
 
 
 @pytest.mark.anyio
+async def test_reporting_wrapper委托通用工具时同一任务写锁可重入(execution_runtime):
+    runtime = execution_runtime
+    hook = create_coding_tool_scheduler_hook(runtime.repository)
+
+    async def verify_report_draft():
+        # Reporting 专用工具由 Agno hook 持有外层任务写锁；正式验收随后委托
+        # WorkspaceTaskToolkit.verify，并会再次进入同一任务调度器。两层调用在
+        # 同一个 asyncio Task 内，必须复用写锁，否则 validator 尚未启动就会死锁。
+        async with runtime.kernel.task_scheduler("external-run") as scheduler:
+            async with scheduler.write():
+                return {"ok": True}
+
+    result = await asyncio.wait_for(
+        hook(runtime.context, "verify_report_draft", verify_report_draft, {}),
+        timeout=0.2,
+    )
+
+    assert result == {"ok": True}
+    assert (id(runtime.repository), "external-run") not in execution_module._TASK_TOOL_SCHEDULERS
+
+
+@pytest.mark.anyio
 async def test_create_files_defers_scheduling_to_atomic_patch_kernel():
     repository = object()
     hook = create_coding_tool_scheduler_hook(repository)  # type: ignore[arg-type]
@@ -2217,6 +2296,7 @@ def test_workspace_coding_tools_have_explicit_schemas_and_split_mutations():
         assert schema["additionalProperties"] is False
 
     list_files = tools["list_files"]
+    assert "本次 assistant 工具批次中的唯一调用" in tools["terminal"].description
     assert 'path 传空字符串 ""' in list_files.description
     assert '根目录必须传空字符串 ""' in list_files.parameters["properties"]["path"]["description"]
 
@@ -2263,6 +2343,106 @@ async def test_finish_entrypoint_stops_registered_agno_function_after_acceptance
     assert execution_result.result["status"] == "accepted"
     assert finish_function.stop_after_tool_call is True
     assert parsed_clone.stop_after_tool_call is True
+
+
+@pytest.mark.anyio
+async def test_coding基础工具自动展开唯一一层arguments包装(execution_runtime):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    assert all(
+        function.pre_hook is normalize_coding_function_call_arguments
+        for function in (*toolkit.functions.values(), *toolkit.async_functions.values())
+    )
+    function = copy(toolkit.async_functions["create_files"])
+
+    async def passthrough_tool_hook(run_context, function_name, function_call, arguments):
+        assert run_context is runtime.context
+        assert function_name == "create_files"
+        return await function_call(**arguments)
+
+    function.tool_hooks = [passthrough_tool_hook]
+    function._run_context = runtime.context
+    call = FunctionCall(
+        function=function,
+        arguments={"arguments": {"files": [{"path": "wrapped.py", "content": "print(1)\n"}]}},
+        call_id="wrapped-create-files",
+    )
+
+    result = await call.aexecute()
+
+    assert result.status == "success"
+    assert result.result["ok"] is True
+    assert (
+        runtime.synchronous.sandbox_for("thread").fs.entries["/home/daytona/workspace/wrapped.py"][
+            1
+        ]
+        == b"print(1)\n"
+    )
+    assert runtime.context.session_state[CODING_TOOL_ARGUMENT_AUTOFIX_STATE_KEY] == [
+        {
+            "code": "coding_tool_arguments_unwrapped",
+            "toolName": "create_files",
+            "mutationSequence": 0,
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_coding基础工具按schema恢复json字符串数组(execution_runtime):
+    runtime = execution_runtime
+    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
+    function = copy(toolkit.async_functions["create_files"])
+
+    async def passthrough_tool_hook(run_context, function_name, function_call, arguments):
+        assert run_context is runtime.context
+        assert function_name == "create_files"
+        return await function_call(**arguments)
+
+    function.tool_hooks = [passthrough_tool_hook]
+    function._run_context = runtime.context
+    call = FunctionCall(
+        function=function,
+        arguments={
+            "files": json.dumps([{"path": "schema-array.py", "content": "print('schema')\n"}])
+        },
+        call_id="schema-array-create-files",
+    )
+
+    result = await call.aexecute()
+
+    assert result.status == "success"
+    assert result.result["ok"] is True
+    assert (
+        runtime.synchronous.sandbox_for("thread").fs.entries[
+            "/home/daytona/workspace/schema-array.py"
+        ][1]
+        == b"print('schema')\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (
+            {"arguments": {"files": []}, "timeout": 30},
+            {"files": [], "timeout": 30},
+        ),
+        ({"arguments": '{"files":[]}'}, {"files": []}),
+        (
+            {"arguments": {"arguments": {"files": []}}},
+            {"arguments": {"files": []}},
+        ),
+    ],
+)
+def test_coding基础工具arguments只做一层等价json规范化(arguments, expected):
+    call = SimpleNamespace(
+        arguments=arguments,
+        function=SimpleNamespace(name="create_files"),
+    )
+
+    normalize_coding_function_call_arguments(call)
+
+    assert call.arguments == expected
 
 
 @pytest.mark.anyio

@@ -19,6 +19,10 @@ from agno.run import RunContext
 from agno.run.base import RunStatus
 from agno.team import TeamMode
 from agno.tools.function import Function
+from openai.types.chat.chat_completion_chunk import (
+    ChoiceDeltaToolCall,
+    ChoiceDeltaToolCallFunction,
+)
 
 from agentos_dev import agents as agents_module
 from agentos_dev import app
@@ -28,6 +32,7 @@ from agentos_dev.agents import (
     create_assistant_team,
 )
 from agentos_dev.agents.assistant import create_assistant
+from agentos_dev.coding.reporting.agent import ReportFacadeOpenAIChat, create_report_agent
 from agentos_dev.coding.reporting.controller import (
     ReportWorkflowController,
     ReportWorkflowToolkit,
@@ -451,6 +456,185 @@ async def test_team_top_level_client_tool_pauses_and_continues_same_run():
 
 
 @pytest.mark.anyio
+async def test_report_start_tool从当前用户消息启动workflow():
+    calls = []
+
+    class FakeController:
+        async def start(self, workflow_input, run_context):
+            calls.append((workflow_input.prompt, run_context.session_id))
+            return {"ok": True, "status": "completed"}
+
+    model = ScriptedModel(
+        id="scripted-report-start-model",
+        responses=[
+            ModelResponse(
+                tool_calls=[
+                    {
+                        "id": "call-report-start",
+                        "type": "function",
+                        "function": {
+                            "name": "report_workflow_start",
+                            "arguments": "{}",
+                        },
+                    }
+                ]
+            ),
+            ModelResponse(content="报表工作流已启动。"),
+        ],
+    )
+    agent = Agent(
+        id="report-start-test",
+        model=model,
+        tools=[ReportWorkflowToolkit(cast(ReportWorkflowController, FakeController()))],
+        db=InMemoryDb(),
+        telemetry=False,
+    )
+    goal = "生成瑞金医院2025年收入、预算、成本和工作量分析报告"
+
+    completed = await agent.arun(
+        goal,
+        run_id="run-report-start",
+        session_id="thread-report-start",
+        user_id="user-report-start",
+    )
+
+    assert completed.status is RunStatus.completed
+    assert completed.content == "报表工作流已启动。"
+    assert calls == [(goal, "thread-report-start")]
+
+
+@pytest.mark.anyio
+async def test_report_facade把workflow暂停确定性提升为agent原生hitl(monkeypatch):
+    provider_calls = []
+
+    async def provider_ainvoke(_model, messages, *_args, **_kwargs):
+        provider_calls.append(messages)
+        if len(provider_calls) > 1:
+            raise AssertionError("Workflow paused 后不应再次请求供应商模型")
+        return ModelResponse(
+            tool_calls=[
+                {
+                    "id": "call-report-start",
+                    "type": "function",
+                    "function": {"name": "report_workflow_start", "arguments": "{}"},
+                }
+            ]
+        )
+
+    class FakeController:
+        async def start(self, _workflow_input, _run_context):
+            return {
+                "ok": True,
+                "status": "paused",
+                "review": {
+                    "stage": "outline",
+                    "title": "审核报告提纲",
+                    "message": "请审核报告提纲。",
+                    "preview": {"title": "瑞金医院2025年整体运营分析报告"},
+                },
+            }
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "ainvoke", provider_ainvoke)
+    model = ReportFacadeOpenAIChat(id="report-facade-routing-test", api_key="test-key")
+    agent = Agent(
+        id="report-facade-routing-test",
+        model=model,
+        tools=[ReportWorkflowToolkit(cast(ReportWorkflowController, FakeController()))],
+        db=InMemoryDb(),
+        telemetry=False,
+    )
+
+    paused = await agent.arun(
+        "生成瑞金医院2025年整体运营分析报告",
+        run_id="run-report-routing",
+        session_id="thread-report-routing",
+        user_id="user-report-routing",
+    )
+
+    assert paused.status is RunStatus.paused
+    assert "审核报告提纲" in str(paused.content)
+    assert "瑞金医院2025年整体运营分析报告" in str(paused.content)
+    assert len(provider_calls) == 1
+    assert len(paused.active_requirements) == 1
+    requirement = paused.active_requirements[0]
+    assert requirement.tool_execution.tool_name == "report_workflow_approve"
+    assert requirement.needs_confirmation is True
+    assert requirement.needs_user_input is False
+
+
+@pytest.mark.anyio
+async def test_report_facade流式运行把workflow暂停提升为agent原生hitl(monkeypatch):
+    provider_calls = []
+
+    async def provider_ainvoke_stream(_model, messages, *_args, **_kwargs):
+        provider_calls.append(messages)
+        if len(provider_calls) > 1:
+            raise AssertionError("Workflow paused 后不应再次请求供应商模型")
+        yield ModelResponse(
+            tool_calls=[
+                ChoiceDeltaToolCall(
+                    index=0,
+                    id="call-report-start",
+                    type="function",
+                    function=ChoiceDeltaToolCallFunction(
+                        name="report_workflow_start", arguments="{}"
+                    ),
+                )
+            ]
+        )
+
+    class FakeController:
+        async def start(self, _workflow_input, _run_context):
+            return {
+                "ok": True,
+                "status": "paused",
+                "review": {
+                    "stage": "outline",
+                    "title": "审核报告提纲",
+                    "message": "请审核报告提纲。",
+                    "preview": {"title": "瑞金医院2025年整体运营分析报告"},
+                },
+            }
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "ainvoke_stream", provider_ainvoke_stream)
+    worker = Agent(
+        id="report-facade-stream-worker-test",
+        model=ProjectedOpenAIChat(id="report-facade-stream-routing-test", api_key="test-key"),
+        db=InMemoryDb(),
+        checkpoint="tool-batch",
+        telemetry=False,
+    )
+    agent = create_report_agent(worker, cast(ReportWorkflowController, FakeController()))
+
+    events = [
+        event
+        async for event in agent.arun(
+            "生成瑞金医院2025年整体运营分析报告",
+            run_id="run-report-stream-routing",
+            session_id="thread-report-stream-routing",
+            user_id="user-report-stream-routing",
+            stream=True,
+            stream_events=True,
+        )
+    ]
+
+    assert len(provider_calls) == 1
+    paused_index = next(index for index, event in enumerate(events) if event.event == "RunPaused")
+    assert any(
+        event.event == "RunContent"
+        and "审核报告提纲" in str(getattr(event, "content", ""))
+        and "瑞金医院2025年整体运营分析报告" in str(getattr(event, "content", ""))
+        for event in events[:paused_index]
+    )
+    paused = events[-1]
+    assert paused.event == "RunPaused"
+    assert len(paused.active_requirements) == 1
+    requirement = paused.active_requirements[0]
+    assert requirement.tool_execution.tool_name == "report_workflow_approve"
+    assert requirement.needs_confirmation is True
+
+
+@pytest.mark.anyio
 async def test_report_review_tool暂停agent并用用户反馈继续同run():
     calls = []
 
@@ -510,6 +694,73 @@ async def test_report_review_tool暂停agent并用用户反馈继续同run():
     assert completed.run_id == paused.run_id
     assert completed.content == "已按修改意见继续报表工作流。"
     assert calls == [("补充异常原因和改进责任人", "thread-report-review")]
+
+
+@pytest.mark.anyio
+async def test_report原生确认拒绝后把备注确定性交给workflow(monkeypatch):
+    provider_calls = []
+    controller_calls = []
+
+    async def provider_ainvoke(_model, _messages, *_args, **_kwargs):
+        provider_calls.append(None)
+        if len(provider_calls) == 1:
+            return ModelResponse(
+                tool_calls=[
+                    {
+                        "id": "call-report-start",
+                        "type": "function",
+                        "function": {"name": "report_workflow_start", "arguments": "{}"},
+                    }
+                ]
+            )
+        return ModelResponse(content="已按拒绝意见继续报表工作流。")
+
+    class FakeController:
+        async def start(self, _workflow_input, _run_context):
+            return {
+                "ok": True,
+                "status": "paused",
+                "review": {
+                    "stage": "outline",
+                    "title": "审核报告提纲",
+                    "message": "请审核报告提纲。",
+                    "preview": {"title": "瑞金医院2025年整体运营分析报告"},
+                },
+            }
+
+        async def reject(self, feedback, run_context):
+            controller_calls.append((feedback, run_context.session_id))
+            return {"ok": True, "status": "completed"}
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "ainvoke", provider_ainvoke)
+    agent = Agent(
+        id="report-confirmation-reject-test",
+        model=ReportFacadeOpenAIChat(id="report-confirmation-reject-test", api_key="test-key"),
+        tools=[ReportWorkflowToolkit(cast(ReportWorkflowController, FakeController()))],
+        db=InMemoryDb(),
+        telemetry=False,
+    )
+
+    paused = await agent.arun(
+        "生成瑞金医院2025年整体运营分析报告",
+        run_id="run-report-confirmation-reject",
+        session_id="thread-report-confirmation-reject",
+        user_id="user-report-confirmation-reject",
+    )
+    requirement = paused.active_requirements[0]
+    requirement.reject(note="补充异常原因和改进责任人")
+
+    completed = await agent.acontinue_run(
+        run_id=paused.run_id,
+        session_id=paused.session_id,
+        requirements=paused.requirements,
+    )
+
+    assert completed.status is RunStatus.completed
+    assert completed.run_id == paused.run_id
+    assert completed.content == "已按拒绝意见继续报表工作流。"
+    assert len(provider_calls) == 2
+    assert controller_calls == [("补充异常原因和改进责任人", "thread-report-confirmation-reject")]
 
 
 @pytest.mark.anyio
@@ -627,20 +878,18 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
     assert report_registered == [
         {
             "report_workflow_start",
-            "report_workflow_start_from_prompt",
             "report_workflow_review",
+            "report_workflow_approve",
+            "report_workflow_reject",
         }
     ]
     review_tool = report_toolkits[0].async_functions["report_workflow_review"]
     assert review_tool.requires_user_input is True
     assert review_tool.user_input_fields == ["action", "feedback", "agent_id"]
+    assert report_toolkits[0].async_functions["report_workflow_approve"].requires_confirmation
     assert all(
-        report_toolkits[0].async_functions[name].requires_confirmation is False
-        for name in (
-            "report_workflow_start",
-            "report_workflow_start_from_prompt",
-            "report_workflow_review",
-        )
+        not report_toolkits[0].async_functions[name].requires_confirmation
+        for name in ("report_workflow_start", "report_workflow_review", "report_workflow_reject")
     )
     worker_toolkits = app.report_worker.tools(
         run_context=RunContext(run_id="run", session_id="thread", session_state={})
@@ -664,6 +913,8 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
         "read_tool_output",
         "update_plan",
         "finish_task",
+        "render_report_draft",
+        "repair_report_draft",
     }
 
 
@@ -691,12 +942,16 @@ def test_toolkit_instructions_are_injected_by_agno():
     parsed_tools = {function.name: function for function in parsed if hasattr(function, "name")}
     assert set(parsed_tools) == {
         "report_workflow_start",
-        "report_workflow_start_from_prompt",
         "report_workflow_review",
+        "report_workflow_approve",
+        "report_workflow_reject",
     }
     assert parsed_tools["report_workflow_review"].requires_user_input is True
-    assert set(parsed_tools["report_workflow_start_from_prompt"].parameters["properties"]) == {
-        "prompt"
+    assert parsed_tools["report_workflow_approve"].requires_confirmation is True
+    assert parsed_tools["report_workflow_start"].parameters == {
+        "type": "object",
+        "properties": {},
+        "required": [],
     }
 
 

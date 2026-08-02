@@ -1352,7 +1352,7 @@ def _tool_batch_admission(function_calls: list[Any]) -> tuple[bool, str]:
         _parallel_safe_tool_call(function_call) for function_call in function_calls
     ):
         return True, "parallel_safe_read"
-    return False, "rejected"
+    return True, "serialized"
 
 
 def _tool_batch_attributes(size: int, admitted: bool, admission: str) -> dict[str, Any]:
@@ -1396,12 +1396,39 @@ def _stream_tool_batch_attributes(calls: dict[int, dict[str, Any]]) -> dict[str,
                 arguments = {}
         parsed_calls.append((str(call["name"]), arguments))
     size = len(parsed_calls)
-    admitted = size <= 1 or (
+    parallel = size <= 1 or (
         size <= CODING_TOOL_BATCH_LIMIT
         and all(_parallel_safe_tool(name, arguments) for name, arguments in parsed_calls)
     )
-    admission = "single" if size <= 1 else "parallel_safe_read" if admitted else "rejected"
-    return _tool_batch_attributes(size, admitted, admission)
+    admission = "single" if size <= 1 else "parallel_safe_read" if parallel else "serialized"
+    return _tool_batch_attributes(size, True, admission)
+
+
+def _tool_call_batches(function_calls: list[Any]) -> list[list[Any]]:
+    """保留模型调用顺序；安全读取限量并发，其他调用逐个串行。
+
+    并发资格只来自服务端工具分类，不能由模型参数声明扩大。写入、执行、验收和
+    finish 均以单调用批次进入 Agno 原执行器，保留其 hook、回执和停止语义。
+    """
+    batches: list[list[Any]] = []
+    reads: list[Any] = []
+
+    def flush_reads() -> None:
+        nonlocal reads
+        if reads:
+            batches.append(reads)
+            reads = []
+
+    for function_call in function_calls:
+        if _parallel_safe_tool_call(function_call):
+            reads.append(function_call)
+            if len(reads) == CODING_TOOL_BATCH_LIMIT:
+                flush_reads()
+            continue
+        flush_reads()
+        batches.append([function_call])
+    flush_reads()
+    return batches
 
 
 def _set_current_span_attributes(attributes: dict[str, Any]) -> None:
@@ -1483,53 +1510,16 @@ class ProjectedOpenAIChat(OpenAIChat):
         finally:
             _CODING_REQUEST_METRICS.reset(token)
 
-    @staticmethod
-    def _reject_tool_batch(function_calls: list[Any], function_call_results: list[Message]) -> None:
-        payload = json.dumps(
-            {
-                "ok": False,
-                "code": "coding_tool_batch_rejected",
-                "batchSize": len(function_calls),
-                "allowed": f"单个调用，或 2 至 {CODING_TOOL_BATCH_LIMIT} 个 parallel_safe_read 调用",
-                "requiredActions": [
-                    f"只读调用按每批最多 {CODING_TOOL_BATCH_LIMIT} 个拆分；"
-                    "terminal、process、update_plan、文件修改、verify 和 finish_task 各自单独调用。"
-                ],
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        for function_call in function_calls:
-            function_call_results.append(
-                Message(
-                    role="tool",
-                    content=payload,
-                    tool_call_id=function_call.call_id,
-                    tool_name=function_call.function.name,
-                    tool_args=function_call.arguments,
-                    tool_call_error=True,
-                )
-            )
-
     def run_function_calls(self, function_calls, function_call_results, *args, **kwargs):
-        admitted, _admission = _tool_batch_admission(function_calls)
-        if not admitted:
-            self._reject_tool_batch(function_calls, function_call_results)
-            return
-        yield from super().run_function_calls(
-            function_calls, function_call_results, *args, **kwargs
-        )
+        for batch in _tool_call_batches(function_calls):
+            yield from super().run_function_calls(batch, function_call_results, *args, **kwargs)
 
     async def arun_function_calls(self, function_calls, function_call_results, *args, **kwargs):
-        admitted, _admission = _tool_batch_admission(function_calls)
-        if not admitted:
-            self._reject_tool_batch(function_calls, function_call_results)
-            return
-        async for event in super().arun_function_calls(
-            function_calls, function_call_results, *args, **kwargs
-        ):
-            yield event
+        for batch in _tool_call_batches(function_calls):
+            async for event in super().arun_function_calls(
+                batch, function_call_results, *args, **kwargs
+            ):
+                yield event
 
 
 def projected_coding_model(model: OpenAIChat) -> ProjectedOpenAIChat:

@@ -54,6 +54,10 @@ MAX_SEARCH_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_PATCH_FILES = 20
 MAX_PATCH_EDITS = 50
 MAX_BATCH_HASH_CONCURRENCY = 8
+MAX_BATCH_HASH_FILE_TIMEOUT = 30
+MAX_BATCH_HASH_TIMEOUT = 60
+MAX_ASYNC_DOWNLOAD_TIMEOUT = 5 * 60
+MAX_ISOLATED_CLIENT_CLOSE_TIMEOUT = 5
 MAX_PATH_BYTES = 1024
 MAX_PATH_COMPONENT_BYTES = 255
 MAX_PATH_DEPTH = 32
@@ -338,6 +342,28 @@ class WorkspaceService:
                 self._owned_async_client = AsyncDaytona()
             client = self._owned_async_client
         yield client
+
+    @asynccontextmanager
+    async def _isolated_async_client(self):
+        if self._async_client_override is not None:
+            yield self._async_client_override
+            return
+        client = AsyncDaytona()
+        try:
+            yield client
+        finally:
+            # 正式验收会密集下载多个产物复核哈希，不得复用长生命周期 client。
+            # 远端半关闭连接时 SDK close 也可能等待，因此清理必须抵抗外层取消且有硬上限；
+            # 该 client 不再复用，关闭超时不能覆盖已经完成的可信哈希结果。
+            try:
+                await complete_cleanup(
+                    asyncio.wait_for(
+                        client.close(),
+                        timeout=MAX_ISOLATED_CLIENT_CLOSE_TIMEOUT,
+                    )
+                )
+            except TimeoutError:
+                pass
 
     async def aclose(self) -> None:
         if self._async_client_override is not None:
@@ -974,13 +1000,18 @@ class WorkspaceService:
         return b"".join(chunks)
 
     @staticmethod
-    async def _adownload_file(sandbox: Any, remote: str, max_bytes: int) -> bytes:
-        if remote.isascii():
-            return await sandbox.fs.download_file(remote)
-
+    async def _adownload_file(
+        sandbox: Any,
+        remote: str,
+        max_bytes: int,
+        *,
+        timeout: int | float = MAX_ASYNC_DOWNLOAD_TIMEOUT,
+    ) -> bytes:
         chunks = []
         total = 0
-        stream = await sandbox.fs.download_file_stream(remote)
+        # 普通下载和流式下载在 Daytona SDK 中是两条不同实现。统一使用流式接口，
+        # 避免路径字符集改变网络行为，并显式覆盖 SDK 30 分钟的默认等待时间。
+        stream = await sandbox.fs.download_file_stream(remote, timeout=timeout)
         async for chunk in stream:
             if not isinstance(chunk, bytes):
                 raise WorkspaceError("工作区返回了无效的文件内容，请稍后重试。")
@@ -1603,30 +1634,39 @@ class WorkspaceService:
         if not isinstance(paths, list) or len(paths) > MAX_PATCH_FILES * 3:
             raise WorkspaceError(f"批量哈希路径不能超过 {MAX_PATCH_FILES * 3} 个。")
         normalized = [self.normalize_path(path, allow_root=False) for path in paths]
-        async with self._async_client() as client:
-            sandbox = await self._asandbox_for(client, thread)
+        try:
+            async with asyncio.timeout(MAX_BATCH_HASH_TIMEOUT):
+                async with self._isolated_async_client() as client:
+                    sandbox = await self._asandbox_for(client, thread)
 
-            semaphore = asyncio.Semaphore(MAX_BATCH_HASH_CONCURRENCY)
+                    semaphore = asyncio.Semaphore(MAX_BATCH_HASH_CONCURRENCY)
 
-            async def hash_file(relative: str, remote: str) -> dict[str, Any]:
-                async with semaphore:
-                    try:
-                        await self._avalidate_existing_path(sandbox, relative)
-                        info = await self._ainfo(sandbox, remote)
-                        if not self._is_regular_file(info):
-                            raise DaytonaNotFoundError("not a regular file")
-                        content = await self._adownload_file(sandbox, remote, MAX_DOWNLOAD_BYTES)
-                    except (DaytonaNotFoundError, WorkspaceError):
-                        return {"path": relative, "missing": True}
-                    return {
-                        "path": relative,
-                        "size": len(content),
-                        "sha256": hashlib.sha256(content).hexdigest(),
-                    }
+                    async def hash_file(relative: str, remote: str) -> dict[str, Any]:
+                        async with semaphore:
+                            try:
+                                await self._avalidate_existing_path(sandbox, relative)
+                                info = await self._ainfo(sandbox, remote)
+                                if not self._is_regular_file(info):
+                                    raise DaytonaNotFoundError("not a regular file")
+                                content = await self._adownload_file(
+                                    sandbox,
+                                    remote,
+                                    MAX_DOWNLOAD_BYTES,
+                                    timeout=MAX_BATCH_HASH_FILE_TIMEOUT,
+                                )
+                            except (DaytonaNotFoundError, WorkspaceError):
+                                return {"path": relative, "missing": True}
+                            return {
+                                "path": relative,
+                                "size": len(content),
+                                "sha256": hashlib.sha256(content).hexdigest(),
+                            }
 
-            results = await asyncio.gather(
-                *(hash_file(relative, remote) for relative, remote in normalized)
-            )
+                    results = await asyncio.gather(
+                        *(hash_file(relative, remote) for relative, remote in normalized)
+                    )
+        except TimeoutError as error:
+            raise WorkspaceError("批量哈希读取超时，请稍后重试。") from error
         return results
 
     async def astat(self, thread: str, path: str = "") -> dict[str, Any]:

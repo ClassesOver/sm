@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..contract import MeasureSemantic
+
 PROFILE_DIRECTORY_NAME = "reporting_profiles"
 PROFILE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
 FIELD_REF_PATTERN = (
@@ -72,6 +74,22 @@ class ReconciliationPatch(ProfileModel):
         return _codes(value)
 
 
+class ScopeFilterPatch(ProfileModel):
+    code: str = Field(pattern=PROFILE_ID_PATTERN)
+    enabled: bool = True
+    description: str | None = Field(default=None, max_length=2_000)
+    field_refs: tuple[str, ...] | None = Field(
+        default=None, alias="fieldRefs", min_length=1, max_length=200
+    )
+    value: str | None = Field(default=None, min_length=1, max_length=1_000)
+    required_for_all_tables: bool | None = Field(default=None, alias="requiredForAllTables")
+
+    @field_validator("field_refs")
+    @classmethod
+    def validate_field_refs(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        return _field_refs(value)
+
+
 class SectionPatch(ProfileModel):
     code: str = Field(pattern=PROFILE_ID_PATTERN)
     enabled: bool = True
@@ -107,14 +125,29 @@ class ReportingProfileDocument(ProfileModel):
     dimensions: tuple[DimensionPatch, ...] = Field(default=(), max_length=500)
     metrics: tuple[MetricPatch, ...] = Field(default=(), max_length=1_000)
     reconciliations: tuple[ReconciliationPatch, ...] = Field(default=(), max_length=500)
+    scope_filters: tuple[ScopeFilterPatch, ...] = Field(
+        default=(), alias="scopeFilters", max_length=100
+    )
+    measure_semantics: tuple[MeasureSemantic, ...] = Field(
+        default=(), alias="measureSemantics", max_length=2_000
+    )
     sections: tuple[SectionPatch, ...] = Field(default=(), max_length=200)
+    section_order: tuple[str, ...] | None = Field(
+        default=None, alias="sectionOrder", min_length=1, max_length=200
+    )
     page_layout: PageLayoutPatch | None = Field(default=None, alias="pageLayout")
 
     @model_validator(mode="after")
     def validate_codes(self) -> ReportingProfileDocument:
         if self.profile_id in self.extends or len(set(self.extends)) != len(self.extends):
             raise ValueError("Profile extends 无效")
-        for values in (self.dimensions, self.metrics, self.reconciliations, self.sections):
+        for values in (
+            self.dimensions,
+            self.metrics,
+            self.reconciliations,
+            self.scope_filters,
+            self.sections,
+        ):
             codes = [item.code for item in values]
             if len(codes) != len(set(codes)):
                 raise ValueError("同一 Profile 层的 code 不能重复")
@@ -123,6 +156,11 @@ class ReportingProfileDocument(ProfileModel):
                 for item in values
             ):
                 raise ValueError("停用项只能包含 code 和 enabled")
+        semantic_refs = [item.field_ref.lower() for item in self.measure_semantics]
+        if len(semantic_refs) != len(set(semantic_refs)):
+            raise ValueError("同一 Profile 层的 measureSemantics.fieldRef 不能重复")
+        if self.section_order is not None:
+            _codes(self.section_order)
         return self
 
 
@@ -178,6 +216,19 @@ class EffectiveReconciliation(ProfileModel):
         return _codes(value) or ()
 
 
+class EffectiveScopeFilter(ProfileModel):
+    code: str = Field(pattern=PROFILE_ID_PATTERN)
+    description: str = Field(default="", max_length=2_000)
+    field_refs: tuple[str, ...] = Field(alias="fieldRefs", min_length=1, max_length=200)
+    value: str = Field(min_length=1, max_length=1_000)
+    required_for_all_tables: bool = Field(default=False, alias="requiredForAllTables")
+
+    @field_validator("field_refs")
+    @classmethod
+    def validate_field_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _field_refs(value) or ()
+
+
 class EffectiveSection(ProfileModel):
     code: str = Field(pattern=PROFILE_ID_PATTERN)
     title: str = Field(min_length=1, max_length=300)
@@ -224,6 +275,12 @@ class EffectiveReportingProfile(ProfileModel):
     dimensions: tuple[EffectiveDimension, ...] = Field(default=(), max_length=500)
     metrics: tuple[EffectiveMetric, ...] = Field(default=(), max_length=1_000)
     reconciliations: tuple[EffectiveReconciliation, ...] = Field(default=(), max_length=500)
+    scope_filters: tuple[EffectiveScopeFilter, ...] = Field(
+        default=(), alias="scopeFilters", max_length=100
+    )
+    measure_semantics: tuple[MeasureSemantic, ...] = Field(
+        default=(), alias="measureSemantics", max_length=2_000
+    )
     sections: tuple[EffectiveSection, ...] = Field(min_length=1, max_length=200)
     page_layout: EffectivePageLayout = Field(
         default_factory=EffectivePageLayout, alias="pageLayout"

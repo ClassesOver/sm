@@ -13,6 +13,7 @@ from .models import (
     EffectivePageLayout,
     EffectiveReconciliation,
     EffectiveReportingProfile,
+    EffectiveScopeFilter,
     EffectiveSection,
     ReportingProfileDocument,
     ReportingProfileRegistry,
@@ -116,11 +117,29 @@ def resolve_reporting_profile(
     dimensions = _merge_items(ordered, "dimensions")
     metrics = _merge_items(ordered, "metrics")
     reconciliations = _merge_items(ordered, "reconciliations")
+    scope_filters = _merge_items(ordered, "scope_filters")
+    measure_semantics = _merge_measure_semantics(ordered)
     sections = _merge_items(ordered, "sections")
+    section_order = next(
+        (
+            document.section_order
+            for document in reversed(ordered)
+            if document.section_order is not None
+        ),
+        None,
+    )
+    if section_order is not None:
+        sections_by_code = {item["code"]: item for item in sections}
+        if set(section_order) != set(sections_by_code):
+            raise ValueError("sectionOrder 必须且只能包含全部生效章节 code。")
+        sections = tuple(sections_by_code[code] for code in section_order)
     effective_dimensions = tuple(EffectiveDimension.model_validate(item) for item in dimensions)
     effective_metrics = tuple(EffectiveMetric.model_validate(item) for item in metrics)
     effective_reconciliations = tuple(
         EffectiveReconciliation.model_validate(item) for item in reconciliations
+    )
+    effective_scope_filters = tuple(
+        EffectiveScopeFilter.model_validate(item) for item in scope_filters
     )
     effective_sections = tuple(EffectiveSection.model_validate(item) for item in sections)
     layout: dict[str, Any] = {}
@@ -150,6 +169,12 @@ def resolve_reporting_profile(
         "metrics": [item.model_dump(mode="json", by_alias=True) for item in effective_metrics],
         "reconciliations": [
             item.model_dump(mode="json", by_alias=True) for item in effective_reconciliations
+        ],
+        "scopeFilters": [
+            item.model_dump(mode="json", by_alias=True) for item in effective_scope_filters
+        ],
+        "measureSemantics": [
+            item.model_dump(mode="json", by_alias=True) for item in measure_semantics
         ],
         "sections": [item.model_dump(mode="json", by_alias=True) for item in effective_sections],
         "pageLayout": effective_layout.model_dump(mode="json", by_alias=True),
@@ -226,6 +251,20 @@ def _merge_items(
     return tuple(merged[code] for code in order)
 
 
+def _merge_measure_semantics(
+    documents: list[ReportingProfileDocument],
+) -> tuple[Any, ...]:
+    merged: dict[str, Any] = {}
+    order: list[str] = []
+    for document in documents:
+        for item in document.measure_semantics:
+            field_ref = item.field_ref.lower()
+            if field_ref not in merged:
+                order.append(field_ref)
+            merged[field_ref] = item
+    return tuple(merged[field_ref] for field_ref in order)
+
+
 def _validate_references(
     dimensions: tuple[EffectiveDimension, ...],
     metrics: tuple[EffectiveMetric, ...],
@@ -276,6 +315,8 @@ def _builtin_profile() -> EffectiveReportingProfile:
         "dimensions": [],
         "metrics": [],
         "reconciliations": [],
+        "scopeFilters": [],
+        "measureSemantics": [],
         "sections": [item.model_dump(mode="json", by_alias=True) for item in sections],
         "pageLayout": EffectivePageLayout().model_dump(mode="json", by_alias=True),
     }

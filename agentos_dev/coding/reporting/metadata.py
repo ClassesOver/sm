@@ -170,6 +170,9 @@ def _adapt_model_response(
     revision_payload = {
         "ddl": [item.model_dump(mode="json", by_alias=True) for item in response.ddl],
         "term": [item.model_dump(mode="json", by_alias=True) for item in response.term],
+        "measureSemantics": [
+            item.model_dump(mode="json", by_alias=True) for item in response.measure_semantics
+        ],
     }
     revision = hashlib.sha256(
         json.dumps(
@@ -186,6 +189,7 @@ def _adapt_model_response(
         ddlModels=response.ddl,
         tables=tuple(tables),
         terms=terms,
+        measureSemantics=response.measure_semantics,
     )
 
 

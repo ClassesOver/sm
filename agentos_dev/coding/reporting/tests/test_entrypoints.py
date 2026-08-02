@@ -7,8 +7,9 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from agno.models.message import Message
 from agno.run import RunContext
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, Response
 from fastapi.exceptions import HTTPException
 
 from agentos_dev.coding.reporting import agentos as report_agentos
@@ -30,6 +31,21 @@ def test_report_entrypoints_import_independently():
         if name.endswith(".__main__"):
             continue
         assert importlib.import_module(name) is not None
+
+
+@pytest.mark.anyio
+async def test_report_agentos_dev中间件为匿名run注入固定用户():
+    request = Request({"type": "http"})
+    captured = {}
+
+    async def call_next(current_request):
+        captured["user_id"] = report_agentos.resolve_run_user_id(current_request)
+        return Response(status_code=204)
+
+    response = await report_agentos._reporting_dev_user_middleware(request, call_next)
+
+    assert response.status_code == 204
+    assert captured["user_id"] == "reporting-dev"
 
 
 def test_report_entrypoints_do_not_import_coding_product_entrypoints():
@@ -66,7 +82,6 @@ def test_report_agentos_registers_reporting_agent_and_shared_workflow(monkeypatc
             "AGENT_CODING_ENABLE_THINKING": "true",
             "AGENT_REPORT_CODING_ENABLE_THINKING": "false",
             "AGENT_REPORT_ENABLE_THINKING": "true",
-            "JWT_VERIFICATION_KEY": "test-key",
         },
         load_env_file=False,
     )
@@ -152,8 +167,6 @@ def test_report_agentos_registers_reporting_agent_and_shared_workflow(monkeypatc
     assert report_worker not in captured["agents"]
     assert captured["interfaces"] == [{"agent": reporting_agent}]
     assert worker_kwargs["report_coding_enable_thinking"] is False
-    assert captured["authorization"] is True
-    assert captured["authorization_config"].user_isolation is True
     assert len(controllers) == 1
     included_routes = [
         route
@@ -302,13 +315,6 @@ def test_report_agentos_components为controller按运行创建workflow(monkeypat
     assert controller_instance is not None
 
 
-def test_report_agentos缺少jwt密钥时拒绝启动():
-    settings = AgentSettings.from_environment({}, load_env_file=False)
-
-    with pytest.raises(ValueError, match="JWT_VERIFICATION_KEY"):
-        report_agentos.create_agentos(settings)
-
-
 def test_report_agentos_main_uses_import_string_for_workers_and_reload(monkeypatch):
     settings = AgentSettings.from_environment({}, load_env_file=False)
     captured = {}
@@ -363,7 +369,7 @@ async def test_report_workflow_start只消费服务端绑定envelope():
 
 
 @pytest.mark.anyio
-async def test_report_workflow_start缺少服务端绑定envelope时返回稳定错误():
+async def test_report_workflow_start缺少服务端envelope和用户原文时返回稳定错误():
     toolkit = ReportWorkflowToolkit(object())
 
     with pytest.raises(ReportingError) as captured:
@@ -372,7 +378,7 @@ async def test_report_workflow_start缺少服务端绑定envelope时返回稳定
         )
 
     assert captured.value.code == "report_request_invalid"
-    assert captured.value.message == "当前消息缺少报表 Envelope。"
+    assert captured.value.message == "当前消息缺少自然语言报表需求。"
 
 
 def test_report_workflow_review由用户输入而非模型决定():
@@ -393,6 +399,17 @@ def test_report_workflow_review由用户输入而非模型决定():
     assert fields["action"].value is None
     assert fields["feedback"].value == ""
     assert fields["agent_id"].value == ""
+
+
+def test_report_workflow普通审核使用原生确认():
+    toolkit = ReportWorkflowToolkit(cast(ReportWorkflowController, object()))
+    approve = toolkit.async_functions["report_workflow_approve"]
+    reject = toolkit.async_functions["report_workflow_reject"]
+
+    assert approve.requires_confirmation is True
+    assert approve.requires_user_input is not True
+    assert reject.requires_confirmation is False
+    assert reject.requires_user_input is not True
 
 
 @pytest.mark.anyio
@@ -418,7 +435,11 @@ async def test_report_workflow_review把结构化决策交给controller():
 
     toolkit = ReportWorkflowToolkit(cast(ReportWorkflowController, FakeController()))
     entrypoint = toolkit.async_functions["report_workflow_review"].entrypoint
+    approve_entrypoint = toolkit.async_functions["report_workflow_approve"].entrypoint
+    reject_entrypoint = toolkit.async_functions["report_workflow_reject"].entrypoint
     assert entrypoint is not None
+    assert approve_entrypoint is not None
+    assert reject_entrypoint is not None
     run_context = RunContext(run_id="run-review", session_id="thread", user_id="user")
 
     assert await entrypoint(action="approve", run_context=run_context) == {"status": "paused"}
@@ -429,11 +450,17 @@ async def test_report_workflow_review把结构化决策交给controller():
         "status": "paused"
     }
     assert await entrypoint(action="cancel", run_context=run_context) == {"status": "cancelled"}
+    assert await approve_entrypoint(run_context=run_context) == {"status": "paused"}
+    assert await reject_entrypoint(feedback="补充预算偏差归因", run_context=run_context) == {
+        "status": "paused"
+    }
     assert calls == [
         ("approve", None, run_context),
         ("reject", "补充异常归因", run_context),
         ("select_agent", "finance", run_context),
         ("cancel", None, run_context),
+        ("approve", None, run_context),
+        ("reject", "补充预算偏差归因", run_context),
     ]
 
 
@@ -451,7 +478,9 @@ async def test_report_workflow自然语言原样交给workflow首步():
     goal = "出一份瑞金医院2025年整体运营分析报告，涵盖收入，预算，成本，工作量的分析"
     run_context = RunContext(run_id="run-text", session_id="thread-text", session_state={})
 
-    result = await toolkit.report_workflow_start_from_prompt(prompt=goal, run_context=run_context)
+    run_context.messages = [Message(role="user", content=goal)]
+
+    result = await toolkit.report_workflow_start(run_context=run_context)
 
     assert result == {"status": "paused"}
     assert captured["envelope"].model_dump(mode="json", by_alias=True, exclude_none=True) == {

@@ -215,9 +215,52 @@ class MetadataTerm(StrictModel):
     value: str = Field(default="", max_length=4_000)
 
 
+class MeasureSemantic(StrictModel):
+    field_ref: str = Field(alias="fieldRef", pattern=FIELD_REF_PATTERN)
+    aggregation: Literal["sum", "average", "min", "max", "count", "count_distinct"]
+    additive_across: tuple[str, ...] = Field(default=(), alias="additiveAcross", max_length=100)
+    exclusive_scope: dict[str, str] = Field(
+        default_factory=dict, alias="exclusiveScope", max_length=100
+    )
+    reconcile_with: str | None = Field(
+        default=None, alias="reconcileWith", pattern=FIELD_REF_PATTERN
+    )
+    tolerance: float | None = Field(default=None, ge=0)
+
+    @field_validator("additive_across")
+    @classmethod
+    def validate_additive_across(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(item.strip().lower() for item in value)
+        if len(normalized) != len(set(normalized)) or any(
+            not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", item) for item in normalized
+        ):
+            raise ValueError("additiveAcross 包含重复或无效字段")
+        return normalized
+
+    @field_validator("exclusive_scope")
+    @classmethod
+    def validate_exclusive_scope(cls, value: dict[str, str]) -> dict[str, str]:
+        normalized = {key.strip().lower(): item.strip() for key, item in value.items()}
+        if len(normalized) != len(value) or any(
+            not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", key) or not item
+            for key, item in normalized.items()
+        ):
+            raise ValueError("exclusiveScope 包含无效字段或空值")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_reconciliation(self) -> MeasureSemantic:
+        if (self.reconcile_with is None) != (self.tolerance is None):
+            raise ValueError("reconcileWith 与 tolerance 必须同时提供")
+        return self
+
+
 class MetadataModelResponse(StrictModel):
     ddl: tuple[RawDdlModel, ...] = Field(min_length=1, max_length=200)
     term: tuple[MetadataTerm, ...] = Field(default=(), max_length=1_000)
+    measure_semantics: tuple[MeasureSemantic, ...] = Field(
+        default=(), alias="measureSemantics", max_length=2_000
+    )
 
 
 class SourceRef(StrictModel):
@@ -263,6 +306,9 @@ class ModelTermsResponse(StrictModel):
     ddl_models: tuple[RawDdlModel, ...] = Field(alias="ddlModels", min_length=1, max_length=200)
     tables: tuple[ModelTable, ...] = Field(min_length=1, max_length=200)
     terms: tuple[ModelTerm, ...] = Field(default=(), max_length=1_000)
+    measure_semantics: tuple[MeasureSemantic, ...] = Field(
+        default=(), alias="measureSemantics", max_length=2_000
+    )
 
     @model_validator(mode="after")
     def validate_schema_hash(self) -> ModelTermsResponse:
@@ -286,6 +332,7 @@ class ModelTermsResponse(StrictModel):
             for field_ref in term.field_refs
         ):
             raise ValueError("terms 包含重复 code 或未知 fieldRef")
+        _validate_measure_semantics(self.measure_semantics, self.tables)
         return self
 
 
@@ -296,6 +343,42 @@ class SourceSchemaSnapshot(StrictModel):
     ddl_models: tuple[RawDdlModel, ...] = Field(default=(), alias="ddlModels", max_length=200)
     tables: tuple[ModelTable, ...]
     terms: tuple[ModelTerm, ...] = Field(default=(), max_length=1_000)
+    measure_semantics: tuple[MeasureSemantic, ...] = Field(
+        default=(), alias="measureSemantics", max_length=2_000
+    )
+
+    @model_validator(mode="after")
+    def validate_measure_semantics(self) -> SourceSchemaSnapshot:
+        _validate_measure_semantics(self.measure_semantics, self.tables)
+        return self
+
+
+def _validate_measure_semantics(
+    semantics: tuple[MeasureSemantic, ...], tables: tuple[ModelTable, ...]
+) -> None:
+    available = {
+        f"{table.source_id}.{table.database}.{table.name}.{column.name}".lower()
+        for table in tables
+        for column in table.columns
+    }
+    semantic_refs = [item.field_ref.lower() for item in semantics]
+    if len(semantic_refs) != len(set(semantic_refs)) or any(
+        field_ref not in available for field_ref in semantic_refs
+    ):
+        raise ValueError("measureSemantics 包含重复或未知 fieldRef")
+    table_columns = {
+        f"{table.source_id}.{table.database}.{table.name}".lower(): {
+            column.name.lower() for column in table.columns
+        }
+        for table in tables
+    }
+    for item in semantics:
+        table_ref = item.field_ref.rsplit(".", 1)[0].lower()
+        columns = table_columns.get(table_ref, set())
+        if set(item.additive_across) - columns or set(item.exclusive_scope) - columns:
+            raise ValueError("measureSemantics 引用了指标表之外的维度字段")
+        if item.reconcile_with and item.reconcile_with.lower() not in available:
+            raise ValueError("measureSemantics.reconcileWith 引用了未知 fieldRef")
 
 
 def schema_hash(tables: tuple[ModelTable, ...] | list[ModelTable]) -> str:

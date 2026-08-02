@@ -1,0 +1,30 @@
+{
+  "version": "1",
+  "profileId": "monthly-operation",
+  "revision": "1",
+  "extends": ["ruijin"],
+  "sections": [
+    {"code": "trend_analysis", "title": "趋势与变化", "required": true},
+    {"code": "structure_analysis", "title": "结构与维度分析", "required": true},
+    {"code": "contribution_analysis", "title": "增长贡献与拖累", "required": true},
+    {"code": "anomaly_analysis", "title": "异常与重点专题", "required": true}
+  ],
+  "sectionOrder": [
+    "executive_summary",
+    "scope_and_methodology",
+    "income_and_budget",
+    "cost_and_expenditure",
+    "project_budget",
+    "service_workload",
+    "trend_analysis",
+    "structure_analysis",
+    "contribution_analysis",
+    "anomaly_analysis",
+    "key_findings",
+    "limitations",
+    "recommendations"
+  ],
+  "pageLayout": {
+    "footerLeft": "月度经营分析"
+  }
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -31,10 +32,79 @@ DEFAULT_PAGE_LAYOUT = {
 }
 PAGE_LAYOUT_FIELDS = frozenset(DEFAULT_PAGE_LAYOUT)
 PAGE_LAYOUT_PLACEHOLDERS = frozenset({"title", "page", "pages"})
+_CITATION_MARKER = re.compile(r"\[\[citation:([^\]\r\n]+)\]\]")
+_SECTION_MARKER = re.compile(r"\[\[section:([^\]\r\n]+)\]\]")
 
 
 class ReportFailure(ValueError):
     pass
+
+
+def _pdf_markdown(
+    markdown: str,
+    presentations: Any,
+) -> tuple[str, list[dict[str, Any]]]:
+    marker_ids = tuple(dict.fromkeys(_CITATION_MARKER.findall(markdown)))
+    if not marker_ids:
+        return _SECTION_MARKER.sub("", markdown), []
+    if not isinstance(presentations, list) or len(presentations) != len(marker_ids):
+        raise ReportFailure("PDF 缺少服务端实际引用展示信息")
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(presentations, start=1):
+        if not isinstance(item, dict) or set(item) != {
+            "citationId",
+            "label",
+            "coverageItems",
+        }:
+            raise ReportFailure("PDF 实际引用展示信息无效")
+        citation_id = item.get("citationId")
+        label = item.get("label")
+        coverage_items = item.get("coverageItems")
+        if (
+            not isinstance(citation_id, str)
+            or not citation_id
+            or not isinstance(label, str)
+            or not 1 <= len(label) <= 200
+            or not isinstance(coverage_items, list)
+            or len(coverage_items) > 100
+        ):
+            raise ReportFailure("PDF 实际引用展示信息与 Markdown 顺序不一致")
+        normalized_coverage: list[dict[str, Any]] = []
+        for coverage_index, coverage in enumerate(coverage_items, start=1):
+            if not isinstance(coverage, dict) or set(coverage) != {"label", "periods"}:
+                raise ReportFailure("PDF 实际引用数据覆盖信息无效")
+            coverage_label = coverage.get("label")
+            periods = coverage.get("periods")
+            if (
+                not isinstance(coverage_label, str)
+                or not 1 <= len(coverage_label) <= 200
+                or not isinstance(periods, list)
+                or len(periods) > 1200
+                or any(not isinstance(period, str) or len(period) > 32 for period in periods)
+            ):
+                raise ReportFailure("PDF 实际引用数据覆盖信息无效")
+            normalized_coverage.append(
+                {
+                    "label": coverage_label or f"来源项 {coverage_index}",
+                    "periods": periods,
+                }
+            )
+        normalized.append(
+            {
+                "citationId": citation_id,
+                "alias": f"[引用 {index:03d}]",
+                "label": label,
+                "coverageItems": normalized_coverage,
+            }
+        )
+    presentation_ids = [item["citationId"] for item in normalized]
+    if len(presentation_ids) != len(set(presentation_ids)) or set(presentation_ids) != set(
+        marker_ids
+    ):
+        raise ReportFailure("PDF 实际引用展示信息与 Markdown 引用不一致")
+    # Citation 绑定仍由服务端校验并写入渲染回执，但 PDF 展示层不泄露机器 marker、
+    # 可读别名或来源附录；权威 Markdown 保持原样，供产物协议和血缘验收使用。
+    return _SECTION_MARKER.sub("", _CITATION_MARKER.sub("", markdown)), normalized
 
 
 def _relative_path(value: str, suffix: str | None = None) -> PurePosixPath:
@@ -321,8 +391,11 @@ class ReportRuntime:
             except UnicodeDecodeError as error:
                 raise ReportFailure("Markdown 文件必须使用 UTF-8 编码") from error
 
+            pdf_markdown, citation_presentations = _pdf_markdown(
+                markdown, state.get("_citationPresentations")
+            )
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
-            tokens = parser.parse(markdown)
+            tokens = parser.parse(pdf_markdown)
             layout = _page_layout(page_layout)
             title = _markdown_title(tokens)
             allowed_images = self._images(source, tokens)
@@ -368,6 +441,8 @@ class ReportRuntime:
                 "th,td{border:0.6pt solid #d0d5dd;padding:5px 7px;text-align:left}"
                 "th{background:#eef4ff;color:#194185}tbody tr:nth-child(even){background:#f9fafb}"
                 "img{display:block;max-width:100%;height:auto;margin:12px auto;break-inside:avoid}"
+                "p:has(>img){break-after:avoid;margin-bottom:1mm}"
+                "p:has(>img)+p{break-before:avoid;margin-top:0;text-align:center;color:#475467}"
                 "pre,code{white-space:pre-wrap;overflow-wrap:anywhere}"
                 "blockquote{border-left:3px solid #84adff;background:#f5f8ff;margin-left:0;"
                 "padding:3mm 4mm;color:#344054}"
@@ -406,6 +481,8 @@ class ReportRuntime:
                 "imageCount": len(allowed_images),
                 "pageLayout": layout,
                 "reportTitle": title,
+                "citationPresentations": citation_presentations,
+                "citationAppendixPresent": False,
             }
             result = {
                 "status": "rendered",
@@ -599,15 +676,28 @@ class ReportRuntime:
             value = item.get("citationId") if isinstance(item, dict) else None
             if isinstance(value, str):
                 citation_ids.append(value)
-        if len(citation_ids) != len(citations) or any(
-            f"[[citation:{item}]]" not in extracted_text for item in citation_ids
+        presentations = render.get("citationPresentations")
+        if (
+            len(citation_ids) != len(citations)
+            or not isinstance(presentations, list)
+            or len(presentations) != len(citation_ids)
+            or any(
+                not isinstance(item, dict)
+                or item.get("citationId") != citation_id
+                or item.get("alias") != f"[引用 {index:03d}]"
+                or not isinstance(item.get("label"), str)
+                for index, (citation_id, item) in enumerate(
+                    zip(citation_ids, presentations, strict=True), start=1
+                )
+            )
+            or any(item["alias"] in extracted_text for item in presentations)
+            or "实际引用附录" in extracted_text
+            or "[[citation:" in extracted_text
         ):
-            raise ReportFailure("PDF 缺少数据引用标识")
+            raise ReportFailure("PDF 不应显示引用标识或实际引用附录")
         section_ids = [item for item in sections if isinstance(item, str)]
-        if len(section_ids) != len(sections) or any(
-            f"[[section:{item}]]" not in extracted_text for item in section_ids
-        ):
-            raise ReportFailure("PDF 缺少关键章节标识")
+        if len(section_ids) != len(sections) or "[[section:" in extracted_text:
+            raise ReportFailure("PDF 不应显示关键章节标识")
         return chart_ids, citation_ids, section_ids
 
     @staticmethod

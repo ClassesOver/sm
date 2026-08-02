@@ -155,6 +155,36 @@ def _workflow_input() -> dict[str, str]:
     return {"version": "1", "prompt": "分析 2025 年经营情况"}
 
 
+def test_controller指标语义审核仅暴露待确认决策():
+    decisions = [
+        {
+            "fieldRef": "operations.reporting.income.amount",
+            "classification": "measure",
+            "reason": "金额字段表示收入发生额。",
+            "measureSemantic": {
+                "fieldRef": "operations.reporting.income.amount",
+                "aggregation": "sum",
+            },
+        }
+    ]
+    requirement = SimpleNamespace(
+        step_name="生成指标语义候选",
+        is_resolved=False,
+        step_output=SimpleNamespace(content={"decisions": decisions, "internalState": "不得暴露"}),
+        output_review_message="请审核指标语义。",
+    )
+    output = SimpleNamespace(
+        active_step_requirements=[requirement], step_requirements=[requirement]
+    )
+
+    review = ReportWorkflowController(lambda: _PublicationWorkflow())._review(output)
+
+    assert review.stage == "semantic"
+    assert review.title == "审核指标语义"
+    assert review.message == "请审核指标语义。"
+    assert review.preview == {"decisions": decisions}
+
+
 def _context(
     *,
     run_id: str = "external-run-1",
@@ -250,6 +280,21 @@ async def test_hitl跨agent回合沿用已持久化workflow作用域():
     result = await controller.approve(_context(run_id="next-agent-run", dependencies=False))
 
     assert result["status"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_start跨agent回合返回已暂停workflow而不重复启动():
+    workflow = _PublicationWorkflow()
+    controller = ReportWorkflowController(lambda: workflow)
+
+    result = await controller.start(
+        _workflow_input(),
+        _context(run_id="next-agent-run", dependencies=False),
+    )
+
+    assert result["status"] == "paused"
+    assert result["review"]["stage"] == "publication"
+    assert result["review"]["preview"]["revision"] == 1
 
 
 @pytest.mark.anyio

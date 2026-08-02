@@ -5,9 +5,7 @@ from typing import Any
 from agno.db.base import BaseDb
 from agno.workflow import HumanReview, OnError, OnReject
 from agno.workflow.step import Step
-from agno.workflow.types import StepOutput
 from agno.workflow.workflow import Workflow
-from pydantic import BaseModel
 
 from .contract import ReportingWorkflowInput
 
@@ -21,6 +19,8 @@ def create_reporting_workflow(
     confirm_source: StepExecutor,
     plan_data_scope: StepExecutor,
     profile_source: StepExecutor,
+    propose_measure_semantics: StepExecutor,
+    commit_measure_semantics: StepExecutor,
     resolve_capabilities: StepExecutor,
     reconcile_sources: StepExecutor,
     generate_outline: StepExecutor,
@@ -45,25 +45,13 @@ def create_reporting_workflow(
                 step_id="normalize-report-request",
                 name="规范化报表请求",
                 executor=normalize_report_request,
-                human_review=HumanReview(
-                    requires_output_review=_requires_request_clarification,
-                    output_review_message="请补充报表分析期间。",
-                    on_reject=OnReject.retry,
-                    on_error=OnError.fail,
-                    max_retries=5,
-                ),
+                on_error=OnError.fail,
             ),
             Step(
                 step_id="confirm-source",
                 name="解析数据来源与 Schema",
                 executor=confirm_source,
-                human_review=HumanReview(
-                    requires_output_review=_requires_source_review,
-                    output_review_message="请选择报表 Agent。",
-                    on_reject=OnReject.retry,
-                    on_error=OnError.fail,
-                    max_retries=5,
-                ),
+                on_error=OnError.fail,
             ),
             Step(
                 step_id="plan-data-scope",
@@ -76,6 +64,21 @@ def create_reporting_workflow(
                 step_id="profile-source",
                 name="受限数据画像",
                 executor=profile_source,
+                on_error=OnError.fail,
+            ),
+            # 指标语义候选与正式提交必须拆成两个 Workflow Step。前一步只允许模型生成
+            # 候选且不能修改 session_state；后一步由确定性服务端代码重新校验候选并写入
+            # 结构快照，模型不能通过直接改 Workflow state 绕过服务端口径约束。
+            Step(
+                step_id="propose-measure-semantics",
+                name="生成指标语义候选",
+                executor=propose_measure_semantics,
+                on_error=OnError.fail,
+            ),
+            Step(
+                step_id="commit-measure-semantics",
+                name="提交已确认指标语义",
+                executor=commit_measure_semantics,
                 on_error=OnError.fail,
             ),
             Step(
@@ -114,13 +117,7 @@ def create_reporting_workflow(
                 name="生成并审核取数方案",
                 executor=generate_query_candidates,
                 max_retries=0,
-                human_review=HumanReview(
-                    requires_output_review=_requires_query_review,
-                    output_review_message="审核完整规范化 SQL 和哈希。",
-                    on_reject=OnReject.retry,
-                    on_error=OnError.fail,
-                    max_retries=5,
-                ),
+                on_error=OnError.fail,
             ),
             Step(
                 step_id="materialize-datasets",
@@ -146,13 +143,7 @@ def create_reporting_workflow(
                 step_id="publish-report",
                 name="发布审核",
                 executor=publish_report,
-                human_review=HumanReview(
-                    requires_output_review=True,
-                    output_review_message="审核最终报告产物，批准后正式发布。",
-                    on_reject=OnReject.retry,
-                    on_error=OnError.fail,
-                    max_retries=5,
-                ),
+                on_error=OnError.fail,
             ),
             Step(
                 step_id="finalize-publication",
@@ -164,26 +155,3 @@ def create_reporting_workflow(
         telemetry=False,
     )
     return workflow
-
-
-def _requires_query_review(output: StepOutput) -> bool:
-    content = output.content
-    if isinstance(content, BaseModel):
-        content = content.model_dump(mode="json", by_alias=True)
-    queries = content.get("queries") if isinstance(content, dict) else None
-    return isinstance(queries, list) and bool(queries)
-
-
-def _requires_source_review(output: StepOutput) -> bool:
-    content = output.content
-    if isinstance(content, BaseModel):
-        content = content.model_dump(mode="json", by_alias=True)
-    agents = content.get("agents") if isinstance(content, dict) else None
-    return isinstance(agents, list) and len(agents) > 1
-
-
-def _requires_request_clarification(output: StepOutput) -> bool:
-    content = output.content
-    if isinstance(content, BaseModel):
-        content = content.model_dump(mode="json", by_alias=True)
-    return isinstance(content, dict) and bool(content.get("clarificationQuestion"))

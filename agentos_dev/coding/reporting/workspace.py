@@ -365,6 +365,31 @@ class WorkspaceReportToolkit(Toolkit):
         job["_pageLayout"] = dict(page_layout)
         self._store_job(job, run_context)
 
+    async def bind_citation_presentations(
+        self,
+        job_id: str,
+        presentations: list[dict[str, Any]],
+        run_context: RunContext | None = None,
+    ) -> None:
+        """由 Workflow 绑定 PDF 可读引用；该内部方法不注册为 Agent 工具。"""
+        if not isinstance(presentations, list) or not presentations:
+            raise WorkspaceError("PDF 实际引用展示信息无效。")
+        encoded = json.dumps(
+            presentations,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        if len(encoded) > MAX_REPORT_JOB_STATE_BYTES // 2:
+            raise WorkspaceError("PDF 实际引用展示信息超过状态边界。")
+        job = self._load_job(job_id, run_context)
+        existing = job.get("_citationPresentations")
+        if existing is not None and existing != presentations:
+            raise WorkspaceError("PDF 实际引用展示信息已经绑定且内容不同。")
+        job["_citationPresentations"] = copy.deepcopy(presentations)
+        self._store_job(job, run_context)
+
     async def report_render_markdown(
         self,
         job_id: str,

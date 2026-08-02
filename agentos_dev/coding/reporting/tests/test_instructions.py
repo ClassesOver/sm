@@ -1,12 +1,9 @@
-import json
 from types import SimpleNamespace
 
 from agno.run import RunContext
 
-from agentos_dev.coding.reporting.artifacts_v1 import REQUIRED_REPORT_SECTIONS
 from agentos_dev.coding.reporting.instructions import (
     REPORT_AGENT_INSTRUCTIONS,
-    REPORT_ARTIFACT_MANIFEST_SCHEMA,
     build_report_agent_instructions,
 )
 from agentos_dev.instructions import (
@@ -49,18 +46,14 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "大型 CSV" in instructions
     assert "不得用 read_file 分段抽样" in instructions
     assert "少量阶段" in instructions
-    assert "只调用一次服务端最终 verify" in instructions
-    assert "manifest 声明的全部图表实际路径" in instructions
-    assert "validator_id=report-artifact:manifest" in instructions
-    assert "ReportArtifactManifest JSON Schema（与运行时验收同源）" in instructions
-    assert REPORT_ARTIFACT_MANIFEST_SCHEMA in instructions
-    sections_schema = json.loads(REPORT_ARTIFACT_MANIFEST_SCHEMA)["properties"]["sections"]
-    assert sections_schema["items"] == {"type": "string"}
-    assert {
-        constraint["contains"]["const"] for constraint in sections_schema["allOf"]
-    } == REQUIRED_REPORT_SECTIONS
-    assert '"additionalProperties":false' in instructions
+    assert "只调用零参数 verify_report_draft" in instructions
+    assert "最多再调用一次 verify_report_draft" in instructions
+    assert "服务端自动完成计划" in instructions
+    assert "warning 不得触发 repair" in instructions
+    assert "确定性调用 finish_task" in instructions
+    assert "finish_task 的 summary 和 artifact_paths 必须使用" in instructions
     assert "observedDataFacts" in instructions
+    assert "不得使用“大概率”" in instructions
     assert "事实来源" in instructions
     assert "analysisPlan.description" in instructions
     assert "不是数据事实来源" in instructions
@@ -69,18 +62,25 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "/home/daytona/workspace" in instructions
     assert "不得再拼接工作区根相对路径" in instructions
     assert "Noto Sans CJK SC" in instructions
-    assert "才创建一次 ReportArtifactManifest" in instructions
-    assert "不得重写、覆盖或重复计算相同哈希" in instructions
+    assert "任何缺失、混合覆盖或未完整覆盖的观测" in instructions
+    assert "不得添加拟合线、平滑曲线、趋势外推或插补点" in instructions
+    assert "优先拆成共享横轴的小多图" in instructions
+    assert "按数据角色建立一致配色" in instructions
+    assert "坐标轴端部预留空间" in instructions
+    assert "不得逐字重复" in instructions
+    assert "避免章节标题、图表题注或单个列表项孤立在页尾" in instructions
+    assert "ReportArtifactManifest 由服务端" in instructions
+    assert "禁止创建、覆盖或修改 manifest" in instructions
     assert "2 到 10 个" in instructions
-    assert "一次 apply_patch" in instructions
-    assert "不得重新读取完整 Markdown 或 manifest" in instructions
+    assert "只调用一次 render_report_draft" in instructions
+    assert "调用一次 repair_report_draft" in instructions
+    assert "不得重新读取完整 Markdown" in instructions
     assert "从工作区根目录执行" in instructions
-    assert "6000 个 UTF-8 字节" in instructions
-    assert "优先保证全部章节完整" in instructions
-    assert "citationId 和 section 标记" in instructions
-    assert "schema 之外的字段" in instructions
-    assert "只提交实际存在的交付路径" in instructions
-    assert "datasetSnapshotHash" in instructions
+    assert "篇幅是发布质量建议" in instructions
+    assert "优先保证全部章节" in instructions
+    assert "服务端负责归档图表并生成章节/citation marker" in instructions
+    assert "只提交 Markdown" in instructions
+    assert "不得提交 manifest" in instructions
     assert "成功验证 execution_id" not in instructions
     assert not any(rule in resolved for rule in PURE_CODING_PARALLEL_READ_INSTRUCTIONS)
 
@@ -108,21 +108,14 @@ def test_报表用户可见内容使用中文且机器标记保持稳定():
     assert "图表标题、坐标轴、图例、表头" in instructions
     assert "不得用英文机器 ID 代替中文标题" in instructions
     assert "只展示中文业务名称" in instructions
-    assert "charts 清单必须与 Markdown 实际引用的图片路径完全一致" in instructions
-    assert "不得声明未展示的图表" in instructions
-    assert "effectiveProfile.sections" in instructions
-    assert "[[section:{section.code}]]" in instructions
-    assert "## {section.title}" in instructions
-    assert "title 是必选章节展示的唯一事实来源" in instructions
-    assert "按 outline.sections 的顺序生成章节" in instructions
-    assert "## 扩展章节标题" in instructions
-    assert "扩展章节不得删除、改名、替代或打乱必选章节" in instructions
-    assert "不得加入 manifest 的 sections" in instructions
-    assert "manifest 的 sections 仍只按 effectiveProfile.sections 保存 section.code" in instructions
-    assert "[[citation:income_detail_1]]" in instructions
+    assert "服务端据此归档实际引用图表并生成不可修改的路径和血缘绑定" in instructions
+    assert "draftSections[].title" in instructions
+    assert "sectionCode 必须逐项复制" in instructions
+    assert "必选章节和扩展章节的中文标题均由服务端" in instructions
+    assert "正文 text 不得包含" in instructions
     assert "禁止直接执行 validator 脚本" in instructions
     assert "只处理 failedRequirements" in instructions
-    assert "重新计算 Markdown 的 size 和 SHA-256" in instructions
-    assert "visibleMachineTerms" in instructions
-    assert "missingMarkdownChartPaths" in instructions
+    assert "真实 Markdown SHA-256" in instructions
+    assert "requiredIssueIds" in instructions
+    assert "不得附加其他修改" in instructions
     assert "最多再调用一次 verify" in instructions

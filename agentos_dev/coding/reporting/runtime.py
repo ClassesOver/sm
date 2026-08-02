@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from copy import copy
 from datetime import date
 from difflib import SequenceMatcher
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 import anyio
@@ -22,6 +23,7 @@ from pydantic import (
     Field,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from ...task_execution import TaskScope, TaskState
@@ -35,10 +37,14 @@ from .artifacts_v1 import (
     ArtifactFile,
     PdfArtifactManifest,
     ReportArtifactManifest,
+    authoritative_citations,
+    build_authoritative_manifest,
     dataset_snapshot_hash,
     validate_rendered_artifacts,
 )
 from .contract import (
+    FIELD_REF_PATTERN,
+    MeasureSemantic,
     ModelColumn,
     ModelTable,
     ModelTermsResponse,
@@ -70,6 +76,7 @@ from .profile import (
     ReconciliationShape,
     ReportingProfileRegistry,
     build_outline_shape_view,
+    parse_field_ref,
     resolve_reporting_profile,
 )
 from .profile import (
@@ -307,6 +314,116 @@ def _coding_observed_data_facts(
     return facts
 
 
+def _human_label(value: str | None, fallback: str) -> str:
+    normalized = " ".join(str(value or "").split())
+    if normalized and re.search(r"[\u4e00-\u9fff]", normalized):
+        return normalized[:120]
+    return fallback
+
+
+def _citation_presentations(
+    *,
+    lineage: tuple[DatasetLineage, ...],
+    requirements: tuple[QueryRequirement, ...],
+    analyses: tuple[AnalysisItem, ...],
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    observed_facts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    requirements_by_id = {item.requirement_id: item for item in requirements}
+    table_descriptions: dict[tuple[str, str], str] = {}
+    for snapshot in snapshots:
+        for table in snapshot.tables:
+            qualified = f"{table.database}.{table.name}".lower()
+            label = _human_label(table.description, "")
+            if label:
+                table_descriptions[(table.source_id, qualified)] = label
+                table_descriptions[(table.source_id, table.name.lower())] = label
+    presentations: list[dict[str, Any]] = []
+    for index, citation in enumerate(authoritative_citations(lineage), start=1):
+        requirement = requirements_by_id.get(citation.requirement_id)
+        metadata_labels = []
+        if requirement is not None:
+            metadata_labels = [
+                table_descriptions.get((requirement.source_id, table.table.lower()), "")
+                for table in requirement.tables
+            ]
+            metadata_labels = list(dict.fromkeys(item for item in metadata_labels if item))
+        analysis_label = next(
+            (
+                analysis.description
+                for analysis in analyses
+                if citation.requirement_id in analysis.requirement_ids
+            ),
+            None,
+        )
+        label = _human_label(
+            "、".join(metadata_labels) if metadata_labels else analysis_label,
+            f"第 {index} 项已审核业务数据",
+        )
+        coverage_items: list[dict[str, Any]] = []
+        bound_facts = [
+            fact
+            for fact in observed_facts
+            if fact.get("datasetId") == citation.dataset_id
+            and fact.get("requirementId") == citation.requirement_id
+        ]
+        for coverage_index, fact in enumerate(bound_facts, start=1):
+            table_name = str(fact.get("table") or "").lower()
+            source_id = str(fact.get("sourceId") or "")
+            coverage_label = _human_label(
+                table_descriptions.get((source_id, table_name)),
+                f"来源项 {coverage_index}",
+            )
+            coverage = {
+                str(period) for period in fact.get("periodCoverage", []) if isinstance(period, str)
+            }
+            missing = {
+                str(period) for period in fact.get("missingPeriods", []) if isinstance(period, str)
+            }
+            coverage_items.append({"label": coverage_label, "periods": sorted(coverage - missing)})
+        presentations.append(
+            {
+                "citationId": citation.citation_id,
+                "label": label,
+                "coverageItems": coverage_items,
+            }
+        )
+    return presentations
+
+
+def _visualization_briefs(
+    analyses: tuple[AnalysisItem, ...],
+    requirements: tuple[QueryRequirement, ...],
+) -> list[dict[str, str]]:
+    requirements_by_id = {item.requirement_id: item for item in requirements}
+    briefs: list[dict[str, str]] = []
+    for analysis in analyses:
+        bound = [
+            requirements_by_id[requirement_id]
+            for requirement_id in analysis.requirement_ids
+            if requirement_id in requirements_by_id
+        ]
+        description = analysis.description
+        if "预算" in description and any(
+            marker in description for marker in ("实际", "执行", "差异", "目标")
+        ):
+            chart_type = "预算执行率或差异对比图"
+        elif any(marker in description for marker in ("排名", "院区", "科室", "贡献")):
+            chart_type = "排序横向条形图"
+        elif any(item.dimension_columns for item in bound):
+            chart_type = "趋势图或分类结构图"
+        else:
+            chart_type = "趋势图"
+        briefs.append(
+            {
+                "analysisCode": analysis.code,
+                "recommendedType": chart_type,
+                "businessQuestion": description[:200],
+            }
+        )
+    return briefs
+
+
 def _observed_data_fact_cards(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for fact in facts:
@@ -355,15 +472,21 @@ def _accepted_artifacts_match_manifest(
     manifest_path: str,
     accepted_artifacts: list[dict[str, Any]],
 ) -> bool:
-    accepted = {
-        item.get("path"): item
+    accepted: dict[str, dict[str, Any]] = {
+        path: item
         for item in accepted_artifacts
-        if isinstance(item, dict) and isinstance(item.get("path"), str)
+        if isinstance(item, dict) and isinstance(path := item.get("path"), str)
     }
     if len(accepted) != len(accepted_artifacts):
         return False
     declared = [manifest.markdown, *manifest.charts]
-    if set(accepted) != {manifest_path, *(item.path for item in declared)}:
+    declared_paths = {item.path for item in declared}
+    extra_paths = set(accepted) - declared_paths
+    if manifest_path in accepted or any(
+        PurePosixPath(path).suffix.lower() not in {".png", ".jpg", ".jpeg"} for path in extra_paths
+    ):
+        return False
+    if not declared_paths.issubset(accepted):
         return False
     return all(
         accepted[item.path].get("size") == item.size
@@ -523,6 +646,49 @@ class PlanningSchemaTable(TableReference):
 
 class PlanningSchema(_StrictModel):
     tables: tuple[PlanningSchemaTable, ...] = Field(min_length=1, max_length=200)
+    measure_semantics: tuple[MeasureSemantic, ...] = Field(
+        default=(), alias="measureSemantics", max_length=2_000
+    )
+
+
+class MeasureSemanticDecision(_StrictModel):
+    field_ref: str = Field(alias="fieldRef", pattern=FIELD_REF_PATTERN)
+    classification: Literal["measure", "dimension"]
+    reason: str = Field(min_length=1, max_length=1_000)
+    measure_semantic: MeasureSemantic | None = Field(default=None, alias="measureSemantic")
+
+    @field_validator("field_ref")
+    @classmethod
+    def normalize_field_ref(cls, value: str) -> str:
+        return value.lower()
+
+    @model_validator(mode="after")
+    def validate_classification(self) -> MeasureSemanticDecision:
+        # 决策对象同时保留字段分类和可审阅理由，但只有 measure 可以携带
+        # MeasureSemantic。这个互斥约束防止模型把同一字段一边声明为维度，
+        # 一边又偷偷提供聚合规则，导致审核界面与最终提交内容不一致。
+        if self.classification == "measure":
+            if self.measure_semantic is None:
+                raise ValueError("measure 分类必须提供 measureSemantic")
+            if self.measure_semantic.field_ref.lower() != self.field_ref:
+                raise ValueError("measureSemantic.fieldRef 必须与决策字段一致")
+        elif self.measure_semantic is not None:
+            raise ValueError("dimension 分类不得提供 measureSemantic")
+        return self
+
+
+class MeasureSemanticProposal(_StrictModel):
+    decisions: tuple[MeasureSemanticDecision, ...] = Field(default=(), max_length=2_000)
+
+    @field_validator("decisions")
+    @classmethod
+    def validate_decisions(
+        cls, value: tuple[MeasureSemanticDecision, ...]
+    ) -> tuple[MeasureSemanticDecision, ...]:
+        field_refs = [item.field_ref for item in value]
+        if len(field_refs) != len(set(field_refs)):
+            raise ValueError("指标语义候选不能重复分类同一字段")
+        return value
 
 
 class AnalysisItem(_StrictModel):
@@ -635,6 +801,29 @@ class ReportWorkflowRuntime:
                 "不得虚构表、字段或业务含义",
             ),
         )
+        self._measure_semantic_agent = self._planning_agent(
+            planner,
+            "report-measure-semantic-proposer",
+            MeasureSemanticProposal,
+            enable_thinking=planner_enable_thinking,
+            stage_instructions=(
+                "这是待用户审核的候选，不是已确认业务事实；只依据输入 Schema、术语和受限数据画像分类",
+                "candidateFieldRefs 中每个字段必须且只能在 decisions 中出现一次，不得增加、遗漏或替换字段",
+                "金额、数量等可聚合事实分类为 measure；年份、期间码、主外键、排序码、状态码和分类编码应分类为 dimension",
+                "measureSemantic.fieldRef 必须与当前 decision.fieldRef 完全一致",
+                (
+                    "additiveAcross 每项只能从当前 candidateFieldContexts.sameTableColumnNames "
+                    "复制裸列名，不得使用完整 fieldRef、table.column 或重复值；不确定时返回空数组"
+                ),
+                (
+                    "exclusiveScope 的键只能从当前 candidateFieldContexts.sameTableColumnNames "
+                    "复制裸列名；值只能使用输入画像或术语能够直接证明的值，不得猜测枚举值"
+                ),
+                "additiveAcross 只声明跨该字段汇总不会重复计数的真实维度；组织层级并存时不得默认全部可加",
+                "reconcileWith 只有在两个字段业务定义确实相同且输入提供依据时才声明，并同时提供 tolerance",
+                "reason 使用简体中文说明判断依据和仍需人工确认的风险",
+            ),
+        )
         self._outline_agent = self._planning_agent(
             planner,
             "report-outline-planner",
@@ -655,7 +844,11 @@ class ReportWorkflowRuntime:
                 "一次返回完整分析计划和全部 requirements",
                 "每项 requirement 显式声明维度、指标、期间字段、期间粒度、共同粒度和表关系",
                 "grainColumns 必须全部包含在 dimensionColumns 中",
-                "measureColumns 只能包含 Schema 中可聚合的数值指标，分类字段放入 dimensionColumns",
+                (
+                    "measureColumns 只能复制 schemas[].measureSemantics[].fieldRef 最后一段中"
+                    "已批准的数值指标；分类字段放入 dimensionColumns；某张表没有任何"
+                    " measureSemantics 时不得为该表生成 requirement"
+                ),
                 "优先为每张表生成独立 requirement，由 analyses 引用多个单表 requirement 完成综合分析",
                 "比较、差异和相关性分析默认引用多个单表 requirement，由后续分析组合，不为这些分析直接生成多表 SQL",
                 "数据覆盖、缺失期间和局限性直接引用 observedDataFacts，不为这些叙述创建多表 requirement",
@@ -759,6 +952,8 @@ class ReportWorkflowRuntime:
             confirm_source=self.confirm_source,
             plan_data_scope=self.plan_data_scope,
             profile_source=self.profile_source,
+            propose_measure_semantics=self.propose_measure_semantics,
+            commit_measure_semantics=self.commit_measure_semantics,
             resolve_capabilities=self.resolve_capabilities,
             reconcile_sources=self.reconcile_sources,
             generate_outline=self.generate_outline,
@@ -919,6 +1114,7 @@ class ReportWorkflowRuntime:
                 source=source,
                 metadata=metadata,
                 catalog=catalog,
+                profile_measure_semantics=profile.measure_semantics,
             )
             snapshots.append(snapshot)
             previews.append(
@@ -934,6 +1130,7 @@ class ReportWorkflowRuntime:
                 }
             )
 
+        snapshots = list(_apply_profile_scope_filters_to_snapshots(tuple(snapshots), profile))
         state = self._state(run_context)
         workflow_input = envelope.workflow_payload(
             default_source_ids=self.registry.default_source_ids
@@ -1070,6 +1267,179 @@ class ReportWorkflowRuntime:
         self._assert_state_safe(state)
         return StepOutput(content={"dataShapes": state[REPORT_DATA_SHAPES_STATE_KEY]})
 
+    async def propose_measure_semantics(
+        self, step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        snapshots = self._snapshots(run_context)
+        plan = self._data_understanding(run_context)
+        profile = self._profile(run_context)
+        candidate_refs = _measure_semantic_candidate_refs(snapshots, plan, profile)
+        if not candidate_refs:
+            # API/Profile 已覆盖全部候选，或剩余数值字段已经由 Profile 明确声明为维度。
+            # 此分支不调用模型，HumanReview 谓词也会返回 False，因此不会制造无意义暂停。
+            return StepOutput(content=MeasureSemanticProposal())
+
+        selected_tables = {item.table for item in plan.tables}
+        tables_by_ref = {
+            (table.source_id.lower(), table.database.lower(), table.name.lower()): table
+            for snapshot in snapshots
+            for table in snapshot.tables
+        }
+        candidate_contexts = []
+        for field_ref in candidate_refs:
+            parsed = parse_field_ref(field_ref)
+            table = tables_by_ref[(parsed.source_id.lower(), parsed.database, parsed.table)]
+            candidate_contexts.append(
+                {
+                    "fieldRef": field_ref,
+                    "sameTableColumnNames": [
+                        column.name
+                        for column in table.columns
+                        if column.name.lower() != parsed.column
+                    ],
+                }
+            )
+        base_payload: dict[str, Any] = {
+            "reportGoal": self._envelope(run_context).report_goal,
+            "candidateFieldRefs": list(candidate_refs),
+            "candidateFieldContexts": candidate_contexts,
+            "schemas": _planning_schema_payload(snapshots, tables=selected_tables),
+            "terms": [
+                item.model_dump(mode="json", by_alias=True)
+                for snapshot in snapshots
+                for item in snapshot.terms
+            ],
+            "dataShapes": [
+                item.model_dump(mode="json", by_alias=True)
+                for item in self._data_shapes(run_context)
+            ],
+            "scopeFilters": [
+                item.model_dump(mode="json", by_alias=True) for item in profile.scope_filters
+            ],
+        }
+        review_feedback = self._feedback(step_input)
+        if review_feedback:
+            base_payload["userReviewFeedback"] = review_feedback
+
+        previous_output: Any = None
+        validation_feedback: dict[str, Any] | None = None
+        for attempt in range(1, 6):
+            payload = dict(base_payload)
+            if validation_feedback is not None:
+                payload["correction"] = {
+                    "attempt": attempt,
+                    "validationFeedback": _compact_validation_feedback(validation_feedback),
+                    "instruction": (
+                        "逐项修正 issues，并重新返回 candidateFieldRefs 的完整分类；"
+                        "不得删除候选、增加字段、返回补丁或解释性 Markdown"
+                    ),
+                }
+            try:
+                output = await self._run_planner(
+                    self._measure_semantic_agent,
+                    payload,
+                    run_context,
+                )
+            except _PlannerOutputValidationError as error:
+                previous_output = error.output
+                validation_feedback = {"issues": error.issues}
+                continue
+            proposal = output
+            if not isinstance(proposal, MeasureSemanticProposal):
+                try:
+                    proposal = MeasureSemanticProposal.model_validate(proposal)
+                except ValidationError as error:
+                    previous_output = output
+                    validation_feedback = {
+                        "issues": [
+                            _planner_validation_issue(item)
+                            for item in error.errors(include_url=False)
+                        ]
+                    }
+                    continue
+            try:
+                proposal = _proposal_with_profile_scope_filters(proposal, snapshots, profile)
+            except ReportingError as error:
+                previous_output = proposal.model_dump(mode="json", by_alias=True)
+                validation_feedback = {
+                    "issues": [
+                        {
+                            "path": "decisions",
+                            "rejectedValue": previous_output,
+                            "reason": error.message,
+                            "requiredAction": "不得覆盖 Profile 强制范围，按 scopeFilters 重新生成完整候选",
+                        }
+                    ]
+                }
+                continue
+            try:
+                # 这里只调用同一套确定性提交校验来验证候选，但不使用返回值，也不写 state。
+                # 用户在 Agno Output Review 中看到的对象，因此与批准后真正提交的对象完全同构。
+                _apply_confirmed_measure_semantics(snapshots, proposal, candidate_refs)
+            except ReportingError as error:
+                previous_output = proposal.model_dump(mode="json", by_alias=True)
+                validation_feedback = {
+                    "issues": [
+                        {
+                            "path": "decisions",
+                            "rejectedValue": previous_output,
+                            "reason": error.message,
+                            "allowedValues": list(candidate_refs),
+                            "requiredAction": "完整分类 allowedValues，且只使用结构快照内的字段和值",
+                        }
+                    ]
+                }
+                continue
+            return StepOutput(content=proposal)
+
+        diagnostic = {
+            "previousOutput": _bounded_rejected_value(previous_output),
+            "validationFeedback": _compact_validation_feedback(validation_feedback),
+        }
+        raise ReportingError(
+            "report_measure_semantic_proposal_invalid",
+            "指标语义候选连续五次未通过校验。最后一次诊断："
+            + json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":"), default=str),
+        )
+
+    async def commit_measure_semantics(
+        self, step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        try:
+            proposal = MeasureSemanticProposal.model_validate(step_input.previous_step_content)
+        except Exception as error:
+            raise ReportingError(
+                "report_measure_semantic_proposal_invalid", "已审核指标语义候选无效。"
+            ) from error
+        snapshots = self._snapshots(run_context)
+        candidate_refs = _measure_semantic_candidate_refs(
+            snapshots,
+            self._data_understanding(run_context),
+            self._profile(run_context),
+        )
+        scoped_proposal = _proposal_with_profile_scope_filters(
+            proposal, snapshots, self._profile(run_context)
+        )
+        if scoped_proposal != proposal:
+            raise ReportingError(
+                "report_measure_semantic_proposal_invalid",
+                "已审核指标语义候选缺少 Profile 强制范围或与其冲突。",
+            )
+        # 不信任上一步输出中隐含的候选范围。提交时依据当前已持久化快照重新计算，
+        # 要求审核对象与待定字段精确相等；缺项、增项、重复项和未知字段全部失败关闭。
+        updated = _apply_confirmed_measure_semantics(snapshots, proposal, candidate_refs)
+        state = self._state(run_context)
+        state[REPORT_SCHEMA_SNAPSHOTS_STATE_KEY] = [
+            item.model_dump(mode="json", by_alias=True) for item in updated
+        ]
+        self._assert_state_safe(state)
+        confirmed = [
+            decision.measure_semantic.model_dump(mode="json", by_alias=True)
+            for decision in proposal.decisions
+            if decision.measure_semantic is not None
+        ]
+        return StepOutput(content={"measureSemantics": confirmed})
+
     async def resolve_capabilities(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
@@ -1186,6 +1556,8 @@ class ReportWorkflowRuntime:
         validation_feedback: dict[str, Any] | None = None
         previous_output: dict[str, Any] | None = None
         allowed_mutation_paths: tuple[str, ...] = ()
+        required_deletion_paths: tuple[str, ...] = ()
+        last_semantic_correction_signature: str | None = None
         bundle: AnalysisBundle | None = None
         for attempt in range(1, 6):
             payload = dict(base_payload)
@@ -1202,14 +1574,23 @@ class ReportWorkflowRuntime:
                 if previous_output is not None:
                     correction["previousOutput"] = previous_output
                     correction["allowedMutationPaths"] = list(allowed_mutation_paths)
+                    if required_deletion_paths:
+                        correction["requiredDeletionPaths"] = list(required_deletion_paths)
+                        correction["instruction"] += (
+                            "；requiredDeletionPaths 中的对象必须精确删除，不能改写、替换"
+                            "或移动到其他字段；analysis 同时引用可用 requirement 时，只从"
+                            " requirementIds 删除失效引用"
+                        )
                 payload["correction"] = correction
                 logger.info(
                     "report_planner_correction agent_id=%s attempt=%s "
-                    "previous_output_sha256=%s allowed_mutation_paths=%s issue_signature=%s",
+                    "previous_output_sha256=%s allowed_mutation_paths=%s "
+                    "required_deletion_paths=%s issue_signature=%s",
                     getattr(self._analysis_agent, "id", "report-analysis-planner"),
                     attempt,
                     _payload_sha256(previous_output) if previous_output is not None else "none",
                     json.dumps(allowed_mutation_paths, ensure_ascii=True, separators=(",", ":")),
+                    json.dumps(required_deletion_paths, ensure_ascii=True, separators=(",", ":")),
                     _payload_sha256(_compact_validation_feedback(validation_feedback)),
                 )
             try:
@@ -1228,6 +1609,8 @@ class ReportWorkflowRuntime:
                 if isinstance(error.output, Mapping):
                     previous_output = dict(error.output)
                     allowed_mutation_paths = _analysis_allowed_mutation_paths(issues)
+                    required_deletion_paths = ()
+                last_semantic_correction_signature = None
                 continue
             assert isinstance(output, AnalysisBundle)
             output_payload = output.model_dump(mode="json", by_alias=True)
@@ -1236,6 +1619,7 @@ class ReportWorkflowRuntime:
                     previous_output,
                     output_payload,
                     allowed_mutation_paths,
+                    required_deletion_paths,
                 )
                 if unexpected_paths:
                     validation_feedback = {
@@ -1260,7 +1644,21 @@ class ReportWorkflowRuntime:
                         attempt,
                         json.dumps(unexpected_paths, ensure_ascii=True, separators=(",", ":")),
                     )
+                    last_semantic_correction_signature = None
                     continue
+            normalized_output, grain_repairs = _normalize_analysis_bundle_grain(output, snapshots)
+            if grain_repairs:
+                normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
+                logger.info(
+                    "report_planner_grain_normalized agent_id=%s before_sha256=%s "
+                    "after_sha256=%s repairs=%s",
+                    getattr(self._analysis_agent, "id", "report-analysis-planner"),
+                    _payload_sha256(output_payload),
+                    _payload_sha256(normalized_payload),
+                    json.dumps(grain_repairs, ensure_ascii=True, separators=(",", ":")),
+                )
+                output = normalized_output
+                output_payload = normalized_payload
             semantic_issues = _analysis_bundle_semantic_issues(
                 output,
                 self._data_understanding(run_context),
@@ -1272,8 +1670,40 @@ class ReportWorkflowRuntime:
                     "summary": "分析计划不可执行或与数据理解计划不一致",
                     "issues": semantic_issues,
                 }
+                correction_signature = _payload_sha256(
+                    {
+                        "output": output_payload,
+                        "feedback": _compact_validation_feedback(validation_feedback),
+                    }
+                )
+                if correction_signature == last_semantic_correction_signature:
+                    logger.warning(
+                        "report_planner_no_progress agent_id=%s attempt=%s "
+                        "output_sha256=%s issue_signature=%s",
+                        getattr(self._analysis_agent, "id", "report-analysis-planner"),
+                        attempt,
+                        _payload_sha256(output_payload),
+                        _payload_sha256(_compact_validation_feedback(validation_feedback)),
+                    )
+                    raise ReportingError(
+                        "report_analysis_plan_invalid",
+                        "分析计划纠错连续两次没有进展。最后一次反馈："
+                        + json.dumps(
+                            _compact_validation_feedback(validation_feedback),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    )
+                last_semantic_correction_signature = correction_signature
                 previous_output = output_payload
-                allowed_mutation_paths = _analysis_allowed_mutation_paths(semantic_issues)
+                required_deletion_paths = _analysis_required_deletion_paths(
+                    semantic_issues, previous_output
+                )
+                allowed_mutation_paths = _analysis_allowed_mutation_paths(
+                    semantic_issues,
+                    previous_output=previous_output,
+                    required_deletion_paths=required_deletion_paths,
+                )
                 continue
             bundle = output
             break
@@ -1475,6 +1905,9 @@ class ReportWorkflowRuntime:
             QueryRequirement.model_validate(item)
             for item in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
         )
+        analyses = tuple(
+            AnalysisItem.model_validate(item) for item in state[REPORT_ANALYSIS_PLAN_STATE_KEY]
+        )
         observed_data_facts = _coding_observed_data_facts(
             self._data_shapes(run_context), requirements, lineage
         )
@@ -1490,6 +1923,10 @@ class ReportWorkflowRuntime:
             ),
             expected_citation_bindings=tuple(
                 (item.dataset_id, item.requirement_id) for item in lineage
+            ),
+            expected_citations=tuple(
+                (item.citation_id, item.dataset_id, item.requirement_id)
+                for item in authoritative_citations(lineage)
             ),
         )
         validation_context_path = (
@@ -1507,10 +1944,40 @@ class ReportWorkflowRuntime:
             "effectiveProfileHash": self._profile(run_context).effective_profile_hash,
             "markdownPath": markdown_path,
             "artifactManifestPath": manifest_path,
+            "manifestAuthority": "server",
         }
+        profile_sections_by_title = {
+            section.title: section for section in self._profile(run_context).sections
+        }
+        render_sections: list[dict[str, Any]] = []
+        extension_index = 0
+        for title in state[REPORT_OUTLINE_STATE_KEY]["sections"]:
+            profile_section = profile_sections_by_title.get(title)
+            if profile_section is not None:
+                render_sections.append(
+                    {
+                        "code": profile_section.code,
+                        "title": profile_section.title,
+                        "protocolMarker": True,
+                    }
+                )
+                continue
+            extension_index += 1
+            render_sections.append(
+                {
+                    "code": f"extension_{extension_index:03d}",
+                    "title": title,
+                    "protocolMarker": False,
+                }
+            )
         acceptance_contract = build_report_artifact_acceptance_contract(
             expected_manifest_identity,
             validation_context_file=validation_context_file,
+            render_contract={
+                "title": state[REPORT_OUTLINE_STATE_KEY]["title"],
+                "sections": render_sections,
+                "citationIds": [item.citation_id for item in authoritative_citations(lineage)],
+            },
         )
         instruction = json.dumps(
             {
@@ -1519,22 +1986,21 @@ class ReportWorkflowRuntime:
                 "effectiveProfile": state[REPORT_EFFECTIVE_PROFILE_STATE_KEY],
                 "reconciliations": state[REPORT_RECONCILIATIONS_STATE_KEY],
                 "analysisPlan": state[REPORT_ANALYSIS_PLAN_STATE_KEY],
+                "visualizationBriefs": _visualization_briefs(analyses, requirements),
                 "dataRequirements": state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
                 "datasets": result["datasets"],
                 "observedDataFactCards": _observed_data_fact_cards(observed_data_facts),
                 "observedDataFactsFile": validation_context_file,
-                "reportId": str(run_context.run_id),
-                "codingTaskKey": task_id,
-                "datasetSnapshotHash": dataset_snapshot_hash(lineage),
-                "effectiveProfileHash": self._profile(run_context).effective_profile_hash,
                 "task": "revise" if feedback else "analyze",
-                "revision": revision + 1,
-                "markdownPath": markdown_path,
-                "artifactManifestPath": manifest_path,
+                "citationBindings": [
+                    item.model_dump(mode="json", by_alias=True)
+                    for item in authoritative_citations(lineage)
+                ],
+                "draftSections": render_sections,
                 "artifactAcceptance": {
                     "validatorId": REPORT_ARTIFACT_VALIDATOR_ID,
-                    "requiredArtifactPaths": [markdown_path, manifest_path],
-                    "includeManifestChartPaths": True,
+                    "artifactPathsFrom": "render_report_draft",
+                    "includeMarkdownChartPaths": True,
                 },
                 "reviewFeedback": feedback,
             },
@@ -1571,15 +2037,19 @@ class ReportWorkflowRuntime:
             REPORT_ARTIFACT_VALIDATOR_ID,
             len(accepted_artifacts),
         )
-        manifest = await self._load_artifact_manifest(
+        manifest = await self._build_and_write_artifact_manifest(
             manifest_path,
             accepted_artifacts=accepted_artifacts,
+            markdown_path=markdown_path,
+            lineage=lineage,
+            revision=revision + 1,
+            coding_task_key=task_id,
             run_context=run_context,
         )
         if not _accepted_artifacts_match_manifest(manifest, manifest_path, accepted_artifacts):
             raise ReportingError(
                 "report_artifact_acceptance_incomplete",
-                "正式产物验收回执未精确绑定 Markdown、manifest 和全部图表。",
+                "正式产物验收回执未精确绑定 Markdown 和全部图表。",
             )
         result.update(
             {
@@ -1615,6 +2085,27 @@ class ReportWorkflowRuntime:
             raise ReportingError(
                 "report_artifact_manifest_invalid", "报告产物清单状态无效。"
             ) from error
+        requirements = tuple(
+            QueryRequirement.model_validate(item)
+            for item in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
+        )
+        analyses = tuple(
+            AnalysisItem.model_validate(item) for item in state[REPORT_ANALYSIS_PLAN_STATE_KEY]
+        )
+        observed_facts = _coding_observed_data_facts(
+            self._data_shapes(run_context), requirements, lineage
+        )
+        await self.report_tools.bind_citation_presentations(
+            str(result["jobId"]),
+            _citation_presentations(
+                lineage=lineage,
+                requirements=requirements,
+                analyses=analyses,
+                snapshots=self._snapshots(run_context),
+                observed_facts=observed_facts,
+            ),
+            run_context=context,
+        )
         await self.report_tools.report_render_markdown(
             str(result["jobId"]),
             str(result["markdownPath"]),
@@ -1698,45 +2189,115 @@ class ReportWorkflowRuntime:
             }
         )
 
-    async def _load_artifact_manifest(
+    async def _build_and_write_artifact_manifest(
         self,
         manifest_path: str,
         *,
         accepted_artifacts: list[dict[str, Any]],
+        markdown_path: str,
+        lineage: tuple[DatasetLineage, ...],
+        revision: int,
+        coding_task_key: str,
         run_context: RunContext,
     ) -> ReportArtifactManifest:
         scope = self._scope(run_context)
+        accepted_by_path: dict[str, dict[str, Any]] = {}
+        for item in accepted_artifacts:
+            path = item.get("path") if isinstance(item, dict) else None
+            if not isinstance(path, str) or path in accepted_by_path:
+                raise ReportingError(
+                    "report_artifact_acceptance_incomplete", "正式产物回执包含重复或无效路径。"
+                )
+            accepted_by_path[path] = item
+        current_artifacts = await self.workspace_service.abatch_hash_files(
+            scope["threadId"], list(accepted_by_path)
+        )
+        current_by_path = {
+            item.get("path"): item
+            for item in current_artifacts
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
+        if (
+            len(current_by_path) != len(accepted_by_path)
+            or set(current_by_path) != set(accepted_by_path)
+            or any(
+                current_by_path[path].get("missing")
+                or current_by_path[path].get("size") != accepted_by_path[path].get("size")
+                or current_by_path[path].get("sha256") != accepted_by_path[path].get("sha256")
+                for path in accepted_by_path
+            )
+        ):
+            raise ReportingError("report_artifact_file_changed", "正式产物在完成验收后发生变化。")
         accepted = next(
             (
                 item
-                for item in accepted_artifacts
-                if isinstance(item, dict) and item.get("path") == manifest_path
+                for item in current_artifacts
+                if isinstance(item, dict) and item.get("path") == markdown_path
             ),
             None,
         )
         if not isinstance(accepted, dict):
             raise ReportingError(
                 "report_artifact_acceptance_missing",
-                "正式产物验收回执缺少 ReportArtifactManifest。",
+                "正式产物验收回执缺少报告 Markdown。",
             )
-        _relative, remote = self.workspace_service.normalize_path(manifest_path, allow_root=False)
+        _relative, markdown_remote = self.workspace_service.normalize_path(
+            markdown_path, allow_root=False
+        )
+        _relative, manifest_remote = self.workspace_service.normalize_path(
+            manifest_path, allow_root=False
+        )
         try:
             async with self.workspace_service._async_client() as client:
                 sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
-                content = await self.workspace_service._adownload_file(sandbox, remote, 1024 * 1024)
-            if len(content) != accepted.get("size") or hashlib.sha256(
-                content
+                markdown_bytes = await self.workspace_service._adownload_file(
+                    sandbox, markdown_remote, 10 * 1024 * 1024
+                )
+            if len(markdown_bytes) != accepted.get("size") or hashlib.sha256(
+                markdown_bytes
             ).hexdigest() != accepted.get("sha256"):
                 raise ReportingError(
                     "report_artifact_file_changed",
-                    "ReportArtifactManifest 在正式验收后发生变化。",
+                    "报告 Markdown 在正式验收后发生变化。",
                 )
-            manifest = ReportArtifactManifest.model_validate_json(content)
+            manifest = build_authoritative_manifest(
+                report_id=str(run_context.run_id),
+                revision=revision,
+                coding_task_key=coding_task_key,
+                effective_profile_hash=self._profile(run_context).effective_profile_hash,
+                markdown_path=markdown_path,
+                markdown=markdown_bytes.decode("utf-8"),
+                accepted_artifacts=current_artifacts,
+                lineage=lineage,
+                sections=tuple(section.code for section in self._profile(run_context).sections),
+            )
+            content = json.dumps(
+                manifest.model_dump(mode="json", by_alias=True),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            self.workspace_service._validate_content(content)
+            async with self.workspace_service._async_client() as client:
+                sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
+                await self.workspace_service._aensure_directory(
+                    sandbox, manifest_remote.rsplit("/", 1)[0]
+                )
+                await sandbox.fs.upload_file(content, manifest_remote)
+                stored = await self.workspace_service._adownload_file(
+                    sandbox, manifest_remote, len(content)
+                )
+            if stored != content:
+                raise ReportingError(
+                    "report_artifact_manifest_changed",
+                    "服务端报告产物清单写入后发生变化。",
+                )
         except ReportingError:
             raise
         except Exception as error:
             raise ReportingError(
-                "report_artifact_manifest_invalid", "报告产物清单不存在或格式无效。"
+                "report_artifact_manifest_invalid", "服务端无法生成报告产物清单。"
             ) from error
         return manifest
 
@@ -2071,7 +2632,8 @@ def _planning_schemas(
                     ),
                 )
                 for table in snapshot.tables
-            )
+            ),
+            measureSemantics=snapshot.measure_semantics,
         )
         for snapshot in snapshots
     )
@@ -2106,6 +2668,231 @@ def _planning_schema_payload(
                         )
             payload.append(schema_payload)
     return payload
+
+
+def _profile_scope_filters_by_table(
+    profile: EffectiveReportingProfile,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> dict[tuple[str, str, str], dict[str, str]]:
+    table_columns = {
+        (table.source_id.lower(), table.database.lower(), table.name.lower()): {
+            column.name.lower() for column in table.columns
+        }
+        for snapshot in snapshots
+        for table in snapshot.tables
+    }
+    constraints: dict[tuple[str, str, str], dict[str, str]] = {}
+    for scope_filter in profile.scope_filters:
+        refs_by_table: dict[tuple[str, str, str], list[str]] = {}
+        for field_ref in scope_filter.field_refs:
+            parsed = parse_field_ref(field_ref)
+            table_key = (
+                parsed.source_id.lower(),
+                parsed.database.lower(),
+                parsed.table.lower(),
+            )
+            refs_by_table.setdefault(table_key, []).append(parsed.column.lower())
+        if any(len(columns) != 1 for columns in refs_by_table.values()):
+            raise ReportingError(
+                "report_profile_scope_filter_invalid",
+                f"Profile 范围过滤 {scope_filter.code} 在同一表中必须只映射一个字段。",
+            )
+        if scope_filter.required_for_all_tables and set(table_columns) - set(refs_by_table):
+            raise ReportingError(
+                "report_profile_scope_filter_invalid",
+                f"Profile 范围过滤 {scope_filter.code} 未覆盖结构快照中的全部表。",
+            )
+        for table_key, columns in refs_by_table.items():
+            # Profile 可以覆盖同一医院数据源的表超集；本次 Snapshot 未包含的表按现有
+            # capability 缩小原则忽略。只要表实际进入 Snapshot，就必须验证物理字段。
+            available = table_columns.get(table_key)
+            if available is None:
+                continue
+            column = columns[0]
+            if column not in available:
+                raise ReportingError(
+                    "report_profile_scope_filter_invalid",
+                    f"Profile 范围过滤 {scope_filter.code} 引用了结构快照外的字段。",
+                )
+            table_constraints = constraints.setdefault(table_key, {})
+            current = table_constraints.get(column)
+            if current is not None and current != scope_filter.value:
+                raise ReportingError(
+                    "report_profile_scope_filter_conflict",
+                    f"Profile 范围过滤在同一字段上声明了冲突值: {field_ref}",
+                )
+            table_constraints[column] = scope_filter.value
+    return constraints
+
+
+def _semantic_with_scope_filters(
+    semantic: MeasureSemantic,
+    constraints: dict[tuple[str, str, str], dict[str, str]],
+) -> MeasureSemantic:
+    parsed = parse_field_ref(semantic.field_ref)
+    required = constraints.get(
+        (parsed.source_id.lower(), parsed.database.lower(), parsed.table.lower()), {}
+    )
+    exclusive_scope = dict(semantic.exclusive_scope)
+    for column, value in required.items():
+        current = exclusive_scope.get(column)
+        if current is not None and current != value:
+            raise ReportingError(
+                "report_profile_scope_filter_conflict",
+                f"指标语义与 Profile 强制范围冲突: {semantic.field_ref}.{column}",
+            )
+        exclusive_scope[column] = value
+    return semantic.model_copy(update={"exclusive_scope": exclusive_scope})
+
+
+def _apply_profile_scope_filters_to_snapshots(
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    profile: EffectiveReportingProfile,
+) -> tuple[SourceSchemaSnapshot, ...]:
+    constraints = _profile_scope_filters_by_table(profile, snapshots)
+    updated: list[SourceSchemaSnapshot] = []
+    for snapshot in snapshots:
+        payload = snapshot.model_dump(mode="json", by_alias=True)
+        payload["measureSemantics"] = [
+            _semantic_with_scope_filters(item, constraints).model_dump(mode="json", by_alias=True)
+            for item in snapshot.measure_semantics
+        ]
+        try:
+            updated.append(SourceSchemaSnapshot.model_validate(payload))
+        except ValidationError as error:
+            raise ReportingError(
+                "report_profile_scope_filter_invalid",
+                "Profile 强制范围无法应用到结构快照指标语义。",
+            ) from error
+    return tuple(updated)
+
+
+def _proposal_with_profile_scope_filters(
+    proposal: MeasureSemanticProposal,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    profile: EffectiveReportingProfile,
+) -> MeasureSemanticProposal:
+    constraints = _profile_scope_filters_by_table(profile, snapshots)
+    return proposal.model_copy(
+        update={
+            "decisions": tuple(
+                decision.model_copy(
+                    update={
+                        "measure_semantic": _semantic_with_scope_filters(
+                            decision.measure_semantic, constraints
+                        )
+                    }
+                )
+                if decision.measure_semantic is not None
+                else decision
+                for decision in proposal.decisions
+            )
+        }
+    )
+
+
+def _measure_semantic_candidate_refs(
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    plan: DataUnderstandingPlan,
+    profile: EffectiveReportingProfile,
+) -> tuple[str, ...]:
+    """确定必须由模型分类并经用户确认的数值字段集合。"""
+
+    selected_period_columns = {
+        (item.source_id.lower(), item.table.lower()): item.period_column.lower()
+        for item in plan.tables
+    }
+    existing_semantics = {
+        item.field_ref.lower() for snapshot in snapshots for item in snapshot.measure_semantics
+    }
+    profile_dimensions = {
+        field_ref.lower() for dimension in profile.dimensions for field_ref in dimension.field_refs
+    }
+    profile_metrics = {
+        metric.field_ref.lower() for metric in profile.metrics if metric.field_ref is not None
+    }
+    candidates: list[str] = []
+
+    # DDL 只能证明字段是数值类型，不能证明它是可聚合指标。程序先排除已确认
+    # 语义、已声明维度和本次期间字段，再让模型对剩余字段逐项提出候选。Profile
+    # 同时把同一字段声明为 metric 和 dimension 时，以 metric 为待确认对象，避免
+    # 配置冲突被静默解释成维度后绕过指标语义审核。
+    for snapshot in snapshots:
+        for table in snapshot.tables:
+            qualified = f"{table.database.lower()}.{table.name.lower()}"
+            period_column = selected_period_columns.get((table.source_id.lower(), qualified))
+            if period_column is None:
+                continue
+            for column in table.columns:
+                field_ref = f"{table.source_id}.{table.database}.{table.name}.{column.name}".lower()
+                if field_ref in existing_semantics:
+                    continue
+                if _NUMERIC_MEASURE_TYPE_PATTERN.match(column.data_type) is None:
+                    continue
+                if column.name.lower() == period_column:
+                    continue
+                if field_ref in profile_dimensions and field_ref not in profile_metrics:
+                    continue
+                candidates.append(field_ref)
+    return tuple(candidates)
+
+
+def _apply_confirmed_measure_semantics(
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    proposal: MeasureSemanticProposal,
+    expected_refs: tuple[str, ...],
+) -> tuple[SourceSchemaSnapshot, ...]:
+    """验证用户审核对象并生成只包含已确认语义的新快照。"""
+
+    actual_refs = tuple(item.field_ref for item in proposal.decisions)
+    if set(actual_refs) != set(expected_refs) or len(actual_refs) != len(expected_refs):
+        raise ReportingError(
+            "report_measure_semantic_proposal_invalid",
+            "指标语义候选必须完整且只能分类当前待确认字段。",
+        )
+
+    additions = {
+        decision.field_ref: decision.measure_semantic
+        for decision in proposal.decisions
+        if decision.classification == "measure" and decision.measure_semantic is not None
+    }
+    available_by_snapshot = [
+        {
+            f"{table.source_id}.{table.database}.{table.name}.{column.name}".lower()
+            for table in snapshot.tables
+            for column in table.columns
+        }
+        for snapshot in snapshots
+    ]
+    if set(actual_refs) - set().union(*available_by_snapshot):
+        raise ReportingError(
+            "report_measure_semantic_proposal_invalid",
+            "指标语义候选引用了结构快照外的字段。",
+        )
+
+    updated: list[SourceSchemaSnapshot] = []
+    for snapshot, available in zip(snapshots, available_by_snapshot, strict=True):
+        snapshot_additions = tuple(
+            semantic
+            for field_ref, semantic in additions.items()
+            if field_ref in available and semantic is not None
+        )
+        payload = snapshot.model_dump(mode="json", by_alias=True)
+        payload["measureSemantics"] = [
+            item.model_dump(mode="json", by_alias=True)
+            for item in (*snapshot.measure_semantics, *snapshot_additions)
+        ]
+        try:
+            # 重新走 SourceSchemaSnapshot 的完整 Pydantic 校验，确保 additiveAcross、
+            # exclusiveScope 和 reconcileWith 只能引用同一受信结构快照中的真实字段。
+            # model_copy(update=...) 默认不重跑 validator，因此这里不能使用它提交候选。
+            updated.append(SourceSchemaSnapshot.model_validate(payload))
+        except ValidationError as error:
+            raise ReportingError(
+                "report_measure_semantic_proposal_invalid",
+                "指标语义候选包含未知维度、固定口径或对账字段。",
+            ) from error
+    return tuple(updated)
 
 
 def _bounded_description(value: str, limit: int) -> str:
@@ -2409,12 +3196,76 @@ def _unexpected_correction_paths(
     previous: dict[str, Any],
     current: dict[str, Any],
     allowed_paths: tuple[str, ...],
+    required_deletion_paths: tuple[str, ...] = (),
 ) -> list[str]:
     return [
         path
-        for path in _json_diff_paths(previous, current)
-        if not any(_correction_path_allowed(path, allowed) for allowed in allowed_paths)
+        for path in _analysis_bundle_diff_paths(previous, current)
+        if path not in required_deletion_paths
+        and not any(_correction_path_allowed(path, allowed) for allowed in allowed_paths)
     ]
+
+
+def _analysis_bundle_diff_paths(previous: Any, current: Any) -> list[str]:
+    """按稳定业务标识比较计划列表，使定点删除不会放宽其他对象的修改权限。"""
+
+    if not isinstance(previous, Mapping) or not isinstance(current, Mapping):
+        return _json_diff_paths(previous, current)
+    paths: list[str] = []
+    keys = sorted(set(previous) | set(current))
+    for key in keys:
+        if key not in previous or key not in current:
+            paths.append(str(key))
+            continue
+        left = previous[key]
+        right = current[key]
+        identity_key = {"requirements": "requirementId", "analyses": "code"}.get(str(key))
+        if (
+            identity_key is None
+            or not isinstance(left, (list, tuple))
+            or not isinstance(right, (list, tuple))
+        ):
+            paths.extend(_json_diff_paths(left, right, str(key)))
+            continue
+        paths.extend(_keyed_sequence_diff_paths(left, right, str(key), identity_key))
+    return paths
+
+
+def _keyed_sequence_diff_paths(
+    previous: list[Any] | tuple[Any, ...],
+    current: list[Any] | tuple[Any, ...],
+    path: str,
+    identity_key: str,
+) -> list[str]:
+    previous_ids = [
+        item.get(identity_key) if isinstance(item, Mapping) else None for item in previous
+    ]
+    current_ids = [
+        item.get(identity_key) if isinstance(item, Mapping) else None for item in current
+    ]
+    if (
+        any(not isinstance(item, str) or not item for item in (*previous_ids, *current_ids))
+        or len(set(previous_ids)) != len(previous_ids)
+        or len(set(current_ids)) != len(current_ids)
+    ):
+        return _json_diff_paths(previous, current, path)
+
+    previous_by_id = {
+        identity: (index, previous[index]) for index, identity in enumerate(previous_ids)
+    }
+    current_by_id = {identity: current[index] for index, identity in enumerate(current_ids)}
+    surviving_ids = [identity for identity in previous_ids if identity in current_by_id]
+    paths: list[str] = []
+    if current_ids != surviving_ids:
+        paths.append(path)
+    for identity, (index, previous_item) in previous_by_id.items():
+        item_path = f"{path}[{index}]"
+        current_item = current_by_id.get(identity)
+        if current_item is None:
+            paths.append(item_path)
+            continue
+        paths.extend(_json_diff_paths(previous_item, current_item, item_path))
+    return paths
 
 
 def _correction_path_allowed(path: str, allowed: str) -> bool:
@@ -2424,7 +3275,54 @@ def _correction_path_allowed(path: str, allowed: str) -> bool:
     return re.match(rf"^{pattern}(?:\.|\[|$)", path) is not None
 
 
-def _analysis_allowed_mutation_paths(issues: list[dict[str, Any]]) -> tuple[str, ...]:
+def _analysis_required_deletion_paths(
+    issues: list[dict[str, Any]], previous_output: Mapping[str, Any] | None
+) -> tuple[str, ...]:
+    if previous_output is None:
+        return ()
+    requirements = previous_output.get("requirements")
+    analyses = previous_output.get("analyses")
+    if not isinstance(requirements, list) or not isinstance(analyses, list):
+        return ()
+
+    requirement_indices: set[int] = set()
+    for issue in issues:
+        path = issue.get("path")
+        match = (
+            re.fullmatch(r"requirements\[(\d+)]\.tables\[\d+]\.measureColumns", path)
+            if isinstance(path, str)
+            else None
+        )
+        if match is not None and issue.get("allowedValues") == []:
+            requirement_indices.add(int(match.group(1)))
+
+    invalid_ids = {
+        str(requirements[index].get("requirementId"))
+        for index in requirement_indices
+        if index < len(requirements)
+        and isinstance(requirements[index], Mapping)
+        and isinstance(requirements[index].get("requirementId"), str)
+    }
+    paths = [f"requirements[{index}]" for index in sorted(requirement_indices)]
+    for index, analysis in enumerate(analyses):
+        if not isinstance(analysis, Mapping):
+            continue
+        requirement_ids = analysis.get("requirementIds")
+        if (
+            isinstance(requirement_ids, list)
+            and requirement_ids
+            and set(requirement_ids).issubset(invalid_ids)
+        ):
+            paths.append(f"analyses[{index}]")
+    return tuple(paths)
+
+
+def _analysis_allowed_mutation_paths(
+    issues: list[dict[str, Any]],
+    *,
+    previous_output: Mapping[str, Any] | None = None,
+    required_deletion_paths: tuple[str, ...] = (),
+) -> tuple[str, ...]:
     if any(
         isinstance(issue.get("path"), str)
         and str(issue["path"]).startswith("requirements[")
@@ -2432,9 +3330,49 @@ def _analysis_allowed_mutation_paths(issues: list[dict[str, Any]]) -> tuple[str,
         for issue in issues
     ):
         return ("requirements", "analyses[*].requirementIds")
-    return tuple(
-        dict.fromkeys(str(issue["path"]) for issue in issues if isinstance(issue.get("path"), str))
+    deletion_prefixes = tuple(
+        path for path in required_deletion_paths if path.startswith("requirements[")
     )
+    paths: list[str] = []
+    for issue in issues:
+        repair_targets = issue.get("repairTargets")
+        candidates = (
+            [str(item) for item in repair_targets if isinstance(item, str)]
+            if isinstance(repair_targets, list)
+            else [str(issue["path"])]
+            if isinstance(issue.get("path"), str)
+            else []
+        )
+        paths.extend(
+            candidate
+            for candidate in candidates
+            if not any(
+                candidate == prefix or candidate.startswith(f"{prefix}.")
+                for prefix in deletion_prefixes
+            )
+        )
+    if previous_output is not None and deletion_prefixes:
+        requirements = previous_output.get("requirements")
+        analyses = previous_output.get("analyses")
+        if isinstance(requirements, list) and isinstance(analyses, list):
+            invalid_ids = {
+                str(requirements[int(match.group(1))].get("requirementId"))
+                for prefix in deletion_prefixes
+                if (match := re.fullmatch(r"requirements\[(\d+)]", prefix)) is not None
+                and int(match.group(1)) < len(requirements)
+                and isinstance(requirements[int(match.group(1))], Mapping)
+            }
+            for index, analysis in enumerate(analyses):
+                if not isinstance(analysis, Mapping):
+                    continue
+                requirement_ids = analysis.get("requirementIds")
+                if (
+                    isinstance(requirement_ids, list)
+                    and set(requirement_ids) & invalid_ids
+                    and not set(requirement_ids).issubset(invalid_ids)
+                ):
+                    paths.append(f"analyses[{index}].requirementIds")
+    return tuple(dict.fromkeys(paths))
 
 
 def _suggested_replacement(rejected: Any, allowed_values: list[str]) -> str | None:
@@ -2966,6 +3904,7 @@ def _analysis_bundle_semantic_issues(
     for index, requirement in enumerate(bundle.requirements):
         issues.extend(_requirement_column_issues(requirement, index, snapshots))
         issues.extend(_measure_column_issues(requirement, index, snapshots))
+        issues.extend(_measure_semantic_issues(requirement, index, snapshots))
         issues.extend(_multi_table_requirement_issues(requirement, index, snapshots))
     requirement_ids = {item.requirement_id for item in bundle.requirements}
     for index, analysis in enumerate(bundle.analyses):
@@ -3155,6 +4094,185 @@ def _measure_column_issues(
                 }
             )
     return [*issues, *measure_issues]
+
+
+def _measure_semantic_issues(
+    requirement: QueryRequirement,
+    requirement_index: int,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> list[dict[str, Any]]:
+    semantics = {
+        item.field_ref.lower(): item
+        for snapshot in snapshots
+        for item in snapshot.measure_semantics
+    }
+    issues: list[dict[str, Any]] = []
+    missing_grain_columns: set[str] = set()
+    ordered_table_columns: list[str] = []
+    for table_index, table in enumerate(requirement.tables):
+        qualified = table.table if "." in table.table else ""
+        if not qualified:
+            matches = [
+                model
+                for snapshot in snapshots
+                for model in snapshot.tables
+                if model.source_id == requirement.source_id and model.name.lower() == table.table
+            ]
+            if len(matches) != 1:
+                continue
+            qualified = f"{matches[0].database}.{matches[0].name}".lower()
+        table_models = [
+            model
+            for snapshot in snapshots
+            for model in snapshot.tables
+            if model.source_id == requirement.source_id
+            and f"{model.database}.{model.name}".lower() == qualified
+        ]
+        if len(table_models) != 1:
+            continue
+        columns = {column.name.lower(): column for column in table_models[0].columns}
+        table_columns = set(columns)
+        ordered_table_columns.extend(
+            column.name.lower()
+            for column in table_models[0].columns
+            if column.name.lower() not in ordered_table_columns
+        )
+        table_prefix = f"{requirement.source_id}.{qualified}.".lower()
+        declared_measure_columns = {
+            field_ref.rsplit(".", 1)[-1]
+            for field_ref in semantics
+            if field_ref.startswith(table_prefix)
+        }
+        for measure in table.measure_columns:
+            column = columns.get(measure)
+            if (
+                column is None
+                or _NUMERIC_MEASURE_TYPE_PATTERN.match(column.data_type) is None
+                or measure in requirement.dimension_columns
+            ):
+                continue
+            field_ref = f"{requirement.source_id}.{qualified}.{measure}".lower()
+            semantic = semantics.get(field_ref)
+            path = f"requirements[{requirement_index}].tables[{table_index}].measureColumns"
+            if semantic is None:
+                allowed = sorted(
+                    item.field_ref.rsplit(".", 1)[-1]
+                    for item in semantics.values()
+                    if item.field_ref.lower().startswith(
+                        f"{requirement.source_id}.{qualified}.".lower()
+                    )
+                )
+                issues.append(
+                    {
+                        "path": path,
+                        "rejectedValue": measure,
+                        "reason": "字段未获服务端结构快照批准为可聚合指标，禁止猜测聚合口径",
+                        "allowedValues": allowed,
+                        "requiredAction": (
+                            "只保留 allowedValues 中已批准的指标；为空时删除整个 requirement，"
+                            "并删除仅引用它的 analysis 或从混合引用中移除该 requirementId；"
+                            "不得改用无关指标或把 rejectedValue 移入维度伪装通过"
+                        ),
+                    }
+                )
+                continue
+            forbidden = sorted(
+                table_columns
+                - declared_measure_columns
+                - set(requirement.grain_columns)
+                - set(semantic.additive_across)
+                - set(semantic.exclusive_scope)
+            )
+            missing_grain_columns.update(forbidden)
+    if missing_grain_columns:
+        missing = [name for name in ordered_table_columns if name in missing_grain_columns]
+        target_dimensions = list(dict.fromkeys((*requirement.dimension_columns, *missing)))
+        target_grain = list(dict.fromkeys((*requirement.grain_columns, *missing)))
+        issue: dict[str, Any] = {
+            "path": f"requirements[{requirement_index}].grainColumns",
+            "missingValues": missing,
+            "reason": "指标表存在未保留、未固定且未声明为可加的维度",
+            "repairTargets": [
+                f"requirements[{requirement_index}].dimensionColumns",
+                f"requirements[{requirement_index}].grainColumns",
+            ],
+            "requiredAction": (
+                "将 missingValues 同时追加到 dimensionColumns 和 grainColumns；"
+                "不得删除原有字段或修改表、指标及分析引用"
+            ),
+        }
+        if len(target_dimensions) <= 30 and len(target_grain) <= 30:
+            issue["targetValues"] = {
+                "dimensionColumns": target_dimensions,
+                "grainColumns": target_grain,
+            }
+        else:
+            issue["requiredColumnCount"] = max(len(target_dimensions), len(target_grain))
+            issue["maxColumnCount"] = 30
+            issue["requiredAction"] = (
+                "完整安全粒度超过契约上限；减少当前 requirement 的 measureColumns，"
+                "或通过已审核 Profile/metadata 补充可加维度或固定范围后重新规划"
+            )
+        issues.append(issue)
+    return issues
+
+
+def _normalize_analysis_bundle_grain(
+    bundle: AnalysisBundle,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> tuple[AnalysisBundle, list[dict[str, Any]]]:
+    """只追加服务端可证明的安全粒度，不替模型改写分析意图。"""
+
+    normalized_requirements: list[QueryRequirement] = []
+    repairs: list[dict[str, Any]] = []
+    for index, requirement in enumerate(bundle.requirements):
+        if len(requirement.tables) != 1:
+            normalized_requirements.append(requirement)
+            continue
+        semantic_issues = _measure_semantic_issues(requirement, index, snapshots)
+        if any(str(issue.get("path", "")).endswith(".measureColumns") for issue in semantic_issues):
+            normalized_requirements.append(requirement)
+            continue
+        grain_issue = next(
+            (
+                issue
+                for issue in semantic_issues
+                if issue.get("path") == f"requirements[{index}].grainColumns"
+                and isinstance(issue.get("targetValues"), Mapping)
+            ),
+            None,
+        )
+        if grain_issue is None:
+            normalized_requirements.append(requirement)
+            continue
+        target_values = grain_issue["targetValues"]
+        payload = requirement.model_dump(mode="json", by_alias=True)
+        payload["dimensionColumns"] = target_values["dimensionColumns"]
+        payload["grainColumns"] = target_values["grainColumns"]
+        try:
+            normalized = QueryRequirement.model_validate(payload)
+        except ValidationError:
+            normalized_requirements.append(requirement)
+            continue
+        normalized_requirements.append(normalized)
+        repairs.append(
+            {
+                "requirementId": requirement.requirement_id,
+                "addedColumns": grain_issue["missingValues"],
+                "repairTargets": grain_issue["repairTargets"],
+            }
+        )
+    if not repairs:
+        return bundle, []
+    normalized_bundle = AnalysisBundle.model_validate(
+        {
+            "analyses": [item.model_dump(mode="json", by_alias=True) for item in bundle.analyses],
+            "requirements": [
+                item.model_dump(mode="json", by_alias=True) for item in normalized_requirements
+            ],
+        }
+    )
+    return normalized_bundle, repairs
 
 
 def _multi_table_requirement_issues(

@@ -25,7 +25,7 @@ REPORT_WORKFLOW_SCOPE_STATE_KEY = "report_workflow_scope"
 _WORKFLOW_ID = "enterprise-reporting-workflow-v1"
 _ACTIVE_STATUSES = frozenset({"running", "paused"})
 ReportWorkflowStatus = Literal["running", "paused", "completed", "cancelled", "failed"]
-ReviewStage = Literal["request", "agent", "source", "outline", "query", "publication"]
+ReviewStage = Literal["request", "agent", "source", "semantic", "outline", "query", "publication"]
 
 
 class ReviewableWorkflow(Protocol):
@@ -76,8 +76,19 @@ class ReportWorkflowController:
         assert run_context is not None
         existing = self._control(state, required=False)
         if existing is not None and existing.status in _ACTIVE_STATUSES:
-            self._assert_scope(existing, scope)
-            raise ReportingError("report_workflow_active", "当前运行已有未完成的报表工作流。")
+            existing_scope = self._scope(run_context, external_run_id=existing.external_run_id)
+            self._assert_scope(existing, existing_scope)
+            output = await self._load(existing)
+            current = self._control_from_output(
+                output,
+                existing_scope,
+                existing.workflow_session_id,
+                existing.workflow_run_id,
+            )
+            state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = current.public_dict()
+            if current.status in _ACTIVE_STATUSES:
+                return self._result(current, output)
+            self._active_external.discard(self._external_scope_key(existing_scope))
 
         workflow = self._workflow()
         workflow_session_id, workflow_run_id = self._workflow_ids(scope)
@@ -501,6 +512,10 @@ class ReportWorkflowController:
             stage = "source"
             title = "确认数据来源"
             allowed = {"sources"}
+        elif "指标语义" in name:
+            stage = "semantic"
+            title = "审核指标语义"
+            allowed = {"decisions"}
         elif "提纲" in name:
             stage = "outline"
             title = "审核报告提纲"
@@ -551,14 +566,16 @@ class ReportWorkflowToolkit(Toolkit):
             name="report_workflow",
             tools=[
                 self.report_workflow_start,
-                self.report_workflow_start_from_prompt,
                 self.report_workflow_review,
+                self.report_workflow_approve,
+                self.report_workflow_reject,
             ],
             instructions=(
-                "已有服务端 Envelope 的新报表调用 report_workflow_start；自然语言新报表调用 "
-                "report_workflow_start_from_prompt，并保持 prompt 与用户输入原文完全一致。"
-                "任一工具返回 paused 时，准确展示 review 后必须立即调用 "
-                "report_workflow_review，由 AgentOS 收集用户的 action、feedback 或 agent_id；"
+                "启动新报表只调用无参数的 report_workflow_start；该工具会读取受信服务端 "
+                "Envelope，或读取当前最后一条用户消息并交给 Workflow 首步归一化。"
+                "任一工具返回普通审核 paused 时，准确展示 review 后必须立即调用 "
+                "report_workflow_approve，由 AgentOS 原生确认收集批准或拒绝；request 和 agent "
+                "阶段使用 report_workflow_review 收集对应输入。"
                 "不得在文本回答中代替用户审批，不得绕过 Workflow 审核或自行执行取数和 "
                 "Coding 分析。"
             ),
@@ -566,31 +583,34 @@ class ReportWorkflowToolkit(Toolkit):
         )
         review = self.async_functions["report_workflow_review"]
         for field in review.user_input_schema or []:
-            if field.name in {"feedback", "agent_id"}:
-                field.value = ""
+            field.value = "" if field.name in {"feedback", "agent_id"} else None
 
     async def report_workflow_start(
         self,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        """使用严格 ReportRequestEnvelope v1 启动企业智能运营报表 Workflow。"""
+        """将服务端 Envelope 或当前用户原文交给报表 Workflow 首步。"""
+        workflow_input: ReportingWorkflowInput | ReportRequestEnvelope
         envelope = current_server_envelope()
-        if envelope is None:
-            raise ReportingError("report_request_invalid", "当前消息缺少报表 Envelope。")
-        return await self.controller.start(envelope, run_context)
-
-    async def report_workflow_start_from_prompt(
-        self,
-        prompt: str,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        """将自然语言原文交给报表 Workflow 首步统一归一化。
-
-        Args:
-            prompt: 完整复制用户输入原文，不得改写、摘要、解析期间或补充。
-        """
-        workflow_input = ReportingWorkflowInput.model_validate({"version": "1", "prompt": prompt})
+        if envelope is not None:
+            workflow_input = envelope
+        else:
+            prompt = self._current_user_prompt(run_context)
+            workflow_input = ReportingWorkflowInput.model_validate(
+                {"version": "1", "prompt": prompt}
+            )
         return await self.controller.start(workflow_input, run_context)
+
+    @staticmethod
+    def _current_user_prompt(run_context: RunContext | None) -> str:
+        for message in reversed((run_context.messages if run_context else None) or []):
+            if getattr(message, "role", None) != "user":
+                continue
+            content = getattr(message, "content", None)
+            if isinstance(content, str) and content.strip():
+                return content
+            break
+        raise ReportingError("report_request_invalid", "当前消息缺少自然语言报表需求。")
 
     @tool(
         requires_user_input=True,
@@ -618,3 +638,20 @@ class ReportWorkflowToolkit(Toolkit):
         if action == "select_agent":
             return await self.controller.select_agent(agent_id, run_context)
         return await self.controller.cancel(run_context)
+
+    @tool(requires_confirmation=True)
+    async def report_workflow_approve(
+        self,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        """批准当前展示的报表审核项并继续 Workflow。"""
+        return await self.controller.approve(run_context)
+
+    @tool()
+    async def report_workflow_reject(
+        self,
+        feedback: str,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        """将 AgentOS 原生确认的拒绝备注提交给报表 Workflow。"""
+        return await self.controller.reject(feedback, run_context)

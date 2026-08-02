@@ -213,7 +213,7 @@ class AsyncFakeFs:
     async def download_file(self, path):
         return self._fs.download_file(path)
 
-    async def download_file_stream(self, path):
+    async def download_file_stream(self, path, timeout=30 * 60):
         async def stream():
             for chunk in self._fs.download_file_stream(path):
                 yield chunk

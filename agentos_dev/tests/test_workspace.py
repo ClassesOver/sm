@@ -26,6 +26,7 @@ from agentos_dev.tests.workspace_fakes import (
 )
 from agentos_dev.workspace import (
     MAX_BATCH_HASH_CONCURRENCY,
+    MAX_BATCH_HASH_FILE_TIMEOUT,
     MAX_DOWNLOAD_BYTES,
     MAX_MANAGED_PROCESSES,
     MAX_PATH_BYTES,
@@ -1348,19 +1349,21 @@ async def test_批量哈希限制并发且保持输入顺序和缺失语义(tmp_
 
     active_downloads = 0
     max_active_downloads = 0
-    original_download = AsyncFakeFs.download_file
+    original_download = AsyncFakeFs.download_file_stream
+    download_timeouts = []
 
-    async def tracked_download(fake_fs, path):
+    async def tracked_download(fake_fs, path, timeout=30 * 60):
         nonlocal active_downloads, max_active_downloads
         active_downloads += 1
         max_active_downloads = max(max_active_downloads, active_downloads)
+        download_timeouts.append(timeout)
         try:
             await asyncio.sleep(0)
-            return await original_download(fake_fs, path)
+            return await original_download(fake_fs, path, timeout=timeout)
         finally:
             active_downloads -= 1
 
-    monkeypatch.setattr(AsyncFakeFs, "download_file", tracked_download)
+    monkeypatch.setattr(AsyncFakeFs, "download_file_stream", tracked_download)
     async_service = WorkspaceService(
         current.secret,
         client=current.client,
@@ -1375,6 +1378,141 @@ async def test_批量哈希限制并发且保持输入顺序和缺失语义(tmp_
     assert [item["path"] for item in results] == requested
     assert results[1] == {"path": "missing.txt", "missing": True}
     assert 1 < max_active_downloads <= MAX_BATCH_HASH_CONCURRENCY
+    assert download_timeouts == [MAX_BATCH_HASH_FILE_TIMEOUT] * len(paths)
+
+
+@pytest.mark.anyio
+async def test_异步下载对英文和中文路径统一使用带超时的流式接口(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    current.create_file("thread", "report.md", b"ascii")
+    current.create_file("thread", "报告.md", b"unicode")
+    calls = []
+    original_download = AsyncFakeFs.download_file_stream
+
+    async def tracked_download(fake_fs, path, timeout=30 * 60):
+        calls.append((path, timeout))
+        return await original_download(fake_fs, path, timeout=timeout)
+
+    monkeypatch.setattr(AsyncFakeFs, "download_file_stream", tracked_download)
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+    sandbox = await async_service._asandbox_for(async_service._async_client_override, "thread")
+
+    assert (
+        await async_service._adownload_file(
+            sandbox, f"{WORKSPACE_ROOT}/report.md", MAX_DOWNLOAD_BYTES, timeout=7
+        )
+        == b"ascii"
+    )
+    assert (
+        await async_service._adownload_file(
+            sandbox, f"{WORKSPACE_ROOT}/报告.md", MAX_DOWNLOAD_BYTES, timeout=9
+        )
+        == b"unicode"
+    )
+    assert calls == [
+        (f"{WORKSPACE_ROOT}/report.md", 7),
+        (f"{WORKSPACE_ROOT}/报告.md", 9),
+    ]
+
+
+@pytest.mark.anyio
+async def test_批量哈希流式下载超时后明确失败(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    current.create_file("thread", "报告.md", b"report")
+    download_started = asyncio.Event()
+    never_complete = asyncio.Event()
+
+    async def blocking_download(_self, _path, timeout=30 * 60):
+        download_started.set()
+        await never_complete.wait()
+
+    monkeypatch.setattr(AsyncFakeFs, "download_file_stream", blocking_download)
+    monkeypatch.setattr(workspace_module, "MAX_BATCH_HASH_TIMEOUT", 0.01)
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+
+    with pytest.raises(WorkspaceError, match="批量哈希读取超时"):
+        await async_service.abatch_hash_files("thread", ["报告.md"])
+    assert download_started.is_set()
+
+
+@pytest.mark.anyio
+async def test_批量哈希使用隔离客户端并在完成后关闭(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    current.create_file("thread", "report.md", b"report")
+    instances = []
+
+    class IsolatedClient(AsyncFakeClient):
+        def __init__(self):
+            super().__init__(current.client)
+            self.closed = False
+            instances.append(self)
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(workspace_module, "AsyncDaytona", IsolatedClient)
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+
+    result = await async_service.abatch_hash_files("thread", ["report.md"])
+
+    assert result == [
+        {
+            "path": "report.md",
+            "size": 6,
+            "sha256": hashlib.sha256(b"report").hexdigest(),
+        }
+    ]
+    assert len(instances) == 1
+    assert instances[0].closed is True
+    assert async_service._owned_async_client is None
+
+
+@pytest.mark.anyio
+async def test_批量哈希不会因隔离客户端关闭阻塞(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    current.create_file("thread", "report.md", b"report")
+    close_started = asyncio.Event()
+    never_complete = asyncio.Event()
+
+    class BlockingCloseClient(AsyncFakeClient):
+        async def close(self):
+            close_started.set()
+            await never_complete.wait()
+
+    monkeypatch.setattr(
+        workspace_module,
+        "AsyncDaytona",
+        lambda: BlockingCloseClient(current.client),
+    )
+    monkeypatch.setattr(workspace_module, "MAX_ISOLATED_CLIENT_CLOSE_TIMEOUT", 0.01)
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+
+    result = await async_service.abatch_hash_files("thread", ["report.md"])
+
+    assert result[0]["sha256"] == hashlib.sha256(b"report").hexdigest()
+    assert close_started.is_set()
 
 
 def test_create_file_locked_serializes_same_thread_and_path(tmp_path):
@@ -1599,7 +1737,12 @@ async def test_异步分支工作区复制失败会清理目标(tmp_path):
     current = service(tmp_path)
     current.create_file("source", "report.txt", b"content")
     source = current.sandbox_for("source")
-    source.fs.download_file = lambda _path: (_ for _ in ()).throw(RuntimeError("offline"))
+
+    def offline_stream(_path):
+        raise RuntimeError("offline")
+        yield b""  # pragma: no cover
+
+    source.fs.download_file_stream = offline_stream
     async_service = WorkspaceService(
         current.secret,
         client=current.client,
@@ -1622,7 +1765,7 @@ async def test_异步分支工作区复制被取消也会清理目标(tmp_path, 
     download_started = asyncio.Event()
     never_complete = asyncio.Event()
 
-    async def blocking_download(_self, _path):
+    async def blocking_download(_self, _path, timeout=30 * 60):
         download_started.set()
         await never_complete.wait()
 

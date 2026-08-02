@@ -1,0 +1,26 @@
+{
+  "version": "1",
+  "profileId": "budget-execution",
+  "revision": "1",
+  "extends": ["ruijin"],
+  "sections": [
+    {"code": "service_workload", "enabled": false},
+    {"code": "budget_overview", "title": "预算执行总览", "required": true},
+    {"code": "budget_variance", "title": "预算差异与重点项目", "required": true}
+  ],
+  "sectionOrder": [
+    "executive_summary",
+    "scope_and_methodology",
+    "budget_overview",
+    "income_and_budget",
+    "cost_and_expenditure",
+    "project_budget",
+    "budget_variance",
+    "key_findings",
+    "limitations",
+    "recommendations"
+  ],
+  "pageLayout": {
+    "footerLeft": "预算执行专题分析"
+  }
+}

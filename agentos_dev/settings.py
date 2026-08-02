@@ -43,7 +43,7 @@ def _positive_int(
     return value
 
 
-def _reasoning_effort(values: MutableMapping[str, str], name: str, default: str = "max") -> str:
+def _reasoning_effort(values: MutableMapping[str, str], name: str, default: str = "medium") -> str:
     value = values.get(name, default).strip().lower()
     if value not in {"minimal", "low", "medium", "high", "xhigh", "max"}:
         raise ValueError(f"{name} 必须是 minimal、low、medium、high、xhigh 或 max")

@@ -210,6 +210,85 @@ def test_markdown_正文表格和多图完整渲染为_pdf(runtime):
         validate_job(runtime, job, rendered["pdfPath"])
 
 
+def test_pdf_不显示引用或实际引用附录但保留_manifest_绑定(runtime):
+    pypdf = pytest.importorskip("pypdf")
+    long_business_label = (
+        "按院区、一级核算单元和预算类型汇总医疗收入预算执行情况，"
+        "对比实际医疗收入与预算医疗收入并形成已审核业务数据说明"
+    )
+    (runtime.workspace / "data.csv").write_text("月份,金额\n2025-01,1\n", encoding="utf-8")
+    markdown = (
+        "# 经营分析报告\n\n"
+        "[[section:executive_summary]]\n"
+        "## 执行摘要\n\n"
+        "预算执行保持稳定。[[citation:citation_002]]\n\n"
+        "收入趋势可控。[[citation:citation_001]]\n"
+    )
+    (runtime.workspace / "report.md").write_text(markdown, encoding="utf-8")
+    job = prepare_job(runtime, ["data.csv"])
+    job["_citationPresentations"] = [
+        {
+            "citationId": "citation_001",
+            "label": long_business_label,
+            "coverageItems": [{"label": "收入数据", "periods": ["2025-01", "2025-02"]}],
+        },
+        {
+            "citationId": "citation_002",
+            "label": "支出预算执行",
+            "coverageItems": [
+                {"label": "预算数据", "periods": ["2025-01", "2025-02"]},
+                {"label": "实际支出数据", "periods": ["2025-02"]},
+            ],
+        },
+    ]
+    rendered = render_job(runtime, job, "report.md", "report.pdf")
+    assert job["render"]["citationAppendixPresent"] is False
+
+    reader = pypdf.PdfReader(str(runtime.workspace / rendered["pdfPath"]))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    assert "[引用 001]" not in text
+    assert "[引用 002]" not in text
+    assert "[[citation:" not in text
+    assert "[[section:executive_summary]]" not in text
+    assert "实际引用附录" not in text
+    assert "支出预算执行" not in text
+    assert "".join(long_business_label.split()) not in "".join(text.split())
+    assert "2025年1月至2月" not in text
+    assert "dataset" not in text
+    assert "requirement" not in text
+    assert "[[citation:citation_002]]" in (runtime.workspace / "report.md").read_text(
+        encoding="utf-8"
+    )
+    assert "[[section:executive_summary]]" in (runtime.workspace / "report.md").read_text(
+        encoding="utf-8"
+    )
+
+    temporary = f"/tmp/workspace-report-{uuid.uuid4().hex}-validate"
+    validation = runtime.validate_pdf(
+        job,
+        rendered["pdfPath"],
+        temporary,
+        {
+            "charts": [],
+            "citations": [
+                {
+                    "citationId": "citation_001",
+                    "datasetId": "dataset-income",
+                    "requirementId": "income",
+                },
+                {
+                    "citationId": "citation_002",
+                    "datasetId": "dataset-budget",
+                    "requirementId": "budget",
+                },
+            ],
+            "sections": ["executive_summary"],
+        },
+    )
+    assert validation["ok"] is True
+    assert validation["citationIds"] == ["citation_001", "citation_002"]
+
+
 def test_pdf_视觉验收识别空白页且不把失败当作完成(runtime, monkeypatch):
     pypdf = pytest.importorskip("pypdf")
     from weasyprint import HTML

@@ -14,6 +14,7 @@ from agno.workflow.types import StepInput, StepOutput
 
 from agentos_dev.coding.reporting.contract import (
     AgentQueryResponse,
+    MeasureSemantic,
     ModelColumn,
     ModelTable,
     ModelTerm,
@@ -248,6 +249,15 @@ def approval_snapshots() -> tuple[SourceSchemaSnapshot, ...]:
             revision="m1",
             schemaHash=schema_hash(model_tables),
             tables=model_tables,
+            measureSemantics=tuple(
+                MeasureSemantic(
+                    fieldRef=f"operations.reporting.{name}.amount",
+                    aggregation="sum",
+                    additiveAcross=("month", "campus"),
+                    exclusiveScope={},
+                )
+                for name in ("income", "cost")
+            ),
         ),
     )
 
@@ -404,7 +414,8 @@ async def test_数据理解模型只接收有效结构契约不接收原始ddl()
     assert set(captured[0]) == {"reportGoal", "period", "schemas"}
     schemas = captured[0]["schemas"]
     assert isinstance(schemas, list)
-    assert set(schemas[0]) == {"tables"}
+    assert set(schemas[0]) == {"tables", "measureSemantics"}
+    assert schemas[0]["measureSemantics"][0]["aggregation"] == "sum"
     assert "ddlModels" not in json.dumps(schemas, ensure_ascii=False)
     assert set(schemas[0]["tables"][0]) == {"sourceId", "table", "description", "columns"}
     assert schemas[0]["tables"][0]["table"] == "reporting.income"
@@ -1000,6 +1011,451 @@ async def test_分析计划语义纠错基于上一合法输出且只允许修�
 
 
 @pytest.mark.anyio
+async def test_分析计划删除无合法指标需求且拒绝借机改写其他分析():
+    income_table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="income",
+        columns=(
+            ModelColumn(name="month", dataType="DATE", nullable=False),
+            ModelColumn(name="campus", dataType="VARCHAR(100)", nullable=True),
+            ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),
+        ),
+    )
+    project_table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="project_budget",
+        columns=(
+            ModelColumn(name="period_year", dataType="INTEGER", nullable=False),
+            ModelColumn(name="project_name", dataType="VARCHAR(255)", nullable=False),
+            ModelColumn(name="budget_amount", dataType="DECIMAL(18,2)", nullable=True),
+        ),
+    )
+    snapshot = SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="m1",
+        schemaHash=schema_hash((income_table, project_table)),
+        tables=(income_table, project_table),
+        measureSemantics=(
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.amount",
+                aggregation="sum",
+                additiveAcross=("month", "campus"),
+                exclusiveScope={},
+            ),
+        ),
+    )
+    income_requirement = QueryRequirement.model_validate(
+        {
+            "requirementId": "income-monthly",
+            "sourceId": "operations",
+            "tables": [
+                {
+                    "table": "reporting.income",
+                    "periodColumn": "month",
+                    "periodGranularity": "date",
+                    "measureColumns": ["amount"],
+                }
+            ],
+            "dimensionColumns": ["month", "campus"],
+            "grainColumns": ["month", "campus"],
+        }
+    )
+    project_requirement = QueryRequirement.model_validate(
+        {
+            "requirementId": "project-annual",
+            "sourceId": "operations",
+            "tables": [
+                {
+                    "table": "reporting.project_budget",
+                    "periodColumn": "period_year",
+                    "periodGranularity": "year",
+                    "measureColumns": ["budget_amount"],
+                }
+            ],
+            "dimensionColumns": ["period_year", "project_name"],
+            "grainColumns": ["period_year", "project_name"],
+        }
+    )
+    invalid = AnalysisBundle.model_validate(
+        {
+            "analyses": [
+                {
+                    "code": "income",
+                    "description": "收入分析",
+                    "requirementIds": ["income-monthly"],
+                },
+                {
+                    "code": "project",
+                    "description": "项目预算分析",
+                    "requirementIds": ["project-annual"],
+                },
+            ],
+            "requirements": [
+                income_requirement.model_dump(mode="json", by_alias=True),
+                project_requirement.model_dump(mode="json", by_alias=True),
+            ],
+        }
+    )
+    corrected = invalid.model_copy(
+        update={"analyses": (invalid.analyses[0],), "requirements": (income_requirement,)}
+    )
+    drifted = corrected.model_copy(
+        update={
+            "analyses": (
+                corrected.analyses[0].model_copy(update={"description": "借纠错改写的收入分析"}),
+            )
+        }
+    )
+    outputs = [invalid, drifted, corrected]
+    captured: list[dict[str, object]] = []
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._analysis_agent = SimpleNamespace(id="analysis-planner")
+
+    async def run_planner(_agent, payload, _run_context):
+        captured.append(payload)
+        return outputs[len(captured) - 1]
+
+    runtime._run_planner = run_planner
+    context = data_understanding_context(snapshot)
+    state = context.session_state
+    state[REPORT_OUTLINE_STATE_KEY] = {
+        "title": "运营分析",
+        "sections": ["收入分析", "项目预算分析"],
+        "assumptions": [],
+    }
+    state[REPORT_OUTLINE_CONTEXT_STATE_KEY] = {}
+    state[REPORT_DATA_UNDERSTANDING_STATE_KEY] = {
+        "tables": [
+            {
+                "sourceId": "operations",
+                "table": "reporting.income",
+                "role": "收入",
+                "periodColumn": "month",
+                "periodGranularity": "date",
+            },
+            {
+                "sourceId": "operations",
+                "table": "reporting.project_budget",
+                "role": "项目预算",
+                "periodColumn": "period_year",
+                "periodGranularity": "year",
+            },
+        ]
+    }
+
+    await runtime.generate_analysis_plan(StepInput(input=envelope()), context)
+
+    assert len(captured) == 3
+    first_correction = captured[1]["correction"]
+    assert first_correction["allowedMutationPaths"] == []
+    assert first_correction["requiredDeletionPaths"] == ["requirements[1]", "analyses[1]"]
+    issue = first_correction["validationFeedback"]["issues"][0]
+    assert issue["reason"] == "字段未获服务端结构快照批准为可聚合指标，禁止猜测聚合口径"
+    assert "删除整个 requirement" in issue["requiredAction"]
+    assert captured[2]["correction"]["validationFeedback"]["code"] == (
+        "report_correction_scope_violation"
+    )
+    assert state[REPORT_ANALYSIS_PLAN_STATE_KEY] == [
+        invalid.analyses[0].model_dump(mode="json", by_alias=True)
+    ]
+    assert state[REPORT_DATA_REQUIREMENTS_STATE_KEY] == [
+        income_requirement.model_dump(mode="json", by_alias=True)
+    ]
+
+
+@pytest.mark.anyio
+async def test_分析计划由服务端补齐多指标共用的安全物化粒度():
+    table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="income",
+        columns=(
+            ModelColumn(name="month", dataType="DATE", nullable=False),
+            ModelColumn(name="campus", dataType="VARCHAR(100)", nullable=True),
+            ModelColumn(name="department_code", dataType="VARCHAR(30)", nullable=True),
+            ModelColumn(name="department", dataType="VARCHAR(100)", nullable=True),
+            ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),
+            ModelColumn(name="person_time", dataType="INTEGER", nullable=True),
+        ),
+    )
+    snapshot = SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="m1",
+        schemaHash=schema_hash((table,)),
+        tables=(table,),
+        measureSemantics=(
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.amount",
+                aggregation="sum",
+            ),
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.person_time",
+                aggregation="sum",
+            ),
+        ),
+    )
+    requirement = QueryRequirement.model_validate(
+        {
+            "requirementId": "income-monthly",
+            "sourceId": "operations",
+            "tables": [
+                {
+                    "table": "reporting.income",
+                    "periodColumn": "month",
+                    "periodGranularity": "date",
+                    "measureColumns": ["amount", "person_time"],
+                }
+            ],
+            "dimensionColumns": ["month", "campus"],
+            "grainColumns": ["month", "campus"],
+        }
+    )
+    bundle = AnalysisBundle.model_validate(
+        {
+            "analyses": [
+                {
+                    "code": "income",
+                    "description": "收入与人次分析",
+                    "requirementIds": [requirement.requirement_id],
+                }
+            ],
+            "requirements": [requirement.model_dump(mode="json", by_alias=True)],
+        }
+    )
+    captured: list[dict[str, object]] = []
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._analysis_agent = SimpleNamespace(id="analysis-planner")
+
+    async def run_planner(_agent, payload, _run_context):
+        captured.append(payload)
+        return bundle
+
+    runtime._run_planner = run_planner
+    context = data_understanding_context(snapshot)
+    state = context.session_state
+    state[REPORT_OUTLINE_STATE_KEY] = {
+        "title": "运营分析",
+        "sections": ["收入分析"],
+        "assumptions": [],
+    }
+    state[REPORT_OUTLINE_CONTEXT_STATE_KEY] = {}
+    state[REPORT_DATA_UNDERSTANDING_STATE_KEY] = {
+        "tables": [
+            {
+                "sourceId": "operations",
+                "table": "reporting.income",
+                "role": "收入",
+                "periodColumn": "month",
+                "periodGranularity": "date",
+            }
+        ]
+    }
+
+    await runtime.generate_analysis_plan(StepInput(input=envelope()), context)
+
+    assert len(captured) == 1
+    normalized = state[REPORT_DATA_REQUIREMENTS_STATE_KEY][0]
+    assert normalized["dimensionColumns"] == [
+        "month",
+        "campus",
+        "department_code",
+        "department",
+    ]
+    assert normalized["grainColumns"] == [
+        "month",
+        "campus",
+        "department_code",
+        "department",
+    ]
+    assert bundle.requirements[0] == requirement
+
+
+def test_分析计划安全粒度反馈按表合并并开放完整修复目标():
+    table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="income",
+        columns=(
+            ModelColumn(name="month", dataType="DATE", nullable=False),
+            ModelColumn(name="campus", dataType="VARCHAR(100)", nullable=True),
+            ModelColumn(name="department", dataType="VARCHAR(100)", nullable=True),
+            ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),
+            ModelColumn(name="person_time", dataType="INTEGER", nullable=True),
+        ),
+    )
+    snapshot = SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="m1",
+        schemaHash=schema_hash((table,)),
+        tables=(table,),
+        measureSemantics=(
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.amount",
+                aggregation="sum",
+            ),
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.person_time",
+                aggregation="sum",
+            ),
+        ),
+    )
+    requirement = QueryRequirement.model_validate(
+        {
+            "requirementId": "income-monthly",
+            "sourceId": "operations",
+            "tables": [
+                {
+                    "table": "reporting.income",
+                    "periodColumn": "month",
+                    "periodGranularity": "date",
+                    "measureColumns": ["amount", "person_time"],
+                }
+            ],
+            "dimensionColumns": ["month", "campus"],
+            "grainColumns": ["month", "campus"],
+        }
+    )
+    bundle = AnalysisBundle.model_validate(
+        {
+            "analyses": [
+                {
+                    "code": "income",
+                    "description": "收入与人次分析",
+                    "requirementIds": [requirement.requirement_id],
+                }
+            ],
+            "requirements": [requirement.model_dump(mode="json", by_alias=True)],
+        }
+    )
+    understanding = DataUnderstandingPlan.model_validate(
+        {
+            "tables": [
+                {
+                    "sourceId": "operations",
+                    "table": "reporting.income",
+                    "role": "收入",
+                    "periodColumn": "month",
+                    "periodGranularity": "date",
+                }
+            ]
+        }
+    )
+
+    issues = _analysis_bundle_semantic_issues(bundle, understanding, (snapshot,))
+
+    assert len(issues) == 1
+    assert issues[0]["path"] == "requirements[0].grainColumns"
+    assert issues[0]["missingValues"] == ["department"]
+    assert issues[0]["repairTargets"] == [
+        "requirements[0].dimensionColumns",
+        "requirements[0].grainColumns",
+    ]
+    assert issues[0]["targetValues"] == {
+        "dimensionColumns": ["month", "campus", "department"],
+        "grainColumns": ["month", "campus", "department"],
+    }
+    assert _analysis_allowed_mutation_paths(issues) == (
+        "requirements[0].dimensionColumns",
+        "requirements[0].grainColumns",
+    )
+
+
+@pytest.mark.anyio
+async def test_分析计划连续相同且无法规范化时提前停止():
+    columns = (
+        ModelColumn(name="month", dataType="DATE", nullable=False),
+        *(
+            ModelColumn(name=f"dimension_{index}", dataType="VARCHAR(30)", nullable=True)
+            for index in range(30)
+        ),
+        ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),
+    )
+    table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="income",
+        columns=columns,
+    )
+    snapshot = SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="m1",
+        schemaHash=schema_hash((table,)),
+        tables=(table,),
+        measureSemantics=(
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.amount",
+                aggregation="sum",
+            ),
+        ),
+    )
+    requirement = QueryRequirement.model_validate(
+        {
+            "requirementId": "income-monthly",
+            "sourceId": "operations",
+            "tables": [
+                {
+                    "table": "reporting.income",
+                    "periodColumn": "month",
+                    "periodGranularity": "date",
+                    "measureColumns": ["amount"],
+                }
+            ],
+            "dimensionColumns": ["month"],
+            "grainColumns": ["month"],
+        }
+    )
+    bundle = AnalysisBundle.model_validate(
+        {
+            "analyses": [
+                {
+                    "code": "income",
+                    "description": "收入分析",
+                    "requirementIds": [requirement.requirement_id],
+                }
+            ],
+            "requirements": [requirement.model_dump(mode="json", by_alias=True)],
+        }
+    )
+    captured: list[dict[str, object]] = []
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._analysis_agent = SimpleNamespace(id="analysis-planner")
+
+    async def run_planner(_agent, payload, _run_context):
+        captured.append(payload)
+        return bundle
+
+    runtime._run_planner = run_planner
+    context = data_understanding_context(snapshot)
+    state = context.session_state
+    state[REPORT_OUTLINE_STATE_KEY] = {
+        "title": "运营分析",
+        "sections": ["收入分析"],
+        "assumptions": [],
+    }
+    state[REPORT_OUTLINE_CONTEXT_STATE_KEY] = {}
+    state[REPORT_DATA_UNDERSTANDING_STATE_KEY] = {
+        "tables": [
+            {
+                "sourceId": "operations",
+                "table": "reporting.income",
+                "role": "收入",
+                "periodColumn": "month",
+                "periodGranularity": "date",
+            }
+        ]
+    }
+
+    with pytest.raises(ReportingError) as captured_error:
+        await runtime.generate_analysis_plan(StepInput(input=envelope()), context)
+
+    assert captured_error.value.code == "report_analysis_plan_invalid"
+    assert "连续两次没有进展" in captured_error.value.message
+    assert len(captured) == 2
+
+
+@pytest.mark.anyio
 async def test_分析计划纠错拒绝修改允许路径以外的字段():
     requirement = query_requirement()
     invalid = AnalysisBundle.model_validate(
@@ -1078,6 +1534,18 @@ async def test_分析计划禁止强行拼接期间语义不同的表并反馈�
         revision="m1",
         schemaHash=schema_hash((monthly, annual)),
         tables=(monthly, annual),
+        measureSemantics=(
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.amount",
+                aggregation="sum",
+                additiveAcross=("period_code", "area"),
+            ),
+            MeasureSemantic(
+                fieldRef="operations.reporting.project_budget.amount",
+                aggregation="sum",
+                additiveAcross=("period_year", "area"),
+            ),
+        ),
     )
     invalid_output = {
         "analyses": [
@@ -2351,6 +2819,90 @@ def test_metadata术语保存在通用结构快照(tmp_path: Path):
     assert snapshot.terms == (term,)
 
 
+def test_metadata与profile指标语义一致时去重且冲突时失败关闭(tmp_path: Path):
+    source = source_config(tmp_path)
+    api_tables = (
+        ModelTable(
+            sourceId="operations",
+            database="reporting",
+            name="income",
+            columns=(ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),),
+        ),
+    )
+    raw = (
+        RawDdlModel(
+            id=1,
+            modelName="income",
+            modelDesc="收入模型",
+            ddl="CREATE TABLE reporting.income (amount DECIMAL(18,2))",
+        ),
+    )
+    semantic = MeasureSemantic(
+        fieldRef="operations.reporting.income.amount",
+        aggregation="sum",
+    )
+    metadata = ModelTermsResponse(
+        revision="m1",
+        schemaHash=schema_hash(api_tables),
+        sourceRefs=({"sourceId": "operations"},),
+        ddlModels=raw,
+        tables=api_tables,
+        terms=(),
+        measureSemantics=(semantic,),
+    )
+
+    snapshot = resolve_schema_snapshot(
+        envelope(),
+        source=source,
+        metadata=metadata,
+        catalog=api_tables,
+        profile_measure_semantics=(semantic,),
+    )
+    assert snapshot.measure_semantics == (semantic,)
+
+    with pytest.raises(ReportingError) as conflict:
+        resolve_schema_snapshot(
+            envelope(),
+            source=source,
+            metadata=metadata,
+            catalog=api_tables,
+            profile_measure_semantics=(semantic.model_copy(update={"aggregation": "average"}),),
+        )
+    assert conflict.value.code == "report_measure_semantic_conflict"
+
+
+def test_ddl_fallback使用profile指标语义(tmp_path: Path):
+    source = source_config(tmp_path)
+    ddl = "CREATE TABLE reporting.income (month DATE, amount DECIMAL(18,2));"
+    catalog = (
+        ModelTable(
+            sourceId="operations",
+            database="reporting",
+            name="income",
+            columns=(
+                ModelColumn(name="month", dataType="DATE", nullable=True),
+                ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),
+            ),
+        ),
+    )
+    semantic = MeasureSemantic(
+        fieldRef="operations.reporting.income.amount",
+        aggregation="sum",
+        additiveAcross=("month",),
+    )
+
+    snapshot = resolve_schema_snapshot(
+        envelope(schemaInput={"ddl": ddl}),
+        source=source,
+        metadata=None,
+        catalog=catalog,
+        profile_measure_semantics=(semantic,),
+    )
+
+    assert snapshot.source == "ddl"
+    assert snapshot.measure_semantics == (semantic,)
+
+
 @pytest.mark.anyio
 async def test_ddl解析后不进入workflow_state(tmp_path: Path, monkeypatch):
     source = source_config(tmp_path)
@@ -2543,6 +3095,13 @@ def test_sql审核年度期间支持数字或字符串年份边界(tmp_path: Pat
         revision="m1",
         schemaHash=schema_hash((table,)),
         tables=(table,),
+        measureSemantics=(
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.amount",
+                aggregation="sum",
+                additiveAcross=("period_year",),
+            ),
+        ),
     )
     requirement = QueryRequirement.model_validate(
         {
@@ -2621,6 +3180,13 @@ def test_sql审核字符串月份支持常见编码边界(tmp_path: Path, start:
         revision="m1",
         schemaHash=schema_hash((table,)),
         tables=(table,),
+        measureSemantics=(
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.amount",
+                aggregation="sum",
+                additiveAcross=("period_code",),
+            ),
+        ),
     )
     requirement = QueryRequirement.model_validate(
         {
@@ -2719,6 +3285,107 @@ def approve_sql(tmp_path: Path, sql: str, *, requirement=None):
         envelope=envelope(),
         requirements=(requirement or query_requirement(),),
     )
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected_code"),
+    [
+        (
+            "SELECT month, AVG(amount) FROM reporting.income "
+            "WHERE month BETWEEN '2025-01-01' AND '2025-12-31' "
+            "AND income_nature = '开单收入' GROUP BY month",
+            "report_query_aggregation_invalid",
+        ),
+        (
+            "SELECT month, SUM(amount) FROM reporting.income "
+            "WHERE month BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY month",
+            "report_query_scope_semantic_invalid",
+        ),
+    ],
+)
+def test_sql审核强制执行指标聚合与固定口径契约(tmp_path: Path, sql: str, expected_code: str):
+    table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="income",
+        columns=(
+            ModelColumn(name="month", dataType="DATE", nullable=False),
+            ModelColumn(name="income_nature", dataType="VARCHAR(20)", nullable=False),
+            ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),
+        ),
+    )
+    snapshot = SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="m1",
+        schemaHash=schema_hash((table,)),
+        tables=(table,),
+        measureSemantics=(
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.amount",
+                aggregation="sum",
+                additiveAcross=("month",),
+                exclusiveScope={"income_nature": "开单收入"},
+            ),
+        ),
+    )
+    requirement = query_requirement()
+
+    with pytest.raises(ReportingError) as captured:
+        approve_query_batch(
+            [{"requirementId": "income-monthly", "sourceId": "operations", "sql": sql}],
+            sources={"operations": source_config(tmp_path)},
+            snapshots=(snapshot,),
+            envelope=envelope(),
+            requirements=(requirement,),
+        )
+
+    assert captured.value.code == expected_code
+
+
+def test_sql审核拒绝通过省略层级维度绕过可加性契约(tmp_path: Path):
+    table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="income",
+        columns=(
+            ModelColumn(name="month", dataType="DATE", nullable=False),
+            ModelColumn(name="department_level", dataType="VARCHAR(20)", nullable=False),
+            ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),
+        ),
+    )
+    snapshot = SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="m1",
+        schemaHash=schema_hash((table,)),
+        tables=(table,),
+        measureSemantics=(
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.amount",
+                aggregation="sum",
+                additiveAcross=("month",),
+            ),
+        ),
+    )
+
+    with pytest.raises(ReportingError) as captured:
+        approve_query_batch(
+            [
+                {
+                    "requirementId": "income-monthly",
+                    "sourceId": "operations",
+                    "sql": (
+                        "SELECT month, SUM(amount) FROM reporting.income "
+                        "WHERE month BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY month"
+                    ),
+                }
+            ],
+            sources={"operations": source_config(tmp_path)},
+            snapshots=(snapshot,),
+            envelope=envelope(),
+            requirements=(query_requirement(),),
+        )
+
+    assert captured.value.code == "report_measure_additivity_invalid"
 
 
 @pytest.mark.parametrize(
@@ -2857,6 +3524,13 @@ def test_sql审核按数据源年度粒度校验期间(tmp_path: Path, condition
         revision="m1",
         schemaHash=schema_hash((table,)),
         tables=(table,),
+        measureSemantics=(
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.amount",
+                aggregation="sum",
+                additiveAcross=("period_year",),
+            ),
+        ),
     )
     requirement = query_requirement(
         tables=[

@@ -36,6 +36,14 @@ from .publishing import (
 )
 from .runtime import ReportWorkflowRuntime
 
+_REPORTING_DEV_USER_ID = "reporting-dev"
+
+
+async def _reporting_dev_user_middleware(request: Request, call_next: Any):
+    if resolve_run_user_id(request) is None:
+        request.state.user_id = _REPORTING_DEV_USER_ID
+    return await call_next(request)
+
 
 class ReportCancelPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -107,6 +115,7 @@ def create_report_agentos_components(
 def create_agentos(settings: AgentSettings | None = None) -> AgentOS:
     current_settings = settings or AgentSettings.from_environment()
     # TODO: DEV 调试结束后恢复独立 Reporting AgentOS 的 JWT 鉴权。
+    # authorization_config = agentos_authorization_config(current_settings)
     context = create_execution_context(current_settings)
     download_repository = SqlAlchemyDownloadGrantRepository(getattr(context.database, "db_engine"))
     download_grants = ReportDownloadGrantService(download_repository)
@@ -114,6 +123,8 @@ def create_agentos(settings: AgentSettings | None = None) -> AgentOS:
         create_report_agentos_components(context, current_settings, download_grants=download_grants)
     )
     base_app = FastAPI()
+    # TODO: DEV 调试结束并恢复 JWT 鉴权后移除此固定用户中间件。
+    base_app.middleware("http")(_reporting_dev_user_middleware)
     base_app.include_router(_standalone_cancel_router(controller))
     base_app.include_router(
         create_workspace_report_download_router(
@@ -137,6 +148,7 @@ def create_agentos(settings: AgentSettings | None = None) -> AgentOS:
         interfaces=[ReportAGUI(agent=reporting_agent)],
         db=context.database,
         authorization=False,
+        # authorization_config=authorization_config,
         cors_allowed_origins=list(current_settings.cors_allowed_origins),
         lifespan=lifespan,
         base_app=base_app,

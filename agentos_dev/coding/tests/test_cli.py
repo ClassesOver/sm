@@ -73,8 +73,10 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.model.timeout == 123
     assert agent.model.max_retries == 0
     assert agent.model.extra_body == {"enable_thinking": True, "thinking_budget": 16384}
-    assert agent.model.reasoning_effort == "max"
-    assert agent.model.get_request_params()["reasoning_effort"] == "max"
+    assert agent.model.temperature == 0
+    assert agent.model.reasoning_effort == "medium"
+    assert agent.model.get_request_params()["temperature"] == 0
+    assert agent.model.get_request_params()["reasoning_effort"] == "medium"
     assert agent.model.request_params == {"parallel_tool_calls": True}
     assert agent.add_history_to_context is False
     assert agent.debug_mode is False
@@ -108,7 +110,7 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert app_agent.model is agent.model
     assert app_agent.model.id == settings.model_id
     assert app_agent.model.extra_body == {"enable_thinking": True, "thinking_budget": 16384}
-    assert app_agent.model.reasoning_effort == "max"
+    assert app_agent.model.reasoning_effort == "medium"
     assert app_agent.model.request_params == {"parallel_tool_calls": True}
     assert app_agent.add_history_to_context is False
     assert app_agent.num_history_runs is None
@@ -134,6 +136,37 @@ def test_create_cli_agent_is_independent_coding_agent():
     )
     assert request_params["tool_choice"] == expected_tool_choice
     assert request_params["parallel_tool_calls"] is True
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://api.siliconflow.cn/v1",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "http://127.0.0.1:8000/v1",
+    ],
+    ids=["siliconflow", "qianwen-dashscope", "vllm"],
+)
+def test_coding_thinking_parameters_use_openai_compatible_request_fields(base_url):
+    settings = AgentSettings.from_environment({"OPENAI_BASE_URL": base_url}, load_env_file=False)
+    agent = create_cli_agent(
+        CliContext(
+            settings=settings,
+            database=object(),
+            workspace_service=object(),
+            coding_repository=object(),  # type: ignore[arg-type]
+        )
+    )
+
+    request_params = agent.model.get_request_params()
+
+    assert str(agent.model.base_url).rstrip("/") == base_url.rstrip("/")
+    assert request_params["reasoning_effort"] == "medium"
+    assert request_params["temperature"] == 0
+    assert request_params["extra_body"] == {
+        "enable_thinking": True,
+        "thinking_budget": 16384,
+    }
 
 
 def test_cli_instructions_prefer_direct_verify_and_batch_patch():
@@ -167,7 +200,7 @@ def test_cli_agent_explicitly_honors_thinking_setting():
     )
 
     assert agent.model.extra_body == {"enable_thinking": False}
-    assert agent.model.reasoning_effort == "max"
+    assert agent.model.reasoning_effort == "medium"
 
 
 def test_create_files_patch_builds_one_native_multi_file_patch():

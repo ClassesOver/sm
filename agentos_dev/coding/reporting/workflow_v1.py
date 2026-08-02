@@ -10,6 +10,7 @@ from sqlglot import exp, parse_one
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from .contract import (
+    MeasureSemantic,
     ModelTable,
     ModelTermsResponse,
     ReportPeriod,
@@ -186,6 +187,7 @@ def resolve_schema_snapshot(
     source: StarRocksSourceConfig,
     metadata: ModelTermsResponse | None,
     catalog: tuple[ModelTable, ...],
+    profile_measure_semantics: tuple[MeasureSemantic, ...] = (),
 ) -> SourceSchemaSnapshot:
     ddl_tables: tuple[ModelTable, ...] | None = None
     if envelope.schema_input and envelope.schema_input.ddl:
@@ -218,6 +220,19 @@ def resolve_schema_snapshot(
             if not term.field_refs
             or any(field_ref.lower().startswith(source_prefix) for field_ref in term.field_refs)
         )
+        metadata_semantics = tuple(
+            item
+            for item in metadata.measure_semantics
+            if item.field_ref.lower().startswith(source_prefix)
+        )
+        source_semantics = _merge_measure_semantics(
+            metadata_semantics,
+            tuple(
+                item
+                for item in profile_measure_semantics
+                if item.field_ref.lower().startswith(source_prefix)
+            ),
+        )
         source_ddl_models = tuple(
             raw
             for raw, table in zip(metadata.ddl_models, metadata.tables, strict=True)
@@ -230,6 +245,7 @@ def resolve_schema_snapshot(
             ddlModels=source_ddl_models,
             tables=requested,
             terms=source_terms,
+            measureSemantics=source_semantics,
         )
     else:
         assert ddl_tables is not None
@@ -238,6 +254,11 @@ def resolve_schema_snapshot(
             revision="ddl-v1",
             schemaHash=schema_hash(ddl_tables),
             tables=ddl_tables,
+            measureSemantics=tuple(
+                item
+                for item in profile_measure_semantics
+                if item.field_ref.lower().startswith(f"{source.id}.".lower())
+            ),
         )
     if envelope.schema_input and envelope.schema_input.schema_hash:
         if envelope.schema_input.schema_hash != snapshot.schema_hash:
@@ -256,6 +277,31 @@ def resolve_schema_snapshot(
     )
 
 
+def _merge_measure_semantics(
+    metadata_semantics: tuple[MeasureSemantic, ...],
+    profile_semantics: tuple[MeasureSemantic, ...],
+) -> tuple[MeasureSemantic, ...]:
+    merged = {item.field_ref.lower(): item for item in metadata_semantics}
+    order = [item.field_ref.lower() for item in metadata_semantics]
+    for item in profile_semantics:
+        field_ref = item.field_ref.lower()
+        current = merged.get(field_ref)
+        if current is not None:
+            current_payload = current.model_dump(mode="json", by_alias=True)
+            item_payload = item.model_dump(mode="json", by_alias=True)
+            current_payload["fieldRef"] = current_payload["fieldRef"].lower()
+            item_payload["fieldRef"] = item_payload["fieldRef"].lower()
+            if current_payload != item_payload:
+                raise ReportingError(
+                    "report_measure_semantic_conflict",
+                    f"metadata API 与 Profile 的指标语义冲突: {item.field_ref}",
+                )
+            continue
+        merged[field_ref] = item
+        order.append(field_ref)
+    return tuple(merged[field_ref] for field_ref in order)
+
+
 def approve_query_batch(
     queries: list[dict[str, str]],
     *,
@@ -272,6 +318,11 @@ def approve_query_batch(
     if not requirements or len(requirement_map) != len(requirements):
         raise ReportingError("report_query_batch_invalid", "SQL requirements 不能为空或重复。")
     snapshot_tables = _snapshot_tables(snapshots)
+    measure_semantics = {
+        item.field_ref.lower(): item
+        for snapshot in snapshots
+        for item in snapshot.measure_semantics
+    }
     for item in queries:
         if set(item) != {"requirementId", "sourceId", "sql"}:
             raise ReportingError("report_query_batch_invalid", "SQL 批次字段无效。")
@@ -291,6 +342,7 @@ def approve_query_batch(
             requirement,
             database=source.database,
             snapshot_tables=scoped_tables,
+            measure_semantics=measure_semantics,
         )
         sql = validate_starrocks_read_only_sql(
             item["sql"],
@@ -303,6 +355,7 @@ def approve_query_batch(
             requirement=requirement,
             period=envelope.period,
             snapshot_tables=scoped_tables,
+            measure_semantics=measure_semantics,
         )
         result.append(
             ApprovedQuery(
@@ -344,6 +397,7 @@ def _validate_requirement_scope(
     *,
     database: str,
     snapshot_tables: dict[str, ModelTable],
+    measure_semantics: dict[str, MeasureSemantic],
 ) -> None:
     available_dimensions: set[str] = set()
     table_columns: dict[str, set[str]] = {}
@@ -360,6 +414,32 @@ def _validate_requirement_scope(
         }
         if required - columns:
             raise ReportingError("report_query_scope_invalid", "取数需求引用了结构快照外的字段。")
+        table_prefix = f"{requirement.source_id}.{qualified}.".lower()
+        declared_measure_columns = {
+            field_ref.rsplit(".", 1)[-1]
+            for field_ref in measure_semantics
+            if field_ref.startswith(table_prefix)
+        }
+        for measure in requested.measure_columns:
+            field_ref = f"{requirement.source_id}.{qualified}.{measure}".lower()
+            semantic = measure_semantics.get(field_ref)
+            if semantic is None:
+                raise ReportingError(
+                    "report_measure_semantic_missing",
+                    f"指标 {field_ref} 缺少服务端聚合语义契约。",
+                )
+            ungoverned_dimensions = (
+                columns
+                - declared_measure_columns
+                - set(requirement.grain_columns)
+                - set(semantic.additive_across)
+                - set(semantic.exclusive_scope)
+            )
+            if ungoverned_dimensions:
+                raise ReportingError(
+                    "report_measure_additivity_invalid",
+                    "指标表存在未保留、未固定且未声明为可加的维度。",
+                )
         table_columns[requested.table] = columns
         available_dimensions.update(columns)
     if set(requirement.dimension_columns) - available_dimensions:
@@ -380,6 +460,7 @@ def _validate_query_contract(
     requirement: QueryRequirement,
     period: ReportPeriod,
     snapshot_tables: dict[str, ModelTable],
+    measure_semantics: dict[str, MeasureSemantic],
 ) -> None:
     statement = parse_one(sql, read="mysql")
     scopes = tuple(traverse_scope(statement))
@@ -432,6 +513,32 @@ def _validate_query_contract(
             raise ReportingError(
                 "report_query_measure_invalid", "SQL 未聚合 requirement 声明的全部指标字段。"
             )
+        qualified = _qualified_requirement_table(table_requirement.table, database)
+        for measure in table_requirement.measure_columns:
+            field_ref = f"{requirement.source_id}.{qualified}.{measure}".lower()
+            semantic = measure_semantics.get(field_ref)
+            if semantic is None:
+                raise ReportingError(
+                    "report_measure_semantic_missing", "SQL 指标缺少服务端聚合语义契约。"
+                )
+            if not _scope_has_semantic_measure(
+                scope.expression,
+                alias=alias,
+                column=measure,
+                aggregation=semantic.aggregation,
+            ):
+                raise ReportingError(
+                    "report_query_aggregation_invalid",
+                    "SQL 指标聚合函数与服务端语义契约不一致。",
+                )
+            for column, value in semantic.exclusive_scope.items():
+                if not _has_exact_scope_filter(
+                    scope.expression, alias=alias, column=column, value=value
+                ):
+                    raise ReportingError(
+                        "report_query_scope_semantic_invalid",
+                        "SQL 缺少指标语义契约要求的固定口径过滤。",
+                    )
 
     if len(actual_tables) > 1:
         for scope in scopes:
@@ -480,6 +587,56 @@ def _scope_has_measures(expression: exp.Expression, measure_columns: tuple[str, 
         for column in aggregate.find_all(exp.Column)
     }
     return set(measure_columns).issubset(aggregated_columns)
+
+
+def _scope_has_semantic_measure(
+    expression: exp.Expression,
+    *,
+    alias: str,
+    column: str,
+    aggregation: str,
+) -> bool:
+    for aggregate in expression.find_all(exp.AggFunc):
+        if not any(_matches_column(item, alias, column) for item in aggregate.find_all(exp.Column)):
+            continue
+        if aggregation == "sum" and isinstance(aggregate, exp.Sum):
+            return True
+        if aggregation == "average" and isinstance(aggregate, exp.Avg):
+            return True
+        if aggregation == "min" and isinstance(aggregate, exp.Min):
+            return True
+        if aggregation == "max" and isinstance(aggregate, exp.Max):
+            return True
+        is_distinct = isinstance(aggregate.this, exp.Distinct) or bool(
+            aggregate.args.get("distinct")
+        )
+        if aggregation == "count" and isinstance(aggregate, exp.Count) and not is_distinct:
+            return True
+        if aggregation == "count_distinct" and isinstance(aggregate, exp.Count) and is_distinct:
+            return True
+    return False
+
+
+def _has_exact_scope_filter(
+    expression: exp.Expression,
+    *,
+    alias: str,
+    column: str,
+    value: str,
+) -> bool:
+    where = expression.args.get("where")
+    if where is None:
+        return False
+    for predicate in _and_predicates(where.this):
+        if not isinstance(predicate, exp.EQ):
+            continue
+        left, right = predicate.this, predicate.expression
+        literal = right if _matches_column(left, alias, column) else left
+        if not (_matches_column(left, alias, column) or _matches_column(right, alias, column)):
+            continue
+        if isinstance(literal, exp.Literal) and str(literal.this) == value:
+            return True
+    return False
 
 
 def _has_complete_period_filter(

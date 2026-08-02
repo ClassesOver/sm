@@ -18,6 +18,7 @@ from typing import Any
 
 from agno.run import RunContext
 from agno.tools import Function
+from agno.utils.log import log_debug
 from daytona import SessionExecuteRequest
 from daytona.common.errors import DaytonaNotFoundError
 
@@ -80,6 +81,7 @@ MAX_TERMINAL_RUNTIME_CACHE_ENTRIES = 1024
 CODING_TOOL_OUTPUT_STATE_KEY = "agentos_coding_tool_outputs"
 CODING_TOOL_PROGRESS_STATE_KEY = "agentos_coding_tool_progress"
 CODING_TOOL_FAILURE_STATE_KEY = "agentos_coding_tool_failures"
+CODING_TOOL_ARGUMENT_AUTOFIX_STATE_KEY = "agentos_coding_tool_argument_autofixes"
 CODING_REWORK_STATE_KEY = "agentos_coding_rework"
 TOOL_OUTPUT_ROOT = "/home/daytona/.agentos/tool-output"
 VALIDATOR_ROOT = "/home/daytona/.agentos/validators"
@@ -87,8 +89,109 @@ READONLY_RUNTIME_ROOT = "/home/daytona/.agentos/runtime"
 MAX_VALIDATOR_REQUEST_BYTES = 256 * 1024
 MAX_VALIDATOR_RESULT_BYTES = 32 * 1024
 MAX_VALIDATOR_DETAIL_BYTES = 8 * 1024
+MAX_VALIDATOR_DOWNLOAD_TIMEOUT = 30
+MAX_VALIDATOR_STAGE_TIMEOUT = 60
 READONLY_SCRIPT_RUNTIME = Path(__file__).with_name("readonly_script_runtime.py").read_bytes()
 READONLY_SCRIPT_RUNTIME_SHA256 = hashlib.sha256(READONLY_SCRIPT_RUNTIME).hexdigest()
+
+
+def normalize_coding_function_call_arguments(
+    fc: Any,
+    run_context: RunContext | None = None,
+) -> None:
+    """在 Agno 建立工具执行链前规范化 JSON 等价参数。"""
+    _normalize_function_call_arguments(
+        fc,
+        run_context,
+        state_key=CODING_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
+        autofix_code="coding_tool_arguments_unwrapped",
+    )
+
+
+def normalize_function_call_arguments(
+    fc: Any,
+    run_context: RunContext | None = None,
+    *,
+    state_key: str,
+    autofix_code: str,
+) -> None:
+    """按 Function schema 解码一层 JSON 传输表示，不修补非法 JSON。"""
+    _normalize_function_call_arguments(
+        fc,
+        run_context,
+        state_key=state_key,
+        autofix_code=autofix_code,
+    )
+
+
+def _normalize_function_call_arguments(
+    fc: Any,
+    run_context: RunContext | None,
+    *,
+    state_key: str,
+    autofix_code: str,
+) -> None:
+    arguments = getattr(fc, "arguments", None)
+    if not isinstance(arguments, dict):
+        return
+
+    function = getattr(fc, "function", None)
+    parameters = getattr(function, "parameters", None)
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    schema_properties = properties if isinstance(properties, dict) else {}
+    corrected = dict(arguments)
+    changed = False
+
+    # `arguments` 不是目标 Function 的真实字段时，允许展开唯一一层传输包装；
+    # 同级字段只在无键冲突时确定性合并，展开后仍由原始 strict schema 最终校验。
+    if "arguments" not in schema_properties and "arguments" in corrected:
+        wrapped = corrected["arguments"]
+        if isinstance(wrapped, str):
+            try:
+                wrapped = json.loads(wrapped)
+            except json.JSONDecodeError:
+                wrapped = None
+        siblings = {key: value for key, value in corrected.items() if key != "arguments"}
+        if isinstance(wrapped, dict) and not wrapped.keys() & siblings.keys():
+            corrected = {**wrapped, **siblings}
+            changed = True
+
+    # 部分 OpenAI-compatible provider 会把 object/array 属性再次 JSON 编码为字符串。
+    # 这里只按声明 schema 解码一层且要求容器类型完全一致；不递归、不补括号、
+    # 不接受 Python literal，也不改字段名或默认值。
+    for key, value in tuple(corrected.items()):
+        property_schema = schema_properties.get(key)
+        expected_type = property_schema.get("type") if isinstance(property_schema, dict) else None
+        if not isinstance(value, str) or expected_type not in {"object", "array"}:
+            continue
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            continue
+        if (expected_type == "object" and isinstance(decoded, dict)) or (
+            expected_type == "array" and isinstance(decoded, list)
+        ):
+            corrected[key] = decoded
+            changed = True
+
+    if not changed:
+        return
+    fc.arguments = corrected
+    state = run_context.session_state if run_context is not None else None
+    if not isinstance(state, dict):
+        return
+    progress = state.get(CODING_TOOL_PROGRESS_STATE_KEY)
+    mutation_sequence = int(progress.get("mutation", 0)) if isinstance(progress, dict) else 0
+    entry = {
+        "code": autofix_code,
+        "toolName": str(getattr(getattr(fc, "function", None), "name", "") or ""),
+        "mutationSequence": mutation_sequence,
+    }
+    stored = state.get(state_key)
+    items = list(stored) if isinstance(stored, list) else []
+    if not items or items[-1] != entry:
+        items.append(entry)
+    state[state_key] = items[-50:]
 
 
 def _create_files_patch(files: list[dict[str, str]]) -> str:
@@ -115,6 +218,8 @@ class _InstalledValidator:
     request_path: str
     runtime_path: str
     runtime_sha256: str
+    script_size: int
+    runtime_size: int
 
 
 TOOL_SPECS = {
@@ -345,6 +450,8 @@ class _AsyncRWLock:
         self._state_lock = asyncio.Lock()
         self._readers = 0
         self._writer = False
+        self._writer_owner: asyncio.Task[Any] | None = None
+        self._writer_depth = 0
         self._waiting_writers = 0
         self._leases = 0
 
@@ -368,11 +475,24 @@ class _AsyncRWLock:
 
     @asynccontextmanager
     async def write(self):
+        owner = asyncio.current_task()
+        if owner is not None and self._writer_owner is owner:
+            # Reporting 专用工具可能在外层 Agno hook 持锁后委托通用 Workspace
+            # 工具。两层调用属于同一个 Task，应复用已有写锁；其他 Task 仍必须
+            # 等待最外层退出，不能借嵌套调用绕过任务级串行边界。
+            self._writer_depth += 1
+            try:
+                yield
+            finally:
+                self._writer_depth -= 1
+            return
         async with self._condition:
             self._waiting_writers += 1
             try:
                 await self._condition.wait_for(lambda: not self._writer and self._readers == 0)
                 self._writer = True
+                self._writer_owner = owner
+                self._writer_depth = 1
             finally:
                 self._waiting_writers -= 1
                 self._condition.notify_all()
@@ -380,6 +500,8 @@ class _AsyncRWLock:
             yield
         finally:
             async with self._condition:
+                self._writer_depth -= 1
+                self._writer_owner = None
                 self._writer = False
                 self._condition.notify_all()
 
@@ -1852,6 +1974,183 @@ class CodingExecutionKernel:
             **({"replacements": replacements} if mode == "replace" else {}),
         }
 
+    async def batch_copy_files(
+        self,
+        copies: list[dict[str, Any]],
+        run_context: RunContext | None,
+        *,
+        _scope: CodingTaskScope | None = None,
+    ) -> dict[str, Any]:
+        """在同一 Task mutation 中归档一组已哈希绑定的普通文件。"""
+        scope = _scope or await self.scope(run_context)
+        if not isinstance(copies, list) or not 1 <= len(copies) <= MAX_PATCH_FILES:
+            raise WorkspaceError(f"批量复制文件必须为 1 至 {MAX_PATCH_FILES} 项。")
+        normalized: list[dict[str, Any]] = []
+        for item in copies:
+            if not isinstance(item, dict) or set(item) != {
+                "source",
+                "destination",
+                "expected_sha256",
+                "expected_size",
+            }:
+                raise WorkspaceError("批量复制参数无效。")
+            source = WorkspaceService.normalize_path(item["source"], allow_root=False)[0]
+            destination = WorkspaceService.normalize_path(item["destination"], allow_root=False)[0]
+            expected_sha256 = self.service._validate_patch_hash(item["expected_sha256"])
+            expected_size = item["expected_size"]
+            if (
+                source == destination
+                or isinstance(expected_size, bool)
+                or not isinstance(expected_size, int)
+                or expected_size < 1
+            ):
+                raise WorkspaceError("批量复制源、目标或预期大小无效。")
+            normalized.append(
+                {
+                    "source": source,
+                    "destination": destination,
+                    "expected_sha256": expected_sha256,
+                    "expected_size": expected_size,
+                }
+            )
+        destinations = [item["destination"] for item in normalized]
+        if len(destinations) != len(set(destinations)):
+            raise WorkspaceError("批量复制目标路径不能重复。")
+
+        identities = await self.service.abatch_hash_files(
+            scope.thread_id,
+            [*(item["source"] for item in normalized), *destinations],
+        )
+        source_identities = identities[: len(normalized)]
+        destination_identities = identities[len(normalized) :]
+        pending: list[dict[str, Any]] = []
+        receipts: list[dict[str, Any]] = []
+        for item, source_identity, destination_identity in zip(
+            normalized, source_identities, destination_identities, strict=True
+        ):
+            if (
+                source_identity.get("missing") is True
+                or source_identity.get("sha256") != item["expected_sha256"]
+                or source_identity.get("size") != item["expected_size"]
+            ):
+                raise WorkspaceError("复制源文件在登记后发生变化，已拒绝归档。")
+            if destination_identity.get("missing") is not True:
+                if (
+                    destination_identity.get("sha256") != item["expected_sha256"]
+                    or destination_identity.get("size") != item["expected_size"]
+                ):
+                    raise WorkspacePathConflict(
+                        f"归档目标“{item['destination']}”已存在且身份不同。"
+                    )
+                receipts.append(
+                    {
+                        "source": item["source"],
+                        "path": item["destination"],
+                        "size": item["expected_size"],
+                        "beforeSha256": item["expected_sha256"],
+                        "afterSha256": item["expected_sha256"],
+                        "sha256": item["expected_sha256"],
+                        "status": "reused",
+                    }
+                )
+                continue
+            pending.append(item)
+
+        if not pending:
+            return {
+                "ok": True,
+                "status": "completed",
+                "files": receipts,
+                "execution_id": None,
+                "mutation_sequence": scope.task.mutation_sequence,
+            }
+
+        mutation_sequence = await self.repository.increment_mutation(
+            scope.external_run_id,
+            lease=scope.lease,
+            internal_run_id=scope.internal_run_id,
+        )
+        execution_id = uuid.uuid4().hex
+        operation_receipt = {
+            "files": [
+                {
+                    "path": item["destination"],
+                    "before_sha256": None,
+                    "after_sha256": item["expected_sha256"],
+                }
+                for item in pending
+            ],
+            "copies": [dict(item) for item in pending],
+        }
+        copy_session_id = (
+            "copy-"
+            + hashlib.sha256(
+                f"{scope.external_run_id}:{scope.attempt_no}:{mutation_sequence}".encode()
+            ).hexdigest()[:32]
+        )
+        await self.repository.reserve_execution(
+            execution_id=execution_id,
+            external_run_id=scope.external_run_id,
+            internal_run_id=scope.internal_run_id,
+            owner_user_id=scope.owner_user_id,
+            thread_id=scope.thread_id,
+            sandbox_id=scope.sandbox_id,
+            daytona_session_id=copy_session_id,
+            mutation_sequence=mutation_sequence,
+            kind="patch",
+            attempt_no=scope.attempt_no,
+            lease_epoch=scope.lease_epoch,
+            operation_receipt=operation_receipt,
+            lease=scope.lease,
+        )
+        await self._check_fence(scope, execution_id)
+        try:
+            for item in pending:
+                copied = await asyncio.to_thread(
+                    self.service.copy_file,
+                    scope.thread_id,
+                    item["source"],
+                    item["destination"],
+                )
+                await self._check_fence(scope, execution_id)
+                if (
+                    copied.get("sha256") != item["expected_sha256"]
+                    or copied.get("size") != item["expected_size"]
+                ):
+                    raise WorkspaceError("复制文件落盘身份与登记值不一致。")
+                receipts.append(
+                    {
+                        "source": item["source"],
+                        "path": item["destination"],
+                        "size": copied["size"],
+                        "beforeSha256": None,
+                        "afterSha256": copied["sha256"],
+                        "sha256": copied["sha256"],
+                        "status": "copied",
+                    }
+                )
+            await self.repository.update_execution(
+                execution_id,
+                status="completed",
+                exit_code=0,
+                operation_receipt={**operation_receipt, "copyReceipts": receipts},
+            )
+        except Exception:
+            await self.repository.update_execution(
+                execution_id,
+                status="failed",
+                exit_code=1,
+                operation_receipt={**operation_receipt, "copyReceipts": receipts},
+            )
+            raise
+        return {
+            "ok": True,
+            "status": "completed",
+            "files": sorted(receipts, key=lambda item: item["path"]),
+            "execution_id": execution_id,
+            "mutation_sequence": mutation_sequence,
+        }
+
     async def verify(
         self,
         command: str | None,
@@ -1998,11 +2297,26 @@ class CodingExecutionKernel:
         normalized_paths = [
             WorkspaceService.normalize_path(path, allow_root=False)[0] for path in artifact_paths
         ]
+        verification_started = time.monotonic()
+
+        def log_phase(phase: str, **details: Any) -> None:
+            suffix = " ".join(f"{key}={value}" for key, value in details.items())
+            log_debug(
+                "coding_validator_verify "
+                f"phase={phase} validator_id={validator_id} "
+                f"external_run_id={scope.external_run_id} "
+                f"artifact_count={len(normalized_paths)} "
+                f"elapsed_ms={int((time.monotonic() - verification_started) * 1000)}"
+                f"{f' {suffix}' if suffix else ''}"
+            )
+
+        log_phase("artifact_hash_started")
         artifacts = (
             await self.service.abatch_hash_files(scope.thread_id, normalized_paths)
             if normalized_paths
             else []
         )
+        log_phase("artifact_hash_completed")
         missing_paths = [item["path"] for item in artifacts if item.get("missing")]
         if missing_paths:
             return self._verification_error(
@@ -2077,7 +2391,9 @@ class CodingExecutionKernel:
                 retryable=False,
             )
 
+        log_phase("validator_install_started")
         installed = await self._install_validator(scope, validator, request_bytes)
+        log_phase("validator_install_completed")
         command = shlex.join(
             [
                 "python3",
@@ -2094,6 +2410,7 @@ class CodingExecutionKernel:
         )
         scripts_unchanged = False
         try:
+            log_phase("validator_execution_started", timeout=validator.timeout)
             result = await self.terminal(
                 command,
                 background=False,
@@ -2113,13 +2430,22 @@ class CodingExecutionKernel:
                     run_context,
                     _scope=scope,
                 )
+            log_phase(
+                "validator_execution_completed",
+                status=result.get("status"),
+                exit_code=result.get("exit_code"),
+            )
         finally:
             try:
+                log_phase("validator_integrity_started")
                 scripts_unchanged = await self._validator_scripts_unchanged(
                     scope, installed, validator.script_sha256
                 )
+                log_phase("validator_integrity_completed", unchanged=scripts_unchanged)
             finally:
+                log_phase("validator_cleanup_started")
                 await self._delete_validator_install(scope, installed.directory)
+                log_phase("validator_cleanup_completed")
 
         if not scripts_unchanged:
             receipt = {
@@ -2146,11 +2472,13 @@ class CodingExecutionKernel:
                 ),
             }
 
+        log_phase("artifact_rehash_started")
         current_artifacts = (
             await self.service.abatch_hash_files(scope.thread_id, normalized_paths)
             if normalized_paths
             else []
         )
+        log_phase("artifact_rehash_completed")
         base_receipt = {
             "validator_id": validator_id,
             "validator_sha256": validator.script_sha256,
@@ -2240,6 +2568,7 @@ class CodingExecutionKernel:
             result["execution_id"], operation_receipt=receipt
         )
         passed = all(item["passed"] is True for item in validator_results)
+        log_phase("completed", passed=passed)
         failed_requirements = []
         for item in validator_results:
             if item["passed"] is True:
@@ -2290,42 +2619,80 @@ class CodingExecutionKernel:
         request_path = f"{validator_dir}/request.json"
         script_path = f"{validator_dir}/validator.py"
         runtime_path = f"{validator_dir}/readonly_script_runtime.py"
-        async for sandbox in self._sandbox(scope):
-            current = ""
-            for part in validator_dir.strip("/").split("/"):
-                current = f"{current}/{part}"
-                try:
-                    info = await sandbox.fs.get_file_info(current)
-                except DaytonaNotFoundError:
-                    await sandbox.fs.create_folder(current, "755")
-                    continue
-                if self.service._is_symlink(info) or not bool(getattr(info, "is_dir", False)):
-                    raise WorkspaceError("validator 安装目录不是安全普通目录。")
-            await sandbox.fs.upload_file(validator.script_content, script_path)
-            await sandbox.fs.upload_file(READONLY_SCRIPT_RUNTIME, runtime_path)
-            await sandbox.fs.upload_file(request, request_path)
-            for path, digest in (
-                (script_path, validator.script_sha256),
-                (runtime_path, READONLY_SCRIPT_RUNTIME_SHA256),
-            ):
-                content = await sandbox.fs.download_file(path)
-                if hashlib.sha256(content).hexdigest() != digest:
-                    raise WorkspaceError("validator 只读脚本摘要验证失败。")
-            await lock_sandbox_paths(
-                sandbox,
-                {
-                    script_path: "555",
-                    runtime_path: "555",
-                    request_path: "444",
-                    validator_dir: "555",
-                },
+        try:
+            # validator 尚未创建执行记录，任何无界 I/O 都会让外部看起来像 verify 卡死。
+            # 因此安装阶段整体受限，脚本回读统一走流式下载并逐文件限制时间与大小。
+            async with asyncio.timeout(MAX_VALIDATOR_STAGE_TIMEOUT):
+                async for sandbox in self._sandbox(scope):
+                    current = ""
+                    for part in validator_dir.strip("/").split("/"):
+                        current = f"{current}/{part}"
+                        try:
+                            info = await sandbox.fs.get_file_info(current)
+                        except DaytonaNotFoundError:
+                            await sandbox.fs.create_folder(current, "755")
+                            continue
+                        if self.service._is_symlink(info) or not bool(
+                            getattr(info, "is_dir", False)
+                        ):
+                            raise WorkspaceError("validator 安装目录不是安全普通目录。")
+                    await sandbox.fs.upload_file(validator.script_content, script_path)
+                    await sandbox.fs.upload_file(READONLY_SCRIPT_RUNTIME, runtime_path)
+                    await sandbox.fs.upload_file(request, request_path)
+                    for kind, path, digest, size in (
+                        (
+                            "validator",
+                            script_path,
+                            validator.script_sha256,
+                            len(validator.script_content),
+                        ),
+                        (
+                            "runtime",
+                            runtime_path,
+                            READONLY_SCRIPT_RUNTIME_SHA256,
+                            len(READONLY_SCRIPT_RUNTIME),
+                        ),
+                    ):
+                        log_debug(
+                            "coding_validator_install "
+                            f"phase=digest_download_started validator_id={validator.validator_id} "
+                            f"file={kind}"
+                        )
+                        content = await self.service._adownload_file(
+                            sandbox,
+                            path,
+                            size,
+                            timeout=MAX_VALIDATOR_DOWNLOAD_TIMEOUT,
+                        )
+                        log_debug(
+                            "coding_validator_install "
+                            f"phase=digest_download_completed validator_id={validator.validator_id} "
+                            f"file={kind}"
+                        )
+                        if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
+                            raise WorkspaceError("validator 只读脚本摘要验证失败。")
+                    await lock_sandbox_paths(
+                        sandbox,
+                        {
+                            script_path: "555",
+                            runtime_path: "555",
+                            request_path: "444",
+                            validator_dir: "555",
+                        },
+                    )
+        except TimeoutError as error:
+            log_debug(
+                f"coding_validator_install phase=timed_out validator_id={validator.validator_id}"
             )
+            raise WorkspaceError("validator 安装超时，请稍后重试。") from error
         return _InstalledValidator(
             directory=validator_dir,
             script_path=script_path,
             request_path=request_path,
             runtime_path=runtime_path,
             runtime_sha256=READONLY_SCRIPT_RUNTIME_SHA256,
+            script_size=len(validator.script_content),
+            runtime_size=len(READONLY_SCRIPT_RUNTIME),
         )
 
     async def _validator_scripts_unchanged(
@@ -2335,16 +2702,26 @@ class CodingExecutionKernel:
         script_sha256: str,
     ) -> bool:
         try:
-            async for sandbox in self._sandbox(scope):
-                for path, digest in (
-                    (installed.script_path, script_sha256),
-                    (installed.runtime_path, installed.runtime_sha256),
-                ):
-                    content = await sandbox.fs.download_file(path)
-                    if hashlib.sha256(content).hexdigest() != digest:
-                        return False
-                return True
-        except (CodingRepositoryError, DaytonaNotFoundError, WorkspaceError):
+            async with asyncio.timeout(MAX_VALIDATOR_STAGE_TIMEOUT):
+                async for sandbox in self._sandbox(scope):
+                    for path, digest, size in (
+                        (installed.script_path, script_sha256, installed.script_size),
+                        (
+                            installed.runtime_path,
+                            installed.runtime_sha256,
+                            installed.runtime_size,
+                        ),
+                    ):
+                        content = await self.service._adownload_file(
+                            sandbox,
+                            path,
+                            size,
+                            timeout=MAX_VALIDATOR_DOWNLOAD_TIMEOUT,
+                        )
+                        if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
+                            return False
+                    return True
+        except (CodingRepositoryError, DaytonaNotFoundError, WorkspaceError, TimeoutError):
             return False
         return False
 
@@ -2352,18 +2729,19 @@ class CodingExecutionKernel:
         if not validator_dir.startswith(f"{VALIDATOR_ROOT}/"):
             return
         try:
-            async for sandbox in self._sandbox(scope):
-                result = await sandbox.process.exec(
-                    shlex.join(["sudo", "rm", "-rf", "--", validator_dir]),
-                    timeout=30,
-                )
-                if getattr(result, "exit_code", None) != 0:
-                    raise WorkspaceError("validator 临时目录清理失败。")
-                try:
-                    await sandbox.fs.delete_file(validator_dir, recursive=True)
-                except DaytonaNotFoundError:
-                    pass
-        except (CodingRepositoryError, DaytonaNotFoundError, WorkspaceError):
+            async with asyncio.timeout(MAX_VALIDATOR_STAGE_TIMEOUT):
+                async for sandbox in self._sandbox(scope):
+                    result = await sandbox.process.exec(
+                        shlex.join(["sudo", "rm", "-rf", "--", validator_dir]),
+                        timeout=30,
+                    )
+                    if getattr(result, "exit_code", None) != 0:
+                        raise WorkspaceError("validator 临时目录清理失败。")
+                    try:
+                        await sandbox.fs.delete_file(validator_dir, recursive=True)
+                    except DaytonaNotFoundError:
+                        pass
+        except (CodingRepositoryError, DaytonaNotFoundError, WorkspaceError, TimeoutError):
             pass
 
     @staticmethod
@@ -3144,7 +3522,10 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         )
         finish_function = Function(
             name="finish_task",
-            description="提交最终任务验收；验收失败时按稳定错误码修复后再次调用。",
+            description=(
+                "提交最终任务验收；验收失败时按稳定错误码修复后再次调用。"
+                '示例：{"summary":"任务已完成","artifact_paths":["output/report.md"]}'
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -3221,6 +3602,11 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             tools=[
                 Function(
                     name="terminal",
+                    description=(
+                        "执行工作区命令。terminal 必须作为本次 assistant 工具批次中的唯一调用，"
+                        "不能与任何其他工具并发。参数必须直接位于顶层，不要包 arguments。"
+                        '示例：{"command":"python3 -m pytest -q","timeout":120}'
+                    ),
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3242,6 +3628,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="process",
+                    description='管理后台进程。示例：{"action":"list"}',
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3265,7 +3652,10 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="create_files",
-                    description="在一次原子补丁中创建一个或多个不存在的文件。",
+                    description=(
+                        "在一次原子补丁中创建一个或多个不存在的文件。"
+                        '示例：{"files":[{"path":"src/app.py","content":"print(1)\\n"}]}'
+                    ),
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3291,6 +3681,11 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="overwrite_file",
+                    description=(
+                        "按读取回执中的 SHA-256 覆盖一个文件。"
+                        '示例：{"path":"src/app.py","content":"print(2)\\n",'
+                        '"expected_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}'
+                    ),
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3308,6 +3703,11 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="replace_text",
+                    description=(
+                        "精确替换文件文本。"
+                        '示例：{"path":"src/app.py","old_string":"print(1)",'
+                        '"new_string":"print(2)"}'
+                    ),
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3323,6 +3723,10 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="apply_patch",
+                    description=(
+                        "应用统一补丁。"
+                        '示例：{"patch":"*** Begin Patch\\n*** Update File: src/app.py\\n@@\\n-print(1)\\n+print(2)\\n*** End Patch"}'
+                    ),
                     parameters={
                         "type": "object",
                         "properties": {"patch": {"type": "string", "minLength": 1}},
@@ -3336,6 +3740,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     description=(
                         "在当前工作区执行显式验证，并把回执绑定到当前 mutation。"
                         "command 与 validator_id 必须且只能提供一个；validator 使用服务端固定配置。"
+                        '示例：{"command":"python3 -m pytest -q tests/test_app.py","timeout":120}'
                     ),
                     parameters={
                         "type": "object",
@@ -3367,7 +3772,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     description=(
                         "列出当前工作区的直属文件和目录。路径必须相对工作区根目录；"
                         '列出根目录时 path 传空字符串 ""，禁止传 /workspace 或 '
-                        "/home/daytona/workspace。"
+                        '/home/daytona/workspace。示例：{"path":"src"}'
                     ),
                     parameters={
                         "type": "object",
@@ -3384,6 +3789,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="read_file",
+                    description='读取文件字节片段。示例：{"path":"src/app.py","offset":0}',
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3403,6 +3809,9 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="read_lines",
+                    description=(
+                        '按行读取文本文件。示例：{"path":"src/app.py","start_line":1,"end_line":80}'
+                    ),
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3417,6 +3826,10 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="search_text",
+                    description=(
+                        "在工作区搜索文本。"
+                        '示例：{"pattern":"render_report_draft","path":"agentos_dev"}'
+                    ),
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3436,6 +3849,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="tree",
+                    description='列出目录树。示例：{"path":"src","max_depth":3}',
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3459,6 +3873,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="git_status",
+                    description='读取 Git 状态。示例：{"repo_path":""}',
                     parameters={
                         "type": "object",
                         "properties": {"repo_path": {"type": "string", "default": ""}},
@@ -3468,6 +3883,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="git_diff",
+                    description='读取 Git 差异。示例：{"repo_path":"","staged":false}',
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3482,6 +3898,10 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="read_tool_output",
+                    description=(
+                        "继续读取被截断的工具输出。"
+                        '示例：{"handle":"tool-output-123","offset":65536}'
+                    ),
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3501,6 +3921,9 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="view_image",
+                    description=(
+                        '检查工作区图片。示例：{"path":"analysis/charts/trend.png","detail":"high"}'
+                    ),
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3518,7 +3941,10 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ),
                 Function(
                     name="update_plan",
-                    description="更新编码任务计划；最多 20 步且最多一个步骤处于 in_progress。",
+                    description=(
+                        "更新编码任务计划；最多 20 步且最多一个步骤处于 in_progress。"
+                        '示例：{"plan":[{"step":"运行定点测试","status":"in_progress"}]}'
+                    ),
                     parameters={
                         "type": "object",
                         "properties": {
@@ -3556,6 +3982,9 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             ],
             instructions=PURE_CODING_TOOLKIT_INSTRUCTIONS,
         )
+        for function in (*self.functions.values(), *self.async_functions.values()):
+            if function.pre_hook is None:
+                function.pre_hook = normalize_coding_function_call_arguments
 
     async def _invoke(
         self,

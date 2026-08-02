@@ -178,3 +178,43 @@ async def test_drive_workflow_continues_with_complete_requirements_and_publishes
         "sessionId": "session-1",
         "content": {"path": "reports/report.pdf", "size": 10, "sha256": "a" * 64},
     }
+
+
+@pytest.mark.anyio
+async def test_drive_workflow除提纲外自动批准普通审核():
+    active = Requirement(step_id="generate-query-candidates", content={"queries": []})
+    paused = SimpleNamespace(
+        status=RunStatus.paused,
+        step_requirements=[active],
+        content=None,
+    )
+    completed = SimpleNamespace(
+        status=RunStatus.completed,
+        step_requirements=[active],
+        content={"path": "reports/report.pdf"},
+    )
+
+    class Workflow:
+        async def arun(self, _report_input, **_kwargs):
+            return paused
+
+        async def acontinue_run(self, **_kwargs):
+            assert active.confirmed is True
+            return completed
+
+    class Runtime:
+        async def cleanup_cancelled(self, *_args):
+            raise AssertionError("完成状态不应清理取消任务")
+
+    result = await drive_workflow(
+        Workflow(),
+        Runtime(),
+        {"version": "1", "prompt": "分析2025年经营情况"},
+        run_id="run-1",
+        session_id="session-1",
+        user_id="cli-v2",
+        read=lambda _prompt: (_ for _ in ()).throw(AssertionError("不应请求人工批准")),
+        write=lambda _value: None,
+    )
+
+    assert result["status"] == "completed"

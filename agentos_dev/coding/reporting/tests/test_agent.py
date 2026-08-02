@@ -1,8 +1,19 @@
+import json
+
+import pytest
+from agno.exceptions import StopAgentRun
+from agno.models.message import Message
 from agno.run import RunContext
 
 from agentos_dev import app
 from agentos_dev.coding.agent import create_coding_agent, create_coding_facade_agent
-from agentos_dev.coding.reporting.agent import create_report_agent, create_report_worker
+from agentos_dev.coding.reporting.agent import (
+    ReportFacadeOpenAIChat,
+    ReportWorkerOpenAIChat,
+    create_report_agent,
+    create_report_worker,
+    normalize_reporting_tool_arguments,
+)
 from agentos_dev.coding.reporting.controller import ReportWorkflowController
 from agentos_dev.coding.reporting.runtime import (
     AnalysisBundle,
@@ -12,6 +23,7 @@ from agentos_dev.coding.reporting.runtime import (
     ReportWorkflowRuntime,
 )
 from agentos_dev.coding.reporting.tests.workspace_fakes import service
+from agentos_dev.context_management import ProjectedOpenAIChat
 from agentos_dev.instructions import build_pure_coding_agent_instructions
 from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
 from agentos_dev.task_execution.execution import is_coding_tool_scheduler_hook
@@ -42,13 +54,16 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
         ReportWorkflowController(lambda: None),
     )
 
+    assert isinstance(report_agent.model, ReportFacadeOpenAIChat)
     assert coding_agent.id == "coding-agent"
     assert coding_facade is not coding_agent
     assert coding_facade.id == coding_agent.id
     assert coding_facade.model is not coding_agent.model
     assert coding_facade.model.id == coding_agent.model.id
     assert coding_facade.model.extra_body == {"enable_thinking": False}
+    assert coding_facade.model.temperature is None
     assert coding_facade.model.reasoning_effort is None
+    assert coding_agent.model.temperature == 0
     assert coding_agent.model.reasoning_effort == app.settings.coding_reasoning_effort
     assert (
         coding_agent.model.get_request_params()["reasoning_effort"]
@@ -80,6 +95,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert report_worker.send_media_to_model is False
     assert report_worker.model is not coding_agent.model
     assert report_worker.model.max_tokens == 32768
+    assert report_worker.model.temperature == 0
     assert coding_agent.model.max_tokens is None
     assert report_worker.model.extra_body["enable_thinking"] is False
     assert "thinking_budget" not in report_worker.model.extra_body
@@ -91,6 +107,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert "HumanReview retry" in facade_instructions
     assert report_agent.model is not report_worker.model
     assert report_agent.model.extra_body == {"enable_thinking": False}
+    assert report_agent.model.temperature is None
     assert report_worker.compression_manager.model is report_worker.model
     assert report_agent.compression_manager.model is report_agent.model
     assert report_worker.compression_manager is not coding_agent.compression_manager
@@ -113,6 +130,17 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert [tool.name for tool in coding_tools] == ["workspace_coding"]
     assert [tool.name for tool in worker_tools] == ["workspace_coding"]
     assert [tool.name for tool in worker_tools_without_injected_context] == ["workspace_coding"]
+    reporting_examples = {
+        "register_report_charts": '示例：{"charts":[',
+        "render_report_draft": '示例：{"draft":{',
+        "resume_report_draft": "示例：{}",
+        "verify_report_draft": "示例：{}",
+        "repair_report_draft": '示例：{"changes":[',
+    }
+    for name, example in reporting_examples.items():
+        assert example in worker_tools[0].async_functions[name].description
+    for tool in worker_tools[0].async_functions.values():
+        assert "示例：" in tool.description, tool.name
     assert "view_image" not in worker_tools[0].async_functions
     assert "view_image" not in worker_tools_without_injected_context[0].async_functions
     assert worker_tools[0].kernel.validator_registry.script_sha256().keys() == {
@@ -123,13 +151,40 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert [tool.name for tool in report_tools_without_injected_context] == ["report_workflow"]
     assert set(report_tools[0].async_functions) == {
         "report_workflow_start",
-        "report_workflow_start_from_prompt",
         "report_workflow_review",
+        "report_workflow_approve",
+        "report_workflow_reject",
     }
     expected_validators = SkillValidatorRegistry.from_skills(coding_agent.skills)
     assert app.coding_supervisor.validator_registry.script_sha256() == (
         expected_validators.script_sha256()
     )
+
+
+@pytest.mark.anyio
+async def test_report_facade流式路径把普通审核路由到原生确认工具():
+    model = ReportFacadeOpenAIChat(id="report-facade-stream-test", api_key="test-key")
+    messages = [
+        Message(
+            role="tool",
+            tool_name="report_workflow_start",
+            tool_call_id="call-start",
+            content=(
+                "{'ok': True, 'status': 'paused', "
+                "'review': {'stage': 'outline', 'title': '审核报告提纲'}}"
+            ),
+        )
+    ]
+
+    responses = [response async for response in model.ainvoke_stream(messages)]
+
+    assert len(responses) == 1
+    assert "审核报告提纲" in str(responses[0].content)
+    tool_calls = model.parse_tool_calls(responses[0].tool_calls)
+    assert tool_calls[0]["function"] == {
+        "name": "report_workflow_approve",
+        "arguments": "{}",
+    }
 
 
 def test_report_worker_exposes_image_tool_only_when_vision_is_enabled(tmp_path):
@@ -203,3 +258,395 @@ def test_report_planners_expose_compact_schema_in_stable_instructions():
         assert '"required"' in contract_instruction
         assert '"description":"' not in contract_instruction
         assert '"title":"' not in contract_instruction
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook只展开一层arguments且错误不产生traceback():
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+
+    async def render_report_draft(draft):
+        return {"ok": True, "draft": draft}
+
+    corrected = await normalize_reporting_tool_arguments(
+        context,
+        "render_report_draft",
+        render_report_draft,
+        {"arguments": {"draft": {"title": "报告", "sections": []}}},
+    )
+    nested = await normalize_reporting_tool_arguments(
+        context,
+        "render_report_draft",
+        render_report_draft,
+        {"arguments": {"arguments": {"draft": {}}}},
+    )
+
+    assert corrected["ok"] is True
+    assert corrected["draft"]["title"] == "报告"
+    assert context.session_state["agentos_reporting_tool_argument_autofixes"] == [
+        {
+            "code": "report_tool_arguments_unwrapped",
+            "toolName": "render_report_draft",
+            "mutationSequence": 0,
+        }
+    ]
+    assert nested["code"] == "report_tool_arguments_invalid"
+    assert nested["severity"] == "warning"
+    assert nested["executionBlocking"] is False
+    assert nested["failedRequirements"] == []
+    expected = nested["expectedCallShape"]
+    assert expected["draft"]["title"] == "报告标题"
+    assert expected["draft"]["sections"][0]["blocks"][0]["text"] == "图表题注"
+    assert nested["correctCallExample"] == {
+        "name": "render_report_draft",
+        "arguments": expected,
+    }
+    assert "Traceback" not in str(nested)
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook同一参数错误无mutation第五次停止重试():
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+
+    async def render_report_draft(draft):
+        return {"ok": True, "draft": draft}
+
+    results = [
+        await normalize_reporting_tool_arguments(
+            context,
+            "render_report_draft",
+            render_report_draft,
+            {"title": "错误调用"},
+        )
+        for _attempt in range(4)
+    ]
+
+    assert all(result["retryable"] is True for result in results)
+    assert all(result["severity"] == "warning" for result in results)
+    assert all(result["executionBlocking"] is False for result in results)
+    with pytest.raises(StopAgentRun) as stopped:
+        await normalize_reporting_tool_arguments(
+            context,
+            "render_report_draft",
+            render_report_draft,
+            {"title": "错误调用"},
+        )
+    blocked = json.loads(str(stopped.value))
+    assert blocked["retryable"] is False
+    assert blocked["severity"] == "error"
+    assert blocked["executionBlocking"] is True
+    assert blocked["requiredActions"] == [
+        "逐字使用 correctCallExample 重试；不要增加 arguments 包装或其他字段。"
+    ]
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook业务拒绝交错出现且无mutation时第五次停止执行():
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+
+    async def repair_report_draft(changes):
+        return {
+            "ok": False,
+            "status": "rejected",
+            "code": "report_repair_changes_incomplete",
+            "message": "结构化修复未覆盖全部 issueId。",
+            "retryable": True,
+        }
+
+    async def read_file(path):
+        return {
+            "ok": False,
+            "status": "rejected",
+            "code": "report_repair_tool_forbidden",
+            "message": "首次验收失败后禁止读取完整 Markdown。",
+            "retryable": True,
+        }
+
+    for _attempt in range(4):
+        repair = await normalize_reporting_tool_arguments(
+            context,
+            "repair_report_draft",
+            repair_report_draft,
+            {"changes": [{"issueId": "period_claim_income", "newText": "错误修复"}]},
+        )
+        assert repair["retryable"] is True
+        read = await normalize_reporting_tool_arguments(
+            context,
+            "read_file",
+            read_file,
+            {"path": "report.md"},
+        )
+        assert read["retryable"] is True
+
+    with pytest.raises(StopAgentRun) as stopped:
+        await normalize_reporting_tool_arguments(
+            context,
+            "repair_report_draft",
+            repair_report_draft,
+            {"changes": [{"issueId": "period_claim_income", "newText": "错误修复"}]},
+        )
+
+    blocked = json.loads(str(stopped.value))
+    assert blocked["code"] == "report_repair_changes_incomplete"
+    assert blocked["retryable"] is False
+    assert blocked["executionBlocking"] is True
+    assert blocked["details"]["noProgressCount"] == 5
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook对通用工具也只展开一层arguments():
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+    called = False
+
+    async def terminal(command):
+        nonlocal called
+        called = True
+        return {"ok": True, "command": command}
+
+    result = await normalize_reporting_tool_arguments(
+        context,
+        "terminal",
+        terminal,
+        {"arguments": {"command": "echo ok"}},
+    )
+
+    assert called is True
+    assert result == {"ok": True, "command": "echo ok"}
+    assert "Traceback" not in str(result)
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook展开arguments并保留同级参数():
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+
+    async def terminal(command, timeout):
+        return {"ok": True, "command": command, "timeout": timeout}
+
+    result = await normalize_reporting_tool_arguments(
+        context,
+        "terminal",
+        terminal,
+        {"arguments": {"command": "python3 analysis/run_analysis.py"}, "timeout": 300},
+    )
+
+    assert result == {
+        "ok": True,
+        "command": "python3 analysis/run_analysis.py",
+        "timeout": 300,
+    }
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook展开字符串arguments对象():
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+
+    async def create_files(files):
+        return {"ok": True, "files": files}
+
+    result = await normalize_reporting_tool_arguments(
+        context,
+        "create_files",
+        create_files,
+        {"arguments": '{"files":[{"path":"analysis/run_analysis.py"}]}'},
+    )
+
+    assert result == {
+        "ok": True,
+        "files": [{"path": "analysis/run_analysis.py"}],
+    }
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook兼容字符串arguments缺少末尾对象括号():
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+
+    async def create_files(files):
+        return {"ok": True, "files": files}
+
+    result = await normalize_reporting_tool_arguments(
+        context,
+        "create_files",
+        create_files,
+        {
+            "arguments": (
+                '{"files":[{"path":"analysis/run_analysis.py","content":"print(\\"报告\\")\\n"}]'
+            )
+        },
+    )
+
+    assert result["code"] == "report_tool_arguments_invalid"
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook展开含三引号文本的arguments对象():
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+
+    async def create_files(files):
+        return {"ok": True, "files": files}
+
+    result = await normalize_reporting_tool_arguments(
+        context,
+        "create_files",
+        create_files,
+        {
+            "arguments": (
+                '{"files":[{"path":"analysis/run_analysis.py",'
+                '\'content\':"""print(\'报告\')\n"""}]}'
+            )
+        },
+    )
+
+    assert result["code"] == "report_tool_arguments_invalid"
+
+
+@pytest.mark.anyio
+async def test_report_worker_verify通过后确定性调用finish而不再请求模型(monkeypatch):
+    model = ReportWorkerOpenAIChat(id="report-worker-test", api_key="test-key")
+    messages = [
+        Message(
+            role="tool",
+            tool_name="verify_report_draft",
+            tool_call_id="verify-call",
+            content=json.dumps(
+                {
+                    "ok": True,
+                    "failedRequirements": [],
+                    "warnings": [{"code": "period_binding_ambiguous"}],
+                    "nextToolCall": {
+                        "name": "finish_task",
+                        "arguments": {
+                            "summary": "报告已通过服务端正式验收。",
+                            "artifact_paths": ["report.md"],
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+    ]
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("verify 通过后不应再请求供应商模型")
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "ainvoke", unexpected)
+    response = await model.ainvoke(messages)
+
+    assert response.tool_calls[0]["function"]["name"] == "finish_task"
+    assert json.loads(response.tool_calls[0]["function"]["arguments"]) == {
+        "summary": "报告已通过服务端正式验收。",
+        "artifact_paths": ["report.md"],
+    }
+
+
+@pytest.mark.anyio
+async def test_report_worker流式verify通过后确定性调用finish而不再请求模型(monkeypatch):
+    model = ReportWorkerOpenAIChat(id="report-worker-stream-test", api_key="test-key")
+    messages = [
+        Message(
+            role="tool",
+            tool_name="verify_report_draft",
+            tool_call_id="verify-call",
+            content=json.dumps(
+                {
+                    "ok": True,
+                    "warnings": [{"code": "period_binding_ambiguous"}],
+                    "nextToolCall": {
+                        "name": "finish_task",
+                        "arguments": {
+                            "summary": "报告已通过服务端正式验收。",
+                            "artifact_paths": ["report.md", "charts/trend.png"],
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+    ]
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("verify 通过后流式路径不应再请求供应商模型")
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "ainvoke_stream", unexpected)
+    responses = [response async for response in model.ainvoke_stream(messages)]
+
+    assert len(responses) == 1
+    tool_calls = model.parse_tool_calls(responses[0].tool_calls)
+    assert tool_calls[0]["function"]["name"] == "finish_task"
+    assert json.loads(tool_calls[0]["function"]["arguments"]) == {
+        "summary": "报告已通过服务端正式验收。",
+        "artifact_paths": ["report.md", "charts/trend.png"],
+    }
+
+
+def test_report_worker缺少受信任next_call时不强制finish(monkeypatch):
+    model = ReportWorkerOpenAIChat(id="report-worker-invalid-next-call", api_key="test-key")
+
+    def upstream(*_args, **_kwargs):
+        return "upstream-response"
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "invoke", upstream)
+    response = model.invoke(
+        [
+            Message(
+                role="tool",
+                tool_name="verify_report_draft",
+                tool_call_id="verify-call",
+                content='{"ok":true}',
+            )
+        ]
+    )
+
+    assert response == "upstream-response"
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook通用工具兼容失败时恢复原始调用并返回warning():
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+    calls = []
+
+    async def terminal(command):
+        calls.append(command)
+        return {"ok": True, "command": command}
+
+    result = await normalize_reporting_tool_arguments(
+        context,
+        "terminal",
+        terminal,
+        {"arguments": {"unknown": "echo ok"}},
+    )
+
+    assert calls == []
+    assert result == {
+        "ok": False,
+        "status": "rejected",
+        "code": "report_tool_arguments_invalid",
+        "message": "工具参数不符合当前工具的调用 schema。",
+        "severity": "warning",
+        "executionBlocking": False,
+        "warnings": [
+            {
+                "code": "report_tool_arguments_invalid",
+                "toolName": "terminal",
+            }
+        ],
+        "autoFixes": [],
+        "failedRequirements": [],
+        "requiredActions": ["参照当前工具描述中的示例直接传参，不要增加 arguments 包装。"],
+        "retryable": True,
+    }
+    assert "Traceback" not in str(result)
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook不会把工具内部TypeError降级为参数warning():
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+
+    async def terminal(command):
+        raise TypeError(f"internal failure while running {command}")
+
+    with pytest.raises(TypeError, match="internal failure"):
+        await normalize_reporting_tool_arguments(
+            context,
+            "terminal",
+            terminal,
+            {"command": "echo ok"},
+        )
