@@ -56,11 +56,12 @@ Coding AgentOS 只注册由 Supervisor 控制的 facade；Reporting AgentOS 注�
 `agentos_dev.app`。Reporting AgentOS 的 `/agui` 同时接受严格 Envelope JSON 和自然语言：自然语言
 原文作为唯一 `prompt` 原样交给 Workflow 首步的无工具结构化模型归一化，facade 不解析期间。
 `reportGoal` 必须逐字保留用户输入；期间不明确时失败关闭并要求提交明确期间，不允许程序猜测。
-Workflow 只有提纲使用官方 output review 暂停，批准、拒绝与恢复使用
-`/workflows/{workflow_id}/runs/{run_id}/continue` 和 `/resume`。
+当前 Workflow 所有步骤均不启用官方 output review，提纲生成后直接继续执行。批准、拒绝与恢复接口
+仍为既有暂停 run 和后续恢复审核能力保留，可使用 `/workflows/{workflow_id}/runs/{run_id}/continue`
+和 `/resume`。
 
 两个报表 CLI 都在服务和 tracing 初始化前校验输入，随后依次处理来源、提纲、批量 SQL 和发布；
-只有提纲的批准、带反馈拒绝和取消会恢复同一持久化 Workflow run。旧 CLI 只接受 Envelope 并保留 Controller
+当前正常路径不暂停确认，既有暂停 run 的批准、带反馈拒绝和取消仍会恢复同一持久化 Workflow run。旧 CLI 只接受 Envelope 并保留 Controller
 兼容链路；`cli_v2` 使用顶层 Workflow 的自然语言归一化和官方 requirements。数据库连接只从服务端
 注册表加载。
 
@@ -104,9 +105,9 @@ Daytona 使用独立的 `docker/docker-compose.yaml` 部署；宿主机运行本
 
 主 Assistant 通过 Agno callable tools factory 注册 `AgentControlToolkit` 和 `BaseToolkit`；
 Coding Agent 固定注册生产 `WorkspaceCodingToolkit`。公开 `report-agent` 只注册
-`ReportWorkflowToolkit` 的单一启动工具和一个审核桥；只有提纲的审核动作与反馈来自 AgentOS
-用户输入，期间和 Agent 必须在启动输入中唯一确定。facade 专用模型适配器在提纲返回 `paused` 时
-确定性生成审核桥调用，不依赖供应商模型决定是否进入 HITL。未注册到 AgentOS 的
+`ReportWorkflowToolkit` 的单一启动工具和一个兼容审核桥；当前步骤均不进入 AgentOS
+人工确认，期间和 Agent 必须在启动输入中唯一确定。facade 专用模型适配器仍可处理既有 run 返回的
+`paused`，但新启动 Workflow 不会因提纲进入 HITL。未注册到 AgentOS 的
 `report-worker` 才持有 `WorkspaceCodingToolkit` 和 `WorkspaceReportToolkit`；它只能读取 Workflow
 提交的不可变数据集。生产 Coding Toolkit 继承 Agno
 `DaytonaTools` 类型，但跳过其创建 sandbox 的初始化逻辑，通过共享 `CodingExecutionKernel` 和
@@ -288,12 +289,12 @@ Shell 命令时拒绝且不写文件。供应商 API 已拒绝的畸形函数参
 供应商重试为有效工具调用。`report-worker` 从该基座派生，固定暴露生产 Coding Toolkit 和
 `WorkspaceReportToolkit`，但不注册为 AgentOS 公共 Agent 或 Team
 member。生产路由仍由公开 `report-agent` 接收，它通过单一启动工具和审核桥调用
-`ReportWorkflowController`；只有提纲使用 `report_workflow_approve` 的 AgentOS 原生确认，拒绝时把
-`confirmation_note` 原样交给 Workflow。期间和 Agent 选择必须在输入中唯一确定，否则失败关闭。
+`ReportWorkflowController`；当前正常路径不调用 `report_workflow_approve`，该 AgentOS 原生确认工具仅为
+既有暂停 run 和后续恢复审核能力保留。期间和 Agent 选择必须在输入中唯一确定，否则失败关闭。
 恢复仍使用同一持久化 Workflow run，不增加第二条传输链路。
-`agentos_dev.coding.reporting` 的 Agno Workflow 依次处理来源解析、受限画像、提纲审核、分析计划、取数需求、
+`agentos_dev.coding.reporting` 的 Agno Workflow 依次处理来源解析、受限画像、提纲生成、分析计划、取数需求、
 SQL 候选校验、不可变数据集物化、Coding 分析、PDF 验收和发布。AG-UI 和 CLI adapter
-只对提纲负责暂停、反馈、继续和取消。Report 层保留数据源物化、输入绑定、Markdown/PDF 渲染及验收。
+仅为既有暂停 run 保留反馈、继续和取消适配。Report 层保留数据源物化、输入绑定、Markdown/PDF 渲染及验收。
 来源和 Schema 必须唯一确定；多个报表 Agent 未显式选择时失败关闭。
 完整文件内容不会注入 facade 模型；内部 worker 只从 AnalysisPlan、DataRequirement 和
 DatasetHandle 取得分析输入，不持有数据库凭据。

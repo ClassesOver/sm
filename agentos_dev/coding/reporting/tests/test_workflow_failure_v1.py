@@ -51,10 +51,10 @@ async def test_步骤失败后工作流终止且不进入后续审核():
         await workflow.arun({"version": "1", "prompt": "report request"})
 
     assert later_calls == 0
-    assert workflow.steps[8].requires_output_review is True
+    assert workflow.steps[8].requires_output_review is False
 
 
-def test_所有报表步骤都显式失败关闭且只有提纲暂停审核():
+def test_所有报表步骤都显式失败关闭且暂不暂停审核():
     def execute(_step_input: StepInput) -> StepOutput:
         return StepOutput(content={})
 
@@ -90,5 +90,4 @@ def test_所有报表步骤都显式失败关闭且只有提纲暂停审核():
     assert workflow.steps[12].max_retries == 0
     assert workflow.steps[13].max_retries == 0
     review_steps = [step for step in workflow.steps if bool(step.requires_output_review)]
-    assert [step.step_id for step in review_steps] == ["generate-outline"]
-    assert review_steps[0].human_review.max_retries == 5
+    assert review_steps == []

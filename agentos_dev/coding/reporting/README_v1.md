@@ -112,10 +112,10 @@ Coding CLI/AgentOS 产品入口。`/agui` 与 AgentOS Agent API 都通过原生 
 语言只作为 `prompt` 原样进入 Workflow 首步，facade 不解析期间，内部审核、查询和恢复
 仍使用同一个 Agno Workflow。facade 只公开无参数的 `report_workflow_start`：有受信服务端 Envelope
 时直接交给 Workflow 首步，否则首步从当前 Agno 用户消息接收自然语言并生成严格 Envelope。
-Workflow 在提纲审核暂停后，facade 专用模型适配器不再请求供应商模型，而是确定性生成标记为
-`requires_confirmation` 的 `report_workflow_approve` 调用；审核预览先作为内容事件输出，随后由
-AgentOS 显示批准或拒绝，拒绝时将 `confirmation_note` 原样提交给 Workflow。期间和 Agent 选择必须
-在输入中唯一确定，否则失败关闭。工具再恢复同一持久化 Workflow run。
+当前 Workflow 的所有步骤均不启用 output review，提纲生成后直接继续执行。facade 的
+`report_workflow_approve` 和 `confirmation_note` 转交逻辑只为既有暂停 run 及后续恢复审核能力保留；
+新启动 Workflow 不会生成 `requires_confirmation` 调用。期间和 Agent 选择必须在输入中唯一确定，
+否则失败关闭；既有暂停 run 仍在同一持久化 Workflow run 上恢复。
 原生 Workflow API 未提供项目私有
 dependency 时，作用域直接来自 Agno
 `RunContext.run_id/session_id/user_id`；恢复时使用 Workflow state。独立服务使用已验证的 Agno

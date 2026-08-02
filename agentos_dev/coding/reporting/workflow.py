@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agno.db.base import BaseDb
-from agno.workflow import HumanReview, OnError, OnReject
+from agno.workflow import OnError
 from agno.workflow.step import Step
 from agno.workflow.workflow import Workflow
 
@@ -97,13 +97,16 @@ def create_reporting_workflow(
                 step_id="generate-outline",
                 name="生成报告提纲",
                 executor=generate_outline,
-                human_review=HumanReview(
-                    requires_output_review=True,
-                    output_review_message="审核报告提纲；拒绝时请填写修改意见。",
-                    on_reject=OnReject.retry,
-                    on_error=OnError.fail,
-                    max_retries=5,
-                ),
+                # 当前产品阶段要求报表全流程连续执行，提纲也不暂停等待人工确认。
+                # 后续恢复提纲审核时，只重新启用原 HumanReview 配置；审批控制器和恢复协议保留不变。
+                # human_review=HumanReview(
+                #     requires_output_review=True,
+                #     output_review_message="审核报告提纲；拒绝时请填写修改意见。",
+                #     on_reject=OnReject.retry,
+                #     on_error=OnError.fail,
+                #     max_retries=5,
+                # ),
+                on_error=OnError.fail,
             ),
             Step(
                 step_id="generate-analysis-plan",
