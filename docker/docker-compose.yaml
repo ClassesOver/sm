@@ -334,3 +334,6 @@ volumes:
 networks:
   daytona-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/16

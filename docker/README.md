@@ -5,6 +5,9 @@
 和 [docker/docker-compose.yaml](https://github.com/daytonaio/daytona/blob/v0.189.0/docker/docker-compose.yaml)
 维护完整的 Daytona 栈。它与根目录的 AgentOS Compose 相互独立，不共享容器网络、项目名或数据卷。
 
+外层 `daytona-network` 固定使用 `172.31.0.0/16`，避免与 Runner 创建 sandbox 时使用的
+`172.20.0.0/16` bridge 路由重叠。部署前仍须确认宿主机及其上游网络未占用该网段。
+
 Daytona 使用 AGPL-3.0 许可证。官方将这套 Compose 定位为本地部署基线；直接暴露到公网前，
 必须增加 TLS、访问控制、防火墙和备份策略。
 
