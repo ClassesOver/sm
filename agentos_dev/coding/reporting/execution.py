@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 from typing import Any
 
@@ -14,6 +15,8 @@ from ...task_execution.execution import TASK_EXECUTION_DEPENDENCY, TaskExecution
 from ...task_execution.session import TaskSession
 from .models import ReportingError
 
+WorkerEventSink = Callable[[TaskScope, str, Any], Awaitable[None]]
+
 
 class ReportTaskRunner:
     """由 Reporting Workflow 驱动一次 worker run，不复用 Coding Supervisor 状态机。"""
@@ -23,10 +26,13 @@ class ReportTaskRunner:
         repository: TaskExecutionRepository,
         worker: Agent,
         execution_cleanup: TaskExecutionKernel,
+        *,
+        event_sink: WorkerEventSink | None = None,
     ):
         self.repository = repository
         self.worker = worker
         self.execution_cleanup = execution_cleanup
+        self.event_sink = event_sink
 
     async def start(
         self,
@@ -56,7 +62,7 @@ class ReportTaskRunner:
             acceptance_contract=acceptance_contract,
         )
 
-    async def run(self, scope: TaskScope) -> dict[str, Any]:
+    async def run(self, scope: TaskScope, *, parent_run_id: str = "") -> dict[str, Any]:
         async with TaskSession(self.repository, scope) as session:
             await self.execution_cleanup.cleanup_old_epoch(scope, session.lease.epoch)
             task = await self.repository.get_task_snapshot(scope.external_run_id)
@@ -103,7 +109,7 @@ class ReportTaskRunner:
                 if continuing:
                     run_result: Any = self.worker.acontinue_run(
                         run_id=attempt.internal_run_id,
-                        stream=False,
+                        stream=True,
                         session_id=_worker_session_id(scope),
                         user_id=scope.owner_user_id,
                         dependencies=dependencies,
@@ -111,13 +117,13 @@ class ReportTaskRunner:
                 else:
                     run_result = self.worker.arun(
                         instruction,
-                        stream=False,
+                        stream=True,
                         run_id=attempt.internal_run_id,
                         session_id=_worker_session_id(scope),
                         user_id=scope.owner_user_id,
                         dependencies=dependencies,
                     )
-                output = await run_result if isawaitable(run_result) else run_result
+                output = await self._consume_run(run_result, scope, parent_run_id)
                 session.assert_alive()
                 updated = await self.repository.get_task_snapshot(scope.external_run_id)
                 if updated is None or updated.state is not TaskState.FINISHING:
@@ -132,6 +138,20 @@ class ReportTaskRunner:
             except BaseException:
                 await complete_cleanup(self._cancel_and_cleanup(scope, session.lease.epoch))
                 raise
+
+    async def _consume_run(self, run_result: Any, scope: TaskScope, parent_run_id: str) -> Any:
+        output = await run_result if isawaitable(run_result) else run_result
+        if not hasattr(output, "__aiter__"):
+            return output
+        last_event: Any = None
+        async for event in output:
+            last_event = event
+            if self.event_sink is not None and parent_run_id:
+                try:
+                    await self.event_sink(scope, parent_run_id, event)
+                except Exception:
+                    pass
+        return last_event
 
     async def cancel(self, scope: TaskScope) -> None:
         task = await self.repository.get_task_snapshot(scope.external_run_id)

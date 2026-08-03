@@ -136,7 +136,7 @@ def test_report_agentos_registers_reporting_agent_and_shared_workflow(monkeypatc
     monkeypatch.setattr(report_agentos, "ReportWorkflowController", create_controller)
     monkeypatch.setattr(report_agentos, "TaskExecutionRepository", lambda _db: object())
     monkeypatch.setattr(report_agentos, "TaskExecutionKernel", lambda *_args: object())
-    monkeypatch.setattr(report_agentos, "ReportTaskRunner", lambda *_args: object())
+    monkeypatch.setattr(report_agentos, "ReportTaskRunner", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(report_agentos, "ReportWorkflowRuntime", FakeRuntime)
     monkeypatch.setattr(
         report_agentos,
@@ -174,6 +174,13 @@ def test_report_agentos_registers_reporting_agent_and_shared_workflow(monkeypatc
         for route in getattr(getattr(item, "original_router", None), "routes", ())
     ]
     assert any(route.path == "/agui/cancel" for route in included_routes)
+    assert any(
+        route.path == "/reporting/runs/{workflow_run_id}/events" for route in included_routes
+    )
+    assert any(
+        route.path == "/reporting/external-runs/{external_run_id}/events"
+        for route in included_routes
+    )
 
 
 @pytest.mark.anyio
@@ -220,6 +227,73 @@ async def test_report_agentos取消路由缺少认证用户时返回401(monkeypa
         )
 
     assert captured.value.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_report_agentos事件路由按序号重放并在终态结束(monkeypatch):
+    broker = report_agentos.ReportingEventBroker()
+    await broker.publish(
+        "user-1",
+        "report-run-one",
+        "workflow_step_completed",
+        {"stepId": "finalize-publication", "terminal": True},
+    )
+    monkeypatch.setattr(report_agentos, "resolve_run_user_id", lambda _request: "user-1")
+    router = report_agentos._standalone_reporting_events_router(broker)
+    route = next(
+        item for item in router.routes if item.path == "/reporting/runs/{workflow_run_id}/events"
+    )
+
+    async def connected():
+        return False
+
+    response = await route.endpoint(
+        SimpleNamespace(is_disconnected=connected), "report-run-one", after=0
+    )
+    body = await anext(response.body_iterator)
+
+    assert "id: 1" in body
+    assert '"type": "workflow_step_completed"' in body
+    with pytest.raises(StopAsyncIteration):
+        await anext(response.body_iterator)
+
+
+@pytest.mark.anyio
+async def test_report_agentos外层run事件路由无需等待session落库(monkeypatch):
+    broker = report_agentos.ReportingEventBroker()
+    _, workflow_run_id = report_agentos.reporting_workflow_ids(
+        user_id="user-1",
+        thread_id="thread-1",
+        external_run_id="outer-run-1",
+    )
+    await broker.publish(
+        "user-1",
+        workflow_run_id,
+        "workflow_step_started",
+        {"stepId": "normalize-report-request"},
+    )
+    monkeypatch.setattr(report_agentos, "resolve_run_user_id", lambda _request: "user-1")
+    router = report_agentos._standalone_reporting_events_router(broker)
+    route = next(
+        item
+        for item in router.routes
+        if item.path == "/reporting/external-runs/{external_run_id}/events"
+    )
+
+    async def connected():
+        return False
+
+    response = await route.endpoint(
+        SimpleNamespace(is_disconnected=connected),
+        "outer-run-1",
+        thread_id="thread-1",
+        after=0,
+    )
+    body = await anext(response.body_iterator)
+
+    assert response.headers["x-reporting-workflow-run-id"] == workflow_run_id
+    assert '"type": "workflow_step_started"' in body
+    assert f'"workflowRunId": "{workflow_run_id}"' in body
 
 
 @pytest.mark.anyio
@@ -286,7 +360,7 @@ def test_report_agentos_components为controller按运行创建workflow(monkeypat
     )
     monkeypatch.setattr(report_agentos, "TaskExecutionRepository", lambda _db: object())
     monkeypatch.setattr(report_agentos, "TaskExecutionKernel", lambda *_args: object())
-    monkeypatch.setattr(report_agentos, "ReportTaskRunner", lambda *_args: object())
+    monkeypatch.setattr(report_agentos, "ReportTaskRunner", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(report_agentos, "ReportWorkflowRuntime", FakeRuntime)
     monkeypatch.setattr(
         report_agentos, "load_configured_report_source_registry", lambda *_args: object()

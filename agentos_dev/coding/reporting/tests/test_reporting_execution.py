@@ -172,7 +172,7 @@ async def test_report_task_runner从agno_checkpoint恢复同一worker_run(monkey
     assert len(continued) == 1
     call = continued[0]
     assert call["run_id"] == "internal-run"
-    assert call["stream"] is False
+    assert call["stream"] is True
     assert call["session_id"] == "report-worker-b2c800fd50c58fe2bf0528a53a85c34e"
     assert call["user_id"] == "user"
     assert call["dependencies"][execution_module.TASK_EXECUTION_DEPENDENCY] == {
@@ -183,6 +183,48 @@ async def test_report_task_runner从agno_checkpoint恢复同一worker_run(monkey
         "leaseEpoch": 2,
         "attemptNo": 0,
     }
+
+
+@pytest.mark.anyio
+async def test_report_task_runner流式转发worker事件(monkeypatch):
+    repository = _Repository(finish_requested=True)
+    forwarded: list[tuple[str, object]] = []
+
+    async def events():
+        yield SimpleNamespace(
+            event="ToolCallStarted",
+            tool=SimpleNamespace(
+                tool_call_id="tool-1", tool_name="terminal", tool_args={"command": "pwd"}
+            ),
+        )
+        yield SimpleNamespace(
+            event="ToolCallCompleted",
+            tool=SimpleNamespace(
+                tool_call_id="tool-1",
+                tool_name="terminal",
+                result="done",
+                tool_call_error=False,
+                metrics=SimpleNamespace(duration=0.25),
+            ),
+        )
+
+    def arun(*_args, **kwargs):
+        assert kwargs["stream"] is True
+        return events()
+
+    async def sink(_scope, parent_run_id: str, event: object) -> None:
+        forwarded.append((parent_run_id, event))
+
+    monkeypatch.setattr(execution_module, "TaskSession", _Session)
+    runner = ReportTaskRunner(repository, SimpleNamespace(arun=arun), _Cleanup(), event_sink=sink)
+
+    await runner.run(_scope(), parent_run_id="workflow-run")
+
+    assert [parent for parent, _event in forwarded] == ["workflow-run", "workflow-run"]
+    assert [getattr(event, "event") for _parent, event in forwarded] == [
+        "ToolCallStarted",
+        "ToolCallCompleted",
+    ]
 
 
 def _scope() -> TaskScope:

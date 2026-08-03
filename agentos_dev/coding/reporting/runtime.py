@@ -752,6 +752,7 @@ class ReportWorkflowRuntime:
         registry: ReportSourceRegistryConfig,
         profiles: ReportingProfileRegistry,
         planner_enable_thinking: bool,
+        workflow_event_sink: Any | None = None,
         metadata_client: ReportingMetadataClient | None = None,
         download_grants: ReportDownloadGrantService | None = None,
         server_identity_factory: ServerIdentityFactory | None = None,
@@ -765,6 +766,7 @@ class ReportWorkflowRuntime:
         self.metadata_client = metadata_client
         self.download_grants = download_grants
         self.server_identity_factory = server_identity_factory
+        self.workflow_event_sink = workflow_event_sink
         self.datasets = ReportDatasetStore(workspace_service)
         self.report_tools = WorkspaceReportToolkit(workspace_service, data_sources=self.datasets)
         self._request_normalizer = self._planning_agent(
@@ -948,6 +950,7 @@ class ReportWorkflowRuntime:
 
         return create_reporting_workflow(
             db=self.db,
+            event_sink=getattr(self, "workflow_event_sink", None),
             normalize_report_request=self.normalize_report_request,
             confirm_source=self.confirm_source,
             plan_data_scope=self.plan_data_scope,
@@ -2021,7 +2024,9 @@ class ReportWorkflowRuntime:
                 instruction,
                 acceptance_contract=acceptance_contract,
             )
-        finish_receipt = await self.task_runner.run(coding_scope)
+        finish_receipt = await self.task_runner.run(
+            coding_scope, parent_run_id=str(run_context.run_id or "")
+        )
         accepted_artifacts = (
             finish_receipt.get("artifacts") if isinstance(finish_receipt, dict) else None
         )

@@ -4,15 +4,18 @@ from typing import Any
 
 import pytest
 from agno.db.in_memory import InMemoryDb
+from agno.models.metrics import RunMetrics
 from agno.workflow import OnError
 from agno.workflow.types import StepInput, StepOutput
 
+from agentos_dev.coding.reporting import workflow as workflow_module
 from agentos_dev.coding.reporting.workflow import create_reporting_workflow
 
 
-def _workflow(first_step: Any, later_step: Any):
+def _workflow(first_step: Any, later_step: Any, *, event_sink=None):
     return create_reporting_workflow(
         db=InMemoryDb(),
+        event_sink=event_sink,
         normalize_report_request=first_step,
         confirm_source=first_step,
         plan_data_scope=later_step,
@@ -91,3 +94,71 @@ def test_所有报表步骤都显式失败关闭且暂不暂停审核():
     assert workflow.steps[13].max_retries == 0
     review_steps = [step for step in workflow.steps if bool(step.requires_output_review)]
     assert review_steps == []
+
+
+@pytest.mark.anyio
+async def test_function步骤记录执行耗时且保留已有metrics(monkeypatch):
+    times = iter((10.0, 11.25))
+    monkeypatch.setattr(workflow_module, "perf_counter", lambda: next(times))
+
+    async def execute(_step_input: StepInput) -> StepOutput:
+        return StepOutput(content={"ok": True}, metrics=RunMetrics(total_tokens=42))
+
+    workflow = _workflow(execute, execute)
+    result = await workflow.steps[0].executor(StepInput(input={}))
+
+    assert result.content == {"ok": True}
+    assert result.metrics is not None
+    assert result.metrics.duration == 1.25
+    assert result.metrics.total_tokens == 42
+
+
+@pytest.mark.anyio
+async def test_function步骤计时不改变异常语义(monkeypatch):
+    times = iter((20.0, 20.5))
+    monkeypatch.setattr(workflow_module, "perf_counter", lambda: next(times))
+
+    async def fail(_step_input: StepInput) -> StepOutput:
+        raise RuntimeError("step failed")
+
+    workflow = _workflow(fail, fail)
+
+    with pytest.raises(RuntimeError, match="step failed"):
+        await workflow.steps[0].executor(StepInput(input={}))
+
+
+@pytest.mark.anyio
+async def test_function步骤实时发布开始和完成事件(monkeypatch):
+    times = iter((30.0, 30.4))
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(workflow_module, "perf_counter", lambda: next(times))
+
+    async def sink(_run_context, event_type: str, data: dict[str, Any]) -> None:
+        events.append((event_type, data))
+
+    async def execute(_step_input: StepInput, _run_context) -> StepOutput:
+        return StepOutput(content={"ok": True})
+
+    workflow = _workflow(execute, execute, event_sink=sink)
+    run_context = object()
+    await workflow.steps[0].executor(StepInput(input={}), run_context)
+
+    assert events == [
+        (
+            "workflow_step_started",
+            {
+                "stepId": "normalize-report-request",
+                "stepName": "规范化报表请求",
+                "executorName": "execute",
+            },
+        ),
+        (
+            "workflow_step_completed",
+            {
+                "stepId": "normalize-report-request",
+                "stepName": "规范化报表请求",
+                "executorName": "execute",
+                "metrics": {"duration": pytest.approx(0.4)},
+            },
+        ),
+    ]

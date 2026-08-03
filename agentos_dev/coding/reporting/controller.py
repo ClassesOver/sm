@@ -28,6 +28,16 @@ ReportWorkflowStatus = Literal["running", "paused", "completed", "cancelled", "f
 ReviewStage = Literal["request", "agent", "source", "semantic", "outline", "query", "publication"]
 
 
+def reporting_workflow_ids(
+    *, user_id: str, thread_id: str, external_run_id: str
+) -> tuple[str, str]:
+    session_digest = hashlib.sha256(f"{user_id}:{thread_id}".encode()).hexdigest()[:32]
+    run_digest = hashlib.sha256(f"{user_id}:{thread_id}:{external_run_id}".encode()).hexdigest()[
+        :32
+    ]
+    return f"report-session-{session_digest}", f"report-run-{run_digest}"
+
+
 class ReviewableWorkflow(Protocol):
     id: str | None
 
@@ -397,13 +407,11 @@ class ReportWorkflowController:
 
     @staticmethod
     def _workflow_ids(scope: dict[str, str]) -> tuple[str, str]:
-        session_digest = hashlib.sha256(
-            f"{scope['user_id']}:{scope['thread_id']}".encode()
-        ).hexdigest()[:32]
-        run_digest = hashlib.sha256(
-            f"{scope['user_id']}:{scope['thread_id']}:{scope['external_run_id']}".encode()
-        ).hexdigest()[:32]
-        return f"report-session-{session_digest}", f"report-run-{run_digest}"
+        return reporting_workflow_ids(
+            user_id=scope["user_id"],
+            thread_id=scope["thread_id"],
+            external_run_id=scope["external_run_id"],
+        )
 
     @staticmethod
     def _workflow_dependencies(scope: dict[str, str]) -> dict[str, dict[str, str]]:

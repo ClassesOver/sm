@@ -7,6 +7,7 @@ from agno.agent import Agent
 from agno.os import AgentOS
 from agno.os.middleware.user_scope import resolve_run_user_id
 from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ...execution_context import (
@@ -18,9 +19,10 @@ from ...settings import AgentSettings
 from ...task_execution import TaskExecutionRepository
 from ...task_execution.execution import TaskExecutionKernel
 from .agent import create_report_agent, create_report_worker
-from .controller import ReportWorkflowController
+from .controller import ReportWorkflowController, reporting_workflow_ids
 from .data_source import load_configured_report_source_registry
 from .entrypoints import ReportServerIdentity
+from .events import ReportingEventBroker
 from .execution import ReportTaskRunner
 from .instructions import build_report_agent_instructions
 from .interface import ReportAGUI
@@ -57,6 +59,7 @@ def create_report_agentos_components(
     settings: AgentSettings,
     *,
     download_grants: ReportDownloadGrantService | None = None,
+    event_broker: ReportingEventBroker | None = None,
 ) -> tuple[Agent, Any, Agent, ReportWorkflowRuntime, ReportWorkflowController]:
     task_repository = TaskExecutionRepository(context.database)
     report_worker = create_report_worker(
@@ -74,6 +77,7 @@ def create_report_agentos_components(
         task_repository,
         report_worker,
         TaskExecutionKernel(context.workspace_service, task_repository),
+        event_sink=event_broker.emit_worker if event_broker is not None else None,
     )
     registry = load_configured_report_source_registry(settings.report_data_sources_dir)
     runtime = ReportWorkflowRuntime(
@@ -85,6 +89,7 @@ def create_report_agentos_components(
         registry=registry,
         profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
         planner_enable_thinking=settings.report_enable_thinking,
+        workflow_event_sink=event_broker.emit_workflow if event_broker is not None else None,
         metadata_client=(
             ReportingMetadataClient(
                 settings.report_metadata_url,
@@ -119,13 +124,20 @@ def create_agentos(settings: AgentSettings | None = None) -> AgentOS:
     context = create_execution_context(current_settings)
     download_repository = SqlAlchemyDownloadGrantRepository(getattr(context.database, "db_engine"))
     download_grants = ReportDownloadGrantService(download_repository)
+    event_broker = ReportingEventBroker()
     reporting_agent, workflow, report_worker, runtime, controller = (
-        create_report_agentos_components(context, current_settings, download_grants=download_grants)
+        create_report_agentos_components(
+            context,
+            current_settings,
+            download_grants=download_grants,
+            event_broker=event_broker,
+        )
     )
     base_app = FastAPI()
     # TODO: DEV 调试结束并恢复 JWT 鉴权后移除此固定用户中间件。
     base_app.middleware("http")(_reporting_dev_user_middleware)
     base_app.include_router(_standalone_cancel_router(controller))
+    base_app.include_router(_standalone_reporting_events_router(event_broker))
     base_app.include_router(
         create_workspace_report_download_router(
             WorkspaceReportDownloadHttpService(download_grants, context.workspace_service),
@@ -188,6 +200,90 @@ def _standalone_cancel_router(controller: ReportWorkflowController) -> APIRouter
         if result is None:
             raise HTTPException(status_code=404, detail="report_workflow_not_found")
         return result
+
+    return router
+
+
+def _standalone_reporting_events_router(event_broker: ReportingEventBroker) -> APIRouter:
+    router = APIRouter()
+
+    def event_response(
+        request: Request,
+        *,
+        user_id: str,
+        workflow_run_id: str,
+        after: int,
+    ) -> StreamingResponse:
+        async def stream():
+            async for event in event_broker.subscribe(
+                user_id, workflow_run_id, after=max(0, after)
+            ):
+                if await request.is_disconnected():
+                    return
+                if event is None:
+                    yield ": keepalive\n\n"
+                    continue
+                yield event.sse()
+                if event.data.get("terminal") is True:
+                    return
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "X-Reporting-Workflow-Run-ID": workflow_run_id,
+            },
+        )
+
+    @router.get("/reporting/runs/{workflow_run_id}/events", include_in_schema=False)
+    async def report_events(
+        request: Request,
+        workflow_run_id: str,
+        after: int = 0,
+    ) -> StreamingResponse:
+        user_id = resolve_run_user_id(request)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="缺少已认证用户身份。")
+        if not workflow_run_id.startswith("report-run-") or len(workflow_run_id) > 128:
+            raise HTTPException(status_code=404, detail="report_workflow_not_found")
+
+        return event_response(
+            request,
+            user_id=user_id,
+            workflow_run_id=workflow_run_id,
+            after=after,
+        )
+
+    @router.get("/reporting/external-runs/{external_run_id}/events", include_in_schema=False)
+    async def external_report_events(
+        request: Request,
+        external_run_id: str,
+        thread_id: str,
+        after: int = 0,
+    ) -> StreamingResponse:
+        user_id = resolve_run_user_id(request)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="缺少已认证用户身份。")
+        if (
+            not external_run_id
+            or len(external_run_id) > 128
+            or not thread_id
+            or len(thread_id) > 256
+        ):
+            raise HTTPException(status_code=404, detail="report_workflow_not_found")
+        _, workflow_run_id = reporting_workflow_ids(
+            user_id=user_id,
+            thread_id=thread_id,
+            external_run_id=external_run_id,
+        )
+        return event_response(
+            request,
+            user_id=user_id,
+            workflow_run_id=workflow_run_id,
+            after=after,
+        )
 
     return router
 

@@ -1113,7 +1113,8 @@ async def test_coding任务启动即绑定正式产物契约且workflow不再二
                 "acceptance": {"version": 1, "requirements": []},
             }
 
-        async def run(self, _scope):
+        async def run(self, _scope, *, parent_run_id=""):
+            assert parent_run_id == "workflow-run"
             return self.finish_receipt
 
         async def revise(self, *_args, **_kwargs):
