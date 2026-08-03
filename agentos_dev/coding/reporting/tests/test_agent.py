@@ -148,6 +148,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert "Workflow 首步" in facade_instructions
     assert "HumanReview retry" in facade_instructions
     assert "downloadUrl 必须逐字保留" in facade_instructions
+    assert "不得输出为裸路径" in facade_instructions
     assert report_agent.model is not report_worker.model
     assert report_agent.model.extra_body == {"enable_thinking": False}
     assert report_agent.model.temperature == 1.0

@@ -645,7 +645,8 @@ def create_report_agent(
                 "审核工具返回 paused 时重复本流程。",
                 "工具返回 completed 后只返回其正式报告产物；不得把 paused、running 或 failed "
                 "描述为完成。正式产物中的 downloadUrl 必须逐字保留为工具返回的相对路径，"
-                "不得补充域名、协议或改写为示例地址。",
+                "不得补充域名、协议或改写为示例地址；必须使用 `[下载报告](downloadUrl)` Markdown "
+                "链接，不得输出为裸路径、行内代码或代码块。",
             ],
             "tools": workflow_tools,
             "skills": None,
