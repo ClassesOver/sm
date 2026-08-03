@@ -1,4 +1,6 @@
 import json
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from agno.exceptions import StopAgentRun
@@ -10,6 +12,9 @@ from agentos_dev.coding.agent import create_coding_agent, create_coding_facade_a
 from agentos_dev.coding.reporting.agent import (
     ReportFacadeOpenAIChat,
     ReportWorkerOpenAIChat,
+    _report_facade_model,
+    _report_model,
+    _report_worker_model,
     create_report_agent,
     create_report_worker,
     normalize_reporting_tool_arguments,
@@ -27,6 +32,42 @@ from agentos_dev.context_management import ProjectedOpenAIChat
 from agentos_dev.instructions import build_pure_coding_agent_instructions
 from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
 from agentos_dev.task_execution.execution import is_coding_tool_scheduler_hook
+
+
+def test_reporting_model仅为siliconflow按完成chunk采集累计usage():
+    siliconflow = _report_model(
+        replace(app.settings, openai_base_url="https://api.siliconflow.cn/v1"),
+        enable_thinking=False,
+    )
+    standard = _report_model(
+        replace(app.settings, openai_base_url="https://api.openai.com/v1"),
+        enable_thinking=False,
+    )
+
+    intermediate = SimpleNamespace(usage=object(), choices=[SimpleNamespace(finish_reason=None)])
+    completed = SimpleNamespace(
+        usage=object(), choices=[SimpleNamespace(finish_reason="tool_calls")]
+    )
+    trailing = SimpleNamespace(usage=object(), choices=[])
+
+    assert siliconflow.collect_metrics_on_completion is True
+    assert siliconflow._should_collect_metrics(intermediate) is False
+    assert siliconflow._should_collect_metrics(completed) is True
+    assert siliconflow._should_collect_metrics(trailing) is False
+    assert standard.collect_metrics_on_completion is False
+    assert standard._should_collect_metrics(trailing) is True
+
+
+def test_reporting_model复制到worker和facade后保留累计usage配置():
+    base = _report_model(
+        replace(app.settings, openai_base_url="https://api.siliconflow.cn/v1"),
+        enable_thinking=True,
+    )
+    worker = _report_worker_model(base)
+    facade = _report_facade_model(worker)
+
+    assert worker.collect_metrics_on_completion is True
+    assert facade.collect_metrics_on_completion is True
 
 
 def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):

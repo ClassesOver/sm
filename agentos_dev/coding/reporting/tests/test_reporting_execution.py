@@ -173,6 +173,7 @@ async def test_report_task_runner从agno_checkpoint恢复同一worker_run(monkey
     call = continued[0]
     assert call["run_id"] == "internal-run"
     assert call["stream"] is True
+    assert call["stream_events"] is True
     assert call["session_id"] == "report-worker-b2c800fd50c58fe2bf0528a53a85c34e"
     assert call["user_id"] == "user"
     assert call["dependencies"][execution_module.TASK_EXECUTION_DEPENDENCY] == {
@@ -210,6 +211,7 @@ async def test_report_task_runner流式转发worker事件(monkeypatch):
 
     def arun(*_args, **kwargs):
         assert kwargs["stream"] is True
+        assert kwargs["stream_events"] is True
         return events()
 
     async def sink(_scope, parent_run_id: str, event: object) -> None:

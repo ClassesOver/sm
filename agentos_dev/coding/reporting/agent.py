@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import fields
 from functools import partial
 from typing import Any, cast
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from agno.agent import Agent
@@ -63,6 +64,7 @@ _REPORT_STRICT_TOOL_NAMES = frozenset(
         "repair_report_draft",
     }
 )
+_CUMULATIVE_STREAM_USAGE_HOSTS = frozenset({"api.siliconflow.cn"})
 _REPORT_TOOL_FAILURE_STATE_KEY = "agentos_reporting_tool_failures"
 _REPORT_TOOL_ARGUMENT_MAX_ATTEMPTS = 5
 _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
@@ -493,6 +495,9 @@ def _report_model(settings: AgentSettings, *, enable_thinking: bool) -> OpenAICh
         max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
         extra_body={"enable_thinking": enable_thinking},
+        collect_metrics_on_completion=(
+            urlparse(settings.openai_base_url).hostname in _CUMULATIVE_STREAM_USAGE_HOSTS
+        ),
         retries=2,
         exponential_backoff=True,
     )

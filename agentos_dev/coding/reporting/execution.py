@@ -110,6 +110,7 @@ class ReportTaskRunner:
                     run_result: Any = self.worker.acontinue_run(
                         run_id=attempt.internal_run_id,
                         stream=True,
+                        stream_events=True,
                         session_id=_worker_session_id(scope),
                         user_id=scope.owner_user_id,
                         dependencies=dependencies,
@@ -118,6 +119,7 @@ class ReportTaskRunner:
                     run_result = self.worker.arun(
                         instruction,
                         stream=True,
+                        stream_events=True,
                         run_id=attempt.internal_run_id,
                         session_id=_worker_session_id(scope),
                         user_id=scope.owner_user_id,
