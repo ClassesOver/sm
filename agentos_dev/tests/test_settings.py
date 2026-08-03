@@ -33,6 +33,7 @@ def test_settings_defaults():
     assert current.report_coding_reasoning_effort == "max"
     assert current.report_coding_thinking_budget == 16384
     assert current.report_enable_thinking is True
+    assert current.report_planner_reasoning_effort == "high"
     assert current.report_enable_vision is False
     assert current.model_timeout_seconds == 900
     assert current.tracing_enabled is False
@@ -78,6 +79,7 @@ def test_agent_feature_flags_can_be_disabled():
         AGENT_REPORT_CODING_REASONING_EFFORT="medium",
         AGENT_REPORT_CODING_THINKING_BUDGET="4096",
         AGENT_REPORT_ENABLE_THINKING="false",
+        AGENT_REPORT_PLANNER_REASONING_EFFORT="high",
         AGENT_REPORT_ENABLE_VISION="true",
         AGENT_HISTORY_TOKEN_BUDGET="32768",
         AGENT_CONTEXT_TOKEN_BUDGET="131072",
@@ -98,6 +100,7 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.report_coding_reasoning_effort == "medium"
     assert current.report_coding_thinking_budget == 4096
     assert current.report_enable_thinking is False
+    assert current.report_planner_reasoning_effort == "high"
     assert current.report_enable_vision is True
     assert current.history_token_budget == 32768
     assert current.context_token_budget == 131072
@@ -121,7 +124,11 @@ def test_invalid_coding_temperature_is_rejected(name, value):
 
 @pytest.mark.parametrize(
     "name",
-    ["AGENT_CODING_REASONING_EFFORT", "AGENT_REPORT_CODING_REASONING_EFFORT"],
+    [
+        "AGENT_CODING_REASONING_EFFORT",
+        "AGENT_REPORT_CODING_REASONING_EFFORT",
+        "AGENT_REPORT_PLANNER_REASONING_EFFORT",
+    ],
 )
 def test_invalid_coding_reasoning_effort_is_rejected(name):
     with pytest.raises(ValueError, match=name):

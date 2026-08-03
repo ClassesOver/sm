@@ -79,8 +79,9 @@ Coding 模式使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入�
 `enable_thinking` 和 `thinking_budget` 由 SDK 从 `extra_body` 合并到请求体，因此可用于
 SiliconFlow、千问 DashScope 兼容端点和暴露对应扩展字段的 vLLM 服务。默认值不代表任意模型都支持
 `max`；部署时仍须选择支持 thinking budget 和相应 reasoning effort 的模型，或通过上述独立变量覆盖。
-结构化 planner 由 `AGENT_REPORT_ENABLE_THINKING=true` 控制；普通 Assistant/Team 由
-`AGENT_ASSISTANT_ENABLE_THINKING=false` 独立控制，公开 facade 始终关闭 thinking。
+结构化 planner 由 `AGENT_REPORT_ENABLE_THINKING=true` 控制 thinking，并由
+`AGENT_REPORT_PLANNER_REASONING_EFFORT=high` 独立控制推理强度；普通 Assistant/Team 由
+`AGENT_ASSISTANT_ENABLE_THINKING=false` 控制，公开 facade 始终关闭 thinking。
 因此 CLI 不导入
 `agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
 PostgreSQL 中 Coding Repository 使用独立的 `agentos_coding` schema 和版本表，不写入 Agno
@@ -177,6 +178,7 @@ Coding `terminal.command` 以 UTF-8 字节计最多 32 KiB；大段文件内容�
 | `AGENT_REPORT_CODING_REASONING_EFFORT` | `max` | 控制 Report Coding worker 推理强度 |
 | `AGENT_REPORT_CODING_THINKING_BUDGET` | `16384` | 控制 Report Coding worker thinking token 预算 |
 | `AGENT_REPORT_ENABLE_THINKING` | `true` | 控制 Reporting planner thinking |
+| `AGENT_REPORT_PLANNER_REASONING_EFFORT` | `high` | 控制 Reporting planner 推理强度 |
 | `AGENT_REPORT_ENABLE_VISION` | `false` | 控制 Report Worker 是否暴露图片检查工具并向模型发送媒体 |
 | `AGENT_REPORT_CONTEXT_TOKEN_BUDGET` | `1048576` | Reporting 专用完整上下文窗口上限 |
 | `AGENT_REPORT_OUTPUT_TOKEN_RESERVE` | `393216` | Reporting high/max 推理最大输出预留（384K tokens） |

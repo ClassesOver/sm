@@ -256,6 +256,7 @@ def test_report_planner_uses_report_thinking_without_mutating_coding_worker():
         "report-test-planner",
         DataUnderstandingPlan,
         enable_thinking=app.settings.report_enable_thinking,
+        reasoning_effort=app.settings.report_planner_reasoning_effort,
         stage_instructions=stage_instructions,
     )
 
@@ -264,7 +265,9 @@ def test_report_planner_uses_report_thinking_without_mutating_coding_worker():
     assert planner.model.temperature == 1.0
     assert planner.model.top_p == 1.0
     assert planner.model.reasoning_effort == (
-        "max" if app.settings.report_enable_thinking else None
+        app.settings.report_planner_reasoning_effort
+        if app.settings.report_enable_thinking
+        else None
     )
     assert planner.model.timeout == app.settings.model_timeout_seconds
     assert planner.parse_response is True
@@ -275,6 +278,18 @@ def test_report_planner_uses_report_thinking_without_mutating_coding_worker():
         app.report_worker.model.extra_body["enable_thinking"]
         is app.settings.report_coding_enable_thinking
     )
+
+
+def test_report_planner_reasoning_effort_can_be_overridden():
+    planner = ReportWorkflowRuntime._planning_agent(
+        app.report_worker,
+        "report-test-planner-low",
+        DataUnderstandingPlan,
+        enable_thinking=True,
+        reasoning_effort="low",
+    )
+
+    assert planner.model.get_request_params()["reasoning_effort"] == "low"
     assert any(
         "非聚合 SELECT 列和 GROUP BY 列必须逐项等于 grainColumns" in instruction
         for instruction in app.report_runtime._sql_agent.instructions

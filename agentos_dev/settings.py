@@ -196,6 +196,7 @@ class AgentSettings:
     report_coding_reasoning_effort: str
     report_coding_thinking_budget: int
     report_enable_thinking: bool
+    report_planner_reasoning_effort: str
     report_enable_vision: bool
     tracing_enabled: bool
     tracing_phoenix_endpoint: str | None
@@ -321,6 +322,9 @@ class AgentSettings:
                 values, "AGENT_REPORT_CODING_THINKING_BUDGET", 16384, maximum=131072
             ),
             report_enable_thinking=_flag(values.get("AGENT_REPORT_ENABLE_THINKING"), default=True),
+            report_planner_reasoning_effort=_reasoning_effort(
+                values, "AGENT_REPORT_PLANNER_REASONING_EFFORT", default="high"
+            ),
             report_enable_vision=_flag(values.get("AGENT_REPORT_ENABLE_VISION"), default=False),
             tracing_enabled=_flag(values.get("AGENT_TRACING_ENABLED")),
             tracing_phoenix_endpoint=_phoenix_endpoint(values),

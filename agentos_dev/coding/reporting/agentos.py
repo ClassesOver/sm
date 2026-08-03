@@ -89,6 +89,7 @@ def create_report_agentos_components(
         registry=registry,
         profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
         planner_enable_thinking=settings.report_enable_thinking,
+        planner_reasoning_effort=settings.report_planner_reasoning_effort,
         workflow_event_sink=event_broker.emit_workflow if event_broker is not None else None,
         metadata_client=(
             ReportingMetadataClient(

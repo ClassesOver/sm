@@ -752,6 +752,7 @@ class ReportWorkflowRuntime:
         registry: ReportSourceRegistryConfig,
         profiles: ReportingProfileRegistry,
         planner_enable_thinking: bool,
+        planner_reasoning_effort: str = "high",
         workflow_event_sink: Any | None = None,
         metadata_client: ReportingMetadataClient | None = None,
         download_grants: ReportDownloadGrantService | None = None,
@@ -774,6 +775,7 @@ class ReportWorkflowRuntime:
             "report-request-normalizer",
             NormalizedReportPrompt,
             enable_thinking=planner_enable_thinking,
+            reasoning_effort=planner_reasoning_effort,
             stage_instructions=(
                 "只归一化分析期间；不得推断或返回数据源、Agent、医院或系统标识",
                 "单个明确日历年份转换为该年1月1日至12月31日",
@@ -786,6 +788,7 @@ class ReportWorkflowRuntime:
             "report-data-understanding-planner",
             DataUnderstandingPlan,
             enable_thinking=planner_enable_thinking,
+            reasoning_effort=planner_reasoning_effort,
             stage_instructions=(
                 "只选择完成报告目标所需的数据表",
                 "sourceId 必须与输入 Schema 完全一致",
@@ -808,6 +811,7 @@ class ReportWorkflowRuntime:
             "report-measure-semantic-proposer",
             MeasureSemanticProposal,
             enable_thinking=planner_enable_thinking,
+            reasoning_effort=planner_reasoning_effort,
             stage_instructions=(
                 "这是待用户审核的候选，不是已确认业务事实；只依据输入 Schema、术语和受限数据画像分类",
                 "candidateFieldRefs 中每个字段必须且只能在 decisions 中出现一次，不得增加、遗漏或替换字段",
@@ -831,6 +835,7 @@ class ReportWorkflowRuntime:
             "report-outline-planner",
             ReportOutline,
             enable_thinking=planner_enable_thinking,
+            reasoning_effort=planner_reasoning_effort,
             stage_instructions=(
                 "sections 必须保留 outlineContext.profile.sections[].title 并保持相对顺序",
                 "可以根据报告目标和真实数据增加其他简体中文章节",
@@ -842,6 +847,7 @@ class ReportWorkflowRuntime:
             "report-analysis-planner",
             AnalysisBundle,
             enable_thinking=planner_enable_thinking,
+            reasoning_effort=planner_reasoning_effort,
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
                 "每项 requirement 显式声明维度、指标、期间字段、期间粒度、共同粒度和表关系",
@@ -870,6 +876,7 @@ class ReportWorkflowRuntime:
             "report-sql-planner",
             GeneratedQueryBatch,
             enable_thinking=planner_enable_thinking,
+            reasoning_effort=planner_reasoning_effort,
             stage_instructions=(
                 "一次返回覆盖全部 requirements 的 SQL 批次",
                 "每项只生成一条 SELECT 或只读 CTE",
@@ -886,6 +893,7 @@ class ReportWorkflowRuntime:
         output_schema: type[BaseModel],
         *,
         enable_thinking: bool,
+        reasoning_effort: str = "high",
         stage_instructions: tuple[str, ...] = (),
     ) -> Agent:
         if not isinstance(planner.model, OpenAIChat):
@@ -897,7 +905,7 @@ class ReportWorkflowRuntime:
         }
         planner_model.temperature = 1.0
         planner_model.top_p = 1.0
-        planner_model.reasoning_effort = "max" if enable_thinking else None
+        planner_model.reasoning_effort = reasoning_effort if enable_thinking else None
         agent = planner.deep_copy(
             update={
                 "id": agent_id,

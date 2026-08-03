@@ -921,6 +921,7 @@ report_runtime = ReportWorkflowRuntime(
     registry=report_source_registry,
     profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
     planner_enable_thinking=settings.report_enable_thinking,
+    planner_reasoning_effort=settings.report_planner_reasoning_effort,
     metadata_client=(
         ReportingMetadataClient(
             settings.report_metadata_url,

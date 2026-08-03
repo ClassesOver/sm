@@ -75,6 +75,7 @@ async def run_cli(
         registry=load_configured_report_source_registry(context.settings.report_data_sources_dir),
         profiles=load_configured_reporting_profiles(context.settings.report_data_sources_dir),
         planner_enable_thinking=context.settings.report_enable_thinking,
+        planner_reasoning_effort=context.settings.report_planner_reasoning_effort,
         metadata_client=(
             ReportingMetadataClient(
                 context.settings.report_metadata_url,
