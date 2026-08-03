@@ -78,6 +78,7 @@ def create_assistants(
         max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
         extra_body={"enable_thinking": settings.assistant_enable_thinking},
+        temperature=1.0,
         retries=2,
         exponential_backoff=True,
     )
@@ -89,6 +90,7 @@ def create_assistants(
         max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
         extra_body={"enable_thinking": False},
+        temperature=1.0,
         retries=2,
         exponential_backoff=True,
     )
@@ -100,6 +102,7 @@ def create_assistants(
         max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
         extra_body={"enable_thinking": False},
+        temperature=1.0,
         retries=2,
         exponential_backoff=True,
     )

@@ -888,6 +888,7 @@ coding_agent = create_coding_agent(
     coding_repository,
     context_token_budget=settings.context_token_budget,
     output_token_reserve=settings.output_token_reserve,
+    temperature=settings.coding_temperature,
     enable_thinking=settings.coding_enable_thinking,
     reasoning_effort=settings.coding_reasoning_effort,
     thinking_budget=settings.coding_thinking_budget,

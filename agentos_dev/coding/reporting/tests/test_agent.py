@@ -102,9 +102,9 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert coding_facade.model is not coding_agent.model
     assert coding_facade.model.id == coding_agent.model.id
     assert coding_facade.model.extra_body == {"enable_thinking": False}
-    assert coding_facade.model.temperature is None
+    assert coding_facade.model.temperature == 1.0
     assert coding_facade.model.reasoning_effort is None
-    assert coding_agent.model.temperature == 0
+    assert coding_agent.model.temperature == 0.1
     assert coding_agent.model.reasoning_effort == app.settings.coding_reasoning_effort
     assert (
         coding_agent.model.get_request_params()["reasoning_effort"]
@@ -136,7 +136,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert report_worker.send_media_to_model is False
     assert report_worker.model is not coding_agent.model
     assert report_worker.model.max_tokens == 32768
-    assert report_worker.model.temperature == 1.0
+    assert report_worker.model.temperature == app.settings.report_coding_temperature
     assert report_worker.model.top_p == 0.95
     assert coding_agent.model.max_tokens is None
     assert report_worker.model.extra_body["enable_thinking"] is False

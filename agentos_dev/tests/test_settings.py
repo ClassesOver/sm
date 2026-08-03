@@ -24,10 +24,12 @@ def test_settings_defaults():
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
     assert current.assistant_enable_thinking is False
+    assert current.coding_temperature == 0.1
     assert current.coding_enable_thinking is True
     assert current.coding_reasoning_effort == "medium"
     assert current.coding_thinking_budget == 16384
     assert current.report_coding_enable_thinking is True
+    assert current.report_coding_temperature == 0.1
     assert current.report_coding_reasoning_effort == "max"
     assert current.report_coding_thinking_budget == 16384
     assert current.report_enable_thinking is True
@@ -67,10 +69,12 @@ def test_agent_feature_flags_can_be_disabled():
         AGENT_ENABLE_TOOL_RESULT_COMPRESSION="false",
         AGENT_ENABLE_SESSION_SUMMARIES="0",
         AGENT_ASSISTANT_ENABLE_THINKING="true",
+        AGENT_CODING_TEMPERATURE="0.25",
         AGENT_CODING_ENABLE_THINKING="off",
         AGENT_CODING_REASONING_EFFORT="high",
         AGENT_CODING_THINKING_BUDGET="8192",
         AGENT_REPORT_CODING_ENABLE_THINKING="no",
+        AGENT_REPORT_CODING_TEMPERATURE="0.35",
         AGENT_REPORT_CODING_REASONING_EFFORT="medium",
         AGENT_REPORT_CODING_THINKING_BUDGET="4096",
         AGENT_REPORT_ENABLE_THINKING="false",
@@ -85,10 +89,12 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.enable_tool_result_compression is False
     assert current.enable_session_summaries is False
     assert current.assistant_enable_thinking is True
+    assert current.coding_temperature == 0.25
     assert current.coding_enable_thinking is False
     assert current.coding_reasoning_effort == "high"
     assert current.coding_thinking_budget == 8192
     assert current.report_coding_enable_thinking is False
+    assert current.report_coding_temperature == 0.35
     assert current.report_coding_reasoning_effort == "medium"
     assert current.report_coding_thinking_budget == 4096
     assert current.report_enable_thinking is False
@@ -102,6 +108,15 @@ def test_agent_feature_flags_can_be_disabled():
 
 def test_model_timeout_comes_from_environment():
     assert settings(AGENT_MODEL_TIMEOUT_SECONDS="3600").model_timeout_seconds == 3600
+
+
+@pytest.mark.parametrize(
+    "name", ["AGENT_CODING_TEMPERATURE", "AGENT_REPORT_CODING_TEMPERATURE"]
+)
+@pytest.mark.parametrize("value", ["invalid", "-0.1", "2.1"])
+def test_invalid_coding_temperature_is_rejected(name, value):
+    with pytest.raises(ValueError, match=name):
+        settings(**{name: value})
 
 
 @pytest.mark.parametrize(

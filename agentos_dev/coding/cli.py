@@ -113,7 +113,7 @@ def create_cli_agent(context: CliContext) -> Agent:
     model = projected_coding_model(
         _create_cli_model(settings, enable_thinking=settings.coding_enable_thinking)
     )
-    model.temperature = 0
+    model.temperature = settings.coding_temperature
     model.reasoning_effort = settings.coding_reasoning_effort
     extra_body = dict(model.extra_body or {})
     if settings.coding_enable_thinking:

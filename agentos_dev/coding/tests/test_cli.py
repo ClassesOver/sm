@@ -73,9 +73,9 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.model.timeout == 123
     assert agent.model.max_retries == 0
     assert agent.model.extra_body == {"enable_thinking": True, "thinking_budget": 16384}
-    assert agent.model.temperature == 0
+    assert agent.model.temperature == 0.1
     assert agent.model.reasoning_effort == "medium"
-    assert agent.model.get_request_params()["temperature"] == 0
+    assert agent.model.get_request_params()["temperature"] == 0.1
     assert agent.model.get_request_params()["reasoning_effort"] == "medium"
     assert agent.model.request_params == {"parallel_tool_calls": True}
     assert agent.add_history_to_context is False
@@ -162,7 +162,7 @@ def test_coding_thinking_parameters_use_openai_compatible_request_fields(base_ur
 
     assert str(agent.model.base_url).rstrip("/") == base_url.rstrip("/")
     assert request_params["reasoning_effort"] == "medium"
-    assert request_params["temperature"] == 0
+    assert request_params["temperature"] == 0.1
     assert request_params["extra_body"] == {
         "enable_thinking": True,
         "thinking_budget": 16384,

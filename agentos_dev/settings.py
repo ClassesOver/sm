@@ -43,6 +43,17 @@ def _positive_int(
     return value
 
 
+def _temperature(values: MutableMapping[str, str], name: str, default: float) -> float:
+    raw = values.get(name, str(default)).strip()
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise ValueError(f"{name} 必须是数字") from error
+    if not 0 <= value <= 2:
+        raise ValueError(f"{name} 必须在 0 到 2 之间")
+    return value
+
+
 def _reasoning_effort(values: MutableMapping[str, str], name: str, default: str = "medium") -> str:
     value = values.get(name, default).strip().lower()
     if value not in {"minimal", "low", "medium", "high", "xhigh", "max"}:
@@ -176,10 +187,12 @@ class AgentSettings:
     enable_tool_result_compression: bool
     enable_session_summaries: bool
     assistant_enable_thinking: bool
+    coding_temperature: float
     coding_enable_thinking: bool
     coding_reasoning_effort: str
     coding_thinking_budget: int
     report_coding_enable_thinking: bool
+    report_coding_temperature: float
     report_coding_reasoning_effort: str
     report_coding_thinking_budget: int
     report_enable_thinking: bool
@@ -289,6 +302,7 @@ class AgentSettings:
             assistant_enable_thinking=_flag(
                 values.get("AGENT_ASSISTANT_ENABLE_THINKING"), default=False
             ),
+            coding_temperature=_temperature(values, "AGENT_CODING_TEMPERATURE", 0.1),
             coding_enable_thinking=_flag(values.get("AGENT_CODING_ENABLE_THINKING"), default=True),
             coding_reasoning_effort=_reasoning_effort(values, "AGENT_CODING_REASONING_EFFORT"),
             coding_thinking_budget=_positive_int(
@@ -296,6 +310,9 @@ class AgentSettings:
             ),
             report_coding_enable_thinking=_flag(
                 values.get("AGENT_REPORT_CODING_ENABLE_THINKING"), default=True
+            ),
+            report_coding_temperature=_temperature(
+                values, "AGENT_REPORT_CODING_TEMPERATURE", 0.1
             ),
             report_coding_reasoning_effort=_reasoning_effort(
                 values, "AGENT_REPORT_CODING_REASONING_EFFORT", default="max"

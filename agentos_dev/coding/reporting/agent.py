@@ -523,7 +523,7 @@ def create_report_worker(
         _report_model(settings, enable_thinking=report_coding_enable_thinking)
     )
     worker_model.max_tokens = output_token_reserve
-    worker_model.temperature = 1.0
+    worker_model.temperature = settings.report_coding_temperature
     worker_model.top_p = 0.95
     worker_model.reasoning_effort = settings.report_coding_reasoning_effort
     extra_body = dict(worker_model.extra_body or {})

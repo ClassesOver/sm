@@ -69,10 +69,11 @@ Coding 模式使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入�
 面向保留 Agno Agent 接口的确定性转交实体；其 `arun` 不调用模型，而是把完整目标直接交给
 `CodingTaskSupervisor`。只有底层 `coding-agent-cli` 使用 `MODEL`，并按
 `AGENT_CODING_ENABLE_THINKING` 传递 `enable_thinking`，默认使用独立配置的
-`AGENT_CODING_REASONING_EFFORT=medium` 和 `AGENT_CODING_THINKING_BUDGET=16384`
+`AGENT_CODING_TEMPERATURE=0.1`、`AGENT_CODING_REASONING_EFFORT=medium` 和
+`AGENT_CODING_THINKING_BUDGET=16384`
 执行受控工具闭环。Reporting Coding worker 默认由独立的
 `AGENT_REPORT_CODING_ENABLE_THINKING=true` 开启，并使用
-`AGENT_REPORT_CODING_REASONING_EFFORT=max` 和
+`AGENT_REPORT_CODING_TEMPERATURE=0.1`、`AGENT_REPORT_CODING_REASONING_EFFORT=max` 和
 `AGENT_REPORT_CODING_THINKING_BUDGET=16384`；两条 Coding 链路互不共享配置。
 三项参数沿用 OpenAI-compatible Chat Completions 请求：`reasoning_effort` 为顶层字段，
 `enable_thinking` 和 `thinking_budget` 由 SDK 从 `extra_body` 合并到请求体，因此可用于
@@ -166,10 +167,13 @@ Coding `terminal.command` 以 UTF-8 字节计最多 32 KiB；大段文件内容�
 | `compress_tool_results` | `True` | 仅压缩历史分析工具的大结果 |
 | `enable_session_summaries` | `True` | 成功 run 后滚动更新非权威摘要 |
 | `AGENT_ASSISTANT_ENABLE_THINKING` | `false` | 控制普通 Assistant/Team thinking |
+| 普通模型 `temperature` | `1.0` | Assistant、Reporting planner 和 facade 的默认温度 |
+| `AGENT_CODING_TEMPERATURE` | `0.1` | 控制纯 Coding worker 温度 |
 | `AGENT_CODING_ENABLE_THINKING` | `true` | 控制纯 Coding worker thinking |
 | `AGENT_CODING_REASONING_EFFORT` | `medium` | 控制纯 Coding worker 推理强度 |
 | `AGENT_CODING_THINKING_BUDGET` | `16384` | 控制纯 Coding worker thinking token 预算 |
 | `AGENT_REPORT_CODING_ENABLE_THINKING` | `true` | 控制 Report Coding worker thinking |
+| `AGENT_REPORT_CODING_TEMPERATURE` | `0.1` | 控制 Report Coding worker 温度 |
 | `AGENT_REPORT_CODING_REASONING_EFFORT` | `max` | 控制 Report Coding worker 推理强度 |
 | `AGENT_REPORT_CODING_THINKING_BUDGET` | `16384` | 控制 Report Coding worker thinking token 预算 |
 | `AGENT_REPORT_ENABLE_THINKING` | `true` | 控制 Reporting planner thinking |

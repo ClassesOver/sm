@@ -38,6 +38,7 @@ def create_coding_agent(
     instructions: AgentInstructions = build_pure_coding_agent_instructions,
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
+    temperature: float = 0.1,
     enable_thinking: bool = True,
     reasoning_effort: str = "medium",
     thinking_budget: int = 16384,
@@ -50,7 +51,7 @@ def create_coding_agent(
     if not isinstance(base_agent.model, OpenAIChat):
         raise TypeError("Coding Agent requires OpenAIChat")
     coding_model = projected_coding_model(base_agent.model)
-    coding_model.temperature = 0
+    coding_model.temperature = temperature
     coding_model.reasoning_effort = reasoning_effort
     coding_model.extra_body = {
         **(coding_model.extra_body or {}),
@@ -99,6 +100,8 @@ def create_coding_facade_agent(
     internal_agent: Agent,
     supervisor: CodingTaskSupervisor,
     workspace_service: WorkspaceService,
+    *,
+    temperature: float = 1.0,
 ) -> Agent:
     if not isinstance(internal_agent.model, OpenAIChat):
         raise TypeError("Coding facade requires OpenAIChat")
@@ -108,7 +111,7 @@ def create_coding_facade_agent(
         "enable_thinking": False,
     }
     facade_model.extra_body.pop("thinking_budget", None)
-    facade_model.temperature = None
+    facade_model.temperature = temperature
     facade_model.reasoning_effort = None
     facade_tool_hooks = [
         hook
