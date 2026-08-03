@@ -9,7 +9,10 @@ from agno.workflow import OnError
 from agno.workflow.types import StepInput, StepOutput
 
 from agentos_dev.coding.reporting import workflow as workflow_module
-from agentos_dev.coding.reporting.workflow import create_reporting_workflow
+from agentos_dev.coding.reporting.workflow import (
+    create_reporting_workflow,
+    record_step_model_metrics,
+)
 
 
 def _workflow(first_step: Any, later_step: Any, *, event_sink=None):
@@ -137,6 +140,9 @@ async def test_function步骤实时发布开始和完成事件(monkeypatch):
         events.append((event_type, data))
 
     async def execute(_step_input: StepInput, _run_context) -> StepOutput:
+        record_step_model_metrics(
+            RunMetrics(input_tokens=30, output_tokens=12, total_tokens=42)
+        )
         return StepOutput(content={"ok": True})
 
     workflow = _workflow(execute, execute, event_sink=sink)
@@ -158,7 +164,12 @@ async def test_function步骤实时发布开始和完成事件(monkeypatch):
                 "stepId": "normalize-report-request",
                 "stepName": "规范化报表请求",
                 "executorName": "execute",
-                "metrics": {"duration": pytest.approx(0.4)},
+                "metrics": {
+                    "input_tokens": 30,
+                    "output_tokens": 12,
+                    "total_tokens": 42,
+                    "duration": pytest.approx(0.4),
+                },
             },
         ),
     ]

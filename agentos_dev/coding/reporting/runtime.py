@@ -88,7 +88,7 @@ from .publishing import (
     cli_result,
     publication_result,
 )
-from .workflow import create_reporting_workflow
+from .workflow import create_reporting_workflow, record_step_model_metrics
 from .workflow_v1 import (
     ApprovedQuery,
     DatasetLineage,
@@ -895,7 +895,9 @@ class ReportWorkflowRuntime:
             **(getattr(planner.model, "extra_body", None) or {}),
             "enable_thinking": enable_thinking,
         }
-        planner_model.reasoning_effort = None
+        planner_model.temperature = 1.0
+        planner_model.top_p = 1.0
+        planner_model.reasoning_effort = "max" if enable_thinking else None
         agent = planner.deep_copy(
             update={
                 "id": agent_id,
@@ -2343,6 +2345,7 @@ class ReportWorkflowRuntime:
             ) from error
         content = getattr(output, "content", None)
         metrics = getattr(output, "metrics", None)
+        record_step_model_metrics(metrics)
         content_bytes = _payload_bytes(content)
         logger.info(
             "report_planner_response agent_id=%s input_sha256=%s output_bytes=%s "

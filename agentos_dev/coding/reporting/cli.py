@@ -58,8 +58,8 @@ async def run_cli(
         instructions=build_report_agent_instructions,
         report_coding_enable_thinking=context.settings.report_coding_enable_thinking,
         report_enable_vision=context.settings.report_enable_vision,
-        context_token_budget=context.settings.context_token_budget,
-        output_token_reserve=context.settings.output_token_reserve,
+        context_token_budget=context.settings.report_context_token_budget,
+        output_token_reserve=context.settings.report_output_token_reserve,
     )
     task_runner = ReportTaskRunner(
         task_repository,

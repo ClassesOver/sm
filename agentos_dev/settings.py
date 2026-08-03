@@ -191,6 +191,8 @@ class AgentSettings:
     context_token_budget: int
     history_token_budget: int
     output_token_reserve: int
+    report_context_token_budget: int
+    report_output_token_reserve: int
 
     @classmethod
     def from_environment(
@@ -230,6 +232,20 @@ class AgentSettings:
         )
         if output_token_reserve >= context_token_budget:
             raise ValueError("AGENT_OUTPUT_TOKEN_RESERVE 必须小于 AGENT_CONTEXT_TOKEN_BUDGET")
+        report_context_token_budget = _positive_int(
+            values,
+            "AGENT_REPORT_CONTEXT_TOKEN_BUDGET",
+            1048576,
+        )
+        report_output_token_reserve = _positive_int(
+            values,
+            "AGENT_REPORT_OUTPUT_TOKEN_RESERVE",
+            393216,
+        )
+        if report_output_token_reserve >= report_context_token_budget:
+            raise ValueError(
+                "AGENT_REPORT_OUTPUT_TOKEN_RESERVE 必须小于 AGENT_REPORT_CONTEXT_TOKEN_BUDGET"
+            )
         return cls(
             env_file=env_file,
             model_id=values.get("MODEL", DEFAULT_MODEL_ID),
@@ -282,7 +298,7 @@ class AgentSettings:
                 values.get("AGENT_REPORT_CODING_ENABLE_THINKING"), default=True
             ),
             report_coding_reasoning_effort=_reasoning_effort(
-                values, "AGENT_REPORT_CODING_REASONING_EFFORT"
+                values, "AGENT_REPORT_CODING_REASONING_EFFORT", default="max"
             ),
             report_coding_thinking_budget=_positive_int(
                 values, "AGENT_REPORT_CODING_THINKING_BUDGET", 16384, maximum=131072
@@ -298,4 +314,6 @@ class AgentSettings:
             context_token_budget=context_token_budget,
             history_token_budget=history_token_budget,
             output_token_reserve=output_token_reserve,
+            report_context_token_budget=report_context_token_budget,
+            report_output_token_reserve=report_output_token_reserve,
         )

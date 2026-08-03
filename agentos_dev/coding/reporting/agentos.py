@@ -70,8 +70,8 @@ def create_report_agentos_components(
         instructions=build_report_agent_instructions,
         report_coding_enable_thinking=settings.report_coding_enable_thinking,
         report_enable_vision=settings.report_enable_vision,
-        context_token_budget=settings.context_token_budget,
-        output_token_reserve=settings.output_token_reserve,
+        context_token_budget=settings.report_context_token_budget,
+        output_token_reserve=settings.report_output_token_reserve,
     )
     task_runner = ReportTaskRunner(
         task_repository,

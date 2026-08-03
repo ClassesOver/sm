@@ -136,7 +136,8 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert report_worker.send_media_to_model is False
     assert report_worker.model is not coding_agent.model
     assert report_worker.model.max_tokens == 32768
-    assert report_worker.model.temperature == 0
+    assert report_worker.model.temperature == 1.0
+    assert report_worker.model.top_p == 0.95
     assert coding_agent.model.max_tokens is None
     assert report_worker.model.extra_body["enable_thinking"] is False
     assert "thinking_budget" not in report_worker.model.extra_body
@@ -146,9 +147,11 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert "不得自行解析期间" in facade_instructions
     assert "Workflow 首步" in facade_instructions
     assert "HumanReview retry" in facade_instructions
+    assert "downloadUrl 必须逐字保留" in facade_instructions
     assert report_agent.model is not report_worker.model
     assert report_agent.model.extra_body == {"enable_thinking": False}
-    assert report_agent.model.temperature is None
+    assert report_agent.model.temperature == 1.0
+    assert report_agent.model.top_p == 0.95
     assert report_worker.compression_manager.model is report_worker.model
     assert report_agent.compression_manager.model is report_agent.model
     assert report_worker.compression_manager is not coding_agent.compression_manager
@@ -258,7 +261,11 @@ def test_report_planner_uses_report_thinking_without_mutating_coding_worker():
 
     assert planner.model is not app.report_worker.model
     assert planner.model.extra_body["enable_thinking"] is app.settings.report_enable_thinking
-    assert planner.model.reasoning_effort is None
+    assert planner.model.temperature == 1.0
+    assert planner.model.top_p == 1.0
+    assert planner.model.reasoning_effort == (
+        "max" if app.settings.report_enable_thinking else None
+    )
     assert planner.model.timeout == app.settings.model_timeout_seconds
     assert planner.parse_response is True
     assert any("不得写占位符" in instruction for instruction in planner.instructions)

@@ -167,6 +167,8 @@ def test_report_agentos_registers_reporting_agent_and_shared_workflow(monkeypatc
     assert report_worker not in captured["agents"]
     assert captured["interfaces"] == [{"agent": reporting_agent}]
     assert worker_kwargs["report_coding_enable_thinking"] is False
+    assert worker_kwargs["context_token_budget"] == 1048576
+    assert worker_kwargs["output_token_reserve"] == 393216
     assert len(controllers) == 1
     included_routes = [
         route

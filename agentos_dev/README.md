@@ -72,7 +72,7 @@ Coding 模式使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入�
 `AGENT_CODING_REASONING_EFFORT=medium` 和 `AGENT_CODING_THINKING_BUDGET=16384`
 执行受控工具闭环。Reporting Coding worker 默认由独立的
 `AGENT_REPORT_CODING_ENABLE_THINKING=true` 开启，并使用
-`AGENT_REPORT_CODING_REASONING_EFFORT=medium` 和
+`AGENT_REPORT_CODING_REASONING_EFFORT=max` 和
 `AGENT_REPORT_CODING_THINKING_BUDGET=16384`；两条 Coding 链路互不共享配置。
 三项参数沿用 OpenAI-compatible Chat Completions 请求：`reasoning_effort` 为顶层字段，
 `enable_thinking` 和 `thinking_budget` 由 SDK 从 `extra_body` 合并到请求体，因此可用于
@@ -170,10 +170,12 @@ Coding `terminal.command` 以 UTF-8 字节计最多 32 KiB；大段文件内容�
 | `AGENT_CODING_REASONING_EFFORT` | `medium` | 控制纯 Coding worker 推理强度 |
 | `AGENT_CODING_THINKING_BUDGET` | `16384` | 控制纯 Coding worker thinking token 预算 |
 | `AGENT_REPORT_CODING_ENABLE_THINKING` | `true` | 控制 Report Coding worker thinking |
-| `AGENT_REPORT_CODING_REASONING_EFFORT` | `medium` | 控制 Report Coding worker 推理强度 |
+| `AGENT_REPORT_CODING_REASONING_EFFORT` | `max` | 控制 Report Coding worker 推理强度 |
 | `AGENT_REPORT_CODING_THINKING_BUDGET` | `16384` | 控制 Report Coding worker thinking token 预算 |
 | `AGENT_REPORT_ENABLE_THINKING` | `true` | 控制 Reporting planner thinking |
 | `AGENT_REPORT_ENABLE_VISION` | `false` | 控制 Report Worker 是否暴露图片检查工具并向模型发送媒体 |
+| `AGENT_REPORT_CONTEXT_TOKEN_BUDGET` | `1048576` | Reporting 专用完整上下文窗口上限 |
+| `AGENT_REPORT_OUTPUT_TOKEN_RESERVE` | `393216` | Reporting high/max 推理最大输出预留（384K tokens） |
 
 Coding Agent 和原生 CLI 额外使用同一个 `ContextBudgetController`：有效上下文上限取
 `AGENT_CONTEXT_TOKEN_BUDGET` 与 96K token 的较小值，并至少保留 32K token 输出空间。未超预算时只在

@@ -495,6 +495,8 @@ def _report_model(settings: AgentSettings, *, enable_thinking: bool) -> OpenAICh
         max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
         extra_body={"enable_thinking": enable_thinking},
+        temperature=1.0,
+        top_p=1.0,
         collect_metrics_on_completion=(
             urlparse(settings.openai_base_url).hostname in _CUMULATIVE_STREAM_USAGE_HOSTS
         ),
@@ -521,7 +523,8 @@ def create_report_worker(
         _report_model(settings, enable_thinking=report_coding_enable_thinking)
     )
     worker_model.max_tokens = output_token_reserve
-    worker_model.temperature = 0
+    worker_model.temperature = 1.0
+    worker_model.top_p = 0.95
     worker_model.reasoning_effort = settings.report_coding_reasoning_effort
     extra_body = dict(worker_model.extra_body or {})
     if report_coding_enable_thinking:
@@ -596,7 +599,8 @@ def create_report_agent(
         "enable_thinking": False,
     }
     facade_model.extra_body.pop("thinking_budget", None)
-    facade_model.temperature = None
+    facade_model.temperature = 1.0
+    facade_model.top_p = 0.95
     facade_model.reasoning_effort = None
     facade_compression_manager = None
     if report_worker.compress_tool_results:
@@ -640,7 +644,8 @@ def create_report_agent(
                 "不得在文本回答中询问审批、猜测审批动作或宣称没有进行中的 Workflow。"
                 "审核工具返回 paused 时重复本流程。",
                 "工具返回 completed 后只返回其正式报告产物；不得把 paused、running 或 failed "
-                "描述为完成。",
+                "描述为完成。正式产物中的 downloadUrl 必须逐字保留为工具返回的相对路径，"
+                "不得补充域名、协议或改写为示例地址。",
             ],
             "tools": workflow_tools,
             "skills": None,

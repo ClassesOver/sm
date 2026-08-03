@@ -28,7 +28,7 @@ def test_settings_defaults():
     assert current.coding_reasoning_effort == "medium"
     assert current.coding_thinking_budget == 16384
     assert current.report_coding_enable_thinking is True
-    assert current.report_coding_reasoning_effort == "medium"
+    assert current.report_coding_reasoning_effort == "max"
     assert current.report_coding_thinking_budget == 16384
     assert current.report_enable_thinking is True
     assert current.report_enable_vision is False
@@ -40,6 +40,8 @@ def test_settings_defaults():
     assert current.context_token_budget == 262144
     assert current.history_token_budget == 196608
     assert current.output_token_reserve == 32768
+    assert current.report_context_token_budget == 1048576
+    assert current.report_output_token_reserve == 393216
     assert current.report_data_sources_dir is None
     assert current.report_metadata_url is None
     assert current.report_metadata_token is None
@@ -76,6 +78,8 @@ def test_agent_feature_flags_can_be_disabled():
         AGENT_HISTORY_TOKEN_BUDGET="32768",
         AGENT_CONTEXT_TOKEN_BUDGET="131072",
         AGENT_OUTPUT_TOKEN_RESERVE="16384",
+        AGENT_REPORT_CONTEXT_TOKEN_BUDGET="524288",
+        AGENT_REPORT_OUTPUT_TOKEN_RESERVE="131072",
     )
 
     assert current.enable_tool_result_compression is False
@@ -92,6 +96,8 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.history_token_budget == 32768
     assert current.context_token_budget == 131072
     assert current.output_token_reserve == 16384
+    assert current.report_context_token_budget == 524288
+    assert current.report_output_token_reserve == 131072
 
 
 def test_model_timeout_comes_from_environment():

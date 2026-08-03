@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from functools import wraps
 from inspect import isawaitable
 from time import perf_counter
@@ -16,6 +17,40 @@ from .contract import ReportingWorkflowInput
 
 StepExecutor = Any
 EventSink = Any
+_STEP_MODEL_METRICS: ContextVar[RunMetrics | None] = ContextVar(
+    "reporting_step_model_metrics", default=None
+)
+_TOKEN_METRIC_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+
+
+def record_step_model_metrics(value: Any) -> None:
+    """把步骤内部模型调用的 usage 汇总到当前异步步骤上下文。"""
+    current = _STEP_MODEL_METRICS.get()
+    if current is None or value is None:
+        return
+    incoming = RunMetrics()
+    for field in _TOKEN_METRIC_FIELDS:
+        metric = getattr(value, field, None)
+        if isinstance(metric, int | float):
+            setattr(incoming, field, metric)
+    _STEP_MODEL_METRICS.set(current + incoming)
+
+
+def _event_metrics(metrics: RunMetrics, duration: float) -> dict[str, int | float]:
+    payload = {
+        field: value
+        for field in _TOKEN_METRIC_FIELDS
+        if isinstance((value := getattr(metrics, field, None)), int | float) and value > 0
+    }
+    payload["duration"] = duration
+    return payload
 
 
 def _timed_step_executor(
@@ -37,12 +72,15 @@ def _timed_step_executor(
         }
         await _emit_event(event_sink, run_context, "workflow_step_started", base_event)
         started_at = perf_counter()
+        metrics_token = _STEP_MODEL_METRICS.set(RunMetrics())
         try:
             result = executor(*args, **kwargs)
             if isawaitable(result):
                 result = await result
         except BaseException as error:
             duration = perf_counter() - started_at
+            metrics = _STEP_MODEL_METRICS.get() or RunMetrics()
+            _STEP_MODEL_METRICS.reset(metrics_token)
             await _emit_event(
                 event_sink,
                 run_context,
@@ -50,14 +88,18 @@ def _timed_step_executor(
                 {
                     **base_event,
                     "error": str(error)[:2000],
-                    "metrics": {"duration": duration},
+                    "metrics": _event_metrics(metrics, duration),
                     "terminal": True,
                 },
             )
             raise
         duration = perf_counter() - started_at
+        collected_metrics = _STEP_MODEL_METRICS.get() or RunMetrics()
+        _STEP_MODEL_METRICS.reset(metrics_token)
+        metrics = collected_metrics
         if isinstance(result, StepOutput):
-            metrics = result.metrics or RunMetrics()
+            if result.metrics is not None:
+                metrics = metrics + result.metrics
             metrics.duration = duration
             result.metrics = metrics
         await _emit_event(
@@ -66,7 +108,7 @@ def _timed_step_executor(
             "workflow_step_completed",
             {
                 **base_event,
-                "metrics": {"duration": duration},
+                "metrics": _event_metrics(metrics, duration),
                 **({"terminal": True} if step_id == "finalize-publication" else {}),
             },
         )
