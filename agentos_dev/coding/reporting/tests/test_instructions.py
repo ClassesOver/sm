@@ -3,6 +3,9 @@ from types import SimpleNamespace
 from agno.run import RunContext
 
 from agentos_dev.coding.reporting.instructions import (
+    HOSPITAL_ANALYSIS_INSTRUCTIONS,
+    HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
+    HOSPITAL_REPORT_WRITING_INSTRUCTIONS,
     REPORT_AGENT_INSTRUCTIONS,
     build_report_agent_instructions,
 )
@@ -99,6 +102,32 @@ def test_报表智能体说明只包含workflow已准备的分析边界():
     assert "report_render_markdown" not in instructions
     assert "report_validate_pdf" not in instructions
     assert "report_job_status" not in instructions
+
+
+def test_医院运营成稿规则仅进入report_worker():
+    context = instruction_context()
+    report_instructions = build_report_agent_instructions(context)
+    coding_instructions = build_coding_agent_instructions(context)
+
+    assert all(rule in report_instructions for rule in HOSPITAL_REPORT_WRITING_INSTRUCTIONS)
+    assert not any(rule in coding_instructions for rule in HOSPITAL_REPORT_WRITING_INSTRUCTIONS)
+    assert not any(rule in REPORT_AGENT_INSTRUCTIONS for rule in HOSPITAL_ANALYSIS_INSTRUCTIONS)
+
+
+def test_医院运营分析规则明确六类主题按目标和数据条件触发():
+    prompt = "\n".join(HOSPITAL_ANALYSIS_INSTRUCTIONS)
+
+    assert "条件规则，不是必须覆盖的主题清单" in prompt
+    assert "报告目标未涉及" in prompt
+    assert "不得创建对应 analysis 或 requirement" in prompt
+    assert not any(
+        rule in REPORT_AGENT_INSTRUCTIONS for rule in HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS
+    )
+
+    writing_prompt = "\n".join(HOSPITAL_REPORT_WRITING_INSTRUCTIONS)
+    assert "不得新增计划外计算" in writing_prompt
+    assert "不得重复执行选表、趋势识别或归因分析" in writing_prompt
+    assert "待管理确认" in writing_prompt
 
 
 def test_报表用户可见内容使用中文且机器标记保持稳定():

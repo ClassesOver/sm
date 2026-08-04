@@ -5,11 +5,13 @@ import logging
 import re
 import secrets
 import stat
+import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol, cast
+from urllib.parse import quote
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException
@@ -383,8 +385,8 @@ def create_report_download_router(
         return FileResponse(
             authorized.path,
             media_type="application/pdf",
-            filename=f"report-r{authorized.grant.revision}.pdf",
             headers={
+                "Content-Disposition": _pdf_content_disposition(authorized.grant.pdf_path),
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
             },
@@ -472,13 +474,24 @@ def create_workspace_report_download_router(
             content,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f'attachment; filename="report-r{grant.revision}.pdf"',
+                "Content-Disposition": _pdf_content_disposition(grant.pdf_path),
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
             },
         )
 
     return router
+
+
+def _pdf_content_disposition(pdf_path: str) -> str:
+    filename = Path(pdf_path).name
+    if Path(filename).suffix.lower() != ".pdf":
+        filename = "report.pdf"
+    ascii_name = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode()
+    if ascii_name != filename or not ascii_name:
+        ascii_name = "report.pdf"
+    encoded_name = quote(filename, safe="")
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
 
 
 def publication_result(

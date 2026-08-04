@@ -39,7 +39,7 @@ def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
         sandbox = client.create(
             CreateSandboxFromSnapshotParams(
                 name=f"agui-report-integration-{uuid.uuid4().hex[:8]}",
-                snapshot=WORKSPACE_SNAPSHOT,
+                snapshot=os.getenv("DAYTONA_DEFAULT_SNAPSHOT", WORKSPACE_SNAPSHOT),
                 public=False,
                 ephemeral=True,
                 auto_stop_interval=60,

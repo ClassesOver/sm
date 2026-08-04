@@ -19,19 +19,94 @@ from agentos_dev.coding.reporting.agent import (
     create_report_worker,
     normalize_reporting_tool_arguments,
 )
+from agentos_dev.coding.reporting.contract import ReportPeriod
 from agentos_dev.coding.reporting.controller import ReportWorkflowController
+from agentos_dev.coding.reporting.instructions import (
+    HOSPITAL_ANALYSIS_INSTRUCTIONS,
+    HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
+)
+from agentos_dev.coding.reporting.profile import (
+    ReportingProfileRegistry,
+    resolve_reporting_profile,
+)
 from agentos_dev.coding.reporting.runtime import (
     AnalysisBundle,
     DataUnderstandingPlan,
     GeneratedQueryBatch,
     ReportOutline,
     ReportWorkflowRuntime,
+    _outline_section_issues,
+    _report_pdf_filename,
 )
 from agentos_dev.coding.reporting.tests.workspace_fakes import service
 from agentos_dev.context_management import ProjectedOpenAIChat
 from agentos_dev.instructions import build_pure_coding_agent_instructions
 from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
 from agentos_dev.task_execution.execution import is_coding_tool_scheduler_hook
+
+
+def test_提纲允许省略可选业务章节并保持已选章节相对顺序():
+    profile = resolve_reporting_profile(
+        ReportingProfileRegistry(documents={}, config_paths=()), None
+    )
+    optional_sections = (
+        profile.sections[:2]
+        + (
+            profile.sections[0].model_copy(
+                update={
+                    "code": "income_analysis",
+                    "title": "收入分析",
+                    "required": False,
+                }
+            ),
+            profile.sections[0].model_copy(
+                update={
+                    "code": "service_workload",
+                    "title": "医疗服务工作量分析",
+                    "required": False,
+                }
+            ),
+        )
+        + profile.sections[2:]
+    )
+    custom_profile = profile.model_copy(update={"sections": optional_sections})
+
+    income_only = ReportOutline(
+        title="收入分析报告",
+        sections=("执行摘要", "分析范围与方法", "收入分析", "关键发现", "局限性", "建议"),
+    )
+    assert _outline_section_issues(income_only, custom_profile) == []
+
+    reordered = income_only.model_copy(
+        update={
+            "sections": (
+                "执行摘要",
+                "分析范围与方法",
+                "医疗服务工作量分析",
+                "收入分析",
+                "关键发现",
+                "局限性",
+                "建议",
+            )
+        }
+    )
+    issues = _outline_section_issues(reordered, custom_profile)
+    assert len(issues) == 1
+    assert "相对顺序" in issues[0]["reason"]
+
+
+def test_pdf文件名使用报告主题和完整时间段并清理路径字符():
+    period = ReportPeriod(start="2025-01-01", end="2025-03-31")
+
+    assert _report_pdf_filename("收入/成本分析报告", period) == (
+        "收入_成本分析报告_2025-01-01至2025-03-31.pdf"
+    )
+
+
+def test_提纲规划器拒绝为单主题目标选择复合业务章节():
+    outline_rules = "\n".join(app.report_runtime._outline_agent.instructions)
+    assert "各主题均与目标相关且有数据支持" in outline_rules
+    assert "单主题扩展章节" in outline_rules
 
 
 def test_reporting_model仅为siliconflow按完成chunk采集累计usage():
@@ -279,6 +354,39 @@ def test_report_planner_uses_report_thinking_without_mutating_coding_worker():
         app.report_worker.model.extra_body["enable_thinking"]
         is app.settings.report_coding_enable_thinking
     )
+
+
+def test_医院运营规划规则按阶段隔离():
+    data_instructions = app.report_runtime._data_understanding_agent.instructions
+    analysis_instructions = app.report_runtime._analysis_agent.instructions
+
+    assert all(rule in data_instructions for rule in HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS)
+    assert not any(rule in data_instructions for rule in HOSPITAL_ANALYSIS_INSTRUCTIONS)
+    assert all(rule in analysis_instructions for rule in HOSPITAL_ANALYSIS_INSTRUCTIONS)
+    assert not any(
+        rule in analysis_instructions for rule in HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS
+    )
+
+    unrelated_planners = (
+        app.report_runtime._request_normalizer,
+        app.report_runtime._measure_semantic_agent,
+        app.report_runtime._outline_agent,
+        app.report_runtime._sql_agent,
+    )
+    hospital_planning_rules = (
+        *HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
+        *HOSPITAL_ANALYSIS_INSTRUCTIONS,
+    )
+    assert all(
+        not any(rule in planner.instructions for rule in hospital_planning_rules)
+        for planner in unrelated_planners
+    )
+
+    analysis_prompt = "\n".join(HOSPITAL_ANALYSIS_INSTRUCTIONS)
+    for scenario in ("收入", "工作量", "预算", "全成本", "费控", "资金"):
+        assert f"{scenario}场景" in analysis_prompt
+    assert "相关性不得表述为确定因果" in analysis_prompt
+    assert "跨域分析仅在期间、粒度、组织和口径可比时执行" in analysis_prompt
 
 
 def test_report_planner_reasoning_effort_can_be_overridden():

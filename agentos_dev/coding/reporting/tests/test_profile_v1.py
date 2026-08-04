@@ -277,6 +277,12 @@ def test_部署默认profile覆盖医院院区条线和模板分层():
     assert len(ruijin.dimensions) == 12
     assert ruijin.metrics == ()
     assert ruijin.measure_semantics == ()
+    assert all(
+        not item.required
+        for item in ruijin.sections
+        if item.code
+        in {"income_and_budget", "cost_and_expenditure", "project_budget", "service_workload"}
+    )
     assert north.scope_filters[0].value == "北部院区"
     assert north.scope_filters[0].required_for_all_tables is True
     assert "service_workload" not in {item.code for item in finance.sections}

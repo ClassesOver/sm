@@ -64,7 +64,8 @@ async def _workspace_download_client(
     current = workspace_service(tmp_path)
     sandbox = current.sandbox_for("thread-1")
     sandbox.fs.create_folder(f"{WORKSPACE_ROOT}/reports", "0755")
-    sandbox.fs.upload_file(content, f"{WORKSPACE_ROOT}/reports/result.pdf")
+    filename = "收入分析报告_2025-01-01至2025-12-31.pdf"
+    sandbox.fs.upload_file(content, f"{WORKSPACE_ROOT}/reports/{filename}")
     async_workspace = WorkspaceService(
         current.secret,
         client=current.client,
@@ -77,7 +78,7 @@ async def _workspace_download_client(
         scope=_scope(),
         report_id="report-1",
         revision=1,
-        pdf_path="reports/result.pdf",
+        pdf_path=f"reports/{filename}",
         pdf_size=len(content),
         pdf_sha256=hashlib.sha256(content).hexdigest(),
         now=issued_at or datetime.now(UTC),
@@ -110,8 +111,12 @@ async def test_workspace_download路由返回已授权pdf且不泄露内部路�
     assert response.headers["content-type"] == "application/pdf"
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
-    assert response.headers["content-disposition"] == 'attachment; filename="report-r1.pdf"'
-    assert "reports/result.pdf" not in response.text
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="report.pdf"; '
+        "filename*=UTF-8''%E6%94%B6%E5%85%A5%E5%88%86%E6%9E%90%E6%8A%A5%E5%91%8A_"
+        "2025-01-01%E8%87%B32025-12-31.pdf"
+    )
+    assert "reports/收入分析报告_2025-01-01至2025-12-31.pdf" not in response.text
 
 
 @pytest.mark.anyio
@@ -139,7 +144,10 @@ async def test_workspace_download路由拒绝跨scope文件变化撤销和过期
     if failure == "file":
         async with workspace._async_client() as current_client:
             sandbox = await workspace._asandbox_for(current_client, "thread-1")
-            await sandbox.fs.upload_file(b"changed", f"{WORKSPACE_ROOT}/reports/result.pdf")
+            await sandbox.fs.upload_file(
+                b"changed",
+                f"{WORKSPACE_ROOT}/reports/收入分析报告_2025-01-01至2025-12-31.pdf",
+            )
     if failure == "revoked":
         await grants.cancel("report-1", scope=_scope())
     try:
@@ -149,7 +157,7 @@ async def test_workspace_download路由拒绝跨scope文件变化撤销和过期
 
     assert response.status_code == expected_status
     assert response.json()["detail"]["code"] == expected_code
-    assert "reports/result.pdf" not in response.text
+    assert "reports/收入分析报告_2025-01-01至2025-12-31.pdf" not in response.text
 
 
 def test_download_access_log过滤器移除raw_grant且重复安装幂等():

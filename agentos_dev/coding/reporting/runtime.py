@@ -68,6 +68,10 @@ from .data_source import (
 from .data_sources import ReportDatasetStore
 from .entrypoints import ReportServerIdentity, current_server_identity
 from .execution import ReportTaskRunner
+from .instructions import (
+    HOSPITAL_ANALYSIS_INSTRUCTIONS,
+    HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
+)
 from .metadata import ReportingMetadataClient, select_reporting_agent
 from .models import ReportingError
 from .profile import (
@@ -548,8 +552,9 @@ class ReportOutline(_StrictModel):
         max_length=30,
         description=(
             "按报告阅读顺序排列的自然语言章节标题；每项只能是一个章节标题，"
-            "必须保留 outlineContext.profile.sections 中的全部 title 及其相对顺序，"
-            "并可根据报告目标和真实数据增加其他中文章节；"
+            "必须保留 outlineContext.profile.sections 中 required=true 的全部 title；"
+            "可选章节仅在报告目标相关且已确认数据能力支持时选择，所有已选 Profile 章节"
+            "必须保持原相对顺序，并可根据报告目标和真实数据增加其他中文章节；"
             "必须包含有效文字或数字且不得重复；不得包含 JSON、键值配置、页面布局、"
             "模板、snake_case 配置标识或转义后的序列化片段。"
         ),
@@ -804,6 +809,7 @@ class ReportWorkflowRuntime:
                 ),
                 "不得使用文件名、不完整表名、table.column 或 DDL 外名称",
                 "不得虚构表、字段或业务含义",
+                *HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
             ),
         )
         self._measure_semantic_agent = self._planning_agent(
@@ -837,9 +843,18 @@ class ReportWorkflowRuntime:
             enable_thinking=planner_enable_thinking,
             reasoning_effort=planner_reasoning_effort,
             stage_instructions=(
-                "sections 必须保留 outlineContext.profile.sections[].title 并保持相对顺序",
+                (
+                    "sections 必须保留 outlineContext.profile.sections 中 required=true 的全部 title；"
+                    "所有已选 Profile 章节必须保持相对顺序"
+                ),
+                "可选章节仅在报告目标明确相关且对应数据能力可用时选择",
+                (
+                    "可选章节标题包含多个业务主题时，只有各主题均与目标相关且有数据支持才可选择；"
+                    "否则使用与目标一致的单主题扩展章节"
+                ),
+                "报告目标未涉及或能力不可用的可选章节不得生成，不得用无数据空章节占位",
                 "可以根据报告目标和真实数据增加其他简体中文章节",
-                "不得删除、改名、打乱或用扩展章节替代 Profile 章节",
+                "不得删除、改名、打乱或用扩展章节替代 Profile 必选章节",
             ),
         )
         self._analysis_agent = self._planning_agent(
@@ -869,6 +884,7 @@ class ReportWorkflowRuntime:
                 ),
                 "禁止为汇总展示强行拼接期间语义、事实粒度或关联键不兼容的表",
                 "披露数据差异、期间缺失、零分母和口径限制，不做未授权推算",
+                *HOSPITAL_ANALYSIS_INSTRUCTIONS,
             ),
         )
         self._sql_agent = self._planning_agent(
@@ -1506,9 +1522,10 @@ class ReportWorkflowRuntime:
                         "可直接展示的自然语言假设或空数组；不得返回 snake_case 字段名、默认占位值、"
                         "纯标点、孤立标点前缀或重复项；缺失数据只能如实披露为限制，不得填补、"
                         "估算、插值或外推；直接替换错误值，不把修正说明或标记写入字段；"
-                        "必须保留 effectiveProfile.sections[].title 并保持相对顺序，"
-                        "可以根据报告目标和真实数据增加其他中文章节，但不得删除、改名、"
-                        "打乱或用扩展章节替代必选章节；"
+                        "必须保留 effectiveProfile.sections 中 required=true 的全部 title；"
+                        "可选章节仅在报告目标相关且数据能力支持时选择，所有已选 Profile 章节"
+                        "保持相对顺序；可以根据报告目标和真实数据增加其他中文章节，但不得"
+                        "删除、改名、打乱或用扩展章节替代必选章节；"
                         "不返回章节正文、解释或 Markdown"
                     ),
                 }
@@ -1924,6 +1941,30 @@ class ReportWorkflowRuntime:
         observed_data_facts = _coding_observed_data_facts(
             self._data_shapes(run_context), requirements, lineage
         )
+        profile_sections_by_title = {
+            section.title: section for section in self._profile(run_context).sections
+        }
+        render_sections: list[dict[str, Any]] = []
+        extension_index = 0
+        for title in state[REPORT_OUTLINE_STATE_KEY]["sections"]:
+            profile_section = profile_sections_by_title.get(title)
+            if profile_section is not None:
+                render_sections.append(
+                    {
+                        "code": profile_section.code,
+                        "title": profile_section.title,
+                        "protocolMarker": True,
+                    }
+                )
+                continue
+            extension_index += 1
+            render_sections.append(
+                {
+                    "code": f"extension_{extension_index:03d}",
+                    "title": title,
+                    "protocolMarker": False,
+                }
+            )
         validation_context = build_report_artifact_validation_context(
             forbidden_visible_terms=_report_machine_terms(
                 state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
@@ -1931,9 +1972,7 @@ class ReportWorkflowRuntime:
                 state[REPORT_EFFECTIVE_PROFILE_STATE_KEY],
             ),
             observed_data_facts=observed_data_facts,
-            expected_sections=tuple(
-                section.code for section in self._profile(run_context).sections
-            ),
+            expected_sections=tuple(section["code"] for section in render_sections),
             expected_citation_bindings=tuple(
                 (item.dataset_id, item.requirement_id) for item in lineage
             ),
@@ -1959,30 +1998,6 @@ class ReportWorkflowRuntime:
             "artifactManifestPath": manifest_path,
             "manifestAuthority": "server",
         }
-        profile_sections_by_title = {
-            section.title: section for section in self._profile(run_context).sections
-        }
-        render_sections: list[dict[str, Any]] = []
-        extension_index = 0
-        for title in state[REPORT_OUTLINE_STATE_KEY]["sections"]:
-            profile_section = profile_sections_by_title.get(title)
-            if profile_section is not None:
-                render_sections.append(
-                    {
-                        "code": profile_section.code,
-                        "title": profile_section.title,
-                        "protocolMarker": True,
-                    }
-                )
-                continue
-            extension_index += 1
-            render_sections.append(
-                {
-                    "code": f"extension_{extension_index:03d}",
-                    "title": title,
-                    "protocolMarker": False,
-                }
-            )
         acceptance_contract = build_report_artifact_acceptance_contract(
             expected_manifest_identity,
             validation_context_file=validation_context_file,
@@ -2085,8 +2100,9 @@ class ReportWorkflowRuntime:
     async def _render_and_validate(self, run_context: RunContext) -> dict[str, Any]:
         state = self._state(run_context)
         result = self._workflow_result(state)
-        revision = int(result.get("revision", 0))
-        pdf_path = f"报表/智能分析/{run_context.run_id}/report-revision-{revision + 1}.pdf"
+        outline = ReportOutline.model_validate(state[REPORT_OUTLINE_STATE_KEY])
+        pdf_filename = _report_pdf_filename(outline.title, self._envelope(run_context).period)
+        pdf_path = f"报表/智能分析/{run_context.run_id}/{pdf_filename}"
         context = self._tool_context(run_context)
         try:
             draft = ReportArtifactManifest.model_validate(
@@ -3554,7 +3570,7 @@ def _outline_section_issues(
     outline: ReportOutline,
     profile: EffectiveReportingProfile,
 ) -> list[dict[str, Any]]:
-    required_titles = [section.title for section in profile.sections]
+    required_titles = [section.title for section in profile.sections if section.required]
     actual_titles = list(outline.sections)
     missing_titles = [title for title in required_titles if title not in actual_titles]
     if missing_titles:
@@ -3568,18 +3584,40 @@ def _outline_section_issues(
                 "requiredAction": "保留 requiredTitles，并可按报告目标和真实数据增加其他中文章节",
             }
         ]
-    required_positions = [actual_titles.index(title) for title in required_titles]
-    if required_positions != sorted(required_positions):
+    selected_profile_titles = [
+        section.title for section in profile.sections if section.title in actual_titles
+    ]
+    selected_positions = [actual_titles.index(title) for title in selected_profile_titles]
+    if selected_positions != sorted(selected_positions):
         return [
             {
                 "path": "sections",
                 "rejectedValue": actual_titles,
                 "requiredTitles": required_titles,
-                "reason": "Profile 必选章节的相对顺序与 effectiveProfile.sections 不一致",
-                "requiredAction": "按 requiredTitles 的相对顺序排列必选章节，扩展章节可插入任意位置",
+                "expectedProfileOrder": selected_profile_titles,
+                "reason": "已选 Profile 章节的相对顺序与 effectiveProfile.sections 不一致",
+                "requiredAction": "按 expectedProfileOrder 排列已选章节，扩展章节可插入任意位置",
             }
         ]
     return []
+
+
+def _report_pdf_filename(title: str, period: ReportPeriod) -> str:
+    safe_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).strip(" ._")
+    if not safe_title:
+        safe_title = "智能分析报告"
+    # 文件系统通常限制单个文件名为 255 bytes，为日期和扩展名预留固定空间。
+    encoded = safe_title.encode("utf-8")
+    if len(encoded) > 180:
+        encoded = encoded[:180]
+        while True:
+            try:
+                safe_title = encoded.decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                encoded = encoded[:-1]
+    period_label = f"{period.start.isoformat()}至{period.end.isoformat()}"
+    return f"{safe_title}_{period_label}.pdf"
 
 
 def _validation_issue(
