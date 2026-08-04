@@ -9,7 +9,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from agentos_dev.coding.reporting.publishing import (
+from agentos_dev.coding.reporting.delivery.publishing import (
     InMemoryDownloadGrantRepository,
     ReportDownloadCallerScope,
     ReportDownloadGrantService,

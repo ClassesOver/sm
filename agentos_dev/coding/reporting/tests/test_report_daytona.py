@@ -13,7 +13,7 @@ import pytest
 from daytona import CreateSandboxFromSnapshotParams, Daytona
 from pypdf import PdfReader
 
-from agentos_dev.coding.reporting import report_runtime
+from agentos_dev.coding.reporting.delivery import report_runtime
 from agentos_dev.workspace import (
     MAX_DOWNLOAD_BYTES,
     MAX_UPLOAD_BYTES,

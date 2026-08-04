@@ -43,9 +43,9 @@ from ...task_execution.execution import (
     is_task_tool_scheduler_hook,
 )
 from ...workspace import WorkspaceService
-from .acceptance import load_reporting_skills
-from .controller import ReportWorkflowController, ReportWorkflowToolkit
+from .delivery.acceptance import load_reporting_skills
 from .tools import REPORT_TOOL_ARGUMENT_AUTOFIX_STATE_KEY, build_report_worker_tools
+from .workflow.controller import ReportWorkflowController, ReportWorkflowToolkit
 
 _REPORT_FACADE_TOOL_NAMES = frozenset(
     {

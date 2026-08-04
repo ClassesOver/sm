@@ -12,13 +12,13 @@ from typing import Any
 import pytest
 from agno.run import RunContext
 
-from agentos_dev.coding.reporting.acceptance import (
+from agentos_dev.coding.reporting.delivery.acceptance import (
     REPORT_ARTIFACT_VALIDATOR_ID,
     REPORT_ARTIFACT_VALIDATOR_SCRIPT,
     build_report_artifact_acceptance_contract,
     build_report_artifact_validation_context,
 )
-from agentos_dev.coding.reporting.artifacts_v1 import (
+from agentos_dev.coding.reporting.delivery.artifacts_v1 import (
     REQUIRED_REPORT_SECTIONS,
     ArtifactFile,
     Citation,
@@ -26,8 +26,8 @@ from agentos_dev.coding.reporting.artifacts_v1 import (
     build_authoritative_manifest,
 )
 from agentos_dev.coding.reporting.models import ReportingError
-from agentos_dev.coding.reporting.query_pipeline import DatasetLineage
-from agentos_dev.coding.reporting.runtime import (
+from agentos_dev.coding.reporting.workflow.query_pipeline import DatasetLineage
+from agentos_dev.coding.reporting.workflow.runtime import (
     REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_DATA_REQUIREMENTS_STATE_KEY,
     REPORT_DATASET_LINEAGE_STATE_KEY,

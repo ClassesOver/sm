@@ -9,7 +9,7 @@ from .artifacts_v1 import ReportArtifactManifest
 
 REPORT_ARTIFACT_VALIDATOR_ID = "report-artifact:manifest"
 REPORT_ARTIFACT_PATTERN = "报表/智能分析/*/*"
-REPORTING_BUILTIN_SKILLS_DIR = Path(__file__).with_name("builtin_skills")
+REPORTING_BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "builtin_skills"
 REPORT_ARTIFACT_VALIDATOR_SCRIPT = (
     REPORTING_BUILTIN_SKILLS_DIR / "report-artifact" / "scripts" / "validate_manifest.py"
 )

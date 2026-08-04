@@ -21,7 +21,7 @@ from agentos_dev.coding.reporting.profile import (
     ReportingProfileRegistry,
     resolve_reporting_profile,
 )
-from agentos_dev.coding.reporting.runtime import (
+from agentos_dev.coding.reporting.workflow.runtime import (
     REPORT_DATA_SHAPES_STATE_KEY,
     REPORT_DATA_UNDERSTANDING_STATE_KEY,
     REPORT_EFFECTIVE_PROFILE_STATE_KEY,

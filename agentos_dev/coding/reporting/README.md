@@ -4,6 +4,15 @@ v1 的 Workflow ID 固定为 `enterprise-reporting-workflow-v1`。v1 只使用�
 请求、模型上下文和 Workflow state 均不得包含 host、用户名、密码或 DSN。数据源配置与覆盖规则见
 [`data_source/README.md`](data_source/README.md)。
 
+## 代码目录
+
+- `workflow/`：请求控制、事件、任务执行、查询规划和 Agno Workflow 运行时。
+- `delivery/`：结构化草稿、产物清单、验收、修复、渲染和发布。
+- `data_source/`：数据源配置、画像、期间语义和只读 SQL 校验。
+- `profile/`：报表 Profile、能力裁剪和对账形态。
+- `builtin_skills/`：Report Worker 使用的内置技能和确定性验收脚本。
+- 顶层模块：公共契约、入口、Agent 装配、数据集存储及工作区工具。
+
 ## 数据和语义边界
 
 - 顶层 Workflow 输入严格区分自然语言 `{"version":"1","prompt":"..."}` 与现有

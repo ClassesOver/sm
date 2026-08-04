@@ -9,7 +9,7 @@ from agno.workflow.types import StepInput
 
 from agentos_dev.coding.reporting.contract import ReportingWorkflowInput
 from agentos_dev.coding.reporting.models import ReportingError
-from agentos_dev.coding.reporting.runtime import (
+from agentos_dev.coding.reporting.workflow.runtime import (
     NormalizedReportPrompt,
     ReportWorkflowRuntime,
 )

@@ -9,7 +9,7 @@ from pydantic import Field, field_validator, model_validator
 from sqlglot import exp, parse_one
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
-from .contract import (
+from ..contract import (
     MeasureSemantic,
     ModelTable,
     ModelTermsResponse,
@@ -21,10 +21,10 @@ from .contract import (
     schema_hash,
     validate_catalog,
 )
-from .data_source.models import ColumnShape, DataShape, TableDataShape
-from .data_source.sql_validation import validate_starrocks_read_only_sql
-from .data_source.starrocks import StarRocksSourceConfig
-from .models import ReportingError
+from ..data_source.models import ColumnShape, DataShape, TableDataShape
+from ..data_source.sql_validation import validate_starrocks_read_only_sql
+from ..data_source.starrocks import StarRocksSourceConfig
+from ..models import ReportingError
 
 __all__ = [
     "ApprovedQuery",

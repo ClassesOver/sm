@@ -20,7 +20,6 @@ from agentos_dev.coding.reporting.agent import (
     normalize_reporting_tool_arguments,
 )
 from agentos_dev.coding.reporting.contract import ReportPeriod
-from agentos_dev.coding.reporting.controller import ReportWorkflowController
 from agentos_dev.coding.reporting.instructions import (
     HOSPITAL_ANALYSIS_INSTRUCTIONS,
     HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
@@ -29,7 +28,9 @@ from agentos_dev.coding.reporting.profile import (
     ReportingProfileRegistry,
     resolve_reporting_profile,
 )
-from agentos_dev.coding.reporting.runtime import (
+from agentos_dev.coding.reporting.tests.workspace_fakes import service
+from agentos_dev.coding.reporting.workflow.controller import ReportWorkflowController
+from agentos_dev.coding.reporting.workflow.runtime import (
     AnalysisBundle,
     DataUnderstandingPlan,
     GeneratedQueryBatch,
@@ -39,7 +40,6 @@ from agentos_dev.coding.reporting.runtime import (
     _report_pdf_filename,
     _report_pdf_path,
 )
-from agentos_dev.coding.reporting.tests.workspace_fakes import service
 from agentos_dev.context_management import ProjectedOpenAIChat
 from agentos_dev.instructions import build_pure_coding_agent_instructions
 from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook

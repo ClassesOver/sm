@@ -8,8 +8,8 @@ from agno.models.metrics import RunMetrics
 from agno.workflow import OnError
 from agno.workflow.types import StepInput, StepOutput
 
-from agentos_dev.coding.reporting import orchestration as orchestration_module
-from agentos_dev.coding.reporting.orchestration import (
+from agentos_dev.coding.reporting.workflow import orchestration as orchestration_module
+from agentos_dev.coding.reporting.workflow.orchestration import (
     create_reporting_workflow,
     record_step_model_metrics,
 )

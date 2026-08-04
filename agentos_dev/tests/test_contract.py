@@ -33,12 +33,12 @@ from agentos_dev.agents import (
 )
 from agentos_dev.agents.assistant import create_assistant
 from agentos_dev.coding.reporting.agent import ReportFacadeOpenAIChat, create_report_agent
-from agentos_dev.coding.reporting.controller import (
-    ReportWorkflowController,
-    ReportWorkflowToolkit,
-)
 from agentos_dev.coding.reporting.instructions import (
     build_report_agent_instructions,
+)
+from agentos_dev.coding.reporting.workflow.controller import (
+    ReportWorkflowController,
+    ReportWorkflowToolkit,
 )
 from agentos_dev.context_management import ContextBudgetController, ProjectedOpenAIChat
 from agentos_dev.instructions import (

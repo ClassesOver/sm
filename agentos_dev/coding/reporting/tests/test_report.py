@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from agentos_dev.coding.reporting import report_runtime
-from agentos_dev.coding.reporting.report_runtime import ReportFailure, ReportRuntime
+from agentos_dev.coding.reporting.delivery import report_runtime
+from agentos_dev.coding.reporting.delivery.report_runtime import ReportFailure, ReportRuntime
 
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="

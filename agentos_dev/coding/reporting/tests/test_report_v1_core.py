@@ -29,6 +29,13 @@ from agentos_dev.coding.reporting.data_source import (
     DataShape,
     load_report_source_registry,
 )
+from agentos_dev.coding.reporting.delivery.publishing import (
+    InMemoryDownloadGrantRepository,
+    ReportDownloadGrantService,
+    ReportDownloadScope,
+    cli_result,
+    publication_result,
+)
 from agentos_dev.coding.reporting.entrypoints import prepare_agui_envelope
 from agentos_dev.coding.reporting.metadata import ReportingMetadataClient, select_reporting_agent
 from agentos_dev.coding.reporting.models import ReportingError
@@ -37,21 +44,14 @@ from agentos_dev.coding.reporting.profile import (
     resolve_capabilities,
     resolve_reporting_profile,
 )
-from agentos_dev.coding.reporting.publishing import (
-    InMemoryDownloadGrantRepository,
-    ReportDownloadGrantService,
-    ReportDownloadScope,
-    cli_result,
-    publication_result,
-)
-from agentos_dev.coding.reporting.query_pipeline import (
+from agentos_dev.coding.reporting.workflow.query_pipeline import (
     DatasetLineage,
     QueryRequirement,
     approve_query_batch,
     require_approved_sql,
     resolve_schema_snapshot,
 )
-from agentos_dev.coding.reporting.runtime import (
+from agentos_dev.coding.reporting.workflow.runtime import (
     REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_APPROVED_QUERIES_STATE_KEY,
     REPORT_CAPABILITIES_STATE_KEY,
@@ -2453,7 +2453,7 @@ def test_提纲拒绝纯标点或重复的自然语言字段(updates: dict[str, 
 
 @pytest.mark.anyio
 async def test_规划器严格解析保留污染字段供模型纠错(caplog):
-    caplog.set_level("INFO", logger="agentos_dev.coding.reporting.runtime")
+    caplog.set_level("INFO", logger="agentos_dev.coding.reporting.workflow.runtime")
     raw = json.dumps(
         {
             "title": "运营分析报告",
@@ -2914,7 +2914,7 @@ async def test_ddl解析后不进入workflow_state(tmp_path: Path, monkeypatch):
             return None
 
     monkeypatch.setattr(
-        "agentos_dev.coding.reporting.runtime.StarRocksDataSourceAdapter", FakeAdapter
+        "agentos_dev.coding.reporting.workflow.runtime.StarRocksDataSourceAdapter", FakeAdapter
     )
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.registry = SimpleNamespace(
@@ -2994,7 +2994,7 @@ async def test_多个metadata_agent先暂停展示再在同一步继续(tmp_path
             return None
 
     monkeypatch.setattr(
-        "agentos_dev.coding.reporting.runtime.StarRocksDataSourceAdapter", FakeAdapter
+        "agentos_dev.coding.reporting.workflow.runtime.StarRocksDataSourceAdapter", FakeAdapter
     )
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.registry = SimpleNamespace(

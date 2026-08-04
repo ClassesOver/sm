@@ -18,9 +18,9 @@ from ...execution_context import close_execution_resources, create_execution_con
 from ...settings import AgentSettings
 from .agentos import create_report_agentos_components
 from .contract import ReportingWorkflowInput
-from .controller import REPORT_WORKFLOW_SCOPE_DEPENDENCY
 from .models import ReportingError
-from .runtime import REPORT_WORKFLOW_SCOPE_STATE_KEY
+from .workflow.controller import REPORT_WORKFLOW_SCOPE_DEPENDENCY
+from .workflow.runtime import REPORT_WORKFLOW_SCOPE_STATE_KEY
 
 
 def read_report_input(*, read: Callable[[str], str] = input) -> str:

@@ -14,9 +14,12 @@ from fastapi.exceptions import HTTPException
 
 from agentos_dev.coding.reporting import agentos as report_agentos
 from agentos_dev.coding.reporting.contract import ReportRequestEnvelope
-from agentos_dev.coding.reporting.controller import ReportWorkflowController, ReportWorkflowToolkit
 from agentos_dev.coding.reporting.entrypoints import bind_server_envelope
 from agentos_dev.coding.reporting.models import ReportingError
+from agentos_dev.coding.reporting.workflow.controller import (
+    ReportWorkflowController,
+    ReportWorkflowToolkit,
+)
 from agentos_dev.settings import AgentSettings
 
 

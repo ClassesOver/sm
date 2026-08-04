@@ -13,7 +13,7 @@ from agno.workflow.step import Step
 from agno.workflow.types import StepOutput
 from agno.workflow.workflow import Workflow
 
-from .contract import ReportingWorkflowInput
+from ..contract import ReportingWorkflowInput
 
 StepExecutor = Any
 EventSink = Any

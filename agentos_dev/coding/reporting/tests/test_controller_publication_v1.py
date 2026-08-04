@@ -7,15 +7,15 @@ from typing import Any
 import pytest
 from agno.run import RunContext
 
-from agentos_dev.coding.reporting.controller import (
-    REPORT_WORKFLOW_CONTROL_STATE_KEY,
-    REPORT_WORKFLOW_SCOPE_DEPENDENCY,
-    ReportWorkflowController,
-)
 from agentos_dev.coding.reporting.models import (
     ReportingError,
     ReportReviewSnapshot,
     ReportWorkflowControl,
+)
+from agentos_dev.coding.reporting.workflow.controller import (
+    REPORT_WORKFLOW_CONTROL_STATE_KEY,
+    REPORT_WORKFLOW_SCOPE_DEPENDENCY,
+    ReportWorkflowController,
 )
 
 

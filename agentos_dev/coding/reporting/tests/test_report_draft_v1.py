@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentos_dev.coding.reporting.draft_v1 import (
+from agentos_dev.coding.reporting.delivery.draft_v1 import (
     ReportChartInput,
     ReportDraft,
     ReportDraftBlock,

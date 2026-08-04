@@ -10,9 +10,9 @@ from agno.tools.function import FunctionCall
 from PIL import Image, ImageDraw
 
 from agentos_dev.agent_control import AGENT_PLAN_STATE_KEY
-from agentos_dev.coding.reporting.draft_v1 import ReportChartRegistration
+from agentos_dev.coding.reporting.delivery.draft_v1 import ReportChartRegistration
+from agentos_dev.coding.reporting.delivery.repair_guard import ReportRepairGuard
 from agentos_dev.coding.reporting.models import ReportingError
-from agentos_dev.coding.reporting.repair_guard import ReportRepairGuard
 from agentos_dev.coding.reporting.tests.workspace_fakes import (
     AsyncFakeClient,
     AsyncMemoryRegistry,

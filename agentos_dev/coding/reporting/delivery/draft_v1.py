@@ -5,8 +5,8 @@ from typing import Any
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
-from .contract import StrictModel
-from .models import ReportingError
+from ..contract import StrictModel
+from ..models import ReportingError
 
 
 class ReportSectionDefinition(StrictModel):

@@ -19,24 +19,24 @@ from ...settings import AgentSettings
 from ...task_execution import TaskExecutionRepository
 from ...task_execution.execution import TaskExecutionKernel
 from .agent import create_report_agent, create_report_worker
-from .controller import ReportWorkflowController, reporting_workflow_ids
 from .data_source import load_configured_report_source_registry
-from .entrypoints import ReportServerIdentity
-from .events import ReportingEventBroker
-from .execution import ReportTaskRunner
-from .instructions import build_report_agent_instructions
-from .interface import ReportAGUI
-from .metadata import ReportingMetadataClient
-from .models import ReportingError
-from .profile import load_configured_reporting_profiles
-from .publishing import (
+from .delivery.publishing import (
     ReportDownloadCallerScope,
     ReportDownloadGrantService,
     SqlAlchemyDownloadGrantRepository,
     WorkspaceReportDownloadHttpService,
     create_workspace_report_download_router,
 )
-from .runtime import ReportWorkflowRuntime
+from .entrypoints import ReportServerIdentity
+from .instructions import build_report_agent_instructions
+from .interface import ReportAGUI
+from .metadata import ReportingMetadataClient
+from .models import ReportingError
+from .profile import load_configured_reporting_profiles
+from .workflow.controller import ReportWorkflowController, reporting_workflow_ids
+from .workflow.events import ReportingEventBroker
+from .workflow.execution import ReportTaskRunner
+from .workflow.runtime import ReportWorkflowRuntime
 
 _REPORTING_DEV_USER_ID = "reporting-dev"
 

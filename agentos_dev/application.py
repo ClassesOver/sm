@@ -17,7 +17,7 @@ from .workspace import WorkspaceService
 
 if TYPE_CHECKING:
     from .coding import CodingTaskSupervisor
-    from .coding.reporting.controller import ReportWorkflowController
+    from .coding.reporting.workflow.controller import ReportWorkflowController
 
 
 @dataclass(frozen=True)

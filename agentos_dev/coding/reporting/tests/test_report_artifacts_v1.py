@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentos_dev.coding.reporting.artifacts_v1 import (
+from agentos_dev.coding.reporting.delivery.artifacts_v1 import (
     REQUIRED_REPORT_SECTIONS,
     ArtifactFile,
     ChartArtifact,
@@ -14,7 +14,7 @@ from agentos_dev.coding.reporting.artifacts_v1 import (
     validate_rendered_artifacts,
 )
 from agentos_dev.coding.reporting.models import ReportingError
-from agentos_dev.coding.reporting.query_pipeline import DatasetLineage
+from agentos_dev.coding.reporting.workflow.query_pipeline import DatasetLineage
 
 
 def lineage() -> tuple[DatasetLineage, ...]:

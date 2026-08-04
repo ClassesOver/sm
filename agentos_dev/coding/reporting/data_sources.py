@@ -15,7 +15,12 @@ from agno.run import RunContext
 from ...workspace import WorkspaceService, _thread
 from .data_source import DataSourceAdapter
 from .models import ReportingError
-from .query_pipeline import ApprovedQuery, DatasetLineage, require_approved_sql, validate_lineage
+from .workflow.query_pipeline import (
+    ApprovedQuery,
+    DatasetLineage,
+    require_approved_sql,
+    validate_lineage,
+)
 
 REPORT_DATASET_HANDLES_STATE_KEY = "report_dataset_handles"
 CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY = "当前消息工作区附件"

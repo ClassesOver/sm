@@ -10,9 +10,9 @@ from urllib.parse import unquote, urlsplit
 from markdown_it import MarkdownIt
 from pydantic import Field, field_validator, model_validator
 
-from .contract import SHA256_PATTERN, StrictModel
-from .models import ReportingError
-from .query_pipeline import DatasetLineage
+from ..contract import SHA256_PATTERN, StrictModel
+from ..models import ReportingError
+from ..workflow.query_pipeline import DatasetLineage
 
 REQUIRED_REPORT_SECTIONS = frozenset(
     {

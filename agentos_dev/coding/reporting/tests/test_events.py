@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentos_dev.coding.reporting.events import ReportingEventBroker
+from agentos_dev.coding.reporting.workflow.events import ReportingEventBroker
 
 
 @pytest.mark.anyio

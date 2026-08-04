@@ -246,7 +246,7 @@ class WorkspaceReportToolkit(Toolkit):
         payload: dict[str, Any],
         run_context: RunContext | None,
     ) -> dict[str, Any]:
-        from . import report_runtime
+        from .delivery import report_runtime
 
         with open(report_runtime.__file__, "rb") as runtime_file:
             content = runtime_file.read()

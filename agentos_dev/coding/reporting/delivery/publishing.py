@@ -32,8 +32,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from ...workspace import WorkspaceService
-from .models import ReportingError
+from ....workspace import WorkspaceService
+from ..models import ReportingError
 
 DOWNLOAD_GRANT_TTL = timedelta(hours=24)
 _DOWNLOAD_ACCESS_PATH = re.compile(r"/reports/v1/download/[^?\s]+(?:\?[^\s]*)?")

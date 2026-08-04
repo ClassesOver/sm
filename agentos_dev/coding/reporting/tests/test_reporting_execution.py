@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentos_dev.coding.reporting import execution as execution_module
-from agentos_dev.coding.reporting.execution import ReportTaskRunner
 from agentos_dev.coding.reporting.models import ReportingError
+from agentos_dev.coding.reporting.workflow import execution as execution_module
+from agentos_dev.coding.reporting.workflow.execution import ReportTaskRunner
 from agentos_dev.task_execution import TaskScope, TaskState
 
 
