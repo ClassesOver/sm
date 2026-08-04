@@ -34,7 +34,6 @@ from agentos_dev.coding.reporting.runtime import (
     _apply_profile_scope_filters_to_snapshots,
     _measure_semantic_candidate_refs,
 )
-from agentos_dev.coding.reporting.workflow import _requires_measure_semantic_review
 
 
 def _snapshot(*, with_semantic: bool = False) -> SourceSchemaSnapshot:
@@ -242,11 +241,10 @@ async def test_模型候选在用户批准前不写入workflow_state():
             "sameTableColumnNames": ["month", "department"],
         }
     ]
-    assert _requires_measure_semantic_review(output) is True
 
 
 @pytest.mark.anyio
-async def test_已有语义时不调用模型也不触发审核():
+async def test_已有语义时不调用模型并返回空候选():
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime._measure_semantic_agent = object()
 
@@ -259,7 +257,6 @@ async def test_已有语义时不调用模型也不触发审核():
     )
 
     assert output.content == MeasureSemanticProposal()
-    assert _requires_measure_semantic_review(output) is False
 
 
 @pytest.mark.anyio

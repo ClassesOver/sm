@@ -74,6 +74,7 @@ from .instructions import (
 )
 from .metadata import ReportingMetadataClient, select_reporting_agent
 from .models import ReportingError
+from .orchestration import create_reporting_workflow, record_step_model_metrics
 from .profile import (
     CapabilitySet,
     EffectiveReportingProfile,
@@ -92,8 +93,7 @@ from .publishing import (
     cli_result,
     publication_result,
 )
-from .workflow import create_reporting_workflow, record_step_model_metrics
-from .workflow_v1 import (
+from .query_pipeline import (
     ApprovedQuery,
     DatasetLineage,
     QueryRequirement,
@@ -2101,8 +2101,12 @@ class ReportWorkflowRuntime:
         state = self._state(run_context)
         result = self._workflow_result(state)
         outline = ReportOutline.model_validate(state[REPORT_OUTLINE_STATE_KEY])
-        pdf_filename = _report_pdf_filename(outline.title, self._envelope(run_context).period)
-        pdf_path = f"报表/智能分析/{run_context.run_id}/{pdf_filename}"
+        pdf_path = _report_pdf_path(
+            str(run_context.run_id),
+            int(result.get("revision", 0)) + 1,
+            outline.title,
+            self._envelope(run_context).period,
+        )
         context = self._tool_context(run_context)
         try:
             draft = ReportArtifactManifest.model_validate(
@@ -3618,6 +3622,11 @@ def _report_pdf_filename(title: str, period: ReportPeriod) -> str:
                 encoded = encoded[:-1]
     period_label = f"{period.start.isoformat()}至{period.end.isoformat()}"
     return f"{safe_title}_{period_label}.pdf"
+
+
+def _report_pdf_path(run_id: str, revision: int, title: str, period: ReportPeriod) -> str:
+    filename = _report_pdf_filename(title, period)
+    return f"报表/智能分析/{run_id}/revision-{revision}/{filename}"
 
 
 def _validation_issue(

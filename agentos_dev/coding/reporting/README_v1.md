@@ -126,6 +126,6 @@ Report worker execution；
 当前部署固定 `AGENT_OS_WORKERS=1`，确保 Agno 默认的进程内取消管理器与启动 controller 位于同一
 进程。配置值大于 1 时服务拒绝启动；需要多 worker 时必须先接入 Agno 共享取消管理器并补充跨进程
 取消契约测试。
-CLI 使用独立发布器，只返回本地相对路径、大小和 SHA-256，不返回 URL。`cli_v2` 接受自然语言或
+CLI 使用独立发布器，只返回本地相对路径、大小和 SHA-256，不返回 URL。CLI 接受自然语言或
 Envelope，直接运行同一个顶层 Workflow；提纲暂停时修改最后一个未解决 requirement，并将完整
-`step_requirements` 传给 Agno `acontinue_run`。既有 `cli` 继续保留 Controller/Envelope 兼容入口。
+`step_requirements` 传给 Agno `acontinue_run`。

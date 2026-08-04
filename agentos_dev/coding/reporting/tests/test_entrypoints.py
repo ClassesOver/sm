@@ -24,7 +24,6 @@ def test_report_entrypoints_import_independently():
     for name in (
         "agentos_dev.coding.reporting",
         "agentos_dev.coding.reporting.cli",
-        "agentos_dev.coding.reporting.cli_v2",
         "agentos_dev.coding.reporting.agentos",
         "agentos_dev.coding.reporting.__main__",
     ):

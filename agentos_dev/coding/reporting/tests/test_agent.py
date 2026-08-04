@@ -37,6 +37,7 @@ from agentos_dev.coding.reporting.runtime import (
     ReportWorkflowRuntime,
     _outline_section_issues,
     _report_pdf_filename,
+    _report_pdf_path,
 )
 from agentos_dev.coding.reporting.tests.workspace_fakes import service
 from agentos_dev.context_management import ProjectedOpenAIChat
@@ -101,6 +102,18 @@ def test_pdf文件名使用报告主题和完整时间段并清理路径字符()
     assert _report_pdf_filename("收入/成本分析报告", period) == (
         "收入_成本分析报告_2025-01-01至2025-03-31.pdf"
     )
+
+
+def test_pdf内部路径按revision隔离且下载文件名保持稳定():
+    period = ReportPeriod(start="2025-01-01", end="2025-12-31")
+
+    first = _report_pdf_path("run-1", 1, "收入分析报告", period)
+    second = _report_pdf_path("run-1", 2, "收入分析报告", period)
+
+    assert first != second
+    assert "/revision-1/" in first
+    assert "/revision-2/" in second
+    assert first.rsplit("/", 1)[-1] == second.rsplit("/", 1)[-1]
 
 
 def test_提纲规划器拒绝为单主题目标选择复合业务章节():

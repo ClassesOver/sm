@@ -12,7 +12,7 @@ from pydantic import Field, field_validator, model_validator
 
 from .contract import SHA256_PATTERN, StrictModel
 from .models import ReportingError
-from .workflow_v1 import DatasetLineage
+from .query_pipeline import DatasetLineage
 
 REQUIRED_REPORT_SECTIONS = frozenset(
     {

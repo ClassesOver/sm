@@ -15,7 +15,7 @@ from agentos_dev.coding.reporting.data_sources import (
     ReportDatasetStore,
 )
 from agentos_dev.coding.reporting.models import ReportingError
-from agentos_dev.coding.reporting.workflow_v1 import ApprovedQuery, normalized_sql_hash
+from agentos_dev.coding.reporting.query_pipeline import ApprovedQuery, normalized_sql_hash
 
 
 class FakeAdapter:

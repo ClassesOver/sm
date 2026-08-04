@@ -14,7 +14,7 @@ from agentos_dev.coding.reporting.artifacts_v1 import (
     validate_rendered_artifacts,
 )
 from agentos_dev.coding.reporting.models import ReportingError
-from agentos_dev.coding.reporting.workflow_v1 import DatasetLineage
+from agentos_dev.coding.reporting.query_pipeline import DatasetLineage
 
 
 def lineage() -> tuple[DatasetLineage, ...]:

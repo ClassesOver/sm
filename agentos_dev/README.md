@@ -25,21 +25,13 @@ Coding 与 Report 的内部入口在包和资源生命周期上相互独立，�
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.cli
 ```
 
-报表模式使用同一个 `ReportWorkflowController` 和终端审核 adapter；输入严格的
-`ReportRequestEnvelope` JSON 后，以单独一行 `/run` 提交。连接信息只能来自服务端数据源注册表，
-DDL 仅用于 metadata 明确返回零个 Agent 时的 schema fallback：
+报表 CLI 直接执行已注册到独立 Reporting AgentOS 的同款顶层 Workflow，不经过
+`ReportWorkflowController`。它接受自然语言或 `ReportRequestEnvelope` JSON，以单独一行 `/run`
+提交；暂停后修改最后一个未解决 requirement，并通过 Agno `acontinue_run` 提交完整
+`step_requirements`。连接信息只能来自服务端数据源注册表：
 
 ```bash
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting.cli
-```
-
-`cli_v2` 直接执行已注册到独立 Reporting AgentOS 的同款顶层 Workflow，不经过
-`ReportWorkflowController`。它接受自然语言或 `ReportRequestEnvelope` JSON，以单独一行 `/run`
-提交；暂停后修改最后一个未解决 requirement，并通过 Agno `acontinue_run` 提交完整
-`step_requirements`：
-
-```bash
-AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting.cli_v2
 ```
 
 仅运行独立 AgentOS 时使用：
@@ -52,7 +44,7 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting
 Coding AgentOS 只注册由 Supervisor 控制的 facade；Reporting AgentOS 注册公开 `report-agent` 和其
 驱动的 `enterprise-reporting-workflow-v1`，不公开底层 worker。Report worker 由报表配置和中立运行
 资源独立构造，不复制 Coding Agent，也不导入 Coding CLI/AgentOS 产品入口。AG-UI 与 AgentOS Agent API 都进入
-同一个 `report-agent`，CLI v2 则直接驱动同一个 Workflow。生产浏览器仍只访问综合
+同一个 `report-agent`，CLI 直接驱动同一个 Workflow。生产浏览器仍只访问综合
 `agentos_dev.app`。Reporting AgentOS 的 `/agui` 同时接受严格 Envelope JSON 和自然语言：自然语言
 原文作为唯一 `prompt` 原样交给 Workflow 首步的无工具结构化模型归一化，facade 不解析期间。
 `reportGoal` 必须逐字保留用户输入；期间不明确时失败关闭并要求提交明确期间，不允许程序猜测。
@@ -60,10 +52,9 @@ Coding AgentOS 只注册由 Supervisor 控制的 facade；Reporting AgentOS 注�
 仍为既有暂停 run 和后续恢复审核能力保留，可使用 `/workflows/{workflow_id}/runs/{run_id}/continue`
 和 `/resume`。
 
-两个报表 CLI 都在服务和 tracing 初始化前校验输入，随后依次处理来源、提纲、批量 SQL 和发布；
-当前正常路径不暂停确认，既有暂停 run 的批准、带反馈拒绝和取消仍会恢复同一持久化 Workflow run。旧 CLI 只接受 Envelope 并保留 Controller
-兼容链路；`cli_v2` 使用顶层 Workflow 的自然语言归一化和官方 requirements。数据库连接只从服务端
-注册表加载。
+报表 CLI 在服务和 tracing 初始化前校验输入，随后依次处理来源、提纲、批量 SQL 和发布；
+当前正常路径不暂停确认，既有暂停 run 的批准、带反馈拒绝和取消仍会恢复同一持久化 Workflow run。
+CLI 使用顶层 Workflow 的自然语言归一化和官方 requirements，数据库连接只从服务端注册表加载。
 
 Coding 模式使用 Agno 2.8.2 原生异步 `Agent.acli_app` 提供多轮输入、终端渲染和退出控制。原生 CLI
 面向保留 Agno Agent 接口的确定性转交实体；其 `arun` 不调用模型，而是把完整目标直接交给

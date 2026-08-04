@@ -32,7 +32,7 @@ from .profile import (
     load_configured_reporting_profiles,
     resolve_reporting_profile,
 )
-from .workflow_v1 import (
+from .query_pipeline import (
     ApprovedQuery,
     DatasetLineage,
     QueryRequirement,

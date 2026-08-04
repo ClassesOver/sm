@@ -26,6 +26,7 @@ from agentos_dev.coding.reporting.artifacts_v1 import (
     build_authoritative_manifest,
 )
 from agentos_dev.coding.reporting.models import ReportingError
+from agentos_dev.coding.reporting.query_pipeline import DatasetLineage
 from agentos_dev.coding.reporting.runtime import (
     REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_DATA_REQUIREMENTS_STATE_KEY,
@@ -38,7 +39,6 @@ from agentos_dev.coding.reporting.runtime import (
     _observed_data_fact_cards,
     _report_machine_terms,
 )
-from agentos_dev.coding.reporting.workflow_v1 import DatasetLineage
 from agentos_dev.task_execution.acceptance import normalize_acceptance_contract
 
 

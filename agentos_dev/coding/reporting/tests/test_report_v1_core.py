@@ -10,7 +10,7 @@ import httpx
 import pytest
 from ag_ui.core import RunAgentInput
 from agno.run import RunContext
-from agno.workflow.types import StepInput, StepOutput
+from agno.workflow.types import StepInput
 
 from agentos_dev.coding.reporting.contract import (
     AgentQueryResponse,
@@ -44,6 +44,13 @@ from agentos_dev.coding.reporting.publishing import (
     cli_result,
     publication_result,
 )
+from agentos_dev.coding.reporting.query_pipeline import (
+    DatasetLineage,
+    QueryRequirement,
+    approve_query_batch,
+    require_approved_sql,
+    resolve_schema_snapshot,
+)
 from agentos_dev.coding.reporting.runtime import (
     REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_APPROVED_QUERIES_STATE_KEY,
@@ -76,14 +83,6 @@ from agentos_dev.coding.reporting.runtime import (
     _PlannerOutputValidationError,
     _planning_schema_payload,
     _validate_data_understanding,
-)
-from agentos_dev.coding.reporting.workflow import _requires_source_review
-from agentos_dev.coding.reporting.workflow_v1 import (
-    DatasetLineage,
-    QueryRequirement,
-    approve_query_batch,
-    require_approved_sql,
-    resolve_schema_snapshot,
 )
 
 
@@ -2611,18 +2610,6 @@ def test_agent分流覆盖零个一个多个和显式选择():
     assert selected.code == "2"  # type: ignore[union-attr]
     pending = select_reporting_agent(multiple, None)
     assert isinstance(pending, tuple) and len(pending) == 2
-
-
-def test_来源唯一时不审核仅多个agent时审核():
-    assert (
-        _requires_source_review(StepOutput(content={"sources": [{"sourceId": "operations"}]}))
-        is False
-    )
-    assert _requires_source_review(StepOutput(content={"agents": [{"code": "1"}]})) is False
-    assert (
-        _requires_source_review(StepOutput(content={"agents": [{"code": "1"}, {"code": "2"}]}))
-        is True
-    )
 
 
 @pytest.mark.anyio

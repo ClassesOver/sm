@@ -8,8 +8,8 @@ from agno.models.metrics import RunMetrics
 from agno.workflow import OnError
 from agno.workflow.types import StepInput, StepOutput
 
-from agentos_dev.coding.reporting import workflow as workflow_module
-from agentos_dev.coding.reporting.workflow import (
+from agentos_dev.coding.reporting import orchestration as orchestration_module
+from agentos_dev.coding.reporting.orchestration import (
     create_reporting_workflow,
     record_step_model_metrics,
 )
@@ -102,7 +102,7 @@ def test_所有报表步骤都显式失败关闭且暂不暂停审核():
 @pytest.mark.anyio
 async def test_function步骤记录执行耗时且保留已有metrics(monkeypatch):
     times = iter((10.0, 11.25))
-    monkeypatch.setattr(workflow_module, "perf_counter", lambda: next(times))
+    monkeypatch.setattr(orchestration_module, "perf_counter", lambda: next(times))
 
     async def execute(_step_input: StepInput) -> StepOutput:
         return StepOutput(content={"ok": True}, metrics=RunMetrics(total_tokens=42))
@@ -119,7 +119,7 @@ async def test_function步骤记录执行耗时且保留已有metrics(monkeypatc
 @pytest.mark.anyio
 async def test_function步骤计时不改变异常语义(monkeypatch):
     times = iter((20.0, 20.5))
-    monkeypatch.setattr(workflow_module, "perf_counter", lambda: next(times))
+    monkeypatch.setattr(orchestration_module, "perf_counter", lambda: next(times))
 
     async def fail(_step_input: StepInput) -> StepOutput:
         raise RuntimeError("step failed")
@@ -134,15 +134,13 @@ async def test_function步骤计时不改变异常语义(monkeypatch):
 async def test_function步骤实时发布开始和完成事件(monkeypatch):
     times = iter((30.0, 30.4))
     events: list[tuple[str, dict[str, Any]]] = []
-    monkeypatch.setattr(workflow_module, "perf_counter", lambda: next(times))
+    monkeypatch.setattr(orchestration_module, "perf_counter", lambda: next(times))
 
     async def sink(_run_context, event_type: str, data: dict[str, Any]) -> None:
         events.append((event_type, data))
 
     async def execute(_step_input: StepInput, _run_context) -> StepOutput:
-        record_step_model_metrics(
-            RunMetrics(input_tokens=30, output_tokens=12, total_tokens=42)
-        )
+        record_step_model_metrics(RunMetrics(input_tokens=30, output_tokens=12, total_tokens=42))
         return StepOutput(content={"ok": True})
 
     workflow = _workflow(execute, execute, event_sink=sink)
