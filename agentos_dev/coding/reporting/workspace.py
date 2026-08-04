@@ -414,9 +414,9 @@ class WorkspaceReportToolkit(Toolkit):
         try:
             async with self.service._async_client() as client:
                 sandbox = await self.service._asandbox_for(client, _thread(run_context))
-                await self.service._avalidate_existing_path(
-                    sandbox, relative_output, include_leaf=False
-                )
+                # PDF 按 revision 子目录隔离，该目录不会在 Markdown 归档阶段创建。
+                # 必须使用工作区安全原语逐级创建，仍然拒绝符号链接和非目录父路径。
+                await self.service._aensure_directory(sandbox, remote_output.rsplit("/", 1)[0])
                 try:
                     await self.service._ainfo(sandbox, remote_output)
                 except DaytonaNotFoundError:

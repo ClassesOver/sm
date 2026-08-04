@@ -246,6 +246,53 @@ async def test_报表发布后状态提交失败会清理pdf和本次临时目�
     assert len([item for item in deleted if item[0].endswith("-render")]) == 1
 
 
+@pytest.mark.anyio
+async def test_报表渲染会创建revision输出父目录(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    sandbox = current.sandbox_for("thread")
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+    toolkit = WorkspaceReportToolkit(async_service)
+    job_id = str(uuid.uuid4())
+    context = RunContext(
+        run_id="run",
+        session_id="thread",
+        session_state={
+            REPORT_JOBS_STATE_KEY: {
+                job_id: {
+                    "jobId": job_id,
+                    "_threadBinding": toolkit._thread_binding("thread"),
+                    "sources": [{"path": "data.csv", "size": 12, "sha256": "a" * 64}],
+                }
+            }
+        },
+    )
+
+    async def status(job, _run_context):
+        return {"jobId": job["jobId"], "status": "prepared", "sources": []}
+
+    async def stop_after_parent_created(*_args, **_kwargs):
+        raise RuntimeError("parent-created")
+
+    monkeypatch.setattr(toolkit, "_job_status", status)
+    monkeypatch.setattr(toolkit, "_run_report_runtime", stop_after_parent_created)
+
+    with pytest.raises(RuntimeError, match="parent-created"):
+        await toolkit.report_render_markdown(
+            job_id,
+            "report.md",
+            "reports/revision-1/report.pdf",
+            run_context=context,
+        )
+
+    assert f"{WORKSPACE_ROOT}/reports/revision-1" in sandbox.fs.entries
+
+
 def test_报表动作和工作区单文件边界统一为200mib():
     assert REPORT_RUNTIME_TIMEOUT_SECONDS == 600
     assert MAX_UPLOAD_BYTES == 200 * 1024 * 1024
