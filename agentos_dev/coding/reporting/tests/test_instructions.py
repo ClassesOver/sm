@@ -132,6 +132,13 @@ def test_医院运营分析规则明确六类主题按目标和数据条件触�
     assert "不得新增 FactSet 之外的计算" in writing_prompt
     assert "不得重复执行选表、取数、趋势识别或归因分析" in writing_prompt
     assert "待管理确认" in writing_prompt
+    assert "不设置数据来源、技术说明、系统实现或审计血缘章节" in writing_prompt
+    assert "报告必须提供简洁的分析依据与分析方法" in writing_prompt
+    assert "经营指标、分析期间、组织范围和比较基准" in writing_prompt
+    assert "规模与结构、趋势与拐点、同比环比、异常贡献和归因验证" in writing_prompt
+    assert "不得把方法说明写成取数或系统技术过程" in writing_prompt
+    assert "只有在影响结论时才简短披露" in writing_prompt
+    assert "不罗列来源系统或技术细节" in writing_prompt
 
 
 def test_报表用户可见内容使用中文且机器标记保持稳定():
@@ -140,7 +147,8 @@ def test_报表用户可见内容使用中文且机器标记保持稳定():
     assert "用户可见内容必须使用简体中文" in instructions
     assert "图表标题、坐标轴、图例、表头" in instructions
     assert "不得用英文机器 ID 代替中文标题" in instructions
-    assert "只展示中文业务名称" in instructions
+    assert "不得生成数据来源清单或技术说明" in instructions
+    assert "不得展示来源系统、数据表名、字段名" in instructions
     assert "服务端据此归档实际引用图表并生成不可修改的路径和血缘绑定" in instructions
     assert "draftSections[].title" in instructions
     assert "sectionCode 必须逐项复制" in instructions
