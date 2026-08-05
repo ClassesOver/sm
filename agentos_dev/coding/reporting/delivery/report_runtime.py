@@ -34,6 +34,7 @@ PAGE_LAYOUT_FIELDS = frozenset(DEFAULT_PAGE_LAYOUT)
 PAGE_LAYOUT_PLACEHOLDERS = frozenset({"title", "page", "pages"})
 _CITATION_MARKER = re.compile(r"\[\[citation:([^\]\r\n]+)\]\]")
 _SECTION_MARKER = re.compile(r"\[\[section:([^\]\r\n]+)\]\]")
+_FACT_MARKER = re.compile(r"\[\[fact:([^\]\r\n]+)\]\]")
 
 
 class ReportFailure(ValueError):
@@ -43,10 +44,11 @@ class ReportFailure(ValueError):
 def _pdf_markdown(
     markdown: str,
     presentations: Any,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]], list[str]]:
     marker_ids = tuple(dict.fromkeys(_CITATION_MARKER.findall(markdown)))
+    fact_ids = list(dict.fromkeys(_FACT_MARKER.findall(markdown)))
     if not marker_ids:
-        return _SECTION_MARKER.sub("", markdown), []
+        return _FACT_MARKER.sub("", _SECTION_MARKER.sub("", markdown)), [], fact_ids
     if not isinstance(presentations, list) or len(presentations) != len(marker_ids):
         raise ReportFailure("PDF 缺少服务端实际引用展示信息")
     normalized: list[dict[str, Any]] = []
@@ -104,7 +106,8 @@ def _pdf_markdown(
         raise ReportFailure("PDF 实际引用展示信息与 Markdown 引用不一致")
     # Citation 绑定仍由服务端校验并写入渲染回执，但 PDF 展示层不泄露机器 marker、
     # 可读别名或来源附录；权威 Markdown 保持原样，供产物协议和血缘验收使用。
-    return _SECTION_MARKER.sub("", _CITATION_MARKER.sub("", markdown)), normalized
+    visible_markdown = _SECTION_MARKER.sub("", _CITATION_MARKER.sub("", markdown))
+    return _FACT_MARKER.sub("", visible_markdown), normalized, fact_ids
 
 
 def _relative_path(value: str, suffix: str | None = None) -> PurePosixPath:
@@ -391,7 +394,7 @@ class ReportRuntime:
             except UnicodeDecodeError as error:
                 raise ReportFailure("Markdown 文件必须使用 UTF-8 编码") from error
 
-            pdf_markdown, citation_presentations = _pdf_markdown(
+            pdf_markdown, citation_presentations, fact_ids = _pdf_markdown(
                 markdown, state.get("_citationPresentations")
             )
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
@@ -483,6 +486,7 @@ class ReportRuntime:
                 "reportTitle": title,
                 "citationPresentations": citation_presentations,
                 "citationAppendixPresent": False,
+                "factIds": fact_ids,
             }
             result = {
                 "status": "rendered",
@@ -607,7 +611,7 @@ class ReportRuntime:
                     )
             markdown_image_count = int(render.get("imageCount") or 0)
             missing_images = max(0, markdown_image_count - rendered_image_count)
-            chart_ids, citation_ids, section_ids = self._validate_manifest_markers(
+            chart_ids, citation_ids, fact_ids, section_ids = self._validate_manifest_markers(
                 artifact_manifest,
                 render=render,
                 extracted_text=extracted_text,
@@ -624,6 +628,7 @@ class ReportRuntime:
                 "missingImageCount": missing_images,
                 "chartIds": chart_ids,
                 "citationIds": citation_ids,
+                "factIds": fact_ids,
                 "sectionIds": section_ids,
                 "blankPages": blank_pages,
                 "missingPageLayoutPages": missing_page_layout,
@@ -642,15 +647,17 @@ class ReportRuntime:
         *,
         render: dict[str, Any],
         extracted_text: str,
-    ) -> tuple[list[str], list[str], list[str]]:
+    ) -> tuple[list[str], list[str], list[str], list[str]]:
         if manifest is None:
-            return [], [], []
+            return [], [], [], []
         charts = manifest.get("charts")
         citations = manifest.get("citations")
+        facts = manifest.get("factIds")
         sections = manifest.get("sections")
         if (
             not isinstance(charts, list)
             or not isinstance(citations, list)
+            or not isinstance(facts, list)
             or not isinstance(sections, list)
         ):
             raise ReportFailure("报告产物清单无效")
@@ -695,10 +702,19 @@ class ReportRuntime:
             or "[[citation:" in extracted_text
         ):
             raise ReportFailure("PDF 不应显示引用标识或实际引用附录")
+        rendered_fact_ids = render.get("factIds")
+        if (
+            any(not isinstance(item, str) for item in facts)
+            or len(facts) != len(set(facts))
+            or not isinstance(rendered_fact_ids, list)
+            or set(rendered_fact_ids) != set(facts)
+            or "[[fact:" in extracted_text
+        ):
+            raise ReportFailure("PDF 事实引用与产物清单不一致或显示了机器标识")
         section_ids = [item for item in sections if isinstance(item, str)]
         if len(section_ids) != len(sections) or "[[section:" in extracted_text:
             raise ReportFailure("PDF 不应显示关键章节标识")
-        return chart_ids, citation_ids, section_ids
+        return chart_ids, citation_ids, list(facts), section_ids
 
     @staticmethod
     def _check_pdf_bounds(path: Path) -> None:

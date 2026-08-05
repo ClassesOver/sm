@@ -210,6 +210,31 @@ async def test_全部移动成功后统一写入句柄和血缘():
 
 
 @pytest.mark.anyio
+async def test_共享期间窗口只物化一次且血缘保留全部角色():
+    service = FakeWorkspaceService()
+    context = run_context()
+    sql = "SELECT 1 AS value FROM reporting.income"
+    approved = (
+        ApprovedQuery(
+            requirementId="income-yoy",
+            sourceId="operations",
+            sql=sql,
+            sqlHash=normalized_sql_hash(sql),
+            periodRoles=("yoy", "mom"),
+            queryWindowId="window-shared-prior",
+        ),
+    )
+
+    handles, lineage = await ReportDatasetStore(service).materialize_batch(  # type: ignore[arg-type]
+        approved, adapters(FakeAdapter()), run_context=context
+    )
+
+    assert len(handles) == len(lineage) == 1
+    assert handles[0].period_roles == lineage[0].period_roles == ("yoy", "mom")
+    assert handles[0].query_window_id == lineage[0].query_window_id == "window-shared-prior"
+
+
+@pytest.mark.anyio
 async def test_审核sql按配置有界并行且句柄顺序稳定():
     service = FakeWorkspaceService()
     context = run_context()

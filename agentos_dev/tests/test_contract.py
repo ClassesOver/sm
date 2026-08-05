@@ -913,7 +913,10 @@ def test_agent_registers_main_and_report_toolkits_without_overlap():
         "read_tool_output",
         "update_plan",
         "finish_task",
+        "register_report_charts",
         "render_report_draft",
+        "resume_report_draft",
+        "verify_report_draft",
         "repair_report_draft",
     }
 

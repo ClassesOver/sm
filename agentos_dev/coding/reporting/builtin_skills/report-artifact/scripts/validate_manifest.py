@@ -11,8 +11,9 @@ from urllib.parse import unquote, urlsplit
 from jsonschema import Draft202012Validator
 from markdown_it import MarkdownIt
 
-_PROTOCOL_MARKER = re.compile(r"\[\[(?:citation|section):[^\]\r\n]+\]\]")
+_PROTOCOL_MARKER = re.compile(r"\[\[(?:citation|section|fact):[^\]\r\n]+\]\]")
 _CITATION_MARKER = re.compile(r"\[\[citation:([^\]\r\n]+)\]\]")
+_FACT_MARKER = re.compile(r"\[\[fact:([^\]\r\n]+)\]\]")
 _REPAIR_WARNING_MARKER = re.compile(r"<!--\s*repair-warning:(period_claim_[a-f0-9]{16})\s*-->")
 _MARKDOWN_LINK_TARGET = re.compile(r"\]\([^\)\r\n]*\)")
 _FORBIDDEN_DERIVATION = re.compile(
@@ -326,10 +327,11 @@ def _load_validation_context(
         "expectedCitationBindings",
         "manifestSchema",
     }
-    extended_keys = expected_keys | {"expectedCitations"}
+    optional_keys = {"expectedCitations", "expectedFactIds"}
     if (
         not isinstance(context, dict)
-        or frozenset(context) not in {frozenset(expected_keys), frozenset(extended_keys)}
+        or not expected_keys.issubset(context)
+        or set(context) - expected_keys - optional_keys
         or context.get("version") != 1
     ):
         return None, "content_invalid"
@@ -355,19 +357,28 @@ def _server_manifest(
         )
     ]
     citation_datasets = {item["citationId"]: item["datasetId"] for item in citations}
+    allowed_fact_ids = {
+        item for item in validation_context.get("expectedFactIds", []) if isinstance(item, str)
+    }
+    report_fact_ids = set(_FACT_MARKER.findall(markdown))
     lines = markdown.splitlines()
     parent = PurePosixPath(markdown_path).parent
     bindings: dict[str, set[str]] = {}
+    fact_bindings: dict[str, set[str]] = {}
     invalid_targets: list[str] = []
     unbound_paths: list[str] = []
     unknown_citations: set[str] = set()
+    unknown_facts = report_fact_ids - allowed_fact_ids if allowed_fact_ids else set()
     for token in MarkdownIt("commonmark").parse(markdown):
         images = [item for item in token.children or () if item.type == "image"]
         if not images:
             continue
         start, end = token.map or (0, len(lines))
         marker_ids = set(_CITATION_MARKER.findall("\n".join(lines[start:end])))
+        marker_fact_ids = set(_FACT_MARKER.findall("\n".join(lines[start:end])))
         unknown_citations.update(marker_ids - set(citation_datasets))
+        if allowed_fact_ids:
+            unknown_facts.update(marker_fact_ids - allowed_fact_ids)
         for image in images:
             source = str(image.attrGet("src") or "")
             parsed = urlsplit(source)
@@ -387,14 +398,19 @@ def _server_manifest(
                 continue
             path = parent.joinpath(relative).as_posix()
             valid_ids = marker_ids & set(citation_datasets)
-            if not valid_ids:
+            valid_fact_ids = marker_fact_ids & (allowed_fact_ids or marker_fact_ids)
+            if not valid_ids or not valid_fact_ids:
                 unbound_paths.append(path)
                 continue
             bindings.setdefault(path, set()).update(citation_datasets[item] for item in valid_ids)
+            fact_bindings.setdefault(path, set()).update(valid_fact_ids)
     details: dict[str, Any] = {}
     _issue(details, "invalidMarkdownImageTargets", sorted(set(invalid_targets)))
     _issue(details, "unboundMarkdownChartPaths", sorted(set(unbound_paths)))
     _issue(details, "unknownChartCitationIds", sorted(unknown_citations))
+    _issue(details, "unknownFactIds", sorted(unknown_facts))
+    if not report_fact_ids:
+        details["missingFactBindings"] = True
     artifact_paths = set(artifacts) - {markdown_path}
     image_paths = {
         path
@@ -416,7 +432,8 @@ def _server_manifest(
             {
                 "repairTarget": markdown_path,
                 "repairInstructions": [
-                    "只修改报告 Markdown：每个图表使用安全相对路径，并在同一段落放置至少一个 Workflow citation marker；不得创建或修改 manifest。"
+                    "只修改报告 Markdown：正文必须绑定已注册 MetricFact；每个图表使用安全相对路径，"
+                    "并在同一段落放置 Workflow citation 与 fact marker；不得创建或修改 manifest。"
                 ],
             }
         )
@@ -445,6 +462,7 @@ def _server_manifest(
             "sha256": artifacts[path]["sha256"],
             "chartId": f"chart_{index:03d}",
             "datasetIds": sorted(bindings[path]),
+            "factIds": sorted(fact_bindings[path]),
         }
         for index, path in enumerate(sorted(bindings), start=1)
     ]
@@ -463,6 +481,7 @@ def _server_manifest(
             },
             "charts": charts,
             "citations": citations,
+            "factIds": sorted(report_fact_ids),
             "sections": validation_context["expectedSections"],
         },
         report_details,
@@ -473,6 +492,7 @@ def _manifest_invariant_errors(manifest: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     charts = manifest["charts"]
     citations = manifest["citations"]
+    fact_ids = manifest["factIds"]
     sections = manifest["sections"]
     chart_ids = [item["chartId"] for item in charts]
     citation_ids = [item["citationId"] for item in citations]
@@ -483,9 +503,14 @@ def _manifest_invariant_errors(manifest: dict[str, Any]) -> list[str]:
         errors.append("图表产物必须是图片")
     if any(len(item["datasetIds"]) != len(set(item["datasetIds"])) for item in charts):
         errors.append("图表数据集引用不能重复")
+    if any(len(item["factIds"]) != len(set(item["factIds"])) for item in charts):
+        errors.append("图表事实引用不能重复")
+    if any(set(item["factIds"]) - set(fact_ids) for item in charts):
+        errors.append("图表事实必须属于报告事实引用")
     for values, message in (
         (chart_ids, "chartId 不能重复"),
         (citation_ids, "citationId 不能重复"),
+        (fact_ids, "factId 不能重复"),
         (paths, "产物路径不能重复"),
         (sections, "报告章节不能重复"),
     ):
@@ -759,6 +784,9 @@ def _validate(requirement: dict[str, Any], *, workspace_root: str) -> dict[str, 
         missing_section_ids = [
             section for section in manifest["sections"] if f"[[section:{section}]]" not in markdown
         ]
+        missing_fact_ids = [
+            fact_id for fact_id in manifest["factIds"] if f"[[fact:{fact_id}]]" not in markdown
+        ]
         _issue(
             details,
             "missingCitationIds",
@@ -769,7 +797,8 @@ def _validate(requirement: dict[str, Any], *, workspace_root: str) -> dict[str, 
             "missingSectionIds",
             missing_section_ids,
         )
-        if missing_citation_ids or missing_section_ids:
+        _issue(details, "missingFactIds", missing_fact_ids)
+        if missing_citation_ids or missing_section_ids or missing_fact_ids:
             details.update(
                 {
                     "repairTarget": markdown_path,
@@ -779,6 +808,7 @@ def _validate(requirement: dict[str, Any], *, workspace_root: str) -> dict[str, 
                     "missingSectionMarkers": [
                         f"[[section:{item}]]" for item in missing_section_ids
                     ],
+                    "missingFactMarkers": [f"[[fact:{item}]]" for item in missing_fact_ids],
                     "repairInstructions": [
                         f"只在 {markdown_path} 中补齐上述协议标记，不得创建或修改 manifest。",
                         "标记应紧邻对应中文结论或章节标题；章节标题继续使用 effectiveProfile 中的中文 title。服务端会自动重算 Markdown 元数据。",

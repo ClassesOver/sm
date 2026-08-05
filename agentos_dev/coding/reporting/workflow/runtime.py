@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from copy import copy
-from datetime import date
+from datetime import UTC, date, datetime
 from difflib import SequenceMatcher
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -27,6 +29,7 @@ from pydantic import (
 )
 
 from ....task_execution import TaskScope, TaskState
+from ....task_execution.repository import MAX_INSTRUCTION_BYTES
 from ....workspace import WorkspaceService
 from ..contract import (
     FIELD_REF_PATTERN,
@@ -51,7 +54,7 @@ from ..data_source import (
     collect_data_shape,
     require_sources,
 )
-from ..data_sources import ReportDatasetStore
+from ..data_sources import MAX_REPORT_INPUTS, DatasetHandle, ReportDatasetStore
 from ..delivery.acceptance import (
     REPORT_ARTIFACT_VALIDATOR_ID,
     build_report_artifact_acceptance_contract,
@@ -73,9 +76,34 @@ from ..delivery.publishing import (
     publication_result,
 )
 from ..entrypoints import ReportServerIdentity, current_server_identity
+from ..hospital_operation.domains import DOMAIN_CODES, resolve_domain_mentions
+from ..hospital_operation.factset import (
+    AnalysisFactSetHandle,
+    FactSetHandle,
+    FactSetIssue,
+    HospitalOperationAnalysisFactSet,
+    HospitalOperationFactSet,
+    build_analysis_fact_set,
+)
+from ..hospital_operation.findings import (
+    FindingProposal,
+    FindingsResult,
+    build_findings,
+)
+from ..hospital_operation.gate import evaluate_publication_gate
+from ..hospital_operation.materialization import DatasetFactInput, build_fact_set_from_datasets
+from ..hospital_operation.outline import (
+    ReportOutline,
+    ReportOutlineProposal,
+    freeze_outline,
+)
+from ..hospital_operation.profiles import HospitalOperationProfile, ruijin_profile
 from ..instructions import (
     HOSPITAL_ANALYSIS_INSTRUCTIONS,
     HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
+    HOSPITAL_FINDINGS_INSTRUCTIONS,
+    HOSPITAL_OUTLINE_INSTRUCTIONS,
+    HOSPITAL_REQUEST_INSTRUCTIONS,
 )
 from ..metadata import ReportingMetadataClient, select_reporting_agent
 from ..models import ReportingError
@@ -106,6 +134,10 @@ from .query_pipeline import (
 
 logger = logging.getLogger(__name__)
 
+# 显式期间模式最多为每个需求生成 current、yoy、mom 三条唯一窗口查询；
+# 与物化批次的 100 条硬上限保持一致，防止模型输出服务端必然无法完整审批的需求数。
+MAX_ANALYSIS_REQUIREMENTS = MAX_REPORT_INPUTS // 3
+
 REPORT_WORKFLOW_INPUT_STATE_KEY = "report_workflow_input"
 REPORT_WORKFLOW_SCOPE_STATE_KEY = "report_workflow_scope"
 REPORT_SCHEMA_SNAPSHOTS_STATE_KEY = "report_schema_snapshots"
@@ -114,12 +146,18 @@ REPORT_DATA_SHAPES_STATE_KEY = "report_data_shapes"
 REPORT_EFFECTIVE_PROFILE_STATE_KEY = "report_effective_profile"
 REPORT_CAPABILITIES_STATE_KEY = "report_capabilities"
 REPORT_RECONCILIATIONS_STATE_KEY = "report_reconciliations"
+REPORT_REQUEST_CONTEXT_STATE_KEY = "report_request_context"
 REPORT_OUTLINE_CONTEXT_STATE_KEY = "report_outline_context"
 REPORT_OUTLINE_STATE_KEY = "report_outline"
 REPORT_ANALYSIS_PLAN_STATE_KEY = "report_analysis_plan"
 REPORT_DATA_REQUIREMENTS_STATE_KEY = "report_data_requirements"
+REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY = "report_row_preserving_requirements"
 REPORT_APPROVED_QUERIES_STATE_KEY = "report_approved_queries"
 REPORT_DATASET_LINEAGE_STATE_KEY = "report_dataset_lineage"
+REPORT_FACT_SET_STATE_KEY = "report_hospital_operation_fact_set"
+REPORT_FINDINGS_STATE_KEY = "report_hospital_operation_findings"
+REPORT_OUTLINE_HASH_STATE_KEY = "report_outline_hash"
+REPORT_PUBLICATION_GATE_STATE_KEY = "report_publication_gate"
 REPORT_WORKFLOW_RESULT_STATE_KEY = "report_workflow_result"
 REPORT_ARTIFACTS_STATE_KEY = "report_artifacts"
 PublicationIssuer = Callable[[dict[str, str], str, str, Any], Awaitable[dict[str, Any]]]
@@ -132,9 +170,14 @@ class _StrictModel(BaseModel):
 
 class NormalizedReportPrompt(_StrictModel):
     period: ReportPeriod | None = None
+    report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
     clarification_question: str | None = Field(
         default=None, alias="clarificationQuestion", min_length=1, max_length=1000
     )
+
+
+class FindingProposalBatch(_StrictModel):
+    findings: tuple[FindingProposal, ...] = Field(min_length=1, max_length=2_000)
 
 
 _SERIALIZED_MEMBER_PATTERN = re.compile(
@@ -194,6 +237,32 @@ def _report_machine_terms(*values: Any) -> tuple[str, ...]:
     return tuple(sorted(terms))
 
 
+def _selected_report_domains(
+    envelope: ReportRequestEnvelope,
+    fact_set: HospitalOperationFactSet,
+) -> tuple[str, ...]:
+    if envelope.domains:
+        return envelope.domains
+    available = {
+        fact.domain
+        for fact in fact_set.facts
+        if fact.period_role == "current" and fact.domain in DOMAIN_CODES
+    }
+    return tuple(code for code in DOMAIN_CODES if code in available)
+
+
+def _frozen_outline(state: Mapping[str, Any]) -> ReportOutline:
+    try:
+        raw = state[REPORT_OUTLINE_STATE_KEY]
+        outline = ReportOutline.model_validate(raw)
+    except Exception as error:
+        raise ReportingError("report_outline_invalid", "报告提纲状态无效。") from error
+    expected_hash = state.get(REPORT_OUTLINE_HASH_STATE_KEY)
+    if isinstance(expected_hash, str) and expected_hash != _payload_sha256(raw):
+        raise ReportingError("report_outline_changed", "已批准报告提纲发生变化，必须重新审核。")
+    return outline
+
+
 def _single_explicit_year(prompt: str, feedback: str | None) -> ReportPeriod | None:
     value = f"{prompt}\n{feedback or ''}"
     years = set(re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", value))
@@ -204,6 +273,16 @@ def _single_explicit_year(prompt: str, feedback: str | None) -> ReportPeriod | N
         return None
     year = int(raw_year)
     return ReportPeriod(start=date(year, 1, 1), end=date(year, 12, 31))
+
+
+def _explicit_report_type(*values: str | None) -> Literal["comprehensive", "topic"] | None:
+    text = "\n".join(value for value in values if isinstance(value, str))
+    found: set[Literal["comprehensive", "topic"]] = set()
+    if re.search(r"(?:reportType\s*[:=]\s*comprehensive|综合(?:运营)?报告)", text, re.I):
+        found.add("comprehensive")
+    if re.search(r"(?:reportType\s*[:=]\s*topic|专题(?:分析)?报告|\S+专题)", text, re.I):
+        found.add("topic")
+    return next(iter(found)) if len(found) == 1 else None
 
 
 def _looks_like_serialized_structure(value: str) -> bool:
@@ -541,57 +620,6 @@ def _analysis_context_payload(outline_context: Any) -> dict[str, Any]:
     return context
 
 
-class ReportOutline(_StrictModel):
-    title: str = Field(
-        min_length=1,
-        max_length=300,
-        description="自然语言报告标题，不得包含 JSON、页面布局或配置序列化内容。",
-    )
-    sections: tuple[str, ...] = Field(
-        min_length=1,
-        max_length=30,
-        description=(
-            "按报告阅读顺序排列的自然语言章节标题；每项只能是一个章节标题，"
-            "必须保留 outlineContext.profile.sections 中 required=true 的全部 title；"
-            "可选章节仅在报告目标相关且已确认数据能力支持时选择，所有已选 Profile 章节"
-            "必须保持原相对顺序，并可根据报告目标和真实数据增加其他中文章节；"
-            "必须包含有效文字或数字且不得重复；不得包含 JSON、键值配置、页面布局、"
-            "模板、snake_case 配置标识或转义后的序列化片段。"
-        ),
-    )
-    assumptions: tuple[str, ...] = Field(
-        default=(),
-        max_length=30,
-        description=(
-            "报告成立所需的自然语言假设；每项必须包含有效文字或数字且不得重复；"
-            "不得使用 snake_case 配置标识；不得拟合、估算、推算、插值、外推、年化、"
-            "平滑或补齐任何数据；缺失数据只能如实披露为限制；没有假设时返回空数组。"
-        ),
-    )
-
-    @field_validator("title")
-    @classmethod
-    def validate_title(cls, value: str) -> str:
-        if not any(character.isalnum() for character in value):
-            raise ValueError("报告标题必须包含有效文字或数字，不得只包含标点或空白")
-        if _looks_like_serialized_structure(value):
-            raise ValueError("报告标题必须是自然语言，不得包含 JSON 或配置序列化片段")
-        return value
-
-    @field_validator("sections")
-    @classmethod
-    def validate_sections(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _validate_natural_language_items(value, label="章节标题")
-
-    @field_validator("assumptions")
-    @classmethod
-    def validate_assumptions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        validated = _validate_natural_language_items(value, label="报告假设")
-        if any(_contains_forbidden_derivation(item) for item in validated):
-            raise ValueError("报告假设不得拟合、估算、推算、插值、外推、年化、平滑或补齐数据")
-        return validated
-
-
 class TableReference(_StrictModel):
     source_id: str = Field(
         alias="sourceId",
@@ -723,13 +751,16 @@ class AnalysisItem(_StrictModel):
 
 class AnalysisBundle(_StrictModel):
     analyses: tuple[AnalysisItem, ...] = Field(min_length=1, max_length=100)
-    requirements: tuple[QueryRequirement, ...] = Field(min_length=1, max_length=100)
+    requirements: tuple[QueryRequirement, ...] = Field(
+        min_length=1, max_length=MAX_ANALYSIS_REQUIREMENTS
+    )
 
 
 class GeneratedQuery(_StrictModel):
     requirement_id: str = Field(alias="requirementId", min_length=1, max_length=128)
     source_id: str = Field(alias="sourceId", min_length=1, max_length=64)
     sql: str = Field(min_length=1, max_length=262_144)
+    period_role: Literal["current", "yoy", "mom"] = Field(default="current", alias="periodRole")
 
 
 class GeneratedQueryBatch(_StrictModel):
@@ -782,7 +813,9 @@ class ReportWorkflowRuntime:
             enable_thinking=planner_enable_thinking,
             reasoning_effort=planner_reasoning_effort,
             stage_instructions=(
-                "只归一化分析期间；不得推断或返回数据源、Agent、医院或系统标识",
+                *HOSPITAL_REQUEST_INSTRUCTIONS,
+                "只归一化分析期间；领域优先由服务端别名规则识别，只有歧义时才提出澄清",
+                "不得推断或返回数据源、Agent、医院或系统标识",
                 "单个明确日历年份转换为该年1月1日至12月31日",
                 "期间缺失、存在多个互相冲突的期间或无法唯一判断时，只返回一个简短 clarificationQuestion",
                 "不得改写或返回用户原始报告目标",
@@ -839,22 +872,27 @@ class ReportWorkflowRuntime:
         self._outline_agent = self._planning_agent(
             planner,
             "report-outline-planner",
-            ReportOutline,
+            ReportOutlineProposal,
             enable_thinking=planner_enable_thinking,
             reasoning_effort=planner_reasoning_effort,
             stage_instructions=(
-                (
-                    "sections 必须保留 outlineContext.profile.sections 中 required=true 的全部 title；"
-                    "所有已选 Profile 章节必须保持相对顺序"
-                ),
-                "可选章节仅在报告目标明确相关且对应数据能力可用时选择",
-                (
-                    "可选章节标题包含多个业务主题时，只有各主题均与目标相关且有数据支持才可选择；"
-                    "否则使用与目标一致的单主题扩展章节"
-                ),
-                "报告目标未涉及或能力不可用的可选章节不得生成，不得用无数据空章节占位",
-                "可以根据报告目标和真实数据增加其他简体中文章节",
-                "不得删除、改名、打乱或用扩展章节替代 Profile 必选章节",
+                *HOSPITAL_OUTLINE_INSTRUCTIONS,
+                "只返回 reportType、中文报告标题、sections 和 assumptions；sections 不得提交 code",
+                "每个章节必须引用一个或多个 outlineContext.findings 中已注册的 findingId",
+                "按真实发现的重要性组织动态章节；未涉及或无数据领域不得生成空章",
+                "section code 由服务端在批准后生成，模型不得提交或猜测 section_NNN",
+            ),
+        )
+        self._findings_agent = self._planning_agent(
+            planner,
+            "report-findings-planner",
+            FindingProposalBatch,
+            enable_thinking=planner_enable_thinking,
+            reasoning_effort=planner_reasoning_effort,
+            stage_instructions=(
+                *HOSPITAL_FINDINGS_INSTRUCTIONS,
+                "每条发现只引用 analysisFactSet.facts 中已存在的 factId，不提交 findingId",
+                "直接数值事实使用 direct_fact，服务端公式结果使用 derived_fact，跨域共变使用 correlation，待核验原因使用 hypothesis",
             ),
         )
         self._analysis_agent = self._planning_agent(
@@ -896,9 +934,15 @@ class ReportWorkflowRuntime:
             stage_instructions=(
                 "一次返回覆盖全部 requirements 的 SQL 批次",
                 "每项只生成一条 SELECT 或只读 CTE",
-                "每张表使用完整精确期间并按共同粒度预聚合",
+                "每个 requirement 对 periodWindows 中每个唯一 queryWindowId 生成一条查询，并提交对应 periodRole",
+                "每张表只使用该 periodRole 的完整精确期间并按共同粒度预聚合",
                 "每个查询块的非聚合 SELECT 列和 GROUP BY 列必须逐项等于 grainColumns；只能额外 SELECT 聚合后的 measureColumns，不得把 dimensionColumns 全量带入",
                 "多表 requirement 必须为每张表建立独立聚合 CTE，再按完整 relations.joinColumns 连接 CTE；禁止直接连接基础表",
+                (
+                    "queryExecutionModes 中标记 row_preserving_conflict_probe 的 requirement "
+                    "必须直接 SELECT 全部 grainColumns 和原始 measureColumns，不得使用聚合函数、"
+                    "GROUP BY、DISTINCT、ORDER BY 或 LIMIT"
+                ),
             ),
         )
 
@@ -961,6 +1005,18 @@ class ReportWorkflowRuntime:
             content = step_input.previous_step_content
             if not isinstance(content, dict):
                 raise ReportingError("report_publication_invalid", "报表发布产物无效。")
+            if content.get("formalReleaseAllowed") is False:
+                return StepOutput(
+                    content={
+                        "status": "formal_release_blocked",
+                        "reportId": content.get("reportId"),
+                        "revision": content.get("revision"),
+                        "path": content.get("pdfPath"),
+                        "size": content.get("pdfSize"),
+                        "sha256": content.get("pdfSha256"),
+                        "publicationGate": content.get("publicationGate"),
+                    }
+                )
             scope = self._scope(run_context)
             published = await issuer(
                 {
@@ -989,6 +1045,8 @@ class ReportWorkflowRuntime:
             generate_analysis_plan=self.generate_analysis_plan,
             generate_query_candidates=self.generate_query_candidates,
             materialize_datasets=self.materialize_datasets,
+            build_fact_set=self.build_fact_set,
+            generate_findings=self.generate_findings,
             run_coding_analysis=self.run_coding_analysis,
             validate_report=self.validate_report,
             publish_report=self.publish_report,
@@ -998,34 +1056,102 @@ class ReportWorkflowRuntime:
     async def normalize_report_request(
         self, step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
+        if run_context.session_state is None:
+            run_context.session_state = {}
+        state = self._state(run_context)
         workflow_input = ReportingWorkflowInput.model_validate(step_input.input)
         request = workflow_input.request()
+        feedback = self._feedback(step_input)
         if isinstance(request, ReportRequestEnvelope):
+            resolution = resolve_domain_mentions(f"{request.report_goal}\n{feedback or ''}")
+            if request.domains is None and resolution.is_ambiguous:
+                return StepOutput(
+                    content={"clarificationQuestion": "请明确主分析领域：全成本或费控。"}
+                )
+            if request.report_type is None:
+                return StepOutput(
+                    content={"clarificationQuestion": "请明确报告类型：综合报告或专题报告。"}
+                )
+            domains = request.domains or resolution.selected or None
+            request = request.model_copy(update={"domains": domains})
+            self._record_request_context(state, request.report_goal, feedback)
+            self._record_normalized_request(state, request)
             return StepOutput(
                 content=request.model_dump(mode="json", by_alias=True, exclude_none=True)
             )
 
         assert isinstance(request, ReportPromptInput)
-        feedback = self._feedback(step_input)
+        self._record_request_context(state, request.prompt, feedback)
+        resolution = resolve_domain_mentions(f"{request.prompt}\n{feedback or ''}")
+        if resolution.is_ambiguous:
+            return StepOutput(content={"clarificationQuestion": "请明确主分析领域：全成本或费控。"})
         prompt_payload: dict[str, Any] = {"prompt": request.prompt}
         if feedback:
             prompt_payload["supplement"] = feedback
         normalized = await self._run_planner(self._request_normalizer, prompt_payload, run_context)
         assert isinstance(normalized, NormalizedReportPrompt)
         period = _single_explicit_year(request.prompt, feedback) or normalized.period
+        missing: list[str] = []
         if period is None:
-            if normalized.clarification_question is None:
-                raise ReportingError("report_request_invalid", "报表分析期间无法确定。")
-            return StepOutput(content={"clarificationQuestion": normalized.clarification_question})
+            missing.append(normalized.clarification_question or "请明确唯一的分析期间。")
+        report_type = _explicit_report_type(request.prompt, feedback)
+        if report_type is None:
+            missing.append("请明确报告类型：综合报告或专题报告。")
+        if missing:
+            return StepOutput(content={"clarificationQuestion": " ".join(missing)})
+        assert period is not None
+        assert report_type is not None
+        domains = resolution.selected or None
         envelope = ReportRequestEnvelope.from_untrusted(
             {
                 "version": "1",
                 "reportGoal": request.prompt,
+                "reportType": report_type,
+                **({"domains": domains} if domains else {}),
                 "period": period.model_dump(mode="json"),
             }
         )
+        self._record_normalized_request(state, envelope)
         return StepOutput(
             content=envelope.model_dump(mode="json", by_alias=True, exclude_none=True)
+        )
+
+    @staticmethod
+    def _record_request_context(
+        state: dict[str, Any], original_goal: str, feedback: str | None
+    ) -> None:
+        current = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY)
+        if not isinstance(current, dict):
+            current = {"originalGoal": original_goal, "feedback": []}
+            state[REPORT_REQUEST_CONTEXT_STATE_KEY] = current
+        elif current.get("originalGoal") != original_goal:
+            raise ReportingError(
+                "report_context_restart_required", "原始报告目标已变化，必须重新发起。"
+            )
+        values = current.get("feedback")
+        if not isinstance(values, list):
+            raise ReportingError("report_workflow_state_invalid", "报表请求语境状态无效。")
+        if feedback:
+            values.append(
+                {
+                    "sequence": len(values) + 1,
+                    "stage": "request_supplement",
+                    "content": feedback,
+                }
+            )
+
+    @staticmethod
+    def _record_normalized_request(state: dict[str, Any], envelope: ReportRequestEnvelope) -> None:
+        current = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY)
+        if not isinstance(current, dict):
+            raise ReportingError("report_workflow_state_invalid", "报表请求语境状态无效。")
+        current.update(
+            {
+                "reportType": envelope.report_type,
+                "domains": list(envelope.domains) if envelope.domains else None,
+                "primaryDomain": envelope.domains[0] if envelope.domains else None,
+                "period": envelope.period.model_dump(mode="json"),
+            }
         )
 
     async def cleanup_cancelled(
@@ -1160,6 +1286,8 @@ class ReportWorkflowRuntime:
             )
 
         snapshots = list(_apply_profile_scope_filters_to_snapshots(tuple(snapshots), profile))
+        if any(source.id == "rj" for source in sources):
+            _validate_hospital_operation_profile_schema(ruijin_profile(), tuple(snapshots))
         state = self._state(run_context)
         workflow_input = envelope.workflow_payload(
             default_source_ids=self.registry.default_source_ids
@@ -1181,6 +1309,8 @@ class ReportWorkflowRuntime:
         base_payload = {
             "reportGoal": envelope.report_goal,
             "period": envelope.period.model_dump(mode="json"),
+            "periodWindows": envelope.period_windows().public_dict(),
+            "domains": list(envelope.domains or ()),
             "schemas": _planning_schema_payload(snapshots),
         }
         previous_output: Any = None
@@ -1490,43 +1620,140 @@ class ReportWorkflowRuntime:
         self._assert_state_safe(state)
         return StepOutput(content={"reconciliations": []})
 
-    async def generate_outline(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
-        state = self._state(run_context)
-        profile = self._profile(run_context)
-        outline_context = build_outline_shape_view(
-            profile,
-            self._capabilities(run_context),
-            self._snapshots(run_context),
-            self._data_shapes(run_context),
-            self._reconciliations(run_context),
-        )
-        state[REPORT_OUTLINE_CONTEXT_STATE_KEY] = outline_context
-        payload = {
-            "reportGoal": self._envelope(run_context).report_goal,
-            "period": self._envelope(run_context).period.model_dump(mode="json"),
-            "outlineContext": outline_context,
-            "feedback": self._feedback(step_input),
+    async def generate_findings(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        fact_set = await self._load_fact_set(run_context)
+        analysis_fact_set = await self._load_analysis_fact_set(run_context)
+        if not analysis_fact_set.facts:
+            raise ReportingError(
+                "report_findings_unavailable",
+                "FactSet 没有可供分析发现引用的可发布事实。",
+            )
+        envelope = self._envelope(run_context)
+        selected_domains = _selected_report_domains(envelope, fact_set)
+        base_payload = {
+            "reportGoal": envelope.report_goal,
+            "reportType": envelope.report_type,
+            "domains": list(selected_domains),
+            "periodWindows": envelope.period_windows().public_dict(),
+            "analysisFactSet": analysis_fact_set.public_dict(),
         }
-        base_payload = payload
+        previous_output: dict[str, Any] | None = None
+        allowed_paths: tuple[str, ...] = ()
         validation_feedback: dict[str, Any] | None = None
-        outline: ReportOutline | None = None
         for attempt in range(1, 6):
             payload = dict(base_payload)
             if validation_feedback is not None:
                 payload["correction"] = {
                     "attempt": attempt,
+                    "previousOutput": previous_output,
+                    "allowedMutationPaths": list(allowed_paths),
                     "validationFeedback": _compact_validation_feedback(validation_feedback),
                     "instruction": (
-                        "修正所有 issues；返回完整 ReportOutline JSON，"
-                        "sections 只能包含可直接展示的自然语言章节标题，assumptions 只能包含"
-                        "可直接展示的自然语言假设或空数组；不得返回 snake_case 字段名、默认占位值、"
-                        "纯标点、孤立标点前缀或重复项；缺失数据只能如实披露为限制，不得填补、"
-                        "估算、插值或外推；直接替换错误值，不把修正说明或标记写入字段；"
-                        "必须保留 effectiveProfile.sections 中 required=true 的全部 title；"
-                        "可选章节仅在报告目标相关且数据能力支持时选择，所有已选 Profile 章节"
-                        "保持相对顺序；可以根据报告目标和真实数据增加其他中文章节，但不得"
-                        "删除、改名、打乱或用扩展章节替代必选章节；"
-                        "不返回章节正文、解释或 Markdown"
+                        "以 previousOutput 为基线，只修改 allowedMutationPaths 指向的失败字段；"
+                        "其他发现和字段逐字保持不变，返回完整 JSON"
+                    ),
+                }
+            try:
+                output = await self._run_planner(self._findings_agent, payload, run_context)
+            except _PlannerOutputValidationError as error:
+                previous_output = dict(error.output) if isinstance(error.output, Mapping) else None
+                issues = error.issues
+                allowed_paths = tuple(
+                    str(issue.get("path")) for issue in issues if issue.get("path")
+                )
+                validation_feedback = {"issues": issues}
+                continue
+            assert isinstance(output, FindingProposalBatch)
+            output_payload = output.model_dump(mode="json", by_alias=True)
+            if previous_output is not None:
+                unexpected = _unexpected_correction_paths(
+                    previous_output, output_payload, allowed_paths, ()
+                )
+                if unexpected:
+                    validation_feedback = {
+                        "issues": [
+                            {
+                                "path": "$",
+                                "rejectedValue": {"unexpectedPaths": unexpected},
+                                "allowedValues": list(allowed_paths),
+                                "requiredAction": "只修改 allowedMutationPaths 后返回完整输出",
+                            }
+                        ]
+                    }
+                    continue
+            try:
+                findings = build_findings(
+                    output.findings,
+                    fact_set,
+                    selected_domains=selected_domains,
+                )
+            except ReportingError as error:
+                previous_output = output_payload
+                raw_issues = (error.details or {}).get("issues", [])
+                issues = [dict(item) for item in raw_issues if isinstance(item, Mapping)]
+                allowed_paths = tuple(
+                    str(issue.get("path")) for issue in issues if issue.get("path")
+                )
+                validation_feedback = {"issues": issues}
+                continue
+            state = self._state(run_context)
+            state[REPORT_FINDINGS_STATE_KEY] = findings.model_dump(mode="json", by_alias=True)
+            self._assert_state_safe(state)
+            return StepOutput(content=findings)
+        raise ReportingError(
+            "report_findings_invalid",
+            "分析发现连续五次未通过校验。最后一次反馈："
+            + json.dumps(
+                _compact_validation_feedback(validation_feedback),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+
+    async def generate_outline(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
+        state = self._state(run_context)
+        envelope = self._envelope(run_context)
+        if envelope.report_type is None:
+            raise ReportingError("report_type_required", "报告类型尚未确认。")
+        feedback = self._feedback(step_input)
+        self._record_outline_feedback(state, feedback)
+        try:
+            findings_result = FindingsResult.model_validate(state.get(REPORT_FINDINGS_STATE_KEY))
+        except Exception as error:
+            raise ReportingError(
+                "report_findings_invalid", "动态提纲缺少有效的冻结分析发现。"
+            ) from error
+        if not findings_result.findings:
+            raise ReportingError("report_findings_unavailable", "没有可供动态提纲引用的真实发现。")
+        outline_context = {
+            "reportType": envelope.report_type,
+            "domains": list(envelope.domains or ()),
+            "findings": [
+                item.model_dump(mode="json", by_alias=True) for item in findings_result.findings
+            ],
+            "requestContext": dict(state.get(REPORT_REQUEST_CONTEXT_STATE_KEY) or {}),
+        }
+        state[REPORT_OUTLINE_CONTEXT_STATE_KEY] = outline_context
+        base_payload = {
+            "reportGoal": envelope.report_goal,
+            "reportType": envelope.report_type,
+            "period": envelope.period.model_dump(mode="json"),
+            "outlineContext": outline_context,
+            "feedback": feedback,
+        }
+        validation_feedback: dict[str, Any] | None = None
+        outline: ReportOutline | None = None
+        for attempt in range(1, 6):
+            payload: dict[str, Any] = dict(base_payload)
+            if validation_feedback is not None:
+                payload["correction"] = {
+                    "attempt": attempt,
+                    "validationFeedback": _compact_validation_feedback(validation_feedback),
+                    "instruction": (
+                        "修正全部 issues 并返回完整 ReportOutlineProposal；sections 不得包含 code，"
+                        "每个章节必须引用已注册 findingId；不返回正文、解释或 Markdown"
                     ),
                 }
             try:
@@ -1538,16 +1765,33 @@ class ReportWorkflowRuntime:
                     "issues": error.issues,
                 }
                 continue
-            assert isinstance(output, ReportOutline)
-            issues = _outline_section_issues(output, profile)
+            assert isinstance(output, ReportOutlineProposal)
+            issues: list[dict[str, Any]] = []
+            if output.report_type != envelope.report_type:
+                issues.append(
+                    {
+                        "path": "reportType",
+                        "rejectedValue": output.report_type,
+                        "allowedValues": [envelope.report_type],
+                        "reason": "提纲报告类型必须与已确认请求一致",
+                    }
+                )
             if issues:
                 validation_feedback = {
                     "code": "report_outline_invalid",
-                    "summary": "报告提纲未保留 Profile 必选章节",
+                    "summary": "报告提纲违反动态章节契约",
                     "issues": issues,
                 }
                 continue
-            outline = output
+            try:
+                outline = freeze_outline(output, findings=findings_result.findings)
+            except ValueError as error:
+                validation_feedback = {
+                    "code": "report_outline_invalid",
+                    "summary": "报告提纲引用的发现未通过服务端冻结校验",
+                    "issues": [{"path": "sections", "reason": str(error)}],
+                }
+                continue
             break
         if outline is None:
             raise ReportingError(
@@ -1560,7 +1804,25 @@ class ReportWorkflowRuntime:
                 ),
             )
         state[REPORT_OUTLINE_STATE_KEY] = outline.model_dump(mode="json", by_alias=True)
+        state[REPORT_OUTLINE_HASH_STATE_KEY] = _payload_sha256(state[REPORT_OUTLINE_STATE_KEY])
+        self._assert_state_safe(state)
         return StepOutput(content=outline)
+
+    @staticmethod
+    def _record_outline_feedback(state: dict[str, Any], feedback: str | None) -> None:
+        if not feedback:
+            return
+        current = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY)
+        if not isinstance(current, dict) or not isinstance(current.get("feedback"), list):
+            raise ReportingError("report_workflow_state_invalid", "报表请求语境状态无效。")
+        values = current["feedback"]
+        values.append(
+            {
+                "sequence": len(values) + 1,
+                "stage": "outline_feedback",
+                "content": feedback,
+            }
+        )
 
     async def generate_analysis_plan(
         self, _step_input: StepInput, run_context: RunContext
@@ -1570,12 +1832,39 @@ class ReportWorkflowRuntime:
         data_understanding = DataUnderstandingPlan.model_validate(
             state[REPORT_DATA_UNDERSTANDING_STATE_KEY]
         )
+        if all(
+            key in state
+            for key in (
+                REPORT_EFFECTIVE_PROFILE_STATE_KEY,
+                REPORT_CAPABILITIES_STATE_KEY,
+                REPORT_DATA_SHAPES_STATE_KEY,
+                REPORT_RECONCILIATIONS_STATE_KEY,
+            )
+        ):
+            analysis_context = build_outline_shape_view(
+                self._profile(run_context),
+                self._capabilities(run_context),
+                snapshots,
+                self._data_shapes(run_context),
+                self._reconciliations(run_context),
+            )
+        else:
+            fallback_context = state.get(REPORT_OUTLINE_CONTEXT_STATE_KEY)
+            if not isinstance(fallback_context, dict):
+                raise ReportingError("report_outline_context_invalid", "报告提纲上下文状态无效。")
+            analysis_context = fallback_context
         base_payload = {
             "reportGoal": self._envelope(run_context).report_goal,
-            "outline": state[REPORT_OUTLINE_STATE_KEY],
-            "analysisContext": _analysis_context_payload(
-                state.get(REPORT_OUTLINE_CONTEXT_STATE_KEY)
-            ),
+            "domains": list(self._envelope(run_context).domains or ()),
+            "periodWindows": self._envelope(run_context).period_windows().public_dict(),
+            "analysisSequence": [
+                "整体规模与结构",
+                "趋势与拐点",
+                "异常贡献",
+                "归因验证",
+                "经营影响",
+            ],
+            "analysisContext": _analysis_context_payload(analysis_context),
             "dataUnderstanding": state[REPORT_DATA_UNDERSTANDING_STATE_KEY],
             "schemas": _planning_schema_payload(
                 snapshots,
@@ -1753,6 +2042,9 @@ class ReportWorkflowRuntime:
         state[REPORT_DATA_REQUIREMENTS_STATE_KEY] = [
             item.model_dump(mode="json", by_alias=True) for item in bundle.requirements
         ]
+        state[REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY] = list(
+            _row_preserving_requirement_ids(bundle.requirements, ruijin_profile())
+        )
         return StepOutput(content=bundle)
 
     async def generate_query_candidates(
@@ -1774,7 +2066,15 @@ class ReportWorkflowRuntime:
                 tables=referenced_tables,
             ),
             "period": self._envelope(run_context).period.model_dump(mode="json"),
+            "periodWindows": self._envelope(run_context).period_windows().public_dict(),
             "feedback": self._feedback(step_input),
+            "queryExecutionModes": [
+                {
+                    "requirementId": requirement_id,
+                    "mode": "row_preserving_conflict_probe",
+                }
+                for requirement_id in state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+            ],
         }
         sources = {item.id: item for item in self._sources(run_context)}
         snapshots = self._snapshots(run_context)
@@ -1788,8 +2088,9 @@ class ReportWorkflowRuntime:
                     "attempt": attempt,
                     "validationFeedback": _compact_validation_feedback(validation_feedback),
                     "instruction": (
-                        "修正所有 issues；返回覆盖全部 requirements 的完整 SQL 批次 JSON，"
-                        "直接替换错误值，不把修正说明或标记写入字段；不返回补丁、解释或 Markdown"
+                        "修正所有 issues；返回覆盖全部 requirements 和唯一期间窗口的完整 SQL 批次 JSON，"
+                        "每个查询只使用所属 periodRole 的精确窗口；直接替换错误值，不把修正说明或标记写入字段；"
+                        "不返回补丁、解释或 Markdown"
                     ),
                 }
             try:
@@ -1808,6 +2109,9 @@ class ReportWorkflowRuntime:
                 snapshots=snapshots,
                 envelope=envelope,
                 requirements=requirements,
+                row_preserving_requirement_ids=tuple(
+                    state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+                ),
             )
             if issues:
                 validation_feedback = {
@@ -1870,6 +2174,332 @@ class ReportWorkflowRuntime:
         }
         return StepOutput(content={"datasets": datasets, "jobId": prepared["jobId"]})
 
+    async def build_fact_set(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
+        state = self._state(run_context)
+        result = self._workflow_result(state)
+        handles = tuple(DatasetHandle.from_state(item) for item in result.get("datasets", ()))
+        requirements = {
+            item.requirement_id: item
+            for item in (
+                QueryRequirement.model_validate(value)
+                for value in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
+            )
+        }
+        lineage = tuple(
+            DatasetLineage.model_validate(item) for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
+        )
+        citations = {item.dataset_id: item.citation_id for item in authoritative_citations(lineage)}
+        schema_hashes = {
+            table.source_id: snapshot.schema_hash
+            for snapshot in self._snapshots(run_context)
+            for table in snapshot.tables
+        }
+        inputs: list[DatasetFactInput] = []
+        fact_set_issues: list[FactSetIssue] = []
+        operation_profile = ruijin_profile()
+        row_preserving_requirement_ids = set(
+            state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+        )
+        scope = self._scope(run_context)
+        async with self.workspace_service._async_client() as client:
+            sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
+            for handle in handles:
+                requirement = requirements.get(handle.requirement_id)
+                if requirement is None:
+                    fact_set_issues.append(
+                        FactSetIssue(
+                            code="dataset_requirement_missing",
+                            status="unconfirmed",
+                            message=f"数据集 {handle.dataset_id} 缺少已批准的数据需求。",
+                            datasetIds=(handle.dataset_id,),
+                        )
+                    )
+                    continue
+                if len(requirement.tables) != 1:
+                    table_names = {
+                        item.table.rsplit(".", 1)[-1].lower() for item in requirement.tables
+                    }
+                    domains = tuple(
+                        sorted(
+                            {
+                                binding.domain
+                                for binding in operation_profile.bindings
+                                if binding.field_ref.rsplit(".", 2)[-2].lower() in table_names
+                            }
+                        )
+                    )
+                    # FactSet 只能冻结单表审核结果；多表结果没有唯一物理字段归属时必须显式阻断，
+                    # 不能静默丢弃后继续让“有其他事实”冒充完整覆盖。
+                    fact_set_issues.append(
+                        FactSetIssue(
+                            code="multi_table_dataset_unmaterialized",
+                            status="unconfirmed",
+                            message=f"数据集 {handle.dataset_id} 来自多表需求，无法确定性映射为业务事实。",
+                            domains=domains,
+                            datasetIds=(handle.dataset_id,),
+                        )
+                    )
+                    continue
+                _relative, remote = self.workspace_service.normalize_path(
+                    handle.path, allow_root=False
+                )
+                content = await self.workspace_service._adownload_file(sandbox, remote, handle.size)
+                if (
+                    len(content) != handle.size
+                    or hashlib.sha256(content).hexdigest() != handle.sha256
+                ):
+                    raise ReportingError("stale_dataset", "FactSet 输入数据集已变化。")
+                reader = csv.DictReader(io.StringIO(content.decode("utf-8")))
+                rows = tuple(dict(row) for row in reader)
+                columns = tuple(reader.fieldnames or ())
+                table = requirement.tables[0]
+                inputs.append(
+                    DatasetFactInput(
+                        dataset_id=handle.dataset_id,
+                        requirement_id=handle.requirement_id,
+                        source_id=handle.source_id,
+                        table=table.table,
+                        period_column=table.period_column,
+                        grain=requirement.grain_columns,
+                        rows=rows,
+                        schema_hash=schema_hashes[handle.source_id],
+                        sql_hash=handle.sql_hash,
+                        file_hash=handle.sha256,
+                        reference=citations[handle.dataset_id],
+                        columns=columns,
+                        row_preserving=handle.requirement_id in row_preserving_requirement_ids,
+                        period_roles=tuple(handle.period_roles),
+                        query_window_id=handle.query_window_id,
+                    )
+                )
+        envelope = self._envelope(run_context)
+        fact_set = build_fact_set_from_datasets(
+            inputs,
+            profile=operation_profile,
+            period_start=envelope.period.start,
+            period_end=envelope.period.end,
+            generated_at=datetime.now(UTC).isoformat(),
+            issues=fact_set_issues,
+        )
+        fact_set_handle = await self._materialize_fact_set(run_context, fact_set)
+        state[REPORT_FACT_SET_STATE_KEY] = fact_set_handle.public_dict()
+        self._assert_state_safe(state)
+        return StepOutput(content=fact_set_handle)
+
+    async def _materialize_fact_set(
+        self,
+        run_context: RunContext,
+        fact_set: HospitalOperationFactSet,
+    ) -> FactSetHandle:
+        """分别物化审计 FactSet 与模型分析目录，并回读校验两个受信身份。"""
+        content = json.dumps(
+            fact_set.public_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        self.workspace_service._validate_content(content)
+        analysis_fact_set = build_analysis_fact_set(fact_set)
+        analysis_content = json.dumps(
+            analysis_fact_set.public_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        self.workspace_service._validate_content(analysis_content)
+        path = _fact_set_path(str(run_context.run_id or ""))
+        analysis_path = _analysis_fact_set_path(str(run_context.run_id or ""))
+        _relative, remote = self.workspace_service.normalize_path(path, allow_root=False)
+        _analysis_relative, analysis_remote = self.workspace_service.normalize_path(
+            analysis_path, allow_root=False
+        )
+        scope = self._scope(run_context)
+        try:
+            async with self.workspace_service._async_client() as client:
+                sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
+                await self.workspace_service._aensure_directory(sandbox, remote.rsplit("/", 1)[0])
+                await sandbox.fs.upload_file(content, remote)
+                await sandbox.fs.upload_file(analysis_content, analysis_remote)
+                stored = await self.workspace_service._adownload_file(sandbox, remote, len(content))
+                stored_analysis = await self.workspace_service._adownload_file(
+                    sandbox, analysis_remote, len(analysis_content)
+                )
+        except Exception as error:
+            raise ReportingError(
+                "report_fact_set_materialization_failed",
+                "服务端无法物化确定性业务 FactSet。",
+            ) from error
+        if stored != content:
+            raise ReportingError(
+                "report_fact_set_changed",
+                "FactSet 写入后发生变化。",
+            )
+        if stored_analysis != analysis_content:
+            raise ReportingError(
+                "report_analysis_fact_set_changed",
+                "分析 FactSet 写入后发生变化。",
+            )
+        domain_counts: dict[str, int] = {}
+        for fact in fact_set.facts:
+            domain_counts[fact.domain] = domain_counts.get(fact.domain, 0) + 1
+        handle = FactSetHandle(
+            path=path,
+            size=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            factSetHash=fact_set.fact_set_hash,
+            factCount=len(fact_set.facts),
+            metricFactCount=len(fact_set.metric_facts),
+            domainCounts=dict(sorted(domain_counts.items())),
+            analysisFactSet=AnalysisFactSetHandle(
+                path=analysis_path,
+                size=len(analysis_content),
+                sha256=hashlib.sha256(analysis_content).hexdigest(),
+                sourceFactSetHash=fact_set.fact_set_hash,
+                factCount=len(analysis_fact_set.facts),
+            ),
+        )
+        logger.info(
+            "report_fact_set_materialized size=%s sha256=%s fact_set_hash=%s "
+            "fact_count=%s metric_fact_count=%s",
+            handle.size,
+            handle.sha256,
+            handle.fact_set_hash,
+            handle.fact_count,
+            handle.metric_fact_count,
+        )
+        logger.info(
+            "report_analysis_fact_set_materialized size=%s sha256=%s "
+            "source_fact_set_hash=%s fact_count=%s",
+            handle.analysis_fact_set.size if handle.analysis_fact_set else 0,
+            handle.analysis_fact_set.sha256 if handle.analysis_fact_set else "",
+            handle.fact_set_hash,
+            len(analysis_fact_set.facts),
+        )
+        return handle
+
+    async def _load_fact_set(self, run_context: RunContext) -> HospitalOperationFactSet:
+        try:
+            handle = FactSetHandle.model_validate(
+                self._state(run_context).get(REPORT_FACT_SET_STATE_KEY)
+            )
+        except Exception as error:
+            raise ReportingError(
+                "report_fact_set_reference_invalid",
+                "Workflow FactSet 引用无效。",
+            ) from error
+        expected_path = _fact_set_path(str(run_context.run_id or ""))
+        if handle.path != expected_path:
+            raise ReportingError(
+                "report_fact_set_reference_invalid",
+                "Workflow FactSet 引用不属于当前运行。",
+            )
+        try:
+            _relative, remote = self.workspace_service.normalize_path(handle.path, allow_root=False)
+            async with self.workspace_service._async_client() as client:
+                sandbox = await self.workspace_service._asandbox_for(
+                    client, self._scope(run_context)["threadId"]
+                )
+                content = await self.workspace_service._adownload_file(sandbox, remote, handle.size)
+        except ReportingError:
+            raise
+        except Exception as error:
+            raise ReportingError(
+                "report_fact_set_unavailable",
+                "Workflow FactSet 文件不可用。",
+            ) from error
+        if len(content) != handle.size or hashlib.sha256(content).hexdigest() != handle.sha256:
+            raise ReportingError(
+                "report_fact_set_changed",
+                "Workflow FactSet 文件已经变化。",
+            )
+        try:
+            fact_set = HospitalOperationFactSet.model_validate(json.loads(content))
+        except Exception as error:
+            raise ReportingError(
+                "report_fact_set_invalid",
+                "Workflow FactSet 文件不符合确定性事实契约。",
+            ) from error
+        domain_counts: dict[str, int] = {}
+        for fact in fact_set.facts:
+            domain_counts[fact.domain] = domain_counts.get(fact.domain, 0) + 1
+        if (
+            fact_set.fact_set_hash != handle.fact_set_hash
+            or len(fact_set.facts) != handle.fact_count
+            or len(fact_set.metric_facts) != handle.metric_fact_count
+            or dict(sorted(domain_counts.items())) != handle.domain_counts
+        ):
+            raise ReportingError(
+                "report_fact_set_changed",
+                "Workflow FactSet 身份与文件内容不一致。",
+            )
+        return fact_set
+
+    async def _load_analysis_fact_set(
+        self, run_context: RunContext
+    ) -> HospitalOperationAnalysisFactSet:
+        try:
+            handle = FactSetHandle.model_validate(
+                self._state(run_context).get(REPORT_FACT_SET_STATE_KEY)
+            )
+            analysis_handle = handle.analysis_fact_set
+        except Exception as error:
+            raise ReportingError(
+                "report_analysis_fact_set_reference_invalid",
+                "Workflow 分析 FactSet 引用无效。",
+            ) from error
+        if analysis_handle is None or analysis_handle.path != _analysis_fact_set_path(
+            str(run_context.run_id or "")
+        ):
+            raise ReportingError(
+                "report_analysis_fact_set_reference_invalid",
+                "Workflow 分析 FactSet 引用不属于当前运行。",
+            )
+        try:
+            _relative, remote = self.workspace_service.normalize_path(
+                analysis_handle.path, allow_root=False
+            )
+            async with self.workspace_service._async_client() as client:
+                sandbox = await self.workspace_service._asandbox_for(
+                    client, self._scope(run_context)["threadId"]
+                )
+                content = await self.workspace_service._adownload_file(
+                    sandbox, remote, analysis_handle.size
+                )
+        except ReportingError:
+            raise
+        except Exception as error:
+            raise ReportingError(
+                "report_analysis_fact_set_unavailable",
+                "Workflow 分析 FactSet 文件不可用。",
+            ) from error
+        if (
+            len(content) != analysis_handle.size
+            or hashlib.sha256(content).hexdigest() != analysis_handle.sha256
+        ):
+            raise ReportingError(
+                "report_analysis_fact_set_changed",
+                "Workflow 分析 FactSet 文件已经变化。",
+            )
+        try:
+            analysis_fact_set = HospitalOperationAnalysisFactSet.model_validate(json.loads(content))
+        except Exception as error:
+            raise ReportingError(
+                "report_analysis_fact_set_invalid",
+                "Workflow 分析 FactSet 文件不符合确定性分析事实契约。",
+            ) from error
+        if (
+            analysis_fact_set.source_fact_set_hash != handle.fact_set_hash
+            or analysis_handle.source_fact_set_hash != handle.fact_set_hash
+            or len(analysis_fact_set.facts) != analysis_handle.fact_count
+        ):
+            raise ReportingError(
+                "report_analysis_fact_set_changed",
+                "Workflow 分析 FactSet 身份与完整 FactSet 不一致。",
+            )
+        return analysis_fact_set
+
     async def run_coding_analysis(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
@@ -1908,6 +2538,7 @@ class ReportWorkflowRuntime:
 
     async def _run_coding(self, run_context: RunContext, *, feedback: str | None) -> dict[str, Any]:
         state = self._state(run_context)
+        outline = _frozen_outline(state)
         result = self._workflow_result(state)
         revision = int(result.get("revision", 0)) + (1 if feedback else 0)
         scope = self._scope(run_context)
@@ -1935,35 +2566,57 @@ class ReportWorkflowRuntime:
             QueryRequirement.model_validate(item)
             for item in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
         )
-        analyses = tuple(
-            AnalysisItem.model_validate(item) for item in state[REPORT_ANALYSIS_PLAN_STATE_KEY]
-        )
+        fact_set_handle = FactSetHandle.model_validate(state[REPORT_FACT_SET_STATE_KEY])
+        analysis_fact_set = await self._load_analysis_fact_set(run_context)
+        analysis_handle = fact_set_handle.analysis_fact_set
+        if analysis_handle is None:  # pragma: no cover - 已由 _load_analysis_fact_set 失败关闭
+            raise ReportingError(
+                "report_analysis_fact_set_reference_invalid", "分析 FactSet 引用缺失。"
+            )
         observed_data_facts = _coding_observed_data_facts(
             self._data_shapes(run_context), requirements, lineage
         )
-        profile_sections_by_title = {
-            section.title: section for section in self._profile(run_context).sections
-        }
-        render_sections: list[dict[str, Any]] = []
-        extension_index = 0
-        for title in state[REPORT_OUTLINE_STATE_KEY]["sections"]:
-            profile_section = profile_sections_by_title.get(title)
-            if profile_section is not None:
-                render_sections.append(
-                    {
-                        "code": profile_section.code,
-                        "title": profile_section.title,
-                        "protocolMarker": True,
-                    }
-                )
-                continue
-            extension_index += 1
-            render_sections.append(
-                {
-                    "code": f"extension_{extension_index:03d}",
-                    "title": title,
-                    "protocolMarker": False,
-                }
+        render_sections: list[dict[str, Any]] = [
+            {
+                "code": section.code,
+                "title": section.title,
+                "protocolMarker": True,
+            }
+            for section in outline.sections
+        ]
+        citation_bindings = authoritative_citations(lineage)
+        instruction = json.dumps(
+            {
+                "reportGoal": self._envelope(run_context).report_goal,
+                "requestContext": state.get(REPORT_REQUEST_CONTEXT_STATE_KEY),
+                "outline": state[REPORT_OUTLINE_STATE_KEY],
+                "findings": state.get(REPORT_FINDINGS_STATE_KEY),
+                "factSetIdentity": {
+                    "factSetHash": fact_set_handle.fact_set_hash,
+                    "factCount": fact_set_handle.fact_count,
+                    "metricFactCount": fact_set_handle.metric_fact_count,
+                    "domainCounts": fact_set_handle.domain_counts,
+                },
+                "analysisFactSetRef": analysis_handle.public_dict(),
+                "task": "revise" if feedback else "analyze",
+                "citationBindings": [
+                    item.model_dump(mode="json", by_alias=True) for item in citation_bindings
+                ],
+                "draftSections": render_sections,
+                "artifactAcceptance": {
+                    "validatorId": REPORT_ARTIFACT_VALIDATOR_ID,
+                    "artifactPathsFrom": "render_report_draft",
+                    "includeMarkdownChartPaths": True,
+                },
+                "reviewFeedback": feedback,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if len(instruction.encode("utf-8")) > MAX_INSTRUCTION_BYTES:
+            raise ReportingError(
+                "report_coding_instruction_too_large",
+                "报表成稿指令超过 Coding Task 边界。",
             )
         validation_context = build_report_artifact_validation_context(
             forbidden_visible_terms=_report_machine_terms(
@@ -1978,8 +2631,9 @@ class ReportWorkflowRuntime:
             ),
             expected_citations=tuple(
                 (item.citation_id, item.dataset_id, item.requirement_id)
-                for item in authoritative_citations(lineage)
+                for item in citation_bindings
             ),
+            expected_fact_ids=tuple(item.fact_id for item in analysis_fact_set.facts),
         )
         validation_context_path = (
             f"报表/智能分析/{run_context.run_id}/"
@@ -2004,36 +2658,24 @@ class ReportWorkflowRuntime:
             render_contract={
                 "title": state[REPORT_OUTLINE_STATE_KEY]["title"],
                 "sections": render_sections,
-                "citationIds": [item.citation_id for item in authoritative_citations(lineage)],
-            },
-        )
-        instruction = json.dumps(
-            {
-                "reportGoal": self._envelope(run_context).report_goal,
-                "outline": state[REPORT_OUTLINE_STATE_KEY],
-                "effectiveProfile": state[REPORT_EFFECTIVE_PROFILE_STATE_KEY],
-                "reconciliations": state[REPORT_RECONCILIATIONS_STATE_KEY],
-                "analysisPlan": state[REPORT_ANALYSIS_PLAN_STATE_KEY],
-                "visualizationBriefs": _visualization_briefs(analyses, requirements),
-                "dataRequirements": state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
-                "datasets": result["datasets"],
-                "observedDataFactCards": _observed_data_fact_cards(observed_data_facts),
-                "observedDataFactsFile": validation_context_file,
-                "task": "revise" if feedback else "analyze",
-                "citationBindings": [
-                    item.model_dump(mode="json", by_alias=True)
-                    for item in authoritative_citations(lineage)
+                "citationIds": [item.citation_id for item in citation_bindings],
+                "facts": [
+                    {
+                        "factId": item.fact_id,
+                        "displayText": item.display_text,
+                        "citationIds": list(item.citation_ids),
+                        "domain": item.domain,
+                        "metric": item.metric,
+                        "scope": item.scope,
+                        "periods": list(item.periods),
+                        "displayUnit": item.display_unit,
+                        "formulaOperation": item.formula_operation,
+                        "periodRole": item.period_role,
+                    }
+                    for item in analysis_fact_set.facts
                 ],
-                "draftSections": render_sections,
-                "artifactAcceptance": {
-                    "validatorId": REPORT_ARTIFACT_VALIDATOR_ID,
-                    "artifactPathsFrom": "render_report_draft",
-                    "includeMarkdownChartPaths": True,
-                },
-                "reviewFeedback": feedback,
+                "requireTable": True,
             },
-            ensure_ascii=False,
-            separators=(",", ":"),
         )
         existing = await self.task_runner.repository.get_task_snapshot(task_id)
         if existing is None:
@@ -2072,6 +2714,7 @@ class ReportWorkflowRuntime:
             accepted_artifacts=accepted_artifacts,
             markdown_path=markdown_path,
             lineage=lineage,
+            allowed_fact_ids=tuple(item.fact_id for item in analysis_fact_set.facts),
             revision=revision + 1,
             coding_task_key=task_id,
             run_context=run_context,
@@ -2100,7 +2743,7 @@ class ReportWorkflowRuntime:
     async def _render_and_validate(self, run_context: RunContext) -> dict[str, Any]:
         state = self._state(run_context)
         result = self._workflow_result(state)
-        outline = ReportOutline.model_validate(state[REPORT_OUTLINE_STATE_KEY])
+        outline = _frozen_outline(state)
         pdf_path = _report_pdf_path(
             str(run_context.run_id),
             int(result.get("revision", 0)) + 1,
@@ -2179,6 +2822,7 @@ class ReportWorkflowRuntime:
             pageCount=validation.get("pageCount"),
             renderedChartIds=tuple(validation.get("chartIds") or ()),
             citationIds=tuple(validation.get("citationIds") or ()),
+            factIds=tuple(validation.get("factIds") or ()),
             sections=tuple(validation.get("sectionIds") or ()),
         )
         validate_rendered_artifacts(draft, rendered, lineage=lineage)
@@ -2210,9 +2854,35 @@ class ReportWorkflowRuntime:
             await self._run_coding(run_context, feedback=feedback)
             await self._render_and_validate(run_context)
         result = self._workflow_result(self._state(run_context))
+        state = self._state(run_context)
+        outline = _frozen_outline(state)
+        fact_set = await self._load_fact_set(run_context)
+        try:
+            artifact_manifest = ReportArtifactManifest.model_validate(
+                state[REPORT_ARTIFACTS_STATE_KEY]["draft"]
+            )
+        except Exception as error:
+            raise ReportingError(
+                "report_artifact_manifest_invalid",
+                "发布门禁缺少已验收的事实引用清单。",
+            ) from error
+        gate = evaluate_publication_gate(
+            fact_set,
+            report_type=outline.report_type,
+            selected_domains=_selected_report_domains(self._envelope(run_context), fact_set),
+            referenced_fact_ids=artifact_manifest.fact_ids,
+            chart_fact_ids=tuple(
+                dict.fromkeys(
+                    fact_id for chart in artifact_manifest.charts for fact_id in chart.fact_ids
+                )
+            ),
+        )
+        state[REPORT_PUBLICATION_GATE_STATE_KEY] = gate.model_dump(mode="json", by_alias=True)
         return StepOutput(
             content={
-                "status": "validated",
+                "status": "validated" if gate.formal_release_allowed else "internal_draft",
+                "formalReleaseAllowed": gate.formal_release_allowed,
+                "publicationGate": gate.model_dump(mode="json", by_alias=True),
                 "jobId": result["jobId"],
                 "reportId": str(run_context.run_id),
                 "revision": int(result.get("revision", 0)) + 1,
@@ -2231,6 +2901,7 @@ class ReportWorkflowRuntime:
         accepted_artifacts: list[dict[str, Any]],
         markdown_path: str,
         lineage: tuple[DatasetLineage, ...],
+        allowed_fact_ids: tuple[str, ...],
         revision: int,
         coding_task_key: str,
         run_context: RunContext,
@@ -2304,7 +2975,10 @@ class ReportWorkflowRuntime:
                 markdown=markdown_bytes.decode("utf-8"),
                 accepted_artifacts=current_artifacts,
                 lineage=lineage,
-                sections=tuple(section.code for section in self._profile(run_context).sections),
+                allowed_fact_ids=allowed_fact_ids,
+                sections=tuple(
+                    section.code for section in _frozen_outline(self._state(run_context)).sections
+                ),
             )
             content = json.dumps(
                 manifest.model_dump(mode="json", by_alias=True),
@@ -3572,37 +4246,8 @@ def _compact_validation_feedback(value: dict[str, Any] | None) -> dict[str, Any]
 
 def _outline_section_issues(
     outline: ReportOutline,
-    profile: EffectiveReportingProfile,
+    _profile: EffectiveReportingProfile,
 ) -> list[dict[str, Any]]:
-    required_titles = [section.title for section in profile.sections if section.required]
-    actual_titles = list(outline.sections)
-    missing_titles = [title for title in required_titles if title not in actual_titles]
-    if missing_titles:
-        return [
-            {
-                "path": "sections",
-                "rejectedValue": actual_titles,
-                "requiredTitles": required_titles,
-                "missingTitles": missing_titles,
-                "reason": "Profile 必选章节必须使用原始 title 并保持相对顺序",
-                "requiredAction": "保留 requiredTitles，并可按报告目标和真实数据增加其他中文章节",
-            }
-        ]
-    selected_profile_titles = [
-        section.title for section in profile.sections if section.title in actual_titles
-    ]
-    selected_positions = [actual_titles.index(title) for title in selected_profile_titles]
-    if selected_positions != sorted(selected_positions):
-        return [
-            {
-                "path": "sections",
-                "rejectedValue": actual_titles,
-                "requiredTitles": required_titles,
-                "expectedProfileOrder": selected_profile_titles,
-                "reason": "已选 Profile 章节的相对顺序与 effectiveProfile.sections 不一致",
-                "requiredAction": "按 expectedProfileOrder 排列已选章节，扩展章节可插入任意位置",
-            }
-        ]
     return []
 
 
@@ -3622,6 +4267,20 @@ def _report_pdf_filename(title: str, period: ReportPeriod) -> str:
                 encoded = encoded[:-1]
     period_label = f"{period.start.isoformat()}至{period.end.isoformat()}"
     return f"{safe_title}_{period_label}.pdf"
+
+
+def _fact_set_path(run_id: str) -> str:
+    if not run_id:
+        raise ReportingError("report_fact_set_reference_invalid", "FactSet 缺少当前运行标识。")
+    return f"报表/智能分析/{run_id}/fact-set.json"
+
+
+def _analysis_fact_set_path(run_id: str) -> str:
+    if not run_id:
+        raise ReportingError(
+            "report_analysis_fact_set_reference_invalid", "分析 FactSet 缺少当前运行标识。"
+        )
+    return f"报表/智能分析/{run_id}/analysis-fact-set.json"
 
 
 def _report_pdf_path(run_id: str, revision: int, title: str, period: ReportPeriod) -> str:
@@ -3655,6 +4314,51 @@ def _planner_validation_issue(error: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _row_preserving_requirement_ids(
+    requirements: tuple[QueryRequirement, ...],
+    profile: HospitalOperationProfile,
+) -> tuple[str, ...]:
+    """只有 Profile 明确要求重复核验的单表需求才能绕过聚合，模型不能自行扩大权限。"""
+    governed_tables = {
+        rule.table_ref.rsplit(".", 1)[-1].lower() for rule in profile.duplicate_conflicts
+    }
+    return tuple(
+        requirement.requirement_id
+        for requirement in requirements
+        if len(requirement.tables) == 1
+        and requirement.tables[0].table.rsplit(".", 1)[-1].lower() in governed_tables
+    )
+
+
+def _validate_hospital_operation_profile_schema(
+    profile: HospitalOperationProfile,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> None:
+    """启动前核对已存在物理表的绑定列，避免列名漂移直到 FactSet 阶段才暴露。"""
+    table_columns = {
+        (table.source_id.lower(), table.database.lower(), table.name.lower()): {
+            column.name.lower() for column in table.columns
+        }
+        for snapshot in snapshots
+        for table in snapshot.tables
+    }
+    missing: list[str] = []
+    for binding in profile.bindings:
+        parts = binding.field_ref.lower().split(".")
+        if len(parts) != 4:
+            missing.append(binding.field_ref)
+            continue
+        source_id, database, table, column = parts
+        available = table_columns.get((source_id, database, table))
+        if available is not None and column not in available:
+            missing.append(binding.field_ref)
+    if missing:
+        raise ReportingError(
+            "hospital_operation_profile_schema_mismatch",
+            "医院运营 Profile 与当前 Schema 不一致：" + ", ".join(sorted(missing)),
+        )
+
+
 def _approve_generated_queries(
     generated: GeneratedQueryBatch,
     *,
@@ -3662,38 +4366,62 @@ def _approve_generated_queries(
     snapshots: tuple[SourceSchemaSnapshot, ...],
     envelope: ReportRequestEnvelope,
     requirements: tuple[QueryRequirement, ...],
+    row_preserving_requirement_ids: tuple[str, ...] = (),
 ) -> tuple[tuple[ApprovedQuery, ...], list[dict[str, Any]]]:
     requirements_by_id = {item.requirement_id: item for item in requirements}
-    query_ids = [item.requirement_id for item in generated.queries]
+    explicit_period_mode = any("period_role" in item.model_fields_set for item in generated.queries)
+    windows_by_role = {item.role: item for item in envelope.period_windows().windows}
+    approved_window_keys: set[tuple[str, str]] = set()
     issues: list[dict[str, Any]] = []
     approved: list[ApprovedQuery] = []
     for index, query in enumerate(generated.queries):
         requirement = requirements_by_id.get(query.requirement_id)
-        if requirement is None or query_ids.count(query.requirement_id) > 1:
+        period_role = query.period_role if explicit_period_mode else "current"
+        query_key = (query.requirement_id, windows_by_role[period_role].query_window_id)
+        if requirement is None:
             issues.append(
                 {
                     "path": f"queries[{index}].requirementId",
                     "rejectedValue": query.requirement_id,
-                    "reason": (
-                        "requirementId 不存在于输入 requirements"
-                        if requirement is None
-                        else "同一 requirementId 只能生成一条 SQL"
-                    ),
+                    "reason": "requirementId 不存在于输入 requirements",
                     "allowedValues": sorted(requirements_by_id),
-                    "requiredAction": "为每个输入 requirementId 返回且只返回一条 SQL",
+                    "requiredAction": "为每个输入 requirementId 和唯一期间窗口返回且只返回一条 SQL",
+                }
+            )
+            continue
+        if query_key in approved_window_keys:
+            issues.append(
+                {
+                    "path": f"queries[{index}]",
+                    "rejectedValue": query.model_dump(mode="json", by_alias=True),
+                    "reason": "同一 requirementId 和 queryWindowId 只能生成一条 SQL",
+                    "allowedValues": [],
+                    "requiredAction": "删除该重复查询；共享同一 queryWindowId 的期间角色只保留一条 SQL",
                 }
             )
             continue
         try:
-            approved.extend(
-                approve_query_batch(
-                    [query.model_dump(mode="json", by_alias=True)],
-                    sources=sources,
-                    snapshots=snapshots,
-                    envelope=envelope,
-                    requirements=(requirement,),
-                )
+            query_approved = approve_query_batch(
+                [
+                    query.model_dump(
+                        mode="json",
+                        by_alias=True,
+                        exclude_unset=not explicit_period_mode,
+                    )
+                ],
+                sources=sources,
+                snapshots=snapshots,
+                envelope=envelope,
+                requirements=(requirement,),
+                row_preserving_requirement_ids=(
+                    (requirement.requirement_id,)
+                    if requirement.requirement_id in row_preserving_requirement_ids
+                    else ()
+                ),
+                require_complete_batch=False,
             )
+            approved.extend(query_approved)
+            approved_window_keys.add(query_key)
         except ReportingError as error:
             expected_period_predicates: list[str] | None = None
             if error.code == "report_query_join_grain_invalid":
@@ -3705,6 +4433,7 @@ def _approve_generated_queries(
                 expected_period_predicates = _expected_period_predicates(
                     requirement,
                     envelope,
+                    period_role=query.period_role,
                 )
                 required_action = (
                     "逐字使用 expectedPeriodPredicates 为每张表添加完整精确期间条件；"
@@ -3714,6 +4443,11 @@ def _approve_generated_queries(
                 required_action = (
                     "只保留 expectedGrainColumns 作为非聚合 SELECT 列和 GROUP BY 列；"
                     "measureColumns 必须聚合；不得把 dimensionColumns 全量带入"
+                )
+            elif error.code == "report_query_row_preserving_invalid":
+                required_action = (
+                    "直接投影 requirementContract 的全部 grainColumns 和原始 measureColumns；"
+                    "删除聚合函数、GROUP BY、DISTINCT、ORDER BY 和 LIMIT"
                 )
             else:
                 required_action = "严格按 requirementContract 的 tables、measureColumns、grainColumns 和 relations 修正 SQL"
@@ -3729,15 +4463,38 @@ def _approve_generated_queries(
             if error.code == "report_query_grain_invalid":
                 issue["expectedGrainColumns"] = list(requirement.grain_columns)
             issues.append(issue)
-    missing = sorted(set(requirements_by_id) - set(query_ids))
+    expected_windows: dict[str, Literal["current", "yoy", "mom"]] = {}
+    selected_windows = (
+        envelope.period_windows().windows
+        if explicit_period_mode
+        else envelope.period_windows().windows[:1]
+    )
+    for item in selected_windows:
+        expected_windows.setdefault(item.query_window_id, item.role)
+    actual_keys = {(item.requirement_id, item.query_window_id) for item in approved}
+    expected_keys = {
+        (requirement_id, query_window_id)
+        for requirement_id in requirements_by_id
+        for query_window_id in expected_windows
+    }
+    missing = sorted(expected_keys - actual_keys)
     if missing:
         issues.append(
             {
                 "path": "queries",
-                "rejectedValue": missing,
-                "reason": "SQL 批次缺少输入 requirementId",
-                "allowedValues": sorted(requirements_by_id),
-                "requiredAction": "补齐每个缺失 requirementId 对应的完整 SQL",
+                "rejectedValue": [
+                    {"requirementId": requirement_id, "queryWindowId": query_window_id}
+                    for requirement_id, query_window_id in missing
+                ],
+                "reason": "SQL 批次缺少输入 requirementId 对应的期间窗口",
+                "allowedValues": [
+                    {
+                        "requirementId": requirement_id,
+                        "periodRole": expected_windows[query_window_id],
+                    }
+                    for requirement_id, query_window_id in sorted(expected_keys)
+                ],
+                "requiredAction": "只补齐缺失的 requirementId 与 periodRole 对应 SQL",
             }
         )
     return tuple(approved), issues
@@ -3746,8 +4503,12 @@ def _approve_generated_queries(
 def _expected_period_predicates(
     requirement: QueryRequirement,
     envelope: ReportRequestEnvelope,
+    *,
+    period_role: Literal["current", "yoy", "mom"] = "current",
 ) -> list[str]:
-    period = envelope.period
+    period = next(
+        item.period for item in envelope.period_windows().windows if item.role == period_role
+    )
     predicates: list[str] = []
     for table in requirement.tables:
         column = f"{table.table}.{table.period_column}"

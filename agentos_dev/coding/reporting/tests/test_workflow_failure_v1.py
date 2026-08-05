@@ -31,6 +31,8 @@ def _workflow(first_step: Any, later_step: Any, *, event_sink=None):
         generate_analysis_plan=later_step,
         generate_query_candidates=later_step,
         materialize_datasets=later_step,
+        build_fact_set=later_step,
+        generate_findings=later_step,
         run_coding_analysis=later_step,
         validate_report=later_step,
         publish_report=later_step,
@@ -57,16 +59,16 @@ async def test_步骤失败后工作流终止且不进入后续审核():
         await workflow.arun({"version": "1", "prompt": "report request"})
 
     assert later_calls == 0
-    assert workflow.steps[8].requires_output_review is False
+    assert workflow.steps[13].requires_output_review is True
 
 
-def test_所有报表步骤都显式失败关闭且暂不暂停审核():
+def test_所有报表步骤都显式失败关闭且请求与提纲启用审核():
     def execute(_step_input: StepInput) -> StepOutput:
         return StepOutput(content={})
 
     workflow = _workflow(execute, execute)
 
-    assert len(workflow.steps) == 16
+    assert len(workflow.steps) == 18
     assert [step.step_id for step in workflow.steps] == [
         "normalize-report-request",
         "confirm-source",
@@ -76,10 +78,12 @@ def test_所有报表步骤都显式失败关闭且暂不暂停审核():
         "commit-measure-semantics",
         "resolve-capabilities",
         "reconcile-sources",
-        "generate-outline",
         "generate-analysis-plan",
         "generate-query-candidates",
         "materialize-datasets",
+        "build-fact-set",
+        "generate-findings",
+        "generate-outline",
         "run-coding-analysis",
         "validate-report",
         "publish-report",
@@ -88,15 +92,20 @@ def test_所有报表步骤都显式失败关闭且暂不暂停审核():
     assert all(step.on_error == OnError.fail for step in workflow.steps)
     assert workflow.steps[2].name == "生成数据理解计划"
     assert workflow.steps[2].max_retries == 0
-    assert workflow.steps[9].name == "生成分析计划与取数需求"
+    assert workflow.steps[8].name == "生成分析计划与取数需求"
+    assert workflow.steps[8].max_retries == 0
+    assert workflow.steps[9].name == "生成并审核取数方案"
     assert workflow.steps[9].max_retries == 0
-    assert workflow.steps[10].name == "生成并审核取数方案"
-    assert workflow.steps[10].max_retries == 0
-    assert workflow.steps[12].name == "Coding 分析与成稿"
-    assert workflow.steps[12].max_retries == 0
-    assert workflow.steps[13].max_retries == 0
+    assert workflow.steps[14].name == "Coding 分析与成稿"
+    assert workflow.steps[14].max_retries == 0
+    assert workflow.steps[15].max_retries == 0
     review_steps = [step for step in workflow.steps if bool(step.requires_output_review)]
-    assert review_steps == []
+    assert [step.step_id for step in review_steps] == [
+        "normalize-report-request",
+        "generate-outline",
+    ]
+    assert workflow.steps[13].human_review is not None
+    assert workflow.steps[13].human_review.max_retries == 5
 
 
 @pytest.mark.anyio

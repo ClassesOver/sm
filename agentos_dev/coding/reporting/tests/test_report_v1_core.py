@@ -37,11 +37,17 @@ from agentos_dev.coding.reporting.delivery.publishing import (
     publication_result,
 )
 from agentos_dev.coding.reporting.entrypoints import prepare_agui_envelope
+from agentos_dev.coding.reporting.hospital_operation import (
+    OutlineSectionProposal,
+    ReportOutlineProposal,
+    ReportOutlineSection,
+    make_outline,
+    ruijin_profile,
+)
 from agentos_dev.coding.reporting.metadata import ReportingMetadataClient, select_reporting_agent
 from agentos_dev.coding.reporting.models import ReportingError
 from agentos_dev.coding.reporting.profile import (
     ReportingProfileRegistry,
-    resolve_capabilities,
     resolve_reporting_profile,
 )
 from agentos_dev.coding.reporting.workflow.query_pipeline import (
@@ -54,14 +60,13 @@ from agentos_dev.coding.reporting.workflow.query_pipeline import (
 from agentos_dev.coding.reporting.workflow.runtime import (
     REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_APPROVED_QUERIES_STATE_KEY,
-    REPORT_CAPABILITIES_STATE_KEY,
     REPORT_DATA_REQUIREMENTS_STATE_KEY,
-    REPORT_DATA_SHAPES_STATE_KEY,
     REPORT_DATA_UNDERSTANDING_STATE_KEY,
     REPORT_EFFECTIVE_PROFILE_STATE_KEY,
+    REPORT_FINDINGS_STATE_KEY,
     REPORT_OUTLINE_CONTEXT_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
-    REPORT_RECONCILIATIONS_STATE_KEY,
+    REPORT_REQUEST_CONTEXT_STATE_KEY,
     REPORT_SCHEMA_SNAPSHOTS_STATE_KEY,
     REPORT_WORKFLOW_INPUT_STATE_KEY,
     REPORT_WORKFLOW_SCOPE_STATE_KEY,
@@ -77,12 +82,15 @@ from agentos_dev.coding.reporting.workflow.runtime import (
     _analysis_allowed_mutation_paths,
     _analysis_bundle_semantic_issues,
     _analysis_validation_issues,
+    _approve_generated_queries,
     _coding_observed_data_facts,
     _compact_validation_feedback,
     _outline_section_issues,
     _PlannerOutputValidationError,
     _planning_schema_payload,
+    _row_preserving_requirement_ids,
     _validate_data_understanding,
+    _validate_hospital_operation_profile_schema,
 )
 
 
@@ -90,6 +98,7 @@ def envelope(**updates):
     value = {
         "version": "1",
         "reportGoal": "分析经营情况",
+        "reportType": "comprehensive",
         "period": {"start": "2025-01-01", "end": "2025-12-31"},
         "sourceIds": ["operations"],
     }
@@ -410,7 +419,19 @@ async def test_数据理解模型只接收有效结构契约不接收原始ddl()
     await runtime.plan_data_scope(StepInput(input=envelope()), context)
 
     assert len(captured) == 1
-    assert set(captured[0]) == {"reportGoal", "period", "schemas"}
+    assert set(captured[0]) == {
+        "reportGoal",
+        "period",
+        "periodWindows",
+        "domains",
+        "schemas",
+    }
+    assert captured[0]["domains"] == []
+    assert [item["role"] for item in captured[0]["periodWindows"]["windows"]] == [
+        "current",
+        "yoy",
+        "mom",
+    ]
     schemas = captured[0]["schemas"]
     assert isinstance(schemas, list)
     assert set(schemas[0]) == {"tables", "measureSemantics"}
@@ -811,6 +832,30 @@ def test_分析计划模型契约以provider兼容描述声明数组不得重复
     assert all("uniqueItems" not in field for field in fields)
 
 
+def test_分析需求数量受三窗口物化批次上限约束():
+    requirement = query_requirement()
+    requirements = tuple(
+        requirement.model_copy(update={"requirement_id": f"income-monthly-{index}"})
+        for index in range(34)
+    )
+
+    with pytest.raises(ValueError):
+        AnalysisBundle.model_validate(
+            {
+                "analyses": [
+                    {
+                        "code": "income",
+                        "description": "收入分析",
+                        "requirementIds": [requirements[0].requirement_id],
+                    }
+                ],
+                "requirements": [
+                    item.model_dump(mode="json", by_alias=True) for item in requirements
+                ],
+            }
+        )
+
+
 def test_分析计划字段纠错反馈提供实际数值字段候选():
     raw_output = {
         "requirements": [
@@ -992,11 +1037,20 @@ async def test_分析计划语义纠错基于上一合法输出且只允许修�
 
     assert set(captured[0]) == {
         "reportGoal",
-        "outline",
+        "domains",
+        "periodWindows",
+        "analysisSequence",
         "analysisContext",
         "dataUnderstanding",
         "schemas",
     }
+    assert captured[0]["analysisSequence"] == [
+        "整体规模与结构",
+        "趋势与拐点",
+        "异常贡献",
+        "归因验证",
+        "经营影响",
+    ]
     assert "schemas" not in captured[0]["analysisContext"]
     assert "tables" not in captured[0]["analysisContext"]
     assert [table["table"] for schema in captured[0]["schemas"] for table in schema["tables"]] == [
@@ -2090,22 +2144,29 @@ async def test_数据理解基础设施错误不进入模型纠错():
 
 
 @pytest.mark.anyio
-async def test_提纲要求使用领域无关的通用章节():
+async def test_动态提纲只接收冻结发现且code由服务端生成():
     captured: dict[str, object] = {}
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime._outline_agent = object()
 
     async def run_planner(_agent, payload, _run_context):
         captured.update(payload)
-        return ReportOutline(
-            title="通用分析报告",
-            sections=("执行摘要", "分析范围与方法", "关键发现", "局限性", "建议"),
+        return ReportOutlineProposal(
+            reportType="comprehensive",
+            title="2025年综合运营报告",
+            sections=(
+                OutlineSectionProposal(
+                    title="收入趋势与异常",
+                    focus=("核对收入趋势和异常月份",),
+                    findingIds=("finding_001",),
+                ),
+            ),
         )
 
     runtime._run_planner = run_planner
-    profile_registry = ReportingProfileRegistry(documents={}, config_paths=())
-    profile = resolve_reporting_profile(profile_registry, None)
-    capabilities = resolve_capabilities(profile, (), ())
+    profile = resolve_reporting_profile(
+        ReportingProfileRegistry(documents={}, config_paths=()), None
+    )
     context = RunContext(
         run_id="workflow-run",
         session_id="workflow-session",
@@ -2115,213 +2176,60 @@ async def test_提纲要求使用领域无关的通用章节():
                 default_source_ids=("operations",)
             ),
             REPORT_SCHEMA_SNAPSHOTS_STATE_KEY: [],
-            REPORT_DATA_SHAPES_STATE_KEY: [],
             REPORT_EFFECTIVE_PROFILE_STATE_KEY: profile.model_dump(mode="json", by_alias=True),
-            REPORT_CAPABILITIES_STATE_KEY: capabilities.model_dump(mode="json", by_alias=True),
-            REPORT_RECONCILIATIONS_STATE_KEY: [],
-        },
-    )
-
-    await runtime.generate_outline(StepInput(input=envelope()), context)
-
-    assert set(captured) == {"reportGoal", "period", "outlineContext", "feedback"}
-    outline_context = captured["outlineContext"]
-    assert isinstance(outline_context, dict)
-    sections = outline_context["profile"]["sections"]
-    assert [item["title"] for item in sections] == [
-        "执行摘要",
-        "分析范围与方法",
-        "关键发现",
-        "局限性",
-        "建议",
-    ]
-    required_sections = "\n".join(item["title"] for item in sections)
-    assert all(term not in required_sections for term in ("院区", "科室", "预算", "收入"))
-
-
-@pytest.mark.anyio
-async def test_提纲结构错误会携带强反馈纠错而不是盲重试():
-    invalid_output = {
-        "title": "运营分析报告",
-        "sections": ['{"code":"summary","content":"正文"}'],
-        "assumptions": [],
-    }
-    captured: list[dict[str, object]] = []
-    runtime: Any = object.__new__(ReportWorkflowRuntime)
-    runtime._outline_agent = object()
-
-    async def run_planner(_agent, payload, _run_context):
-        captured.append(payload)
-        if len(captured) == 1:
-            raise _PlannerOutputValidationError(
-                invalid_output,
-                [
+            REPORT_REQUEST_CONTEXT_STATE_KEY: {"originalGoal": "分析经营情况", "feedback": []},
+            REPORT_FINDINGS_STATE_KEY: {
+                "version": "1",
+                "findings": [
                     {
-                        "path": "sections",
-                        "rejectedValue": invalid_output["sections"],
-                        "reason": "章节必须是自然语言标题，不得包含 JSON 或配置序列化片段",
-                        "requiredAction": "只返回章节标题，并返回完整 ReportOutline",
+                        "findingId": "finding_001",
+                        "type": "trend",
+                        "domain": "income",
+                        "title": "收入趋势",
+                        "claim": "收入趋势已由服务端事实确认。",
+                        "factIds": ["metric-income"],
+                        "citationIds": ["citation_001"],
+                        "evidenceKind": "derived_fact",
+                        "periodRoles": ["current"],
+                        "relatedDomains": ["income"],
                     }
                 ],
-            )
-        return ReportOutline(
-            title="运营分析报告",
-            sections=("执行摘要", "分析范围与方法", "关键发现", "局限性", "建议"),
-        )
-
-    runtime._run_planner = run_planner
-    profile_registry = ReportingProfileRegistry(documents={}, config_paths=())
-    profile = resolve_reporting_profile(profile_registry, None)
-    capabilities = resolve_capabilities(profile, (), ())
-    context = RunContext(
-        run_id="workflow-run",
-        session_id="workflow-session",
-        user_id="user-1",
-        session_state={
-            REPORT_WORKFLOW_INPUT_STATE_KEY: envelope().workflow_payload(
-                default_source_ids=("operations",)
-            ),
-            REPORT_SCHEMA_SNAPSHOTS_STATE_KEY: [],
-            REPORT_DATA_SHAPES_STATE_KEY: [],
-            REPORT_EFFECTIVE_PROFILE_STATE_KEY: profile.model_dump(mode="json", by_alias=True),
-            REPORT_CAPABILITIES_STATE_KEY: capabilities.model_dump(mode="json", by_alias=True),
-            REPORT_RECONCILIATIONS_STATE_KEY: [],
-        },
-    )
-
-    await runtime.generate_outline(StepInput(input=envelope()), context)
-
-    assert len(captured) == 2
-    assert "correction" not in captured[0]
-    correction = captured[1]["correction"]
-    assert correction["attempt"] == 2
-    assert "previousOutput" not in correction
-    assert correction["validationFeedback"]["issues"][0]["path"] == "sections"
-    assert "自然语言章节标题" in correction["instruction"]
-
-
-def test_提纲允许在profile必选章节之间增加中文章节():
-    profile = resolve_reporting_profile(
-        ReportingProfileRegistry(documents={}, config_paths=()), None
-    )
-    outline = ReportOutline(
-        title="运营分析报告",
-        sections=(
-            "执行摘要",
-            "分析范围与方法",
-            "收入与预算执行分析",
-            "关键发现",
-            "局限性",
-            "建议",
-        ),
-    )
-
-    assert _outline_section_issues(outline, profile) == []
-
-
-@pytest.mark.parametrize(
-    ("sections", "reason"),
-    (
-        (
-            ("执行摘要", "分析范围与方法", "关键发现", "建议"),
-            "必须使用原始 title",
-        ),
-        (
-            ("摘要", "分析范围与方法", "关键发现", "局限性", "建议"),
-            "必须使用原始 title",
-        ),
-        (
-            ("分析范围与方法", "执行摘要", "关键发现", "局限性", "建议"),
-            "相对顺序",
-        ),
-    ),
-)
-def test_提纲拒绝删除改名或打乱profile必选章节(sections: tuple[str, ...], reason: str):
-    profile = resolve_reporting_profile(
-        ReportingProfileRegistry(documents={}, config_paths=()), None
-    )
-
-    issues = _outline_section_issues(
-        ReportOutline(title="运营分析报告", sections=sections), profile
-    )
-
-    assert len(issues) == 1
-    assert issues[0]["path"] == "sections"
-    assert issues[0]["requiredTitles"] == [section.title for section in profile.sections]
-    assert reason in issues[0]["reason"]
-
-
-def test_提纲必选章节只使用自定义profile_title():
-    profile = resolve_reporting_profile(
-        ReportingProfileRegistry(documents={}, config_paths=()), None
-    )
-    custom_sections = tuple(
-        section.model_copy(update={"title": "管理层摘要"})
-        if section.code == "executive_summary"
-        else section
-        for section in profile.sections
-    )
-    custom_profile = profile.model_copy(update={"sections": custom_sections})
-    outline = ReportOutline(
-        title="运营分析报告",
-        sections=("管理层摘要", "分析范围与方法", "关键发现", "局限性", "建议"),
-    )
-
-    assert _outline_section_issues(outline, custom_profile) == []
-    issues = _outline_section_issues(
-        ReportOutline(
-            title="运营分析报告",
-            sections=("执行摘要", "分析范围与方法", "关键发现", "局限性", "建议"),
-        ),
-        custom_profile,
-    )
-    assert issues[0]["missingTitles"] == ["管理层摘要"]
-
-
-@pytest.mark.anyio
-async def test_提纲未保留profile章节时携带精确标题纠错():
-    captured: list[dict[str, object]] = []
-    runtime: Any = object.__new__(ReportWorkflowRuntime)
-    runtime._outline_agent = object()
-
-    async def run_planner(_agent, payload, _run_context):
-        captured.append(payload)
-        sections = (
-            ("执行摘要", "收入分析")
-            if len(captured) == 1
-            else ("执行摘要", "分析范围与方法", "收入分析", "关键发现", "局限性", "建议")
-        )
-        return ReportOutline(title="运营分析报告", sections=sections)
-
-    runtime._run_planner = run_planner
-    profile = resolve_reporting_profile(
-        ReportingProfileRegistry(documents={}, config_paths=()), None
-    )
-    capabilities = resolve_capabilities(profile, (), ())
-    context = RunContext(
-        run_id="workflow-run",
-        session_id="workflow-session",
-        user_id="user-1",
-        session_state={
-            REPORT_WORKFLOW_INPUT_STATE_KEY: envelope().workflow_payload(
-                default_source_ids=("operations",)
-            ),
-            REPORT_SCHEMA_SNAPSHOTS_STATE_KEY: [],
-            REPORT_DATA_SHAPES_STATE_KEY: [],
-            REPORT_EFFECTIVE_PROFILE_STATE_KEY: profile.model_dump(mode="json", by_alias=True),
-            REPORT_CAPABILITIES_STATE_KEY: capabilities.model_dump(mode="json", by_alias=True),
-            REPORT_RECONCILIATIONS_STATE_KEY: [],
+                "issues": [],
+            },
         },
     )
 
     output = await runtime.generate_outline(StepInput(input=envelope()), context)
 
-    assert output.content.sections[2] == "收入分析"
-    correction = captured[1]["correction"]
-    issue = correction["validationFeedback"]["issues"][0]
-    assert issue["requiredTitles"] == [section.title for section in profile.sections]
-    assert issue["missingTitles"] == ["分析范围与方法", "关键发现", "局限性", "建议"]
-    assert "可以根据报告目标和真实数据增加其他中文章节" in correction["instruction"]
+    assert set(captured) == {"reportGoal", "reportType", "period", "outlineContext", "feedback"}
+    outline_context = captured["outlineContext"]
+    assert isinstance(outline_context, dict)
+    assert [item["findingId"] for item in outline_context["findings"]] == ["finding_001"]
+    assert "fixedSections" not in outline_context
+    assert "structuralSchemas" not in outline_context
+    assert [section.code for section in output.content.sections] == ["section_001"]
+    assert output.content.sections[0].finding_ids == ("finding_001",)
+
+
+def test_提纲顶层章节不再由profile决定():
+    profile = resolve_reporting_profile(
+        ReportingProfileRegistry(documents={}, config_paths=()), None
+    )
+    outline = make_outline("comprehensive", title="运营分析报告")
+
+    assert _outline_section_issues(outline, profile) == []
+    assert [item.code for item in outline.sections] == [
+        "operation_overview",
+        "income",
+        "workload",
+        "budget",
+        "full_cost",
+        "cost_control",
+        "funds",
+        "cross_domain",
+        "risk_and_data_quality",
+        "management_actions",
+    ]
 
 
 def test_模型纠错反馈限制拒绝值大小但保留允许值和修复动作():
@@ -2348,48 +2256,54 @@ def test_模型纠错反馈限制拒绝值大小但保留允许值和修复动�
 
 
 @pytest.mark.parametrize(
-    "section",
+    "title",
     [
         '{"displayCoverpage": false, "pageSize": "A4"}',
         '"displayCoverpage": false, "pageSize": "A4"',
         'displayCoverpage\\": false, pageSize\\": \\"A4\\"',
     ],
 )
-def test_提纲章节拒绝json或配置序列化片段(section: str):
+def test_提纲章节标题拒绝json或配置序列化片段(title: str):
     with pytest.raises(ValueError):
-        ReportOutline(title="运营分析报告", sections=(section,))
+        ReportOutlineSection(code="income", title=title)
 
 
 def test_提纲章节允许正常中文标题和标点():
+    sections = make_outline("comprehensive", title="占位").sections
     outline = ReportOutline(
+        reportType="comprehensive",
         title="2025年运营分析报告",
-        sections=("执行摘要", "收入、成本与工作量分析", "结论：风险与建议"),
+        sections=sections,
         assumptions=("分析期间为2025年。",),
     )
 
-    assert outline.sections == ("执行摘要", "收入、成本与工作量分析", "结论：风险与建议")
+    assert outline.title == "2025年运营分析报告"
+    assert outline.sections[7].title == "跨域运营分析"
 
 
 def test_提纲拒绝孤立标点前缀但允许句内标点():
     with pytest.raises(ValueError):
-        ReportOutline(title="运营分析报告", sections=(": 执行摘要",))
+        ReportOutlineSection(code="income", title=": 收入分析")
 
-    outline = ReportOutline(title="运营分析报告", sections=("结论：风险与建议",))
+    section = ReportOutlineSection(code="risk_and_data_quality", title="结论：风险与建议")
 
-    assert outline.sections == ("结论：风险与建议",)
+    assert section.title == "结论：风险与建议"
 
 
 def test_提纲假设拒绝填补缺失数据但允许如实披露():
+    sections = make_outline("comprehensive", title="占位").sections
     with pytest.raises(ValueError):
         ReportOutline(
+            reportType="comprehensive",
             title="运营分析报告",
-            sections=("数据限制",),
+            sections=sections,
             assumptions=("缺失月份按趋势估算或视为未发生",),
         )
 
     outline = ReportOutline(
+        reportType="comprehensive",
         title="运营分析报告",
-        sections=("数据限制",),
+        sections=sections,
         assumptions=("2025年12月数据缺失，报告仅披露可用期间，不进行估算。",),
     )
 
@@ -2408,8 +2322,9 @@ def test_提纲假设拒绝填补缺失数据但允许如实披露():
 def test_提纲假设拒绝任何派生或拟合数据(assumption: str):
     with pytest.raises(ValueError, match="不得拟合、估算、推算、插值、外推、年化、平滑或补齐数据"):
         ReportOutline(
+            reportType="comprehensive",
             title="运营分析报告",
-            sections=("数据限制",),
+            sections=make_outline("comprehensive", title="占位").sections,
             assumptions=(assumption,),
         )
 
@@ -2427,40 +2342,16 @@ def test_分析描述拒绝派生数据但允许否定披露():
     assert item.description == "只分析观测值，不进行估算或年化"
 
 
-@pytest.mark.parametrize(
-    "updates",
-    [
-        {"title": ": "},
-        {"sections": (": ",)},
-        {"assumptions": ("——",)},
-        {"sections": ("收入分析", " 收入分析 ")},
-        {"assumptions": ("数据口径一致", "数据口径一致")},
-        {"sections": ("executive_summary",)},
-        {"assumptions": ("default_assumption",)},
-    ],
-)
-def test_提纲拒绝纯标点或重复的自然语言字段(updates: dict[str, object]):
-    payload = {
-        "title": "运营分析报告",
-        "sections": ("执行摘要",),
-        "assumptions": (),
-        **updates,
-    }
-
-    with pytest.raises(ValueError):
-        ReportOutline.model_validate(payload)
-
-
 @pytest.mark.anyio
 async def test_规划器严格解析保留污染字段供模型纠错(caplog):
     caplog.set_level("INFO", logger="agentos_dev.coding.reporting.workflow.runtime")
-    raw = json.dumps(
-        {
-            "title": "运营分析报告",
-            "sections": ["执行摘要", "correctionAppliedClean: true"],
-            "assumptions": [],
-        }
+    payload = make_outline("comprehensive", title="运营分析报告").model_dump(
+        mode="json", by_alias=True
     )
+    payload["sections"].append(
+        {"code": "correction_applied_clean", "title": "correctionAppliedClean: true"}
+    )
+    raw = json.dumps(payload)
 
     class FakeAgent:
         id = "strict-planner"
@@ -2488,8 +2379,8 @@ async def test_规划器严格解析保留污染字段供模型纠错(caplog):
     with pytest.raises(_PlannerOutputValidationError) as captured:
         await runtime._run_planner(FakeAgent(), {}, context)
 
-    assert captured.value.output["sections"][1] == "correctionAppliedClean: true"
-    assert captured.value.issues[0]["path"] == "sections"
+    assert captured.value.output["sections"][-1]["title"] == "correctionAppliedClean: true"
+    assert captured.value.issues[0]["path"] == "sections[10].title"
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "report_planner_request" in messages
     assert "report_planner_response" in messages
@@ -2500,12 +2391,9 @@ async def test_规划器严格解析保留污染字段供模型纠错(caplog):
 @pytest.mark.anyio
 @pytest.mark.parametrize("wrapper", ["fence", "encoded"])
 async def test_规划器只弱解包完整结构化JSON(wrapper: str):
+    expected = make_outline("comprehensive", title="运营分析报告")
     raw = json.dumps(
-        {
-            "title": "运营分析报告",
-            "sections": ["执行摘要"],
-            "assumptions": [],
-        },
+        expected.model_dump(mode="json", by_alias=True),
         ensure_ascii=False,
     )
     content = f"```json\n{raw}\n```" if wrapper == "fence" else json.dumps(raw)
@@ -2523,11 +2411,7 @@ async def test_规划器只弱解包完整结构化JSON(wrapper: str):
 
     output = await runtime._run_planner(FakeAgent(), {}, context)
 
-    assert output == ReportOutline(
-        title="运营分析报告",
-        sections=("执行摘要",),
-        assumptions=(),
-    )
+    assert output == expected
 
 
 @pytest.mark.anyio
@@ -3065,6 +2949,121 @@ def test_sql审核后只允许执行完全相同的原文(tmp_path: Path):
     assert changed.value.code == "report_sql_hash_mismatch"
 
 
+def test_重复冲突探测查询保留原始行且拒绝提前sum(tmp_path: Path):
+    source = source_config(tmp_path)
+    requirement = QueryRequirement.model_validate(
+        {
+            "requirementId": "income-monthly",
+            "sourceId": "operations",
+            "tables": [
+                {
+                    "table": "reporting.income",
+                    "periodColumn": "month",
+                    "periodGranularity": "date",
+                    "measureColumns": ["amount"],
+                }
+            ],
+            "dimensionColumns": ["month", "campus"],
+            "grainColumns": ["month", "campus"],
+        }
+    )
+    raw_sql = (
+        "SELECT month, campus, amount FROM reporting.income "
+        "WHERE month BETWEEN '2025-01-01' AND '2025-12-31'"
+    )
+
+    (approved,) = approve_query_batch(
+        [{"requirementId": "income-monthly", "sourceId": "operations", "sql": raw_sql}],
+        sources={"operations": source},
+        snapshots=approval_snapshots(),
+        envelope=envelope(),
+        requirements=(requirement,),
+        row_preserving_requirement_ids=("income-monthly",),
+    )
+    assert approved.sql == raw_sql
+
+    with pytest.raises(ReportingError) as captured:
+        approve_query_batch(
+            [
+                {
+                    "requirementId": "income-monthly",
+                    "sourceId": "operations",
+                    "sql": (
+                        "SELECT month, campus, SUM(amount) AS amount FROM reporting.income "
+                        "WHERE month BETWEEN '2025-01-01' AND '2025-12-31' "
+                        "GROUP BY month, campus"
+                    ),
+                }
+            ],
+            sources={"operations": source},
+            snapshots=approval_snapshots(),
+            envelope=envelope(),
+            requirements=(requirement,),
+            row_preserving_requirement_ids=("income-monthly",),
+        )
+    assert captured.value.code == "report_query_row_preserving_invalid"
+
+
+def test_原始行权限只由profile受治理项目表自动签发():
+    project = QueryRequirement.model_validate(
+        {
+            "requirementId": "project-budget-probe",
+            "sourceId": "rj",
+            "tables": [
+                {
+                    "table": "rj.dwd_project_budget_view",
+                    "periodColumn": "period_year",
+                    "periodGranularity": "year",
+                    "measureColumns": ["budget_project_amount"],
+                }
+            ],
+            "dimensionColumns": ["period_year", "project_code"],
+            "grainColumns": ["period_year", "project_code"],
+        }
+    )
+    ordinary = project.model_copy(
+        update={
+            "requirement_id": "income",
+            "tables": (
+                project.tables[0].model_copy(update={"table": "rj.dwd_income_budget_view"}),
+            ),
+        }
+    )
+
+    assert _row_preserving_requirement_ids((ordinary, project), ruijin_profile()) == (
+        "project-budget-probe",
+    )
+
+
+def test_医院运营profile在真实表列漂移时启动失败关闭():
+    def snapshot(column_name: str) -> SourceSchemaSnapshot:
+        table = ModelTable(
+            sourceId="rj",
+            database="rj",
+            name="dwd_hdc_income_summary_view",
+            columns=(ModelColumn(name=column_name, dataType="DECIMAL(18,2)", nullable=True),),
+        )
+        return SourceSchemaSnapshot(
+            source="metadata_api",
+            revision="m1",
+            schemaHash=schema_hash((table,)),
+            tables=(table,),
+        )
+
+    _validate_hospital_operation_profile_schema(
+        ruijin_profile(),
+        (snapshot("indicator_value"),),
+    )
+
+    with pytest.raises(ReportingError) as captured:
+        _validate_hospital_operation_profile_schema(
+            ruijin_profile(),
+            (snapshot("indicator_name"),),
+        )
+    assert captured.value.code == "hospital_operation_profile_schema_mismatch"
+    assert "rj.rj.dwd_hdc_income_summary_view.indicator_value" in captured.value.message
+
+
 @pytest.mark.parametrize(("start", "end"), [("2024", "2025"), ("'2024'", "'2025'")])
 def test_sql审核年度期间支持数字或字符串年份边界(tmp_path: Path, start: str, end: str):
     source = source_config(tmp_path)
@@ -3272,6 +3271,127 @@ def approve_sql(tmp_path: Path, sql: str, *, requirement=None):
         envelope=envelope(),
         requirements=(requirement or query_requirement(),),
     )
+
+
+def test_sql显式期间角色分别使用所属窗口(tmp_path: Path):
+    queries = [
+        {
+            "requirementId": "income-monthly",
+            "sourceId": "operations",
+            "periodRole": role,
+            "sql": (
+                "SELECT month, SUM(amount) AS amount FROM reporting.income "
+                f"WHERE month BETWEEN '{start}' AND '{end}' GROUP BY month"
+            ),
+        }
+        for role, start, end in (
+            ("current", "2025-01-01", "2025-12-31"),
+            ("yoy", "2024-01-01", "2024-12-31"),
+            ("mom", "2024-01-02", "2024-12-31"),
+        )
+    ]
+
+    approved = approve_query_batch(
+        queries,
+        sources={"operations": source_config(tmp_path)},
+        snapshots=approval_snapshots(),
+        envelope=envelope(),
+        requirements=(query_requirement(),),
+    )
+
+    assert [item.period_roles for item in approved] == [("current",), ("yoy",), ("mom",)]
+    assert len({item.query_window_id for item in approved}) == 3
+
+
+def test_sql本期角色访问同比窗口被拒绝(tmp_path: Path):
+    with pytest.raises(ReportingError) as captured:
+        approve_query_batch(
+            [
+                {
+                    "requirementId": "income-monthly",
+                    "sourceId": "operations",
+                    "periodRole": "current",
+                    "sql": (
+                        "SELECT month, SUM(amount) AS amount FROM reporting.income "
+                        "WHERE month BETWEEN '2024-01-01' AND '2024-12-31' GROUP BY month"
+                    ),
+                }
+            ],
+            sources={"operations": source_config(tmp_path)},
+            snapshots=approval_snapshots(),
+            envelope=envelope(),
+            requirements=(query_requirement(),),
+        )
+
+    assert captured.value.code == "report_query_period_invalid"
+
+
+def test_sql显式期间角色缺少窗口被拒绝(tmp_path: Path):
+    with pytest.raises(ReportingError) as captured:
+        approve_query_batch(
+            [
+                {
+                    "requirementId": "income-monthly",
+                    "sourceId": "operations",
+                    "periodRole": "current",
+                    "sql": (
+                        "SELECT month, SUM(amount) AS amount FROM reporting.income "
+                        "WHERE month BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY month"
+                    ),
+                }
+            ],
+            sources={"operations": source_config(tmp_path)},
+            snapshots=approval_snapshots(),
+            envelope=envelope(),
+            requirements=(query_requirement(),),
+        )
+
+    assert captured.value.code == "report_query_batch_invalid"
+
+
+def test_运行时按共享queryWindowId拒绝重复查询(tmp_path: Path):
+    request = envelope(period={"start": "2023-01-01", "end": "2023-12-31"})
+    generated = GeneratedQueryBatch.model_validate(
+        {
+            "queries": [
+                {
+                    "requirementId": "income-monthly",
+                    "sourceId": "operations",
+                    "periodRole": role,
+                    "sql": (
+                        "SELECT month, SUM(amount) AS amount FROM reporting.income "
+                        f"WHERE month BETWEEN '{start}' AND '{end}' GROUP BY month"
+                    ),
+                }
+                for role, start, end in (
+                    ("current", "2023-01-01", "2023-12-31"),
+                    ("yoy", "2022-01-01", "2022-12-31"),
+                    ("mom", "2022-01-01", "2022-12-31"),
+                )
+            ]
+        }
+    )
+
+    approved, issues = _approve_generated_queries(
+        generated,
+        sources={"operations": source_config(tmp_path)},
+        snapshots=approval_snapshots(),
+        envelope=request,
+        requirements=(query_requirement(),),
+    )
+
+    assert len(approved) == 2
+    assert approved[1].period_roles == ("yoy", "mom")
+    assert approved[0].query_window_id != approved[1].query_window_id
+    assert issues == [
+        {
+            "path": "queries[2]",
+            "rejectedValue": generated.queries[2].model_dump(mode="json", by_alias=True),
+            "reason": "同一 requirementId 和 queryWindowId 只能生成一条 SQL",
+            "allowedValues": [],
+            "requiredAction": "删除该重复查询；共享同一 queryWindowId 的期间角色只保留一条 SQL",
+        }
+    ]
 
 
 @pytest.mark.parametrize(

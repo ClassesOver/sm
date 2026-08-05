@@ -42,6 +42,7 @@ def test_workflow_input严格区分prompt与envelope():
             {
                 "version": "1",
                 "reportGoal": "分析经营情况",
+                "reportType": "comprehensive",
                 "period": {"start": "2025-01-01", "end": "2025-12-31"},
             }
         ).report_goal
@@ -66,6 +67,7 @@ async def test_envelope首步直接校验且不调用模型():
             input={
                 "version": "1",
                 "reportGoal": "分析经营情况",
+                "reportType": "comprehensive",
                 "period": {"start": "2025-01-01", "end": "2025-12-31"},
             }
         ),
@@ -73,12 +75,14 @@ async def test_envelope首步直接校验且不调用模型():
     )
 
     assert result.content["reportGoal"] == "分析经营情况"
+    assert result.content["reportType"] == "comprehensive"
+    assert "domains" not in result.content
     assert result.content["period"] == {"start": "2025-01-01", "end": "2025-12-31"}
 
 
 @pytest.mark.anyio
 async def test_prompt单个明确年份转换全年并保持原文():
-    prompt = "瑞金医院2025年整体运营分析报告，涵盖收入、预算、成本和工作量"
+    prompt = "瑞金医院2025年综合运营报告，涵盖收入、预算、全成本和工作量"
     runtime = _runtime_with_normalized(NormalizedReportPrompt(clarificationQuestion="请提供期间"))
 
     result = await runtime.normalize_report_request(
@@ -86,6 +90,8 @@ async def test_prompt单个明确年份转换全年并保持原文():
     )
 
     assert result.content["reportGoal"] == prompt
+    assert result.content["reportType"] == "comprehensive"
+    assert result.content["domains"] == ["income", "workload", "budget", "full_cost"]
     assert result.content["period"] == {"start": "2025-01-01", "end": "2025-12-31"}
 
 
@@ -100,7 +106,22 @@ async def test_prompt缺失或冲突期间返回补充问题(prompt):
         StepInput(input={"version": "1", "prompt": prompt}), _context()
     )
 
-    assert result.content == {"clarificationQuestion": "请明确唯一的分析期间。"}
+    assert result.content == {
+        "clarificationQuestion": "请明确唯一的分析期间。 请明确报告类型：综合报告或专题报告。"
+    }
+
+
+@pytest.mark.anyio
+async def test_prompt缺失显式报告类型时返回补充问题():
+    runtime = _runtime_with_normalized(
+        NormalizedReportPrompt(period={"start": "2025-01-01", "end": "2025-12-31"})
+    )
+
+    result = await runtime.normalize_report_request(
+        StepInput(input={"version": "1", "prompt": "分析2025年收入"}), _context()
+    )
+
+    assert result.content == {"clarificationQuestion": "请明确报告类型：综合报告或专题报告。"}
 
 
 @pytest.mark.anyio
@@ -113,12 +134,13 @@ async def test_rejection_feedback在同一首步重试并保持原始目标():
     result = await runtime.normalize_report_request(
         StepInput(
             input={"version": "1", "prompt": prompt},
-            additional_data={"rejection_feedback": "分析2025年"},
+            additional_data={"rejection_feedback": "生成综合报告，分析2025年"},
         ),
         _context(),
     )
 
     assert result.content["reportGoal"] == prompt
+    assert result.content["reportType"] == "comprehensive"
     assert result.content["period"] == {"start": "2025-01-01", "end": "2025-12-31"}
 
 

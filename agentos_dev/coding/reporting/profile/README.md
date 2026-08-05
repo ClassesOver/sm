@@ -1,8 +1,8 @@
 # Report Agent Profile 配置规约
 
-本文是 Reporting Profile 的唯一专用说明。Profile 负责表达稳定、可审核的业务配置，例如医院、院区、
-管理条线、报告模板、章节标题和固定数据范围；它不保存连接信息，也不根据字段名猜测会随数据变化的
-聚合口径。
+本文是 Reporting Profile 的唯一专用说明。Profile 负责表达稳定、可审核的物理字段绑定、单位、粒度、
+医院/院区别名、对账规则和固定数据范围；它不保存连接信息，也不根据字段名猜测会随数据变化的聚合
+口径。医院运营报告的顶层章节由 `hospital_operation` 固定契约维护，Profile 不是章节事实来源。
 
 ## 整体流程
 
@@ -271,6 +271,12 @@ metadata API 和 Profile 都可以提供已确认语义。同一字段内容完�
 含义；无法确定的语义必须由模型提出并由用户确认。
 
 ### sections 与 sectionOrder
+
+`sections` 与 `sectionOrder` 仅服务仍使用通用模板的非医院报告，属于待迁移的兼容配置。医院运营报告
+在 FactSet 和结构化 findings 冻结后动态生成章节，模型只提交中文标题、分析重点和 finding 引用，
+`section_001` 等 code 由服务端按批准顺序生成并冻结。Profile 不得新增、删除或重排医院运营报告的
+顶层章节；部署文件中现存的医院章节配置不再具有运行时权威。`make_outline()` 未传 findings 时保留的
+固定十章行为仅用于旧调用兼容，不是生产 Workflow 的提纲来源。
 
 章节至少必须包含以下五个领域无关 code：
 

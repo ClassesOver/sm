@@ -7,10 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ReportingError(ValueError):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, details: Any | None = None):
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+        self.details = details
 
 
 class ReportReviewSnapshot(BaseModel):

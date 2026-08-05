@@ -221,8 +221,8 @@ def test_pdf_不显示引用或实际引用附录但保留_manifest_绑定(runti
         "# 经营分析报告\n\n"
         "[[section:executive_summary]]\n"
         "## 执行摘要\n\n"
-        "预算执行保持稳定。[[citation:citation_002]]\n\n"
-        "收入趋势可控。[[citation:citation_001]]\n"
+        "预算执行保持稳定。[[citation:citation_002]][[fact:metric-budget-total]]\n\n"
+        "收入趋势可控。[[citation:citation_001]][[fact:metric-income-total]]\n"
     )
     (runtime.workspace / "report.md").write_text(markdown, encoding="utf-8")
     job = prepare_job(runtime, ["data.csv"])
@@ -249,6 +249,7 @@ def test_pdf_不显示引用或实际引用附录但保留_manifest_绑定(runti
     assert "[引用 001]" not in text
     assert "[引用 002]" not in text
     assert "[[citation:" not in text
+    assert "[[fact:" not in text
     assert "[[section:executive_summary]]" not in text
     assert "实际引用附录" not in text
     assert "支出预算执行" not in text
@@ -282,11 +283,13 @@ def test_pdf_不显示引用或实际引用附录但保留_manifest_绑定(runti
                     "requirementId": "budget",
                 },
             ],
+            "factIds": ["metric-budget-total", "metric-income-total"],
             "sections": ["executive_summary"],
         },
     )
     assert validation["ok"] is True
     assert validation["citationIds"] == ["citation_001", "citation_002"]
+    assert validation["factIds"] == ["metric-budget-total", "metric-income-total"]
 
 
 def test_pdf_视觉验收识别空白页且不把失败当作完成(runtime, monkeypatch):

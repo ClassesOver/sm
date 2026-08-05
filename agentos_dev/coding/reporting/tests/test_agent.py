@@ -20,13 +20,10 @@ from agentos_dev.coding.reporting.agent import (
     normalize_reporting_tool_arguments,
 )
 from agentos_dev.coding.reporting.contract import ReportPeriod
+from agentos_dev.coding.reporting.hospital_operation import ReportOutlineProposal, make_outline
 from agentos_dev.coding.reporting.instructions import (
     HOSPITAL_ANALYSIS_INSTRUCTIONS,
     HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
-)
-from agentos_dev.coding.reporting.profile import (
-    ReportingProfileRegistry,
-    resolve_reporting_profile,
 )
 from agentos_dev.coding.reporting.tests.workspace_fakes import service
 from agentos_dev.coding.reporting.workflow.controller import ReportWorkflowController
@@ -36,7 +33,6 @@ from agentos_dev.coding.reporting.workflow.runtime import (
     GeneratedQueryBatch,
     ReportOutline,
     ReportWorkflowRuntime,
-    _outline_section_issues,
     _report_pdf_filename,
     _report_pdf_path,
 )
@@ -46,54 +42,27 @@ from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
 from agentos_dev.task_execution.execution import is_coding_tool_scheduler_hook
 
 
-def test_提纲允许省略可选业务章节并保持已选章节相对顺序():
-    profile = resolve_reporting_profile(
-        ReportingProfileRegistry(documents={}, config_paths=()), None
-    )
-    optional_sections = (
-        profile.sections[:2]
-        + (
-            profile.sections[0].model_copy(
-                update={
-                    "code": "income_analysis",
-                    "title": "收入分析",
-                    "required": False,
-                }
-            ),
-            profile.sections[0].model_copy(
-                update={
-                    "code": "service_workload",
-                    "title": "医疗服务工作量分析",
-                    "required": False,
-                }
-            ),
-        )
-        + profile.sections[2:]
-    )
-    custom_profile = profile.model_copy(update={"sections": optional_sections})
-
-    income_only = ReportOutline(
+def test_专题提纲允许业务章节子集并保持固定十章主序():
+    income_only = make_outline(
+        "topic",
         title="收入分析报告",
-        sections=("执行摘要", "分析范围与方法", "收入分析", "关键发现", "局限性", "建议"),
+        selected_codes=("income",),
     )
-    assert _outline_section_issues(income_only, custom_profile) == []
 
-    reordered = income_only.model_copy(
-        update={
-            "sections": (
-                "执行摘要",
-                "分析范围与方法",
-                "医疗服务工作量分析",
-                "收入分析",
-                "关键发现",
-                "局限性",
-                "建议",
-            )
-        }
+    assert [section.code for section in income_only.sections] == [
+        "operation_overview",
+        "income",
+        "risk_and_data_quality",
+        "management_actions",
+    ]
+
+    payload = income_only.model_dump(mode="json", by_alias=True)
+    payload["sections"][0], payload["sections"][1] = (
+        payload["sections"][1],
+        payload["sections"][0],
     )
-    issues = _outline_section_issues(reordered, custom_profile)
-    assert len(issues) == 1
-    assert "相对顺序" in issues[0]["reason"]
+    with pytest.raises(ValueError, match="主序"):
+        ReportOutline.model_validate(payload)
 
 
 def test_pdf文件名使用报告主题和完整时间段并清理路径字符():
@@ -116,10 +85,13 @@ def test_pdf内部路径按revision隔离且下载文件名保持稳定():
     assert first.rsplit("/", 1)[-1] == second.rsplit("/", 1)[-1]
 
 
-def test_提纲规划器拒绝为单主题目标选择复合业务章节():
+def test_提纲规划器基于finding生成动态章节且不接收code():
     outline_rules = "\n".join(app.report_runtime._outline_agent.instructions)
-    assert "各主题均与目标相关且有数据支持" in outline_rules
-    assert "单主题扩展章节" in outline_rules
+    assert app.report_runtime._outline_agent.output_schema is ReportOutlineProposal
+    assert "sections 不得提交 code" in outline_rules
+    assert "findingId" in outline_rules
+    assert "动态章节" in outline_rules
+    assert "comprehensive 必须精确返回固定十章" not in outline_rules
 
 
 def test_reporting_model仅为siliconflow按完成chunk采集累计usage():
@@ -374,10 +346,13 @@ def test_医院运营规划规则按阶段隔离():
     analysis_instructions = app.report_runtime._analysis_agent.instructions
 
     assert all(rule in data_instructions for rule in HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS)
-    assert not any(rule in data_instructions for rule in HOSPITAL_ANALYSIS_INSTRUCTIONS)
+    assert not any(
+        "跨域分析仅在期间、粒度、组织和口径可比时执行" in rule for rule in data_instructions
+    )
     assert all(rule in analysis_instructions for rule in HOSPITAL_ANALYSIS_INSTRUCTIONS)
     assert not any(
-        rule in analysis_instructions for rule in HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS
+        "只能依据 Schema Snapshot、字段说明和业务术语判断表的用途" in rule
+        for rule in analysis_instructions
     )
 
     unrelated_planners = (
@@ -397,7 +372,7 @@ def test_医院运营规划规则按阶段隔离():
 
     analysis_prompt = "\n".join(HOSPITAL_ANALYSIS_INSTRUCTIONS)
     for scenario in ("收入", "工作量", "预算", "全成本", "费控", "资金"):
-        assert f"{scenario}场景" in analysis_prompt
+        assert scenario in analysis_prompt
     assert "相关性不得表述为确定因果" in analysis_prompt
     assert "跨域分析仅在期间、粒度、组织和口径可比时执行" in analysis_prompt
 
@@ -421,7 +396,7 @@ def test_report_planner_reasoning_effort_can_be_overridden():
 def test_report_planners_expose_compact_schema_in_stable_instructions():
     expected_fields = {
         DataUnderstandingPlan: ("tables", "periodColumn", "periodGranularity"),
-        ReportOutline: ("title", "sections", "assumptions"),
+        ReportOutlineProposal: ("title", "sections", "findingIds"),
         AnalysisBundle: ("analyses", "requirements", "requirementIds"),
         GeneratedQueryBatch: ("queries", "requirementId", "sourceId"),
     }
@@ -489,25 +464,28 @@ async def test_reporting_tool_hook只展开一层arguments且错误不产生trac
 
 
 @pytest.mark.anyio
-async def test_reporting_tool_hook同一参数错误无mutation第五次停止重试():
+async def test_reporting_tool_hook普通workspace_mutation不能重置同一错误预算():
     context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
 
     async def render_report_draft(draft):
         return {"ok": True, "draft": draft}
 
-    results = [
-        await normalize_reporting_tool_arguments(
-            context,
-            "render_report_draft",
-            render_report_draft,
-            {"title": "错误调用"},
+    results = []
+    for attempt in range(4):
+        context.session_state["agentos_coding_tool_progress"] = {"mutation": attempt}
+        results.append(
+            await normalize_reporting_tool_arguments(
+                context,
+                "render_report_draft",
+                render_report_draft,
+                {"title": "错误调用"},
+            )
         )
-        for _attempt in range(4)
-    ]
 
     assert all(result["retryable"] is True for result in results)
     assert all(result["severity"] == "warning" for result in results)
     assert all(result["executionBlocking"] is False for result in results)
+    context.session_state["agentos_coding_tool_progress"] = {"mutation": 99}
     with pytest.raises(StopAgentRun) as stopped:
         await normalize_reporting_tool_arguments(
             context,
@@ -525,56 +503,51 @@ async def test_reporting_tool_hook同一参数错误无mutation第五次停止�
 
 
 @pytest.mark.anyio
-async def test_reporting_tool_hook业务拒绝交错出现且无mutation时第五次停止执行():
+async def test_reporting_tool_hook跨工具和错误码累计到阶段预算时停止执行():
     context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
 
-    async def repair_report_draft(changes):
+    async def reject_with(code, **_arguments):
         return {
             "ok": False,
             "status": "rejected",
-            "code": "report_repair_changes_incomplete",
-            "message": "结构化修复未覆盖全部 issueId。",
+            "code": code,
+            "message": "当前阶段没有产生有效进展。",
             "retryable": True,
         }
 
-    async def read_file(path):
-        return {
-            "ok": False,
-            "status": "rejected",
-            "code": "report_repair_tool_forbidden",
-            "message": "首次验收失败后禁止读取完整 Markdown。",
-            "retryable": True,
-        }
-
-    for _attempt in range(4):
-        repair = await normalize_reporting_tool_arguments(
+    attempts = [
+        ("render_report_draft", "report_draft_chart_citation_invalid", {"draft": {}}),
+        ("resume_report_draft", "report_draft_chart_citation_invalid", {}),
+        ("register_report_charts", "report_chart_registration_conflict", {"charts": []}),
+        ("render_report_draft", "report_draft_already_submitted", {"draft": {}}),
+        ("resume_report_draft", "report_draft_chart_citation_invalid", {}),
+        ("register_report_charts", "report_chart_registration_conflict", {"charts": []}),
+        ("render_report_draft", "report_tool_arguments_invalid", {"draft": {}}),
+    ]
+    for function_name, code, arguments in attempts:
+        result = await normalize_reporting_tool_arguments(
             context,
-            "repair_report_draft",
-            repair_report_draft,
-            {"changes": [{"issueId": "period_claim_income", "newText": "错误修复"}]},
+            function_name,
+            lambda **kwargs: reject_with(code, **kwargs),
+            arguments,
         )
-        assert repair["retryable"] is True
-        read = await normalize_reporting_tool_arguments(
-            context,
-            "read_file",
-            read_file,
-            {"path": "report.md"},
-        )
-        assert read["retryable"] is True
+        assert result["retryable"] is True
 
     with pytest.raises(StopAgentRun) as stopped:
         await normalize_reporting_tool_arguments(
             context,
-            "repair_report_draft",
-            repair_report_draft,
-            {"changes": [{"issueId": "period_claim_income", "newText": "错误修复"}]},
+            "register_report_charts",
+            lambda **kwargs: reject_with("report_chart_registration_conflict", **kwargs),
+            {"charts": []},
         )
 
     blocked = json.loads(str(stopped.value))
-    assert blocked["code"] == "report_repair_changes_incomplete"
+    assert blocked["code"] == "report_chart_registration_conflict"
     assert blocked["retryable"] is False
     assert blocked["executionBlocking"] is True
-    assert blocked["details"]["noProgressCount"] == 5
+    assert blocked["details"]["noProgressCount"] == 8
+    assert blocked["details"]["phaseFailureCount"] == 8
+    assert blocked["details"]["sameFailureCount"] == 3
 
 
 @pytest.mark.anyio

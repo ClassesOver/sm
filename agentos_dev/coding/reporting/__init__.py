@@ -10,7 +10,6 @@ from .data_source import (
     require_sources,
 )
 from .delivery.artifacts_v1 import (
-    REQUIRED_REPORT_SECTIONS,
     ArtifactFile,
     ChartArtifact,
     Citation,
@@ -55,7 +54,6 @@ def main() -> None:
 
 __all__ = [
     "CONFIG_FILE_NAME",
-    "REQUIRED_REPORT_SECTIONS",
     "ApprovedQuery",
     "ArtifactFile",
     "ChartArtifact",

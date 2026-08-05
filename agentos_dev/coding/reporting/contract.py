@@ -17,6 +17,7 @@ from pydantic import (
 )
 from sqlglot import exp, parse
 
+from .hospital_operation.domains import DOMAIN_CODES
 from .models import ReportingError
 
 CONTRACT_VERSION = "1"
@@ -65,6 +66,39 @@ class ReportPeriod(StrictModel):
         return value.isoformat()
 
 
+class ReportPeriodWindow(StrictModel):
+    """查询/事实中的期间角色；窗口边界使用闭区间。"""
+
+    role: Literal["current", "yoy", "mom"]
+    period: ReportPeriod
+    query_window_id: str = Field(alias="queryWindowId", min_length=1, max_length=128)
+
+
+class ReportPeriodWindows(StrictModel):
+    windows: tuple[ReportPeriodWindow, ...] = Field(min_length=1, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_roles(self) -> ReportPeriodWindows:
+        roles = [item.role for item in self.windows]
+        if "current" not in roles or len(roles) != len(set(roles)):
+            raise ValueError("期间窗口必须包含唯一 current 角色")
+        expected_order = [role for role in ("current", "yoy", "mom") if role in roles]
+        if roles != expected_order:
+            raise ValueError("期间窗口必须按 current、yoy、mom 稳定排序")
+        ids_by_period: dict[tuple[date, date], str] = {}
+        periods_by_id: dict[str, tuple[date, date]] = {}
+        for item in self.windows:
+            bounds = (item.period.start, item.period.end)
+            if ids_by_period.setdefault(bounds, item.query_window_id) != item.query_window_id:
+                raise ValueError("相同期间边界必须共享 queryWindowId")
+            if periods_by_id.setdefault(item.query_window_id, bounds) != bounds:
+                raise ValueError("同一 queryWindowId 不得表示不同期间边界")
+        return self
+
+    def public_dict(self) -> dict[str, object]:
+        return self.model_dump(mode="json", by_alias=True)
+
+
 class SchemaInput(StrictModel):
     ddl: str | None = Field(default=None, min_length=1, max_length=1_048_576)
     schema_hash: str | None = Field(default=None, alias="schemaHash", pattern=SHA256_PATTERN)
@@ -79,6 +113,8 @@ class SchemaInput(StrictModel):
 class ReportRequestEnvelope(StrictModel):
     version: Literal["1"] = "1"
     report_goal: str = Field(alias="reportGoal", min_length=1, max_length=20_000)
+    report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
+    domains: tuple[str, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
     agent_id: str | None = Field(default=None, alias="agentId", min_length=1, max_length=128)
@@ -88,6 +124,23 @@ class ReportRequestEnvelope(StrictModel):
     @classmethod
     def strip_text(cls, value: str | None) -> str | None:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("domains")
+    @classmethod
+    def validate_domains(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        normalized: list[str] = []
+        for item in value:
+            code = item.strip()
+            if code not in DOMAIN_CODES:
+                raise ValueError("domains 只能包含医院运营六域稳定代码，不接受中文别名")
+            if code not in normalized:
+                normalized.append(code)
+        if not normalized:
+            raise ValueError("domains 不能为空")
+        # 对外序列化始终使用六域稳定顺序，避免模型提交顺序影响哈希和门禁。
+        return tuple(code for code in DOMAIN_CODES if code in normalized)
 
     @field_validator("source_ids")
     @classmethod
@@ -121,6 +174,31 @@ class ReportRequestEnvelope(StrictModel):
         payload["sourceIds"] = list(self.source_ids or default_source_ids)
         return payload
 
+    def period_windows(self) -> ReportPeriodWindows:
+        """按请求期间生成本期、同比和环比角色；同边界角色共享 queryWindowId。"""
+        from .data_source.period import build_period_windows
+
+        generated = build_period_windows(self.period.start, self.period.end)
+        by_bounds: dict[tuple[date, date], str] = {}
+        windows: list[ReportPeriodWindow] = []
+        for item in generated.windows:
+            bounds = (item.start, item.end)
+            query_id = by_bounds.setdefault(
+                bounds,
+                "window-"
+                + hashlib.sha256(
+                    f"{item.start.isoformat()}:{item.end.isoformat()}".encode()
+                ).hexdigest()[:24],
+            )
+            windows.append(
+                ReportPeriodWindow(
+                    role=item.role,
+                    period=ReportPeriod(start=item.start, end=item.end),
+                    queryWindowId=query_id,
+                )
+            )
+        return ReportPeriodWindows(windows=tuple(windows))
+
 
 class ReportPromptInput(StrictModel):
     version: Literal["1"] = "1"
@@ -140,6 +218,8 @@ class ReportingWorkflowInput(StrictModel):
     report_goal: str | None = Field(
         default=None, alias="reportGoal", min_length=1, max_length=20_000
     )
+    report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
+    domains: tuple[str, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod | None = None
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
     agent_id: str | None = Field(default=None, alias="agentId", min_length=1, max_length=128)
@@ -152,6 +232,8 @@ class ReportingWorkflowInput(StrictModel):
                 value is not None
                 for value in (
                     self.report_goal,
+                    self.report_type,
+                    self.domains,
                     self.period,
                     self.source_ids,
                     self.agent_id,

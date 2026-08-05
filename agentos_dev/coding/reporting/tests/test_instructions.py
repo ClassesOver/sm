@@ -46,8 +46,6 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "权威纠错反馈" in instructions
     assert "逐项完成 requiredActions" in instructions
     assert "不得原样重复失败调用" in instructions
-    assert "大型 CSV" in instructions
-    assert "不得用 read_file 分段抽样" in instructions
     assert "少量阶段" in instructions
     assert "只调用零参数 verify_report_draft" in instructions
     assert "最多再调用一次 verify_report_draft" in instructions
@@ -55,11 +53,13 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "warning 不得触发 repair" in instructions
     assert "确定性调用 finish_task" in instructions
     assert "finish_task 的 summary 和 artifact_paths 必须使用" in instructions
-    assert "observedDataFacts" in instructions
+    assert "HospitalOperationFactSet" in instructions
+    assert "analysisFactSetRef.path" in instructions
+    assert "禁止修改、覆盖、移动或删除" in instructions
+    assert "不得读取原始数据集" in instructions
     assert "不得使用“大概率”" in instructions
-    assert "事实来源" in instructions
-    assert "analysisPlan.description" in instructions
-    assert "不是数据事实来源" in instructions
+    assert "FactSet 是摘要、正文和图表唯一事实来源" in instructions
+    assert "不得读取基础明细自行换算、累计、构造指标" in instructions
     assert "工作区根目录" in instructions
     assert "不得使用 /workspace" in instructions
     assert "/home/daytona/workspace" in instructions
@@ -81,7 +81,10 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "从工作区根目录执行" in instructions
     assert "篇幅是发布质量建议" in instructions
     assert "优先保证全部章节" in instructions
-    assert "服务端负责归档图表并生成章节/citation marker" in instructions
+    assert "服务端负责归档图表并生成章节/citation/fact marker" in instructions
+    assert "每份报告至少包含一个事实表格" in instructions
+    assert "不得提交单元格数值" in instructions
+    assert "逐字使用所绑定 MetricFact.displayText" in instructions
     assert "只提交 Markdown" in instructions
     assert "不得提交 manifest" in instructions
     assert "成功验证 execution_id" not in instructions
@@ -92,9 +95,10 @@ def test_报表智能体说明只包含workflow已准备的分析边界():
     instructions = "\n".join(build_report_agent_instructions(instruction_context()))
 
     assert "Coding Agent 的智能报表扩展" in instructions
-    assert "不可变 DatasetHandle" in instructions
+    assert "HospitalOperationFactSet" in instructions
+    assert "不得读取原始数据集" in instructions
     assert "分析不经过 Report 层二次封装" in instructions
-    assert "Workflow 已提交并校验 hash" in instructions
+    assert "确定性生成并校验 hash" in instructions
     assert "report_list_data_sources" not in instructions
     assert "report_describe_data_source" not in instructions
     assert "report_materialize_dataset" not in instructions
@@ -125,8 +129,8 @@ def test_医院运营分析规则明确六类主题按目标和数据条件触�
     )
 
     writing_prompt = "\n".join(HOSPITAL_REPORT_WRITING_INSTRUCTIONS)
-    assert "不得新增计划外计算" in writing_prompt
-    assert "不得重复执行选表、趋势识别或归因分析" in writing_prompt
+    assert "不得新增 FactSet 之外的计算" in writing_prompt
+    assert "不得重复执行选表、取数、趋势识别或归因分析" in writing_prompt
     assert "待管理确认" in writing_prompt
 
 

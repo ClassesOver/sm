@@ -10,6 +10,7 @@ v1 的 Workflow ID 固定为 `enterprise-reporting-workflow-v1`。v1 只使用�
 - `delivery/`：结构化草稿、产物清单、验收、修复、渲染和发布。
 - `data_source/`：数据源配置、画像、期间语义和只读 SQL 校验。
 - `profile/`：报表 Profile、能力裁剪和对账形态。
+- `hospital_operation/`：医院运营六域指引、不可变 FactSet、结构化发现、动态提纲、勾稽与发布门禁。
 - `builtin_skills/`：Report Worker 使用的内置技能和确定性验收脚本。
 - 顶层模块：公共契约、入口、Agent 装配、数据集存储及工作区工具。
 
@@ -18,7 +19,9 @@ v1 的 Workflow ID 固定为 `enterprise-reporting-workflow-v1`。v1 只使用�
 - 顶层 Workflow 输入严格区分自然语言 `{"version":"1","prompt":"..."}` 与现有
   `ReportRequestEnvelope v1`。Envelope 直接校验；自然语言由无工具结构化模型归一化，原文保持为
   `reportGoal`，单个明确年份转换为全年。期间缺失或冲突时失败关闭，调用方必须提交明确期间。
-  `sourceIds` 省略时使用配置文件中的
+  `domains` 只接受收入、工作量、预算、全成本、费控、资金六个稳定代码；常见中文别名由服务端先行
+  识别，只有“成本”等歧义输入才交由模型澄清。`reportType` 保留兼容但不再强制询问：明确领域子集
+  自动视为专题，未指定领域时按本期实际可用事实形成综合分析。`sourceIds` 省略时使用配置文件中的
   `defaultSourceIds`。
 - metadata DDL 是本次运行表范围的事实来源，并固化为不可变结构快照。实时 catalog 必须包含 DDL
   字段且类型兼容；额外字段、nullable 差异和 DECIMAL 参数差异不阻断只读分析。
@@ -31,11 +34,14 @@ v1 的 Workflow ID 固定为 `enterprise-reporting-workflow-v1`。v1 只使用�
   日期或年度期间覆盖与缺失、字段空值/基数/唯一性、数值分布、低基数 Top-K，以及 metadata revision、
   schema hash、统计版本和查询数。
 - 服务端 Profile 通过显式继承解析为不可变 Effective Profile。Capability 只能根据 Snapshot 和
-  DataShape 缩小可用维度、指标和章节；Profile 不能扩大数据源白名单。`sectionOrder` 必须精确覆盖
-  全部生效章节，`scopeFilters` 必须引用真实字段并确定性进入指标固定口径。
+  DataShape 缩小可用维度和指标；Profile 不能扩大数据源白名单。医院运营报告的顶层章节不再由
+  Profile 决定，`scopeFilters` 必须引用真实字段并确定性进入指标固定口径。
 - Profile 是服务端批准的业务上下文和范围约束；字段存在性仍以 Snapshot 为准，运行时画像和用户审核
   不能扩大 Profile 强制范围。
-- 提纲只接收用户目标、期间和确定性生成的 OutlineShapeView，不直接接收无界的完整数据画像。
+- Workflow 依次完成范围识别、数据理解与画像、分析规划与取数、FactSet、结构化发现、动态提纲、成稿、
+  验收发布。分析阶段固定执行整体规模与结构、趋势与拐点、异常贡献、归因验证和经营影响；章节由真实
+  findings 自由组织，不为未涉及或无数据领域生成空章。提纲模型只提交中文标题、分析重点和 finding
+  引用，服务端按顺序生成并冻结 `section_001` 等 code；拒绝提纲只重跑提纲步骤，不重复取数。
 - 数据源、Schema 和 Profile 必须唯一确定；多个 metadata Agent 未通过 `agentId` 明确选择时失败关闭。
 - `dimensionColumns` 声明 requirement 可用维度，`grainColumns` 声明本次查询共同粒度；每张表通过
   `periodColumn`/`periodGranularity` 声明期间语义，`measureColumns` 声明必须聚合的指标字段，多表
@@ -47,8 +53,10 @@ v1 的 Workflow ID 固定为 `enterprise-reporting-workflow-v1`。v1 只使用�
 ## SQL 审核边界
 
 SQL 必须一次批量生成，并通过 SQLGlot AST 校验：单条只读、Snapshot 表字段白名单、requirement/source/表集合
-一致、每张表包含完整且精确的期间条件、按完整共同粒度预聚合且聚合全部指标字段。跨表明细连接
-一律拒绝；各表聚合 CTE 只能按全部共同粒度键连接。
+一致、每张表包含完整且精确的所属期间条件、按完整共同粒度预聚合且聚合全部指标字段。服务端自动生成
+本期、同比和紧邻等长上期窗口；查询、Dataset lineage、FactSet 和 MetricFact 全程携带 `periodRoles`
+与 `queryWindowId`，相同边界只查询一次但保留全部业务角色，禁止跨角色累计。跨表明细连接一律拒绝；
+各表聚合 CTE 只能按全部共同粒度键连接。
 
 指标必须存在于最终 `SourceSchemaSnapshot.measureSemantics`。metadata API 与 Profile 是已确认语义
 来源：同一 `fieldRef` 内容一致时去重，内容冲突时返回 `report_measure_semantic_conflict`。二者都未
@@ -64,8 +72,27 @@ SQL 必须一次批量生成，并通过 SQLGlot AST 校验：单条只读、Sna
 
 ## 成稿和发布边界
 
-CodingTask 不提供数据库函数，也不采用 `execute_sql_query` 模式；它只能读取 Workflow 已原子提交的
-不可变数据集。同一 workflow run 的暂停、恢复和报告 revision 共用稳定 CodingTask key。
+CodingTask 不提供数据库函数，也不采用 `execute_sql_query` 模式。物化不可变数据集保存已审核 SQL
+的原始查询结果及 Schema/SQL/文件哈希，回答“查到了什么”；Workflow 在这些数据集之上确定性构建
+`HospitalOperationFactSet`，统一业务指标、组织、期间、单位、覆盖状态、冲突和证据引用，回答“数据
+代表什么”。完整 FactSet 作为当前 run 的不可变审计 JSON 写入 Daytona，仅供服务端复算和发布门禁；
+Workflow 同时生成只包含 publishable MetricFact 语义、规范展示值和引用的紧凑
+`analysis-fact-set.json`。Coding 指令只暴露完整 FactSet 的 hash/数量身份以及紧凑分析目录的
+path/size/SHA-256 受信引用，模型不能取得基础事实文件路径，也不能读取原始数据集或自行换算、累计和
+构造指标。同一 workflow run 的暂停、恢复和报告 revision 共用稳定 CodingTask key，并在每次消费
+分析目录或完整 FactSet 前重新校验文件身份、来源 hash 和事实数量。
+
+FactSet 之后的发现只允许引用已注册 `factId`，并明确区分直接事实、派生事实、相关性和待验证假设。
+跨域归因必须通过期间、粒度、组织和口径一致性检查，相关性不得写成确定因果；提纲和正文只能消费已
+冻结的 findings，不得绕过发现层直接扩写无事实结论。
+
+报告表格是管理分析表，不是查询明细表。模型只选择分析目录中的 factId 并提交表头与行标签，服务端
+使用同一 MetricFact `displayText` 回填数值单元格；正文、表格和图表因此共享相同展示值和事实血缘。
+
+正式发布门禁按规范化请求领域和本期实际事实校验主领域覆盖、冲突和待确认事项、跨域共同期间与粒度、
+事实证据哈希及 FactSet hash，不从章节 code 反推领域。主领域本期事实缺失会阻断正式发布；同比或
+环比缺失时保留本期分析并强制披露比较限制。门禁失败仍保留已验收 PDF 作为内部草稿，但不签发正式
+发布结果。
 
 PDF 由 Workflow 固定调用 WeasyPrint 渲染，模型不能选择引擎或页面 CSS。Effective Profile 只通过
 `pageLayout.headerLeft/headerRight/footerLeft/footerRight` 定义页眉页脚格式，占位符限于
@@ -75,9 +102,13 @@ PDF 由 Workflow 固定调用 WeasyPrint 渲染，模型不能选择引擎或页
 别名，也不生成实际引用附录。
 
 模型先用 `register_report_charts` 登记任意安全工作区相对路径中的 PNG/JPEG 源文件，服务端固定其
-大小、SHA-256、格式、尺寸和 citation 绑定；随后每个 Coding Attempt 只用一次
+大小、SHA-256、格式、尺寸、citation 和 MetricFact 绑定；随后每个 Coding Attempt 只用一次
 `render_report_draft(draft=...)` 提交完整 `ReportDraft`。服务端确定性归档正文实际引用的图表并生成
-Markdown；机械归档失败时只用 `resume_report_draft()` 恢复已保存 Draft。正式验收只能调用零参数
+Markdown。正文业务数值必须逐字使用所绑定 MetricFact 的 `displayText`；每份报告至少包含一个事实
+表格，模型只提交表头、行标签和 fact ID，数值单元格由服务端统一填入。已登记图表在 Draft 持久化前
+使用真实 citation 和 fact 身份校验，不匹配时允许修正 Draft 后重提；只有缺图时才冻结 Draft 及每个
+图表允许的 citation/fact 集合，合法图表登记齐全后服务端自动恢复。
+图表复制或 Markdown 写入等机械归档失败时才用 `resume_report_draft()`。正式验收只能调用零参数
 `verify_report_draft()`。首次期间语义硬失败由服务端把稳定 `issueId` 绑定到
 `sectionCode + blockId + exact claim + JSON Pointer`，模型仍只提交 `issueId + newText`；服务端内部只对
 对应 block 的 `text` 执行带原文 `test` 的 RFC 6902 `replace`，不接受模型提供 patch 路径。模型修复
@@ -85,8 +116,9 @@ Markdown；机械归档失败时只用 `resume_report_draft()` 恢复已保存 D
 并由服务端隐藏 marker 将同一 validator issue 降为 warning。Draft 状态漂移、路径、哈希、citation、
 manifest 和数据血缘问题仍硬失败。其他 warning 直接进入发布审核。Reporting 工具参数兼容按三层处理：
 合法的一层 `arguments` 包装由服务端自动展开
-并记录 `autoFix`；前四次可重试的参数绑定错误返回 `severity=warning` 且不进入
-`failedRequirements`；同一错误在无 mutation 下连续第五次才阻断当前执行。工具内部异常、状态不一致
+并记录 `autoFix`；前四次可重试的同类参数绑定错误返回 `severity=warning` 且不进入
+`failedRequirements`；同一阶段同类错误第五次或跨工具、跨错误码累计第八次会阻断当前执行，普通工作区
+mutation 不会重置该预算。工具内部异常、状态不一致
 和副作用校验失败仍硬失败，不能被参数兼容层吞掉。
 
 `ReportArtifactManifest` 只由 Workflow 服务端生成：服务端读取真实 Markdown 和图表计算大小与
@@ -121,10 +153,11 @@ Coding CLI/AgentOS 产品入口。`/agui` 与 AgentOS Agent API 都通过原生 
 语言只作为 `prompt` 原样进入 Workflow 首步，facade 不解析期间，内部审核、查询和恢复
 仍使用同一个 Agno Workflow。facade 只公开无参数的 `report_workflow_start`：有受信服务端 Envelope
 时直接交给 Workflow 首步，否则首步从当前 Agno 用户消息接收自然语言并生成严格 Envelope。
-当前 Workflow 的所有步骤均不启用 output review，提纲生成后直接继续执行。facade 的
-`report_workflow_approve` 和 `confirmation_note` 转交逻辑只为既有暂停 run 及后续恢复审核能力保留；
-新启动 Workflow 不会生成 `requires_confirmation` 调用。期间和 Agent 选择必须在输入中唯一确定，
-否则失败关闭；既有暂停 run 仍在同一持久化 Workflow run 上恢复。
+请求缺少明确期间或领域存在歧义时，规范化步骤通过条件 `HumanReview` 要求补充；`reportType` 可由
+规范化领域范围确定，不单独强制询问。提纲步骤在 FactSet 和 findings 冻结后使用
+`HumanReview(requires_output_review=True, on_reject=OnReject.retry, max_retries=5)`；拒绝意见进入
+不可变请求语境并只重跑提纲。期间、领域范围、医院或数据源变化必须取消并重新发起；既有暂停 run 在
+同一持久化 Workflow run 上恢复。
 原生 Workflow API 未提供项目私有
 dependency 时，作用域直接来自 Agno
 `RunContext.run_id/session_id/user_id`；恢复时使用 Workflow state。独立服务使用已验证的 Agno

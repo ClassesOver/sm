@@ -7,7 +7,7 @@ import secrets
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal, cast
 
 import anyio
 from agno.run import RunContext
@@ -38,6 +38,18 @@ class DatasetHandle:
     sha256: str
     requirement_id: str
     sql_hash: str
+    period_roles: tuple[Literal["current", "yoy", "mom"], ...] = ("current",)
+    query_window_id: str = "current"
+
+    def __post_init__(self) -> None:
+        if (
+            not self.period_roles
+            or len(self.period_roles) != len(set(self.period_roles))
+            or any(role not in {"current", "yoy", "mom"} for role in self.period_roles)
+        ):
+            raise ValueError("数据集句柄 periodRoles 无效")
+        if not self.query_window_id:
+            raise ValueError("数据集句柄 queryWindowId 无效")
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +64,8 @@ class DatasetHandle:
             "provenance": {
                 "requirementId": self.requirement_id,
                 "sqlHash": self.sql_hash,
+                "periodRoles": list(self.period_roles),
+                "queryWindowId": self.query_window_id,
             },
         }
 
@@ -60,6 +74,9 @@ class DatasetHandle:
         try:
             provenance = value["provenance"]
             if not isinstance(provenance, Mapping):
+                raise TypeError
+            raw_period_roles = provenance.get("periodRoles") or ("current",)
+            if not isinstance(raw_period_roles, (list, tuple)):
                 raise TypeError
             return cls(
                 dataset_id=str(value["datasetId"]),
@@ -70,6 +87,11 @@ class DatasetHandle:
                 sha256=str(value["sha256"]),
                 requirement_id=str(provenance["requirementId"]),
                 sql_hash=str(provenance["sqlHash"]),
+                period_roles=cast(
+                    tuple[Literal["current", "yoy", "mom"], ...],
+                    tuple(raw_period_roles),
+                ),
+                query_window_id=str(provenance.get("queryWindowId") or "current"),
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ReportingError("dataset_invalid", "数据集句柄无效，请重新准备。") from error
@@ -152,7 +174,7 @@ class ReportDatasetStore:
                                 "dataset-"
                                 + hashlib.sha256(
                                     f"{query.source_id}:{query.requirement_id}:"
-                                    f"{query.sql_hash}:{digest}".encode()
+                                    f"{query.query_window_id}:{query.sql_hash}:{digest}".encode()
                                 ).hexdigest()[:32]
                             )
                             path = f"{final_root}/{dataset_id}.csv"
@@ -179,6 +201,8 @@ class ReportDatasetStore:
                                 sha256=digest,
                                 requirement_id=query.requirement_id,
                                 sql_hash=query.sql_hash,
+                                period_roles=query.period_roles,
+                                query_window_id=query.query_window_id,
                             )
                 except Exception as error:
                     raise _BatchItemError(index, error) from error
@@ -203,6 +227,8 @@ class ReportDatasetStore:
                         rowCount=item.row_count,
                         size=item.size,
                         sha256=item.sha256,
+                        periodRoles=item.period_roles,
+                        queryWindowId=item.query_window_id,
                     )
                     for item in completed
                 )

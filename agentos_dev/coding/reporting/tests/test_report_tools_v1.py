@@ -22,6 +22,7 @@ from agentos_dev.coding.reporting.tests.workspace_fakes import (
     service as workspace_service,
 )
 from agentos_dev.coding.reporting.tools import (
+    REPORT_CHART_STATE_KEY,
     REPORT_DRAFT_STATE_KEY,
     REPORT_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
     ReportWorkspaceTaskToolkit,
@@ -53,6 +54,14 @@ def _acceptance_contract():
                             }
                         ],
                         "citationIds": ["citation_001"],
+                        "facts": [
+                            {
+                                "factId": "metric-income-total",
+                                "displayText": "100万元",
+                                "citationIds": ["citation_001"],
+                            }
+                        ],
+                        "requireTable": False,
                     },
                 },
             }
@@ -71,11 +80,36 @@ def _draft(text="工作量11月无记录。"):
                         "blockId": "summary",
                         "text": text,
                         "citationIds": ["citation_001"],
+                        "factIds": ["metric-income-total"],
                         "chartIds": [],
                     }
                 ],
             }
         ],
+    }
+
+
+def _chart_identity(
+    chart_id: str,
+    citation_ids: list[str],
+    *,
+    source_path: str = "analysis/charts/income.png",
+    fact_ids: list[str] | None = None,
+):
+    return {
+        "chartId": chart_id,
+        "sourcePath": source_path,
+        "title": "医疗收入趋势",
+        "altText": "医疗收入月度趋势图",
+        "citationIds": citation_ids,
+        "factIds": fact_ids or ["metric-income-total"],
+        "size": 100,
+        "sha256": "b" * 64,
+        "format": "PNG",
+        "mediaType": "image/png",
+        "extension": ".png",
+        "width": 1200,
+        "height": 675,
     }
 
 
@@ -124,6 +158,35 @@ async def test_report结构化工具只使用task合同路径并由服务端生�
     assert "[[section:executive_summary]]" in patch.kwargs["content"]
     assert "[[citation:citation_001]]" in patch.kwargs["content"]
     assert context.session_state[REPORT_DRAFT_STATE_KEY]["markdownPath"] == MARKDOWN_PATH
+
+
+@pytest.mark.anyio
+async def test_report事实表格由服务端填值且缺表不会锁死attempt():
+    toolkit = _toolkit()
+    toolkit.kernel.scope.return_value.task.acceptance_contract["requirements"][0]["parameters"][
+        "renderContract"
+    ]["requireTable"] = True
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+
+    missing = await toolkit.render_report_draft(_draft(), run_context=context)
+
+    assert missing["code"] == "report_draft_table_missing"
+    assert context.session_state[REPORT_DRAFT_STATE_KEY].get("submitted") is not True
+
+    draft = _draft("本期收入为100万元。")
+    draft["sections"][0]["blocks"][0]["table"] = {
+        "tableId": "overview",
+        "title": "核心指标",
+        "columns": ["项目", "本期值"],
+        "rows": [{"label": "医疗收入", "factIds": ["metric-income-total"]}],
+    }
+    rendered = await toolkit.render_report_draft(draft, run_context=context)
+
+    assert rendered["ok"] is True
+    assert rendered["factIds"] == ["metric-income-total"]
+    markdown = toolkit.kernel.patch.await_args.kwargs["content"]
+    assert "| 医疗收入 | 100万元 |" in markdown
+    assert "[[fact:metric-income-total]]" in markdown
 
 
 @pytest.mark.anyio
@@ -646,7 +709,57 @@ async def test_report草稿schema错误返回精确字段且不回显原始内�
 
 
 @pytest.mark.anyio
-async def test_report草稿图表异常只需登记后resume且完整draft只提交一次():
+async def test_report正文块可绑定两个citation且错误草稿不会锁死attempt():
+    toolkit = _toolkit()
+    toolkit.kernel.scope.return_value.task.acceptance_contract["requirements"][0]["parameters"][
+        "renderContract"
+    ]["citationIds"] = ["citation_001", "citation_002"]
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+    toolkit._inspect_chart = AsyncMock(
+        return_value=(
+            _chart_identity("income-trend", ["citation_001", "citation_002"]),
+            [],
+        )
+    )
+    registered = await toolkit.register_report_charts(
+        [
+            {
+                "chartId": "income-trend",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "医疗收入趋势",
+                "altText": "医疗收入月度趋势图",
+                "citationIds": ["citation_001", "citation_002"],
+                "factIds": ["metric-income-total"],
+            }
+        ],
+        run_context=context,
+    )
+    draft = _draft()
+    draft["sections"][0]["blocks"][0]["chartIds"] = ["income-trend"]
+
+    invalid = await toolkit.render_report_draft(draft, run_context=context)
+
+    assert registered["ok"] is True
+    assert invalid["code"] == "report_draft_chart_citation_invalid"
+    assert "income-trend" in invalid["message"]
+    assert "citation_002" in invalid["message"]
+    assert context.session_state[REPORT_DRAFT_STATE_KEY].get("submitted") is not True
+    assert "draft" not in context.session_state[REPORT_DRAFT_STATE_KEY]
+    toolkit.kernel.patch.assert_not_awaited()
+
+    draft["sections"][0]["blocks"][0]["citationIds"] = [
+        "citation_001",
+        "citation_002",
+    ]
+    corrected = await toolkit.render_report_draft(draft, run_context=context)
+
+    assert corrected["ok"] is True
+    assert "[[citation:citation_001]]" in toolkit.kernel.patch.await_args.kwargs["content"]
+    assert "[[citation:citation_002]]" in toolkit.kernel.patch.await_args.kwargs["content"]
+
+
+@pytest.mark.anyio
+async def test_report草稿缺图登记完成后服务端自动resume且完整draft只提交一次():
     toolkit = _toolkit()
     context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
     draft = _draft()
@@ -657,22 +770,14 @@ async def test_report草稿图表异常只需登记后resume且完整draft只提
 
     assert first["code"] == "report_draft_chart_unregistered"
     assert repeated["code"] == "report_draft_already_submitted"
+    assert repeated["retryable"] is False
+    assert context.session_state[REPORT_DRAFT_STATE_KEY]["status"] == "awaiting_charts"
+    assert context.session_state[REPORT_DRAFT_STATE_KEY]["pendingChartBindings"] == {
+        "income-trend": ["citation_001"]
+    }
     toolkit._inspect_chart = AsyncMock(
         return_value=(
-            {
-                "chartId": "income-trend",
-                "sourcePath": "analysis/charts/income.png",
-                "title": "医疗收入趋势",
-                "altText": "医疗收入月度趋势图",
-                "citationIds": ["citation_001"],
-                "size": 100,
-                "sha256": "b" * 64,
-                "format": "PNG",
-                "mediaType": "image/png",
-                "extension": ".png",
-                "width": 1200,
-                "height": 675,
-            },
+            _chart_identity("income-trend", ["citation_001"]),
             [],
         )
     )
@@ -684,19 +789,154 @@ async def test_report草稿图表异常只需登记后resume且完整draft只提
                 "title": "医疗收入趋势",
                 "altText": "医疗收入月度趋势图",
                 "citationIds": ["citation_001"],
+                "factIds": ["metric-income-total"],
             }
         ],
         run_context=context,
     )
-    resumed = await toolkit.resume_report_draft(run_context=context)
 
     assert registered["ok"] is True
-    assert resumed["ok"] is True
-    assert len(resumed["artifactPaths"]) == 2
+    assert registered["draftResult"]["ok"] is True
+    assert len(registered["draftResult"]["artifactPaths"]) == 2
+    assert context.session_state[REPORT_DRAFT_STATE_KEY]["status"] == "rendered"
     copy = toolkit.kernel.batch_copy_files.await_args.args[0][0]
     assert copy["source"] == "analysis/charts/income.png"
     assert copy["destination"].startswith("报表/智能分析/run/chart-")
     assert copy["expected_sha256"] == "b" * 64
+
+
+@pytest.mark.anyio
+async def test_report自动resume机械归档失败后只需手工resume无需重传draft():
+    toolkit = _toolkit()
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+    draft = _draft()
+    draft["sections"][0]["blocks"][0]["chartIds"] = ["income-trend"]
+    await toolkit.render_report_draft(draft, run_context=context)
+    toolkit._inspect_chart = AsyncMock(
+        return_value=(
+            _chart_identity("income-trend", ["citation_001"]),
+            [],
+        )
+    )
+    toolkit.kernel.batch_copy_files.return_value = {
+        "ok": False,
+        "status": "failed",
+        "code": "workspace_copy_failed",
+        "message": "图表归档失败。",
+        "retryable": True,
+    }
+
+    failed = await toolkit.register_report_charts(
+        [
+            {
+                "chartId": "income-trend",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "医疗收入趋势",
+                "altText": "医疗收入月度趋势图",
+                "citationIds": ["citation_001"],
+                "factIds": ["metric-income-total"],
+            }
+        ],
+        run_context=context,
+    )
+
+    assert failed["code"] == "workspace_copy_failed"
+    assert failed["draftSaved"] is True
+    assert failed["registeredCharts"][0]["chartId"] == "income-trend"
+    assert context.session_state[REPORT_DRAFT_STATE_KEY]["status"] == "validated"
+    toolkit.kernel.batch_copy_files.return_value = {
+        "ok": True,
+        "files": [],
+        "execution_id": "copy-2",
+        "mutation_sequence": 2,
+    }
+
+    resumed = await toolkit.resume_report_draft(run_context=context)
+
+    assert resumed["ok"] is True
+    assert context.session_state[REPORT_DRAFT_STATE_KEY]["status"] == "rendered"
+
+
+@pytest.mark.anyio
+async def test_report待登记图表citation不匹配时整批拒绝且不污染registry():
+    toolkit = _toolkit()
+    toolkit.kernel.scope.return_value.task.acceptance_contract["requirements"][0]["parameters"][
+        "renderContract"
+    ]["citationIds"] = ["citation_001", "citation_002"]
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+    draft = _draft()
+    draft["sections"][0]["blocks"] = [
+        {
+            "blockId": "chart",
+            "text": "收入趋势。",
+            "citationIds": ["citation_001"],
+            "factIds": ["metric-income-total"],
+            "chartIds": ["income-trend"],
+        },
+        {
+            "blockId": "other",
+            "text": "其他数据。",
+            "citationIds": ["citation_002"],
+            "chartIds": [],
+        },
+    ]
+    waiting = await toolkit.render_report_draft(draft, run_context=context)
+
+    async def inspect(*, thread_id, registration):
+        del thread_id
+        return (
+            _chart_identity(
+                registration.chart_id,
+                list(registration.citation_ids),
+                source_path=registration.source_path,
+            ),
+            [],
+        )
+
+    toolkit._inspect_chart = AsyncMock(side_effect=inspect)
+    rejected = await toolkit.register_report_charts(
+        [
+            {
+                "chartId": "unused-chart",
+                "sourcePath": "analysis/charts/unused.png",
+                "title": "医疗收入趋势",
+                "altText": "医疗收入月度趋势图",
+                "citationIds": ["citation_001"],
+                "factIds": ["metric-income-total"],
+            },
+            {
+                "chartId": "income-trend",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "医疗收入趋势",
+                "altText": "医疗收入月度趋势图",
+                "citationIds": ["citation_001", "citation_002"],
+                "factIds": ["metric-income-total"],
+            },
+        ],
+        run_context=context,
+    )
+
+    assert waiting["code"] == "report_draft_chart_unregistered"
+    assert rejected["code"] == "report_draft_chart_citation_invalid"
+    assert context.session_state[REPORT_CHART_STATE_KEY].get("charts", {}) == {}
+    assert context.session_state[REPORT_DRAFT_STATE_KEY]["status"] == "awaiting_charts"
+
+    accepted = await toolkit.register_report_charts(
+        [
+            {
+                "chartId": "income-trend",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "医疗收入趋势",
+                "altText": "医疗收入月度趋势图",
+                "citationIds": ["citation_001"],
+                "factIds": ["metric-income-total"],
+            }
+        ],
+        run_context=context,
+    )
+
+    assert accepted["ok"] is True
+    assert accepted["draftResult"]["ok"] is True
 
 
 @pytest.mark.anyio
@@ -760,6 +1000,7 @@ async def test_report图表登记解码真实图片并拒绝符号链接和空�
         title="收入趋势",
         altText="收入趋势图",
         citationIds=("citation_001",),
+        factIds=("metric-income-total",),
     )
 
     identity, warnings = await toolkit._inspect_chart(thread_id="thread", registration=registration)
@@ -893,7 +1134,7 @@ async def test_report图表批量归档拒绝登记后源文件变化():
 
 
 @pytest.mark.anyio
-async def test_report_issue_id修复允许在授权block内更新指标数值():
+async def test_report_issue_id修复不得绕过服务端fact修改指标数值():
     toolkit = _toolkit()
     context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
     claim = "2025年11月收入100万元无记录。"
@@ -938,12 +1179,13 @@ async def test_report_issue_id修复允许在授权block内更新指标数值():
         run_context=context,
     )
 
-    assert result["ok"] is True
-    assert result["autoFixes"] == []
-    content = toolkit.kernel.patch.await_args.kwargs["content"]
-    assert "2025年11月收入101万元按有效观测处理。" in content
-    assert "100万元无记录" not in content
-    assert toolkit.kernel.patch.await_count == 2
+    assert result["ok"] is False
+    assert result["code"] == "report_draft_fact_value_mismatch"
+    assert (
+        context.session_state[REPORT_DRAFT_STATE_KEY]["draft"]["sections"][0]["blocks"][0]["text"]
+        == claim
+    )
+    assert toolkit.kernel.patch.await_count == 1
 
 
 def test_report_issue_id修复示例只陈述validator已证明的期间覆盖():

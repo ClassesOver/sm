@@ -55,6 +55,7 @@ def build_report_artifact_validation_context(
     expected_sections: tuple[str, ...] = (),
     expected_citation_bindings: tuple[tuple[str, str], ...] = (),
     expected_citations: tuple[tuple[str, str, str], ...] = (),
+    expected_fact_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     return {
         "version": 1,
@@ -74,5 +75,6 @@ def build_report_artifact_validation_context(
             }
             for citation_id, dataset_id, requirement_id in expected_citations
         ],
+        "expectedFactIds": list(dict.fromkeys(expected_fact_ids)),
         "manifestSchema": ReportArtifactManifest.model_json_schema(by_alias=True),
     }

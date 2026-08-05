@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import inspect
 import json
 from collections.abc import AsyncIterator, Iterator
@@ -44,7 +45,13 @@ from ...task_execution.execution import (
 )
 from ...workspace import WorkspaceService
 from .delivery.acceptance import load_reporting_skills
-from .tools import REPORT_TOOL_ARGUMENT_AUTOFIX_STATE_KEY, build_report_worker_tools
+from .delivery.repair_guard import REPORT_REPAIR_STATE_KEY
+from .tools import (
+    REPORT_CHART_STATE_KEY,
+    REPORT_DRAFT_STATE_KEY,
+    REPORT_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
+    build_report_worker_tools,
+)
 from .workflow.controller import ReportWorkflowController, ReportWorkflowToolkit
 
 _REPORT_FACADE_TOOL_NAMES = frozenset(
@@ -67,6 +74,7 @@ _REPORT_STRICT_TOOL_NAMES = frozenset(
 _CUMULATIVE_STREAM_USAGE_HOSTS = frozenset({"api.siliconflow.cn"})
 _REPORT_TOOL_FAILURE_STATE_KEY = "agentos_reporting_tool_failures"
 _REPORT_TOOL_ARGUMENT_MAX_ATTEMPTS = 5
+_REPORT_TOOL_PHASE_MAX_FAILURES = 8
 _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
     "register_report_charts": {
         "charts": [
@@ -76,6 +84,7 @@ _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
                 "title": "医疗收入月度趋势",
                 "altText": "2025年医疗收入月度变化",
                 "citationIds": ["citation_003"],
+                "factIds": ["metric-income-month-01"],
             }
         ]
     },
@@ -90,7 +99,19 @@ _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
                             "blockId": "income_chart",
                             "text": "图表题注",
                             "citationIds": ["citation_001"],
+                            "factIds": ["metric-income-total"],
                             "chartIds": ["income_trend"],
+                            "table": {
+                                "tableId": "overview",
+                                "title": "核心指标",
+                                "columns": ["项目", "本期值"],
+                                "rows": [
+                                    {
+                                        "label": "医疗收入",
+                                        "factIds": ["metric-income-total"],
+                                    }
+                                ],
+                            },
                         }
                     ],
                 }
@@ -185,6 +206,37 @@ def _report_tool_argument_failure(
     return result
 
 
+def _reporting_progress_fingerprint(state: dict[str, Any]) -> str:
+    draft = state.get(REPORT_DRAFT_STATE_KEY)
+    charts = state.get(REPORT_CHART_STATE_KEY)
+    repair = state.get(REPORT_REPAIR_STATE_KEY)
+    draft = draft if isinstance(draft, dict) else {}
+    charts = charts if isinstance(charts, dict) else {}
+    repair = repair if isinstance(repair, dict) else {}
+    pending = draft.get("pendingChartBindings")
+    pending = pending if isinstance(pending, dict) else {}
+    registry = charts.get("charts")
+    registry = registry if isinstance(registry, dict) else {}
+    snapshot = {
+        "draft": {
+            "attemptNo": draft.get("attemptNo"),
+            "chartAttemptNo": charts.get("attemptNo"),
+            "status": draft.get("status"),
+            "draftId": draft.get("draftId"),
+            "pendingChartIds": sorted(str(value) for value in pending),
+            "registeredPendingChartIds": sorted(set(pending) & set(registry)),
+        },
+        "repair": {
+            "phase": repair.get("phase"),
+            "verifyCount": repair.get("verifyCount"),
+            "draftRepairApplied": repair.get("draftRepairApplied"),
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def _enforce_reporting_no_progress(
     run_context: RunContext,
     function_name: str,
@@ -198,23 +250,35 @@ def _enforce_reporting_no_progress(
         return result
 
     mutation_sequence = _reporting_mutation_sequence(state)
-    fingerprint = f"{function_name}:{code}:{mutation_sequence}"
+    progress_fingerprint = _reporting_progress_fingerprint(state)
+    fingerprint = f"{function_name}:{code}"
     stored = state.get(_REPORT_TOOL_FAILURE_STATE_KEY)
     counts = (
         dict(stored.get("counts", {}))
         if isinstance(stored, dict)
-        and stored.get("mutationSequence") == mutation_sequence
+        and stored.get("progressFingerprint") == progress_fingerprint
         and isinstance(stored.get("counts"), dict)
         else {}
     )
+    previous_total = (
+        stored.get("phaseFailureCount", 0)
+        if isinstance(stored, dict) and stored.get("progressFingerprint") == progress_fingerprint
+        else 0
+    )
+    phase_failure_count = int(previous_total) + 1 if isinstance(previous_total, int) else 1
     previous_count = counts.get(fingerprint, 0)
     count = int(previous_count) + 1 if isinstance(previous_count, int) else 1
     counts[fingerprint] = count
     state[_REPORT_TOOL_FAILURE_STATE_KEY] = {
+        "progressFingerprint": progress_fingerprint,
         "mutationSequence": mutation_sequence,
+        "phaseFailureCount": phase_failure_count,
         "counts": counts,
     }
-    if count < _REPORT_TOOL_ARGUMENT_MAX_ATTEMPTS:
+    if (
+        count < _REPORT_TOOL_ARGUMENT_MAX_ATTEMPTS
+        and phase_failure_count < _REPORT_TOOL_PHASE_MAX_FAILURES
+    ):
         return result
 
     # Agno 官方 StopAgentRun 会在当前工具批次结束后退出模型工具循环，并完整保存
@@ -225,8 +289,11 @@ def _enforce_reporting_no_progress(
     details.update(
         {
             "failureFingerprint": fingerprint,
+            "progressFingerprint": progress_fingerprint,
             "mutationSequence": mutation_sequence,
-            "noProgressCount": count,
+            "noProgressCount": phase_failure_count,
+            "phaseFailureCount": phase_failure_count,
+            "sameFailureCount": count,
         }
     )
     blocked.update(

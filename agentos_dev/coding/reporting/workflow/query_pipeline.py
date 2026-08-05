@@ -50,11 +50,19 @@ class ApprovedQuery(StrictModel):
     source_id: str = Field(alias="sourceId", min_length=1, max_length=64)
     sql: str = Field(min_length=1, max_length=262_144)
     sql_hash: str = Field(alias="sqlHash", pattern=r"^[0-9a-f]{64}$")
+    period_roles: tuple[Literal["current", "yoy", "mom"], ...] = Field(
+        default=("current",), alias="periodRoles", min_length=1, max_length=3
+    )
+    query_window_id: str = Field(
+        default="current", alias="queryWindowId", min_length=1, max_length=128
+    )
 
     @model_validator(mode="after")
     def validate_hash(self) -> ApprovedQuery:
         if normalized_sql_hash(self.sql) != self.sql_hash:
             raise ValueError("sqlHash 与 SQL 不一致")
+        if len(self.period_roles) != len(set(self.period_roles)):
+            raise ValueError("periodRoles 不能重复")
         return self
 
 
@@ -66,6 +74,12 @@ class DatasetLineage(StrictModel):
     row_count: int = Field(alias="rowCount", ge=0)
     size: int = Field(ge=0)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    period_roles: tuple[Literal["current", "yoy", "mom"], ...] = Field(
+        default=("current",), alias="periodRoles", min_length=1, max_length=3
+    )
+    query_window_id: str = Field(
+        default="current", alias="queryWindowId", min_length=1, max_length=128
+    )
 
 
 class RequirementTable(StrictModel):
@@ -303,32 +317,83 @@ def _merge_measure_semantics(
 
 
 def approve_query_batch(
-    queries: list[dict[str, str]],
+    queries: list[dict[str, Any]],
     *,
     sources: dict[str, StarRocksSourceConfig],
     snapshots: tuple[SourceSchemaSnapshot, ...],
     envelope: ReportRequestEnvelope,
     requirements: tuple[QueryRequirement, ...],
+    row_preserving_requirement_ids: tuple[str, ...] = (),
+    require_complete_batch: bool = True,
 ) -> tuple[ApprovedQuery, ...]:
     if not queries or len(queries) > 100:
         raise ReportingError("report_query_batch_invalid", "SQL 批次必须包含 1 至 100 条查询。")
     result: list[ApprovedQuery] = []
-    requirement_ids: set[str] = set()
+    approved_keys: set[tuple[str, str]] = set()
     requirement_map = {item.requirement_id: item for item in requirements}
     if not requirements or len(requirement_map) != len(requirements):
         raise ReportingError("report_query_batch_invalid", "SQL requirements 不能为空或重复。")
+    row_preserving_ids = set(row_preserving_requirement_ids)
+    if len(row_preserving_ids) != len(row_preserving_requirement_ids) or row_preserving_ids - set(
+        requirement_map
+    ):
+        raise ReportingError(
+            "report_query_batch_invalid", "原始行保留查询引用了未知或重复 requirement。"
+        )
     snapshot_tables = _snapshot_tables(snapshots)
     measure_semantics = {
         item.field_ref.lower(): item
         for snapshot in snapshots
         for item in snapshot.measure_semantics
     }
+    period_windows = envelope.period_windows().windows
+    windows_by_role = {item.role: item for item in period_windows}
+    roles_by_window: dict[str, tuple[Literal["current", "yoy", "mom"], ...]] = {}
+    for window in period_windows:
+        roles_by_window.setdefault(window.query_window_id, ())
+        roles_by_window[window.query_window_id] = (
+            *roles_by_window[window.query_window_id],
+            window.role,
+        )
+    explicit_period_mode = any(
+        isinstance(item, dict)
+        and any(key in item for key in ("periodRole", "periodRoles", "queryWindowId"))
+        for item in queries
+    )
     for item in queries:
-        if set(item) != {"requirementId", "sourceId", "sql"}:
+        if not isinstance(item, dict):
+            raise ReportingError("report_query_batch_invalid", "SQL 批次项目必须是对象。")
+        allowed_keys = {
+            "requirementId",
+            "sourceId",
+            "sql",
+            "periodRole",
+            "periodRoles",
+            "queryWindowId",
+        }
+        if set(item) - allowed_keys or not {"requirementId", "sourceId", "sql"}.issubset(item):
             raise ReportingError("report_query_batch_invalid", "SQL 批次字段无效。")
+        if not all(isinstance(item[key], str) for key in ("requirementId", "sourceId", "sql")):
+            raise ReportingError("report_query_batch_invalid", "SQL 批次字段类型无效。")
         requirement_id = item["requirementId"].strip()
         source = sources.get(item["sourceId"])
-        if not requirement_id or requirement_id in requirement_ids or source is None:
+        raw_role = item.get("periodRole", "current")
+        if not isinstance(raw_role, str) or raw_role not in windows_by_role:
+            raise ReportingError("report_query_period_invalid", "SQL 期间角色不在请求窗口内。")
+        window = windows_by_role[raw_role]
+        expected_roles = roles_by_window[window.query_window_id]
+        if item.get("queryWindowId", window.query_window_id) != window.query_window_id:
+            raise ReportingError(
+                "report_query_period_invalid", "SQL queryWindowId 与期间角色不一致。"
+            )
+        if "periodRoles" in item:
+            raw_roles = item["periodRoles"]
+            if not isinstance(raw_roles, (list, tuple)) or tuple(raw_roles) != expected_roles:
+                raise ReportingError(
+                    "report_query_period_invalid", "SQL periodRoles 与窗口角色不一致。"
+                )
+        approved_key = (requirement_id, window.query_window_id)
+        if not requirement_id or approved_key in approved_keys or source is None:
             raise ReportingError("report_query_batch_invalid", "SQL requirement 或 source 无效。")
         requirement = requirement_map.get(requirement_id)
         if requirement is None or requirement.source_id != source.id:
@@ -353,9 +418,10 @@ def approve_query_batch(
             sql,
             database=source.database,
             requirement=requirement,
-            period=envelope.period,
+            period=window.period,
             snapshot_tables=scoped_tables,
             measure_semantics=measure_semantics,
+            row_preserving=requirement_id in row_preserving_ids,
         )
         result.append(
             ApprovedQuery(
@@ -363,10 +429,22 @@ def approve_query_batch(
                 sourceId=source.id,
                 sql=sql,
                 sqlHash=normalized_sql_hash(sql),
+                periodRoles=expected_roles,
+                queryWindowId=window.query_window_id,
             )
         )
-        requirement_ids.add(requirement_id)
-    if requirement_ids != set(requirement_map):
+        approved_keys.add(approved_key)
+    expected_window_ids = (
+        set(roles_by_window)
+        if explicit_period_mode
+        else {windows_by_role["current"].query_window_id}
+    )
+    expected_keys = {
+        (requirement_id, query_window_id)
+        for requirement_id in requirement_map
+        for query_window_id in expected_window_ids
+    }
+    if require_complete_batch and approved_keys != expected_keys:
         raise ReportingError("report_query_batch_invalid", "SQL 批次未覆盖全部 requirements。")
     return tuple(result)
 
@@ -461,6 +539,7 @@ def _validate_query_contract(
     period: ReportPeriod,
     snapshot_tables: dict[str, ModelTable],
     measure_semantics: dict[str, MeasureSemantic],
+    row_preserving: bool = False,
 ) -> None:
     statement = parse_one(sql, read="mysql")
     scopes = tuple(traverse_scope(statement))
@@ -492,6 +571,10 @@ def _validate_query_contract(
             physical_scopes.append((scope, alias, table_requirement, snapshot_table))
     if actual_tables != set(expected_tables):
         raise ReportingError("report_query_batch_invalid", "SQL 未覆盖 requirement 声明的全部表。")
+    if row_preserving and len(expected_tables) != 1:
+        raise ReportingError(
+            "report_query_row_preserving_invalid", "原始行冲突探测只允许单表查询。"
+        )
 
     for scope, alias, table_requirement, snapshot_table in physical_scopes:
         _validate_scope_columns(scope, alias=alias, table=snapshot_table)
@@ -505,14 +588,26 @@ def _validate_query_contract(
             raise ReportingError(
                 "report_query_period_invalid", "SQL 必须对每张表包含完整且精确的报表期间约束。"
             )
-        if not _scope_has_grain(scope.expression, requirement.grain_columns):
-            raise ReportingError(
-                "report_query_grain_invalid", "SQL 聚合粒度与 requirement.grainColumns 不一致。"
-            )
-        if not _scope_has_measures(scope.expression, table_requirement.measure_columns):
-            raise ReportingError(
-                "report_query_measure_invalid", "SQL 未聚合 requirement 声明的全部指标字段。"
-            )
+        if row_preserving:
+            if not _scope_is_row_preserving(
+                scope.expression,
+                grain_columns=requirement.grain_columns,
+                measure_columns=table_requirement.measure_columns,
+            ):
+                raise ReportingError(
+                    "report_query_row_preserving_invalid",
+                    "原始行冲突探测必须直接投影完整 grainColumns 和 measureColumns，"
+                    "不得聚合、去重、排序截断或改写金额。",
+                )
+        else:
+            if not _scope_has_grain(scope.expression, requirement.grain_columns):
+                raise ReportingError(
+                    "report_query_grain_invalid", "SQL 聚合粒度与 requirement.grainColumns 不一致。"
+                )
+            if not _scope_has_measures(scope.expression, table_requirement.measure_columns):
+                raise ReportingError(
+                    "report_query_measure_invalid", "SQL 未聚合 requirement 声明的全部指标字段。"
+                )
         qualified = _qualified_requirement_table(table_requirement.table, database)
         for measure in table_requirement.measure_columns:
             field_ref = f"{requirement.source_id}.{qualified}.{measure}".lower()
@@ -521,7 +616,7 @@ def _validate_query_contract(
                 raise ReportingError(
                     "report_measure_semantic_missing", "SQL 指标缺少服务端聚合语义契约。"
                 )
-            if not _scope_has_semantic_measure(
+            if not row_preserving and not _scope_has_semantic_measure(
                 scope.expression,
                 alias=alias,
                 column=measure,
@@ -578,6 +673,34 @@ def _scope_has_grain(expression: exp.Expression, grain_columns: tuple[str, ...])
     }
     has_aggregate = any(isinstance(item, exp.AggFunc) for item in expression.walk())
     return grouped == set(grain_columns) and has_aggregate
+
+
+def _scope_is_row_preserving(
+    expression: exp.Expression,
+    *,
+    grain_columns: tuple[str, ...],
+    measure_columns: tuple[str, ...],
+) -> bool:
+    if not isinstance(expression, exp.Select):
+        return False
+    if (
+        expression.args.get("group") is not None
+        or expression.args.get("distinct")
+        or expression.args.get("limit") is not None
+        or expression.args.get("order") is not None
+        or any(isinstance(item, (exp.AggFunc, exp.Window)) for item in expression.walk())
+    ):
+        return False
+    projected: list[str] = []
+    for item in expression.expressions:
+        column = item.this if isinstance(item, exp.Alias) else item
+        if not isinstance(column, exp.Column):
+            return False
+        if isinstance(item, exp.Alias) and item.alias.lower() != column.name.lower():
+            return False
+        projected.append(column.name.lower())
+    expected = {*grain_columns, *measure_columns}
+    return len(projected) == len(set(projected)) and set(projected) == expected
 
 
 def _scope_has_measures(expression: exp.Expression, measure_columns: tuple[str, ...]) -> bool:
@@ -875,8 +998,26 @@ def require_approved_sql(approved: ApprovedQuery, execution_sql: str) -> str:
 def validate_lineage(
     approved: tuple[ApprovedQuery, ...], lineage: tuple[DatasetLineage, ...]
 ) -> None:
-    expected = {(item.source_id, item.requirement_id, item.sql_hash) for item in approved}
-    actual = {(item.source_id, item.requirement_id, item.sql_hash) for item in lineage}
+    expected = {
+        (
+            item.source_id,
+            item.requirement_id,
+            item.sql_hash,
+            item.query_window_id,
+            item.period_roles,
+        )
+        for item in approved
+    }
+    actual = {
+        (
+            item.source_id,
+            item.requirement_id,
+            item.sql_hash,
+            item.query_window_id,
+            item.period_roles,
+        )
+        for item in lineage
+    }
     if expected != actual or len(lineage) != len(approved):
         raise ReportingError("report_dataset_lineage_incomplete", "不可变数据集血缘不完整。")
 

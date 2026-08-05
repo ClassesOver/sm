@@ -8,7 +8,7 @@ from typing import Any
 
 from agno.db.base import BaseDb
 from agno.models.metrics import RunMetrics
-from agno.workflow import OnError
+from agno.workflow import HumanReview, OnError, OnReject
 from agno.workflow.step import Step
 from agno.workflow.types import StepOutput
 from agno.workflow.workflow import Workflow
@@ -28,6 +28,11 @@ _TOKEN_METRIC_FIELDS = (
     "cache_read_tokens",
     "cache_write_tokens",
 )
+
+
+def _requires_request_review(output: StepOutput) -> bool:
+    content = output.content
+    return isinstance(content, dict) and bool(content.get("clarificationQuestion"))
 
 
 def record_step_model_metrics(value: Any) -> None:
@@ -150,6 +155,8 @@ def create_reporting_workflow(
     generate_analysis_plan: StepExecutor,
     generate_query_candidates: StepExecutor,
     materialize_datasets: StepExecutor,
+    build_fact_set: StepExecutor,
+    generate_findings: StepExecutor,
     run_coding_analysis: StepExecutor,
     validate_report: StepExecutor,
     publish_report: StepExecutor,
@@ -172,6 +179,13 @@ def create_reporting_workflow(
                     step_id="normalize-report-request",
                     step_name="规范化报表请求",
                     event_sink=event_sink,
+                ),
+                human_review=HumanReview(
+                    requires_output_review=_requires_request_review,
+                    output_review_message="补充缺失的主分析领域或分析期间。",
+                    on_reject=OnReject.retry,
+                    on_error=OnError.fail,
+                    max_retries=5,
                 ),
                 on_error=OnError.fail,
             ),
@@ -257,26 +271,6 @@ def create_reporting_workflow(
                 on_error=OnError.fail,
             ),
             Step(
-                step_id="generate-outline",
-                name="生成报告提纲",
-                executor=_timed_step_executor(
-                    generate_outline,
-                    step_id="generate-outline",
-                    step_name="生成报告提纲",
-                    event_sink=event_sink,
-                ),
-                # 当前产品阶段要求报表全流程连续执行，提纲也不暂停等待人工确认。
-                # 后续恢复提纲审核时，只重新启用原 HumanReview 配置；审批控制器和恢复协议保留不变。
-                # human_review=HumanReview(
-                #     requires_output_review=True,
-                #     output_review_message="审核报告提纲；拒绝时请填写修改意见。",
-                #     on_reject=OnReject.retry,
-                #     on_error=OnError.fail,
-                #     max_retries=5,
-                # ),
-                on_error=OnError.fail,
-            ),
-            Step(
                 step_id="generate-analysis-plan",
                 name="生成分析计划与取数需求",
                 executor=_timed_step_executor(
@@ -308,6 +302,47 @@ def create_reporting_workflow(
                     step_id="materialize-datasets",
                     step_name="物化不可变数据集",
                     event_sink=event_sink,
+                ),
+                on_error=OnError.fail,
+            ),
+            Step(
+                step_id="build-fact-set",
+                name="构建确定性业务 FactSet",
+                executor=_timed_step_executor(
+                    build_fact_set,
+                    step_id="build-fact-set",
+                    step_name="构建确定性业务 FactSet",
+                    event_sink=event_sink,
+                ),
+                on_error=OnError.fail,
+            ),
+            Step(
+                step_id="generate-findings",
+                name="生成结构化分析发现",
+                executor=_timed_step_executor(
+                    generate_findings,
+                    step_id="generate-findings",
+                    step_name="生成结构化分析发现",
+                    event_sink=event_sink,
+                ),
+                max_retries=0,
+                on_error=OnError.fail,
+            ),
+            Step(
+                step_id="generate-outline",
+                name="生成动态报告提纲",
+                executor=_timed_step_executor(
+                    generate_outline,
+                    step_id="generate-outline",
+                    step_name="生成动态报告提纲",
+                    event_sink=event_sink,
+                ),
+                human_review=HumanReview(
+                    requires_output_review=True,
+                    output_review_message="审核动态报告提纲；拒绝时请填写修改意见。",
+                    on_reject=OnReject.retry,
+                    on_error=OnError.fail,
+                    max_retries=5,
                 ),
                 on_error=OnError.fail,
             ),

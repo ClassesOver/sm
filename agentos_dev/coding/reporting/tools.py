@@ -27,6 +27,7 @@ from .delivery.draft_v1 import (
     ReportChartInput,
     ReportChartRegistration,
     ReportDraft,
+    ReportFactInput,
     ReportSectionDefinition,
 )
 from .delivery.draft_v1 import render_report_draft as render_structured_draft
@@ -85,7 +86,8 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     "登记工作区中的报告图表源文件；服务端校验身份并决定发布路径。"
                     '示例：{"charts":[{"chartId":"income_trend","sourcePath":'
                     '"analysis/charts/income.png","title":"医疗收入月度趋势",'
-                    '"altText":"2025年医疗收入月度变化","citationIds":["citation_001"]}]}'
+                    '"altText":"2025年医疗收入月度变化","citationIds":["citation_001"],'
+                    '"factIds":["metric-income-month-01"]}]}'
                 ),
                 parameters={
                     "type": "object",
@@ -113,7 +115,10 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     '示例：{"draft":{"title":"报告标题","sections":[{"sectionCode":'
                     '"executive_summary","blocks":[{"blockId":"income_chart",'
                     '"text":"图表题注","citationIds":["citation_001"],'
-                    '"chartIds":["income_trend"]}]}]}}'
+                    '"factIds":["metric-income-total"],"chartIds":["income_trend"],'
+                    '"table":{"tableId":"overview","title":"核心指标",'
+                    '"columns":["项目","本期值"],"rows":[{"label":"医疗收入",'
+                    '"factIds":["metric-income-total"]}]}}]}]}}'
                 ),
                 parameters={
                     "type": "object",
@@ -129,7 +134,8 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             Function(
                 name="resume_report_draft",
                 description=(
-                    "图表登记或归档异常修复后，恢复当前 Attempt 已保存的报告草稿。示例：{}"
+                    "仅在服务端已接受 Draft 但图表复制或 Markdown 写入等机械归档失败后，"
+                    "恢复当前 Attempt 的报告草稿；缺图登记齐全后服务端会自动恢复。示例：{}"
                 ),
                 parameters={"type": "object", "properties": {}, "additionalProperties": False},
                 strict=True,
@@ -255,7 +261,16 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         return None
 
     @staticmethod
-    def _render_contract(scope: Any) -> tuple[str, str, tuple[Any, ...], tuple[str, ...]]:
+    def _render_contract(
+        scope: Any,
+    ) -> tuple[
+        str,
+        str,
+        tuple[Any, ...],
+        tuple[str, ...],
+        tuple[ReportFactInput, ...],
+        bool,
+    ]:
         acceptance_contract = scope.task.acceptance_contract
         requirements = (
             acceptance_contract.get("requirements")
@@ -276,11 +291,15 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         markdown_path = expected.get("markdownPath")
         raw_sections = contract.get("sections")
         raw_citations = contract.get("citationIds")
+        raw_facts = contract.get("facts")
+        require_table = contract.get("requireTable")
         if (
             not isinstance(title, str)
             or not isinstance(markdown_path, str)
             or not isinstance(raw_sections, list)
             or not isinstance(raw_citations, list)
+            or not isinstance(raw_facts, list)
+            or not isinstance(require_table, bool)
         ):
             raise ReportingError(
                 "report_draft_contract_invalid", "当前 Reporting Task 的服务端渲染契约无效。"
@@ -290,7 +309,12 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             raise ReportingError(
                 "report_draft_contract_invalid", "当前 Reporting Task 的 citation 注册表无效。"
             )
-        return title, markdown_path, sections, tuple(raw_citations)
+        facts = tuple(ReportFactInput.model_validate(item) for item in raw_facts)
+        if len({item.fact_id for item in facts}) != len(facts):
+            raise ReportingError(
+                "report_draft_contract_invalid", "当前 Reporting Task 的事实注册表重复。"
+            )
+        return title, markdown_path, sections, tuple(raw_citations), facts, require_table
 
     @staticmethod
     def _failure(error: Exception, *, retryable: bool = True) -> dict[str, Any]:
@@ -333,7 +357,9 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         else:
             code = "report_draft_workspace_error"
             message = "报告草稿处理失败。"
-        result = {
+        if code in {"report_draft_already_submitted", "report_draft_already_rendered"}:
+            retryable = False
+        result: dict[str, Any] = {
             "ok": False,
             "status": "rejected",
             "code": code,
@@ -345,6 +371,18 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             result["validationErrors"] = validation_errors
             result["requiredActions"] = [
                 "仅修正 validationErrors 指向的字段后重新调用 render_report_draft。"
+            ]
+        elif code == "report_draft_chart_unregistered":
+            result["requiredActions"] = [
+                "仅登记错误消息列出的缺失图表；登记齐全后服务端会自动恢复草稿。"
+            ]
+        elif code == "report_draft_chart_citation_invalid":
+            result["requiredActions"] = [
+                "使图表 citation 成为每个引用该图表的正文块 citation 子集后重试。"
+            ]
+        elif code == "report_draft_already_submitted":
+            result["requiredActions"] = [
+                "不得重传完整 Draft；缺图登记完成后服务端会自动恢复，只有机械归档失败才调用 resume_report_draft。"
             ]
         return result
 
@@ -459,7 +497,14 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             return rejection
         try:
             scope = await self.kernel.scope(run_context)
-            _title, _path, _sections, citation_ids = self._render_contract(scope)
+            (
+                title,
+                markdown_path,
+                sections,
+                citation_ids,
+                facts,
+                require_table,
+            ) = self._render_contract(scope)
             parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
             if len({item.chart_id for item in parsed}) != len(parsed):
                 raise ReportingError(
@@ -467,24 +512,80 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 )
             if any(set(item.citation_ids) - set(citation_ids) for item in parsed):
                 raise ReportingError("report_draft_citation_unknown", "图表引用了未注册 citation。")
-            registry_state = self._attempt_state(
-                state, REPORT_CHART_STATE_KEY, int(getattr(scope, "attempt_no", 0))
-            )
-            registry = registry_state.setdefault("charts", {})
+            fact_registry = {item.fact_id: item for item in facts}
+            if any(set(item.fact_ids) - set(fact_registry) for item in parsed):
+                raise ReportingError("report_draft_fact_unknown", "图表引用了未注册 MetricFact。")
+            if any(
+                not {
+                    citation_id
+                    for fact_id in item.fact_ids
+                    for citation_id in fact_registry[fact_id].citation_ids
+                }.issubset(item.citation_ids)
+                for item in parsed
+            ):
+                raise ReportingError(
+                    "report_draft_fact_citation_invalid",
+                    "图表 citation 未覆盖所绑定事实的完整血缘。",
+                )
+            attempt_no = int(getattr(scope, "attempt_no", 0))
+            registry_state = self._attempt_state(state, REPORT_CHART_STATE_KEY, attempt_no)
+            raw_registry = registry_state.get("charts")
+            registry = dict(raw_registry) if isinstance(raw_registry, dict) else {}
+            candidate_registry = dict(registry)
+            draft_state = state.get(REPORT_DRAFT_STATE_KEY) if isinstance(state, dict) else None
+            if not isinstance(draft_state, dict) or draft_state.get("attemptNo") != attempt_no:
+                draft_state = None
+            pending_bindings: dict[str, list[str]] = {}
+            pending_fact_bindings: dict[str, list[str]] = {}
+            if draft_state is not None and draft_state.get("status") == "awaiting_charts":
+                raw_pending = draft_state.get("pendingChartBindings")
+                if not isinstance(raw_pending, dict) or any(
+                    not isinstance(chart_id, str)
+                    or not isinstance(values, list)
+                    or not values
+                    or any(not isinstance(value, str) for value in values)
+                    for chart_id, values in raw_pending.items()
+                ):
+                    raise ReportingError(
+                        "report_draft_state_invalid", "待登记图表的 citation 约束状态无效。"
+                    )
+                pending_bindings = {
+                    str(chart_id): list(values) for chart_id, values in raw_pending.items()
+                }
+                raw_pending_facts = draft_state.get("pendingChartFactBindings")
+                if not isinstance(raw_pending_facts, dict) or any(
+                    not isinstance(chart_id, str)
+                    or not isinstance(values, list)
+                    or not values
+                    or any(not isinstance(value, str) for value in values)
+                    for chart_id, values in raw_pending_facts.items()
+                ):
+                    raise ReportingError(
+                        "report_draft_state_invalid", "待登记图表的 factId 约束状态无效。"
+                    )
+                pending_fact_bindings = {
+                    str(chart_id): list(values) for chart_id, values in raw_pending_facts.items()
+                }
+                if set(pending_fact_bindings) != set(pending_bindings):
+                    raise ReportingError(
+                        "report_draft_state_invalid", "待登记图表的引用约束状态不一致。"
+                    )
             warnings: list[dict[str, Any]] = []
             registered: list[dict[str, Any]] = []
+            inspected: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
             for registration in parsed:
                 identity, chart_warnings = await self._inspect_chart(
                     thread_id=scope.thread_id,
                     registration=registration,
                 )
-                existing = registry.get(registration.chart_id)
+                existing = candidate_registry.get(registration.chart_id)
                 if isinstance(existing, dict):
                     comparable_keys = {
                         "sourcePath",
                         "title",
                         "altText",
                         "citationIds",
+                        "factIds",
                         "size",
                         "sha256",
                         "format",
@@ -498,7 +599,53 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                         )
                     identity = existing
                 else:
-                    registry[registration.chart_id] = identity
+                    candidate_registry[registration.chart_id] = identity
+                allowed = pending_bindings.get(registration.chart_id)
+                if allowed is not None and not set(identity["citationIds"]).issubset(allowed):
+                    raise ReportingError(
+                        "report_draft_chart_citation_invalid",
+                        f"图表 {registration.chart_id} 的 citation 必须属于已冻结的正文块绑定："
+                        + ", ".join(allowed),
+                    )
+                allowed_facts = pending_fact_bindings.get(registration.chart_id)
+                if allowed_facts is not None and not set(identity["factIds"]).issubset(
+                    allowed_facts
+                ):
+                    raise ReportingError(
+                        "report_draft_chart_fact_invalid",
+                        f"图表 {registration.chart_id} 的 factIds 必须属于已冻结的正文块绑定："
+                        + ", ".join(allowed_facts),
+                    )
+                inspected.append((identity, chart_warnings))
+
+            pending_chart_ids: list[str] = []
+            resume_after_commit = False
+            if draft_state is not None and draft_state.get("status") == "awaiting_charts":
+                pending_chart_ids = sorted(set(pending_bindings) - set(candidate_registry))
+                if not pending_chart_ids:
+                    pending_draft = ReportDraft.model_validate(draft_state.get("draft"))
+                    candidate_inputs = tuple(
+                        self._archived_chart_input(identity)
+                        for identity in candidate_registry.values()
+                        if isinstance(identity, dict)
+                    )
+                    render_structured_draft(
+                        pending_draft,
+                        expected_title=title,
+                        markdown_path=markdown_path,
+                        sections=sections,
+                        citation_ids=citation_ids,
+                        facts=facts,
+                        charts=candidate_inputs,
+                        require_table=require_table,
+                    )
+                    resume_after_commit = True
+
+            # 图表解码、不可变身份和待恢复 Draft 约束全部通过后才一次性替换 registry；
+            # 补齐最后一张图时还会先用候选 registry 完整重放 Draft 校验。任一失败都不能
+            # 留下半批身份或推进 Draft，否则后续正确输入会被不可变状态永久阻断。
+            registry_state["charts"] = candidate_registry
+            for identity, chart_warnings in inspected:
                 warnings.extend(chart_warnings)
                 registered.append(
                     {
@@ -511,15 +658,38 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                         "height": identity["height"],
                     }
                 )
+            draft_result: dict[str, Any] | None = None
+            if resume_after_commit and draft_state is not None:
+                draft_state["status"] = "validated"
+                draft_state["pendingChartBindings"] = {}
+                draft_state["pendingChartFactBindings"] = {}
+                draft_result = await self._resume_saved_draft(
+                    scope=scope,
+                    state=state,
+                    draft_state=draft_state,
+                    run_context=run_context,
+                )
         except (ReportingError, ValidationError, WorkspaceError) as error:
             return self._failure(error)
-        return {
+        if draft_result is not None and draft_result.get("ok") is not True:
+            return {
+                **draft_result,
+                "registeredCharts": registered,
+                "chartWarnings": warnings,
+                "draftSaved": True,
+            }
+        result: dict[str, Any] = {
             "ok": True,
             "status": "completed",
             "charts": registered,
             "warnings": warnings,
             "mutation_sequence": getattr(scope.task, "mutation_sequence", 0),
         }
+        if pending_chart_ids:
+            result["pendingChartIds"] = pending_chart_ids
+        if draft_result is not None:
+            result["draftResult"] = draft_result
+        return result
 
     @staticmethod
     def _draft_chart_ids(draft: ReportDraft) -> tuple[str, ...]:
@@ -533,7 +703,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         )
 
     @staticmethod
-    def _placeholder_charts(draft: ReportDraft) -> tuple[ReportChartInput, ...]:
+    def _draft_chart_bindings(draft: ReportDraft) -> dict[str, tuple[str, ...]]:
         bindings: dict[str, set[str]] = {}
         for section in draft.sections:
             for block in section.blocks:
@@ -547,15 +717,44 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 "report_draft_chart_citation_invalid",
                 "同一图表在全部正文块中必须具有共同 citation 绑定。",
             )
+        return {chart_id: tuple(sorted(citations)) for chart_id, citations in bindings.items()}
+
+    @staticmethod
+    def _draft_chart_fact_bindings(draft: ReportDraft) -> dict[str, tuple[str, ...]]:
+        bindings: dict[str, set[str]] = {}
+        for section in draft.sections:
+            for block in section.blocks:
+                for chart_id in block.chart_ids:
+                    if chart_id in bindings:
+                        bindings[chart_id].intersection_update(block.fact_ids)
+                    else:
+                        bindings[chart_id] = set(block.fact_ids)
+        if any(not values for values in bindings.values()):
+            raise ReportingError(
+                "report_draft_chart_fact_invalid",
+                "同一图表在全部正文块中必须具有共同 MetricFact 绑定。",
+            )
+        return {chart_id: tuple(sorted(fact_ids)) for chart_id, fact_ids in bindings.items()}
+
+    @classmethod
+    def _placeholder_charts(
+        cls,
+        draft: ReportDraft,
+        chart_ids: set[str] | None = None,
+    ) -> tuple[ReportChartInput, ...]:
+        bindings = cls._draft_chart_bindings(draft)
+        fact_bindings = cls._draft_chart_fact_bindings(draft)
         return tuple(
             ReportChartInput(
                 chartId=chart_id,
                 fileName=f"chart-{hashlib.sha256(chart_id.encode()).hexdigest()[:16]}.png",
                 title="待登记图表",
                 altText="待登记图表",
-                citationIds=tuple(sorted(citations)),
+                citationIds=citations,
+                factIds=fact_bindings[chart_id],
             )
             for chart_id, citations in bindings.items()
+            if chart_ids is None or chart_id in chart_ids
         )
 
     def _validate_and_store_draft(
@@ -568,31 +767,64 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         attempt_no = int(getattr(scope, "attempt_no", 0))
         draft_state = self._attempt_state(state, REPORT_DRAFT_STATE_KEY, attempt_no)
         if draft_state.get("submitted") is True:
+            status = draft_state.get("status")
             raise ReportingError(
                 "report_draft_already_submitted",
-                "当前 Attempt 已提交过完整 ReportDraft；请使用 resume_report_draft 恢复。",
+                (
+                    "当前 Attempt 的完整 ReportDraft 已冻结并等待缺失图表登记；"
+                    "不得重传，登记齐全后服务端会自动恢复。"
+                    if status == "awaiting_charts"
+                    else "当前 Attempt 已提交过完整 ReportDraft；只有机械归档失败时才使用 "
+                    "resume_report_draft 恢复。"
+                ),
             )
-        title, markdown_path, sections, citation_ids = self._render_contract(scope)
+        (
+            title,
+            markdown_path,
+            sections,
+            citation_ids,
+            facts,
+            require_table,
+        ) = self._render_contract(scope)
         parsed = ReportDraft.model_validate(draft)
-        # 这里先用服务端占位图表完成标题、章节、正文 citation 与协议注入校验；
-        # 图表真实身份随后由登记表校验，因此机械归档失败不会迫使模型重传完整 Draft。
+        chart_state = self._attempt_state(state, REPORT_CHART_STATE_KEY, attempt_no)
+        raw_registry = chart_state.get("charts")
+        registry = raw_registry if isinstance(raw_registry, dict) else {}
+        bindings = self._draft_chart_bindings(parsed)
+        fact_bindings = self._draft_chart_fact_bindings(parsed)
+        missing = set(bindings) - set(registry)
+        chart_inputs = tuple(
+            self._archived_chart_input(identity)
+            for identity in registry.values()
+            if isinstance(identity, dict)
+        ) + self._placeholder_charts(parsed, missing)
+        # 已登记图表必须在持久化 Draft 前用真实 citation 身份校验。只有确实缺图时
+        # 才使用服务端占位身份，并冻结允许集合；语义不匹配不能把 Attempt 推入不可修改状态。
         render_structured_draft(
             parsed,
             expected_title=title,
             markdown_path=markdown_path,
             sections=sections,
             citation_ids=citation_ids,
-            charts=self._placeholder_charts(parsed),
+            facts=facts,
+            charts=chart_inputs,
+            require_table=require_table,
         )
         serialized = parsed.model_dump(mode="json", by_alias=True)
         draft_id = _stable_digest(serialized)
         draft_state.update(
             {
                 "submitted": True,
-                "status": "validated",
+                "status": "awaiting_charts" if missing else "validated",
                 "draftId": draft_id,
                 "draft": serialized,
                 "markdownPath": markdown_path,
+                "pendingChartBindings": {
+                    chart_id: list(bindings[chart_id]) for chart_id in sorted(missing)
+                },
+                "pendingChartFactBindings": {
+                    chart_id: list(fact_bindings[chart_id]) for chart_id in sorted(missing)
+                },
             }
         )
         return parsed, markdown_path, sections, citation_ids, draft_state
@@ -609,6 +841,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             title=identity["title"],
             altText=identity["altText"],
             citationIds=identity["citationIds"],
+            factIds=identity["factIds"],
         )
 
     async def _write_rendered_draft(
@@ -678,7 +911,14 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         draft_state: dict[str, Any],
         run_context: RunContext | None,
     ) -> dict[str, Any]:
-        title, markdown_path, sections, citation_ids = self._render_contract(scope)
+        (
+            title,
+            markdown_path,
+            sections,
+            citation_ids,
+            facts,
+            require_table,
+        ) = self._render_contract(scope)
         parsed = ReportDraft.model_validate(draft_state.get("draft"))
         attempt_no = int(getattr(scope, "attempt_no", 0))
         chart_state = self._attempt_state(state, REPORT_CHART_STATE_KEY, attempt_no)
@@ -702,7 +942,9 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             markdown_path=markdown_path,
             sections=sections,
             citation_ids=citation_ids,
+            facts=facts,
             charts=chart_inputs,
+            require_table=require_table,
         )
         rendered_markdown, repair_warnings = self._render_repair_warnings(
             rendered.markdown,
@@ -748,6 +990,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 "status": "rendered",
                 "markdownSha256": markdown_sha256,
                 "artifactPaths": [markdown_path, *rendered.chart_paths],
+                "factIds": list(rendered.fact_ids),
                 "archiveReceipt": copy_result.get("files", []),
             }
         )
@@ -764,6 +1007,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             "markdownPath": markdown_path,
             "markdownSha256": markdown_sha256,
             "artifactPaths": [markdown_path, *rendered.chart_paths],
+            "factIds": list(rendered.fact_ids),
             "warnings": [*rendered.warnings, *repair_warnings],
             "autoFixes": list(rendered.auto_fixes),
             "archiveReceipts": copy_result.get("files", []),
@@ -1192,7 +1436,8 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                         }
                     )
             parsed = ReportDraft.model_validate(draft_payload)
-            stored.update(
+            candidate_stored = dict(stored)
+            candidate_stored.update(
                 {
                     "draft": parsed.model_dump(mode="json", by_alias=True),
                     "status": "validated",
@@ -1200,12 +1445,17 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     "repairWarnings": repair_warnings,
                 }
             )
+            # 修复后的 Draft 必须先通过事实值、citation、图表和表格的完整重放。
+            # ReportingError 表示语义候选无效，不能污染冻结状态；返回式工作区失败则属于
+            # 机械归档故障，保留已验证候选，允许后续 resume 而无需模型重传整份 Draft。
             result = await self._resume_saved_draft(
                 scope=scope,
                 state=state,
-                draft_state=stored,
+                draft_state=candidate_stored,
                 run_context=run_context,
             )
+            stored.clear()
+            stored.update(candidate_stored)
         except (KeyError, ReportingError, ValidationError, WorkspaceError) as error:
             return self._failure(error)
         if isinstance(result, dict) and result.get("ok") is True:

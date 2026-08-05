@@ -14,15 +14,7 @@ from ..contract import SHA256_PATTERN, StrictModel
 from ..models import ReportingError
 from ..workflow.query_pipeline import DatasetLineage
 
-REQUIRED_REPORT_SECTIONS = frozenset(
-    {
-        "executive_summary",
-        "scope_and_methodology",
-        "key_findings",
-        "limitations",
-        "recommendations",
-    }
-)
+_FACT_MARKER = re.compile(r"\[\[fact:([^\]\r\n]+)\]\]")
 
 
 class ArtifactFile(StrictModel):
@@ -47,6 +39,7 @@ class ArtifactFile(StrictModel):
 class ChartArtifact(ArtifactFile):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)
+    fact_ids: tuple[str, ...] = Field(alias="factIds", min_length=1, max_length=2_000)
 
     @model_validator(mode="after")
     def validate_image(self) -> ChartArtifact:
@@ -54,6 +47,8 @@ class ChartArtifact(ArtifactFile):
             raise ValueError("图表产物必须是图片")
         if len(set(self.dataset_ids)) != len(self.dataset_ids):
             raise ValueError("图表数据集引用不能重复")
+        if len(set(self.fact_ids)) != len(self.fact_ids):
+            raise ValueError("图表事实引用不能重复")
         return self
 
 
@@ -72,15 +67,10 @@ class ReportArtifactManifest(StrictModel):
     markdown: ArtifactFile
     charts: tuple[ChartArtifact, ...] = Field(default=(), max_length=100)
     citations: tuple[Citation, ...] = Field(min_length=1, max_length=2_000)
-    sections: tuple[str, ...] = Field(
-        min_length=1,
-        max_length=100,
-        json_schema_extra={
-            "allOf": [
-                {"contains": {"const": section}} for section in sorted(REQUIRED_REPORT_SECTIONS)
-            ]
-        },
-    )
+    fact_ids: tuple[str, ...] = Field(alias="factIds", min_length=1, max_length=10_000)
+    # 章节内容和顺序由 Workflow 批准提纲冻结，并通过 expectedSections 精确验收。
+    # 交付模型只约束通用结构，不能再维护一份会与综合十章或专题子集冲突的业务清单。
+    sections: tuple[str, ...] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def validate_manifest(self) -> ReportArtifactManifest:
@@ -93,12 +83,14 @@ class ReportArtifactManifest(StrictModel):
             raise ValueError("chartId 不能重复")
         if len(citation_ids) != len(set(citation_ids)):
             raise ValueError("citationId 不能重复")
+        if len(self.fact_ids) != len(set(self.fact_ids)):
+            raise ValueError("factId 不能重复")
+        if any(set(chart.fact_ids) - set(self.fact_ids) for chart in self.charts):
+            raise ValueError("图表事实必须属于报告事实引用")
         if len(paths) != len(set(paths)):
             raise ValueError("产物路径不能重复")
         if len(self.sections) != len(set(self.sections)):
             raise ValueError("报告章节不能重复")
-        if not REQUIRED_REPORT_SECTIONS.issubset(self.sections):
-            raise ValueError("报告缺少关键章节")
         return self
 
 
@@ -124,6 +116,7 @@ def build_authoritative_manifest(
     markdown: str,
     accepted_artifacts: list[dict[str, Any]],
     lineage: tuple[DatasetLineage, ...],
+    allowed_fact_ids: tuple[str, ...],
     sections: tuple[str, ...],
 ) -> ReportArtifactManifest:
     artifacts: dict[str, dict[str, Any]] = {
@@ -143,7 +136,19 @@ def build_authoritative_manifest(
 
     citations = authoritative_citations(lineage)
     citation_datasets = {item.citation_id: item.dataset_id for item in citations}
-    image_bindings = _markdown_image_bindings(markdown, markdown_path, citation_datasets)
+    fact_ids = tuple(sorted(set(_FACT_MARKER.findall(markdown))))
+    allowed_facts = set(allowed_fact_ids)
+    if not fact_ids or set(fact_ids) - allowed_facts:
+        raise ReportingError(
+            "report_artifact_fact_invalid",
+            "Markdown 必须绑定至少一个已注册 MetricFact，且不得引用未知事实。",
+        )
+    image_bindings = _markdown_image_bindings(
+        markdown,
+        markdown_path,
+        citation_datasets,
+        allowed_facts,
+    )
     extra_paths = set(artifacts) - {markdown_path}
     submitted_images = {
         path
@@ -163,7 +168,8 @@ def build_authoritative_manifest(
             size=_artifact_size(artifacts[path]),
             sha256=_artifact_sha256(artifacts[path]),
             chartId=f"chart_{index:03d}",
-            datasetIds=image_bindings[path],
+            datasetIds=image_bindings[path][0],
+            factIds=image_bindings[path][1],
         )
         for index, path in enumerate(sorted(image_bindings), start=1)
     )
@@ -181,6 +187,7 @@ def build_authoritative_manifest(
         ),
         charts=charts,
         citations=citations,
+        factIds=fact_ids,
         sections=sections,
     )
 
@@ -214,10 +221,12 @@ def _markdown_image_bindings(
     markdown: str,
     markdown_path: str,
     citation_datasets: dict[str, str],
-) -> dict[str, tuple[str, ...]]:
+    allowed_fact_ids: set[str],
+) -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
     lines = markdown.splitlines()
     parent = PurePosixPath(markdown_path).parent
-    bindings: dict[str, set[str]] = {}
+    dataset_bindings: dict[str, set[str]] = {}
+    fact_bindings: dict[str, set[str]] = {}
     for token in MarkdownIt("commonmark").parse(markdown):
         images = [item for item in token.children or () if item.type == "image"]
         if not images:
@@ -226,11 +235,13 @@ def _markdown_image_bindings(
         citation_ids = set(
             re.findall(r"\[\[citation:([^\]\r\n]+)\]\]", "\n".join(lines[start:end]))
         )
+        fact_ids = set(_FACT_MARKER.findall("\n".join(lines[start:end])))
         unknown = citation_ids - set(citation_datasets)
-        if unknown or not citation_ids:
+        unknown_facts = fact_ids - allowed_fact_ids
+        if unknown or not citation_ids or unknown_facts or not fact_ids:
             raise ReportingError(
                 "report_artifact_chart_citation_invalid",
-                "每个图表必须在同一 Markdown 段落绑定至少一个 Workflow citation marker。",
+                "每个图表必须在同一 Markdown 段落绑定已注册的 citation 和 MetricFact。",
             )
         for image in images:
             source = str(image.attrGet("src") or "")
@@ -251,10 +262,14 @@ def _markdown_image_bindings(
                     "report_artifact_chart_invalid", "Markdown 图表必须使用安全相对路径。"
                 )
             path = parent.joinpath(relative).as_posix()
-            bindings.setdefault(path, set()).update(
+            dataset_bindings.setdefault(path, set()).update(
                 citation_datasets[item] for item in citation_ids
             )
-    return {path: tuple(sorted(dataset_ids)) for path, dataset_ids in bindings.items()}
+            fact_bindings.setdefault(path, set()).update(fact_ids)
+    return {
+        path: (tuple(sorted(dataset_ids)), tuple(sorted(fact_bindings[path])))
+        for path, dataset_ids in dataset_bindings.items()
+    }
 
 
 class PdfArtifactManifest(StrictModel):
@@ -266,6 +281,7 @@ class PdfArtifactManifest(StrictModel):
         default=(), alias="renderedChartIds", max_length=100
     )
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=2_000)
+    fact_ids: tuple[str, ...] = Field(default=(), alias="factIds", max_length=10_000)
     sections: tuple[str, ...] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
@@ -276,6 +292,8 @@ class PdfArtifactManifest(StrictModel):
             raise ValueError("PDF 图表引用不能重复")
         if len(self.citation_ids) != len(set(self.citation_ids)):
             raise ValueError("PDF 引用不能重复")
+        if len(self.fact_ids) != len(set(self.fact_ids)):
+            raise ValueError("PDF 事实引用不能重复")
         return self
 
 
@@ -307,6 +325,12 @@ def validate_markdown_markers(draft: ReportArtifactManifest, markdown: str) -> N
             "report_artifact_section_missing",
             f"Markdown 缺少关键章节标识：{', '.join(missing_sections)}。",
         )
+    missing_facts = [fact_id for fact_id in draft.fact_ids if f"[[fact:{fact_id}]]" not in markdown]
+    if missing_facts:
+        raise ReportingError(
+            "report_artifact_fact_missing",
+            f"Markdown 缺少事实引用标识：{', '.join(missing_facts)}。",
+        )
 
 
 def validate_rendered_artifacts(
@@ -337,5 +361,7 @@ def validate_rendered_artifacts(
         raise ReportingError("report_artifact_chart_missing", "PDF 未完整渲染报告图表。")
     if {item.citation_id for item in draft.citations} != set(rendered.citation_ids):
         raise ReportingError("report_artifact_citation_missing", "PDF 未完整保留数据引用。")
+    if set(draft.fact_ids) != set(rendered.fact_ids):
+        raise ReportingError("report_artifact_fact_missing", "PDF 未完整保留事实引用。")
     if not set(draft.sections).issubset(rendered.sections):
         raise ReportingError("report_artifact_section_missing", "PDF 缺少报告关键章节。")

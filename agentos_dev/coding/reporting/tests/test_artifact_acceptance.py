@@ -5,12 +5,14 @@ import json
 import subprocess
 import sys
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from agno.run import RunContext
+from agno.workflow.types import StepInput
 
 from agentos_dev.coding.reporting.delivery.acceptance import (
     REPORT_ARTIFACT_VALIDATOR_ID,
@@ -19,27 +21,43 @@ from agentos_dev.coding.reporting.delivery.acceptance import (
     build_report_artifact_validation_context,
 )
 from agentos_dev.coding.reporting.delivery.artifacts_v1 import (
-    REQUIRED_REPORT_SECTIONS,
     ArtifactFile,
+    ChartArtifact,
     Citation,
     ReportArtifactManifest,
     build_authoritative_manifest,
+)
+from agentos_dev.coding.reporting.hospital_operation import (
+    COMPREHENSIVE_SECTIONS,
+    AnalysisFactSetHandle,
+    FactEvidence,
+    FactSetBuilder,
+    FactSetHandle,
+    build_analysis_fact_set,
+    make_outline,
 )
 from agentos_dev.coding.reporting.models import ReportingError
 from agentos_dev.coding.reporting.workflow.query_pipeline import DatasetLineage
 from agentos_dev.coding.reporting.workflow.runtime import (
     REPORT_ANALYSIS_PLAN_STATE_KEY,
+    REPORT_ARTIFACTS_STATE_KEY,
     REPORT_DATA_REQUIREMENTS_STATE_KEY,
     REPORT_DATASET_LINEAGE_STATE_KEY,
     REPORT_EFFECTIVE_PROFILE_STATE_KEY,
+    REPORT_FACT_SET_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
     REPORT_RECONCILIATIONS_STATE_KEY,
+    REPORT_WORKFLOW_INPUT_STATE_KEY,
     ReportWorkflowRuntime,
     _accepted_artifacts_match_manifest,
     _observed_data_fact_cards,
     _report_machine_terms,
 )
 from agentos_dev.task_execution.acceptance import normalize_acceptance_contract
+from agentos_dev.task_execution.repository import MAX_INSTRUCTION_BYTES
+
+REPORT_SECTIONS = tuple(section.code for section in COMPREHENSIVE_SECTIONS)
+FACT_ID = "metric-income-total"
 
 
 def _identity(path: Path, root: Path) -> dict[str, object]:
@@ -55,12 +73,8 @@ def test_服务端manifest只使用workflow身份和真实文件元数据():
     markdown_path = "报表/智能分析/run/report.md"
     chart_path = "报表/智能分析/run/chart.png"
     markdown = (
-        "[[section:executive_summary]]\n## 执行摘要\n"
-        "![收入趋势](chart.png) [[citation:citation_001]]\n"
-        "[[section:scope_and_methodology]]\n## 分析范围与方法\n"
-        "[[section:key_findings]]\n## 关键发现\n"
-        "[[section:limitations]]\n## 局限性\n"
-        "[[section:recommendations]]\n## 建议\n"
+        "\n".join(f"[[section:{section}]]\n## {section}" for section in REPORT_SECTIONS)
+        + f"\n![收入趋势](chart.png) [[citation:citation_001]][[fact:{FACT_ID}]]\n"
     )
     lineage = (
         DatasetLineage(
@@ -87,13 +101,16 @@ def test_服务端manifest只使用workflow身份和真实文件元数据():
         markdown=markdown,
         accepted_artifacts=artifacts,
         lineage=lineage,
-        sections=tuple(sorted(REQUIRED_REPORT_SECTIONS)),
+        allowed_fact_ids=(FACT_ID,),
+        sections=REPORT_SECTIONS,
     )
 
     assert manifest.markdown.size == len(markdown.encode())
     assert manifest.markdown.sha256 == "c" * 64
     assert manifest.charts[0].sha256 == "d" * 64
     assert manifest.charts[0].dataset_ids == ("dataset-1",)
+    assert manifest.charts[0].fact_ids == (FACT_ID,)
+    assert manifest.fact_ids == (FACT_ID,)
     assert manifest.citations[0].citation_id == "citation_001"
     assert manifest.dataset_snapshot_hash != "f" * 64
 
@@ -103,12 +120,8 @@ def test_服务端manifest忽略未引用图片并只发布正文实际图表():
     chart_path = "报表/智能分析/run/chart.png"
     unused_path = "报表/智能分析/run/unused.png"
     markdown = (
-        "[[section:executive_summary]]\n## 执行摘要\n"
-        "![收入趋势](chart.png) [[citation:citation_001]]\n"
-        "[[section:scope_and_methodology]]\n## 分析范围与方法\n"
-        "[[section:key_findings]]\n## 关键发现\n"
-        "[[section:limitations]]\n## 局限性\n"
-        "[[section:recommendations]]\n## 建议\n"
+        "\n".join(f"[[section:{section}]]\n## {section}" for section in REPORT_SECTIONS)
+        + f"\n![收入趋势](chart.png) [[citation:citation_001]][[fact:{FACT_ID}]]\n"
     )
     lineage = (
         DatasetLineage(
@@ -136,7 +149,8 @@ def test_服务端manifest忽略未引用图片并只发布正文实际图表():
         markdown=markdown,
         accepted_artifacts=artifacts,
         lineage=lineage,
-        sections=tuple(sorted(REQUIRED_REPORT_SECTIONS)),
+        allowed_fact_ids=(FACT_ID,),
+        sections=REPORT_SECTIONS,
     )
 
     assert [chart.path for chart in manifest.charts] == [chart_path]
@@ -155,7 +169,7 @@ def test_服务端manifest拒绝模型提交额外manifest路径():
             coding_task_key="task",
             effective_profile_hash="e" * 64,
             markdown_path="report.md",
-            markdown="[[citation:citation_001]]",
+            markdown=f"[[citation:citation_001]][[fact:{FACT_ID}]]",
             accepted_artifacts=[
                 {"path": "report.md", "size": 1, "sha256": "a" * 64},
                 {"path": "forged.manifest.json", "size": 1, "sha256": "b" * 64},
@@ -171,7 +185,8 @@ def test_服务端manifest拒绝模型提交额外manifest路径():
                     sha256="d" * 64,
                 ),
             ),
-            sections=tuple(sorted(REQUIRED_REPORT_SECTIONS)),
+            allowed_fact_ids=(FACT_ID,),
+            sections=REPORT_SECTIONS,
         )
 
     assert getattr(captured.value, "code", None) == "report_artifact_acceptance_incomplete"
@@ -203,6 +218,7 @@ async def test_服务端生成manifest前拒绝验收后变化的图表():
             accepted_artifacts=accepted_artifacts,
             markdown_path=markdown_path,
             lineage=(),
+            allowed_fact_ids=(FACT_ID,),
             revision=1,
             coding_task_key="task",
             run_context=RunContext(run_id="run", session_id="session"),
@@ -236,15 +252,19 @@ def _request(
         if include_citation
         else ""
     )
+    fact_marker = f"[[fact:{FACT_ID}]]"
     section_markers = "\n".join(
-        f"[[section:{section}]]"
-        for section in sorted(REQUIRED_REPORT_SECTIONS)
-        if section != missing_section_marker
+        f"[[section:{section}]]" for section in REPORT_SECTIONS if section != missing_section_marker
     )
     machine_text = f"数据源：{visible_machine_term}\n" if visible_machine_term else ""
-    chart_reference = "![收入趋势](chart.png)\n" if include_chart and reference_chart else ""
+    chart_reference = (
+        f"![收入趋势](chart.png) [[citation:{bindings[0][0]}]][[fact:{FACT_ID}]]\n"
+        if include_chart and reference_chart
+        else ""
+    )
     markdown.write_text(
-        f"# 报告\n{citation}\n{section_markers}\n{machine_text}{visible_text}\n{chart_reference}",
+        f"# 报告\n{citation}\n{fact_marker}\n{section_markers}\n"
+        f"{machine_text}{visible_text}\n{chart_reference}",
         encoding="utf-8",
     )
     markdown_identity = _identity(markdown, tmp_path)
@@ -265,11 +285,12 @@ def _request(
     validation_context = build_report_artifact_validation_context(
         forbidden_visible_terms=("dwd_income_view", "dataset-1", "income"),
         observed_data_facts=bound_facts,
-        expected_sections=tuple(sorted(REQUIRED_REPORT_SECTIONS)),
+        expected_sections=REPORT_SECTIONS,
         expected_citation_bindings=tuple(
             (dataset_id, requirement_id) for _citation_id, dataset_id, requirement_id in bindings
         ),
         expected_citations=tuple(bindings),
+        expected_fact_ids=(FACT_ID,),
     )
     validation_context_path = tmp_path / "validation-context.json"
     validation_context_path.write_text(
@@ -303,6 +324,7 @@ def _request(
                             **chart_identity,
                             "chartId": "income-trend",
                             "datasetIds": ["dataset-1"],
+                            "factIds": [FACT_ID],
                             "mediaType": "image/png",
                         }
                     ]
@@ -317,7 +339,8 @@ def _request(
                     }
                     for citation_id, dataset_id, requirement_id in bindings
                 ],
-                "sections": (sorted(REQUIRED_REPORT_SECTIONS) if sections is None else sections),
+                "factIds": [FACT_ID],
+                "sections": (list(REPORT_SECTIONS) if sections is None else sections),
             },
             ensure_ascii=False,
         ),
@@ -369,17 +392,16 @@ def test_reporting服务端validator无需模型manifest即可验收markdown和�
     manifest = tmp_path / "report.manifest.json"
     markdown.write_text(
         "# 经营分析\n"
-        + "\n".join(
-            f"[[section:{section}]]\n## 中文章节" for section in sorted(REQUIRED_REPORT_SECTIONS)
-        )
-        + "\n![收入趋势](chart.png) [[citation:citation_001]]\n",
+        + "\n".join(f"[[section:{section}]]\n## 中文章节" for section in REPORT_SECTIONS)
+        + f"\n![收入趋势](chart.png) [[citation:citation_001]][[fact:{FACT_ID}]]\n",
         encoding="utf-8",
     )
     chart.write_bytes(b"png-content")
     context = build_report_artifact_validation_context(
-        expected_sections=tuple(sorted(REQUIRED_REPORT_SECTIONS)),
+        expected_sections=REPORT_SECTIONS,
         expected_citation_bindings=(("dataset-1", "income"),),
         expected_citations=(("citation_001", "dataset-1", "income"),),
+        expected_fact_ids=(FACT_ID,),
     )
     context_path = tmp_path / "validation-context.json"
     context_path.write_text(
@@ -489,12 +511,111 @@ def test_reporting正式回执必须精确包含manifest声明的全部产物():
         effectiveProfileHash="b" * 64,
         markdown=ArtifactFile(path="report.md", mediaType="text/markdown", size=2, sha256="c" * 64),
         citations=(Citation(citationId="c", datasetId="d", requirementId="r"),),
-        sections=tuple(sorted(REQUIRED_REPORT_SECTIONS)),
+        factIds=(FACT_ID,),
+        sections=REPORT_SECTIONS,
     )
     markdown_artifact = {"path": "report.md", "size": 2, "sha256": "c" * 64}
 
     assert not _accepted_artifacts_match_manifest(manifest, "report.manifest.json", [])
     assert _accepted_artifacts_match_manifest(manifest, "report.manifest.json", [markdown_artifact])
+
+
+@pytest.mark.anyio
+async def test_发布门禁消费已验收manifest的正文和图表fact绑定(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def evaluate(_fact_set, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            formal_release_allowed=False,
+            model_dump=lambda **_kwargs: {
+                "reportType": "topic",
+                "formalReleaseAllowed": False,
+                "internalDraftAllowed": True,
+                "factSetHash": "f" * 64,
+                "issues": [],
+            },
+        )
+
+    monkeypatch.setattr(
+        "agentos_dev.coding.reporting.workflow.runtime.evaluate_publication_gate",
+        evaluate,
+    )
+    outline = make_outline(
+        "topic",
+        title="收入专题报告",
+        selected_codes=("income",),
+    )
+    manifest = ReportArtifactManifest(
+        reportId="run",
+        revision=1,
+        codingTaskKey="task",
+        datasetSnapshotHash="a" * 64,
+        effectiveProfileHash="b" * 64,
+        markdown=ArtifactFile(
+            path="report.md",
+            mediaType="text/markdown",
+            size=1,
+            sha256="c" * 64,
+        ),
+        charts=(
+            ChartArtifact(
+                path="chart.png",
+                mediaType="image/png",
+                size=1,
+                sha256="d" * 64,
+                chartId="income-chart",
+                datasetIds=("dataset-income",),
+                factIds=("metric-income-month",),
+            ),
+        ),
+        citations=(
+            Citation(
+                citationId="citation-income",
+                datasetId="dataset-income",
+                requirementId="income",
+            ),
+        ),
+        factIds=("metric-income-total", "metric-income-month"),
+        sections=tuple(section.code for section in outline.sections),
+    )
+    state = {
+        REPORT_WORKFLOW_INPUT_STATE_KEY: {
+            "version": "1",
+            "reportGoal": "分析收入经营情况",
+            "reportType": "topic",
+            "domains": ["income"],
+            "period": {"start": "2025-01-01", "end": "2025-12-31"},
+            "sourceIds": ["operations"],
+        },
+        REPORT_OUTLINE_STATE_KEY: outline.model_dump(mode="json", by_alias=True),
+        REPORT_ARTIFACTS_STATE_KEY: {"draft": manifest.model_dump(mode="json", by_alias=True)},
+    }
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._workflow_result = lambda _state: {
+        "jobId": "job",
+        "revision": 0,
+        "markdownPath": "report.md",
+        "pdfPath": "report.pdf",
+        "pdfSize": 1,
+        "pdfSha256": "e" * 64,
+        "validation": {"ok": True},
+    }
+
+    async def load_fact_set(_context):
+        return object()
+
+    runtime._load_fact_set = load_fact_set
+    context = RunContext(run_id="run", session_id="session", session_state=state)
+
+    result = await runtime.publish_report(StepInput(input={}), context)
+
+    assert result.content["status"] == "internal_draft"
+    assert captured["referenced_fact_ids"] == (
+        "metric-income-total",
+        "metric-income-month",
+    )
+    assert captured["chart_fact_ids"] == ("metric-income-month",)
 
 
 def test_reporting给小模型的事实卡保持有界且指向完整事实():
@@ -584,7 +705,7 @@ def test_reporting服务端validator明确返回markdown_marker修复目标(tmp_
         _request(
             tmp_path,
             include_citation=False,
-            missing_section_marker="executive_summary",
+            missing_section_marker="operation_overview",
         ),
     )
 
@@ -594,8 +715,8 @@ def test_reporting服务端validator明确返回markdown_marker修复目标(tmp_
     assert requirement["details"]["repairTarget"] == "report.md"
     assert requirement["details"]["missingCitationIds"] == ["income"]
     assert requirement["details"]["missingCitationMarkers"] == ["[[citation:income]]"]
-    assert requirement["details"]["missingSectionIds"] == ["executive_summary"]
-    assert requirement["details"]["missingSectionMarkers"] == ["[[section:executive_summary]]"]
+    assert requirement["details"]["missingSectionIds"] == ["operation_overview"]
+    assert requirement["details"]["missingSectionMarkers"] == ["[[section:operation_overview]]"]
     assert requirement["details"]["repairInstructions"] == [
         "只在 report.md 中补齐上述协议标记，不得创建或修改 manifest。",
         "标记应紧邻对应中文结论或章节标题；章节标题继续使用 effectiveProfile 中的中文 title。服务端会自动重算 Markdown 元数据。",
@@ -1049,7 +1170,7 @@ def test_reporting服务端validator拒绝篡改章节或数据引用绑定(tmp_
 
     details = result["requirements"][0]["details"]
     assert details["repairTarget"] == "report.manifest.json"
-    assert details["manifestSectionMismatch"]["expected"] == sorted(REQUIRED_REPORT_SECTIONS)
+    assert details["manifestSectionMismatch"]["expected"] == list(REPORT_SECTIONS)
     assert details["manifestCitationBindingMismatch"]["missing"] == [
         {"datasetId": "dataset-1", "requirementId": "income"}
     ]
@@ -1059,23 +1180,33 @@ def test_reporting服务端validator拒绝篡改章节或数据引用绑定(tmp_
     assert "不得删除、替换或伪造绑定" in details["repairInstructions"][0]
 
 
-def test_reporting服务端validator在coding阶段拒绝缺少固定code的sections(tmp_path: Path):
+@pytest.mark.parametrize(
+    "sections",
+    [
+        list(REPORT_SECTIONS[:-1]),
+        [*REPORT_SECTIONS, "invented_section"],
+        [REPORT_SECTIONS[1], REPORT_SECTIONS[0], *REPORT_SECTIONS[2:]],
+    ],
+)
+def test_reporting服务端validator按workflow提纲拒绝缺章增章或重排(
+    tmp_path: Path,
+    sections: list[str],
+):
     result = _validate(
         tmp_path,
-        _request(
-            tmp_path,
-            sections=["执行摘要", "分析范围与方法", "关键发现", "局限性", "建议"],
-        ),
+        _request(tmp_path, sections=sections),
     )
 
     requirement = result["requirements"][0]
     assert requirement["passed"] is False
-    assert {
-        issue["expectedContains"] for issue in requirement["details"]["schemaErrors"]
-    } == REQUIRED_REPORT_SECTIONS
-    assert requirement["details"]["repairTarget"] == "report.manifest.json"
-    assert requirement["details"]["authorizedManifestMutationPaths"] == ["sections"]
-    assert "不得整份覆盖 manifest" in requirement["details"]["repairInstructions"][0]
+    details = requirement["details"]
+    assert "schemaErrors" not in details
+    assert details["manifestSectionMismatch"] == {
+        "expected": list(REPORT_SECTIONS),
+        "received": sections,
+    }
+    assert details["repairTarget"] == "report.manifest.json"
+    assert details["authorizedManifestMutationPaths"] == ["sections", "citations"]
 
 
 @pytest.mark.anyio
@@ -1132,16 +1263,66 @@ async def test_coding任务启动即绑定正式产物契约且workflow不再二
     runtime.workspace_service = Workspace()
     runtime.task_runner = TaskRunner()
     runtime.report_worker = SimpleNamespace(id="report-worker")
-    section_titles = {
-        code: f"中文章节{index}"
-        for index, code in enumerate(sorted(REQUIRED_REPORT_SECTIONS), start=1)
-    }
+    outline = make_outline("comprehensive", title="医院经营分析报告")
+    fact_set_builder = FactSetBuilder(
+        hospital="瑞金医院",
+        period_start=date(2025, 1, 1),
+        period_end=date(2025, 12, 31),
+        generated_at="2026-08-04T00:00:00Z",
+    )
+    for index in range(100):
+        fact_set_builder.add(
+            fact_id=f"income-{index:03d}",
+            domain="income",
+            metric="actual_medical_income",
+            period=f"2025-{index % 12 + 1:02d}",
+            value=str(index),
+            raw_unit="元",
+            evidence=FactEvidence(
+                datasetId="dataset-income",
+                schemaHash="a" * 64,
+                sqlHash="b" * 64,
+                fileHash="c" * 64,
+                references=("citation-income",),
+            ),
+        )
+    fact_set = fact_set_builder.build()
+    fact_set_content = json.dumps(
+        fact_set.public_dict(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+    assert len(fact_set_content) > MAX_INSTRUCTION_BYTES
+    analysis_fact_set = build_analysis_fact_set(fact_set)
+    analysis_fact_set_content = json.dumps(
+        analysis_fact_set.public_dict(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+    analysis_handle = AnalysisFactSetHandle(
+        path="报表/智能分析/workflow-run/analysis-fact-set.json",
+        size=len(analysis_fact_set_content),
+        sha256=hashlib.sha256(analysis_fact_set_content).hexdigest(),
+        sourceFactSetHash=fact_set.fact_set_hash,
+        factCount=len(analysis_fact_set.facts),
+    )
+    fact_set_handle = FactSetHandle(
+        path="报表/智能分析/workflow-run/fact-set.json",
+        size=len(fact_set_content),
+        sha256=hashlib.sha256(fact_set_content).hexdigest(),
+        factSetHash=fact_set.fact_set_hash,
+        factCount=len(fact_set.facts),
+        domainCounts={"income": len(fact_set.facts)},
+        analysisFactSet=analysis_handle,
+    )
     runtime._state = lambda _context: {
-        REPORT_OUTLINE_STATE_KEY: {
-            "title": "医院经营分析报告",
-            "sections": list(section_titles.values()),
-        },
+        REPORT_OUTLINE_STATE_KEY: outline.model_dump(mode="json", by_alias=True),
         REPORT_EFFECTIVE_PROFILE_STATE_KEY: {},
+        REPORT_FACT_SET_STATE_KEY: fact_set_handle.public_dict(),
         REPORT_ANALYSIS_PLAN_STATE_KEY: {},
         REPORT_DATA_REQUIREMENTS_STATE_KEY: [],
         REPORT_DATASET_LINEAGE_STATE_KEY: [],
@@ -1157,10 +1338,6 @@ async def test_coding任务启动即绑定正式产物契约且workflow不再二
     runtime._data_shapes = lambda _context: ()
     runtime._profile = lambda _context: SimpleNamespace(
         effective_profile_hash="b" * 64,
-        sections=tuple(
-            SimpleNamespace(code=code, title=section_titles[code])
-            for code in sorted(REQUIRED_REPORT_SECTIONS)
-        ),
     )
 
     async def write_validation_context(_thread_id, path, context):
@@ -1168,6 +1345,16 @@ async def test_coding任务启动即绑定正式产物契约且workflow不再二
         return {"path": path, "size": 1, "sha256": "e" * 64}
 
     runtime._write_artifact_validation_context = write_validation_context
+
+    async def load_fact_set(_context):
+        return fact_set
+
+    runtime._load_fact_set = load_fact_set
+
+    async def load_analysis_fact_set(_context):
+        return analysis_fact_set
+
+    runtime._load_analysis_fact_set = load_analysis_fact_set
 
     async def load_manifest(_manifest_path, **_kwargs):
         return ReportArtifactManifest(
@@ -1185,7 +1372,8 @@ async def test_coding任务启动即绑定正式产物契约且workflow不再二
                 sha256="c" * 64,
             ),
             citations=(Citation(citationId="c", datasetId="d", requirementId="r"),),
-            sections=tuple(sorted(REQUIRED_REPORT_SECTIONS)),
+            factIds=(FACT_ID,),
+            sections=REPORT_SECTIONS,
         )
 
     runtime._build_and_write_artifact_manifest = load_manifest
@@ -1216,17 +1404,149 @@ async def test_coding任务启动即绑定正式产物契约且workflow不再二
     assert contract["requirements"][0]["parameters"]["renderContract"] == {
         "title": "医院经营分析报告",
         "sections": [
-            {"code": code, "title": title, "protocolMarker": True}
-            for code, title in section_titles.items()
+            {"code": section.code, "title": section.title, "protocolMarker": True}
+            for section in outline.sections
         ],
         "citationIds": [],
+        "facts": [],
+        "requireTable": True,
     }
     assert (
         instruction["draftSections"]
         == contract["requirements"][0]["parameters"]["renderContract"]["sections"]
     )
-    assert instruction["observedDataFactCards"] == []
+    assert instruction["factSetIdentity"] == {
+        "factSetHash": fact_set_handle.fact_set_hash,
+        "factCount": fact_set_handle.fact_count,
+        "metricFactCount": fact_set_handle.metric_fact_count,
+        "domainCounts": fact_set_handle.domain_counts,
+    }
+    assert instruction["analysisFactSetRef"] == analysis_handle.public_dict()
+    assert "factSetRef" not in instruction
+    assert fact_set_handle.path not in json.dumps(instruction, ensure_ascii=False)
+    assert "factSet" not in instruction
+    assert (
+        len(
+            json.dumps(
+                instruction,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+        )
+        <= MAX_INSTRUCTION_BYTES
+    )
+    assert "datasets" not in instruction
+    assert "dataRequirements" not in instruction
+    assert "effectiveProfile" not in instruction
+    assert "analysisPlan" not in instruction
     assert (
         result["markdownPath"]
         == contract["requirements"][0]["parameters"]["expectedIdentity"]["markdownPath"]
     )
+
+
+@pytest.mark.anyio
+async def test_factset物化后只在状态保存受信引用且可恢复并拒绝篡改():
+    files: dict[str, bytes] = {}
+
+    class Fs:
+        async def upload_file(self, content, path):
+            files[path] = content
+
+    sandbox = SimpleNamespace(id="sandbox", fs=Fs())
+
+    class Workspace:
+        @staticmethod
+        def _validate_content(content):
+            assert len(content) < 200 * 1024 * 1024
+
+        @staticmethod
+        def normalize_path(path, *, allow_root=False):
+            assert allow_root is False
+            return path, f"/workspace/{path}"
+
+        @asynccontextmanager
+        async def _async_client(self):
+            yield object()
+
+        async def _asandbox_for(self, _client, thread_id):
+            assert thread_id == "thread"
+            return sandbox
+
+        async def _aensure_directory(self, _sandbox, _path):
+            return None
+
+        async def _adownload_file(self, _sandbox, path, _maximum):
+            return files[path]
+
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = Workspace()
+    runtime._scope = lambda _context: {
+        "userId": "user",
+        "threadId": "thread",
+    }
+    state: dict[str, Any] = {}
+    runtime._state = lambda _context: state
+    context = RunContext(run_id="workflow-run", session_id="session", user_id="user")
+    fact_set = FactSetBuilder(
+        hospital="瑞金医院",
+        period_start=date(2025, 1, 1),
+        period_end=date(2025, 12, 31),
+        generated_at="2026-08-04T00:00:00Z",
+    ).build()
+
+    handle = await runtime._materialize_fact_set(context, fact_set)
+    state[REPORT_FACT_SET_STATE_KEY] = handle.public_dict()
+
+    assert await runtime._load_fact_set(context) == fact_set
+    assert await runtime._load_analysis_fact_set(context) == build_analysis_fact_set(fact_set)
+    assert state[REPORT_FACT_SET_STATE_KEY] == handle.public_dict()
+    assert "facts" not in state[REPORT_FACT_SET_STATE_KEY]
+    assert handle.analysis_fact_set is not None
+    assert set(files) == {
+        "/workspace/报表/智能分析/workflow-run/fact-set.json",
+        "/workspace/报表/智能分析/workflow-run/analysis-fact-set.json",
+    }
+
+    _relative, analysis_remote = runtime.workspace_service.normalize_path(
+        handle.analysis_fact_set.path, allow_root=False
+    )
+    analysis_content = files[analysis_remote]
+    analysis_payload = json.loads(analysis_content)
+    assert analysis_payload["sourceFactSetHash"] == fact_set.fact_set_hash
+    assert "rawValue" not in analysis_content.decode("utf-8")
+    files[analysis_remote] = analysis_content[:-1] + b" "
+    with pytest.raises(ReportingError) as captured:
+        await runtime._load_analysis_fact_set(context)
+    assert captured.value.code == "report_analysis_fact_set_changed"
+    files[analysis_remote] = analysis_content
+
+    _relative, remote = runtime.workspace_service.normalize_path(handle.path, allow_root=False)
+    files[remote] = files[remote][:-1] + b" "
+    with pytest.raises(ReportingError) as captured:
+        await runtime._load_fact_set(context)
+    assert captured.value.code == "report_fact_set_changed"
+
+
+@pytest.mark.anyio
+async def test_factset恢复拒绝引用当前run之外的文件():
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = SimpleNamespace()
+    runtime._scope = lambda _context: {"userId": "user", "threadId": "thread"}
+    state = {
+        REPORT_FACT_SET_STATE_KEY: FactSetHandle(
+            path="报表/智能分析/other-run/fact-set.json",
+            size=10,
+            sha256="a" * 64,
+            factSetHash="b" * 64,
+            factCount=0,
+            domainCounts={},
+        ).public_dict()
+    }
+    runtime._state = lambda _context: state
+
+    with pytest.raises(ReportingError) as captured:
+        await runtime._load_fact_set(
+            RunContext(run_id="workflow-run", session_id="session", user_id="user")
+        )
+    assert captured.value.code == "report_fact_set_reference_invalid"
