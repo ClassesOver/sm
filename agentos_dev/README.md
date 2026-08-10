@@ -73,6 +73,10 @@ SiliconFlow、千问 DashScope 兼容端点和暴露对应扩展字段的 vLLM �
 结构化 planner 由 `AGENT_REPORT_ENABLE_THINKING=true` 控制 thinking，并由
 `AGENT_REPORT_PLANNER_REASONING_EFFORT=high` 独立控制推理强度；普通 Assistant/Team 由
 `AGENT_ASSISTANT_ENABLE_THINKING=false` 控制，公开 facade 始终关闭 thinking。
+`AGENT_REPORT_ENABLE_VISION=true` 时，Report Worker 暴露 `view_image`，但图片只发送给
+`AGENT_REPORT_VISION_MODEL` 指定的短生命周期视觉 Agent；该 Agent 无工具、无历史和数据库，
+主 Worker 始终只接收结构化文字反馈。视觉模型复用 `OPENAI_BASE_URL`、`OPENAI_API_KEY`、
+`AGENT_MODEL_TIMEOUT_SECONDS` 和有限模型请求重试，审查不可用时不会阻断图表登记或报告发布。
 因此 CLI 不导入
 `agentos_dev.app`，同时与生产 `/agui` 共用 Task/Attempt/Execution、租约、续跑和完成门禁。
 PostgreSQL 中 Coding Repository 使用独立的 `agentos_coding` schema 和版本表，不写入 Agno
@@ -170,7 +174,8 @@ Coding `terminal.command` 以 UTF-8 字节计最多 32 KiB；大段文件内容�
 | `AGENT_REPORT_CODING_THINKING_BUDGET` | `16384` | 控制 Report Coding worker thinking token 预算 |
 | `AGENT_REPORT_ENABLE_THINKING` | `true` | 控制 Reporting planner thinking |
 | `AGENT_REPORT_PLANNER_REASONING_EFFORT` | `high` | 控制 Reporting planner 推理强度 |
-| `AGENT_REPORT_ENABLE_VISION` | `false` | 控制 Report Worker 是否暴露图片检查工具并向模型发送媒体 |
+| `AGENT_REPORT_ENABLE_VISION` | `false` | 控制 Report Worker 是否暴露独立图片视觉审查工具 |
+| `AGENT_REPORT_VISION_MODEL` | `qwen3.6-flash` | 独立视觉审查模型；复用现有 OpenAI 兼容地址与凭据 |
 | `AGENT_REPORT_CONTEXT_TOKEN_BUDGET` | `1048576` | Reporting 专用完整上下文窗口上限 |
 | `AGENT_REPORT_OUTPUT_TOKEN_RESERVE` | `393216` | Reporting high/max 推理最大输出预留（384K tokens） |
 

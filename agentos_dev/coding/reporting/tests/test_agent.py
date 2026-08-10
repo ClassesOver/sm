@@ -215,7 +215,11 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert [skill.name for skill in coding_agent.skills.get_all_skills()] == ["sandbox-tooling"]
     assert coding_agent.id not in {member.id for member in app.assistant_team.members}
     assert report_worker.id == "report-worker"
-    assert [skill.name for skill in report_worker.skills.get_all_skills()] == ["sandbox-tooling"]
+    assert {skill.name for skill in report_worker.skills.get_all_skills()} == {
+        "sandbox-tooling",
+        "report-artifact",
+        "report-visualization",
+    }
     assert report_worker.use_instruction_tags is True
     assert report_worker.send_media_to_model is False
     assert report_worker.model is not coding_agent.model
@@ -286,6 +290,7 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
         assert "示例：" in tool.description, tool.name
     assert "view_image" not in worker_tools[0].async_functions
     assert "view_image" not in worker_tools_without_injected_context[0].async_functions
+    assert worker_tools[0]._vision_reviewer is None
     assert "verify" not in worker_tools[0].async_functions
     assert worker_tools[0].kernel.validator_registry.script_sha256() == {}
     assert coding_tools[0].kernel.validator_registry.script_sha256() == {}
@@ -340,8 +345,13 @@ def test_report_worker_exposes_image_tool_only_when_vision_is_enabled(tmp_path):
         report_enable_vision=True,
     )
 
-    assert report_worker.send_media_to_model is True
-    assert "view_image" in report_worker.tools()[0].async_functions
+    tools = report_worker.tools()[0]
+    assert report_worker.send_media_to_model is False
+    assert "view_image" in tools.async_functions
+    assert "独立视觉模型" in tools.async_functions["view_image"].description
+    assert "不向 Report Worker 回传媒体" in tools.async_functions["view_image"].description
+    assert tools._vision_reviewer is not None
+    assert tools._vision_reviewer.model_id == app.settings.report_vision_model
 
 
 def test_report_planner_uses_report_thinking_without_mutating_coding_worker():
@@ -569,13 +579,25 @@ async def test_reporting_tool_hook跨工具和错误码累计到阶段预算时�
         }
 
     attempts = [
-        ("render_report_section", "report_section_chart_unknown", {"sectionCode": "a", "blocks": []}),
+        (
+            "render_report_section",
+            "report_section_chart_unknown",
+            {"sectionCode": "a", "blocks": []},
+        ),
         ("begin_report_draft", "report_draft_state_invalid", {}),
         ("register_report_charts", "report_chart_registration_conflict", {"charts": []}),
-        ("render_report_section", "report_section_already_submitted", {"sectionCode": "a", "blocks": []}),
+        (
+            "render_report_section",
+            "report_section_already_submitted",
+            {"sectionCode": "a", "blocks": []},
+        ),
         ("finalize_report_draft", "report_draft_sections_incomplete", {}),
         ("register_report_charts", "report_chart_registration_conflict", {"charts": []}),
-        ("render_report_section", "report_tool_arguments_invalid", {"sectionCode": "a", "blocks": []}),
+        (
+            "render_report_section",
+            "report_tool_arguments_invalid",
+            {"sectionCode": "a", "blocks": []},
+        ),
     ]
     for function_name, code, arguments in attempts:
         result = await normalize_reporting_tool_arguments(

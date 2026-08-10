@@ -9,6 +9,10 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 from ..contract import StrictModel
 from ..models import ReportingError
 
+_LEADING_SECTION_HEADING = re.compile(
+    r"\A#{1,2}[ \t]+(?P<title>[^\r\n]*?)(?:[ \t]+#+)?[ \t]*(?:\r?\n|\Z)"
+)
+
 
 class ReportSectionDefinition(StrictModel):
     code: str = Field(min_length=1, max_length=128)
@@ -86,9 +90,7 @@ class ReportDraftBlock(StrictModel):
     @field_validator("analysis_ids")
     @classmethod
     def normalize_analysis_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(
-            not re.fullmatch(r"analysis_[0-9]{3,6}", item) for item in value
-        ):
+        if any(not re.fullmatch(r"analysis_[0-9]{3,6}", item) for item in value):
             raise ValueError("正文 analysisId 格式无效")
         return tuple(dict.fromkeys(value))
 
@@ -178,6 +180,15 @@ def _marker_lines(
     return f"{text}{markers}"
 
 
+def _strip_duplicate_section_heading(markdown: str, *, expected_title: str) -> tuple[str, bool]:
+    match = _LEADING_SECTION_HEADING.match(markdown)
+    if match is None or match.group("title").strip() != expected_title.strip():
+        return markdown, False
+    # 正式章节标题以 effectiveProfile 为唯一事实来源，服务端会在所有正文块之前统一插入。
+    # 这里只移除首块开头精确同名的 H1/H2，避免模型重复外层标题，同时保留其余子标题和正文。
+    return markdown[match.end() :].lstrip("\r\n"), True
+
+
 def assemble_report_markdown(
     draft: ReportDraft,
     *,
@@ -238,15 +249,30 @@ def assemble_report_markdown(
         markdown_parts.append(
             f"[[section:{definition.code}]]\n{heading}" if definition.protocol_marker else heading
         )
-        for block in section.blocks:
+        for block_index, block in enumerate(section.blocks):
+            block_markdown = block.markdown
+            if block_index == 0:
+                block_markdown, heading_removed = _strip_duplicate_section_heading(
+                    block_markdown,
+                    expected_title=definition.title,
+                )
+                if heading_removed:
+                    auto_fixes.append(
+                        {
+                            "code": "duplicate_section_heading_removed",
+                            "sectionCode": definition.code,
+                            "blockId": block.block_id,
+                            "title": definition.title,
+                        }
+                    )
             if (
-                "[[citation:" in block.markdown
-                or "[[section:" in block.markdown
-                or "[[analysis:" in block.markdown
-                or "[[table:" in block.markdown
-                or "[[/table:" in block.markdown
-                or "<!-- repair-warning:" in block.markdown
-                or "![" in block.markdown
+                "[[citation:" in block_markdown
+                or "[[section:" in block_markdown
+                or "[[analysis:" in block_markdown
+                or "[[table:" in block_markdown
+                or "[[/table:" in block_markdown
+                or "<!-- repair-warning:" in block_markdown
+                or "![" in block_markdown
             ):
                 raise ReportingError(
                     "report_draft_protocol_injection",
@@ -260,7 +286,7 @@ def assemble_report_markdown(
                 raise ReportingError("report_draft_chart_unknown", "草稿引用了未注册图表。")
             markdown_parts.append(
                 _marker_lines(
-                    block.markdown,
+                    block_markdown,
                     block.citation_ids,
                     block.analysis_ids,
                 )
@@ -281,7 +307,9 @@ def assemble_report_markdown(
                     + f"\n\n*图表：{chart.title}*"
                 )
 
-    if require_table and not any("|" in block.markdown for section in draft.sections for block in section.blocks):
+    if require_table and not any(
+        "|" in block.markdown for section in draft.sections for block in section.blocks
+    ):
         raise ReportingError("report_draft_table_missing", "当前报告至少需要一个 Markdown 表格。")
 
     unused = sorted(set(chart_registry) - set(referenced_chart_ids))

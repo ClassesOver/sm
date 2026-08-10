@@ -35,6 +35,7 @@ def test_settings_defaults():
     assert current.report_enable_thinking is True
     assert current.report_planner_reasoning_effort == "high"
     assert current.report_enable_vision is False
+    assert current.report_vision_model == "qwen3.6-flash"
     assert current.model_timeout_seconds == 900
     assert current.tracing_enabled is False
     assert current.tracing_phoenix_endpoint is None
@@ -81,6 +82,7 @@ def test_agent_feature_flags_can_be_disabled():
         AGENT_REPORT_ENABLE_THINKING="false",
         AGENT_REPORT_PLANNER_REASONING_EFFORT="high",
         AGENT_REPORT_ENABLE_VISION="true",
+        AGENT_REPORT_VISION_MODEL="vision-model",
         AGENT_HISTORY_TOKEN_BUDGET="32768",
         AGENT_CONTEXT_TOKEN_BUDGET="131072",
         AGENT_OUTPUT_TOKEN_RESERVE="16384",
@@ -102,6 +104,7 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.report_enable_thinking is False
     assert current.report_planner_reasoning_effort == "high"
     assert current.report_enable_vision is True
+    assert current.report_vision_model == "vision-model"
     assert current.history_token_budget == 32768
     assert current.context_token_budget == 131072
     assert current.output_token_reserve == 16384
@@ -113,9 +116,13 @@ def test_model_timeout_comes_from_environment():
     assert settings(AGENT_MODEL_TIMEOUT_SECONDS="3600").model_timeout_seconds == 3600
 
 
-@pytest.mark.parametrize(
-    "name", ["AGENT_CODING_TEMPERATURE", "AGENT_REPORT_CODING_TEMPERATURE"]
-)
+def test_report_vision_model_comes_from_environment():
+    assert settings(AGENT_REPORT_VISION_MODEL="custom-vision").report_vision_model == (
+        "custom-vision"
+    )
+
+
+@pytest.mark.parametrize("name", ["AGENT_CODING_TEMPERATURE", "AGENT_REPORT_CODING_TEMPERATURE"])
 @pytest.mark.parametrize("value", ["invalid", "-0.1", "2.1"])
 def test_invalid_coding_temperature_is_rejected(name, value):
     with pytest.raises(ValueError, match=name):

@@ -102,14 +102,18 @@ REPORT_AGENT_INSTRUCTIONS = [
         "不得把原始行顺序解释为时间序列。"
     ),
     (
-        "profileModelView 的 chartOpportunities 只是候选。图表类型必须按数据实际和管理问题选择，"
-        "可使用趋势带、同比哑铃、Pareto、箱线图、热力矩阵、子弹图、偏差瀑布、漏斗、散点或气泡象限；"
-        "不设置固定数量、固定类型或全部候选覆盖要求。"
+        "profileModelView 的 chartOpportunities 只是候选。需要按数据实际和管理问题选择图表类型、"
+        "设计多图组合或修正图片时，按需读取 report-visualization Skill；需要示例时再读取其"
+        " chart-cookbook.md。Skill 和示例都不是模板或验收条件，不设置固定数量、固定类型或"
+        "全部候选覆盖要求。"
     ),
     (
         "图表脚本在保存前完成布局收敛并检查标题、坐标轴、图例、数据标签和注释边界；"
         "类别密集时可改用图例、排序条形图或标签避让，不把大量小项文字直接堆在饼图周围。"
         "仅在工具列表实际包含 view_image 时调用它检查最终图片；工具不存在时不得尝试调用。"
+        "反馈出现空白、截断、严重重叠或文字不可读，或 requiresRevision=true 时，必须修正并"
+        "重新调用 view_image 复查；普通警告和建议是可选视觉反馈，不作为服务端图表登记或发布门禁。"
+        "status=warning 且 code=report_vision_unavailable 时继续执行，不重复调用制造无效重试。"
     ),
     (
         "较长分析优先使用一个主脚本，例如 analysis/report_analysis.py；可按分析复杂度拆分辅助模块。"
@@ -127,8 +131,21 @@ REPORT_AGENT_INSTRUCTIONS = [
         "并可通过 evidencePaths 让服务端记录文件身份，避免把 Python 排错与 Markdown 成稿交错累积。"
     ),
     "按 begin_report_draft 返回的顺序逐章调用 render_report_section；sectionCode 原样复制服务端返回值。",
-    "每个 block 的 markdown 直接使用 Markdown 完成标题、段落、列表、引用、强调和表格；章节内部可自由组织丰富的管理叙事。",
-    "正文块只提交已注册 citationIds、analysisIds 和 chartIds；引用由 datasetId、requirementId、snapshotHash 共同绑定，不得猜测或改写。",
+    (
+        "章节 title 由服务端统一插入，block 不得重复一级或二级章节标题；"
+        "章节内部标题从三级标题开始，并可使用段落、列表、引用、强调和表格组织管理叙事。"
+    ),
+    (
+        "最终成稿必须图表结合，同时包含按管理问题选择的图表和数据汇总表。"
+        "核心经营指标章节使用标准 Markdown 管道表，标明期间、单位和比较口径，"
+        "直接写入相关 render_report_section 正文；不得将表格渲染为图片或登记为 chartId。"
+        "具体图表类型、表格数量和列项根据数据实际决定，不设置固定模板、固定数量或服务端门禁。"
+    ),
+    (
+        "正文块只提交已注册 citationIds、analysisIds 和 chartIds；引用由 datasetId、requirementId、"
+        "snapshotHash 共同绑定，不得猜测或改写。全部已注册 citationIds 必须在与对应数据事实相关的"
+        "正文块中至少引用一次；finalize_report_draft 返回缺失 ID 时，替换相关完整章节补齐后重试。"
+    ),
     (
         "每张图表的源文件最终定稿后一次登记工作区源路径、中文标题、中文替代文字和 citationIds；"
         "登记后不得改写或复用同一 chartId 的源文件。误登记且未被章节引用的预览图或被替代图，"
@@ -159,6 +176,8 @@ def build_report_agent_instructions(run_context: RunContext) -> list[str]:
         CODING_FINISH_VERIFICATION_INSTRUCTION,
     }
     coding_rules = [
-        rule for rule in build_coding_agent_instructions(run_context) if rule not in verification_rules
+        rule
+        for rule in build_coding_agent_instructions(run_context)
+        if rule not in verification_rules
     ]
     return [*coding_rules, *REPORT_AGENT_INSTRUCTIONS]

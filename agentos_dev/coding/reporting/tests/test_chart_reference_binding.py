@@ -123,9 +123,7 @@ async def test_finalize前要求正文引用全部已登记图表(monkeypatch, t
         return {
             "ok": True,
             "status": "completed",
-            "files": [
-                {"source": item["source"], "path": item["destination"]} for item in copies
-            ],
+            "files": [{"source": item["source"], "path": item["destination"]} for item in copies],
             "execution_id": "copy-1",
             "mutation_sequence": 1,
         }
@@ -167,6 +165,63 @@ async def test_finalize前要求正文引用全部已登记图表(monkeypatch, t
 
     assert finalized["ok"] is True
     assert finalized["nextToolCall"]["name"] == "finish_task"
+
+
+@pytest.mark.anyio
+async def test_finalize前拒绝未覆盖服务端citation(monkeypatch, tmp_path):
+    context = RunContext(
+        run_id="run",
+        session_id="thread",
+        user_id="user",
+        session_state={},
+    )
+    toolkit = build_report_worker_tools(
+        service(tmp_path),
+        app.coding_repository,
+        run_context=context,
+    )[0]
+
+    async def scope(_run_context):
+        return SimpleNamespace(
+            attempt_no=1,
+            thread_id="thread",
+            task=SimpleNamespace(mutation_sequence=0),
+        )
+
+    async def render_contract(_scope):
+        return (
+            "运营报告",
+            "reports/report.md",
+            (
+                ReportSectionDefinition(code="budget", title="预算执行"),
+                ReportSectionDefinition(code="income", title="收入联动"),
+            ),
+            ("citation_001", "citation_002"),
+            False,
+        )
+
+    monkeypatch.setattr(toolkit.kernel, "scope", scope)
+    monkeypatch.setattr(toolkit, "_render_contract", render_contract)
+
+    await toolkit.begin_report_draft(context)
+    await toolkit.render_report_section(
+        "budget",
+        [{"blockId": "budget", "markdown": "预算执行分析。", "citationIds": ["citation_001"]}],
+        context,
+    )
+    await toolkit.render_report_section(
+        "income",
+        [{"blockId": "income", "markdown": "收入联动分析。", "citationIds": ["citation_001"]}],
+        context,
+    )
+
+    result = await toolkit.finalize_report_draft(context)
+
+    assert result["ok"] is False
+    assert result["status"] == "rejected"
+    assert result["code"] == "report_draft_citation_missing"
+    assert "citation_002" in result["message"]
+    assert context.session_state[REPORT_DRAFT_STATE_KEY]["submitted"] is not True
 
 
 @pytest.mark.anyio
@@ -225,9 +280,7 @@ async def test_finalize将超过单批上限的图表分批归档(monkeypatch, t
         return {
             "ok": True,
             "status": "completed",
-            "files": [
-                {"source": item["source"], "path": item["destination"]} for item in copies
-            ],
+            "files": [{"source": item["source"], "path": item["destination"]} for item in copies],
             "execution_id": f"copy-{len(copied_batches)}",
             "mutation_sequence": len(copied_batches),
         }

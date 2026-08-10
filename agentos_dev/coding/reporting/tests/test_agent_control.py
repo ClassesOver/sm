@@ -6,9 +6,9 @@ from agno.run import RunContext
 
 from agentos_dev import app
 from agentos_dev.agent_control import AgentControlToolkit, build_agent_tools
-from agentos_dev.coding.reporting.tests.workspace_fakes import service
 from agentos_dev.coding.reporting.delivery.draft_v1 import ReportSectionDefinition
 from agentos_dev.coding.reporting.delivery.report_runtime import REPORT_VISUAL_THEME
+from agentos_dev.coding.reporting.tests.workspace_fakes import service
 from agentos_dev.coding.reporting.tools import build_report_worker_tools
 
 
@@ -61,7 +61,7 @@ def test_report_toolkit_is_discoverable_but_requires_skill_route(tmp_path):
     vision_tools = build_report_worker_tools(
         workspace_service,
         app.coding_repository,
-        enable_vision=True,
+        vision_reviewer=SimpleNamespace(),
         run_context=SimpleNamespace(session_state=context.session_state, dependencies={}),
     )
     assert "view_image" in vision_tools[0].async_functions

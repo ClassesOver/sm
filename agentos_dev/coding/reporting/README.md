@@ -62,11 +62,15 @@ DatasetHandle、DatasetLineage、CSV 身份、Profile 文件与 Warning。执行
 CSV、实现对应 analysis、生成正文、表格和图表。完整 Profile 只用于发现分析方向，最终
 数字和证据全部从不可变 CSV 复算。图表候选由实际字段、期间、组织粒度、偏度/峰度、零值、缺失、
 相关性、预算阶段和跨域关系共同产生，Worker 按管理问题选择趋势、结构、贡献、分布、热力、预算、
-漏斗、散点或象限表达，不受固定图表数量约束。
+漏斗、散点或象限表达，不受固定图表数量约束。需要选图或修图时，Worker 按需读取 Reporting 专属
+`report-visualization` Skill；其中 cookbook 只提供开放示例，不是模板、白名单或验收条件。
 
 Worker 在生成分析脚本和图表前调用 `begin_report_draft`，获取冻结章节顺序和服务端统一
 `visualTheme`（当前默认主题为 `enterprise-tech-blue`）。PDF、Word 和 Coding 生成的图表共用该配色；配色只作为视觉一致性基准，
-不限制图表类型、系列数量或数据强调方式。图表登记安全工作区相对路径和 `citationIds`，
+不限制图表类型、系列数量或数据强调方式。启用视觉能力时，`view_image` 通过工作区既有路径、格式、
+签名和 10 MiB 限制读取图片，再交给无工具、无历史、无数据库的独立视觉 Agent；Report Worker
+固定关闭媒体透传，只接收结构化文字反馈。空白、截断、严重重叠或不可读问题要求修正后复查，
+普通建议不形成服务端门禁，视觉模型不可用也不阻断后续交付。图表登记安全工作区相对路径和 `citationIds`，
 再通过 `render_report_section` 逐章提交原生 Markdown；正文块绑定
 `citationIds + analysisIds + chartIds`，已登记图表由服务端插入。全部章节完成后先按
 `unreferencedChartIds` 区分处理：计划发布图补齐正文引用，误登记且未被正文引用的预览图通过

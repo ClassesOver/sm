@@ -23,9 +23,9 @@ from openai.types.chat.chat_completion_chunk import (
 )
 from pydantic import ValidationError
 
+from ...agent_control import AGENT_PLAN_STATE_KEY
 from ...agents import OPENAI_COMPATIBLE_ROLE_MAP
 from ...agents.assistant import AgentInstructions
-from ...agent_control import AGENT_PLAN_STATE_KEY
 from ...context_management import (
     CODING_CONTEXT_TOKEN_LIMIT,
     CODING_OUTPUT_TOKEN_RESERVE,
@@ -47,12 +47,14 @@ from ...task_execution.execution import (
     is_task_tool_scheduler_hook,
 )
 from ...workspace import WorkspaceService
+from .delivery.acceptance import load_reporting_skills
 from .tools import (
     REPORT_CHART_STATE_KEY,
     REPORT_DRAFT_STATE_KEY,
     REPORT_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
     build_report_worker_tools,
 )
+from .vision import ReportVisionReviewer
 from .workflow.controller import ReportWorkflowController, ReportWorkflowToolkit
 
 _REPORT_FACADE_TOOL_NAMES = frozenset(
@@ -723,7 +725,10 @@ def create_report_worker(
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
 ) -> Agent:
-    reporting_skills = load_sandbox_execution_skills(settings.skills_dir)
+    reporting_skills = load_reporting_skills(load_sandbox_execution_skills(settings.skills_dir))
+    vision_reviewer = (
+        ReportVisionReviewer(settings, workspace_service) if report_enable_vision else None
+    )
     input_token_budget = max(
         1,
         min(context_token_budget, CODING_CONTEXT_TOKEN_LIMIT)
@@ -765,7 +770,7 @@ def create_report_worker(
             build_report_worker_tools,
             workspace_service,
             task_repository,
-            enable_vision=report_enable_vision,
+            vision_reviewer=vision_reviewer,
             context_token_budget=context_token_budget,
             output_token_reserve=output_token_reserve,
         ),
@@ -790,7 +795,7 @@ def create_report_worker(
         ],
         debug_mode=settings.debug,
         markdown=True,
-        send_media_to_model=report_enable_vision,
+        send_media_to_model=False,
         tool_choice="auto",
     )
     worker.num_history_runs = None

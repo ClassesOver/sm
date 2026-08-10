@@ -27,10 +27,11 @@ from .delivery.draft_v1 import (
     ReportDraftBlock,
     ReportDraftSection,
     ReportSectionDefinition,
+    assemble_report_markdown,
 )
-from .delivery.draft_v1 import assemble_report_markdown
 from .delivery.report_runtime import REPORT_VISUAL_THEME
 from .models import ReportingError
+from .vision import ReportVisionReviewer
 
 REPORT_DRAFT_STATE_KEY = "agentos_reporting_structured_draft"
 REPORT_CHART_STATE_KEY = "agentos_reporting_registered_charts"
@@ -72,9 +73,7 @@ def _decode_json_pointer(pointer: str) -> tuple[str, ...]:
     tokens: list[str] = []
     for raw in pointer[1:].split("/"):
         if re.search(r"~(?![01])", raw):
-            raise ReportingError(
-                "report_profile_pointer_invalid", "Profile Pointer 包含无效转义。"
-            )
+            raise ReportingError("report_profile_pointer_invalid", "Profile Pointer 包含无效转义。")
         tokens.append(raw.replace("~1", "/").replace("~0", "~"))
     return tuple(tokens)
 
@@ -151,17 +150,27 @@ def normalize_reporting_function_call_arguments(
 class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
     """Report Worker 的专用工具门禁；底层锁、租约和审计复用通用 Kernel。"""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        vision_reviewer: ReportVisionReviewer | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._vision_reviewer = vision_reviewer
         super().__init__(*args, **kwargs)
         # Reporting 在 finalize 后由 Workflow 继续执行独立产物验收。Worker 收尾只绑定
         # 当前产物哈希，不重复要求 verify 或执行 Task acceptance validator。
         self.kernel.require_finish_verification = False
         self.kernel.evaluate_finish_acceptance = False
-        self.async_functions["finish_task"].parameters["properties"].pop(
-            "verification_ids", None
-        )
+        self.async_functions["finish_task"].parameters["properties"].pop("verification_ids", None)
         self.functions.pop("verify", None)
         self.async_functions.pop("verify", None)
+        self.async_functions["view_image"].description = (
+            "使用独立视觉模型检查工作区最终图片，只返回 reviewed、modelId、summary、"
+            "requiresRevision、criticalIssues、warnings 和 suggestions 等结构化文字；"
+            "视觉模型不可用时返回非阻断 warning，不向 Report Worker 回传媒体。"
+            '示例：{"path":"analysis/charts/trend.png","detail":"high"}'
+        )
         # Toolkit 指令由通用 Coding 实现注入，其中仍声明了已删除的 verify 工具。
         # Reporting 必须让模型看到与实际 schema 一致的能力，避免 finalize 后进入
         # 不可满足的 verify -> finish_task 循环。
@@ -323,7 +332,8 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 name="render_report_section",
                 description=(
                     "按 begin_report_draft 返回的顺序提交一个章节。每个 block 的 markdown "
-                    "可直接使用 Markdown 标题、列表、引用、强调和表格；图片通过 chartIds 插入；"
+                    "不得重复服务端返回的章节 title，内部标题从 ### 开始；可直接使用列表、"
+                    "引用、强调和表格；图片通过 chartIds 插入；"
                     "evidencePaths 可选，提供时服务端记录证据文件的路径、大小和 SHA-256；"
                     "finalize 前可用同一 sectionCode 重新提交并替换该章节；全部章节完成时，"
                     "必须先补齐回执 unreferencedChartIds 再定稿。"
@@ -373,6 +383,27 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         for function in (*self.functions.values(), *self.async_functions.values()):
             if function.pre_hook is None:
                 function.pre_hook = normalize_reporting_function_call_arguments
+
+    async def view_image(
+        self,
+        path: str,
+        detail: str = "high",
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        if detail not in {"high", "original"}:
+            raise WorkspaceError("图片 detail 必须是 high 或 original。")
+        reviewer = self._vision_reviewer
+        if reviewer is None:
+            raise WorkspaceError("当前 Reporting Worker 未启用图片视觉审查。")
+
+        async def call(scope: Any) -> dict[str, Any]:
+            return await reviewer.review(
+                scope.thread_id,
+                path,
+                detail=detail,
+            )
+
+        return await self._invoke("view_image", {"path": path, "detail": detail}, call, run_context)
 
     @staticmethod
     def _session_state(run_context: RunContext | None) -> dict[str, Any] | None:
@@ -497,9 +528,10 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             thread_id,
             identity["path"],
         )
-        if len(content) != identity["size"] or hashlib.sha256(content).hexdigest() != identity[
-            "sha256"
-        ]:
+        if (
+            len(content) != identity["size"]
+            or hashlib.sha256(content).hexdigest() != identity["sha256"]
+        ):
             raise ReportingError(identity_code, "受信 JSON 文件身份校验失败。")
         try:
             value = json.loads(content)
@@ -540,11 +572,15 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             structure_code="report_analysis_context_invalid",
         )
         raw_contexts = analysis_context.get("datasetContexts")
-        matches = [
-            item
-            for item in raw_contexts
-            if isinstance(item, dict) and item.get("datasetId") == datasetId
-        ] if isinstance(raw_contexts, list) else []
+        matches = (
+            [
+                item
+                for item in raw_contexts
+                if isinstance(item, dict) and item.get("datasetId") == datasetId
+            ]
+            if isinstance(raw_contexts, list)
+            else []
+        )
         if len(matches) != 1:
             raise ReportingError(
                 "report_profile_dataset_unknown", "datasetId 不属于当前受信分析上下文。"
@@ -558,9 +594,11 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         indexed_pointers = _collect_profile_pointers(profile_model_view)
         pointer_tokens = _decode_json_pointer(profilePointer)
         fields = dataset_context.get("fields")
-        field_names = {
-            item for item in fields if isinstance(item, str)
-        } if isinstance(fields, list) else set()
+        field_names = (
+            {item for item in fields if isinstance(item, str)}
+            if isinstance(fields, list)
+            else set()
+        )
         variable_pointer = (
             len(pointer_tokens) in {2, 3}
             and pointer_tokens[0] == "variables"
@@ -592,9 +630,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 "truncated": truncated,
                 "itemLimit": effective_limit,
             }
-            encoded = json.dumps(
-                result, ensure_ascii=False, separators=(",", ":")
-            ).encode("utf-8")
+            encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             if len(encoded) <= MAX_PROFILE_POINTER_OUTPUT_BYTES:
                 return result
             if effective_limit <= 1:
@@ -619,9 +655,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             or not isinstance(maxFields, int)
             or not 1 <= maxFields <= MAX_PROFILE_INDEX_FIELDS
         ):
-            raise ReportingError(
-                "report_profile_index_invalid", "Profile 字段分页参数无效。"
-            )
+            raise ReportingError("report_profile_index_invalid", "Profile 字段分页参数无效。")
         scope = await self.kernel.scope(run_context)
         parameters = self._artifact_parameters(scope)
         validation_context = await self._read_trusted_json(
@@ -637,11 +671,15 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             structure_code="report_analysis_context_invalid",
         )
         raw_contexts = analysis_context.get("datasetContexts")
-        matches = [
-            item
-            for item in raw_contexts
-            if isinstance(item, dict) and item.get("datasetId") == datasetId
-        ] if isinstance(raw_contexts, list) else []
+        matches = (
+            [
+                item
+                for item in raw_contexts
+                if isinstance(item, dict) and item.get("datasetId") == datasetId
+            ]
+            if isinstance(raw_contexts, list)
+            else []
+        )
         if len(matches) != 1:
             raise ReportingError(
                 "report_profile_dataset_unknown", "datasetId 不属于当前受信分析上下文。"
@@ -655,14 +693,10 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         coverage = model_view.get("coverage")
         fields = dataset_context.get("fields")
         if not isinstance(coverage, dict) or not isinstance(fields, list):
-            raise ReportingError(
-                "report_profile_context_invalid", "Dataset Profile 索引结构无效。"
-            )
+            raise ReportingError("report_profile_context_invalid", "Dataset Profile 索引结构无效。")
         field_names = [item for item in fields if isinstance(item, str)]
         if fieldOffset > len(field_names):
-            raise ReportingError(
-                "report_profile_index_invalid", "fieldOffset 超出字段范围。"
-            )
+            raise ReportingError("report_profile_index_invalid", "fieldOffset 超出字段范围。")
         page_size = min(maxFields, len(field_names) - fieldOffset)
         while True:
             selected = field_names[fieldOffset : fieldOffset + page_size]
@@ -696,8 +730,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     "fieldOffset": fieldOffset,
                     "fieldCount": len(field_names),
                     "variableRoots": {
-                        name: f"/variables/{_encode_json_pointer_token(name)}"
-                        for name in selected
+                        name: f"/variables/{_encode_json_pointer_token(name)}" for name in selected
                     },
                     "indexedFieldTypes": {
                         item["name"]: item.get("type", "Unknown")
@@ -709,14 +742,10 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     "alerts": model_view.get("alertsPointer"),
                     "correlations": correlation_pointers,
                     "timeSeries": (
-                        time_series.get("profilePointer")
-                        if isinstance(time_series, dict)
-                        else None
+                        time_series.get("profilePointer") if isinstance(time_series, dict) else None
                     ),
                     "timeSeriesFields": (
-                        time_series.get("fields", [])
-                        if isinstance(time_series, dict)
-                        else []
+                        time_series.get("fields", []) if isinstance(time_series, dict) else []
                     ),
                     "numericDetailTemplates": [
                         "/variables/{field}/histogram",
@@ -809,6 +838,11 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         elif code == "report_draft_chart_citation_invalid":
             result["requiredActions"] = [
                 "使图表 citation 成为每个引用该图表的正文块 citation 子集后重试。"
+            ]
+        elif code == "report_draft_citation_missing":
+            result["requiredActions"] = [
+                "把错误消息列出的每个 citationId 添加到实际使用对应数据的正文块，"
+                "再重新调用 finalize_report_draft。"
             ]
         elif code == "report_draft_already_submitted":
             result["requiredActions"] = [
@@ -979,9 +1013,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                         "width",
                         "height",
                     }
-                    if any(
-                        existing.get(key) != identity.get(key) for key in immutable_file_keys
-                    ):
+                    if any(existing.get(key) != identity.get(key) for key in immutable_file_keys):
                         raise ReportingError(
                             "report_chart_registration_conflict",
                             f"chartId {registration.chart_id} 已绑定不同图表身份。",
@@ -1093,9 +1125,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 )
             scope = await self.kernel.scope(run_context)
             attempt_no = int(getattr(scope, "attempt_no", 0))
-            registry_state = self._attempt_state(
-                state, REPORT_CHART_STATE_KEY, attempt_no
-            )
+            registry_state = self._attempt_state(state, REPORT_CHART_STATE_KEY, attempt_no)
             raw_registry = registry_state.get("charts")
             registry = dict(raw_registry) if isinstance(raw_registry, dict) else {}
             unknown = sorted(set(chartIds) - set(registry))
@@ -1105,9 +1135,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     "待丢弃图表未登记：" + ", ".join(unknown),
                 )
 
-            draft_state = (
-                state.get(REPORT_DRAFT_STATE_KEY) if isinstance(state, dict) else None
-            )
+            draft_state = state.get(REPORT_DRAFT_STATE_KEY) if isinstance(state, dict) else None
             if isinstance(draft_state, dict) and draft_state.get("attemptNo") == attempt_no:
                 if draft_state.get("submitted") is True:
                     raise ReportingError(
@@ -1150,6 +1178,30 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 for block in section.blocks
                 for chart_id in block.chart_ids
             )
+        )
+
+    @staticmethod
+    def _require_all_draft_citations(
+        draft: ReportDraft,
+        citation_ids: tuple[str, ...],
+    ) -> None:
+        referenced = {
+            citation_id
+            for section in draft.sections
+            for block in section.blocks
+            for citation_id in block.citation_ids
+        }
+        missing = tuple(
+            citation_id for citation_id in citation_ids if citation_id not in referenced
+        )
+        if not missing:
+            return
+        # PDF/Word 验收会把全部权威 DatasetLineage citation 与 Markdown marker 做精确集合
+        # 比对。草稿若只引用子集，图表和章节工具都可能成功，却必然在后续渲染阶段失败。
+        # 因此必须在草稿仍可替换章节时拒绝，并只返回缺失的稳定 citationId 供定点修正。
+        raise ReportingError(
+            "report_draft_citation_missing",
+            "正文未覆盖服务端注册 citation：" + ", ".join(missing),
         )
 
     @classmethod
@@ -1254,6 +1306,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             require_table,
         ) = await self._render_contract(scope)
         parsed = ReportDraft.model_validate(draft)
+        self._require_all_draft_citations(parsed, citation_ids)
         chart_state = self._attempt_state(state, REPORT_CHART_STATE_KEY, attempt_no)
         raw_registry = chart_state.get("charts")
         registry = raw_registry if isinstance(raw_registry, dict) else {}
@@ -1344,6 +1397,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             require_table,
         ) = await self._render_contract(scope)
         parsed = ReportDraft.model_validate(draft_state.get("draft"))
+        self._require_all_draft_citations(parsed, citation_ids)
         attempt_no = int(getattr(scope, "attempt_no", 0))
         chart_state = self._attempt_state(state, REPORT_CHART_STATE_KEY, attempt_no)
         registry = chart_state.get("charts")
@@ -1402,9 +1456,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             )
             if batch_result.get("ok") is not True:
                 return batch_result
-            copied_files.extend(
-                cast(list[dict[str, Any]], batch_result.get("files", []))
-            )
+            copied_files.extend(cast(list[dict[str, Any]], batch_result.get("files", [])))
             copy_result["mutation_sequence"] = batch_result.get(
                 "mutation_sequence", copy_result["mutation_sequence"]
             )
@@ -1443,15 +1495,17 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             "mutation_sequence": mutation.get("mutation_sequence"),
         }
 
-    async def begin_report_draft(
-        self, run_context: RunContext | None = None
-    ) -> dict[str, Any]:
+    async def begin_report_draft(self, run_context: RunContext | None = None) -> dict[str, Any]:
         state = self._session_state(run_context)
         try:
             scope = await self.kernel.scope(run_context)
-            title, markdown_path, sections, _citation_ids, _require_table = (
-                await self._render_contract(scope)
-            )
+            (
+                title,
+                markdown_path,
+                sections,
+                _citation_ids,
+                _require_table,
+            ) = await self._render_contract(scope)
             draft_state = self._attempt_state(
                 state, REPORT_DRAFT_STATE_KEY, int(getattr(scope, "attempt_no", 0))
             )
@@ -1484,7 +1538,9 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     }
                     for item in sections
                 ],
-                "nextSectionCode": sections[next_index].code if next_index < len(sections) else None,
+                "nextSectionCode": sections[next_index].code
+                if next_index < len(sections)
+                else None,
             }
         except (ReportingError, ValidationError, WorkspaceError) as error:
             return self._failure(error)
@@ -1500,25 +1556,25 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         state = self._session_state(run_context)
         try:
             scope = await self.kernel.scope(run_context)
-            _title, _markdown_path, definitions, citation_ids, _require_table = (
-                await self._render_contract(scope)
-            )
+            (
+                _title,
+                _markdown_path,
+                definitions,
+                citation_ids,
+                _require_table,
+            ) = await self._render_contract(scope)
             draft_state = self._attempt_state(
                 state, REPORT_DRAFT_STATE_KEY, int(getattr(scope, "attempt_no", 0))
             )
             if draft_state.get("started") is not True:
-                raise ReportingError(
-                    "report_draft_not_started", "必须先调用 begin_report_draft。"
-                )
+                raise ReportingError("report_draft_not_started", "必须先调用 begin_report_draft。")
             revising_unused_charts = (
                 draft_state.get("submitted") is True
                 and draft_state.get("status") == "rendered"
                 and bool(self._unused_chart_ids(draft_state.get("warnings")))
             )
             if draft_state.get("submitted") is True and not revising_unused_charts:
-                raise ReportingError(
-                    "report_draft_already_finalized", "报告已经进入最终拼装阶段。"
-                )
+                raise ReportingError("report_draft_already_finalized", "报告已经进入最终拼装阶段。")
             parsed = ReportDraftSection.model_validate(
                 {"sectionCode": sectionCode, "blocks": blocks}
             )
@@ -1623,9 +1679,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                         "acceptedSectionCount": next_index,
                         "sectionCount": len(definitions),
                         "nextSectionCode": (
-                            definitions[next_index].code
-                            if next_index < len(definitions)
-                            else None
+                            definitions[next_index].code if next_index < len(definitions) else None
                         ),
                         "evidenceFiles": evidence_files,
                     },
@@ -1701,17 +1755,15 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         state = self._session_state(run_context)
         try:
             scope = await self.kernel.scope(run_context)
-            _title, _path, definitions, _citations, _require_table = (
-                await self._render_contract(scope)
+            _title, _path, definitions, _citations, _require_table = await self._render_contract(
+                scope
             )
             draft_state = self._attempt_state(
                 state, REPORT_DRAFT_STATE_KEY, int(getattr(scope, "attempt_no", 0))
             )
             stored_sections = draft_state.get("sections")
             if draft_state.get("started") is not True or not isinstance(stored_sections, list):
-                raise ReportingError(
-                    "report_draft_not_started", "必须先调用 begin_report_draft。"
-                )
+                raise ReportingError("report_draft_not_started", "必须先调用 begin_report_draft。")
             if draft_state.get("submitted") is not True:
                 received_codes = [
                     item.get("sectionCode") for item in stored_sections if isinstance(item, dict)
@@ -1722,12 +1774,16 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                         "report_draft_sections_incomplete",
                         "全部冻结章节提交完成后才能最终拼装。",
                     )
-                _parsed, _markdown_path, _sections, _citation_ids, draft_state = (
-                    await self._validate_and_store_draft(
-                        scope=scope,
-                        state=state,
-                        draft={"sections": stored_sections},
-                    )
+                (
+                    _parsed,
+                    _markdown_path,
+                    _sections,
+                    _citation_ids,
+                    draft_state,
+                ) = await self._validate_and_store_draft(
+                    scope=scope,
+                    state=state,
+                    draft={"sections": stored_sections},
                 )
             rendered = await self._resume_saved_draft(
                 scope=scope,
@@ -1761,8 +1817,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             if plan is not None and state is not None:
                 state[AGENT_PLAN_STATE_KEY] = {
                     "plan": [
-                        {"step": item["step"], "status": "completed"}
-                        for item in plan["plan"]
+                        {"step": item["step"], "status": "completed"} for item in plan["plan"]
                     ],
                     "explanation": plan["explanation"],
                 }
@@ -1790,7 +1845,7 @@ def build_report_worker_tools(
     *,
     run_context: RunContext | None = None,
     agent: Any | None = None,
-    enable_vision: bool = False,
+    vision_reviewer: ReportVisionReviewer | None = None,
     context_token_budget: int = 262144,
     output_token_reserve: int = 32768,
 ) -> list[Toolkit]:
@@ -1799,8 +1854,9 @@ def build_report_worker_tools(
         workspace_service,
         task_repository,
         validator_registry=validator_registry,
+        vision_reviewer=vision_reviewer,
     )
-    if not enable_vision:
+    if vision_reviewer is None:
         toolkit.functions.pop("view_image", None)
         toolkit.async_functions.pop("view_image", None)
     return [toolkit]

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from agno.run import RunContext
 
+from agentos_dev.coding.reporting.hospital_operation.domains import build_domain_stage_guidance
 from agentos_dev.coding.reporting.instructions import (
     HOSPITAL_ANALYSIS_INSTRUCTIONS,
     HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
@@ -9,7 +10,6 @@ from agentos_dev.coding.reporting.instructions import (
     REPORT_AGENT_INSTRUCTIONS,
     build_report_agent_instructions,
 )
-from agentos_dev.coding.reporting.hospital_operation.domains import build_domain_stage_guidance
 from agentos_dev.instructions import (
     CODING_DELIVERABLE_VERIFICATION_INSTRUCTION,
     CODING_FINISH_VERIFICATION_INSTRUCTION,
@@ -61,6 +61,10 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "Profile 只用于发现分析方向" in instructions
     assert "最终报告数字" in instructions and "不可变 CSV" in instructions
     assert "图表类型" in instructions and "数据实际" in instructions
+    assert "report-visualization" in instructions
+    assert "空白、截断、严重重叠或文字不可读" in instructions
+    assert "requiresRevision" in instructions
+    assert "普通警告和建议" in instructions and "可选" in instructions
     assert "把 DetailedAnalysisPlan 视为已批准执行计划" in instructions
     assert "禁止 round(None)" in instructions
     assert "None-safe 格式化" in instructions
@@ -68,7 +72,8 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "visualTheme" in instructions and "chartPalette" in instructions
     assert "不限定图表类型" in instructions
     assert "逐章调用 render_report_section" in instructions
-    assert "每个 block 的 markdown 直接使用 Markdown" in instructions
+    assert "block 不得重复一级或二级章节标题" in instructions
+    assert "章节内部标题从三级标题开始" in instructions
     assert "调用 finalize_report_draft" in instructions
     assert "analysis/report_analysis.py" in instructions
     assert "优先通过一次 apply_patch" in instructions
@@ -84,6 +89,17 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     )
     assert len("\n".join(REPORT_AGENT_INSTRUCTIONS).encode("utf-8")) < 32 * 1024
     assert not any(rule in resolved for rule in PURE_CODING_PARALLEL_READ_INSTRUCTIONS)
+
+
+def test_报表成稿提示词要求图表结合且表格直接使用markdown():
+    instructions = "\n".join(REPORT_AGENT_INSTRUCTIONS)
+
+    assert "最终成稿必须图表结合" in instructions
+    assert "标准 Markdown 管道表" in instructions
+    assert "直接写入相关 render_report_section 正文" in instructions
+    assert "不得将表格渲染为图片或登记为 chartId" in instructions
+    assert "具体图表类型、表格数量和列项根据数据实际决定" in instructions
+    assert "不设置固定模板、固定数量或服务端门禁" in instructions
 
 
 def test_报表智能体说明只包含workflow已准备的分析边界():
@@ -155,6 +171,7 @@ def test_报表用户可见内容使用中文且机器标记保持稳定():
     assert "sectionCode 原样复制" in instructions
     assert "调用 finalize_report_draft" in instructions
     assert "citationIds" in instructions
+    assert "全部已注册 citationIds" in instructions
     assert "snapshotHash" in instructions
     assert "FactSet" not in instructions
     assert "?" not in instructions and "？" not in instructions

@@ -8,6 +8,7 @@ from dotenv import dotenv_values
 
 DEFAULT_ENV_FILE = ".env"
 DEFAULT_MODEL_ID = "qwen3.6-35b-a3b"
+DEFAULT_REPORT_VISION_MODEL_ID = "qwen3.6-flash"
 DEFAULT_MODEL_TIMEOUT_SECONDS = 900
 DEFAULT_WORKSPACE_SNAPSHOT = "sandbox-tools"
 DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -198,6 +199,7 @@ class AgentSettings:
     report_enable_thinking: bool
     report_planner_reasoning_effort: str
     report_enable_vision: bool
+    report_vision_model: str
     tracing_enabled: bool
     tracing_phoenix_endpoint: str | None
     tracing_phoenix_api_key: str | None
@@ -312,9 +314,7 @@ class AgentSettings:
             report_coding_enable_thinking=_flag(
                 values.get("AGENT_REPORT_CODING_ENABLE_THINKING"), default=True
             ),
-            report_coding_temperature=_temperature(
-                values, "AGENT_REPORT_CODING_TEMPERATURE", 0.1
-            ),
+            report_coding_temperature=_temperature(values, "AGENT_REPORT_CODING_TEMPERATURE", 0.1),
             report_coding_reasoning_effort=_reasoning_effort(
                 values, "AGENT_REPORT_CODING_REASONING_EFFORT", default="max"
             ),
@@ -326,6 +326,10 @@ class AgentSettings:
                 values, "AGENT_REPORT_PLANNER_REASONING_EFFORT", default="high"
             ),
             report_enable_vision=_flag(values.get("AGENT_REPORT_ENABLE_VISION"), default=False),
+            report_vision_model=(
+                values.get("AGENT_REPORT_VISION_MODEL", DEFAULT_REPORT_VISION_MODEL_ID).strip()
+                or DEFAULT_REPORT_VISION_MODEL_ID
+            ),
             tracing_enabled=_flag(values.get("AGENT_TRACING_ENABLED")),
             tracing_phoenix_endpoint=_phoenix_endpoint(values),
             tracing_phoenix_api_key=(
