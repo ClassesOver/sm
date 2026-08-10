@@ -23,6 +23,7 @@ from daytona import SessionExecuteRequest
 from daytona.common.errors import DaytonaNotFoundError
 
 from ..agent_control import AGENT_PLAN_STATE_KEY, AgentControlToolkit, validated_agent_plan
+from ..observability import suppress_expected_probe_tracing
 from ..skills import (
     CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
@@ -73,6 +74,7 @@ MAX_FINISH_ARTIFACTS = 50
 MAX_VERIFICATION_IDS = 20
 MAX_TERMINAL_COMMAND_BYTES = 32 * 1024
 MAX_TOOL_PREVIEW_BYTES = 48 * 1024
+MAX_REPORT_TOOL_PREVIEW_BYTES = 16 * 1024
 MAX_TOOL_OUTPUT_RESOURCE_BYTES = 16 * 1024 * 1024
 MAX_TASK_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_TOOL_OUTPUT_READ_BYTES = 64 * 1024
@@ -87,8 +89,10 @@ TOOL_OUTPUT_ROOT = "/home/daytona/.agentos/tool-output"
 VALIDATOR_ROOT = "/home/daytona/.agentos/validators"
 READONLY_RUNTIME_ROOT = "/home/daytona/.agentos/runtime"
 MAX_VALIDATOR_REQUEST_BYTES = 256 * 1024
-MAX_VALIDATOR_RESULT_BYTES = 32 * 1024
+MAX_VALIDATOR_RESULT_BYTES = 256 * 1024
 MAX_VALIDATOR_DETAIL_BYTES = 8 * 1024
+MAX_VALIDATOR_WARNINGS = 100
+MAX_VALIDATOR_WARNING_BYTES = 64 * 1024
 MAX_VALIDATOR_DOWNLOAD_TIMEOUT = 30
 MAX_VALIDATOR_STAGE_TIMEOUT = 60
 READONLY_SCRIPT_RUNTIME = Path(__file__).with_name("readonly_script_runtime.py").read_bytes()
@@ -434,7 +438,15 @@ def _is_read_only_terminal_command(command: str) -> bool:
 
 
 _PARALLEL_SKILL_TOOLS = frozenset({"get_skill_instructions", "get_skill_reference"})
-_PARALLEL_REPORT_TOOLS = frozenset({"report_list_data_sources", "report_describe_data_source"})
+_PARALLEL_REPORT_TOOLS = frozenset(
+    {
+        "report_list_data_sources",
+        "report_describe_data_source",
+        # 该工具只按受信身份读取 Profile 节点，不修改工作区或任务状态。
+        "inspect_profile_index",
+        "read_profile_pointer",
+    }
+)
 _CODING_TOOL_SCHEDULER_MARKER = "_agentos_coding_tool_scheduler"
 
 
@@ -609,6 +621,8 @@ class CodingExecutionKernel:
         self.completion_evidence = completion_evidence
         self.validator_registry = validator_registry or SkillValidatorRegistry()
         self.acceptance_policy = AcceptancePolicy()
+        self.require_finish_verification = True
+        self.evaluate_finish_acceptance = True
         self.workspace = WorkspaceToolkit(service)
         self.plan = AgentControlToolkit(service)
         self._migration_lock = asyncio.Lock()
@@ -633,13 +647,13 @@ class CodingExecutionKernel:
         return external_run_id
 
     @staticmethod
-    def _preview_text(raw: bytes) -> str:
-        if len(raw) <= MAX_TOOL_PREVIEW_BYTES:
+    def _preview_text(raw: bytes, max_bytes: int = MAX_TOOL_PREVIEW_BYTES) -> str:
+        if len(raw) <= max_bytes:
             return raw.decode("utf-8", errors="replace")
         marker = (
-            f"\n[TOOL_OUTPUT_TRUNCATED omitted_bytes={len(raw) - MAX_TOOL_PREVIEW_BYTES}]\n"
+            f"\n[TOOL_OUTPUT_TRUNCATED omitted_bytes={len(raw) - max_bytes}]\n"
         ).encode()
-        available = MAX_TOOL_PREVIEW_BYTES - len(marker)
+        available = max_bytes - len(marker)
         head_size = available // 2
         tail_size = available - head_size
         head = raw[:head_size].decode("utf-8", errors="ignore")
@@ -652,6 +666,11 @@ class CodingExecutionKernel:
         result: Any,
         run_context: RunContext | None,
     ) -> dict[str, Any]:
+        preview_bytes = (
+            MAX_REPORT_TOOL_PREVIEW_BYTES
+            if scope.external_run_id.startswith("report-coding-")
+            else MAX_TOOL_PREVIEW_BYTES
+        )
         serialized = json.dumps(
             result, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
         )
@@ -667,18 +686,18 @@ class CodingExecutionKernel:
         if candidates:
             key, value = max(candidates, key=lambda item: len(item[1].encode("utf-8")))
             if (
-                len(value.encode("utf-8")) <= MAX_TOOL_PREVIEW_BYTES
-                and len(serialized.encode("utf-8")) > MAX_TOOL_PREVIEW_BYTES
+                len(value.encode("utf-8")) <= preview_bytes
+                and len(serialized.encode("utf-8")) > preview_bytes
             ):
                 result = {"output": serialized, "outputFormat": "json"}
                 key, value = "output", serialized
         else:
-            if len(serialized.encode("utf-8")) <= MAX_TOOL_PREVIEW_BYTES:
+            if len(serialized.encode("utf-8")) <= preview_bytes:
                 return result
             result = {"output": serialized, "outputFormat": "json"}
             key, value = "output", serialized
         raw = value.encode("utf-8")
-        if len(raw) <= MAX_TOOL_PREVIEW_BYTES:
+        if len(raw) <= preview_bytes:
             return result
         state = (
             run_context.session_state
@@ -688,7 +707,7 @@ class CodingExecutionKernel:
         if state is None:
             return {
                 **result,
-                key: self._preview_text(raw),
+                key: self._preview_text(raw, preview_bytes),
                 "outputBytes": len(raw),
                 "outputSha256": hashlib.sha256(raw).hexdigest(),
                 "outputTruncated": True,
@@ -768,7 +787,7 @@ class CodingExecutionKernel:
                 raise
         return {
             **result,
-            key: self._preview_text(raw),
+            key: self._preview_text(raw, preview_bytes),
             "outputHandle": handle,
             "outputBytes": len(raw),
             "outputStoredBytes": stored_bytes,
@@ -1558,14 +1577,16 @@ class CodingExecutionKernel:
                 for part in runtime_dir.strip("/").split("/"):
                     current = f"{current}/{part}"
                     try:
-                        info = await sandbox.fs.get_file_info(current)
+                        with suppress_expected_probe_tracing():
+                            info = await sandbox.fs.get_file_info(current)
                     except DaytonaNotFoundError:
                         await sandbox.fs.create_folder(current, "700")
                         continue
                     if self.service._is_symlink(info) or not bool(getattr(info, "is_dir", False)):
                         raise WorkspaceError("只读执行 runtime 安装目录不是安全普通目录。")
                 try:
-                    info = await sandbox.fs.get_file_info(runtime_path)
+                    with suppress_expected_probe_tracing():
+                        info = await sandbox.fs.get_file_info(runtime_path)
                 except DaytonaNotFoundError:
                     await sandbox.fs.upload_file(READONLY_SCRIPT_RUNTIME, runtime_path)
                 else:
@@ -2247,7 +2268,19 @@ class CodingExecutionKernel:
                         "failureCode": failure_code,
                         "diagnostics": diagnostics,
                     },
-                    "requiredActions": ["安装或替换缺失命令后重新运行验证。"],
+                    "requiredActions": (
+                        [
+                            (
+                                "修复事实与 citationIds 的绑定错误：以事实卡中该 factId 的实际 citationIds "
+                                "为准修改当前草稿或验证脚本，不得按章节或领域猜测 citation，然后重新运行同一验证。"
+                                if "citation" in diagnostics.lower()
+                                else "修复验证脚本中的 Python 异常；依据 details.diagnostics 定位并修改当前产物，"
+                                "不要安装命令，然后重新运行同一验证。"
+                            )
+                        ]
+                        if failure_code == "python_traceback"
+                        else ["安装或替换缺失命令后重新运行验证。"]
+                    ),
                     "retryable": True,
                 }
             )
@@ -2628,7 +2661,8 @@ class CodingExecutionKernel:
                     for part in validator_dir.strip("/").split("/"):
                         current = f"{current}/{part}"
                         try:
-                            info = await sandbox.fs.get_file_info(current)
+                            with suppress_expected_probe_tracing():
+                                info = await sandbox.fs.get_file_info(current)
                         except DaytonaNotFoundError:
                             await sandbox.fs.create_folder(current, "755")
                             continue
@@ -2784,7 +2818,9 @@ class CodingExecutionKernel:
             if (
                 not isinstance(raw, dict)
                 or not {"id", "passed"}.issubset(raw)
-                or not set(raw).issubset({"id", "passed", "message", "details"})
+                or not set(raw).issubset(
+                    {"id", "passed", "message", "details", "warnings"}
+                )
             ):
                 raise ValueError("validator_result_requirement_fields")
             requirement_id = raw["id"]
@@ -2811,6 +2847,24 @@ class CodingExecutionKernel:
                     raise ValueError("validator_result_details") from error
                 if len(details_bytes) > MAX_VALIDATOR_DETAIL_BYTES:
                     raise ValueError("validator_result_details_size")
+            warnings_value = raw.get("warnings")
+            if warnings_value is not None:
+                if (
+                    not isinstance(warnings_value, list)
+                    or len(warnings_value) > MAX_VALIDATOR_WARNINGS
+                    or any(
+                        not isinstance(item, str) or not item or len(item) > 1024
+                        for item in warnings_value
+                    )
+                ):
+                    raise ValueError("validator_result_warnings")
+                warnings_bytes = json.dumps(
+                    warnings_value,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                if len(warnings_bytes) > MAX_VALIDATOR_WARNING_BYTES:
+                    raise ValueError("validator_result_warnings_size")
             results_by_id[requirement_id] = raw
         if set(results_by_id) != {requirement["id"] for requirement in requirements}:
             raise ValueError("validator_result_requirement_set")
@@ -2827,6 +2881,11 @@ class CodingExecutionKernel:
                 **(
                     {"details": results_by_id[requirement["id"]]["details"]}
                     if "details" in results_by_id[requirement["id"]]
+                    else {}
+                ),
+                **(
+                    {"warnings": results_by_id[requirement["id"]]["warnings"]}
+                    if "warnings" in results_by_id[requirement["id"]]
                     else {}
                 ),
             }
@@ -2956,6 +3015,8 @@ class CodingExecutionKernel:
                 None,
             )
             verification_ids = [current_verification] if current_verification is not None else []
+        if not self.require_finish_verification:
+            verification_ids = []
         observation_fingerprint = self._finish_fingerprint(
             scope,
             task.mutation_sequence,
@@ -3173,7 +3234,7 @@ class CodingExecutionKernel:
             )
         artifacts = [item for item in artifacts if not item.get("missing")]
 
-        if (
+        if self.require_finish_verification and (
             not isinstance(verification_ids, list)
             or not verification_ids
             or len(verification_ids) > MAX_VERIFICATION_IDS
@@ -3272,7 +3333,7 @@ class CodingExecutionKernel:
                 )
 
         acceptance_summary = None
-        if task.acceptance_contract is not None:
+        if task.acceptance_contract is not None and self.evaluate_finish_acceptance:
             acceptance_decision = self.acceptance_policy.evaluate(
                 task.acceptance_contract,
                 executions,
@@ -4301,6 +4362,10 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             None,
         )
         if verification is None:
+            # Reporting 在 finalize 后由独立 Workflow 完成产物验收，因此不提供 verify。
+            # 仅显式关闭 finish 验证的专用 Kernel 可跳过；默认 Coding 门禁仍失败关闭。
+            if tool_name == "finish_task" and not self.kernel.require_finish_verification:
+                return None
             if (
                 TOOL_SPECS[tool_name].effect == "read"
                 or tool_name in self._FILE_MUTATION_TOOLS

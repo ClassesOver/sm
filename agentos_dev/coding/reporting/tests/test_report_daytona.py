@@ -1,3 +1,4 @@
+import base64
 import csv
 import hashlib
 import io
@@ -6,6 +7,7 @@ import os
 import shlex
 import textwrap
 import uuid
+import zipfile
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -22,6 +24,10 @@ from agentos_dev.workspace import (
     WorkspaceService,
 )
 
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
 
 def _csv_bytes(rows: Iterable[Iterable[object]]) -> bytes:
     stream = io.StringIO(newline="")
@@ -30,7 +36,202 @@ def _csv_bytes(rows: Iterable[Iterable[object]]) -> bytes:
 
 
 @pytest.mark.integration
-def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
+def test_sandbox_tools_生成并验收同revision双格式正式报告(tmp_path):
+    if not os.getenv("DAYTONA_API_KEY"):
+        pytest.skip("需要 Daytona API Key")
+    client = Daytona()
+    sandbox = None
+    try:
+        sandbox = client.create(
+            CreateSandboxFromSnapshotParams(
+                name=f"agui-report-pair-{uuid.uuid4().hex[:8]}",
+                snapshot=os.getenv("DAYTONA_DEFAULT_SNAPSHOT", WORKSPACE_SNAPSHOT),
+                public=False,
+                ephemeral=True,
+                auto_stop_interval=60,
+                auto_archive_interval=0,
+                network_block_all=True,
+            ),
+            timeout=180,
+        )
+        sandbox.fs.upload_file(Path(report_runtime.__file__).read_bytes(), "/tmp/report_runtime.py")
+        source = "月份,收入,成本\n2025-01,120,80\n2025-02,150,90\n".encode()
+        revision = "报表/生成结果/dual-format/revision-1"
+        markdown_path = f"{revision}/经营分析报告.md"
+        pdf_path = f"{revision}/经营分析报告.pdf"
+        word_path = f"{revision}/经营分析报告.docx"
+        sandbox.process.exec(
+            f"mkdir -p -- {shlex.quote(WORKSPACE_ROOT + '/' + revision + '/assets')}",
+            cwd=WORKSPACE_ROOT,
+            timeout=30,
+        )
+        sandbox.fs.upload_file(source, f"{WORKSPACE_ROOT}/source.csv")
+        sandbox.fs.upload_file(PNG, f"{WORKSPACE_ROOT}/{revision}/assets/trend.png")
+        markdown = (
+            "# 医院月度经营分析报告\n\n"
+            "[[section:executive_summary]]\n"
+            "## 执行摘要\n\n"
+            "2025 年前两个月收入合计 270 万元，成本合计 170 万元。\n\n"
+            "![月度收入趋势](assets/trend.png)\n\n"
+            "[[section:operating_details]]\n"
+            "## 经营明细\n\n"
+            "| 月份 | 收入（万元） | 成本（万元） |\n"
+            "| --- | ---: | ---: |\n"
+            "| 2025-01 | 120 | 80 |\n"
+            "| 2025-02 | 150 | 90 |\n\n"
+            "收入增长 25%，同期成本增长 12.5%，结余改善。\n"
+        ).encode()
+        sandbox.fs.upload_file(markdown, f"{WORKSPACE_ROOT}/{markdown_path}")
+        context = {
+            "title": "医院月度经营分析报告",
+            "periodLabel": "2025-01-01 至 2025-02-28",
+            "organizationName": "上海鼎医信息技术有限公司",
+            "generatedByLabel": "AI 智能报告平台生成",
+            "watermarkText": "AI 智能报告平台生成",
+            "generatedDate": "2026-08-05",
+            "sections": [
+                {"code": "executive_summary", "title": "执行摘要"},
+                {"code": "operating_details", "title": "经营明细"},
+            ],
+        }
+        job = {
+            "jobId": str(uuid.uuid4()),
+            "sources": [
+                {
+                    "path": "source.csv",
+                    "size": len(source),
+                    "sha256": hashlib.sha256(source).hexdigest(),
+                }
+            ],
+            "_documentContext": context,
+        }
+
+        def run(action, payload):
+            payload_text = json.dumps(payload, ensure_ascii=False)
+            command = (
+                f"python /tmp/report_runtime.py {shlex.quote(action)} {shlex.quote(payload_text)}"
+            )
+            result = sandbox.process.exec(command, cwd=WORKSPACE_ROOT, timeout=600)
+            if result.exit_code != 0:
+                diagnostic_payload = dict(payload)
+                if action == "render_markdown":
+                    diagnostic_payload["temporary_path"] = (
+                        f"/tmp/workspace-report-{uuid.uuid4().hex}-render/render.pdf"
+                    )
+                    invocation = (
+                        "runtime.render_markdown(payload['job'], payload['markdown_path'], "
+                        "payload['output_path'], payload['temporary_path'], "
+                        "payload.get('page_layout'), payload.get('word_output_path'))"
+                    )
+                else:
+                    diagnostic_payload["temporary_directory"] = (
+                        f"/tmp/workspace-report-{uuid.uuid4().hex}-validate"
+                    )
+                    invocation = (
+                        "runtime.validate_pdf(payload['job'], payload['pdf_path'], "
+                        "payload['temporary_directory'], payload.get('artifact_manifest'), "
+                        "payload.get('word_path'))"
+                    )
+                diagnostic_code = (
+                    "import json,sys;sys.path.insert(0,'/tmp');"
+                    "from report_runtime import ReportRuntime;"
+                    f"payload=json.loads({json.dumps(json.dumps(diagnostic_payload, ensure_ascii=False))});"
+                    f"runtime=ReportRuntime({WORKSPACE_ROOT!r});{invocation}"
+                )
+                diagnostic = sandbox.process.exec(
+                    f"python -c {shlex.quote(diagnostic_code)}",
+                    cwd=WORKSPACE_ROOT,
+                    timeout=600,
+                )
+                pytest.fail(f"{result.result}\n{diagnostic.result}")
+            output = next(line for line in reversed(result.result.splitlines()) if line.strip())
+            return json.loads(output)
+
+        temporary_pdf = f"/tmp/workspace-report-{uuid.uuid4().hex}-render/render.pdf"
+        rendered = run(
+            "render_markdown",
+            {
+                "job": job,
+                "markdown_path": markdown_path,
+                "output_path": pdf_path,
+                "word_output_path": word_path,
+                "temporary_path": temporary_pdf,
+                "page_layout": {
+                    "headerLeft": "{organization}",
+                    "headerRight": "{title}",
+                    "footerLeft": "企业智能运营报表",
+                    "footerRight": "第 {page} / {pages} 页",
+                },
+            },
+        )
+        render = rendered.pop("render")
+        temporary_word = temporary_pdf.rsplit("/", 1)[0] + "/render.docx"
+        for source_path, target_path in (
+            (temporary_pdf, f"{WORKSPACE_ROOT}/{pdf_path}"),
+            (temporary_word, f"{WORKSPACE_ROOT}/{word_path}"),
+        ):
+            copied = sandbox.process.exec(
+                f"cp --no-clobber -- {shlex.quote(source_path)} {shlex.quote(target_path)}",
+                cwd=WORKSPACE_ROOT,
+                timeout=30,
+            )
+            assert copied.exit_code == 0, copied.result
+        job["render"] = render
+        validated = run(
+            "validate_pdf",
+            {
+                "job": job,
+                "pdf_path": pdf_path,
+                "word_path": word_path,
+                "temporary_directory": f"/tmp/workspace-report-{uuid.uuid4().hex}-validate",
+            },
+        )
+
+        assert validated["ok"] is True, validated
+        assert [item["role"] for item in validated["pages"]] == ["cover", "toc", "body"]
+        assert validated["pages"][0]["watermarkPresent"] is False
+        assert all(item["watermarkPresent"] for item in validated["pages"][1:])
+        assert validated["coverPresent"] is True
+        assert validated["tocPresent"] is True
+        assert validated["signaturePresent"] is True
+        assert validated["tocLinkCount"] >= 2
+        assert validated["word"]["nativeTocPresent"] is True
+        assert validated["word"]["sectionCount"] == 3
+        assert validated["word"]["tocEntryCount"] == 2
+        assert validated["word"]["embeddedImageCount"] >= 1
+        assert validated["word"]["externalRelationshipCount"] == 0
+        assert validated["word"]["blankPages"] == []
+
+        for source_path, target_path in (
+            (f"{WORKSPACE_ROOT}/{pdf_path}", "/tmp/dual-format-report.pdf"),
+            (f"{WORKSPACE_ROOT}/{word_path}", "/tmp/dual-format-report.docx"),
+        ):
+            copied = sandbox.process.exec(
+                f"cp -- {shlex.quote(source_path)} {shlex.quote(target_path)}",
+                cwd=WORKSPACE_ROOT,
+                timeout=30,
+            )
+            assert copied.exit_code == 0, copied.result
+        pdf_content = sandbox.fs.download_file("/tmp/dual-format-report.pdf")
+        word_content = sandbox.fs.download_file("/tmp/dual-format-report.docx")
+        assert hashlib.sha256(pdf_content).hexdigest() == render["pdf"]["sha256"]
+        assert hashlib.sha256(word_content).hexdigest() == render["word"]["sha256"]
+        local_pdf = tmp_path / "双格式正式报告.pdf"
+        local_word = tmp_path / "双格式正式报告.docx"
+        local_pdf.write_bytes(pdf_content)
+        local_word.write_bytes(word_content)
+        reader = PdfReader(local_pdf)
+        assert len(reader.pages) == validated["pageCount"]
+        with zipfile.ZipFile(local_word) as package:
+            assert "word/document.xml" in package.namelist()
+            assert "word/settings.xml" in package.namelist()
+    finally:
+        if sandbox is not None:
+            client.delete(sandbox)
+
+
+@pytest.mark.integration
+def test_sandbox_tools_复杂多轮分析后生成多页图文双格式报告(tmp_path):
     if not os.getenv("DAYTONA_API_KEY"):
         pytest.skip("需要 Daytona API Key")
     client = Daytona()
@@ -143,6 +344,19 @@ def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
             }
 
         job_id = str(uuid.uuid4())
+        sections = [
+            {"code": "executive_summary", "title": "一、执行摘要"},
+            {"code": "hospital_staff", "title": "二、医院人员分布"},
+            {"code": "department_staff", "title": "三、科室人员结构"},
+            {"code": "salary_tenure", "title": "四、薪酬与司龄概览"},
+            {"code": "finance_workload", "title": "五、收入、成本与服务负荷"},
+            {"code": "department_operations", "title": "六、跨表科室经营分析"},
+            {"code": "turnover_trend", "title": "七、年度离职趋势"},
+            {"code": "turnover_risk", "title": "八、科室离职风险"},
+            {"code": "data_quality", "title": "九、数据质量与方法边界"},
+            {"code": "recommendations", "title": "十、管理建议"},
+            {"code": "conclusion", "title": "十一、结论"},
+        ]
         job = {
             "jobId": job_id,
             "sources": [
@@ -157,6 +371,15 @@ def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
                     ("turnover.csv", turnover_csv),
                 )
             ],
+            "_documentContext": {
+                "title": "医院经营与人力资源综合分析报告",
+                "periodLabel": "2023-01-01 至 2025-12-31",
+                "organizationName": "上海鼎医信息技术有限公司",
+                "generatedByLabel": "AI 智能报告平台生成",
+                "watermarkText": "AI 智能报告平台生成",
+                "generatedDate": "2026-08-05",
+                "sections": sections,
+            },
         }
         failed_process = sandbox.process.exec(
             "python -c 'raise ValueError(\"缺少预期分析列\")'",
@@ -370,6 +593,12 @@ def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
                 "## 十一、结论",
                 "本次多轮分析完成了大型源数据校验、跨表聚合、收入成本趋势计算、人员风险排序和图文报告生成。报告中的 80000 人总量、120000 条收入明细、科室排名及离职指标均可从工作区产物复核。",
             ])
+            for section in {sections!r}:
+                heading = "## " + section["title"]
+                report = report.replace(
+                    heading,
+                    "[[section:" + section["code"] + "]]\\n" + heading,
+                )
             (root / "复杂人力资源分析报告.md").write_text(report, encoding="utf-8")
             print(json.dumps({{"markdown": str(root / "复杂人力资源分析报告.md"), "charts": 4}}, ensure_ascii=False))
             """,
@@ -385,26 +614,34 @@ def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
                 "job": job,
                 "markdown_path": f"{directory}/复杂人力资源分析报告.md",
                 "output_path": f"{directory}/复杂人力资源分析报告.pdf",
+                "word_output_path": f"{directory}/复杂人力资源分析报告.docx",
                 "temporary_path": temporary_pdf,
             },
         )
         render = rendered.pop("render")
-        sandbox.process.exec(
-            f"cp --no-clobber -- {shlex.quote(temporary_pdf)} "
-            f"{shlex.quote(WORKSPACE_ROOT + '/' + rendered['pdfPath'])}",
-            cwd=WORKSPACE_ROOT,
-            timeout=30,
-        )
+        temporary_word = temporary_pdf.rsplit("/", 1)[0] + "/render.docx"
+        for source_path, target_path in (
+            (temporary_pdf, f"{WORKSPACE_ROOT}/{rendered['pdfPath']}"),
+            (temporary_word, f"{WORKSPACE_ROOT}/{rendered['wordPath']}"),
+        ):
+            copied = sandbox.process.exec(
+                f"cp --no-clobber -- {shlex.quote(source_path)} {shlex.quote(target_path)}",
+                cwd=WORKSPACE_ROOT,
+                timeout=30,
+            )
+            assert copied.exit_code == 0, copied.result
         job["render"] = render
         assert rendered["imageCount"] == 4
         assert rendered["pageCount"] >= 2
         assert rendered["size"] > 20_000
+        assert rendered["wordSize"] > 10_000
 
         validated = run(
             "validate_pdf",
             {
                 "job": job,
                 "pdf_path": rendered["pdfPath"],
+                "word_path": rendered["wordPath"],
                 "temporary_directory": f"/tmp/workspace-report-{uuid.uuid4().hex}-validate",
             },
         )
@@ -412,6 +649,8 @@ def test_sandbox_tools_复杂多轮分析后生成多页图文_pdf(tmp_path):
         assert validated["status"] == "validated"
         assert validated["blankPages"] == []
         assert validated["missingImageCount"] == 0
+        assert validated["word"]["blankPages"] == []
+        assert validated["word"]["embeddedImageCount"] >= 4
 
         content = WorkspaceService._download_file(
             sandbox,

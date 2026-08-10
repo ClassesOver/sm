@@ -119,6 +119,7 @@ def test_hermes_coding_toolkit_is_independent_and_keeps_supported_contract(tmp_p
         "timeout",
         "workdir",
         "pty",
+        "shell",
     }
     assert tools["process"].parameters["properties"]["action"]["enum"] == [
         "list",
@@ -312,6 +313,7 @@ async def test_hermes_terminal_maps_foreground_and_background_to_managed_command
     await toolkit.terminal(
         "python3 server.py",
         background=True,
+        shell="/bin/bash",
         run_context=context(),
     )
 
@@ -324,6 +326,7 @@ async def test_hermes_terminal_maps_foreground_and_background_to_managed_command
     assert calls[1][0] == "python3 server.py"
     assert calls[1][1]["timeout_seconds"] == DEFAULT_EXEC_TIMEOUT_SECONDS
     assert calls[1][1]["yield_time_ms"] == 0
+    assert calls[1][1]["shell"] == "/bin/bash"
 
 
 @pytest.mark.anyio

@@ -147,11 +147,38 @@ class QueryRequirement(StrictModel):
         description="物化共同粒度字段，每个字段只出现一次；maxItems 只是上限。",
     )
     relations: tuple[RequirementRelation, ...] = Field(default=(), max_length=100)
+    comparison_roles: tuple[Literal["yoy", "mom"], ...] | None = Field(
+        default=None,
+        alias="comparisonRoles",
+        max_length=2,
+        description="省略时继承请求；只能收窄，不能扩展请求比较范围。",
+    )
 
     @field_validator("dimension_columns", "grain_columns")
     @classmethod
     def validate_grain_columns(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _normalized_identifiers(value, "维度或粒度字段")
+
+    @field_validator("comparison_roles")
+    @classmethod
+    def validate_comparison_roles(
+        cls, value: tuple[Literal["yoy", "mom"], ...] | None
+    ) -> tuple[Literal["yoy", "mom"], ...] | None:
+        if value is None:
+            return None
+        if len(value) != len(set(value)):
+            raise ValueError("comparisonRoles 不能重复")
+        return tuple(role for role in ("yoy", "mom") if role in value)
+
+    def resolved_comparison_roles(
+        self, requested: tuple[Literal["yoy", "mom"], ...]
+    ) -> tuple[Literal["yoy", "mom"], ...]:
+        selected = requested if self.comparison_roles is None else self.comparison_roles
+        if set(selected) - set(requested):
+            raise ValueError("requirement comparisonRoles 不得扩展请求范围")
+        if "mom" in selected and any(item.period_granularity == "year" for item in self.tables):
+            raise ValueError("year 粒度 requirement 不支持 mom")
+        return selected
 
     @model_validator(mode="after")
     def validate_tables(self) -> QueryRequirement:
@@ -346,15 +373,14 @@ def approve_query_batch(
         for snapshot in snapshots
         for item in snapshot.measure_semantics
     }
-    period_windows = envelope.period_windows().windows
-    windows_by_role = {item.role: item for item in period_windows}
-    roles_by_window: dict[str, tuple[Literal["current", "yoy", "mom"], ...]] = {}
-    for window in period_windows:
-        roles_by_window.setdefault(window.query_window_id, ())
-        roles_by_window[window.query_window_id] = (
-            *roles_by_window[window.query_window_id],
-            window.role,
-        )
+    windows_by_requirement = {
+        requirement.requirement_id: envelope.model_copy(
+            update={
+                "comparison_roles": requirement.resolved_comparison_roles(envelope.comparison_roles)
+            }
+        ).period_windows(granularity=requirement.tables[0].period_granularity)
+        for requirement in requirements
+    }
     explicit_period_mode = any(
         isinstance(item, dict)
         and any(key in item for key in ("periodRole", "periodRoles", "queryWindowId"))
@@ -376,6 +402,18 @@ def approve_query_batch(
         if not all(isinstance(item[key], str) for key in ("requirementId", "sourceId", "sql")):
             raise ReportingError("report_query_batch_invalid", "SQL 批次字段类型无效。")
         requirement_id = item["requirementId"].strip()
+        requirement = requirement_map.get(requirement_id)
+        if requirement is None:
+            raise ReportingError("report_query_batch_invalid", "SQL requirement 不存在。")
+        period_windows = windows_by_requirement[requirement_id].windows
+        windows_by_role = {window.role: window for window in period_windows}
+        roles_by_window: dict[str, tuple[Literal["current", "yoy", "mom"], ...]] = {}
+        for period_window in period_windows:
+            roles_by_window.setdefault(period_window.query_window_id, ())
+            roles_by_window[period_window.query_window_id] = (
+                *roles_by_window[period_window.query_window_id],
+                period_window.role,
+            )
         source = sources.get(item["sourceId"])
         raw_role = item.get("periodRole", "current")
         if not isinstance(raw_role, str) or raw_role not in windows_by_role:
@@ -395,7 +433,6 @@ def approve_query_batch(
         approved_key = (requirement_id, window.query_window_id)
         if not requirement_id or approved_key in approved_keys or source is None:
             raise ReportingError("report_query_batch_invalid", "SQL requirement 或 source 无效。")
-        requirement = requirement_map.get(requirement_id)
         if requirement is None or requirement.source_id != source.id:
             raise ReportingError(
                 "report_query_batch_invalid", "SQL 与 requirement 或 source 不匹配。"
@@ -434,15 +471,14 @@ def approve_query_batch(
             )
         )
         approved_keys.add(approved_key)
-    expected_window_ids = (
-        set(roles_by_window)
-        if explicit_period_mode
-        else {windows_by_role["current"].query_window_id}
-    )
     expected_keys = {
-        (requirement_id, query_window_id)
-        for requirement_id in requirement_map
-        for query_window_id in expected_window_ids
+        (requirement.requirement_id, window.query_window_id)
+        for requirement in requirements
+        for window in (
+            windows_by_requirement[requirement.requirement_id].windows
+            if explicit_period_mode
+            else windows_by_requirement[requirement.requirement_id].windows[:1]
+        )
     }
     if require_complete_batch and approved_keys != expected_keys:
         raise ReportingError("report_query_batch_invalid", "SQL 批次未覆盖全部 requirements。")

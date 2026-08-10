@@ -560,7 +560,15 @@ class ReportWorkflowController:
             if isinstance(content, BaseModel):
                 content = content.model_dump(mode="json", by_alias=True)
             if isinstance(content, dict):
-                allowed = {"reportId", "revision", "pdf", "path", "size", "sha256"}
+                allowed = {
+                    "reportId",
+                    "revision",
+                    "pdf",
+                    "word",
+                    "path",
+                    "size",
+                    "sha256",
+                }
                 report = {key: content[key] for key in allowed if key in content}
                 if report:
                     result["report"] = report

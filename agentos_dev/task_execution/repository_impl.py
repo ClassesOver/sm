@@ -51,9 +51,11 @@ from .models import (
 TASK_SCHEMA_VERSION = "2.1.0"
 CODING_DB_SCHEMA = "agentos_coding"
 MAX_CONTINUATIONS = 20
-MAX_TERMINAL_OUTPUT_BYTES = 64 * 1024
+MAX_TERMINAL_OUTPUT_BYTES = 256 * 1024
+MAX_EXECUTION_RECEIPT_BYTES = 512 * 1024
 MAX_INSTRUCTION_ID_LENGTH = 128
 MAX_INSTRUCTION_BYTES = 32 * 1024
+MAX_EXTENDED_INSTRUCTION_BYTES = 512 * 1024
 MAX_PENDING_INSTRUCTIONS = 50
 MAX_PENDING_INSTRUCTION_BYTES = 256 * 1024
 TASK_RETENTION = timedelta(days=7)
@@ -1207,7 +1209,7 @@ class CodingTaskRepository:
             values["retained_service"] = retained_service
         if operation_receipt is not None:
             encoded_receipt = json.dumps(operation_receipt, sort_keys=True, separators=(",", ":"))
-            if len(encoded_receipt.encode()) > MAX_TERMINAL_OUTPUT_BYTES:
+            if len(encoded_receipt.encode()) > MAX_EXECUTION_RECEIPT_BYTES:
                 raise CodingRepositoryError("execution_receipt_too_large", "Execution 回执过大。")
             values["operation_receipt"] = operation_receipt
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
@@ -1413,9 +1415,12 @@ class CodingTaskRepository:
         predecessor_task_id: str | None = None,
         *,
         acceptance_contract: dict[str, Any] | None = None,
+        max_instruction_bytes: int = MAX_INSTRUCTION_BYTES,
     ) -> TaskSnapshot:
         await self.initialize()
-        self._validate_instruction("initial", initial_instruction)
+        self._validate_instruction(
+            "initial", initial_instruction, max_instruction_bytes=max_instruction_bytes
+        )
         normalized_contract = self._normalize_acceptance_contract(acceptance_contract)
         now = utcnow()
         internal_run_id = self.internal_run_id(scope.external_run_id, 0)
@@ -1532,7 +1537,12 @@ class CodingTaskRepository:
             raise CodingRepositoryError("acceptance_contract_invalid", str(error)) from error
 
     @staticmethod
-    def _validate_instruction(instruction_id: str, content: str) -> None:
+    def _validate_instruction(
+        instruction_id: str,
+        content: str,
+        *,
+        max_instruction_bytes: int = MAX_INSTRUCTION_BYTES,
+    ) -> None:
         if (
             not isinstance(instruction_id, str)
             or not instruction_id
@@ -1541,8 +1551,17 @@ class CodingTaskRepository:
             raise CodingRepositoryError("instruction_id_invalid", "instruction_id 无效。")
         if not isinstance(content, str) or not content.strip():
             raise CodingRepositoryError("instruction_content_invalid", "指令内容不能为空。")
-        if len(content.encode("utf-8")) > MAX_INSTRUCTION_BYTES:
-            raise CodingRepositoryError("instruction_too_large", "单条指令超过 32 KiB。")
+        if (
+            isinstance(max_instruction_bytes, bool)
+            or not isinstance(max_instruction_bytes, int)
+            or not MAX_INSTRUCTION_BYTES <= max_instruction_bytes <= MAX_EXTENDED_INSTRUCTION_BYTES
+        ):
+            raise CodingRepositoryError("instruction_limit_invalid", "指令大小上限无效。")
+        if len(content.encode("utf-8")) > max_instruction_bytes:
+            raise CodingRepositoryError(
+                "instruction_too_large",
+                f"单条指令超过 {max_instruction_bytes // 1024} KiB。",
+            )
 
     async def submit_instruction(
         self,
@@ -1664,11 +1683,14 @@ class CodingTaskRepository:
         content: str,
         *,
         acceptance_contract: dict[str, Any] | None = None,
+        max_instruction_bytes: int = MAX_INSTRUCTION_BYTES,
     ) -> TaskSnapshot:
         """在同一任务内为已完成结果开启下一个修订 Attempt。"""
 
         await self.initialize()
-        self._validate_instruction(instruction_id, content)
+        self._validate_instruction(
+            instruction_id, content, max_instruction_bytes=max_instruction_bytes
+        )
         normalized_contract = (
             self._normalize_acceptance_contract(acceptance_contract)
             if acceptance_contract is not None
@@ -2140,8 +2162,8 @@ class CodingTaskRepository:
     ) -> TaskSnapshot:
         await self.initialize()
         encoded_receipt = json.dumps(finish_receipt, sort_keys=True, separators=(",", ":"))
-        if len(encoded_receipt.encode()) > MAX_TERMINAL_OUTPUT_BYTES:
-            raise CodingRepositoryError("finish_receipt_too_large", "完成回执超过 64 KiB。")
+        if len(encoded_receipt.encode()) > MAX_EXECUTION_RECEIPT_BYTES:
+            raise CodingRepositoryError("finish_receipt_too_large", "完成回执超过 512 KiB。")
         now = utcnow()
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
             task = await self._locked_task(
@@ -2457,6 +2479,7 @@ __all__ = [
     "MAX_PENDING_INSTRUCTIONS",
     "MAX_PENDING_INSTRUCTION_BYTES",
     "MAX_TERMINAL_OUTPUT_BYTES",
+    "MAX_EXECUTION_RECEIPT_BYTES",
     "TASK_RETENTION",
     "TASK_SCHEMA_VERSION",
     "TERMINAL_EXECUTION_STATUSES",

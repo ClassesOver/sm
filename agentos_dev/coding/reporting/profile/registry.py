@@ -9,6 +9,7 @@ from typing import Any
 from .models import (
     PROFILE_DIRECTORY_NAME,
     EffectiveDimension,
+    EffectiveDocumentBranding,
     EffectiveMetric,
     EffectivePageLayout,
     EffectiveReconciliation,
@@ -151,6 +152,15 @@ def resolve_reporting_profile(
                 )
             )
     effective_layout = EffectivePageLayout.model_validate(layout)
+    branding: dict[str, Any] = {}
+    for document in ordered:
+        if document.document_branding is not None:
+            branding.update(
+                document.document_branding.model_dump(
+                    mode="json", by_alias=True, exclude_none=True, exclude_unset=True
+                )
+            )
+    effective_branding = EffectiveDocumentBranding.model_validate(branding)
     if not effective_sections:
         raise ValueError("有效 Profile 至少需要一个报告章节。")
     _validate_references(
@@ -178,6 +188,7 @@ def resolve_reporting_profile(
         ],
         "sections": [item.model_dump(mode="json", by_alias=True) for item in effective_sections],
         "pageLayout": effective_layout.model_dump(mode="json", by_alias=True),
+        "documentBranding": effective_branding.model_dump(mode="json", by_alias=True),
     }
     return EffectiveReportingProfile.model_validate(
         {**payload, "effectiveProfileHash": effective_profile_hash(payload)}
@@ -319,6 +330,7 @@ def _builtin_profile() -> EffectiveReportingProfile:
         "measureSemantics": [],
         "sections": [item.model_dump(mode="json", by_alias=True) for item in sections],
         "pageLayout": EffectivePageLayout().model_dump(mode="json", by_alias=True),
+        "documentBranding": EffectiveDocumentBranding().model_dump(mode="json", by_alias=True),
     }
     return EffectiveReportingProfile.model_validate(
         {**payload, "effectiveProfileHash": effective_profile_hash(payload)}

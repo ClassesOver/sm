@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +31,7 @@ from agentos_dev.coding.reporting.data_source import (
     DataShape,
     load_report_source_registry,
 )
+from agentos_dev.coding.reporting.data_sources import DatasetHandle
 from agentos_dev.coding.reporting.delivery.publishing import (
     InMemoryDownloadGrantRepository,
     ReportDownloadGrantService,
@@ -44,6 +47,15 @@ from agentos_dev.coding.reporting.hospital_operation import (
     make_outline,
     ruijin_profile,
 )
+from agentos_dev.coding.reporting.hospital_operation.detailed_analysis import (
+    DetailedAnalysisPlan,
+    profile_csv_dataset,
+)
+from agentos_dev.coding.reporting.hospital_operation.delivery import (
+    PlanExecutionReceipt,
+    SourceBinding,
+    SourceWarning,
+)
 from agentos_dev.coding.reporting.metadata import ReportingMetadataClient, select_reporting_agent
 from agentos_dev.coding.reporting.models import ReportingError
 from agentos_dev.coding.reporting.profile import (
@@ -58,14 +70,17 @@ from agentos_dev.coding.reporting.workflow.query_pipeline import (
     resolve_schema_snapshot,
 )
 from agentos_dev.coding.reporting.workflow.runtime import (
+    REPORT_ANALYSIS_CONTEXT_FILE_STATE_KEY,
+    REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
     REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_APPROVED_QUERIES_STATE_KEY,
     REPORT_DATA_REQUIREMENTS_STATE_KEY,
+    REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
     REPORT_DATA_UNDERSTANDING_STATE_KEY,
     REPORT_EFFECTIVE_PROFILE_STATE_KEY,
-    REPORT_FINDINGS_STATE_KEY,
     REPORT_OUTLINE_CONTEXT_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
+    REPORT_RECONCILIATIONS_STATE_KEY,
     REPORT_REQUEST_CONTEXT_STATE_KEY,
     REPORT_SCHEMA_SNAPSHOTS_STATE_KEY,
     REPORT_WORKFLOW_INPUT_STATE_KEY,
@@ -85,6 +100,7 @@ from agentos_dev.coding.reporting.workflow.runtime import (
     _approve_generated_queries,
     _coding_observed_data_facts,
     _compact_validation_feedback,
+    _normalize_duplicate_requirements,
     _outline_section_issues,
     _PlannerOutputValidationError,
     _planning_schema_payload,
@@ -289,6 +305,157 @@ def data_understanding_context(
     )
 
 
+@pytest.mark.anyio
+async def test_分析数据上下文从需求表读取指标字段并绑定语义() -> None:
+    content = b"month,amount\n2025-01-01,10\n"
+    digest = hashlib.sha256(content).hexdigest()
+    requirement = QueryRequirement.model_validate(
+        {
+            "requirementId": "income-monthly",
+            "sourceId": "operations",
+            "tables": [
+                {
+                    "table": "reporting.income",
+                    "periodColumn": "month",
+                    "periodGranularity": "date",
+                    "measureColumns": ["amount"],
+                }
+            ],
+            "dimensionColumns": ["month"],
+            "grainColumns": ["month"],
+        }
+    )
+    handle = DatasetHandle(
+        dataset_id="dataset-1",
+        source_id="operations",
+        path="reports/dataset-1.csv",
+        row_count=1,
+        size=len(content),
+        sha256=digest,
+        requirement_id=requirement.requirement_id,
+        sql_hash="a" * 64,
+    )
+    state = {
+        REPORT_DATA_REQUIREMENTS_STATE_KEY: [
+            requirement.model_dump(mode="json", by_alias=True)
+        ]
+    }
+
+    class Workspace:
+        @asynccontextmanager
+        async def _async_client(self):
+            yield object()
+
+        async def _asandbox_for(self, _client, _thread_id):
+            return object()
+
+        @staticmethod
+        def normalize_path(path, *, allow_root):
+            assert not allow_root
+            return path, path
+
+        async def _adownload_file(self, _sandbox, _path, _size):
+            return content
+
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = Workspace()
+    runtime._state = lambda _context: state
+    runtime._workflow_result = lambda _state: {"datasets": [handle.public_dict()]}
+    runtime._scope = lambda _context: {"threadId": "thread-1"}
+    runtime._snapshots = lambda _context: approval_snapshots()
+    runtime._assert_state_safe = lambda _state: None
+
+    await runtime.prepare_analysis_context(StepInput(input=envelope()), data_understanding_context())
+
+    contexts = state[REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY]
+    assert contexts[0]["organizationGrain"] == ["month"]
+    assert [item["fieldRef"] for item in contexts[0]["metricSemantics"]] == [
+        "operations.reporting.income.amount"
+    ]
+
+
+@pytest.mark.anyio
+async def test_详细分析计划根据profile索引编排且不启动coding任务() -> None:
+    content = b"period,amount\n2025-01,10\n"
+    profiled = profile_csv_dataset(
+        content,
+        dataset_id="dataset-question-runtime",
+        path="reports/dataset-question-runtime.csv",
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+        metric_semantics=(
+            {"fieldRef": "operations.reporting.income.amount", "aggregation": "sum"},
+        ),
+    )
+    captured: dict[str, Any] = {}
+    handle = DatasetHandle(
+        dataset_id="dataset-question-runtime",
+        source_id="operations",
+        path="reports/dataset-question-runtime.csv",
+        row_count=1,
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        requirement_id="income-monthly",
+        sql_hash="b" * 64,
+    )
+
+    state: dict[str, Any] = {
+        REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY: [
+            profiled.model_dump(mode="json", by_alias=True)
+        ],
+        REPORT_ANALYSIS_PLAN_STATE_KEY: [
+            {
+                "code": "income",
+                "description": "收入规模与趋势分析",
+                "requirementIds": ["income-monthly"],
+            }
+        ],
+        REPORT_DATA_REQUIREMENTS_STATE_KEY: [],
+    }
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._state = lambda _context: state
+    runtime._workflow_result = lambda _state: {"datasets": [handle.public_dict()]}
+    runtime._scope = lambda _context: {
+        "userId": "user-1",
+        "threadId": "thread-1",
+    }
+    runtime._envelope = lambda _context: envelope()
+    runtime._snapshots = lambda _context: approval_snapshots()
+    async def write_artifact_validation_context(_thread_id, _path, payload):
+        captured["context"] = payload
+        return {
+            "path": "reports/analysis-context.json",
+            "size": 1,
+            "sha256": "a" * 64,
+        }
+
+    runtime._write_artifact_validation_context = write_artifact_validation_context
+    runtime._assert_state_safe = lambda _state: None
+
+    output = await runtime.generate_detailed_analysis_plan(
+        StepInput(input=envelope()),
+        RunContext(run_id="workflow-run", session_id="session", user_id="user-1"),
+    )
+
+    analysis = output.content.analyses[0]
+    assert analysis.analysis_id == "analysis_001"
+    assert analysis.domain == "income"
+    assert analysis.dataset_ids == ("dataset-question-runtime",)
+    assert analysis.metrics == ("amount",)
+    assert "CSV 复算" in analysis.evidence_summary
+    assert "Profile 定位信号包含 2 个变量" in analysis.evidence_summary
+    assert "先检查 coverage 与 alerts" in analysis.evidence_summary
+    assert "Pointer 定点读取完整 Profile" in analysis.evidence_summary
+    assert "关键指标期间趋势图" not in analysis.recommended_charts
+    assert analysis.recommended_charts
+    assert "？" not in analysis.management_question
+    assert state[REPORT_ANALYSIS_CONTEXT_FILE_STATE_KEY]["sha256"] == "a" * 64
+    assert "datasetContexts" in captured["context"]
+    assert "initialRequirements" in captured["context"]
+    assert state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY]["analyses"][0][
+        "analysisId"
+    ] == "analysis_001"
+
+
 def valid_data_understanding_output() -> dict[str, object]:
     return {
         "tables": [
@@ -430,7 +597,6 @@ async def test_数据理解模型只接收有效结构契约不接收原始ddl()
     assert [item["role"] for item in captured[0]["periodWindows"]["windows"]] == [
         "current",
         "yoy",
-        "mom",
     ]
     schemas = captured[0]["schemas"]
     assert isinstance(schemas, list)
@@ -1261,8 +1427,8 @@ async def test_分析计划由服务端补齐多指标共用的安全物化粒�
                     "measureColumns": ["amount", "person_time"],
                 }
             ],
-            "dimensionColumns": ["month", "campus"],
-            "grainColumns": ["month", "campus"],
+            "dimensionColumns": ["campus"],
+            "grainColumns": ["campus"],
         }
     )
     bundle = AnalysisBundle.model_validate(
@@ -1311,14 +1477,14 @@ async def test_分析计划由服务端补齐多指标共用的安全物化粒�
     assert len(captured) == 1
     normalized = state[REPORT_DATA_REQUIREMENTS_STATE_KEY][0]
     assert normalized["dimensionColumns"] == [
-        "month",
         "campus",
+        "month",
         "department_code",
         "department",
     ]
     assert normalized["grainColumns"] == [
-        "month",
         "campus",
+        "month",
         "department_code",
         "department",
     ]
@@ -1752,6 +1918,91 @@ def test_分析计划允许期间语义和完整共同粒度一致的多表requi
     assert _analysis_bundle_semantic_issues(bundle, understanding, approval_snapshots()) == []
 
 
+def test_分析计划拒绝requirement扩展请求比较范围():
+    requirement = query_requirement().model_copy(
+        update={"comparison_roles": ("yoy", "mom")}
+    )
+    bundle = AnalysisBundle.model_validate(
+        {
+            "analyses": [
+                {
+                    "code": "income",
+                    "description": "收入分析",
+                    "requirementIds": [requirement.requirement_id],
+                }
+            ],
+            "requirements": [requirement.model_dump(mode="json", by_alias=True)],
+        }
+    )
+    understanding = DataUnderstandingPlan.model_validate(valid_data_understanding_output())
+
+    issues = _analysis_bundle_semantic_issues(
+        bundle,
+        understanding,
+        approval_snapshots(),
+        envelope(),
+    )
+
+    assert issues == [
+        {
+            "path": "requirements[0].comparisonRoles",
+            "rejectedValue": ["mom"],
+            "reason": "comparisonRoles 超出请求允许的比较范围",
+            "allowedValues": ["yoy"],
+            "requiredAction": (
+                "删除 rejectedValue，只保留 allowedValues；省略 comparisonRoles 表示继承请求范围"
+            ),
+        }
+    ]
+
+
+def test_分析计划合并同一物理表重复需求并重写分析引用():
+    def requirement(requirement_id: str, measures: list[str], grain: list[str]):
+        return QueryRequirement.model_validate(
+            {
+                "requirementId": requirement_id,
+                "sourceId": "operations",
+                "tables": [
+                    {
+                        "table": "reporting.income",
+                        "periodColumn": "month",
+                        "periodGranularity": "date",
+                        "measureColumns": measures,
+                    }
+                ],
+                "dimensionColumns": grain,
+                "grainColumns": grain,
+            }
+        )
+
+    first = requirement("income-area", ["amount"], ["month", "campus"])
+    duplicate = requirement("income-dept", ["amount", "visits"], ["month", "department"])
+    bundle = AnalysisBundle(
+        analyses=(
+            AnalysisItem(
+                code="income",
+                description="收入分析",
+                requirementIds=(first.requirement_id, duplicate.requirement_id),
+            ),
+        ),
+        requirements=(first, duplicate),
+    )
+
+    normalized, repairs = _normalize_duplicate_requirements(bundle)
+
+    assert repairs == [
+        {
+            "removedRequirementId": "income-dept",
+            "canonicalRequirementId": "income-area",
+            "table": "reporting.income",
+        }
+    ]
+    assert [item.requirement_id for item in normalized.requirements] == ["income-area"]
+    assert normalized.requirements[0].tables[0].measure_columns == ("amount", "visits")
+    assert normalized.requirements[0].dimension_columns == ("month", "campus", "department")
+    assert normalized.analyses[0].requirement_ids == ("income-area",)
+
+
 def test_分析计划将快照外维度和粒度定点反馈给模型():
     requirement = query_requirement(grain_columns=("month", "company"))
     bundle = AnalysisBundle.model_validate(
@@ -2144,7 +2395,7 @@ async def test_数据理解基础设施错误不进入模型纠错():
 
 
 @pytest.mark.anyio
-async def test_动态提纲只接收冻结发现且code由服务端生成():
+async def test_动态提纲只接收冻结分析且code由服务端生成():
     captured: dict[str, object] = {}
     runtime: Any = object.__new__(ReportWorkflowRuntime)
     runtime._outline_agent = object()
@@ -2158,7 +2409,7 @@ async def test_动态提纲只接收冻结发现且code由服务端生成():
                 OutlineSectionProposal(
                     title="收入趋势与异常",
                     focus=("核对收入趋势和异常月份",),
-                    findingIds=("finding_001",),
+                    analysisIds=("analysis_001",),
                 ),
             ),
         )
@@ -2178,23 +2429,23 @@ async def test_动态提纲只接收冻结发现且code由服务端生成():
             REPORT_SCHEMA_SNAPSHOTS_STATE_KEY: [],
             REPORT_EFFECTIVE_PROFILE_STATE_KEY: profile.model_dump(mode="json", by_alias=True),
             REPORT_REQUEST_CONTEXT_STATE_KEY: {"originalGoal": "分析经营情况", "feedback": []},
-            REPORT_FINDINGS_STATE_KEY: {
-                "version": "1",
-                "findings": [
+            REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY: {
+                "datasetIds": ["dataset-income"],
+                "analyses": [
                     {
-                        "findingId": "finding_001",
-                        "type": "trend",
+                        "analysisId": "analysis_001",
                         "domain": "income",
-                        "title": "收入趋势",
-                        "claim": "收入趋势已由服务端事实确认。",
-                        "factIds": ["metric-income"],
-                        "citationIds": ["citation_001"],
-                        "evidenceKind": "derived_fact",
-                        "periodRoles": ["current"],
-                        "relatedDomains": ["income"],
+                        "managementQuestion": "收入规模与期间变化形成管理判断。",
+                        "datasetIds": ["dataset-income"],
+                        "fields": ["amount"],
+                        "metrics": ["amount"],
+                        "periods": ["2025-01"],
+                        "actions": ["规模分析"],
+                        "evidenceSummary": "CSV 已完成全量画像。",
+                        "suggestedSection": "收入分析",
+                        "completionConditions": ["覆盖数据集"],
                     }
                 ],
-                "issues": [],
             },
         },
     )
@@ -2204,11 +2455,11 @@ async def test_动态提纲只接收冻结发现且code由服务端生成():
     assert set(captured) == {"reportGoal", "reportType", "period", "outlineContext", "feedback"}
     outline_context = captured["outlineContext"]
     assert isinstance(outline_context, dict)
-    assert [item["findingId"] for item in outline_context["findings"]] == ["finding_001"]
+    assert [item["analysisId"] for item in outline_context["analyses"]] == ["analysis_001"]
     assert "fixedSections" not in outline_context
     assert "structuralSchemas" not in outline_context
     assert [section.code for section in output.content.sections] == ["section_001"]
-    assert output.content.sections[0].finding_ids == ("finding_001",)
+    assert output.content.sections[0].analysis_ids == ("analysis_001",)
 
 
 def test_提纲顶层章节不再由profile决定():
@@ -2434,6 +2685,33 @@ async def test_规划器超时返回稳定错误且不进入结构纠错():
     assert captured.value.code == "report_planner_timeout"
     assert "180 秒" in captured.value.message
     assert "analysis-planner" in captured.value.message
+
+
+@pytest.mark.anyio
+async def test_规划器上下文硬上限作为确定性错误只执行一次():
+    calls = 0
+
+    class HardLimitAgent:
+        id = "detailed-analysis-planner"
+        output_schema = ReportOutline
+
+        async def arun(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return SimpleNamespace(
+                content="不可约简的编码上下文前缀与工具 schema 超过模型输入 hard cap。",
+                metrics=None,
+            )
+
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._scope = lambda _context: {"userId": "user-1"}
+    context = RunContext(run_id="run-1", session_id="session-1", session_state={})
+
+    with pytest.raises(ReportingError) as captured:
+        await runtime._run_planner(HardLimitAgent(), {}, context)
+
+    assert captured.value.code == "report_planner_context_budget_exceeded"
+    assert calls == 1
 
 
 @pytest.mark.parametrize("field", ["host", "username", "password", "dsn", "databaseUrl"])
@@ -3041,7 +3319,10 @@ def test_医院运营profile在真实表列漂移时启动失败关闭():
             sourceId="rj",
             database="rj",
             name="dwd_hdc_income_summary_view",
-            columns=(ModelColumn(name=column_name, dataType="DECIMAL(18,2)", nullable=True),),
+            columns=tuple(
+                ModelColumn(name=name, dataType="DECIMAL(18,2)", nullable=True)
+                for name in (column_name, "area", "stlevel_analytic_unit")
+            ),
         )
         return SourceSchemaSnapshot(
             source="metadata_api",
@@ -3062,6 +3343,49 @@ def test_医院运营profile在真实表列漂移时启动失败关闭():
         )
     assert captured.value.code == "hospital_operation_profile_schema_mismatch"
     assert "rj.rj.dwd_hdc_income_summary_view.indicator_value" in captured.value.message
+
+
+@pytest.mark.anyio
+async def test_对账步骤冻结下游可解析的未物化计划():
+    state: dict[str, Any] = {}
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._state = lambda _context: state
+    runtime._profile = lambda _context: SimpleNamespace(
+        reconciliations=(
+            SimpleNamespace(
+                code="income_cross_check",
+                left_metric="income_total",
+                right_metric="income_summary",
+                grain=("month", "campus"),
+            ),
+        )
+    )
+    runtime._assert_state_safe = lambda _state: None
+    context = RunContext(run_id="run", session_id="session")
+
+    await runtime.reconcile_sources(StepInput(input={}), context)
+
+    frozen = state[REPORT_RECONCILIATIONS_STATE_KEY]
+    assert frozen == [
+        {
+            "code": "income_cross_check",
+            "status": "unavailable",
+            "leftMetric": "income_total",
+            "rightMetric": "income_summary",
+            "grain": ["month", "campus"],
+            "leftTotal": None,
+            "rightTotal": None,
+            "difference": None,
+            "differenceRate": None,
+            "commonKeyCount": 0,
+            "leftOnlyKeyCount": 0,
+            "rightOnlyKeyCount": 0,
+            "zeroDenominatorCount": 0,
+            "exceedsTolerance": None,
+            "issues": ["等待语义事实物化后执行服务端对账。"],
+        }
+    ]
+    assert runtime._reconciliations(context)[0].status == "unavailable"
 
 
 @pytest.mark.parametrize(("start", "end"), [("2024", "2025"), ("'2024'", "'2025'")])
@@ -3287,7 +3611,6 @@ def test_sql显式期间角色分别使用所属窗口(tmp_path: Path):
         for role, start, end in (
             ("current", "2025-01-01", "2025-12-31"),
             ("yoy", "2024-01-01", "2024-12-31"),
-            ("mom", "2024-01-02", "2024-12-31"),
         )
     ]
 
@@ -3299,8 +3622,8 @@ def test_sql显式期间角色分别使用所属窗口(tmp_path: Path):
         requirements=(query_requirement(),),
     )
 
-    assert [item.period_roles for item in approved] == [("current",), ("yoy",), ("mom",)]
-    assert len({item.query_window_id for item in approved}) == 3
+    assert [item.period_roles for item in approved] == [("current",), ("yoy",)]
+    assert len({item.query_window_id for item in approved}) == 2
 
 
 def test_sql本期角色访问同比窗口被拒绝(tmp_path: Path):
@@ -3381,15 +3704,57 @@ def test_运行时按共享queryWindowId拒绝重复查询(tmp_path: Path):
     )
 
     assert len(approved) == 2
-    assert approved[1].period_roles == ("yoy", "mom")
+    assert approved[1].period_roles == ("yoy",)
     assert approved[0].query_window_id != approved[1].query_window_id
     assert issues == [
         {
-            "path": "queries[2]",
-            "rejectedValue": generated.queries[2].model_dump(mode="json", by_alias=True),
-            "reason": "同一 requirementId 和 queryWindowId 只能生成一条 SQL",
-            "allowedValues": [],
-            "requiredAction": "删除该重复查询；共享同一 queryWindowId 的期间角色只保留一条 SQL",
+            "path": "queries[2].periodRole",
+            "rejectedValue": "mom",
+            "reason": "periodRole 超出 requirement 允许的比较范围",
+            "allowedValues": ["current", "yoy"],
+            "requiredAction": "删除超出请求或 requirement 比较范围的查询",
+        }
+    ]
+
+
+def test_sql审核将历史requirement比较范围越界转换为结构化issue(tmp_path: Path):
+    requirement = query_requirement().model_copy(
+        update={"comparison_roles": ("yoy", "mom")}
+    )
+    generated = GeneratedQueryBatch.model_validate(
+        {
+            "queries": [
+                {
+                    "requirementId": requirement.requirement_id,
+                    "sourceId": "operations",
+                    "periodRole": "current",
+                    "sql": (
+                        "SELECT month, SUM(amount) AS amount FROM reporting.income "
+                        "WHERE month BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY month"
+                    ),
+                }
+            ]
+        }
+    )
+
+    approved, issues = _approve_generated_queries(
+        generated,
+        sources={"operations": source_config(tmp_path)},
+        snapshots=approval_snapshots(),
+        envelope=envelope(),
+        requirements=(requirement,),
+    )
+
+    assert approved == ()
+    assert issues == [
+        {
+            "path": "requirements[0].comparisonRoles",
+            "rejectedValue": ["mom"],
+            "reason": "comparisonRoles 超出请求允许的比较范围",
+            "allowedValues": ["yoy"],
+            "requiredAction": (
+                "删除 rejectedValue，只保留 allowedValues；省略 comparisonRoles 表示继承请求范围"
+            ),
         }
     ]
 
@@ -3447,6 +3812,65 @@ def test_sql审核强制执行指标聚合与固定口径契约(tmp_path: Path, 
         )
 
     assert captured.value.code == expected_code
+
+
+def test_sql固定口径拒绝反馈包含服务端确认的精确过滤(tmp_path: Path):
+    table = ModelTable(
+        sourceId="operations",
+        database="reporting",
+        name="income",
+        columns=(
+            ModelColumn(name="month", dataType="DATE", nullable=False),
+            ModelColumn(name="income_nature", dataType="VARCHAR(20)", nullable=False),
+            ModelColumn(name="amount", dataType="DECIMAL(18,2)", nullable=True),
+        ),
+    )
+    snapshot = SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="m1",
+        schemaHash=schema_hash((table,)),
+        tables=(table,),
+        measureSemantics=(
+            MeasureSemantic(
+                fieldRef="operations.reporting.income.amount",
+                aggregation="sum",
+                additiveAcross=("month",),
+                exclusiveScope={"income_nature": "开单收入"},
+            ),
+        ),
+    )
+    generated = GeneratedQueryBatch.model_validate(
+        {
+            "queries": [
+                {
+                    "requirementId": "income-monthly",
+                    "sourceId": "operations",
+                    "sql": (
+                        "SELECT month, SUM(amount) AS amount FROM reporting.income "
+                        "WHERE month BETWEEN '2025-01-01' AND '2025-12-31' "
+                        "GROUP BY month"
+                    ),
+                }
+            ]
+        }
+    )
+
+    approved, issues = _approve_generated_queries(
+        generated,
+        sources={"operations": source_config(tmp_path)},
+        snapshots=(snapshot,),
+        envelope=envelope(),
+        requirements=(query_requirement(),),
+    )
+
+    assert approved == ()
+    assert issues[0]["expectedScopeFilters"] == [
+        {
+            "table": "reporting.income",
+            "column": "income_nature",
+            "value": "开单收入",
+        }
+    ]
 
 
 def test_sql审核拒绝通过省略层级维度绕过可加性契约(tmp_path: Path):
@@ -3789,6 +4213,9 @@ async def test_download_grant绑定scope_revision和文件hash且cli不返回url
         pdf_path="reports/result.pdf",
         pdf_size=100,
         pdf_sha256="a" * 64,
+        word_path="reports/result.docx",
+        word_size=200,
+        word_sha256="c" * 64,
         now=now,
     )
 
@@ -3823,7 +4250,72 @@ async def test_download_grant绑定scope_revision和文件hash且cli不返回url
             await service.resolve(raw, **arguments)
         assert captured.value.code == code
 
-    http = publication_result(report_id="report-1", revision=1, raw_grant=raw, grant=grant)
-    cli = cli_result(path="/tmp/result.pdf", size=100, sha256="a" * 64)
+    warning = SourceWarning(
+        code="source_period_difference",
+        message="期间不同",
+        datasetIds=("dataset-1",),
+    ).model_dump(mode="json", by_alias=True)
+    receipt = PlanExecutionReceipt(
+        planId="table-1",
+        planHash="d" * 64,
+        inputSnapshotHash="e" * 64,
+        actualSource=SourceBinding(
+            sourcePolicy="csv",
+            datasetIds=("dataset-1",),
+            warnings=(SourceWarning.model_validate(warning),),
+        ),
+        inputRowCount=1,
+        outputSummary={"kind": "table"},
+        warnings=(SourceWarning.model_validate(warning),),
+        artifactSha256="f" * 64,
+    ).model_dump(mode="json", by_alias=True)
+    http = publication_result(
+        report_id="report-1",
+        revision=1,
+        raw_grant=raw,
+        grant=grant,
+        source_warnings=[warning],
+        coding_receipts=[receipt],
+    )
+    cli = cli_result(
+        path="/tmp/result.pdf",
+        size=100,
+        sha256="a" * 64,
+        word_path="/tmp/result.docx",
+        word_size=200,
+        word_sha256="c" * 64,
+        source_warnings=[warning],
+        coding_receipts=[receipt],
+    )
     assert "downloadUrl" in http["pdf"]  # type: ignore[operator]
+    assert "downloadUrl" in http["word"]  # type: ignore[operator]
+    assert http["sourceWarnings"] == [warning]
+    assert http["codingReceipts"] == [receipt]
+    assert cli["word"] == {
+        "path": "/tmp/result.docx",
+        "size": 200,
+        "sha256": "c" * 64,
+    }
     assert "Url" not in repr(cli) and "url" not in repr(cli)
+    assert cli["sourceWarnings"][0]["code"] == "source_period_difference"  # type: ignore[index]
+    assert cli["codingReceipts"][0]["planId"] == "table-1"  # type: ignore[index]
+
+
+def test_发布内容拒绝非法来源warning或coding回执():
+    base = {
+        "reportId": "report-1",
+        "revision": 1,
+        "pdfPath": "report.pdf",
+        "pdfSize": 10,
+        "pdfSha256": "a" * 64,
+        "wordPath": "report.docx",
+        "wordSize": 20,
+        "wordSha256": "b" * 64,
+    }
+    for invalid in (
+        {"sourceWarnings": [{"code": "unknown"}]},
+        {"codingReceipts": [{"planId": "table-1"}]},
+    ):
+        with pytest.raises(ReportingError) as captured:
+            ReportWorkflowRuntime._publication_content(base | invalid)
+        assert captured.value.code == "report_publication_invalid"

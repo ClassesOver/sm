@@ -3,9 +3,10 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-from agno.exceptions import StopAgentRun
+from agno.exceptions import RetryAgentRun, StopAgentRun
 from agno.models.message import Message
 from agno.run import RunContext
+from pydantic import BaseModel
 
 from agentos_dev import app
 from agentos_dev.coding.agent import create_coding_agent, create_coding_facade_agent
@@ -85,11 +86,11 @@ def test_pdf内部路径按revision隔离且下载文件名保持稳定():
     assert first.rsplit("/", 1)[-1] == second.rsplit("/", 1)[-1]
 
 
-def test_提纲规划器基于finding生成动态章节且不接收code():
+def test_提纲规划器基于analysis生成动态章节且不接收code():
     outline_rules = "\n".join(app.report_runtime._outline_agent.instructions)
     assert app.report_runtime._outline_agent.output_schema is ReportOutlineProposal
     assert "sections 不得提交 code" in outline_rules
-    assert "findingId" in outline_rules
+    assert "analysisId" in outline_rules
     assert "动态章节" in outline_rules
     assert "comprehensive 必须精确返回固定十章" not in outline_rules
 
@@ -130,6 +131,30 @@ def test_reporting_model复制到worker和facade后保留累计usage配置():
     assert facade.collect_metrics_on_completion is True
 
 
+def test_report_worker禁用视觉时将过期view_image调用转为跳过回执():
+    model = ReportWorkerOpenAIChat(id="report-worker-vision-test", api_key="test-key")
+    model._report_vision_enabled = False
+    assistant = Message(
+        role="assistant",
+        tool_calls=[
+            {
+                "id": "call-image",
+                "type": "function",
+                "function": {"name": "view_image", "arguments": "{}"},
+            }
+        ],
+    )
+    messages = [assistant]
+
+    assert model.get_function_calls_to_run(assistant, messages, {}) == []
+    assert json.loads(messages[-1].content) == {
+        "ok": False,
+        "status": "skipped",
+        "code": "report_vision_disabled",
+        "message": "当前 Reporting Worker 未启用图片视觉工具，继续使用文本和文件证据。",
+    }
+
+
 def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     workspace_service = service(tmp_path)
     coding_agent = create_coding_agent(
@@ -149,6 +174,8 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
         app.coding_repository,
         instructions=["测试报表"],
         report_coding_enable_thinking=False,
+        context_token_budget=app.settings.report_context_token_budget,
+        output_token_reserve=app.settings.report_output_token_reserve,
     )
     report_agent = create_report_agent(
         report_worker,
@@ -188,14 +215,11 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert [skill.name for skill in coding_agent.skills.get_all_skills()] == ["sandbox-tooling"]
     assert coding_agent.id not in {member.id for member in app.assistant_team.members}
     assert report_worker.id == "report-worker"
-    assert [skill.name for skill in report_worker.skills.get_all_skills()] == [
-        "sandbox-tooling",
-        "report-artifact",
-    ]
+    assert [skill.name for skill in report_worker.skills.get_all_skills()] == ["sandbox-tooling"]
     assert report_worker.use_instruction_tags is True
     assert report_worker.send_media_to_model is False
     assert report_worker.model is not coding_agent.model
-    assert report_worker.model.max_tokens == 32768
+    assert report_worker.model.max_tokens == app.settings.report_output_token_reserve
     assert report_worker.model.temperature == app.settings.report_coding_temperature
     assert report_worker.model.top_p == 0.95
     assert coding_agent.model.max_tokens is None
@@ -208,12 +232,25 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert "Workflow 首步" in facade_instructions
     assert "HumanReview retry" in facade_instructions
     assert "downloadUrl 必须逐字保留" in facade_instructions
+    assert "[下载 PDF]" in facade_instructions
+    assert "[下载 Word]" in facade_instructions
     assert "不得输出为裸路径" in facade_instructions
     assert report_agent.model is not report_worker.model
     assert report_agent.model.extra_body == {"enable_thinking": False}
     assert report_agent.model.temperature == 1.0
     assert report_agent.model.top_p == 0.95
     assert report_worker.compression_manager.model is report_worker.model
+    assert (
+        report_worker.compression_manager.context_token_limit
+        == app.settings.report_context_token_budget
+    )
+    assert (
+        report_worker.compression_manager.output_token_reserve
+        == app.settings.report_output_token_reserve
+    )
+    assert report_worker.model._coding_input_token_budget == (
+        report_worker.compression_manager.input_token_budget
+    )
     assert report_agent.compression_manager.model is report_agent.model
     assert report_worker.compression_manager is not coding_agent.compression_manager
     assert report_agent.compression_manager is not report_worker.compression_manager
@@ -236,11 +273,12 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert [tool.name for tool in worker_tools] == ["workspace_coding"]
     assert [tool.name for tool in worker_tools_without_injected_context] == ["workspace_coding"]
     reporting_examples = {
+        "read_profile_pointer": '示例：{"datasetId":',
         "register_report_charts": '示例：{"charts":[',
-        "render_report_draft": '示例：{"draft":{',
-        "resume_report_draft": "示例：{}",
-        "verify_report_draft": "示例：{}",
-        "repair_report_draft": '示例：{"changes":[',
+        "discard_report_charts": '示例：{"chartIds":[',
+        "begin_report_draft": "示例：{}",
+        "render_report_section": '示例：{"sectionCode":',
+        "finalize_report_draft": "示例：{}",
     }
     for name, example in reporting_examples.items():
         assert example in worker_tools[0].async_functions[name].description
@@ -248,9 +286,8 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
         assert "示例：" in tool.description, tool.name
     assert "view_image" not in worker_tools[0].async_functions
     assert "view_image" not in worker_tools_without_injected_context[0].async_functions
-    assert worker_tools[0].kernel.validator_registry.script_sha256().keys() == {
-        "report-artifact:manifest"
-    }
+    assert "verify" not in worker_tools[0].async_functions
+    assert worker_tools[0].kernel.validator_registry.script_sha256() == {}
     assert coding_tools[0].kernel.validator_registry.script_sha256() == {}
     assert [tool.name for tool in report_tools] == ["report_workflow"]
     assert [tool.name for tool in report_tools_without_injected_context] == ["report_workflow"]
@@ -332,6 +369,10 @@ def test_report_planner_uses_report_thinking_without_mutating_coding_worker():
     )
     assert planner.model.timeout == app.settings.model_timeout_seconds
     assert planner.parse_response is True
+    assert planner.enable_session_summaries is False
+    assert planner.add_session_summary_to_context is False
+    assert planner.session_summary_manager is None
+    assert planner.add_session_state_to_context is False
     assert any("不得写占位符" in instruction for instruction in planner.instructions)
     assert any("不得把 correction" in instruction for instruction in planner.instructions)
     assert all(instruction in planner.instructions for instruction in stage_instructions)
@@ -396,7 +437,7 @@ def test_report_planner_reasoning_effort_can_be_overridden():
 def test_report_planners_expose_compact_schema_in_stable_instructions():
     expected_fields = {
         DataUnderstandingPlan: ("tables", "periodColumn", "periodGranularity"),
-        ReportOutlineProposal: ("title", "sections", "findingIds"),
+        ReportOutlineProposal: ("title", "sections", "analysisIds"),
         AnalysisBundle: ("analyses", "requirements", "requirementIds"),
         GeneratedQueryBatch: ("queries", "requirementId", "sourceId"),
     }
@@ -424,28 +465,28 @@ def test_report_planners_expose_compact_schema_in_stable_instructions():
 async def test_reporting_tool_hook只展开一层arguments且错误不产生traceback():
     context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
 
-    async def render_report_draft(draft):
-        return {"ok": True, "draft": draft}
+    async def render_report_section(sectionCode, blocks):
+        return {"ok": True, "sectionCode": sectionCode, "blocks": blocks}
 
     corrected = await normalize_reporting_tool_arguments(
         context,
-        "render_report_draft",
-        render_report_draft,
-        {"arguments": {"draft": {"title": "报告", "sections": []}}},
+        "render_report_section",
+        render_report_section,
+        {"arguments": {"sectionCode": "summary", "blocks": []}},
     )
     nested = await normalize_reporting_tool_arguments(
         context,
-        "render_report_draft",
-        render_report_draft,
-        {"arguments": {"arguments": {"draft": {}}}},
+        "render_report_section",
+        render_report_section,
+        {"arguments": {"arguments": {"sectionCode": "summary", "blocks": []}}},
     )
 
     assert corrected["ok"] is True
-    assert corrected["draft"]["title"] == "报告"
+    assert corrected["sectionCode"] == "summary"
     assert context.session_state["agentos_reporting_tool_argument_autofixes"] == [
         {
             "code": "report_tool_arguments_unwrapped",
-            "toolName": "render_report_draft",
+            "toolName": "render_report_section",
             "mutationSequence": 0,
         }
     ]
@@ -454,21 +495,37 @@ async def test_reporting_tool_hook只展开一层arguments且错误不产生trac
     assert nested["executionBlocking"] is False
     assert nested["failedRequirements"] == []
     expected = nested["expectedCallShape"]
-    assert expected["draft"]["title"] == "报告标题"
-    assert expected["draft"]["sections"][0]["blocks"][0]["text"] == "图表题注"
+    assert expected["sectionCode"] == "executive_summary"
+    assert expected["blocks"][0]["markdown"].startswith("### 核心结论")
     assert nested["correctCallExample"] == {
-        "name": "render_report_draft",
+        "name": "render_report_section",
         "arguments": expected,
     }
     assert "Traceback" not in str(nested)
 
 
 @pytest.mark.anyio
-async def test_reporting_tool_hook普通workspace_mutation不能重置同一错误预算():
+async def test_reporting_tool_hook保留RetryAgentRun给Agno当前循环重试():
     context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
 
-    async def render_report_draft(draft):
-        return {"ok": True, "draft": draft}
+    async def render_report_section(sectionCode, blocks):
+        raise RetryAgentRun(f"章节 {sectionCode} 需要修正")
+
+    with pytest.raises(RetryAgentRun, match="章节 summary 需要修正"):
+        await normalize_reporting_tool_arguments(
+            context,
+            "render_report_section",
+            render_report_section,
+            {"sectionCode": "summary", "blocks": []},
+        )
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook真实mutation代表进展并重置同一错误预算():
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+
+    async def render_report_section(sectionCode, blocks):
+        return {"ok": True, "sectionCode": sectionCode, "blocks": blocks}
 
     results = []
     for attempt in range(4):
@@ -476,8 +533,8 @@ async def test_reporting_tool_hook普通workspace_mutation不能重置同一错�
         results.append(
             await normalize_reporting_tool_arguments(
                 context,
-                "render_report_draft",
-                render_report_draft,
+                "render_report_section",
+                render_report_section,
                 {"title": "错误调用"},
             )
         )
@@ -485,21 +542,17 @@ async def test_reporting_tool_hook普通workspace_mutation不能重置同一错�
     assert all(result["retryable"] is True for result in results)
     assert all(result["severity"] == "warning" for result in results)
     assert all(result["executionBlocking"] is False for result in results)
+    # 工作区 mutation 变化表示模型取得了真实进展，错误预算从新进度重新计数。
     context.session_state["agentos_coding_tool_progress"] = {"mutation": 99}
-    with pytest.raises(StopAgentRun) as stopped:
-        await normalize_reporting_tool_arguments(
-            context,
-            "render_report_draft",
-            render_report_draft,
-            {"title": "错误调用"},
-        )
-    blocked = json.loads(str(stopped.value))
-    assert blocked["retryable"] is False
-    assert blocked["severity"] == "error"
-    assert blocked["executionBlocking"] is True
-    assert blocked["requiredActions"] == [
-        "逐字使用 correctCallExample 重试；不要增加 arguments 包装或其他字段。"
-    ]
+    result = await normalize_reporting_tool_arguments(
+        context,
+        "render_report_section",
+        render_report_section,
+        {"title": "错误调用"},
+    )
+    assert result["retryable"] is True
+    assert result["severity"] == "warning"
+    assert result["executionBlocking"] is False
 
 
 @pytest.mark.anyio
@@ -516,13 +569,13 @@ async def test_reporting_tool_hook跨工具和错误码累计到阶段预算时�
         }
 
     attempts = [
-        ("render_report_draft", "report_draft_chart_citation_invalid", {"draft": {}}),
-        ("resume_report_draft", "report_draft_chart_citation_invalid", {}),
+        ("render_report_section", "report_section_chart_unknown", {"sectionCode": "a", "blocks": []}),
+        ("begin_report_draft", "report_draft_state_invalid", {}),
         ("register_report_charts", "report_chart_registration_conflict", {"charts": []}),
-        ("render_report_draft", "report_draft_already_submitted", {"draft": {}}),
-        ("resume_report_draft", "report_draft_chart_citation_invalid", {}),
+        ("render_report_section", "report_section_already_submitted", {"sectionCode": "a", "blocks": []}),
+        ("finalize_report_draft", "report_draft_sections_incomplete", {}),
         ("register_report_charts", "report_chart_registration_conflict", {"charts": []}),
-        ("render_report_draft", "report_tool_arguments_invalid", {"draft": {}}),
+        ("render_report_section", "report_tool_arguments_invalid", {"sectionCode": "a", "blocks": []}),
     ]
     for function_name, code, arguments in attempts:
         result = await normalize_reporting_tool_arguments(
@@ -657,13 +710,13 @@ async def test_reporting_tool_hook展开含三引号文本的arguments对象():
 
 
 @pytest.mark.anyio
-async def test_report_worker_verify通过后确定性调用finish而不再请求模型(monkeypatch):
+async def test_report_worker_finalize通过后确定性调用finish而不再请求模型(monkeypatch):
     model = ReportWorkerOpenAIChat(id="report-worker-test", api_key="test-key")
     messages = [
         Message(
             role="tool",
-            tool_name="verify_report_draft",
-            tool_call_id="verify-call",
+            tool_name="finalize_report_draft",
+            tool_call_id="finalize-call",
             content=json.dumps(
                 {
                     "ok": True,
@@ -683,7 +736,7 @@ async def test_report_worker_verify通过后确定性调用finish而不再请求
     ]
 
     async def unexpected(*_args, **_kwargs):
-        raise AssertionError("verify 通过后不应再请求供应商模型")
+        raise AssertionError("finalize 通过后不应再请求供应商模型")
 
     monkeypatch.setattr(ProjectedOpenAIChat, "ainvoke", unexpected)
     response = await model.ainvoke(messages)
@@ -696,13 +749,13 @@ async def test_report_worker_verify通过后确定性调用finish而不再请求
 
 
 @pytest.mark.anyio
-async def test_report_worker流式verify通过后确定性调用finish而不再请求模型(monkeypatch):
+async def test_report_worker流式finalize通过后确定性调用finish而不再请求模型(monkeypatch):
     model = ReportWorkerOpenAIChat(id="report-worker-stream-test", api_key="test-key")
     messages = [
         Message(
             role="tool",
-            tool_name="verify_report_draft",
-            tool_call_id="verify-call",
+            tool_name="finalize_report_draft",
+            tool_call_id="finalize-call",
             content=json.dumps(
                 {
                     "ok": True,
@@ -721,7 +774,7 @@ async def test_report_worker流式verify通过后确定性调用finish而不再�
     ]
 
     async def unexpected(*_args, **_kwargs):
-        raise AssertionError("verify 通过后流式路径不应再请求供应商模型")
+        raise AssertionError("finalize 通过后流式路径不应再请求供应商模型")
 
     monkeypatch.setattr(ProjectedOpenAIChat, "ainvoke_stream", unexpected)
     responses = [response async for response in model.ainvoke_stream(messages)]
@@ -735,6 +788,44 @@ async def test_report_worker流式verify通过后确定性调用finish而不再�
     }
 
 
+@pytest.mark.anyio
+async def test_report_worker接受agno工具返回的python字典文本并使用定稿产物(monkeypatch):
+    model = ReportWorkerOpenAIChat(id="report-worker-repr-test", api_key="test-key")
+    trusted_paths = ["report.md", "charts/income.png", "charts/workload.png"]
+    messages = [
+        Message(
+            role="tool",
+            tool_name="finalize_report_draft",
+            tool_call_id="finalize-call",
+            content=str(
+                {
+                    "ok": True,
+                    "status": "completed",
+                    "artifactPaths": trusted_paths,
+                    "nextToolCall": {
+                        "name": "finish_task",
+                        "arguments": {
+                            "summary": "报告已完成逐章拼装。",
+                            "artifact_paths": trusted_paths,
+                        },
+                    },
+                }
+            ),
+        )
+    ]
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("Agno 字典文本应直接收敛到服务端签发的 finish_task")
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "ainvoke", unexpected)
+    response = await model.ainvoke(messages)
+
+    assert response.tool_calls[0]["function"]["name"] == "finish_task"
+    assert json.loads(response.tool_calls[0]["function"]["arguments"])["artifact_paths"] == (
+        trusted_paths
+    )
+
+
 def test_report_worker缺少受信任next_call时不强制finish(monkeypatch):
     model = ReportWorkerOpenAIChat(id="report-worker-invalid-next-call", api_key="test-key")
 
@@ -746,8 +837,8 @@ def test_report_worker缺少受信任next_call时不强制finish(monkeypatch):
         [
             Message(
                 role="tool",
-                tool_name="verify_report_draft",
-                tool_call_id="verify-call",
+                tool_name="finalize_report_draft",
+                tool_call_id="finalize-call",
                 content='{"ok":true}',
             )
         ]
@@ -790,8 +881,56 @@ async def test_reporting_tool_hook通用工具兼容失败时恢复原始调用�
         "failedRequirements": [],
         "requiredActions": ["参照当前工具描述中的示例直接传参，不要增加 arguments 包装。"],
         "retryable": True,
+        "details": {
+            "issues": [
+                {
+                    "loc": "$",
+                    "message": "test_reporting_tool_hook通用工具兼容失败时恢复原始调用并返回warning.<locals>.terminal() got an unexpected keyword argument 'arguments'",
+                    "type": "type_error",
+                }
+            ],
+            "topLevelTypes": {"arguments": "dict"},
+        },
     }
     assert "Traceback" not in str(result)
+
+
+@pytest.mark.anyio
+async def test_reporting_tool_hook返回有界ValidationError位置且不泄露参数值():
+    class FileInput(BaseModel):
+        path: str
+        content: str
+
+    class CreateFilesInput(BaseModel):
+        files: list[FileInput]
+
+    context = RunContext(run_id="run", session_id="thread", user_id="user", session_state={})
+
+    async def create_files(files):
+        CreateFilesInput.model_validate({"files": files})
+
+    secret = "不应出现在错误诊断中的脚本正文"
+    result = await normalize_reporting_tool_arguments(
+        context,
+        "create_files",
+        create_files,
+        {"files": [{"path": "analysis/report_analysis.py", "unknown": secret}]},
+    )
+
+    assert result["details"] == {
+        "issues": [
+            {
+                "loc": "files.0.content",
+                "message": "Field required",
+                "type": "missing",
+            }
+        ],
+        "topLevelTypes": {"files": "list"},
+    }
+    assert secret not in json.dumps(result, ensure_ascii=False)
+    assert len(result["details"]["issues"]) <= 8
+    assert all(len(issue["loc"]) <= 256 for issue in result["details"]["issues"])
+    assert all(len(issue["message"]) <= 512 for issue in result["details"]["issues"])
 
 
 @pytest.mark.anyio

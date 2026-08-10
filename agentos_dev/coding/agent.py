@@ -9,7 +9,12 @@ from agno.run.agent import RunOutputEvent
 from agno.tools import Function
 
 from ..agent_control import build_coding_agent_tools
-from ..context_management import ContextBudgetController, projected_coding_model
+from ..context_management import (
+    CODING_CONTEXT_TOKEN_LIMIT,
+    CODING_OUTPUT_TOKEN_RESERVE,
+    ContextBudgetController,
+    projected_coding_model,
+)
 from ..instructions import build_pure_coding_agent_instructions
 from ..skills import (
     SkillValidatorRegistry,
@@ -50,7 +55,15 @@ def create_coding_agent(
     ]
     if not isinstance(base_agent.model, OpenAIChat):
         raise TypeError("Coding Agent requires OpenAIChat")
-    coding_model = projected_coding_model(base_agent.model)
+    input_token_budget = max(
+        1,
+        min(context_token_budget, CODING_CONTEXT_TOKEN_LIMIT)
+        - max(CODING_OUTPUT_TOKEN_RESERVE, output_token_reserve),
+    )
+    coding_model = projected_coding_model(
+        base_agent.model,
+        input_token_budget=input_token_budget,
+    )
     coding_model.temperature = temperature
     coding_model.reasoning_effort = reasoning_effort
     coding_model.extra_body = {

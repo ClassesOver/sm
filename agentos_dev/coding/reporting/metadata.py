@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -26,6 +27,9 @@ from .data_source.models import DataSourceConfig
 from .models import ReportingError
 
 MAX_METADATA_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_METADATA_ATTEMPTS = 3
+METADATA_RETRY_STATUS_CODES = frozenset({502, 503, 504})
+METADATA_RETRY_DELAYS = (0.2, 0.5)
 
 
 class ReportingMetadataClient:
@@ -95,28 +99,51 @@ class ReportingMetadataClient:
             else request
         )
         try:
-            response = await client.post(path, headers=headers, json=body)
-        except httpx.TimeoutException as error:
-            raise ReportingError("report_metadata_timeout", "报表元数据服务请求超时。") from error
-        except httpx.HTTPError as error:
-            raise ReportingError("report_metadata_unavailable", "报表元数据服务不可用。") from error
+            for attempt in range(1, MAX_METADATA_ATTEMPTS + 1):
+                try:
+                    response = await client.post(path, headers=headers, json=body)
+                except httpx.TimeoutException as error:
+                    if attempt < MAX_METADATA_ATTEMPTS:
+                        await asyncio.sleep(METADATA_RETRY_DELAYS[attempt - 1])
+                        continue
+                    raise ReportingError(
+                        "report_metadata_timeout", "报表元数据服务请求超时。"
+                    ) from error
+                except httpx.NetworkError as error:
+                    if attempt < MAX_METADATA_ATTEMPTS:
+                        await asyncio.sleep(METADATA_RETRY_DELAYS[attempt - 1])
+                        continue
+                    raise ReportingError(
+                        "report_metadata_unavailable", "报表元数据服务不可用。"
+                    ) from error
+                except httpx.HTTPError as error:
+                    raise ReportingError(
+                        "report_metadata_unavailable", "报表元数据服务不可用。"
+                    ) from error
+
+                if response.status_code in METADATA_RETRY_STATUS_CODES:
+                    if attempt < MAX_METADATA_ATTEMPTS:
+                        await asyncio.sleep(METADATA_RETRY_DELAYS[attempt - 1])
+                        continue
+                    raise ReportingError("report_metadata_unavailable", "报表元数据服务不可用。")
+                if response.status_code in {401, 403}:
+                    raise ReportingError("report_metadata_auth_failed", "报表元数据服务鉴权失败。")
+                if response.status_code >= 500:
+                    raise ReportingError("report_metadata_unavailable", "报表元数据服务不可用。")
+                if response.status_code < 200 or response.status_code >= 300:
+                    raise ReportingError("report_metadata_rejected", "报表元数据服务拒绝了请求。")
+                if len(response.content) > MAX_METADATA_RESPONSE_BYTES:
+                    raise ReportingError("report_metadata_response_too_large", "报表元数据响应过大。")
+                try:
+                    return response.json()
+                except ValueError as error:
+                    raise ReportingError(
+                        "report_metadata_invalid_json", "报表元数据响应不是合法 JSON。"
+                    ) from error
+            raise ReportingError("report_metadata_unavailable", "报表元数据服务不可用。")
         finally:
             if owns_client:
                 await client.aclose()
-        if response.status_code in {401, 403}:
-            raise ReportingError("report_metadata_auth_failed", "报表元数据服务鉴权失败。")
-        if response.status_code >= 500:
-            raise ReportingError("report_metadata_unavailable", "报表元数据服务不可用。")
-        if response.status_code < 200 or response.status_code >= 300:
-            raise ReportingError("report_metadata_rejected", "报表元数据服务拒绝了请求。")
-        if len(response.content) > MAX_METADATA_RESPONSE_BYTES:
-            raise ReportingError("report_metadata_response_too_large", "报表元数据响应过大。")
-        try:
-            return response.json()
-        except ValueError as error:
-            raise ReportingError(
-                "report_metadata_invalid_json", "报表元数据响应不是合法 JSON。"
-            ) from error
 
     @staticmethod
     def _validate(model: type[Any], payload: Any, code: str) -> Any:

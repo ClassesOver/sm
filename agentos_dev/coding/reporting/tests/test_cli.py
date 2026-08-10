@@ -169,7 +169,16 @@ async def test_drive_workflow_continues_with_complete_requirements_and_publishes
     completed = SimpleNamespace(
         status=RunStatus.completed,
         step_requirements=[resolved, active],
-        content={"path": "reports/report.pdf", "size": 10, "sha256": "a" * 64},
+        content={
+            "path": "reports/report.pdf",
+            "size": 10,
+            "sha256": "a" * 64,
+            "word": {
+                "path": "reports/report.docx",
+                "size": 20,
+                "sha256": "b" * 64,
+            },
+        },
     )
 
     class Workflow:
@@ -204,7 +213,16 @@ async def test_drive_workflow_continues_with_complete_requirements_and_publishes
         "status": "completed",
         "runId": "run-1",
         "sessionId": "session-1",
-        "content": {"path": "reports/report.pdf", "size": 10, "sha256": "a" * 64},
+        "content": {
+            "path": "reports/report.pdf",
+            "size": 10,
+            "sha256": "a" * 64,
+            "word": {
+                "path": "reports/report.docx",
+                "size": 20,
+                "sha256": "b" * 64,
+            },
+        },
     }
 
 
@@ -219,7 +237,10 @@ async def test_drive_workflow除提纲外自动批准普通审核():
     completed = SimpleNamespace(
         status=RunStatus.completed,
         step_requirements=[active],
-        content={"path": "reports/report.pdf"},
+        content={
+            "path": "reports/report.pdf",
+            "word": {"path": "reports/report.docx"},
+        },
     )
 
     class Workflow:

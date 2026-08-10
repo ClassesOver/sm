@@ -66,6 +66,21 @@ def test_projected_coding_model_enables_parallel_calls_without_mutating_base_mod
     assert projected.get_request_params()["parallel_tool_calls"] is True
 
 
+def test_projected_coding_model_使用Reporting输入预算作为投影hard_cap(monkeypatch):
+    base = OpenAIChat(id="budgeted-model")
+    projected = projected_coding_model(base, input_token_budget=1234)
+    observed = {}
+
+    def project(messages, **kwargs):
+        observed["hard_cap"] = kwargs["hard_cap"]
+        return messages
+
+    monkeypatch.setattr(context_management_module.CodingContextProjector, "project", project)
+    projected._project([Message(role="user", content="继续")], (), {})
+
+    assert observed["hard_cap"] == 1234
+
+
 class CountingModel:
     id = "test-model"
     supports_native_structured_outputs = False
@@ -293,6 +308,18 @@ def test_coding_context_controller_keeps_below_budget_history_uncompressed():
     assert prepared[3].compressed_content is None
     assert controller.context_token_limit == 200_000
     assert controller.input_token_budget == 200_000 - 32 * 1024
+
+
+def test_reporting_context_controller按模型窗口保留最大输出预算():
+    controller = ContextBudgetController(
+        model=CountingModel(),
+        context_token_budget=1_048_576,
+        output_token_reserve=393_216,
+    )
+
+    assert controller.context_token_limit == 1_048_576
+    assert controller.output_token_reserve == 393_216
+    assert controller.input_token_budget == 655_360
 
 
 def test_coding_context_projection_keeps_append_only_provider_prefix_stable():

@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from .factset import OperationModel
+from .schema import HospitalOperationSchema
 
 ReportType = Literal["comprehensive", "topic"]
 _SERIALIZED_MEMBER_PATTERN = re.compile(
@@ -25,11 +25,11 @@ def _looks_like_serialized_structure(value: str) -> bool:
     return isinstance(parsed, (dict, list)) or bool(_SERIALIZED_MEMBER_PATTERN.search(normalized))
 
 
-class ReportOutlineSection(OperationModel):
+class ReportOutlineSection(HospitalOperationSchema):
     code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     title: str = Field(min_length=1, max_length=300)
     focus: tuple[str, ...] = Field(default=(), max_length=20)
-    finding_ids: tuple[str, ...] = Field(default=(), alias="findingIds", max_length=2_000)
+    analysis_ids: tuple[str, ...] = Field(default=(), alias="analysisIds", max_length=2_000)
 
     @field_validator("title")
     @classmethod
@@ -53,23 +53,23 @@ class ReportOutlineSection(OperationModel):
             raise ValueError("章节重点必须是不重复的中文自然语言")
         return normalized
 
-    @field_validator("finding_ids")
+    @field_validator("analysis_ids")
     @classmethod
-    def validate_findings(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+    def validate_analyses(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         normalized = tuple(item.strip() for item in value)
         if len(normalized) != len(set(normalized)) or any(
-            not re.fullmatch(r"^finding_[0-9]{3,6}$", item) for item in normalized
+            not re.fullmatch(r"^analysis_[0-9]{3,6}$", item) for item in normalized
         ):
-            raise ValueError("章节只能引用服务端生成的 findingId")
+            raise ValueError("章节只能引用服务端生成的 analysisId")
         return normalized
 
 
-class OutlineSectionProposal(OperationModel):
+class OutlineSectionProposal(HospitalOperationSchema):
     """提纲模型只提交中文展示字段和发现引用，不提交 section code。"""
 
     title: str = Field(min_length=1, max_length=300)
     focus: tuple[str, ...] = Field(default=(), max_length=20)
-    finding_ids: tuple[str, ...] = Field(alias="findingIds", min_length=1, max_length=2_000)
+    analysis_ids: tuple[str, ...] = Field(alias="analysisIds", min_length=1, max_length=2_000)
 
     @field_validator("title")
     @classmethod
@@ -78,7 +78,7 @@ class OutlineSectionProposal(OperationModel):
         if (
             not any("\u4e00" <= character <= "\u9fff" for character in normalized)
             or _looks_like_serialized_structure(normalized)
-            or re.search(r"(?:section|finding)[-_][A-Za-z0-9_]+", normalized, re.I)
+            or re.search(r"(?:section|analysis)[-_][A-Za-z0-9_]+", normalized, re.I)
         ):
             raise ValueError("动态章节标题必须是中文自然语言且不得包含机器标识")
         return normalized
@@ -96,17 +96,17 @@ class OutlineSectionProposal(OperationModel):
             raise ValueError("动态章节重点必须是不重复的中文自然语言")
         return normalized
 
-    @field_validator("finding_ids")
+    @field_validator("analysis_ids")
     @classmethod
-    def validate_finding_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+    def validate_analysis_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)) or any(
-            not re.fullmatch(r"finding_[0-9]{3,6}", item) for item in value
+            not re.fullmatch(r"analysis_[0-9]{3,6}", item) for item in value
         ):
-            raise ValueError("动态章节只能引用不重复的服务端 findingId")
+            raise ValueError("动态章节只能引用不重复的服务端 analysisId")
         return value
 
 
-class ReportOutlineProposal(OperationModel):
+class ReportOutlineProposal(HospitalOperationSchema):
     report_type: ReportType = Field(alias="reportType")
     title: str = Field(min_length=1, max_length=300)
     sections: tuple[OutlineSectionProposal, ...] = Field(min_length=1, max_length=30)
@@ -115,11 +115,11 @@ class ReportOutlineProposal(OperationModel):
     @model_validator(mode="after")
     def validate_sections(self) -> ReportOutlineProposal:
         titles = [item.title for item in self.sections]
-        finding_ids = [finding_id for item in self.sections for finding_id in item.finding_ids]
+        analysis_ids = [analysis_id for item in self.sections for analysis_id in item.analysis_ids]
         if len(titles) != len(set(titles)):
             raise ValueError("动态提纲章节标题不能重复")
-        if len(finding_ids) != len(set(finding_ids)):
-            raise ValueError("同一 findingId 只能归属一个动态章节")
+        if len(analysis_ids) != len(set(analysis_ids)):
+            raise ValueError("同一 analysisId 只能归属一个动态章节")
         return self
 
 
@@ -142,7 +142,7 @@ _DOMAIN_OR_CROSS = frozenset(
 _TOPIC_REQUIRED = frozenset({"operation_overview", "risk_and_data_quality", "management_actions"})
 
 
-class ReportOutline(OperationModel):
+class ReportOutline(HospitalOperationSchema):
     report_type: ReportType = Field(alias="reportType")
     title: str = Field(min_length=1, max_length=300)
     sections: tuple[ReportOutlineSection, ...] = Field(min_length=1, max_length=30)
@@ -201,8 +201,8 @@ class ReportOutline(OperationModel):
             actual = set(codes)
             if not _TOPIC_REQUIRED.issubset(actual) or not actual.intersection(_DOMAIN_OR_CROSS):
                 raise ValueError("专题报告必须包含总览、业务分析、风险与数据质量和管理行动")
-        if not legacy and not any(section.finding_ids for section in self.sections):
-            raise ValueError("动态提纲至少需要引用一个真实发现")
+        if not legacy and not any(section.analysis_ids for section in self.sections):
+            raise ValueError("动态提纲至少需要引用一个真实分析")
         return self
 
 
@@ -213,17 +213,17 @@ def make_outline(
     selected_codes: tuple[str, ...] = (),
     title_overrides: dict[str, str] | None = None,
     focus: dict[str, tuple[str, ...]] | None = None,
-    findings: Iterable[Any] | None = None,
+    analyses: Iterable[Any] | None = None,
     proposal: ReportOutlineProposal | Mapping[str, Any] | None = None,
 ) -> ReportOutline:
     """构造提纲。
 
-    传入 findings/proposal 时走动态章节路径；未传入时保留 v1 固定提纲兼容入口，
+    传入 analyses/proposal 时走动态章节路径；未传入时保留固定提纲入口，
     便于迁移既有非医院产物。
     """
-    if findings is not None or proposal is not None:
+    if analyses is not None or proposal is not None:
         if proposal is None:
-            proposals = _default_outline_proposals(tuple(findings or ()), report_type=report_type)
+            proposals = _default_outline_proposals(tuple(analyses or ()), report_type=report_type)
             proposal_obj = ReportOutlineProposal(
                 reportType=report_type,
                 title=title,
@@ -240,7 +240,7 @@ def make_outline(
                 proposal_obj = proposal_obj.model_copy(
                     update={"report_type": report_type, "title": title}
                 )
-        return freeze_outline(proposal_obj, findings=tuple(findings or ()))
+        return freeze_outline(proposal_obj, analyses=tuple(analyses or ()))
     overrides = title_overrides or {}
     focus_values = focus or {}
     if report_type == "comprehensive":
@@ -263,32 +263,34 @@ def make_outline(
 def freeze_outline(
     proposal: ReportOutlineProposal | Mapping[str, Any],
     *,
-    findings: Iterable[Any],
+    analyses: Iterable[Any],
 ) -> ReportOutline:
-    """在批准边界生成稳定 section_001... code，并冻结发现引用。"""
+    """在批准边界生成稳定 section_001... code，并冻结分析引用。"""
     proposal_obj = (
         proposal
         if isinstance(proposal, ReportOutlineProposal)
         else ReportOutlineProposal.model_validate(proposal)
     )
-    finding_ids = {
-        item.finding_id if hasattr(item, "finding_id") else str(item.get("findingId"))
-        for item in findings
-        if isinstance(item, Mapping) or hasattr(item, "finding_id")
+    analysis_ids = {
+        item.analysis_id if hasattr(item, "analysis_id") else str(item.get("analysisId"))
+        for item in analyses
+        if isinstance(item, Mapping) or hasattr(item, "analysis_id")
     }
-    if not finding_ids:
-        raise ValueError("没有可供提纲引用的真实发现")
+    if not analysis_ids:
+        raise ValueError("没有可供提纲引用的真实分析")
     sections: list[ReportOutlineSection] = []
+    referenced_analysis_ids: set[str] = set()
     for index, section in enumerate(proposal_obj.sections, start=1):
-        unknown = set(section.finding_ids) - finding_ids
+        unknown = set(section.analysis_ids) - analysis_ids
         if unknown:
-            raise ValueError(f"提纲引用未知 findingId: {', '.join(sorted(unknown))}")
+            raise ValueError(f"提纲引用未知 analysisId: {', '.join(sorted(unknown))}")
+        referenced_analysis_ids.update(section.analysis_ids)
         sections.append(
             ReportOutlineSection(
                 code=f"section_{index:03d}",
                 title=section.title,
                 focus=section.focus,
-                findingIds=section.finding_ids,
+                analysisIds=section.analysis_ids,
             )
         )
     return ReportOutline(
@@ -300,35 +302,35 @@ def freeze_outline(
 
 
 def _default_outline_proposals(
-    findings: tuple[Any, ...],
+    analyses: tuple[Any, ...],
     *,
     report_type: ReportType,
 ) -> tuple[OutlineSectionProposal, ...]:
     grouped: dict[str, list[str]] = {}
     titles: dict[str, str] = {}
-    for finding in findings:
-        if isinstance(finding, Mapping):
-            finding_id = str(finding.get("findingId") or "")
-            domain = str(finding.get("domain") or "data_quality")
-            title = str(finding.get("title") or "运营发现")
+    for analysis in analyses:
+        if isinstance(analysis, Mapping):
+            analysis_id = str(analysis.get("analysisId") or "")
+            domain = str(analysis.get("domain") or "data_quality")
+            title = str(analysis.get("managementQuestion") or analysis.get("title") or "运营分析")
         else:
-            finding_id = str(getattr(finding, "finding_id", ""))
-            domain = str(getattr(finding, "domain", "data_quality"))
-            title = str(getattr(finding, "title", "运营发现"))
-        if not finding_id:
+            analysis_id = str(getattr(analysis, "analysis_id", ""))
+            domain = str(getattr(analysis, "domain", "data_quality"))
+            title = str(getattr(analysis, "management_question", "运营分析"))
+        if not analysis_id:
             continue
-        grouped.setdefault(domain, []).append(finding_id)
+        grouped.setdefault(domain, []).append(analysis_id)
         titles.setdefault(domain, title)
     proposals = tuple(
         OutlineSectionProposal(
             title=titles[domain],
             focus=(f"围绕{titles[domain]}核对事实和经营影响",),
-            findingIds=tuple(grouped[domain]),
+            analysisIds=tuple(grouped[domain]),
         )
         for domain in grouped
     )
     if not proposals:
-        raise ValueError("没有可供提纲引用的真实发现")
+        raise ValueError("没有可供提纲引用的真实分析")
     return proposals
 
 

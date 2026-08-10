@@ -1,8 +1,8 @@
 # Report Agent Profile 配置规约
 
 本文是 Reporting Profile 的唯一专用说明。Profile 负责表达稳定、可审核的物理字段绑定、单位、粒度、
-医院/院区别名、对账规则和固定数据范围；它不保存连接信息，也不根据字段名猜测会随数据变化的聚合
-口径。医院运营报告的顶层章节由 `hospital_operation` 固定契约维护，Profile 不是章节事实来源。
+医院/院区别名、对账规则、固定数据范围和文档品牌；它不保存连接信息，也不根据字段名猜测会随数据
+变化的聚合口径。医院运营报告的顶层章节由 `hospital_operation` 固定契约维护，Profile 不是章节事实来源。
 
 ## 整体流程
 
@@ -43,7 +43,8 @@ flowchart TD
 - 用户批准后，独立提交步骤重新基于当前 Snapshot 计算候选集合；缺项、增项、未知字段和范围冲突均
   失败关闭。
 - Profile `scopeFilters` 是服务端强制范围，会确定性进入指标 `exclusiveScope`，模型不能删除或覆盖。
-- `effectiveProfileHash` 覆盖所有生效层和最终内容，报告产物必须绑定该 hash。
+- `effectiveProfileHash` 覆盖所有生效层及最终的 `documentBranding`、`pageLayout` 内容，PDF 和 Word
+  产物都必须绑定该 hash。
 
 ## 目录与加载
 
@@ -100,7 +101,7 @@ flowchart TD
 
 子层只需写需要覆盖的字段；`{"code": "service_workload", "enabled": false}` 会删除继承项，停用对象
 不得包含 `code`、`enabled` 之外的字段。`measureSemantics` 不使用 code，而是按不区分大小写的完整
-`fieldRef` 覆盖。`pageLayout` 按具体页眉页脚字段覆盖。
+`fieldRef` 覆盖。`pageLayout` 和 `documentBranding` 分别按具体字段覆盖。
 
 医院、院区、条线和模板需要同时生效时，应增加一个最终组合 Profile，而不是依赖目录名。组合层必须
 显式给出覆盖所有最终章节的 `sectionOrder`，例如：
@@ -151,6 +152,7 @@ Profile 使用严格 JSON，所有未知字段都会被拒绝：
 | `sections` | 否 | 报告章节标题和能力依赖 |
 | `sectionOrder` | 否 | 最终章节完整顺序 |
 | `pageLayout` | 否 | 固定页眉页脚 |
+| `documentBranding` | 否 | 机构名称、生成标记和水印文案 |
 
 `fieldRef` 一律使用 `sourceId.database.table.column`。Profile 只能引用 Schema Snapshot 中存在的字段，
 不能扩大 metadata DDL 和真实 Catalog 的交集，也不能包含 SQL、Python、自由表达式、DSN、host、用户
@@ -273,7 +275,7 @@ metadata API 和 Profile 都可以提供已确认语义。同一字段内容完�
 ### sections 与 sectionOrder
 
 `sections` 与 `sectionOrder` 仅服务仍使用通用模板的非医院报告，属于待迁移的兼容配置。医院运营报告
-在 FactSet 和结构化 findings 冻结后动态生成章节，模型只提交中文标题、分析重点和 finding 引用，
+在详细分析计划冻结后动态生成章节，模型只提交中文标题、分析重点和 analysisId 引用，
 `section_001` 等 code 由服务端按批准顺序生成并冻结。Profile 不得新增、删除或重排医院运营报告的
 顶层章节；部署文件中现存的医院章节配置不再具有运行时权威。`make_outline()` 未传 findings 时保留的
 固定十章行为仅用于旧调用兼容，不是生产 Workflow 的提纲来源。
@@ -297,8 +299,24 @@ Profile、Schema Snapshot 和 DataShape 确定性缩小。
 
 ### pageLayout
 
-`pageLayout` 支持 `headerLeft`、`headerRight`、`footerLeft`、`footerRight`。只允许 `{title}`、`{page}`、
-`{pages}` 三种占位符，不允许 CSS 或格式表达式；最终页脚必须同时包含 `{page}` 和 `{pages}`。
+`pageLayout` 支持 `headerLeft`、`headerRight`、`footerLeft`、`footerRight`。只允许 `{title}`、
+`{organization}`、`{page}`、`{pages}` 四种占位符，不允许 CSS 或格式表达式；最终页脚必须同时包含
+`{page}` 和 `{pages}`。`{organization}` 始终展开为生效 `documentBranding.organizationName`，避免在
+Profile 中重复维护机构名称。
+
+### documentBranding
+
+`documentBranding` 按字段继承，支持：
+
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `organizationName` | `上海鼎医信息技术有限公司` | 封面、页眉占位符和正文末尾落款 |
+| `generatedByLabel` | `AI 智能报告平台生成` | 封面底部生成标记 |
+| `watermarkText` | `AI 智能报告平台生成` | 目录和正文页背后的斜向水印 |
+
+三个字段必须包含可见文字，不能是空白或包含控制字符。封面标题、分析期间、机构名称和生成标记，
+以及目录、页眉页脚、水印和上海时区生成日期落款均由服务端写入 PDF/Word，不进入权威 Markdown，
+也不允许模型覆盖。
 
 ## 修改与验收
 
@@ -309,7 +327,8 @@ Profile、Schema Snapshot 和 DataShape 确定性缩小。
 3. `fieldRef` 属于目标数据源的 metadata DDL 与真实 Catalog 交集。
 4. 院区、组织和值域等固定范围已经由业务方确认，不是根据字段名推测。
 5. 会随数据变化的粒度、完整期间和聚合语义留给运行时探测与审核。
-6. Profile 中没有连接信息、SQL、临时探测结果或真实凭据。
+6. `documentBranding` 的机构名称、生成标记和水印符合部署方正式文案。
+7. Profile 中没有连接信息、SQL、临时探测结果或真实凭据。
 
 仓库内的 Profile 加载与继承定点测试：
 

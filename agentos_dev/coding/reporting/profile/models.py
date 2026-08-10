@@ -117,6 +117,23 @@ class PageLayoutPatch(ProfileModel):
         return _page_format(value)
 
 
+class DocumentBrandingPatch(ProfileModel):
+    organization_name: str | None = Field(
+        default=None, alias="organizationName", min_length=1, max_length=200
+    )
+    generated_by_label: str | None = Field(
+        default=None, alias="generatedByLabel", min_length=1, max_length=200
+    )
+    watermark_text: str | None = Field(
+        default=None, alias="watermarkText", min_length=1, max_length=200
+    )
+
+    @field_validator("organization_name", "generated_by_label", "watermark_text")
+    @classmethod
+    def validate_text(cls, value: str | None) -> str | None:
+        return _branding_text(value)
+
+
 class ReportingProfileDocument(ProfileModel):
     version: Literal["1"] = "1"
     profile_id: str = Field(alias="profileId", pattern=PROFILE_ID_PATTERN)
@@ -136,6 +153,7 @@ class ReportingProfileDocument(ProfileModel):
         default=None, alias="sectionOrder", min_length=1, max_length=200
     )
     page_layout: PageLayoutPatch | None = Field(default=None, alias="pageLayout")
+    document_branding: DocumentBrandingPatch | None = Field(default=None, alias="documentBranding")
 
     @model_validator(mode="after")
     def validate_codes(self) -> ReportingProfileDocument:
@@ -244,7 +262,7 @@ class EffectiveSection(ProfileModel):
 
 
 class EffectivePageLayout(ProfileModel):
-    header_left: str = Field(default="上海鼎医信息技术有限公司", alias="headerLeft", max_length=200)
+    header_left: str = Field(default="{organization}", alias="headerLeft", max_length=200)
     header_right: str = Field(default="{title}", alias="headerRight", max_length=200)
     footer_left: str = Field(default="企业智能运营报表", alias="footerLeft", max_length=200)
     footer_right: str = Field(default="第 {page} / {pages} 页", alias="footerRight", max_length=200)
@@ -260,6 +278,32 @@ class EffectivePageLayout(ProfileModel):
         if "{page}" not in footer or "{pages}" not in footer:
             raise ValueError("页脚必须包含 {page} 和 {pages}")
         return self
+
+
+class EffectiveDocumentBranding(ProfileModel):
+    organization_name: str = Field(
+        default="上海鼎医信息技术有限公司",
+        alias="organizationName",
+        min_length=1,
+        max_length=200,
+    )
+    generated_by_label: str = Field(
+        default="AI 智能报告平台生成",
+        alias="generatedByLabel",
+        min_length=1,
+        max_length=200,
+    )
+    watermark_text: str = Field(
+        default="AI 智能报告平台生成",
+        alias="watermarkText",
+        min_length=1,
+        max_length=200,
+    )
+
+    @field_validator("organization_name", "generated_by_label", "watermark_text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        return _branding_text(value) or ""
 
 
 class ProfileLayerRef(ProfileModel):
@@ -284,6 +328,9 @@ class EffectiveReportingProfile(ProfileModel):
     sections: tuple[EffectiveSection, ...] = Field(min_length=1, max_length=200)
     page_layout: EffectivePageLayout = Field(
         default_factory=EffectivePageLayout, alias="pageLayout"
+    )
+    document_branding: EffectiveDocumentBranding = Field(
+        default_factory=EffectiveDocumentBranding, alias="documentBranding"
     )
 
     @model_validator(mode="after")
@@ -356,6 +403,21 @@ def _page_format(value: str | None) -> str | None:
     for _literal, field_name, format_spec, conversion in parsed:
         if field_name is None:
             continue
-        if field_name not in {"title", "page", "pages"} or format_spec or conversion:
-            raise ValueError("页面格式只允许 {title}、{page} 和 {pages}")
+        if (
+            field_name not in {"title", "organization", "page", "pages"}
+            or format_spec
+            or conversion
+        ):
+            raise ValueError("页面格式只允许 {title}、{organization}、{page} 和 {pages}")
     return value
+
+
+def _branding_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("文档品牌字段不能为空")
+    if any(ord(character) < 32 for character in normalized):
+        raise ValueError("文档品牌字段包含控制字符")
+    return normalized

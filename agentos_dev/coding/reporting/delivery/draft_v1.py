@@ -7,18 +7,23 @@ from typing import Any
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..contract import StrictModel
-from ..data_source.period import PeriodRole
 from ..models import ReportingError
-
-_BUSINESS_VALUE = re.compile(
-    r"(?<![A-Za-z0-9_.])-?\d+(?:,\d{3})*(?:\.\d+)?\s*(?:亿元|万元|元|人次|%|个百分点)"
-)
 
 
 class ReportSectionDefinition(StrictModel):
     code: str = Field(min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=200)
     protocol_marker: bool = Field(default=True, alias="protocolMarker")
+    analysis_ids: tuple[str, ...] = Field(default=(), alias="analysisIds", max_length=2_000)
+
+    @field_validator("analysis_ids")
+    @classmethod
+    def validate_analysis_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)) or any(
+            not re.fullmatch(r"analysis_[0-9]{3,6}", item) for item in value
+        ):
+            raise ValueError("章节 analysisId 必须是服务端冻结且不重复的标识")
+        return value
 
 
 class ReportChartInput(StrictModel):
@@ -29,15 +34,11 @@ class ReportChartInput(StrictModel):
     title: str = Field(min_length=1, max_length=200)
     alt_text: str = Field(alias="altText", min_length=1, max_length=200)
     citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
-    fact_ids: tuple[str, ...] = Field(alias="factIds", min_length=1, max_length=2_000)
 
-    @model_validator(mode="after")
-    def validate_unique_citations(self) -> ReportChartInput:
-        if len(self.citation_ids) != len(set(self.citation_ids)):
-            raise ValueError("图表 citationId 不能重复")
-        if len(self.fact_ids) != len(set(self.fact_ids)):
-            raise ValueError("图表 factId 不能重复")
-        return self
+    @field_validator("citation_ids")
+    @classmethod
+    def deduplicate_citations(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(value))
 
 
 class ReportChartRegistration(StrictModel):
@@ -48,7 +49,6 @@ class ReportChartRegistration(StrictModel):
     title: str = Field(min_length=1, max_length=200)
     alt_text: str = Field(alias="altText", min_length=1, max_length=200)
     citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
-    fact_ids: tuple[str, ...] = Field(alias="factIds", min_length=1, max_length=2_000)
 
     @field_validator("source_path")
     @classmethod
@@ -60,92 +60,37 @@ class ReportChartRegistration(StrictModel):
             raise ValueError("图表源路径必须是安全工作区相对路径")
         return path.as_posix()
 
-    @model_validator(mode="after")
-    def validate_unique_citations(self) -> ReportChartRegistration:
-        if len(self.citation_ids) != len(set(self.citation_ids)):
-            raise ValueError("图表 citationId 不能重复")
-        if len(self.fact_ids) != len(set(self.fact_ids)):
-            raise ValueError("图表 factId 不能重复")
-        return self
-
-
-class ReportFactInput(StrictModel):
-    """Workflow 下发给渲染器的最小可展示事实，不暴露模型可改写的数值字段。"""
-
-    fact_id: str = Field(alias="factId", min_length=1, max_length=256)
-    display_text: str = Field(alias="displayText", min_length=1, max_length=100)
-    citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
-    # 这些字段只用于让模型按业务语义选择事实；数值仍只能来自 displayText，
-    # 不能通过该目录提交 normalizedValue 或自定义公式。
-    domain: str | None = Field(default=None, max_length=64)
-    metric: str | None = Field(default=None, max_length=128)
-    scope: str | None = Field(default=None, max_length=32)
-    period_role: PeriodRole = Field(default="current", alias="periodRole")
-    periods: tuple[str, ...] = Field(default=(), max_length=1_200)
-    display_unit: str | None = Field(default=None, alias="displayUnit", max_length=32)
-    formula_operation: str | None = Field(default=None, alias="formulaOperation", max_length=32)
-
-    @model_validator(mode="after")
-    def validate_references(self) -> ReportFactInput:
-        if len(self.citation_ids) != len(set(self.citation_ids)):
-            raise ValueError("事实 citationId 不能重复")
-        return self
-
-
-class ReportDraftTableRow(StrictModel):
-    label: str = Field(min_length=1, max_length=200)
-    fact_ids: tuple[str, ...] = Field(alias="factIds", min_length=1, max_length=20)
-
-    @field_validator("label")
+    @field_validator("citation_ids")
     @classmethod
-    def validate_label(cls, value: str) -> str:
-        if "|" in value or "\n" in value or "\r" in value:
-            raise ValueError("表格行标签不得包含 Markdown 表格控制字符")
-        return value.strip()
-
-
-class ReportDraftTable(StrictModel):
-    table_id: str = Field(alias="tableId", min_length=1, max_length=128)
-    title: str = Field(min_length=1, max_length=200)
-    columns: tuple[str, ...] = Field(min_length=2, max_length=21)
-    rows: tuple[ReportDraftTableRow, ...] = Field(min_length=1, max_length=200)
-
-    @model_validator(mode="after")
-    def validate_shape(self) -> ReportDraftTable:
-        if len(self.columns) != len(set(self.columns)) or any(
-            not item.strip() or "|" in item or "\n" in item or "\r" in item for item in self.columns
-        ):
-            raise ValueError("表格列名不能为空、重复或包含 Markdown 表格控制字符")
-        expected_values = len(self.columns) - 1
-        if any(len(row.fact_ids) != expected_values for row in self.rows):
-            raise ValueError("每行 factIds 数量必须与数值列数量一致")
-        if len({row.label for row in self.rows}) != len(self.rows):
-            raise ValueError("同一表格行标签不能重复")
-        return self
+    def deduplicate_citations(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(value))
 
 
 class ReportDraftBlock(StrictModel):
     block_id: str = Field(alias="blockId", min_length=1, max_length=128)
-    text: str = Field(min_length=1, max_length=24_000)
+    markdown: str = Field(min_length=1, max_length=64_000)
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=100)
-    fact_ids: tuple[str, ...] = Field(default=(), alias="factIds", max_length=2_000)
-    chart_ids: tuple[str, ...] = Field(default=(), alias="chartIds", max_length=100)
-    table: ReportDraftTable | None = None
+    analysis_ids: tuple[str, ...] = Field(default=(), alias="analysisIds", max_length=2_000)
+    chart_ids: tuple[str, ...] = Field(default=(), alias="chartIds")
 
-    @field_validator("text")
+    @field_validator("markdown")
     @classmethod
-    def strip_text(cls, value: str) -> str:
+    def strip_markdown(cls, value: str) -> str:
         return value.strip()
 
-    @model_validator(mode="after")
-    def validate_unique_references(self) -> ReportDraftBlock:
-        if len(self.citation_ids) != len(set(self.citation_ids)):
-            raise ValueError("正文 citationId 不能重复")
-        if len(self.chart_ids) != len(set(self.chart_ids)):
-            raise ValueError("正文 chartId 不能重复")
-        if len(self.fact_ids) != len(set(self.fact_ids)):
-            raise ValueError("正文 factId 不能重复")
-        return self
+    @field_validator("citation_ids", "chart_ids")
+    @classmethod
+    def deduplicate_references(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(value))
+
+    @field_validator("analysis_ids")
+    @classmethod
+    def normalize_analysis_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(
+            not re.fullmatch(r"analysis_[0-9]{3,6}", item) for item in value
+        ):
+            raise ValueError("正文 analysisId 格式无效")
+        return tuple(dict.fromkeys(value))
 
 
 class ReportDraftSection(StrictModel):
@@ -161,7 +106,8 @@ class ReportDraftSection(StrictModel):
 
 
 class ReportDraft(StrictModel):
-    title: str = Field(min_length=1, max_length=300)
+    # 标题由 Workflow 冻结，模型省略或回传不同文本都不改变最终渲染标题。
+    title: str | None = Field(default=None, min_length=1, max_length=300)
     sections: tuple[ReportDraftSection, ...] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
@@ -182,7 +128,7 @@ class RenderedReportDraft(StrictModel):
 
     markdown: str
     chart_paths: tuple[str, ...] = Field(alias="chartPaths")
-    fact_ids: tuple[str, ...] = Field(default=(), alias="factIds")
+    analysis_ids: tuple[str, ...] = Field(default=(), alias="analysisIds")
     warnings: tuple[dict[str, Any], ...] = ()
     auto_fixes: tuple[dict[str, Any], ...] = Field(default=(), alias="autoFixes")
 
@@ -225,59 +171,23 @@ def _safe_chart_name(
 def _marker_lines(
     text: str,
     citation_ids: tuple[str, ...],
-    fact_ids: tuple[str, ...],
+    analysis_ids: tuple[str, ...],
 ) -> str:
     markers = "".join(f"[[citation:{citation_id}]]" for citation_id in citation_ids)
-    markers += "".join(f"[[fact:{fact_id}]]" for fact_id in fact_ids)
+    markers += "".join(f"[[analysis:{analysis_id}]]" for analysis_id in analysis_ids)
     return f"{text}{markers}"
 
 
-def _render_fact_table(
-    table: ReportDraftTable,
-    facts: dict[str, ReportFactInput],
-) -> str:
-    header = "| " + " | ".join(item.strip() for item in table.columns) + " |"
-    separator = "| " + " | ".join("---" for _item in table.columns) + " |"
-    rows = [
-        "| "
-        + " | ".join([row.label, *(facts[fact_id].display_text for fact_id in row.fact_ids)])
-        + " |"
-        for row in table.rows
-    ]
-    return "\n".join((f"**{table.title}**", "", header, separator, *rows))
-
-
-def _validate_fact_values(
-    text: str,
-    *,
-    block_fact_ids: tuple[str, ...],
-    facts: dict[str, ReportFactInput],
-) -> None:
-    observed = {match.group(0) for match in _BUSINESS_VALUE.finditer(text)}
-    if not observed:
-        return
-    allowed = {facts[fact_id].display_text for fact_id in block_fact_ids}
-    if not block_fact_ids or observed - allowed:
-        raise ReportingError(
-            "report_draft_fact_value_mismatch",
-            "正文业务数值必须逐字使用已绑定 MetricFact 的服务端展示值。",
-        )
-
-
-def render_report_draft(
+def assemble_report_markdown(
     draft: ReportDraft,
     *,
     expected_title: str,
     markdown_path: str,
     sections: tuple[ReportSectionDefinition, ...],
     citation_ids: tuple[str, ...],
-    facts: tuple[ReportFactInput, ...] = (),
     charts: tuple[ReportChartInput, ...] = (),
     require_table: bool = False,
 ) -> RenderedReportDraft:
-    if draft.title != expected_title:
-        raise ReportingError("report_draft_title_mismatch", "报告标题与 Workflow 固定标题不一致。")
-
     section_registry = {item.code: item for item in sections}
     if len(section_registry) != len(sections):
         raise ReportingError("report_draft_registry_invalid", "Workflow 章节注册表包含重复 code。")
@@ -297,12 +207,6 @@ def render_report_draft(
         raise ReportingError(
             "report_draft_registry_invalid", "Workflow 图表注册表包含重复 chartId。"
         )
-    fact_registry = {item.fact_id: item for item in facts}
-    if len(fact_registry) != len(facts):
-        raise ReportingError(
-            "report_draft_registry_invalid", "Workflow 事实注册表包含重复 factId。"
-        )
-
     report_path = PurePosixPath(markdown_path)
     if report_path.is_absolute() or ".." in report_path.parts or "\\" in markdown_path:
         raise ReportingError("report_draft_path_invalid", "Markdown 路径必须是安全工作区相对路径。")
@@ -313,18 +217,6 @@ def render_report_draft(
         unknown = set(chart.citation_ids) - citation_registry
         if unknown:
             raise ReportingError("report_draft_citation_unknown", "图表引用了未注册 citation。")
-        unknown_facts = set(chart.fact_ids) - set(fact_registry)
-        if unknown_facts:
-            raise ReportingError("report_draft_fact_unknown", "图表引用了未注册 MetricFact。")
-        expected_citations = {
-            citation_id
-            for fact_id in chart.fact_ids
-            for citation_id in fact_registry[fact_id].citation_ids
-        }
-        if not expected_citations.issubset(chart.citation_ids):
-            raise ReportingError(
-                "report_draft_fact_citation_invalid", "图表 citation 未覆盖所绑定事实的完整血缘。"
-            )
         file_name, auto_fix = _safe_chart_name(
             chart.file_name,
             report_parent=report_path.parent,
@@ -334,22 +226,27 @@ def render_report_draft(
         normalized_charts[chart.chart_id] = (chart, file_name)
 
     referenced_chart_ids: list[str] = []
-    referenced_fact_ids: list[str] = []
-    table_count = 0
+    referenced_analysis_ids: list[str] = []
     markdown_parts = [f"# {expected_title}"]
     for section in draft.sections:
         definition = section_registry[section.section_code]
+        section_analysis_ids = tuple(
+            analysis_id for block in section.blocks for analysis_id in block.analysis_ids
+        )
+        referenced_analysis_ids.extend(section_analysis_ids)
         heading = f"## {definition.title}"
         markdown_parts.append(
             f"[[section:{definition.code}]]\n{heading}" if definition.protocol_marker else heading
         )
         for block in section.blocks:
             if (
-                "[[citation:" in block.text
-                or "[[section:" in block.text
-                or "[[fact:" in block.text
-                or "<!-- repair-warning:" in block.text
-                or "![" in block.text
+                "[[citation:" in block.markdown
+                or "[[section:" in block.markdown
+                or "[[analysis:" in block.markdown
+                or "[[table:" in block.markdown
+                or "[[/table:" in block.markdown
+                or "<!-- repair-warning:" in block.markdown
+                or "![" in block.markdown
             ):
                 raise ReportingError(
                     "report_draft_protocol_injection",
@@ -361,37 +258,13 @@ def render_report_draft(
             unknown_charts = set(block.chart_ids) - set(chart_registry)
             if unknown_charts:
                 raise ReportingError("report_draft_chart_unknown", "草稿引用了未注册图表。")
-            unknown_facts = set(block.fact_ids) - set(fact_registry)
-            if unknown_facts:
-                raise ReportingError("report_draft_fact_unknown", "草稿引用了未注册 MetricFact。")
-            fact_citations = {
-                citation_id
-                for fact_id in block.fact_ids
-                for citation_id in fact_registry[fact_id].citation_ids
-            }
-            if not fact_citations.issubset(block.citation_ids):
-                raise ReportingError(
-                    "report_draft_fact_citation_invalid",
-                    "正文 citation 未覆盖所绑定事实的完整血缘。",
+            markdown_parts.append(
+                _marker_lines(
+                    block.markdown,
+                    block.citation_ids,
+                    block.analysis_ids,
                 )
-            _validate_fact_values(
-                block.text,
-                block_fact_ids=block.fact_ids,
-                facts=fact_registry,
             )
-            referenced_fact_ids.extend(block.fact_ids)
-            markdown_parts.append(_marker_lines(block.text, block.citation_ids, block.fact_ids))
-            if block.table is not None:
-                table_fact_ids = tuple(
-                    fact_id for row in block.table.rows for fact_id in row.fact_ids
-                )
-                if set(table_fact_ids) - set(block.fact_ids):
-                    raise ReportingError(
-                        "report_draft_table_fact_invalid",
-                        "表格事实必须同时属于所在正文块的 factIds。",
-                    )
-                table_count += 1
-                markdown_parts.append(_render_fact_table(block.table, fact_registry))
             for chart_id in block.chart_ids:
                 chart, file_name = normalized_charts[chart_id]
                 if not set(chart.citation_ids).issubset(block.citation_ids):
@@ -401,22 +274,15 @@ def render_report_draft(
                         f"正文块 {block.block_id} 的 citation 绑定"
                         f"（{', '.join(block.citation_ids)}）。",
                     )
-                if not set(chart.fact_ids).issubset(block.fact_ids):
-                    raise ReportingError(
-                        "report_draft_chart_fact_invalid",
-                        f"图表 {chart_id} 的 factIds 必须属于正文块 {block.block_id} 的事实绑定。",
-                    )
                 referenced_chart_ids.append(chart_id)
-                referenced_fact_ids.extend(chart.fact_ids)
                 markdown_parts.append(
                     f'![{chart.alt_text}]({file_name} "{chart.title}")'
                     + "".join(f"[[citation:{citation_id}]]" for citation_id in chart.citation_ids)
-                    + "".join(f"[[fact:{fact_id}]]" for fact_id in chart.fact_ids)
                     + f"\n\n*图表：{chart.title}*"
                 )
 
-    if require_table and table_count == 0:
-        raise ReportingError("report_draft_table_missing", "当前报告至少需要一个事实绑定表格。")
+    if require_table and not any("|" in block.markdown for section in draft.sections for block in section.blocks):
+        raise ReportingError("report_draft_table_missing", "当前报告至少需要一个 Markdown 表格。")
 
     unused = sorted(set(chart_registry) - set(referenced_chart_ids))
     warnings: list[dict[str, Any]] = []
@@ -428,18 +294,6 @@ def render_report_draft(
                 "message": "未被正文引用的图表已从发布包排除。",
             }
         )
-    used_citations = {
-        citation_id
-        for section in draft.sections
-        for block in section.blocks
-        for citation_id in block.citation_ids
-    }
-    missing_citations = sorted(citation_registry - used_citations)
-    if missing_citations:
-        raise ReportingError(
-            "report_draft_citation_missing",
-            "结构化草稿必须使用 Workflow 注册的全部 citation。",
-        )
     chart_paths = tuple(
         report_path.parent.joinpath(normalized_charts[chart_id][1]).as_posix()
         for chart_id in dict.fromkeys(referenced_chart_ids)
@@ -447,7 +301,7 @@ def render_report_draft(
     return RenderedReportDraft(
         markdown="\n\n".join(markdown_parts) + "\n",
         chartPaths=chart_paths,
-        factIds=tuple(dict.fromkeys(referenced_fact_ids)),
+        analysisIds=tuple(referenced_analysis_ids),
         warnings=tuple(warnings),
         autoFixes=tuple(auto_fixes),
     )

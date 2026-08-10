@@ -5,18 +5,19 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from ..data_source.period import build_period_windows
 from ..models import ReportingError
 from .domains import DOMAIN_CODES, DomainResolution, normalize_domain_code, resolve_domain_mentions
-from .factset import OperationModel
+from .schema import HospitalOperationSchema
 
 
-class ClarificationRequired(OperationModel):
+class ClarificationRequired(HospitalOperationSchema):
     code: Literal["domain_ambiguous", "period_required", "report_type_required"]
     question: str = Field(min_length=1, max_length=1_000)
     candidates: tuple[str, ...] = Field(default=(), max_length=6)
 
 
-class CorrectionFeedback(OperationModel):
+class CorrectionFeedback(HospitalOperationSchema):
     """只描述一个失败字段的可执行纠错，不携带整份模型输出。"""
 
     path: str = Field(min_length=1, max_length=500)
@@ -25,13 +26,13 @@ class CorrectionFeedback(OperationModel):
     required_action: str = Field(alias="requiredAction", min_length=1, max_length=1_000)
 
 
-class ContextFeedback(OperationModel):
+class ContextFeedback(HospitalOperationSchema):
     sequence: int = Field(ge=1)
     stage: Literal["request_supplement", "outline_feedback"]
     content: str = Field(min_length=1, max_length=20_000)
 
 
-class ReportRequestContext(OperationModel):
+class ReportRequestContext(HospitalOperationSchema):
     original_goal: str = Field(alias="originalGoal", min_length=1, max_length=20_000)
     report_type: Literal["comprehensive", "topic"] = Field(
         default="comprehensive", alias="reportType"
@@ -45,12 +46,25 @@ class ReportRequestContext(OperationModel):
     period_end: date = Field(alias="periodEnd")
     hospital: str = Field(min_length=1, max_length=200)
     source_ids: tuple[str, ...] = Field(alias="sourceIds", min_length=1, max_length=20)
+    comparison_roles: tuple[Literal["yoy", "mom"], ...] = Field(
+        default=("yoy",), alias="comparisonRoles", max_length=2
+    )
     feedback: tuple[ContextFeedback, ...] = Field(default=(), max_length=20)
 
     @model_validator(mode="after")
     def validate_context(self) -> ReportRequestContext:
         if self.period_start > self.period_end:
             raise ValueError("请求期间无效")
+        if len(self.comparison_roles) != len(set(self.comparison_roles)):
+            raise ValueError("comparisonRoles 不能重复")
+        from ..data_source.period import build_period_windows
+
+        build_period_windows(
+            self.period_start,
+            self.period_end,
+            include_yoy="yoy" in self.comparison_roles,
+            include_mom="mom" in self.comparison_roles,
+        )
         sequences = [item.sequence for item in self.feedback]
         if sequences != list(range(1, len(sequences) + 1)):
             raise ValueError("请求反馈必须按顺序连续保存")
@@ -110,7 +124,12 @@ class ReportRequestContext(OperationModel):
     def period_windows(self):
         from ..data_source.period import build_period_windows
 
-        return build_period_windows(self.period_start, self.period_end)
+        return build_period_windows(
+            self.period_start,
+            self.period_end,
+            include_yoy="yoy" in self.comparison_roles,
+            include_mom="mom" in self.comparison_roles,
+        )
 
 
 def normalize_report_request(
@@ -123,6 +142,7 @@ def normalize_report_request(
     report_type: Literal["comprehensive", "topic"] | None = None,
     domains: tuple[str, ...] | None = None,
     available_domains: tuple[str, ...] = DOMAIN_CODES,
+    comparison_roles: tuple[Literal["yoy", "mom"], ...] = ("yoy",),
 ) -> ReportRequestContext | ClarificationRequired:
     normalized_goal = original_goal.strip()
     available = tuple(code for code in DOMAIN_CODES if code in available_domains)
@@ -149,12 +169,27 @@ def normalize_report_request(
     else:
         resolution = resolve_domain_mentions(normalized_goal)
         if resolution.is_ambiguous:
-            return ClarificationRequired(
-                code="domain_ambiguous",
-                question="请明确主分析领域：全成本或费控。",
-                candidates=resolution.ambiguous_aliases,
+            if report_type != "comprehensive":
+                return ClarificationRequired(
+                    code="domain_ambiguous",
+                    question="请明确主分析领域：全成本或费控。",
+                    candidates=resolution.ambiguous_aliases,
+                )
+            selected = available
+            resolution = DomainResolution(
+                selected=selected,
+                primary=selected[0],
+                matched_aliases=resolution.matched_aliases,
             )
-        selected = resolution.selected
+        else:
+            selected = resolution.selected
+    if report_type == "comprehensive" and not selected:
+        selected = available
+        resolution = DomainResolution(
+            selected=selected,
+            primary=selected[0],
+            matched_aliases=resolution.matched_aliases,
+        )
     selected = tuple(code for code in DOMAIN_CODES if code in selected and code in available)
     if period_start is None or period_end is None:
         return ClarificationRequired(
@@ -163,7 +198,18 @@ def normalize_report_request(
         )
     if period_start > period_end:
         raise ReportingError("report_period_invalid", "请求期间无效。")
-    # 未指定领域或覆盖全部实际可用领域视为综合；明确子集自动视为专题。
+    if len(comparison_roles) != len(set(comparison_roles)):
+        raise ReportingError("report_comparison_roles_invalid", "比较角色不能重复。")
+    try:
+        build_period_windows(
+            period_start,
+            period_end,
+            include_yoy="yoy" in comparison_roles,
+            include_mom="mom" in comparison_roles,
+        )
+    except ValueError as error:
+        raise ReportingError("report_comparison_roles_invalid", str(error)) from error
+    # 综合报告默认使用数据源实际可用的六域候选；明确子集自动视为专题。
     derived_type: Literal["comprehensive", "topic"] = (
         "comprehensive" if not selected or set(selected) == set(available) else "topic"
     )
@@ -182,4 +228,5 @@ def normalize_report_request(
         periodEnd=period_end,
         hospital=hospital.strip(),
         sourceIds=source_ids,
+        comparisonRoles=tuple(role for role in ("yoy", "mom") if role in comparison_roles),
     )

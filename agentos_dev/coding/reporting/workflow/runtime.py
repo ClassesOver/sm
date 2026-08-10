@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import csv
 import hashlib
-import io
 import json
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from copy import copy
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from difflib import SequenceMatcher
 from pathlib import PurePosixPath
-from typing import Any, Literal
+from typing import Any, Literal, cast
+from zoneinfo import ZoneInfo
 
 import anyio
 from agno.agent import Agent
@@ -28,8 +28,8 @@ from pydantic import (
     model_validator,
 )
 
+from ....async_utils import complete_cleanup
 from ....task_execution import TaskScope, TaskState
-from ....task_execution.repository import MAX_INSTRUCTION_BYTES
 from ....workspace import WorkspaceService
 from ..contract import (
     FIELD_REF_PATTERN,
@@ -39,6 +39,7 @@ from ..contract import (
     ModelTermsResponse,
     ReportingWorkflowInput,
     ReportPeriod,
+    ReportPeriodWindows,
     ReportPromptInput,
     ReportRequestEnvelope,
     SourceSchemaSnapshot,
@@ -62,6 +63,8 @@ from ..delivery.acceptance import (
 )
 from ..delivery.artifacts_v1 import (
     ArtifactFile,
+    Citation,
+    DocxArtifactManifest,
     PdfArtifactManifest,
     ReportArtifactManifest,
     authoritative_citations,
@@ -76,22 +79,17 @@ from ..delivery.publishing import (
     publication_result,
 )
 from ..entrypoints import ReportServerIdentity, current_server_identity
+from ..hospital_operation.delivery import (
+    PlanExecutionReceipt,
+    SourceWarning,
+)
 from ..hospital_operation.domains import DOMAIN_CODES, resolve_domain_mentions
-from ..hospital_operation.factset import (
-    AnalysisFactSetHandle,
-    FactSetHandle,
-    FactSetIssue,
-    HospitalOperationAnalysisFactSet,
-    HospitalOperationFactSet,
-    build_analysis_fact_set,
+from ..hospital_operation.detailed_analysis import (
+    DatasetAnalysisContext,
+    DetailedAnalysisItem,
+    DetailedAnalysisPlan,
+    profile_csv_dataset,
 )
-from ..hospital_operation.findings import (
-    FindingProposal,
-    FindingsResult,
-    build_findings,
-)
-from ..hospital_operation.gate import evaluate_publication_gate
-from ..hospital_operation.materialization import DatasetFactInput, build_fact_set_from_datasets
 from ..hospital_operation.outline import (
     ReportOutline,
     ReportOutlineProposal,
@@ -101,7 +99,6 @@ from ..hospital_operation.profiles import HospitalOperationProfile, ruijin_profi
 from ..instructions import (
     HOSPITAL_ANALYSIS_INSTRUCTIONS,
     HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
-    HOSPITAL_FINDINGS_INSTRUCTIONS,
     HOSPITAL_OUTLINE_INSTRUCTIONS,
     HOSPITAL_REQUEST_INSTRUCTIONS,
 )
@@ -120,7 +117,7 @@ from ..profile import (
     resolve_capabilities as resolve_profile_capabilities,
 )
 from ..workspace import WorkspaceReportToolkit
-from .execution import ReportTaskRunner
+from .execution import MAX_REPORT_INSTRUCTION_BYTES, ReportTaskRunner
 from .orchestration import create_reporting_workflow, record_step_model_metrics
 from .query_pipeline import (
     ApprovedQuery,
@@ -137,7 +134,6 @@ logger = logging.getLogger(__name__)
 # 显式期间模式最多为每个需求生成 current、yoy、mom 三条唯一窗口查询；
 # 与物化批次的 100 条硬上限保持一致，防止模型输出服务端必然无法完整审批的需求数。
 MAX_ANALYSIS_REQUIREMENTS = MAX_REPORT_INPUTS // 3
-
 REPORT_WORKFLOW_INPUT_STATE_KEY = "report_workflow_input"
 REPORT_WORKFLOW_SCOPE_STATE_KEY = "report_workflow_scope"
 REPORT_SCHEMA_SNAPSHOTS_STATE_KEY = "report_schema_snapshots"
@@ -146,22 +142,41 @@ REPORT_DATA_SHAPES_STATE_KEY = "report_data_shapes"
 REPORT_EFFECTIVE_PROFILE_STATE_KEY = "report_effective_profile"
 REPORT_CAPABILITIES_STATE_KEY = "report_capabilities"
 REPORT_RECONCILIATIONS_STATE_KEY = "report_reconciliations"
+REPORT_SOURCE_WARNINGS_STATE_KEY = "report_source_warnings"
 REPORT_REQUEST_CONTEXT_STATE_KEY = "report_request_context"
 REPORT_OUTLINE_CONTEXT_STATE_KEY = "report_outline_context"
 REPORT_OUTLINE_STATE_KEY = "report_outline"
 REPORT_ANALYSIS_PLAN_STATE_KEY = "report_analysis_plan"
+REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY = "report_analysis_data_context"
+REPORT_ANALYSIS_CONTEXT_FILE_STATE_KEY = "report_analysis_context_file"
+REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY = "report_detailed_analysis_plan"
 REPORT_DATA_REQUIREMENTS_STATE_KEY = "report_data_requirements"
 REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY = "report_row_preserving_requirements"
 REPORT_APPROVED_QUERIES_STATE_KEY = "report_approved_queries"
 REPORT_DATASET_LINEAGE_STATE_KEY = "report_dataset_lineage"
-REPORT_FACT_SET_STATE_KEY = "report_hospital_operation_fact_set"
-REPORT_FINDINGS_STATE_KEY = "report_hospital_operation_findings"
 REPORT_OUTLINE_HASH_STATE_KEY = "report_outline_hash"
 REPORT_PUBLICATION_GATE_STATE_KEY = "report_publication_gate"
+REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY = "report_document_generated_date"
 REPORT_WORKFLOW_RESULT_STATE_KEY = "report_workflow_result"
 REPORT_ARTIFACTS_STATE_KEY = "report_artifacts"
 PublicationIssuer = Callable[[dict[str, str], str, str, Any], Awaitable[dict[str, Any]]]
 ServerIdentityFactory = Callable[[dict[str, str]], ReportServerIdentity]
+
+
+def _coding_detailed_analysis_plan(plan: DetailedAnalysisPlan) -> dict[str, Any]:
+    """向成稿 Worker 投影 Codex 风格步骤，完整事实继续由受信上下文承载。"""
+    return {
+        "version": plan.version,
+        "analyses": [
+            {
+                "analysisId": item.analysis_id,
+                "domain": item.domain,
+                "step": item.management_question,
+                "datasetIds": list(item.dataset_ids),
+            }
+            for item in plan.analyses
+        ],
+    }
 
 
 class _StrictModel(BaseModel):
@@ -174,10 +189,6 @@ class NormalizedReportPrompt(_StrictModel):
     clarification_question: str | None = Field(
         default=None, alias="clarificationQuestion", min_length=1, max_length=1000
     )
-
-
-class FindingProposalBatch(_StrictModel):
-    findings: tuple[FindingProposal, ...] = Field(min_length=1, max_length=2_000)
 
 
 _SERIALIZED_MEMBER_PATTERN = re.compile(
@@ -237,20 +248,6 @@ def _report_machine_terms(*values: Any) -> tuple[str, ...]:
     return tuple(sorted(terms))
 
 
-def _selected_report_domains(
-    envelope: ReportRequestEnvelope,
-    fact_set: HospitalOperationFactSet,
-) -> tuple[str, ...]:
-    if envelope.domains:
-        return envelope.domains
-    available = {
-        fact.domain
-        for fact in fact_set.facts
-        if fact.period_role == "current" and fact.domain in DOMAIN_CODES
-    }
-    return tuple(code for code in DOMAIN_CODES if code in available)
-
-
 def _frozen_outline(state: Mapping[str, Any]) -> ReportOutline:
     try:
         raw = state[REPORT_OUTLINE_STATE_KEY]
@@ -278,11 +275,27 @@ def _single_explicit_year(prompt: str, feedback: str | None) -> ReportPeriod | N
 def _explicit_report_type(*values: str | None) -> Literal["comprehensive", "topic"] | None:
     text = "\n".join(value for value in values if isinstance(value, str))
     found: set[Literal["comprehensive", "topic"]] = set()
-    if re.search(r"(?:reportType\s*[:=]\s*comprehensive|综合(?:运营)?报告)", text, re.I):
+    if re.search(
+        r"(?:reportType\s*[:=]\s*comprehensive|(?:综合|整体)(?:运营|经营)?(?:分析)?(?:报告|情况)?)",
+        text,
+        re.I,
+    ):
         found.add("comprehensive")
     if re.search(r"(?:reportType\s*[:=]\s*topic|专题(?:分析)?报告|\S+专题)", text, re.I):
         found.add("topic")
     return next(iter(found)) if len(found) == 1 else None
+
+
+def _resolved_report_type(
+    explicit: Literal["comprehensive", "topic"] | None,
+    domains: tuple[str, ...] | None,
+) -> Literal["comprehensive", "topic"]:
+    """保留显式兼容值；否则由规范化领域范围确定报告类型。"""
+    if explicit is not None:
+        return explicit
+    if domains and len(domains) < len(DOMAIN_CODES):
+        return "topic"
+    return "comprehensive"
 
 
 def _looks_like_serialized_structure(value: str) -> bool:
@@ -395,6 +408,20 @@ def _coding_observed_data_facts(
                 }
             )
     return facts
+
+
+def _source_warnings_from_state(state: Mapping[str, Any]) -> tuple[SourceWarning, ...]:
+    """读取服务端对账告警；非法或模型伪造的告警不会进入交付回执。"""
+
+    raw = state.get(REPORT_SOURCE_WARNINGS_STATE_KEY)
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ReportingError("report_source_warning_invalid", "来源差异告警状态无效。")
+    try:
+        return tuple(SourceWarning.model_validate(item) for item in raw)
+    except Exception as error:
+        raise ReportingError("report_source_warning_invalid", "来源差异告警状态无效。") from error
 
 
 def _human_label(value: str | None, fallback: str) -> str:
@@ -814,10 +841,10 @@ class ReportWorkflowRuntime:
             reasoning_effort=planner_reasoning_effort,
             stage_instructions=(
                 *HOSPITAL_REQUEST_INSTRUCTIONS,
-                "只归一化分析期间；领域优先由服务端别名规则识别，只有歧义时才提出澄清",
+                "只归一化分析期间；领域优先由服务端别名规则识别，领域歧义状态返回澄清内容",
                 "不得推断或返回数据源、Agent、医院或系统标识",
                 "单个明确日历年份转换为该年1月1日至12月31日",
-                "期间缺失、存在多个互相冲突的期间或无法唯一判断时，只返回一个简短 clarificationQuestion",
+                "期间缺失、存在多个互相冲突的期间或无法唯一判断时，只返回一个简短且陈述式的 clarificationQuestion",
                 "不得改写或返回用户原始报告目标",
             ),
         )
@@ -862,7 +889,8 @@ class ReportWorkflowRuntime:
                 ),
                 (
                     "exclusiveScope 的键只能从当前 candidateFieldContexts.sameTableColumnNames "
-                    "复制裸列名；值只能使用输入画像或术语能够直接证明的值，不得猜测枚举值"
+                    "复制裸列名；值必须逐字来自输入画像 topValues。字段说明、字段类别名和术语不能证明"
+                    "具体取值；没有精确观测值时必须返回空对象"
                 ),
                 "additiveAcross 只声明跨该字段汇总不会重复计数的真实维度；组织层级并存时不得默认全部可加",
                 "reconcileWith 只有在两个字段业务定义确实相同且输入提供依据时才声明，并同时提供 tolerance",
@@ -878,21 +906,9 @@ class ReportWorkflowRuntime:
             stage_instructions=(
                 *HOSPITAL_OUTLINE_INSTRUCTIONS,
                 "只返回 reportType、中文报告标题、sections 和 assumptions；sections 不得提交 code",
-                "每个章节必须引用一个或多个 outlineContext.findings 中已注册的 findingId",
-                "按真实发现的重要性组织动态章节；未涉及或无数据领域不得生成空章",
+                "每个章节必须引用一个或多个 outlineContext.analyses 中已注册的 analysisId",
+                "按详细分析计划的重要性组织动态章节；未涉及或无数据领域不得生成空章",
                 "section code 由服务端在批准后生成，模型不得提交或猜测 section_NNN",
-            ),
-        )
-        self._findings_agent = self._planning_agent(
-            planner,
-            "report-findings-planner",
-            FindingProposalBatch,
-            enable_thinking=planner_enable_thinking,
-            reasoning_effort=planner_reasoning_effort,
-            stage_instructions=(
-                *HOSPITAL_FINDINGS_INSTRUCTIONS,
-                "每条发现只引用 analysisFactSet.facts 中已存在的 factId，不提交 findingId",
-                "直接数值事实使用 direct_fact，服务端公式结果使用 derived_fact，跨域共变使用 correlation，待核验原因使用 hypothesis",
             ),
         )
         self._analysis_agent = self._planning_agent(
@@ -991,6 +1007,14 @@ class ReportWorkflowRuntime:
                 "output_schema": output_schema,
                 "parse_response": True,
                 "post_hooks": [],
+                # 规划步骤的输入由 Workflow 每次完整签发，既不依赖历史，也不消费会话
+                # 摘要。若从 Coding Worker 继承摘要配置，Agno 会在每次大目录分析后再次
+                # 把整份输入交给摘要模型，即使摘要从未加入下一次规划上下文。这既增加
+                # 成本和延迟，也扩大了无意义的数据暴露面，因此在复制边界显式关闭。
+                "enable_session_summaries": False,
+                "add_session_summary_to_context": False,
+                "session_summary_manager": None,
+                "add_session_state_to_context": False,
             }
         )
         agent.num_history_runs = None
@@ -1014,7 +1038,14 @@ class ReportWorkflowRuntime:
                         "path": content.get("pdfPath"),
                         "size": content.get("pdfSize"),
                         "sha256": content.get("pdfSha256"),
+                        "word": {
+                            "path": content.get("wordPath"),
+                            "size": content.get("wordSize"),
+                            "sha256": content.get("wordSha256"),
+                        },
                         "publicationGate": content.get("publicationGate"),
+                        "sourceWarnings": content.get("sourceWarnings", []),
+                        "codingReceipts": content.get("codingReceipts", []),
                     }
                 )
             scope = self._scope(run_context)
@@ -1045,8 +1076,8 @@ class ReportWorkflowRuntime:
             generate_analysis_plan=self.generate_analysis_plan,
             generate_query_candidates=self.generate_query_candidates,
             materialize_datasets=self.materialize_datasets,
-            build_fact_set=self.build_fact_set,
-            generate_findings=self.generate_findings,
+            prepare_analysis_context=self.prepare_analysis_context,
+            generate_detailed_analysis_plan=self.generate_detailed_analysis_plan,
             run_coding_analysis=self.run_coding_analysis,
             validate_report=self.validate_report,
             publish_report=self.publish_report,
@@ -1063,17 +1094,30 @@ class ReportWorkflowRuntime:
         request = workflow_input.request()
         feedback = self._feedback(step_input)
         if isinstance(request, ReportRequestEnvelope):
+            explicit_type = request.report_type
             resolution = resolve_domain_mentions(f"{request.report_goal}\n{feedback or ''}")
-            if request.domains is None and resolution.is_ambiguous:
+            if (
+                request.domains is None
+                and resolution.is_ambiguous
+                and explicit_type != "comprehensive"
+            ):
                 return StepOutput(
                     content={"clarificationQuestion": "请明确主分析领域：全成本或费控。"}
                 )
-            if request.report_type is None:
-                return StepOutput(
-                    content={"clarificationQuestion": "请明确报告类型：综合报告或专题报告。"}
-                )
-            domains = request.domains or resolution.selected or None
-            request = request.model_copy(update={"domains": domains})
+            domains = request.domains or (
+                DOMAIN_CODES
+                if explicit_type == "comprehensive" and resolution.is_ambiguous
+                else resolution.selected or None
+            )
+            report_type = _resolved_report_type(explicit_type, domains)
+            if report_type == "comprehensive" and domains is None:
+                domains = DOMAIN_CODES
+            request = request.model_copy(
+                update={
+                    "domains": domains,
+                    "report_type": report_type,
+                }
+            )
             self._record_request_context(state, request.report_goal, feedback)
             self._record_normalized_request(state, request)
             return StepOutput(
@@ -1082,8 +1126,9 @@ class ReportWorkflowRuntime:
 
         assert isinstance(request, ReportPromptInput)
         self._record_request_context(state, request.prompt, feedback)
+        explicit_type = _explicit_report_type(request.prompt, feedback)
         resolution = resolve_domain_mentions(f"{request.prompt}\n{feedback or ''}")
-        if resolution.is_ambiguous:
+        if resolution.is_ambiguous and explicit_type != "comprehensive":
             return StepOutput(content={"clarificationQuestion": "请明确主分析领域：全成本或费控。"})
         prompt_payload: dict[str, Any] = {"prompt": request.prompt}
         if feedback:
@@ -1094,14 +1139,15 @@ class ReportWorkflowRuntime:
         missing: list[str] = []
         if period is None:
             missing.append(normalized.clarification_question or "请明确唯一的分析期间。")
-        report_type = _explicit_report_type(request.prompt, feedback)
-        if report_type is None:
-            missing.append("请明确报告类型：综合报告或专题报告。")
         if missing:
             return StepOutput(content={"clarificationQuestion": " ".join(missing)})
         assert period is not None
-        assert report_type is not None
-        domains = resolution.selected or None
+        domains = (
+            DOMAIN_CODES if explicit_type == "comprehensive" else resolution.selected or None
+        )
+        report_type = _resolved_report_type(explicit_type or normalized.report_type, domains)
+        if report_type == "comprehensive" and domains is None:
+            domains = DOMAIN_CODES
         envelope = ReportRequestEnvelope.from_untrusted(
             {
                 "version": "1",
@@ -1151,6 +1197,7 @@ class ReportWorkflowRuntime:
                 "domains": list(envelope.domains) if envelope.domains else None,
                 "primaryDomain": envelope.domains[0] if envelope.domains else None,
                 "period": envelope.period.model_dump(mode="json"),
+                "comparisonRoles": list(envelope.comparison_roles),
             }
         )
 
@@ -1181,8 +1228,14 @@ class ReportWorkflowRuntime:
         if identity is None or identity.thread_id != scope["thread_id"]:
             raise ReportingError("report_publication_scope_missing", "报表发布作用域缺失。")
         content = self._publication_content(output)
-        current = await self.workspace_service.ahash_file(scope["thread_id"], content["pdfPath"])
-        self._require_pdf_identity(content, current)
+        current_pdf = await self.workspace_service.ahash_file(
+            scope["thread_id"], content["pdfPath"]
+        )
+        current_word = await self.workspace_service.ahash_file(
+            scope["thread_id"], content["wordPath"]
+        )
+        self._require_artifact_identity(content, current_pdf, artifact="pdf")
+        self._require_artifact_identity(content, current_word, artifact="word")
         download_scope = ReportDownloadScope(
             database=identity.database,
             user_id=identity.user_id,
@@ -1198,12 +1251,17 @@ class ReportWorkflowRuntime:
             pdf_path=content["pdfPath"],
             pdf_size=content["pdfSize"],
             pdf_sha256=content["pdfSha256"],
+            word_path=content["wordPath"],
+            word_size=content["wordSize"],
+            word_sha256=content["wordSha256"],
         )
         return publication_result(
             report_id=content["reportId"],
             revision=content["revision"],
             raw_grant=raw,
             grant=grant,
+            source_warnings=content["sourceWarnings"],
+            coding_receipts=content["codingReceipts"],
         )
 
     async def issue_cli_publication(
@@ -1214,12 +1272,23 @@ class ReportWorkflowRuntime:
         output: Any,
     ) -> dict[str, Any]:
         content = self._publication_content(output)
-        current = await self.workspace_service.ahash_file(scope["thread_id"], content["pdfPath"])
-        self._require_pdf_identity(content, current)
+        current_pdf = await self.workspace_service.ahash_file(
+            scope["thread_id"], content["pdfPath"]
+        )
+        current_word = await self.workspace_service.ahash_file(
+            scope["thread_id"], content["wordPath"]
+        )
+        self._require_artifact_identity(content, current_pdf, artifact="pdf")
+        self._require_artifact_identity(content, current_word, artifact="word")
         return cli_result(
             path=content["pdfPath"],
             size=content["pdfSize"],
             sha256=content["pdfSha256"],
+            word_path=content["wordPath"],
+            word_size=content["wordSize"],
+            word_sha256=content["wordSha256"],
+            source_warnings=content["sourceWarnings"],
+            coding_receipts=content["codingReceipts"],
         )
 
     async def confirm_source(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
@@ -1517,6 +1586,7 @@ class ReportWorkflowRuntime:
                     }
                     continue
             try:
+                _validate_proposed_exclusive_scopes(proposal, self._data_shapes(run_context))
                 proposal = _proposal_with_profile_scope_filters(proposal, snapshots, profile)
             except ReportingError as error:
                 previous_output = proposal.model_dump(mode="json", by_alias=True)
@@ -1576,9 +1646,13 @@ class ReportWorkflowRuntime:
             self._data_understanding(run_context),
             self._profile(run_context),
         )
-        scoped_proposal = _proposal_with_profile_scope_filters(
-            proposal, snapshots, self._profile(run_context)
+        profile = self._profile(run_context)
+        _validate_proposed_exclusive_scopes(
+            proposal,
+            self._data_shapes(run_context),
+            trusted_profile=profile,
         )
+        scoped_proposal = _proposal_with_profile_scope_filters(proposal, snapshots, profile)
         if scoped_proposal != proposal:
             raise ReportingError(
                 "report_measure_semantic_proposal_invalid",
@@ -1615,102 +1689,28 @@ class ReportWorkflowRuntime:
     async def reconcile_sources(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
+        profile = self._profile(run_context)
+        frozen_plan = [
+            ReconciliationShape(
+                code=item.code,
+                status="unavailable",
+                leftMetric=item.left_metric,
+                rightMetric=item.right_metric,
+                grain=item.grain,
+                issues=("等待语义事实物化后执行服务端对账。",),
+            ).model_dump(mode="json", by_alias=True)
+            for item in profile.reconciliations
+        ]
         state = self._state(run_context)
-        state[REPORT_RECONCILIATIONS_STATE_KEY] = []
+        # 此步骤只把当前 Effective Profile 的对账身份冻结为画像上下文，不读取尚未
+        # 物化的数据，也不伪造 completed。数据差异在 CSV 物化和完整 Profile 阶段
+        # 作为来源告警进入后续分析计划。
+        state[REPORT_RECONCILIATIONS_STATE_KEY] = frozen_plan
+        # 业务来源差异只允许由服务端确定性对账写入；当前阶段尚无事实输入时保持空，
+        # 后续 Profile/Coding 阶段会复用同一状态并回填到所有交付回执。
+        state.setdefault(REPORT_SOURCE_WARNINGS_STATE_KEY, [])
         self._assert_state_safe(state)
-        return StepOutput(content={"reconciliations": []})
-
-    async def generate_findings(
-        self, _step_input: StepInput, run_context: RunContext
-    ) -> StepOutput:
-        fact_set = await self._load_fact_set(run_context)
-        analysis_fact_set = await self._load_analysis_fact_set(run_context)
-        if not analysis_fact_set.facts:
-            raise ReportingError(
-                "report_findings_unavailable",
-                "FactSet 没有可供分析发现引用的可发布事实。",
-            )
-        envelope = self._envelope(run_context)
-        selected_domains = _selected_report_domains(envelope, fact_set)
-        base_payload = {
-            "reportGoal": envelope.report_goal,
-            "reportType": envelope.report_type,
-            "domains": list(selected_domains),
-            "periodWindows": envelope.period_windows().public_dict(),
-            "analysisFactSet": analysis_fact_set.public_dict(),
-        }
-        previous_output: dict[str, Any] | None = None
-        allowed_paths: tuple[str, ...] = ()
-        validation_feedback: dict[str, Any] | None = None
-        for attempt in range(1, 6):
-            payload = dict(base_payload)
-            if validation_feedback is not None:
-                payload["correction"] = {
-                    "attempt": attempt,
-                    "previousOutput": previous_output,
-                    "allowedMutationPaths": list(allowed_paths),
-                    "validationFeedback": _compact_validation_feedback(validation_feedback),
-                    "instruction": (
-                        "以 previousOutput 为基线，只修改 allowedMutationPaths 指向的失败字段；"
-                        "其他发现和字段逐字保持不变，返回完整 JSON"
-                    ),
-                }
-            try:
-                output = await self._run_planner(self._findings_agent, payload, run_context)
-            except _PlannerOutputValidationError as error:
-                previous_output = dict(error.output) if isinstance(error.output, Mapping) else None
-                issues = error.issues
-                allowed_paths = tuple(
-                    str(issue.get("path")) for issue in issues if issue.get("path")
-                )
-                validation_feedback = {"issues": issues}
-                continue
-            assert isinstance(output, FindingProposalBatch)
-            output_payload = output.model_dump(mode="json", by_alias=True)
-            if previous_output is not None:
-                unexpected = _unexpected_correction_paths(
-                    previous_output, output_payload, allowed_paths, ()
-                )
-                if unexpected:
-                    validation_feedback = {
-                        "issues": [
-                            {
-                                "path": "$",
-                                "rejectedValue": {"unexpectedPaths": unexpected},
-                                "allowedValues": list(allowed_paths),
-                                "requiredAction": "只修改 allowedMutationPaths 后返回完整输出",
-                            }
-                        ]
-                    }
-                    continue
-            try:
-                findings = build_findings(
-                    output.findings,
-                    fact_set,
-                    selected_domains=selected_domains,
-                )
-            except ReportingError as error:
-                previous_output = output_payload
-                raw_issues = (error.details or {}).get("issues", [])
-                issues = [dict(item) for item in raw_issues if isinstance(item, Mapping)]
-                allowed_paths = tuple(
-                    str(issue.get("path")) for issue in issues if issue.get("path")
-                )
-                validation_feedback = {"issues": issues}
-                continue
-            state = self._state(run_context)
-            state[REPORT_FINDINGS_STATE_KEY] = findings.model_dump(mode="json", by_alias=True)
-            self._assert_state_safe(state)
-            return StepOutput(content=findings)
-        raise ReportingError(
-            "report_findings_invalid",
-            "分析发现连续五次未通过校验。最后一次反馈："
-            + json.dumps(
-                _compact_validation_feedback(validation_feedback),
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-        )
+        return StepOutput(content={"reconciliations": frozen_plan})
 
     async def generate_outline(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
         state = self._state(run_context)
@@ -1720,19 +1720,28 @@ class ReportWorkflowRuntime:
         feedback = self._feedback(step_input)
         self._record_outline_feedback(state, feedback)
         try:
-            findings_result = FindingsResult.model_validate(state.get(REPORT_FINDINGS_STATE_KEY))
+            detailed_plan = DetailedAnalysisPlan.model_validate(
+                state.get(REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY)
+            )
         except Exception as error:
             raise ReportingError(
-                "report_findings_invalid", "动态提纲缺少有效的冻结分析发现。"
+                "report_detailed_analysis_plan_invalid",
+                "动态提纲缺少有效的详细分析计划。",
             ) from error
-        if not findings_result.findings:
-            raise ReportingError("report_findings_unavailable", "没有可供动态提纲引用的真实发现。")
+        if not detailed_plan.analyses:
+            raise ReportingError(
+                "report_detailed_analysis_plan_unavailable",
+                "没有可供动态提纲引用的分析任务。",
+            )
         outline_context = {
             "reportType": envelope.report_type,
             "domains": list(envelope.domains or ()),
-            "findings": [
-                item.model_dump(mode="json", by_alias=True) for item in findings_result.findings
+            "analyses": [
+                item.model_dump(mode="json", by_alias=True)
+                for item in detailed_plan.analyses
             ],
+            "dataShapes": state.get(REPORT_DATA_SHAPES_STATE_KEY, []),
+            "warnings": list(detailed_plan.warnings),
             "requestContext": dict(state.get(REPORT_REQUEST_CONTEXT_STATE_KEY) or {}),
         }
         state[REPORT_OUTLINE_CONTEXT_STATE_KEY] = outline_context
@@ -1744,16 +1753,20 @@ class ReportWorkflowRuntime:
             "feedback": feedback,
         }
         validation_feedback: dict[str, Any] | None = None
+        previous_output: dict[str, Any] | None = None
+        allowed_paths: tuple[str, ...] = ()
         outline: ReportOutline | None = None
         for attempt in range(1, 6):
             payload: dict[str, Any] = dict(base_payload)
             if validation_feedback is not None:
                 payload["correction"] = {
                     "attempt": attempt,
+                    "previousOutput": previous_output,
+                    "allowedPaths": list(allowed_paths),
                     "validationFeedback": _compact_validation_feedback(validation_feedback),
                     "instruction": (
                         "修正全部 issues 并返回完整 ReportOutlineProposal；sections 不得包含 code，"
-                        "每个章节必须引用已注册 findingId；不返回正文、解释或 Markdown"
+                        "每个章节必须引用已注册 analysisId；不返回正文、解释或 Markdown"
                     ),
                 }
             try:
@@ -1777,6 +1790,8 @@ class ReportWorkflowRuntime:
                     }
                 )
             if issues:
+                previous_output = output.model_dump(mode="json", by_alias=True)
+                allowed_paths = tuple(str(item["path"]) for item in issues)
                 validation_feedback = {
                     "code": "report_outline_invalid",
                     "summary": "报告提纲违反动态章节契约",
@@ -1784,11 +1799,13 @@ class ReportWorkflowRuntime:
                 }
                 continue
             try:
-                outline = freeze_outline(output, findings=findings_result.findings)
+                outline = freeze_outline(output, analyses=detailed_plan.analyses)
             except ValueError as error:
+                previous_output = output.model_dump(mode="json", by_alias=True)
+                allowed_paths = ("sections",)
                 validation_feedback = {
                     "code": "report_outline_invalid",
-                    "summary": "报告提纲引用的发现未通过服务端冻结校验",
+                    "summary": "报告提纲引用的分析未通过服务端冻结校验",
                     "issues": [{"path": "sections", "reason": str(error)}],
                 }
                 continue
@@ -1978,10 +1995,20 @@ class ReportWorkflowRuntime:
                 )
                 output = normalized_output
                 output_payload = normalized_payload
+            normalized_output, requirement_repairs = _normalize_duplicate_requirements(output)
+            if requirement_repairs:
+                normalized_payload = normalized_output.model_dump(mode="json", by_alias=True)
+                logger.info(
+                    "report_planner_requirements_normalized repairs=%s",
+                    json.dumps(requirement_repairs, ensure_ascii=False, separators=(",", ":")),
+                )
+                output = normalized_output
+                output_payload = normalized_payload
             semantic_issues = _analysis_bundle_semantic_issues(
                 output,
                 self._data_understanding(run_context),
                 snapshots,
+                self._envelope(run_context),
             )
             if semantic_issues:
                 validation_feedback = {
@@ -2174,335 +2201,570 @@ class ReportWorkflowRuntime:
         }
         return StepOutput(content={"datasets": datasets, "jobId": prepared["jobId"]})
 
-    async def build_fact_set(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
+    async def prepare_analysis_context(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        """并发生成完整 Profile 文件，并只把同源模型视图保存在 Workflow state。"""
         state = self._state(run_context)
         result = self._workflow_result(state)
         handles = tuple(DatasetHandle.from_state(item) for item in result.get("datasets", ()))
+        if not handles:
+            raise ReportingError("report_analysis_context_unavailable", "没有可分析的数据集。")
+        scope = self._scope(run_context)
+        thread_id = scope["threadId"]
+        run_id = str(run_context.run_id or "report")
+        snapshots = self._snapshots(run_context)
         requirements = {
             item.requirement_id: item
             for item in (
                 QueryRequirement.model_validate(value)
-                for value in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
+                for value in state.get(REPORT_DATA_REQUIREMENTS_STATE_KEY, ())
             )
         }
-        lineage = tuple(
-            DatasetLineage.model_validate(item) for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
+        try:
+            cached_contexts = {
+                item.dataset_id: item
+                for item in (
+                    DatasetAnalysisContext.model_validate(value)
+                    for value in state.get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ())
+                )
+            }
+        except (TypeError, ValueError, ValidationError) as error:
+            raise ReportingError(
+                "report_analysis_context_invalid", "已保存的分析数据上下文无效。"
+            ) from error
+        contexts: list[DatasetAnalysisContext | None] = [None] * len(handles)
+        errors: list[Exception | None] = [None] * len(handles)
+        profile_limiter = anyio.CapacityLimiter(2)
+        source_warning_messages = tuple(
+            str(item.message)
+            for item in _source_warnings_from_state(state)
+            if getattr(item, "message", None)
         )
-        citations = {item.dataset_id: item.citation_id for item in authoritative_citations(lineage)}
-        schema_hashes = {
-            table.source_id: snapshot.schema_hash
-            for snapshot in self._snapshots(run_context)
-            for table in snapshot.tables
-        }
-        inputs: list[DatasetFactInput] = []
-        fact_set_issues: list[FactSetIssue] = []
-        operation_profile = ruijin_profile()
-        row_preserving_requirement_ids = set(
-            state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
-        )
-        scope = self._scope(run_context)
+
+        def profile_path(handle: DatasetHandle) -> str:
+            return f"报表/分析计划/{run_id}/profiles/{handle.dataset_id}.profile.json"
+
+        def cached_context(handle: DatasetHandle) -> DatasetAnalysisContext | None:
+            candidate = cached_contexts.get(handle.dataset_id)
+            if (
+                candidate is None
+                or candidate.path != handle.path
+                or candidate.size != handle.size
+                or candidate.sha256 != handle.sha256
+                or candidate.row_count != handle.row_count
+                or candidate.profile_file.path != profile_path(handle)
+            ):
+                return None
+            return candidate
+
         async with self.workspace_service._async_client() as client:
-            sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
-            for handle in handles:
-                requirement = requirements.get(handle.requirement_id)
-                if requirement is None:
-                    fact_set_issues.append(
-                        FactSetIssue(
-                            code="dataset_requirement_missing",
-                            status="unconfirmed",
-                            message=f"数据集 {handle.dataset_id} 缺少已批准的数据需求。",
-                            datasetIds=(handle.dataset_id,),
+            sandbox = await self.workspace_service._asandbox_for(client, thread_id)
+
+            async def prepare_one(index: int, handle: DatasetHandle) -> None:
+                started_at = time.monotonic()
+                cache_hit = False
+                try:
+                    cached = cached_context(handle)
+                    if cached is not None:
+                        _relative_profile, profile_remote = self.workspace_service.normalize_path(
+                            cached.profile_file.path, allow_root=False
                         )
+                        try:
+                            stored_profile = await self.workspace_service._adownload_file(
+                                sandbox, profile_remote, cached.profile_file.size
+                            )
+                        except Exception:
+                            stored_profile = b""
+                        if (
+                            len(stored_profile) == cached.profile_file.size
+                            and hashlib.sha256(stored_profile).hexdigest()
+                            == cached.profile_file.sha256
+                        ):
+                            contexts[index] = cached
+                            cache_hit = True
+                            return
+
+                    _relative, remote = self.workspace_service.normalize_path(
+                        handle.path, allow_root=False
                     )
-                    continue
-                if len(requirement.tables) != 1:
-                    table_names = {
-                        item.table.rsplit(".", 1)[-1].lower() for item in requirement.tables
-                    }
-                    domains = tuple(
-                        sorted(
-                            {
-                                binding.domain
-                                for binding in operation_profile.bindings
-                                if binding.field_ref.rsplit(".", 2)[-2].lower() in table_names
-                            }
+                    content = await self.workspace_service._adownload_file(
+                        sandbox, remote, handle.size
+                    )
+                    if (
+                        len(content) != handle.size
+                        or hashlib.sha256(content).hexdigest() != handle.sha256
+                    ):
+                        raise ReportingError("stale_dataset", "分析数据集已变化。")
+                    requirement = requirements.get(handle.requirement_id)
+                    # measureColumns 属于每个 RequirementTable，不是 QueryRequirement
+                    # 顶层字段。这里按完整 fieldRef 绑定语义，避免多表存在同名指标时
+                    # 把未授权表的语义混入当前不可变数据集上下文。
+                    measure_field_refs = (
+                        {
+                            f"{requirement.source_id}.{table.table}.{measure}".lower()
+                            for table in requirement.tables
+                            for measure in table.measure_columns
+                        }
+                        if requirement is not None
+                        else set()
+                    )
+                    requirement_tables = (
+                        {table.table.lower() for table in requirement.tables}
+                        if requirement is not None
+                        else set()
+                    )
+                    profiled = await anyio.to_thread.run_sync(
+                        lambda: profile_csv_dataset(
+                            content,
+                            dataset_id=handle.dataset_id,
+                            path=handle.path,
+                            expected_sha256=handle.sha256,
+                            profile_path=profile_path(handle),
+                            period_fields=(
+                                tuple(
+                                    dict.fromkeys(
+                                        table.period_column for table in requirement.tables
+                                    )
+                                )
+                                if requirement is not None
+                                else ()
+                            ),
+                            schema={
+                                "sourceId": handle.source_id,
+                                "requirementId": handle.requirement_id,
+                                "tables": [
+                                    table.model_dump(mode="json", by_alias=True)
+                                    for snapshot in snapshots
+                                    for table in snapshot.tables
+                                    if table.source_id == handle.source_id
+                                    and (
+                                        not requirement_tables
+                                        or f"{table.database}.{table.name}".lower()
+                                        in requirement_tables
+                                        or table.name.lower() in requirement_tables
+                                    )
+                                ],
+                            },
+                            organization_grain=(
+                                tuple(requirement.grain_columns)
+                                if requirement is not None
+                                else ()
+                            ),
+                            metric_semantics=tuple(
+                                item.model_dump(mode="json", by_alias=True)
+                                for snapshot in snapshots
+                                for item in snapshot.measure_semantics
+                                if item.field_ref.lower() in measure_field_refs
+                            ),
+                            source_warnings=source_warning_messages,
+                        ),
+                        limiter=profile_limiter,
+                    )
+                    # 生产 WorkspaceService 始终提供内容边界校验；极小的单元测试夹具
+                    # 可以只实现读写原语，不应改变 Profile 或其哈希契约。
+                    validate_content = getattr(self.workspace_service, "_validate_content", None)
+                    if callable(validate_content):
+                        validate_content(profiled.profile_content)
+                    _relative_profile, profile_remote = self.workspace_service.normalize_path(
+                        profiled.context.profile_file.path, allow_root=False
+                    )
+                    filesystem = getattr(sandbox, "fs", None)
+                    if filesystem is not None and hasattr(filesystem, "upload_file"):
+                        ensure_directory = getattr(self.workspace_service, "_aensure_directory", None)
+                        if callable(ensure_directory):
+                            await ensure_directory(sandbox, profile_remote.rsplit("/", 1)[0])
+                        await filesystem.upload_file(profiled.profile_content, profile_remote)
+                        stored_profile = await self.workspace_service._adownload_file(
+                            sandbox, profile_remote, profiled.context.profile_file.size
                         )
+                        if (
+                            len(stored_profile) != profiled.context.profile_file.size
+                            or hashlib.sha256(stored_profile).hexdigest()
+                            != profiled.context.profile_file.sha256
+                        ):
+                            raise ReportingError(
+                                "report_analysis_profile_changed",
+                                "完整数据画像写入后发生变化。",
+                            )
+                    contexts[index] = profiled.context
+                except Exception as error:
+                    errors[index] = error
+                finally:
+                    context = contexts[index]
+                    logger.info(
+                        "report_dataset_profile dataset_id=%s row_count=%s profile_bytes=%s "
+                        "model_view_bytes=%s duration_ms=%s cache_hit=%s",
+                        handle.dataset_id,
+                        context.row_count if context is not None else handle.row_count,
+                        context.profile_file.size if context is not None else 0,
+                        (
+                            len(
+                                json.dumps(
+                                    context.profile_model_view,
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                ).encode("utf-8")
+                            )
+                            if context is not None
+                            else 0
+                        ),
+                        int((time.monotonic() - started_at) * 1000),
+                        cache_hit,
                     )
-                    # FactSet 只能冻结单表审核结果；多表结果没有唯一物理字段归属时必须显式阻断，
-                    # 不能静默丢弃后继续让“有其他事实”冒充完整覆盖。
-                    fact_set_issues.append(
-                        FactSetIssue(
-                            code="multi_table_dataset_unmaterialized",
-                            status="unconfirmed",
-                            message=f"数据集 {handle.dataset_id} 来自多表需求，无法确定性映射为业务事实。",
-                            domains=domains,
-                            datasetIds=(handle.dataset_id,),
-                        )
-                    )
-                    continue
-                _relative, remote = self.workspace_service.normalize_path(
-                    handle.path, allow_root=False
-                )
-                content = await self.workspace_service._adownload_file(sandbox, remote, handle.size)
-                if (
-                    len(content) != handle.size
-                    or hashlib.sha256(content).hexdigest() != handle.sha256
-                ):
-                    raise ReportingError("stale_dataset", "FactSet 输入数据集已变化。")
-                reader = csv.DictReader(io.StringIO(content.decode("utf-8")))
-                rows = tuple(dict(row) for row in reader)
-                columns = tuple(reader.fieldnames or ())
-                table = requirement.tables[0]
-                inputs.append(
-                    DatasetFactInput(
-                        dataset_id=handle.dataset_id,
-                        requirement_id=handle.requirement_id,
-                        source_id=handle.source_id,
-                        table=table.table,
-                        period_column=table.period_column,
-                        grain=requirement.grain_columns,
-                        rows=rows,
-                        schema_hash=schema_hashes[handle.source_id],
-                        sql_hash=handle.sql_hash,
-                        file_hash=handle.sha256,
-                        reference=citations[handle.dataset_id],
-                        columns=columns,
-                        row_preserving=handle.requirement_id in row_preserving_requirement_ids,
-                        period_roles=tuple(handle.period_roles),
-                        query_window_id=handle.query_window_id,
-                    )
-                )
-        envelope = self._envelope(run_context)
-        fact_set = build_fact_set_from_datasets(
-            inputs,
-            profile=operation_profile,
-            period_start=envelope.period.start,
-            period_end=envelope.period.end,
-            generated_at=datetime.now(UTC).isoformat(),
-            issues=fact_set_issues,
-        )
-        fact_set_handle = await self._materialize_fact_set(run_context, fact_set)
-        state[REPORT_FACT_SET_STATE_KEY] = fact_set_handle.public_dict()
+
+            async with anyio.create_task_group() as task_group:
+                for index, handle in enumerate(handles):
+                    task_group.start_soon(prepare_one, index, handle)
+
+        failure = next((item for item in errors if item is not None), None)
+        if failure is not None:
+            if isinstance(failure, ReportingError):
+                raise failure
+            raise ReportingError(
+                "report_analysis_context_invalid", "CSV 数据集画像生成失败。"
+            ) from failure
+        completed_contexts = tuple(item for item in contexts if item is not None)
+        if len(completed_contexts) != len(handles):
+            raise ReportingError(
+                "report_analysis_context_invalid", "CSV 数据集画像结果不完整。"
+            )
+        state[REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY] = [
+            item.model_dump(mode="json", by_alias=True) for item in completed_contexts
+        ]
         self._assert_state_safe(state)
-        return StepOutput(content=fact_set_handle)
+        return StepOutput(
+            content={"datasetContexts": state[REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY]}
+        )
 
-    async def _materialize_fact_set(
-        self,
-        run_context: RunContext,
-        fact_set: HospitalOperationFactSet,
-    ) -> FactSetHandle:
-        """分别物化审计 FactSet 与模型分析目录，并回读校验两个受信身份。"""
-        content = json.dumps(
-            fact_set.public_dict(),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        self.workspace_service._validate_content(content)
-        analysis_fact_set = build_analysis_fact_set(fact_set)
-        analysis_content = json.dumps(
-            analysis_fact_set.public_dict(),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        self.workspace_service._validate_content(analysis_content)
-        path = _fact_set_path(str(run_context.run_id or ""))
-        analysis_path = _analysis_fact_set_path(str(run_context.run_id or ""))
-        _relative, remote = self.workspace_service.normalize_path(path, allow_root=False)
-        _analysis_relative, analysis_remote = self.workspace_service.normalize_path(
-            analysis_path, allow_root=False
+    async def generate_detailed_analysis_plan(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        """把已批准分析范围与 Profile 索引编排成可执行计划。"""
+        state = self._state(run_context)
+        raw_contexts = state.get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ())
+        if not raw_contexts:
+            raise ReportingError("report_analysis_context_unavailable", "分析数据上下文缺失。")
+        contexts = tuple(DatasetAnalysisContext.model_validate(value) for value in raw_contexts)
+        envelope = self._envelope(run_context)
+        requested_domains = set(envelope.domains or DOMAIN_CODES)
+        initial = tuple(
+            AnalysisItem.model_validate(item)
+            for item in state.get(REPORT_ANALYSIS_PLAN_STATE_KEY, ())
+            if isinstance(item, dict)
         )
-        scope = self._scope(run_context)
-        try:
-            async with self.workspace_service._async_client() as client:
-                sandbox = await self.workspace_service._asandbox_for(client, scope["threadId"])
-                await self.workspace_service._aensure_directory(sandbox, remote.rsplit("/", 1)[0])
-                await sandbox.fs.upload_file(content, remote)
-                await sandbox.fs.upload_file(analysis_content, analysis_remote)
-                stored = await self.workspace_service._adownload_file(sandbox, remote, len(content))
-                stored_analysis = await self.workspace_service._adownload_file(
-                    sandbox, analysis_remote, len(analysis_content)
-                )
-        except Exception as error:
-            raise ReportingError(
-                "report_fact_set_materialization_failed",
-                "服务端无法物化确定性业务 FactSet。",
-            ) from error
-        if stored != content:
-            raise ReportingError(
-                "report_fact_set_changed",
-                "FactSet 写入后发生变化。",
-            )
-        if stored_analysis != analysis_content:
-            raise ReportingError(
-                "report_analysis_fact_set_changed",
-                "分析 FactSet 写入后发生变化。",
-            )
-        domain_counts: dict[str, int] = {}
-        for fact in fact_set.facts:
-            domain_counts[fact.domain] = domain_counts.get(fact.domain, 0) + 1
-        handle = FactSetHandle(
-            path=path,
-            size=len(content),
-            sha256=hashlib.sha256(content).hexdigest(),
-            factSetHash=fact_set.fact_set_hash,
-            factCount=len(fact_set.facts),
-            metricFactCount=len(fact_set.metric_facts),
-            domainCounts=dict(sorted(domain_counts.items())),
-            analysisFactSet=AnalysisFactSetHandle(
-                path=analysis_path,
-                size=len(analysis_content),
-                sha256=hashlib.sha256(analysis_content).hexdigest(),
-                sourceFactSetHash=fact_set.fact_set_hash,
-                factCount=len(analysis_fact_set.facts),
-            ),
-        )
-        logger.info(
-            "report_fact_set_materialized size=%s sha256=%s fact_set_hash=%s "
-            "fact_count=%s metric_fact_count=%s",
-            handle.size,
-            handle.sha256,
-            handle.fact_set_hash,
-            handle.fact_count,
-            handle.metric_fact_count,
-        )
-        logger.info(
-            "report_analysis_fact_set_materialized size=%s sha256=%s "
-            "source_fact_set_hash=%s fact_count=%s",
-            handle.analysis_fact_set.size if handle.analysis_fact_set else 0,
-            handle.analysis_fact_set.sha256 if handle.analysis_fact_set else "",
-            handle.fact_set_hash,
-            len(analysis_fact_set.facts),
-        )
-        return handle
+        if not initial:
+            raise ReportingError("report_analysis_plan_invalid", "已批准分析计划缺失。")
 
-    async def _load_fact_set(self, run_context: RunContext) -> HospitalOperationFactSet:
-        try:
-            handle = FactSetHandle.model_validate(
-                self._state(run_context).get(REPORT_FACT_SET_STATE_KEY)
+        covered_domains: set[str] = set()
+        for item in initial:
+            if item.code in DOMAIN_CODES:
+                covered_domains.add(item.code)
+            covered_domains.update(
+                resolve_domain_mentions(f"{item.code} {item.description}").selected
             )
-        except Exception as error:
-            raise ReportingError(
-                "report_fact_set_reference_invalid",
-                "Workflow FactSet 引用无效。",
-            ) from error
-        expected_path = _fact_set_path(str(run_context.run_id or ""))
-        if handle.path != expected_path:
-            raise ReportingError(
-                "report_fact_set_reference_invalid",
-                "Workflow FactSet 引用不属于当前运行。",
+        # 领域范围先服从步骤 9 的已批准计划；只有步骤 9 没有给出稳定领域时，
+        # 才依据 Profile 的真实指标字段收敛。步骤 13 只做计划编排，不重新解释
+        # 用户范围，也不在此阶段读取 CSV 或生成经营数字。
+        profile_domains: set[str] = set()
+        known_bindings = tuple(ruijin_profile().bindings)
+        for context in contexts:
+            fields = {field.rsplit(".", 1)[-1].casefold() for field in context.fields}
+            semantic_fields = {
+                str(item.get("fieldRef", "")).rsplit(".", 1)[-1].casefold()
+                for item in context.metric_semantics
+                if isinstance(item, Mapping)
+            }
+            observed_fields = fields | semantic_fields
+            profile_domains.update(
+                binding.domain
+                for binding in known_bindings
+                if binding.field_ref.rsplit(".", 1)[-1].casefold() in observed_fields
             )
-        try:
-            _relative, remote = self.workspace_service.normalize_path(handle.path, allow_root=False)
-            async with self.workspace_service._async_client() as client:
-                sandbox = await self.workspace_service._asandbox_for(
-                    client, self._scope(run_context)["threadId"]
-                )
-                content = await self.workspace_service._adownload_file(sandbox, remote, handle.size)
-        except ReportingError:
-            raise
-        except Exception as error:
-            raise ReportingError(
-                "report_fact_set_unavailable",
-                "Workflow FactSet 文件不可用。",
-            ) from error
-        if len(content) != handle.size or hashlib.sha256(content).hexdigest() != handle.sha256:
-            raise ReportingError(
-                "report_fact_set_changed",
-                "Workflow FactSet 文件已经变化。",
-            )
-        try:
-            fact_set = HospitalOperationFactSet.model_validate(json.loads(content))
-        except Exception as error:
-            raise ReportingError(
-                "report_fact_set_invalid",
-                "Workflow FactSet 文件不符合确定性事实契约。",
-            ) from error
-        domain_counts: dict[str, int] = {}
-        for fact in fact_set.facts:
-            domain_counts[fact.domain] = domain_counts.get(fact.domain, 0) + 1
-        if (
-            fact_set.fact_set_hash != handle.fact_set_hash
-            or len(fact_set.facts) != handle.fact_count
-            or len(fact_set.metric_facts) != handle.metric_fact_count
-            or dict(sorted(domain_counts.items())) != handle.domain_counts
-        ):
-            raise ReportingError(
-                "report_fact_set_changed",
-                "Workflow FactSet 身份与文件内容不一致。",
-            )
-        return fact_set
+        candidate_domains = covered_domains or profile_domains
+        domains = tuple(
+            code
+            for code in DOMAIN_CODES
+            if code in requested_domains and (not candidate_domains or code in candidate_domains)
+        )
+        if not domains:
+            raise ReportingError("report_analysis_plan_invalid", "授权 CSV 没有形成可分析领域。")
 
-    async def _load_analysis_fact_set(
-        self, run_context: RunContext
-    ) -> HospitalOperationAnalysisFactSet:
-        try:
-            handle = FactSetHandle.model_validate(
-                self._state(run_context).get(REPORT_FACT_SET_STATE_KEY)
-            )
-            analysis_handle = handle.analysis_fact_set
-        except Exception as error:
-            raise ReportingError(
-                "report_analysis_fact_set_reference_invalid",
-                "Workflow 分析 FactSet 引用无效。",
-            ) from error
-        if analysis_handle is None or analysis_handle.path != _analysis_fact_set_path(
-            str(run_context.run_id or "")
-        ):
-            raise ReportingError(
-                "report_analysis_fact_set_reference_invalid",
-                "Workflow 分析 FactSet 引用不属于当前运行。",
-            )
-        try:
-            _relative, remote = self.workspace_service.normalize_path(
-                analysis_handle.path, allow_root=False
-            )
-            async with self.workspace_service._async_client() as client:
-                sandbox = await self.workspace_service._asandbox_for(
-                    client, self._scope(run_context)["threadId"]
-                )
-                content = await self.workspace_service._adownload_file(
-                    sandbox, remote, analysis_handle.size
-                )
-        except ReportingError:
-            raise
-        except Exception as error:
-            raise ReportingError(
-                "report_analysis_fact_set_unavailable",
-                "Workflow 分析 FactSet 文件不可用。",
-            ) from error
+        result = self._workflow_result(state)
+        handles = tuple(
+            DatasetHandle.from_state(item) for item in result.get("datasets", ())
+        )
+        context_by_id = {item.dataset_id: item for item in contexts}
         if (
-            len(content) != analysis_handle.size
-            or hashlib.sha256(content).hexdigest() != analysis_handle.sha256
+            not handles
+            or len(context_by_id) != len(contexts)
+            or {item.dataset_id for item in handles} != set(context_by_id)
         ):
             raise ReportingError(
-                "report_analysis_fact_set_changed",
-                "Workflow 分析 FactSet 文件已经变化。",
+                "report_analysis_context_invalid",
+                "分析数据上下文没有精确绑定本轮不可变数据集。",
             )
-        try:
-            analysis_fact_set = HospitalOperationAnalysisFactSet.model_validate(json.loads(content))
-        except Exception as error:
-            raise ReportingError(
-                "report_analysis_fact_set_invalid",
-                "Workflow 分析 FactSet 文件不符合确定性分析事实契约。",
-            ) from error
-        if (
-            analysis_fact_set.source_fact_set_hash != handle.fact_set_hash
-            or analysis_handle.source_fact_set_hash != handle.fact_set_hash
-            or len(analysis_fact_set.facts) != analysis_handle.fact_count
-        ):
-            raise ReportingError(
-                "report_analysis_fact_set_changed",
-                "Workflow 分析 FactSet 身份与完整 FactSet 不一致。",
+
+        profile_warnings = tuple(
+            dict.fromkeys(
+                warning
+                for context in contexts
+                for warning in (*context.source_warnings, *context.quality_warnings)
             )
-        return analysis_fact_set
+        )
+        context_payload = {
+            "version": 1,
+            "datasetIds": [item.dataset_id for item in contexts],
+            "datasetContexts": [item.model_dump(mode="json", by_alias=True) for item in contexts],
+            "initialRequirements": state.get(REPORT_DATA_REQUIREMENTS_STATE_KEY, []),
+            "reportGoal": envelope.report_goal,
+            "analysisGoal": envelope.report_goal,
+            "allowedDomains": list(domains),
+            "dataShapes": state.get(REPORT_DATA_SHAPES_STATE_KEY, []),
+            "warnings": list(profile_warnings),
+        }
+        context_path = (
+            f"报表/分析计划/{run_context.run_id}/detailed-analysis-context.json"
+        )
+        context_file = await self._write_artifact_validation_context(
+            self._scope(run_context)["threadId"], context_path, context_payload
+        )
+        state[REPORT_ANALYSIS_CONTEXT_FILE_STATE_KEY] = context_file
+
+        analyses: list[DetailedAnalysisItem] = []
+        covered_dataset_ids: set[str] = set()
+        plan_warnings = list(profile_warnings)
+        role_labels = {"current": "本期", "yoy": "同比", "mom": "环比"}
+        for initial_item in initial:
+            requirement_ids = set(initial_item.requirement_ids)
+            referenced_handles = tuple(
+                handle for handle in handles if handle.requirement_id in requirement_ids
+            )
+            if not referenced_handles:
+                raise ReportingError(
+                    "report_analysis_plan_invalid",
+                    "已批准分析项没有绑定本轮不可变数据集。",
+                )
+            referenced_contexts = tuple(
+                context_by_id[handle.dataset_id] for handle in referenced_handles
+            )
+            covered_dataset_ids.update(handle.dataset_id for handle in referenced_handles)
+
+            resolved = resolve_domain_mentions(
+                f"{initial_item.code} {initial_item.description}"
+            ).selected
+            domain = (
+                initial_item.code
+                if initial_item.code in domains
+                else next((item for item in resolved if item in domains), domains[0])
+            )
+
+            field_candidates: list[str] = []
+            metric_candidates: list[str] = []
+            periods: list[str] = []
+            for context in referenced_contexts:
+                field_candidates.extend(context.organization_grain)
+                if context.time_series_sort_field:
+                    field_candidates.append(context.time_series_sort_field)
+                field_candidates.extend(context.numeric_fields)
+                field_candidates.extend(context.fields)
+                semantic_metrics = [
+                    str(item.get("fieldRef", "")).rsplit(".", 1)[-1]
+                    for item in context.metric_semantics
+                    if isinstance(item, Mapping) and item.get("fieldRef")
+                ]
+                metric_candidates.extend(semantic_metrics or context.numeric_fields)
+                period_values = list(context.period_values)
+                periods.extend(
+                    period_values
+                    if len(period_values) <= 24
+                    else [period_values[0], period_values[-1]]
+                )
+            fields = tuple(dict.fromkeys(field_candidates))
+            metrics = tuple(dict.fromkeys(metric_candidates))
+            if len(fields) > 100:
+                plan_warnings.append(
+                    f"分析项 {initial_item.code} 的字段索引超过 100 个；计划保留前 100 个关键字段，完整字段仍保存在 Profile 索引中。"
+                )
+            if len(metrics) > 100:
+                plan_warnings.append(
+                    f"分析项 {initial_item.code} 的指标索引超过 100 个；计划保留前 100 个指标，完整指标仍保存在 Profile 索引中。"
+                )
+            comparison_basis = tuple(
+                dict.fromkeys(
+                    role_labels[role]
+                    for handle in referenced_handles
+                    for role in handle.period_roles
+                )
+            )
+            actions = ["核验数据范围、指标口径和 Profile 告警"]
+            actions.append("从不可变 CSV 复算规模、结构和关键指标")
+            if periods:
+                actions.append("分析期间趋势、变化幅度和比较基准")
+            if any(context.organization_grain for context in referenced_contexts):
+                actions.append("按组织粒度下钻贡献与异常")
+            if len(referenced_contexts) > 1:
+                actions.append("校验跨数据集期间、粒度和口径的可比性")
+
+            item_warnings = tuple(
+                dict.fromkeys(
+                    warning
+                    for context in referenced_contexts
+                    for warning in (*context.source_warnings, *context.quality_warnings)
+                )
+            )
+            profile_coverages = tuple(
+                coverage
+                for context in referenced_contexts
+                for coverage in (context.profile_model_view.get("coverage"),)
+                if isinstance(coverage, Mapping)
+            )
+            correlation_methods = tuple(
+                dict.fromkeys(
+                    str(method)
+                    for coverage in profile_coverages
+                    for method in coverage.get("correlationMethods", ())
+                    if isinstance(method, str)
+                )
+            )
+            profile_signal = (
+                "Profile 定位信号包含 "
+                f"{sum(int(item.get('variableCount', 0)) for item in profile_coverages)} 个变量、"
+                f"{sum(int(item.get('alertCount', 0)) for item in profile_coverages)} 条告警、"
+                f"{sum(int(item.get('timeSeriesFieldCount', 0)) for item in profile_coverages)} 个时序字段"
+                f"和相关性方法 {', '.join(correlation_methods) or '无'}；"
+                "先检查 coverage 与 alerts，再按变量、相关性和时序 Pointer 定点读取完整 Profile。"
+            )
+            recommended_charts = [
+                str(opportunity["label"])
+                for context in referenced_contexts
+                for opportunity in context.profile_model_view.get("chartOpportunities", ())
+                if isinstance(opportunity, Mapping)
+                and isinstance(opportunity.get("label"), str)
+            ]
+            if periods:
+                recommended_charts.append("月度趋势带或同比哑铃图")
+            if any(context.organization_grain for context in referenced_contexts):
+                recommended_charts.append("组织贡献排名、Pareto 图或结构图")
+            if len(referenced_contexts) > 1:
+                recommended_charts.append("跨域散点、相关矩阵或气泡象限图")
+            lowered_fields = {
+                field.casefold()
+                for context in referenced_contexts
+                for field in context.fields
+            }
+            if any("budget" in field for field in lowered_fields) and any(
+                "actual" in field for field in lowered_fields
+            ):
+                recommended_charts.append("预算与实际子弹图或偏差瀑布图")
+            if all(
+                any(token in field for field in lowered_fields)
+                for token in ("budget", "contract", "pay")
+            ):
+                recommended_charts.append("预算、合同与付款转化漏斗图")
+            recommended_charts = list(dict.fromkeys(recommended_charts))[:12]
+            description = initial_item.description.rstrip("。？?")
+            analyses.append(
+                DetailedAnalysisItem(
+                    analysisId=f"analysis_{len(analyses) + 1:03d}",
+                    domain=domain,
+                    managementQuestion=(
+                        f"围绕{description}形成可由本轮不可变 CSV 复算的管理结论。"
+                    ),
+                    datasetIds=tuple(handle.dataset_id for handle in referenced_handles),
+                    fields=fields[:100],
+                    metrics=metrics[:100],
+                    periods=tuple(dict.fromkeys(periods)),
+                    comparisonBasis=comparison_basis,
+                    organizationGrain=tuple(
+                        dict.fromkeys(
+                            grain
+                            for context in referenced_contexts
+                            for grain in context.organization_grain
+                        )
+                    ),
+                    actions=tuple(actions),
+                    evidenceSummary=(
+                        f"计划绑定 {len(referenced_contexts)} 个不可变数据集、"
+                        f"{sum(context.row_count for context in referenced_contexts)} 行记录；"
+                        f"{profile_signal}最终数字由 Coding 从 CSV 复算。"
+                    ),
+                    limitations=item_warnings[:100],
+                    recommendedTables=("按期间与组织粒度汇总关键指标",),
+                    recommendedCharts=tuple(recommended_charts),
+                    suggestedSection=(description or domain)[:128],
+                    completionConditions=(
+                        "核验全部绑定数据集的路径、大小和 SHA-256",
+                        "按 analysisId 完成 CSV 复算并保存可复现证据",
+                        "正文、表格和图表只绑定已登记 citationId",
+                    ),
+                )
+            )
+
+        if covered_dataset_ids != set(context_by_id):
+            raise ReportingError(
+                "report_analysis_plan_invalid",
+                "已批准分析计划没有覆盖全部授权数据集。",
+            )
+        unique_warnings = tuple(dict.fromkeys(plan_warnings))
+        if len(unique_warnings) > 500:
+            unique_warnings = unique_warnings[:499] + (
+                f"另有 {len(unique_warnings) - 499} 条完整 Warning 保存在分析数据上下文中。",
+            )
+        plan = DetailedAnalysisPlan(
+            analyses=tuple(analyses),
+            datasetIds=tuple(context.dataset_id for context in contexts),
+            reportGoal=envelope.report_goal,
+            analysisGoal=envelope.report_goal,
+            warnings=unique_warnings,
+        )
+        state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY] = plan.model_dump(
+            mode="json", by_alias=True
+        )
+        self._assert_state_safe(state)
+        return StepOutput(content=plan)
 
     async def run_coding_analysis(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
+        state = self._state(run_context)
+        result = self._workflow_result(state)
+        profile = self._profile(run_context)
+        outline = _frozen_outline(state)
+        period = self._envelope(run_context).period
+        generated_date = state.get(REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY)
+        if generated_date is None:
+            generated_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+            state[REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY] = generated_date
+        try:
+            if (
+                not isinstance(generated_date, str)
+                or date.fromisoformat(generated_date).isoformat() != generated_date
+            ):
+                raise ValueError
+        except ValueError as error:
+            raise ReportingError(
+                "report_document_context_invalid", "报告服务端生成日期状态无效。"
+            ) from error
+        # 文档事实只能在提纲审核通过后的下一步骤绑定；提前绑定会读取不存在的提纲，
+        # 或把用户已拒绝的提纲固化进封面、目录和双格式 manifest。生成日期首次绑定后
+        # 写入 Workflow state，跨午夜恢复也必须复用，不能让重入改变同一报告事实。
+        await self.report_tools.bind_document_context(
+            str(result["jobId"]),
+            {
+                "title": outline.title,
+                "periodLabel": f"{period.start.isoformat()} 至 {period.end.isoformat()}",
+                "organizationName": profile.document_branding.organization_name,
+                "generatedByLabel": profile.document_branding.generated_by_label,
+                "watermarkText": profile.document_branding.watermark_text,
+                "generatedDate": generated_date,
+                "sections": [
+                    {"code": section.code, "title": section.title} for section in outline.sections
+                ],
+            },
+            run_context=self._tool_context(run_context),
+        )
         return StepOutput(content=await self._run_coding(run_context, feedback=None))
 
     async def _write_artifact_validation_context(
@@ -2566,13 +2828,17 @@ class ReportWorkflowRuntime:
             QueryRequirement.model_validate(item)
             for item in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
         )
-        fact_set_handle = FactSetHandle.model_validate(state[REPORT_FACT_SET_STATE_KEY])
-        analysis_fact_set = await self._load_analysis_fact_set(run_context)
-        analysis_handle = fact_set_handle.analysis_fact_set
-        if analysis_handle is None:  # pragma: no cover - 已由 _load_analysis_fact_set 失败关闭
+        detailed_plan = DetailedAnalysisPlan.model_validate(
+            state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY]
+        )
+        analysis_context_file = state.get(REPORT_ANALYSIS_CONTEXT_FILE_STATE_KEY)
+        if not isinstance(analysis_context_file, dict):
             raise ReportingError(
-                "report_analysis_fact_set_reference_invalid", "分析 FactSet 引用缺失。"
+                "report_analysis_context_unavailable", "完整分析数据上下文文件缺失。"
             )
+        dataset_handles = tuple(
+            DatasetHandle.from_state(item) for item in result.get("datasets", ())
+        )
         observed_data_facts = _coding_observed_data_facts(
             self._data_shapes(run_context), requirements, lineage
         )
@@ -2581,39 +2847,43 @@ class ReportWorkflowRuntime:
                 "code": section.code,
                 "title": section.title,
                 "protocolMarker": True,
+                "analysisIds": list(section.analysis_ids),
             }
             for section in outline.sections
         ]
         citation_bindings = authoritative_citations(lineage)
+        source_warnings = _source_warnings_from_state(state)
+        # Coding 只接收本轮不可变 CSV 身份和详细分析计划；全量数据由工具在工作区
+        # 读取，不把原始行塞入指令，也不重建第二套计算协议。
         instruction = json.dumps(
             {
                 "reportGoal": self._envelope(run_context).report_goal,
-                "requestContext": state.get(REPORT_REQUEST_CONTEXT_STATE_KEY),
                 "outline": state[REPORT_OUTLINE_STATE_KEY],
-                "findings": state.get(REPORT_FINDINGS_STATE_KEY),
-                "factSetIdentity": {
-                    "factSetHash": fact_set_handle.fact_set_hash,
-                    "factCount": fact_set_handle.fact_count,
-                    "metricFactCount": fact_set_handle.metric_fact_count,
-                    "domainCounts": fact_set_handle.domain_counts,
-                },
-                "analysisFactSetRef": analysis_handle.public_dict(),
-                "task": "revise" if feedback else "analyze",
-                "citationBindings": [
-                    item.model_dump(mode="json", by_alias=True) for item in citation_bindings
+                "detailedAnalysisPlan": _coding_detailed_analysis_plan(detailed_plan),
+                "analysisContextFile": analysis_context_file,
+                "datasets": [
+                    {
+                        "datasetId": item.dataset_id,
+                        "path": item.path,
+                        "size": item.size,
+                        "sha256": item.sha256,
+                    }
+                    for item in dataset_handles
                 ],
-                "draftSections": render_sections,
-                "artifactAcceptance": {
-                    "validatorId": REPORT_ARTIFACT_VALIDATOR_ID,
-                    "artifactPathsFrom": "render_report_draft",
-                    "includeMarkdownChartPaths": True,
-                },
+                "datasetLineage": [
+                    item.model_dump(mode="json", by_alias=True) for item in lineage
+                ],
+                "sourceWarnings": [
+                    item.model_dump(mode="json", by_alias=True) for item in source_warnings
+                ],
+                "task": "revise" if feedback else "analyze",
+                "draftMode": "section_by_section",
                 "reviewFeedback": feedback,
             },
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        if len(instruction.encode("utf-8")) > MAX_INSTRUCTION_BYTES:
+        if len(instruction.encode("utf-8")) > MAX_REPORT_INSTRUCTION_BYTES:
             raise ReportingError(
                 "report_coding_instruction_too_large",
                 "报表成稿指令超过 Coding Task 边界。",
@@ -2627,14 +2897,26 @@ class ReportWorkflowRuntime:
             observed_data_facts=observed_data_facts,
             expected_sections=tuple(section["code"] for section in render_sections),
             expected_citation_bindings=tuple(
-                (item.dataset_id, item.requirement_id) for item in lineage
+                (item.dataset_id, item.requirement_id) for item in citation_bindings
             ),
             expected_citations=tuple(
-                (item.citation_id, item.dataset_id, item.requirement_id)
+                (
+                    item.citation_id,
+                    item.dataset_id,
+                    item.requirement_id,
+                    item.snapshot_hash,
+                )
                 for item in citation_bindings
             ),
-            expected_fact_ids=tuple(item.fact_id for item in analysis_fact_set.facts),
+            analysis_context_file=analysis_context_file,
         )
+        render_contract_data = {
+            "title": state[REPORT_OUTLINE_STATE_KEY]["title"],
+            "sections": render_sections,
+            "citationIds": [item.citation_id for item in citation_bindings],
+            "requireTable": False,
+        }
+        validation_context["renderContract"] = render_contract_data
         validation_context_path = (
             f"报表/智能分析/{run_context.run_id}/"
             f"report-revision-{revision + 1}.validation-context.json"
@@ -2659,22 +2941,8 @@ class ReportWorkflowRuntime:
                 "title": state[REPORT_OUTLINE_STATE_KEY]["title"],
                 "sections": render_sections,
                 "citationIds": [item.citation_id for item in citation_bindings],
-                "facts": [
-                    {
-                        "factId": item.fact_id,
-                        "displayText": item.display_text,
-                        "citationIds": list(item.citation_ids),
-                        "domain": item.domain,
-                        "metric": item.metric,
-                        "scope": item.scope,
-                        "periods": list(item.periods),
-                        "displayUnit": item.display_unit,
-                        "formulaOperation": item.formula_operation,
-                        "periodRole": item.period_role,
-                    }
-                    for item in analysis_fact_set.facts
-                ],
-                "requireTable": True,
+                "contextFileBacked": True,
+                "requireTable": False,
             },
         )
         existing = await self.task_runner.repository.get_task_snapshot(task_id)
@@ -2697,16 +2965,14 @@ class ReportWorkflowRuntime:
         accepted_artifacts = (
             finish_receipt.get("artifacts") if isinstance(finish_receipt, dict) else None
         )
-        acceptance = finish_receipt.get("acceptance") if isinstance(finish_receipt, dict) else None
-        if not isinstance(accepted_artifacts, list) or not isinstance(acceptance, dict):
+        if not isinstance(accepted_artifacts, list):
             raise ReportingError(
                 "report_artifact_acceptance_missing",
-                "报表 Coding 任务缺少正式产物验收回执。",
+                "报表 Coding 任务缺少产物身份回执。",
             )
         logger.info(
-            "report_artifact_acceptance task_id=%s validator_id=%s artifact_count=%s status=passed",
+            "report_artifact_receipt task_id=%s artifact_count=%s status=completed",
             task_id,
-            REPORT_ARTIFACT_VALIDATOR_ID,
             len(accepted_artifacts),
         )
         manifest = await self._build_and_write_artifact_manifest(
@@ -2714,7 +2980,7 @@ class ReportWorkflowRuntime:
             accepted_artifacts=accepted_artifacts,
             markdown_path=markdown_path,
             lineage=lineage,
-            allowed_fact_ids=tuple(item.fact_id for item in analysis_fact_set.facts),
+            source_warnings=source_warnings,
             revision=revision + 1,
             coding_task_key=task_id,
             run_context=run_context,
@@ -2729,6 +2995,10 @@ class ReportWorkflowRuntime:
                 "markdownPath": markdown_path,
                 "artifactManifestPath": manifest_path,
                 "revision": revision,
+                "sourceWarnings": [
+                    item.model_dump(mode="json", by_alias=True) for item in source_warnings
+                ],
+                "codingReceipts": [],
             }
         )
         state[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
@@ -2767,6 +3037,7 @@ class ReportWorkflowRuntime:
             QueryRequirement.model_validate(item)
             for item in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
         )
+        source_warnings = _source_warnings_from_state(state)
         analyses = tuple(
             AnalysisItem.model_validate(item) for item in state[REPORT_ANALYSIS_PLAN_STATE_KEY]
         )
@@ -2784,68 +3055,304 @@ class ReportWorkflowRuntime:
             ),
             run_context=context,
         )
-        await self.report_tools.report_render_markdown(
+        rendered_result = await self.report_tools._render_report_pair(
             str(result["jobId"]),
             str(result["markdownPath"]),
-            pdf_path,
-            run_context=context,
-        )
-        validation = await self.report_tools.report_validate_pdf(
-            str(result["jobId"]),
             pdf_path,
             artifact_manifest=draft.model_dump(mode="json", by_alias=True),
             run_context=context,
         )
-        if validation.get("ok") is not True:
-            raise ReportingError("report_pdf_validation_failed", "PDF 验收未通过。")
-        pdf_identity = await self.workspace_service.ahash_file(
-            self._scope(run_context)["threadId"], pdf_path
-        )
-        validated_pdf_sha256 = validation.get("pdfSha256")
-        if (
-            not isinstance(validated_pdf_sha256, str)
-            or pdf_identity.get("sha256") != validated_pdf_sha256
-        ):
-            raise ReportingError(
-                "report_pdf_changed",
-                "PDF 在验收后发生变化，必须重新渲染并验收。",
+        word_path = str(PurePosixPath(pdf_path).with_suffix(".docx"))
+        try:
+            if not isinstance(rendered_result, dict):
+                raise ReportingError(
+                    "report_artifact_validation_failed", "PDF/Word 联合验收回执无效。"
+                )
+            validation = rendered_result.get("validation")
+            if not isinstance(validation, dict) or validation.get("ok") is not True:
+                raise ReportingError(
+                    "report_artifact_validation_failed", "PDF/Word 联合验收未通过。"
+                )
+            if rendered_result.get("wordPath") != word_path:
+                raise ReportingError(
+                    "report_artifact_validation_failed", "Word 验收路径缺失或不匹配。"
+                )
+            pdf_identity = await self.workspace_service.ahash_file(
+                self._scope(run_context)["threadId"], pdf_path
             )
-        rendered = PdfArtifactManifest(
-            reportId=draft.report_id,
-            revision=draft.revision,
-            pdf=ArtifactFile(
-                path=pdf_path,
-                mediaType="application/pdf",
-                size=pdf_identity["size"],
-                sha256=pdf_identity["sha256"],
-            ),
-            pageCount=validation.get("pageCount"),
-            renderedChartIds=tuple(validation.get("chartIds") or ()),
-            citationIds=tuple(validation.get("citationIds") or ()),
-            factIds=tuple(validation.get("factIds") or ()),
-            sections=tuple(validation.get("sectionIds") or ()),
-        )
-        validate_rendered_artifacts(draft, rendered, lineage=lineage)
-        result.update(
-            {
-                "pdfPath": pdf_path,
-                "pdfSize": int(pdf_identity["size"]),
-                "pdfSha256": str(pdf_identity["sha256"]),
-                "validation": validation,
-                "status": "validated",
+            word_identity = await self.workspace_service.ahash_file(
+                self._scope(run_context)["threadId"], word_path
+            )
+            validated_pdf_sha256 = validation.get("pdfSha256")
+            validated_word_sha256 = validation.get("wordSha256")
+            if (
+                not isinstance(validated_pdf_sha256, str)
+                or pdf_identity.get("sha256") != validated_pdf_sha256
+                or not isinstance(validated_word_sha256, str)
+                or word_identity.get("sha256") != validated_word_sha256
+            ):
+                raise ReportingError(
+                    "report_artifact_changed",
+                    "PDF 或 Word 在验收后发生变化，必须重新渲染并验收。",
+                )
+            source_chart_sha256s = tuple(item.sha256 for item in draft.charts)
+            page_count = validation.get("pageCount")
+            word_validation = validation.get("word")
+            if not isinstance(word_validation, dict):
+                raise ReportingError("report_artifact_validation_failed", "Word 验收回执无效。")
+            converted_page_count = word_validation.get("convertedPageCount")
+            section_count = word_validation.get("sectionCount")
+            toc_entry_count = word_validation.get("tocEntryCount")
+            if (
+                isinstance(page_count, bool)
+                or not isinstance(page_count, int)
+                or isinstance(converted_page_count, bool)
+                or not isinstance(converted_page_count, int)
+                or isinstance(section_count, bool)
+                or not isinstance(section_count, int)
+                or isinstance(toc_entry_count, bool)
+                or not isinstance(toc_entry_count, int)
+            ):
+                raise ReportingError(
+                    "report_artifact_validation_failed", "PDF/Word 验收回执缺少有效计数。"
+                )
+            rendered_pdf = PdfArtifactManifest(
+                reportId=draft.report_id,
+                revision=draft.revision,
+                effectiveProfileHash=draft.effective_profile_hash,
+                sourceMarkdownSha256=draft.markdown.sha256,
+                sourceChartSha256s=source_chart_sha256s,
+                pdf=ArtifactFile(
+                    path=pdf_path,
+                    mediaType="application/pdf",
+                    size=pdf_identity["size"],
+                    sha256=pdf_identity["sha256"],
+                ),
+                pageCount=page_count,
+                renderedChartIds=tuple(validation.get("chartIds") or ()),
+                citationIds=tuple(validation.get("citationIds") or ()),
+                sections=tuple(validation.get("sectionIds") or ()),
+                sourceWarnings=source_warnings,
+            )
+            rendered_word = DocxArtifactManifest(
+                reportId=draft.report_id,
+                revision=draft.revision,
+                effectiveProfileHash=draft.effective_profile_hash,
+                sourceMarkdownSha256=draft.markdown.sha256,
+                sourceChartSha256s=source_chart_sha256s,
+                docx=ArtifactFile(
+                    path=word_path,
+                    mediaType=(
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    ),
+                    size=word_identity["size"],
+                    sha256=word_identity["sha256"],
+                ),
+                convertedPageCount=converted_page_count,
+                sectionCount=section_count,
+                tocEntryCount=toc_entry_count,
+                renderedChartIds=tuple(validation.get("chartIds") or ()),
+                citationIds=tuple(validation.get("citationIds") or ()),
+                sections=tuple(validation.get("sectionIds") or ()),
+                sourceWarnings=source_warnings,
+            )
+            validate_rendered_artifacts(draft, rendered_pdf, rendered_word, lineage=lineage)
+            result.update(
+                {
+                    "pdfPath": pdf_path,
+                    "pdfSize": int(pdf_identity["size"]),
+                    "pdfSha256": str(pdf_identity["sha256"]),
+                    "wordPath": word_path,
+                    "wordSize": int(word_identity["size"]),
+                    "wordSha256": str(word_identity["sha256"]),
+                    "validation": validation,
+                    "status": "validated",
+                }
+            )
+            state[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
+            state[REPORT_ARTIFACTS_STATE_KEY] = {
+                "draft": draft.model_dump(mode="json", by_alias=True),
+                "pdf": rendered_pdf.model_dump(mode="json", by_alias=True),
+                "word": rendered_word.model_dump(mode="json", by_alias=True),
             }
-        )
-        state[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
-        state[REPORT_ARTIFACTS_STATE_KEY] = {
-            "draft": draft.model_dump(mode="json", by_alias=True),
-            "pdf": rendered.model_dump(mode="json", by_alias=True),
-        }
+            return {
+                "status": "validated",
+                "jobId": result["jobId"],
+                "markdownPath": result["markdownPath"],
+                "pdfPath": pdf_path,
+                "wordPath": word_path,
+                "validation": validation,
+            }
+        except BaseException:
+            # _render_report_pair 返回即表示 revision 目录已正式发布。之后任何回执、
+            # 身份、manifest 或状态异常都必须删除同目录双文件；取消也不能打断清理。
+            await complete_cleanup(
+                self.report_tools.discard_report_revision(
+                    str(result["jobId"]), pdf_path, word_path, run_context=context
+                )
+            )
+            raise
+
+    async def _dataset_publication_gate(
+        self, run_context: RunContext, result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """在发布前重新核对 DatasetLineage、分析计划、提纲和产物身份。
+
+        该门禁只依赖本轮不可变 CSV、DatasetLineage 和服务端生成的产物清单；Profile
+        质量 Warning 会继续传播但不阻断发布，路径越界、哈希漂移和结构引用错误则
+        必须失败关闭。
+        """
+        state = self._state(run_context)
+        issues: list[dict[str, Any]] = []
+
+        def issue(code: str, message: str, **details: Any) -> None:
+            item: dict[str, Any] = {"code": code, "message": message}
+            if details:
+                item["details"] = details
+            issues.append(item)
+
+        try:
+            lineage = tuple(
+                DatasetLineage.model_validate(item)
+                for item in state.get(REPORT_DATASET_LINEAGE_STATE_KEY, ())
+            )
+        except (TypeError, ValueError, ValidationError):
+            lineage = ()
+            issue("dataset_lineage_invalid", "DatasetLineage 状态无法解析。")
+        try:
+            handles = tuple(
+                DatasetHandle.from_state(item)
+                for item in self._workflow_result(state).get("datasets", ())
+            )
+        except (TypeError, ValueError, ReportingError):
+            handles = ()
+            issue("dataset_handle_invalid", "DatasetHandle 状态无法解析。")
+
+        lineage_by_id = {item.dataset_id: item for item in lineage}
+        handle_by_id = {item.dataset_id: item for item in handles}
+        if set(lineage_by_id) != set(handle_by_id) or len(lineage_by_id) != len(lineage):
+            issue("dataset_lineage_binding_invalid", "DatasetHandle 与 DatasetLineage 未精确对应。")
+        thread_id = self._scope(run_context)["threadId"]
+        for dataset_id, handle in handle_by_id.items():
+            source = lineage_by_id.get(dataset_id)
+            if source is None:
+                continue
+            if (
+                handle.source_id != source.source_id
+                or handle.requirement_id != source.requirement_id
+                or handle.size != source.size
+                or handle.sha256 != source.sha256
+                or handle.row_count != source.row_count
+                or handle.sql_hash != source.sql_hash
+            ):
+                issue("dataset_lineage_binding_invalid", "DatasetHandle 与 DatasetLineage 身份不一致。", datasetId=dataset_id)
+            try:
+                current = await self.workspace_service.ahash_file(thread_id, handle.path)
+                if (
+                    current.get("missing")
+                    or current.get("size") != handle.size
+                    or current.get("sha256") != handle.sha256
+                ):
+                    issue("dataset_snapshot_changed", "不可变 CSV 在发布前发生变化。", datasetId=dataset_id)
+            except Exception:
+                issue("dataset_snapshot_unavailable", "不可变 CSV 路径不可读取或越界。", datasetId=dataset_id)
+
+        try:
+            detailed_plan = DetailedAnalysisPlan.model_validate(
+                state.get(REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY)
+            )
+            authorized_ids = set(lineage_by_id)
+            if set(detailed_plan.dataset_ids) != authorized_ids:
+                issue("analysis_dataset_coverage_invalid", "详细分析计划未精确覆盖授权数据集。")
+            covered_ids = {
+                dataset_id
+                for item in detailed_plan.analyses
+                for dataset_id in item.dataset_ids
+            }
+            if covered_ids != authorized_ids:
+                issue("analysis_dataset_coverage_invalid", "详细分析项未覆盖全部授权数据集。")
+        except (TypeError, ValueError, ValidationError):
+            detailed_plan = None
+            issue("analysis_plan_invalid", "详细分析计划状态无效。")
+
+        try:
+            outline = _frozen_outline(state)
+            known_analysis_ids = {
+                item.analysis_id for item in (detailed_plan.analyses if detailed_plan else ())
+            }
+            referenced_analysis_ids = [
+                analysis_id
+                for section in outline.sections
+                for analysis_id in section.analysis_ids
+            ]
+            if len(referenced_analysis_ids) != len(set(referenced_analysis_ids)):
+                issue("outline_analysis_duplicate", "批准提纲重复引用 analysisId。")
+            if set(referenced_analysis_ids) - known_analysis_ids:
+                issue("outline_analysis_unknown", "批准提纲引用不存在的 analysisId。")
+            if outline.report_type != self._envelope(run_context).report_type:
+                issue("outline_report_type_mismatch", "提纲报告类型与用户范围不一致。")
+        except (ReportingError, TypeError, ValueError, ValidationError):
+            outline = None
+            issue("outline_invalid", "批准提纲状态无效。")
+
+        try:
+            manifest = ReportArtifactManifest.model_validate(
+                state.get(REPORT_ARTIFACTS_STATE_KEY, {}).get("draft")
+            )
+            expected_citations = authoritative_citations(lineage)
+            actual_citations = {
+                (item.citation_id, item.dataset_id, item.requirement_id, item.snapshot_hash)
+                for item in manifest.citations
+            }
+            expected_citation_values = {
+                (item.citation_id, item.dataset_id, item.requirement_id, item.snapshot_hash)
+                for item in expected_citations
+            }
+            if actual_citations != expected_citation_values:
+                issue("citation_lineage_invalid", "产物引用未精确绑定当前 DatasetLineage。")
+            if manifest.dataset_snapshot_hash != dataset_snapshot_hash(lineage):
+                issue("manifest_dataset_snapshot_invalid", "产物清单未绑定当前数据快照。")
+            if outline is not None:
+                expected_outline_analysis_ids = {
+                    analysis_id
+                    for section in outline.sections
+                    for analysis_id in section.analysis_ids
+                }
+                if set(manifest.analysis_ids) != expected_outline_analysis_ids:
+                    issue("manifest_analysis_binding_invalid", "产物清单未精确绑定批准提纲分析。")
+        except (TypeError, ValueError, ValidationError, AttributeError):
+            manifest = None
+            issue("manifest_invalid", "服务端产物清单状态无效。")
+
+        if result.get("status") != "validated":
+            issue("artifact_not_validated", "Markdown、PDF 或 DOCX 尚未完成验收。")
+        for key in ("markdownPath", "pdfPath", "wordPath"):
+            path = result.get(key)
+            if not isinstance(path, str) or not path:
+                issue("artifact_identity_invalid", "验收回执缺少产物路径。", field=key)
+                continue
+            try:
+                current = await self.workspace_service.ahash_file(thread_id, path)
+                if key == "markdownPath" and manifest is not None:
+                    expected_size = manifest.markdown.size
+                    expected_sha = manifest.markdown.sha256
+                else:
+                    expected_size = result.get(key.replace("Path", "Size"))
+                    expected_sha = result.get(key.replace("Path", "Sha256"))
+                if (
+                    current.get("missing")
+                    or current.get("size") != expected_size
+                    or current.get("sha256") != expected_sha
+                ):
+                    issue("artifact_identity_changed", "已验收产物在发布前发生变化。", field=key)
+            except Exception:
+                issue("artifact_path_invalid", "已验收产物路径不可读取或越界。", field=key)
+
+        warnings = result.get("sourceWarnings", [])
         return {
-            "status": "validated",
-            "jobId": result["jobId"],
-            "markdownPath": result["markdownPath"],
-            "pdfPath": pdf_path,
-            "validation": validation,
+            "formalReleaseAllowed": not issues,
+            "issues": issues,
+            "warnings": warnings if isinstance(warnings, list) else [],
         }
 
     async def publish_report(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
@@ -2855,34 +3362,21 @@ class ReportWorkflowRuntime:
             await self._render_and_validate(run_context)
         result = self._workflow_result(self._state(run_context))
         state = self._state(run_context)
-        outline = _frozen_outline(state)
-        fact_set = await self._load_fact_set(run_context)
         try:
-            artifact_manifest = ReportArtifactManifest.model_validate(
+            ReportArtifactManifest.model_validate(
                 state[REPORT_ARTIFACTS_STATE_KEY]["draft"]
             )
         except Exception as error:
             raise ReportingError(
-                "report_artifact_manifest_invalid",
-                "发布门禁缺少已验收的事实引用清单。",
+                "report_artifact_manifest_invalid", "发布门禁缺少已验收的产物清单。"
             ) from error
-        gate = evaluate_publication_gate(
-            fact_set,
-            report_type=outline.report_type,
-            selected_domains=_selected_report_domains(self._envelope(run_context), fact_set),
-            referenced_fact_ids=artifact_manifest.fact_ids,
-            chart_fact_ids=tuple(
-                dict.fromkeys(
-                    fact_id for chart in artifact_manifest.charts for fact_id in chart.fact_ids
-                )
-            ),
-        )
-        state[REPORT_PUBLICATION_GATE_STATE_KEY] = gate.model_dump(mode="json", by_alias=True)
+        gate = await self._dataset_publication_gate(run_context, result)
+        state[REPORT_PUBLICATION_GATE_STATE_KEY] = gate
         return StepOutput(
             content={
-                "status": "validated" if gate.formal_release_allowed else "internal_draft",
-                "formalReleaseAllowed": gate.formal_release_allowed,
-                "publicationGate": gate.model_dump(mode="json", by_alias=True),
+                "status": "validated",
+                "formalReleaseAllowed": gate["formalReleaseAllowed"],
+                "publicationGate": gate,
                 "jobId": result["jobId"],
                 "reportId": str(run_context.run_id),
                 "revision": int(result.get("revision", 0)) + 1,
@@ -2890,7 +3384,12 @@ class ReportWorkflowRuntime:
                 "pdfPath": result["pdfPath"],
                 "pdfSize": result["pdfSize"],
                 "pdfSha256": result["pdfSha256"],
+                "wordPath": result["wordPath"],
+                "wordSize": result["wordSize"],
+                "wordSha256": result["wordSha256"],
                 "validation": result["validation"],
+                "sourceWarnings": result.get("sourceWarnings", []),
+                "codingReceipts": result.get("codingReceipts", []),
             }
         )
 
@@ -2901,10 +3400,10 @@ class ReportWorkflowRuntime:
         accepted_artifacts: list[dict[str, Any]],
         markdown_path: str,
         lineage: tuple[DatasetLineage, ...],
-        allowed_fact_ids: tuple[str, ...],
         revision: int,
         coding_task_key: str,
         run_context: RunContext,
+        source_warnings: tuple[SourceWarning, ...] = (),
     ) -> ReportArtifactManifest:
         scope = self._scope(run_context)
         accepted_by_path: dict[str, dict[str, Any]] = {}
@@ -2975,10 +3474,10 @@ class ReportWorkflowRuntime:
                 markdown=markdown_bytes.decode("utf-8"),
                 accepted_artifacts=current_artifacts,
                 lineage=lineage,
-                allowed_fact_ids=allowed_fact_ids,
                 sections=tuple(
                     section.code for section in _frozen_outline(self._state(run_context)).sections
                 ),
+                source_warnings=source_warnings,
             )
             content = json.dumps(
                 manifest.model_dump(mode="json", by_alias=True),
@@ -3014,15 +3513,29 @@ class ReportWorkflowRuntime:
         self, agent: Agent, payload: dict[str, Any], run_context: RunContext
     ) -> BaseModel:
         scope = self._scope(run_context)
-        digest = hashlib.sha256(f"{run_context.run_id}:{agent.id}".encode()).hexdigest()[:32]
+        block_identity = payload.get("analysisBlock")
+        if isinstance(block_identity, Mapping):
+            session_suffix = str(block_identity.get("blockId", ""))
+        else:
+            session_suffix = ""
+        digest = hashlib.sha256(
+            f"{run_context.run_id}:{agent.id}:{session_suffix}".encode()
+        ).hexdigest()[:32]
         serialized_payload = json.dumps(
             payload, ensure_ascii=False, separators=(",", ":"), default=str
         )
         input_bytes = serialized_payload.encode()
         input_sha256 = hashlib.sha256(input_bytes).hexdigest()
         logger.info(
-            "report_planner_request agent_id=%s input_bytes=%s input_sha256=%s",
+            "report_planner_request agent_id=%s block_id=%s attempt=%s "
+            "input_bytes=%s input_sha256=%s",
             agent.id,
+            session_suffix or "-",
+            (
+                payload["correction"].get("attempt", 1)
+                if isinstance(payload.get("correction"), Mapping)
+                else 1
+            ),
             len(input_bytes),
             input_sha256,
         )
@@ -3046,6 +3559,13 @@ class ReportWorkflowRuntime:
                 f"报表规划模型在 {timeout_seconds} 秒内未响应（{agent.id}）。",
             ) from error
         content = getattr(output, "content", None)
+        if isinstance(content, str) and (
+            "不可约简的编码上下文前缀与工具 schema 超过模型输入 hard cap" in content
+        ):
+            raise ReportingError(
+                "report_planner_context_budget_exceeded",
+                f"报表规划输入超过当前模型上下文预算（{agent.id}）。",
+            )
         metrics = getattr(output, "metrics", None)
         record_step_model_metrics(metrics)
         content_bytes = _payload_bytes(content)
@@ -3070,9 +3590,14 @@ class ReportWorkflowRuntime:
         schema = agent.output_schema
         if not isinstance(schema, type) or not issubclass(schema, BaseModel):
             raise ReportingError("report_planner_invalid", "报表规划器缺少结构化输出。")
+        schema_model = cast(type[BaseModel], schema)
         candidate = _planner_candidate(content)
         try:
-            return content if isinstance(content, schema) else schema.model_validate(candidate)
+            return (
+                content
+                if isinstance(content, schema_model)
+                else schema_model.model_validate(candidate)
+            )
         except ValidationError as error:
             issues = [_planner_validation_issue(item) for item in error.errors(include_url=False)]
             logger.warning(
@@ -3256,6 +3781,11 @@ class ReportWorkflowRuntime:
             "pdfPath": content.get("pdfPath"),
             "pdfSize": content.get("pdfSize"),
             "pdfSha256": content.get("pdfSha256"),
+            "wordPath": content.get("wordPath"),
+            "wordSize": content.get("wordSize"),
+            "wordSha256": content.get("wordSha256"),
+            "sourceWarnings": content.get("sourceWarnings", []),
+            "codingReceipts": content.get("codingReceipts", []),
         }
         if (
             not isinstance(values["reportId"], str)
@@ -3265,19 +3795,46 @@ class ReportWorkflowRuntime:
             or values["pdfSize"] <= 0
             or not isinstance(values["pdfSha256"], str)
             or re.fullmatch(r"[0-9a-f]{64}", values["pdfSha256"]) is None
+            or not isinstance(values["wordPath"], str)
+            or not isinstance(values["wordSize"], int)
+            or values["wordSize"] <= 0
+            or not isinstance(values["wordSha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", values["wordSha256"]) is None
+            or not isinstance(values["sourceWarnings"], list)
+            or not isinstance(values["codingReceipts"], list)
         ):
             raise ReportingError("report_publication_invalid", "报表发布产物无效。")
+        try:
+            values["sourceWarnings"] = [
+                SourceWarning.model_validate(item).model_dump(mode="json", by_alias=True)
+                for item in values["sourceWarnings"]
+            ]
+            values["codingReceipts"] = [
+                PlanExecutionReceipt.model_validate(item).model_dump(mode="json", by_alias=True)
+                for item in values["codingReceipts"]
+            ]
+        except Exception as error:
+            raise ReportingError(
+                "report_publication_invalid",
+                "报表来源告警或 Coding 回执无效。",
+            ) from error
         return values
 
     @staticmethod
-    def _require_pdf_identity(expected: dict[str, Any], current: dict[str, Any]) -> None:
+    def _require_artifact_identity(
+        expected: dict[str, Any],
+        current: dict[str, Any],
+        *,
+        artifact: Literal["pdf", "word"],
+    ) -> None:
+        prefix = "pdf" if artifact == "pdf" else "word"
         if (
-            current.get("size") != expected["pdfSize"]
-            or current.get("sha256") != expected["pdfSha256"]
+            current.get("size") != expected[f"{prefix}Size"]
+            or current.get("sha256") != expected[f"{prefix}Sha256"]
         ):
             raise ReportingError(
-                "report_pdf_changed",
-                "PDF 在验收或审核后发生变化，必须重新验收。",
+                "report_artifact_changed",
+                "PDF 或 Word 在验收或审核后发生变化，必须重新验收。",
             )
 
     def _tool_context(self, run_context: RunContext) -> RunContext:
@@ -3603,6 +4160,71 @@ def _apply_confirmed_measure_semantics(
                 "指标语义候选包含未知维度、固定口径或对账字段。",
             ) from error
     return tuple(updated)
+
+
+def _validate_proposed_exclusive_scopes(
+    proposal: MeasureSemanticProposal,
+    data_shapes: tuple[DataShape, ...],
+    *,
+    trusted_profile: EffectiveReportingProfile | None = None,
+) -> None:
+    """拒绝模型把字段说明或类别名称伪装成已观测的固定口径值。"""
+    observed_values = {
+        (
+            table.source_id.lower(),
+            table.database.lower(),
+            table.table.lower(),
+            column.name.lower(),
+        ): {str(item.value) for item in column.top_values}
+        for shape in data_shapes
+        for table in shape.tables
+        for column in table.columns
+    }
+    trusted_values = {
+        (
+            parsed.source_id.lower(),
+            parsed.database.lower(),
+            parsed.table.lower(),
+            parsed.column.lower(),
+            scope_filter.value,
+        )
+        for scope_filter in (() if trusted_profile is None else trusted_profile.scope_filters)
+        for field_ref in scope_filter.field_refs
+        for parsed in (parse_field_ref(field_ref),)
+    }
+    for decision in proposal.decisions:
+        semantic = decision.measure_semantic
+        if semantic is None:
+            continue
+        parsed = parse_field_ref(semantic.field_ref)
+        for column, value in semantic.exclusive_scope.items():
+            observed = observed_values.get(
+                (
+                    parsed.source_id.lower(),
+                    parsed.database.lower(),
+                    parsed.table.lower(),
+                    column.lower(),
+                ),
+                set(),
+            )
+            # 模型只能从本次受限画像引用精确值；没有 topValues 不是放宽理由。
+            # 部署方明确声明的 Profile scopeFilters 在此校验之后合并，继续以受信
+            # 配置为事实来源，不受画像采样上限影响。
+            trusted_key = (
+                parsed.source_id.lower(),
+                parsed.database.lower(),
+                parsed.table.lower(),
+                column.lower(),
+                value,
+            )
+            if value not in observed and trusted_key not in trusted_values:
+                allowed = sorted(observed)
+                suffix = f"；允许值：{allowed}" if allowed else "；该字段没有可引用的观测值"
+                raise ReportingError(
+                    "report_measure_semantic_scope_unobserved",
+                    f"指标固定口径未被受限画像证明: {semantic.field_ref}.{column}={value!r}"
+                    f"{suffix}。无法证明时必须删除该 exclusiveScope 项。",
+                )
 
 
 def _bounded_description(value: str, limit: int) -> str:
@@ -4244,6 +4866,25 @@ def _compact_validation_feedback(value: dict[str, Any] | None) -> dict[str, Any]
     return compact
 
 
+def _validation_issue_log_summary(issues: Any) -> str:
+    """日志只保留校验定位和短原因，避免再次复制事实值或完整候选。"""
+    if not isinstance(issues, (list, tuple)):
+        return "[]"
+    summary: list[dict[str, Any]] = []
+    for issue in issues[:20]:
+        if not isinstance(issue, Mapping):
+            continue
+        summary.append(
+            {
+                "path": str(issue.get("path", "$"))[:160],
+                "reason": str(issue.get("reason", "字段不符合契约"))[:240],
+            }
+        )
+    if len(issues) > 20:
+        summary.append({"omittedIssueCount": len(issues) - 20})
+    return json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+
+
 def _outline_section_issues(
     outline: ReportOutline,
     _profile: EffectiveReportingProfile,
@@ -4269,20 +4910,6 @@ def _report_pdf_filename(title: str, period: ReportPeriod) -> str:
     return f"{safe_title}_{period_label}.pdf"
 
 
-def _fact_set_path(run_id: str) -> str:
-    if not run_id:
-        raise ReportingError("report_fact_set_reference_invalid", "FactSet 缺少当前运行标识。")
-    return f"报表/智能分析/{run_id}/fact-set.json"
-
-
-def _analysis_fact_set_path(run_id: str) -> str:
-    if not run_id:
-        raise ReportingError(
-            "report_analysis_fact_set_reference_invalid", "分析 FactSet 缺少当前运行标识。"
-        )
-    return f"报表/智能分析/{run_id}/analysis-fact-set.json"
-
-
 def _report_pdf_path(run_id: str, revision: int, title: str, period: ReportPeriod) -> str:
     filename = _report_pdf_filename(title, period)
     return f"报表/智能分析/{run_id}/revision-{revision}/{filename}"
@@ -4305,9 +4932,15 @@ def _validation_issue(
     }
 
 
-def _planner_validation_issue(error: Mapping[str, Any]) -> dict[str, Any]:
+def _planner_validation_issue(
+    error: Mapping[str, Any],
+    *,
+    path_prefix: tuple[Any, ...] = (),
+    default_location: tuple[Any, ...] = (),
+) -> dict[str, Any]:
+    location = tuple(error.get("loc", ())) or default_location
     return {
-        "path": _validation_path(tuple(error.get("loc", ()))),
+        "path": _validation_path((*path_prefix, *location)),
         "rejectedValue": error.get("input"),
         "reason": str(error.get("msg", "字段不符合严格输出契约")),
         "requiredAction": "根据 reason 修正该字段，并返回完整输出 JSON",
@@ -4334,7 +4967,7 @@ def _validate_hospital_operation_profile_schema(
     profile: HospitalOperationProfile,
     snapshots: tuple[SourceSchemaSnapshot, ...],
 ) -> None:
-    """启动前核对已存在物理表的绑定列，避免列名漂移直到 FactSet 阶段才暴露。"""
+    """启动前核对已存在物理表的绑定列，避免列名漂移到 CSV 物化后才暴露。"""
     table_columns = {
         (table.source_id.lower(), table.database.lower(), table.name.lower()): {
             column.name.lower() for column in table.columns
@@ -4343,20 +4976,58 @@ def _validate_hospital_operation_profile_schema(
         for table in snapshot.tables
     }
     missing: list[str] = []
-    for binding in profile.bindings:
-        parts = binding.field_ref.lower().split(".")
+    field_refs = tuple(item.field_ref for item in profile.bindings) + tuple(
+        item.field_ref for item in profile.dimension_bindings
+    )
+    for field_ref in field_refs:
+        parts = field_ref.lower().split(".")
         if len(parts) != 4:
-            missing.append(binding.field_ref)
+            missing.append(field_ref)
             continue
         source_id, database, table, column = parts
         available = table_columns.get((source_id, database, table))
         if available is not None and column not in available:
-            missing.append(binding.field_ref)
+            missing.append(field_ref)
     if missing:
         raise ReportingError(
             "hospital_operation_profile_schema_mismatch",
             "医院运营 Profile 与当前 Schema 不一致：" + ", ".join(sorted(missing)),
         )
+
+
+def _resolve_requirement_comparison_roles(
+    requirement: QueryRequirement,
+    requirement_index: int,
+    envelope: ReportRequestEnvelope,
+) -> tuple[tuple[Literal["yoy", "mom"], ...] | None, dict[str, Any] | None]:
+    """把 Planner 的比较范围越界转换为可定点修正的结构化反馈。"""
+    try:
+        return requirement.resolved_comparison_roles(envelope.comparison_roles), None
+    except ValueError as error:
+        selected = (
+            envelope.comparison_roles
+            if requirement.comparison_roles is None
+            else requirement.comparison_roles
+        )
+        rejected = [role for role in selected if role not in envelope.comparison_roles]
+        if rejected:
+            reason = "comparisonRoles 超出请求允许的比较范围"
+            allowed = list(envelope.comparison_roles)
+            required_action = (
+                "删除 rejectedValue，只保留 allowedValues；省略 comparisonRoles 表示继承请求范围"
+            )
+        else:
+            rejected = ["mom"] if "mom" in selected else list(selected)
+            allowed = [role for role in envelope.comparison_roles if role != "mom"]
+            reason = str(error)
+            required_action = "删除 rejectedValue，只保留当前期间粒度支持的 allowedValues"
+        return None, {
+            "path": f"requirements[{requirement_index}].comparisonRoles",
+            "rejectedValue": rejected,
+            "reason": reason,
+            "allowedValues": allowed,
+            "requiredAction": required_action,
+        }
 
 
 def _approve_generated_queries(
@@ -4370,14 +5041,27 @@ def _approve_generated_queries(
 ) -> tuple[tuple[ApprovedQuery, ...], list[dict[str, Any]]]:
     requirements_by_id = {item.requirement_id: item for item in requirements}
     explicit_period_mode = any("period_role" in item.model_fields_set for item in generated.queries)
-    windows_by_role = {item.role: item for item in envelope.period_windows().windows}
     approved_window_keys: set[tuple[str, str]] = set()
     issues: list[dict[str, Any]] = []
+    windows_by_requirement: dict[str, ReportPeriodWindows] = {}
+    invalid_requirement_ids: set[str] = set()
+    for index, requirement in enumerate(requirements):
+        comparison_roles, issue = _resolve_requirement_comparison_roles(
+            requirement,
+            index,
+            envelope,
+        )
+        if issue is not None:
+            issues.append(issue)
+            invalid_requirement_ids.add(requirement.requirement_id)
+            continue
+        assert comparison_roles is not None
+        windows_by_requirement[requirement.requirement_id] = envelope.model_copy(
+            update={"comparison_roles": comparison_roles}
+        ).period_windows(granularity=requirement.tables[0].period_granularity)
     approved: list[ApprovedQuery] = []
     for index, query in enumerate(generated.queries):
         requirement = requirements_by_id.get(query.requirement_id)
-        period_role = query.period_role if explicit_period_mode else "current"
-        query_key = (query.requirement_id, windows_by_role[period_role].query_window_id)
         if requirement is None:
             issues.append(
                 {
@@ -4389,6 +5073,24 @@ def _approve_generated_queries(
                 }
             )
             continue
+        if requirement.requirement_id in invalid_requirement_ids:
+            continue
+        windows_by_role = {
+            item.role: item for item in windows_by_requirement[requirement.requirement_id].windows
+        }
+        period_role = query.period_role if explicit_period_mode else "current"
+        if period_role not in windows_by_role:
+            issues.append(
+                {
+                    "path": f"queries[{index}].periodRole",
+                    "rejectedValue": period_role,
+                    "reason": "periodRole 超出 requirement 允许的比较范围",
+                    "allowedValues": sorted(windows_by_role),
+                    "requiredAction": "删除超出请求或 requirement 比较范围的查询",
+                }
+            )
+            continue
+        query_key = (query.requirement_id, windows_by_role[period_role].query_window_id)
         if query_key in approved_window_keys:
             issues.append(
                 {
@@ -4424,6 +5126,7 @@ def _approve_generated_queries(
             approved_window_keys.add(query_key)
         except ReportingError as error:
             expected_period_predicates: list[str] | None = None
+            expected_scope_filters: list[dict[str, str]] | None = None
             if error.code == "report_query_join_grain_invalid":
                 required_action = (
                     "按 requirementContract 为每张表建立独立 CTE，逐表使用完整期间条件并按全部 "
@@ -4449,9 +5152,15 @@ def _approve_generated_queries(
                     "直接投影 requirementContract 的全部 grainColumns 和原始 measureColumns；"
                     "删除聚合函数、GROUP BY、DISTINCT、ORDER BY 和 LIMIT"
                 )
+            elif error.code == "report_query_scope_semantic_invalid":
+                expected_scope_filters = _expected_scope_filters(requirement, snapshots)
+                required_action = (
+                    "逐字使用 expectedScopeFilters 中每个 table、column、value 添加等值过滤；"
+                    "不得改为 IN、非空判断、字段类别名或近义值"
+                )
             else:
                 required_action = "严格按 requirementContract 的 tables、measureColumns、grainColumns 和 relations 修正 SQL"
-            issue = {
+            issue: dict[str, Any] = {
                 "path": f"queries[{index}].sql",
                 "rejectedValue": query.sql,
                 "reason": f"{error.code}: {error.message}",
@@ -4460,22 +5169,21 @@ def _approve_generated_queries(
             }
             if expected_period_predicates is not None:
                 issue["expectedPeriodPredicates"] = expected_period_predicates
+            if expected_scope_filters is not None:
+                issue["expectedScopeFilters"] = expected_scope_filters
             if error.code == "report_query_grain_invalid":
                 issue["expectedGrainColumns"] = list(requirement.grain_columns)
             issues.append(issue)
-    expected_windows: dict[str, Literal["current", "yoy", "mom"]] = {}
-    selected_windows = (
-        envelope.period_windows().windows
-        if explicit_period_mode
-        else envelope.period_windows().windows[:1]
-    )
-    for item in selected_windows:
-        expected_windows.setdefault(item.query_window_id, item.role)
     actual_keys = {(item.requirement_id, item.query_window_id) for item in approved}
     expected_keys = {
-        (requirement_id, query_window_id)
-        for requirement_id in requirements_by_id
-        for query_window_id in expected_windows
+        (requirement.requirement_id, window.query_window_id)
+        for requirement in requirements
+        if requirement.requirement_id in windows_by_requirement
+        for window in (
+            windows_by_requirement[requirement.requirement_id].windows
+            if explicit_period_mode
+            else windows_by_requirement[requirement.requirement_id].windows[:1]
+        )
     }
     missing = sorted(expected_keys - actual_keys)
     if missing:
@@ -4490,7 +5198,11 @@ def _approve_generated_queries(
                 "allowedValues": [
                     {
                         "requirementId": requirement_id,
-                        "periodRole": expected_windows[query_window_id],
+                        "periodRole": next(
+                            window.role
+                            for window in windows_by_requirement[requirement_id].windows
+                            if window.query_window_id == query_window_id
+                        ),
                     }
                     for requirement_id, query_window_id in sorted(expected_keys)
                 ],
@@ -4500,14 +5212,44 @@ def _approve_generated_queries(
     return tuple(approved), issues
 
 
+def _expected_scope_filters(
+    requirement: QueryRequirement,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> list[dict[str, str]]:
+    semantics = {
+        item.field_ref.lower(): item
+        for snapshot in snapshots
+        for item in snapshot.measure_semantics
+    }
+    filters: dict[tuple[str, str, str], dict[str, str]] = {}
+    for table in requirement.tables:
+        for measure in table.measure_columns:
+            field_ref = f"{requirement.source_id}.{table.table}.{measure}".lower()
+            semantic = semantics.get(field_ref)
+            if semantic is None:
+                continue
+            for column, value in semantic.exclusive_scope.items():
+                filters[(table.table, column, value)] = {
+                    "table": table.table,
+                    "column": column,
+                    "value": value,
+                }
+    return [filters[key] for key in sorted(filters)]
+
+
 def _expected_period_predicates(
     requirement: QueryRequirement,
     envelope: ReportRequestEnvelope,
     *,
     period_role: Literal["current", "yoy", "mom"] = "current",
 ) -> list[str]:
+    roles = requirement.resolved_comparison_roles(envelope.comparison_roles)
     period = next(
-        item.period for item in envelope.period_windows().windows if item.role == period_role
+        item.period
+        for item in envelope.model_copy(update={"comparison_roles": roles})
+        .period_windows(granularity=requirement.tables[0].period_granularity)
+        .windows
+        if item.role == period_role
     )
     predicates: list[str] = []
     for table in requirement.tables:
@@ -4707,6 +5449,7 @@ def _analysis_bundle_semantic_issues(
     bundle: AnalysisBundle,
     plan: DataUnderstandingPlan,
     snapshots: tuple[SourceSchemaSnapshot, ...],
+    envelope: ReportRequestEnvelope | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     try:
@@ -4726,6 +5469,14 @@ def _analysis_bundle_semantic_issues(
             }
         )
     for index, requirement in enumerate(bundle.requirements):
+        if envelope is not None:
+            _, comparison_issue = _resolve_requirement_comparison_roles(
+                requirement,
+                index,
+                envelope,
+            )
+            if comparison_issue is not None:
+                issues.append(comparison_issue)
         issues.extend(_requirement_column_issues(requirement, index, snapshots))
         issues.extend(_measure_column_issues(requirement, index, snapshots))
         issues.extend(_measure_semantic_issues(requirement, index, snapshots))
@@ -4961,6 +5712,11 @@ def _measure_semantic_issues(
             for column in table_models[0].columns
             if column.name.lower() not in ordered_table_columns
         )
+        # periodColumn 不只是 SQL WHERE 边界，也是 CSV 分析的期间事实来源。
+        # 即使指标声明可跨该列相加，也必须保留在 SELECT/GROUP BY 和不可变数据集中；
+        # 否则 Coding 无法判断每行属于哪个月，不能用查询窗口代替行事实。
+        if table.period_column not in requirement.grain_columns:
+            missing_grain_columns.add(table.period_column)
         table_prefix = f"{requirement.source_id}.{qualified}.".lower()
         declared_measure_columns = {
             field_ref.rsplit(".", 1)[-1]
@@ -5097,6 +5853,99 @@ def _normalize_analysis_bundle_grain(
         }
     )
     return normalized_bundle, repairs
+
+
+def _normalize_duplicate_requirements(
+    bundle: AnalysisBundle,
+) -> tuple[AnalysisBundle, list[dict[str, Any]]]:
+    """合并同一物理窗口的重复取数需求，避免物化后把同一事实当成多来源冲突。
+
+    同一张表的不同分析视角只需要一次包含完整指标和安全粒度的查询；Coding 会按
+    详细计划从不可变 CSV 复算。合并只扩展字段集合并改写引用，不对数值
+    做加法，也不吞掉真实的跨数据集冲突。
+    """
+
+    canonical_by_key: dict[tuple[Any, ...], int] = {}
+    merged: list[QueryRequirement] = []
+    replacement: dict[str, str] = {}
+    repairs: list[dict[str, Any]] = []
+    for requirement in bundle.requirements:
+        if len(requirement.tables) != 1:
+            merged.append(requirement)
+            continue
+        table = requirement.tables[0]
+        key = (
+            requirement.source_id.lower(),
+            table.table.lower(),
+            table.period_column.lower(),
+            table.period_granularity,
+            requirement.comparison_roles,
+        )
+        canonical_index = canonical_by_key.get(key)
+        if canonical_index is None:
+            canonical_by_key[key] = len(merged)
+            merged.append(requirement)
+            continue
+        canonical = merged[canonical_index]
+        canonical_table = canonical.tables[0]
+        merged_table = canonical_table.model_copy(
+            update={
+                "measure_columns": tuple(
+                    dict.fromkeys((*canonical_table.measure_columns, *table.measure_columns))
+                ),
+            }
+        )
+        merged_requirement = canonical.model_copy(
+            update={
+                "tables": (merged_table,),
+                "dimension_columns": tuple(
+                    dict.fromkeys((*canonical.dimension_columns, *requirement.dimension_columns))
+                ),
+                "grain_columns": tuple(
+                    dict.fromkeys((*canonical.grain_columns, *requirement.grain_columns))
+                ),
+            }
+        )
+        try:
+            merged[canonical_index] = QueryRequirement.model_validate(
+                merged_requirement.model_dump(mode="json", by_alias=True)
+            )
+        except ValidationError:
+            # 只有合并后的字段集合超过协议上限时才保留原需求，让语义校验给出
+            # 精确的可修复路径；不能静默丢字段。
+            merged.append(requirement)
+            continue
+        replacement[requirement.requirement_id] = canonical.requirement_id
+        repairs.append(
+            {
+                "removedRequirementId": requirement.requirement_id,
+                "canonicalRequirementId": canonical.requirement_id,
+                "table": table.table,
+            }
+        )
+
+    if not repairs:
+        return bundle, []
+    analyses: list[AnalysisItem] = []
+    for analysis in bundle.analyses:
+        analyses.append(
+            analysis.model_copy(
+                update={
+                    "requirement_ids": tuple(
+                        dict.fromkeys(
+                            replacement.get(item, item) for item in analysis.requirement_ids
+                        )
+                    )
+                }
+            )
+        )
+    normalized = AnalysisBundle.model_validate(
+        {
+            "analyses": [item.model_dump(mode="json", by_alias=True) for item in analyses],
+            "requirements": [item.model_dump(mode="json", by_alias=True) for item in merged],
+        }
+    )
+    return normalized, repairs
 
 
 def _multi_table_requirement_issues(

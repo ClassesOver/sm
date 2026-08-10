@@ -6,6 +6,7 @@ from .context import (
     resolve_capabilities,
 )
 from .models import (
+    EffectiveDocumentBranding,
     EffectivePageLayout,
     EffectiveReportingProfile,
     ReportingProfileDocument,
@@ -16,6 +17,7 @@ from .reconciliation import collect_reconciliation_shapes
 from .registry import load_configured_reporting_profiles, resolve_reporting_profile
 
 __all__ = [
+    "EffectiveDocumentBranding",
     "EffectivePageLayout",
     "EffectiveReportingProfile",
     "Capability",

@@ -16,6 +16,7 @@ from ....task_execution.session import TaskSession
 from ..models import ReportingError
 
 WorkerEventSink = Callable[[TaskScope, str, Any], Awaitable[None]]
+MAX_REPORT_INSTRUCTION_BYTES = 512 * 1024
 
 
 class ReportTaskRunner:
@@ -45,6 +46,7 @@ class ReportTaskRunner:
             scope,
             instruction,
             acceptance_contract=acceptance_contract,
+            max_instruction_bytes=MAX_REPORT_INSTRUCTION_BYTES,
         )
 
     async def revise(
@@ -60,6 +62,7 @@ class ReportTaskRunner:
             instruction_id,
             instruction,
             acceptance_contract=acceptance_contract,
+            max_instruction_bytes=MAX_REPORT_INSTRUCTION_BYTES,
         )
 
     async def run(self, scope: TaskScope, *, parent_run_id: str = "") -> dict[str, Any]:

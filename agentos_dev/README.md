@@ -292,8 +292,9 @@ member。生产路由仍由公开 `report-agent` 接收，它通过单一启动�
 既有暂停 run 和后续恢复审核能力保留。期间和 Agent 选择必须在输入中唯一确定，否则失败关闭。
 恢复仍使用同一持久化 Workflow run，不增加第二条传输链路。
 `agentos_dev.coding.reporting` 的 Agno Workflow 依次处理来源解析、受限画像、提纲生成、分析计划、取数需求、
-SQL 候选校验、不可变数据集物化、Coding 分析、PDF 验收和发布。AG-UI 和 CLI adapter
-仅为既有暂停 run 保留反馈、继续和取消适配。Report 层保留数据源物化、输入绑定、Markdown/PDF 渲染及验收。
+SQL 候选校验、不可变数据集物化、Coding 分析、PDF/Word 双格式验收和发布。AG-UI 和 CLI adapter
+仅为既有暂停 run 保留反馈、继续和取消适配。Report 层保留数据源物化、输入绑定、Markdown 到
+PDF/Word 的确定性渲染及联合验收。
 来源和 Schema 必须唯一确定；多个报表 Agent 未显式选择时失败关闭。
 完整文件内容不会注入 facade 模型；内部 worker 只从 AnalysisPlan、DataRequirement 和
 DatasetHandle 取得分析输入，不持有数据库凭据。
@@ -372,8 +373,9 @@ Report v1 只接受服务端注册的 StarRocks 数据源。`AGENT_REPORT_DATA_S
 
 同一配置边界下的 `reporting_profiles/**/*.json` 使用显式 `profileId`/`extends` 组织平台、行业、集团、
 医院和模板层。目录名不产生隐式继承；有效 Profile 按稳定 code 合并并计算 hash。Profile 只能通过
-结构化字段引用、受限聚合和对账规则缩小 Snapshot，不能包含 SQL、表达式或连接信息。未绑定 Profile
-的数据源使用内置领域无关章节。
+结构化字段引用、受限聚合和对账规则缩小 Snapshot，并通过 `documentBranding`、`pageLayout` 提供
+服务端文档品牌和页眉页脚，不能包含 SQL、表达式或连接信息。未绑定 Profile 的数据源使用内置领域
+无关章节和默认品牌。
 
 StarRocks 使用官方 `starrocks==1.3.3` SQLAlchemy dialect。数据源账号权限不作为启动门禁；
 API/DDL 模型仍必须与实时 catalog 一致。
@@ -386,12 +388,14 @@ SQL 只允许单条 `SELECT` 或只读 CTE，并强制只读事务、超时、Sn
 Bearer token；未配置 URL 表示明确禁用 metadata 服务，而网络、鉴权、5xx 或响应契约错误均失败关闭，
 不会降级为零 Agent。
 
-综合 AgentOS 在启动时创建 `report_download_grants_v1`；正式部署应以等价数据库迁移预建该表。
-PDF 验收和发布步骤完成前不签发下载 grant。完成后返回的同源
-`GET /reports/v1/download/{opaqueGrant}` 必须携带现有 `X-AGUI-Thread` 和
-`X-AGUI-Capability`，并继续校验数据库、用户、公司、Odoo session、thread、Workflow run、
-report revision 与 PDF hash。应用会脱敏 Uvicorn access log 中的 grant 路径；反向代理、网关和
-APM 也必须将 `/reports/v1/download/*` 记录为固定占位路径，禁止采集原始 URL。
+综合 AgentOS 在启动时创建 `report_download_grants_v2`；正式部署应以等价数据库迁移预建该表。
+启动会把 `report_download_grants_v1` 中仍有效、未撤销且尚未迁移的 PDF grant 幂等写入 v2；旧 URL
+在原有效期内继续下载 PDF，但 `/word` 返回不可用。PDF/Word 联合验收和发布步骤完成前不签发新 grant。
+完成后 PDF 使用兼容的 `GET /reports/v1/download/{opaqueGrant}`，Word 使用
+`GET /reports/v1/download/{opaqueGrant}/word`；两者必须携带现有 `X-AGUI-Thread` 和
+`X-AGUI-Capability`，并继续校验数据库、用户、公司、Odoo session、thread、Workflow run、report
+revision 以及对应文件的路径、大小和 SHA-256。应用会脱敏 Uvicorn access log 中的 grant 路径；
+反向代理、网关和 APM 也必须将 `/reports/v1/download/*` 记录为固定占位路径，禁止采集原始 URL。
 
 独立 Report AgentOS 使用 Agno JWT 中已验证的 `user_id` 和当前 Workflow thread 构造独立的
 `reporting` 发布作用域，并装配自己的下载 grant repository、发布 issuer 与同源下载 router。下载时
@@ -410,22 +414,28 @@ APM 也必须将 `/reports/v1/download/*` 记录为固定占位路径，禁止�
 SQL 或数据库凭据。Report 层不再提供能力探测、固定剖析、
 独立命令执行器、60 秒分析超时或成功轮次门槛。模型先登记本地图表源文件，再为每个 Attempt 提交
 一次完整结构化 `ReportDraft`；服务端归档正文实际引用的图表并生成权威 Markdown，图表机械错误使用
-已保存 Draft 恢复，不要求重传正文。随后将 Markdown 渲染为
-不覆盖已有文件的新 PDF；渲染和 PDF 验收各自最多运行 600 秒。PDF 限制为 200 MiB 和 200 页，运行时使用
-Poppler 将 PDF 逐页栅格化，检查空白页、页眉页脚、页码、文本、图片数量和像素占比，并把 Markdown、图片、PDF 的
-路径、大小、SHA-256 和验收结果写入 Workflow 持久化状态。只有 PDF 验收通过且发布步骤完成，
-SSE 交付门禁才返回正式产物。系统不再使用固定模板、`compile` 或 `blocks`。
+已保存 Draft 恢复，不要求重传正文。随后从同一 Markdown 生成不覆盖已有 revision 的 PDF 和原生可编辑
+DOCX：WeasyPrint 负责 PDF，Pandoc 负责 DOCX 初稿，`python-docx`/OOXML 负责 Word 原生目录、分节页码、
+页眉页脚、水印和样式；LibreOffice Writer 临时转 PDF 检查 DOCX 可渲染性和空白页。单文件上限均为
+200 MiB，PDF 最多 200 页，渲染和验收动作各有 600 秒预算。Poppler 逐页检查 PDF 的空白页、封面、目录、
+页眉页脚、页码、水印、文本、图片和像素占比；Word 验收同时拒绝宏、OLE、外部关系和网络资源。两种
+成品先在 `/tmp` 生成，再经联合验收和哈希复核原子发布到同一 revision 目录；任一失败会删除整组产物。
+Workflow 持久化状态分别保存 `draft`、`pdf` 和 `word` manifest。只有双格式验收通过且发布步骤完成，
+SSE 交付门禁才返回含 `pdf`、`word` 两个下载对象的正式产物。系统不再使用固定模板、`compile` 或 `blocks`。
 权威 Markdown 必须包含 Workflow 指定的 `[[citation:<citationId>]]` 引用标记和
 `[[section:<sectionCode>]]` 关键章节标记；图表路径、Markdown、PDF、数据集 snapshot、CodingTask key
-和 report revision 通过 `ReportArtifactManifest`/`PdfArtifactManifest` 的大小与 SHA-256 绑定。
+和 report revision 通过 `ReportArtifactManifest`、`PdfArtifactManifest`、`DocxArtifactManifest` 的大小
+与 SHA-256 绑定。
 模型不创建或修改 `ReportArtifactManifest`；Workflow 在正式 Markdown/图表验收通过后根据真实文件
 和持久化状态生成。PDF 正文只显示 `[引用 NNN]`，不显示 raw citation marker；末尾“实际引用附录”由
 服务端按 manifest citation 顺序生成中文业务名称和真实期间覆盖，且不展示数据集、需求、数据源、表、
 字段或章节机器标识。metadata 的每个可用指标必须通过全限定 `fieldRef` 提供 `measureSemantics`，缺少
 聚合、可加维度或固定口径语义时，规划和 SQL 审核失败关闭。
 sandbox 的 `/tmp/workspace-report-*` 仅用于一次渲染或验收的临时文件；超时和失败都会由 AgentOS 清理，
-不能作为 job 状态或验收依据。Markdown、图片和 PDF 输出到 `报表/生成结果/<job_id>/`。生产环境必须使用仓库现有
-`docker/sandbox-tools` 镜像，以提供 ripgrep、WeasyPrint 69、pypdf、数据分析库和 Noto CJK。镜像
+不能作为 job 状态或验收依据。Markdown、图片和双格式成品输出到
+`报表/智能分析/<run_id>/revision-<revision>/`。生产环境必须使用仓库现有 `docker/sandbox-tools`
+镜像，以提供 ripgrep、WeasyPrint 69、Pandoc、LibreOffice Writer、`python-docx`、pypdf、数据分析库和
+Noto CJK。镜像
 同时安装 `matplotlibrc`，将 Matplotlib/Seaborn 默认字体固定为 Noto CJK，避免中文图表在生成 PNG
 时已经丢失字形；不要在分析命令中改回仅含 DejaVu 的字体配置。
 部署时从该镜像创建并激活自定义 Snapshot `sandbox-tools-20260722`；不要复用不可删除的

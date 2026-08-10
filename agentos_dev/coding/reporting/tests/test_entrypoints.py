@@ -102,12 +102,13 @@ def test_report_agentos_registers_reporting_agent_and_shared_workflow(monkeypatc
     controllers = []
     captured = {}
     worker_kwargs = {}
+    runtime_kwargs = {}
 
     class FakeRuntime:
         cleanup_cancelled = object()
 
-        def __init__(self, **_kwargs):
-            pass
+        def __init__(self, **kwargs):
+            runtime_kwargs.update(kwargs)
 
         def workflow(self):
             workflow = object()
@@ -171,6 +172,7 @@ def test_report_agentos_registers_reporting_agent_and_shared_workflow(monkeypatc
     assert worker_kwargs["report_coding_enable_thinking"] is False
     assert worker_kwargs["context_token_budget"] == 1048576
     assert worker_kwargs["output_token_reserve"] == 393216
+    assert "compact_analysis_block_token_budget" not in runtime_kwargs
     assert len(controllers) == 1
     included_routes = [
         route

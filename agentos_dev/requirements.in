@@ -10,11 +10,15 @@ openinference-instrumentation-agno>=0.1.38,<0.2.0
 openpyxl>=3.1,<4.0
 opentelemetry-exporter-otlp-proto-http>=1.44,<2.0
 pandas>=2.2,<2.4
+fg-data-profiling>=4.19,<4.20
+setuptools>=72,<81
 pypdf>=6.0,<7.0
 weasyprint==69.0
 xlrd>=2.0,<3.0
 plotly>=6.0,<6.6
 python-dotenv>=1.2
+python-dateutil>=2.9,<3.0
+types-python-dateutil>=2.9,<3.0
 python-multipart>=0.0.20
 psycopg[binary]>=3.2,<4.0
 sqlalchemy>=2.0,<3.0

@@ -4,19 +4,25 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from .factset import OperationModel
+from .schema import HospitalOperationSchema
 
 
-class PhysicalFieldBinding(OperationModel):
+class PhysicalFieldBinding(HospitalOperationSchema):
     domain: str = Field(min_length=1, max_length=64)
     metric: str = Field(min_length=1, max_length=128)
     field_ref: str = Field(alias="fieldRef", min_length=1, max_length=512)
     raw_unit: str = Field(alias="rawUnit", min_length=1, max_length=32)
     grain: tuple[str, ...] = Field(min_length=1, max_length=20)
     parent_metric: str | None = Field(default=None, alias="parentMetric", max_length=128)
+    aggregation: Literal["sum"] = "sum"
 
 
-class ReconciliationBinding(OperationModel):
+class PhysicalDimensionBinding(HospitalOperationSchema):
+    code: Literal["campus", "department", "first_level_accounting_unit"]
+    field_ref: str = Field(alias="fieldRef", min_length=1, max_length=512)
+
+
+class ReconciliationBinding(HospitalOperationSchema):
     code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     domains: tuple[str, ...] = Field(min_length=1, max_length=6)
     left_metric: str = Field(alias="leftMetric", min_length=1, max_length=128)
@@ -25,7 +31,7 @@ class ReconciliationBinding(OperationModel):
     absolute_tolerance: str = Field(default="0", alias="absoluteTolerance")
 
 
-class DuplicateConflictBinding(OperationModel):
+class DuplicateConflictBinding(HospitalOperationSchema):
     code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     domain: str = Field(min_length=1, max_length=64)
     table_ref: str = Field(alias="tableRef", min_length=1, max_length=512)
@@ -33,11 +39,20 @@ class DuplicateConflictBinding(OperationModel):
     value_fields: tuple[str, ...] = Field(alias="valueFields", min_length=1, max_length=20)
 
 
-class HospitalOperationProfile(OperationModel):
+class HospitalOperationProfile(HospitalOperationSchema):
     profile_id: str = Field(alias="profileId", min_length=1, max_length=128)
     revision: str = Field(min_length=1, max_length=128)
     hospital: str = Field(min_length=1, max_length=200)
     bindings: tuple[PhysicalFieldBinding, ...] = Field(max_length=500)
+    dimension_bindings: tuple[PhysicalDimensionBinding, ...] = Field(
+        default=(), alias="dimensionBindings", max_length=500
+    )
+    publish_grains: tuple[tuple[str, ...], ...] = Field(
+        default=(("month",),), alias="publishGrains", min_length=1, max_length=20
+    )
+    additive_overlap_metrics: tuple[str, ...] = Field(
+        default=(), alias="additiveOverlapMetrics", max_length=500
+    )
     campus_aliases: dict[str, tuple[str, ...]] = Field(alias="campusAliases", max_length=100)
     reconciliations: tuple[ReconciliationBinding, ...] = Field(default=(), max_length=100)
     duplicate_conflicts: tuple[DuplicateConflictBinding, ...] = Field(
@@ -73,6 +88,12 @@ class HospitalOperationProfile(OperationModel):
         keys = [(item.domain, item.metric, item.field_ref.lower()) for item in self.bindings]
         if len(keys) != len(set(keys)):
             raise ValueError("Profile 物理字段绑定不能重复")
+        dimension_refs = [item.field_ref.lower() for item in self.dimension_bindings]
+        if len(dimension_refs) != len(set(dimension_refs)):
+            raise ValueError("Profile 维度字段绑定不能重复")
+        allowed = {"month", "year", "campus", "department", "first_level_accounting_unit"}
+        if any(not grain or set(grain) - allowed for grain in self.publish_grains):
+            raise ValueError("Profile publishGrains 包含未知或空粒度")
         return self
 
     def canonical_campus(self, value: str) -> str:
@@ -180,11 +201,36 @@ def ruijin_profile() -> HospitalOperationProfile:
             grain=("year", "campus", "accounting_unit", "project"),
         ),
     )
+    dimension_specs: tuple[
+        tuple[Literal["campus", "department", "first_level_accounting_unit"], str], ...
+    ] = (
+        ("campus", "area"),
+        ("first_level_accounting_unit", "stlevel_analytic_unit"),
+    )
     return HospitalOperationProfile(
         profileId="ruijin-hospital-operation",
         revision="2025-acceptance-2",
         hospital="瑞金医院",
         bindings=bindings,
+        dimensionBindings=tuple(
+            PhysicalDimensionBinding(code=code, fieldRef=f"rj.rj.{table}.{column}")
+            for table in (
+                "dwd_income_budget_view",
+                "dm_hdc_gongzuoliang_view",
+                "dwd_hdc_income_summary_view",
+                "dwd_hdc_cost_table_view",
+                "dwd_project_budget_view",
+            )
+            for code, column in dimension_specs
+        ),
+        publishGrains=(
+            ("month",),
+            ("month", "campus"),
+            ("month", "first_level_accounting_unit"),
+            ("year",),
+            ("year", "campus"),
+            ("year", "first_level_accounting_unit"),
+        ),
         campusAliases={
             "质子院区": ("质子中心",),
             "转化院区": ("转化",),

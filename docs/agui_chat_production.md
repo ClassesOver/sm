@@ -60,7 +60,8 @@ AgentOS 保留内置 `/health` 存活端点。流量就绪检查使用 `/ready`�
 `/ready`，并自动重启 Agent 服务。
 
 Agent 镜像安装 pandas、openpyxl、matplotlib 和 Plotly；Daytona sandbox-tools 镜像安装
-最终 PDF 报表所需的 Matplotlib、WeasyPrint 和 Noto CJK 字体，并预装 RST、Notebook、
+最终 PDF/Word 报表所需的 Matplotlib、WeasyPrint、Pandoc、LibreOffice Writer、`python-docx` 和
+Noto CJK 字体，并预装 RST、Notebook、
 出版级表格、Excel 公式、离线图表与 SVG 渲染、图像、地理空间、SQL、并行与多维数据分析，
 以及 Python 测试、构建和静态检查工具。沙箱仍禁止运行时安装依赖和访问网络。
 `agentos_dev/requirements.txt` 变化后必须重建镜像，不要在运行中的生产容器内交互安装
@@ -232,8 +233,18 @@ pypdf、Matplotlib、pandas、openpyxl、xlrd、Python 测试与静态检查工�
 以及 Noto CJK 字体和 `/usr/bin/bash`。Daytona sandbox 默认必须启用 `network_block_all`；仅当运维
 显式配置 `DAYTONA_NETWORK_ALLOW_LIST` 时，新建 sandbox 才改用最多 10 项的 IPv4 CIDR 白名单，
 且端口访问仍须由出口防火墙或目标服务 ACL 限制。报表 job 的可信状态保存在
-AgentOS/Agno session state，并绑定 thread、输入 SHA-256 和大小；sandbox `/tmp/workspace-report-*` 只能存放一次
-渲染或验收的临时文件，超时和失败由 AgentOS 精确清理。工作区文件和 PDF 的单文件上限为 200 MiB，PDF 最多 200 页；渲染、验收和数据转换动作各有 600 秒服务端预算。
+AgentOS/Agno session state，并绑定 thread、输入 SHA-256 和大小；sandbox `/tmp/workspace-report-*` 只能
+存放一次渲染或验收的临时文件，超时和失败由 AgentOS 精确清理。PDF 和 DOCX 的单文件上限均为
+200 MiB，PDF 最多 200 页；渲染、验收和数据转换动作各有 600 秒服务端预算。两个成品必须从同一
+Markdown 生成、联合验收并原子发布到同一 revision 目录；Pandoc、LibreOffice 或任一格式验收失败时
+不得保留正式产物或签发下载 grant。
+
+生产数据库迁移必须创建 `report_download_grants_v2` 的 PDF/Word 身份字段。启动时会将仍有效且未撤销
+的 v1 PDF grant 幂等迁入 v2，旧链接只在原有效期内继续提供 PDF；新发布仅写 v2。PDF 下载路径保持
+`/reports/v1/download/{grant}`，Word 使用 `/reports/v1/download/{grant}/word`。代理、网关和 APM
+必须继续对这两个路径中的 grant 统一脱敏。下载响应先在 Daytona 内核验已签发的路径、大小和 SHA-256，
+再以 `download_file_stream` 直接转发并增量复核文件身份，不在 AgentOS 内聚合完整产物；反向代理必须
+保留 `X-Accel-Buffering: no`，不得重新缓冲 PDF 或 DOCX。
 从工具镜像创建并激活自定义 Snapshot `sandbox-tools-20260722`，不要使用同名 System
 Snapshot；System Snapshot 的固定 `ref` 不会因 Registry tag 更新而刷新。
 每次更新工具镜像后都必须重新创建并激活该自定义 Snapshot；只推送同名 Registry tag 不会让

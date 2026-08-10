@@ -868,6 +868,83 @@ async def test_validator_failure_preserves_bounded_schema_details(
 
 
 @pytest.mark.anyio
+async def test_validator_acceptance_preserves_bounded_warnings(
+    execution_runtime,
+    tmp_path,
+):
+    runtime = execution_runtime
+    acceptance = await acceptance_runtime(runtime, tmp_path)
+    warnings = ["w" * 1000] * 60
+    details = {"summary": "d" * 7900}
+    output = json.dumps(
+        {
+            "version": 1,
+            "requirements": [
+                {
+                    "id": "report",
+                    "passed": True,
+                    "message": "详细分析计划有效。",
+                    "details": details,
+                    "warnings": warnings,
+                }
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    assert 64 * 1024 < len(output.encode("utf-8")) < execution_module.MAX_VALIDATOR_RESULT_BYTES
+
+    execution_id, _command, result = await completed_validator(
+        runtime,
+        acceptance,
+        output=output,
+    )
+
+    assert result["ok"] is True
+    assert result["acceptance"]["requirements"][0]["warnings"] == warnings
+    assert result["acceptance"]["requirements"][0]["details"] == details
+    execution = await runtime.repository.get_execution(execution_id)
+    assert execution is not None
+    assert execution.operation_receipt["acceptance"]["requirements"][0]["warnings"] == warnings
+
+
+@pytest.mark.parametrize(
+    ("warnings", "expected_error"),
+    [
+        (["warning"] * (execution_module.MAX_VALIDATOR_WARNINGS + 1), "warnings"),
+        (["x" * 1025], "warnings"),
+        (["警" * 700] * execution_module.MAX_VALIDATOR_WARNINGS, "warnings_size"),
+    ],
+)
+def test_validator_result_rejects_warnings_outside_bounds(warnings, expected_error):
+    requirements = [
+        {
+            "id": "report",
+            "validatorId": "analysis:report",
+            "parameters": {},
+            "artifactPatterns": ["reports/*.json"],
+        }
+    ]
+    output = json.dumps(
+        {
+            "version": 1,
+            "requirements": [
+                {
+                    "id": "report",
+                    "passed": True,
+                    "warnings": warnings,
+                }
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    with pytest.raises(ValueError, match=rf"validator_result_{expected_error}$"):
+        CodingExecutionKernel._parse_validator_result(output, requirements)
+
+
+@pytest.mark.anyio
 async def test_skill_script_is_installed_readonly_and_writable_copy_is_rejected(
     execution_runtime,
 ):
@@ -1476,6 +1553,66 @@ async def test_large_tool_output_has_stable_preview_and_exact_handle_reads(execu
 
 
 @pytest.mark.anyio
+async def test_report_coding_tool_output_uses_smaller_preview_and_exact_handle_reads(
+    execution_runtime,
+):
+    runtime = execution_runtime
+    external_run_id = "report-coding-preview-test"
+    sandbox_id = str(runtime.synchronous.sandbox_for("thread").id)
+    task = await runtime.repository.create_task_with_initial_attempt(
+        CodingScope(external_run_id, "user", "thread", sandbox_id, "coding-agent"),
+        "生成报表章节",
+    )
+    lease = await runtime.repository.claim_lease(external_run_id, "report-request")
+    assert isinstance(lease, Lease)
+    _task, attempt = await runtime.repository.open_initial(
+        external_run_id,
+        lease,
+        task.state_version,
+    )
+    context = RunContext(
+        run_id=attempt.internal_run_id,
+        session_id="thread",
+        user_id="user",
+        session_state={},
+        dependencies={
+            CODING_TASK_DEPENDENCY: {
+                "externalRunId": external_run_id,
+                "leaseOwner": "report-request",
+                "leaseEpoch": lease.epoch,
+                "sandboxId": sandbox_id,
+            }
+        },
+    )
+    scope = await runtime.kernel.scope(context)
+    output = "画像统计" * 8_000
+
+    bounded = await runtime.kernel.bound_tool_result(scope, {"output": output}, context)
+    first_page = await runtime.kernel.read_tool_output(
+        bounded["outputHandle"],
+        0,
+        execution_module.MAX_TOOL_OUTPUT_READ_BYTES,
+        context,
+    )
+    second_page = await runtime.kernel.read_tool_output(
+        bounded["outputHandle"],
+        first_page["nextOffset"],
+        execution_module.MAX_TOOL_OUTPUT_READ_BYTES,
+        context,
+    )
+
+    assert "TOOL_OUTPUT_TRUNCATED" in bounded["output"]
+    assert (
+        len(bounded["output"].encode("utf-8"))
+        <= execution_module.MAX_REPORT_TOOL_PREVIEW_BYTES
+    )
+    assert first_page["content"] + second_page["content"] == output
+    assert first_page["hasMore"] is True
+    assert second_page["hasMore"] is False
+    assert second_page["outputSha256"] == bounded["outputSha256"]
+
+
+@pytest.mark.anyio
 async def test_tool_output_capacity_is_explicit_and_cleanup_removes_internal_files(
     execution_runtime, monkeypatch
 ):
@@ -1801,6 +1938,8 @@ async def test_parallel_read_completion_merges_progress_failures_and_output_hand
         ("get_skill_script", {"execute": 0}, False),
         ("report_list_data_sources", {}, True),
         ("report_describe_data_source", {}, True),
+        ("inspect_profile_index", {}, True),
+        ("read_profile_pointer", {}, True),
         ("report_materialize_dataset", {}, False),
         ("report_prepare_dataset", {}, False),
         ("report_job_status", {}, False),
@@ -2561,7 +2700,7 @@ async def test_verify_rejects_python_traceback_hidden_by_zero_exit(
         command.output = (
             "Traceback (most recent call last):\n"
             '  File "verify.py", line 4, in <module>\n'
-            "AssertionError: totals differ\n"
+            "AssertionError: metric-001 citation 不匹配: have={'citation_006'} want=['citation_009']\n"
         )
         command.exit_code = 0
         return result
@@ -2574,6 +2713,7 @@ async def test_verify_rejects_python_traceback_hidden_by_zero_exit(
     assert result["ok"] is False
     assert result["code"] == "verification_output_error"
     assert result["details"]["failureCode"] == "python_traceback"
+    assert "事实卡" in result["requiredActions"][0]
     assert execution is not None
     assert execution.operation_receipt["valid"] is False
 

@@ -69,6 +69,12 @@ class _PublicationWorkflow:
                 "size": 123,
                 "sha256": "a" * 64,
             },
+            "word": {
+                "downloadUrl": "/reports/v1/download/opaque/word",
+                "expiresAt": "2026-07-29T00:00:00+00:00",
+                "size": 456,
+                "sha256": "b" * 64,
+            },
         }
 
     async def aget_run(self, run_id: str, session_id: str | None = None) -> Any:
@@ -259,7 +265,16 @@ async def test_publication拒绝并进入新revision时不签发旧grant():
 
 @pytest.mark.anyio
 async def test_cli_publication结果只返回本地文件身份():
-    published = {"path": "reports/result.pdf", "size": 123, "sha256": "b" * 64}
+    published = {
+        "path": "reports/result.pdf",
+        "size": 123,
+        "sha256": "b" * 64,
+        "word": {
+            "path": "reports/result.docx",
+            "size": 456,
+            "sha256": "c" * 64,
+        },
+    }
     workflow = _PublicationWorkflow(completed_content=published)
 
     result = await ReportWorkflowController(lambda: workflow).approve(_context())
@@ -267,7 +282,7 @@ async def test_cli_publication结果只返回本地文件身份():
     assert result == {
         "ok": True,
         "status": "completed",
-        "report": {"path": "reports/result.pdf", "size": 123, "sha256": "b" * 64},
+        "report": published,
     }
     assert "url" not in repr(result).lower()
 

@@ -17,6 +17,8 @@ from rich.console import Console
 from ..agents import OPENAI_COMPATIBLE_ROLE_MAP
 from ..async_utils import complete_cleanup
 from ..context_management import (
+    CODING_CONTEXT_TOKEN_LIMIT,
+    CODING_OUTPUT_TOKEN_RESERVE,
     ContextBudgetController,
     clear_terminal_reasoning,
     projected_coding_model,
@@ -110,8 +112,14 @@ def _create_cli_model(
 
 def create_cli_agent(context: CliContext) -> Agent:
     settings = context.settings
+    input_token_budget = max(
+        1,
+        min(settings.context_token_budget, CODING_CONTEXT_TOKEN_LIMIT)
+        - max(CODING_OUTPUT_TOKEN_RESERVE, settings.output_token_reserve),
+    )
     model = projected_coding_model(
-        _create_cli_model(settings, enable_thinking=settings.coding_enable_thinking)
+        _create_cli_model(settings, enable_thinking=settings.coding_enable_thinking),
+        input_token_budget=input_token_budget,
     )
     model.temperature = settings.coding_temperature
     model.reasoning_effort = settings.coding_reasoning_effort

@@ -1505,6 +1505,12 @@ class HermesCodingToolkit(_ManagedDaytonaTools):
                                 "default": False,
                                 "description": "是否分配 PTY。",
                             },
+                            "shell": {
+                                "type": "string",
+                                "enum": ["/bin/sh", "/bin/bash"],
+                                "default": "/bin/sh",
+                                "description": "命令使用的 Shell；需要 Bash 语法时显式选择 /bin/bash。",
+                            },
                         },
                         "required": ["command"],
                         "additionalProperties": False,
@@ -1623,6 +1629,7 @@ class HermesCodingToolkit(_ManagedDaytonaTools):
         timeout: int | None = None,
         workdir: str | None = None,
         pty: bool = False,
+        shell: str | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         if not isinstance(background, bool):
@@ -1632,6 +1639,7 @@ class HermesCodingToolkit(_ManagedDaytonaTools):
             command,
             workdir=workdir,
             tty=pty,
+            shell=shell,
             timeout_seconds=execution_timeout,
             yield_time_ms=0 if background else 30000,
             run_context=run_context,

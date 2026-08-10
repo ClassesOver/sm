@@ -351,8 +351,15 @@ Coding/Report SSE 空闲时每 15 秒发送注释心跳。网络失败或没有�
 
 模型正常结束但未通过 `finish_task` 时，候选最终文本不会发给浏览器；服务端继续同一 logical task。
 只有计划完成、产物仍属于当前 sandbox、验证回执对应最后 mutation、无未声明活动进程，且 Report 的
-PDF/交付证据有效时，服务端才生成最终 assistant 文本并发送唯一 `RUN_FINISHED`。预算耗尽、熔断、
+PDF/Word 联合交付证据有效时，服务端才生成最终 assistant 文本并发送唯一 `RUN_FINISHED`。预算耗尽、熔断、
 显式取消和稳定门禁错误使用唯一 `RUN_ERROR` 结束当前连接。
+
+Report 正式完成结果固定包含 `reportId`、`revision`、`pdf` 和 `word`；两个格式对象都包含
+`downloadUrl`、`expiresAt`、`size`、`sha256`。PDF 继续使用
+`/reports/v1/download/{grant}`，Word 使用 `/reports/v1/download/{grant}/word`，同一 grant 绑定同一
+revision 的两个文件并沿用现有 thread/capability 下载鉴权。由 v1 迁入的旧 grant 只允许在原有效期内
+下载 PDF，不得据此取得 Word。
+
 模型配额不足、认证失败、无效请求或 provider 限流使用 `model_insufficient_quota`、
 `model_authentication_failed`、`model_invalid_request`、`model_rate_limited` 结束当前连接，但 Coding Task
 保持 `suspended`，不消耗自动恢复次数；外部条件恢复后可使用同一 external `runId` 显式恢复。

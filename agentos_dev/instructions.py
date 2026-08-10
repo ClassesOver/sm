@@ -16,6 +16,13 @@ CODING_DELIVERABLE_VERIFICATION_INSTRUCTION = (
     "并通过 artifact_paths 提交实际交付物；不得用中间源码或生成器替代尚未生成的交付物。"
 )
 
+CODING_FINISH_VERIFICATION_INSTRUCTION = (
+    "最后一次 mutation 后必须调用 verify 重新运行显式验证，普通 terminal 不计为验证。最终调用 finish_task，"
+    "提交总结和当前工作区产物；verification_ids 可省略以自动选择当前 mutation 最近一次成功 verify，"
+    "活动服务还要引用成功 verify 健康检查回执。只有 finish_task 返回 accepted 才能结束任务，"
+    "拒绝时按 code 修复后重试。"
+)
+
 COMMON_INSTRUCTIONS = [
     "使用中文简洁回答。",
     "对话历史由 AgentOS PostgreSQL 加载；业务结论只能来自当前上下文、最新 HRP 宿主快照和本轮工具结果，无法确认的数据不要猜测。",
@@ -41,7 +48,7 @@ CODING_AGENT_INSTRUCTIONS = [
     CODING_DELIVERABLE_VERIFICATION_INSTRUCTION,
     "多步骤任务在计划仍有未完成项时继续实际工作；保留已完成步骤，只推进下一真实待办，"
     "不得因中间验证或上下文压缩重置计划、重读相同证据或重做已有产物。",
-    "最后一次 mutation 后必须调用 verify 重新运行显式验证，普通 terminal 不计为验证。最终调用 finish_task，提交总结和当前工作区产物；verification_ids 可省略以自动选择当前 mutation 最近一次成功 verify，活动服务还要引用成功 verify 健康检查回执。只有 finish_task 返回 accepted 才能结束任务，拒绝时按 code 修复后重试。",
+    CODING_FINISH_VERIFICATION_INSTRUCTION,
 ]
 
 PURE_CODING_PARALLEL_READ_INSTRUCTIONS = [

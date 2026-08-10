@@ -7,6 +7,7 @@ from typing import Any
 from agno.agent import Agent
 from agno.db.base import AsyncBaseDb, BaseDb
 
+from .agno_function_arguments import install_agno_function_argument_decoder
 from .database import create_agent_database
 from .observability import configure_tracing, flush_tracing
 from .settings import AgentSettings
@@ -28,6 +29,7 @@ def create_execution_context(
     tracing_configurer: Any = configure_tracing,
     workspace_factory: Any = WorkspaceService,
 ) -> ExecutionContext:
+    install_agno_function_argument_decoder()
     current_settings = settings or AgentSettings.from_environment()
     database = database_factory(current_settings.database_url)
     tracing_configurer(

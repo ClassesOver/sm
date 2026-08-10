@@ -13,7 +13,7 @@ from agentos_dev.coding import (
     TaskState,
 )
 from agentos_dev.database import create_agent_database
-from agentos_dev.task_execution.repository import utcnow
+from agentos_dev.task_execution.repository import MAX_INSTRUCTION_BYTES, utcnow
 
 
 @pytest.fixture
@@ -27,6 +27,22 @@ async def repository_v2(tmp_path):
 
 def scope(run_id: str = "run") -> CodingScope:
     return CodingScope(run_id, "user", "thread", "sandbox", "coding-agent")
+
+
+@pytest.mark.anyio
+async def test_reporting可显式提高单条指令上限且默认边界不变(repository_v2):
+    content = "x" * (MAX_INSTRUCTION_BYTES + 1)
+    with pytest.raises(CodingRepositoryError) as rejected:
+        await repository_v2.create_task_with_initial_attempt(scope("default-limit"), content)
+    assert rejected.value.code == "instruction_too_large"
+
+    task = await repository_v2.create_task_with_initial_attempt(
+        scope("report-limit"),
+        content,
+        max_instruction_bytes=512 * 1024,
+    )
+
+    assert task.scope.external_run_id == "report-limit"
 
 
 @pytest.mark.anyio

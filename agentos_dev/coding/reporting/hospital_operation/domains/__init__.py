@@ -82,7 +82,7 @@ def domain_definitions() -> tuple[DomainDefinition, ...]:
             "收入",
             ("actual_medical_income",),
             aliases=("收入", "营收", "营业收入", "医疗收入", "收入分析", "income"),
-            core_questions=("收入规模和结构是什么？", "收入趋势和主要贡献对象在哪里？"),
+            core_questions=("收入规模与结构分析", "收入趋势及主要贡献对象识别"),
             attribution_clues=(
                 "工作量",
                 "服务结构",
@@ -98,7 +98,7 @@ def domain_definitions() -> tuple[DomainDefinition, ...]:
             "工作量",
             ("outpatient_visits", "discharges"),
             aliases=("工作量", "业务量", "工作量分析", "门急诊量", "出院量", "workload"),
-            core_questions=("业务规模和结构如何变化？", "哪些组织或服务贡献了变化？"),
+            core_questions=("业务规模与结构变化分析", "变化贡献组织及服务识别"),
             attribution_clues=("科室贡献", "资源供给", "排班", "季节性", "患者结构", "服务能力"),
             forbidden_inferences=("缺少可靠分母时推断人均或床位效率", "把单项业务量代表全部工作量"),
         ),
@@ -107,7 +107,7 @@ def domain_definitions() -> tuple[DomainDefinition, ...]:
             "预算",
             ("budget_income",),
             aliases=("预算", "预算执行", "预算完成", "预算分析", "budget"),
-            core_questions=("实际与预算差异多大？", "偏差集中在哪里且是否持续？"),
+            core_questions=("实际与预算差异测算", "偏差集中领域及持续性识别"),
             attribution_clues=("序时进度", "项目结构", "收入或支出类别", "组织执行", "预算版本"),
             forbidden_inferences=(
                 "不得把当前进度外推为全年结果",
@@ -119,7 +119,7 @@ def domain_definitions() -> tuple[DomainDefinition, ...]:
             "全成本",
             ("total_cost",),
             aliases=("全成本", "总成本", "成本核算", "成本分析", "full cost"),
-            core_questions=("成本规模、结构和趋势怎样？", "成本与收入或业务量是否可比？"),
+            core_questions=("成本规模、结构与趋势分析", "成本与收入或业务量可比性验证"),
             attribution_clues=("业务量", "采购价格", "资源消耗", "成本归集", "分摊变化"),
             forbidden_inferences=("缺少可靠分母时不得计算单位成本", "把成本相关性写成确定原因"),
         ),
@@ -128,7 +128,7 @@ def domain_definitions() -> tuple[DomainDefinition, ...]:
             "费控",
             ("average_cost",),
             aliases=("费控", "费用控制", "费用管控", "次均费用", "药耗", "cost control"),
-            core_questions=("次均费用和药耗结构有何变化？", "异常费用集中于哪些服务或对象？"),
+            core_questions=("次均费用与药耗结构变化分析", "异常费用集中服务及对象识别"),
             attribution_clues=("业务结构", "高值耗材", "用药", "编码", "支付政策"),
             forbidden_inferences=(
                 "缺少对应数据时不得推断医保、DRG或DIP结论",
@@ -140,7 +140,7 @@ def domain_definitions() -> tuple[DomainDefinition, ...]:
             "资金",
             ("cash_balance", "receivables"),
             aliases=("资金", "现金流", "现金", "资金分析", "回款", "funds"),
-            core_questions=("资金余额及流入流出如何变化？", "应收、回款和付款是否造成流动性压力？"),
+            core_questions=("资金余额及流入流出变化分析", "应收、回款和付款流动性压力识别"),
             attribution_clues=("回款", "医保结算", "付款安排", "季节性", "重大支出"),
             forbidden_inferences=(
                 "没有现金或应收事实时不得判断流动性",
@@ -232,13 +232,19 @@ def build_domain_stage_guidance(stage: str) -> tuple[str, ...]:
         "request": "输入：用户原始目标、可选领域代码和期间文本。",
         "data_understanding": "输入：已冻结请求范围、Schema/DataShape 和可用领域事实。",
         "analysis": "输入：已批准取数需求、期间角色数据和领域事实。",
-        "findings": "输入：FactSet、MetricFact、引用和期间覆盖。",
+        "findings": "输入：不可变 Dataset、Profile 索引、引用和期间覆盖。",
         "outline": "输入：已注册结构化发现、请求范围和数据覆盖。",
-        "draft": "输入：批准提纲、FactSet、发现、引用和审核意见。",
+        "draft": "输入：批准提纲、详细分析计划、DatasetLineage、引用和审核意见。",
     }
     steps = {
-        "request": "执行：确定主领域和分析期间；未指定领域保留为空，歧义只提出一个澄清问题。",
-        "data_understanding": "执行：只选择主领域数据；仅在期间、粒度、组织和口径可比且确有必要时选择跨域证据。",
+        "request": (
+            "执行：确定报告类型、领域和分析期间；综合报告默认以收入、工作量、预算、全成本、费控、资金六域为候选，"
+            "再按用户明确范围和数据源实际覆盖收敛；专题报告的成本短词歧义才提出一个澄清问题。"
+        ),
+        "data_understanding": (
+            "执行：只在冻结的用户范围内选择数据源实际支持的领域；综合报告可覆盖六域，"
+            "缺少可靠数据的领域必须标记覆盖不足，不能虚构 requirement。"
+        ),
         "analysis": (
             "执行：六域是条件规则，不是必须覆盖的主题清单；依次规划整体规模与结构、趋势与拐点、"
             "异常贡献、归因验证、经营影响。报告目标未涉及或无可靠数据时，不得创建对应 analysis 或 requirement。"
@@ -262,7 +268,10 @@ def build_domain_stage_guidance(stage: str) -> tuple[str, ...]:
         "draft": "禁止：改写 displayText、脱离绑定引用、生成空领域章节或未经证实的因果。",
     }
     examples = {
-        "request": "正例：‘分析2025年收入’→主领域 income、期间 2025-01-01..2025-12-31；反例：‘分析成本’→澄清全成本/费控。",
+        "request": (
+            "正例：‘生成2025年整体运营报告’→综合六域候选、期间 2025-01-01..2025-12-31；"
+            "‘分析2025年收入’→收入专题；反例：把专题中的‘成本’静默解释为全成本或费控。"
+        ),
         "data_understanding": "正例：收入专题只取收入表，工作量表仅在同期间同粒度验证量价时加入；反例：无目标地选择六域全部表。",
         "analysis": "正例：先比较规模，再定位十月拐点和贡献组织；反例：直接写‘因为政策导致下降’。",
         "findings": "正例：finding 引用 metric-001 并标记 hypothesis；反例：引用不存在的 fact-999。",
@@ -278,7 +287,7 @@ def build_domain_stage_guidance(stage: str) -> tuple[str, ...]:
         + "）"
         + ("；别名：" + "、".join(item.get("aliases", ())) if item.get("aliases") else "")
         + (
-            "；核心问题：" + " ".join(item.get("coreQuestions", ()))
+            "；核心分析目标：" + "；".join(item.get("coreQuestions", ()))
             if item.get("coreQuestions")
             else ""
         )

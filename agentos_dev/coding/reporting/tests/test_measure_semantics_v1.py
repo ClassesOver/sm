@@ -14,6 +14,7 @@ from agentos_dev.coding.reporting.contract import (
     SourceSchemaSnapshot,
     schema_hash,
 )
+from agentos_dev.coding.reporting.data_source import DataShape
 from agentos_dev.coding.reporting.models import ReportingError
 from agentos_dev.coding.reporting.profile import (
     EffectiveReportingProfile,
@@ -33,6 +34,7 @@ from agentos_dev.coding.reporting.workflow.runtime import (
     _apply_confirmed_measure_semantics,
     _apply_profile_scope_filters_to_snapshots,
     _measure_semantic_candidate_refs,
+    _validate_proposed_exclusive_scopes,
 )
 
 
@@ -203,7 +205,6 @@ def test_待确认数值字段排除期间字段和已有语义():
         runtime._data_understanding(context),
         runtime._profile(context),
     )
-
     assert refs == ("operations.reporting.income.amount",)
     context_with_semantic = _context(with_semantic=True)
     assert (
@@ -214,6 +215,40 @@ def test_待确认数值字段排除期间字段和已有语义():
         )
         == ()
     )
+
+
+def test_模型固定口径值必须来自受限画像():
+    state = _state()
+    shape_payload = deepcopy(state[REPORT_DATA_SHAPES_STATE_KEY][0])
+    department = next(
+        item for item in shape_payload["tables"][0]["columns"] if item["name"] == "department"
+    )
+    department["topValues"] = [{"value": "内科", "count": 1, "ratio": 0.5}]
+    data_shapes = (DataShape.model_validate(shape_payload),)
+
+    def proposal(value: str) -> MeasureSemanticProposal:
+        return MeasureSemanticProposal(
+            decisions=(
+                MeasureSemanticDecision(
+                    fieldRef="operations.reporting.income.amount",
+                    classification="measure",
+                    reason="金额字段表示收入发生额。",
+                    measureSemantic=MeasureSemantic(
+                        fieldRef="operations.reporting.income.amount",
+                        aggregation="sum",
+                        additiveAcross=("month",),
+                        exclusiveScope={"department": value},
+                    ),
+                ),
+            )
+        )
+
+    _validate_proposed_exclusive_scopes(proposal("内科"), data_shapes)
+    with pytest.raises(ReportingError) as captured:
+        _validate_proposed_exclusive_scopes(proposal("科室类型"), data_shapes)
+
+    assert captured.value.code == "report_measure_semantic_scope_unobserved"
+    assert "内科" in captured.value.message
 
 
 @pytest.mark.anyio

@@ -33,6 +33,7 @@ from sqlalchemy.sql import func
 
 from .async_utils import complete_cleanup
 from .database import AgentDatabase, create_agent_database
+from .observability import suppress_expected_probe_tracing
 from .security import thread_label
 
 WORKSPACE_ROOT = "/home/daytona/workspace"
@@ -789,7 +790,8 @@ class WorkspaceService:
     def _validate_destination(self, sandbox, relative: str, remote: str):
         self._validate_existing_path(sandbox, relative, include_leaf=False)
         try:
-            info = self._info(sandbox, remote)
+            with suppress_expected_probe_tracing():
+                info = self._info(sandbox, remote)
         except DaytonaNotFoundError:
             return None
         if self._is_symlink(info):
@@ -799,7 +801,8 @@ class WorkspaceService:
     def _ensure_directory(self, sandbox, remote: str):
         if remote == WORKSPACE_ROOT:
             try:
-                info = self._info(sandbox, remote)
+                with suppress_expected_probe_tracing():
+                    info = self._info(sandbox, remote)
                 if self._is_symlink(info) or not info.is_dir:
                     raise WorkspaceError("工作区根路径不是安全目录，请联系管理员检查运行环境。")
                 return
@@ -814,7 +817,8 @@ class WorkspaceService:
         for part in relative.split("/") if relative else []:
             current = f"{current}/{part}"
             try:
-                info = self._info(sandbox, current)
+                with suppress_expected_probe_tracing():
+                    info = self._info(sandbox, current)
                 if self._is_symlink(info) or not info.is_dir:
                     raise WorkspaceError("工作区父路径不是安全目录，请更换路径后重试。")
             except WorkspaceError:
@@ -825,7 +829,8 @@ class WorkspaceService:
     async def _aensure_directory(self, sandbox, remote: str):
         if remote == WORKSPACE_ROOT:
             try:
-                info = await self._ainfo(sandbox, remote)
+                with suppress_expected_probe_tracing():
+                    info = await self._ainfo(sandbox, remote)
                 if self._is_symlink(info) or not info.is_dir:
                     raise WorkspaceError("工作区根路径不是安全目录，请联系管理员检查运行环境。")
                 return
@@ -840,7 +845,8 @@ class WorkspaceService:
         for part in relative.split("/") if relative else []:
             current = f"{current}/{part}"
             try:
-                info = await self._ainfo(sandbox, current)
+                with suppress_expected_probe_tracing():
+                    info = await self._ainfo(sandbox, current)
                 if self._is_symlink(info) or not info.is_dir:
                     raise WorkspaceError("工作区目录路径不是安全目录，请改用普通目录。")
             except WorkspaceError:
@@ -2298,7 +2304,8 @@ class WorkspaceService:
         for index in range(1, len(parts) + 1):
             remote = f"{WORKSPACE_ROOT}/{'/'.join(parts[:index])}"
             try:
-                info = self._info(sandbox, remote)
+                with suppress_expected_probe_tracing():
+                    info = self._info(sandbox, remote)
             except DaytonaNotFoundError:
                 return None
             if self._is_symlink(info):

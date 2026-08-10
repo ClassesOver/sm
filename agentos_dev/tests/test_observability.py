@@ -1,11 +1,38 @@
 import builtins
 import os
 import sys
+from contextlib import contextmanager
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from agentos_dev.observability import TracingConfigurationError, configure_tracing, flush_tracing
+from agentos_dev.observability import (
+    TracingConfigurationError,
+    configure_tracing,
+    flush_tracing,
+    suppress_expected_probe_tracing,
+)
+
+
+def test_expected_probe_uses_opentelemetry_suppression(monkeypatch):
+    calls = []
+
+    @contextmanager
+    def suppress():
+        calls.append("enter")
+        try:
+            yield
+        finally:
+            calls.append("exit")
+
+    monkeypatch.setattr(
+        "opentelemetry.instrumentation.utils.suppress_instrumentation", suppress
+    )
+
+    with suppress_expected_probe_tracing():
+        calls.append("probe")
+
+    assert calls == ["enter", "probe", "exit"]
 
 
 def test_configure_tracing_is_noop_when_disabled(monkeypatch):

@@ -119,6 +119,9 @@ class ReportRequestEnvelope(StrictModel):
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
     agent_id: str | None = Field(default=None, alias="agentId", min_length=1, max_length=128)
     schema_input: SchemaInput | None = Field(default=None, alias="schemaInput")
+    comparison_roles: tuple[Literal["yoy", "mom"], ...] = Field(
+        default=("yoy",), alias="comparisonRoles", max_length=2
+    )
 
     @field_validator("report_goal", "agent_id")
     @classmethod
@@ -154,6 +157,15 @@ class ReportRequestEnvelope(StrictModel):
             raise ValueError("sourceIds 包含无效值")
         return normalized
 
+    @field_validator("comparison_roles")
+    @classmethod
+    def validate_comparison_roles(
+        cls, value: tuple[Literal["yoy", "mom"], ...]
+    ) -> tuple[Literal["yoy", "mom"], ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("comparisonRoles 不能重复")
+        return tuple(role for role in ("yoy", "mom") if role in value)
+
     @classmethod
     def from_untrusted(cls, value: Any) -> ReportRequestEnvelope:
         forbidden = _find_connection_input(value)
@@ -174,11 +186,19 @@ class ReportRequestEnvelope(StrictModel):
         payload["sourceIds"] = list(self.source_ids or default_source_ids)
         return payload
 
-    def period_windows(self) -> ReportPeriodWindows:
-        """按请求期间生成本期、同比和环比角色；同边界角色共享 queryWindowId。"""
+    def period_windows(
+        self, *, granularity: Literal["date", "month", "year"] = "date"
+    ) -> ReportPeriodWindows:
+        """按请求声明生成比较窗口；物理边界相同的角色共享 queryWindowId。"""
         from .data_source.period import build_period_windows
 
-        generated = build_period_windows(self.period.start, self.period.end)
+        generated = build_period_windows(
+            self.period.start,
+            self.period.end,
+            include_yoy="yoy" in self.comparison_roles,
+            include_mom="mom" in self.comparison_roles,
+            granularity=granularity,
+        )
         by_bounds: dict[tuple[date, date], str] = {}
         windows: list[ReportPeriodWindow] = []
         for item in generated.windows:
@@ -187,7 +207,7 @@ class ReportRequestEnvelope(StrictModel):
                 bounds,
                 "window-"
                 + hashlib.sha256(
-                    f"{item.start.isoformat()}:{item.end.isoformat()}".encode()
+                    f"{granularity}:{item.start.isoformat()}:{item.end.isoformat()}".encode()
                 ).hexdigest()[:24],
             )
             windows.append(
@@ -224,6 +244,9 @@ class ReportingWorkflowInput(StrictModel):
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
     agent_id: str | None = Field(default=None, alias="agentId", min_length=1, max_length=128)
     schema_input: SchemaInput | None = Field(default=None, alias="schemaInput")
+    comparison_roles: tuple[Literal["yoy", "mom"], ...] | None = Field(
+        default=None, alias="comparisonRoles", max_length=2
+    )
 
     @model_validator(mode="after")
     def validate_variant(self) -> ReportingWorkflowInput:
@@ -238,6 +261,7 @@ class ReportingWorkflowInput(StrictModel):
                     self.source_ids,
                     self.agent_id,
                     self.schema_input,
+                    self.comparison_roles,
                 )
             ):
                 raise ValueError("prompt 输入不能混用 Envelope 字段")

@@ -1,9 +1,11 @@
-"""医院运营管理业务核心。
+"""医院运营报表的请求、领域、Profile、分析计划与提纲契约。"""
 
-该包只提供确定性的业务事实、领域装配和发布门禁；不连接数据库，也不依赖
-Report Worker。Workflow 通过这里冻结的 FactSet 向下游传递事实。
-"""
-
+from .detailed_analysis import (
+    DatasetAnalysisContext,
+    DetailedAnalysisItem,
+    DetailedAnalysisPlan,
+    profile_csv_dataset,
+)
 from .domains import (
     DOMAIN_CODES,
     DomainDefinition,
@@ -15,32 +17,6 @@ from .domains import (
     normalize_domain_code,
     resolve_domain_mentions,
 )
-from .factset import (
-    AnalysisFactSetHandle,
-    FactEvidence,
-    FactSetBuilder,
-    FactSetHandle,
-    FactSetIssue,
-    HospitalOperationAnalysisFact,
-    HospitalOperationAnalysisFactSet,
-    HospitalOperationFact,
-    HospitalOperationFactSet,
-    HospitalOperationMetricFact,
-    MetricFormula,
-    build_analysis_fact_set,
-    display_money,
-    normalize_money,
-)
-from .findings import (
-    EvidenceKind,
-    FindingProposal,
-    FindingsResult,
-    FindingType,
-    HospitalOperationFinding,
-    build_findings,
-)
-from .gate import PublicationGateResult, evaluate_publication_gate
-from .materialization import DatasetFactInput, build_fact_set_from_datasets
 from .outline import (
     COMPREHENSIVE_SECTIONS,
     OutlineSectionProposal,
@@ -51,13 +27,6 @@ from .outline import (
     make_outline,
 )
 from .profiles import HospitalOperationProfile, ruijin_profile
-from .reconciliation import (
-    ReconciliationResult,
-    coverage_status,
-    detect_duplicate_conflicts,
-    reconcile_series,
-    reject_double_counting,
-)
 from .request import (
     ClarificationRequired,
     CorrectionFeedback,
@@ -66,55 +35,30 @@ from .request import (
 )
 
 __all__ = [
-    "AnalysisFactSetHandle",
+    "COMPREHENSIVE_SECTIONS",
+    "DOMAIN_CODES",
     "ClarificationRequired",
     "CorrectionFeedback",
-    "COMPREHENSIVE_SECTIONS",
-    "OutlineSectionProposal",
-    "FactEvidence",
-    "FactSetIssue",
-    "FactSetBuilder",
-    "FactSetHandle",
-    "DatasetFactInput",
-    "HospitalOperationCore",
-    "HospitalOperationAnalysisFact",
-    "HospitalOperationAnalysisFactSet",
-    "DOMAIN_CODES",
+    "DatasetAnalysisContext",
+    "DetailedAnalysisItem",
+    "DetailedAnalysisPlan",
     "DomainDefinition",
     "DomainResolution",
-    "HospitalOperationFact",
-    "HospitalOperationFactSet",
-    "HospitalOperationMetricFact",
-    "EvidenceKind",
-    "FindingProposal",
-    "FindingType",
-    "FindingsResult",
-    "HospitalOperationFinding",
+    "HospitalOperationCore",
     "HospitalOperationProfile",
-    "MetricFormula",
-    "PublicationGateResult",
-    "ReconciliationResult",
+    "OutlineSectionProposal",
     "ReportOutline",
     "ReportOutlineProposal",
     "ReportOutlineSection",
     "ReportRequestContext",
-    "coverage_status",
-    "build_fact_set_from_datasets",
-    "build_analysis_fact_set",
-    "build_findings",
     "build_domain_stage_guidance",
-    "detect_duplicate_conflicts",
-    "display_money",
     "domain_definitions",
     "domain_guidance",
-    "evaluate_publication_gate",
-    "make_outline",
     "freeze_outline",
-    "normalize_money",
+    "make_outline",
     "normalize_domain_code",
     "normalize_report_request",
-    "reconcile_series",
-    "reject_double_counting",
-    "ruijin_profile",
+    "profile_csv_dataset",
     "resolve_domain_mentions",
+    "ruijin_profile",
 ]

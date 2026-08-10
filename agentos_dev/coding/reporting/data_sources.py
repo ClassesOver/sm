@@ -121,7 +121,15 @@ class ReportDatasetStore:
             raise ReportingError("report_query_batch_invalid", "审核 SQL 批次数量无效。")
 
         validated: list[tuple[ApprovedQuery, DataSourceAdapter, str]] = []
+        seen_query_keys: set[tuple[str, str, str]] = set()
         for query in approved:
+            query_key = (query.source_id, query.requirement_id, query.query_window_id)
+            if query_key in seen_query_keys:
+                raise ReportingError(
+                    "report_query_duplicate_window",
+                    "同一 sourceId、requirementId、queryWindowId 只能执行一次查询。",
+                )
+            seen_query_keys.add(query_key)
             adapter = adapters.get(query.source_id)
             if adapter is None:
                 raise ReportingError("report_source_not_found", "审核 SQL 的数据源不存在。")

@@ -52,6 +52,61 @@ class _ReportDatasetResolver:
         return ["报表/数据集/收入.csv"]
 
 
+def _atomic_render_setup(tmp_path, monkeypatch):
+    current = service(tmp_path)
+    sandbox = current.sandbox_for("thread")
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+    toolkit = WorkspaceReportToolkit(async_service)
+    job_id = str(uuid.uuid4())
+    context = RunContext(
+        run_id="run",
+        session_id="thread",
+        session_state={
+            REPORT_JOBS_STATE_KEY: {
+                job_id: {
+                    "jobId": job_id,
+                    "_threadBinding": toolkit._thread_binding("thread"),
+                    "sources": [{"path": "data.csv", "size": 12, "sha256": "a" * 64}],
+                }
+            }
+        },
+    )
+
+    async def status(job, _run_context):
+        return {"jobId": job["jobId"], "status": "prepared", "sources": []}
+
+    monkeypatch.setattr(toolkit, "_job_status", status)
+    return sandbox, async_service, toolkit, job_id, context
+
+
+def _rendered_pair():
+    return {
+        "status": "rendered",
+        "pdfPath": "reports/revision-1/report.pdf",
+        "wordPath": "reports/revision-1/report.docx",
+        "render": {
+            "markdown": {"path": "report.md", "size": 1, "sha256": "b" * 64},
+            "pdf": {
+                "path": "reports/revision-1/report.pdf",
+                "size": 20,
+                "sha256": "c" * 64,
+            },
+            "word": {
+                "path": "reports/revision-1/report.docx",
+                "size": 30,
+                "sha256": "d" * 64,
+            },
+            "images": [],
+        },
+    }
+
+
 @pytest.mark.anyio
 async def test_报表任务由session_state恢复并拒绝跨thread复用和超限污染():
     service = _ReportStateService()
@@ -98,6 +153,11 @@ async def test_报表交付只接受当前请求触达且仍通过哈希复核�
                 "size": 34,
                 "sha256": "c" * 64,
             },
+            "报表/年度收入.docx": {
+                "path": "报表/年度收入.docx",
+                "size": 45,
+                "sha256": "d" * 64,
+            },
         }
     )
     toolkit = WorkspaceReportToolkit(service)
@@ -118,11 +178,13 @@ async def test_报表交付只接受当前请求触达且仍通过哈希复核�
                     "render": {
                         "markdown": service.entries["报表/年度收入.md"],
                         "pdf": service.entries["报表/年度收入.pdf"],
+                        "word": service.entries["报表/年度收入.docx"],
                         "images": [],
                     },
                     "validation": {
                         "ok": True,
                         "pdfPath": "报表/年度收入.pdf",
+                        "wordPath": "报表/年度收入.docx",
                     },
                 }
             },
@@ -136,8 +198,10 @@ async def test_报表交付只接受当前请求触达且仍通过哈希复核�
         "status": "validated",
         "markdownPath": "报表/年度收入.md",
         "pdfPath": "报表/年度收入.pdf",
+        "wordPath": "报表/年度收入.docx",
         "markdownSha256": "b" * 64,
         "pdfSha256": "c" * 64,
+        "wordSha256": "d" * 64,
     }
     assert await toolkit.validated_delivery("other-delivery", run_context=context) is None
 
@@ -173,7 +237,7 @@ async def test_报表工具把本轮实际触达的job绑定到交付门禁():
 
 
 @pytest.mark.anyio
-async def test_报表发布后状态提交失败会清理pdf和本次临时目录(tmp_path, monkeypatch):
+async def test_报表发布后状态提交失败会清理整个revision和本次临时目录(tmp_path, monkeypatch):
     current = service(tmp_path)
     current.sandbox_for("thread")
     async_service = WorkspaceService(
@@ -203,31 +267,45 @@ async def test_报表发布后状态提交失败会清理pdf和本次临时目�
     async def status(job, _run_context):
         return {"jobId": job["jobId"], "status": "prepared", "sources": []}
 
-    async def render(_action, payload, _run_context):
+    async def render(action, payload, _run_context):
+        if action == "validate_pdf":
+            return {
+                "ok": True,
+                "pdfPath": payload["pdf_path"],
+                "wordPath": payload["word_path"],
+            }
         return {
             "status": "rendered",
-            "pdfPath": "report.pdf",
+            "pdfPath": "reports/revision-1/report.pdf",
+            "wordPath": "reports/revision-1/report.docx",
             "render": {
                 "markdown": {"path": "report.md", "size": 1, "sha256": "b" * 64},
-                "pdf": {"path": "report.pdf", "size": 20, "sha256": "c" * 64},
+                "pdf": {
+                    "path": "reports/revision-1/report.pdf",
+                    "size": 20,
+                    "sha256": "c" * 64,
+                },
+                "word": {
+                    "path": "reports/revision-1/report.docx",
+                    "size": 30,
+                    "sha256": "d" * 64,
+                },
                 "images": [],
             },
         }
 
     async def hash_file(_thread, path):
-        return {"path": path, "size": 20, "sha256": "c" * 64}
+        if path.endswith(".pdf"):
+            return {"path": path, "size": 20, "sha256": "c" * 64}
+        return {"path": path, "size": 30, "sha256": "d" * 64}
 
     async def cleanup(path, _run_context, *, recursive):
         deleted.append((path, recursive))
-
-    async def unpublish(path, _staging, _run_context):
-        deleted.append((path, False))
 
     monkeypatch.setattr(toolkit, "_job_status", status)
     monkeypatch.setattr(toolkit, "_run_report_runtime", render)
     monkeypatch.setattr(async_service, "ahash_file", hash_file)
     monkeypatch.setattr(toolkit, "_delete_report_path", cleanup)
-    monkeypatch.setattr(toolkit, "_delete_published_report", unpublish)
     monkeypatch.setattr(
         toolkit,
         "_store_job",
@@ -238,12 +316,109 @@ async def test_报表发布后状态提交失败会清理pdf和本次临时目�
         await toolkit.report_render_markdown(
             job_id,
             "report.md",
-            "report.pdf",
+            "reports/revision-1/report.pdf",
             run_context=context,
         )
 
-    assert (f"{WORKSPACE_ROOT}/report.pdf", False) in deleted
+    assert (f"{WORKSPACE_ROOT}/reports/revision-1", True) in deleted
+    assert any(path.endswith(".tmp") and recursive for path, recursive in deleted)
     assert len([item for item in deleted if item[0].endswith("-render")]) == 1
+
+
+@pytest.mark.anyio
+async def test_word暂存失败不会发布revision(tmp_path, monkeypatch):
+    sandbox, _async_service, toolkit, job_id, context = _atomic_render_setup(tmp_path, monkeypatch)
+    original_exec = sandbox.process.exec
+
+    def fail_word_copy(command, cwd=None, timeout=None):
+        result = original_exec(command, cwd=cwd, timeout=timeout)
+        if "cp --no-clobber" in command and "render.docx" in command:
+            result.exit_code = 1
+        return result
+
+    async def render(action, _payload, _run_context):
+        assert action == "render_markdown"
+        return _rendered_pair()
+
+    sandbox.process.exec = fail_word_copy
+    monkeypatch.setattr(toolkit, "_run_report_runtime", render)
+
+    with pytest.raises(WorkspaceError, match="双格式报告暂存失败"):
+        await toolkit.report_render_markdown(
+            job_id,
+            "report.md",
+            "reports/revision-1/report.pdf",
+            run_context=context,
+        )
+
+    assert not any("mv -T" in item["command"] for item in sandbox.process.calls)
+    assert f"{WORKSPACE_ROOT}/reports/revision-1" not in sandbox.fs.entries
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("changed_suffix", [".pdf", ".docx"])
+async def test_任一暂存产物身份变化都会阻止发布(tmp_path, monkeypatch, changed_suffix):
+    sandbox, async_service, toolkit, job_id, context = _atomic_render_setup(tmp_path, monkeypatch)
+
+    async def render(action, _payload, _run_context):
+        assert action == "render_markdown"
+        return _rendered_pair()
+
+    async def hash_file(_thread, path):
+        if path.endswith(changed_suffix):
+            return {"path": path, "size": 99, "sha256": "e" * 64}
+        if path.endswith(".pdf"):
+            return {"path": path, "size": 20, "sha256": "c" * 64}
+        return {"path": path, "size": 30, "sha256": "d" * 64}
+
+    monkeypatch.setattr(toolkit, "_run_report_runtime", render)
+    monkeypatch.setattr(async_service, "ahash_file", hash_file)
+
+    with pytest.raises(WorkspaceError, match="双格式报告暂存身份校验失败"):
+        await toolkit.report_render_markdown(
+            job_id,
+            "report.md",
+            "reports/revision-1/report.pdf",
+            run_context=context,
+        )
+
+    assert not any("mv -T" in item["command"] for item in sandbox.process.calls)
+
+
+@pytest.mark.anyio
+async def test_联合验收失败不会发布revision(tmp_path, monkeypatch):
+    sandbox, async_service, toolkit, job_id, context = _atomic_render_setup(tmp_path, monkeypatch)
+    actions = []
+
+    async def render(action, payload, _run_context):
+        actions.append(action)
+        if action == "render_markdown":
+            return _rendered_pair()
+        return {
+            "ok": False,
+            "pdfPath": payload["pdf_path"],
+            "wordPath": payload["word_path"],
+        }
+
+    async def hash_file(_thread, path):
+        if path.endswith(".pdf"):
+            return {"path": path, "size": 20, "sha256": "c" * 64}
+        return {"path": path, "size": 30, "sha256": "d" * 64}
+
+    monkeypatch.setattr(toolkit, "_run_report_runtime", render)
+    monkeypatch.setattr(async_service, "ahash_file", hash_file)
+
+    with pytest.raises(WorkspaceError, match="PDF/Word 联合验收未通过"):
+        await toolkit.report_render_markdown(
+            job_id,
+            "report.md",
+            "reports/revision-1/report.pdf",
+            run_context=context,
+        )
+
+    assert actions == ["render_markdown", "validate_pdf"]
+    assert not any("mv -T" in item["command"] for item in sandbox.process.calls)
+    assert f"{WORKSPACE_ROOT}/reports/revision-1" not in sandbox.fs.entries
 
 
 @pytest.mark.anyio
@@ -290,7 +465,8 @@ async def test_报表渲染会创建revision输出父目录(tmp_path, monkeypatc
             run_context=context,
         )
 
-    assert f"{WORKSPACE_ROOT}/reports/revision-1" in sandbox.fs.entries
+    assert f"{WORKSPACE_ROOT}/reports" in sandbox.fs.entries
+    assert f"{WORKSPACE_ROOT}/reports/revision-1" not in sandbox.fs.entries
 
 
 def test_报表动作和工作区单文件边界统一为200mib():

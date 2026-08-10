@@ -24,13 +24,17 @@ MIN_COMPRESSION_CHARS = 2000
 SKILL_CONTENT_WINDOW = 10
 SKILL_PRUNE_MIN_CHARS = 5000
 SKILL_TOOL_NAMES = frozenset({"get_skill_instructions", "get_skill_reference", "get_skill_script"})
-CODING_CONTEXT_TOKEN_LIMIT = 256 * 1024
+# 这是所有 Coding 上下文的绝对顶线，具体 Agent 仍取自身配置与该值的较小者。
+# Reporting 模型已明确支持 1M 上下文；继续固定 256K 会在模型调用前错误拒绝合法的
+# Profile 定点分析与逐章成稿上下文，而普通 Coding Agent 的 262K 配置不会因此扩大。
+CODING_CONTEXT_TOKEN_LIMIT = 1024 * 1024
 CODING_OUTPUT_TOKEN_RESERVE = 32 * 1024
 CODING_RECENT_ASSISTANT_TURNS = 2
 CODING_CHECKPOINT_MAX_BYTES = 32 * 1024
 CODING_CONTEXT_REBASE_THRESHOLD = 0.75
 CODING_CONTEXT_REBASE_TARGET = 0.50
 CODING_TOOL_BATCH_LIMIT = 10
+_PROJECTED_INPUT_TOKEN_BUDGET_ATTR = "_coding_input_token_budget"
 CODING_TOOL_NAMES = frozenset(
     {
         "terminal",
@@ -632,6 +636,13 @@ class ContextBudgetController(ProtectedCompressionManager):
         self.context_token_limit = min(context_token_budget, CODING_CONTEXT_TOKEN_LIMIT)
         self.output_token_reserve = max(CODING_OUTPUT_TOKEN_RESERVE, output_token_reserve)
         self.input_token_budget = max(1, self.context_token_limit - self.output_token_reserve)
+        # Agno 的 canonical history 仍由 Agent 保留；这里仅把同一输入预算传给模型投影层。
+        # 之前投影层使用全局默认 hard cap，Reporting 的压缩预算因此没有真正生效。
+        try:
+            setattr(model, _PROJECTED_INPUT_TOKEN_BUDGET_ATTR, self.input_token_budget)
+        except Exception:
+            # 非 Agno 测试模型可能拒绝动态属性；压缩管理器本身仍可独立工作。
+            pass
         super().__init__(
             model=model,
             compress_tool_results=True,
@@ -1322,6 +1333,7 @@ _PARALLEL_SAFE_READ_TOOLS = frozenset(
         "view_image",
         "get_skill_instructions",
         "get_skill_reference",
+        "inspect_profile_index",
         "report_list_data_sources",
         "report_describe_data_source",
     }
@@ -1448,14 +1460,20 @@ _CODING_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar(
 
 
 class ProjectedOpenAIChat(OpenAIChat):
+    _coding_input_token_budget: int | None = None
+
     def _project(self, messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]):
         response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
         tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
+        hard_cap = getattr(self, _PROJECTED_INPUT_TOKEN_BUDGET_ATTR, None)
+        if not isinstance(hard_cap, int) or hard_cap < 1:
+            hard_cap = CODING_CONTEXT_TOKEN_LIMIT - CODING_OUTPUT_TOKEN_RESERVE
         projected = CodingContextProjector.project(
             messages,
             model=self,
             tools=tools,
             response_format=response_format,
+            hard_cap=hard_cap,
         )
         return projected, dict(CodingContextProjector.last_metrics)
 
@@ -1522,18 +1540,27 @@ class ProjectedOpenAIChat(OpenAIChat):
                 yield event
 
 
-def projected_coding_model(model: OpenAIChat) -> ProjectedOpenAIChat:
+def projected_coding_model(
+    model: OpenAIChat,
+    *,
+    input_token_budget: int | None = None,
+) -> ProjectedOpenAIChat:
     if (
         isinstance(model, ProjectedOpenAIChat)
         and (model.request_params or {}).get("parallel_tool_calls") is True
     ):
+        if isinstance(input_token_budget, int) and input_token_budget > 0:
+            setattr(model, _PROJECTED_INPUT_TOKEN_BUDGET_ATTR, input_token_budget)
         return model
     values = {field.name: getattr(model, field.name) for field in fields(model)}
     values["request_params"] = {
         **(model.request_params or {}),
         "parallel_tool_calls": True,
     }
-    return ProjectedOpenAIChat(**values)
+    projected = ProjectedOpenAIChat(**values)
+    if isinstance(input_token_budget, int) and input_token_budget > 0:
+        setattr(projected, _PROJECTED_INPUT_TOKEN_BUDGET_ATTR, input_token_budget)
+    return projected
 
 
 async def build_budgeted_history_context(

@@ -32,6 +32,7 @@ from .agent_control import (
     AGENT_LOADED_TOOLKITS_STATE_KEY,
     AGENT_PLAN_STATE_KEY,
 )
+from .agno_function_arguments import install_agno_function_argument_decoder
 from .agents import (
     create_assistant_team,
     create_assistants,
@@ -175,6 +176,7 @@ class CodingCancelPayload(BaseModel):
     run_id: str = Field(alias="runId", min_length=1, max_length=128)
 
 
+install_agno_function_argument_decoder()
 settings = AgentSettings.from_environment()
 workspace_secret = settings.workspace_hmac_secret
 agent_skills = load_skills(settings.skills_dir)
@@ -903,8 +905,8 @@ report_worker = create_report_worker(
     instructions=build_report_agent_instructions,
     report_coding_enable_thinking=settings.report_coding_enable_thinking,
     report_enable_vision=settings.report_enable_vision,
-    context_token_budget=settings.context_token_budget,
-    output_token_reserve=settings.output_token_reserve,
+    context_token_budget=settings.report_context_token_budget,
+    output_token_reserve=settings.report_output_token_reserve,
 )
 report_task_runner = ReportTaskRunner(
     coding_repository,

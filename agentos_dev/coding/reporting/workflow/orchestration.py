@@ -155,8 +155,8 @@ def create_reporting_workflow(
     generate_analysis_plan: StepExecutor,
     generate_query_candidates: StepExecutor,
     materialize_datasets: StepExecutor,
-    build_fact_set: StepExecutor,
-    generate_findings: StepExecutor,
+    prepare_analysis_context: StepExecutor,
+    generate_detailed_analysis_plan: StepExecutor,
     run_coding_analysis: StepExecutor,
     validate_report: StepExecutor,
     publish_report: StepExecutor,
@@ -187,6 +187,7 @@ def create_reporting_workflow(
                     on_error=OnError.fail,
                     max_retries=5,
                 ),
+                max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
@@ -198,6 +199,7 @@ def create_reporting_workflow(
                     step_name="解析数据来源与 Schema",
                     event_sink=event_sink,
                 ),
+                max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
@@ -221,6 +223,7 @@ def create_reporting_workflow(
                     step_name="受限数据画像",
                     event_sink=event_sink,
                 ),
+                max_retries=0,
                 on_error=OnError.fail,
             ),
             # 指标语义候选与正式提交必须拆成两个 Workflow Step。前一步只允许模型生成
@@ -235,6 +238,7 @@ def create_reporting_workflow(
                     step_name="生成指标语义候选",
                     event_sink=event_sink,
                 ),
+                max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
@@ -246,6 +250,7 @@ def create_reporting_workflow(
                     step_name="提交已确认指标语义",
                     event_sink=event_sink,
                 ),
+                max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
@@ -257,6 +262,7 @@ def create_reporting_workflow(
                     step_name="解析报表能力",
                     event_sink=event_sink,
                 ),
+                max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
@@ -268,6 +274,7 @@ def create_reporting_workflow(
                     step_name="执行跨表对账",
                     event_sink=event_sink,
                 ),
+                max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
@@ -303,26 +310,28 @@ def create_reporting_workflow(
                     step_name="物化不可变数据集",
                     event_sink=event_sink,
                 ),
+                max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
-                step_id="build-fact-set",
-                name="构建确定性业务 FactSet",
+                step_id="prepare-analysis-context",
+                name="准备分析数据上下文",
                 executor=_timed_step_executor(
-                    build_fact_set,
-                    step_id="build-fact-set",
-                    step_name="构建确定性业务 FactSet",
+                    prepare_analysis_context,
+                    step_id="prepare-analysis-context",
+                    step_name="准备分析数据上下文",
                     event_sink=event_sink,
                 ),
+                max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
-                step_id="generate-findings",
-                name="生成结构化分析发现",
+                step_id="generate-detailed-analysis-plan",
+                name="生成详细分析计划",
                 executor=_timed_step_executor(
-                    generate_findings,
-                    step_id="generate-findings",
-                    step_name="生成结构化分析发现",
+                    generate_detailed_analysis_plan,
+                    step_id="generate-detailed-analysis-plan",
+                    step_name="生成详细分析计划",
                     event_sink=event_sink,
                 ),
                 max_retries=0,
@@ -337,6 +346,7 @@ def create_reporting_workflow(
                     step_name="生成动态报告提纲",
                     event_sink=event_sink,
                 ),
+                max_retries=0,
                 human_review=HumanReview(
                     requires_output_review=True,
                     output_review_message="审核动态报告提纲；拒绝时请填写修改意见。",
@@ -360,11 +370,11 @@ def create_reporting_workflow(
             ),
             Step(
                 step_id="validate-report",
-                name="PDF 验收",
+                name="PDF/Word 双格式验收",
                 executor=_timed_step_executor(
                     validate_report,
                     step_id="validate-report",
-                    step_name="PDF 验收",
+                    step_name="PDF/Word 双格式验收",
                     event_sink=event_sink,
                 ),
                 max_retries=0,
@@ -379,6 +389,7 @@ def create_reporting_workflow(
                     step_name="发布审核",
                     event_sink=event_sink,
                 ),
+                max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
@@ -390,6 +401,7 @@ def create_reporting_workflow(
                     step_name="正式发布",
                     event_sink=event_sink,
                 ),
+                max_retries=0,
                 on_error=OnError.fail,
             ),
         ],

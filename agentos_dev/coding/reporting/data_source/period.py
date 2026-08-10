@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from typing import Literal
+
+from dateutil.relativedelta import relativedelta
 
 PeriodGranularity = Literal["date", "month", "year"]
 PeriodRole = Literal["current", "yoy", "mom"]
+ComparisonRole = Literal["yoy", "mom"]
 
 
 @dataclass(frozen=True)
@@ -81,11 +84,13 @@ def build_period_windows(
     period_end: date,
     *,
     include_yoy: bool = True,
-    include_mom: bool = True,
+    include_mom: bool = False,
+    granularity: PeriodGranularity = "date",
 ) -> PeriodWindowSet:
-    """生成比较窗口，所有边界均为闭区间。"""
+    """生成比较窗口，所有边界均为按物理期间粒度规范化后的闭区间。"""
     if period_start > period_end:
         raise ValueError("分析期间无效")
+    period_start, period_end = normalize_period_bounds(period_start, period_end, granularity)
     windows = [PeriodWindow("current", period_start, period_end)]
     if include_yoy:
         windows.append(
@@ -96,10 +101,37 @@ def build_period_windows(
             )
         )
     if include_mom:
-        days = (period_end - period_start).days + 1
-        previous_end = period_start - timedelta(days=1)
-        windows.append(PeriodWindow("mom", previous_end - timedelta(days=days - 1), previous_end))
+        if granularity == "year":
+            raise ValueError("year 粒度不支持 mom")
+        if _is_complete_calendar_month(period_start, period_end):
+            previous_start = period_start - relativedelta(months=1)
+            previous_end = previous_start + relativedelta(months=1, days=-1)
+            windows.append(PeriodWindow("mom", previous_start, previous_end))
+        elif not _is_complete_month_sequence(period_start, period_end):
+            raise ValueError("mom 只支持单一完整日历月")
+        # 多个完整月份的环比由 current 月序列相邻计算，不签发额外历史查询窗口。
     return PeriodWindowSet(tuple(windows))
+
+
+def normalize_period_bounds(
+    period_start: date,
+    period_end: date,
+    granularity: PeriodGranularity,
+) -> tuple[date, date]:
+    """把业务期间规范为物理谓词真正使用的边界。"""
+    if period_start > period_end:
+        raise ValueError("分析期间无效")
+    if granularity == "date":
+        return period_start, period_end
+    if granularity == "month":
+        start = period_start.replace(day=1)
+        end = period_end.replace(day=1) + relativedelta(months=1, days=-1)
+        return start, end
+    return date(period_start.year, 1, 1), date(period_end.year, 12, 31)
+
+
+def _is_complete_calendar_month(period_start: date, period_end: date) -> bool:
+    return period_start.day == 1 and period_end == period_start + relativedelta(months=1, days=-1)
 
 
 def normalize_period_role(value: str) -> PeriodRole:
@@ -133,6 +165,12 @@ def unique_period_windows(windows: Iterable[PeriodWindow]) -> tuple[UniquePeriod
     return tuple(
         UniquePeriodWindow(start=start, end=end, roles=tuple(roles))
         for (start, end), roles in grouped.items()
+    )
+
+
+def _is_complete_month_sequence(period_start: date, period_end: date) -> bool:
+    return period_start.day == 1 and period_end == period_end.replace(day=1) + relativedelta(
+        months=1, days=-1
     )
 
 
@@ -177,12 +215,14 @@ def period_window_filter_sql(
 
 __all__ = [
     "PeriodGranularity",
+    "ComparisonRole",
     "PeriodRole",
     "PeriodWindow",
     "PeriodWindowSet",
     "UniquePeriodWindow",
     "build_period_windows",
     "normalize_period_role",
+    "normalize_period_bounds",
     "normalized_period_sql",
     "period_filter_sql",
     "period_window_filter_sql",

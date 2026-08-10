@@ -6,6 +6,7 @@ import pytest
 from agentos_dev.coding.reporting.models import ReportingError
 from agentos_dev.coding.reporting.workflow import execution as execution_module
 from agentos_dev.coding.reporting.workflow.execution import ReportTaskRunner
+from agentos_dev.coding.reporting.workflow.execution import MAX_REPORT_INSTRUCTION_BYTES
 from agentos_dev.task_execution import TaskScope, TaskState
 
 
@@ -73,6 +74,20 @@ class _Cleanup:
 
     async def cleanup_disconnect(self, _scope, epoch):
         self.disconnected_epochs.append(epoch)
+
+
+@pytest.mark.anyio
+async def test_report_task_runner仅为reporting提高指令上限():
+    captured = {}
+
+    class Repository:
+        async def create_task_with_initial_attempt(self, scope, instruction, **kwargs):
+            captured.update(scope=scope, instruction=instruction, kwargs=kwargs)
+
+    runner = ReportTaskRunner(Repository(), SimpleNamespace(), _Cleanup())
+    await runner.start(_scope(), "完整报表上下文", acceptance_contract={"version": 1})
+
+    assert captured["kwargs"]["max_instruction_bytes"] == MAX_REPORT_INSTRUCTION_BYTES
 
 
 @pytest.mark.anyio

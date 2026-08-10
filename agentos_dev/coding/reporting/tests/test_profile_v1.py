@@ -38,6 +38,10 @@ def _documents(root) -> ReportingProfileRegistry:
             "version": "1",
             "profileId": "base",
             "revision": "1",
+            "documentBranding": {
+                "organizationName": "基础机构",
+                "generatedByLabel": "基础平台生成",
+            },
             "sections": [
                 {"code": "executive_summary", "title": "执行摘要", "required": True},
                 {
@@ -61,8 +65,13 @@ def _documents(root) -> ReportingProfileRegistry:
             "revision": "2",
             "extends": ["base"],
             "pageLayout": {
+                "headerLeft": "{organization}",
                 "headerRight": "{title} · 医院 A",
                 "footerLeft": "内部管理资料",
+            },
+            "documentBranding": {
+                "organizationName": "医院 A",
+                "watermarkText": "医院 A 内部报告",
             },
             "dimensions": [
                 {
@@ -205,10 +214,13 @@ def test_profile显式继承按code覆盖停用且hash稳定(tmp_path):
         "budget-analysis",
     ]
     assert first.sections[0].title == "医院管理摘要"
-    assert first.page_layout.header_left == "上海鼎医信息技术有限公司"
+    assert first.page_layout.header_left == "{organization}"
     assert first.page_layout.header_right == "{title} · 医院 A"
     assert first.page_layout.footer_left == "内部管理资料"
     assert first.page_layout.footer_right == "第 {page} / {pages} 页"
+    assert first.document_branding.organization_name == "医院 A"
+    assert first.document_branding.generated_by_label == "基础平台生成"
+    assert first.document_branding.watermark_text == "医院 A 内部报告"
     assert first.effective_profile_hash == second.effective_profile_hash
     tampered = first.model_dump(mode="json", by_alias=True)
     tampered["sections"][0]["title"] = "被修改"
@@ -351,7 +363,7 @@ def test_profile拒绝连接字段和循环继承(tmp_path):
 
 def test_profile页面格式拒绝未知占位符和缺少页码(tmp_path):
     for profile_id, page_layout in (
-        ("unknown", {"headerLeft": "{organization}"}),
+        ("unknown", {"headerLeft": "{unknown}"}),
         ("no-pages", {"footerRight": "第 {page} 页", "footerLeft": ""}),
     ):
         root = tmp_path / profile_id
@@ -375,6 +387,47 @@ def test_profile页面格式拒绝未知占位符和缺少页码(tmp_path):
         with pytest.raises(ValueError):
             registry = load_configured_reporting_profiles(root)
             resolve_reporting_profile(registry, profile_id)
+
+
+def test_profile默认品牌进入hash且拒绝空值和控制字符(tmp_path):
+    builtin = resolve_reporting_profile(
+        ReportingProfileRegistry(documents={}, config_paths=()), None
+    )
+
+    assert builtin.document_branding.organization_name == "上海鼎医信息技术有限公司"
+    assert builtin.document_branding.generated_by_label == "AI 智能报告平台生成"
+    assert builtin.document_branding.watermark_text == "AI 智能报告平台生成"
+    assert builtin.page_layout.header_left == "{organization}"
+
+    for profile_id, value in (("blank", "   "), ("control", "平台\n生成")):
+        root = tmp_path / profile_id
+        _write_profile(
+            root,
+            "profile.json",
+            {
+                "version": "1",
+                "profileId": profile_id,
+                "revision": "1",
+                "documentBranding": {"generatedByLabel": value},
+                "sections": [
+                    {"code": "executive_summary", "title": "执行摘要"},
+                    {"code": "scope_and_methodology", "title": "范围"},
+                    {"code": "key_findings", "title": "发现"},
+                    {"code": "limitations", "title": "限制"},
+                    {"code": "recommendations", "title": "建议"},
+                ],
+            },
+        )
+        with pytest.raises(ValueError):
+            load_configured_reporting_profiles(root)
+
+
+def test_profile品牌覆盖会改变有效hash(tmp_path):
+    registry = _documents(tmp_path)
+    base = resolve_reporting_profile(registry, "base")
+    hospital = resolve_reporting_profile(registry, "hospital-a")
+
+    assert base.effective_profile_hash != hospital.effective_profile_hash
 
 
 def test_capability由snapshot和datashape确定性缩小(tmp_path):

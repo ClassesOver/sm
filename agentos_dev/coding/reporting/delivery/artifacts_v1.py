@@ -11,17 +11,26 @@ from markdown_it import MarkdownIt
 from pydantic import Field, field_validator, model_validator
 
 from ..contract import SHA256_PATTERN, StrictModel
+from ..hospital_operation.delivery import SourcePolicy, SourceWarning
 from ..models import ReportingError
 from ..workflow.query_pipeline import DatasetLineage
 
-_FACT_MARKER = re.compile(r"\[\[fact:([^\]\r\n]+)\]\]")
+_ANALYSIS_MARKER = re.compile(r"\[\[analysis:([^\]\r\n]+)\]\]")
+_TABLE_BLOCK = re.compile(
+    r"^\[\[table:([^\]\r\n]+)\]\]\n(.*?)\n\[\[/table:\1\]\]$",
+    re.MULTILINE | re.DOTALL,
+)
 
 
 class ArtifactFile(StrictModel):
     path: str = Field(min_length=1, max_length=512)
-    media_type: Literal["text/markdown", "image/png", "image/jpeg", "application/pdf"] = Field(
-        alias="mediaType"
-    )
+    media_type: Literal[
+        "text/markdown",
+        "image/png",
+        "image/jpeg",
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ] = Field(alias="mediaType")
     size: int = Field(ge=1, le=200 * 1024 * 1024)
     sha256: str = Field(pattern=SHA256_PATTERN)
 
@@ -39,7 +48,8 @@ class ArtifactFile(StrictModel):
 class ChartArtifact(ArtifactFile):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)
-    fact_ids: tuple[str, ...] = Field(alias="factIds", min_length=1, max_length=2_000)
+    source_policy: SourcePolicy | None = Field(default=None, alias="sourcePolicy")
+    source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
 
     @model_validator(mode="after")
     def validate_image(self) -> ChartArtifact:
@@ -47,8 +57,6 @@ class ChartArtifact(ArtifactFile):
             raise ValueError("图表产物必须是图片")
         if len(set(self.dataset_ids)) != len(self.dataset_ids):
             raise ValueError("图表数据集引用不能重复")
-        if len(set(self.fact_ids)) != len(self.fact_ids):
-            raise ValueError("图表事实引用不能重复")
         return self
 
 
@@ -56,6 +64,14 @@ class Citation(StrictModel):
     citation_id: str = Field(alias="citationId", min_length=1, max_length=128)
     dataset_id: str = Field(alias="datasetId", min_length=1, max_length=128)
     requirement_id: str = Field(alias="requirementId", min_length=1, max_length=128)
+    snapshot_hash: str = Field(alias="snapshotHash", pattern=SHA256_PATTERN)
+
+
+class TableArtifact(StrictModel):
+    """由服务端表格协议块计算的独立产物身份。"""
+
+    table_id: str = Field(alias="tableId", min_length=1, max_length=128)
+    sha256: str = Field(pattern=SHA256_PATTERN)
 
 
 class ReportArtifactManifest(StrictModel):
@@ -65,28 +81,33 @@ class ReportArtifactManifest(StrictModel):
     dataset_snapshot_hash: str = Field(alias="datasetSnapshotHash", pattern=SHA256_PATTERN)
     effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
     markdown: ArtifactFile
-    charts: tuple[ChartArtifact, ...] = Field(default=(), max_length=100)
+    tables: tuple[TableArtifact, ...] = Field(default=(), max_length=2_000)
+    charts: tuple[ChartArtifact, ...] = ()
     citations: tuple[Citation, ...] = Field(min_length=1, max_length=2_000)
-    fact_ids: tuple[str, ...] = Field(alias="factIds", min_length=1, max_length=10_000)
+    analysis_ids: tuple[str, ...] = Field(default=(), alias="analysisIds", max_length=2_000)
     # 章节内容和顺序由 Workflow 批准提纲冻结，并通过 expectedSections 精确验收。
     # 交付模型只约束通用结构，不能再维护一份会与综合十章或专题子集冲突的业务清单。
     sections: tuple[str, ...] = Field(min_length=1, max_length=100)
+    source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
 
     @model_validator(mode="after")
     def validate_manifest(self) -> ReportArtifactManifest:
         if self.markdown.media_type != "text/markdown":
             raise ValueError("正文产物必须是 Markdown")
         chart_ids = [item.chart_id for item in self.charts]
+        table_ids = [item.table_id for item in self.tables]
         citation_ids = [item.citation_id for item in self.citations]
         paths = [self.markdown.path, *(item.path for item in self.charts)]
         if len(chart_ids) != len(set(chart_ids)):
             raise ValueError("chartId 不能重复")
+        if len(table_ids) != len(set(table_ids)):
+            raise ValueError("tableId 不能重复")
         if len(citation_ids) != len(set(citation_ids)):
             raise ValueError("citationId 不能重复")
-        if len(self.fact_ids) != len(set(self.fact_ids)):
-            raise ValueError("factId 不能重复")
-        if any(set(chart.fact_ids) - set(self.fact_ids) for chart in self.charts):
-            raise ValueError("图表事实必须属于报告事实引用")
+        if len(self.analysis_ids) != len(set(self.analysis_ids)) or any(
+            not re.fullmatch(r"analysis_[0-9]{3,6}", item) for item in self.analysis_ids
+        ):
+            raise ValueError("analysisId 无效或重复")
         if len(paths) != len(set(paths)):
             raise ValueError("产物路径不能重复")
         if len(self.sections) != len(set(self.sections)):
@@ -101,6 +122,7 @@ def authoritative_citations(lineage: tuple[DatasetLineage, ...]) -> tuple[Citati
             citationId=f"citation_{index:03d}",
             datasetId=item.dataset_id,
             requirementId=item.requirement_id,
+            snapshotHash=item.sha256,
         )
         for index, item in enumerate(ordered, start=1)
     )
@@ -116,8 +138,8 @@ def build_authoritative_manifest(
     markdown: str,
     accepted_artifacts: list[dict[str, Any]],
     lineage: tuple[DatasetLineage, ...],
-    allowed_fact_ids: tuple[str, ...],
     sections: tuple[str, ...],
+    source_warnings: tuple[SourceWarning, ...] = (),
 ) -> ReportArtifactManifest:
     artifacts: dict[str, dict[str, Any]] = {
         path: item
@@ -136,19 +158,13 @@ def build_authoritative_manifest(
 
     citations = authoritative_citations(lineage)
     citation_datasets = {item.citation_id: item.dataset_id for item in citations}
-    fact_ids = tuple(sorted(set(_FACT_MARKER.findall(markdown))))
-    allowed_facts = set(allowed_fact_ids)
-    if not fact_ids or set(fact_ids) - allowed_facts:
-        raise ReportingError(
-            "report_artifact_fact_invalid",
-            "Markdown 必须绑定至少一个已注册 MetricFact，且不得引用未知事实。",
-        )
+    analysis_ids = tuple(dict.fromkeys(_ANALYSIS_MARKER.findall(markdown)))
     image_bindings = _markdown_image_bindings(
         markdown,
         markdown_path,
         citation_datasets,
-        allowed_facts,
     )
+    tables = _markdown_table_artifacts(markdown)
     extra_paths = set(artifacts) - {markdown_path}
     submitted_images = {
         path
@@ -161,18 +177,18 @@ def build_authoritative_manifest(
             "正式产物回执必须包含 Markdown 引用的全部图表，且不能包含非图片附加产物。",
         )
 
-    charts = tuple(
-        ChartArtifact(
-            path=path,
-            mediaType=_image_media_type(path),
-            size=_artifact_size(artifacts[path]),
-            sha256=_artifact_sha256(artifacts[path]),
-            chartId=f"chart_{index:03d}",
-            datasetIds=image_bindings[path][0],
-            factIds=image_bindings[path][1],
+    charts: list[ChartArtifact] = []
+    for index, path in enumerate(sorted(image_bindings), start=1):
+        charts.append(
+            ChartArtifact(
+                path=path,
+                mediaType=_image_media_type(path),
+                size=_artifact_size(artifacts[path]),
+                sha256=_artifact_sha256(artifacts[path]),
+                chartId=f"chart_{index:03d}",
+                datasetIds=image_bindings[path],
+            )
         )
-        for index, path in enumerate(sorted(image_bindings), start=1)
-    )
     return ReportArtifactManifest(
         reportId=report_id,
         revision=revision,
@@ -185,11 +201,35 @@ def build_authoritative_manifest(
             size=_artifact_size(markdown_artifact),
             sha256=_artifact_sha256(markdown_artifact),
         ),
-        charts=charts,
+        tables=tables,
+        charts=tuple(charts),
         citations=citations,
-        factIds=fact_ids,
+        analysisIds=analysis_ids,
         sections=sections,
+        sourceWarnings=source_warnings,
     )
+
+
+def _markdown_table_artifacts(markdown: str) -> tuple[TableArtifact, ...]:
+    """表格起止标记只能由结构化 Draft 渲染器生成，清单据此签发逐表哈希。"""
+
+    tables: list[TableArtifact] = []
+    for match in _TABLE_BLOCK.finditer(markdown):
+        table_id, body = match.groups()
+        tables.append(
+            TableArtifact(
+                tableId=table_id,
+                sha256=hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            )
+        )
+    marker_ids = re.findall(r"\[\[table:([^\]\r\n]+)\]\]", markdown)
+    closing_ids = re.findall(r"\[\[/table:([^\]\r\n]+)\]\]", markdown)
+    parsed_ids = [item.table_id for item in tables]
+    if marker_ids != closing_ids or marker_ids != parsed_ids or len(parsed_ids) != len(set(parsed_ids)):
+        raise ReportingError(
+            "report_artifact_table_invalid", "Markdown 表格协议块缺失、重复或边界不一致。"
+        )
+    return tuple(tables)
 
 
 def _artifact_size(artifact: dict[str, Any]) -> int:
@@ -221,12 +261,10 @@ def _markdown_image_bindings(
     markdown: str,
     markdown_path: str,
     citation_datasets: dict[str, str],
-    allowed_fact_ids: set[str],
-) -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
+) -> dict[str, tuple[str, ...]]:
     lines = markdown.splitlines()
     parent = PurePosixPath(markdown_path).parent
     dataset_bindings: dict[str, set[str]] = {}
-    fact_bindings: dict[str, set[str]] = {}
     for token in MarkdownIt("commonmark").parse(markdown):
         images = [item for item in token.children or () if item.type == "image"]
         if not images:
@@ -235,13 +273,11 @@ def _markdown_image_bindings(
         citation_ids = set(
             re.findall(r"\[\[citation:([^\]\r\n]+)\]\]", "\n".join(lines[start:end]))
         )
-        fact_ids = set(_FACT_MARKER.findall("\n".join(lines[start:end])))
         unknown = citation_ids - set(citation_datasets)
-        unknown_facts = fact_ids - allowed_fact_ids
-        if unknown or not citation_ids or unknown_facts or not fact_ids:
+        if unknown or not citation_ids:
             raise ReportingError(
                 "report_artifact_chart_citation_invalid",
-                "每个图表必须在同一 Markdown 段落绑定已注册的 citation 和 MetricFact。",
+                "每个图表必须在同一 Markdown 段落绑定已注册 citation。",
             )
         for image in images:
             source = str(image.attrGet("src") or "")
@@ -265,9 +301,8 @@ def _markdown_image_bindings(
             dataset_bindings.setdefault(path, set()).update(
                 citation_datasets[item] for item in citation_ids
             )
-            fact_bindings.setdefault(path, set()).update(fact_ids)
     return {
-        path: (tuple(sorted(dataset_ids)), tuple(sorted(fact_bindings[path])))
+        path: tuple(sorted(dataset_ids))
         for path, dataset_ids in dataset_bindings.items()
     }
 
@@ -275,14 +310,19 @@ def _markdown_image_bindings(
 class PdfArtifactManifest(StrictModel):
     report_id: str = Field(alias="reportId", min_length=1, max_length=128)
     revision: int = Field(ge=1)
+    effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
+    source_markdown_sha256: str = Field(alias="sourceMarkdownSha256", pattern=SHA256_PATTERN)
+    source_chart_sha256s: tuple[str, ...] = Field(
+        default=(), alias="sourceChartSha256s"
+    )
     pdf: ArtifactFile
     page_count: int = Field(alias="pageCount", ge=1, le=1_000)
     rendered_chart_ids: tuple[str, ...] = Field(
-        default=(), alias="renderedChartIds", max_length=100
+        default=(), alias="renderedChartIds"
     )
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=2_000)
-    fact_ids: tuple[str, ...] = Field(default=(), alias="factIds", max_length=10_000)
     sections: tuple[str, ...] = Field(min_length=1, max_length=100)
+    source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
 
     @model_validator(mode="after")
     def validate_pdf(self) -> PdfArtifactManifest:
@@ -292,8 +332,41 @@ class PdfArtifactManifest(StrictModel):
             raise ValueError("PDF 图表引用不能重复")
         if len(self.citation_ids) != len(set(self.citation_ids)):
             raise ValueError("PDF 引用不能重复")
-        if len(self.fact_ids) != len(set(self.fact_ids)):
-            raise ValueError("PDF 事实引用不能重复")
+        return self
+
+
+class DocxArtifactManifest(StrictModel):
+    report_id: str = Field(alias="reportId", min_length=1, max_length=128)
+    revision: int = Field(ge=1)
+    effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
+    source_markdown_sha256: str = Field(alias="sourceMarkdownSha256", pattern=SHA256_PATTERN)
+    source_chart_sha256s: tuple[str, ...] = Field(
+        default=(), alias="sourceChartSha256s"
+    )
+    docx: ArtifactFile
+    converted_page_count: int = Field(alias="convertedPageCount", ge=1, le=1_000)
+    section_count: int = Field(alias="sectionCount", ge=1, le=100)
+    toc_entry_count: int = Field(alias="tocEntryCount", ge=0, le=100)
+    rendered_chart_ids: tuple[str, ...] = Field(
+        default=(), alias="renderedChartIds"
+    )
+    citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=2_000)
+    sections: tuple[str, ...] = Field(min_length=1, max_length=100)
+    source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
+
+    @model_validator(mode="after")
+    def validate_docx(self) -> DocxArtifactManifest:
+        if (
+            self.docx.media_type
+            != "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ):
+            raise ValueError("Word 产物类型无效")
+        for values, message in (
+            (self.rendered_chart_ids, "Word 图表引用不能重复"),
+            (self.citation_ids, "Word 引用不能重复"),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(message)
         return self
 
 
@@ -325,30 +398,45 @@ def validate_markdown_markers(draft: ReportArtifactManifest, markdown: str) -> N
             "report_artifact_section_missing",
             f"Markdown 缺少关键章节标识：{', '.join(missing_sections)}。",
         )
-    missing_facts = [fact_id for fact_id in draft.fact_ids if f"[[fact:{fact_id}]]" not in markdown]
-    if missing_facts:
-        raise ReportingError(
-            "report_artifact_fact_missing",
-            f"Markdown 缺少事实引用标识：{', '.join(missing_facts)}。",
-        )
 
 
 def validate_rendered_artifacts(
     draft: ReportArtifactManifest,
-    rendered: PdfArtifactManifest,
+    pdf: PdfArtifactManifest,
+    word: DocxArtifactManifest,
     *,
     lineage: tuple[DatasetLineage, ...],
 ) -> None:
-    if draft.report_id != rendered.report_id or draft.revision != rendered.revision:
+    if any(
+        draft.report_id != rendered.report_id or draft.revision != rendered.revision
+        for rendered in (pdf, word)
+    ):
         raise ReportingError(
-            "report_artifact_revision_mismatch", "PDF 与当前报告 revision 不一致。"
+            "report_artifact_revision_mismatch", "PDF/Word 与当前报告 revision 不一致。"
         )
     if dataset_snapshot_hash(lineage) != draft.dataset_snapshot_hash:
         raise ReportingError("report_artifact_dataset_changed", "成稿使用的数据集已变化。")
 
-    lineage_keys = {(item.dataset_id, item.requirement_id) for item in lineage}
+    expected_chart_sha256s = tuple(item.sha256 for item in draft.charts)
+    for rendered in (pdf, word):
+        if (
+            rendered.effective_profile_hash != draft.effective_profile_hash
+            or rendered.source_markdown_sha256 != draft.markdown.sha256
+            or rendered.source_chart_sha256s != expected_chart_sha256s
+        ):
+            raise ReportingError(
+                "report_artifact_source_mismatch",
+                "PDF/Word 未绑定当前 Profile、Markdown 或图表身份。",
+            )
+
+    lineage_by_key = {(item.dataset_id, item.requirement_id): item for item in lineage}
     if any(
-        (citation.dataset_id, citation.requirement_id) not in lineage_keys
+        (citation.dataset_id, citation.requirement_id) not in lineage_by_key
+        or (
+            citation.snapshot_hash
+            and citation.snapshot_hash
+            != lineage_by_key[(citation.dataset_id, citation.requirement_id)].sha256
+        )
         for citation in draft.citations
     ) or any(
         dataset_id not in {item.dataset_id for item in lineage}
@@ -357,11 +445,12 @@ def validate_rendered_artifacts(
     ):
         raise ReportingError("report_artifact_lineage_invalid", "报告产物引用了未知数据集。")
 
-    if {item.chart_id for item in draft.charts} != set(rendered.rendered_chart_ids):
-        raise ReportingError("report_artifact_chart_missing", "PDF 未完整渲染报告图表。")
-    if {item.citation_id for item in draft.citations} != set(rendered.citation_ids):
-        raise ReportingError("report_artifact_citation_missing", "PDF 未完整保留数据引用。")
-    if set(draft.fact_ids) != set(rendered.fact_ids):
-        raise ReportingError("report_artifact_fact_missing", "PDF 未完整保留事实引用。")
-    if not set(draft.sections).issubset(rendered.sections):
-        raise ReportingError("report_artifact_section_missing", "PDF 缺少报告关键章节。")
+    for rendered in (pdf, word):
+        if {item.chart_id for item in draft.charts} != set(rendered.rendered_chart_ids):
+            raise ReportingError("report_artifact_chart_missing", "PDF/Word 未完整渲染报告图表。")
+        if {item.citation_id for item in draft.citations} != set(rendered.citation_ids):
+            raise ReportingError(
+                "report_artifact_citation_missing", "PDF/Word 未完整保留数据引用。"
+            )
+        if draft.sections != rendered.sections:
+            raise ReportingError("report_artifact_section_missing", "PDF/Word 正式章节不一致。")

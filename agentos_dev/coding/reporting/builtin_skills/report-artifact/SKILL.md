@@ -1,6 +1,6 @@
 ---
 name: report-artifact
-description: 验证 Reporting Workflow 的 Markdown、图表和 ReportArtifactManifest 交付契约。
+description: 验证 Reporting Workflow 的 Markdown、图表和 ReportArtifactManifest 成稿契约。
 metadata:
   agentos:
     acceptance:
@@ -14,10 +14,12 @@ metadata:
 
 # Reporting 产物验收
 
-该技能只提供服务端固定 validator。生成全部产物后，使用任务验收契约声明的
-`report-artifact:manifest` 验证实际交付路径、citation、MetricFact、事实表格和图表事实绑定，
-再调用 `finish_task`。最终 PDF 隐藏协议 marker，权威 Markdown 和 Manifest 保留完整事实血缘。
+该技能只提供服务端固定 validator。生成全部成稿产物后，使用任务验收契约声明的
+`report-artifact:manifest` 验证实际交付路径、citation 和图表引用，
+再调用 `finish_task`。PDF 和 Word 由 Workflow 在同一 revision 中从该 Markdown 确定性生成并联合验收；
+模型不得自行生成、修改或发布任一成品。最终 PDF/Word 隐藏协议 marker，权威 Markdown 和 Manifest
+保留完整数据集血缘。
 
-成稿只读取 `analysisFactSetRef.path` 指向的紧凑分析目录；完整 FactSet 和原始物化数据集仅供服务端
-审计，不得读取或重新聚合。事实表格只提交表头、行标签和 publishable MetricFact ID，数值由服务端
-使用目录中的同一 `displayText` 回填，禁止生成明细数据表或自行提交单元格数值。
+分析与成稿只读取 Workflow 提供的本轮不可变 CSV。章节按批准提纲顺序逐章生成并绑定
+`analysisId`，图表绑定 citation；全部章节完成后由服务端统一拼装 Markdown、PDF 和 Word。
+来源差异 Warning 由服务端签发，模型不得隐藏、删除、改写差异数值或扩大授权来源。

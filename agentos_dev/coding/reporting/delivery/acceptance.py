@@ -54,8 +54,8 @@ def build_report_artifact_validation_context(
     observed_data_facts: list[dict[str, Any]] | None = None,
     expected_sections: tuple[str, ...] = (),
     expected_citation_bindings: tuple[tuple[str, str], ...] = (),
-    expected_citations: tuple[tuple[str, str, str], ...] = (),
-    expected_fact_ids: tuple[str, ...] = (),
+    expected_citations: tuple[tuple[str, ...], ...] = (),
+    analysis_context_file: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "version": 1,
@@ -69,12 +69,18 @@ def build_report_artifact_validation_context(
         ],
         "expectedCitations": [
             {
-                "citationId": citation_id,
-                "datasetId": dataset_id,
-                "requirementId": requirement_id,
+                "citationId": item[0],
+                "datasetId": item[1],
+                "requirementId": item[2],
+                **({"snapshotHash": item[3]} if len(item) > 3 else {}),
             }
-            for citation_id, dataset_id, requirement_id in expected_citations
+            for item in expected_citations
+            if len(item) >= 3
         ],
-        "expectedFactIds": list(dict.fromkeys(expected_fact_ids)),
+        **(
+            {"analysisContextFile": dict(analysis_context_file)}
+            if analysis_context_file is not None
+            else {}
+        ),
         "manifestSchema": ReportArtifactManifest.model_json_schema(by_alias=True),
     }
