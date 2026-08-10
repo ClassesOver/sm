@@ -1,31 +1,28 @@
 # Enterprise Reporting Workflow
 
 Reporting 是独立于纯 Coding Agent 的企业报表产品。当前唯一工作流为
-`enterprise-reporting-workflow-v1`，共 18 步：
+`enterprise-reporting-workflow-v1`，共 15 步：
 
 1. 规范化请求。
 2. 解析数据来源与 Schema。
-3. 生成数据理解计划。
-4. 执行受限数据画像。
-5. 生成指标语义候选。
-6. 提交指标语义。
-7. 解析报表能力。
-8. 执行跨表对账。
-9. 生成初始分析计划与取数需求。
-10. 生成并审核只读取数方案。
-11. 物化不可变 CSV。
-12. 准备分析数据上下文。
-13. 根据 Profile 索引生成详细分析计划。
-14. 生成并审核动态提纲。
-15. Coding 按章节分析与成稿。
-16. 验收报表产物。
-17. 发布报表。
-18. 返回最终下载回执。
+3. 确定数据范围并执行受限数据画像。
+4. 生成指标语义候选。
+5. 提交指标语义。
+6. 执行跨表对账。
+7. 生成初始分析计划与取数需求，并确定报表能力。
+8. 生成并审核只读取数方案。
+9. 物化不可变 CSV。
+10. 准备分析数据上下文。
+11. 根据 Profile 索引生成详细分析计划。
+12. 生成并审核动态提纲。
+13. Coding 按章节分析与成稿。
+14. 验收报表产物。
+15. 执行发布门禁并返回最终下载回执。
 
 ## 数据与 Profile
 
-步骤 11 为每个授权查询物化不可变 CSV，并冻结相对路径、大小、SHA-256 和
-`DatasetLineage`。步骤 12 对完整 CSV 执行 `fg-data-profiling`，完整 Profile 作为独立 JSON
+步骤 9 为每个授权查询物化不可变 CSV，并冻结相对路径、大小、SHA-256 和
+`DatasetLineage`。步骤 10 对完整 CSV 执行 `fg-data-profiling`，完整 Profile 作为独立 JSON
 文件保存，不截断统计结果。`profileModelView` 只提供 coverage、alerts、highlights 和 JSON
 Pointer 索引，单个 Dataset 视图硬限制在 12 KiB 内。模型先通过
 `inspect_profile_index` 获取单个 Dataset 的紧凑 coverage、完整/已索引告警数、分层截断状态和
@@ -42,7 +39,7 @@ Profile 用于定位分析重点，不替代最终计算。报告中的正文数
 
 ## 详细分析计划
 
-步骤 13 不启动第二个 Coding Task，也不重复读取 CSV。服务端根据步骤 9 已批准分析项、步骤 12
+步骤 11 不启动第二个 Coding Task，也不重复读取 CSV。服务端根据步骤 7 已批准分析项、步骤 10
 Profile 索引、DatasetHandle 和 Warning 编排紧凑 `DetailedAnalysisPlan`。每项包含：
 
 - `analysisId`、领域和管理目标；
@@ -55,10 +52,10 @@ Profile 索引、DatasetHandle 和 Warning 编排紧凑 `DetailedAnalysisPlan`�
 
 ## 提纲与逐章成稿
 
-步骤 14 使用 `DetailedAnalysisPlan + DataShape + Warning` 生成动态提纲。章节引用唯一且真实的
+步骤 12 使用 `DetailedAnalysisPlan + DataShape + Warning` 生成动态提纲。章节引用唯一且真实的
 `analysisId`，并继续使用现有人工审核或 CLI 提纲自动确认机制。
 
-步骤 15 向 Report Coding Worker 提供用户目标、批准提纲、DetailedAnalysisPlan 的紧凑执行投影、
+步骤 13 向 Report Coding Worker 提供用户目标、批准提纲、DetailedAnalysisPlan 的紧凑执行投影、
 DatasetHandle、DatasetLineage、CSV 身份、Profile 文件与 Warning。执行投影中的每项只包含
 `analysisId + domain + step + datasetIds`；字段、期间、Profile 信号和完整 Warning 继续保存在受信
 `analysisContextFile`，不在动态指令中重复。Worker 先形成少量执行步骤，再按照提纲章节逐章读取

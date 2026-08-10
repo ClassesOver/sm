@@ -145,11 +145,9 @@ def create_reporting_workflow(
     event_sink: EventSink | None = None,
     normalize_report_request: StepExecutor,
     confirm_source: StepExecutor,
-    plan_data_scope: StepExecutor,
-    profile_source: StepExecutor,
+    prepare_data_profile: StepExecutor,
     propose_measure_semantics: StepExecutor,
     commit_measure_semantics: StepExecutor,
-    resolve_capabilities: StepExecutor,
     reconcile_sources: StepExecutor,
     generate_outline: StepExecutor,
     generate_analysis_plan: StepExecutor,
@@ -159,7 +157,6 @@ def create_reporting_workflow(
     generate_detailed_analysis_plan: StepExecutor,
     run_coding_analysis: StepExecutor,
     validate_report: StepExecutor,
-    publish_report: StepExecutor,
     finalize_publication: StepExecutor,
 ) -> Workflow:
     """创建可注册到现有 AgentOS 的报表 Workflow，不建立第二条传输链路。"""
@@ -167,7 +164,7 @@ def create_reporting_workflow(
     workflow = Workflow(
         id="enterprise-reporting-workflow-v1",
         name="企业智能运营报表",
-        description="来源绑定、分析规划、受控取数、Coding 分析和报告发布审核。",
+        description="来源绑定、分析规划、受控取数、Coding 分析和报告发布。",
         db=db,
         input_schema=ReportingWorkflowInput,
         steps=[
@@ -202,25 +199,17 @@ def create_reporting_workflow(
                 max_retries=0,
                 on_error=OnError.fail,
             ),
+            # 数据理解计划决定画像范围，画像结果又是后续语义和分析规划的唯一输入。
+            # 两者之间没有人工审核或可恢复副作用，放在同一失败关闭步骤中可以避免把
+            # 同一份中间状态重复持久化；内部仍按“先计划、后画像”顺序执行，不能绕过
+            # 计划对数据探查范围的限制。
             Step(
-                step_id="plan-data-scope",
-                name="生成数据理解计划",
+                step_id="prepare-data-profile",
+                name="确定数据范围并执行受限数据画像",
                 executor=_timed_step_executor(
-                    plan_data_scope,
-                    step_id="plan-data-scope",
-                    step_name="生成数据理解计划",
-                    event_sink=event_sink,
-                ),
-                max_retries=0,
-                on_error=OnError.fail,
-            ),
-            Step(
-                step_id="profile-source",
-                name="受限数据画像",
-                executor=_timed_step_executor(
-                    profile_source,
-                    step_id="profile-source",
-                    step_name="受限数据画像",
+                    prepare_data_profile,
+                    step_id="prepare-data-profile",
+                    step_name="确定数据范围并执行受限数据画像",
                     event_sink=event_sink,
                 ),
                 max_retries=0,
@@ -248,18 +237,6 @@ def create_reporting_workflow(
                     commit_measure_semantics,
                     step_id="commit-measure-semantics",
                     step_name="提交已确认指标语义",
-                    event_sink=event_sink,
-                ),
-                max_retries=0,
-                on_error=OnError.fail,
-            ),
-            Step(
-                step_id="resolve-capabilities",
-                name="解析报表能力",
-                executor=_timed_step_executor(
-                    resolve_capabilities,
-                    step_id="resolve-capabilities",
-                    step_name="解析报表能力",
                     event_sink=event_sink,
                 ),
                 max_retries=0,
@@ -381,24 +358,12 @@ def create_reporting_workflow(
                 on_error=OnError.fail,
             ),
             Step(
-                step_id="publish-report",
-                name="发布审核",
-                executor=_timed_step_executor(
-                    publish_report,
-                    step_id="publish-report",
-                    step_name="发布审核",
-                    event_sink=event_sink,
-                ),
-                max_retries=0,
-                on_error=OnError.fail,
-            ),
-            Step(
                 step_id="finalize-publication",
-                name="正式发布",
+                name="发布门禁与正式发布",
                 executor=_timed_step_executor(
                     finalize_publication,
                     step_id="finalize-publication",
-                    step_name="正式发布",
+                    step_name="发布门禁与正式发布",
                     event_sink=event_sink,
                 ),
                 max_retries=0,

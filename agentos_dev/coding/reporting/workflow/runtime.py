@@ -1026,7 +1026,11 @@ class ReportWorkflowRuntime:
         async def finalize_publication(
             step_input: StepInput, run_context: RunContext
         ) -> StepOutput:
-            content = step_input.previous_step_content
+            # 发布门禁和外部签发共用一个可观察步骤，但保留明确的先后顺序：
+            # publish_report 先重新核对产物、血缘和快照，只有门禁允许时才调用
+            # issuer。这样减少一次 Workflow 状态恢复，不会把副作用提前到验收之前。
+            gate_output = await self.publish_report(step_input, run_context)
+            content = gate_output.content
             if not isinstance(content, dict):
                 raise ReportingError("report_publication_invalid", "报表发布产物无效。")
             if content.get("formalReleaseAllowed") is False:
@@ -1066,11 +1070,9 @@ class ReportWorkflowRuntime:
             event_sink=getattr(self, "workflow_event_sink", None),
             normalize_report_request=self.normalize_report_request,
             confirm_source=self.confirm_source,
-            plan_data_scope=self.plan_data_scope,
-            profile_source=self.profile_source,
+            prepare_data_profile=self.prepare_data_profile,
             propose_measure_semantics=self.propose_measure_semantics,
             commit_measure_semantics=self.commit_measure_semantics,
-            resolve_capabilities=self.resolve_capabilities,
             reconcile_sources=self.reconcile_sources,
             generate_outline=self.generate_outline,
             generate_analysis_plan=self.generate_analysis_plan,
@@ -1080,7 +1082,6 @@ class ReportWorkflowRuntime:
             generate_detailed_analysis_plan=self.generate_detailed_analysis_plan,
             run_coding_analysis=self.run_coding_analysis,
             validate_report=self.validate_report,
-            publish_report=self.publish_report,
             finalize_publication=finalize_publication,
         )
 
@@ -1422,6 +1423,28 @@ class ReportWorkflowRuntime:
             "数据理解计划连续五次未通过校验。最后一次诊断："
             + json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":"), default=str),
         )
+
+    async def prepare_data_profile(
+        self, step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        """在一个 Workflow 边界内先确定画像范围，再执行受限数据画像。
+
+        两个内部动作仍保持独立实现和状态写入顺序：画像只能读取已通过校验的数据理解
+        计划，后续语义候选也只能消费完整 DataShape。合并的是外部状态转换，不是数据
+        探查权限或失败语义；任一动作失败都会让当前步骤失败关闭，不能继续到指标语义。
+        """
+        plan_output = await self.plan_data_scope(step_input, run_context)
+        profile_output = await self.profile_source(
+            StepInput(previous_step_content=plan_output.content), run_context
+        )
+        profile_content = (
+            profile_output.content.model_dump(mode="json", by_alias=True)
+            if isinstance(profile_output.content, BaseModel)
+            else profile_output.content
+        )
+        # 数据理解计划已写入受信 session_state，后续步骤都从 state 读取；StepOutput
+        # 只保留原画像步骤的紧凑结果，避免合并后把同一计划再次带入下一步上下文。
+        return StepOutput(content=profile_content)
 
     async def profile_source(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
         envelope = self._envelope(run_context)
@@ -1849,6 +1872,10 @@ class ReportWorkflowRuntime:
         data_understanding = DataUnderstandingPlan.model_validate(
             state[REPORT_DATA_UNDERSTANDING_STATE_KEY]
         )
+        # 报表能力是 Profile/Schema 的确定性投影，不需要独立的 Workflow 状态转换。
+        # 在生成分析计划前重新计算并持久化，保证恢复运行时不会信任旧的能力快照，且
+        # Planner 仍能看到与当前结构快照一致的能力集合。
+        await self.resolve_capabilities(_step_input, run_context)
         if all(
             key in state
             for key in (

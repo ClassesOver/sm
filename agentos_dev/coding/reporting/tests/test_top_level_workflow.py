@@ -6,7 +6,7 @@ from types import MethodType, SimpleNamespace
 import pytest
 from agno.db.in_memory import InMemoryDb
 from agno.run import RunContext
-from agno.workflow.types import StepInput
+from agno.workflow.types import StepInput, StepOutput
 
 from agentos_dev.coding.reporting.contract import ReportRequestEnvelope, ReportingWorkflowInput
 from agentos_dev.coding.reporting.hospital_operation.domains import DOMAIN_CODES
@@ -317,6 +317,12 @@ async def test_发布签发是workflow审核后的正式末步骤():
         "wordSha256": "b" * 64,
     }
 
+    async def pass_publication_gate(_step_input, _run_context):
+        calls.append("gate")
+        return StepOutput(content={**content, "formalReleaseAllowed": True})
+
+    runtime.publish_report = pass_publication_gate
+
     result = await workflow.steps[-1].executor(StepInput(previous_step_content=content), context)
 
     assert workflow.steps[-1].step_id == "finalize-publication"
@@ -331,6 +337,7 @@ async def test_发布签发是workflow审核后的正式末步骤():
         },
     }
     assert calls == [
+        "gate",
         (
             {
                 "external_run_id": "workflow-run",
@@ -339,9 +346,47 @@ async def test_发布签发是workflow审核后的正式末步骤():
             },
             "workflow-session",
             "workflow-run",
-            content,
-        )
+            {**content, "formalReleaseAllowed": True},
+        ),
     ]
+
+
+@pytest.mark.anyio
+async def test_发布门禁阻断时最终步骤不调用签发器():
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.db = InMemoryDb()
+    calls: list[str] = []
+
+    async def issue(*_args):
+        calls.append("issuer")
+        raise AssertionError("门禁阻断后不应调用签发器")
+
+    workflow = runtime.workflow(publication_issuer=issue)
+    context = RunContext(
+        run_id="workflow-run",
+        session_id="workflow-session",
+        user_id="user-1",
+        session_state={},
+    )
+
+    async def block_publication_gate(_step_input, _run_context):
+        calls.append("gate")
+        return StepOutput(
+            content={
+                "formalReleaseAllowed": False,
+                "reportId": "report-1",
+                "revision": 1,
+                "publicationGate": {"issues": [{"code": "snapshot_changed"}]},
+            }
+        )
+
+    runtime.publish_report = block_publication_gate
+    result = await workflow.steps[-1].executor(
+        StepInput(previous_step_content={}), context
+    )
+
+    assert result.content["status"] == "formal_release_blocked"
+    assert calls == ["gate"]
 
 
 @pytest.mark.anyio
