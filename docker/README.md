@@ -1,9 +1,11 @@
-# Daytona 完整 Docker Compose 部署
+# Daytona 精简 Docker Compose 部署
 
 本目录基于 Daytona OSS `v0.189.0` 官方
 [Open Source Deployment](https://github.com/daytonaio/daytona/blob/v0.189.0/apps/docs/src/content/docs/en/oss-deployment.mdx)
 和 [docker/docker-compose.yaml](https://github.com/daytonaio/daytona/blob/v0.189.0/docker/docker-compose.yaml)
-维护完整的 Daytona 栈。它与根目录的 AgentOS Compose 相互独立，不共享容器网络、项目名或数据卷。
+维护满足登录、沙箱生命周期、命令与文件操作、Toolbox、HTTP 预览、镜像和对象存储的
+Daytona 核心栈，不包含 SSH Gateway、MailDev、Jaeger、OpenTelemetry Collector、PgAdmin 和
+Registry UI。它与根目录的 AgentOS Compose 相互独立，不共享容器网络、项目名或数据卷。
 
 外层 `daytona-network` 固定使用 `172.31.0.0/16`，避免与 Runner 创建 sandbox 时使用的
 `172.20.0.0/16` bridge 路由重叠。部署前仍须确认宿主机及其上游网络未占用该网段。
@@ -19,8 +21,8 @@ Daytona 使用 AGPL-3.0 许可证。官方将这套 Compose 定位为本地部�
 | `33044` | Proxy | 沙箱 HTTP 预览和 Toolbox |
 | `33047` | Dex | OIDC 登录 |
 
-Runner、SSH Gateway、PostgreSQL、Redis、Registry、MinIO、MailDev、Jaeger、PgAdmin 和
-OpenTelemetry Collector 仅在 Daytona 项目网络内提供。宿主机默认只暴露 API、Proxy 和 Dex。
+Runner、PostgreSQL、Redis、Registry 和 MinIO 仅在 Daytona 项目网络内提供。宿主机默认只
+暴露 API、Proxy 和 Dex。
 默认 Sandbox 镜像使用 `docker.m.daocloud.io/daytonaio/sandbox:0.5.0-slim`，仅为解决
 Docker Hub 在受限网络中的拉取超时；Daytona API、Runner 和 Proxy 仍使用官方 Docker Hub
 镜像。可在 `docker/.env` 中将 `DAYTONA_DEFAULT_SNAPSHOT` 改回其他可访问的完整镜像地址。
@@ -39,27 +41,22 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
   run --build --rm env-init
 ```
 
-脚本会生成 Daytona 服务密钥、12 位服务密码、Dex 密码哈希及 SSH Gateway 密钥。Dex
-明文登录密码只显示一次，默认账号为 `admin@example.com`，应立即保存。初始化容器以 root
-运行 `ssh-keygen`，完成后根据 `HOST_UID`、`HOST_GID` 恢复环境文件的宿主所有权；配置只有在
-全部密钥生成成功后才会一次性替换。
+脚本会生成 Daytona 服务密钥、12 位服务密码及 Dex 密码哈希。Dex 明文登录密码只显示一次，
+默认账号为 `admin@example.com`，应立即保存。初始化容器以 root 运行，完成后根据
+`HOST_UID`、`HOST_GID` 恢复环境文件的宿主所有权；配置只有在全部密钥生成成功后才会一次性替换。
 
-启动完整 Daytona 栈：
+启动 Daytona 核心栈：
 
 ```bash
 docker compose --env-file docker/.env \
   -f docker/docker-compose.yaml config
 
 docker compose --env-file docker/.env \
-  -f docker/docker-compose.yaml up -d
+  -f docker/docker-compose.yaml up -d --remove-orphans
 ```
 
-需要从宿主机通过 SSH 进入沙箱时，再加载 SSH 端口 override：
-
-```bash
-docker compose --env-file docker/.env \
-  -f docker/docker-compose.yaml -f docker/docker-compose.ssh.yaml up -d
-```
+`--remove-orphans` 会清理同一 Daytona Compose 项目中已从精简配置删除的辅助容器，但不会删除
+PostgreSQL、Redis、Registry、MinIO、Runner 或 Dex 的具名数据卷。
 
 打开 `http://127.0.0.1:33043/dashboard`，登录后激活默认 Snapshot，并创建具有沙箱创建、
 写入和删除权限的 API Key。该 Key 属于 AgentOS 客户端，应写入根目录 `.env` 的
@@ -214,4 +211,4 @@ docker compose --env-file docker/.env -f docker/docker-compose.yaml down
 ```
 
 不要在未备份的情况下使用 `down -v`。需要备份的具名卷包括 PostgreSQL、Redis、Registry、
-MinIO、Runner、Dex 和 PgAdmin 数据。
+MinIO、Runner 和 Dex 数据。

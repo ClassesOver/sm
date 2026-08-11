@@ -26,8 +26,7 @@ services:
     ports:
       - "0.0.0.0:${DAYTONA_API_PORT:-33043}:3000"
     environment:
-      OTEL_ENABLED: "true"
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_ENABLED: "false"
       DEFAULT_SNAPSHOT: ${DAYTONA_DEFAULT_SNAPSHOT:-docker.m.daocloud.io/daytonaio/sandbox:0.5.0-slim}
       ENCRYPTION_KEY: ${DAYTONA_ENCRYPTION_KEY:?必须设置}
       ENCRYPTION_SALT: ${DAYTONA_ENCRYPTION_SALT:?必须设置}
@@ -55,12 +54,6 @@ services:
       INTERNAL_REGISTRY_ADMIN: ${DAYTONA_REGISTRY_USER:-daytona}
       INTERNAL_REGISTRY_PASSWORD: ${DAYTONA_REGISTRY_PASSWORD:?必须设置}
       INTERNAL_REGISTRY_PROJECT_ID: daytona
-      SMTP_HOST: maildev
-      SMTP_PORT: "1025"
-      SMTP_USER: ""
-      SMTP_PASSWORD: ""
-      SMTP_SECURE: "false"
-      SMTP_EMAIL_FROM: Daytona Team <no-reply@daytona.local>
       S3_ENDPOINT: http://minio:9000
       S3_STS_ENDPOINT: http://minio:9000/minio/v1/assume-role
       S3_REGION: us-east-1
@@ -72,6 +65,7 @@ services:
       ENVIRONMENT: docker-compose
       MAX_AUTO_ARCHIVE_INTERVAL: "43200"
       MAINTENANCE_MODE: "false"
+      NOTIFICATION_GATEWAY_DISABLED: "true"
       PROXY_DOMAIN: ${DAYTONA_PROXY_DOMAIN:-proxy.localhost:33044}
       PROXY_PROTOCOL: ${DAYTONA_PUBLIC_SCHEME:-http}
       PROXY_API_KEY: ${DAYTONA_PROXY_API_KEY:?必须设置}
@@ -101,10 +95,6 @@ services:
       DEFAULT_ORG_QUOTA_MAX_SNAPSHOT_SIZE: "100"
       DEFAULT_ORG_QUOTA_VOLUME_QUOTA: "100"
       SSH_GATEWAY_API_KEY: ${DAYTONA_SSH_GATEWAY_API_KEY:?必须设置}
-      SSH_GATEWAY_COMMAND: ssh -p 2222 {{TOKEN}}@ssh-gateway
-      SSH_GATEWAY_PUBLIC_KEY: ${DAYTONA_SSH_PUBLIC_KEY:?必须设置}
-      SSH_GATEWAY_URL: ssh-gateway:2222
-      OTEL_COLLECTOR_API_KEY: ${DAYTONA_OTEL_COLLECTOR_API_KEY:?必须设置}
       HEALTH_CHECK_API_KEY: ${DAYTONA_HEALTH_API_KEY:?必须设置}
       SKIP_USER_EMAIL_VERIFICATION: "true"
       RUN_MIGRATIONS: "true"
@@ -122,8 +112,6 @@ services:
       registry:
         condition: service_started
       minio:
-        condition: service_started
-      maildev:
         condition: service_started
     restart: unless-stopped
 
@@ -164,8 +152,7 @@ services:
       AWS_DEFAULT_BUCKET: daytona
       DAYTONA_API_URL: http://api:3000/api
       RUNNER_DOMAIN: runner
-      SSH_GATEWAY_ENABLE: "true"
-      SSH_PUBLIC_KEY: ${DAYTONA_SSH_PUBLIC_KEY:?必须设置}
+      SSH_GATEWAY_ENABLE: "false"
       INTER_SANDBOX_NETWORK_ENABLED: "false"
       DAEMON_START_TIMEOUT_SEC: "60"
       SANDBOX_START_TIMEOUT_SEC: "30"
@@ -174,18 +161,6 @@ services:
     volumes:
       - daytona_runner_data:/home/daytona/runner
     privileged: true
-    restart: unless-stopped
-
-  ssh-gateway:
-    image: ${DAYTONA_IMAGE_REGISTRY:-docker.io}/daytonaio/daytona-ssh-gateway:v0.189.0-${DAYTONA_IMAGE_ARCH:-amd64}
-    environment:
-      API_URL: http://api:3000/api
-      API_KEY: ${DAYTONA_SSH_GATEWAY_API_KEY:?必须设置}
-      SSH_GATEWAY_PORT: "2222"
-      SSH_PRIVATE_KEY: ${DAYTONA_SSH_PRIVATE_KEY:?必须设置}
-      SSH_HOST_KEY: ${DAYTONA_SSH_HOST_KEY:?必须设置}
-    networks: [daytona-network]
-    depends_on: [api]
     restart: unless-stopped
 
   dex:
@@ -249,22 +224,6 @@ services:
     networks: [daytona-network]
     restart: unless-stopped
 
-  registry-ui:
-    image: docker.io/joxit/docker-registry-ui:main
-    environment:
-      SINGLE_REGISTRY: "true"
-      REGISTRY_TITLE: Daytona Registry
-      DELETE_IMAGES: "true"
-      SHOW_CONTENT_DIGEST: "true"
-      NGINX_PROXY_PASS_URL: http://registry:6000
-      SHOW_CATALOG_NB_TAGS: "true"
-      CATALOG_MIN_BRANCHES: "1"
-      CATALOG_MAX_BRANCHES: "1"
-      REGISTRY_SECURED: "false"
-    networks: [daytona-network]
-    depends_on: [registry]
-    restart: unless-stopped
-
   minio:
     image: docker.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
     environment:
@@ -275,44 +234,6 @@ services:
     volumes:
       - daytona_minio_data:/data
     networks: [daytona-network]
-    restart: unless-stopped
-
-  maildev:
-    image: docker.io/maildev/maildev:2.2.1
-    networks: [daytona-network]
-    restart: unless-stopped
-
-  jaeger:
-    image: docker.io/jaegertracing/all-in-one:1.67.0
-    networks: [daytona-network]
-    restart: unless-stopped
-
-  otel-collector:
-    image: docker.io/otel/opentelemetry-collector-contrib:0.138.0
-    volumes:
-      - ./otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
-    networks: [daytona-network]
-    restart: unless-stopped
-
-  pgadmin:
-    image: docker.io/dpage/pgadmin4:9.2.0
-    user: root
-    environment:
-      PGADMIN_DEFAULT_EMAIL: ${DEX_ADMIN_EMAIL:-admin@example.com}
-      PGADMIN_DEFAULT_PASSWORD: ${DAYTONA_PGADMIN_PASSWORD:?必须设置}
-      PGADMIN_CONFIG_SERVER_MODE: "False"
-      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
-      DAYTONA_POSTGRES_USER: ${DAYTONA_POSTGRES_USER:-daytona}
-      DAYTONA_POSTGRES_PASSWORD: ${DAYTONA_POSTGRES_PASSWORD:?必须设置}
-    volumes:
-      - ./pgadmin4/servers.json.template:/pgadmin4/servers.json.template:ro
-      - pgadmin_data:/var/lib/pgadmin
-    entrypoint:
-      - sh
-      - -ec
-      - sed -e "s|__POSTGRES_USER__|$$DAYTONA_POSTGRES_USER|g" /pgadmin4/servers.json.template > /pgadmin4/servers.json && printf 'db:5432:*:%s:%s\\n' "$$DAYTONA_POSTGRES_USER" "$$DAYTONA_POSTGRES_PASSWORD" > /pgpass && chmod 600 /pgpass && exec /entrypoint.sh
-    networks: [daytona-network]
-    depends_on: [db]
     restart: unless-stopped
 
 volumes:
@@ -328,8 +249,6 @@ volumes:
     name: "${DAYTONA_VOLUME_PREFIX:-daytona_}daytona_minio_data"
   dex_data:
     name: "${DAYTONA_VOLUME_PREFIX:-daytona_}dex_data"
-  pgadmin_data:
-    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}pgadmin_data"
 
 networks:
   daytona-network:

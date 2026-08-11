@@ -13,7 +13,7 @@ FROM base AS env-init
 WORKDIR /workspace
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends apache2-utils bash coreutils mawk openssh-client openssl \
+    && apt-get install -y --no-install-recommends apache2-utils bash coreutils mawk openssl \
     && rm -rf /var/lib/apt/lists/*
 
 FROM base AS runtime

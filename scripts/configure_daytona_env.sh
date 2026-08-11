@@ -7,7 +7,6 @@ ENV_FILE=${1:-"$ROOT_DIR/docker/.env"}
 ENV_DIR=$(dirname "$ENV_FILE")
 BACKUP_DIR="$ENV_DIR/.env.backups"
 WORK_FILE=
-SSH_TEMP_DIR=
 
 die() {
     printf '错误：%s\n' "$*" >&2
@@ -26,13 +25,12 @@ restore_host_ownership() {
 
 cleanup() {
     [[ -z "$WORK_FILE" || ! -e "$WORK_FILE" ]] || rm -f "$WORK_FILE"
-    [[ -z "$SSH_TEMP_DIR" || ! -d "$SSH_TEMP_DIR" ]] || rm -rf "$SSH_TEMP_DIR"
     restore_host_ownership
 }
 
 trap cleanup EXIT
 
-for command in openssl ssh-keygen htpasswd awk; do
+for command in openssl htpasswd awk; do
     command -v "$command" >/dev/null 2>&1 || die "缺少 $command。"
 done
 [[ -f "$TEMPLATE_FILE" ]] || die "未找到 $TEMPLATE_FILE。"
@@ -92,22 +90,6 @@ bcrypt_password() {
     printf '%s\n' "$1" | htpasswd -niBC 10 admin | awk -F: 'NR == 1 { print $2 }'
 }
 
-generate_ssh_material() {
-    local private_key public_key host_key
-    SSH_TEMP_DIR=$(mktemp -d "$ENV_DIR/.ssh-keys.XXXXXX")
-    ssh-keygen -q -t ed25519 -N '' -C daytona-gateway -f "$SSH_TEMP_DIR/gateway"
-    ssh-keygen -q -t ed25519 -N '' -C daytona-host -f "$SSH_TEMP_DIR/host"
-    private_key=$(base64 < "$SSH_TEMP_DIR/gateway" | tr -d '\n')
-    public_key=$(base64 < "$SSH_TEMP_DIR/gateway.pub" | tr -d '\n')
-    host_key=$(base64 < "$SSH_TEMP_DIR/host" | tr -d '\n')
-    set_env DAYTONA_SSH_PRIVATE_KEY "$private_key"
-    set_env DAYTONA_SSH_PUBLIC_KEY "$public_key"
-    set_env DAYTONA_SSH_HOST_KEY "$host_key"
-    rm -rf "$SSH_TEMP_DIR"
-    SSH_TEMP_DIR=
-    unset private_key public_key host_key
-}
-
 is_new=false
 mkdir -p "$ENV_DIR"
 WORK_FILE=$(mktemp "$ENV_DIR/.env.pending.XXXXXX")
@@ -130,10 +112,10 @@ rotate_runtime=$is_new
 rotate_persistent=$is_new
 
 if [[ "$is_new" == false ]]; then
-    if ask_yes_no '重新生成 Proxy、健康检查、SSH Gateway 和 OTel 服务密钥？' n; then
+    if ask_yes_no '重新生成 Proxy、健康检查和 SSH Gateway API Key？' n; then
         rotate_runtime=true
     fi
-    printf '%s\n' '警告：下组值包含 Daytona 加密密钥、Runner Token、SSH 密钥、Dex 登录密码和持久化服务口令。'
+    printf '%s\n' '警告：下组值包含 Daytona 加密密钥、Runner Token、Dex 登录密码和持久化服务口令。'
     printf '%s\n' '已运行的部署不能只修改环境文件；还必须迁移对应凭据，或重建 Daytona 数据卷。'
     if ask_yes_no '确认这是首次部署或已安排完整凭据迁移，并重新生成这些值？' n; then
         rotate_persistent=true
@@ -144,10 +126,9 @@ if [[ "$rotate_runtime" == true ]]; then
     set_random_env DAYTONA_PROXY_API_KEY 32
     set_random_env DAYTONA_HEALTH_API_KEY 32
     set_random_env DAYTONA_SSH_GATEWAY_API_KEY 32
-    set_random_env DAYTONA_OTEL_COLLECTOR_API_KEY 32
     printf '%s\n' '已更新 Daytona 无状态服务密钥。'
 else
-    for key in DAYTONA_PROXY_API_KEY DAYTONA_HEALTH_API_KEY DAYTONA_SSH_GATEWAY_API_KEY DAYTONA_OTEL_COLLECTOR_API_KEY; do
+    for key in DAYTONA_PROXY_API_KEY DAYTONA_HEALTH_API_KEY DAYTONA_SSH_GATEWAY_API_KEY; do
         needs_value "$key" && set_random_env "$key" 32
     done
 fi
@@ -160,23 +141,16 @@ if [[ "$rotate_persistent" == true ]]; then
     set_random_password_env DAYTONA_REDIS_PASSWORD
     set_random_password_env DAYTONA_REGISTRY_PASSWORD
     set_random_password_env DAYTONA_MINIO_PASSWORD
-    set_random_password_env DAYTONA_PGADMIN_PASSWORD
-    generate_ssh_material
     dex_admin_password=$(openssl rand -base64 9 | tr '/+' '_-')
     dex_password_hash=$(bcrypt_password "$dex_admin_password")
     [[ ${#dex_password_hash} -eq 60 && "$dex_password_hash" == '$2'* ]] || die "生成的 Dex bcrypt 哈希无效。"
     set_env DEX_STATIC_PASSWORD_HASH "'$dex_password_hash'"
-    printf '%s\n' '已更新 Daytona 持久化服务密钥、SSH 密钥、口令和 Dex 登录密码。'
+    printf '%s\n' '已更新 Daytona 持久化服务密钥、口令和 Dex 登录密码。'
     unset dex_password_hash
 else
     for key in DAYTONA_ENCRYPTION_KEY DAYTONA_ENCRYPTION_SALT DAYTONA_RUNNER_TOKEN DAYTONA_POSTGRES_PASSWORD DAYTONA_REDIS_PASSWORD DAYTONA_REGISTRY_PASSWORD DAYTONA_MINIO_PASSWORD DEX_STATIC_PASSWORD_HASH; do
         needs_value "$key" && die "配置 $key 尚未初始化，请重新运行并确认生成持久化凭据。"
     done
-    needs_value DAYTONA_PGADMIN_PASSWORD && set_random_password_env DAYTONA_PGADMIN_PASSWORD
-    if needs_value DAYTONA_SSH_PRIVATE_KEY || needs_value DAYTONA_SSH_PUBLIC_KEY || needs_value DAYTONA_SSH_HOST_KEY; then
-        generate_ssh_material
-        printf '%s\n' '已补充 Daytona SSH Gateway 密钥。'
-    fi
 fi
 
 chmod 600 "$WORK_FILE"

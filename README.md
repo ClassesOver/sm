@@ -35,7 +35,7 @@ Playwright 仅在该目录存在时加载依赖它的用例；远端 HRP 已安�
 按对话隔离的附件、工作区文件和经确认的代码执行使用 Daytona。部署分为两个独立项目：
 
 - 根目录 `docker-compose.yml`：AgentOS 和专用 PostgreSQL。
-- `docker/docker-compose.yaml`：基于 Daytona OSS `v0.189.0` 官方配置的完整 Daytona 栈。
+- `docker/docker-compose.yaml`：基于 Daytona OSS `v0.189.0` 官方配置的精简 Daytona 核心栈。
 
 两套 Compose 不共享容器网络、项目名或数据卷。请按下面的顺序分别初始化和启动。
 从旧统一 Compose 升级时，必须先按[生产部署指南](docs/agui_chat_production.md#compose-volume-migration)
@@ -62,7 +62,7 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
   run --build --rm env-init
 ```
 
-脚本会生成 Daytona 服务密钥、12 位服务密码、Dex 密码哈希和 SSH 密钥。Dex 明文密码只在
+脚本会生成 Daytona 服务密钥、12 位服务密码和 Dex 密码哈希。Dex 明文密码只在
 终端显示一次，默认登录邮箱为 `admin@example.com`，应立即保存。
 
 3. 检查并启动 Daytona：
@@ -72,7 +72,7 @@ docker compose --env-file docker/.env \
   -f docker/docker-compose.yaml config
 
 docker compose --env-file docker/.env \
-  -f docker/docker-compose.yaml up -d
+  -f docker/docker-compose.yaml up -d --remove-orphans
 ```
 
 打开 `http://127.0.0.1:33043/dashboard`，使用 Dex 账号登录，激活默认 Snapshot，并创建具有
@@ -98,9 +98,8 @@ Daytona 基础 Compose 默认只向宿主机发布以下必要端口：
 | `33044` | Proxy | 沙箱 HTTP 预览和 Toolbox |
 | `33047` | Dex | OIDC 登录 |
 
-Runner、SSH Gateway、PostgreSQL、Redis、Registry、MinIO、MailDev、Jaeger、PgAdmin 和
-OpenTelemetry Collector 只在 Daytona 内部网络提供。SSH 入口按需通过独立 override 开放。
-完整命令、远程 HTTPS、端口和备份要求见 [Daytona 部署说明](docker/README.md)与
+Runner、PostgreSQL、Redis、Registry 和 MinIO 只在 Daytona 内部网络提供。部署命令、
+远程 HTTPS、端口和备份要求见 [Daytona 部署说明](docker/README.md)与
 [生产部署指南](docs/agui_chat_production.md#first-start)。
 
 集成开发环境可直接启动仓库内的最小 AgentOS 应用：

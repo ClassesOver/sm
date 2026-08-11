@@ -85,8 +85,8 @@ docker compose exec agent python -m pip check
 AgentOS 与 Daytona 现在是两个独立 Compose 项目，不共享容器网络、项目名或数据卷：
 
 - 根目录 `docker-compose.yml` 只运行 AgentOS 和 `agent-db`。
-- `docker/docker-compose.yaml` 按 Daytona OSS `v0.189.0` 官方 Compose 运行完整 Daytona
-  服务，包括 SSH Gateway、PgAdmin、Registry UI、MailDev、Jaeger 和 OTel Collector。
+- `docker/docker-compose.yaml` 基于 Daytona OSS `v0.189.0` 官方 Compose 运行精简核心服务，
+  保留登录、沙箱生命周期、Toolbox、HTTP 预览、镜像和对象存储，关闭 SSH、邮件和遥测辅助服务。
 
 <a id="compose-volume-migration"></a>
 
@@ -105,7 +105,7 @@ DAYTONA_VOLUME_PREFIX=agui-daytona_
 
 这样 AgentOS 和 Daytona 会直接复用旧具名卷，而不是创建空数据库。旧部署使用自定义
 `COMPOSE_PROJECT_NAME` 时，将 `agui-daytona_` 替换为原项目名加下划线。确认备份和卷内容后
-再启动；PgAdmin 是新增服务，没有旧卷时会正常创建自己的卷。
+再启动。
 
 复用旧卷时还必须从旧 `.env` 保留相匹配的 AgentOS 数据库密码，以及全部 Daytona 加密密钥、
 Runner Token、数据库/Redis/Registry/MinIO 密码、Dex 哈希和服务密钥。将 Daytona 变量复制到
@@ -124,8 +124,8 @@ AGPL-3.0 向这些用户提供对应源代码，并保存源码修订版本和�
 AgentOS 根目录 `.env` 包含模型 API Key、AgentOS PostgreSQL 密码、工作区 HMAC、宿主与
 容器使用的 Daytona API 地址、技能目录可信 UID 和 Dashboard 创建的 `DAYTONA_API_KEY`。
 Daytona 的独立凭据全部位于 `docker/.env`。
-HMAC、加密、Proxy、健康检查、Runner 和 SSH Gateway API Key 使用 32 字节随机值，服务密码
-使用 12 位 Base64URL 值；SSH 密钥长度由算法决定。
+HMAC、加密、Proxy、健康检查、Runner 和 Daytona API 要求的 SSH Gateway API Key 使用
+32 字节随机值，服务密码使用 12 位 Base64URL 值。
 
 两套环境分别初始化：
 
@@ -160,7 +160,7 @@ AgentOS 会拒绝技能目录中的符号链接、非普通文件和越界资源
 docker compose --env-file docker/.env \
   -f docker/docker-compose.yaml config
 docker compose --env-file docker/.env \
-  -f docker/docker-compose.yaml up -d
+  -f docker/docker-compose.yaml up -d --remove-orphans
 ```
 
 打开 `http://127.0.0.1:33043/dashboard`，使用配置的 Dex 用户登录，激活默认 Snapshot，
@@ -181,7 +181,7 @@ AgentOS 容器通过 `host.docker.internal:33043` 访问 Daytona API，根目录
 `DAYTONA_PUBLIC_SCHEME=https`、`DAYTONA_PROXY_DOMAIN`，并为 Proxy 配置通配 DNS 和证书。
 普通远程 HTTP 页面无法使用 `Crypto.subtle`，不能把关闭 TLS 当作生产方案。
 
-端口、辅助服务和运维命令见 [Daytona 完整部署说明](../docker/README.md)。
+端口和运维命令见 [Daytona 部署说明](../docker/README.md)。
 
 ### 备份与恢复
 
