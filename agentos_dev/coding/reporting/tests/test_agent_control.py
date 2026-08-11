@@ -40,14 +40,17 @@ def test_report_toolkit_is_discoverable_but_requires_skill_route(tmp_path):
     assert "view_image" not in report_tools[0].async_functions
     assert "verify" not in report_tools[0].async_functions
     assert {
+        "complete_report_analysis",
         "inspect_profile_index",
         "read_profile_pointer",
-        "discard_report_charts",
-        "begin_report_draft",
+        "register_report_charts",
         "render_report_section",
-        "finalize_report_draft",
+        "request_analysis_rework",
     }.issubset(report_tools[0].async_functions)
     assert {
+        "discard_report_charts",
+        "begin_report_draft",
+        "finalize_report_draft",
         "render_report_draft",
         "resume_report_draft",
         "verify_report_draft",
@@ -65,6 +68,47 @@ def test_report_toolkit_is_discoverable_but_requires_skill_route(tmp_path):
         run_context=SimpleNamespace(session_state=context.session_state, dependencies={}),
     )
     assert "view_image" in vision_tools[0].async_functions
+
+
+def test_report_worker_tools保留全集避免agno跨phase缓存污染(tmp_path):
+    workspace_service = service(tmp_path)
+
+    def context(phase: str):
+        return SimpleNamespace(
+            session_state={},
+            dependencies={"AgentOS 编码任务": {"reportingPhase": phase}},
+        )
+
+    analysis = build_report_worker_tools(
+        workspace_service,
+        app.coding_repository,
+        run_context=context("analysis"),
+    )[0]
+    section = build_report_worker_tools(
+        workspace_service,
+        app.coding_repository,
+        run_context=context("section"),
+    )[0]
+
+    section_tools = {
+        "finish_task",
+        "read_file",
+        "read_lines",
+        "read_tool_output",
+        "render_report_section",
+        "request_analysis_rework",
+    }
+
+    # Agno 2.8.2 会缓存动态 Toolkit。analysis 首次构建时若删除章节工具，后续
+    # section run 只能复用残缺缓存，模型将无法提交章节或请求分析返工。Toolkit
+    # 必须保持 phase 无关的完整能力，实际可见工具由每次模型请求投影并由执行门禁复核。
+    assert section_tools.issubset(analysis.async_functions)
+    assert section_tools.issubset(section.async_functions)
+    assert "terminal" in analysis.async_functions
+    assert "terminal" in section.async_functions
+    assert "complete_report_analysis" in analysis.async_functions
+    assert "complete_report_analysis" in section.async_functions
+    assert analysis.instructions == section.instructions
 
 
 @pytest.mark.anyio

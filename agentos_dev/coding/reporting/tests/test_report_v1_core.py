@@ -47,14 +47,13 @@ from agentos_dev.coding.reporting.hospital_operation import (
     make_outline,
     ruijin_profile,
 )
-from agentos_dev.coding.reporting.hospital_operation.detailed_analysis import (
-    DetailedAnalysisPlan,
-    profile_csv_dataset,
-)
 from agentos_dev.coding.reporting.hospital_operation.delivery import (
     PlanExecutionReceipt,
     SourceBinding,
     SourceWarning,
+)
+from agentos_dev.coding.reporting.hospital_operation.detailed_analysis import (
+    profile_csv_dataset,
 )
 from agentos_dev.coding.reporting.metadata import ReportingMetadataClient, select_reporting_agent
 from agentos_dev.coding.reporting.models import ReportingError
@@ -75,11 +74,12 @@ from agentos_dev.coding.reporting.workflow.runtime import (
     REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_APPROVED_QUERIES_STATE_KEY,
     REPORT_DATA_REQUIREMENTS_STATE_KEY,
-    REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
     REPORT_DATA_UNDERSTANDING_STATE_KEY,
+    REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
     REPORT_EFFECTIVE_PROFILE_STATE_KEY,
     REPORT_OUTLINE_CONTEXT_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
+    REPORT_PROFILE_COVERAGE_STATE_KEY,
     REPORT_RECONCILIATIONS_STATE_KEY,
     REPORT_REQUEST_CONTEXT_STATE_KEY,
     REPORT_SCHEMA_SNAPSHOTS_STATE_KEY,
@@ -336,9 +336,7 @@ async def test_分析数据上下文从需求表读取指标字段并绑定语�
         sql_hash="a" * 64,
     )
     state = {
-        REPORT_DATA_REQUIREMENTS_STATE_KEY: [
-            requirement.model_dump(mode="json", by_alias=True)
-        ]
+        REPORT_DATA_REQUIREMENTS_STATE_KEY: [requirement.model_dump(mode="json", by_alias=True)]
     }
 
     class Workspace:
@@ -365,13 +363,21 @@ async def test_分析数据上下文从需求表读取指标字段并绑定语�
     runtime._snapshots = lambda _context: approval_snapshots()
     runtime._assert_state_safe = lambda _state: None
 
-    await runtime.prepare_analysis_context(StepInput(input=envelope()), data_understanding_context())
+    await runtime.prepare_analysis_context(
+        StepInput(input=envelope()), data_understanding_context()
+    )
 
     contexts = state[REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY]
     assert contexts[0]["organizationGrain"] == ["month"]
     assert [item["fieldRef"] for item in contexts[0]["metricSemantics"]] == [
         "operations.reporting.income.amount"
     ]
+    coverage = state[REPORT_PROFILE_COVERAGE_STATE_KEY]
+    assert coverage["authorizedDatasetCount"] == 1
+    assert coverage["coveredDatasetCount"] == 1
+    assert coverage["datasets"][0]["datasetId"] == handle.dataset_id
+    assert coverage["datasets"][0]["fields"] == ["month", "amount"]
+    assert coverage["datasets"][0]["profileFile"]["sha256"] == contexts[0]["profileFile"]["sha256"]
 
 
 @pytest.mark.anyio
@@ -399,9 +405,26 @@ async def test_详细分析计划根据profile索引编排且不启动coding任�
     )
 
     state: dict[str, Any] = {
-        REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY: [
-            profiled.model_dump(mode="json", by_alias=True)
-        ],
+        REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY: [profiled.model_dump(mode="json", by_alias=True)],
+        REPORT_PROFILE_COVERAGE_STATE_KEY: {
+            "version": "1",
+            "authorizedDatasetCount": 1,
+            "coveredDatasetCount": 1,
+            "datasets": [
+                {
+                    "datasetId": handle.dataset_id,
+                    "datasetPath": handle.path,
+                    "datasetSize": handle.size,
+                    "datasetSnapshotHash": handle.sha256,
+                    "profileFile": profiled.context.profile_file.model_dump(
+                        mode="json", by_alias=True
+                    ),
+                    "rowCount": profiled.context.row_count,
+                    "fieldCount": len(profiled.context.fields),
+                    "fields": list(profiled.context.fields),
+                }
+            ],
+        },
         REPORT_ANALYSIS_PLAN_STATE_KEY: [
             {
                 "code": "income",
@@ -420,6 +443,7 @@ async def test_详细分析计划根据profile索引编排且不启动coding任�
     }
     runtime._envelope = lambda _context: envelope()
     runtime._snapshots = lambda _context: approval_snapshots()
+
     async def write_artifact_validation_context(_thread_id, _path, payload):
         captured["context"] = payload
         return {
@@ -450,10 +474,14 @@ async def test_详细分析计划根据profile索引编排且不启动coding任�
     assert "？" not in analysis.management_question
     assert state[REPORT_ANALYSIS_CONTEXT_FILE_STATE_KEY]["sha256"] == "a" * 64
     assert "datasetContexts" in captured["context"]
+    assert (
+        captured["context"]["profileCoverageManifest"] == state[REPORT_PROFILE_COVERAGE_STATE_KEY]
+    )
     assert "initialRequirements" in captured["context"]
-    assert state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY]["analyses"][0][
-        "analysisId"
-    ] == "analysis_001"
+    assert (
+        state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY]["analyses"][0]["analysisId"]
+        == "analysis_001"
+    )
 
 
 def valid_data_understanding_output() -> dict[str, object]:
@@ -1919,9 +1947,7 @@ def test_分析计划允许期间语义和完整共同粒度一致的多表requi
 
 
 def test_分析计划拒绝requirement扩展请求比较范围():
-    requirement = query_requirement().model_copy(
-        update={"comparison_roles": ("yoy", "mom")}
-    )
+    requirement = query_requirement().model_copy(update={"comparison_roles": ("yoy", "mom")})
     bundle = AnalysisBundle.model_validate(
         {
             "analyses": [
@@ -3718,9 +3744,7 @@ def test_运行时按共享queryWindowId拒绝重复查询(tmp_path: Path):
 
 
 def test_sql审核将历史requirement比较范围越界转换为结构化issue(tmp_path: Path):
-    requirement = query_requirement().model_copy(
-        update={"comparison_roles": ("yoy", "mom")}
-    )
+    requirement = query_requirement().model_copy(update={"comparison_roles": ("yoy", "mom")})
     generated = GeneratedQueryBatch.model_validate(
         {
             "queries": [

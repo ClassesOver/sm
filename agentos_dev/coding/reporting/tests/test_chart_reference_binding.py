@@ -14,7 +14,7 @@ from agentos_dev.coding.reporting.tools import (
 
 
 @pytest.mark.anyio
-async def test_finalize前要求正文引用全部已登记图表(monkeypatch, tmp_path):
+async def test_finalize自动排除全部未引用已登记图表(monkeypatch, tmp_path):
     context = RunContext(
         run_id="run",
         session_id="thread",
@@ -94,16 +94,8 @@ async def test_finalize前要求正文引用全部已登记图表(monkeypatch, t
         context,
     )
 
-    assert completed["status"] == "awaiting_chart_references"
-    assert completed["unreferencedChartIds"] == [
-        "budget_exec_cum",
-        "exp_budget_monthly",
-        "income_outpatient_yoy",
-    ]
-    assert completed["requiredActions"] == [
-        "计划发布图用同一 sectionCode 重提完整章节并补齐 chartIds；误登记且未被章节引用的"
-        "预览图用 discard_report_charts 丢弃；处理完成后再调用 finalize_report_draft。"
-    ]
+    assert completed["status"] == "accepted"
+    assert "unreferencedChartIds" not in completed
 
     stored = context.session_state[REPORT_DRAFT_STATE_KEY]
 
@@ -135,36 +127,25 @@ async def test_finalize前要求正文引用全部已登记图表(monkeypatch, t
     monkeypatch.setattr(toolkit.kernel, "batch_copy_files", batch_copy_files)
     monkeypatch.setattr(toolkit, "_write_rendered_draft", write_rendered_draft)
 
-    needs_repair = await toolkit.finalize_report_draft(context)
-
-    assert needs_repair["status"] == "awaiting_chart_references"
-    assert needs_repair["unreferencedChartIds"] == completed["unreferencedChartIds"]
-    assert "nextToolCall" not in needs_repair
-    assert stored["submitted"] is True
-    assert stored["status"] == "rendered"
-
-    repaired = await toolkit.render_report_section(
-        "income",
-        [
-            {
-                "blockId": "income",
-                "markdown": "收入联动与预算执行分析。",
-                "citationIds": ["citation_001"],
-                "chartIds": completed["unreferencedChartIds"],
-            }
-        ],
-        context,
-    )
-
-    assert repaired["status"] == "replaced"
-    assert "unreferencedChartIds" not in repaired
-    assert stored["submitted"] is False
-    assert stored["status"] == "sections_completed"
-
     finalized = await toolkit.finalize_report_draft(context)
 
     assert finalized["ok"] is True
+    assert finalized["warnings"] == [
+        {
+            "code": "unused_chart_excluded",
+            "chartIds": [
+                "budget_exec_cum",
+                "exp_budget_monthly",
+                "income_outpatient_yoy",
+            ],
+            "message": "未被正文引用的图表已从发布包排除。",
+        }
+    ]
+    assert finalized["archiveReceipts"] == []
+    assert finalized["artifactPaths"] == ["reports/report.md"]
     assert finalized["nextToolCall"]["name"] == "finish_task"
+    assert stored["submitted"] is True
+    assert stored["status"] == "rendered"
 
 
 @pytest.mark.anyio

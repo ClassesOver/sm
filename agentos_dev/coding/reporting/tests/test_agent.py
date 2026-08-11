@@ -13,6 +13,8 @@ from agentos_dev.coding.agent import create_coding_agent, create_coding_facade_a
 from agentos_dev.coding.reporting.agent import (
     ReportFacadeOpenAIChat,
     ReportWorkerOpenAIChat,
+    _phase_filtered_report_messages,
+    _phase_filtered_report_tools,
     _report_facade_model,
     _report_model,
     _report_worker_model,
@@ -155,6 +157,81 @@ def test_report_worker禁用视觉时将过期view_image调用转为跳过回执
     }
 
 
+def test_report_worker模型schema在section只暴露章节工具():
+    messages = [Message(role="user", content='{"phase":"section"}')]
+    tools = [
+        {"type": "function", "function": {"name": name, "parameters": {}}}
+        for name in (
+            "terminal",
+            "get_skill_script",
+            "read_file",
+            "read_tool_output",
+            "render_report_section",
+            "request_analysis_rework",
+            "finish_task",
+        )
+    ]
+
+    projected = _phase_filtered_report_tools(messages, tools)
+
+    assert [item["function"]["name"] for item in projected] == [
+        "read_file",
+        "read_tool_output",
+        "render_report_section",
+        "request_analysis_rework",
+        "finish_task",
+    ]
+
+
+def test_report_worker_section系统投影移除agno自动skill规则():
+    messages = [
+        Message(
+            role="system",
+            content=(
+                "<instructions>当前章节规则</instructions>\n"
+                "<skills_system>\n必须调用 get_skill_instructions\n</skills_system>\n"
+            ),
+        ),
+        Message(role="user", content='{"phase":"section"}'),
+    ]
+
+    projected = _phase_filtered_report_messages(messages)
+
+    assert projected is not messages
+    assert projected[0] is not messages[0]
+    assert projected[0].content == "<instructions>当前章节规则</instructions>\n"
+    assert "skills_system" in str(messages[0].content)
+    assert (
+        _phase_filtered_report_messages(
+            [messages[0], Message(role="user", content='{"phase":"analysis"}')]
+        )[0].content
+        == messages[0].content
+    )
+
+
+def test_report_worker拒绝section旧schema中的terminal调用():
+    model = ReportWorkerOpenAIChat(id="report-worker-phase-test", api_key="test-key")
+    assistant = Message(
+        role="assistant",
+        tool_calls=[
+            {
+                "id": "call-terminal",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": '{"command":"pwd"}'},
+            }
+        ],
+    )
+    messages = [Message(role="user", content='{"phase":"section"}'), assistant]
+
+    assert model.get_function_calls_to_run(assistant, messages, {}) == []
+    assert json.loads(messages[-1].content) == {
+        "ok": False,
+        "status": "rejected",
+        "code": "report_phase_tool_forbidden",
+        "message": "当前 Reporting phase 不允许调用该工具，请使用本阶段已提供工具继续。",
+    }
+
+
 def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     workspace_service = service(tmp_path)
     coding_agent = create_coding_agent(
@@ -277,12 +354,12 @@ def test_report_agent_facade_wraps_unregistered_report_worker(tmp_path):
     assert [tool.name for tool in worker_tools] == ["workspace_coding"]
     assert [tool.name for tool in worker_tools_without_injected_context] == ["workspace_coding"]
     reporting_examples = {
+        "complete_report_analysis": '示例：{"reportBrief":',
+        "inspect_profile_index": '示例：{"datasetId":',
         "read_profile_pointer": '示例：{"datasetId":',
         "register_report_charts": '示例：{"charts":[',
-        "discard_report_charts": '示例：{"chartIds":[',
-        "begin_report_draft": "示例：{}",
         "render_report_section": '示例：{"sectionCode":',
-        "finalize_report_draft": "示例：{}",
+        "request_analysis_rework": '示例：{"analysisIds":[',
     }
     for name, example in reporting_examples.items():
         assert example in worker_tools[0].async_functions[name].description
@@ -768,6 +845,44 @@ async def test_report_worker_finalize通过后确定性调用finish而不再请�
         "summary": "报告已通过服务端正式验收。",
         "artifact_paths": ["report.md"],
     }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "tool_name",
+    ["complete_report_analysis", "render_report_section", "request_analysis_rework"],
+)
+async def test_report_worker阶段产物通过后确定性调用finish(monkeypatch, tool_name):
+    model = ReportWorkerOpenAIChat(id="report-worker-phase-test", api_key="test-key")
+    messages = [
+        Message(
+            role="tool",
+            tool_name=tool_name,
+            tool_call_id="phase-call",
+            content=json.dumps(
+                {
+                    "ok": True,
+                    "status": "accepted",
+                    "nextToolCall": {
+                        "name": "finish_task",
+                        "arguments": {
+                            "summary": "阶段产物已冻结。",
+                            "artifact_paths": ["phases/output.json"],
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+    ]
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("阶段工具通过后不应再请求供应商模型")
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "ainvoke", unexpected)
+    response = await model.ainvoke(messages)
+
+    assert response.tool_calls[0]["function"]["name"] == "finish_task"
 
 
 @pytest.mark.anyio

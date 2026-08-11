@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import re
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from pathlib import PurePosixPath
 from typing import Any, cast
@@ -31,19 +32,31 @@ from .delivery.draft_v1 import (
 )
 from .delivery.report_runtime import REPORT_VISUAL_THEME
 from .models import ReportingError
+from .phase import ReportingPhase, reporting_phase_allows_tool
 from .vision import ReportVisionReviewer
+from .workflow.checkpoint import (
+    AnalysisArtifact,
+    AnalysisChart,
+    AnalysisEvidence,
+    AnalysisEvidenceManifest,
+    AnalysisReworkRequest,
+    FileIdentity,
+    MetricDefinition,
+    ProfileReadReceipt,
+    ReportBrief,
+    SectionArtifact,
+    SectionWorkItem,
+)
 
 REPORT_DRAFT_STATE_KEY = "agentos_reporting_structured_draft"
 REPORT_CHART_STATE_KEY = "agentos_reporting_registered_charts"
 REPORT_TOOL_ARGUMENT_AUTOFIX_STATE_KEY = "agentos_reporting_tool_argument_autofixes"
+REPORT_PROFILE_READ_RECEIPTS_STATE_KEY = "agentos_reporting_profile_read_receipts"
+REPORT_PHASE_OUTPUT_STATE_KEY = "agentos_reporting_phase_output"
 MAX_REPORT_CHART_BYTES = 10 * 1024 * 1024
 MAX_PROFILE_POINTER_ITEMS = 200
 MAX_PROFILE_POINTER_OUTPUT_BYTES = 16 * 1024
 MAX_PROFILE_INDEX_FIELDS = 100
-_CHART_REFERENCE_REQUIRED_ACTION = (
-    "计划发布图用同一 sectionCode 重提完整章节并补齐 chartIds；误登记且未被章节引用的"
-    "预览图用 discard_report_charts 丢弃；处理完成后再调用 finalize_report_draft。"
-)
 
 
 def _stable_digest(value: Any) -> str:
@@ -227,7 +240,8 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     "从当前 Task 的受信分析上下文按 JSON Pointer 定点读取完整 Dataset Profile；"
                     "每次返回均有界，禁止读取完整 variables、correlations 或整份 Profile。"
                     '示例：{"datasetId":"dataset-001","profilePointer":'
-                    '"/variables/amount/histogram","maxItems":50}'
+                    '"/variables/amount/histogram","purpose":"核验金额分布与异常值",'
+                    '"maxItems":50}'
                 ),
                 parameters={
                     "type": "object",
@@ -243,6 +257,11 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                             "maxLength": 1024,
                             "pattern": "^/",
                         },
+                        "purpose": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1000,
+                        },
                         "maxItems": {
                             "type": "integer",
                             "minimum": 1,
@@ -250,11 +269,92 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                             "default": 50,
                         },
                     },
-                    "required": ["datasetId", "profilePointer"],
+                    "required": ["datasetId", "profilePointer", "purpose"],
                     "additionalProperties": False,
                 },
                 strict=True,
                 entrypoint=self.read_profile_pointer,
+            )
+        )
+        self.register(
+            Function(
+                name="complete_report_analysis",
+                description=(
+                    "全局分析完成后一次冻结 ReportBrief、逐 analysis evidence、共享指标口径、"
+                    "Profile 读取回执和已登记图表；服务端写入 AnalysisEvidenceManifest。"
+                    '示例：{"reportBrief":{"objective":"分析经营表现","executiveSummary":'
+                    '"收入增长但成本承压","managementQuestions":["增长是否可持续？"],'
+                    '"warnings":[]},"evidence":[{"analysisId":"analysis_001",'
+                    '"summary":"收入同比增长","datasetIds":["dataset-001"],'
+                    '"evidencePaths":["analysis/evidence.json"],'
+                    '"citationIds":["citation_001"]}],"metricDefinitions":[],"warnings":[]}'
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "reportBrief": ReportBrief.model_json_schema(by_alias=True),
+                        "evidence": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 200,
+                            "items": {"type": "object"},
+                        },
+                        "metricDefinitions": {
+                            "type": "array",
+                            "maxItems": 500,
+                            "items": MetricDefinition.model_json_schema(by_alias=True),
+                        },
+                        "warnings": {
+                            "type": "array",
+                            "maxItems": 500,
+                            "items": {"type": "string", "maxLength": 2000},
+                        },
+                    },
+                    "required": [
+                        "reportBrief",
+                        "evidence",
+                        "metricDefinitions",
+                        "warnings",
+                    ],
+                    "additionalProperties": False,
+                },
+                strict=True,
+                entrypoint=self.complete_report_analysis,
+            )
+        )
+        self.register(
+            Function(
+                name="request_analysis_rework",
+                description=(
+                    "仅当当前 SectionWorkItem 的证据不足以成稿时，提交缺口和受影响 analysisIds；"
+                    "服务端只补全局分析并重跑当前章节。"
+                    '示例：{"analysisIds":["analysis_001"],"reason":"缺少同比基准",'
+                    '"missingEvidence":["补充上年同期收入"]}'
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "analysisIds": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 200,
+                            "uniqueItems": True,
+                            "items": {"type": "string", "pattern": "^analysis_[0-9]{3,6}$"},
+                        },
+                        "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
+                        "missingEvidence": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 100,
+                            "uniqueItems": True,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 2000},
+                        },
+                    },
+                    "required": ["analysisIds", "reason", "missingEvidence"],
+                    "additionalProperties": False,
+                },
+                strict=True,
+                entrypoint=self.request_analysis_rework,
             )
         )
         self.register(
@@ -506,6 +606,35 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             )
         return parameters
 
+    @classmethod
+    def _active_reporting_phase(cls, scope: Any) -> ReportingPhase | None:
+        task = getattr(scope, "task", None)
+        if getattr(task, "acceptance_contract", None) is None:
+            return None
+        phase = cls._artifact_parameters(scope).get("phase")
+        if phase is None:
+            return None
+        if phase not in {"analysis", "section"}:
+            raise ReportingError("report_phase_contract_invalid", "Reporting phase 参数无效。")
+        return cast(ReportingPhase, phase)
+
+    @classmethod
+    def _require_phase_tool(
+        cls,
+        scope: Any,
+        *,
+        allowed: frozenset[str],
+        tool_name: str,
+    ) -> None:
+        # phase 来自服务端 acceptance contract，不采信模型参数。旧无 phase 草稿测试仍可调用原方法，
+        # 新 analysis/section run 则只能使用本阶段工具，不能绕回共享 Draft 状态机。
+        phase = cls._active_reporting_phase(scope)
+        if phase is not None and phase not in allowed:
+            raise ReportingError(
+                "report_phase_tool_forbidden",
+                f"phase={phase} 不能调用 {tool_name}。",
+            )
+
     async def _read_trusted_json(
         self,
         *,
@@ -545,6 +674,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         self,
         datasetId: str,
         profilePointer: str,
+        purpose: str,
         maxItems: int = 50,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
@@ -559,6 +689,11 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             )
         scope = await self.kernel.scope(run_context)
         parameters = self._artifact_parameters(scope)
+        self._require_phase_tool(
+            scope,
+            allowed=frozenset({"analysis"}),
+            tool_name="read_profile_pointer",
+        )
         validation_context = await self._read_trusted_json(
             thread_id=scope.thread_id,
             identity=parameters.get("validationContextFile"),
@@ -617,6 +752,23 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             structure_code="report_analysis_profile_invalid",
         )
         value = _resolve_json_pointer(profile, pointer_tokens)
+        receipt = ProfileReadReceipt.create(
+            dataset_id=datasetId,
+            profile_pointer=profilePointer,
+            snapshot_hash=str(dataset_context["profileFile"]["sha256"]),
+            purpose=purpose,
+        )
+        state = self._session_state(run_context)
+        serialized_receipt = receipt.model_dump(mode="json", by_alias=True)
+        if state is not None:
+            stored_receipts = state.get(REPORT_PROFILE_READ_RECEIPTS_STATE_KEY)
+            receipts = list(stored_receipts) if isinstance(stored_receipts, list) else []
+            if not any(
+                isinstance(item, dict) and item.get("receiptId") == receipt.receipt_id
+                for item in receipts
+            ):
+                receipts.append(serialized_receipt)
+            state[REPORT_PROFILE_READ_RECEIPTS_STATE_KEY] = receipts[-1000:]
         effective_limit = min(maxItems, MAX_PROFILE_POINTER_ITEMS)
         while True:
             bounded_value, truncated = _bound_profile_pointer_value(
@@ -629,6 +781,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 "value": bounded_value,
                 "truncated": truncated,
                 "itemLimit": effective_limit,
+                "readReceipt": serialized_receipt,
             }
             encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             if len(encoded) <= MAX_PROFILE_POINTER_OUTPUT_BYTES:
@@ -658,6 +811,11 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             raise ReportingError("report_profile_index_invalid", "Profile 字段分页参数无效。")
         scope = await self.kernel.scope(run_context)
         parameters = self._artifact_parameters(scope)
+        self._require_phase_tool(
+            scope,
+            allowed=frozenset({"analysis"}),
+            tool_name="inspect_profile_index",
+        )
         validation_context = await self._read_trusted_json(
             thread_id=scope.thread_id,
             identity=parameters.get("validationContextFile"),
@@ -771,6 +929,507 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 )
             page_size = max(1, page_size // 2)
 
+    async def _write_phase_json(
+        self,
+        *,
+        scope: Any,
+        path: str,
+        payload: dict[str, Any],
+        run_context: RunContext | None,
+    ) -> dict[str, Any]:
+        content = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        self.kernel.service._validate_content(content)
+        current = (await self.kernel.service.abatch_hash_files(scope.thread_id, [path]))[0]
+        mode = "create" if current.get("missing") is True else "overwrite"
+        result = await self.kernel.patch(
+            mode,
+            path,
+            None,
+            None,
+            False,
+            None,
+            run_context,
+            content=content.decode("utf-8"),
+            expected_sha256=current.get("sha256") if mode == "overwrite" else None,
+            _scope=scope,
+        )
+        if result.get("ok") is not True:
+            raise ReportingError("report_phase_artifact_write_failed", "阶段产物写入失败。")
+        identity = await self.kernel.service.ahash_file(scope.thread_id, path)
+        if (
+            identity.get("missing")
+            or identity.get("size") != len(content)
+            or identity.get("sha256") != hashlib.sha256(content).hexdigest()
+        ):
+            raise ReportingError("report_phase_artifact_changed", "阶段产物写入后发生变化。")
+        return FileIdentity.model_validate(identity).model_dump(mode="json", by_alias=True)
+
+    @staticmethod
+    def _phase_parameters(scope: Any, expected_phase: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        parameters = ReportWorkspaceTaskToolkit._artifact_parameters(scope)
+        phase_contract = parameters.get("phaseContract")
+        if parameters.get("phase") != expected_phase or not isinstance(phase_contract, dict):
+            raise ReportingError(
+                "report_phase_contract_invalid", f"当前 Task 不是有效的 {expected_phase} 阶段。"
+            )
+        return parameters, phase_contract
+
+    async def _section_work_item(
+        self,
+        *,
+        scope: Any,
+        contract: dict[str, Any],
+    ) -> SectionWorkItem:
+        inline = contract.get("sectionWorkItem")
+        if isinstance(inline, dict):
+            return SectionWorkItem.model_validate(inline)
+        payload = await self._read_trusted_json(
+            thread_id=scope.thread_id,
+            identity=contract.get("sectionWorkItemFile"),
+            identity_code="report_section_work_item_changed",
+            structure_code="report_section_work_item_invalid",
+        )
+        return SectionWorkItem.model_validate(payload)
+
+    async def _section_evidence_read_rejection(
+        self,
+        *,
+        scope: Any,
+        path: Any,
+    ) -> dict[str, Any] | None:
+        try:
+            if self._active_reporting_phase(scope) != "section":
+                return None
+            _parameters, contract = self._phase_parameters(scope, "section")
+            work_item = await self._section_work_item(scope=scope, contract=contract)
+            normalized_path = WorkspaceService.normalize_path(path, allow_root=False)[0]
+            allowed_paths = {
+                evidence_file.path
+                for evidence in work_item.evidence
+                for evidence_file in evidence.evidence_files
+            }
+            if normalized_path in allowed_paths:
+                return None
+            # 章节 run 的事实边界就是当前 WorkItem 冻结的 evidenceFiles。即使模型猜到
+            # 其他章节或分析上下文的真实路径，也不能把那些内容重新带入当前章节历史。
+            return self._failure(
+                ReportingError(
+                    "report_section_evidence_path_forbidden",
+                    "section phase 只能读取当前 SectionWorkItem 授权的 evidence 文件。",
+                ),
+                retryable=False,
+            )
+        except (ReportingError, ValidationError, WorkspaceError) as error:
+            return self._failure(error)
+
+    async def _invoke(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        call: Callable[[Any], Awaitable[Any]],
+        run_context: RunContext | None,
+    ) -> Any:
+        async def guarded_call(scope: Any) -> Any:
+            phase = self._active_reporting_phase(scope)
+            if phase is not None and not reporting_phase_allows_tool(phase, tool_name):
+                # Toolkit 为避免 Agno 跨 run 缓存污染而保留能力全集，但执行权限只来自
+                # 当前 Task 的受信 acceptance contract；模型投影或旧历史都不能绕过。
+                return self._failure(
+                    ReportingError(
+                        "report_phase_tool_forbidden",
+                        f"phase={phase} 不能调用 {tool_name}。",
+                    ),
+                    retryable=False,
+                )
+            if tool_name in {"read_file", "read_lines"}:
+                rejection = await self._section_evidence_read_rejection(
+                    scope=scope,
+                    path=arguments.get("path"),
+                )
+                if rejection is not None:
+                    return rejection
+            return await call(scope)
+
+        return await super()._invoke(tool_name, arguments, guarded_call, run_context)
+
+    @staticmethod
+    def _complete_phase_plan(state: dict[str, Any] | None) -> None:
+        if state is None:
+            return
+        plan = validated_agent_plan(state.get(AGENT_PLAN_STATE_KEY))
+        if plan is None or all(item["status"] == "completed" for item in plan["plan"]):
+            return
+        # phase 产物已通过严格 schema、文件身份和幂等冻结校验，此时当前 run 的工作
+        # 已由服务端确认完成。必须在签发 finish_task 前同步关闭模型计划，否则通用
+        # Coding 门禁会要求模型在冻结后继续 update_plan，而 Reporting 又不暴露 verify。
+        state[AGENT_PLAN_STATE_KEY] = {
+            "plan": [{"step": item["step"], "status": "completed"} for item in plan["plan"]],
+            "explanation": plan["explanation"],
+        }
+
+    @classmethod
+    def _phase_finish_response(
+        cls,
+        *,
+        phase: str,
+        identity: dict[str, Any],
+        summary: str,
+        state: dict[str, Any] | None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        cls._complete_phase_plan(state)
+        return {
+            "ok": True,
+            "status": "accepted",
+            "phase": phase,
+            "artifactFile": identity,
+            **(extra or {}),
+            "nextToolCall": {
+                "name": "finish_task",
+                "arguments": {
+                    "summary": summary,
+                    "artifact_paths": [identity["path"]],
+                },
+            },
+        }
+
+    async def complete_report_analysis(
+        self,
+        reportBrief: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        metricDefinitions: list[dict[str, Any]],
+        warnings: list[str],
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        """冻结全局分析事实；后续章节只能消费该产物，不继承本 run 消息。"""
+
+        state = self._session_state(run_context)
+        try:
+            scope = await self.kernel.scope(run_context)
+            parameters, contract = self._phase_parameters(scope, "analysis")
+            output_path = parameters.get("analysisOutputPath")
+            expected_analysis_ids = contract.get("analysisIds")
+            known_dataset_ids = contract.get("datasetIds")
+            known_citation_ids = contract.get("citationIds")
+            if (
+                not isinstance(output_path, str)
+                or not isinstance(expected_analysis_ids, list)
+                or not isinstance(known_dataset_ids, list)
+                or not isinstance(known_citation_ids, list)
+            ):
+                raise ReportingError(
+                    "report_phase_contract_invalid", "Analysis Task 缺少冻结注册表。"
+                )
+            if not isinstance(evidence, list) or not evidence:
+                raise ReportingError(
+                    "report_analysis_evidence_invalid", "全局分析 evidence 不能为空。"
+                )
+
+            receipts = tuple(
+                ProfileReadReceipt.model_validate(item)
+                for item in (
+                    state.get(REPORT_PROFILE_READ_RECEIPTS_STATE_KEY, ())
+                    if isinstance(state, dict)
+                    else ()
+                )
+            )
+            receipt_ids = {item.receipt_id for item in receipts}
+            chart_state = self._attempt_state(
+                state, REPORT_CHART_STATE_KEY, int(getattr(scope, "attempt_no", 0))
+            )
+            raw_charts = chart_state.get("charts")
+            chart_registry = raw_charts if isinstance(raw_charts, dict) else {}
+
+            parsed_evidence: list[AnalysisEvidence] = []
+            for item in evidence:
+                if not isinstance(item, dict):
+                    raise ReportingError(
+                        "report_analysis_evidence_invalid", "analysis evidence 必须是对象。"
+                    )
+                allowed = {
+                    "analysisId",
+                    "summary",
+                    "datasetIds",
+                    "evidencePaths",
+                    "citationIds",
+                    "chartIds",
+                    "profileReadReceiptIds",
+                    "warnings",
+                }
+                if set(item) - allowed:
+                    raise ReportingError(
+                        "report_analysis_evidence_invalid", "analysis evidence 包含未注册字段。"
+                    )
+                paths = item.get("evidencePaths")
+                if (
+                    not isinstance(paths, list)
+                    or not paths
+                    or len(paths) > 50
+                    or len(paths) != len(set(paths))
+                    or any(not isinstance(path, str) or not path for path in paths)
+                ):
+                    raise ReportingError(
+                        "report_analysis_evidence_invalid",
+                        "每项 analysis 必须绑定 1 至 50 个不重复 evidencePaths。",
+                    )
+                identities = await asyncio.gather(
+                    *(self.kernel.service.ahash_file(scope.thread_id, path) for path in paths)
+                )
+                if any(identity.get("missing") for identity in identities):
+                    raise ReportingError(
+                        "report_analysis_evidence_missing", "analysis evidence 文件不存在。"
+                    )
+                parsed = AnalysisEvidence.model_validate(
+                    {
+                        **{key: value for key, value in item.items() if key != "evidencePaths"},
+                        "evidenceFiles": identities,
+                    }
+                )
+                if set(parsed.dataset_ids) - set(known_dataset_ids):
+                    raise ReportingError(
+                        "report_analysis_dataset_unknown",
+                        "analysis evidence 引用了未授权 Dataset。",
+                    )
+                if set(parsed.citation_ids) - set(known_citation_ids):
+                    raise ReportingError(
+                        "report_analysis_citation_unknown",
+                        "analysis evidence 引用了未注册 citation。",
+                    )
+                if set(parsed.chart_ids) - set(chart_registry):
+                    raise ReportingError(
+                        "report_analysis_chart_unknown", "analysis evidence 引用了未登记图表。"
+                    )
+                if set(parsed.profile_read_receipt_ids) - receipt_ids:
+                    raise ReportingError(
+                        "report_profile_receipt_unknown",
+                        "analysis evidence 引用了不存在的 ProfileReadReceipt。",
+                    )
+                parsed_evidence.append(parsed)
+            if [item.analysis_id for item in parsed_evidence] != expected_analysis_ids:
+                raise ReportingError(
+                    "report_analysis_evidence_incomplete",
+                    "analysis evidence 必须按冻结顺序精确覆盖全部 analysisId。",
+                )
+
+            parsed_charts: list[AnalysisChart] = []
+            for chart_id, chart in chart_registry.items():
+                if not isinstance(chart, dict):
+                    raise ReportingError("report_analysis_chart_invalid", "图表登记状态无效。")
+                source_path = chart.get("sourcePath")
+                if not isinstance(source_path, str):
+                    raise ReportingError("report_analysis_chart_invalid", "图表缺少源路径。")
+                current = await self.kernel.service.ahash_file(scope.thread_id, source_path)
+                if (
+                    current.get("missing")
+                    or current.get("size") != chart.get("size")
+                    or current.get("sha256") != chart.get("sha256")
+                ):
+                    raise ReportingError(
+                        "report_analysis_chart_changed", f"图表 {chart_id} 在冻结前发生变化。"
+                    )
+                parsed_charts.append(
+                    AnalysisChart.model_validate(
+                        {
+                            "chartId": chart_id,
+                            "sourceFile": current,
+                            "title": chart.get("title"),
+                            "altText": chart.get("altText"),
+                            "citationIds": chart.get("citationIds"),
+                        }
+                    )
+                )
+
+            artifact = AnalysisArtifact(
+                reportBrief=ReportBrief.model_validate(reportBrief),
+                evidenceManifest=AnalysisEvidenceManifest(
+                    evidence=tuple(parsed_evidence),
+                    metricDefinitions=tuple(
+                        MetricDefinition.model_validate(item) for item in metricDefinitions
+                    ),
+                    charts=tuple(parsed_charts),
+                    warnings=tuple(warnings),
+                ),
+                profileReadReceipts=receipts,
+            )
+            serialized = artifact.model_dump(mode="json", by_alias=True)
+            phase_state = (
+                state.get(REPORT_PHASE_OUTPUT_STATE_KEY) if isinstance(state, dict) else None
+            )
+            if isinstance(phase_state, dict):
+                if (
+                    phase_state.get("phase") != "analysis"
+                    or phase_state.get("payload") != serialized
+                ):
+                    raise ReportingError(
+                        "report_analysis_already_submitted",
+                        "当前 analysis run 已冻结阶段产物，不能替换。",
+                    )
+                identity = FileIdentity.model_validate(phase_state.get("artifactFile")).model_dump(
+                    mode="json", by_alias=True
+                )
+            else:
+                identity = await self._write_phase_json(
+                    scope=scope,
+                    path=output_path,
+                    payload=serialized,
+                    run_context=run_context,
+                )
+                if state is not None:
+                    state[REPORT_PHASE_OUTPUT_STATE_KEY] = {
+                        "phase": "analysis",
+                        "payload": serialized,
+                        "artifactFile": identity,
+                    }
+            return self._phase_finish_response(
+                phase="analysis",
+                identity=identity,
+                summary="全局分析、证据清单和指标口径已冻结。",
+                state=state,
+                extra={
+                    "analysisCount": len(parsed_evidence),
+                    "profileReadReceiptCount": len(receipts),
+                },
+            )
+        except (ReportingError, ValidationError, WorkspaceError) as error:
+            return self._failure(error)
+
+    async def _render_isolated_section(
+        self,
+        *,
+        scope: Any,
+        section_code: str,
+        blocks: list[dict[str, Any]],
+        state: dict[str, Any] | None,
+        run_context: RunContext | None,
+    ) -> dict[str, Any]:
+        parameters, contract = self._phase_parameters(scope, "section")
+        output_path = parameters.get("sectionOutputPath")
+        work_item = await self._section_work_item(scope=scope, contract=contract)
+        if not isinstance(output_path, str) or section_code != work_item.section_code:
+            raise ReportingError(
+                "report_section_order_invalid", "当前 Task 只能提交 SectionWorkItem 指定章节。"
+            )
+        artifact = SectionArtifact.model_validate({"sectionCode": section_code, "blocks": blocks})
+        known_citations = {item.citation_id for item in work_item.citations}
+        known_charts = {item.chart_id for item in work_item.charts}
+        referenced_citations = {
+            citation_id for block in artifact.blocks for citation_id in block.citation_ids
+        }
+        referenced_charts = {chart_id for block in artifact.blocks for chart_id in block.chart_ids}
+        if referenced_citations - known_citations:
+            raise ReportingError(
+                "report_section_citation_unknown", "当前章节引用了 SectionWorkItem 外的 citation。"
+            )
+        if known_citations - referenced_citations:
+            raise ReportingError(
+                "report_section_citation_missing", "当前章节没有覆盖全部相关 evidence citation。"
+            )
+        if referenced_charts - known_charts:
+            raise ReportingError(
+                "report_section_chart_unknown", "当前章节引用了 SectionWorkItem 外的 chart。"
+            )
+        phase_state = state.get(REPORT_PHASE_OUTPUT_STATE_KEY) if isinstance(state, dict) else None
+        serialized = artifact.model_dump(mode="json", by_alias=True)
+        if isinstance(phase_state, dict):
+            if phase_state.get("phase") != "section" or phase_state.get("payload") != serialized:
+                raise ReportingError(
+                    "report_section_already_submitted", "当前独立章节 run 已提交，不能替换正文。"
+                )
+            identity = FileIdentity.model_validate(phase_state.get("artifactFile")).model_dump(
+                mode="json", by_alias=True
+            )
+        else:
+            identity = await self._write_phase_json(
+                scope=scope,
+                path=output_path,
+                payload=serialized,
+                run_context=run_context,
+            )
+            if state is not None:
+                state[REPORT_PHASE_OUTPUT_STATE_KEY] = {
+                    "phase": "section",
+                    "payload": serialized,
+                    "artifactFile": identity,
+                }
+        return self._phase_finish_response(
+            phase="section",
+            identity=identity,
+            summary=f"章节 {section_code} 已按冻结证据完成。",
+            state=state,
+            extra={"sectionCode": section_code},
+        )
+
+    async def request_analysis_rework(
+        self,
+        analysisIds: list[str],
+        reason: str,
+        missingEvidence: list[str],
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        state = self._session_state(run_context)
+        try:
+            scope = await self.kernel.scope(run_context)
+            parameters, contract = self._phase_parameters(scope, "section")
+            output_path = parameters.get("reworkRequestPath")
+            work_item = await self._section_work_item(scope=scope, contract=contract)
+            if not isinstance(output_path, str) or not set(analysisIds).issubset(
+                work_item.analysis_ids
+            ):
+                raise ReportingError(
+                    "report_analysis_rework_invalid",
+                    "返工请求只能引用当前 SectionWorkItem 的 analysisIds。",
+                )
+            request = AnalysisReworkRequest(
+                sectionCode=work_item.section_code,
+                analysisIds=tuple(analysisIds),
+                reason=reason,
+                missingEvidence=tuple(missingEvidence),
+            )
+            serialized = request.model_dump(mode="json", by_alias=True)
+            phase_state = (
+                state.get(REPORT_PHASE_OUTPUT_STATE_KEY) if isinstance(state, dict) else None
+            )
+            if isinstance(phase_state, dict):
+                if (
+                    phase_state.get("phase") != "analysis_rework"
+                    or phase_state.get("payload") != serialized
+                ):
+                    raise ReportingError(
+                        "report_section_already_submitted",
+                        "当前章节 run 已产生阶段产物。",
+                    )
+                identity = FileIdentity.model_validate(phase_state.get("artifactFile")).model_dump(
+                    mode="json", by_alias=True
+                )
+            else:
+                identity = await self._write_phase_json(
+                    scope=scope,
+                    path=output_path,
+                    payload=serialized,
+                    run_context=run_context,
+                )
+                if state is not None:
+                    state[REPORT_PHASE_OUTPUT_STATE_KEY] = {
+                        "phase": "analysis_rework",
+                        "payload": serialized,
+                        "artifactFile": identity,
+                    }
+            return self._phase_finish_response(
+                phase="analysis_rework",
+                identity=identity,
+                summary=f"章节 {work_item.section_code} 已提交分析补证请求。",
+                state=state,
+                extra={"sectionCode": work_item.section_code},
+            )
+        except (ReportingError, ValidationError, WorkspaceError) as error:
+            return self._failure(error)
+
     @staticmethod
     def _failure(error: Exception, *, retryable: bool = True) -> dict[str, Any]:
         validation_errors: list[dict[str, str]] = []
@@ -813,6 +1472,8 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             code = "report_draft_workspace_error"
             message = "报告草稿处理失败。"
         if code in {
+            "report_analysis_already_submitted",
+            "report_section_already_submitted",
             "report_draft_already_submitted",
             "report_draft_already_rendered",
             "report_chart_discard_after_finalize",
@@ -828,9 +1489,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         }
         if validation_errors:
             result["validationErrors"] = validation_errors
-            result["requiredActions"] = [
-                "仅修正 validationErrors 指向的当前章节字段后重新调用 render_report_section。"
-            ]
+            result["requiredActions"] = ["仅修正 validationErrors 指向的字段后重新调用当前工具。"]
         elif code == "report_draft_chart_unregistered":
             result["requiredActions"] = [
                 "仅登记错误消息列出的缺失图表；登记齐全后服务端会自动恢复草稿。"
@@ -956,13 +1615,37 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         state = self._session_state(run_context)
         try:
             scope = await self.kernel.scope(run_context)
-            (
-                title,
-                markdown_path,
-                sections,
-                citation_ids,
-                require_table,
-            ) = await self._render_contract(scope)
+            self._require_phase_tool(
+                scope,
+                allowed=frozenset({"analysis"}),
+                tool_name="register_report_charts",
+            )
+            phase = self._active_reporting_phase(scope)
+            title = ""
+            markdown_path = ""
+            sections: tuple[Any, ...] = ()
+            require_table = False
+            if phase == "analysis":
+                _parameters, phase_contract = self._phase_parameters(scope, "analysis")
+                raw_citation_ids = phase_contract.get("citationIds")
+                if (
+                    not isinstance(raw_citation_ids, list)
+                    or len(raw_citation_ids) != len(set(raw_citation_ids))
+                    or any(not isinstance(item, str) or not item for item in raw_citation_ids)
+                ):
+                    raise ReportingError(
+                        "report_phase_contract_invalid",
+                        "Analysis Task citation 注册表无效。",
+                    )
+                citation_ids = tuple(raw_citation_ids)
+            else:
+                (
+                    title,
+                    markdown_path,
+                    sections,
+                    citation_ids,
+                    require_table,
+                ) = await self._render_contract(scope)
             parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
             if len({item.chart_id for item in parsed}) != len(parsed):
                 raise ReportingError(
@@ -975,7 +1658,11 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             raw_registry = registry_state.get("charts")
             registry = dict(raw_registry) if isinstance(raw_registry, dict) else {}
             candidate_registry = dict(registry)
-            draft_state = state.get(REPORT_DRAFT_STATE_KEY) if isinstance(state, dict) else None
+            draft_state = (
+                state.get(REPORT_DRAFT_STATE_KEY)
+                if phase is None and isinstance(state, dict)
+                else None
+            )
             if not isinstance(draft_state, dict) or draft_state.get("attemptNo") != attempt_no:
                 draft_state = None
             pending_bindings: dict[str, list[str]] = {}
@@ -1124,6 +1811,11 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     "chartIds 必须是 1 至 100 个不重复图表标识。",
                 )
             scope = await self.kernel.scope(run_context)
+            self._require_phase_tool(
+                scope,
+                allowed=frozenset(),
+                tool_name="discard_report_charts",
+            )
             attempt_no = int(getattr(scope, "attempt_no", 0))
             registry_state = self._attempt_state(state, REPORT_CHART_STATE_KEY, attempt_no)
             raw_registry = registry_state.get("charts")
@@ -1213,20 +1905,9 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         registry: dict[str, Any],
         section_count: int,
     ) -> dict[str, Any]:
-        if len(stored_sections) != section_count:
-            return result
-        draft = ReportDraft.model_validate({"sections": stored_sections})
-        unreferenced = sorted(set(registry) - set(cls._draft_chart_ids(draft)))
-        if unreferenced:
-            # 最后一章提交成功是草稿冻结前最后一个确定性检查点。登记图表代表本轮报告
-            # 的发布资产，因此必须把漏引 ID 直接反馈给模型，让其定点替换相关完整章节。
-            result.update(
-                {
-                    "status": "awaiting_chart_references",
-                    "unreferencedChartIds": unreferenced,
-                    "requiredActions": [_CHART_REFERENCE_REQUIRED_ACTION],
-                }
-            )
+        # 未引用图表不属于正文完整性错误。服务端最终装配会把它们标记为
+        # unused_chart_excluded 并排除，不能要求模型为了消除预览资产而重写章节。
+        del cls, stored_sections, registry, section_count
         return result
 
     @staticmethod
@@ -1499,6 +2180,11 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         state = self._session_state(run_context)
         try:
             scope = await self.kernel.scope(run_context)
+            self._require_phase_tool(
+                scope,
+                allowed=frozenset(),
+                tool_name="begin_report_draft",
+            )
             (
                 title,
                 markdown_path,
@@ -1556,6 +2242,20 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         state = self._session_state(run_context)
         try:
             scope = await self.kernel.scope(run_context)
+            phase = self._active_reporting_phase(scope)
+            if phase == "section":
+                return await self._render_isolated_section(
+                    scope=scope,
+                    section_code=sectionCode,
+                    blocks=blocks,
+                    state=state,
+                    run_context=run_context,
+                )
+            if phase == "analysis":
+                raise ReportingError(
+                    "report_phase_tool_forbidden",
+                    "phase=analysis 不能调用 render_report_section。",
+                )
             (
                 _title,
                 _markdown_path,
@@ -1755,6 +2455,11 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         state = self._session_state(run_context)
         try:
             scope = await self.kernel.scope(run_context)
+            self._require_phase_tool(
+                scope,
+                allowed=frozenset(),
+                tool_name="finalize_report_draft",
+            )
             _title, _path, definitions, _citations, _require_table = await self._render_contract(
                 scope
             )
@@ -1801,18 +2506,6 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     "report_draft_state_missing",
                     "最终拼装没有生成可信产物路径。",
                 )
-            unreferenced = self._unused_chart_ids(rendered.get("warnings"))
-            if unreferenced:
-                # 拼装器已经产生结构化排除告警；finalize 不运行新的内容校验，只把该既有
-                # 结果转成可恢复状态并暂缓 finish_task，供模型定点替换章节后再次拼装。
-                rendered.update(
-                    {
-                        "status": "awaiting_chart_references",
-                        "unreferencedChartIds": list(unreferenced),
-                        "requiredActions": [_CHART_REFERENCE_REQUIRED_ACTION],
-                    }
-                )
-                return rendered
             plan = validated_agent_plan(state.get(AGENT_PLAN_STATE_KEY)) if state else None
             if plan is not None and state is not None:
                 state[AGENT_PLAN_STATE_KEY] = {
@@ -1856,7 +2549,14 @@ def build_report_worker_tools(
         validator_registry=validator_registry,
         vision_reviewer=vision_reviewer,
     )
+    for name in ("begin_report_draft", "discard_report_charts", "finalize_report_draft"):
+        toolkit.functions.pop(name, None)
+        toolkit.async_functions.pop(name, None)
     if vision_reviewer is None:
         toolkit.functions.pop("view_image", None)
         toolkit.async_functions.pop("view_image", None)
+    # Agno 2.8.2 会跨内部 run 复用同名动态 Toolkit。若按首次 run_context 的 phase
+    # 删除函数，后续 analysis/section run 会继承残缺工具集，无法提交合法阶段产物。
+    # Toolkit 因此必须保持 phase 无关的能力全集；模型请求仍逐次投影允许工具，执行时
+    # _invoke 还会依据受信 phase 状态复核，不能通过直接调用绕过阶段边界。
     return [toolkit]

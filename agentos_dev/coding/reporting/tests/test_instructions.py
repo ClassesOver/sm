@@ -8,6 +8,7 @@ from agentos_dev.coding.reporting.instructions import (
     HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
     HOSPITAL_REPORT_WRITING_INSTRUCTIONS,
     REPORT_AGENT_INSTRUCTIONS,
+    REPORT_SECTION_AGENT_INSTRUCTIONS,
     build_report_agent_instructions,
 )
 from agentos_dev.instructions import (
@@ -54,8 +55,11 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "read_profile_pointer" in instructions
     assert "inspect_profile_index" in instructions
     assert "nextFieldOffset" in instructions
+    assert "ProfileCoverageManifest" in instructions
+    assert "ProfileReadReceipt" in instructions
+    assert "purpose" in instructions
+    assert "outputHandle" in instructions
     assert "面板数据先聚合后计算的 ACF" in instructions
-    assert "discard_report_charts" in instructions
     assert "仅在工具列表实际包含 view_image" in instructions
     assert "先按月及适当组织粒度聚合" in instructions
     assert "Profile 只用于发现分析方向" in instructions
@@ -68,13 +72,21 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert "把 DetailedAnalysisPlan 视为已批准执行计划" in instructions
     assert "禁止 round(None)" in instructions
     assert "None-safe 格式化" in instructions
-    assert "调用 begin_report_draft 获取冻结章节顺序" in instructions
+    assert "phase=analysis" in instructions and "phase=section" in instructions
+    assert "complete_report_analysis" in instructions
+    assert "ReportBrief" in instructions and "AnalysisEvidenceManifest" in instructions
+    assert "SectionWorkItem" in instructions
+    assert "正常只调用一次 render_report_section" in instructions
+    assert "request_analysis_rework" in instructions
+    assert "不得调用 begin_report_draft 或 finalize_report_draft" in instructions
     assert "visualTheme" in instructions and "chartPalette" in instructions
     assert "不限定图表类型" in instructions
-    assert "逐章调用 render_report_section" in instructions
     assert "block 不得重复一级或二级章节标题" in instructions
     assert "章节内部标题从三级标题开始" in instructions
-    assert "调用 finalize_report_draft" in instructions
+    assert "正文块只提交 blockId、Markdown、citationIds 和 chartIds" in instructions
+    assert "不提交 analysisIds" in instructions
+    assert "unused_chart_excluded" in instructions
+    assert "不阻断 Finalize" in instructions
     assert "analysis/report_analysis.py" in instructions
     assert "优先通过一次 apply_patch" in instructions
     assert "分析命令从工作区根目录执行" in instructions
@@ -91,10 +103,31 @@ def test_report_agent_instructions_support_iterative_python_scripts():
     assert not any(rule in resolved for rule in PURE_CODING_PARALLEL_READ_INSTRUCTIONS)
 
 
+def test_section_phase只接收章节指令且不再注入coding与analysis规则():
+    context = RunContext(
+        run_id="run-1",
+        session_id="thread-1",
+        dependencies={"AgentOS 编码任务": {"reportingPhase": "section"}},
+    )
+
+    resolved = build_report_agent_instructions(context)
+    instructions = "\n".join(resolved)
+
+    assert resolved == REPORT_SECTION_AGENT_INSTRUCTIONS
+    assert "render_report_section" in instructions
+    assert "request_analysis_rework" in instructions
+    assert "read_tool_output" in instructions
+    assert "terminal" not in instructions
+    assert "apply_patch" not in instructions
+    assert "phase=analysis" not in instructions
+    assert "report-visualization" not in instructions
+    assert "完整 Profile" not in instructions
+
+
 def test_报表成稿提示词要求图表结合且表格直接使用markdown():
     instructions = "\n".join(REPORT_AGENT_INSTRUCTIONS)
 
-    assert "最终成稿必须图表结合" in instructions
+    assert "根据 SectionWorkItem 中的实际证据决定图表和表格" in instructions
     assert "标准 Markdown 管道表" in instructions
     assert "直接写入相关 render_report_section 正文" in instructions
     assert "不得将表格渲染为图片或登记为 chartId" in instructions
@@ -167,11 +200,11 @@ def test_报表用户可见内容使用中文且机器标记保持稳定():
     instructions = "\n".join(build_report_agent_instructions(instruction_context()))
 
     assert "不得展示来源系统、数据表名、字段名" in instructions
-    assert "逐章调用 render_report_section" in instructions
-    assert "sectionCode 原样复制" in instructions
-    assert "调用 finalize_report_draft" in instructions
+    assert "正常只调用一次 render_report_section" in instructions
+    assert "sectionCode 必须原样复制" in instructions
+    assert "不得调用 begin_report_draft 或 finalize_report_draft" in instructions
     assert "citationIds" in instructions
-    assert "全部已注册 citationIds" in instructions
+    assert "当前 WorkItem 的 citationIds" in instructions
     assert "snapshotHash" in instructions
     assert "FactSet" not in instructions
     assert "?" not in instructions and "？" not in instructions

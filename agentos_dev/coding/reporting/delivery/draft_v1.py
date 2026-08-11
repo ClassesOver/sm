@@ -74,7 +74,6 @@ class ReportDraftBlock(StrictModel):
     block_id: str = Field(alias="blockId", min_length=1, max_length=128)
     markdown: str = Field(min_length=1, max_length=64_000)
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=100)
-    analysis_ids: tuple[str, ...] = Field(default=(), alias="analysisIds", max_length=2_000)
     chart_ids: tuple[str, ...] = Field(default=(), alias="chartIds")
 
     @field_validator("markdown")
@@ -85,13 +84,6 @@ class ReportDraftBlock(StrictModel):
     @field_validator("citation_ids", "chart_ids")
     @classmethod
     def deduplicate_references(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(value))
-
-    @field_validator("analysis_ids")
-    @classmethod
-    def normalize_analysis_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(not re.fullmatch(r"analysis_[0-9]{3,6}", item) for item in value):
-            raise ValueError("正文 analysisId 格式无效")
         return tuple(dict.fromkeys(value))
 
 
@@ -241,11 +233,10 @@ def assemble_report_markdown(
     markdown_parts = [f"# {expected_title}"]
     for section in draft.sections:
         definition = section_registry[section.section_code]
-        section_analysis_ids = tuple(
-            analysis_id for block in section.blocks for analysis_id in block.analysis_ids
-        )
-        referenced_analysis_ids.extend(section_analysis_ids)
-        heading = f"## {definition.title}"
+        # analysisIds 的唯一事实来源是用户批准后冻结的提纲。模型无需在每个正文块
+        # 重复提交，也不能通过遗漏或替换 block.analysisIds 改变最终 manifest 绑定。
+        referenced_analysis_ids.extend(definition.analysis_ids)
+        heading = _marker_lines(f"## {definition.title}", (), definition.analysis_ids)
         markdown_parts.append(
             f"[[section:{definition.code}]]\n{heading}" if definition.protocol_marker else heading
         )
@@ -288,7 +279,7 @@ def assemble_report_markdown(
                 _marker_lines(
                     block_markdown,
                     block.citation_ids,
-                    block.analysis_ids,
+                    (),
                 )
             )
             for chart_id in block.chart_ids:

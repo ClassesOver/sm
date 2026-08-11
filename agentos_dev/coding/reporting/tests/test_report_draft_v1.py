@@ -26,7 +26,6 @@ def _draft() -> ReportDraft:
                                 "| 项目 | 本期值 |\n| --- | --- |\n| 医疗收入 | 100万元 |"
                             ),
                             "citationIds": ["citation_001"],
-                            "analysisIds": ["analysis_001"],
                             "chartIds": ["income-trend"],
                         }
                     ],
@@ -77,7 +76,7 @@ def test_dataset协议拒绝旧Fact字段(field: str) -> None:
         ReportChartInput.model_validate(payload)
 
 
-def test草稿analysisId不执行提纲覆盖校验() -> None:
+def test草稿analysisId由冻结提纲服务端绑定() -> None:
     rendered = assemble_report_markdown(
         _draft(),
         expected_title="运营报告",
@@ -97,7 +96,42 @@ def test草稿analysisId不执行提纲覆盖校验() -> None:
         ),
     )
 
-    assert rendered.analysis_ids == ("analysis_001",)
+    assert rendered.analysis_ids == ("analysis_002",)
+    assert "[[analysis:analysis_002]]" in rendered.markdown
+    assert "[[analysis:analysis_001]]" not in rendered.markdown
+
+
+def test未引用图表只被排除且不阻断服务端装配() -> None:
+    payload = _draft().model_dump(mode="json", by_alias=True)
+    payload["sections"][0]["blocks"][0]["chartIds"] = []
+
+    rendered = assemble_report_markdown(
+        ReportDraft.model_validate(payload),
+        expected_title="运营报告",
+        markdown_path="reports/report.md",
+        sections=(
+            ReportSectionDefinition(code="income", title="收入分析", analysisIds=("analysis_001",)),
+        ),
+        citation_ids=("citation_001",),
+        charts=(
+            ReportChartInput(
+                chartId="income-trend",
+                fileName="income.png",
+                title="收入趋势",
+                altText="收入趋势图",
+                citationIds=("citation_001",),
+            ),
+        ),
+    )
+
+    assert rendered.chart_paths == ()
+    assert rendered.warnings == (
+        {
+            "code": "unused_chart_excluded",
+            "chartIds": ["income-trend"],
+            "message": "未被正文引用的图表已从发布包排除。",
+        },
+    )
 
 
 def test草稿可省略标题并归一化重复引用() -> None:
@@ -105,7 +139,6 @@ def test草稿可省略标题并归一化重复引用() -> None:
     payload.pop("title")
     block = payload["sections"][0]["blocks"][0]
     block["citationIds"] = ["citation_001", "citation_001"]
-    block["analysisIds"] = ["analysis_001", "analysis_001"]
     block["chartIds"] = ["income-trend", "income-trend"]
     draft = ReportDraft.model_validate(payload)
 

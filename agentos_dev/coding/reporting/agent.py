@@ -48,6 +48,7 @@ from ...task_execution.execution import (
 )
 from ...workspace import WorkspaceService
 from .delivery.acceptance import load_reporting_skills
+from .phase import ReportingPhase, reporting_phase_allows_tool
 from .tools import (
     REPORT_CHART_STATE_KEY,
     REPORT_DRAFT_STATE_KEY,
@@ -67,6 +68,8 @@ _REPORT_FACADE_TOOL_NAMES = frozenset(
 )
 _REPORT_STRICT_TOOL_NAMES = frozenset(
     {
+        "complete_report_analysis",
+        "request_analysis_rework",
         "register_report_charts",
         "discard_report_charts",
         "begin_report_draft",
@@ -83,6 +86,30 @@ _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
 _REPORT_ARGUMENT_MAX_MESSAGE_LENGTH = 512
 _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
+    "complete_report_analysis": {
+        "reportBrief": {
+            "objective": "形成年度运营报告",
+            "executiveSummary": "收入增长但成本承压",
+            "managementQuestions": ["增长是否可持续"],
+            "warnings": [],
+        },
+        "evidence": [
+            {
+                "analysisId": "analysis_001",
+                "summary": "收入规模与趋势已复算",
+                "datasetIds": ["dataset-001"],
+                "evidencePaths": ["analysis/evidence/income.json"],
+                "citationIds": ["citation_001"],
+            }
+        ],
+        "metricDefinitions": [],
+        "warnings": [],
+    },
+    "request_analysis_rework": {
+        "analysisIds": ["analysis_001"],
+        "reason": "缺少同比基准",
+        "missingEvidence": ["补充上年同期收入"],
+    },
     "register_report_charts": {
         "charts": [
             {
@@ -103,7 +130,6 @@ _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
                 "blockId": "overview",
                 "markdown": "### 核心结论\n\n- 医疗收入同比增长 8.2%",
                 "citationIds": ["citation_001"],
-                "analysisIds": ["analysis_001"],
                 "chartIds": ["income_trend"],
             }
         ],
@@ -524,9 +550,19 @@ def _tool_response(
 def _forced_report_worker_response(
     messages: list[Message], *, stream: bool = False
 ) -> ModelResponse | None:
-    """正式验收通过后只执行服务端签发的 finish_task，不再请求模型决策。"""
+    """阶段产物通过后只执行服务端签发的 finish_task，不再请求模型决策。"""
     last = messages[-1] if messages else None
-    if last is None or last.role != "tool" or last.tool_name != "finalize_report_draft":
+    if (
+        last is None
+        or last.role != "tool"
+        or last.tool_name
+        not in {
+            "complete_report_analysis",
+            "render_report_section",
+            "request_analysis_rework",
+            "finalize_report_draft",
+        }
+    ):
         return None
     if not isinstance(last.content, str):
         return None
@@ -558,6 +594,92 @@ def _forced_report_worker_response(
     return _tool_response("finish_task", arguments, stream=stream)
 
 
+def _reporting_phase_from_messages(messages: list[Message]) -> ReportingPhase | None:
+    """读取 Workflow 生成的首层任务 JSON；该值只用于模型投影，执行门禁另行校验。"""
+    for message in reversed(messages):
+        if message.role != "user":
+            continue
+        content = message.content
+        if isinstance(content, dict):
+            payload = content
+        elif isinstance(content, str):
+            try:
+                payload = json.loads(content)
+            except json.JSONDecodeError:
+                continue
+        else:
+            continue
+        phase = payload.get("phase") if isinstance(payload, dict) else None
+        if phase in {"analysis", "section"}:
+            return phase
+    return None
+
+
+def _report_model_tool_name(tool: Any) -> str | None:
+    if isinstance(tool, dict):
+        function = tool.get("function")
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            return function["name"]
+        return tool.get("name") if isinstance(tool.get("name"), str) else None
+    name = getattr(tool, "name", None)
+    return name if isinstance(name, str) else None
+
+
+def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
+    phase = _reporting_phase_from_messages(messages)
+    if phase is None or tools is None:
+        return tools
+    return [
+        tool
+        for tool in tools
+        if (name := _report_model_tool_name(tool)) is not None
+        and reporting_phase_allows_tool(phase, name)
+    ]
+
+
+def _phase_filtered_report_messages(messages: list[Message]) -> list[Message]:
+    if _reporting_phase_from_messages(messages) != "section":
+        return messages
+    projected: list[Message] | None = None
+    opening = "<skills_system>"
+    closing = "</skills_system>"
+    for index, message in enumerate(messages):
+        content = message.content
+        if message.role != "system" or not isinstance(content, str):
+            continue
+        start = content.find(opening)
+        end = content.find(closing, start + len(opening)) if start >= 0 else -1
+        if start < 0 or end < 0:
+            continue
+        end += len(closing)
+        before = content[:start]
+        after = content[end:]
+        if before.endswith("\n") and after.startswith("\n"):
+            after = after[1:]
+        if projected is None:
+            projected = list(messages)
+        updated = deepcopy(message)
+        updated.content = before + after
+        projected[index] = updated
+    return projected if projected is not None else messages
+
+
+def _phase_filtered_model_call(
+    messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    updated_args = args
+    updated_kwargs = dict(kwargs)
+    if "tools" in updated_kwargs:
+        updated_kwargs["tools"] = _phase_filtered_report_tools(
+            messages, updated_kwargs.get("tools")
+        )
+    elif len(args) >= 3:
+        positional = list(args)
+        positional[2] = _phase_filtered_report_tools(messages, positional[2])
+        updated_args = tuple(positional)
+    return updated_args, updated_kwargs
+
+
 class ReportWorkerOpenAIChat(ProjectedOpenAIChat):
     """Reporting Worker 在通过正式验收后确定性收敛到 finish_task。"""
 
@@ -569,21 +691,27 @@ class ReportWorkerOpenAIChat(ProjectedOpenAIChat):
         messages: list[Message],
         functions: dict[str, Any] | None = None,
     ) -> list[Any]:
-        """视觉关闭时把过期的 view_image 调用转成有界工具回执。
+        """把 phase 外工具和过期的 view_image 调用转成有界工具回执。
 
-        工具 schema 会随配置移除 view_image，但模型可能仍携带上一轮 schema 的调用。
-        直接交给 Agno 会生成“Function not found”并触发无效重试；这里只拦截该单一
-        工具名，保留其它调用和原始 assistant 消息，避免改变普通工具执行语义。
+        工具 schema 会按内部 run 投影，但模型仍可能生成旧 schema 中的调用。执行前必须
+        同步拒绝，避免 Agno 生成 Function not found 后继续扩大无效历史。
         """
-        if getattr(self, "_report_vision_enabled", True):
-            return super().get_function_calls_to_run(assistant_message, messages, functions)
+        phase = _reporting_phase_from_messages(messages)
         tool_calls = list(assistant_message.tool_calls or [])
         allowed_calls = []
         blocked = []
         for tool_call in tool_calls:
             function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
             name = function.get("name") if isinstance(function, dict) else None
-            if name != "view_image":
+            phase_forbidden = (
+                isinstance(name, str)
+                and phase in {"analysis", "section"}
+                and not reporting_phase_allows_tool(phase, name)
+            )
+            vision_disabled = name == "view_image" and not getattr(
+                self, "_report_vision_enabled", True
+            )
+            if not phase_forbidden and not vision_disabled:
                 allowed_calls.append(tool_call)
                 continue
             call_id = tool_call.get("id") if isinstance(tool_call, dict) else None
@@ -594,14 +722,23 @@ class ReportWorkerOpenAIChat(ProjectedOpenAIChat):
                 Message(
                     role=self.tool_message_role,
                     tool_call_id=call_id,
-                    tool_name="view_image",
+                    tool_name=name,
                     content=json.dumps(
-                        {
-                            "ok": False,
-                            "status": "skipped",
-                            "code": "report_vision_disabled",
-                            "message": "当前 Reporting Worker 未启用图片视觉工具，继续使用文本和文件证据。",
-                        },
+                        (
+                            {
+                                "ok": False,
+                                "status": "rejected",
+                                "code": "report_phase_tool_forbidden",
+                                "message": "当前 Reporting phase 不允许调用该工具，请使用本阶段已提供工具继续。",
+                            }
+                            if phase_forbidden
+                            else {
+                                "ok": False,
+                                "status": "skipped",
+                                "code": "report_vision_disabled",
+                                "message": "当前 Reporting Worker 未启用图片视觉工具，继续使用文本和文件证据。",
+                            }
+                        ),
                         ensure_ascii=False,
                         separators=(",", ":"),
                     ),
@@ -617,18 +754,42 @@ class ReportWorkerOpenAIChat(ProjectedOpenAIChat):
         filtered_message.tool_calls = allowed_calls
         return super().get_function_calls_to_run(filtered_message, messages, functions)
 
+    def count_tokens(
+        self,
+        messages: list[Message],
+        tools: Any = None,
+        output_schema: Any = None,
+    ) -> int:
+        messages = _phase_filtered_report_messages(messages)
+        return super().count_tokens(
+            messages,
+            _phase_filtered_report_tools(messages, tools),
+            output_schema=output_schema,
+        )
+
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        return _forced_report_worker_response(messages) or super().invoke(messages, *args, **kwargs)
+        forced = _forced_report_worker_response(messages)
+        if forced is not None:
+            return forced
+        messages = _phase_filtered_report_messages(messages)
+        args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
+        return super().invoke(messages, *args, **kwargs)
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
         forced = _forced_report_worker_response(messages)
-        return forced if forced is not None else await super().ainvoke(messages, *args, **kwargs)
+        if forced is not None:
+            return forced
+        messages = _phase_filtered_report_messages(messages)
+        args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
+        return await super().ainvoke(messages, *args, **kwargs)
 
     def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
         forced = _forced_report_worker_response(messages, stream=True)
         if forced is not None:
             yield forced
             return
+        messages = _phase_filtered_report_messages(messages)
+        args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
         yield from super().invoke_stream(messages, *args, **kwargs)
 
     async def ainvoke_stream(
@@ -638,6 +799,8 @@ class ReportWorkerOpenAIChat(ProjectedOpenAIChat):
         if forced is not None:
             yield forced
             return
+        messages = _phase_filtered_report_messages(messages)
+        args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
         async for response in super().ainvoke_stream(messages, *args, **kwargs):
             yield response
 

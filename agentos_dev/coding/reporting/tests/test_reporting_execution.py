@@ -5,8 +5,10 @@ import pytest
 
 from agentos_dev.coding.reporting.models import ReportingError
 from agentos_dev.coding.reporting.workflow import execution as execution_module
-from agentos_dev.coding.reporting.workflow.execution import ReportTaskRunner
-from agentos_dev.coding.reporting.workflow.execution import MAX_REPORT_INSTRUCTION_BYTES
+from agentos_dev.coding.reporting.workflow.execution import (
+    MAX_REPORT_INSTRUCTION_BYTES,
+    ReportTaskRunner,
+)
 from agentos_dev.task_execution import TaskScope, TaskState
 
 
@@ -25,9 +27,19 @@ class _Session:
 
 
 class _Repository:
-    def __init__(self, *, finish_requested: bool, initial_state: TaskState = TaskState.NEW):
+    def __init__(
+        self,
+        *,
+        finish_requested: bool,
+        initial_state: TaskState = TaskState.NEW,
+        phase: str = "analysis",
+    ):
         self.finish_requested = finish_requested
         self.initial_state = initial_state
+        self.acceptance_contract = {
+            "version": 1,
+            "requirements": [{"parameters": {"phase": phase}}],
+        }
         self.reads = 0
         self.cancelled = False
         self.resumed = False
@@ -39,7 +51,12 @@ class _Repository:
             if self.reads == 1
             else (TaskState.FINISHING if self.finish_requested else TaskState.ACTIVE)
         )
-        return SimpleNamespace(state=state, state_version=self.reads, finish_receipt=None)
+        return SimpleNamespace(
+            state=state,
+            state_version=self.reads,
+            finish_receipt=None,
+            acceptance_contract=self.acceptance_contract,
+        )
 
     async def open_initial(self, _task_id, _lease, _version):
         return (
@@ -93,14 +110,26 @@ async def test_report_task_runner仅为reporting提高指令上限():
 @pytest.mark.anyio
 async def test_report_task_runner直接运行agno_worker并完成正式回执(monkeypatch):
     repository = _Repository(finish_requested=True)
-    worker = SimpleNamespace(arun=lambda *_args, **_kwargs: SimpleNamespace(status="completed"))
+
+    async def events():
+        yield SimpleNamespace(status="running")
+        yield SimpleNamespace(
+            status="completed",
+            metrics=SimpleNamespace(input_tokens=123, output_tokens=45, total_tokens=168),
+        )
+
+    worker = SimpleNamespace(arun=lambda *_args, **_kwargs: events())
     cleanup = _Cleanup()
     monkeypatch.setattr(execution_module, "TaskSession", _Session)
     runner = ReportTaskRunner(repository, worker, cleanup)
 
     receipt = await runner.run(_scope())
 
-    assert receipt == {"artifacts": [], "acceptance": {"requirements": []}}
+    assert receipt == {
+        "artifacts": [],
+        "acceptance": {"requirements": []},
+        "modelMetrics": {"inputTokens": 123, "outputTokens": 45, "totalTokens": 168},
+    }
     assert repository.cancelled is False
     assert cleanup.disconnected_epochs == []
 
@@ -117,6 +146,21 @@ async def test_report_task_runner未调用finish_task时拒绝并取消任务(mo
         await runner.run(_scope())
 
     assert captured.value.code == "report_worker_failed"
+    assert repository.cancelled is True
+    assert cleanup.disconnected_epochs == [2]
+
+
+@pytest.mark.anyio
+async def test_report_task_runner缺少受信phase时失败关闭并清理(monkeypatch):
+    repository = _Repository(finish_requested=False, phase="invalid")
+    cleanup = _Cleanup()
+    monkeypatch.setattr(execution_module, "TaskSession", _Session)
+    runner = ReportTaskRunner(repository, SimpleNamespace(), cleanup)
+
+    with pytest.raises(ReportingError) as captured:
+        await runner.run(_scope())
+
+    assert captured.value.code == "report_phase_contract_invalid"
     assert repository.cancelled is True
     assert cleanup.disconnected_epochs == [2]
 
@@ -198,7 +242,26 @@ async def test_report_task_runner从agno_checkpoint恢复同一worker_run(monkey
         "leaseOwner": "lease",
         "leaseEpoch": 2,
         "attemptNo": 0,
+        "reportingPhase": "analysis",
     }
+
+
+@pytest.mark.anyio
+async def test_report_task_runner把受信section_phase绑定到独立worker_run(monkeypatch):
+    repository = _Repository(finish_requested=True, phase="section")
+    calls: list[dict] = []
+
+    def arun(*_args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status="completed")
+
+    monkeypatch.setattr(execution_module, "TaskSession", _Session)
+    runner = ReportTaskRunner(repository, SimpleNamespace(arun=arun), _Cleanup())
+
+    await runner.run(_scope())
+
+    binding = calls[0]["dependencies"][execution_module.TASK_EXECUTION_DEPENDENCY]
+    assert binding["reportingPhase"] == "section"
 
 
 @pytest.mark.anyio

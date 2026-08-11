@@ -14,6 +14,10 @@ from ....task_execution import TaskExecutionRepository, TaskScope, TaskState
 from ....task_execution.execution import TASK_EXECUTION_DEPENDENCY, TaskExecutionKernel
 from ....task_execution.session import TaskSession
 from ..models import ReportingError
+from ..phase import (
+    REPORTING_PHASE_DEPENDENCY_KEY,
+    reporting_phase_from_acceptance_contract,
+)
 
 WorkerEventSink = Callable[[TaskScope, str, Any], Awaitable[None]]
 MAX_REPORT_INSTRUCTION_BYTES = 512 * 1024
@@ -83,6 +87,12 @@ class ReportTaskRunner:
                 return self._finish_receipt(completed)
             continuing = task.state in {TaskState.ACTIVE, TaskState.SUSPENDED}
             try:
+                reporting_phase = reporting_phase_from_acceptance_contract(task.acceptance_contract)
+                if reporting_phase is None:
+                    raise ReportingError(
+                        "report_phase_contract_invalid",
+                        "Reporting 内部任务缺少受信 phase 契约。",
+                    )
                 if continuing:
                     task, attempt = await self.repository.resume_current(
                         scope.external_run_id,
@@ -107,6 +117,7 @@ class ReportTaskRunner:
                         "leaseOwner": session.lease.owner,
                         "leaseEpoch": session.lease.epoch,
                         "attemptNo": attempt.attempt_no,
+                        REPORTING_PHASE_DEPENDENCY_KEY: reporting_phase,
                     }
                 }
                 if continuing:
@@ -139,7 +150,7 @@ class ReportTaskRunner:
                     updated.state_version,
                     agno_status=str(getattr(output, "status", "completed")),
                 )
-                return self._finish_receipt(completed)
+                return self._finish_receipt(completed, output=output)
             except BaseException:
                 await complete_cleanup(self._cancel_and_cleanup(scope, session.lease.epoch))
                 raise
@@ -176,14 +187,29 @@ class ReportTaskRunner:
             await self.execution_cleanup.cleanup_disconnect(scope, lease_epoch)
 
     @staticmethod
-    def _finish_receipt(task: Any) -> dict[str, Any]:
+    def _finish_receipt(task: Any, *, output: Any | None = None) -> dict[str, Any]:
         receipt = task.finish_receipt
         if not isinstance(receipt, dict):
             raise ReportingError(
                 "report_artifact_acceptance_missing",
                 "报表 Coding 任务缺少正式产物验收回执。",
             )
-        return receipt
+        result = dict(receipt)
+        metrics = getattr(output, "metrics", None)
+        model_metrics = {
+            alias: value
+            for field, alias in (
+                ("input_tokens", "inputTokens"),
+                ("output_tokens", "outputTokens"),
+                ("total_tokens", "totalTokens"),
+            )
+            if not isinstance((value := getattr(metrics, field, None)), bool)
+            and isinstance(value, int)
+            and value >= 0
+        }
+        if model_metrics:
+            result["modelMetrics"] = model_metrics
+        return result
 
 
 def _worker_session_id(scope: TaskScope) -> str:
