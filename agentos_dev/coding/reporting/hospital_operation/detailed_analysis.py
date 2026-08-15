@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import re
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -42,9 +41,7 @@ class FieldStatistic(AnalysisModel):
     cardinality_rate: float = Field(alias="cardinalityRate", ge=0, le=1)
     unique: bool
     sample_values: tuple[str, ...] = Field(alias="sampleValues", default=(), max_length=20)
-    top_values: tuple["ValueFrequency", ...] = Field(
-        alias="topValues", default=(), max_length=20
-    )
+    top_values: tuple[ValueFrequency, ...] = Field(alias="topValues", default=(), max_length=20)
     minimum: float | None = None
     maximum: float | None = None
     average: float | None = None
@@ -54,9 +51,7 @@ class FieldStatistic(AnalysisModel):
     p75: float | None = None
     zero_count: int = Field(default=0, alias="zeroCount", ge=0)
     negative_count: int = Field(default=0, alias="negativeCount", ge=0)
-    numeric_parse_failure_count: int = Field(
-        default=0, alias="numericParseFailureCount", ge=0
-    )
+    numeric_parse_failure_count: int = Field(default=0, alias="numericParseFailureCount", ge=0)
 
 
 class ValueFrequency(AnalysisModel):
@@ -93,7 +88,9 @@ class DatasetAnalysisContext(AnalysisModel):
     fields: tuple[str, ...] = Field(max_length=500)
     schema_snapshot: dict[str, Any] = Field(alias="schema", default_factory=dict)
     period_coverage: tuple[str, ...] = Field(alias="periodCoverage", default=(), max_length=1200)
-    organization_grain: tuple[str, ...] = Field(alias="organizationGrain", default=(), max_length=30)
+    organization_grain: tuple[str, ...] = Field(
+        alias="organizationGrain", default=(), max_length=30
+    )
     metric_semantics: tuple[dict[str, Any], ...] = Field(
         alias="metricSemantics", default=(), max_length=200
     )
@@ -101,9 +98,7 @@ class DatasetAnalysisContext(AnalysisModel):
     numeric_fields: tuple[str, ...] = Field(alias="numericFields", max_length=500)
     period_values: tuple[str, ...] = Field(alias="periodValues", max_length=1200)
     source_warnings: tuple[str, ...] = Field(alias="sourceWarnings", default=(), max_length=100)
-    quality_warnings: tuple[str, ...] = Field(
-        alias="qualityWarnings", default=(), max_length=100
-    )
+    quality_warnings: tuple[str, ...] = Field(alias="qualityWarnings", default=(), max_length=100)
     time_series_sort_field: str | None = Field(default=None, alias="timeSeriesSortField")
     time_series_fields: tuple[str, ...] = Field(
         default=(), alias="timeSeriesFields", max_length=100
@@ -114,19 +109,28 @@ class DetailedAnalysisItem(AnalysisModel):
     analysis_id: str = Field(alias="analysisId", pattern=r"^analysis_[0-9]{3,6}$")
     domain: str = Field(min_length=1, max_length=64)
     management_question: str = Field(alias="managementQuestion", min_length=1, max_length=2_000)
+    primary_metric_family: str = Field(alias="primaryMetricFamily", min_length=1, max_length=256)
     dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)
     fields: tuple[str, ...] = Field(max_length=100)
     metrics: tuple[str, ...] = Field(max_length=100)
     periods: tuple[str, ...] = Field(max_length=1200)
     comparison_basis: tuple[str, ...] = Field(alias="comparisonBasis", default=(), max_length=10)
-    organization_grain: tuple[str, ...] = Field(alias="organizationGrain", default=(), max_length=30)
+    organization_grain: tuple[str, ...] = Field(
+        alias="organizationGrain", default=(), max_length=30
+    )
     actions: tuple[str, ...] = Field(min_length=1, max_length=30)
     evidence_summary: str = Field(alias="evidenceSummary", min_length=1, max_length=4_000)
     limitations: tuple[str, ...] = Field(default=(), max_length=100)
-    recommended_tables: tuple[str, ...] = Field(alias="recommendedTables", default=(), max_length=30)
-    recommended_charts: tuple[str, ...] = Field(alias="recommendedCharts", default=(), max_length=30)
+    recommended_tables: tuple[str, ...] = Field(
+        alias="recommendedTables", default=(), max_length=30
+    )
+    recommended_charts: tuple[str, ...] = Field(
+        alias="recommendedCharts", default=(), max_length=30
+    )
     suggested_section: str = Field(alias="suggestedSection", min_length=1, max_length=128)
-    completion_conditions: tuple[str, ...] = Field(alias="completionConditions", min_length=1, max_length=30)
+    completion_conditions: tuple[str, ...] = Field(
+        alias="completionConditions", min_length=1, max_length=30
+    )
 
     @model_validator(mode="after")
     def validate_ids(self) -> DetailedAnalysisItem:
@@ -138,9 +142,7 @@ class DetailedAnalysisItem(AnalysisModel):
 class DetailedAnalysisPlan(AnalysisModel):
     version: Literal["1"] = "1"
     analyses: tuple[DetailedAnalysisItem, ...] = Field(min_length=1, max_length=200)
-    dataset_ids: tuple[str, ...] = Field(
-        alias="datasetIds", min_length=1, max_length=100
-    )
+    dataset_ids: tuple[str, ...] = Field(alias="datasetIds", min_length=1, max_length=100)
     report_goal: str = Field(alias="reportGoal", default="", max_length=4000)
     analysis_goal: str = Field(alias="analysisGoal", default="", max_length=4000)
     warnings: tuple[str, ...] = Field(default=(), max_length=500)
@@ -299,8 +301,7 @@ def profile_csv_dataset(
         if not isinstance(value_counts, Mapping):
             value_counts = {}
         sample_values = tuple(
-            str(value)
-            for value in dataframe[field].dropna().astype(str).drop_duplicates().head(20)
+            str(value) for value in dataframe[field].dropna().astype(str).drop_duplicates().head(20)
         )
         field_stats.append(
             FieldStatistic(
@@ -373,9 +374,7 @@ def profile_csv_dataset(
         and not (alert.startswith("Dataset has ") and " duplicate rows" in alert)
     )
     engine_version = (
-        str(package.get("data_profiling_version", ""))
-        if isinstance(package, Mapping)
-        else ""
+        str(package.get("data_profiling_version", "")) if isinstance(package, Mapping) else ""
     )
     if not engine_version:
         raise ValueError("CSV Profile 缺少引擎版本")
@@ -451,8 +450,8 @@ def _prepare_profile_dataframe(
     for raw_column in candidates:
         column = str(raw_column)
         values = dataframe[raw_column]
-        name_is_temporal = (
-            column.casefold() in trusted_period_fields or _is_period_field_name(column)
+        name_is_temporal = column.casefold() in trusted_period_fields or _is_period_field_name(
+            column
         )
         dtype_is_temporal = pd.api.types.is_datetime64_any_dtype(values)
         # 日期文本只有字段名明确表达时间语义时才允许解析。普通文本即使全部形似
@@ -527,9 +526,7 @@ def _append_time_series_statistics(
     ordered = dataframe.loc[order]
     series_payload: dict[str, Any] = {}
     raw_variables = profile.get("variables")
-    variables: Mapping[str, Any] = (
-        raw_variables if isinstance(raw_variables, Mapping) else {}
-    )
+    variables: Mapping[str, Any] = raw_variables if isinstance(raw_variables, Mapping) else {}
     numeric_fields: list[str] = []
     numeric_fields = [
         field
@@ -617,7 +614,6 @@ def build_profile_model_view(profile: Mapping[str, Any]) -> dict[str, Any]:
     variables = profile.get("variables")
     correlations = profile.get("correlations")
     time_series_analysis = profile.get("time_series_analysis")
-    time_index_analysis = profile.get("time_index_analysis")
     if not isinstance(table, Mapping) or not isinstance(variables, Mapping):
         raise ValueError("CSV Profile 结构无效")
 
@@ -631,15 +627,9 @@ def build_profile_model_view(profile: Mapping[str, Any]) -> dict[str, Any]:
     zero_fields: list[dict[str, Any]] = []
     negative_fields: list[dict[str, Any]] = []
     structured_detail_count = 0
-    legacy_panel_time_series = bool(
-        isinstance(time_series_analysis, Mapping)
-        and time_series_analysis.get("enabled") is True
-        and isinstance(time_index_analysis, Mapping)
-        and time_index_analysis.get("n_series") == 0
-    )
     usable_time_series_fields = (
         time_series_analysis.get("fields")
-        if isinstance(time_series_analysis, Mapping) and not legacy_panel_time_series
+        if isinstance(time_series_analysis, Mapping)
         else {}
     )
 
@@ -676,9 +666,10 @@ def build_profile_model_view(profile: Mapping[str, Any]) -> dict[str, Any]:
                     "profilePointer": field_pointer,
                 }
             )
-        if int(raw_variable.get("count", 0) or 0) and int(
-            raw_variable.get("n_distinct", 0) or 0
-        ) <= 1:
+        if (
+            int(raw_variable.get("count", 0) or 0)
+            and int(raw_variable.get("n_distinct", 0) or 0) <= 1
+        ):
             constant_fields.append({"name": raw_name, "profilePointer": field_pointer})
         for target, source_key in (
             (skewness_fields, "skewness"),
@@ -692,25 +683,16 @@ def build_profile_model_view(profile: Mapping[str, Any]) -> dict[str, Any]:
                     {
                         "name": raw_name,
                         "value": value,
-                        "profilePointer": (
-                            f"{field_pointer}/{_json_pointer_token(source_key)}"
-                        ),
+                        "profilePointer": (f"{field_pointer}/{_json_pointer_token(source_key)}"),
                     }
                 )
-        if (
-            isinstance(usable_time_series_fields, Mapping)
-            and raw_name in usable_time_series_fields
-        ):
+        if isinstance(usable_time_series_fields, Mapping) and raw_name in usable_time_series_fields:
             time_series_views.append(
                 {
                     "name": raw_name,
                     "profilePointer": f"/time_series_analysis/fields/{pointer_name}",
-                    "acfPointer": (
-                        f"/time_series_analysis/fields/{pointer_name}/acf"
-                    ),
-                    "pacfPointer": (
-                        f"/time_series_analysis/fields/{pointer_name}/pacf"
-                    ),
+                    "acfPointer": (f"/time_series_analysis/fields/{pointer_name}/acf"),
+                    "pacfPointer": (f"/time_series_analysis/fields/{pointer_name}/pacf"),
                     "seasonalityPointer": (
                         f"/time_series_analysis/fields/{pointer_name}/seasonality"
                     ),
@@ -726,8 +708,10 @@ def build_profile_model_view(profile: Mapping[str, Any]) -> dict[str, Any]:
             rows = raw_matrix if isinstance(raw_matrix, list) else []
             first_row = rows[0] if rows and isinstance(rows[0], Mapping) else {}
             columns = [key for key in first_row if isinstance(key, str)]
-            matrix_valid = bool(columns) and len(rows) == len(columns) and all(
-                isinstance(row, Mapping) and list(row) == columns for row in rows
+            matrix_valid = (
+                bool(columns)
+                and len(rows) == len(columns)
+                and all(isinstance(row, Mapping) and list(row) == columns for row in rows)
             )
             if matrix_valid:
                 for row_index, row in enumerate(rows):
@@ -775,7 +759,9 @@ def build_profile_model_view(profile: Mapping[str, Any]) -> dict[str, Any]:
         zero_fields,
         negative_fields,
     ):
-        values.sort(key=lambda item: abs(float(item.get("value", item.get("rate", 0)) or 0)), reverse=True)
+        values.sort(
+            key=lambda item: abs(float(item.get("value", item.get("rate", 0)) or 0)), reverse=True
+        )
         del values[MAX_PROFILE_HIGHLIGHTS:]
     constant_fields.sort(key=lambda item: item["name"])
     del constant_fields[MAX_PROFILE_HIGHLIGHTS:]
@@ -785,22 +771,16 @@ def build_profile_model_view(profile: Mapping[str, Any]) -> dict[str, Any]:
     time_series_enabled = bool(
         isinstance(time_series_analysis, Mapping)
         and time_series_analysis.get("enabled") is True
-        and not legacy_panel_time_series
     )
     time_series_reason = (
-        "duplicate_time_index"
-        if legacy_panel_time_series
-        else time_series_analysis.get("reason")
+        time_series_analysis.get("reason")
         if isinstance(time_series_analysis, Mapping)
         and isinstance(time_series_analysis.get("reason"), str)
         else None
     )
     aggregation_required = bool(
-        legacy_panel_time_series
-        or (
-            isinstance(time_series_analysis, Mapping)
-            and time_series_analysis.get("aggregation_required") is True
-        )
+        isinstance(time_series_analysis, Mapping)
+        and time_series_analysis.get("aggregation_required") is True
     )
     chart_opportunities = _profile_chart_opportunities(
         variable_views=variable_views,
@@ -871,12 +851,8 @@ def build_profile_model_view(profile: Mapping[str, Any]) -> dict[str, Any]:
             "duplicateGroupCount": duplicate_groups,
             "indexedVariableCount": len(indexed_variables),
             "variableIndexTruncated": len(indexed_variables) < len(variables),
-            "eligibleDetailCount": sum(
-                len(item["detailPointers"]) for item in indexed_variables
-            ),
-            "indexedDetailCount": sum(
-                len(item["detailPointers"]) for item in indexed_variables
-            ),
+            "eligibleDetailCount": sum(len(item["detailPointers"]) for item in indexed_variables),
+            "indexedDetailCount": sum(len(item["detailPointers"]) for item in indexed_variables),
             "detailIndexTruncated": False,
             "variableTypes": variable_types,
             "alertCount": len(alerts),
@@ -904,9 +880,7 @@ def _profile_chart_opportunities(
 ) -> list[dict[str, Any]]:
     """只提供基于 Profile 信号的候选，不形成图表数量或类型闭包。"""
     numeric_fields = [
-        item["name"]
-        for item in variable_views
-        if item["type"] in {"Numeric", "TimeSeries"}
+        item["name"] for item in variable_views if item["type"] in {"Numeric", "TimeSeries"}
     ]
     categorical_fields = [
         item["name"]
@@ -972,16 +946,10 @@ def _profile_chart_opportunities(
             "correlation_matrix",
             "相关矩阵、散点图或气泡象限图",
             "Profile 存在可定点复核的高相关字段对",
-            [
-                field
-                for item in correlation_pairs
-                for field in (item["left"], item["right"])
-            ],
+            [field for item in correlation_pairs for field in (item["left"], item["right"])],
         )
     lowered = {str(item["name"]).casefold() for item in variable_views}
-    if any("budget" in name for name in lowered) and any(
-        "actual" in name for name in lowered
-    ):
+    if any("budget" in name for name in lowered) and any("actual" in name for name in lowered):
         add(
             "budget_variance",
             "预算与实际子弹图、偏差瀑布图或气泡象限图",
@@ -1021,7 +989,11 @@ def _bound_profile_model_view(model_view: dict[str, Any]) -> dict[str, Any]:
     model_view["modelViewTruncated"] = True
     for variable in reversed(model_view["variables"]):
         detail_pointers = variable.get("detailPointers")
-        while isinstance(detail_pointers, dict) and detail_pointers and size() > MAX_PROFILE_MODEL_VIEW_BYTES:
+        while (
+            isinstance(detail_pointers, dict)
+            and detail_pointers
+            and size() > MAX_PROFILE_MODEL_VIEW_BYTES
+        ):
             detail_pointers.pop(next(reversed(detail_pointers)))
     while len(model_view["variables"]) > 10 and size() > MAX_PROFILE_MODEL_VIEW_BYTES:
         model_view["variables"].pop()

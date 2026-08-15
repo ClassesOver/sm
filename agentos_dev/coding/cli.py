@@ -14,7 +14,6 @@ from agno.run.agent import RunOutput, RunOutputEvent
 from agno.tools import Function
 from rich.console import Console
 
-from ..agents import OPENAI_COMPATIBLE_ROLE_MAP
 from ..async_utils import complete_cleanup
 from ..context_management import (
     CODING_CONTEXT_TOKEN_LIMIT,
@@ -34,6 +33,7 @@ from ..instructions import (
     CODING_VALIDATOR_FEEDBACK_INSTRUCTION,
     PURE_CODING_PARALLEL_READ_INSTRUCTIONS,
 )
+from ..model_config import OPENAI_COMPATIBLE_ROLE_MAP
 from ..observability import configure_tracing, flush_tracing
 from ..settings import AgentSettings
 from ..skills import (
@@ -65,7 +65,7 @@ CLI_AGENT_INSTRUCTIONS = [
     "首次运行与任务范围匹配的测试时直接使用 verify；仅在验证失败并修改后再次验证，避免先用 terminal 重复执行同一命令。",
     "verify 始终在工作区根目录执行，命令中禁止添加 cd /workspace。",
     '探测工作区根目录时调用 list_files(path="")，禁止把 /workspace 或 /home/daytona/workspace 作为工具路径。',
-    "明确需要创建多个文件时，必须一次调用 create_files 并传入所有文件；混合创建和修改时使用一次 apply_patch，新文件格式为 *** Add File: path 且正文每行以 + 开头，禁止使用 ---/+++ 或 /dev/null。",
+    "明确需要创建多个文件时，必须一次调用 create_files 并传入所有文件；混合创建和修改时使用一次 apply_patch，并提交标准 unified diff。路径使用 a/path 与 b/path，新建或删除使用 /dev/null。",
     CODING_VALIDATOR_FEEDBACK_INSTRUCTION,
     CODING_DELIVERABLE_VERIFICATION_INSTRUCTION,
     "修改后复查差异并运行与范围匹配的验证；最终准确说明改动、检查结果和未验证风险。",

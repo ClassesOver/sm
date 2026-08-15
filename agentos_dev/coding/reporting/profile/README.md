@@ -243,6 +243,7 @@ Schema 表超集；未进入本次 Snapshot 的表不会扩大运行范围。已
 {
   "fieldRef": "rj.rj.example.amount",
   "aggregation": "sum",
+  "unit": "元",
   "additiveAcross": ["data_date", "area"],
   "exclusiveScope": {"income_type": "开单收入"},
   "reconcileWith": "rj.rj.example_summary.amount",
@@ -251,6 +252,7 @@ Schema 表超集；未进入本次 Snapshot 的表不会扩大运行范围。已
 ```
 
 - `aggregation` 支持 `sum`、`average`、`min`、`max`、`count`、`count_distinct`。
+- `unit` 可选；只记录已经确认的展示单位，不根据字段名或数值范围猜测。
 - `additiveAcross` 只允许同一张受信表中的真实维度字段。
 - `exclusiveScope` 只允许同一张表中的真实字段和值，表示统计该指标必须同时满足的固定口径。
 - `reconcileWith` 和 `tolerance` 必须同时提供；对账字段必须属于受信 Snapshot。
@@ -274,11 +276,9 @@ metadata API 和 Profile 都可以提供已确认语义。同一字段内容完�
 
 ### sections 与 sectionOrder
 
-`sections` 与 `sectionOrder` 仅服务仍使用通用模板的非医院报告，属于待迁移的兼容配置。医院运营报告
-在详细分析计划冻结后动态生成章节，模型只提交中文标题、分析重点和 analysisId 引用，
+`sections` 与 `sectionOrder` 不参与医院运营报告运行时。医院运营报告在详细分析计划冻结后动态生成章节，模型只提交中文标题、分析重点和 analysisId 引用，
 `section_001` 等 code 由服务端按批准顺序生成并冻结。Profile 不得新增、删除或重排医院运营报告的
-顶层章节；部署文件中现存的医院章节配置不再具有运行时权威。`make_outline()` 未传 findings 时保留的
-固定十章行为仅用于旧调用兼容，不是生产 Workflow 的提纲来源。
+顶层章节；部署文件中现存的医院章节配置不具有运行时权威。
 
 章节至少必须包含以下五个领域无关 code：
 

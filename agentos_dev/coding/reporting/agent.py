@@ -1,9 +1,9 @@
-import ast
 import hashlib
 import inspect
 import json
-from collections.abc import AsyncIterator, Iterator
-from copy import deepcopy
+from collections.abc import AsyncIterator, Iterator, Mapping
+from contextvars import ContextVar
+from copy import copy, deepcopy
 from dataclasses import fields
 from functools import partial
 from typing import Any, cast
@@ -12,11 +12,13 @@ from uuid import uuid4
 
 from agno.agent import Agent
 from agno.db.base import AsyncBaseDb
-from agno.exceptions import StopAgentRun
+from agno.exceptions import AgentRunException
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from agno.models.response import ModelResponse
 from agno.run import RunContext
+from agno.run.agent import RunOutputEvent
+from agno.run.team import TeamRunOutputEvent
 from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCall,
     ChoiceDeltaToolCallFunction,
@@ -24,17 +26,17 @@ from openai.types.chat.chat_completion_chunk import (
 from pydantic import ValidationError
 
 from ...agent_control import AGENT_PLAN_STATE_KEY
-from ...agents import OPENAI_COMPATIBLE_ROLE_MAP
-from ...agents.assistant import AgentInstructions
 from ...context_management import (
     CODING_CONTEXT_TOKEN_LIMIT,
     CODING_OUTPUT_TOKEN_RESERVE,
+    CodingContextProjector,
     ContextBudgetController,
     ProjectedOpenAIChat,
     RollingSessionSummaryManager,
     clear_terminal_reasoning,
     projected_coding_model,
 )
+from ...model_config import OPENAI_COMPATIBLE_ROLE_MAP
 from ...settings import AgentSettings
 from ...skills import (
     create_skill_script_hook,
@@ -48,15 +50,29 @@ from ...task_execution.execution import (
 )
 from ...workspace import WorkspaceService
 from .delivery.acceptance import load_reporting_skills
-from .phase import ReportingPhase, reporting_phase_allows_tool
-from .tools import (
-    REPORT_CHART_STATE_KEY,
-    REPORT_DRAFT_STATE_KEY,
-    REPORT_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
-    build_report_worker_tools,
+from .instructions import build_report_agent_instructions
+from .model_policy import (
+    ReportingReasoningEffort,
+    ReportingThinkingProfile,
+    apply_reporting_thinking_profile,
+    reporting_thinking_profile_from_model,
 )
+from .models import ReportingError
+from .phase import (
+    REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
+    REPORTING_SECTION_INPUT_TOKEN_HARD_CAP,
+    ReportingPhase,
+    current_reporting_run_context,
+    record_reporting_projection_metrics,
+    reporting_phase_allows_tool,
+    reporting_phase_from_run_context,
+    reporting_task_kind_from_run_context,
+    reporting_thinking_effort_from_run_context,
+)
+from .tools import build_report_worker_tools
 from .vision import ReportVisionReviewer
 from .workflow.controller import ReportWorkflowController, ReportWorkflowToolkit
+from .workflow.repository import ReportingStateRepository
 
 _REPORT_FACADE_TOOL_NAMES = frozenset(
     {
@@ -68,40 +84,36 @@ _REPORT_FACADE_TOOL_NAMES = frozenset(
 )
 _REPORT_STRICT_TOOL_NAMES = frozenset(
     {
-        "complete_report_analysis",
+        "complete_analysis_item",
+        "finalize_report_analysis",
         "request_analysis_rework",
         "register_report_charts",
-        "discard_report_charts",
-        "begin_report_draft",
         "render_report_section",
-        "finalize_report_draft",
     }
 )
+_REPORT_TOOL_ARGUMENT_ERROR_STATE_KEY = "agentos_reporting_tool_argument_errors"
+_REPORT_TOOL_ARGUMENT_ERROR_CONTEXT_LENGTH = 240
 _CUMULATIVE_STREAM_USAGE_HOSTS = frozenset({"api.siliconflow.cn"})
 _REPORT_TOOL_FAILURE_STATE_KEY = "agentos_reporting_tool_failures"
-_REPORT_TOOL_ARGUMENT_MAX_ATTEMPTS = 5
-_REPORT_TOOL_PHASE_MAX_FAILURES = 8
 _REPORT_ARGUMENT_MAX_ISSUES = 8
 _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
 _REPORT_ARGUMENT_MAX_MESSAGE_LENGTH = 512
+_REPORT_PROFILE_RECEIPT_PROJECTION_LIMIT = 100
+_REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
+_REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
+_REPORT_MODEL_RUN_ERROR: ContextVar[tuple[int, Exception] | None] = ContextVar(
+    "reporting_model_run_error",
+    default=None,
+)
 _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
-    "complete_report_analysis": {
+    "finalize_report_analysis": {
         "reportBrief": {
             "objective": "形成年度运营报告",
             "executiveSummary": "收入增长但成本承压",
             "managementQuestions": ["增长是否可持续"],
             "warnings": [],
         },
-        "evidence": [
-            {
-                "analysisId": "analysis_001",
-                "summary": "收入规模与趋势已复算",
-                "datasetIds": ["dataset-001"],
-                "evidencePaths": ["analysis/evidence/income.json"],
-                "citationIds": ["citation_001"],
-            }
-        ],
         "metricDefinitions": [],
         "warnings": [],
     },
@@ -121,8 +133,6 @@ _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
             }
         ]
     },
-    "discard_report_charts": {"chartIds": ["cost_structure_preview"]},
-    "begin_report_draft": {},
     "render_report_section": {
         "sectionCode": "executive_summary",
         "blocks": [
@@ -133,10 +143,47 @@ _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
                 "chartIds": ["income_trend"],
             }
         ],
-        "evidencePaths": ["analysis/evidence/executive_summary.json"],
     },
-    "finalize_report_draft": {},
 }
+
+
+def _record_reporting_tool_run_error(run_context: RunContext, error: Exception) -> None:
+    """把原异常绑定到当前 RunContext，跨 Agno 并行工具 Task 保留对象身份。"""
+
+    if getattr(run_context, _REPORT_TOOL_RUN_ERROR_ATTR, None) is None:
+        setattr(run_context, _REPORT_TOOL_RUN_ERROR_ATTR, error)
+
+
+def _take_reporting_tool_run_error() -> Exception | None:
+    run_context = current_reporting_run_context()
+    if run_context is None:
+        return None
+    error = getattr(run_context, _REPORT_TOOL_RUN_ERROR_ATTR, None)
+    if isinstance(error, Exception):
+        delattr(run_context, _REPORT_TOOL_RUN_ERROR_ATTR)
+        return error
+    return None
+
+
+async def propagate_reporting_tool_errors(
+    run_context: RunContext,
+    function_name: str,
+    function_call: Any,
+    arguments: dict[str, Any],
+) -> Any:
+    """记录非领域工具异常，供模型工具批次边界原样抛给 Agno retry。"""
+
+    _ = function_name
+    try:
+        result = function_call(**arguments)
+        return await result if inspect.isawaitable(result) else result
+    except (AgentRunException, ReportingError, ValidationError):
+        raise
+    except Exception as error:
+        # Agno 2.8.2 Function.aexecute 会把普通异常转换成失败工具消息。只抛出并不足以
+        # 触发 Agent retry，因此在共享 RunContext 记录原对象，由模型批次边界立即重抛。
+        _record_reporting_tool_run_error(run_context, error)
+        raise
 
 
 def _reporting_session_state(run_context: RunContext) -> dict[str, Any] | None:
@@ -148,20 +195,149 @@ def _reporting_mutation_sequence(state: dict[str, Any] | None) -> int:
     return int(progress.get("mutation", 0)) if isinstance(progress, dict) else 0
 
 
-def _record_reporting_argument_autofix(run_context: RunContext, function_name: str) -> None:
-    state = _reporting_session_state(run_context)
-    if state is None:
-        return
-    entry = {
-        "code": "report_tool_arguments_unwrapped",
-        "toolName": function_name,
-        "mutationSequence": _reporting_mutation_sequence(state),
+def _reporting_invalid_argument_receipt(
+    run_context: RunContext | None,
+    function_name: Any,
+    raw_arguments: Any,
+    error: json.JSONDecodeError | TypeError | None,
+    *,
+    schema_hint: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """保留有界原始诊断，并把 malformed JSON 作为可自纠工具回执返回。"""
+
+    if isinstance(raw_arguments, str):
+        raw_text = raw_arguments
+        argument_bytes = raw_arguments.encode("utf-8")
+    elif isinstance(raw_arguments, (bytes, bytearray)):
+        argument_bytes = bytes(raw_arguments)
+        raw_text = argument_bytes.decode("utf-8", errors="replace")
+    else:
+        try:
+            raw_text = json.dumps(
+                raw_arguments,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        except (TypeError, ValueError):
+            raw_text = repr(raw_arguments)
+        argument_bytes = raw_text.encode("utf-8")
+    if isinstance(error, json.JSONDecodeError):
+        # CPython 对未闭合字符串把 pos 指向起始引号；Reporting 的常见成因是
+        # 模型输出被截断，此时 EOF 才是可执行的修正位置，也能让有界上下文保留尾部。
+        reported_offset = (
+            len(raw_text) if error.msg.startswith("Unterminated string") else error.pos
+        )
+        error_offset = max(0, min(reported_offset, len(raw_text)))
+        error_message = error.msg
+    elif isinstance(error, TypeError):
+        error_offset = 0
+        error_message = "Arguments must be a JSON string"
+    else:
+        error_offset = 0
+        error_message = "Top-level JSON value must be an object"
+    context_start = max(
+        0,
+        min(
+            error_offset - (_REPORT_TOOL_ARGUMENT_ERROR_CONTEXT_LENGTH // 2),
+            max(0, len(raw_text) - _REPORT_TOOL_ARGUMENT_ERROR_CONTEXT_LENGTH),
+        ),
+    )
+    error_context = raw_text[
+        context_start : context_start + _REPORT_TOOL_ARGUMENT_ERROR_CONTEXT_LENGTH
+    ]
+    tool_name = function_name if isinstance(function_name, str) and function_name else "<unknown>"
+    attempt = 1
+    state = _reporting_session_state(run_context) if run_context is not None else None
+    if state is not None:
+        stored = state.get(_REPORT_TOOL_ARGUMENT_ERROR_STATE_KEY)
+        counts = dict(stored) if isinstance(stored, dict) else {}
+        previous = counts.get(tool_name, 0)
+        attempt = int(previous) + 1 if isinstance(previous, int) else 1
+        counts[tool_name] = attempt
+        state[_REPORT_TOOL_ARGUMENT_ERROR_STATE_KEY] = counts
+    is_analysis_write = function_name == "write_analysis_files"
+    receipt: dict[str, Any] = {
+        "ok": False,
+        "status": "rejected",
+        "code": (
+            "report_analysis_write_arguments_json_invalid"
+            if is_analysis_write
+            else "report_tool_arguments_json_invalid"
+        ),
+        "message": (
+            "write_analysis_files 参数不是合法 JSON 对象；工具尚未执行，请按严格 schema 重试。"
+            if is_analysis_write
+            else f"{tool_name} 参数不是合法 JSON 对象；工具尚未执行，请按当前 schema 重试。"
+        ),
+        "retryable": True,
+        "attempt": attempt,
+        "schemaHint": dict(schema_hint or {"argumentsType": "object"}),
+        "details": {
+            "argumentBytes": len(argument_bytes),
+            "argumentsSha256": hashlib.sha256(argument_bytes).hexdigest(),
+            "jsonErrorOffset": error_offset,
+            "jsonErrorMessage": error_message,
+            "errorContextStart": context_start,
+            "errorContext": error_context,
+        },
+        "requiredActions": [
+            f"下一条响应只调用一次 {tool_name}；参数必须是完整严格 JSON 对象，不得附加 Markdown 或解释文字。",
+        ],
     }
-    stored = state.get(REPORT_TOOL_ARGUMENT_AUTOFIX_STATE_KEY)
-    items = list(stored) if isinstance(stored, list) else []
-    if not items or items[-1] != entry:
-        items.append(entry)
-    state[REPORT_TOOL_ARGUMENT_AUTOFIX_STATE_KEY] = items[-50:]
+    if is_analysis_write:
+        receipt["retryContract"] = {
+            "operation": "create_file",
+            "path": "analysis/<name>.py",
+            "content": "# complete script\npass\n",
+        }
+        receipt["requiredActions"].append(
+            "按 retryContract 使用 content 单字符串一次提交完整脚本。"
+            if attempt == 1
+            else "继续优先使用 content 单字符串一次提交；只有再次失败或输出截断，或服务端明确报告超过 4 MiB 后，才使用 apply_patch/replace_text 定点续写。"
+        )
+    else:
+        receipt["requiredActions"].append(
+            "按 schemaHint 重新生成参数；不要修补、猜测或隐藏无效 JSON。"
+        )
+    return receipt
+
+
+def _clear_reporting_argument_error(
+    run_context: RunContext | None,
+    function_name: Any,
+) -> None:
+    state = _reporting_session_state(run_context) if run_context is not None else None
+    if state is None or not isinstance(function_name, str):
+        return
+    stored = state.get(_REPORT_TOOL_ARGUMENT_ERROR_STATE_KEY)
+    if not isinstance(stored, dict) or function_name not in stored:
+        return
+    counts = dict(stored)
+    counts.pop(function_name, None)
+    state[_REPORT_TOOL_ARGUMENT_ERROR_STATE_KEY] = counts
+
+
+def _reporting_tool_schema_hint(
+    function_name: Any,
+    functions: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """返回有界 schema 摘要，避免在错误回执中复制整份工具定义。"""
+
+    hint: dict[str, Any] = {"argumentsType": "object"}
+    if not isinstance(function_name, str) or not isinstance(functions, Mapping):
+        return hint
+    function = functions.get(function_name)
+    parameters = getattr(function, "parameters", None)
+    if not isinstance(parameters, Mapping):
+        return hint
+    properties = parameters.get("properties")
+    if isinstance(properties, Mapping):
+        hint["allowedFields"] = sorted(str(key) for key in properties)[:64]
+    required = parameters.get("required")
+    if isinstance(required, list):
+        hint["requiredFields"] = [str(key) for key in required[:64]]
+    return hint
 
 
 def _is_tool_argument_error(error: TypeError | ValidationError) -> bool:
@@ -274,34 +450,17 @@ def _report_tool_argument_details(
 
 
 def _reporting_progress_fingerprint(state: dict[str, Any]) -> str:
-    draft = state.get(REPORT_DRAFT_STATE_KEY)
-    charts = state.get(REPORT_CHART_STATE_KEY)
     coding_progress = state.get("agentos_coding_tool_progress")
     agent_plan = state.get(AGENT_PLAN_STATE_KEY)
-    draft = draft if isinstance(draft, dict) else {}
-    charts = charts if isinstance(charts, dict) else {}
     coding_progress = coding_progress if isinstance(coding_progress, dict) else {}
     agent_plan = agent_plan if isinstance(agent_plan, dict) else {}
     progress_entries = coding_progress.get("entries")
     progress_entries = progress_entries if isinstance(progress_entries, list) else []
     plan_steps = agent_plan.get("plan")
     plan_steps = plan_steps if isinstance(plan_steps, list) else []
-    pending = draft.get("pendingChartBindings")
-    pending = pending if isinstance(pending, dict) else {}
-    registry = charts.get("charts")
-    registry = registry if isinstance(registry, dict) else {}
     snapshot = {
-        "draft": {
-            "attemptNo": draft.get("attemptNo"),
-            "chartAttemptNo": charts.get("attemptNo"),
-            "status": draft.get("status"),
-            "draftId": draft.get("draftId"),
-            "pendingChartIds": sorted(str(value) for value in pending),
-            "registeredPendingChartIds": sorted(set(pending) & set(registry)),
-        },
-        # 详细分析模式合法地经历 verify -> update_plan -> finish_task；仅查看
-        # 草稿/图表会把这些真实进展误判为同一失败循环。把通用 Coding 工具进度
-        # 和 AgentOS 官方计划状态纳入指纹，状态或 mutation 变化即重新计数。
+        # Reporting 运行会通过阶段提交、update_plan 和 finish_task 推进。
+        # 工具状态或 mutation 变化即重新计数。
         "codingProgress": {
             "mutation": coding_progress.get("mutation"),
             "entries": [
@@ -329,17 +488,41 @@ def _enforce_reporting_no_progress(
     run_context: RunContext,
     function_name: str,
     result: Any,
+    arguments: Mapping[str, Any] | None = None,
 ) -> Any:
-    if not isinstance(result, dict) or result.get("ok") is not False:
+    if not isinstance(result, dict):
+        return result
+    state = _reporting_session_state(run_context)
+    # 任何成功的 Reporting 工具调用都代表模型已经完成了一个可观察动作。
+    # 失败计数只用于阻断“同一错误、状态不变”的死循环，不能跨越真实成功进展
+    # 累积到 finalize 阶段，否则早期参数错误会误杀后续正常提交。
+    if result.get("ok") is True:
+        if isinstance(state, dict):
+            state.pop(_REPORT_TOOL_FAILURE_STATE_KEY, None)
+        return result
+    if result.get("ok") is not False:
         return result
     code = result.get("code")
-    state = _reporting_session_state(run_context)
     if not isinstance(code, str) or not code or state is None:
         return result
 
     mutation_sequence = _reporting_mutation_sequence(state)
     progress_fingerprint = _reporting_progress_fingerprint(state)
-    fingerprint = f"{function_name}:{code}"
+    call_identity = {
+        "function": function_name,
+        "arguments": dict(arguments or {}),
+        "code": code,
+        "details": result.get("details"),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            call_identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
     stored = state.get(_REPORT_TOOL_FAILURE_STATE_KEY)
     counts = (
         dict(stored.get("counts", {}))
@@ -363,15 +546,12 @@ def _enforce_reporting_no_progress(
         "phaseFailureCount": phase_failure_count,
         "counts": counts,
     }
-    if (
-        count < _REPORT_TOOL_ARGUMENT_MAX_ATTEMPTS
-        and phase_failure_count < _REPORT_TOOL_PHASE_MAX_FAILURES
-    ):
+    if count < 2:
         return result
 
-    # Agno 官方 StopAgentRun 会在当前工具批次结束后退出模型工具循环，并完整保存
-    # 已有消息和工具结果。仅返回 executionBlocking 字段不会阻止模型继续盲重试。
-    blocked = dict(result)
+    # 精确重复失败只增加 DeepSeek Harness 风格的纠错提示。重复次数是可观测指标，
+    # 不是运行预算或业务门禁；模型仍可缩小查询、修改参数或选择其他合法工具继续。
+    guided = dict(result)
     raw_details = result.get("details")
     details = dict(raw_details) if isinstance(raw_details, dict) else {}
     details.update(
@@ -384,16 +564,24 @@ def _enforce_reporting_no_progress(
             "sameFailureCount": count,
         }
     )
-    blocked.update(
+    required_actions = [
+        str(item) for item in result.get("requiredActions", ()) if isinstance(item, str) and item
+    ]
+    progressive_action = (
+        "不要原样重复当前工具调用；只修改服务端 code/details 指向的参数后重试。"
+        if count == 2
+        else "当前调用已精确重复失败；缩小查询或改用本阶段其他合法工具取得同一事实。"
+    )
+    if progressive_action not in required_actions:
+        required_actions.append(progressive_action)
+    guided.update(
         {
-            "severity": "error",
-            "executionBlocking": True,
-            "retryable": False,
-            "warnings": [],
             "details": details,
+            "requiredActions": required_actions,
+            "retryable": result.get("retryable", True),
         }
     )
-    raise StopAgentRun(json.dumps(blocked, ensure_ascii=False, separators=(",", ":")))
+    return guided
 
 
 async def normalize_reporting_tool_arguments(
@@ -402,55 +590,25 @@ async def normalize_reporting_tool_arguments(
     function_call: Any,
     arguments: dict[str, Any],
 ) -> Any:
-    """纠正 SiliconFlow 偶发的一层 arguments 包装，并收敛 Reporting 错误。"""
-    corrected = arguments
-    wrapped: Any = arguments.get("arguments")
-    if isinstance(wrapped, str):
-        try:
-            decoded = json.loads(wrapped)
-        except json.JSONDecodeError:
-            decoded = None
-        if isinstance(decoded, dict):
-            wrapped = decoded
-    if isinstance(wrapped, dict):
-        siblings = {key: value for key, value in arguments.items() if key != "arguments"}
-        if not wrapped.keys() & siblings.keys():
-            # SiliconFlow 也可能把 command 放入 arguments、同时把 timeout 留在顶层。
-            # 这里只展开一层且拒绝覆盖同名字段；冲突时沿用原始调用并保留 Agno 错误。
-            corrected = {**wrapped, **siblings}
+    """执行 Reporting 工具并把参数错误收敛为可操作回执。"""
     try:
-        result = function_call(**corrected)
+        result = function_call(**arguments)
         result = await result if inspect.isawaitable(result) else result
     except (TypeError, ValidationError) as error:
         if not _is_tool_argument_error(error):
             raise
-        diagnostic_error = error
-        diagnostic_arguments = corrected
-        if function_name not in _REPORT_STRICT_TOOL_NAMES and corrected is not arguments:
-            try:
-                original_result = function_call(**arguments)
-                return (
-                    await original_result
-                    if inspect.isawaitable(original_result)
-                    else original_result
-                )
-            except (TypeError, ValidationError) as original_error:
-                if not _is_tool_argument_error(original_error):
-                    raise
-                diagnostic_error = original_error
-                diagnostic_arguments = arguments
+        failure = _report_tool_argument_failure(
+            function_name,
+            error,
+            arguments,
+        )
         return _enforce_reporting_no_progress(
             run_context,
             function_name,
-            _report_tool_argument_failure(
-                function_name,
-                diagnostic_error,
-                diagnostic_arguments,
-            ),
+            failure,
+            arguments,
         )
-    if corrected is not arguments:
-        _record_reporting_argument_autofix(run_context, function_name)
-    return _enforce_reporting_no_progress(run_context, function_name, result)
+    return _enforce_reporting_no_progress(run_context, function_name, result, arguments)
 
 
 def _review_content(payload: dict[str, Any]) -> str | None:
@@ -488,10 +646,7 @@ def _forced_review_response(
         try:
             payload = json.loads(content)
         except ValueError:
-            try:
-                payload = ast.literal_eval(content)
-            except (SyntaxError, ValueError):
-                return None
+            return None
         if not isinstance(payload, dict) or payload.get("status") != "paused":
             return None
         review = payload.get("review")
@@ -547,55 +702,17 @@ def _tool_response(
     )
 
 
-def _forced_report_worker_response(
-    messages: list[Message], *, stream: bool = False
-) -> ModelResponse | None:
-    """阶段产物通过后只执行服务端签发的 finish_task，不再请求模型决策。"""
-    last = messages[-1] if messages else None
-    if (
-        last is None
-        or last.role != "tool"
-        or last.tool_name
-        not in {
-            "complete_report_analysis",
-            "render_report_section",
-            "request_analysis_rework",
-            "finalize_report_draft",
-        }
-    ):
-        return None
-    if not isinstance(last.content, str):
-        return None
-    try:
-        payload = json.loads(last.content)
-    except json.JSONDecodeError:
-        try:
-            payload = ast.literal_eval(last.content)
-        except (SyntaxError, ValueError):
-            return None
-    if not isinstance(payload, dict):
-        return None
-    next_call = payload.get("nextToolCall")
-    if not isinstance(next_call, dict):
-        return None
-    arguments = next_call.get("arguments")
-    if (
-        payload.get("ok") is not True
-        or next_call.get("name") != "finish_task"
-        or not isinstance(arguments, dict)
-        or set(arguments) != {"summary", "artifact_paths"}
-        or not isinstance(arguments.get("summary"), str)
-        or not arguments["summary"]
-        or not isinstance(arguments.get("artifact_paths"), list)
-        or len(arguments["artifact_paths"]) > 50
-        or any(not isinstance(path, str) or not path for path in arguments["artifact_paths"])
-    ):
-        return None
-    return _tool_response("finish_task", arguments, stream=stream)
-
-
 def _reporting_phase_from_messages(messages: list[Message]) -> ReportingPhase | None:
-    """读取 Workflow 生成的首层任务 JSON；该值只用于模型投影，执行门禁另行校验。"""
+    _ = messages
+    return reporting_phase_from_run_context(current_reporting_run_context())
+
+
+def _reporting_request_uses_escalation(
+    messages: list[Message],
+    fields: tuple[str, ...],
+) -> bool:
+    if not fields:
+        return False
     for message in reversed(messages):
         if message.role != "user":
             continue
@@ -609,10 +726,8 @@ def _reporting_phase_from_messages(messages: list[Message]) -> ReportingPhase | 
                 continue
         else:
             continue
-        phase = payload.get("phase") if isinstance(payload, dict) else None
-        if phase in {"analysis", "section"}:
-            return phase
-    return None
+        return isinstance(payload, dict) and any(payload.get(field) for field in fields)
+    return False
 
 
 def _report_model_tool_name(tool: Any) -> str | None:
@@ -627,13 +742,14 @@ def _report_model_tool_name(tool: Any) -> str | None:
 
 def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
     phase = _reporting_phase_from_messages(messages)
+    task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
     if phase is None or tools is None:
         return tools
     return [
         tool
         for tool in tools
         if (name := _report_model_tool_name(tool)) is not None
-        and reporting_phase_allows_tool(phase, name)
+        and reporting_phase_allows_tool(phase, name, task_kind=task_kind)
     ]
 
 
@@ -664,6 +780,78 @@ def _phase_filtered_report_messages(messages: list[Message]) -> list[Message]:
     return projected if projected is not None else messages
 
 
+def _with_reporting_durable_identities(messages: list[Message]) -> list[Message]:
+    """在 Analysis 投影中固定保留 Profile 回执身份，不带回查询结果正文。
+
+    工具正文可能被压缩，完整回合也可能因输入 hard cap 被移出窗口；但 receiptId、
+    Dataset、snapshot 与查询节点决定了后续 complete_analysis_item 能否准确绑定事实。
+    这里仅从当前 run 已成功返回的工具回执提取身份，不读取数据库、不复制 Profile value，
+    也不把已取消 child task 的回执注入新任务。
+    """
+
+    if _reporting_phase_from_messages(messages) != "analysis":
+        return messages
+    receipts: dict[str, dict[str, str]] = {}
+    for message in messages:
+        if message.role != "tool" or message.tool_name != "query_profile":
+            continue
+        payload: dict[str, Any] | None = None
+        for content in (message.content, message.compressed_content):
+            if isinstance(content, dict):
+                candidate = content
+            elif isinstance(content, str):
+                try:
+                    candidate = json.loads(content)
+                except (TypeError, ValueError):
+                    continue
+            else:
+                continue
+            if isinstance(candidate, dict) and candidate.get("ok") is True:
+                payload = candidate
+                break
+        receipt = payload.get("readReceipt") if isinstance(payload, dict) else None
+        if not isinstance(receipt, dict):
+            continue
+        receipt_id = receipt.get("receiptId")
+        dataset_id = receipt.get("datasetId")
+        snapshot_hash = receipt.get("snapshotHash")
+        query = receipt.get("query")
+        if (
+            not isinstance(receipt_id, str)
+            or not receipt_id
+            or not isinstance(dataset_id, str)
+            or not dataset_id
+            or not isinstance(snapshot_hash, str)
+            or not snapshot_hash
+            or not isinstance(query, str)
+            or not query
+        ):
+            continue
+        identity: dict[str, str] = {
+            "receiptId": receipt_id,
+            "datasetId": dataset_id,
+            "snapshotHash": snapshot_hash,
+            "querySha256": hashlib.sha256(query.encode()).hexdigest(),
+        }
+        if len(query) <= _REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH:
+            identity["query"] = query
+        receipts[receipt_id] = identity
+    if not receipts:
+        return messages
+    ledger = {
+        "marker": "REPORTING_DURABLE_IDENTITIES",
+        "version": 1,
+        "profileReadReceipts": list(receipts.values())[-_REPORT_PROFILE_RECEIPT_PROJECTION_LIMIT:],
+    }
+    return [
+        *messages,
+        Message(
+            role="user",
+            content=json.dumps(ledger, ensure_ascii=False, separators=(",", ":")),
+        ),
+    ]
+
+
 def _phase_filtered_model_call(
     messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
@@ -680,10 +868,267 @@ def _phase_filtered_model_call(
     return updated_args, updated_kwargs
 
 
-class ReportWorkerOpenAIChat(ProjectedOpenAIChat):
+class ReportingOpenAIChat(ProjectedOpenAIChat):
+    """为所有 Reporting 模型提供统一、严格的 function-call 传输边界。"""
+
+    _report_raw_tool_argument_errors = False
+
+    def _phase_request_model(self, messages: list[Message]) -> "ReportingOpenAIChat":
+        """为单次请求生成隔离配置，禁止并发 Section 修改共享 Worker 模型。"""
+
+        base_profile = reporting_thinking_profile_from_model(self)
+        profile = base_profile
+        bound_effort = reporting_thinking_effort_from_run_context(current_reporting_run_context())
+        if _reporting_phase_from_messages(messages) == "section" or bound_effort == "off":
+            profile = ReportingThinkingProfile.off(temperature=base_profile.temperature)
+        elif bound_effort in {"high", "max"}:
+            budget = base_profile.thinking_budget
+            if budget is None:
+                raise ValueError("Reporting Worker 缺少 thinking_budget，无法应用请求档位")
+            profile = ReportingThinkingProfile.on(
+                reasoning_effort=bound_effort,
+                thinking_budget=budget,
+                temperature=base_profile.temperature,
+            )
+        else:
+            escalation_profile = getattr(self, "_report_escalation_thinking_profile", None)
+            escalation_fields = getattr(self, "_report_thinking_escalation_fields", ())
+            if isinstance(escalation_profile, ReportingThinkingProfile) and (
+                isinstance(escalation_fields, tuple)
+                and _reporting_request_uses_escalation(messages, escalation_fields)
+            ):
+                profile = escalation_profile
+        request_model = copy(self)
+        return apply_reporting_thinking_profile(request_model, profile)
+
+    @staticmethod
+    def _validated_reporting_response(
+        model: "ReportingOpenAIChat",
+        response: ModelResponse,
+    ) -> ModelResponse:
+        validator = getattr(model, "_report_response_validator", None)
+        if callable(validator):
+            response.content = validator(response.content)
+        return response
+
+    def _clear_report_run_error(self) -> None:
+        _REPORT_MODEL_RUN_ERROR.set(None)
+
+    def _record_report_run_error(self, error: Exception) -> None:
+        _REPORT_MODEL_RUN_ERROR.set((id(self), error))
+
+    def report_run_error(self) -> Exception | None:
+        recorded = _REPORT_MODEL_RUN_ERROR.get()
+        return recorded[1] if recorded is not None and recorded[0] == id(self) else None
+
+    def response(
+        self,
+        messages: list[Message],
+        *args: Any,
+        **kwargs: Any,
+    ) -> ModelResponse:
+        self._clear_report_run_error()
+        request_model = self._phase_request_model(messages)
+        try:
+            response = ProjectedOpenAIChat.response(request_model, messages, *args, **kwargs)
+            self._clear_report_run_error()
+            return self._validated_reporting_response(request_model, response)
+        except Exception as error:
+            self._record_report_run_error(error)
+            raise
+
+    async def aresponse(
+        self,
+        messages: list[Message],
+        *args: Any,
+        **kwargs: Any,
+    ) -> ModelResponse:
+        self._clear_report_run_error()
+        request_model = self._phase_request_model(messages)
+        try:
+            response = await ProjectedOpenAIChat.aresponse(
+                request_model,
+                messages,
+                *args,
+                **kwargs,
+            )
+            self._clear_report_run_error()
+            return self._validated_reporting_response(request_model, response)
+        except Exception as error:
+            self._record_report_run_error(error)
+            raise
+
+    def response_stream(
+        self,
+        messages: list[Message],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Iterator[ModelResponse | RunOutputEvent | TeamRunOutputEvent]:
+        self._clear_report_run_error()
+        request_model = self._phase_request_model(messages)
+        try:
+            yield from ProjectedOpenAIChat.response_stream(
+                request_model,
+                messages,
+                *args,
+                **kwargs,
+            )
+            self._clear_report_run_error()
+        except Exception as error:
+            self._record_report_run_error(error)
+            raise
+
+    async def aresponse_stream(
+        self,
+        messages: list[Message],
+        *args: Any,
+        **kwargs: Any,
+    ) -> AsyncIterator[ModelResponse | RunOutputEvent | TeamRunOutputEvent]:
+        self._clear_report_run_error()
+        request_model = self._phase_request_model(messages)
+        try:
+            async for response in ProjectedOpenAIChat.aresponse_stream(
+                request_model,
+                messages,
+                *args,
+                **kwargs,
+            ):
+                yield response
+            self._clear_report_run_error()
+        except Exception as error:
+            self._record_report_run_error(error)
+            raise
+
+    def _format_message(
+        self,
+        message: Message,
+        compress_tool_results: bool = False,
+    ) -> dict[str, Any]:
+        formatted = super()._format_message(message, compress_tool_results)
+        # DeepSeek thinking 模式要求工具往返时回传本轮 reasoning_content；普通文本轮次
+        # 不回传，避免扩大上下文。该字段只进入模型请求，终态仍由 post hook 清除。
+        if (
+            message.role == "assistant"
+            and message.tool_calls
+            and isinstance(message.reasoning_content, str)
+            and message.reasoning_content
+        ):
+            formatted["reasoning_content"] = message.reasoning_content
+        return formatted
+
+    def _strict_reporting_tool_calls(
+        self,
+        assistant_message: Message,
+        messages: list[Message],
+        functions: dict[str, Any] | None,
+    ) -> list[Any]:
+        run_context = current_reporting_run_context()
+        allowed_calls = []
+        blocked = []
+        for tool_call in list(assistant_message.tool_calls or []):
+            function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+            name = function.get("name") if isinstance(function, dict) else None
+            arguments = function.get("arguments") if isinstance(function, dict) else None
+            if isinstance(arguments, (str, bytes, bytearray)):
+                try:
+                    decoded = json.loads(arguments)
+                    decode_error: json.JSONDecodeError | TypeError | None = None
+                except json.JSONDecodeError as error:
+                    decoded = None
+                    decode_error = error
+            else:
+                decoded = None
+                decode_error = TypeError("Arguments must be a JSON string")
+            if isinstance(decoded, dict):
+                _clear_reporting_argument_error(run_context, name)
+                allowed_calls.append(tool_call)
+                continue
+            if self._report_raw_tool_argument_errors:
+                if decode_error is not None:
+                    raise decode_error
+                raise TypeError("Top-level JSON value must be an object")
+            call_id = tool_call.get("id") if isinstance(tool_call, dict) else None
+            if not isinstance(call_id, str) or not call_id:
+                allowed_calls.append(tool_call)
+                continue
+            blocked.append(
+                Message(
+                    role=self.tool_message_role,
+                    tool_call_id=call_id,
+                    tool_name=name,
+                    content=json.dumps(
+                        _reporting_invalid_argument_receipt(
+                            run_context,
+                            name,
+                            arguments,
+                            decode_error,
+                            schema_hint=_reporting_tool_schema_hint(name, functions),
+                        ),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                )
+            )
+        if blocked:
+            messages.extend(blocked)
+        return allowed_calls
+
+    def _run_reporting_tool_calls(
+        self,
+        assistant_message: Message,
+        messages: list[Message],
+        functions: dict[str, Any] | None,
+        tool_calls: list[Any],
+    ) -> list[Any]:
+        if not tool_calls:
+            return []
+        if tool_calls == list(assistant_message.tool_calls or []):
+            filtered_message = assistant_message
+        else:
+            filtered_message = deepcopy(assistant_message)
+            filtered_message.tool_calls = tool_calls
+        return super().get_function_calls_to_run(filtered_message, messages, functions)
+
+    def get_function_calls_to_run(
+        self,
+        assistant_message: Message,
+        messages: list[Message],
+        functions: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        return self._run_reporting_tool_calls(
+            assistant_message,
+            messages,
+            functions,
+            self._strict_reporting_tool_calls(assistant_message, messages, functions),
+        )
+
+
+class ReportWorkerOpenAIChat(ReportingOpenAIChat):
     """Reporting Worker 在通过正式验收后确定性收敛到 finish_task。"""
 
     _report_vision_enabled = True
+    _report_raw_tool_argument_errors = True
+
+    async def arun_function_calls(
+        self,
+        function_calls: Any,
+        function_call_results: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> AsyncIterator[Any]:
+        async for event in super().arun_function_calls(
+            function_calls,
+            function_call_results,
+            *args,
+            **kwargs,
+        ):
+            error = _take_reporting_tool_run_error()
+            if error is not None:
+                raise error
+            yield event
+        error = _take_reporting_tool_run_error()
+        if error is not None:
+            raise error
 
     def get_function_calls_to_run(
         self,
@@ -697,16 +1142,25 @@ class ReportWorkerOpenAIChat(ProjectedOpenAIChat):
         同步拒绝，避免 Agno 生成 Function not found 后继续扩大无效历史。
         """
         phase = _reporting_phase_from_messages(messages)
-        tool_calls = list(assistant_message.tool_calls or [])
+        tool_calls = self._strict_reporting_tool_calls(
+            assistant_message,
+            messages,
+            functions,
+        )
         allowed_calls = []
         blocked = []
         for tool_call in tool_calls:
             function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
             name = function.get("name") if isinstance(function, dict) else None
+            call_id = tool_call.get("id") if isinstance(tool_call, dict) else None
             phase_forbidden = (
                 isinstance(name, str)
                 and phase in {"analysis", "section"}
-                and not reporting_phase_allows_tool(phase, name)
+                and not reporting_phase_allows_tool(
+                    phase,
+                    name,
+                    task_kind=reporting_task_kind_from_run_context(current_reporting_run_context()),
+                )
             )
             vision_disabled = name == "view_image" and not getattr(
                 self, "_report_vision_enabled", True
@@ -714,7 +1168,6 @@ class ReportWorkerOpenAIChat(ProjectedOpenAIChat):
             if not phase_forbidden and not vision_disabled:
                 allowed_calls.append(tool_call)
                 continue
-            call_id = tool_call.get("id") if isinstance(tool_call, dict) else None
             if not isinstance(call_id, str) or not call_id:
                 allowed_calls.append(tool_call)
                 continue
@@ -744,15 +1197,16 @@ class ReportWorkerOpenAIChat(ProjectedOpenAIChat):
                     ),
                 )
             )
+            # phase admission 在工具执行前发生；同一模型响应可能含多个并行调用，
+            # 拒绝回执仍逐项写入消息供下一轮纠正。
         if blocked:
             messages.extend(blocked)
-        if len(allowed_calls) == len(tool_calls):
-            return super().get_function_calls_to_run(assistant_message, messages, functions)
-        if not allowed_calls:
-            return []
-        filtered_message = deepcopy(assistant_message)
-        filtered_message.tool_calls = allowed_calls
-        return super().get_function_calls_to_run(filtered_message, messages, functions)
+        return self._run_reporting_tool_calls(
+            assistant_message,
+            messages,
+            functions,
+            allowed_calls,
+        )
 
     def count_tokens(
         self,
@@ -767,27 +1221,58 @@ class ReportWorkerOpenAIChat(ProjectedOpenAIChat):
             output_schema=output_schema,
         )
 
+    def _project(self, messages: list[Message], args: tuple[Any, ...], kwargs: dict[str, Any]):
+        response_format = kwargs.get("response_format", args[1] if len(args) > 1 else None)
+        tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
+        configured_cap = getattr(self, "_coding_input_token_budget", None)
+        if (
+            isinstance(configured_cap, bool)
+            or not isinstance(configured_cap, int)
+            or configured_cap < 1
+        ):
+            configured_cap = CODING_CONTEXT_TOKEN_LIMIT - CODING_OUTPUT_TOKEN_RESERVE
+        phase = _reporting_phase_from_messages(messages)
+        phase_cap = (
+            REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
+            if phase == "analysis"
+            else REPORTING_SECTION_INPUT_TOKEN_HARD_CAP
+            if phase == "section"
+            else None
+        )
+        hard_cap = min(configured_cap, phase_cap) if phase_cap is not None else configured_cap
+
+        def filter_and_bind_tools(current_tools: Any) -> Any:
+            filtered = _phase_filtered_report_tools(messages, current_tools)
+            if filtered is current_tools:
+                return current_tools
+            if "tools" in kwargs:
+                kwargs["tools"] = filtered
+            return filtered
+
+        tools = filter_and_bind_tools(tools)
+        identity_messages = _with_reporting_durable_identities(messages)
+        projected = CodingContextProjector.project(
+            identity_messages,
+            model=self,
+            tools=tools,
+            response_format=response_format,
+            hard_cap=hard_cap,
+        )
+        metrics = dict(CodingContextProjector.last_metrics)
+        record_reporting_projection_metrics(metrics, input_token_hard_cap=hard_cap)
+        return projected, metrics
+
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        forced = _forced_report_worker_response(messages)
-        if forced is not None:
-            return forced
         messages = _phase_filtered_report_messages(messages)
         args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
         return super().invoke(messages, *args, **kwargs)
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        forced = _forced_report_worker_response(messages)
-        if forced is not None:
-            return forced
         messages = _phase_filtered_report_messages(messages)
         args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
         return await super().ainvoke(messages, *args, **kwargs)
 
     def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
-        forced = _forced_report_worker_response(messages, stream=True)
-        if forced is not None:
-            yield forced
-            return
         messages = _phase_filtered_report_messages(messages)
         args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
         yield from super().invoke_stream(messages, *args, **kwargs)
@@ -795,17 +1280,13 @@ class ReportWorkerOpenAIChat(ProjectedOpenAIChat):
     async def ainvoke_stream(
         self, messages: list[Message], *args: Any, **kwargs: Any
     ) -> AsyncIterator[Any]:
-        forced = _forced_report_worker_response(messages, stream=True)
-        if forced is not None:
-            yield forced
-            return
         messages = _phase_filtered_report_messages(messages)
         args, kwargs = _phase_filtered_model_call(messages, args, kwargs)
         async for response in super().ainvoke_stream(messages, *args, **kwargs):
             yield response
 
 
-class ReportFacadeOpenAIChat(ProjectedOpenAIChat):
+class ReportFacadeOpenAIChat(ReportingOpenAIChat):
     """把内层 Workflow 暂停确定性提升为 facade Agent HITL。"""
 
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
@@ -857,7 +1338,12 @@ def _report_worker_model(
     return worker
 
 
-def _report_model(settings: AgentSettings, *, enable_thinking: bool) -> OpenAIChat:
+def _report_model(
+    settings: AgentSettings,
+    *,
+    enable_thinking: bool,
+    retries: int = 2,
+) -> OpenAIChat:
     return OpenAIChat(
         id=settings.model_id,
         base_url=settings.openai_base_url,
@@ -871,8 +1357,8 @@ def _report_model(settings: AgentSettings, *, enable_thinking: bool) -> OpenAICh
         collect_metrics_on_completion=(
             urlparse(settings.openai_base_url).hostname in _CUMULATIVE_STREAM_USAGE_HOSTS
         ),
-        retries=2,
-        exponential_backoff=True,
+        retries=retries,
+        exponential_backoff=retries > 0,
     )
 
 
@@ -882,15 +1368,15 @@ def create_report_worker(
     workspace_service: WorkspaceService,
     task_repository: TaskExecutionRepository,
     *,
-    instructions: AgentInstructions,
-    report_coding_enable_thinking: bool = True,
-    report_enable_vision: bool = False,
-    context_token_budget: int = 262144,
-    output_token_reserve: int = 32768,
+    state_repository: ReportingStateRepository,
 ) -> Agent:
+    # settings 是 Report Worker 的唯一配置事实源。直接构造与 AgentOS 装配必须使用
+    # 同一组 Reporting 预算，不能静默退回普通 Coding Agent 的 256K/32K 默认值。
+    context_token_budget = settings.report_context_token_budget
+    output_token_reserve = settings.report_output_token_reserve
     reporting_skills = load_reporting_skills(load_sandbox_execution_skills(settings.skills_dir))
     vision_reviewer = (
-        ReportVisionReviewer(settings, workspace_service) if report_enable_vision else None
+        ReportVisionReviewer(settings, workspace_service) if settings.report_enable_vision else None
     )
     input_token_budget = max(
         1,
@@ -898,20 +1384,29 @@ def create_report_worker(
         - max(CODING_OUTPUT_TOKEN_RESERVE, output_token_reserve),
     )
     worker_model = _report_worker_model(
-        _report_model(settings, enable_thinking=report_coding_enable_thinking),
+        _report_model(
+            settings,
+            enable_thinking=settings.report_coding_enable_thinking,
+            retries=0,
+        ),
         input_token_budget=input_token_budget,
     )
-    worker_model._report_vision_enabled = report_enable_vision
+    worker_model._report_vision_enabled = settings.report_enable_vision
     worker_model.max_tokens = output_token_reserve
-    worker_model.temperature = settings.report_coding_temperature
+    worker_profile = (
+        ReportingThinkingProfile.on(
+            reasoning_effort=cast(
+                ReportingReasoningEffort,
+                settings.report_coding_reasoning_effort,
+            ),
+            thinking_budget=settings.report_coding_thinking_budget,
+            temperature=settings.report_coding_temperature,
+        )
+        if settings.report_coding_enable_thinking
+        else ReportingThinkingProfile.off(temperature=settings.report_coding_temperature)
+    )
+    apply_reporting_thinking_profile(worker_model, worker_profile)
     worker_model.top_p = 0.95
-    worker_model.reasoning_effort = settings.report_coding_reasoning_effort
-    extra_body = dict(worker_model.extra_body or {})
-    if report_coding_enable_thinking:
-        extra_body["thinking_budget"] = settings.report_coding_thinking_budget
-    else:
-        extra_body.pop("thinking_budget", None)
-    worker_model.extra_body = extra_body
     worker_compression_manager = (
         ContextBudgetController(
             model=worker_model,
@@ -926,16 +1421,15 @@ def create_report_worker(
         name="智能报表 Worker",
         role="根据已批准的分析计划和不可变数据集执行受控 Coding 分析。",
         model=worker_model,
-        instructions=instructions,
+        instructions=build_report_agent_instructions,
         use_instruction_tags=True,
         skills=reporting_skills,
         tools=partial(
             build_report_worker_tools,
             workspace_service,
             task_repository,
+            state_repository=state_repository,
             vision_reviewer=vision_reviewer,
-            context_token_budget=context_token_budget,
-            output_token_reserve=output_token_reserve,
         ),
         db=database,
         checkpoint="tool-batch",
@@ -950,8 +1444,10 @@ def create_report_worker(
         compress_tool_results=settings.enable_tool_result_compression,
         compression_manager=worker_compression_manager,
         retries=0,
+        exponential_backoff=False,
         post_hooks=[clear_terminal_reasoning],
         tool_hooks=[
+            propagate_reporting_tool_errors,
             normalize_reporting_tool_arguments,
             create_task_tool_scheduler_hook(task_repository),
             create_skill_script_hook(workspace_service),
@@ -973,14 +1469,13 @@ def create_report_agent(
     if not isinstance(report_worker.model, ProjectedOpenAIChat):
         raise TypeError("Report facade requires ProjectedOpenAIChat")
     facade_model = _report_facade_model(report_worker.model)
-    facade_model.extra_body = {
-        **(getattr(report_worker.model, "extra_body", None) or {}),
-        "enable_thinking": False,
-    }
-    facade_model.extra_body.pop("thinking_budget", None)
-    facade_model.temperature = 1.0
+    apply_reporting_thinking_profile(
+        facade_model,
+        ReportingThinkingProfile.off(temperature=1.0),
+    )
     facade_model.top_p = 0.95
-    facade_model.reasoning_effort = None
+    facade_model.retries = 2
+    facade_model.exponential_backoff = True
     facade_compression_manager = None
     if report_worker.compress_tool_results:
         if not isinstance(report_worker.compression_manager, ContextBudgetController):
@@ -993,7 +1488,9 @@ def create_report_agent(
     facade_tool_hooks = [
         hook
         for hook in (report_worker.tool_hooks or [])
-        if not is_skill_script_hook(hook) and not is_task_tool_scheduler_hook(hook)
+        if hook is not propagate_reporting_tool_errors
+        and not is_skill_script_hook(hook)
+        and not is_task_tool_scheduler_hook(hook)
     ]
 
     def workflow_tools(
@@ -1008,6 +1505,8 @@ def create_report_agent(
             "name": "智能报表",
             "role": "通过受控 Workflow 编排来源确认、分析、验收和发布审核。",
             "model": facade_model,
+            "retries": 0,
+            "exponential_backoff": False,
             "compression_manager": facade_compression_manager,
             "checkpoint": None,
             "instructions": [
@@ -1018,7 +1517,7 @@ def create_report_agent(
                 "使 Workflow 首步按官方 HumanReview retry 继续归一化。",
                 "任一报表工具返回普通审核 paused 时，系统会先准确展示当前 review 预览，再在同一 "
                 "run 中确定性调用 report_workflow_approve，由 AgentOS 原生确认收集批准或拒绝；"
-                "拒绝备注由系统确定性交给 Workflow，不得由模型生成或改写。request 和 agent 阶段"
+                "拒绝备注由系统确定性交给 Workflow，不得由模型生成或改写。request 阶段"
                 "仍调用 report_workflow_review 收集对应输入；"
                 "不得在文本回答中询问审批、猜测审批动作或宣称没有进行中的 Workflow。"
                 "审核工具返回 paused 时重复本流程。",

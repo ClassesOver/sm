@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from sqlglot import exp, parse
 
 from .contract import (
-    AgentQueryResponse,
     MetadataAgentResponse,
     MetadataModelResponse,
     ModelTable,
@@ -46,22 +45,18 @@ class ReportingMetadataClient:
         self.timeout_seconds = timeout_seconds
         self.client_factory = client_factory
 
-    async def query_agents(self, _source_ids: tuple[str, ...] = ()) -> AgentQueryResponse:
+    async def query_agent(self) -> ReportingAgent:
         payload = await self._post("/get_agent_json", {})
         response = self._validate(MetadataAgentResponse, payload, "report_metadata_agents_invalid")
-        ids = [item.id for item in response.agent_list]
-        if len(ids) != len(set(ids)):
-            raise ReportingError("report_metadata_agents_invalid", "报表 Agent id 重复。")
-        return AgentQueryResponse(
-            agents=tuple(
-                ReportingAgent(
-                    code=str(item.id),
-                    name=item.name,
-                    description=item.desc,
-                    enabled=True,
-                )
-                for item in response.agent_list
+        if len(response.agent_list) != 1:
+            raise ReportingError(
+                "report_metadata_agents_invalid", "Reporting metadata 必须唯一配置一个 Agent。"
             )
+        item = response.agent_list[0]
+        return ReportingAgent(
+            code=str(item.id),
+            name=item.name,
+            description=item.desc,
         )
 
     async def query_model(
@@ -243,21 +238,3 @@ def _bind_ddl_source(ddl: str, sources: tuple[DataSourceConfig, ...]) -> DataSou
         raise ReportingError(code, "DDL 数据表无法唯一绑定到已配置数据源数据库。")
     return matches[0]
 
-
-def select_reporting_agent(
-    response: AgentQueryResponse,
-    requested_agent_id: str | None,
-) -> ReportingAgent | tuple[ReportingAgent, ...] | None:
-    enabled = tuple(item for item in response.agents if item.enabled)
-    if requested_agent_id is not None:
-        if not re.fullmatch(r"[1-9][0-9]*", requested_agent_id):
-            raise ReportingError("report_agent_invalid", "报表 Agent code 必须是正整数。")
-        selected = next((item for item in enabled if item.code == requested_agent_id), None)
-        if selected is None:
-            raise ReportingError("report_agent_invalid", "所选报表 Agent 不存在或未启用。")
-        return selected
-    if len(enabled) == 1:
-        return enabled[0]
-    if len(enabled) > 1:
-        return enabled
-    return None

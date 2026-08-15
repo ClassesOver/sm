@@ -11,7 +11,7 @@ SECRET = "0123456789abcdef0123456789abcdef"
 
 
 def encode(claims, secret=SECRET):
-    header = {"alg": "HS256", "typ": "AGUI-CAP"}
+    header = {"alg": "HS256", "typ": "WORKSPACE-CAP"}
 
     def segment(value):
         return (
@@ -33,7 +33,7 @@ def encode(claims, secret=SECRET):
 
 def claims(**overrides):
     value = {
-        "aud": "agui-agentos-workspace",
+        "aud": "agentos-workspace",
         "database": "odoo",
         "user": 7,
         "company": 3,

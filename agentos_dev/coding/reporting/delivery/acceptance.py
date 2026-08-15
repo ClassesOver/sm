@@ -7,45 +7,14 @@ from agno.skills import LocalSkills, Skills
 
 from .artifacts_v1 import ReportArtifactManifest
 
-REPORT_ARTIFACT_VALIDATOR_ID = "report-artifact:manifest"
-REPORT_ARTIFACT_PATTERN = "报表/智能分析/*/*"
+REPORT_PHASE_CONTRACT_ID = "reporting-phase:contract"
 REPORTING_BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "builtin_skills"
-REPORT_ARTIFACT_VALIDATOR_SCRIPT = (
-    REPORTING_BUILTIN_SKILLS_DIR / "report-artifact" / "scripts" / "validate_manifest.py"
-)
 
 
 def load_reporting_skills(base_skills: Skills | None) -> Skills:
     loaders = list(base_skills.loaders) if base_skills is not None else []
     loaders.append(LocalSkills(str(REPORTING_BUILTIN_SKILLS_DIR)))
     return Skills(loaders=loaders)
-
-
-def build_report_artifact_acceptance_contract(
-    expected_identity: dict[str, Any],
-    *,
-    validation_context_file: dict[str, Any],
-    render_contract: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return {
-        "version": 1,
-        "requirements": [
-            {
-                "id": "report-artifact",
-                "validatorId": REPORT_ARTIFACT_VALIDATOR_ID,
-                "parameters": {
-                    "expectedIdentity": dict(expected_identity),
-                    "validationContextFile": dict(validation_context_file),
-                    **(
-                        {"renderContract": dict(render_contract)}
-                        if render_contract is not None
-                        else {}
-                    ),
-                },
-                "artifactPatterns": [REPORT_ARTIFACT_PATTERN],
-            }
-        ],
-    }
 
 
 def build_report_phase_acceptance_contract(
@@ -60,10 +29,17 @@ def build_report_phase_acceptance_contract(
     """把内部 phase 身份放入首个 requirement，供 Reporting 工具可信读取。"""
 
     if phase == "analysis":
-        if not analysis_output_path or section_output_path or rework_request_path:
-            raise ValueError("analysis phase 输出路径无效")
-        paths = [analysis_output_path]
-        output_parameters = {"analysisOutputPath": analysis_output_path}
+        task_kind = phase_contract.get("taskKind")
+        if task_kind == "analysis_item":
+            if analysis_output_path or section_output_path or rework_request_path:
+                raise ValueError("analysis item 不得声明阶段输出路径")
+            paths = []
+            output_parameters = {}
+        else:
+            if not analysis_output_path or section_output_path or rework_request_path:
+                raise ValueError("analysis phase 输出路径无效")
+            paths = [analysis_output_path]
+            output_parameters = {"analysisOutputPath": analysis_output_path}
     elif phase == "section":
         if not section_output_path or not rework_request_path or analysis_output_path:
             raise ValueError("section phase 输出路径无效")
@@ -79,9 +55,9 @@ def build_report_phase_acceptance_contract(
         "requirements": [
             {
                 "id": f"report-{phase}-phase",
-                # Report Worker 已关闭通用 acceptance validator；此处复用已登记 ID，
-                # requirement 仅作为不可变 phase 参数载体，由阶段工具自行核验产物哈希。
-                "validatorId": REPORT_ARTIFACT_VALIDATOR_ID,
+                # Report Worker 已关闭通用 acceptance validator；requirement 仅作为
+                # 不可变 phase 参数载体，由阶段工具自行核验产物哈希。
+                "validatorId": REPORT_PHASE_CONTRACT_ID,
                 "parameters": {
                     "phase": phase,
                     "validationContextFile": dict(validation_context_file),

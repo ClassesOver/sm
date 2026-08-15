@@ -225,7 +225,11 @@ def _markdown_table_artifacts(markdown: str) -> tuple[TableArtifact, ...]:
     marker_ids = re.findall(r"\[\[table:([^\]\r\n]+)\]\]", markdown)
     closing_ids = re.findall(r"\[\[/table:([^\]\r\n]+)\]\]", markdown)
     parsed_ids = [item.table_id for item in tables]
-    if marker_ids != closing_ids or marker_ids != parsed_ids or len(parsed_ids) != len(set(parsed_ids)):
+    if (
+        marker_ids != closing_ids
+        or marker_ids != parsed_ids
+        or len(parsed_ids) != len(set(parsed_ids))
+    ):
         raise ReportingError(
             "report_artifact_table_invalid", "Markdown 表格协议块缺失、重复或边界不一致。"
         )
@@ -301,10 +305,7 @@ def _markdown_image_bindings(
             dataset_bindings.setdefault(path, set()).update(
                 citation_datasets[item] for item in citation_ids
             )
-    return {
-        path: tuple(sorted(dataset_ids))
-        for path, dataset_ids in dataset_bindings.items()
-    }
+    return {path: tuple(sorted(dataset_ids)) for path, dataset_ids in dataset_bindings.items()}
 
 
 class PdfArtifactManifest(StrictModel):
@@ -312,14 +313,10 @@ class PdfArtifactManifest(StrictModel):
     revision: int = Field(ge=1)
     effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
     source_markdown_sha256: str = Field(alias="sourceMarkdownSha256", pattern=SHA256_PATTERN)
-    source_chart_sha256s: tuple[str, ...] = Field(
-        default=(), alias="sourceChartSha256s"
-    )
+    source_chart_sha256s: tuple[str, ...] = Field(default=(), alias="sourceChartSha256s")
     pdf: ArtifactFile
     page_count: int = Field(alias="pageCount", ge=1, le=1_000)
-    rendered_chart_ids: tuple[str, ...] = Field(
-        default=(), alias="renderedChartIds"
-    )
+    rendered_chart_ids: tuple[str, ...] = Field(default=(), alias="renderedChartIds")
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=2_000)
     sections: tuple[str, ...] = Field(min_length=1, max_length=100)
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
@@ -340,16 +337,12 @@ class DocxArtifactManifest(StrictModel):
     revision: int = Field(ge=1)
     effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
     source_markdown_sha256: str = Field(alias="sourceMarkdownSha256", pattern=SHA256_PATTERN)
-    source_chart_sha256s: tuple[str, ...] = Field(
-        default=(), alias="sourceChartSha256s"
-    )
+    source_chart_sha256s: tuple[str, ...] = Field(default=(), alias="sourceChartSha256s")
     docx: ArtifactFile
     converted_page_count: int = Field(alias="convertedPageCount", ge=1, le=1_000)
     section_count: int = Field(alias="sectionCount", ge=1, le=100)
     toc_entry_count: int = Field(alias="tocEntryCount", ge=0, le=100)
-    rendered_chart_ids: tuple[str, ...] = Field(
-        default=(), alias="renderedChartIds"
-    )
+    rendered_chart_ids: tuple[str, ...] = Field(default=(), alias="renderedChartIds")
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=2_000)
     sections: tuple[str, ...] = Field(min_length=1, max_length=100)
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
@@ -377,27 +370,6 @@ def dataset_snapshot_hash(lineage: tuple[DatasetLineage, ...]) -> str:
     )
     encoded = json.dumps(values, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
-
-
-def validate_markdown_markers(draft: ReportArtifactManifest, markdown: str) -> None:
-    missing_citations = [
-        item.citation_id
-        for item in draft.citations
-        if f"[[citation:{item.citation_id}]]" not in markdown
-    ]
-    if missing_citations:
-        raise ReportingError(
-            "report_artifact_citation_missing",
-            f"Markdown 缺少数据引用标识：{', '.join(missing_citations)}。",
-        )
-    missing_sections = [
-        section for section in draft.sections if f"[[section:{section}]]" not in markdown
-    ]
-    if missing_sections:
-        raise ReportingError(
-            "report_artifact_section_missing",
-            f"Markdown 缺少关键章节标识：{', '.join(missing_sections)}。",
-        )
 
 
 def validate_rendered_artifacts(

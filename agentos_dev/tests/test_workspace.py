@@ -62,7 +62,7 @@ def test_每个对话使用独立持久沙箱且注册表可跨服务复用(tmp_
     assert params.network_block_all is True
     assert params.snapshot == WORKSPACE_SNAPSHOT
     assert params.auto_stop_interval == 60
-    assert list(params.labels) == ["agui-thread"]
+    assert list(params.labels) == ["agent-thread"]
     assert "thread-one" not in str(params.labels)
 
     restarted = WorkspaceService(SECRET, client=client, registry=first.registry)
@@ -280,8 +280,8 @@ def test_销毁会删除重复标签沙箱并清理注册表(tmp_path):
     client = FakeClient()
     current = service(tmp_path, client)
     value = current._hash("thread")
-    first = FakeSandbox("sandbox-1", {"agui-thread": value})
-    second = FakeSandbox("sandbox-2", {"agui-thread": value})
+    first = FakeSandbox("sandbox-1", {"agent-thread": value})
+    second = FakeSandbox("sandbox-2", {"agent-thread": value})
     client.sandboxes = {first.id: first, second.id: second}
     current.registry.set(value, first.id)
 
@@ -956,7 +956,7 @@ async def test_sandbox_exec_后台模式使用受管会话并支持轮询输入�
     )
 
     assert started["status"] == "running"
-    assert started["sessionId"].startswith("agui-exec-")
+    assert started["sessionId"].startswith("agent-exec-")
     assert started["commandId"] == "command-1"
     assert started["originalBytes"] == 7
     assert started["wallTimeSeconds"] >= 0
@@ -1659,8 +1659,8 @@ def test_沙箱启动异常多实例与后端故障均明确处理(tmp_path):
     duplicate = service(tmp_path, duplicate_client)
     label = duplicate._hash("duplicate")
     duplicate_client.sandboxes = {
-        "one": FakeSandbox("one", {"agui-thread": label}),
-        "two": FakeSandbox("two", {"agui-thread": label}),
+        "one": FakeSandbox("one", {"agent-thread": label}),
+        "two": FakeSandbox("two", {"agent-thread": label}),
     }
     with pytest.raises(WorkspaceError, match="多个运行环境"):
         duplicate.sandbox_for("duplicate")

@@ -19,6 +19,7 @@ from daytona.common.errors import DaytonaNotFoundError
 import agentos_dev.task_execution.execution as execution_module
 from agentos_dev.agent_control import AGENT_PLAN_STATE_KEY
 from agentos_dev.coding import CodingScope, Lease
+from agentos_dev.coding.reporting.tools import ReportWorkspaceTaskToolkit
 from agentos_dev.coding.executor import CODING_FINISH_FAILURE_STATE_KEY
 from agentos_dev.coding.tests.workspace_fakes import (
     AsyncFakeClient,
@@ -1409,7 +1410,7 @@ async def test_terminal_rejects_oversized_inline_command_without_mutation(execut
 
 
 @pytest.mark.anyio
-async def test_terminal_accepts_32_kib_utf8_boundary(execution_runtime):
+async def test_terminal_accepts_1_mib_utf8_boundary(execution_runtime):
     runtime = execution_runtime
     command = "x" * MAX_TERMINAL_COMMAND_BYTES
 
@@ -1550,6 +1551,112 @@ async def test_large_tool_output_has_stable_preview_and_exact_handle_reads(execu
     metadata["attempt"] += 1
     with pytest.raises(WorkspaceError, match="不属于当前"):
         await runtime.kernel.read_tool_output(bounded["outputHandle"], 0, 1024, runtime.context)
+
+
+@pytest.mark.anyio
+async def test_small_tool_output_only_gets_handle_when_explicitly_retained(execution_runtime):
+    runtime = execution_runtime
+    scope = await runtime.kernel.scope(runtime.context)
+    result = {"status": "completed", "output": "收入同比增长 8.2%"}
+
+    ordinary = await runtime.kernel.bound_tool_result(scope, result, runtime.context)
+    retained = await runtime.kernel.bound_tool_result(
+        scope,
+        result,
+        runtime.context,
+        retain=True,
+    )
+    page = await runtime.kernel.read_tool_output(
+        retained["outputHandle"], 0, 1024, runtime.context
+    )
+
+    assert ordinary == result
+    assert "outputHandle" not in ordinary
+    assert retained["output"] == result["output"]
+    assert retained["outputTruncated"] is False
+    assert retained["outputDiscarded"] is False
+    assert page["content"] == result["output"]
+    assert page["hasMore"] is False
+
+
+@pytest.mark.anyio
+async def test_reporting_analysis_terminal_retains_small_output(execution_runtime):
+    runtime = execution_runtime
+    external_run_id = "report-coding-retain-test"
+    sandbox_id = str(runtime.synchronous.sandbox_for("thread").id)
+    scope = CodingScope(external_run_id, "user", "thread", sandbox_id, "report-agent")
+    task = await runtime.repository.create_task_with_initial_attempt(
+        scope,
+        "执行全局分析",
+        acceptance_contract={
+            "version": 1,
+            "requirements": [
+                {
+                    "id": "report-artifact",
+                    "validatorId": "report:artifact",
+                    "parameters": {"phase": "analysis"},
+                    "artifactPatterns": [],
+                }
+            ],
+        },
+    )
+    lease = await runtime.repository.claim_lease(external_run_id, "report-request")
+    assert isinstance(lease, Lease)
+    _task, attempt = await runtime.repository.open_initial(
+        external_run_id,
+        lease,
+        task.state_version,
+    )
+    context = RunContext(
+        run_id=attempt.internal_run_id,
+        session_id="thread",
+        user_id="user",
+        session_state={},
+        dependencies={
+            CODING_TASK_DEPENDENCY: {
+                "externalRunId": external_run_id,
+                "leaseOwner": "report-request",
+                "leaseEpoch": lease.epoch,
+                "sandboxId": sandbox_id,
+            }
+        },
+    )
+    toolkit = ReportWorkspaceTaskToolkit(runtime.workspace, runtime.repository)
+
+    created = await toolkit.coding_create_file(
+        "analysis/report_analysis.py",
+        "print('收入同比增长 8.2%')\n",
+        run_context=context,
+    )
+    started = await toolkit.terminal(
+        "printf '收入同比增长 8.2%%'",
+        background=True,
+        run_context=context,
+    )
+    finish_remote_execution(
+        runtime,
+        started["execution_id"],
+        output="收入同比增长 8.2%",
+    )
+    result = await toolkit.process(
+        "poll",
+        session_id=started["execution_id"],
+        run_context=context,
+    )
+    if result["status"] == "draining":
+        result = await toolkit.process(
+            "poll",
+            session_id=started["execution_id"],
+            run_context=context,
+        )
+    page = await toolkit.read_tool_output(
+        result["outputHandle"], _agno_run_context=context
+    )
+
+    assert created["mutation_sequence"] == 1
+    assert "收入同比增长 8.2%" in result["output"]
+    assert result["outputTruncated"] is False
+    assert page["content"] == result["output"]
 
 
 @pytest.mark.anyio
@@ -1942,9 +2049,6 @@ async def test_parallel_read_completion_merges_progress_failures_and_output_hand
         ("read_profile_pointer", {}, True),
         ("report_materialize_dataset", {}, False),
         ("report_prepare_dataset", {}, False),
-        ("report_job_status", {}, False),
-        ("report_render_markdown", {}, False),
-        ("report_validate_pdf", {}, False),
         ("unknown_tool", {}, False),
     ],
 )
@@ -3150,63 +3254,3 @@ async def test_finish_task_rejects_changed_sandbox_with_stable_code(execution_ru
     assert result["code"] == "finish_sandbox_changed"
     task = await runtime.repository.get_task("external-run")
     assert task is not None and task.status != "completed"
-
-
-@pytest.mark.anyio
-async def test_report_finish_requires_validated_delivery_evidence(execution_runtime):
-    runtime = execution_runtime
-    report_scope = CodingScope(
-        "report-run",
-        "user",
-        "thread",
-        str(runtime.synchronous.sandbox_for("thread").id),
-        "report-agent",
-    )
-    report_task = await runtime.repository.create_task_with_initial_attempt(
-        report_scope, "生成报表"
-    )
-    report_lease = await runtime.repository.claim_lease("report-run", "report-request")
-    assert isinstance(report_lease, Lease)
-    _report_task, report_attempt = await runtime.repository.open_initial(
-        "report-run", report_lease, report_task.state_version
-    )
-    report_context = RunContext(
-        run_id=report_attempt.internal_run_id,
-        session_id="thread",
-        user_id="user",
-        session_state={AGENT_PLAN_STATE_KEY: {"plan": []}},
-        dependencies={
-            CODING_TASK_DEPENDENCY: {
-                "externalRunId": "report-run",
-                "leaseOwner": "report-request",
-                "leaseEpoch": report_lease.epoch,
-                "sandboxId": report_scope.sandbox_id,
-            }
-        },
-    )
-
-    async def missing_evidence(_run_context):
-        return None
-
-    report_kernel = CodingExecutionKernel(
-        runtime.workspace,
-        runtime.repository,
-        completion_evidence=missing_evidence,
-    )
-    execution_id = await completed_verification(
-        runtime,
-        "verify report",
-        kernel=report_kernel,
-        run_context=report_context,
-    )
-
-    result = await report_kernel.finish_task(
-        "report done",
-        [],
-        [execution_id],
-        [],
-        report_context,
-        Function(name="finish_task"),
-    )
-
-    assert result["code"] == "finish_report_unverified"

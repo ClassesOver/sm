@@ -10,7 +10,6 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from agno.run import RunContext
-from agno.tools import Toolkit
 from daytona.common.errors import DaytonaNotFoundError
 
 from ...async_utils import complete_cleanup
@@ -24,58 +23,14 @@ from ...workspace import (
 )
 
 REPORT_JOBS_STATE_KEY = "report_jobs"
-REPORT_DELIVERY_STATE_KEY = "report_delivery"
-REPORT_DELIVERY_INCOMPLETE_MESSAGE = (
-    "报表未完成：服务端未找到本轮已验收且当前仍存在的 Markdown/PDF/Word 产物，"
-    "已阻止发送生成成功结论。"
-)
 MAX_REPORT_JOBS = 10
 MAX_REPORT_JOB_STATE_BYTES = 48 * 1024
 REPORT_RUNTIME_TIMEOUT_SECONDS = 600
 
-WORKSPACE_REPORT_TOOLKIT_INSTRUCTIONS = """
-智能报表工具规则：
-- 本工具集只负责绑定报表输入，以及从同一 Markdown 生成并验收 PDF/Word；文件检查、Python 编码、分析和长进程统一使用 Coding 工具。
-- 先通过 report_materialize_dataset 获得一至二十个 datasetId，再用 report_prepare_dataset 绑定这些不可变数据集句柄，并在后续各轮原样复用返回的 jobId。
-- 复杂分析先用 terminal 检查文件，再用 patch 的 replace 或 patch 模式在工作区创建或修改 Python 脚本；不得用 Shell 绕过补丁边界。
-- 用 terminal 执行当前依赖和权限允许的分析命令；返回 session_id 时用 process 轮询、输入或终止，不另加 Report 层命令限制。
-- 分析失败时读取 output 和 exit_code，修正脚本或命令后继续；由模型根据证据充分性决定分析方式和轮次。
-- 分析充分后，基于真实工具结果生成 Markdown 文件；结论、数字、表格和图片不得脱离分析结果，图片使用相对 Markdown 文件的路径。
-- 使用新的输出路径调用 report_render_markdown，再调用兼容入口 report_validate_pdf 联合验收 PDF/Word；必要时用 view_image 检查生成的图表。report_job_status 为 validated 后仍须调用 finish_task，只有门禁 accepted 才能声称报表完成。
-""".strip()
-
-
-def report_delivery_content(content: Any, evidence: dict[str, Any] | None) -> str:
-    if evidence is None:
-        return REPORT_DELIVERY_INCOMPLETE_MESSAGE
-    markdown_path = str(evidence["markdownPath"])
-    pdf_path = str(evidence["pdfPath"])
-    word_path = str(evidence["wordPath"])
-    text = content.strip() if isinstance(content, str) else ""
-    if markdown_path in text and pdf_path in text and word_path in text:
-        return text
-    prefix = text or "报表已生成并通过服务端验收。"
-    return (
-        f"{prefix}\n\n已验证产物：\n- Markdown：`{markdown_path}`"
-        f"\n- PDF：`{pdf_path}`\n- Word：`{word_path}`"
-    )
-
-
-class WorkspaceReportToolkit(Toolkit):
+class WorkspaceReportService:
     def __init__(self, service: WorkspaceService, data_sources: Any | None = None):
         self.service = service
         self.data_sources = data_sources
-        super().__init__(
-            name="workspace_report",
-            tools=[
-                self.report_prepare_dataset,
-                self.report_job_status,
-                self.report_render_markdown,
-                self.report_validate_pdf,
-            ],
-            instructions=WORKSPACE_REPORT_TOOLKIT_INSTRUCTIONS,
-            add_instructions=True,
-        )
 
     @staticmethod
     def _session_state(run_context: RunContext | None) -> MutableMapping[str, Any]:
@@ -125,16 +80,6 @@ class WorkspaceReportToolkit(Toolkit):
         while len(jobs) > MAX_REPORT_JOBS:
             jobs.pop(next(iter(jobs)))
         state[REPORT_JOBS_STATE_KEY] = jobs
-
-    def _touch_job(self, job_id: str, run_context: RunContext | None) -> None:
-        state = self._session_state(run_context)
-        delivery = state.get(REPORT_DELIVERY_STATE_KEY)
-        if not isinstance(delivery, dict) or not isinstance(delivery.get("deliveryId"), str):
-            return
-        state[REPORT_DELIVERY_STATE_KEY] = {
-            "deliveryId": delivery["deliveryId"],
-            "jobId": job_id,
-        }
 
     async def _current_artifact(
         self,
@@ -202,59 +147,6 @@ class WorkspaceReportToolkit(Toolkit):
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > MAX_TOOL_OUTPUT_BYTES:
             raise WorkspaceError("报表任务状态超过返回边界，请重新生成较短的报表。")
         return result
-
-    async def validated_delivery(
-        self,
-        delivery_id: str,
-        run_context: RunContext | None,
-    ) -> dict[str, Any] | None:
-        state = self._session_state(run_context)
-        delivery = state.get(REPORT_DELIVERY_STATE_KEY)
-        if (
-            not isinstance(delivery, dict)
-            or delivery.get("deliveryId") != delivery_id
-            or not isinstance(delivery.get("jobId"), str)
-        ):
-            return None
-        try:
-            job = self._load_job(delivery["jobId"], run_context)
-            status = await self._job_status(job, run_context)
-        except Exception:
-            return None
-        if status.get("status") != "validated":
-            return None
-        artifacts = status.get("artifacts")
-        validation = status.get("validation")
-        if not isinstance(artifacts, dict) or not isinstance(validation, dict):
-            return None
-        markdown = artifacts.get("markdown")
-        pdf = artifacts.get("pdf")
-        word = artifacts.get("word")
-        if (
-            not isinstance(markdown, dict)
-            or not isinstance(pdf, dict)
-            or not isinstance(word, dict)
-            or markdown.get("changed") is not False
-            or pdf.get("changed") is not False
-            or word.get("changed") is not False
-            or not isinstance(markdown.get("path"), str)
-            or not isinstance(pdf.get("path"), str)
-            or not isinstance(word.get("path"), str)
-            or validation.get("ok") is not True
-            or validation.get("pdfPath") != pdf["path"]
-            or validation.get("wordPath") != word["path"]
-        ):
-            return None
-        return {
-            "jobId": job["jobId"],
-            "status": "validated",
-            "markdownPath": markdown["path"],
-            "pdfPath": pdf["path"],
-            "wordPath": word["path"],
-            "markdownSha256": markdown.get("sha256"),
-            "pdfSha256": pdf.get("sha256"),
-            "wordSha256": word.get("sha256"),
-        }
 
     async def _run_report_runtime(
         self,
@@ -336,18 +228,7 @@ class WorkspaceReportToolkit(Toolkit):
             "sources": sources,
         }
         self._store_job(job, run_context)
-        self._touch_job(job_id, run_context)
         return {"status": "prepared", "jobId": job_id, "sources": sources}
-
-    async def report_job_status(
-        self,
-        job_id: str,
-        run_context: RunContext | None = None,
-    ):
-        """返回 job 的输入哈希、已登记产物哈希和最近双格式验收状态。"""
-        job = self._load_job(job_id, run_context)
-        self._touch_job(job["jobId"], run_context)
-        return await self._job_status(job, run_context)
 
     async def bind_page_layout(
         self,
@@ -414,22 +295,6 @@ class WorkspaceReportToolkit(Toolkit):
         job["_citationPresentations"] = copy.deepcopy(presentations)
         self._store_job(job, run_context)
 
-    async def report_render_markdown(
-        self,
-        job_id: str,
-        markdown_path: str,
-        output_path: str,
-        run_context: RunContext | None = None,
-    ):
-        """按服务端版式生成双格式草稿；无需用户确认，正式 Workflow 会额外绑定 manifest。"""
-        return await self._render_report_pair(
-            job_id,
-            markdown_path,
-            output_path,
-            artifact_manifest=None,
-            run_context=run_context,
-        )
-
     async def _render_report_pair(
         self,
         job_id: str,
@@ -441,7 +306,6 @@ class WorkspaceReportToolkit(Toolkit):
     ):
         """从同一 Markdown 生成并验收 PDF/Word，再原子发布整个 revision。"""
         job = self._load_job(job_id, run_context)
-        self._touch_job(job["jobId"], run_context)
         await self._job_status(job, run_context)
         relative_output, _remote_output = self.service.normalize_path(output_path, allow_root=False)
         output = PurePosixPath(relative_output)
@@ -650,50 +514,3 @@ class WorkspaceReportToolkit(Toolkit):
         job.pop("render", None)
         job.pop("validation", None)
         self._store_job(job, run_context)
-
-    async def report_validate_pdf(
-        self,
-        job_id: str,
-        pdf_path: str,
-        artifact_manifest: dict[str, Any] | None = None,
-        run_context: RunContext | None = None,
-    ):
-        """重新检查当前 job 已登记的 PDF 与 Word；无需用户确认。"""
-        job = self._load_job(job_id, run_context)
-        self._touch_job(job["jobId"], run_context)
-        status = await self._job_status(job, run_context)
-        if status["status"] == "artifact_changed":
-            raise WorkspaceError("报表产物发生变化，请重新渲染后验收。")
-        temporary_directory = f"/tmp/workspace-report-{uuid.uuid4().hex}-validate"
-        render = job.get("render")
-        word_path = render.get("word", {}).get("path") if isinstance(render, dict) else None
-        if not isinstance(word_path, str):
-            raise WorkspaceError("Word 未登记为当前报表产物。")
-        try:
-            validation = await self._run_report_runtime(
-                "validate_pdf",
-                {
-                    "job": job,
-                    "pdf_path": pdf_path,
-                    "word_path": word_path,
-                    "temporary_directory": temporary_directory,
-                    "artifact_manifest": artifact_manifest,
-                },
-                run_context,
-            )
-            if (
-                validation.get("pdfPath") != pdf_path
-                or validation.get("wordPath") != word_path
-                or not isinstance(validation.get("ok"), bool)
-            ):
-                raise WorkspaceError("PDF/Word 验收返回无效结果。")
-            current_status = await self._job_status(job, run_context)
-            if current_status["status"] == "artifact_changed":
-                raise WorkspaceError("报表产物在验收期间发生变化，请重新渲染后验收。")
-            job["validation"] = validation
-            self._store_job(job, run_context)
-            return validation
-        finally:
-            await complete_cleanup(
-                self._delete_report_path(temporary_directory, run_context, recursive=True)
-            )

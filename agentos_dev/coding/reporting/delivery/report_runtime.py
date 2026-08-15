@@ -1,4 +1,4 @@
-"""受限 Markdown 报表运行时；由 WorkspaceReportToolkit 在 Daytona 中执行。"""
+"""受限 Markdown 报表运行时；由 Reporting Workflow 在 Daytona 中执行。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -63,7 +64,6 @@ REPORT_VISUAL_THEME = {
 }
 PAGE_LAYOUT_FIELDS = frozenset(DEFAULT_PAGE_LAYOUT)
 PAGE_LAYOUT_PLACEHOLDERS = frozenset({"title", "organization", "page", "pages"})
-DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _DOCX_FORBIDDEN_PARTS = ("word/vbaProject.bin", "word/embeddings/", "word/activeX/")
 _WORD_MARKERS = {
     "cover_end": "__REPORT_COVER_END__",
@@ -90,7 +90,7 @@ def _pdf_markdown(
     if not marker_ids:
         visible_markdown = _ANALYSIS_MARKER.sub("", _SECTION_MARKER.sub("", markdown))
         return _TABLE_MARKER.sub("", visible_markdown), []
-    if not isinstance(presentations, list) or len(presentations) != len(marker_ids):
+    if not isinstance(presentations, list):
         raise ReportFailure("PDF 缺少服务端实际引用展示信息")
     normalized: list[dict[str, Any]] = []
     for index, item in enumerate(presentations, start=1):
@@ -141,8 +141,11 @@ def _pdf_markdown(
             }
         )
     presentation_ids = [item["citationId"] for item in normalized]
-    if len(presentation_ids) != len(set(presentation_ids)) or set(presentation_ids) != set(
-        marker_ids
+    # Manifest 绑定全部授权 DatasetLineage，而专题正文可以只直接使用其中一部分。
+    # 展示 ledger 因而允许是 Markdown marker 的超集，但 marker 仍必须逐个来自服务端
+    # ledger，且 ledger 自身不能重复，防止模型注入未知 citation 或伪造展示标签。
+    if len(presentation_ids) != len(set(presentation_ids)) or not set(marker_ids).issubset(
+        presentation_ids
     ):
         raise ReportFailure("PDF 实际引用展示信息与 Markdown 引用不一致")
     # Citation 绑定仍由服务端校验并写入渲染回执，但 PDF 展示层不泄露机器 marker、
@@ -436,6 +439,7 @@ def _semantic_documents(
     *,
     context: dict[str, Any],
     layout: dict[str, str],
+    toc_page_numbers: Mapping[str, int] | None = None,
 ) -> tuple[str, str]:
     theme = REPORT_VISUAL_THEME
     title = html.escape(context["title"])
@@ -445,7 +449,10 @@ def _semantic_documents(
     generated_date = html.escape(context["generatedDate"])
     toc = "".join(
         f'<p class="toc-entry"><a href="#report-section-{item["code"]}">'
-        f"{html.escape(item['title'])}</a></p>"
+        f'<span class="toc-title">{html.escape(item["title"])}</span>'
+        '<span class="toc-leader"></span>'
+        f'<span class="toc-page">{toc_page_numbers.get(item["code"], "") if toc_page_numbers is not None else ""}</span>'
+        "</a></p>"
         for item in context["sections"]
     )
     shared = (
@@ -481,7 +488,7 @@ def _semantic_documents(
         ".report-generated{position:absolute;bottom:8mm;font-size:9pt;color:"
         f"{theme['muted']}"
         "}"
-        ".report-toc{page:toc;counter-reset:page 1;break-after:page;min-height:240mm}"
+        ".report-toc{page:toc;break-after:page;min-height:240mm}"
         ".report-toc h1{color:"
         f"{theme['primary']}"
         ";font-size:22pt;border-bottom:1.5pt solid "
@@ -490,9 +497,11 @@ def _semantic_documents(
         "padding-bottom:5mm;margin-bottom:8mm}"
         ".toc-entry{margin:0 0 3mm}.toc-entry a{color:"
         f"{theme['ink']}"
-        ";text-decoration:none}"
-        ".toc-entry a::after{content:leader('.') target-counter(attr(href), page);float:right}"
-        ".report-body{page:body;counter-reset:page 1}"
+        ";text-decoration:none;display:flex;align-items:baseline;gap:2mm}"
+        ".toc-title{min-width:0}.toc-leader{flex:1;border-bottom:0.5pt dotted "
+        f"{theme['grid']}"
+        ";transform:translateY(-1.5mm)}.toc-page{min-width:3ch;text-align:right}"
+        ".report-body{page:body}"
         "h2{color:"
         f"{theme['primary']}"
         ";border-left:3pt solid "
@@ -538,6 +547,37 @@ def _semantic_documents(
         f"<p>{organization}</p><p>{generated_date}</p></body>"
     )
     return pdf_document, word_document
+
+
+def _toc_page_numbers(
+    pages: Sequence[Any], sections: Sequence[Mapping[str, str]]
+) -> dict[str, int]:
+    """从 WeasyPrint 页面锚点计算正文从 1 开始的稳定目录页码。"""
+
+    anchor_pages: dict[str, int] = {}
+    expected_anchors = {
+        f"report-section-{section['code']}": section["code"] for section in sections
+    }
+    for physical_page, page in enumerate(pages, start=1):
+        anchors = getattr(page, "anchors", None)
+        if not isinstance(anchors, Mapping):
+            continue
+        for anchor in anchors:
+            code = expected_anchors.get(anchor)
+            if code is None:
+                continue
+            if code in anchor_pages:
+                raise ReportFailure("PDF 正文章节锚点重复")
+            anchor_pages[code] = physical_page
+    if set(anchor_pages) != {section["code"] for section in sections}:
+        raise ReportFailure("PDF 正文章节锚点不完整")
+    body_start_page = anchor_pages[sections[0]["code"]]
+    page_numbers = {
+        section["code"]: anchor_pages[section["code"]] - body_start_page + 1 for section in sections
+    }
+    if any(number < 1 for number in page_numbers.values()):
+        raise ReportFailure("PDF 正文章节页码顺序无效")
+    return page_numbers
 
 
 def _apply_pdf_page_decorations(
@@ -1010,9 +1050,7 @@ def _postprocess_docx(path: Path, *, context: dict[str, Any], layout: dict[str, 
             row_properties.append(table_header)
             for cell in table.rows[0].cells:
                 shading = OxmlElement("w:shd")
-                shading.set(
-                    qn("w:fill"), str(REPORT_VISUAL_THEME["surface"]).removeprefix("#")
-                )
+                shading.set(qn("w:fill"), str(REPORT_VISUAL_THEME["surface"]).removeprefix("#"))
                 cell._tc.get_or_add_tcPr().append(shading)
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
@@ -1241,8 +1279,7 @@ def _validate_docx_rendering(
         index
         for index, page_text in enumerate(extracted_pages, start=1)
         if index > 1
-        and first_section_title
-        in "".join(page_text.split()).replace(report_title, "", 1)
+        and first_section_title in "".join(page_text.split()).replace(report_title, "", 1)
     ]
     # LibreOffice 会在转换后的 PDF 文本层为中文标题插入布局空格。该位置只用于
     # 识别页码装饰，不再把目录缓存方式和正文分页形态作为发布门禁。
@@ -1438,14 +1475,31 @@ class ReportRuntime:
                 context=context,
                 layout=layout,
             )
-            HTML(
+            preflight_document = HTML(
                 string=pdf_document,
                 base_url=str(source.parent),
                 url_fetcher=fetch_resource,
-            ).write_pdf(str(temporary))
+            ).render()
+            toc_page_numbers = _toc_page_numbers(preflight_document.pages, context["sections"])
+            pdf_document, _ = _semantic_documents(
+                body,
+                context=context,
+                layout=layout,
+                toc_page_numbers=toc_page_numbers,
+            )
+            final_document = HTML(
+                string=pdf_document,
+                base_url=str(source.parent),
+                url_fetcher=fetch_resource,
+            ).render()
+            if _toc_page_numbers(final_document.pages, context["sections"]) != toc_page_numbers:
+                # 目录页码使用固定宽度，正常不会改变分页；若字体或渲染器升级导致
+                # 锚点漂移，则不能发布目录与正文不一致的产物。
+                raise ReportFailure("PDF 目录页码在最终渲染时发生漂移")
+            final_document.write_pdf(str(temporary))
             if temporary.stat().st_size > MAX_PDF_BYTES:
                 raise ReportFailure("PDF 文件不能超过 200 MiB")
-            base_page_count = len(pypdf.PdfReader(str(temporary)).pages)
+            base_page_count = len(final_document.pages)
             if not base_page_count:
                 raise ReportFailure("PDF 校验失败")
             if base_page_count > MAX_PDF_PAGES:
@@ -1752,12 +1806,10 @@ class ReportRuntime:
                 )
             markdown_image_count = int(render.get("imageCount") or 0)
             missing_images = max(0, markdown_image_count - rendered_image_count)
-            chart_ids, citation_ids, section_ids = (
-                self._validate_manifest_markers(
-                    artifact_manifest,
-                    render=render,
-                    extracted_text=extracted_text,
-                )
+            chart_ids, citation_ids, section_ids = self._validate_manifest_markers(
+                artifact_manifest,
+                render=render,
+                extracted_text=extracted_text,
             )
             ok = (
                 bool(pages)

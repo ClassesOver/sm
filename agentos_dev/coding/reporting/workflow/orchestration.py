@@ -16,7 +16,6 @@ from agno.workflow.workflow import Workflow
 from ..contract import ReportingWorkflowInput
 
 StepExecutor = Any
-EventSink = Any
 _STEP_MODEL_METRICS: ContextVar[RunMetrics | None] = ContextVar(
     "reporting_step_model_metrics", default=None
 )
@@ -48,55 +47,19 @@ def record_step_model_metrics(value: Any) -> None:
     _STEP_MODEL_METRICS.set(current + incoming)
 
 
-def _event_metrics(metrics: RunMetrics, duration: float) -> dict[str, int | float]:
-    payload = {
-        field: value
-        for field in _TOKEN_METRIC_FIELDS
-        if isinstance((value := getattr(metrics, field, None)), int | float) and value > 0
-    }
-    payload["duration"] = duration
-    return payload
-
-
-def _timed_step_executor(
-    executor: StepExecutor,
-    *,
-    step_id: str,
-    step_name: str,
-    event_sink: EventSink | None,
-) -> StepExecutor:
+def _timed_step_executor(executor: StepExecutor) -> StepExecutor:
     # Agno 2.8.2 只自动汇总 Agent/Team executor 的 metrics；报表步骤均为 function
     # executor，因此在报表自己的边界记录墙钟耗时，并保留步骤已有的 token metrics。
     @wraps(executor)
     async def execute(*args: Any, **kwargs: Any) -> Any:
-        run_context = kwargs.get("run_context") or (args[1] if len(args) > 1 else None)
-        base_event = {
-            "stepId": step_id,
-            "stepName": step_name,
-            "executorName": str(getattr(executor, "__name__", "workflow_step")),
-        }
-        await _emit_event(event_sink, run_context, "workflow_step_started", base_event)
         started_at = perf_counter()
         metrics_token = _STEP_MODEL_METRICS.set(RunMetrics())
         try:
             result = executor(*args, **kwargs)
             if isawaitable(result):
                 result = await result
-        except BaseException as error:
-            duration = perf_counter() - started_at
-            metrics = _STEP_MODEL_METRICS.get() or RunMetrics()
+        except BaseException:
             _STEP_MODEL_METRICS.reset(metrics_token)
-            await _emit_event(
-                event_sink,
-                run_context,
-                "workflow_step_error",
-                {
-                    **base_event,
-                    "error": str(error)[:2000],
-                    "metrics": _event_metrics(metrics, duration),
-                    "terminal": True,
-                },
-            )
             raise
         duration = perf_counter() - started_at
         collected_metrics = _STEP_MODEL_METRICS.get() or RunMetrics()
@@ -107,48 +70,19 @@ def _timed_step_executor(
                 metrics = metrics + result.metrics
             metrics.duration = duration
             result.metrics = metrics
-        await _emit_event(
-            event_sink,
-            run_context,
-            "workflow_step_completed",
-            {
-                **base_event,
-                "metrics": _event_metrics(metrics, duration),
-                **({"terminal": True} if step_id == "finalize-publication" else {}),
-            },
-        )
         return result
 
     return execute
 
 
-async def _emit_event(
-    event_sink: EventSink | None,
-    run_context: Any,
-    event_type: str,
-    data: dict[str, Any],
-) -> None:
-    if event_sink is None or run_context is None:
-        return
-    try:
-        result = event_sink(run_context, event_type, data)
-        if isawaitable(result):
-            await result
-    except Exception:
-        # 实时事件是可恢复的观察通道，不能改变 Workflow 的业务结果。
-        return
-
-
 def create_reporting_workflow(
     *,
     db: BaseDb | Any,
-    event_sink: EventSink | None = None,
     normalize_report_request: StepExecutor,
     confirm_source: StepExecutor,
     prepare_data_profile: StepExecutor,
     propose_measure_semantics: StepExecutor,
     commit_measure_semantics: StepExecutor,
-    reconcile_sources: StepExecutor,
     generate_outline: StepExecutor,
     generate_analysis_plan: StepExecutor,
     generate_query_candidates: StepExecutor,
@@ -171,12 +105,7 @@ def create_reporting_workflow(
             Step(
                 step_id="normalize-report-request",
                 name="规范化报表请求",
-                executor=_timed_step_executor(
-                    normalize_report_request,
-                    step_id="normalize-report-request",
-                    step_name="规范化报表请求",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(normalize_report_request),
                 human_review=HumanReview(
                     requires_output_review=_requires_request_review,
                     output_review_message="补充缺失的主分析领域或分析期间。",
@@ -190,12 +119,7 @@ def create_reporting_workflow(
             Step(
                 step_id="confirm-source",
                 name="解析数据来源与 Schema",
-                executor=_timed_step_executor(
-                    confirm_source,
-                    step_id="confirm-source",
-                    step_name="解析数据来源与 Schema",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(confirm_source),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
@@ -206,12 +130,7 @@ def create_reporting_workflow(
             Step(
                 step_id="prepare-data-profile",
                 name="确定数据范围并执行受限数据画像",
-                executor=_timed_step_executor(
-                    prepare_data_profile,
-                    step_id="prepare-data-profile",
-                    step_name="确定数据范围并执行受限数据画像",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(prepare_data_profile),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
@@ -221,108 +140,56 @@ def create_reporting_workflow(
             Step(
                 step_id="propose-measure-semantics",
                 name="生成指标语义候选",
-                executor=_timed_step_executor(
-                    propose_measure_semantics,
-                    step_id="propose-measure-semantics",
-                    step_name="生成指标语义候选",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(propose_measure_semantics),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="commit-measure-semantics",
                 name="提交已确认指标语义",
-                executor=_timed_step_executor(
-                    commit_measure_semantics,
-                    step_id="commit-measure-semantics",
-                    step_name="提交已确认指标语义",
-                    event_sink=event_sink,
-                ),
-                max_retries=0,
-                on_error=OnError.fail,
-            ),
-            Step(
-                step_id="reconcile-sources",
-                name="执行跨表对账",
-                executor=_timed_step_executor(
-                    reconcile_sources,
-                    step_id="reconcile-sources",
-                    step_name="执行跨表对账",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(commit_measure_semantics),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="generate-analysis-plan",
                 name="生成分析计划与取数需求",
-                executor=_timed_step_executor(
-                    generate_analysis_plan,
-                    step_id="generate-analysis-plan",
-                    step_name="生成分析计划与取数需求",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(generate_analysis_plan),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="generate-query-candidates",
                 name="生成并审核取数方案",
-                executor=_timed_step_executor(
-                    generate_query_candidates,
-                    step_id="generate-query-candidates",
-                    step_name="生成并审核取数方案",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(generate_query_candidates),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="materialize-datasets",
                 name="物化不可变数据集",
-                executor=_timed_step_executor(
-                    materialize_datasets,
-                    step_id="materialize-datasets",
-                    step_name="物化不可变数据集",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(materialize_datasets),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="prepare-analysis-context",
                 name="准备分析数据上下文",
-                executor=_timed_step_executor(
-                    prepare_analysis_context,
-                    step_id="prepare-analysis-context",
-                    step_name="准备分析数据上下文",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(prepare_analysis_context),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="generate-detailed-analysis-plan",
                 name="生成详细分析计划",
-                executor=_timed_step_executor(
-                    generate_detailed_analysis_plan,
-                    step_id="generate-detailed-analysis-plan",
-                    step_name="生成详细分析计划",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(generate_detailed_analysis_plan),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="generate-outline",
                 name="生成动态报告提纲",
-                executor=_timed_step_executor(
-                    generate_outline,
-                    step_id="generate-outline",
-                    step_name="生成动态报告提纲",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(generate_outline),
                 max_retries=0,
                 human_review=HumanReview(
                     requires_output_review=True,
@@ -333,39 +200,20 @@ def create_reporting_workflow(
                 ),
                 on_error=OnError.fail,
             ),
-            Step(
-                step_id="run-coding-analysis",
-                name="Coding 分析与成稿",
-                executor=_timed_step_executor(
-                    run_coding_analysis,
-                    step_id="run-coding-analysis",
-                    step_name="Coding 分析与成稿",
-                    event_sink=event_sink,
-                ),
-                max_retries=0,
-                on_error=OnError.fail,
-            ),
+            create_coding_analysis_step(run_coding_analysis),
             Step(
                 step_id="validate-report",
                 name="PDF/Word 双格式验收",
-                executor=_timed_step_executor(
-                    validate_report,
-                    step_id="validate-report",
-                    step_name="PDF/Word 双格式验收",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(validate_report),
                 max_retries=0,
-                on_error=OnError.fail,
+                # 取数、分析和章节已经在前一步完成并持久化。末端渲染或验收失败时由
+                # Agno 保存 ErrorRequirement，恢复只重跑当前 Step，不能回到前序步骤。
+                on_error=OnError.pause,
             ),
             Step(
                 step_id="finalize-publication",
                 name="发布门禁与正式发布",
-                executor=_timed_step_executor(
-                    finalize_publication,
-                    step_id="finalize-publication",
-                    step_name="发布门禁与正式发布",
-                    event_sink=event_sink,
-                ),
+                executor=_timed_step_executor(finalize_publication),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
@@ -373,3 +221,15 @@ def create_reporting_workflow(
         telemetry=False,
     )
     return workflow
+
+
+def create_coding_analysis_step(executor: StepExecutor) -> Step:
+    """构造生产与历史回放共用的 Coding 分析步骤契约。"""
+
+    return Step(
+        step_id="run-coding-analysis",
+        name="Coding 分析与成稿",
+        executor=_timed_step_executor(executor),
+        max_retries=0,
+        on_error=OnError.fail,
+    )

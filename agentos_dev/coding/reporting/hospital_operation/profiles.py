@@ -96,13 +96,6 @@ class HospitalOperationProfile(HospitalOperationSchema):
             raise ValueError("Profile publishGrains 包含未知或空粒度")
         return self
 
-    def canonical_campus(self, value: str) -> str:
-        normalized = value.strip()
-        for canonical, aliases in self.campus_aliases.items():
-            if normalized == canonical or normalized in aliases:
-                return canonical
-        return normalized
-
     def period_format(self, table: str) -> Literal["year", "year_month", "date", "day_month_year"]:
         normalized = table.rsplit(".", 1)[-1].lower()
         for table_ref, period_format in self.period_formats.items():

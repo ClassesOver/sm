@@ -26,7 +26,7 @@ from agentos_dev.task_execution.tools import (
     PURE_CODING_TOOLKIT_INSTRUCTIONS,
     CodingToolkit,
     HermesCodingToolkit,
-    parse_codex_patch,
+    parse_unified_diff,
 )
 from agentos_dev.workspace import (
     WORKSPACE_ROOT,
@@ -172,11 +172,10 @@ def test_coding_tool_contract_explains_limits_patch_format_and_persistent_servic
     assert exec_schema["timeout_seconds"]["maximum"] == 86400
     assert "0 至 30000" in exec_schema["yield_time_ms"]["description"]
     assert "0 至 30000" in poll_schema["yield_time_ms"]["description"]
-    assert "*** Add File: path" in patch_description
-    assert "包括空行" in patch_description
+    assert "--- /dev/null" in patch_description
+    assert "@@ hunk" in patch_description
     assert "heredoc" in patch_description
-    assert "首个 hunk 可省略 @@" in patch_description
-    assert "禁止 ---/+++" in patch_description
+    assert "标准 unified diff" in patch_description
     assert "独立 exec_command" in CODING_TOOLKIT_INSTRUCTIONS
     assert "按需或定时用 poll_process" in CODING_TOOLKIT_INSTRUCTIONS
     assert "write_stdin 只用于" in CODING_TOOLKIT_INSTRUCTIONS
@@ -195,7 +194,7 @@ def test_coding_tool_contract_explains_limits_patch_format_and_persistent_servic
     assert "连续两次轮询" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不得继续盲目轮询" in CODING_TOOLKIT_INSTRUCTIONS
     assert "0 至 30000" in CODING_TOOLKIT_INSTRUCTIONS
-    assert "禁止使用 ---/+++" in CODING_TOOLKIT_INSTRUCTIONS
+    assert "标准 unified diff" in CODING_TOOLKIT_INSTRUCTIONS
     assert "不是 OS PID" in tools["exec_command"].description
     assert "apply_patch 的兼容兜底" in tools["exec_command"].description
     assert "apply_patch <<'PATCH'" in exec_schema["cmd"]["description"]
@@ -599,24 +598,24 @@ def test_apply_patch_rejects_invalid_syntax_paths_symlinks_and_hunks(tmp_path):
     current.create_file("thread", "notes.txt", b"before\n")
 
     with pytest.raises(WorkspaceError, match="首行"):
-        parse_codex_patch("*** Add File: bad.txt\n+bad")
+        parse_unified_diff("*** Add File: bad.txt\n+bad")
     with pytest.raises(WorkspaceError, match="末行"):
-        parse_codex_patch("*** Begin Patch\n*** Add File: bad.txt\n+bad")
+        parse_unified_diff("*** Begin Patch\n*** Add File: bad.txt\n+bad")
     with pytest.raises(WorkspaceError, match=r"每一行.*\+"):
         toolkit.apply_patch(
             "*** Begin Patch\n*** Add File: bad.txt\n+first\nmissing prefix\n*** End Patch",
             run_context=run_context,
         )
     with pytest.raises(WorkspaceError, match="首行"):
-        parse_codex_patch("说明：\n*** Begin Patch\n*** Add File: bad.txt\n+bad\n*** End Patch")
+        parse_unified_diff("说明：\n*** Begin Patch\n*** Add File: bad.txt\n+bad\n*** End Patch")
     with pytest.raises(WorkspaceError, match="首行"):
-        parse_codex_patch("--- /dev/null\n+++ b/bad.txt\n@@\n+bad")
+        parse_unified_diff("--- /dev/null\n+++ b/bad.txt\n@@\n+bad")
     with pytest.raises(WorkspaceError, match="首行"):
-        parse_codex_patch(
+        parse_unified_diff(
             "```patch\n*** Begin Patch\n*** Add File: bad.txt\n+bad\n*** End Patch\n```\n说明"
         )
     with pytest.raises(WorkspaceError, match="首行"):
-        parse_codex_patch(
+        parse_unified_diff(
             "<<'EOF'\n*** Begin Patch\n*** Add File: bad.txt\n+bad\n*** End Patch\nNOT_EOF"
         )
     with pytest.raises(WorkspaceError, match="绝对路径"):
@@ -1459,7 +1458,7 @@ async def test_exec_command_prunes_stale_handles_before_capacity_check(tmp_path)
             str(index): {
                 "thread": "thread",
                 "user_id": "user",
-                "session_id": f"agui-exec-{'0' * 31}{index % 10}",
+                "session_id": f"agent-exec-{'0' * 31}{index % 10}",
                 "command_id": "command-1",
                 "offset": 0,
                 "started_at": expired,
@@ -1531,7 +1530,7 @@ async def test_exec_command_reserves_last_handle_before_starting_remote_process(
             str(index): {
                 "thread": "thread",
                 "user_id": "user",
-                "session_id": f"agui-exec-{'0' * 31}{index % 10}",
+                "session_id": f"agent-exec-{'0' * 31}{index % 10}",
                 "command_id": "command-1",
                 "offset": 0,
                 "started_at": started_at,
@@ -1553,7 +1552,7 @@ async def test_exec_command_reserves_last_handle_before_starting_remote_process(
             "status": "running",
             "output": "",
             "exitCode": None,
-            "sessionId": "agui-exec-0123456789abcdef0123456789abcdef",
+            "sessionId": "agent-exec-0123456789abcdef0123456789abcdef",
             "commandId": "command-1",
             "offset": 0,
             "nextOffset": 0,

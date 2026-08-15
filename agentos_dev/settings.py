@@ -62,6 +62,15 @@ def _reasoning_effort(values: MutableMapping[str, str], name: str, default: str 
     return value
 
 
+def _report_reasoning_effort(
+    values: MutableMapping[str, str], name: str, default: str = "high"
+) -> str:
+    value = values.get(name, default).strip().lower()
+    if value not in {"high", "max"}:
+        raise ValueError(f"{name} 必须是 high 或 max")
+    return value
+
+
 def _database_url(values: MutableMapping[str, str]) -> str:
     configured = values.get("AGENT_DB_URL") or values.get("DATABASE_URL")
     if configured:
@@ -172,9 +181,6 @@ class AgentSettings:
     workers: int
     reload: bool
     access_log: bool
-    agentos_jwt_verification_key: str | None
-    agentos_jwt_algorithm: str
-    agentos_jwt_audience: str | None
     debug: bool
     cors_allowed_origins: tuple[str, ...]
     database_url: str
@@ -187,7 +193,6 @@ class AgentSettings:
     daytona_network_allow_list: str | None
     enable_tool_result_compression: bool
     enable_session_summaries: bool
-    assistant_enable_thinking: bool
     coding_temperature: float
     coding_enable_thinking: bool
     coding_reasoning_effort: str
@@ -198,6 +203,7 @@ class AgentSettings:
     report_coding_thinking_budget: int
     report_enable_thinking: bool
     report_planner_reasoning_effort: str
+    report_planner_thinking_budget: int
     report_enable_vision: bool
     report_vision_model: str
     tracing_enabled: bool
@@ -205,10 +211,10 @@ class AgentSettings:
     tracing_phoenix_api_key: str | None
     tracing_phoenix_project_name: str
     context_token_budget: int
-    history_token_budget: int
     output_token_reserve: int
     report_context_token_budget: int
     report_output_token_reserve: int
+    report_section_concurrency: int
 
     @classmethod
     def from_environment(
@@ -235,12 +241,6 @@ class AgentSettings:
             "AGENT_CONTEXT_TOKEN_BUDGET",
             262144,
         )
-        history_token_budget = _positive_int(
-            values,
-            "AGENT_HISTORY_TOKEN_BUDGET",
-            196608,
-            maximum=context_token_budget,
-        )
         output_token_reserve = _positive_int(
             values,
             "AGENT_OUTPUT_TOKEN_RESERVE",
@@ -262,6 +262,12 @@ class AgentSettings:
             raise ValueError(
                 "AGENT_REPORT_OUTPUT_TOKEN_RESERVE 必须小于 AGENT_REPORT_CONTEXT_TOKEN_BUDGET"
             )
+        report_section_concurrency = _positive_int(
+            values,
+            "AGENT_REPORT_SECTION_CONCURRENCY",
+            2,
+            maximum=5,
+        )
         return cls(
             env_file=env_file,
             model_id=values.get("MODEL", DEFAULT_MODEL_ID),
@@ -278,9 +284,6 @@ class AgentSettings:
             workers=_positive_int(values, "AGENT_OS_WORKERS", 1, maximum=1),
             reload=_flag(values.get("AGENT_OS_RELOAD")),
             access_log=_flag(values.get("AGENT_OS_ACCESS_LOG")),
-            agentos_jwt_verification_key=(values.get("JWT_VERIFICATION_KEY", "").strip() or None),
-            agentos_jwt_algorithm=(values.get("JWT_ALGORITHM", "HS256").strip() or "HS256"),
-            agentos_jwt_audience=(values.get("JWT_AUDIENCE", "").strip() or None),
             debug=_flag(values.get("AGENT_DEBUG")),
             cors_allowed_origins=origins,
             database_url=database_url_from_environment(values),
@@ -290,7 +293,7 @@ class AgentSettings:
             ),
             report_metadata_url=_report_metadata_url(values),
             report_metadata_token=(values.get("AGENT_REPORT_METADATA_TOKEN", "").strip() or None),
-            workspace_hmac_secret=values.get("AGUI_WORKSPACE_HMAC_SECRET", ""),
+            workspace_hmac_secret=values.get("AGENT_WORKSPACE_HMAC_SECRET", ""),
             workspace_snapshot=(
                 values.get("DAYTONA_DEFAULT_SNAPSHOT") or DEFAULT_WORKSPACE_SNAPSHOT
             ).strip()
@@ -302,9 +305,6 @@ class AgentSettings:
             enable_session_summaries=_flag(
                 values.get("AGENT_ENABLE_SESSION_SUMMARIES"), default=True
             ),
-            assistant_enable_thinking=_flag(
-                values.get("AGENT_ASSISTANT_ENABLE_THINKING"), default=False
-            ),
             coding_temperature=_temperature(values, "AGENT_CODING_TEMPERATURE", 0.1),
             coding_enable_thinking=_flag(values.get("AGENT_CODING_ENABLE_THINKING"), default=True),
             coding_reasoning_effort=_reasoning_effort(values, "AGENT_CODING_REASONING_EFFORT"),
@@ -315,15 +315,18 @@ class AgentSettings:
                 values.get("AGENT_REPORT_CODING_ENABLE_THINKING"), default=True
             ),
             report_coding_temperature=_temperature(values, "AGENT_REPORT_CODING_TEMPERATURE", 0.1),
-            report_coding_reasoning_effort=_reasoning_effort(
-                values, "AGENT_REPORT_CODING_REASONING_EFFORT", default="max"
+            report_coding_reasoning_effort=_report_reasoning_effort(
+                values, "AGENT_REPORT_CODING_REASONING_EFFORT", default="high"
             ),
             report_coding_thinking_budget=_positive_int(
-                values, "AGENT_REPORT_CODING_THINKING_BUDGET", 16384, maximum=131072
+                values, "AGENT_REPORT_CODING_THINKING_BUDGET", 8192, maximum=131072
             ),
             report_enable_thinking=_flag(values.get("AGENT_REPORT_ENABLE_THINKING"), default=True),
-            report_planner_reasoning_effort=_reasoning_effort(
+            report_planner_reasoning_effort=_report_reasoning_effort(
                 values, "AGENT_REPORT_PLANNER_REASONING_EFFORT", default="high"
+            ),
+            report_planner_thinking_budget=_positive_int(
+                values, "AGENT_REPORT_PLANNER_THINKING_BUDGET", 8192, maximum=131072
             ),
             report_enable_vision=_flag(values.get("AGENT_REPORT_ENABLE_VISION"), default=False),
             report_vision_model=(
@@ -337,8 +340,8 @@ class AgentSettings:
             ),
             tracing_phoenix_project_name=_phoenix_project_name(values),
             context_token_budget=context_token_budget,
-            history_token_budget=history_token_budget,
             output_token_reserve=output_token_reserve,
             report_context_token_budget=report_context_token_budget,
             report_output_token_reserve=report_output_token_reserve,
+            report_section_concurrency=report_section_concurrency,
         )

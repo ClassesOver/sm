@@ -10,7 +10,6 @@ from dataclasses import fields
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
-from ag_ui.core import Context
 from agno.compression.manager import CompressionManager
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
@@ -18,9 +17,6 @@ from agno.session.summary import SessionSummary, SessionSummaryManager
 from agno.session.team import TeamSession
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-HISTORY_CONTEXT_DESCRIPTION = "AgentOS 预算历史（非权威）"
-MAX_SUMMARY_TOKENS = 4096
-MIN_COMPRESSION_CHARS = 2000
 SKILL_CONTENT_WINDOW = 10
 SKILL_PRUNE_MIN_CHARS = 5000
 SKILL_TOOL_NAMES = frozenset({"get_skill_instructions", "get_skill_reference", "get_skill_script"})
@@ -75,8 +71,8 @@ _ADDITIONAL_CONTEXT = re.compile(
     r"\n*<additional context>.*?</additional context>\s*",
     re.DOTALL | re.IGNORECASE,
 )
-_STALE_ODOO_HISTORY = re.compile(
-    r"snapshotId|hostRevision|modifiers|[\"']?token[\"']?\s*[:=]",
+_SENSITIVE_HISTORY = re.compile(
+    r"(?:authorization\s+token)|授权\s*token|[\"']?token[\"']?\s*[:=]",
     re.IGNORECASE,
 )
 _EXACT_METADATA_KEYS = frozenset(
@@ -108,7 +104,7 @@ _EXACT_METADATA_KEYS = frozenset(
     }
 )
 _FORBIDDEN_SUMMARY_CONTENT = re.compile(
-    r"snapshotId|hostRevision|modifiers|(?:authorization\s+token)|授权\s*token|"
+    r"(?:authorization\s+token)|授权\s*token|"
     r"[\"']?token[\"']?\s*[:=]",
     re.IGNORECASE,
 )
@@ -215,29 +211,6 @@ def _status_value(run: Any) -> str:
     return str(getattr(status, "value", status) or "").lower()
 
 
-def _normalized_run(run: Any) -> dict[str, Any] | None:
-    messages: list[dict[str, str]] = []
-    for message in getattr(run, "messages", None) or []:
-        role = str(getattr(message, "role", "") or "")
-        content = _message_text(message)
-        if role == "user":
-            content = _strip_stale_context(content)
-        elif role in {"assistant", "model"}:
-            role = "assistant"
-        elif role == "tool":
-            tool_name = str(getattr(message, "tool_name", "") or "")
-            if tool_name not in COMPRESSIBLE_HISTORY_TOOLS:
-                continue
-            role = f"tool:{tool_name}"
-        else:
-            continue
-        if content and not _STALE_ODOO_HISTORY.search(content):
-            messages.append({"role": role, "content": content})
-    if not messages:
-        return None
-    return {"runId": str(getattr(run, "run_id", "") or ""), "messages": messages}
-
-
 def _fallback_token_count(value: str) -> int:
     return max(1, (len(value.encode("utf-8")) + 1) // 2)
 
@@ -263,169 +236,11 @@ def _fallback_context_token_count(
     return _fallback_token_count("\n".join(parts))
 
 
-def _count_text_tokens(model: Any, value: str) -> int | None:
-    try:
-        return int(model.count_tokens([Message(role="user", content=value)]))
-    except Exception:
-        return None
-
-
-def _encoded_run(run: Any) -> tuple[dict[str, Any], str] | None:
-    normalized = _normalized_run(run)
-    if normalized is None:
-        return None
-    return normalized, json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
-
-
-def _latest_fallback_run(runs: list[Any], remaining: int) -> list[dict[str, Any]]:
-    for run in reversed(runs):
-        if _status_value(run) not in {"completed", ""}:
-            continue
-        encoded_run = _encoded_run(run)
-        if encoded_run is None:
-            continue
-        normalized, encoded = encoded_run
-        if _fallback_token_count(encoded) <= remaining:
-            return [normalized]
-    return []
-
-
 def _session_history_runs(session: Any) -> list[Any]:
     runs = list(getattr(session, "runs", None) or [])
     if isinstance(session, TeamSession):
         return [run for run in runs if getattr(run, "parent_run_id", None) is None]
     return runs
-
-
-def build_history_context(
-    session: Any,
-    model: Any,
-    *,
-    history_token_budget: int,
-    include_summary: bool = True,
-    status: dict[str, Any] | None = None,
-) -> Context | None:
-    summary_value = (
-        str(getattr(getattr(session, "summary", None), "summary", "") or "").strip()
-        if include_summary
-        else ""
-    )
-    summary_tokens = _count_text_tokens(model, summary_value) if summary_value else 0
-    token_count_failed = summary_tokens is None
-    if summary_tokens is None:
-        summary_tokens = _fallback_token_count(summary_value)
-    if summary_tokens > min(MAX_SUMMARY_TOKENS, history_token_budget):
-        summary_value = ""
-        summary_tokens = 0
-
-    remaining = max(0, history_token_budget - summary_tokens)
-    runs = _session_history_runs(session)
-    if token_count_failed:
-        fallback_selected = _latest_fallback_run(runs, remaining)
-        if status is not None:
-            fallback_tokens = sum(
-                _fallback_token_count(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
-                for item in fallback_selected
-            )
-            _set_history_status(
-                status,
-                session=session,
-                budget=history_token_budget,
-                used=min(history_token_budget, summary_tokens + fallback_tokens),
-                summary_included=bool(summary_value),
-                selected_run_count=len(fallback_selected),
-                reliable=False,
-            )
-        return _history_context(summary_value, fallback_selected)
-
-    selected: list[dict[str, Any]] = []
-    for run in reversed(runs):
-        if _status_value(run) not in {"completed", ""}:
-            continue
-        encoded_run = _encoded_run(run)
-        if encoded_run is None:
-            continue
-        normalized, encoded = encoded_run
-        tokens = _count_text_tokens(model, encoded)
-        if tokens is None:
-            selected = _latest_fallback_run(runs, remaining)
-            if status is not None:
-                fallback_tokens = sum(
-                    _fallback_token_count(
-                        json.dumps(item, ensure_ascii=False, separators=(",", ":"))
-                    )
-                    for item in selected
-                )
-                _set_history_status(
-                    status,
-                    session=session,
-                    budget=history_token_budget,
-                    used=min(history_token_budget, summary_tokens + fallback_tokens),
-                    summary_included=bool(summary_value),
-                    selected_run_count=len(selected),
-                    reliable=False,
-                )
-            return _history_context(summary_value, selected)
-        if tokens > remaining:
-            continue
-        selected.append(normalized)
-        remaining -= tokens
-
-    selected.reverse()
-    if status is not None:
-        _set_history_status(
-            status,
-            session=session,
-            budget=history_token_budget,
-            used=history_token_budget - remaining,
-            summary_included=bool(summary_value),
-            selected_run_count=len(selected),
-            reliable=True,
-        )
-    return _history_context(summary_value, selected)
-
-
-def _set_history_status(
-    status: dict[str, Any],
-    *,
-    session: Any,
-    budget: int,
-    used: int,
-    summary_included: bool,
-    selected_run_count: int,
-    reliable: bool,
-) -> None:
-    metadata = getattr(session, "session_data", None)
-    summary_metadata = metadata.get(SUMMARY_METADATA_KEY, {}) if isinstance(metadata, dict) else {}
-    status.clear()
-    status.update(
-        {
-            "historyTokenBudget": budget,
-            "historyTokensUsed": used,
-            "historyTokensRemaining": max(0, budget - used),
-            "summaryIncluded": summary_included,
-            "summaryVersion": int(summary_metadata.get("version") or 0)
-            if isinstance(summary_metadata, dict)
-            else 0,
-            "selectedRunCount": selected_run_count,
-            "tokenCountReliable": reliable,
-        }
-    )
-
-
-def _history_context(summary_value: str, selected: list[dict[str, Any]]) -> Context | None:
-    if not summary_value and not selected:
-        return None
-    payload = {
-        "authoritative": False,
-        "notice": "仅用于理解历史意图；页面事实必须使用本轮最新 HRP 宿主快照。",
-        "summary": summary_value or None,
-        "runs": selected,
-    }
-    return Context(
-        description=HISTORY_CONTEXT_DESCRIPTION,
-        value=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-    )
 
 
 def _exact_metadata(content: Any) -> dict[str, Any]:
@@ -462,7 +277,7 @@ def _compression_messages(tool_result: Message) -> list[Message]:
         Message(
             role="system",
             content=(
-                "压缩分析工具输出。只总结关键发现，不推导权限、Odoo 页面状态或标识符；"
+                "压缩分析工具输出。只总结关键发现，不推导权限状态或敏感标识符；"
                 "不要在摘要中复制令牌、快照或 modifiers。必须只返回符合指定 schema 的 JSON 对象。"
             ),
         ),
@@ -1563,49 +1378,6 @@ def projected_coding_model(
     return projected
 
 
-async def build_budgeted_history_context(
-    session: Any,
-    model: Any,
-    *,
-    history_token_budget: int,
-    compression_manager: ProtectedCompressionManager | None,
-    include_summary: bool = True,
-    status: dict[str, Any] | None = None,
-) -> tuple[Context | None, bool]:
-    changed = False
-    if compression_manager is not None:
-        originals: list[Message] = []
-        tasks = []
-        for run in _session_history_runs(session):
-            if _status_value(run) not in {"completed", ""}:
-                continue
-            for message in getattr(run, "messages", None) or []:
-                if (
-                    message.role == "tool"
-                    and message.tool_name in COMPRESSIBLE_HISTORY_TOOLS
-                    and message.compressed_content is None
-                    and len(str(message.content or "")) >= MIN_COMPRESSION_CHARS
-                ):
-                    originals.append(message)
-                    tasks.append(compression_manager.compress_history_message(message))
-        candidates = await asyncio.gather(*tasks) if tasks else []
-        for original, candidate in zip(originals, candidates):
-            if candidate.compressed_content:
-                original.compressed_content = candidate.compressed_content
-                changed = True
-
-    return (
-        build_history_context(
-            session,
-            model,
-            history_token_budget=history_token_budget,
-            include_summary=include_summary,
-            status=status,
-        ),
-        changed,
-    )
-
-
 def _summary_messages(runs: list[Any]) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     for run in runs:
@@ -1618,7 +1390,7 @@ def _summary_messages(runs: list[Any]) -> list[dict[str, str]]:
                 content = _message_text(message)
             else:
                 continue
-            if content and not _STALE_ODOO_HISTORY.search(content):
+            if content and not _SENSITIVE_HISTORY.search(content):
                 messages.append({"role": role, "content": content})
     return messages
 
@@ -1708,8 +1480,7 @@ class RollingSessionSummaryManager(SessionSummaryManager):
                 role="system",
                 content=(
                     "更新非权威滚动会话摘要。只输出用户目标、已确认决策、工作区文件、"
-                    "完成事项和待办事项；不得包含或推导 Odoo 当前记录值、权限状态、"
-                    "snapshotId、hostRevision、授权 token 或 modifiers。"
+                    "完成事项和待办事项；不得包含或推导权限状态或授权 token。"
                     "必须只返回符合指定 schema 的 JSON 对象。"
                 ),
             ),

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
@@ -24,10 +23,6 @@ class PeriodWindow:
         if self.start > self.end:
             raise ValueError("期间窗口开始日期不能晚于结束日期")
 
-    @property
-    def inclusive_days(self) -> int:
-        return (self.end - self.start).days + 1
-
     def public_dict(self) -> dict[str, str]:
         return {"role": self.role, "start": self.start.isoformat(), "end": self.end.isoformat()}
 
@@ -45,29 +40,8 @@ class PeriodWindowSet:
         if "current" not in roles:
             raise ValueError("期间窗口必须包含 current 角色")
 
-    def for_role(self, role: PeriodRole) -> PeriodWindow:
-        for window in self.windows:
-            if window.role == role:
-                return window
-        raise KeyError(role)
-
     def public_dict(self) -> list[dict[str, str]]:
         return [item.public_dict() for item in self.windows]
-
-
-@dataclass(frozen=True)
-class UniquePeriodWindow:
-    """一次物理查询对应的唯一边界，以及共享该边界的全部业务角色。"""
-
-    start: date
-    end: date
-    roles: tuple[PeriodRole, ...]
-
-    def __post_init__(self) -> None:
-        if self.start > self.end:
-            raise ValueError("期间窗口开始日期不能晚于结束日期")
-        if not self.roles or len(self.roles) != len(set(self.roles)):
-            raise ValueError("唯一查询窗口必须包含不重复的期间角色")
 
 
 def _same_month_day_previous_year(value: date) -> date:
@@ -134,40 +108,6 @@ def _is_complete_calendar_month(period_start: date, period_end: date) -> bool:
     return period_start.day == 1 and period_end == period_start + relativedelta(months=1, days=-1)
 
 
-def normalize_period_role(value: str) -> PeriodRole:
-    normalized = value.strip().casefold()
-    aliases = {
-        "current": "current",
-        "actual": "current",
-        "本期": "current",
-        "yoy": "yoy",
-        "year_over_year": "yoy",
-        "same_period_last_year": "yoy",
-        "同比": "yoy",
-        "mom": "mom",
-        "month_over_month": "mom",
-        "adjacent_prior": "mom",
-        "环比": "mom",
-        "紧邻上期": "mom",
-    }
-    try:
-        return aliases[normalized]  # type: ignore[return-value]
-    except KeyError as error:
-        raise ValueError(f"未知期间角色: {value}") from error
-
-
-def unique_period_windows(windows: Iterable[PeriodWindow]) -> tuple[UniquePeriodWindow, ...]:
-    """按边界合并窗口；物理查询去重，业务角色完整保留。"""
-    grouped: dict[tuple[date, date], list[PeriodRole]] = {}
-    for window in windows:
-        key = (window.start, window.end)
-        grouped.setdefault(key, []).append(window.role)
-    return tuple(
-        UniquePeriodWindow(start=start, end=end, roles=tuple(roles))
-        for (start, end), roles in grouped.items()
-    )
-
-
 def _is_complete_month_sequence(period_start: date, period_end: date) -> bool:
     return period_start.day == 1 and period_end == period_end.replace(day=1) + relativedelta(
         months=1, days=-1
@@ -196,35 +136,14 @@ def period_filter_sql(
     return f"{normalized} >= '{start}' AND {normalized} <= '{end}'"
 
 
-def period_window_filter_sql(
-    identifier: str,
-    granularity: PeriodGranularity,
-    windows: Iterable[PeriodWindow],
-) -> str:
-    """生成覆盖所有角色的单一范围谓词；角色标签由查询投影而非谓词推断。"""
-    values = tuple(windows)
-    if not values:
-        raise ValueError("至少需要一个期间窗口")
-    predicates = tuple(
-        period_filter_sql(identifier, granularity, item.start, item.end) for item in values
-    )
-    if len(predicates) == 1:
-        return predicates[0]
-    return "(" + " OR ".join(predicates) + ")"
-
-
 __all__ = [
     "PeriodGranularity",
     "ComparisonRole",
     "PeriodRole",
     "PeriodWindow",
     "PeriodWindowSet",
-    "UniquePeriodWindow",
     "build_period_windows",
-    "normalize_period_role",
     "normalize_period_bounds",
     "normalized_period_sql",
     "period_filter_sql",
-    "period_window_filter_sql",
-    "unique_period_windows",
 ]

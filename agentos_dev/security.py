@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-CAPABILITY_AUDIENCE = "agui-agentos-workspace"
+CAPABILITY_AUDIENCE = "agentos-workspace"
 MAX_CAPABILITY_TTL = 10 * 60
 
 
@@ -56,7 +56,7 @@ def verify_capability(
     except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
         raise CapabilityError("capability_invalid") from error
 
-    if header != {"alg": "HS256", "typ": "AGUI-CAP"}:
+    if header != {"alg": "HS256", "typ": "WORKSPACE-CAP"}:
         raise CapabilityError("capability_header_invalid")
     if claims.get("aud") != CAPABILITY_AUDIENCE:
         raise CapabilityError("capability_audience_invalid")

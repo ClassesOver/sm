@@ -27,9 +27,6 @@ Runner、PostgreSQL、Redis、Registry 和 MinIO 仅在 Daytona 项目网络内�
 Docker Hub 在受限网络中的拉取超时；Daytona API、Runner 和 Proxy 仍使用官方 Docker Hub
 镜像。可在 `docker/.env` 中将 `DAYTONA_DEFAULT_SNAPSHOT` 改回其他可访问的完整镜像地址。
 
-从旧统一 Compose 升级时，必须在首次启动前复用旧卷和匹配的旧凭据，具体见
-[生产部署指南](../docs/agui_chat_production.md#compose-volume-migration)。
-
 ## 首次启动
 
 在仓库根目录生成独立的 `docker/.env`：

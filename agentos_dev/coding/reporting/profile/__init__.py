@@ -13,7 +13,6 @@ from .models import (
     ReportingProfileRegistry,
     parse_field_ref,
 )
-from .reconciliation import collect_reconciliation_shapes
 from .registry import load_configured_reporting_profiles, resolve_reporting_profile
 
 __all__ = [
@@ -27,7 +26,6 @@ __all__ = [
     "ReportingProfileRegistry",
     "load_configured_reporting_profiles",
     "build_outline_shape_view",
-    "collect_reconciliation_shapes",
     "parse_field_ref",
     "resolve_reporting_profile",
     "resolve_capabilities",

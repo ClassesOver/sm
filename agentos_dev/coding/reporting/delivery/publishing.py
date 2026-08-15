@@ -1,34 +1,34 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import secrets
-import stat
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol, cast
 from urllib.parse import quote
 
-import anyio
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy import (
     BigInteger,
     Column,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     String,
     Table,
     Text,
-    exists,
+    delete,
     insert,
-    literal,
     select,
     update,
 )
@@ -42,34 +42,10 @@ from ....workspace import (
 from ..models import ReportingError
 
 DOWNLOAD_GRANT_TTL = timedelta(hours=24)
+REPORT_ARTIFACT_CHUNK_BYTES = 1024 * 1024
 _DOWNLOAD_ACCESS_PATH = re.compile(r"/reports/v1/download/[^?\s]+(?:\?[^\s]*)?")
 
 _metadata = MetaData()
-report_download_grants_v1 = Table(
-    "report_download_grants_v1",
-    _metadata,
-    Column("grant_hash", String(64), primary_key=True),
-    Column("database_name", String(256), nullable=False),
-    Column("user_id", String(256), nullable=False),
-    Column("company_id", String(256), nullable=False),
-    Column("session_id", String(256), nullable=False),
-    Column("thread_id", String(256), nullable=False),
-    Column("workflow_run_id", String(256), nullable=False),
-    Column("report_id", String(256), nullable=False),
-    Column("revision", Integer, nullable=False),
-    Column("pdf_path", Text, nullable=False),
-    Column("pdf_size", BigInteger, nullable=False),
-    Column("pdf_sha256", String(64), nullable=False),
-    Column("expires_at", DateTime(timezone=True), nullable=False),
-    Column("revoked_at", DateTime(timezone=True), nullable=True),
-    Index(
-        "ix_report_download_grants_v1_report_scope",
-        "report_id",
-        "database_name",
-        "user_id",
-        "company_id",
-    ),
-)
 report_download_grants_v2 = Table(
     "report_download_grants_v2",
     _metadata,
@@ -85,10 +61,9 @@ report_download_grants_v2 = Table(
     Column("pdf_path", Text, nullable=False),
     Column("pdf_size", BigInteger, nullable=False),
     Column("pdf_sha256", String(64), nullable=False),
-    # 由 v1 幂等迁入的旧 grant 只允许继续下载 PDF；新签发记录必须写入全部 Word 字段。
-    Column("word_path", Text, nullable=True),
-    Column("word_size", BigInteger, nullable=True),
-    Column("word_sha256", String(64), nullable=True),
+    Column("word_path", Text, nullable=False),
+    Column("word_size", BigInteger, nullable=False),
+    Column("word_sha256", String(64), nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=False),
     Column("revoked_at", DateTime(timezone=True), nullable=True),
     Index(
@@ -98,6 +73,46 @@ report_download_grants_v2 = Table(
         "user_id",
         "company_id",
     ),
+)
+report_artifact_files_v1 = Table(
+    "report_artifact_files_v1",
+    _metadata,
+    Column("artifact_key", String(64), primary_key=True),
+    Column("database_name", String(256), nullable=False),
+    Column("user_id", String(256), nullable=False),
+    Column("company_id", String(256), nullable=False),
+    Column("session_id", String(256), nullable=False),
+    Column("thread_id", String(256), nullable=False),
+    Column("workflow_run_id", String(256), nullable=False),
+    Column("report_id", String(256), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("artifact", String(8), nullable=False),
+    Column("path", Text, nullable=False),
+    Column("size", BigInteger, nullable=False),
+    Column("sha256", String(64), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Index(
+        "ix_report_artifact_files_v1_scope",
+        "report_id",
+        "revision",
+        "database_name",
+        "user_id",
+        "company_id",
+        "session_id",
+        "thread_id",
+        "workflow_run_id",
+    ),
+)
+report_artifact_chunks_v1 = Table(
+    "report_artifact_chunks_v1",
+    _metadata,
+    Column(
+        "artifact_key",
+        ForeignKey("report_artifact_files_v1.artifact_key", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("chunk_index", Integer, primary_key=True),
+    Column("content", LargeBinary, nullable=False),
 )
 
 
@@ -129,11 +144,32 @@ class ReportDownloadGrant:
     pdf_path: str
     pdf_size: int
     pdf_sha256: str
+    word_path: str
+    word_size: int
+    word_sha256: str
     expires_at: datetime
-    word_path: str | None = None
-    word_size: int | None = None
-    word_sha256: str | None = None
     revoked_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ReportArtifactSpec:
+    artifact: Literal["pdf", "word"]
+    path: str
+    size: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class StoredReportArtifact:
+    artifact_key: str
+    scope: ReportDownloadScope
+    report_id: str
+    revision: int
+    artifact: Literal["pdf", "word"]
+    path: str
+    size: int
+    sha256: str
+    created_at: datetime
 
 
 class DownloadGrantRepository(Protocol):
@@ -150,33 +186,16 @@ class DownloadGrantRepository(Protocol):
     ) -> None: ...
 
 
-class InMemoryDownloadGrantRepository:
-    """测试仓；与生产仓相同，只保存 grant hash。"""
-
-    def __init__(self) -> None:
-        self.records: dict[str, ReportDownloadGrant] = {}
-
-    async def put(self, grant: ReportDownloadGrant) -> None:
-        self.records[grant.grant_hash] = grant
-
-    async def get(self, grant_hash: str) -> ReportDownloadGrant | None:
-        return self.records.get(grant_hash)
-
-    async def revoke_report(
+class ReportArtifactRepository(Protocol):
+    async def put(
         self,
-        report_id: str,
-        *,
-        scope: ReportDownloadScope,
-        before_revision: int | None = None,
-    ) -> None:
-        now = datetime.now(UTC)
-        for key, grant in tuple(self.records.items()):
-            if (
-                grant.report_id == report_id
-                and grant.scope == scope
-                and (before_revision is None or grant.revision < before_revision)
-            ):
-                self.records[key] = replace(grant, revoked_at=now)
+        artifact: StoredReportArtifact,
+        chunks: AsyncIterator[bytes],
+    ) -> None: ...
+
+    async def get(self, artifact_key: str) -> StoredReportArtifact | None: ...
+
+    def stream(self, artifact_key: str) -> AsyncIterator[bytes]: ...
 
 
 class SqlAlchemyDownloadGrantRepository:
@@ -186,59 +205,10 @@ class SqlAlchemyDownloadGrantRepository:
         self.engine = engine
 
     async def create_schema(self) -> None:
-        """创建 v2 表并迁移仍有效的 v1 PDF grant；重复启动保持幂等。"""
+        """创建当前下载授权和 PostgreSQL 报告产物表。"""
 
         async with self.engine.begin() as connection:
             await connection.run_sync(_metadata.create_all)
-            current = datetime.now(UTC)
-            columns = (
-                "grant_hash",
-                "database_name",
-                "user_id",
-                "company_id",
-                "session_id",
-                "thread_id",
-                "workflow_run_id",
-                "report_id",
-                "revision",
-                "pdf_path",
-                "pdf_size",
-                "pdf_sha256",
-                "word_path",
-                "word_size",
-                "word_sha256",
-                "expires_at",
-                "revoked_at",
-            )
-            legacy = select(
-                report_download_grants_v1.c.grant_hash,
-                report_download_grants_v1.c.database_name,
-                report_download_grants_v1.c.user_id,
-                report_download_grants_v1.c.company_id,
-                report_download_grants_v1.c.session_id,
-                report_download_grants_v1.c.thread_id,
-                report_download_grants_v1.c.workflow_run_id,
-                report_download_grants_v1.c.report_id,
-                report_download_grants_v1.c.revision,
-                report_download_grants_v1.c.pdf_path,
-                report_download_grants_v1.c.pdf_size,
-                report_download_grants_v1.c.pdf_sha256,
-                literal(None),
-                literal(None),
-                literal(None),
-                report_download_grants_v1.c.expires_at,
-                report_download_grants_v1.c.revoked_at,
-            ).where(
-                report_download_grants_v1.c.expires_at > current,
-                report_download_grants_v1.c.revoked_at.is_(None),
-                ~exists(
-                    select(1).where(
-                        report_download_grants_v2.c.grant_hash
-                        == report_download_grants_v1.c.grant_hash
-                    )
-                ),
-            )
-            await connection.execute(insert(report_download_grants_v2).from_select(columns, legacy))
 
     async def put(self, grant: ReportDownloadGrant) -> None:
         values = {
@@ -286,9 +256,9 @@ class SqlAlchemyDownloadGrantRepository:
             pdf_path=cast(str, row["pdf_path"]),
             pdf_size=cast(int, row["pdf_size"]),
             pdf_sha256=cast(str, row["pdf_sha256"]),
-            word_path=cast(str, row["word_path"]) if row["word_path"] is not None else None,
-            word_size=cast(int, row["word_size"]) if row["word_size"] is not None else None,
-            word_sha256=(cast(str, row["word_sha256"]) if row["word_sha256"] is not None else None),
+            word_path=cast(str, row["word_path"]),
+            word_size=cast(int, row["word_size"]),
+            word_sha256=cast(str, row["word_sha256"]),
             expires_at=_utc_datetime(cast(datetime, row["expires_at"])),
             revoked_at=(
                 _utc_datetime(cast(datetime, row["revoked_at"]))
@@ -323,6 +293,108 @@ class SqlAlchemyDownloadGrantRepository:
         )
         async with self.engine.begin() as connection:
             await connection.execute(statement)
+
+
+class SqlAlchemyReportArtifactRepository:
+    """在 PostgreSQL 中分块保存正式 PDF/Word，避免将大文件整体载入服务内存。"""
+
+    def __init__(self, engine: AsyncEngine):
+        self.engine = engine
+
+    async def put(
+        self,
+        artifact: StoredReportArtifact,
+        chunks: AsyncIterator[bytes],
+    ) -> None:
+        values = {
+            "artifact_key": artifact.artifact_key,
+            "database_name": artifact.scope.database,
+            "user_id": artifact.scope.user_id,
+            "company_id": artifact.scope.company_id,
+            "session_id": artifact.scope.session_id,
+            "thread_id": artifact.scope.thread_id,
+            "workflow_run_id": artifact.scope.workflow_run_id,
+            "report_id": artifact.report_id,
+            "revision": artifact.revision,
+            "artifact": artifact.artifact,
+            "path": artifact.path,
+            "size": artifact.size,
+            "sha256": artifact.sha256,
+            "created_at": artifact.created_at,
+        }
+        digest = hashlib.sha256()
+        total = 0
+        chunk_index = 0
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                delete(report_artifact_chunks_v1).where(
+                    report_artifact_chunks_v1.c.artifact_key == artifact.artifact_key
+                )
+            )
+            await connection.execute(
+                delete(report_artifact_files_v1).where(
+                    report_artifact_files_v1.c.artifact_key == artifact.artifact_key
+                )
+            )
+            await connection.execute(insert(report_artifact_files_v1).values(**values))
+            async for chunk in chunks:
+                _validate_artifact_chunk(chunk)
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > artifact.size or total > MAX_DOWNLOAD_BYTES:
+                    raise ReportingError("report_artifact_changed", "报告文件已变化。")
+                digest.update(chunk)
+                await connection.execute(
+                    insert(report_artifact_chunks_v1).values(
+                        artifact_key=artifact.artifact_key,
+                        chunk_index=chunk_index,
+                        content=chunk,
+                    )
+                )
+                chunk_index += 1
+            _validate_stored_artifact(artifact, total=total, digest=digest.hexdigest())
+
+    async def get(self, artifact_key: str) -> StoredReportArtifact | None:
+        statement = select(report_artifact_files_v1).where(
+            report_artifact_files_v1.c.artifact_key == artifact_key
+        )
+        async with self.engine.connect() as connection:
+            row = (await connection.execute(statement)).mappings().one_or_none()
+        if row is None:
+            return None
+        artifact = cast(str, row["artifact"])
+        if artifact not in {"pdf", "word"}:
+            raise ReportingError("report_artifact_invalid", "持久化报告产物无效。")
+        return StoredReportArtifact(
+            artifact_key=cast(str, row["artifact_key"]),
+            scope=ReportDownloadScope(
+                database=cast(str, row["database_name"]),
+                user_id=cast(str, row["user_id"]),
+                company_id=cast(str, row["company_id"]),
+                session_id=cast(str, row["session_id"]),
+                thread_id=cast(str, row["thread_id"]),
+                workflow_run_id=cast(str, row["workflow_run_id"]),
+            ),
+            report_id=cast(str, row["report_id"]),
+            revision=cast(int, row["revision"]),
+            artifact=cast(Literal["pdf", "word"], artifact),
+            path=cast(str, row["path"]),
+            size=cast(int, row["size"]),
+            sha256=cast(str, row["sha256"]),
+            created_at=_utc_datetime(cast(datetime, row["created_at"])),
+        )
+
+    async def stream(self, artifact_key: str) -> AsyncIterator[bytes]:
+        statement = (
+            select(report_artifact_chunks_v1.c.content)
+            .where(report_artifact_chunks_v1.c.artifact_key == artifact_key)
+            .order_by(report_artifact_chunks_v1.c.chunk_index)
+        )
+        async with self.engine.connect() as connection:
+            result = await connection.stream(statement)
+            async for row in result:
+                yield cast(bytes, row[0])
 
 
 class ReportDownloadGrantService:
@@ -362,41 +434,6 @@ class ReportDownloadGrantService:
         await self.repository.put(grant)
         return raw, grant
 
-    async def resolve(
-        self,
-        raw_grant: str,
-        *,
-        scope: ReportDownloadScope,
-        current_pdf_sha256: str,
-        current_revision: int,
-        current_word_sha256: str | None = None,
-        now: datetime | None = None,
-    ) -> ReportDownloadGrant:
-        grant = await self.inspect(raw_grant, scope=scope, now=now)
-        if grant.revision != current_revision:
-            raise ReportingError("report_download_revision_changed", "报告 revision 已变化。")
-        if not secrets.compare_digest(grant.pdf_sha256, current_pdf_sha256):
-            raise ReportingError("report_download_file_changed", "报告文件已变化。")
-        if (
-            current_word_sha256 is not None
-            and grant.word_sha256 is not None
-            and not secrets.compare_digest(grant.word_sha256, current_word_sha256)
-        ):
-            raise ReportingError("report_download_file_changed", "报告文件已变化。")
-        return grant
-
-    async def inspect(
-        self,
-        raw_grant: str,
-        *,
-        scope: ReportDownloadScope,
-        now: datetime | None = None,
-    ) -> ReportDownloadGrant:
-        grant = await self.lookup(raw_grant, now=now)
-        if grant.scope != scope:
-            raise ReportingError("report_download_scope_mismatch", "下载授权不属于当前上下文。")
-        return grant
-
     async def lookup(self, raw_grant: str, *, now: datetime | None = None) -> ReportDownloadGrant:
         if not isinstance(raw_grant, str) or len(raw_grant) > 128:
             raise ReportingError("report_download_grant_invalid", "下载授权无效。")
@@ -408,135 +445,104 @@ class ReportDownloadGrantService:
             raise ReportingError("report_download_grant_expired", "下载授权已过期。")
         return grant
 
-    async def cancel(self, report_id: str, *, scope: ReportDownloadScope) -> None:
-        await self.repository.revoke_report(report_id, scope=scope)
 
+class ReportArtifactPersistenceService:
+    """将正式产物从 Daytona 流式固化到 PostgreSQL，完成后才允许删除 sandbox。"""
 
-@dataclass(frozen=True)
-class ReportDownloadFileState:
-    revision: int
-    pdf_path: str
-    word_path: str | None = None
+    def __init__(
+        self,
+        repository: ReportArtifactRepository,
+        workspace_service: WorkspaceService,
+    ) -> None:
+        self.repository = repository
+        self.workspace_service = workspace_service
 
+    async def persist(
+        self,
+        *,
+        scope: ReportDownloadScope,
+        report_id: str,
+        revision: int,
+        artifacts: tuple[ReportArtifactSpec, ...],
+    ) -> None:
+        if len(artifacts) != 2 or {item.artifact for item in artifacts} != {"pdf", "word"}:
+            raise ReportingError("report_artifact_invalid", "必须同时持久化 PDF 和 Word。")
+        for spec in artifacts:
+            if (
+                spec.size <= 0
+                or spec.size > MAX_DOWNLOAD_BYTES
+                or re.fullmatch(r"[0-9a-f]{64}", spec.sha256) is None
+            ):
+                raise ReportingError("report_artifact_invalid", "报告产物身份无效。")
+            relative, remote = self.workspace_service.normalize_path(spec.path, allow_root=False)
+            if relative != spec.path:
+                raise ReportingError("report_artifact_changed", "报告文件路径已变化。")
+            artifact = StoredReportArtifact(
+                artifact_key=_artifact_key(scope, report_id, revision, spec),
+                scope=scope,
+                report_id=report_id,
+                revision=revision,
+                artifact=spec.artifact,
+                path=relative,
+                size=spec.size,
+                sha256=spec.sha256,
+                created_at=datetime.now(UTC),
+            )
+            existing = await self.repository.get(artifact.artifact_key)
+            if existing is not None and _same_artifact_identity(existing, artifact):
+                continue
+            await self.repository.put(
+                artifact,
+                self._workspace_chunks(scope.thread_id, remote, expected_size=spec.size),
+            )
 
-class CurrentReportFileProvider(Protocol):
-    async def get_current(
-        self, report_id: str, scope: ReportDownloadScope
-    ) -> ReportDownloadFileState | None: ...
-
-
-@dataclass(frozen=True)
-class AuthorizedReportDownload:
-    grant: ReportDownloadGrant
-    path: Path
-    artifact: Literal["pdf", "word"]
+    async def _workspace_chunks(
+        self,
+        thread_id: str,
+        remote: str,
+        *,
+        expected_size: int,
+    ) -> AsyncIterator[bytes]:
+        try:
+            async with self.workspace_service._async_client() as client:
+                sandbox = await self.workspace_service._asandbox_for(
+                    client, thread_id, create=False
+                )
+                if sandbox is None:
+                    raise ReportingError("report_artifact_missing", "报告工作区不存在。")
+                stream = await sandbox.fs.download_file_stream(
+                    remote,
+                    timeout=MAX_ASYNC_DOWNLOAD_TIMEOUT,
+                )
+                buffered = bytearray()
+                total = 0
+                async for chunk in stream:
+                    _validate_artifact_chunk(chunk)
+                    total += len(chunk)
+                    if total > expected_size or total > MAX_DOWNLOAD_BYTES:
+                        raise ReportingError("report_artifact_changed", "报告文件已变化。")
+                    buffered.extend(chunk)
+                    while len(buffered) >= REPORT_ARTIFACT_CHUNK_BYTES:
+                        yield bytes(buffered[:REPORT_ARTIFACT_CHUNK_BYTES])
+                        del buffered[:REPORT_ARTIFACT_CHUNK_BYTES]
+                if buffered:
+                    yield bytes(buffered)
+        except ReportingError:
+            raise
+        except Exception as error:
+            raise ReportingError("report_artifact_changed", "报告文件已变化。") from error
 
 
 class ReportDownloadHttpService:
-    """组合 grant、当前报告状态和实际文件校验，不依赖应用装配。"""
+    """从 PostgreSQL 流式读取已授权的正式报告产物。"""
 
     def __init__(
         self,
         grants: ReportDownloadGrantService,
-        current_reports: CurrentReportFileProvider,
+        artifacts: ReportArtifactRepository,
     ):
         self.grants = grants
-        self.current_reports = current_reports
-
-    async def authorize(
-        self,
-        raw_grant: str,
-        *,
-        scope: ReportDownloadScope,
-        artifact: Literal["pdf", "word"] = "pdf",
-        now: datetime | None = None,
-    ) -> AuthorizedReportDownload:
-        grant = await self.grants.inspect(raw_grant, scope=scope, now=now)
-        current = await self.current_reports.get_current(grant.report_id, scope)
-        if current is None or current.revision != grant.revision:
-            raise ReportingError("report_download_revision_changed", "报告 revision 已变化。")
-        path_value, size_value, sha256_value = _grant_artifact(grant, artifact)
-        current_path = current.pdf_path if artifact == "pdf" else current.word_path
-        if current_path != path_value:
-            raise ReportingError("report_download_file_changed", "报告文件已变化。")
-        path = Path(path_value)
-        size, digest = await anyio.to_thread.run_sync(_file_identity, path)
-        if size != size_value or digest != sha256_value:
-            raise ReportingError("report_download_file_changed", "报告文件已变化。")
-        return AuthorizedReportDownload(grant=grant, path=path, artifact=artifact)
-
-
-ScopeDependency = Callable[..., ReportDownloadScope | Awaitable[ReportDownloadScope]]
-
-
-def create_report_download_router(
-    service: ReportDownloadHttpService,
-    *,
-    scope_dependency: ScopeDependency,
-) -> APIRouter:
-    router = APIRouter()
-
-    @router.get("/reports/v1/download/{opaque_grant}", name="download_report_pdf")
-    async def download_report_pdf(
-        opaque_grant: str,
-        scope: ReportDownloadScope = Depends(scope_dependency),
-    ) -> FileResponse:
-        try:
-            authorized = await service.authorize(opaque_grant, scope=scope)
-        except ReportingError as error:
-            raise HTTPException(
-                status_code=_download_error_status(error.code),
-                detail={"code": error.code, "message": error.message},
-            ) from None
-        return FileResponse(
-            authorized.path,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": _content_disposition(
-                    authorized.grant.pdf_path, artifact="pdf"
-                ),
-                "Cache-Control": "no-store",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
-
-    @router.get("/reports/v1/download/{opaque_grant}/word", name="download_report_word")
-    async def download_report_word(
-        opaque_grant: str,
-        scope: ReportDownloadScope = Depends(scope_dependency),
-    ) -> FileResponse:
-        try:
-            authorized = await service.authorize(opaque_grant, scope=scope, artifact="word")
-        except ReportingError as error:
-            raise HTTPException(
-                status_code=_download_error_status(error.code),
-                detail={"code": error.code, "message": error.message},
-            ) from None
-        return FileResponse(
-            authorized.path,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={
-                "Content-Disposition": _content_disposition(
-                    authorized.grant.word_path or "report.docx", artifact="word"
-                ),
-                "Cache-Control": "no-store",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
-
-    return router
-
-
-class WorkspaceReportDownloadHttpService:
-    """从绑定 thread 的 Daytona 工作区流式读取已授权报表产物。"""
-
-    def __init__(
-        self,
-        grants: ReportDownloadGrantService,
-        workspace_service: WorkspaceService,
-    ):
-        self.grants = grants
-        self.workspace_service = workspace_service
+        self.artifacts = artifacts
 
     async def stream(
         self,
@@ -563,35 +569,31 @@ class WorkspaceReportDownloadHttpService:
         if actual != expected:
             raise ReportingError("report_download_scope_mismatch", "下载授权不属于当前上下文。")
         path, size, sha256 = _grant_artifact(grant, artifact)
-        relative, remote = self.workspace_service.normalize_path(path, allow_root=False)
-        if size < 0 or size > MAX_DOWNLOAD_BYTES:
+        if size <= 0 or size > MAX_DOWNLOAD_BYTES:
             raise ReportingError("report_download_file_changed", "报告文件已变化。")
-
-        # StreamingResponse 发送响应头后不能再改成结构化 409。先在 Daytona 内部计算
-        # 当前文件身份，确保已签发的路径、大小和哈希在任何字节离开服务前仍然成立。
-        try:
-            current = await self.workspace_service.ahash_file(caller.thread_id, relative)
-        except Exception as error:
-            raise ReportingError("report_download_file_changed", "报告文件已变化。") from error
-        current_sha256 = current.get("sha256")
+        spec = ReportArtifactSpec(artifact=artifact, path=path, size=size, sha256=sha256)
+        artifact_key = _artifact_key(grant.scope, grant.report_id, grant.revision, spec)
+        stored = await self.artifacts.get(artifact_key)
         if (
-            current.get("path") != relative
-            or current.get("size") != size
-            or not isinstance(current_sha256, str)
-            or not secrets.compare_digest(current_sha256, sha256)
+            stored is None
+            or stored.scope != grant.scope
+            or stored.report_id != grant.report_id
+            or stored.revision != grant.revision
+            or stored.artifact != artifact
+            or stored.path != path
+            or stored.size != size
+            or not secrets.compare_digest(stored.sha256, sha256)
         ):
             raise ReportingError("report_download_file_changed", "报告文件已变化。")
         return grant, self._stream_verified_file(
-            caller.thread_id,
-            remote,
+            artifact_key,
             expected_size=size,
             expected_sha256=sha256,
         )
 
     async def _stream_verified_file(
         self,
-        thread_id: str,
-        remote: str,
+        artifact_key: str,
         *,
         expected_size: int,
         expected_sha256: str,
@@ -599,51 +601,35 @@ class WorkspaceReportDownloadHttpService:
         digest = hashlib.sha256()
         total = 0
         try:
-            async with self.workspace_service._async_client() as client:
-                sandbox = await self.workspace_service._asandbox_for(client, thread_id)
-                stream = await sandbox.fs.download_file_stream(
-                    remote,
-                    timeout=MAX_ASYNC_DOWNLOAD_TIMEOUT,
-                )
-                async for chunk in stream:
-                    if not isinstance(chunk, bytes):
-                        raise ReportingError(
-                            "report_download_file_changed", "报告文件已变化。"
-                        )
-                    total += len(chunk)
-                    if total > expected_size:
-                        raise ReportingError(
-                            "report_download_file_changed", "报告文件已变化。"
-                        )
-                    digest.update(chunk)
-                    yield chunk
+            async for chunk in self.artifacts.stream(artifact_key):
+                _validate_artifact_chunk(chunk)
+                total += len(chunk)
+                if total > expected_size:
+                    raise ReportingError("report_download_file_changed", "报告文件已变化。")
+                digest.update(chunk)
+                yield chunk
         except ReportingError:
             raise
         except Exception as error:
             raise ReportingError("report_download_file_changed", "报告文件已变化。") from error
 
-        # 预检与实际读取之间仍存在竞态窗口。传输过程中再次增量核验，不缓存完整
-        # PDF/DOCX；发生漂移时终止响应，禁止把变化后的文件当成已签发产物交付。
         if total != expected_size or not secrets.compare_digest(
             digest.hexdigest(), expected_sha256
         ):
             raise ReportingError("report_download_file_changed", "报告文件已变化。")
 
 
-CallerScopeDependency = Callable[
-    ..., ReportDownloadCallerScope | Awaitable[ReportDownloadCallerScope]
-]
-
-
-def create_workspace_report_download_router(
-    service: WorkspaceReportDownloadHttpService,
+def create_report_download_router(
+    service: ReportDownloadHttpService,
     *,
-    scope_dependency: CallerScopeDependency,
+    scope_dependency: Callable[
+        ..., ReportDownloadCallerScope | Awaitable[ReportDownloadCallerScope]
+    ],
 ) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/reports/v1/download/{opaque_grant}", name="download_workspace_report_pdf")
-    async def download_workspace_report_pdf(
+    @router.get("/reports/v1/download/{opaque_grant}", name="download_report_pdf")
+    async def download_report_pdf(
         opaque_grant: str,
         caller: ReportDownloadCallerScope = Depends(scope_dependency),
     ) -> StreamingResponse:
@@ -658,7 +644,7 @@ def create_workspace_report_download_router(
             content,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": _pdf_content_disposition(grant.pdf_path),
+                "Content-Disposition": _content_disposition(grant.pdf_path, artifact="pdf"),
                 "Content-Length": str(grant.pdf_size),
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
@@ -666,8 +652,8 @@ def create_workspace_report_download_router(
             },
         )
 
-    @router.get("/reports/v1/download/{opaque_grant}/word", name="download_workspace_report_word")
-    async def download_workspace_report_word(
+    @router.get("/reports/v1/download/{opaque_grant}/word", name="download_report_word")
+    async def download_report_word(
         opaque_grant: str,
         caller: ReportDownloadCallerScope = Depends(scope_dependency),
     ) -> StreamingResponse:
@@ -683,9 +669,7 @@ def create_workspace_report_download_router(
             content,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={
-                "Content-Disposition": _content_disposition(
-                    grant.word_path or "report.docx", artifact="word"
-                ),
+                "Content-Disposition": _content_disposition(grant.word_path, artifact="word"),
                 "Content-Length": str(word_size),
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
@@ -694,10 +678,6 @@ def create_workspace_report_download_router(
         )
 
     return router
-
-
-def _pdf_content_disposition(pdf_path: str) -> str:
-    return _content_disposition(pdf_path, artifact="pdf")
 
 
 def _content_disposition(path: str, *, artifact: Literal["pdf", "word"]) -> str:
@@ -803,26 +783,64 @@ def _utc_datetime(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
-def _file_identity(path: Path) -> tuple[int, str]:
-    try:
-        metadata = path.lstat()
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise OSError
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                digest.update(chunk)
-        final_metadata = path.lstat()
-    except OSError as error:
-        raise ReportingError("report_download_file_changed", "报告文件已变化。") from error
+def _artifact_key(
+    scope: ReportDownloadScope,
+    report_id: str,
+    revision: int,
+    artifact: ReportArtifactSpec,
+) -> str:
+    payload = {
+        "artifact": artifact.artifact,
+        "companyId": scope.company_id,
+        "database": scope.database,
+        "path": artifact.path,
+        "reportId": report_id,
+        "revision": revision,
+        "sessionId": scope.session_id,
+        "sha256": artifact.sha256,
+        "size": artifact.size,
+        "threadId": scope.thread_id,
+        "userId": scope.user_id,
+        "workflowRunId": scope.workflow_run_id,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _validate_artifact_chunk(chunk: object) -> None:
+    if not isinstance(chunk, bytes):
+        raise ReportingError("report_artifact_changed", "报告文件已变化。")
+
+
+def _same_artifact_identity(
+    left: StoredReportArtifact,
+    right: StoredReportArtifact,
+) -> bool:
+    return (
+        left.artifact_key == right.artifact_key
+        and left.scope == right.scope
+        and left.report_id == right.report_id
+        and left.revision == right.revision
+        and left.artifact == right.artifact
+        and left.path == right.path
+        and left.size == right.size
+        and secrets.compare_digest(left.sha256, right.sha256)
+    )
+
+
+def _validate_stored_artifact(
+    artifact: StoredReportArtifact,
+    *,
+    total: int,
+    digest: str,
+) -> None:
     if (
-        metadata.st_dev != final_metadata.st_dev
-        or metadata.st_ino != final_metadata.st_ino
-        or metadata.st_size != final_metadata.st_size
-        or metadata.st_mtime_ns != final_metadata.st_mtime_ns
+        artifact.size <= 0
+        or artifact.size > MAX_DOWNLOAD_BYTES
+        or total != artifact.size
+        or not secrets.compare_digest(digest, artifact.sha256)
     ):
-        raise ReportingError("report_download_file_changed", "报告文件已变化。")
-    return metadata.st_size, digest.hexdigest()
+        raise ReportingError("report_artifact_changed", "报告文件已变化。")
 
 
 def _grant_artifact(
@@ -831,11 +849,6 @@ def _grant_artifact(
 ) -> tuple[str, int, str]:
     if artifact == "pdf":
         return grant.pdf_path, grant.pdf_size, grant.pdf_sha256
-    if grant.word_path is None or grant.word_size is None or grant.word_sha256 is None:
-        raise ReportingError(
-            "report_download_word_unavailable",
-            "该旧版下载授权不包含 Word 产物。",
-        )
     return grant.word_path, grant.word_size, grant.word_sha256
 
 
@@ -845,5 +858,4 @@ def _download_error_status(code: str) -> int:
         "report_download_grant_expired": 410,
         "report_download_revision_changed": 409,
         "report_download_file_changed": 409,
-        "report_download_word_unavailable": 404,
     }.get(code, 404)

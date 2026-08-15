@@ -6,7 +6,6 @@ import io
 import secrets
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from typing import Any, Literal, cast
 
 import anyio
@@ -23,7 +22,6 @@ from .workflow.query_pipeline import (
 )
 
 REPORT_DATASET_HANDLES_STATE_KEY = "report_dataset_handles"
-CURRENT_MESSAGE_WORKSPACE_FILES_DEPENDENCY = "当前消息工作区附件"
 MAX_REPORT_INPUTS = 100
 MAX_DATASET_FILE_BYTES = 200 * 1024 * 1024
 
@@ -345,56 +343,3 @@ def _session_state(run_context: RunContext | None) -> MutableMapping[str, Any]:
 
 def _thread_binding(thread_id: str) -> str:
     return hashlib.sha256(thread_id.encode()).hexdigest()
-
-
-async def rebind_report_dataset_handles(
-    session_data: Mapping[str, Any] | None,
-    service: WorkspaceService,
-    source_thread: str,
-    target_thread: str,
-) -> dict[str, dict[str, Any]]:
-    """重新校验 branch 复制的 v1 不可变数据集，并绑定到目标 thread。"""
-    if not isinstance(session_data, Mapping):
-        return {}
-    session_state = session_data.get("session_state")
-    if not isinstance(session_state, Mapping):
-        return {}
-    stored = session_state.get(REPORT_DATASET_HANDLES_STATE_KEY)
-    if stored is None:
-        return {}
-    if not isinstance(stored, Mapping):
-        raise ReportingError("dataset_invalid", "数据集状态无效，请重新准备。")
-
-    source_binding = _thread_binding(source_thread)
-    target_binding = _thread_binding(target_thread)
-    rebound: dict[str, dict[str, Any]] = {}
-    for dataset_id, raw in stored.items():
-        if not isinstance(dataset_id, str) or not isinstance(raw, Mapping):
-            raise ReportingError("dataset_invalid", "数据集状态无效，请重新准备。")
-        handle = DatasetHandle.from_state(raw)
-        if (
-            handle.dataset_id != dataset_id
-            or raw.get("sourceType") != "starrocks_materialized"
-            or raw.get("_threadBinding") != source_binding
-        ):
-            raise ReportingError("stale_dataset", "数据集不属于源对话，请重新物化。")
-        path = PurePosixPath(handle.path)
-        if (
-            path.is_absolute()
-            or not path.parts
-            or any(part in {"", ".", ".."} for part in path.parts)
-        ):
-            raise ReportingError("dataset_invalid", "数据集路径无效，请重新准备。")
-        for thread_id in (source_thread, target_thread):
-            stat = await service.astat(thread_id, handle.path)
-            digest = await service.ahash_file(thread_id, handle.path)
-            if (
-                stat.get("type") != "file"
-                or int(digest.get("size", -1)) != handle.size
-                or digest.get("sha256") != handle.sha256
-            ):
-                raise ReportingError(
-                    "stale_dataset", "数据集文件已变化，请重新物化并确认分析范围。"
-                )
-        rebound[dataset_id] = {**handle.public_dict(), "_threadBinding": target_binding}
-    return rebound

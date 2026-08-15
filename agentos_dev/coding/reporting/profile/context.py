@@ -25,10 +25,6 @@ class CapabilitySet(ProfileModel):
     effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=r"^[0-9a-f]{64}$")
     capabilities: tuple[Capability, ...] = Field(max_length=2_000)
 
-    def by_code(self) -> dict[str, Capability]:
-        return {item.code: item for item in self.capabilities}
-
-
 class ReconciliationShape(ProfileModel):
     code: str = Field(min_length=1, max_length=128)
     status: Literal["completed", "unavailable"]

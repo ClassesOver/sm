@@ -123,25 +123,6 @@ class ReportOutlineProposal(HospitalOperationSchema):
         return self
 
 
-COMPREHENSIVE_SECTIONS = (
-    ReportOutlineSection(code="operation_overview", title="运营总览"),
-    ReportOutlineSection(code="income", title="收入分析"),
-    ReportOutlineSection(code="workload", title="工作量分析"),
-    ReportOutlineSection(code="budget", title="预算分析"),
-    ReportOutlineSection(code="full_cost", title="全成本分析"),
-    ReportOutlineSection(code="cost_control", title="费控分析"),
-    ReportOutlineSection(code="funds", title="资金分析"),
-    ReportOutlineSection(code="cross_domain", title="跨域运营分析"),
-    ReportOutlineSection(code="risk_and_data_quality", title="风险与数据质量"),
-    ReportOutlineSection(code="management_actions", title="管理行动"),
-)
-_SECTION_ORDER = {item.code: index for index, item in enumerate(COMPREHENSIVE_SECTIONS)}
-_DOMAIN_OR_CROSS = frozenset(
-    {"income", "workload", "budget", "full_cost", "cost_control", "funds", "cross_domain"}
-)
-_TOPIC_REQUIRED = frozenset({"operation_overview", "risk_and_data_quality", "management_actions"})
-
-
 class ReportOutline(HospitalOperationSchema):
     report_type: ReportType = Field(alias="reportType")
     title: str = Field(min_length=1, max_length=300)
@@ -175,89 +156,18 @@ class ReportOutline(HospitalOperationSchema):
         codes = [item.code for item in value]
         if len(codes) != len(set(codes)):
             raise ValueError("提纲包含重复章节 code")
-        legacy = all(item in _SECTION_ORDER for item in codes)
-        dynamic = all(re.fullmatch(r"section_[0-9]{3,6}", item) for item in codes)
-        if not legacy and not dynamic:
+        if not all(re.fullmatch(r"section_[0-9]{3,6}", item) for item in codes):
             raise ValueError("提纲章节 code 必须由服务端生成 section_NNN")
-        if legacy and codes != sorted(codes, key=_SECTION_ORDER.__getitem__):
-            raise ValueError("提纲章节必须按综合报告十章主序排列")
-        if dynamic:
-            expected = [f"section_{index:03d}" for index in range(1, len(codes) + 1)]
-            if codes != expected:
-                raise ValueError("动态提纲 section code 必须从 section_001 连续生成")
+        expected = [f"section_{index:03d}" for index in range(1, len(codes) + 1)]
+        if codes != expected:
+            raise ValueError("动态提纲 section code 必须从 section_001 连续生成")
         return value
 
     @model_validator(mode="after")
     def validate_report_type(self) -> ReportOutline:
-        codes = tuple(item.code for item in self.sections)
-        legacy = all(item in _SECTION_ORDER for item in codes)
-        if (
-            legacy
-            and self.report_type == "comprehensive"
-            and codes != tuple(item.code for item in COMPREHENSIVE_SECTIONS)
-        ):
-            raise ValueError("综合报告必须精确包含固定十章")
-        if legacy and self.report_type == "topic":
-            actual = set(codes)
-            if not _TOPIC_REQUIRED.issubset(actual) or not actual.intersection(_DOMAIN_OR_CROSS):
-                raise ValueError("专题报告必须包含总览、业务分析、风险与数据质量和管理行动")
-        if not legacy and not any(section.analysis_ids for section in self.sections):
+        if not any(section.analysis_ids for section in self.sections):
             raise ValueError("动态提纲至少需要引用一个真实分析")
         return self
-
-
-def make_outline(
-    report_type: ReportType,
-    *,
-    title: str,
-    selected_codes: tuple[str, ...] = (),
-    title_overrides: dict[str, str] | None = None,
-    focus: dict[str, tuple[str, ...]] | None = None,
-    analyses: Iterable[Any] | None = None,
-    proposal: ReportOutlineProposal | Mapping[str, Any] | None = None,
-) -> ReportOutline:
-    """构造提纲。
-
-    传入 analyses/proposal 时走动态章节路径；未传入时保留固定提纲入口，
-    便于迁移既有非医院产物。
-    """
-    if analyses is not None or proposal is not None:
-        if proposal is None:
-            proposals = _default_outline_proposals(tuple(analyses or ()), report_type=report_type)
-            proposal_obj = ReportOutlineProposal(
-                reportType=report_type,
-                title=title,
-                sections=proposals,
-                assumptions=(),
-            )
-        else:
-            proposal_obj = (
-                proposal
-                if isinstance(proposal, ReportOutlineProposal)
-                else ReportOutlineProposal.model_validate(proposal)
-            )
-            if proposal_obj.report_type != report_type or proposal_obj.title != title:
-                proposal_obj = proposal_obj.model_copy(
-                    update={"report_type": report_type, "title": title}
-                )
-        return freeze_outline(proposal_obj, analyses=tuple(analyses or ()))
-    overrides = title_overrides or {}
-    focus_values = focus or {}
-    if report_type == "comprehensive":
-        selected = {item.code for item in COMPREHENSIVE_SECTIONS}
-    else:
-        selected = set(selected_codes) | _TOPIC_REQUIRED
-    sections = tuple(
-        item.model_copy(
-            update={
-                "title": overrides.get(item.code, item.title),
-                "focus": focus_values.get(item.code, ()),
-            }
-        )
-        for item in COMPREHENSIVE_SECTIONS
-        if item.code in selected
-    )
-    return ReportOutline(reportType=report_type, title=title, sections=sections)
 
 
 def freeze_outline(
@@ -301,45 +211,10 @@ def freeze_outline(
     )
 
 
-def _default_outline_proposals(
-    analyses: tuple[Any, ...],
-    *,
-    report_type: ReportType,
-) -> tuple[OutlineSectionProposal, ...]:
-    grouped: dict[str, list[str]] = {}
-    titles: dict[str, str] = {}
-    for analysis in analyses:
-        if isinstance(analysis, Mapping):
-            analysis_id = str(analysis.get("analysisId") or "")
-            domain = str(analysis.get("domain") or "data_quality")
-            title = str(analysis.get("managementQuestion") or analysis.get("title") or "运营分析")
-        else:
-            analysis_id = str(getattr(analysis, "analysis_id", ""))
-            domain = str(getattr(analysis, "domain", "data_quality"))
-            title = str(getattr(analysis, "management_question", "运营分析"))
-        if not analysis_id:
-            continue
-        grouped.setdefault(domain, []).append(analysis_id)
-        titles.setdefault(domain, title)
-    proposals = tuple(
-        OutlineSectionProposal(
-            title=titles[domain],
-            focus=(f"围绕{titles[domain]}核对事实和经营影响",),
-            analysisIds=tuple(grouped[domain]),
-        )
-        for domain in grouped
-    )
-    if not proposals:
-        raise ValueError("没有可供提纲引用的真实分析")
-    return proposals
-
-
 __all__ = [
-    "COMPREHENSIVE_SECTIONS",
     "OutlineSectionProposal",
     "ReportOutline",
     "ReportOutlineProposal",
     "ReportOutlineSection",
     "freeze_outline",
-    "make_outline",
 ]

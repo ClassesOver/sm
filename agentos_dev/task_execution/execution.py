@@ -9,7 +9,7 @@ import shlex
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -72,9 +72,10 @@ CODING_EXECUTION_MIGRATION_STATE_KEY = "agentos_coding_execution_migrated"
 DEFAULT_TERMINAL_TIMEOUT = 900
 MAX_FINISH_ARTIFACTS = 50
 MAX_VERIFICATION_IDS = 20
-MAX_TERMINAL_COMMAND_BYTES = 32 * 1024
+# 1 MiB 足以容纳长分析命令；更大的正文仍应通过文件写入工具提交，避免复制到 shell 日志。
+MAX_TERMINAL_COMMAND_BYTES = 1024 * 1024
 MAX_TOOL_PREVIEW_BYTES = 48 * 1024
-MAX_REPORT_TOOL_PREVIEW_BYTES = 8 * 1024
+MAX_REPORT_TOOL_PREVIEW_BYTES = 16 * 1024
 MAX_TOOL_OUTPUT_RESOURCE_BYTES = 16 * 1024 * 1024
 MAX_TASK_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_TOOL_OUTPUT_READ_BYTES = 64 * 1024
@@ -199,13 +200,22 @@ def _normalize_function_call_arguments(
 
 
 def _create_files_patch(files: list[dict[str, str]]) -> str:
-    lines = ["*** Begin Patch"]
+    lines: list[str] = []
     for item in files:
-        lines.append(f"*** Add File: {item['path']}")
-        content_lines = item["content"].replace("\r\n", "\n").replace("\r", "\n").splitlines()
-        lines.extend(f"+{line}" for line in (content_lines or [""]))
-    lines.append("*** End Patch")
-    return "\n".join(lines)
+        content = item["content"].replace("\r\n", "\n").replace("\r", "\n")
+        content_lines = content.splitlines(keepends=True)
+        patch_lines = [line if line.endswith("\n") else f"{line}\n" for line in content_lines]
+        lines.extend(
+            [
+                "--- /dev/null\n",
+                f"+++ b/{item['path']}\n",
+                f"@@ -0,0 +1,{len(content_lines)} @@\n",
+                *(f"+{line}" for line in patch_lines),
+            ]
+        )
+        if content and not content.endswith("\n"):
+            lines.append("\\ No newline at end of file\n")
+    return "".join(lines)
 
 
 @dataclass(frozen=True)
@@ -613,12 +623,10 @@ class CodingExecutionKernel:
         service: WorkspaceService,
         repository: CodingTaskRepository,
         *,
-        completion_evidence: Callable[[RunContext], Awaitable[dict[str, Any] | None]] | None = None,
         validator_registry: SkillValidatorRegistry | None = None,
     ):
         self.service = service
         self.repository = repository
-        self.completion_evidence = completion_evidence
         self.validator_registry = validator_registry or SkillValidatorRegistry()
         self.acceptance_policy = AcceptancePolicy()
         self.require_finish_verification = True
@@ -650,9 +658,7 @@ class CodingExecutionKernel:
     def _preview_text(raw: bytes, max_bytes: int = MAX_TOOL_PREVIEW_BYTES) -> str:
         if len(raw) <= max_bytes:
             return raw.decode("utf-8", errors="replace")
-        marker = (
-            f"\n[TOOL_OUTPUT_TRUNCATED omitted_bytes={len(raw) - max_bytes}]\n"
-        ).encode()
+        marker = (f"\n[TOOL_OUTPUT_TRUNCATED omitted_bytes={len(raw) - max_bytes}]\n").encode()
         available = max_bytes - len(marker)
         head_size = available // 2
         tail_size = available - head_size
@@ -665,6 +671,8 @@ class CodingExecutionKernel:
         scope: CodingTaskScope,
         result: Any,
         run_context: RunContext | None,
+        *,
+        retain: bool = False,
     ) -> dict[str, Any]:
         preview_bytes = (
             MAX_REPORT_TOOL_PREVIEW_BYTES
@@ -683,6 +691,7 @@ class CodingExecutionKernel:
             if isinstance(result, dict)
             else []
         )
+        key: str | None = None
         if candidates:
             key, value = max(candidates, key=lambda item: len(item[1].encode("utf-8")))
             if (
@@ -691,20 +700,33 @@ class CodingExecutionKernel:
             ):
                 result = {"output": serialized, "outputFormat": "json"}
                 key, value = "output", serialized
+            raw = value.encode("utf-8")
         else:
-            if len(serialized.encode("utf-8")) <= preview_bytes:
-                return result
-            result = {"output": serialized, "outputFormat": "json"}
-            key, value = "output", serialized
-        raw = value.encode("utf-8")
-        if len(raw) <= preview_bytes:
+            raw = serialized.encode("utf-8")
+            if len(raw) <= preview_bytes:
+                if retain:
+                    result = (
+                        dict(result)
+                        if isinstance(result, dict)
+                        else {"output": serialized, "outputFormat": "json"}
+                    )
+                else:
+                    return result
+            else:
+                result = {"output": serialized, "outputFormat": "json"}
+                key = "output"
+        if len(raw) <= preview_bytes and not retain:
             return result
+        truncated = len(raw) > preview_bytes
         state = (
             run_context.session_state
             if run_context is not None and isinstance(run_context.session_state, dict)
             else None
         )
         if state is None:
+            if not truncated:
+                return result
+            assert key is not None
             return {
                 **result,
                 key: self._preview_text(raw, preview_bytes),
@@ -787,12 +809,16 @@ class CodingExecutionKernel:
                 raise
         return {
             **result,
-            key: self._preview_text(raw, preview_bytes),
+            **(
+                {key: self._preview_text(raw, preview_bytes)}
+                if truncated and key is not None
+                else {}
+            ),
             "outputHandle": handle,
             "outputBytes": len(raw),
             "outputStoredBytes": stored_bytes,
             "outputSha256": metadata["sha256"],
-            "outputTruncated": True,
+            "outputTruncated": truncated,
             "outputDiscarded": stored_bytes < len(raw),
         }
 
@@ -818,20 +844,14 @@ class CodingExecutionKernel:
                 f"output max_bytes 必须是 1 至 {MAX_TOOL_OUTPUT_READ_BYTES} 之间的整数。"
             )
         scope = _scope or await self.scope(run_context)
-        state = run_context.session_state if run_context is not None else None
-        root = state.get(CODING_TOOL_OUTPUT_STATE_KEY, {}) if isinstance(state, dict) else {}
-        metadata = root.get("handles", {}).get(handle) if isinstance(root, dict) else None
-        if (
-            not isinstance(metadata, dict)
-            or metadata.get("task") != scope.external_run_id
-            or metadata.get("attempt") != scope.attempt_no
-        ):
-            raise WorkspaceError("output handle 不属于当前 Task/Attempt。")
-        stored_bytes = int(metadata.get("storedBytes", 0))
+        raw, metadata = await self.read_tool_output_resource(
+            handle,
+            run_context,
+            _scope=scope,
+        )
+        stored_bytes = int(metadata["storedBytes"])
         if offset > stored_bytes:
             raise WorkspaceError("output offset 超过已保存内容大小。")
-        async for sandbox in self._sandbox(scope):
-            raw = await sandbox.fs.download_file(metadata["path"]) if stored_bytes else b""
         end = min(stored_bytes, offset + max_bytes)
         while end > offset:
             try:
@@ -854,6 +874,46 @@ class CodingExecutionKernel:
             "hasMore": end < stored_bytes,
             "outputDiscarded": stored_bytes < int(metadata["bytes"]),
         }
+
+    async def read_tool_output_resource(
+        self,
+        handle: str,
+        run_context: RunContext | None,
+        *,
+        _scope: CodingTaskScope | None = None,
+    ) -> tuple[bytes, dict[str, Any]]:
+        """读取当前 Task/Attempt 的完整工具资源，并复核受信存储身份。"""
+
+        if not isinstance(handle, str) or not handle:
+            raise WorkspaceError("output handle 无效。")
+        scope = _scope or await self.scope(run_context)
+        state = run_context.session_state if run_context is not None else None
+        root = state.get(CODING_TOOL_OUTPUT_STATE_KEY, {}) if isinstance(state, dict) else {}
+        metadata = root.get("handles", {}).get(handle) if isinstance(root, dict) else None
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("task") != scope.external_run_id
+            or metadata.get("attempt") != scope.attempt_no
+        ):
+            raise WorkspaceError("output handle 不属于当前 Task/Attempt。")
+        stored_bytes = int(metadata.get("storedBytes", 0))
+        if stored_bytes:
+            async for sandbox in self._sandbox(scope):
+                raw = await sandbox.fs.download_file(metadata["path"])
+                break
+            else:
+                raise WorkspaceError("output handle 对应的 sandbox 不可用。")
+        else:
+            raw = b""
+        if len(raw) != stored_bytes:
+            raise WorkspaceError("output handle 已保存内容长度与受信元数据不一致。")
+        output_bytes = int(metadata.get("bytes", -1))
+        output_sha256 = metadata.get("sha256")
+        if stored_bytes == output_bytes and (
+            not isinstance(output_sha256, str) or hashlib.sha256(raw).hexdigest() != output_sha256
+        ):
+            raise WorkspaceError("output handle 已保存内容哈希与受信元数据不一致。")
+        return raw, dict(metadata)
 
     async def cleanup_tool_outputs(
         self, scope: CodingTaskScope, run_context: RunContext | None
@@ -2818,9 +2878,7 @@ class CodingExecutionKernel:
             if (
                 not isinstance(raw, dict)
                 or not {"id", "passed"}.issubset(raw)
-                or not set(raw).issubset(
-                    {"id", "passed", "message", "details", "warnings"}
-                )
+                or not set(raw).issubset({"id", "passed", "message", "details", "warnings"})
             ):
                 raise ValueError("validator_result_requirement_fields")
             requirement_id = raw["id"]
@@ -3352,28 +3410,12 @@ class CodingExecutionKernel:
                 )
             acceptance_summary = acceptance_decision.summary
 
-        extra_evidence = None
-        if self.completion_evidence is not None:
-            try:
-                assert run_context is not None
-                extra_evidence = await self.completion_evidence(run_context)
-            except (WorkspaceError, DaytonaNotFoundError):
-                extra_evidence = None
-            if extra_evidence is None:
-                return reject(
-                    "finish_report_unverified",
-                    "报表 PDF 或交付证据未通过验收。",
-                    required_actions=["完成报表 PDF 与交付证据验证。"],
-                    progress_state={"evidence": None},
-                )
-
         payload: dict[str, Any] = {
             "summary": summary.strip(),
             "artifacts": artifacts,
             "verificationIds": verification_ids,
             "serviceSessions": service_sessions,
             **({"acceptance": acceptance_summary} if acceptance_summary is not None else {}),
-            **({"evidence": extra_evidence} if extra_evidence is not None else {}),
         }
         try:
             current_artifacts = await self.service.abatch_hash_files(
@@ -3559,7 +3601,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         {
             "finish_artifact_missing",
             "finish_artifact_changed",
-            "finish_report_unverified",
             "finish_verification_missing",
             "finish_verification_failed",
             "finish_verification_stale",
@@ -3572,13 +3613,11 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         service: WorkspaceService,
         repository: CodingTaskRepository,
         *,
-        completion_evidence: Callable[[RunContext], Awaitable[dict[str, Any] | None]] | None = None,
         validator_registry: SkillValidatorRegistry | None = None,
     ):
         self.kernel = CodingExecutionKernel(
             service,
             repository,
-            completion_evidence=completion_evidence,
             validator_registry=validator_registry,
         )
         finish_function = Function(
@@ -3666,12 +3705,16 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     description=(
                         "执行工作区命令。terminal 必须作为本次 assistant 工具批次中的唯一调用，"
                         "不能与任何其他工具并发。参数必须直接位于顶层，不要包 arguments。"
-                        '示例：{"command":"python3 -m pytest -q","timeout":120}'
+                        '示例：{"command":"python3 -m pytest -q","timeout":120}；命令上限为 1 MiB，长文件优先使用 create_files/apply_patch。'
                     ),
                     parameters={
                         "type": "object",
                         "properties": {
-                            "command": {"type": "string", "minLength": 1},
+                            "command": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": MAX_TERMINAL_COMMAND_BYTES,
+                            },
                             "background": {"type": "boolean", "default": False},
                             "timeout": {
                                 "type": "integer",
@@ -3785,8 +3828,9 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 Function(
                     name="apply_patch",
                     description=(
-                        "应用统一补丁。"
-                        '示例：{"patch":"*** Begin Patch\\n*** Update File: src/app.py\\n@@\\n-print(1)\\n+print(2)\\n*** End Patch"}'
+                        "应用标准 unified diff；路径使用 a/path 与 b/path。"
+                        '示例：{"patch":"--- a/src/app.py\\n+++ b/src/app.py\\n'
+                        '@@ -1 +1 @@\\n-print(1)\\n+print(2)\\n"}'
                     ),
                     parameters={
                         "type": "object",
@@ -4087,7 +4131,16 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             args_hash = hashlib.sha256(
                 json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str).encode()
             ).hexdigest()
-            exempt = progress_name in NO_PROGRESS_EXEMPT_TOOLS or tool_name == "finish_task"
+            exempt = (
+                progress_name in NO_PROGRESS_EXEMPT_TOOLS
+                or tool_name == "finish_task"
+                or self._no_progress_exempt(
+                    scope=scope,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    run_context=run_context,
+                )
+            )
             async with lock.state():
                 progress = state.get(CODING_TOOL_PROGRESS_STATE_KEY) if state is not None else None
                 entries = (
@@ -4234,7 +4287,12 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 ).encode()
             ).hexdigest()
             if spec.output_policy == "bounded_text":
-                result = await self.kernel.bound_tool_result(scope, result, run_context)
+                result = await self.kernel.bound_tool_result(
+                    scope,
+                    result,
+                    run_context,
+                    retain=self._retain_bounded_tool_result(scope, tool_name),
+                )
             if (
                 tool_name == "verify"
                 and isinstance(result, dict)
@@ -4304,6 +4362,25 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             if tool_name == "finish_task" and isinstance(result, dict) and result.get("ok"):
                 await self.kernel.cleanup_tool_outputs(scope, run_context)
             return result
+
+    def _retain_bounded_tool_result(self, scope: CodingTaskScope, tool_name: str) -> bool:
+        """由专用 Toolkit 显式扩大可恢复性，普通 Coding 保持原行为。"""
+
+        _ = scope, tool_name
+        return False
+
+    def _no_progress_exempt(
+        self,
+        *,
+        scope: CodingTaskScope,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        run_context: RunContext | None,
+    ) -> bool:
+        """允许专用 Toolkit 让权威状态机授权优先于通用 Attempt 防重。"""
+
+        _ = scope, tool_name, arguments, run_context
+        return False
 
     async def _state_admission_rejection(
         self,

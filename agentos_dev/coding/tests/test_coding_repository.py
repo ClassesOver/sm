@@ -116,7 +116,7 @@ async def test_execution_scope_terminal_receipt_and_output_are_persistent_and_bo
         owner_user_id=task.owner_user_id,
         thread_id=task.thread_id,
         sandbox_id=task.sandbox_id,
-        daytona_session_id="agui-coding-execution-1",
+        daytona_session_id="agent-coding-execution-1",
         mutation_sequence=task.mutation_sequence,
         is_verification=True,
     )
@@ -225,7 +225,7 @@ async def test_cleanup_removes_only_terminal_records_after_seven_days(repository
         owner_user_id=expired.owner_user_id,
         thread_id=expired.thread_id,
         sandbox_id=expired.sandbox_id,
-        daytona_session_id="agui-exec-expired",
+        daytona_session_id="agent-exec-expired",
         mutation_sequence=0,
     )
     await current.update_execution(
@@ -280,7 +280,7 @@ async def test_postgres_repository_uses_the_same_core_contract():
             owner_user_id=task.owner_user_id,
             thread_id=task.thread_id,
             sandbox_id=task.sandbox_id,
-            daytona_session_id=f"agui-exec-{suffix}",
+            daytona_session_id=f"agent-exec-{suffix}",
             mutation_sequence=mutation_sequence,
             is_verification=True,
         )

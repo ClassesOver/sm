@@ -14,6 +14,7 @@ from agno.tools import Function, Toolkit
 from agno.tools.daytona import DaytonaTools
 from daytona.common.errors import DaytonaNotFoundError
 from tree_sitter import Language, Node, Parser
+from unidiff import PatchSet, UnidiffParseError
 
 from ..agent_control import AgentControlToolkit
 from ..async_utils import complete_cleanup
@@ -56,50 +57,12 @@ APPLY_PATCH_HEREDOC_HEADER = re.compile(
     r"(?P<bare>[A-Za-z_][A-Za-z0-9_]{0,31})"
     r")[ \t]*"
 )
-_PATCH_OPERATION_PREFIXES = (
-    "*** Add File: ",
-    "*** Delete File: ",
-    "*** Update File: ",
-)
-_PATCH_HEREDOC_OPENERS = {"<<EOF", "<<'EOF'", '<<"EOF"'}
-_PATCH_MATCH_TRANSLATION = str.maketrans(
-    {
-        "‐": "-",
-        "‑": "-",
-        "‒": "-",
-        "–": "-",
-        "—": "-",
-        "―": "-",
-        "−": "-",
-        "‘": "'",
-        "’": "'",
-        "‚": "'",
-        "‛": "'",
-        "“": '"',
-        "”": '"',
-        "„": '"',
-        "‟": '"',
-        " ": " ",
-        " ": " ",
-        " ": " ",
-        " ": " ",
-        " ": " ",
-        " ": " ",
-        " ": " ",
-        " ": " ",
-        " ": " ",
-        " ": " ",
-        " ": " ",
-        " ": " ",
-        "　": " ",
-    }
-)
 
 CODING_TOOLKIT_INSTRUCTIONS = """
 Coding Agent 工具规则：
 - 所有命令和文件都位于当前 thread 隔离的 Daytona 工作区；workdir 和文件路径只能使用工作区相对路径。
 - 搜索和读取优先通过 exec_command 使用 rg、sed、git 等现有命令；不得访问 AgentOS 宿主文件系统。
-- 已有文件的小范围精确修改优先使用 patch 的 replace 模式；新增、删除、移动或多文件变更使用 apply_patch，或使用 patch 的 patch 模式提交完整“*** Begin Patch / *** End Patch”补丁。原生补丁支持 Add/Update/Delete/Move、多文件和多个 hunk，并兼容完整单层 Markdown 围栏、apply_patch heredoc，以及 Add File 正文中漏写 + 的纯空行；禁止使用 ---/+++、/dev/null 或普通 unified diff。
+- 已有文件的小范围精确修改优先使用 patch 的 replace 模式；新增、删除或多文件变更使用 apply_patch，或使用 patch 的 patch 模式提交标准 unified diff。路径使用 a/path 与 b/path，新建或删除使用 /dev/null；每个文件必须包含至少一个标准 @@ hunk。重命名用一次删除加一次新建表达，不接受无 hunk 的 rename 元数据。
 - 如果模型无法稳定生成补丁函数参数，可改用独立 exec_command heredoc：apply_patch <<'PATCH'，随后是完整补丁和单独一行 PATCH。服务端会拦截并复用同一原子补丁实现，不会在 Daytona 中查找或执行 apply_patch 命令；不得附加其他 Shell 命令、workdir 或 PTY。
 - CodingToolkit 的全部工具直接执行，不会请求确认；这不扩大当前 thread、Daytona 工作区、路径、进程、网络、超时或输出限制。
 - exec_command、poll_process 和 write_stdin 的 yield_time_ms 必须在 0 至 30000 之间；不得提交 60000 等越界值。
@@ -124,7 +87,7 @@ LEGACY_HERMES_CODING_TOOLKIT_INSTRUCTIONS = """
 - 短命令使用 terminal 前台模式；长任务或服务使用 background=true，并用 process 的 poll 或 wait 查看增量输出，不能使用 shell 后台符号绕过受管进程。
 - process 支持 list、poll、wait、kill、write 和 submit；write 原样写入，submit 会在数据后追加换行。未暴露的日志回溯、关闭 stdin 和异步通知能力不可假定存在。
 - patch 的 replace 模式用于精确字符串替换，默认要求原文唯一；需要替换全部匹配时显式设置 replace_all=true。
-- patch 的 patch 模式使用完整的“*** Begin Patch / *** End Patch”补丁，支持 Add/Update/Delete/Move、多文件和多个 hunk；terminal 中独立的 apply_patch heredoc 进入同一原子补丁内核。
+- patch 的 patch 模式使用标准 unified diff，支持新增、更新、删除、多文件和多个 hunk；terminal 中独立的 apply_patch heredoc 进入同一原子补丁内核。重命名使用删除加新建表达。
 - 文件路径和 workdir 必须是工作区相对路径；所有工具直接执行，但不会扩大当前 thread、路径、网络、进程、超时或输出限制。
 - 多步骤任务用 update_plan 维护计划；完成前确保全部步骤为 completed，且交付产物仍存在。
 - 最后一次潜在修改后必须用 terminal 得到成功验证回执；存在活动进程时必须终止，或在 finish_task 的 service_sessions 中声明并提供当前 mutation 的成功健康检查回执。
@@ -135,10 +98,10 @@ PURE_CODING_TOOLKIT_INSTRUCTIONS = """
 生产工作区工具规则：
 - 只使用当前生产 Coding Toolkit 声明的 terminal、process、create_files、overwrite_file、replace_text、apply_patch、verify、list_files、read_file、read_lines、search_text、tree、git_status、git_diff、read_tool_output、view_image、update_plan 和 finish_task；它们共享当前 thread 唯一的 Daytona 工作区、受管进程和原子文件提交层。
 - 普通文件读取、分段读取、文本搜索、目录列举及 Git 状态或差异优先使用对应受控只读工具；不要用 terminal 代替。独立只读调用可以并行，有数据依赖时必须串行。
-- 短命令使用 terminal 前台模式；长任务或服务使用 background=true，并用 process 的 poll 或 wait 查看增量输出，不能使用 shell 后台符号绕过受管进程。terminal 的 command 最多 32 KiB UTF-8 字节，不要用巨型 heredoc 传输文件内容。
+- 短命令使用 terminal 前台模式；长任务或服务使用 background=true，并用 process 的 poll 或 wait 查看增量输出，不能使用 shell 后台符号绕过受管进程。terminal 的 command 最多 1 MiB UTF-8 字节；长文件仍优先使用 create_files/apply_patch。
 - process 支持 list、poll、wait、kill、write 和 submit；write 原样写入，submit 会在数据后追加换行。未暴露的日志回溯、关闭 stdin 和异步通知能力不可假定存在。
 - create_files 用于在一次原子补丁中创建一个或多个不存在的目标；overwrite_file 用于完整覆盖已有文件且必须提供最新 expected_sha256；replace_text 用于精确字符串替换，默认要求原文唯一，需要替换全部匹配时显式设置 replace_all=true。
-- apply_patch 使用完整的“*** Begin Patch / *** End Patch”补丁，支持 Add/Update/Delete/Move、多文件和多个 hunk；terminal 中独立的 apply_patch heredoc 进入同一原子补丁内核。禁止无条件覆盖和模糊匹配。
+- apply_patch 使用标准 unified diff，支持新增、更新、删除、多文件和多个 hunk；路径使用 a/path 与 b/path，新建或删除使用 /dev/null。terminal 中独立的 apply_patch heredoc 进入同一原子补丁内核，禁止无条件覆盖和模糊匹配。
 - 文本工具结果被截断且返回 outputHandle 时，使用 read_tool_output(handle, offset, max_bytes) 按需重读；句柄是当前 Task/Attempt 的不透明标识，不得当作路径或跨任务使用。
 - 文件路径和 workdir 必须是工作区相对路径；探测工作区根目录时调用 list_files(path="")，禁止传 /workspace 或 /home/daytona/workspace。所有工具直接执行，但不会扩大当前 thread、路径、网络、进程、超时或输出限制。
 - terminal 默认从工作区根目录执行；设置 workdir 后，命令中的每个相对路径都以该 workdir 为基准。命令引用工作区根目录相对路径时保持 workdir 为空，不得同时设置子目录 workdir 后重复拼接根目录相对路径。
@@ -150,20 +113,9 @@ PURE_CODING_TOOLKIT_INSTRUCTIONS = """
 
 
 @dataclass(frozen=True)
-class _PatchChunk:
-    context: str | None
-    old_lines: tuple[str, ...]
-    new_lines: tuple[str, ...]
-    end_of_file: bool
-
-
-@dataclass(frozen=True)
 class _PatchOperation:
     operation: str
     path: str
-    destination: str | None = None
-    content: str | None = None
-    chunks: tuple[_PatchChunk, ...] = ()
 
 
 def _extract_apply_patch_command(cmd: str) -> str | None:
@@ -208,230 +160,77 @@ def _extract_apply_patch_command(cmd: str) -> str | None:
     return arguments[1]
 
 
-def _parse_update_chunks(lines: list[str], path: str) -> tuple[_PatchChunk, ...]:
-    chunks: list[_PatchChunk] = []
-    index = 0
-    while index < len(lines):
-        while index < len(lines) and chunks and chunks[-1].end_of_file and not lines[index].strip():
-            index += 1
-        if index >= len(lines):
-            break
-
-        header = lines[index].rstrip()
-        if header == "@@" or header.startswith("@@ "):
-            context = header[3:] if header.startswith("@@ ") else None
-            index += 1
-        elif not chunks:
-            context = None
-        else:
-            raise WorkspaceError(f"文件“{path}”的后续更新 hunk 必须以 @@ 开头。")
-
-        old_lines: list[str] = []
-        new_lines: list[str] = []
-        end_of_file = False
-        saw_line = False
-        while index < len(lines):
-            line = lines[index]
-            update_line = line.rstrip()
-            if update_line == "@@" or update_line.startswith("@@ "):
-                break
-            if update_line == "*** End of File":
-                if not saw_line:
-                    raise WorkspaceError(f"文件“{path}”的 End of File 前必须包含 hunk 行。")
-                end_of_file = True
-                index += 1
-                break
-            if line == "":
-                marker, value = " ", ""
-            elif line[0] in {" ", "+", "-"}:
-                marker, value = line[0], line[1:]
-            else:
-                raise WorkspaceError(f"文件“{path}”的 hunk 行必须以空格、+ 或 - 开头。")
-            saw_line = True
-            if marker in {" ", "-"}:
-                old_lines.append(value)
-            if marker in {" ", "+"}:
-                new_lines.append(value)
-            index += 1
-        if not saw_line:
-            raise WorkspaceError(f"文件“{path}”的更新 hunk 不能为空。")
-        chunks.append(
-            _PatchChunk(
-                context=context,
-                old_lines=tuple(old_lines),
-                new_lines=tuple(new_lines),
-                end_of_file=end_of_file,
-            )
-        )
-    return tuple(chunks)
+def _unified_diff_path(value: str) -> str:
+    if value == "/dev/null":
+        return value
+    if not value.startswith(("a/", "b/")):
+        raise WorkspaceError("unified diff 路径必须使用 a/path 或 b/path 前缀。")
+    return value[2:]
 
 
-def _normalized_patch_lines(patch: str) -> list[str]:
-    normalized = patch.replace("\r\n", "\n").replace("\r", "\n").strip()
-    lines = normalized.split("\n")
-    if len(lines) >= 3 and lines[0].strip() in {"```", "```patch"}:
-        if lines[-1].strip() == "```":
-            lines = lines[1:-1]
-    elif len(lines) >= 4 and lines[0].strip() in _PATCH_HEREDOC_OPENERS:
-        if lines[-1].strip() == "EOF":
-            lines = lines[1:-1]
-    return "\n".join(lines).strip().split("\n")
-
-
-def parse_codex_patch(patch: str) -> tuple[_PatchOperation, ...]:
+def parse_unified_diff(patch: str) -> tuple[_PatchOperation, ...]:
     if not isinstance(patch, str) or not patch.strip():
         raise WorkspaceError("补丁不能为空。")
-    lines = _normalized_patch_lines(patch)
-    if not lines or lines[0].strip() != "*** Begin Patch":
-        raise WorkspaceError(
-            "补丁首行必须是 *** Begin Patch，且 patch 参数只能包含纯补丁文本；"
-            "仅兼容完整单层 Markdown 代码围栏或 apply_patch heredoc 外壳。"
-        )
-    if len(lines) < 3 or lines[-1].strip() != "*** End Patch":
-        raise WorkspaceError("补丁末行必须是 *** End Patch。")
-
-    operations: list[_PatchOperation] = []
-    index = 1
-    while index < len(lines) - 1:
-        header = lines[index].strip()
-        if header.startswith("*** Add File: "):
-            path = header.removeprefix("*** Add File: ").strip()
-            index += 1
-            content: list[str] = []
-            while index < len(lines) - 1 and not lines[index].strip().startswith(
-                _PATCH_OPERATION_PREFIXES
-            ):
-                if lines[index] == "":
-                    content.append("")
-                elif lines[index].startswith("+"):
-                    content.append(lines[index][1:])
-                else:
-                    raise WorkspaceError(f"新增文件“{path}”每一行的非空内容都必须以 + 开头。")
-                index += 1
-            if not content:
-                raise WorkspaceError(f"新增文件“{path}”至少需要一行内容。")
-            operations.append(
-                _PatchOperation(operation="create", path=path, content="\n".join(content) + "\n")
-            )
-            continue
-        if header.startswith("*** Delete File: "):
-            path = header.removeprefix("*** Delete File: ").strip()
-            operations.append(_PatchOperation(operation="delete", path=path))
-            index += 1
-            continue
-        if header.startswith("*** Update File: "):
-            path = header.removeprefix("*** Update File: ").strip()
-            index += 1
-            destination = None
-            if index < len(lines) - 1 and lines[index].strip().startswith("*** Move to: "):
-                destination = lines[index].strip().removeprefix("*** Move to: ").strip()
-                index += 1
-            update_lines: list[str] = []
-            while index < len(lines) - 1 and not lines[index].strip().startswith(
-                _PATCH_OPERATION_PREFIXES
-            ):
-                update_lines.append(lines[index])
-                index += 1
-            if not update_lines and destination is None:
-                raise WorkspaceError(f"更新文件“{path}”必须包含 hunk 或 Move to。")
-            operations.append(
-                _PatchOperation(
-                    operation="update",
-                    path=path,
-                    destination=destination,
-                    chunks=_parse_update_chunks(update_lines, path) if update_lines else (),
-                )
-            )
-            continue
-        raise WorkspaceError(f"无效的补丁文件操作：{header}")
-
-    if not 1 <= len(operations) <= MAX_PATCH_FILES:
+    normalized = patch.replace("\r\n", "\n").replace("\r", "\n")
+    if "*** Begin Patch" in normalized or "*** Add File:" in normalized:
+        raise WorkspaceError("仅接受标准 unified diff，不接受 Codex patch 方言。")
+    try:
+        parsed = PatchSet(normalized)
+    except (UnidiffParseError, ValueError) as error:
+        raise WorkspaceError("标准 unified diff 语法无效。") from error
+    if not 1 <= len(parsed) <= MAX_PATCH_FILES:
         raise WorkspaceError(f"补丁必须包含 1 至 {MAX_PATCH_FILES} 个文件操作。")
+    operations: list[_PatchOperation] = []
+    for patched_file in parsed:
+        if not patched_file:
+            raise WorkspaceError("每个 unified diff 文件必须包含至少一个 @@ hunk。")
+        source = _unified_diff_path(patched_file.source_file)
+        target = _unified_diff_path(patched_file.target_file)
+        if patched_file.is_added_file:
+            if source != "/dev/null" or target == "/dev/null":
+                raise WorkspaceError("新增文件必须使用 --- /dev/null 与 +++ b/path。")
+            operations.append(_PatchOperation(operation="create", path=target))
+        elif patched_file.is_removed_file:
+            if source == "/dev/null" or target != "/dev/null":
+                raise WorkspaceError("删除文件必须使用 --- a/path 与 +++ /dev/null。")
+            operations.append(_PatchOperation(operation="delete", path=source))
+        else:
+            if source == "/dev/null" or target == "/dev/null":
+                raise WorkspaceError("更新文件必须同时声明 a/path 与 b/path。")
+            if source != target:
+                raise WorkspaceError("重命名必须使用删除旧文件和新建新文件两个标准 diff。")
+            operations.append(_PatchOperation(operation="update", path=source))
     return tuple(operations)
 
 
-def _normalized_patch_match_line(value: str) -> str:
-    return value.strip().translate(_PATCH_MATCH_TRANSLATION)
-
-
-def _seek_patch_sequence(
-    lines: list[str], pattern: tuple[str, ...], start: int, end_of_file: bool
-) -> int | None:
-    if not pattern:
-        return start
-    if len(pattern) > len(lines):
-        return None
-
-    last_start = len(lines) - len(pattern)
-    search_start = last_start if end_of_file else start
-
-    def find(normalize: Callable[[str], str]) -> int | None:
-        for candidate in range(search_start, last_start + 1):
-            if all(
-                normalize(lines[candidate + offset]) == normalize(expected)
-                for offset, expected in enumerate(pattern)
-            ):
-                return candidate
-        return None
-
-    for normalize in (
-        lambda value: value,
-        str.rstrip,
-        str.strip,
-        _normalized_patch_match_line,
-    ):
-        found = find(normalize)
-        if found is not None:
-            return found
-    return None
-
-
-def _apply_update_chunks(content: str, operation: _PatchOperation) -> str:
-    if not operation.chunks:
-        return content
-
-    original_lines = content.split("\n")
-    if original_lines and original_lines[-1] == "":
-        original_lines.pop()
-    replacements: list[tuple[int, int, tuple[str, ...]]] = []
-    line_index = 0
-
-    for chunk in operation.chunks:
-        if chunk.context is not None:
-            context_index = _seek_patch_sequence(
-                original_lines, (chunk.context,), line_index, False
-            )
-            if context_index is None:
-                raise WorkspaceError(
-                    f"文件“{operation.path}”中未找到 hunk 上下文“{chunk.context}”。"
-                )
-            line_index = context_index + 1
-
-        if not chunk.old_lines:
-            replacements.append((len(original_lines), 0, chunk.new_lines))
-            continue
-
-        old_lines = chunk.old_lines
-        new_lines = chunk.new_lines
-        match = _seek_patch_sequence(original_lines, old_lines, line_index, chunk.end_of_file)
-        if match is None and old_lines[-1] == "":
-            old_lines = old_lines[:-1]
-            if new_lines and new_lines[-1] == "":
-                new_lines = new_lines[:-1]
-            match = _seek_patch_sequence(original_lines, old_lines, line_index, chunk.end_of_file)
-        if match is None:
-            raise WorkspaceError(
-                f"文件“{operation.path}”中未找到 hunk 原文，请重新读取文件后重试。"
-            )
-        replacements.append((match, len(old_lines), new_lines))
-        line_index = match + len(old_lines)
-
-    updated_lines = list(original_lines)
-    for start, old_length, new_lines in reversed(sorted(replacements, key=lambda item: item[0])):
-        updated_lines[start : start + old_length] = new_lines
-    if not updated_lines or updated_lines[-1] != "":
-        updated_lines.append("")
-    return "\n".join(updated_lines)
+def _apply_unified_hunks(content: str, patched_file: Any) -> str:
+    original = content.splitlines(keepends=True)
+    updated: list[str] = []
+    source_index = 0
+    for hunk in patched_file:
+        hunk_start = max(0, hunk.source_start - 1)
+        if hunk_start < source_index:
+            raise WorkspaceError("unified diff hunk 范围重叠或顺序无效。")
+        updated.extend(original[source_index:hunk_start])
+        cursor = hunk_start
+        hunk_lines = list(hunk)
+        for index, line in enumerate(hunk_lines):
+            if line.line_type == "\\":
+                continue
+            value = line.value
+            if index + 1 < len(hunk_lines) and hunk_lines[index + 1].line_type == "\\":
+                value = value.removesuffix("\n")
+            if line.is_context or line.is_removed:
+                if cursor >= len(original) or original[cursor] != value:
+                    raise WorkspaceError("unified diff hunk 与当前文件内容不匹配。")
+                if line.is_context:
+                    updated.append(original[cursor])
+                cursor += 1
+            elif line.is_added:
+                updated.append(value)
+        source_index = cursor
+    updated.extend(original[source_index:])
+    return "".join(updated)
 
 
 def build_workspace_changes(
@@ -440,47 +239,33 @@ def build_workspace_changes(
     patch: str,
 ) -> list[dict[str, Any]]:
     changes: list[dict[str, Any]] = []
-    for operation in parse_codex_patch(patch):
+    normalized = patch.replace("\r\n", "\n").replace("\r", "\n")
+    parsed = PatchSet(normalized)
+    operations = parse_unified_diff(normalized)
+    for operation, patched_file in zip(operations, parsed, strict=True):
         path = service.normalize_path(operation.path, allow_root=False)[0]
         if operation.operation == "create":
-            changes.append({"operation": "create", "path": path, "content": operation.content})
+            updated = _apply_unified_hunks("", patched_file)
+            changes.append({"operation": "create", "path": path, "content": updated})
             continue
 
         current = service.read_text(thread, path)
         digest = hashlib.sha256(current.encode("utf-8")).hexdigest()
         if operation.operation == "delete":
+            if _apply_unified_hunks(current, patched_file):
+                raise WorkspaceError("删除文件的 unified diff 应移除全部现有内容。")
             changes.append({"operation": "delete", "path": path, "expected_sha256": digest})
             continue
 
-        updated = _apply_update_chunks(current, operation)
-        if operation.destination is None:
-            changes.append(
-                {
-                    "operation": "update",
-                    "path": path,
-                    "content": updated,
-                    "expected_sha256": digest,
-                }
-            )
-            continue
-
-        destination = service.normalize_path(operation.destination, allow_root=False)[0]
-        if updated == current:
-            changes.append(
-                {
-                    "operation": "move",
-                    "path": path,
-                    "destination": destination,
-                    "expected_sha256": digest,
-                }
-            )
-        else:
-            changes.extend(
-                [
-                    {"operation": "delete", "path": path, "expected_sha256": digest},
-                    {"operation": "create", "path": destination, "content": updated},
-                ]
-            )
+        updated = _apply_unified_hunks(current, patched_file)
+        changes.append(
+            {
+                "operation": "update",
+                "path": path,
+                "content": updated,
+                "expected_sha256": digest,
+            }
+        )
     if len(changes) > MAX_PATCH_FILES:
         raise WorkspaceError(f"补丁转换后的文件操作不能超过 {MAX_PATCH_FILES} 个。")
     return changes
@@ -688,13 +473,10 @@ class CodingToolkit(_ManagedDaytonaTools):
                                 "type": "string",
                                 "minLength": 1,
                                 "description": (
-                                    "优先直接传入完整原生补丁。例如：\n"
-                                    "*** Begin Patch\n*** Add File: path\n+first line\n+\n"
-                                    "+last line\n*** End Patch\n"
-                                    "原生格式中 Add File 的每一行（包括空行）都以 + 开头；"
-                                    "工具也兼容完整单层 Markdown 围栏、apply_patch heredoc 和"
-                                    "漏写 + 的纯空行。Update 的首个 hunk 可省略 @@。"
-                                    "禁止 ---/+++、/dev/null 和普通 unified diff。"
+                                    "传入标准 unified diff。例如：\n"
+                                    "--- /dev/null\n+++ b/path\n@@ -0,0 +1 @@\n+first line\n"
+                                    "新增和删除使用 /dev/null；更新必须包含严格的 @@ hunk。"
+                                    "可通过独立 apply_patch heredoc 传入，不能附加其他命令。"
                                 ),
                             }
                         },
@@ -1591,8 +1373,8 @@ class HermesCodingToolkit(_ManagedDaytonaTools):
                             "patch": {
                                 "type": "string",
                                 "description": (
-                                    "patch 模式必填的完整补丁，必须包含 "
-                                    "*** Begin Patch 和 *** End Patch。"
+                                    "patch 模式必填的完整标准 unified diff，新增和删除使用 "
+                                    "/dev/null，更新必须包含 @@ hunk。"
                                 ),
                             },
                         },

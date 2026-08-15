@@ -23,17 +23,17 @@ def test_settings_defaults():
     )
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
-    assert current.assistant_enable_thinking is False
     assert current.coding_temperature == 0.1
     assert current.coding_enable_thinking is True
     assert current.coding_reasoning_effort == "medium"
     assert current.coding_thinking_budget == 16384
     assert current.report_coding_enable_thinking is True
     assert current.report_coding_temperature == 0.1
-    assert current.report_coding_reasoning_effort == "max"
-    assert current.report_coding_thinking_budget == 16384
+    assert current.report_coding_reasoning_effort == "high"
+    assert current.report_coding_thinking_budget == 8192
     assert current.report_enable_thinking is True
     assert current.report_planner_reasoning_effort == "high"
+    assert current.report_planner_thinking_budget == 8192
     assert current.report_enable_vision is False
     assert current.report_vision_model == "qwen3.6-flash"
     assert current.model_timeout_seconds == 900
@@ -42,74 +42,65 @@ def test_settings_defaults():
     assert current.tracing_phoenix_api_key is None
     assert current.tracing_phoenix_project_name == "agentos"
     assert current.context_token_budget == 262144
-    assert current.history_token_budget == 196608
     assert current.output_token_reserve == 32768
     assert current.report_context_token_budget == 1048576
     assert current.report_output_token_reserve == 393216
+    assert current.report_section_concurrency == 2
     assert current.report_data_sources_dir is None
     assert current.report_metadata_url is None
     assert current.report_metadata_token is None
-    assert current.agentos_jwt_verification_key is None
-    assert current.agentos_jwt_algorithm == "HS256"
-    assert current.agentos_jwt_audience is None
-
-
-def test_agentos_jwt_config_is_loaded():
-    current = settings(
-        JWT_VERIFICATION_KEY=" secret ",
-        JWT_ALGORITHM="RS256",
-        JWT_AUDIENCE=" report-agent-os ",
-    )
-
-    assert current.agentos_jwt_verification_key == "secret"
-    assert current.agentos_jwt_algorithm == "RS256"
-    assert current.agentos_jwt_audience == "report-agent-os"
 
 
 def test_agent_feature_flags_can_be_disabled():
     current = settings(
         AGENT_ENABLE_TOOL_RESULT_COMPRESSION="false",
         AGENT_ENABLE_SESSION_SUMMARIES="0",
-        AGENT_ASSISTANT_ENABLE_THINKING="true",
         AGENT_CODING_TEMPERATURE="0.25",
         AGENT_CODING_ENABLE_THINKING="off",
         AGENT_CODING_REASONING_EFFORT="high",
         AGENT_CODING_THINKING_BUDGET="8192",
         AGENT_REPORT_CODING_ENABLE_THINKING="no",
         AGENT_REPORT_CODING_TEMPERATURE="0.35",
-        AGENT_REPORT_CODING_REASONING_EFFORT="medium",
+        AGENT_REPORT_CODING_REASONING_EFFORT="max",
         AGENT_REPORT_CODING_THINKING_BUDGET="4096",
         AGENT_REPORT_ENABLE_THINKING="false",
         AGENT_REPORT_PLANNER_REASONING_EFFORT="high",
+        AGENT_REPORT_PLANNER_THINKING_BUDGET="2048",
         AGENT_REPORT_ENABLE_VISION="true",
         AGENT_REPORT_VISION_MODEL="vision-model",
-        AGENT_HISTORY_TOKEN_BUDGET="32768",
         AGENT_CONTEXT_TOKEN_BUDGET="131072",
         AGENT_OUTPUT_TOKEN_RESERVE="16384",
         AGENT_REPORT_CONTEXT_TOKEN_BUDGET="524288",
         AGENT_REPORT_OUTPUT_TOKEN_RESERVE="131072",
+        AGENT_REPORT_SECTION_CONCURRENCY="4",
     )
 
     assert current.enable_tool_result_compression is False
     assert current.enable_session_summaries is False
-    assert current.assistant_enable_thinking is True
     assert current.coding_temperature == 0.25
     assert current.coding_enable_thinking is False
     assert current.coding_reasoning_effort == "high"
     assert current.coding_thinking_budget == 8192
     assert current.report_coding_enable_thinking is False
     assert current.report_coding_temperature == 0.35
-    assert current.report_coding_reasoning_effort == "medium"
+    assert current.report_coding_reasoning_effort == "max"
     assert current.report_coding_thinking_budget == 4096
     assert current.report_enable_thinking is False
     assert current.report_planner_reasoning_effort == "high"
+    assert current.report_planner_thinking_budget == 2048
     assert current.report_enable_vision is True
     assert current.report_vision_model == "vision-model"
-    assert current.history_token_budget == 32768
     assert current.context_token_budget == 131072
     assert current.output_token_reserve == 16384
     assert current.report_context_token_budget == 524288
     assert current.report_output_token_reserve == 131072
+    assert current.report_section_concurrency == 4
+
+
+@pytest.mark.parametrize("value", ["0", "6", "invalid"])
+def test_report_section_concurrency_is_bounded(value):
+    with pytest.raises(ValueError, match="AGENT_REPORT_SECTION_CONCURRENCY"):
+        settings(AGENT_REPORT_SECTION_CONCURRENCY=value)
 
 
 def test_model_timeout_comes_from_environment():
@@ -144,7 +135,24 @@ def test_invalid_coding_reasoning_effort_is_rejected(name):
 
 @pytest.mark.parametrize(
     "name",
-    ["AGENT_CODING_THINKING_BUDGET", "AGENT_REPORT_CODING_THINKING_BUDGET"],
+    [
+        "AGENT_REPORT_CODING_REASONING_EFFORT",
+        "AGENT_REPORT_PLANNER_REASONING_EFFORT",
+    ],
+)
+@pytest.mark.parametrize("value", ["minimal", "low", "medium", "xhigh"])
+def test_reporting_reasoning_effort_only_accepts_deepseek_v4_levels(name, value):
+    with pytest.raises(ValueError, match=name):
+        settings(**{name: value})
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "AGENT_CODING_THINKING_BUDGET",
+        "AGENT_REPORT_CODING_THINKING_BUDGET",
+        "AGENT_REPORT_PLANNER_THINKING_BUDGET",
+    ],
 )
 @pytest.mark.parametrize("value", ["invalid", "0", "131073"])
 def test_invalid_coding_thinking_budget_is_rejected(name, value):
@@ -252,7 +260,6 @@ def test_context_budget_rejects_invalid_reserve():
     with pytest.raises(ValueError, match="AGENT_OUTPUT_TOKEN_RESERVE"):
         settings(
             AGENT_CONTEXT_TOKEN_BUDGET="1024",
-            AGENT_HISTORY_TOKEN_BUDGET="512",
             AGENT_OUTPUT_TOKEN_RESERVE="1024",
         )
 

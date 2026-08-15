@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     )
     from ..task_execution.repository import CodingRepositoryError, CodingTaskRepository
     from ..task_execution.session import TaskSession
-    from .adapters import AguiCodingAdapter, CliCodingAdapter, CodingMemberAdapter
+    from .adapters import CliCodingAdapter, CodingMemberAdapter
     from .completion import CompletionGate
     from .executor import AgnoCodingExecutor, AgnoRunState
     from .policy import ContinuationAction, ContinuationDecision, ContinuationPolicy
@@ -32,7 +32,6 @@ if TYPE_CHECKING:
 
 
 _EXPORT_MODULES = {
-    "AguiCodingAdapter": ".adapters",
     "CliCodingAdapter": ".adapters",
     "CodingMemberAdapter": ".adapters",
     "CompletionGate": ".completion",
@@ -69,16 +68,4 @@ def __getattr__(name: str) -> Any:
     return value
 
 
-def create_agentos(settings=None):
-    from .agentos import create_agentos as factory
-
-    return factory(settings)
-
-
-def main() -> None:
-    from .agentos import main as run
-
-    run()
-
-
-__all__ = [*_EXPORT_MODULES, "create_agentos", "main"]
+__all__ = list(_EXPORT_MODULES)

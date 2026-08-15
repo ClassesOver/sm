@@ -4,7 +4,6 @@ from io import StringIO
 
 import pytest
 from agno.agent.protocol import AgentProtocol
-from agno.os.interfaces.agui import AGUI
 from agno.run import RunContext
 from agno.run.agent import RunContentEvent
 
@@ -25,6 +24,8 @@ from agentos_dev.instructions import (
 from agentos_dev.settings import AgentSettings
 from agentos_dev.skills import SkillValidatorRegistry, is_skill_script_hook
 from agentos_dev.task_execution.execution import _create_files_patch, is_coding_tool_scheduler_hook
+from agentos_dev.task_execution.tools import build_workspace_changes
+from agentos_dev.workspace import WorkspaceService
 
 
 def test_cli_main_reads_complete_stdin_without_rewriting(monkeypatch):
@@ -103,10 +104,6 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert app_agent.id == "coding-agent-cli-app"
     assert isinstance(app_agent, DirectCodingAgent)
     assert isinstance(app_agent, AgentProtocol)
-    assert {route.path for route in AGUI(agent=app_agent).get_router().routes} == {
-        "/agui",
-        "/status",
-    }
     assert app_agent.model is agent.model
     assert app_agent.model.id == settings.model_id
     assert app_agent.model.extra_body == {"enable_thinking": True, "thinking_budget": 16384}
@@ -174,7 +171,7 @@ def test_cli_instructions_prefer_direct_verify_and_batch_patch():
 
     assert "首次" in instructions and "verify" in instructions
     assert "一次调用 create_files" in instructions and "一次 apply_patch" in instructions
-    assert "*** Add File: path" in instructions and "/dev/null" in instructions
+    assert "标准 unified diff" in instructions and "/dev/null" in instructions
     assert "两次" in instructions and "计划" in instructions
     assert "cd /workspace" in instructions
     assert 'list_files(path="")' in instructions
@@ -211,10 +208,30 @@ def test_create_files_patch_builds_one_native_multi_file_patch():
         ]
     )
 
-    assert patch.count("*** Begin Patch") == 1
-    assert patch.count("*** Add File:") == 2
-    assert patch.endswith("*** End Patch")
-    assert "---" not in patch and "/dev/null" not in patch
+    assert patch.count("--- /dev/null") == 2
+    assert patch.count("+++ b/") == 2
+    assert patch.count("@@ -0,0") == 2
+
+
+def test_create_files_patch_preserves_missing_trailing_newline() -> None:
+    patch = _create_files_patch(
+        [{"path": "analysis/report.py", "content": 'print("OK")'}]
+    )
+
+    changes = build_workspace_changes(
+        object.__new__(WorkspaceService),
+        "thread",
+        patch,
+    )
+
+    assert '+print("OK")\n\\ No newline at end of file\n' in patch
+    assert changes == [
+        {
+            "operation": "create",
+            "path": "analysis/report.py",
+            "content": 'print("OK")',
+        }
+    ]
 
 
 @pytest.mark.anyio

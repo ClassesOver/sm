@@ -75,9 +75,9 @@ MAX_BRANCH_FILE_BYTES = 200 * 1024 * 1024
 MAX_INSPECT_PDF_PAGES = 200
 MAX_SANDBOX_ID_CACHE_ENTRIES = 1024
 IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
-MANAGED_PROCESS_PREFIX = "agui-exec-"
-MANAGED_TIMEOUT_ENV = "AGUI_MANAGED_TIMEOUT_MARKER"
-MANAGED_TIMEOUT_OUTPUT_PREFIX = "__AGUI_MANAGED_TIMEOUT__"
+MANAGED_PROCESS_PREFIX = "agent-exec-"
+MANAGED_TIMEOUT_ENV = "AGENT_MANAGED_TIMEOUT_MARKER"
+MANAGED_TIMEOUT_OUTPUT_PREFIX = "__AGENT_MANAGED_TIMEOUT__"
 
 
 class WorkspaceError(ValueError):
@@ -108,7 +108,7 @@ class SandboxRegistry:
         schema = getattr(self.db, "db_schema", None)
         self.metadata = MetaData(schema=schema)
         self.table = Table(
-            "agui_workspace_sandbox",
+            "agent_workspace_sandbox",
             self.metadata,
             Column("thread_hash", String(64), primary_key=True),
             Column("sandbox_id", String(256), nullable=False),
@@ -135,7 +135,7 @@ class SandboxRegistry:
                     )
                 connection.exec_driver_sql(
                     "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    ("agui-workspace:initialize",),
+                    ("agent-workspace:initialize",),
                 )
             self.metadata.create_all(connection)
         self.db.upsert_schema_version(self.table.name, "1.0.0")
@@ -206,7 +206,7 @@ class AsyncSandboxRegistry:
         schema = getattr(self.db, "db_schema", None)
         self.metadata = MetaData(schema=schema)
         self.table = Table(
-            "agui_workspace_sandbox",
+            "agent_workspace_sandbox",
             self.metadata,
             Column("thread_hash", String(64), primary_key=True),
             Column("sandbox_id", String(256), nullable=False),
@@ -238,7 +238,7 @@ class AsyncSandboxRegistry:
                             )
                         await connection.exec_driver_sql(
                             "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                            ("agui-workspace:initialize",),
+                            ("agent-workspace:initialize",),
                         )
                     await connection.run_sync(self.metadata.create_all)
             await self.db.upsert_schema_version(self.table.name, "1.0.0")
@@ -418,7 +418,7 @@ class WorkspaceService:
         matches = list(
             self.client.list(
                 ListSandboxesQuery(
-                    labels={"agui-thread": value},
+                    labels={"agent-thread": value},
                     limit=2,
                 )
             )
@@ -469,9 +469,9 @@ class WorkspaceService:
                     sandbox = self.client.create(
                         CreateSandboxFromSnapshotParams(
                             snapshot=self.snapshot,
-                            name=f"agui-{value[:20]}",
+                            name=f"agent-{value[:20]}",
                             language="python",
-                            labels={"agui-thread": value},
+                            labels={"agent-thread": value},
                             public=False,
                             ephemeral=False,
                             auto_stop_interval=60,
@@ -500,7 +500,7 @@ class WorkspaceService:
                     pass
             for sandbox in self.client.list(
                 ListSandboxesQuery(
-                    labels={"agui-thread": value},
+                    labels={"agent-thread": value},
                 )
             ):
                 sandboxes[sandbox.id] = sandbox
@@ -527,7 +527,7 @@ class WorkspaceService:
             sandbox
             async for sandbox in client.list(
                 ListSandboxesQuery(
-                    labels={"agui-thread": value},
+                    labels={"agent-thread": value},
                     limit=2,
                 )
             )
@@ -578,9 +578,9 @@ class WorkspaceService:
                     sandbox = await client.create(
                         CreateSandboxFromSnapshotParams(
                             snapshot=self.snapshot,
-                            name=f"agui-{value[:20]}",
+                            name=f"agent-{value[:20]}",
                             language="python",
-                            labels={"agui-thread": value},
+                            labels={"agent-thread": value},
                             public=False,
                             ephemeral=False,
                             auto_stop_interval=60,
@@ -609,7 +609,7 @@ class WorkspaceService:
                     pass
             async for sandbox in client.list(
                 ListSandboxesQuery(
-                    labels={"agui-thread": value},
+                    labels={"agent-thread": value},
                 )
             ):
                 sandboxes[sandbox.id] = sandbox
@@ -963,7 +963,7 @@ class WorkspaceService:
 
     def create_file_locked(self, thread: str, path: str, content: bytes) -> dict[str, Any]:
         relative, _remote = self.normalize_path(path, allow_root=False)
-        lock_key = f"agui-workspace-file:{self._hash(thread)}:{relative}"
+        lock_key = f"agent-workspace-file:{self._hash(thread)}:{relative}"
         with self.registry.locked(lock_key):
             return self.create_file(thread, relative, content)
 
@@ -1974,7 +1974,7 @@ class WorkspaceService:
         ):
             raise WorkspaceError("补丁文件哈希格式无效，请先重新读取文件哈希。")
         relative = self.normalize_path(path, allow_root=False)[0]
-        lock_key = f"agui-workspace-patch:{self._hash(thread)}"
+        lock_key = f"agent-workspace-patch:{self._hash(thread)}"
         with self.registry.locked(lock_key):
             current = self.read_text(thread, relative)
             current_bytes = current.encode("utf-8")
@@ -2077,7 +2077,7 @@ class WorkspaceService:
                     raise WorkspaceError(f"批量补丁编辑项不能超过 {MAX_PATCH_EDITS} 个。")
             normalized.append((relative, expected_sha256, validated_edits))
 
-        lock_key = f"agui-workspace-patch:{self._hash(thread)}"
+        lock_key = f"agent-workspace-patch:{self._hash(thread)}"
         with self.registry.locked(lock_key):
             prepared: list[dict[str, Any]] = []
             for relative, expected_sha256, edits in normalized:
@@ -2211,7 +2211,7 @@ class WorkspaceService:
                     raise WorkspaceError(f"定位补丁 hunk 不能超过 {MAX_PATCH_EDITS} 个。")
             normalized.append((relative, expected_sha256, validated_hunks))
 
-        lock_key = f"agui-workspace-patch:{self._hash(thread)}"
+        lock_key = f"agent-workspace-patch:{self._hash(thread)}"
         with self.registry.locked(lock_key):
             prepared: list[dict[str, Any]] = []
             for relative, expected_sha256, hunks in normalized:
@@ -2327,7 +2327,7 @@ class WorkspaceService:
             "delete": {"operation", "path", "expected_sha256"},
             "move": {"operation", "path", "destination", "expected_sha256"},
         }
-        lock_key = f"agui-workspace-changes:{self._hash(thread)}"
+        lock_key = f"agent-workspace-changes:{self._hash(thread)}"
         with self.registry.locked(lock_key):
             for change in changes:
                 if not isinstance(change, dict):
@@ -2606,7 +2606,7 @@ class WorkspaceService:
 
     def create_directory(self, thread: str, path: str) -> dict[str, Any]:
         relative, remote = self.normalize_path(path, allow_root=False)
-        lock_key = f"agui-workspace-directory:{self._hash(thread)}:{relative}"
+        lock_key = f"agent-workspace-directory:{self._hash(thread)}:{relative}"
         with self.registry.locked(lock_key):
             sandbox = self.sandbox_for(thread)
             if self._inspect_destination_without_writes(sandbox, relative) is not None:
@@ -2622,7 +2622,7 @@ class WorkspaceService:
         destination_relative, destination_remote = self.normalize_path(
             destination, allow_root=False
         )
-        lock_key = f"agui-workspace-copy:{self._hash(thread)}"
+        lock_key = f"agent-workspace-copy:{self._hash(thread)}"
         with self.registry.locked(lock_key):
             sandbox = self.sandbox_for(thread)
             self._validate_existing_path(sandbox, source_relative)
@@ -2779,7 +2779,7 @@ BASE_TOOL_PARAMETER_CONSTRAINTS: dict[str, dict[str, dict[str, Any]]] = {
         "yield_time_ms": {"minimum": 0, "maximum": 30000},
     },
     "sandbox_process_poll": {
-        "session_id": {"pattern": r"^agui-exec-[0-9a-f]{32}$"},
+        "session_id": {"pattern": r"^agent-exec-[0-9a-f]{32}$"},
         "command_id": {
             "minLength": 1,
             "maxLength": 128,
@@ -2793,7 +2793,7 @@ BASE_TOOL_PARAMETER_CONSTRAINTS: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
     "sandbox_process_write": {
-        "session_id": {"pattern": r"^agui-exec-[0-9a-f]{32}$"},
+        "session_id": {"pattern": r"^agent-exec-[0-9a-f]{32}$"},
         "command_id": {
             "minLength": 1,
             "maxLength": 128,
@@ -2809,7 +2809,7 @@ BASE_TOOL_PARAMETER_CONSTRAINTS: dict[str, dict[str, dict[str, Any]]] = {
         "yield_time_ms": {"minimum": 0, "maximum": 30000},
     },
     "sandbox_process_stop": {
-        "session_id": {"pattern": r"^agui-exec-[0-9a-f]{32}$"},
+        "session_id": {"pattern": r"^agent-exec-[0-9a-f]{32}$"},
         "command_id": {
             "minLength": 1,
             "maxLength": 128,
@@ -2817,7 +2817,7 @@ BASE_TOOL_PARAMETER_CONSTRAINTS: dict[str, dict[str, dict[str, Any]]] = {
         },
     },
     "sandbox_process_interrupt": {
-        "session_id": {"pattern": r"^agui-exec-[0-9a-f]{32}$"},
+        "session_id": {"pattern": r"^agent-exec-[0-9a-f]{32}$"},
         "command_id": {
             "minLength": 1,
             "maxLength": 128,
@@ -3119,7 +3119,7 @@ class DaytonaToolkit(Toolkit):
         request: SessionExecuteRequest,
         session_id: str | None = None,
     ) -> tuple[str, str, Any]:
-        lock_key = f"agui-managed-processes:{self.service._hash(thread)}"
+        lock_key = f"agent-managed-processes:{self.service._hash(thread)}"
         async with self.service.async_registry.locked(lock_key):
             active = 0
             for session in await process.list_sessions():
@@ -3376,7 +3376,7 @@ class DaytonaToolkit(Toolkit):
             if background:
                 started_at = asyncio.get_running_loop().time()
                 timeout_marker = uuid.uuid4().hex
-                timeout_status_path = f"/tmp/agui-managed-status-{timeout_marker}"
+                timeout_status_path = f"/tmp/agent-managed-status-{timeout_marker}"
                 tracked_command = (
                     f"(\n{executed_command}\n)\n"
                     "command_status=$?\n"
@@ -3400,7 +3400,7 @@ class DaytonaToolkit(Toolkit):
                 )
                 environment = ["env"]
                 if pty:
-                    environment.append("AGUI_MANAGED_PTY=1")
+                    environment.append("AGENT_MANAGED_PTY=1")
                 environment.append(f"{MANAGED_TIMEOUT_ENV}={timeout_marker}")
                 wrapped_command = (
                     f"cd -- {shlex.quote(remote_cwd)} && "
@@ -3549,7 +3549,7 @@ class DaytonaToolkit(Toolkit):
                 wrapper = shlex.split(str(getattr(command, "command", "") or ""))
             except ValueError:
                 wrapper = []
-            if wrapper[3:6] != ["&&", "env", "AGUI_MANAGED_PTY=1"]:
+            if wrapper[3:6] != ["&&", "env", "AGENT_MANAGED_PTY=1"]:
                 raise WorkspaceError("后台进程未启用 PTY，不能发送终端中断信号。")
             await sandbox.process.send_session_command_input(session_id, command_id, "\x03")
         return {"ok": True, "status": "signal_sent", "signal": signal}

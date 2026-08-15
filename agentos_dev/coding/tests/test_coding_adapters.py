@@ -1,7 +1,6 @@
 from collections.abc import AsyncIterator
 
 import pytest
-from ag_ui.core import EventType
 from agno.run.agent import (
     ReasoningCompletedEvent,
     ReasoningContentDeltaEvent,
@@ -12,7 +11,6 @@ from agno.run.agent import (
 )
 
 from agentos_dev.coding import (
-    AguiCodingAdapter,
     CliCodingAdapter,
     CodingEvent,
     CodingScope,
@@ -105,36 +103,6 @@ async def test_member_adapter_forwards_server_acceptance_contract():
     )
 
 
-@pytest.mark.anyio
-async def test_agui_adapter_uses_deterministic_final_and_terminal_ids():
-    supervisor = FakeSupervisor()
-    adapter = AguiCodingAdapter(supervisor)  # type: ignore[arg-type]
-
-    events = [event async for event in adapter.start_events(scope(), "实现目标")]
-
-    assert [getattr(event, "message_id", None) for event in events[:3]] == [
-        "run:final",
-        "run:final",
-        "run:final",
-    ]
-    assert events[-1].run_id == "run"
-
-
-def test_agui_adapter_converts_suspension_to_connection_error():
-    adapter = AguiCodingAdapter(FakeSupervisor())  # type: ignore[arg-type]
-    converted = adapter.convert(
-        CodingEvent(
-            "run:suspended:2",
-            "suspended",
-            {"state": "suspended", "code": "model_insufficient_quota"},
-        ),
-        scope(),
-    )
-
-    assert len(converted) == 1
-    assert converted[0].code == "model_insufficient_quota"
-
-
 def tool_event(phase: str) -> CodingEvent:
     return CodingEvent(
         f"run:0:{phase}",
@@ -202,21 +170,3 @@ def test_cli_adapter_converts_reasoning_to_official_stream_events():
     assert converted[1].reasoning_content == "先检查"
     assert isinstance(converted[2], ReasoningContentDeltaEvent)
     assert converted[2].reasoning_content == "，再修改"
-
-
-def test_agui_adapter_converts_internal_tools_to_standard_tool_call_events():
-    adapter = AguiCodingAdapter(FakeSupervisor())  # type: ignore[arg-type]
-
-    started = adapter.convert(tool_event("started"), scope())
-    completed = adapter.convert(tool_event("completed"), scope())
-
-    assert [event.type for event in started] == [
-        EventType.TOOL_CALL_START,
-        EventType.TOOL_CALL_ARGS,
-        EventType.TOOL_CALL_END,
-    ]
-    assert started[0].tool_call_id == "run:0:internal:call-1"
-    assert started[1].delta == '{"command":"pytest -q"}'
-    assert [event.type for event in completed] == [EventType.TOOL_CALL_RESULT]
-    assert completed[0].tool_call_id == "run:0:internal:call-1"
-    assert completed[0].content == '{"ok":true,"internal":true,"durationSeconds":1.25}'

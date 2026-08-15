@@ -20,7 +20,8 @@ from sqlglot import exp, parse
 from .hospital_operation.domains import DOMAIN_CODES
 from .models import ReportingError
 
-CONTRACT_VERSION = "1"
+REPORT_WORKFLOW_SCOPE_STATE_KEY = "report_workflow_scope"
+
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 FIELD_REF_PATTERN = (
     r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\."
@@ -117,13 +118,12 @@ class ReportRequestEnvelope(StrictModel):
     domains: tuple[str, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
-    agent_id: str | None = Field(default=None, alias="agentId", min_length=1, max_length=128)
     schema_input: SchemaInput | None = Field(default=None, alias="schemaInput")
     comparison_roles: tuple[Literal["yoy", "mom"], ...] = Field(
         default=("yoy",), alias="comparisonRoles", max_length=2
     )
 
-    @field_validator("report_goal", "agent_id")
+    @field_validator("report_goal")
     @classmethod
     def strip_text(cls, value: str | None) -> str | None:
         return value.strip() if isinstance(value, str) else value
@@ -242,7 +242,6 @@ class ReportingWorkflowInput(StrictModel):
     domains: tuple[str, ...] | None = Field(default=None, max_length=6)
     period: ReportPeriod | None = None
     source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", max_length=20)
-    agent_id: str | None = Field(default=None, alias="agentId", min_length=1, max_length=128)
     schema_input: SchemaInput | None = Field(default=None, alias="schemaInput")
     comparison_roles: tuple[Literal["yoy", "mom"], ...] | None = Field(
         default=None, alias="comparisonRoles", max_length=2
@@ -259,7 +258,6 @@ class ReportingWorkflowInput(StrictModel):
                     self.domains,
                     self.period,
                     self.source_ids,
-                    self.agent_id,
                     self.schema_input,
                     self.comparison_roles,
                 )
@@ -284,7 +282,6 @@ class ReportingAgent(StrictModel):
     code: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=2_000)
-    enabled: bool
 
 
 class MetadataAgent(StrictModel):
@@ -295,10 +292,6 @@ class MetadataAgent(StrictModel):
 
 class MetadataAgentResponse(StrictModel):
     agent_list: tuple[MetadataAgent, ...] = Field(max_length=100)
-
-
-class AgentQueryResponse(StrictModel):
-    agents: tuple[ReportingAgent, ...] = Field(max_length=100)
 
 
 class RawDdlModel(StrictModel):
@@ -324,6 +317,7 @@ class MetadataTerm(StrictModel):
 class MeasureSemantic(StrictModel):
     field_ref: str = Field(alias="fieldRef", pattern=FIELD_REF_PATTERN)
     aggregation: Literal["sum", "average", "min", "max", "count", "count_distinct"]
+    unit: str | None = Field(default=None, min_length=1, max_length=64)
     additive_across: tuple[str, ...] = Field(default=(), alias="additiveAcross", max_length=100)
     exclusive_scope: dict[str, str] = Field(
         default_factory=dict, alias="exclusiveScope", max_length=100

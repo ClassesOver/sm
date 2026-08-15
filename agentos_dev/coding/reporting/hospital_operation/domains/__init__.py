@@ -50,30 +50,6 @@ class DomainResolution:
     def is_ambiguous(self) -> bool:
         return bool(self.ambiguous_aliases)
 
-    @property
-    def is_unspecified(self) -> bool:
-        return not self.selected and not self.ambiguous_aliases
-
-
-class HospitalOperationCore:
-    """六域静态装配；域之间只共享事实契约，不互相导入。"""
-
-    def __init__(self, definitions: tuple[DomainDefinition, ...] | None = None):
-        self._definitions = definitions or domain_definitions()
-        codes = [item.code for item in self._definitions]
-        if tuple(codes) != DOMAIN_CODES:
-            raise ValueError("医院运营六域必须使用稳定顺序")
-
-    @property
-    def domains(self) -> tuple[DomainDefinition, ...]:
-        return self._definitions
-
-    def definition(self, code: str) -> DomainDefinition:
-        for item in self._definitions:
-            if item.code == code:
-                return item
-        raise KeyError(code)
-
 
 def domain_definitions() -> tuple[DomainDefinition, ...]:
     return (
@@ -157,17 +133,6 @@ def _normalized_alias(value: str) -> str:
     return _NORMALIZE_RE.sub("", value.strip().casefold())
 
 
-def normalize_domain_code(value: str) -> str:
-    normalized = _normalized_alias(value)
-    for definition in domain_definitions():
-        if normalized in {
-            _normalized_alias(definition.code),
-            *(_normalized_alias(item) for item in definition.aliases),
-        }:
-            return definition.code
-    raise ValueError(f"未知医院运营领域: {value}")
-
-
 def resolve_domain_mentions(text: str) -> DomainResolution:
     """先用确定性别名识别领域；"成本"等重叠词明确返回歧义。"""
     if not isinstance(text, str):
@@ -214,7 +179,6 @@ def domain_guidance(stage: str | None = None) -> tuple[dict[str, Any], ...]:
         "request": {"aliases", "title"},
         "data_understanding": {"title", "coreQuestions", "attributionClues", "forbiddenInferences"},
         "analysis": {"title", "coreQuestions", "attributionClues", "forbiddenInferences"},
-        "findings": {"title", "coreQuestions", "attributionClues", "forbiddenInferences"},
         "outline": {"title", "coreQuestions"},
         "draft": {"title", "forbiddenInferences"},
     }.get(stage)
@@ -232,7 +196,6 @@ def build_domain_stage_guidance(stage: str) -> tuple[str, ...]:
         "request": "输入：用户原始目标、可选领域代码和期间文本。",
         "data_understanding": "输入：已冻结请求范围、Schema/DataShape 和可用领域事实。",
         "analysis": "输入：已批准取数需求、期间角色数据和领域事实。",
-        "findings": "输入：不可变 Dataset、Profile 索引、引用和期间覆盖。",
         "outline": "输入：已注册结构化发现、请求范围和数据覆盖。",
         "draft": "输入：批准提纲、详细分析计划、DatasetLineage、引用和审核意见。",
     }
@@ -249,7 +212,6 @@ def build_domain_stage_guidance(stage: str) -> tuple[str, ...]:
             "执行：六域是条件规则，不是必须覆盖的主题清单；依次规划整体规模与结构、趋势与拐点、"
             "异常贡献、归因验证、经营影响。报告目标未涉及或无可靠数据时，不得创建对应 analysis 或 requirement。"
         ),
-        "findings": "执行：从已注册 factId 生成整体、趋势、异常线索、归因或数据质量发现。",
         "outline": (
             "执行：按真实发现的重要性自由组织中文经营章节；未涉及或无数据领域不建空章，"
             "可用简短章节或段落说明分析依据与分析方法，但不单列数据来源、技术实现或审计信息。"
@@ -263,7 +225,6 @@ def build_domain_stage_guidance(stage: str) -> tuple[str, ...]:
         "request": "禁止：生成表名、字段、SQL、章节、指标值或强制询问 reportType。",
         "data_understanding": "禁止：虚构表字段、为覆盖六域而全选表、用不可比跨域数据归因。",
         "analysis": "禁止：补齐/外推/年化；相关性不得表述为确定因果，也不得把待验证原因写成事实。",
-        "findings": "禁止：引用未注册 factId、提交自造数值、把相关性写成因果。",
         "outline": "禁止：提交机器 code、固定十章模板、引用未存在的发现。",
         "draft": "禁止：改写 displayText、脱离绑定引用、生成空领域章节或未经证实的因果。",
     }
@@ -274,7 +235,6 @@ def build_domain_stage_guidance(stage: str) -> tuple[str, ...]:
         ),
         "data_understanding": "正例：收入专题只取收入表，工作量表仅在同期间同粒度验证量价时加入；反例：无目标地选择六域全部表。",
         "analysis": "正例：先比较规模，再定位十月拐点和贡献组织；反例：直接写‘因为政策导致下降’。",
-        "findings": "正例：finding 引用 metric-001 并标记 hypothesis；反例：引用不存在的 fact-999。",
         "outline": "正例：发现只有收入趋势和数据质量时组织两到三节；反例：固定生成六个空领域章节。",
         "draft": "正例：‘收入为 1.20亿元（metric-001）’；反例：模型自行把 12000万元换算并改精度。",
     }
@@ -317,10 +277,8 @@ __all__ = [
     "DomainCode",
     "DomainDefinition",
     "DomainResolution",
-    "HospitalOperationCore",
     "build_domain_stage_guidance",
     "domain_definitions",
     "domain_guidance",
-    "normalize_domain_code",
     "resolve_domain_mentions",
 ]

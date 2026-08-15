@@ -60,7 +60,7 @@ async def test_coding_model_cannot_modify_installed_skill_script_in_daytona(tmp_
         try:
             sandbox = await client.create(
                 CreateSandboxFromSnapshotParams(
-                    name=f"agui-skill-readonly-{uuid.uuid4().hex[:8]}",
+                    name=f"agent-skill-readonly-{uuid.uuid4().hex[:8]}",
                     snapshot=os.getenv("DAYTONA_DEFAULT_SNAPSHOT", WORKSPACE_SNAPSHOT),
                     public=False,
                     ephemeral=True,

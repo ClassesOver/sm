@@ -81,10 +81,10 @@ chmod 600 "$WORK_FILE"
 
 if [[ "$is_new" == true ]]; then
     set_random_env AGENT_POSTGRES_PASSWORD 9
-    set_random_env AGUI_WORKSPACE_HMAC_SECRET 32
+    set_random_env AGENT_WORKSPACE_HMAC_SECRET 32
 else
     if ask_yes_no '重新生成 AgentOS 工作区 HMAC 密钥？' n; then
-        set_random_env AGUI_WORKSPACE_HMAC_SECRET 32
+        set_random_env AGENT_WORKSPACE_HMAC_SECRET 32
     fi
     password=$(env_value AGENT_POSTGRES_PASSWORD)
     [[ -n "$password" && "$password" != 'generated-by-env-init' ]] || set_random_env AGENT_POSTGRES_PASSWORD 9

@@ -154,8 +154,6 @@ downloads/
 eggs/
 .eggs/
 lib/
-!/agui_chat/static/lib/
-!/agui_chat/static/lib/agui-chat-react/
 lib64/
 parts/
 sdist/
@@ -303,9 +301,8 @@ cython_debug/
 #.idea/
 
 ### 项目专用
-# 本地 Agent 配置和 Odoo 测试模块
+# 本地 Agent 配置
 /.agents/
-/agui_chat_test/
 
 # JetBrains IDE 本地配置
 /.idea/
@@ -319,9 +316,6 @@ cython_debug/
 /*.db-journal
 /*.db-shm
 /*.db-wal
-
-# Playwright 测试产物（视觉回归基准图应保留）
-/agui_chat/react_widget/test-results/
 
 # 合并和补丁残留
 *.orig

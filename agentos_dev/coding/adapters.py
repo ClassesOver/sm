@@ -4,19 +4,6 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
-from ag_ui.core import (
-    BaseEvent,
-    EventType,
-    RunErrorEvent,
-    RunFinishedEvent,
-    TextMessageContentEvent,
-    TextMessageEndEvent,
-    TextMessageStartEvent,
-    ToolCallArgsEvent,
-    ToolCallEndEvent,
-    ToolCallResultEvent,
-    ToolCallStartEvent,
-)
 from agno.metrics import ToolCallMetrics
 from agno.models.response import ToolExecution
 from agno.run.agent import (
@@ -174,94 +161,6 @@ class CliCodingAdapter(CodingMemberAdapter):
         ]
 
 
-class AguiCodingAdapter(CodingMemberAdapter):
-    def __init__(self, supervisor: CodingTaskSupervisor):
-        super().__init__(supervisor)
-        self._terminal_calls: set[str] = set()
-
-    async def start_events(
-        self,
-        scope: CodingScope,
-        instruction: str,
-        *,
-        predecessor_task_id: str | None = None,
-        acceptance_contract: dict[str, Any] | None = None,
-    ) -> AsyncIterator[BaseEvent]:
-        async for event in self.start(
-            scope,
-            instruction,
-            predecessor_task_id=predecessor_task_id,
-            acceptance_contract=acceptance_contract,
-        ):
-            for converted in self.convert(event, scope):
-                yield converted
-
-    async def resume_events(self, scope: CodingScope) -> AsyncIterator[BaseEvent]:
-        async for event in self.resume(scope):
-            for converted in self.convert(event, scope):
-                yield converted
-
-    def convert(self, event: CodingEvent, scope: CodingScope) -> list[BaseEvent]:
-        tool_data = _tool_event_data(event)
-        if tool_data is not None:
-            call_id, tool_name, phase, arguments, duration = tool_data
-            if phase == "started":
-                return [
-                    ToolCallStartEvent(tool_call_id=call_id, tool_call_name=tool_name),
-                    ToolCallArgsEvent(tool_call_id=call_id, delta=arguments or "{}"),
-                    ToolCallEndEvent(tool_call_id=call_id),
-                ]
-            if call_id in self._terminal_calls:
-                return []
-            self._terminal_calls.add(call_id)
-            content: dict[str, Any] = {"ok": phase == "completed", "internal": True}
-            if duration is not None:
-                content["durationSeconds"] = duration
-            if phase == "error":
-                content["code"] = "internal_tool_failed"
-            return [
-                ToolCallResultEvent(
-                    message_id=f"{call_id}:result",
-                    tool_call_id=call_id,
-                    content=json.dumps(content, separators=(",", ":")),
-                    role="tool",
-                )
-            ]
-        if event.type == "final_message":
-            return [
-                TextMessageStartEvent(message_id=event.event_id, role="assistant"),
-                TextMessageContentEvent(
-                    message_id=event.event_id, delta=str(event.data.get("content") or "")
-                ),
-                TextMessageEndEvent(message_id=event.event_id),
-            ]
-        if event.type == "terminal" and event.data.get("state") == "completed":
-            return [
-                RunFinishedEvent(
-                    type=EventType.RUN_FINISHED,
-                    thread_id=scope.thread_id,
-                    run_id=scope.external_run_id,
-                )
-            ]
-        if event.type == "terminal":
-            return [
-                RunErrorEvent(
-                    type=EventType.RUN_ERROR,
-                    message=str(event.data.get("message") or "编码任务未完成。"),
-                    code=str(event.data.get("code") or "coding_task_failed"),
-                )
-            ]
-        if event.type == "suspended":
-            return [
-                RunErrorEvent(
-                    type=EventType.RUN_ERROR,
-                    message="编码任务已暂停，请在外部依赖恢复后继续。",
-                    code=str(event.data.get("code") or "coding_task_suspended"),
-                )
-            ]
-        return []
-
-
 def _tool_event_data(
     event: CodingEvent,
 ) -> tuple[str, str, str, str, float | None] | None:
@@ -295,7 +194,6 @@ def _tool_arguments(arguments: str) -> dict[str, Any]:
 
 
 __all__ = [
-    "AguiCodingAdapter",
     "CliCodingAdapter",
     "CodingMemberAdapter",
 ]

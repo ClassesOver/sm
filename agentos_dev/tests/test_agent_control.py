@@ -1,15 +1,9 @@
-from types import SimpleNamespace
-
 import pytest
-from agno.models.message import Message
 from agno.run import RunContext
 
 from agentos_dev.agent_control import (
-    AGENT_CONTEXT_STATUS_DEPENDENCY,
-    AGENT_CONTINUATION_STATE_KEY,
     AGENT_PLAN_STATE_KEY,
     AgentControlToolkit,
-    build_agent_tools,
     validated_agent_plan,
 )
 from agentos_dev.tests.workspace_fakes import service
@@ -76,105 +70,3 @@ def test_validated_agent_plan_rejects_untrusted_or_invalid_state():
         )
         is None
     )
-
-
-class CountingModel:
-    def count_tokens(self, messages, tools=None, output_schema=None):
-        return sum(len(str(message.content)) for message in messages) + len(tools or []) * 10
-
-
-def test_agent_context_status_returns_full_context_estimate_without_business_data(tmp_path):
-    toolkit = AgentControlToolkit(
-        service(tmp_path),
-        model=CountingModel(),
-        context_token_budget=262144,
-        output_token_reserve=32768,
-    )
-    context = RunContext(
-        run_id="run",
-        session_id="thread",
-        dependencies={
-            AGENT_CONTEXT_STATUS_DEPENDENCY: {
-                "historyTokenBudget": 65536,
-                "historyTokensUsed": 120,
-                "historyTokensRemaining": 65416,
-                "summaryIncluded": True,
-                "tokenCountReliable": True,
-            },
-            "宿主": {"snapshotId": "secret"},
-        },
-        messages=[Message(role="user", content="当前请求")],
-        tools=[],
-    )
-
-    result = toolkit.agent_context_status(run_context=context)
-
-    assert result["historyTokensUsed"] == 120
-    assert "snapshotId" not in str(result)
-    assert result["contextTokenBudget"] == 262144
-    assert result["outputReserveTokens"] == 32768
-    assert result["estimatedTokensUsed"] == 4
-    assert result["estimatedTokensRemaining"] == 229372
-    assert result["scope"] == "full_context_estimate"
-    assert result["tokenCountReliable"] is True
-
-
-def test_agent_prepare_continuation_only_stores_sanitized_handoff(tmp_path):
-    toolkit = AgentControlToolkit(service(tmp_path))
-    context = RunContext(
-        run_id="run",
-        session_id="thread",
-        session_state={"odoo": {"snapshotId": "authoritative"}},
-    )
-
-    result = toolkit.agent_prepare_continuation(
-        summary="已完成收入数据剖析",
-        pending_steps=["生成 Markdown", "渲染并验收 PDF"],
-        artifact_paths=["报表/分析.json"],
-        run_context=context,
-    )
-
-    assert result["ok"] is True
-    assert result["appliesFrom"] == "next_run"
-    assert context.session_state["odoo"] == {"snapshotId": "authoritative"}
-    assert context.session_state[AGENT_CONTINUATION_STATE_KEY]["sourceRunId"] == "run"
-
-    with pytest.raises(ValueError, match="Odoo"):
-        toolkit.agent_prepare_continuation(
-            summary="snapshotId=secret",
-            pending_steps=["继续"],
-            run_context=context,
-        )
-
-    with pytest.raises(ValueError, match="Odoo"):
-        toolkit.agent_prepare_continuation(
-            summary='{"token":"secret"}',
-            pending_steps=["继续"],
-            run_context=context,
-        )
-
-
-def test_tool_factory_injects_model_budget_and_continuation(tmp_path):
-    model = CountingModel()
-    handoff = {
-        "summary": "已完成剖析",
-        "pendingSteps": ["生成 PDF"],
-        "artifactPaths": ["报表/分析.json"],
-    }
-
-    tools = build_agent_tools(
-        service(tmp_path),
-        run_context=SimpleNamespace(
-            session_state={AGENT_CONTINUATION_STATE_KEY: handoff},
-            dependencies={},
-        ),
-        agent=SimpleNamespace(model=model),
-        context_token_budget=262144,
-        output_token_reserve=32768,
-    )
-
-    control = tools[0]
-    assert isinstance(control, AgentControlToolkit)
-    assert control.model is model
-    assert control.context_token_budget == 262144
-    assert "已完成剖析" in control.instructions
