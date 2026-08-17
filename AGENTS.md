@@ -23,7 +23,7 @@
 
 ## 架构边界与事实来源
 
-- `agentos_dev/` 是 Python 3.12、FastAPI、Agno 2.8.2 的 AgentOS 服务，负责智能体、持久化和 Daytona 工作区。
+- `smart_reporting/` 是 Python 3.12、FastAPI、Agno 2.8.2 的 AgentOS 服务，负责智能体、持久化和 Daytona 工作区。
 - 纯 Coding Agent 定位为领域无关的通用软件工程执行能力，只依据用户目标、当前工作区和通用工具完成编码、运行与验证；可以按任务编写任意领域代码，但不得内置特定业务领域的流程、知识、工具或验收规则。
 - Report Agent 与纯 Coding Agent 是独立产品边界，必须保持解耦。两者不得相互导入或复用对方的领域指令、工具集、状态机、控制器、验收契约、运行入口或持久化状态；纯 Coding Agent 中禁止加入报表、取数、数据源或特定任务类型的规则。
 - 两类 Agent 仅可依赖领域无关且接口稳定的底层能力，例如模型适配、工作区原语、通用执行记录和可观测性。共享能力应下沉到中立模块并由双方单向依赖，不得通过条件分支、反向导入或兼容层把两条运行链路重新耦合；相关测试和入口必须能够独立运行。
@@ -46,7 +46,7 @@
 
 ## AgentOS 与 Agno
 
-- 依赖版本以 `agentos_dev/requirements.in` 和锁定的 `requirements*.txt` 为准；不要凭记忆套用其他 Agno 版本的 API。
+- 依赖版本以 `smart_reporting/requirements.in` 和锁定的 `requirements*.txt` 为准；不要凭记忆套用其他 Agno 版本的 API。
 - 优先使用 Agno 公共 API。修改相关代码或升级 `agno` 时，必须核对官方文档和源码并补充契约测试。
 - 保持 `AgentOS` 和 `PostgresDb` 的现有职责，不自行复制运行历史或会话持久化。结构化输入输出使用明确的 Pydantic/schema 模型，不手工拼接可结构化的数据。
 - FastAPI 异步入口不得直接执行阻塞 I/O；沿用线程池或异步客户端边界，并覆盖取消、超时和依赖失败路径。
@@ -68,7 +68,7 @@
 
 - 新增行为覆盖正常路径和与改动直接相关的失败路径。鉴权、幂等、重放、过期、跨用户/公司/thread 和输入边界变更必须有负向测试。
 - 默认先运行与改动直接对应的定点测试节点或最小测试文件，不得用整个目录、全部单元测试或端到端测试代替定点验证。只有定点测试无法覆盖跨模块契约、改动确实跨越完整服务流程或用户明确要求时，才按风险逐级扩大测试范围。
-- 修改 `agentos_dev/` 的 Python 实现、测试或依赖时，默认运行定点 pytest，并对改动文件运行 Ruff format、Ruff lint 和必要的 Mypy；只有跨模块影响需要完整非集成回归或用户明确要求全量检查时，才在仓库根目录运行 `bash scripts/check_agentos.sh`。
+- 修改 `smart_reporting/` 的 Python 实现、测试或依赖时，默认运行定点 pytest，并对改动文件运行 Ruff format、Ruff lint 和必要的 Mypy；只有跨模块影响需要完整非集成回归或用户明确要求全量检查时，才在仓库根目录运行 `bash scripts/check_agentos.sh`。
 - 沙箱内运行异步 SQLite 测试时，若 `aiosqlite` worker 已完成操作但 asyncio self-pipe 唤醒报 `PermissionError: [Errno 1] Operation not permitted`，表现为首次连接或 fixture 假死，应将其识别为沙箱限制而非业务死锁；在获得权限后于沙箱外重跑相同检查，不得为绕过该环境限制修改业务实现。
 - Python 单元测试使用小而明确的 fixture、`tmp_path`、`monkeypatch`/mock 和异步测试；不得访问真实网络或共享用户目录。外部 PostgreSQL/Daytona 场景标记为 `integration`。
 - 修改根目录 Compose 或环境变量时运行 `docker compose config`；修改 Daytona Compose 时运行 `docker compose --env-file docker/.env -f docker/docker-compose.yaml config`。同步相应 `.env.example` 和部署文档。

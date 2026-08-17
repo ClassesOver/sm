@@ -40,8 +40,8 @@ docker compose up -d --build
 
 ```bash
 uv venv --python 3.12 .venv-agent
-uv pip install --python .venv-agent/bin/python -r agentos_dev/requirements.txt
-AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.app
+uv pip install --python .venv-agent/bin/python -r smart_reporting/requirements.txt
+AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 ```
 
 Daytona 的端口、镜像和运维说明见 [docker/README.md](docker/README.md)。

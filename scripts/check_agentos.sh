@@ -13,7 +13,7 @@ if sys.version_info[:2] != (3, 12):
         f"AgentOS 检查要求 Python 3.12，当前为 {sys.version_info.major}.{sys.version_info.minor}。"
     )
 '
-"${python_bin}" -m ruff format --check agentos_dev
-"${python_bin}" -m ruff check agentos_dev
-"${python_bin}" -m mypy agentos_dev
+"${python_bin}" -m ruff format --check smart_reporting
+"${python_bin}" -m ruff check smart_reporting
+"${python_bin}" -m mypy smart_reporting
 "${python_bin}" -m pytest

@@ -15,7 +15,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "proxy.localhost:host-gateway"
-    command: ["python", "-m", "agentos_dev.app"]
+    command: ["python", "-m", "smart_reporting.app"]
     ports:
       - "33046:7777"
     environment:

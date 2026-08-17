@@ -26,10 +26,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
-COPY agentos_dev/requirements.txt ./agentos_dev/requirements.txt
-RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r agentos_dev/requirements.txt
+COPY smart_reporting/requirements.txt ./smart_reporting/requirements.txt
+RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r smart_reporting/requirements.txt
 
-COPY agentos_dev ./agentos_dev
+COPY smart_reporting ./smart_reporting
 
 ENV AGENT_OS_HOST=0.0.0.0 \
     AGENT_OS_PORT=7777 \
@@ -40,4 +40,4 @@ ENV AGENT_OS_HOST=0.0.0.0 \
 
 EXPOSE 7777
 
-CMD ["python", "-m", "agentos_dev.app"]
+CMD ["python", "-m", "smart_reporting.app"]
