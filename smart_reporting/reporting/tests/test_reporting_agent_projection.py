@@ -1,5 +1,6 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 from agno.agent import Agent
@@ -10,12 +11,14 @@ from agno.tools import Function
 from agno.tools.function import FunctionCall
 
 from smart_reporting.context_management import ProjectedOpenAIChat
+from smart_reporting.reporting import agent as report_agent_module
 from smart_reporting.reporting.agent import (
     ReportFacadeOpenAIChat,
     ReportWorkerOpenAIChat,
     _phase_filtered_report_tools,
     _report_worker_tools_cache_key,
     _with_reporting_durable_identities,
+    create_report_worker,
     propagate_reporting_tool_errors,
 )
 from smart_reporting.reporting.instructions import build_report_agent_instructions
@@ -26,6 +29,32 @@ from smart_reporting.reporting.phase import (
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
     bind_reporting_run_context,
 )
+from smart_reporting.settings import AgentSettings
+
+
+def test_report_worker_disables_unused_session_summaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = AgentSettings.from_environment(
+        {
+            "OPENAI_API_KEY": "test",
+            "AGENT_ENABLE_SESSION_SUMMARIES": "true",
+        },
+        load_env_file=False,
+    )
+    monkeypatch.setattr(report_agent_module, "load_sandbox_execution_skills", lambda _: None)
+    monkeypatch.setattr(report_agent_module, "load_reporting_skills", lambda _: None)
+
+    worker = create_report_worker(
+        settings,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        state_repository=SimpleNamespace(),
+    )
+
+    assert worker.add_history_to_context is False
+    assert worker.enable_session_summaries is False
+    assert worker.add_session_summary_to_context is False
+    assert worker.session_summary_manager is None
 
 
 @pytest.mark.parametrize(

@@ -32,7 +32,6 @@ from ..context_management import (
     CodingContextProjector,
     ContextBudgetController,
     ProjectedOpenAIChat,
-    RollingSessionSummaryManager,
     clear_terminal_reasoning,
     projected_coding_model,
 )
@@ -1448,13 +1447,13 @@ def create_report_worker(
         db=database,
         checkpoint="tool-batch",
         add_history_to_context=False,
-        enable_session_summaries=settings.enable_session_summaries,
+        # 每个 Reporting Task 使用独立 session，恢复事实来自 durable state 和
+        # Agno checkpoint；摘要既不加入上下文，也没有后续消费者。若沿用全局开关，
+        # Agno 会在工具完成后再次把整份分析/图表上下文提交给摘要模型，单次超时还会
+        # 按模型重试策略阻塞 Workflow，因此在 Report Worker 边界固定关闭。
+        enable_session_summaries=False,
         add_session_summary_to_context=False,
-        session_summary_manager=(
-            RollingSessionSummaryManager(model=_report_model(settings, enable_thinking=False))
-            if settings.enable_session_summaries
-            else None
-        ),
+        session_summary_manager=None,
         compress_tool_results=settings.enable_tool_result_compression,
         compression_manager=worker_compression_manager,
         retries=0,
