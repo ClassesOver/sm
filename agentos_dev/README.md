@@ -38,7 +38,7 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.cli
 Reporting CLI：
 
 ```bash
-AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.coding.reporting.cli
+AGENT_ENV_FILE=.env .venv-agent/bin/python -m agentos_dev.reporting.cli
 ```
 
 Coding 与 Reporting 使用独立 Agent、指令、工具、状态和验收链路。Coding 通过 `CodingTaskSupervisor` 管理 Task、Attempt、Execution、租约、验证和完成门禁；Reporting 通过顶层 Workflow 编排数据准备、分析、章节生成、双格式验收和发布。

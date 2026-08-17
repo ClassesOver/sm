@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import update
 
-from agentos_dev.coding.reporting.workflow.repository import ReportingStateRepository
-from agentos_dev.coding.reporting.workflow.state import (
+from agentos_dev.reporting.workflow.repository import ReportingStateRepository
+from agentos_dev.reporting.workflow.state import (
     ReportingPhase,
     ReportingRunState,
     ReportingStateConflict,

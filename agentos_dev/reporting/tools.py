@@ -24,14 +24,14 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from PIL import Image, UnidentifiedImageError
 from pydantic import ValidationError
 
-from ...agent_control import AGENT_PLAN_STATE_KEY, validated_agent_plan
-from ...task_execution.execution import (
+from ..agent_control import AGENT_PLAN_STATE_KEY, validated_agent_plan
+from ..task_execution.execution import (
     MAX_TOOL_OUTPUT_READ_BYTES,
     WorkspaceTaskToolkit,
     _create_files_patch,
 )
-from ...task_execution.tools import parse_unified_diff
-from ...workspace import (
+from ..task_execution.tools import parse_unified_diff
+from ..workspace import (
     WORKSPACE_ROOT,
     WorkspaceError,
     WorkspaceService,
@@ -872,6 +872,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 post_hook=_stop_after_finished_phase_call,
             )
         )
+
     async def view_image(
         self,
         path: str,

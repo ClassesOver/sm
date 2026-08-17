@@ -2,7 +2,7 @@
 
 from agno.run import RunContext
 
-from ...instructions import (
+from ..instructions import (
     CODING_DELIVERABLE_VERIFICATION_INSTRUCTION,
     CODING_FINISH_VERIFICATION_INSTRUCTION,
     CODING_VALIDATOR_FEEDBACK_INSTRUCTION,

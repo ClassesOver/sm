@@ -17,8 +17,8 @@ from openai.types.chat.chat_completion_chunk import (
 )
 
 from agentos_dev import app
-from agentos_dev.coding.reporting.agent import ReportFacadeOpenAIChat, create_report_agent
-from agentos_dev.coding.reporting.workflow.controller import (
+from agentos_dev.reporting.agent import ReportFacadeOpenAIChat, create_report_agent
+from agentos_dev.reporting.workflow.controller import (
     ReportWorkflowController,
     ReportWorkflowToolkit,
 )

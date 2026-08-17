@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from agentos_dev.coding.reporting.delivery.publishing import (
+from agentos_dev.reporting.delivery.publishing import (
     ReportArtifactPersistenceService,
     ReportArtifactSpec,
     ReportDownloadCallerScope,
@@ -21,12 +21,12 @@ from agentos_dev.coding.reporting.delivery.publishing import (
     SqlAlchemyReportArtifactRepository,
     StoredReportArtifact,
 )
-from agentos_dev.coding.reporting.models import ReportingError
-from agentos_dev.coding.reporting.tests.delivery_fakes import (
+from agentos_dev.reporting.models import ReportingError
+from agentos_dev.reporting.tests.delivery_fakes import (
     InMemoryDownloadGrantRepository,
     InMemoryReportArtifactRepository,
 )
-from agentos_dev.coding.reporting.workflow.runtime import ReportWorkflowRuntime
+from agentos_dev.reporting.workflow.runtime import ReportWorkflowRuntime
 from agentos_dev.reporting_identity import (
     ReportServerIdentity,
     bind_report_identity,

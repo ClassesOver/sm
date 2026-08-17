@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 import pytest
 from agno.workflow import OnError
 
-from agentos_dev.coding.reporting import cli as reporting_cli
-from agentos_dev.coding.reporting.cli import _cli_settings, _CliProgressSink, resume_workflow
-from agentos_dev.coding.reporting.models import ReportingError
-from agentos_dev.coding.reporting.workflow.orchestration import create_reporting_workflow
+from agentos_dev.reporting import cli as reporting_cli
+from agentos_dev.reporting.cli import _cli_settings, _CliProgressSink, resume_workflow
+from agentos_dev.reporting.models import ReportingError
+from agentos_dev.reporting.workflow.orchestration import create_reporting_workflow
 from agentos_dev.settings import AgentSettings
 
 

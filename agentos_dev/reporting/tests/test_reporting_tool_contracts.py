@@ -10,13 +10,13 @@ from agno.run import RunContext
 from agno.tools import Function
 from daytona.common.errors import DaytonaError
 
-from agentos_dev.coding.reporting.agent import (
+from agentos_dev.reporting.agent import (
     _REPORT_TOOL_FAILURE_STATE_KEY,
     _enforce_reporting_no_progress,
 )
-from agentos_dev.coding.reporting.models import ReportingError
-from agentos_dev.coding.reporting.tests.workspace_fakes import service as fake_workspace_service
-from agentos_dev.coding.reporting.tools import (
+from agentos_dev.reporting.models import ReportingError
+from agentos_dev.reporting.tests.workspace_fakes import service as fake_workspace_service
+from agentos_dev.reporting.tools import (
     ANALYSIS_WRITE_PUBLIC_TOOL_NAMES,
     MAX_ANALYSIS_WRITE_INTENT_BYTES,
     ReportWorkspaceTaskToolkit,
@@ -29,8 +29,8 @@ from agentos_dev.coding.reporting.tools import (
     _reset_stop_after_tool_call,
     _stop_after_accepted_tool_call,
 )
-from agentos_dev.coding.reporting.workflow.checkpoint import ProfileReadReceipt
-from agentos_dev.coding.reporting.workflow.state import ReportingRunState
+from agentos_dev.reporting.workflow.checkpoint import ProfileReadReceipt
+from agentos_dev.reporting.workflow.state import ReportingRunState
 from agentos_dev.workspace import WorkspaceError
 
 

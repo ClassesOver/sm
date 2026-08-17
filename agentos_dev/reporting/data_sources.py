@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 import anyio
 from agno.run import RunContext
 
-from ...workspace import WorkspaceService, _thread
+from ..workspace import WorkspaceService, _thread
 from .data_source import DataSourceAdapter
 from .models import ReportingError
 from .workflow.query_pipeline import (

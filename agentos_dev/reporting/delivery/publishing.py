@@ -34,7 +34,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from ....workspace import (
+from ...workspace import (
     MAX_ASYNC_DOWNLOAD_TIMEOUT,
     MAX_DOWNLOAD_BYTES,
     WorkspaceService,

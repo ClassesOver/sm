@@ -12,10 +12,10 @@ import anyio
 from agno.agent import Agent
 from agno.run import RunContext
 
-from ....async_utils import complete_cleanup
-from ....task_execution import TaskExecutionRepository, TaskScope, TaskState
-from ....task_execution.execution import TASK_EXECUTION_DEPENDENCY, TaskExecutionKernel
-from ....task_execution.session import TaskSession
+from ...async_utils import complete_cleanup
+from ...task_execution import TaskExecutionRepository, TaskScope, TaskState
+from ...task_execution.execution import TASK_EXECUTION_DEPENDENCY, TaskExecutionKernel
+from ...task_execution.session import TaskSession
 from ..models import ReportingError
 from ..phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,

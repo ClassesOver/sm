@@ -72,6 +72,7 @@ _WORD_MARKERS = {
     "toc_end": "__REPORT_TOC_END__",
     "body_start": "__REPORT_BODY_START__",
 }
+_WORD_PAGE_FIELDS = {"page": "PAGE", "pages": "SECTIONPAGES"}
 _CITATION_MARKER = re.compile(r"\[\[citation:([^\]\r\n]+)\]\]")
 _SECTION_MARKER = re.compile(r"\[\[section:([^\]\r\n]+)\]\]")
 _ANALYSIS_MARKER = re.compile(r"\[\[analysis:([^\]\r\n]+)\]\]")
@@ -405,7 +406,7 @@ def _formatted_page_text(
     title: str,
     organization: str,
     page: str | int,
-    pages: int,
+    pages: str | int,
 ) -> str:
     return template.format(title=title, organization=organization, page=page, pages=pages)
 
@@ -417,7 +418,7 @@ def _has_page_layout(
     title: str,
     organization: str,
     page: str | int,
-    pages: int,
+    pages: str | int,
 ) -> bool:
     compact = "".join(text.split())
     expected = (
@@ -603,10 +604,10 @@ def _apply_pdf_page_decorations(
         page_count = len(reader.pages)
         decoration_pages: list[str] = []
         for page_number in range(2, page_count + 1):
-            page_value: str | int = (
-                _roman(page_number - 1)
-                if page_number < body_start_page
-                else page_number - body_start_page + 1
+            page_value, pages_value = _page_number_context(
+                page_number,
+                body_start_page=body_start_page,
+                physical_page_count=page_count,
             )
             values = {
                 key: html.escape(
@@ -615,7 +616,7 @@ def _apply_pdf_page_decorations(
                         title=context["title"],
                         organization=context["organizationName"],
                         page=page_value,
-                        pages=page_count,
+                        pages=pages_value,
                     )
                 )
                 for key, template in layout.items()
@@ -976,10 +977,8 @@ def _postprocess_docx(path: Path, *, context: dict[str, Any], layout: dict[str, 
                     paragraph.add_run(context["title"])
                 elif field_name == "organization":
                     paragraph.add_run(context["organizationName"])
-                elif field_name == "page":
-                    field_run(paragraph, "PAGE")
-                elif field_name == "pages":
-                    field_run(paragraph, "NUMPAGES")
+                elif field_name in _WORD_PAGE_FIELDS:
+                    field_run(paragraph, _WORD_PAGE_FIELDS[field_name])
 
         append(left)
         paragraph.add_run("\t")
@@ -1163,6 +1162,24 @@ def _roman(value: int) -> str:
     return "".join(result)
 
 
+def _page_number_context(
+    physical_page: int,
+    *,
+    body_start_page: int,
+    physical_page_count: int,
+) -> tuple[str | int, str | int]:
+    """返回当前分节内的页码和分节总页数，封面不进入编号体系。"""
+
+    if (
+        not 2 <= physical_page <= physical_page_count
+        or not 2 <= body_start_page <= physical_page_count
+    ):
+        raise ReportFailure("报表分节页码边界无效")
+    if physical_page < body_start_page:
+        return _roman(physical_page - 1), _roman(body_start_page - 2)
+    return physical_page - body_start_page + 1, physical_page_count - body_start_page + 1
+
+
 def _pdf_section_pages(reader: Any, sections: list[dict[str, str]]) -> dict[str, int]:
     destinations = getattr(reader, "named_destinations", {})
     pages: dict[str, int] = {}
@@ -1290,8 +1307,10 @@ def _validate_docx_rendering(
     ):
         substantive_text = "".join(page_text.split())
         if index > 1:
-            page_value: str | int = (
-                _roman(index - 1) if index < body_start_page else index - body_start_page + 1
+            page_value, pages_value = _page_number_context(
+                index,
+                body_start_page=body_start_page,
+                physical_page_count=len(reader.pages),
             )
             decorations = [
                 context["watermarkText"],
@@ -1301,7 +1320,7 @@ def _validate_docx_rendering(
                         title=context["title"],
                         organization=context["organizationName"],
                         page=page_value,
-                        pages=len(reader.pages),
+                        pages=pages_value,
                     )
                     for value in layout.values()
                     if value
@@ -1693,28 +1712,22 @@ class ReportRuntime:
                     if index == 1:
                         role = "cover"
                         page_value: str | int = 1
+                        pages_value: str | int = 1
                         layout_present = False
-                    elif index < body_start_page:
-                        role = "toc"
-                        page_value = _roman(index - 1)
-                        layout_present = _has_page_layout(
-                            page_text,
-                            layout,
-                            title=title,
-                            organization=context["organizationName"],
-                            page=page_value,
-                            pages=len(reader.pages),
-                        )
                     else:
-                        role = "body"
-                        page_value = index - body_start_page + 1
+                        role = "toc" if index < body_start_page else "body"
+                        page_value, pages_value = _page_number_context(
+                            index,
+                            body_start_page=body_start_page,
+                            physical_page_count=len(reader.pages),
+                        )
                         layout_present = _has_page_layout(
                             page_text,
                             layout,
                             title=title,
                             organization=context["organizationName"],
                             page=page_value,
-                            pages=len(reader.pages),
+                            pages=pages_value,
                         )
                     watermark_present = index > 1 and context["watermarkText"] in page_text
                     substantive_text = "".join(page_text.split())
@@ -1727,7 +1740,7 @@ class ReportRuntime:
                                     title=title,
                                     organization=context["organizationName"],
                                     page=page_value,
-                                    pages=len(reader.pages),
+                                    pages=pages_value,
                                 )
                                 for value in layout.values()
                                 if value

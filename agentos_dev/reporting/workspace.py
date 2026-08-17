@@ -12,9 +12,9 @@ from typing import Any
 from agno.run import RunContext
 from daytona.common.errors import DaytonaNotFoundError
 
-from ...async_utils import complete_cleanup
-from ...observability import suppress_expected_probe_tracing
-from ...workspace import (
+from ..async_utils import complete_cleanup
+from ..observability import suppress_expected_probe_tracing
+from ..workspace import (
     MAX_TOOL_OUTPUT_BYTES,
     WORKSPACE_ROOT,
     WorkspaceError,
@@ -26,6 +26,7 @@ REPORT_JOBS_STATE_KEY = "report_jobs"
 MAX_REPORT_JOBS = 10
 MAX_REPORT_JOB_STATE_BYTES = 48 * 1024
 REPORT_RUNTIME_TIMEOUT_SECONDS = 600
+
 
 class WorkspaceReportService:
     def __init__(self, service: WorkspaceService, data_sources: Any | None = None):

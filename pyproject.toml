@@ -1,7 +1,7 @@
 [tool.pytest.ini_options]
 testpaths = [
     "agentos_dev/coding/tests",
-    "agentos_dev/coding/reporting/tests",
+    "agentos_dev/reporting/tests",
     "agentos_dev/tests",
 ]
 addopts = "-m 'not integration'"

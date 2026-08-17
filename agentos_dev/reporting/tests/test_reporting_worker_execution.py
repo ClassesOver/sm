@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agentos_dev.coding.reporting.workflow.checkpoint import reporting_phase_task_key
-from agentos_dev.coding.reporting.workflow.execution import ReportTaskRunner, _worker_session_id
+from agentos_dev.reporting.workflow.checkpoint import reporting_phase_task_key
+from agentos_dev.reporting.workflow.execution import ReportTaskRunner, _worker_session_id
 from agentos_dev.task_execution import TaskScope
 
 

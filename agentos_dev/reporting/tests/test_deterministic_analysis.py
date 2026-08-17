@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from agentos_dev.coding.reporting.contract import MeasureSemantic
-from agentos_dev.coding.reporting.hospital_operation.detailed_analysis import (
+from agentos_dev.reporting.contract import MeasureSemantic
+from agentos_dev.reporting.hospital_operation.detailed_analysis import (
     AnalysisFileIdentity,
     DatasetAnalysisContext,
     DetailedAnalysisItem,
 )
-from agentos_dev.coding.reporting.hospital_operation.deterministic_analysis import (
+from agentos_dev.reporting.hospital_operation.deterministic_analysis import (
     build_deterministic_analysis_bundle,
 )
 

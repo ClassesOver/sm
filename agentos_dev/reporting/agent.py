@@ -25,8 +25,8 @@ from openai.types.chat.chat_completion_chunk import (
 )
 from pydantic import ValidationError
 
-from ...agent_control import AGENT_PLAN_STATE_KEY
-from ...context_management import (
+from ..agent_control import AGENT_PLAN_STATE_KEY
+from ..context_management import (
     CODING_CONTEXT_TOKEN_LIMIT,
     CODING_OUTPUT_TOKEN_RESERVE,
     CodingContextProjector,
@@ -36,19 +36,19 @@ from ...context_management import (
     clear_terminal_reasoning,
     projected_coding_model,
 )
-from ...model_config import OPENAI_COMPATIBLE_ROLE_MAP
-from ...settings import AgentSettings
-from ...skills import (
+from ..model_config import OPENAI_COMPATIBLE_ROLE_MAP
+from ..settings import AgentSettings
+from ..skills import (
     create_skill_script_hook,
     is_skill_script_hook,
     load_sandbox_execution_skills,
 )
-from ...task_execution import TaskExecutionRepository
-from ...task_execution.execution import (
+from ..task_execution import TaskExecutionRepository
+from ..task_execution.execution import (
     create_task_tool_scheduler_hook,
     is_task_tool_scheduler_hook,
 )
-from ...workspace import WorkspaceService
+from ..workspace import WorkspaceService
 from .delivery.acceptance import load_reporting_skills
 from .instructions import build_report_agent_instructions
 from .model_policy import (

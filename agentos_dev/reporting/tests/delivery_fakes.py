@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from ....workspace import MAX_DOWNLOAD_BYTES
+from ...workspace import MAX_DOWNLOAD_BYTES
 from ..delivery.publishing import (
     ReportDownloadGrant,
     ReportDownloadScope,

@@ -19,7 +19,7 @@ from daytona.common.errors import DaytonaNotFoundError
 import agentos_dev.task_execution.execution as execution_module
 from agentos_dev.agent_control import AGENT_PLAN_STATE_KEY
 from agentos_dev.coding import CodingScope, Lease
-from agentos_dev.coding.reporting.tools import ReportWorkspaceTaskToolkit
+from agentos_dev.reporting.tools import ReportWorkspaceTaskToolkit
 from agentos_dev.coding.executor import CODING_FINISH_FAILURE_STATE_KEY
 from agentos_dev.coding.tests.workspace_fakes import (
     AsyncFakeClient,

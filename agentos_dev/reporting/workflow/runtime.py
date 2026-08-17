@@ -29,10 +29,10 @@ from pydantic import (
     model_validator,
 )
 
-from ....async_utils import complete_cleanup
-from ....reporting_identity import current_report_identity
-from ....task_execution import TaskScope, TaskState
-from ....workspace import WorkspaceService
+from ...async_utils import complete_cleanup
+from ...reporting_identity import current_report_identity
+from ...task_execution import TaskScope, TaskState
+from ...workspace import WorkspaceService
 from ..contract import (
     FIELD_REF_PATTERN,
     REPORT_WORKFLOW_SCOPE_STATE_KEY,
@@ -849,6 +849,7 @@ class ReportWorkflowRuntime:
             raise ValueError("planner_thinking_budget 必须是正整数")
         self.section_concurrency = section_concurrency
         self._durable_command_lock = asyncio.Lock()
+        self._checkpoint_persist_lock = asyncio.Lock()
         self.datasets = ReportDatasetStore(workspace_service)
         self.report_tools = WorkspaceReportService(workspace_service, data_sources=self.datasets)
         planner_off = ReportingThinkingProfile.off()
@@ -2912,6 +2913,16 @@ class ReportWorkflowRuntime:
         run_context: RunContext,
         checkpoint: ReportingCheckpoint,
     ) -> ReportingCheckpoint:
+        # 并发章节会携带各自启动时的 checkpoint 副本。读取最新 durable、合并和写回
+        # 必须串行完成，否则后到的旧副本会覆盖先完成章节，调度器随后会重复生成正文。
+        async with self._checkpoint_persist_lock:
+            return await self._persist_reporting_checkpoint_unlocked(run_context, checkpoint)
+
+    async def _persist_reporting_checkpoint_unlocked(
+        self,
+        run_context: RunContext,
+        checkpoint: ReportingCheckpoint,
+    ) -> ReportingCheckpoint:
         durable = await self.state_repository.get(
             str(run_context.run_id or self._scope(run_context)["externalRunId"])
         )
@@ -4213,6 +4224,58 @@ class ReportWorkflowRuntime:
             ),
         )
 
+    async def _durable_completed_section(
+        self,
+        run_context: RunContext,
+        *,
+        revision: int,
+        section_code: str,
+        analysis_ids: tuple[str, ...],
+        work_item_hash: str,
+    ) -> tuple[CompletedSection, SectionArtifact] | None:
+        durable = await self.state_repository.get_by_external_run_id(
+            self._scope(run_context)["externalRunId"]
+        )
+        section_artifacts = durable.payload.get("sectionArtifacts") if durable is not None else None
+        bound = section_artifacts.get(section_code) if isinstance(section_artifacts, dict) else None
+        if not isinstance(bound, Mapping):
+            return None
+        # Durable sectionArtifacts 是章节完成身份的权威来源。只有 revision、WorkItem 和
+        # analysis 绑定完全一致时才允许恢复；不同身份继续由既有冲突门禁失败关闭。
+        if (
+            bound.get("revision") != revision
+            or bound.get("workItemHash") != work_item_hash
+            or tuple(bound.get("analysisIds", ())) != analysis_ids
+        ):
+            raise ReportingError(
+                "report_section_completion_conflict",
+                f"章节 {section_code} 已绑定其他完成产物。",
+            )
+        try:
+            identity = FileIdentity.model_validate(bound.get("artifactFile"))
+            artifact = cast(
+                SectionArtifact,
+                await self._read_identity_model(
+                    self._scope(run_context)["threadId"], identity, SectionArtifact
+                ),
+            )
+        except ValidationError as error:
+            raise ReportingError(
+                "report_section_artifact_invalid", "Durable 章节产物身份无效。"
+            ) from error
+        if artifact.section_code != section_code:
+            raise ReportingError(
+                "report_section_artifact_invalid", "Durable 章节产物没有绑定当前 sectionCode。"
+            )
+        return (
+            CompletedSection(
+                sectionCode=section_code,
+                workItemHash=work_item_hash,
+                artifactFile=identity,
+            ),
+            artifact,
+        )
+
     async def _run_section_phase(
         self,
         run_context: RunContext,
@@ -4235,6 +4298,34 @@ class ReportWorkflowRuntime:
         scope = self._scope(run_context)
         work_item_payload = work_item.model_dump(mode="json", by_alias=True)
         work_item_hash = payload_sha256(work_item_payload)
+        restored = await self._durable_completed_section(
+            run_context,
+            revision=revision,
+            section_code=work_item.section_code,
+            analysis_ids=work_item.analysis_ids,
+            work_item_hash=work_item_hash,
+        )
+        if restored is not None:
+            completed_section, artifact = restored
+            checkpoint = self._update_reporting_checkpoint(
+                checkpoint,
+                phase="sections",
+                completed_sections=tuple(
+                    item
+                    for item in checkpoint.completed_sections
+                    if item.section_code != work_item.section_code
+                )
+                + (completed_section,),
+                pending_sections=tuple(
+                    item for item in checkpoint.pending_sections if item != work_item.section_code
+                ),
+                last_error=None,
+                files=self._merge_checkpoint_files(
+                    checkpoint.files, completed_section.artifact_file
+                ),
+            )
+            checkpoint = await self._persist_reporting_checkpoint(run_context, checkpoint)
+            return checkpoint, artifact, None
         await self._apply_durable_command(
             run_context,
             ReportingCommand(
@@ -4500,6 +4591,8 @@ class ReportWorkflowRuntime:
                         payload={
                             "sectionCode": work_item.section_code,
                             "analysisIds": list(work_item.analysis_ids),
+                            "workItemHash": work_item_hash,
+                            "revision": revision,
                             "artifactFile": identity.model_dump(mode="json", by_alias=True),
                         },
                     ),
@@ -4548,6 +4641,11 @@ class ReportWorkflowRuntime:
                     },
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
+                if code in {
+                    "report_section_completion_conflict",
+                    "report_section_start_conflict",
+                }:
+                    raise error
         assert last_error is not None
         raise last_error
 

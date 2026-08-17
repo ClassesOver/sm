@@ -9,18 +9,18 @@ from agno.agent import Agent
 from agno.models.response import ModelResponse
 from pydantic import ValidationError
 
-from agentos_dev.coding.reporting import contract as reporting_contract
-from agentos_dev.coding.reporting.agent import ReportWorkerOpenAIChat
-from agentos_dev.coding.reporting.hospital_operation.detailed_analysis import (
+from agentos_dev.reporting import contract as reporting_contract
+from agentos_dev.reporting.agent import ReportWorkerOpenAIChat
+from agentos_dev.reporting.hospital_operation.detailed_analysis import (
     DetailedAnalysisPlan,
 )
-from agentos_dev.coding.reporting.hospital_operation.outline import ReportOutlineProposal
-from agentos_dev.coding.reporting.instructions import (
+from agentos_dev.reporting.hospital_operation.outline import ReportOutlineProposal
+from agentos_dev.reporting.instructions import (
     REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
 )
-from agentos_dev.coding.reporting.model_policy import ReportingThinkingProfile
-from agentos_dev.coding.reporting.workflow import runtime as reporting_runtime
-from agentos_dev.coding.reporting.workflow.runtime import (
+from agentos_dev.reporting.model_policy import ReportingThinkingProfile
+from agentos_dev.reporting.workflow import runtime as reporting_runtime
+from agentos_dev.reporting.workflow.runtime import (
     REPORT_WORKFLOW_INPUT_STATE_KEY,
     AnalysisBundle,
     DataUnderstandingPlan,

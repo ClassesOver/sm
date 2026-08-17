@@ -334,8 +334,8 @@ Profile 中重复维护机构名称。
 
 ```bash
 .venv-agent/bin/python -m pytest -q \
-  agentos_dev/coding/reporting/tests/test_profile_v1.py \
-  agentos_dev/coding/reporting/tests/test_measure_semantics_v1.py
+  agentos_dev/reporting/tests/test_profile_v1.py \
+  agentos_dev/reporting/tests/test_measure_semantics_v1.py
 ```
 
 修改 Python 契约或运行时实现后，还必须从仓库根目录运行：

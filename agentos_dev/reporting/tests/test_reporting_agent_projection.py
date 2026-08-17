@@ -9,14 +9,14 @@ from agno.run import RunContext
 from agno.tools import Function
 from agno.tools.function import FunctionCall
 
-from agentos_dev.coding.reporting.agent import (
+from agentos_dev.reporting.agent import (
     ReportFacadeOpenAIChat,
     ReportWorkerOpenAIChat,
     _phase_filtered_report_tools,
     _with_reporting_durable_identities,
     propagate_reporting_tool_errors,
 )
-from agentos_dev.coding.reporting.phase import (
+from agentos_dev.reporting.phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
