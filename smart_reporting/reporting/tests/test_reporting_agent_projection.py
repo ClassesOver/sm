@@ -58,6 +58,36 @@ def test_report_worker_disables_unused_session_summaries(monkeypatch: pytest.Mon
 
 
 @pytest.mark.parametrize(
+    ("configured_timeout", "expected_timeout"),
+    [("900", 180), ("120", 120)],
+)
+def test_report_worker_caps_only_long_model_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_timeout: str,
+    expected_timeout: int,
+) -> None:
+    monkeypatch.setattr(report_agent_module, "load_sandbox_execution_skills", lambda _: None)
+    monkeypatch.setattr(report_agent_module, "load_reporting_skills", lambda _: None)
+
+    settings = AgentSettings.from_environment(
+        {
+            "OPENAI_API_KEY": "test",
+            "AGENT_MODEL_TIMEOUT_SECONDS": configured_timeout,
+        },
+        load_env_file=False,
+    )
+    worker = create_report_worker(
+        settings,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        state_repository=SimpleNamespace(),
+    )
+
+    assert worker.model.timeout == expected_timeout
+
+
+@pytest.mark.parametrize(
     ("task_kind", "expected"),
     [
         (

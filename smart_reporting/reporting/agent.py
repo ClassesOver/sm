@@ -102,6 +102,10 @@ _REPORT_ARGUMENT_MAX_MESSAGE_LENGTH = 512
 _REPORT_PROFILE_RECEIPT_PROJECTION_LIMIT = 100
 _REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
 _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
+# 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
+# 后端异常却可能持续数分钟才返回。Worker 仍保留既有一次同 run continuation，
+# 这里只收紧单次 HTTP 等待上限，避免失败关闭路径被 900 秒默认值拖长。
+_REPORT_WORKER_MODEL_TIMEOUT_CAP_SECONDS = 180
 _REPORT_MODEL_RUN_ERROR: ContextVar[tuple[int, Exception] | None] = ContextVar(
     "reporting_model_run_error",
     default=None,
@@ -1355,12 +1359,13 @@ def _report_model(
     *,
     enable_thinking: bool,
     retries: int = 2,
+    timeout_seconds: int | None = None,
 ) -> OpenAIChat:
     return OpenAIChat(
         id=settings.model_id,
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
-        timeout=settings.model_timeout_seconds,
+        timeout=(settings.model_timeout_seconds if timeout_seconds is None else timeout_seconds),
         max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
         extra_body={"enable_thinking": enable_thinking},
@@ -1400,6 +1405,10 @@ def create_report_worker(
             settings,
             enable_thinking=settings.report_coding_enable_thinking,
             retries=0,
+            timeout_seconds=min(
+                settings.model_timeout_seconds,
+                _REPORT_WORKER_MODEL_TIMEOUT_CAP_SECONDS,
+            ),
         ),
         input_token_budget=input_token_budget,
     )
