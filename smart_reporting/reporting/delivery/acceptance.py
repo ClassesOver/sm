@@ -33,6 +33,17 @@ def build_report_phase_acceptance_contract(
         if task_kind == "analysis_item":
             if analysis_output_path or section_output_path or rework_request_path:
                 raise ValueError("analysis item 不得声明阶段输出路径")
+            analysis_ids = phase_contract.get("analysisIds")
+            output_root = phase_contract.get("analysisOutputRoot")
+            if (
+                not isinstance(analysis_ids, list)
+                or len(analysis_ids) != 1
+                or not isinstance(analysis_ids[0], str)
+                or not analysis_ids[0]
+                or not isinstance(output_root, str)
+                or not output_root
+            ):
+                raise ValueError("analysis item 必须绑定唯一 analysisId 和专属输出目录")
             paths = []
             output_parameters = {}
         else:

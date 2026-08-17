@@ -214,6 +214,7 @@ class AgentSettings:
     output_token_reserve: int
     report_context_token_budget: int
     report_output_token_reserve: int
+    report_analysis_concurrency: int
     report_section_concurrency: int
 
     @classmethod
@@ -262,6 +263,12 @@ class AgentSettings:
             raise ValueError(
                 "AGENT_REPORT_OUTPUT_TOKEN_RESERVE 必须小于 AGENT_REPORT_CONTEXT_TOKEN_BUDGET"
             )
+        report_analysis_concurrency = _positive_int(
+            values,
+            "AGENT_REPORT_ANALYSIS_CONCURRENCY",
+            3,
+            maximum=4,
+        )
         report_section_concurrency = _positive_int(
             values,
             "AGENT_REPORT_SECTION_CONCURRENCY",
@@ -343,5 +350,6 @@ class AgentSettings:
             output_token_reserve=output_token_reserve,
             report_context_token_budget=report_context_token_budget,
             report_output_token_reserve=report_output_token_reserve,
+            report_analysis_concurrency=report_analysis_concurrency,
             report_section_concurrency=report_section_concurrency,
         )

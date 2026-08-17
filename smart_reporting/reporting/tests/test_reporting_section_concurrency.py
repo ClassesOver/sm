@@ -11,13 +11,18 @@ from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
     AnalysisEvidenceManifest,
     CompletedSection,
+    ContextTrace,
     FileIdentity,
     ProfileCoverageDataset,
     ProfileCoverageManifest,
     ReportBrief,
     ReportingCheckpoint,
 )
-from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime, _run_bounded
+from smart_reporting.reporting.workflow.runtime import (
+    ReportWorkflowRuntime,
+    _run_bounded,
+    _run_pending_analysis_items,
+)
 
 
 @pytest.mark.anyio
@@ -42,6 +47,56 @@ async def test_run_bounded_limits_concurrency_and_preserves_input_order() -> Non
     assert result == [10, 20, 30, 40]
 
 
+@pytest.mark.anyio
+async def test_run_pending_analysis_items_skips_completed_and_limits_concurrency() -> None:
+    active = 0
+    maximum = 0
+    observed: list[str] = []
+    lock = asyncio.Lock()
+
+    async def worker(analysis_id: str) -> None:
+        nonlocal active, maximum
+        async with lock:
+            active += 1
+            maximum = max(maximum, active)
+        await asyncio.sleep(0.005)
+        observed.append(analysis_id)
+        async with lock:
+            active -= 1
+
+    scheduled = await _run_pending_analysis_items(
+        ("analysis_001", "analysis_002", "analysis_003", "analysis_004"),
+        completed_analysis_ids={"analysis_002"},
+        concurrency=2,
+        worker=worker,
+    )
+
+    assert scheduled == ("analysis_001", "analysis_003", "analysis_004")
+    assert set(observed) == set(scheduled)
+    assert maximum == 2
+
+
+@pytest.mark.anyio
+async def test_run_pending_analysis_items_finishes_siblings_before_raising_failure() -> None:
+    observed: list[str] = []
+
+    async def worker(analysis_id: str) -> None:
+        await asyncio.sleep(0)
+        observed.append(analysis_id)
+        if analysis_id == "analysis_002":
+            raise RuntimeError("analysis failed")
+
+    with pytest.raises(RuntimeError, match="analysis failed"):
+        await _run_pending_analysis_items(
+            ("analysis_001", "analysis_002", "analysis_003"),
+            completed_analysis_ids=set(),
+            concurrency=3,
+            worker=worker,
+        )
+
+    assert set(observed) == {"analysis_001", "analysis_002", "analysis_003"}
+
+
 def test_merge_reporting_checkpoints_keeps_out_of_order_section_results() -> None:
     base = checkpoint(
         completed=(completed("section_002", "b"),),
@@ -59,6 +114,52 @@ def test_merge_reporting_checkpoints_keeps_out_of_order_section_results() -> Non
         "section_002",
     }
     assert merged.pending_sections == ("section_003",)
+
+
+def test_merge_reporting_checkpoints_keeps_concurrent_analysis_traces_and_files() -> None:
+    first_file = FileIdentity(path="analysis/analysis_001/evidence.json", size=1, sha256="a" * 64)
+    second_file = FileIdentity(path="analysis/analysis_002/evidence.json", size=1, sha256="b" * 64)
+    base = checkpoint(completed=(), pending=()).model_copy(
+        update={
+            "phase": "analysis",
+            "report_brief": None,
+            "evidence_manifest": None,
+            "analysis_manifest_file": None,
+            "files": (first_file,),
+            "trace": (
+                ContextTrace(
+                    phase="analysis",
+                    taskId="task-analysis-001",
+                    workKind="analysis_item",
+                    analysisId="analysis_001",
+                    status="completed",
+                ),
+            ),
+        }
+    )
+    incoming = checkpoint(completed=(), pending=()).model_copy(
+        update={
+            "phase": "analysis",
+            "report_brief": None,
+            "evidence_manifest": None,
+            "analysis_manifest_file": None,
+            "files": (second_file,),
+            "trace": (
+                ContextTrace(
+                    phase="analysis",
+                    taskId="task-analysis-002",
+                    workKind="analysis_item",
+                    analysisId="analysis_002",
+                    status="completed",
+                ),
+            ),
+        }
+    )
+
+    merged = ReportWorkflowRuntime._merge_reporting_checkpoints(base, incoming)
+
+    assert {item.path for item in merged.files} == {first_file.path, second_file.path}
+    assert {item.analysis_id for item in merged.trace} == {"analysis_001", "analysis_002"}
 
 
 @pytest.mark.anyio

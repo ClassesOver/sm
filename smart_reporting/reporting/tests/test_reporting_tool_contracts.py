@@ -14,6 +14,7 @@ from smart_reporting.reporting.agent import (
     _REPORT_TOOL_FAILURE_STATE_KEY,
     _enforce_reporting_no_progress,
 )
+from smart_reporting.reporting.delivery.acceptance import build_report_phase_acceptance_contract
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
@@ -854,12 +855,16 @@ async def test_analysis_evidence_registers_existing_untracked_file() -> None:
 
 
 @pytest.mark.anyio
-async def test_complete_analysis_item_rejects_out_of_order_submission() -> None:
+async def test_complete_analysis_item_rejects_contract_with_multiple_analysis_ids() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=object()))
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
-        {"taskKind": "analysis_item", "analysisIds": ["analysis_001", "analysis_002"]},
+        {
+            "taskKind": "analysis_item",
+            "analysisIds": ["analysis_001", "analysis_002"],
+            "analysisOutputRoot": "analysis",
+        },
     )
     durable = reporting_state_with_artifacts().model_copy(
         update={
@@ -881,9 +886,7 @@ async def test_complete_analysis_item_rejects_out_of_order_submission() -> None:
         warnings=[],
     )
 
-    assert result["code"] == "report_analysis_item_out_of_order"
-    assert result["details"] == {"currentAnalysisId": "analysis_002"}
-    assert "details.currentAnalysisId" in result["requiredActions"][0]
+    assert result["code"] == "report_analysis_item_unknown"
 
 
 @pytest.mark.anyio
@@ -900,7 +903,7 @@ async def test_complete_analysis_item_finishes_task_and_only_accepted_stops_run(
             "payload": {
                 **reporting_state_with_artifacts(*identities).payload,
                 "analysisIds": ["analysis_001", "analysis_002"],
-                "currentAnalysisId": "analysis_001",
+                "currentAnalysisId": "analysis_002",
                 "profileReadReceipts": [{"receiptId": "receipt-1", "datasetId": "dataset-1"}],
             }
         }
@@ -922,7 +925,8 @@ async def test_complete_analysis_item_finishes_task_and_only_accepted_stops_run(
         {},
         {
             "taskKind": "analysis_item",
-            "analysisIds": ["analysis_001", "analysis_002"],
+            "analysisIds": ["analysis_001"],
+            "analysisOutputRoot": "analysis",
             "analysisDatasetIds": {"analysis_001": ["dataset-1"]},
         },
     )
@@ -996,6 +1000,7 @@ async def test_complete_analysis_item_recovers_same_durable_payload_and_rejects_
         {
             "taskKind": "analysis_item",
             "analysisIds": ["analysis_001"],
+            "analysisOutputRoot": "analysis",
             "analysisDatasetIds": {"analysis_001": ["dataset-1"]},
         },
     )
@@ -1060,6 +1065,7 @@ async def test_complete_analysis_item_uses_immutable_facts_without_model_evidenc
         {
             "taskKind": "analysis_item",
             "analysisIds": ["analysis_001"],
+            "analysisOutputRoot": "analysis",
             "analysisDatasetIds": {"analysis_001": ["dataset-1"]},
             "deterministicFactFiles": {"analysis_001": fact_identity},
         },
@@ -1106,6 +1112,7 @@ async def test_complete_analysis_item_rejects_empty_evidence_without_immutable_f
         {
             "taskKind": "analysis_item",
             "analysisIds": ["analysis_001"],
+            "analysisOutputRoot": "analysis",
             "analysisDatasetIds": {"analysis_001": ["dataset-1"]},
         },
     )
@@ -1122,6 +1129,54 @@ async def test_complete_analysis_item_rejects_empty_evidence_without_immutable_f
     )
 
     assert result["code"] == "report_analysis_evidence_missing"
+
+
+def test_analysis_output_paths_are_confined_to_current_item_root() -> None:
+    contract = {"analysisOutputRoot": "analysis/analysis_001"}
+
+    ReportWorkspaceTaskToolkit._require_analysis_output_paths(
+        contract,
+        ["analysis/analysis_001/script.py", "analysis/analysis_001/evidence.json"],
+    )
+    with pytest.raises(ReportingError, match="专属目录") as raised:
+        ReportWorkspaceTaskToolkit._require_analysis_output_paths(
+            contract,
+            ["analysis/analysis_002/evidence.json"],
+        )
+
+    assert raised.value.code == "report_analysis_output_path_invalid"
+
+
+def test_visualization_contract_does_not_require_analysis_item_output_root() -> None:
+    contract = {"taskKind": "visualization"}
+
+    ReportWorkspaceTaskToolkit._require_analysis_task_output_paths(
+        contract,
+        ["analysis/charts/trend.py"],
+    )
+
+
+def test_analysis_item_acceptance_contract_requires_single_id_and_output_root() -> None:
+    base = {
+        "taskKind": "analysis_item",
+        "analysisIds": ["analysis_001"],
+        "analysisOutputRoot": "analysis/analysis_001",
+    }
+
+    contract = build_report_phase_acceptance_contract(
+        phase="analysis",
+        validation_context_file={"path": "validation.json"},
+        phase_contract=base,
+    )
+    parameters = contract["requirements"][0]["parameters"]
+    assert parameters["phaseContract"]["analysisOutputRoot"] == "analysis/analysis_001"
+
+    with pytest.raises(ValueError, match="唯一 analysisId"):
+        build_report_phase_acceptance_contract(
+            phase="analysis",
+            validation_context_file={"path": "validation.json"},
+            phase_contract={**base, "analysisIds": ["analysis_001", "analysis_002"]},
+        )
 
 
 @pytest.mark.parametrize(

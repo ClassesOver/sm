@@ -103,7 +103,8 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
     ),
     (
         "write_analysis_files 的首次 create_file 可用 content 一次提交最长 4 MiB 的完整脚本；"
-        "不要预先拆分。只有服务端明确返回 JSON 错误、输出截断或超过 4 MiB 时才定点修正。"
+        "所有补充脚本和 evidence 必须写入任务 JSON 的 analysisOutputRoot；不要预先拆分。"
+        "只有服务端明确返回 JSON 错误、输出截断或超过 4 MiB 时才定点修正。"
     ),
     (
         "complete_analysis_item 会把当前 deterministicFactFile 直接冻结为 evidence，并追加可选补充"

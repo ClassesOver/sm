@@ -94,6 +94,26 @@ def test_report_worker_tool_cache_key_separates_task_kinds_for_same_user() -> No
     ) != _report_worker_tools_cache_key(context("visualization"))
 
 
+def test_report_worker_tool_cache_key_separates_concurrent_analysis_tasks() -> None:
+    def context(task_id: str) -> RunContext:
+        return RunContext(
+            run_id=f"internal-{task_id}",
+            session_id=f"session-{task_id}",
+            user_id="user-1",
+            dependencies={
+                REPORTING_TASK_DEPENDENCY: {
+                    "externalRunId": task_id,
+                    REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                    REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
+                }
+            },
+        )
+
+    assert _report_worker_tools_cache_key(context("analysis-1")) != (
+        _report_worker_tools_cache_key(context("analysis-2"))
+    )
+
+
 @pytest.mark.parametrize("task_kind", ["analysis_item", "visualization"])
 def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str) -> None:
     context = RunContext(

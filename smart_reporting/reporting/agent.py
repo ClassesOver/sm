@@ -61,6 +61,7 @@ from .models import ReportingError
 from .phase import (
     REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
     REPORTING_SECTION_INPUT_TOKEN_HARD_CAP,
+    REPORTING_TASK_DEPENDENCY,
     ReportingPhase,
     current_reporting_run_context,
     record_reporting_projection_metrics,
@@ -757,9 +758,12 @@ def _report_worker_tools_cache_key(run_context: RunContext) -> str:
     """按调用者与受信阶段隔离 Agno callable-tool 缓存。"""
 
     identity = run_context.user_id or run_context.session_id or str(run_context.run_id)
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    task_id = binding.get("externalRunId") if isinstance(binding, Mapping) else None
     phase = reporting_phase_from_run_context(run_context) or "unbound"
     task_kind = reporting_task_kind_from_run_context(run_context) or "unbound"
-    return f"report-worker:{identity}:{phase}:{task_kind}"
+    return f"report-worker:{identity}:{task_id or run_context.run_id}:{phase}:{task_kind}"
 
 
 def _phase_filtered_report_messages(messages: list[Message]) -> list[Message]:

@@ -9,7 +9,7 @@ import io
 import json
 import re
 import shlex
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
 from pathlib import PurePosixPath
 from typing import Any, cast
@@ -1663,6 +1663,51 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             raise ReportingError("report_state_not_found", "Reporting 运行状态不存在。")
         return state
 
+    @staticmethod
+    def _analysis_output_root(contract: Mapping[str, Any]) -> str:
+        value = contract.get("analysisOutputRoot")
+        if not isinstance(value, str) or not value:
+            raise ReportingError(
+                "report_phase_contract_invalid", "analysis item 缺少专属输出目录。"
+            )
+        try:
+            return WorkspaceService.normalize_path(value, allow_root=False)[0]
+        except WorkspaceError as error:
+            raise ReportingError(
+                "report_phase_contract_invalid", "analysis item 专属输出目录无效。"
+            ) from error
+
+    @classmethod
+    def _require_analysis_output_paths(
+        cls,
+        contract: Mapping[str, Any],
+        paths: Iterable[str],
+    ) -> None:
+        root = cls._analysis_output_root(contract)
+        prefix = f"{root}/"
+        for value in paths:
+            try:
+                path = WorkspaceService.normalize_path(value, allow_root=False)[0]
+            except WorkspaceError as error:
+                raise ReportingError(
+                    "report_analysis_output_path_invalid", "analysis 输出路径无效。"
+                ) from error
+            if not path.startswith(prefix):
+                raise ReportingError(
+                    "report_analysis_output_path_invalid",
+                    "analysis 补充文件必须写入当前 analysisId 的专属目录。",
+                    details={"outputRoot": root, "path": path},
+                )
+
+    @classmethod
+    def _require_analysis_task_output_paths(
+        cls,
+        contract: Mapping[str, Any],
+        paths: Iterable[str],
+    ) -> None:
+        if contract.get("taskKind") == "analysis_item":
+            cls._require_analysis_output_paths(contract, paths)
+
     async def _apply_durable(
         self,
         scope: Any,
@@ -1973,9 +2018,11 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         )
 
         async def call(scope: Any) -> dict[str, Any]:
+            _parameters, contract = self._phase_parameters(scope, "analysis")
             canonical, paths, expected_states, payload_bytes = (
                 self._validate_analysis_write_arguments(canonical_tool_name, canonical_input)
             )
+            self._require_analysis_task_output_paths(contract, paths)
             payload = json.dumps(
                 {
                     "version": "1",
@@ -2715,20 +2762,14 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     "complete_analysis_item 只允许 analysis_item Task 调用。",
                 )
             expected = contract.get("analysisIds")
-            if not isinstance(expected, list) or analysisId not in expected:
+            if not isinstance(expected, list) or expected != [analysisId]:
                 raise ReportingError("report_analysis_item_unknown", "analysisId 不在冻结计划中。")
             durable_current = await self._durable_state(scope)
-            current_analysis_id = durable_current.payload.get("currentAnalysisId")
             analysis_items = durable_current.payload.get("analysisItems")
             durable_item = (
                 analysis_items.get(analysisId) if isinstance(analysis_items, dict) else None
             )
-            if durable_item is None and analysisId != current_analysis_id:
-                raise ReportingError(
-                    "report_analysis_item_out_of_order",
-                    "只能提交服务端当前未完成的 analysisId。",
-                    details={"currentAnalysisId": current_analysis_id},
-                )
+            self._require_analysis_output_paths(contract, evidencePaths)
             payload: dict[str, Any] = {
                 "analysisId": analysisId,
                 "summary": summary,
@@ -3165,7 +3206,6 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 "report_analysis_evidence_missing",
                 "report_analysis_evidence_not_registered",
                 "report_analysis_evidence_identity_mismatch",
-                "report_analysis_item_out_of_order",
                 "report_profile_query_invalid",
                 "report_analysis_context_query_invalid",
                 "report_analysis_facts_query_invalid",
@@ -3190,10 +3230,6 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             result["requiredActions"] = [
                 "文件已在登记后发生变化；通过 write_analysis_files 提交当前内容和 SHA-256，"
                 "再重试当前 analysis 提交。"
-            ]
-        elif code == "report_analysis_item_out_of_order":
-            result["requiredActions"] = [
-                "停止处理其他 analysisId，只完成 details.currentAnalysisId 后重新提交。"
             ]
         elif code == "report_analysis_dependency_missing":
             result["requiredActions"] = [

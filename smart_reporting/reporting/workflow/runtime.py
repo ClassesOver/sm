@@ -226,6 +226,35 @@ async def _run_bounded(
     return results
 
 
+async def _run_pending_analysis_items(
+    analysis_ids: Sequence[str],
+    *,
+    completed_analysis_ids: set[str],
+    concurrency: int,
+    worker: Callable[[str], Awaitable[Any]],
+) -> tuple[str, ...]:
+    """并发执行未完成分析项；返回本轮实际调度的稳定计划顺序。"""
+
+    pending = tuple(item for item in analysis_ids if item not in completed_analysis_ids)
+    if pending:
+        failures: dict[str, Exception] = {}
+
+        async def run_one(analysis_id: str) -> None:
+            try:
+                await worker(analysis_id)
+            except Exception as error:
+                # 单项业务失败不能取消已经并发运行的其他 analysis；成功项已通过
+                # durable CAS 冻结，下一轮只重试失败项。外部取消仍由 CancelledError
+                # 直接穿透 TaskGroup，确保用户终止不会被吞掉。
+                failures[analysis_id] = error
+
+        await _run_bounded(pending, concurrency=concurrency, worker=run_one)
+        for analysis_id in pending:
+            if analysis_id in failures:
+                raise failures[analysis_id]
+    return pending
+
+
 def _coding_detailed_analysis_plan(
     plan: DetailedAnalysisPlan,
     *,
@@ -825,6 +854,7 @@ class ReportWorkflowRuntime:
         download_grants: ReportDownloadGrantService | None = None,
         artifact_persistence: ReportArtifactPersistenceService | None = None,
         state_repository: ReportingStateRepository,
+        analysis_concurrency: int = 3,
         section_concurrency: int = 2,
     ):
         self.db = db
@@ -837,6 +867,8 @@ class ReportWorkflowRuntime:
         self.download_grants = download_grants
         self.artifact_persistence = artifact_persistence
         self.state_repository = state_repository
+        if isinstance(analysis_concurrency, bool) or not 1 <= analysis_concurrency <= 4:
+            raise ValueError("analysis_concurrency 必须在 1 到 4 之间")
         if isinstance(section_concurrency, bool) or not 1 <= section_concurrency <= 5:
             raise ValueError("section_concurrency 必须在 1 到 5 之间")
         if planner_reasoning_effort not in {"high", "max"}:
@@ -847,6 +879,7 @@ class ReportWorkflowRuntime:
             or planner_thinking_budget <= 0
         ):
             raise ValueError("planner_thinking_budget 必须是正整数")
+        self.analysis_concurrency = analysis_concurrency
         self.section_concurrency = section_concurrency
         self._durable_command_lock = asyncio.Lock()
         self._checkpoint_persist_lock = asyncio.Lock()
@@ -2909,8 +2942,8 @@ class ReportWorkflowRuntime:
         run_context: RunContext,
         checkpoint: ReportingCheckpoint,
     ) -> ReportingCheckpoint:
-        # 并发章节会携带各自启动时的 checkpoint 副本。读取最新 durable、合并和写回
-        # 必须串行完成，否则后到的旧副本会覆盖先完成章节，调度器随后会重复生成正文。
+        # 并发分析项和章节都会携带各自启动时的 checkpoint 副本。读取最新 durable、
+        # 合并和写回必须串行完成，否则后到的旧副本会覆盖先完成任务并触发重复执行。
         async with self._checkpoint_persist_lock:
             return await self._persist_reporting_checkpoint_unlocked(run_context, checkpoint)
 
@@ -2959,7 +2992,7 @@ class ReportWorkflowRuntime:
         current: ReportingCheckpoint,
         incoming: ReportingCheckpoint,
     ) -> ReportingCheckpoint:
-        """合并并发章节回执；分析、提纲和冻结 manifest 必须保持同一身份。"""
+        """合并并发任务回执；提纲和冻结 manifest 必须保持同一身份。"""
 
         current_frozen = (
             current.analysis_manifest_file,
@@ -2984,7 +3017,7 @@ class ReportWorkflowRuntime:
         ):
             raise ReportingError(
                 "report_checkpoint_conflict",
-                "并发章节 checkpoint 与当前冻结分析身份不一致。",
+                "并发任务 checkpoint 与当前冻结分析身份不一致。",
             )
         completed_by_code = {item.section_code: item for item in current.completed_sections}
         for item in incoming.completed_sections:
@@ -3303,7 +3336,7 @@ class ReportWorkflowRuntime:
         if analysis is None or analysis_id not in fact_files:
             raise ReportingError(
                 "report_analysis_item_unknown",
-                "durable currentAnalysisId 不在冻结分析计划中。",
+                "analysisId 不在冻结分析计划或固定事实文件中。",
             )
         selected_dataset_ids = set(analysis.dataset_ids)
         selected_handles = tuple(
@@ -3387,6 +3420,7 @@ class ReportWorkflowRuntime:
                 "reportGoal": self._envelope(run_context).report_goal,
                 "currentAnalysisId": analysis_id,
                 "currentAnalysis": analysis_plan,
+                "analysisOutputRoot": (f"报表/智能分析/{report_run_id}/evidence/{analysis_id}"),
                 "completionConditions": (
                     [
                         "durable 单项事实已冻结；不要重算或改写 evidence",
@@ -3459,6 +3493,7 @@ class ReportWorkflowRuntime:
                     ),
                     "analysisIds": [analysis_id],
                     "currentAnalysisId": analysis_id,
+                    "analysisOutputRoot": (f"报表/智能分析/{report_run_id}/evidence/{analysis_id}"),
                     "analysisPlans": {analysis_id: analysis_plan},
                     "analysisDatasetIds": {analysis_id: list(analysis.dataset_ids)},
                     "deterministicFactFiles": {
@@ -3653,47 +3688,18 @@ class ReportWorkflowRuntime:
             else ("report_revision_feedback" if feedback else None)
         )
 
-        while True:
-            durable_state = await self.state_repository.get(
-                str(run_context.run_id or scope["externalRunId"])
-            )
-            durable_payload = durable_state.payload if durable_state is not None else {}
-            durable_items = durable_payload.get("analysisItems")
-            completed_task_ids = {
-                item.analysis_id
-                for item in checkpoint.trace
-                if item.phase == "analysis"
-                and item.work_kind == "analysis_item"
-                and item.status == "completed"
-                and item.retry_reason == retry_reason
-                and item.analysis_id is not None
-            }
-            recovery_id = next(
-                (
-                    analysis_id
-                    for analysis_id in analysis_ids
-                    if isinstance(durable_items, dict)
-                    and isinstance(durable_items.get(analysis_id), dict)
-                    and analysis_id not in completed_task_ids
-                    and any(
-                        item.phase == "analysis"
-                        and item.work_kind == "analysis_item"
-                        and item.analysis_id == analysis_id
-                        and item.retry_reason == retry_reason
-                        for item in checkpoint.trace
-                    )
-                ),
-                None,
-            )
-            current_analysis_id = durable_payload.get("currentAnalysisId")
-            target_analysis_id = recovery_id or (
-                current_analysis_id
-                if isinstance(current_analysis_id, str) and current_analysis_id
-                else None
-            )
-            if target_analysis_id is None:
-                break
-            checkpoint = await self._run_analysis_item_task(
+        completed_task_ids = {
+            item.analysis_id
+            for item in checkpoint.trace
+            if item.phase == "analysis"
+            and item.work_kind == "analysis_item"
+            and item.status == "completed"
+            and item.retry_reason == retry_reason
+            and item.analysis_id is not None
+        }
+
+        async def run_one(analysis_id: str) -> ReportingCheckpoint:
+            return await self._run_analysis_item_task(
                 run_context,
                 checkpoint=checkpoint,
                 revision=revision,
@@ -3705,11 +3711,20 @@ class ReportWorkflowRuntime:
                 citation_bindings=citation_bindings,
                 analysis_context_file=analysis_context_file,
                 fact_files=fact_files,
-                analysis_id=target_analysis_id,
+                analysis_id=analysis_id,
                 retry_reason=retry_reason,
                 feedback=feedback,
                 rework_request=rework_request,
             )
+
+        scheduled_analysis_ids = await _run_pending_analysis_items(
+            analysis_ids,
+            completed_analysis_ids=completed_task_ids,
+            concurrency=self.analysis_concurrency,
+            worker=run_one,
+        )
+        if scheduled_analysis_ids:
+            checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)
         last_error: Exception | None = None
 
         for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):

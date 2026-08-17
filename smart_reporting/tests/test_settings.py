@@ -45,6 +45,7 @@ def test_settings_defaults():
     assert current.output_token_reserve == 32768
     assert current.report_context_token_budget == 1048576
     assert current.report_output_token_reserve == 393216
+    assert current.report_analysis_concurrency == 3
     assert current.report_section_concurrency == 2
     assert current.report_data_sources_dir is None
     assert current.report_metadata_url is None
@@ -72,6 +73,7 @@ def test_agent_feature_flags_can_be_disabled():
         AGENT_OUTPUT_TOKEN_RESERVE="16384",
         AGENT_REPORT_CONTEXT_TOKEN_BUDGET="524288",
         AGENT_REPORT_OUTPUT_TOKEN_RESERVE="131072",
+        AGENT_REPORT_ANALYSIS_CONCURRENCY="3",
         AGENT_REPORT_SECTION_CONCURRENCY="4",
     )
 
@@ -94,6 +96,7 @@ def test_agent_feature_flags_can_be_disabled():
     assert current.output_token_reserve == 16384
     assert current.report_context_token_budget == 524288
     assert current.report_output_token_reserve == 131072
+    assert current.report_analysis_concurrency == 3
     assert current.report_section_concurrency == 4
 
 
@@ -101,6 +104,12 @@ def test_agent_feature_flags_can_be_disabled():
 def test_report_section_concurrency_is_bounded(value):
     with pytest.raises(ValueError, match="AGENT_REPORT_SECTION_CONCURRENCY"):
         settings(AGENT_REPORT_SECTION_CONCURRENCY=value)
+
+
+@pytest.mark.parametrize("value", ["0", "5", "invalid"])
+def test_report_analysis_concurrency_is_bounded(value):
+    with pytest.raises(ValueError, match="AGENT_REPORT_ANALYSIS_CONCURRENCY"):
+        settings(AGENT_REPORT_ANALYSIS_CONCURRENCY=value)
 
 
 def test_model_timeout_comes_from_environment():

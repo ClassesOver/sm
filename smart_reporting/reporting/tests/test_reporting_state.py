@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import update
 
+from smart_reporting.database import create_agent_database
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 from smart_reporting.reporting.workflow.state import (
     ReportingPhase,
@@ -14,7 +15,6 @@ from smart_reporting.reporting.workflow.state import (
     ReportingStateReducer,
     ReportingStateVersionUnsupported,
 )
-from smart_reporting.database import create_agent_database
 
 
 def initial_state() -> ReportingRunState:
@@ -126,7 +126,7 @@ def test_record_artifact_is_idempotent_and_rejects_identity_change() -> None:
     assert raised.value.code == "report_artifact_identity_mismatch"
 
 
-def test_complete_analysis_item_advances_and_enters_visualization_server_side():
+def test_complete_analysis_items_can_finish_out_of_order_and_enter_visualization():
     state = apply_phase(initial_state(), "start_analysis")
     state = ReportingStateReducer.apply(
         state,
@@ -138,29 +138,30 @@ def test_complete_analysis_item_advances_and_enters_visualization_server_side():
         state.state_version,
     ).state
 
-    first = ReportingStateReducer.apply(
+    second_completed_first = ReportingStateReducer.apply(
         state,
-        {
-            "name": "complete_analysis_item",
-            "commandId": "complete-001",
-            "payload": {"analysisId": "analysis_001", "summary": "收入已复算"},
-        },
-        state.state_version,
-    ).state
-    assert first.phase is ReportingPhase.ANALYSIS_RUNNING
-    assert first.payload["currentAnalysisId"] == "analysis_002"
-
-    second = ReportingStateReducer.apply(
-        first,
         {
             "name": "complete_analysis_item",
             "commandId": "complete-002",
             "payload": {"analysisId": "analysis_002", "summary": "成本已复算"},
         },
-        first.state_version,
+        state.state_version,
     ).state
-    assert second.phase is ReportingPhase.VISUALIZATION
-    assert second.payload["currentAnalysisId"] is None
+    assert second_completed_first.phase is ReportingPhase.ANALYSIS_RUNNING
+    assert second_completed_first.payload["completedAnalysisIds"] == ["analysis_002"]
+    assert second_completed_first.payload["currentAnalysisId"] == "analysis_001"
+
+    completed = ReportingStateReducer.apply(
+        second_completed_first,
+        {
+            "name": "complete_analysis_item",
+            "commandId": "complete-001",
+            "payload": {"analysisId": "analysis_001", "summary": "收入已复算"},
+        },
+        second_completed_first.state_version,
+    ).state
+    assert completed.phase is ReportingPhase.VISUALIZATION
+    assert completed.payload["currentAnalysisId"] is None
 
 
 def test_targeted_rework_requires_analysis_ids_and_missing_evidence():
