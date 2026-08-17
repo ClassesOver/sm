@@ -41,7 +41,13 @@ from .delivery.draft_v1 import (
     ReportDraftBlock,
 )
 from .models import ReportingError
-from .phase import ReportingPhase, ReportingTaskKind, reporting_phase_allows_tool
+from .phase import (
+    ReportingPhase,
+    ReportingTaskKind,
+    reporting_phase_allows_tool,
+    reporting_phase_from_run_context,
+    reporting_task_kind_from_run_context,
+)
 from .vision import ReportVisionReviewer
 from .workflow.checkpoint import (
     AnalysisArtifact,
@@ -66,6 +72,11 @@ MAX_PROFILE_POINTER_OUTPUT_BYTES = 16 * 1024
 MAX_ANALYSIS_PYTHON_DEPENDENCIES = 100
 MAX_ANALYSIS_PYTHON_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_ANALYSIS_WRITE_INTENT_BYTES = 4 * 1024 * 1024
+REPORT_WORKER_TOOLKIT_INSTRUCTIONS = (
+    "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\n"
+    "直接使用任务 JSON 中的受信工作区相对路径，不浏览根目录、不猜测路径。\n"
+    "严格按工具 schema 直接传参，并以每次服务端回执决定下一步。"
+)
 ANALYSIS_WRITE_TOOL_NAMES = frozenset(
     {"overwrite_file", "replace_text", "create_files", "apply_patch"}
 )
@@ -3433,8 +3444,23 @@ def build_report_worker_tools(
     if vision_reviewer is None:
         toolkit.functions.pop("view_image", None)
         toolkit.async_functions.pop("view_image", None)
-    # Agno 2.8.2 会跨内部 run 复用同名动态 Toolkit。若按首次 run_context 的 phase
-    # 删除函数，后续 analysis/section run 会继承残缺工具集，无法提交合法阶段产物。
-    # Toolkit 因此必须保持 phase 无关的能力全集；模型请求仍逐次投影允许工具，执行时
-    # _invoke 还会依据受信 phase 状态复核，不能通过直接调用绕过阶段边界。
+    phase = reporting_phase_from_run_context(run_context)
+    task_kind = reporting_task_kind_from_run_context(run_context)
+    if phase is not None:
+        # Agent callable-tools 缓存键已包含 phase/taskKind，因此这里可以让实际
+        # Toolkit、工具说明和模型 schema 使用同一最小能力集。执行入口仍保留受信
+        # phase 复核，不能通过直接方法调用绕过服务端边界。finish_task 是阶段提交
+        # 工具在服务端收尾时依赖的内部函数对象，即使当前模型不应直接调用，也不能
+        # 从 Toolkit 删除；write_analysis_files 同样依赖四个底层写入原语完成校验与
+        # 提交。模型请求层会按 phase 白名单继续隐藏这些内部依赖。
+        for functions in (toolkit.functions, toolkit.async_functions):
+            for name in tuple(functions):
+                internal_dependency = name == "finish_task" or (
+                    phase == "analysis" and name in ANALYSIS_WRITE_TOOL_NAMES
+                )
+                if not internal_dependency and not reporting_phase_allows_tool(
+                    phase, name, task_kind=task_kind
+                ):
+                    functions.pop(name, None)
+        toolkit.instructions = REPORT_WORKER_TOOLKIT_INSTRUCTIONS
     return [toolkit]

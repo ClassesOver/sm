@@ -24,8 +24,8 @@ REPORTING_TASK_KIND_DEPENDENCY_KEY = "reportingTaskKind"
 REPORTING_THINKING_EFFORT_DEPENDENCY_KEY = "reportingThinkingEffort"
 REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
 
-# 工具按生命周期白名单暴露。Toolkit 内部仍保留完整能力集，避免 Agno 跨 run 复用同名
-# Toolkit 时丢失函数；模型请求和执行入口都只接受当前阶段白名单中的工具。
+# 工具按生命周期白名单暴露。Agno callable-tool 缓存键包含 phase/taskKind，实际 Toolkit、
+# 模型请求和执行入口都只接受当前阶段白名单中的工具。
 # SectionWorkItem 已给出全部授权 evidence 路径和引用；章节 run 不得再执行脚本、
 # 修改工作区或浏览其他目录。大型只读结果仍可通过 outputHandle 分段恢复。
 REPORTING_SECTION_TOOL_NAMES = frozenset(

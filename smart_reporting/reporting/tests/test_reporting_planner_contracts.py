@@ -9,6 +9,7 @@ from agno.agent import Agent
 from agno.models.response import ModelResponse
 from pydantic import ValidationError
 
+from smart_reporting.context_management import ProjectedOpenAIChat
 from smart_reporting.reporting import contract as reporting_contract
 from smart_reporting.reporting.agent import ReportWorkerOpenAIChat
 from smart_reporting.reporting.hospital_operation.detailed_analysis import (
@@ -27,8 +28,8 @@ from smart_reporting.reporting.workflow.runtime import (
     ReportWorkflowRuntime,
     _coding_detailed_analysis_plan,
     _normalize_requirement_periods,
+    _requirement_measure_field_refs,
 )
-from smart_reporting.context_management import ProjectedOpenAIChat
 
 
 def analysis_bundle(*, table: str, period_granularity: str) -> AnalysisBundle:
@@ -112,6 +113,66 @@ def test_requirement_periods_do_not_guess_unknown_table() -> None:
 
     assert normalized is bundle
     assert repairs == []
+
+
+@pytest.mark.parametrize(
+    "table_ref",
+    ["dwd_hdc_income_summary_view", "rj.dwd_hdc_income_summary_view"],
+)
+def test_requirement_measure_field_refs_use_snapshot_database(table_ref: str) -> None:
+    requirement = analysis_bundle(table=table_ref, period_granularity="date").requirements[0]
+    snapshot = reporting_contract.SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="revision-1",
+        schemaHash="a" * 64,
+        tables=(
+            reporting_contract.ModelTable(
+                sourceId="rj",
+                database="rj",
+                name="dwd_hdc_income_summary_view",
+                columns=(
+                    reporting_contract.ModelColumn(
+                        name="indicator_value",
+                        dataType="DECIMAL(18,2)",
+                        nullable=True,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    refs = _requirement_measure_field_refs(requirement, (snapshot,))
+
+    assert refs == {"rj.rj.dwd_hdc_income_summary_view.indicator_value"}
+
+
+def test_requirement_measure_field_refs_reject_ambiguous_bare_table() -> None:
+    requirement = analysis_bundle(
+        table="dwd_hdc_income_summary_view",
+        period_granularity="date",
+    ).requirements[0]
+    snapshot = reporting_contract.SourceSchemaSnapshot(
+        source="metadata_api",
+        revision="revision-1",
+        schemaHash="a" * 64,
+        tables=tuple(
+            reporting_contract.ModelTable(
+                sourceId="rj",
+                database=database,
+                name="dwd_hdc_income_summary_view",
+                columns=(
+                    reporting_contract.ModelColumn(
+                        name="indicator_value",
+                        dataType="DECIMAL(18,2)",
+                        nullable=True,
+                    ),
+                ),
+            )
+            for database in ("rj", "archive")
+        ),
+    )
+
+    assert _requirement_measure_field_refs(requirement, (snapshot,)) == set()
 
 
 def test_coding_analysis_plan_projects_only_unfinished_items() -> None:

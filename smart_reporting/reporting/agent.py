@@ -753,6 +753,15 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
     ]
 
 
+def _report_worker_tools_cache_key(run_context: RunContext) -> str:
+    """按调用者与受信阶段隔离 Agno callable-tool 缓存。"""
+
+    identity = run_context.user_id or run_context.session_id or str(run_context.run_id)
+    phase = reporting_phase_from_run_context(run_context) or "unbound"
+    task_kind = reporting_task_kind_from_run_context(run_context) or "unbound"
+    return f"report-worker:{identity}:{phase}:{task_kind}"
+
+
 def _phase_filtered_report_messages(messages: list[Message]) -> list[Message]:
     if _reporting_phase_from_messages(messages) != "section":
         return messages
@@ -1431,6 +1440,7 @@ def create_report_worker(
             state_repository=state_repository,
             vision_reviewer=vision_reviewer,
         ),
+        callable_tools_cache_key=_report_worker_tools_cache_key,
         db=database,
         checkpoint="tool-batch",
         add_history_to_context=False,

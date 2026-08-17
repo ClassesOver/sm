@@ -15,9 +15,15 @@ from smart_reporting.reporting.agent import (
     _enforce_reporting_no_progress,
 )
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.phase import (
+    REPORTING_PHASE_DEPENDENCY_KEY,
+    REPORTING_TASK_DEPENDENCY,
+    REPORTING_TASK_KIND_DEPENDENCY_KEY,
+)
 from smart_reporting.reporting.tests.workspace_fakes import service as fake_workspace_service
 from smart_reporting.reporting.tools import (
     ANALYSIS_WRITE_PUBLIC_TOOL_NAMES,
+    ANALYSIS_WRITE_TOOL_NAMES,
     MAX_ANALYSIS_WRITE_INTENT_BYTES,
     ReportWorkspaceTaskToolkit,
     _analysis_context_projection,
@@ -28,6 +34,7 @@ from smart_reporting.reporting.tools import (
     _jmespath_reporting_error,
     _reset_stop_after_tool_call,
     _stop_after_accepted_tool_call,
+    build_report_worker_tools,
 )
 from smart_reporting.reporting.workflow.checkpoint import ProfileReadReceipt
 from smart_reporting.reporting.workflow.state import ReportingRunState
@@ -753,6 +760,67 @@ def test_complete_analysis_item_schema_allows_server_derived_fact_evidence() -> 
 
     assert evidence_paths["minItems"] == 0
     assert "固定事实" in evidence_paths["description"]
+
+
+@pytest.mark.parametrize(
+    ("phase", "task_kind", "required", "forbidden"),
+    [
+        (
+            "analysis",
+            "analysis_item",
+            {"query_analysis_facts", "complete_analysis_item"},
+            {"update_plan", "register_report_charts"},
+        ),
+        (
+            "analysis",
+            "visualization",
+            {"query_analysis_facts", "register_report_charts", "finalize_report_analysis"},
+            {"update_plan", "complete_analysis_item"},
+        ),
+        (
+            "section",
+            "section",
+            {"read_file", "render_report_section", "request_analysis_rework"},
+            {"update_plan", "replace_text", "query_analysis_facts"},
+        ),
+    ],
+)
+def test_report_worker_toolkit_registers_only_current_task_tools(
+    phase: str,
+    task_kind: str,
+    required: set[str],
+    forbidden: set[str],
+) -> None:
+    context = RunContext(
+        run_id=f"run-{task_kind}",
+        session_id=f"session-{task_kind}",
+        user_id="user-1",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: phase,
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
+            }
+        },
+    )
+
+    [toolkit] = build_report_worker_tools(
+        fake_workspace_service(None),
+        AsyncMock(),
+        state_repository=AsyncMock(),
+        run_context=context,
+    )
+    names = set(toolkit.async_functions)
+
+    assert required <= names
+    assert not forbidden & names
+    # 阶段工具通过 Toolkit 内部函数对象调用 finish_task 收尾；它仍由模型投影层隐藏。
+    assert "finish_task" in names
+    if phase == "analysis":
+        assert ANALYSIS_WRITE_TOOL_NAMES <= names
+    else:
+        assert not ANALYSIS_WRITE_TOOL_NAMES & names
+    assert "update_plan" not in (toolkit.instructions or "")
+    assert "replace_text" not in (toolkit.instructions or "")
 
 
 def test_analysis_evidence_accepts_current_committed_identity() -> None:

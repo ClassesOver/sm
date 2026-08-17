@@ -9,13 +9,16 @@ from agno.run import RunContext
 from agno.tools import Function
 from agno.tools.function import FunctionCall
 
+from smart_reporting.context_management import ProjectedOpenAIChat
 from smart_reporting.reporting.agent import (
     ReportFacadeOpenAIChat,
     ReportWorkerOpenAIChat,
     _phase_filtered_report_tools,
+    _report_worker_tools_cache_key,
     _with_reporting_durable_identities,
     propagate_reporting_tool_errors,
 )
+from smart_reporting.reporting.instructions import build_report_agent_instructions
 from smart_reporting.reporting.phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
@@ -23,7 +26,6 @@ from smart_reporting.reporting.phase import (
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
     bind_reporting_run_context,
 )
-from smart_reporting.context_management import ProjectedOpenAIChat
 
 
 @pytest.mark.parametrize(
@@ -71,6 +73,48 @@ def test_analysis_task_kind_projection_separates_item_and_visualization_tools(
         )
 
     assert [item["function"]["name"] for item in projected] == expected
+
+
+def test_report_worker_tool_cache_key_separates_task_kinds_for_same_user() -> None:
+    def context(task_kind: str) -> RunContext:
+        return RunContext(
+            run_id=f"run-{task_kind}",
+            session_id=f"session-{task_kind}",
+            user_id="user-1",
+            dependencies={
+                REPORTING_TASK_DEPENDENCY: {
+                    REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                    REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
+                }
+            },
+        )
+
+    assert _report_worker_tools_cache_key(
+        context("analysis_item")
+    ) != _report_worker_tools_cache_key(context("visualization"))
+
+
+@pytest.mark.parametrize("task_kind", ["analysis_item", "visualization"])
+def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str) -> None:
+    context = RunContext(
+        run_id=f"run-{task_kind}",
+        session_id=f"session-{task_kind}",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
+            }
+        },
+    )
+
+    instructions = "\n".join(build_report_agent_instructions(context))
+
+    assert "当前实际提供的工具 schema" in instructions
+    assert "update_plan" not in instructions
+    assert "replace_text" not in instructions
+    assert "git_status" not in instructions
+    if task_kind == "visualization":
+        assert "只调用 write_analysis_files" in instructions
 
 
 def test_analysis_projection_keeps_compact_profile_receipt_identities() -> None:

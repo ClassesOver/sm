@@ -2339,11 +2339,7 @@ class ReportWorkflowRuntime:
                     # 顶层字段。这里按完整 fieldRef 绑定语义，避免多表存在同名指标时
                     # 把未授权表的语义混入当前不可变数据集上下文。
                     measure_field_refs = (
-                        {
-                            f"{requirement.source_id}.{table.table}.{measure}".lower()
-                            for table in requirement.tables
-                            for measure in table.measure_columns
-                        }
+                        _requirement_measure_field_refs(requirement, snapshots)
                         if requirement is not None
                         else set()
                     )
@@ -3455,7 +3451,12 @@ class ReportWorkflowRuntime:
                 phase_contract={
                     "reportRunId": report_run_id,
                     "taskKind": "analysis_item",
-                    "thinkingEffort": self._worker_thinking_effort(retry=retry),
+                    # 单项分析的正常路径以工具回执和固定事实为主，不需要持续开启深度
+                    # 思考；只有服务端判定上一次尝试失败时才升级，避免把每个分析项都
+                    # 付出完整 reasoning budget 的墙钟成本。
+                    "thinkingEffort": (
+                        self._worker_thinking_effort(retry=True) if retry else "off"
+                    ),
                     "analysisIds": [analysis_id],
                     "currentAnalysisId": analysis_id,
                     "analysisPlans": {analysis_id: analysis_plan},
@@ -6851,6 +6852,36 @@ def _analysis_table_columns(
         and (qualified == table.lower() or qualified.endswith(f".{table.lower()}"))
     ]
     return matches[0] if len(matches) == 1 else ()
+
+
+def _requirement_measure_field_refs(
+    requirement: QueryRequirement,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> set[str]:
+    """把 Requirement 的裸指标列绑定到结构快照中的标准四段 fieldRef。"""
+
+    available_tables = _available_tables(snapshots)
+    field_refs: set[str] = set()
+    for table in requirement.tables:
+        table_ref = table.table.lower()
+        matches = [
+            model
+            for (source_id, qualified), model in available_tables.items()
+            if source_id == requirement.source_id
+            and (qualified == table_ref or qualified.endswith(f".{table_ref}"))
+        ]
+        # 裸表名只能在当前 source 下唯一命中。多义时不绑定任何指标语义，避免把
+        # 同名表的聚合规则混入不可变 Dataset；前置计划校验会把该歧义作为错误关闭。
+        if len(matches) != 1:
+            continue
+        model = matches[0]
+        available_columns = {column.name.lower() for column in model.columns}
+        field_refs.update(
+            f"{model.source_id}.{model.database}.{model.name}.{measure}".lower()
+            for measure in table.measure_columns
+            if measure.lower() in available_columns
+        )
+    return field_refs
 
 
 def _compact_validation_feedback(value: dict[str, Any] | None) -> dict[str, Any] | None:
