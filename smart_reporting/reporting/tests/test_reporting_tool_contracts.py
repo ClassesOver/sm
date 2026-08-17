@@ -33,12 +33,14 @@ from smart_reporting.reporting.tools import (
     _canonical_analysis_write_call,
     _derive_durable_analysis_binding,
     _jmespath_reporting_error,
+    _profile_receipt_command_id,
     _reset_stop_after_tool_call,
     _stop_after_accepted_tool_call,
     build_report_worker_tools,
 )
 from smart_reporting.reporting.workflow.checkpoint import ProfileReadReceipt
 from smart_reporting.reporting.workflow.state import ReportingRunState
+from smart_reporting.task_execution.acceptance import normalize_acceptance_contract
 from smart_reporting.workspace import WorkspaceError
 
 
@@ -585,6 +587,19 @@ def test_profile_query_receipt_identity_reuses_same_query_across_purposes() -> N
 
     assert first.receipt_id == second.receipt_id
     assert first.purpose != second.purpose
+
+
+def test_profile_receipt_command_id_binds_full_receipt_payload() -> None:
+    first = ProfileReadReceipt.create_query(
+        dataset_id="dataset-1",
+        query="variables.area.value_counts_without_nan",
+        snapshot_hash="a" * 64,
+        purpose="读取院区分布",
+    ).model_dump(mode="json", by_alias=True)
+    second = {**first, "purpose": "复核院区结构"}
+
+    assert _profile_receipt_command_id(first) == _profile_receipt_command_id(dict(first))
+    assert _profile_receipt_command_id(first) != _profile_receipt_command_id(second)
 
 
 @pytest.mark.anyio
@@ -1170,6 +1185,7 @@ def test_analysis_item_acceptance_contract_requires_single_id_and_output_root() 
     )
     parameters = contract["requirements"][0]["parameters"]
     assert parameters["phaseContract"]["analysisOutputRoot"] == "analysis/analysis_001"
+    assert "citationRegistry" not in parameters["phaseContract"]
 
     with pytest.raises(ValueError, match="唯一 analysisId"):
         build_report_phase_acceptance_contract(
@@ -1177,6 +1193,48 @@ def test_analysis_item_acceptance_contract_requires_single_id_and_output_root() 
             validation_context_file={"path": "validation.json"},
             phase_contract={**base, "analysisIds": ["analysis_001", "analysis_002"]},
         )
+
+
+def test_visualization_acceptance_contract_drops_unused_large_projections() -> None:
+    analysis_ids = [f"analysis_{index:03d}" for index in range(1, 19)]
+    phase_contract = {
+        "taskKind": "visualization",
+        "analysisIds": analysis_ids,
+        "analysisPlans": {
+            analysis_id: {"analysisId": analysis_id, "step": "复杂分析说明" * 100}
+            for analysis_id in analysis_ids
+        },
+        "analysisDatasetIds": {analysis_id: ["dataset-1"] for analysis_id in analysis_ids},
+        "deterministicFactFiles": {
+            analysis_id: {
+                "path": f"facts/{analysis_id}.json",
+                "size": 1,
+                "sha256": "a" * 64,
+            }
+            for analysis_id in analysis_ids
+        },
+        "datasetIds": ["dataset-1"],
+        "citationIds": [f"citation-{index:03d}" for index in range(1, 19)],
+        "citationRegistry": [
+            {"citationId": f"citation-{index:03d}", "quote": "大型引用正文" * 200}
+            for index in range(1, 19)
+        ],
+    }
+
+    contract = build_report_phase_acceptance_contract(
+        phase="analysis",
+        validation_context_file={"path": "validation.json", "size": 1, "sha256": "b" * 64},
+        phase_contract=phase_contract,
+        analysis_output_path="analysis/final.json",
+    )
+    normalized = normalize_acceptance_contract(contract)
+    trusted = normalized["requirements"][0]["parameters"]["phaseContract"]
+
+    assert trusted["analysisIds"] == analysis_ids
+    assert trusted["deterministicFactFiles"] == phase_contract["deterministicFactFiles"]
+    assert "analysisPlans" not in trusted
+    assert "analysisDatasetIds" not in trusted
+    assert "citationRegistry" not in trusted
 
 
 @pytest.mark.parametrize(

@@ -28,13 +28,20 @@ def build_report_phase_acceptance_contract(
 ) -> dict[str, Any]:
     """把内部 phase 身份放入首个 requirement，供 Reporting 工具可信读取。"""
 
+    trusted_phase_contract = dict(phase_contract)
     if phase == "analysis":
-        task_kind = phase_contract.get("taskKind")
+        task_kind = trusted_phase_contract.get("taskKind")
+        # citationRegistry 只用于模型指令展示，工具校验只消费 citationIds；visualization
+        # 也不需要单项计划映射。避免把重复的大型投影塞进 16 KiB acceptance 参数。
+        trusted_phase_contract.pop("citationRegistry", None)
+        if task_kind == "visualization":
+            trusted_phase_contract.pop("analysisPlans", None)
+            trusted_phase_contract.pop("analysisDatasetIds", None)
         if task_kind == "analysis_item":
             if analysis_output_path or section_output_path or rework_request_path:
                 raise ValueError("analysis item 不得声明阶段输出路径")
-            analysis_ids = phase_contract.get("analysisIds")
-            output_root = phase_contract.get("analysisOutputRoot")
+            analysis_ids = trusted_phase_contract.get("analysisIds")
+            output_root = trusted_phase_contract.get("analysisOutputRoot")
             if (
                 not isinstance(analysis_ids, list)
                 or len(analysis_ids) != 1
@@ -72,7 +79,7 @@ def build_report_phase_acceptance_contract(
                 "parameters": {
                     "phase": phase,
                     "validationContextFile": dict(validation_context_file),
-                    "phaseContract": dict(phase_contract),
+                    "phaseContract": trusted_phase_contract,
                     **output_parameters,
                 },
                 "artifactPatterns": paths,

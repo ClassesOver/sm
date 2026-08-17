@@ -103,6 +103,10 @@ def _stable_digest(value: Any) -> str:
     ).hexdigest()
 
 
+def _profile_receipt_command_id(receipt: Mapping[str, Any]) -> str:
+    return f"profile-receipt:{receipt['receiptId']}:{_stable_digest(receipt)}"
+
+
 def _reset_stop_after_tool_call(fc: Any) -> None:
     """Function 会跨内部 run 复用，每次执行前必须清除上一轮接受状态。"""
 
@@ -1212,7 +1216,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     scope,
                     name="record_profile_receipt",
                     payload={"receipt": serialized_receipt},
-                    command_id=f"profile-receipt:{receipt.receipt_id}",
+                    command_id=_profile_receipt_command_id(serialized_receipt),
                 )
                 return bounded
             if effective_limit <= 1:
@@ -1346,7 +1350,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     scope,
                     name="record_profile_receipt",
                     payload={"receipt": serialized_receipt},
-                    command_id=f"profile-receipt:{receipt.receipt_id}",
+                    command_id=_profile_receipt_command_id(serialized_receipt),
                 )
                 return bounded
             if effective_limit <= 1:

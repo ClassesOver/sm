@@ -102,6 +102,12 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
         "年化、平滑或补齐。固定事实已覆盖的指标不得重复计算或覆盖。"
     ),
     (
+        "任务 JSON 中的 Dataset 路径和 analysisOutputRoot 都是相对工作区根目录的受信路径。"
+        "脚本必须从工作区根目录执行：python3 <analysisOutputRoot>/script.py；不得 cd 到 "
+        "evidence/analysis_*，不得猜测 /workspace，也不得用 pwd、ls、find 或 wc 探测任务 JSON "
+        "已明确提供的路径；不要给成功的脚本执行附加探测命令。"
+    ),
+    (
         "write_analysis_files 的首次 create_file 可用 content 一次提交最长 4 MiB 的完整脚本；"
         "所有补充脚本和 evidence 必须写入任务 JSON 的 analysisOutputRoot；不要预先拆分。"
         "只有服务端明确返回 JSON 错误、输出截断或超过 4 MiB 时才定点修正。"

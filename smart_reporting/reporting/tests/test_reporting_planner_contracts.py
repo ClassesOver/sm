@@ -342,6 +342,12 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "evidencePaths 传空数组" in instructions
     assert "deterministicFactFile 直接冻结为 evidence" in instructions
     assert "不执行摘要百分比启发式匹配" in instructions
+    assert "脚本必须从工作区根目录执行" in instructions
+    assert "python3 <analysisOutputRoot>/script.py" in instructions
+    assert "不得 cd 到 evidence/analysis_*" in instructions
+    assert "不得猜测 /workspace" in instructions
+    assert "不得用 pwd、ls、find 或 wc 探测" in instructions
+    assert "不要给成功的脚本执行附加探测命令" in instructions
 
 
 def test_planner_validation_runs_inside_agent_retry_boundary() -> None:
