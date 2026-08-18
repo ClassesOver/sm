@@ -34,6 +34,7 @@ from ..task_execution.tools import parse_unified_diff
 from ..workspace import (
     WORKSPACE_ROOT,
     WorkspaceError,
+    WorkspacePathConflict,
     WorkspaceService,
 )
 from .delivery.draft_v1 import (
@@ -118,6 +119,16 @@ def _stop_after_accepted_tool_call(fc: Any) -> None:
 
     fc.function.stop_after_tool_call = bool(
         isinstance(fc.result, dict) and fc.result.get("status") == "accepted"
+    )
+
+
+def _stop_after_nonretryable_tool_call(fc: Any) -> None:
+    """不可重试的工具回执结束当前 run，避免同一错误继续膨胀上下文。"""
+
+    fc.function.stop_after_tool_call = bool(
+        isinstance(fc.result, dict)
+        and fc.result.get("ok") is False
+        and fc.result.get("retryable") is False
     )
 
 
@@ -289,11 +300,13 @@ def _analysis_write_operation_arguments(
     allowed = _ANALYSIS_WRITE_OPERATION_FIELDS.get(operation, frozenset())
     normalized: dict[str, Any] = {}
     for key, value in arguments.items():
+        # 公开入口是扁平 schema，模型可能同时填充其他操作的字段；操作已经
+        # 明确选择后，只把当前分支字段映射到底层原语，避免无关字段触发严格 schema。
+        if key not in allowed:
+            continue
         if value is None:
             continue
-        inactive_neutral = key not in allowed and (value == "" or value == [] or value is False)
-        if not inactive_neutral:
-            normalized[key] = value
+        normalized[key] = value
     return normalized
 
 
@@ -544,6 +557,8 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 parameters=_analysis_write_parameters(self.async_functions),
                 strict=True,
                 entrypoint=self.write_analysis_files,
+                pre_hook=_reset_stop_after_tool_call,
+                post_hook=_stop_after_nonretryable_tool_call,
             )
         )
         self.register(
@@ -2083,46 +2098,53 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 payload={"intent": intent},
                 command_id=f"write-intent:{intent_sha256}",
             )
-            if canonical_tool_name == "overwrite_file":
-                result = await self.kernel.patch(
-                    "overwrite",
-                    canonical["path"],
-                    None,
-                    None,
-                    False,
-                    None,
-                    run_context,
-                    content=canonical["content"],
-                    expected_sha256=canonical["expected_sha256"],
-                    _scope=scope,
-                )
-            elif canonical_tool_name == "replace_text":
-                result = await self.kernel.patch(
-                    "replace",
-                    canonical["path"],
-                    canonical["old_string"],
-                    canonical["new_string"],
-                    canonical["replace_all"],
-                    None,
-                    run_context,
-                    _scope=scope,
-                )
-            else:
-                patch = (
-                    _create_files_patch(canonical["files"])
-                    if canonical_tool_name == "create_files"
-                    else canonical["patch"]
-                )
-                result = await self.kernel.patch(
-                    "patch",
-                    None,
-                    None,
-                    None,
-                    False,
-                    patch,
-                    run_context,
-                    _scope=scope,
-                )
+            try:
+                if canonical_tool_name == "overwrite_file":
+                    result = await self.kernel.patch(
+                        "overwrite",
+                        canonical["path"],
+                        None,
+                        None,
+                        False,
+                        None,
+                        run_context,
+                        content=canonical["content"],
+                        expected_sha256=canonical["expected_sha256"],
+                        _scope=scope,
+                    )
+                elif canonical_tool_name == "replace_text":
+                    result = await self.kernel.patch(
+                        "replace",
+                        canonical["path"],
+                        canonical["old_string"],
+                        canonical["new_string"],
+                        canonical["replace_all"],
+                        None,
+                        run_context,
+                        _scope=scope,
+                    )
+                else:
+                    patch = (
+                        _create_files_patch(canonical["files"])
+                        if canonical_tool_name == "create_files"
+                        else canonical["patch"]
+                    )
+                    result = await self.kernel.patch(
+                        "patch",
+                        None,
+                        None,
+                        None,
+                        False,
+                        patch,
+                        run_context,
+                        _scope=scope,
+                    )
+            except WorkspacePathConflict as error:
+                raise ReportingError(
+                    "report_analysis_write_path_conflict",
+                    "写入目标文件已存在或内容身份已变化。",
+                    details={"paths": list(paths)},
+                ) from error
             if result.get("ok") is not True:
                 return result
             identities = await self._analysis_write_hash_files(
@@ -3194,6 +3216,17 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             "retryable": retryable,
         }
         if (
+            code == "report_analysis_write_path_conflict"
+            and isinstance(error, ReportingError)
+            and isinstance(error.details, Mapping)
+        ):
+            paths = error.details.get("paths")
+            if isinstance(paths, list):
+                result["details"] = {"paths": [path for path in paths if isinstance(path, str)]}
+            result["requiredActions"] = [
+                "先调用 read_file 获取目标文件及最新 SHA-256，再使用 overwrite_file 或 apply_patch。"
+            ]
+        elif (
             code == "report_analysis_dependency_missing"
             and isinstance(error, ReportingError)
             and isinstance(error.details, Mapping)

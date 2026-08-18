@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import jmespath
@@ -36,12 +38,13 @@ from smart_reporting.reporting.tools import (
     _profile_receipt_command_id,
     _reset_stop_after_tool_call,
     _stop_after_accepted_tool_call,
+    _stop_after_nonretryable_tool_call,
     build_report_worker_tools,
 )
 from smart_reporting.reporting.workflow.checkpoint import ProfileReadReceipt
 from smart_reporting.reporting.workflow.state import ReportingRunState
 from smart_reporting.task_execution.acceptance import normalize_acceptance_contract
-from smart_reporting.workspace import WorkspaceError
+from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
 
 
 def write_functions() -> dict[str, Function]:
@@ -143,7 +146,7 @@ def test_write_analysis_files_create_file_is_canonicalized_to_existing_primitive
     }
 
 
-def test_write_analysis_files_drops_only_inactive_neutral_fields() -> None:
+def test_write_analysis_files_drops_inactive_neutral_fields() -> None:
     arguments = _analysis_write_operation_arguments(
         "replace_text",
         {
@@ -185,24 +188,84 @@ def test_write_analysis_files_drops_empty_create_file_alternative() -> None:
     }
 
 
-def test_write_analysis_files_keeps_inactive_nonempty_fields_for_strict_rejection() -> None:
+def test_write_analysis_files_drops_nonempty_inactive_create_file_fields() -> None:
     arguments = _analysis_write_operation_arguments(
-        "replace_text",
+        "create_file",
         {
             "path": "analysis/report.py",
-            "old_string": "before",
-            "new_string": "after",
-            "patch": "--- a/report.py\n+++ b/report.py\n",
+            "content": "print('ok')\n",
+            "expected_sha256": "0" * 64,
+            "old_string": "stale",
+            "new_string": "stale",
+            "replace_all": True,
+            "patch": "--- a/old.py\n+++ b/old.py\n",
         },
     )
-    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
 
-    with pytest.raises(ReportingError) as raised:
-        toolkit._validate_analysis_write_arguments("replace_text", arguments)
+    assert arguments == {"path": "analysis/report.py", "content": "print('ok')\n"}
 
-    assert raised.value.code == "report_analysis_write_intent_invalid"
-    assert raised.value.details["validator"] == "additionalProperties"
+
+@pytest.mark.parametrize(
+    ("operation", "arguments", "expected"),
+    [
+        (
+            "overwrite_file",
+            {
+                "path": "analysis/report.py",
+                "content": "after",
+                "expected_sha256": "a" * 64,
+                "old_string": "before",
+                "new_string": "after",
+                "replace_all": True,
+                "patch": "--- a/report.py\n+++ b/report.py\n",
+            },
+            {
+                "path": "analysis/report.py",
+                "content": "after",
+                "expected_sha256": "a" * 64,
+            },
+        ),
+        (
+            "replace_text",
+            {
+                "path": "analysis/report.py",
+                "old_string": "before",
+                "new_string": "after",
+                "replace_all": True,
+                "content": "ignored",
+                "expected_sha256": "a" * 64,
+                "patch": "--- a/report.py\n+++ b/report.py\n",
+            },
+            {
+                "path": "analysis/report.py",
+                "old_string": "before",
+                "new_string": "after",
+                "replace_all": True,
+            },
+        ),
+        (
+            "apply_patch",
+            {
+                "patch": "--- a/report.py\n+++ b/report.py\n@@ -1 +1 @@\n-before\n+after\n",
+                "path": "analysis/report.py",
+                "content": "ignored",
+                "expected_sha256": "a" * 64,
+                "old_string": "before",
+                "new_string": "after",
+                "replace_all": True,
+            },
+            {
+                "patch": "--- a/report.py\n+++ b/report.py\n@@ -1 +1 @@\n-before\n+after\n",
+            },
+        ),
+    ],
+)
+def test_write_analysis_files_drops_nonempty_inactive_fields_for_each_operation(
+    operation: str,
+    arguments: dict[str, object],
+    expected: dict[str, object],
+) -> None:
+    assert _analysis_write_operation_arguments(operation, arguments) == expected
 
 
 def test_write_analysis_files_create_file_accepts_complete_content() -> None:
@@ -694,6 +757,51 @@ async def test_pending_create_files_with_missing_target_continues_write() -> Non
 
 
 @pytest.mark.anyio
+async def test_analysis_write_path_conflict_returns_retryable_receipt() -> None:
+    @asynccontextmanager
+    async def context(value):
+        yield value
+
+    scheduler = SimpleNamespace(write=lambda: context(None))
+    scope = SimpleNamespace(thread_id="thread-1")
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.async_functions = write_functions()
+    toolkit.kernel = SimpleNamespace(
+        bound_external_run_id=lambda _run_context: "external-run-1",
+        task_scheduler=lambda _external_run_id: context(scheduler),
+        scope=AsyncMock(return_value=scope),
+        patch=AsyncMock(side_effect=WorkspacePathConflict("目标文件已经存在。")),
+    )
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis"},
+    )
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.write_analysis_files(
+        operation="create_file",
+        path="analysis/report.py",
+        content="print('ok')\n",
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result == {
+        "ok": False,
+        "status": "rejected",
+        "code": "report_analysis_write_path_conflict",
+        "message": "写入目标文件已存在或内容身份已变化。",
+        "requiredActions": [
+            "先调用 read_file 获取目标文件及最新 SHA-256，再使用 overwrite_file 或 apply_patch。"
+        ],
+        "retryable": True,
+        "details": {"paths": ["analysis/report.py"]},
+    }
+    toolkit._apply_durable.assert_awaited_once()
+
+
+@pytest.mark.anyio
 async def test_analysis_write_hash_failure_preserves_original_error() -> None:
     error = DaytonaError("temporary download failure")
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
@@ -729,17 +837,47 @@ def test_successful_tool_call_resets_no_progress_failure_count() -> None:
     assert context.session_state[_REPORT_TOOL_FAILURE_STATE_KEY]["phaseFailureCount"] == 1
 
 
-def test_repeated_failure_without_progress_only_adds_progressive_guidance() -> None:
+def test_repeated_failure_without_progress_stops_after_same_failure_limit() -> None:
     context = RunContext(run_id="run-1", session_id="session-1", session_state={})
     failure = {"ok": False, "code": "report_tool_arguments_invalid"}
 
-    results = [_enforce_reporting_no_progress(context, "terminal", failure) for _ in range(6)]
+    results = [_enforce_reporting_no_progress(context, "terminal", failure) for _ in range(3)]
 
     assert results[0] == failure
     assert results[1]["details"]["sameFailureCount"] == 2
     assert "只修改服务端 code/details" in results[1]["requiredActions"][-1]
-    assert results[-1]["details"]["sameFailureCount"] == 6
-    assert "缩小查询" in results[-1]["requiredActions"][-1]
+    assert results[-1]["code"] == "tool_no_progress"
+    assert results[-1]["retryable"] is False
+    assert results[-1]["details"]["sameFailureCount"] == 3
+
+
+def test_nonretryable_reporting_tool_result_stops_function_run() -> None:
+    function_call = SimpleNamespace(
+        function=SimpleNamespace(stop_after_tool_call=False),
+        result={"ok": False, "code": "tool_no_progress", "retryable": False},
+    )
+
+    _stop_after_nonretryable_tool_call(function_call)
+
+    assert function_call.function.stop_after_tool_call is True
+
+
+def test_phase_failure_limit_stops_distinct_failures_without_progress() -> None:
+    context = RunContext(run_id="run-1", session_id="session-1", session_state={})
+
+    results = [
+        _enforce_reporting_no_progress(
+            context,
+            "write_analysis_files",
+            {"ok": False, "code": "report_analysis_write_intent_invalid"},
+            {"path": f"analysis/{index}.py"},
+        )
+        for index in range(8)
+    ]
+
+    assert results[-1]["code"] == "tool_no_progress"
+    assert results[-1]["retryable"] is False
+    assert results[-1]["details"]["phaseFailureCount"] == 8
 
 
 def reporting_state_with_artifacts(*artifacts: dict[str, object]) -> ReportingRunState:

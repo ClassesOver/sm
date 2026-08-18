@@ -95,6 +95,8 @@ _REPORT_TOOL_ARGUMENT_ERROR_STATE_KEY = "agentos_reporting_tool_argument_errors"
 _REPORT_TOOL_ARGUMENT_ERROR_CONTEXT_LENGTH = 240
 _CUMULATIVE_STREAM_USAGE_HOSTS = frozenset({"api.siliconflow.cn"})
 _REPORT_TOOL_FAILURE_STATE_KEY = "agentos_reporting_tool_failures"
+_REPORT_TOOL_SAME_FAILURE_LIMIT = 3
+_REPORT_TOOL_PHASE_FAILURE_LIMIT = 8
 _REPORT_ARGUMENT_MAX_ISSUES = 8
 _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
@@ -550,7 +552,7 @@ def _enforce_reporting_no_progress(
         "phaseFailureCount": phase_failure_count,
         "counts": counts,
     }
-    if count < 2:
+    if count < 2 and phase_failure_count < _REPORT_TOOL_PHASE_FAILURE_LIMIT:
         return result
 
     # 精确重复失败只增加 DeepSeek Harness 风格的纠错提示。重复次数是可观测指标，
@@ -578,11 +580,25 @@ def _enforce_reporting_no_progress(
     )
     if progressive_action not in required_actions:
         required_actions.append(progressive_action)
+    terminal_no_progress = (
+        count >= _REPORT_TOOL_SAME_FAILURE_LIMIT
+        or phase_failure_count >= _REPORT_TOOL_PHASE_FAILURE_LIMIT
+    )
+    if terminal_no_progress:
+        required_actions = [
+            "当前 Task 在没有任何成功工具进展时重复失败；结束本次 run，交由上层按既有重试策略恢复。"
+        ]
     guided.update(
         {
+            "code": "tool_no_progress" if terminal_no_progress else code,
+            "message": (
+                "Reporting 工具连续失败且没有可观察进展，已停止当前 run。"
+                if terminal_no_progress
+                else result.get("message")
+            ),
             "details": details,
             "requiredActions": required_actions,
-            "retryable": result.get("retryable", True),
+            "retryable": False if terminal_no_progress else result.get("retryable", True),
         }
     )
     return guided
