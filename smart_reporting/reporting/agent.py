@@ -104,8 +104,8 @@ _REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
 _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
 # 后端异常却可能持续数分钟才返回。Worker 仍保留既有一次同 run continuation，
-# 这里只收紧单次 HTTP 等待上限，避免失败关闭路径被 900 秒默认值拖长。
-_REPORT_WORKER_MODEL_TIMEOUT_CAP_SECONDS = 180
+# 这里按成功最长值的两倍以上保留余量，同时避免失败关闭路径被 900 秒默认值拖长。
+_REPORT_WORKER_MODEL_TIMEOUT_CAP_SECONDS = 300
 _REPORT_MODEL_RUN_ERROR: ContextVar[tuple[int, Exception] | None] = ContextVar(
     "reporting_model_run_error",
     default=None,

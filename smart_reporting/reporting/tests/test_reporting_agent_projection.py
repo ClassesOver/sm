@@ -59,7 +59,7 @@ def test_report_worker_disables_unused_session_summaries(monkeypatch: pytest.Mon
 
 @pytest.mark.parametrize(
     ("configured_timeout", "expected_timeout"),
-    [("900", 180), ("120", 120)],
+    [("900", 300), ("120", 120)],
 )
 def test_report_worker_caps_only_long_model_timeout(
     monkeypatch: pytest.MonkeyPatch,
