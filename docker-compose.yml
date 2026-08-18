@@ -1,24 +1,7 @@
-name: ${AGENTOS_COMPOSE_PROJECT_NAME:-agentos}
+name: ${AGENTOS_COMPOSE_PROJECT_NAME:-agentos-reporting}
 
 services:
-  env-init:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: env-init
-      args:
-        PYTHON_IMAGE: ${PYTHON_IMAGE:-docker.m.daocloud.io/library/python:3.12-slim}
-        APT_MIRROR_HOST: ${APT_MIRROR_HOST:-mirrors.aliyun.com}
-    profiles: [setup]
-    working_dir: /workspace
-    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
-    volumes:
-      - .:/workspace
-    network_mode: none
-    entrypoint: ["bash", "scripts/configure_agentos_env.sh"]
-    command: ["/workspace/.env"]
-
-  agent:
+  reporting-os:
     build:
       context: .
       dockerfile: Dockerfile
@@ -32,11 +15,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "proxy.localhost:host-gateway"
+    command: ["python", "-m", "smart_reporting.app"]
     ports:
-      - "33042:7777"
+      - "33046:7777"
     environment:
       AGENT_OS_WORKERS: "1"
-      AGENT_POSTGRES_HOST: agent-db
+      AGENT_POSTGRES_HOST: reporting-db
       AGENT_POSTGRES_PORT: "5432"
       AGENT_POSTGRES_DB: ${AGENT_POSTGRES_DB:-dev}
       AGENT_POSTGRES_USER: ${AGENT_POSTGRES_USER:-odoo}
@@ -55,7 +39,7 @@ services:
       - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
       - ${AGENT_REPORT_DATA_SOURCES_DIR:-./deploy/agentos/reporting}:/run/agentos/reporting:ro
     depends_on:
-      agent-db:
+      reporting-db:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.getenv('AGENT_OS_PORT', '7777') + '/ready', timeout=3)"]
@@ -65,7 +49,7 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  agent-db:
+  reporting-db:
     image: docker.io/library/postgres:18.0-alpine
     environment:
       POSTGRES_DB: ${AGENT_POSTGRES_DB:-dev}
@@ -74,14 +58,14 @@ services:
     ports:
       - "${AGENT_POSTGRES_BIND:-127.0.0.1}:${AGENT_POSTGRES_PORT:-55432}:5432"
     healthcheck:
-      test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 12
     volumes:
-      - agent_db_data:/var/lib/postgresql
+      - reporting_db_data:/var/lib/postgresql
     restart: unless-stopped
 
 volumes:
-  agent_db_data:
-    name: "${AGENTOS_VOLUME_PREFIX:-agentos_}agent_db_data"
+  reporting_db_data:
+    name: "${AGENTOS_VOLUME_PREFIX:-agentos_}reporting_db_data"

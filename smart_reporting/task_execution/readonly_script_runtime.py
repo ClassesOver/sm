@@ -120,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--write-root", action="append", default=[])
     parser.add_argument("--shell-command")
+    parser.add_argument("--shell", choices=("/bin/sh", "/bin/bash"), default="/bin/sh")
     parser.add_argument("script", nargs="?")
     parser.add_argument("args", nargs=argparse.REMAINDER)
     values = parser.parse_args(argv)
@@ -127,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         if values.script is not None or values.args:
             raise RuntimeError("shell command 参数无效。")
         restrict_writes([str(Path(root).resolve(strict=True)) for root in values.write_root])
-        os.execv("/bin/sh", ["/bin/sh", "-l", "-c", values.shell_command])
+        os.execv(values.shell, [values.shell, "-l", "-c", values.shell_command])
         return 127
     if values.script is None:
         raise RuntimeError("缺少只读脚本路径。")

@@ -1273,12 +1273,13 @@ class CodingExecutionKernel:
         background: bool,
         timeout: int,
         pty: bool,
+        shell: str,
     ) -> None:
         if not isinstance(background, bool) or not isinstance(pty, bool):
             raise WorkspaceError("terminal 的 background 和 pty 必须是布尔值。")
         if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 86_400:
             raise WorkspaceError("terminal timeout 必须是 1 至 86400 之间的整数秒。")
-        CodingToolkit._validate_command_policy(command, "/bin/sh")
+        CodingToolkit._validate_command_policy(command, shell)
         if len(command.encode("utf-8")) > MAX_TERMINAL_COMMAND_BYTES:
             raise WorkspaceError(
                 f"terminal command 超过 {MAX_TERMINAL_COMMAND_BYTES} 字节；"
@@ -1383,15 +1384,19 @@ class CodingExecutionKernel:
         timeout: int = DEFAULT_TERMINAL_TIMEOUT,
         workdir: str | None = None,
         pty: bool = False,
+        shell: str | None = None,
         run_context: RunContext | None = None,
         _verification: bool = False,
         _artifact_paths: list[str] | None = None,
         _read_only: bool | None = None,
         _scope: CodingTaskScope | None = None,
     ) -> dict[str, Any]:
+        selected_shell = shell or "/bin/sh"
+        if selected_shell not in {"/bin/sh", "/bin/bash"}:
+            raise WorkspaceError("shell 只支持 /bin/sh 或 /bin/bash。")
         patch = _extract_apply_patch_command(command) if isinstance(command, str) else None
         if patch is None:
-            self._validate_terminal_arguments(command, background, timeout, pty)
+            self._validate_terminal_arguments(command, background, timeout, pty, selected_shell)
         elif workdir not in (None, "") or pty:
             raise WorkspaceError("apply_patch heredoc 不支持 workdir 或 PTY。")
         scope = _scope or await self.scope(run_context)
@@ -1490,26 +1495,27 @@ class CodingExecutionKernel:
                 }
 
         assert terminal_runtime is not None
-        protected_command = shlex.join(
-            [
-                "python3",
-                "-I",
-                "-B",
-                terminal_runtime,
-                "--write-root",
-                WORKSPACE_ROOT,
-                "--write-root",
-                "/tmp",
-                "--write-root",
-                "/home/daytona/.cache",
-                "--write-root",
-                "/home/daytona/.config",
-                "--write-root",
-                "/dev/null",
-                "--shell-command",
-                command,
-            ]
-        )
+        protected_arguments = [
+            "python3",
+            "-I",
+            "-B",
+            terminal_runtime,
+            "--write-root",
+            WORKSPACE_ROOT,
+            "--write-root",
+            "/tmp",
+            "--write-root",
+            "/home/daytona/.cache",
+            "--write-root",
+            "/home/daytona/.config",
+            "--write-root",
+            "/dev/null",
+            "--shell-command",
+            command,
+        ]
+        if shell is not None:
+            protected_arguments.extend(("--shell", selected_shell))
+        protected_command = shlex.join(protected_arguments)
         managed_command = self._managed_command(protected_command, workdir, timeout, pty)
         try:
             async for sandbox in self._sandbox(scope):
@@ -3724,6 +3730,11 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                             },
                             "workdir": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                             "pty": {"type": "boolean", "default": False},
+                            "shell": {
+                                "type": "string",
+                                "enum": ["/bin/sh", "/bin/bash"],
+                                "default": "/bin/sh",
+                            },
                         },
                         "required": ["command"],
                         "additionalProperties": False,
@@ -4571,6 +4582,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         timeout: int = DEFAULT_TERMINAL_TIMEOUT,
         workdir: str | None = None,
         pty: bool = False,
+        shell: str | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         return await self._invoke(
@@ -4581,6 +4593,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 "timeout": timeout,
                 "workdir": workdir,
                 "pty": pty,
+                "shell": shell,
             },
             lambda scope: self.kernel.terminal(
                 command,
@@ -4588,6 +4601,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 timeout=timeout,
                 workdir=workdir,
                 pty=pty,
+                shell=shell,
                 run_context=run_context,
                 _scope=scope,
             ),

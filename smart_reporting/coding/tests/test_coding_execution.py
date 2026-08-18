@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import shlex
 import subprocess
 import sys
 from copy import copy
@@ -19,7 +20,6 @@ from daytona.common.errors import DaytonaNotFoundError
 import smart_reporting.task_execution.execution as execution_module
 from smart_reporting.agent_control import AGENT_PLAN_STATE_KEY
 from smart_reporting.coding import CodingScope, Lease
-from smart_reporting.reporting.tools import ReportWorkspaceTaskToolkit
 from smart_reporting.coding.executor import CODING_FINISH_FAILURE_STATE_KEY
 from smart_reporting.coding.tests.workspace_fakes import (
     AsyncFakeClient,
@@ -29,6 +29,7 @@ from smart_reporting.coding.tests.workspace_fakes import (
     service,
 )
 from smart_reporting.database import create_agent_database
+from smart_reporting.reporting.tools import ReportWorkspaceTaskToolkit
 from smart_reporting.skills import (
     CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillValidatorRegistry,
@@ -1037,6 +1038,32 @@ def test_readonly_script_runtime_blocks_self_mutation_but_allows_workspace_write
     assert (workspace / "result.txt").read_text(encoding="utf-8") == "ok"
 
 
+def test_readonly_script_runtime_executes_shell_command_with_selected_bash(tmp_path):
+    environment = tmp_path / "runtime.env"
+    environment.write_text("export REPORT_VALUE=ready\n", encoding="utf-8")
+    runtime = Path(execution_module.__file__).with_name("readonly_script_runtime.py")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(runtime),
+            "--write-root",
+            str(tmp_path),
+            "--shell-command",
+            f"source {shlex.quote(str(environment))}; printf '%s' \"$REPORT_VALUE\"",
+            "--shell",
+            "/bin/bash",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "ready"
+
+
 @pytest.mark.anyio
 async def test_validator_rejects_runtime_digest_change_and_cleans_install(
     execution_runtime,
@@ -1566,9 +1593,7 @@ async def test_small_tool_output_only_gets_handle_when_explicitly_retained(execu
         runtime.context,
         retain=True,
     )
-    page = await runtime.kernel.read_tool_output(
-        retained["outputHandle"], 0, 1024, runtime.context
-    )
+    page = await runtime.kernel.read_tool_output(retained["outputHandle"], 0, 1024, runtime.context)
 
     assert ordinary == result
     assert "outputHandle" not in ordinary
@@ -1649,9 +1674,7 @@ async def test_reporting_analysis_terminal_retains_small_output(execution_runtim
             session_id=started["execution_id"],
             run_context=context,
         )
-    page = await toolkit.read_tool_output(
-        result["outputHandle"], _agno_run_context=context
-    )
+    page = await toolkit.read_tool_output(result["outputHandle"], _agno_run_context=context)
 
     assert created["mutation_sequence"] == 1
     assert "收入同比增长 8.2%" in result["output"]
@@ -1709,10 +1732,7 @@ async def test_report_coding_tool_output_uses_smaller_preview_and_exact_handle_r
     )
 
     assert "TOOL_OUTPUT_TRUNCATED" in bounded["output"]
-    assert (
-        len(bounded["output"].encode("utf-8"))
-        <= execution_module.MAX_REPORT_TOOL_PREVIEW_BYTES
-    )
+    assert len(bounded["output"].encode("utf-8")) <= execution_module.MAX_REPORT_TOOL_PREVIEW_BYTES
     assert first_page["content"] + second_page["content"] == output
     assert first_page["hasMore"] is True
     assert second_page["hasMore"] is False
@@ -2523,6 +2543,11 @@ def test_workspace_coding_tools_have_explicit_schemas_and_split_mutations():
     }.issubset(tools)
     create_files = tools["create_files"]
     assert create_files.parameters["properties"]["files"]["minItems"] == 1
+    assert tools["terminal"].parameters["properties"]["shell"] == {
+        "type": "string",
+        "enum": ["/bin/sh", "/bin/bash"],
+        "default": "/bin/sh",
+    }
     for name in (
         "list_files",
         "read_file",
@@ -2553,6 +2578,24 @@ def test_workspace_coding_tools_have_explicit_schemas_and_split_mutations():
         "path",
         "limit",
     }
+
+
+@pytest.mark.anyio
+async def test_workspace_terminal_forwards_selected_shell_to_protected_runtime(execution_runtime):
+    runtime = execution_runtime
+
+    started = await runtime.kernel.terminal(
+        "source env.sh",
+        background=True,
+        shell="/bin/bash",
+        run_context=runtime.context,
+    )
+
+    execution = await runtime.repository.get_execution(started["execution_id"])
+    assert execution is not None
+    sandbox = runtime.synchronous.sandbox_for("thread")
+    command = sandbox.process.sessions[execution.daytona_session_id].commands[0].command
+    assert "--shell /bin/bash" in command
 
 
 @pytest.mark.anyio
