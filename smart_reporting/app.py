@@ -30,7 +30,7 @@ from .reporting_identity import (
     ReportServerIdentity,
     apply_report_identity,
     bind_report_identity,
-    is_report_run_path,
+    requires_workspace_capability,
 )
 from .security import CapabilityError, verify_capability
 from .settings import AgentSettings
@@ -121,21 +121,21 @@ async def _read_limited_body(request: Request, limit: int) -> bytes | None:
 
 
 async def require_workspace_capability(request: Request, call_next):
-    context = _application_context(request)
     path = request.url.path.rstrip("/") or "/"
-    report_run = is_report_run_path(path)
-    protected = (
-        path.startswith("/workspace") or path.startswith("/reports/v1/download/") or report_run
-    )
-    has_capability = bool(request.headers.get("X-Workspace-Capability"))
-    if not protected and not has_capability:
-        return await call_next(request)
     thread = _request_thread(request)
+    capability = str(request.headers.get("X-Workspace-Capability", "")).strip()
+    if not requires_workspace_capability(
+        path,
+        has_thread=bool(thread),
+        has_capability=bool(capability),
+    ):
+        return await call_next(request)
     if not thread:
         return JSONResponse({"error": "thread_header_required"}, status_code=400)
+    context = _application_context(request)
     try:
         request.state.capability = verify_capability(
-            request.headers.get("X-Workspace-Capability", ""),
+            capability,
             context.settings.workspace_hmac_secret,
             thread,
         )

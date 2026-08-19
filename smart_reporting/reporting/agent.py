@@ -1548,8 +1548,10 @@ def create_report_agent(
             "compression_manager": facade_compression_manager,
             "checkpoint": None,
             "instructions": [
-                "新报表只调用无参数的 report_workflow_start；该工具会读取受信服务端 Envelope，或把当前"
-                "最后一条用户消息原文交给 Workflow 首步。不得自行解析期间、改写目标、取数、执行 Coding "
+                "普通聊天问题直接回答，不调用报表工具；只有用户明确要求生成、分析或导出报表时，才调用"
+                "无参数的 report_workflow_start。该工具会读取受信服务端 Envelope，或把当前"
+                "最后一条用户消息按 CLI 相同规则解析为自然语言或 ReportRequestEnvelope JSON，再交给 "
+                "Workflow 首步。不得自行解析期间、改写目标、取数、执行 Coding "
                 "或生成报告。Workflow 返回 request 阶段 paused 时，向用户"
                 "展示 clarificationQuestion，并由 report_workflow_review 的 AgentOS 用户输入收集补充原文，"
                 "使 Workflow 首步按官方 HumanReview retry 继续归一化。",

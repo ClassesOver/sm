@@ -13,15 +13,18 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 
 主应用保留：
 
-- AgentOS 原生 Agent API，公开 `report-agent`。
+- AgentOS 原生 Agent API，公开 `report-agent`，同时支持普通对话和智能报表。
+- `report-agent` 的报表请求支持与 CLI 相同的自然语言或 `ReportRequestEnvelope` JSON 输入。
 - `GET /ready` 服务就绪检查。
 - `/workspace/*` 工作区文件接口。
 - `/reports/v1/download/*` 报告下载接口。
 
-Reporting run、Workspace 和报告下载请求都必须使用 `X-Workspace-Thread` 和
-`X-Workspace-Capability`。Capability 必须携带并绑定 Odoo `database`、`user`、
-`company`、`odoo_session` 和 `thread`；服务端会用验签后的 `user/thread` 覆盖 AgentOS
-run 请求中的 `user_id/session_id`。签名密钥由 `AGENT_WORKSPACE_HMAC_SECRET` 配置。
+通用 AgentOS Console 的 run 请求可不携带 Workspace 请求头，此时沿用原生
+`user_id/session_id`，且不会生成默认 Odoo 身份。Odoo 集成请求必须同时使用
+`X-Workspace-Thread` 和 `X-Workspace-Capability`；Workspace 和报告下载请求始终要求这
+两个请求头。Capability 必须携带并绑定 Odoo `database`、`user`、`company`、
+`odoo_session` 和 `thread`；服务端会用验签后的 `user/thread` 覆盖 AgentOS run 请求中的
+`user_id/session_id`。签名密钥由 `AGENT_WORKSPACE_HMAC_SECRET` 配置。
 
 Reporting 正常发布时先将 PDF/Word 分块写入 PostgreSQL并核验大小与 SHA-256，再签发
 下载授权并删除对应 Daytona sandbox。下载接口从 PostgreSQL 流式读取产物，继续校验上述

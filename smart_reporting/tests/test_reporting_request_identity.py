@@ -14,7 +14,7 @@ from smart_reporting.reporting_identity import (
     apply_report_identity,
     bind_report_identity,
     current_report_identity,
-    is_report_run_path,
+    requires_workspace_capability,
 )
 from smart_reporting.security import CapabilityError, verify_capability
 
@@ -66,15 +66,18 @@ def _app() -> FastAPI:
 
     @application.middleware("http")
     async def require_report_identity(request: Request, call_next):
-        if not is_report_run_path(request.url.path):
-            return await call_next(request)
         thread = str(request.headers.get("X-Workspace-Thread", "")).strip()
+        capability = str(request.headers.get("X-Workspace-Capability", "")).strip()
+        if not requires_workspace_capability(
+            request.url.path,
+            has_thread=bool(thread),
+            has_capability=bool(capability),
+        ):
+            return await call_next(request)
         if not thread:
             return JSONResponse({"error": "thread_header_required"}, status_code=400)
         try:
-            claims = verify_capability(
-                request.headers.get("X-Workspace-Capability", ""), SECRET, thread
-            )
+            claims = verify_capability(capability, SECRET, thread)
         except CapabilityError as error:
             return JSONResponse({"error": str(error)}, status_code=401)
         identity = ReportServerIdentity(
@@ -91,7 +94,8 @@ def _app() -> FastAPI:
     @application.post("/agents/report-agent/runs")
     async def report_run(request: Request):
         identity = current_report_identity()
-        assert identity is not None
+        if identity is None:
+            return {"identity": None}
         return {
             "database": identity.database,
             "userId": identity.user_id,
@@ -101,6 +105,10 @@ def _app() -> FastAPI:
             "requestUserId": request.state.user_id,
             "requestSessionId": request.state.session_id,
         }
+
+    @application.get("/workspace/files")
+    async def workspace_files():
+        return {"ok": True}
 
     @application.get("/agents/report-agent/runs/run-1/resume")
     async def resume_report_run():
@@ -118,14 +126,53 @@ def _app() -> FastAPI:
 
 
 @pytest.mark.anyio
-async def test_reporting_run_requires_odoo_capability() -> None:
+async def test_reporting_run_without_capability_uses_native_agentos_identity() -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post("/agents/report-agent/runs")
 
+    assert response.status_code == 200
+    assert response.json() == {"identity": None}
+
+
+@pytest.mark.anyio
+async def test_workspace_still_requires_odoo_capability() -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.get("/workspace/files")
+
     assert response.status_code == 400
     assert response.json() == {"error": "thread_header_required"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("headers", "status_code", "error"),
+    [
+        (
+            {"X-Workspace-Capability": _capability()},
+            400,
+            "thread_header_required",
+        ),
+        (
+            {"X-Workspace-Thread": "thread-1"},
+            401,
+            "capability_invalid",
+        ),
+    ],
+)
+async def test_reporting_run_rejects_partial_workspace_identity(
+    headers: dict[str, str], status_code: int, error: str
+) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post("/agents/report-agent/runs", headers=headers)
+
+    assert response.status_code == status_code
+    assert response.json() == {"error": error}
 
 
 @pytest.mark.anyio

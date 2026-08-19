@@ -460,3 +460,11 @@ def test_toolkit_instructions_are_injected_by_agno():
         "properties": {},
         "required": [],
     }
+
+
+def test_report_agent_routes_only_report_requests_to_workflow():
+    instructions = "\n".join(app.report_agent.instructions)
+
+    assert "普通聊天问题直接回答，不调用报表工具" in instructions
+    assert "明确要求生成、分析或导出报表" in instructions
+    assert "自然语言或 ReportRequestEnvelope JSON" in instructions

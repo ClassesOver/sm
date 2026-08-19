@@ -21,7 +21,7 @@ from ..async_utils import complete_cleanup
 from ..execution_context import close_execution_resources, create_execution_context
 from ..settings import AgentSettings
 from .bootstrap import create_report_runtime
-from .contract import REPORT_WORKFLOW_SCOPE_STATE_KEY, ReportingWorkflowInput
+from .contract import REPORT_WORKFLOW_SCOPE_STATE_KEY, parse_reporting_workflow_input
 from .models import ReportingError
 from .workflow.controller import REPORT_WORKFLOW_SCOPE_DEPENDENCY
 
@@ -123,19 +123,7 @@ def read_report_input(*, read: Callable[[str], str] = input) -> str:
 
 
 def parse_report_input(value: str) -> dict[str, Any]:
-    normalized = str(value or "").strip()
-    if not normalized:
-        raise ReportingError("report_request_invalid", "报表请求不能为空。")
-    try:
-        parsed = json.loads(normalized)
-    except ValueError:
-        parsed = {"version": "1", "prompt": normalized}
-    if not isinstance(parsed, dict):
-        raise ReportingError("report_request_invalid", "报表请求不符合 v1 契约。")
-    try:
-        request = ReportingWorkflowInput.model_validate(parsed)
-    except Exception as error:
-        raise ReportingError("report_request_invalid", "报表请求不符合 v1 契约。") from error
+    request = parse_reporting_workflow_input(value)
     return request.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 

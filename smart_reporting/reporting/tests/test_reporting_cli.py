@@ -4,11 +4,19 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from agno.models.message import Message
+from agno.run import RunContext
 from agno.workflow import OnError
 
 from smart_reporting.reporting import cli as reporting_cli
-from smart_reporting.reporting.cli import _cli_settings, _CliProgressSink, resume_workflow
+from smart_reporting.reporting.cli import (
+    _cli_settings,
+    _CliProgressSink,
+    parse_report_input,
+    resume_workflow,
+)
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.workflow.controller import ReportWorkflowToolkit
 from smart_reporting.reporting.workflow.orchestration import create_reporting_workflow
 from smart_reporting.settings import AgentSettings
 
@@ -25,6 +33,54 @@ class ErrorRequirement:
 
     def retry(self) -> None:
         self.decision = "retry"
+
+
+def test_report_input_parsing_is_shared_with_agentos() -> None:
+    assert parse_report_input("生成 2025 年运营报告") == {
+        "version": "1",
+        "prompt": "生成 2025 年运营报告",
+    }
+
+
+@pytest.mark.anyio
+async def test_agentos_report_start_accepts_cli_envelope_json() -> None:
+    controller = SimpleNamespace(start=AsyncMock(return_value={"status": "running"}))
+    toolkit = ReportWorkflowToolkit(controller)
+    run_context = RunContext(
+        run_id="run-1",
+        session_id="thread-1",
+        messages=[
+            Message(
+                role="user",
+                content=(
+                    '{"version":"1","reportGoal":"生成运营报告",'
+                    '"reportType":"comprehensive","period":'
+                    '{"start":"2025-01-01","end":"2025-12-31"}}'
+                ),
+            )
+        ],
+    )
+
+    assert await toolkit.report_workflow_start(run_context) == {"status": "running"}
+    workflow_input, captured_context = controller.start.await_args.args
+    assert workflow_input.prompt is None
+    assert workflow_input.report_goal == "生成运营报告"
+    assert workflow_input.report_type == "comprehensive"
+    assert workflow_input.period.model_dump(mode="json") == {
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+    }
+    assert captured_context is run_context
+    assert parse_report_input(
+        '{"version":"1","reportGoal":"生成运营报告",'
+        '"reportType":"comprehensive","period":{"start":"2025-01-01",'
+        '"end":"2025-12-31"}}'
+    ) == {
+        "version": "1",
+        "reportGoal": "生成运营报告",
+        "reportType": "comprehensive",
+        "period": {"start": "2025-01-01", "end": "2025-12-31"},
+    }
 
 
 @pytest.mark.anyio

@@ -278,6 +278,24 @@ class ReportingWorkflowInput(StrictModel):
         return ReportRequestEnvelope.from_untrusted(payload)
 
 
+def parse_reporting_workflow_input(value: str) -> ReportingWorkflowInput:
+    """按 CLI 与 AgentOS 共用规则解析自然语言或 v1 Envelope JSON。"""
+
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ReportingError("report_request_invalid", "报表请求不能为空。")
+    try:
+        parsed = json.loads(normalized)
+    except ValueError:
+        parsed = {"version": "1", "prompt": normalized}
+    if not isinstance(parsed, dict):
+        raise ReportingError("report_request_invalid", "报表请求不符合 v1 契约。")
+    try:
+        return ReportingWorkflowInput.model_validate(parsed)
+    except Exception as error:
+        raise ReportingError("report_request_invalid", "报表请求不符合 v1 契约。") from error
+
+
 class ReportingAgent(StrictModel):
     code: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=200)

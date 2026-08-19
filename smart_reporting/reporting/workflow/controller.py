@@ -15,6 +15,7 @@ from ..contract import (
     REPORT_WORKFLOW_SCOPE_STATE_KEY,
     ReportingWorkflowInput,
     ReportRequestEnvelope,
+    parse_reporting_workflow_input,
 )
 from ..models import (
     ReportingError,
@@ -459,7 +460,7 @@ class ReportWorkflowToolkit(Toolkit):
     ) -> dict[str, Any]:
         """将当前用户原文交给报表 Workflow 首步。"""
         prompt = self._current_user_prompt(run_context)
-        workflow_input = ReportingWorkflowInput.model_validate({"version": "1", "prompt": prompt})
+        workflow_input = parse_reporting_workflow_input(prompt)
         return await self.controller.start(workflow_input, run_context)
 
     @staticmethod
