@@ -24,6 +24,7 @@ from smart_reporting.reporting.agent import (
     propagate_reporting_tool_errors,
 )
 from smart_reporting.reporting.instructions import build_report_agent_instructions
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
@@ -480,8 +481,6 @@ async def test_report_worker_tool_error_is_retried_by_agno_agent(monkeypatch) ->
 @pytest.mark.anyio
 async def test_report_worker_agent_stops_before_analysis_tool_budget_overflow(monkeypatch) -> None:
     calls = 0
-    stopped = False
-    stop_messages: list[Message] = []
     run_context = RunContext(
         run_id="run-analysis-budget",
         session_id="session-analysis-budget",
@@ -501,7 +500,6 @@ async def test_report_worker_agent_stops_before_analysis_tool_budget_overflow(mo
         return {"ok": True}
 
     async def fake_aresponse(model, *args, **kwargs):
-        nonlocal stopped
         _ = args, kwargs
         for index in range(3):
             function = Function(name="query_profile", entrypoint=successful_query)
@@ -512,17 +510,8 @@ async def test_report_worker_agent_stops_before_analysis_tool_budget_overflow(mo
             function._run_context = run_context
             call = FunctionCall(function=function, arguments={}, call_id=f"call-query-{index}")
             results = []
-            additional_input: list[Message] = []
-            async for event in model.arun_function_calls(
-                [call],
-                results,
-                additional_input=additional_input,
-            ):
-                if any(tool.stop_after_tool_call for tool in event.tool_executions or ()):
-                    stopped = True
-            stop_messages.extend(additional_input)
-            if stopped:
-                break
+            async for _event in model.arun_function_calls([call], results):
+                pass
         return ModelResponse(content="budget was not enforced")
 
     monkeypatch.setattr(report_agent_module, "_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT", 2)
@@ -537,11 +526,41 @@ async def test_report_worker_agent_stops_before_analysis_tool_budget_overflow(mo
         )
 
     assert calls == 2
-    assert stopped is True
-    assert output.status == "COMPLETED"
-    assert any(
-        "report_analysis_tool_budget_exhausted" in str(item.content) for item in stop_messages
+    assert str(output.status) == "RunStatus.error"
+    error = model.report_run_error()
+    assert isinstance(error, ReportingError)
+    assert error.code == "report_analysis_tool_budget_exhausted"
+
+
+@pytest.mark.anyio
+async def test_report_facade_returns_exact_workflow_start_error_without_model(monkeypatch) -> None:
+    async def unexpected_model_call(*_args, **_kwargs):
+        raise AssertionError("工作流错误不得交给模型重新解释")
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "aresponse", unexpected_model_call)
+    model = ReportFacadeOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+    messages = [
+        Message(role="user", content="生成瑞金医院运营报告"),
+        Message(
+            role="tool",
+            tool_name="report_workflow_start",
+            tool_call_id="call-report-start",
+            tool_call_error=True,
+            content="report_analysis_tool_budget_exhausted: 当前分析项已达到成功工具调用上限。",
+        ),
+    ]
+
+    response = await model.ainvoke(messages)
+
+    assert response.content == (
+        "报表工作流执行失败：report_analysis_tool_budget_exhausted: "
+        "当前分析项已达到成功工具调用上限。"
     )
+    assert not response.tool_calls
+
+    streamed = [item async for item in model.ainvoke_stream(messages)]
+    assert [item.content for item in streamed] == [response.content]
+    assert not streamed[0].tool_calls
 
 
 @pytest.mark.anyio

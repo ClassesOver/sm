@@ -280,6 +280,34 @@ def _coding_detailed_analysis_plan(
     }
 
 
+def _analysis_item_completion_conditions(
+    recovery_payload: dict[str, Any] | None,
+    last_error: Exception | None,
+) -> list[str]:
+    if recovery_payload is not None:
+        return [
+            "durable 单项事实已冻结；不要重算或改写 evidence",
+            "使用 durableAnalysisItem 的相同字段重新调用 complete_analysis_item 完成 Task 收尾",
+        ]
+    if (
+        isinstance(last_error, ReportingError)
+        and last_error.code == "report_analysis_tool_budget_exhausted"
+    ):
+        return [
+            "上一轮因成功工具调用达到上限而终止；禁止继续探索 Profile、创建脚本或生成补充 evidence",
+            "只调用一次 query_analysis_facts 读取 deterministicFactFile 中当前管理问题所需的最小事实",
+            "随后立即调用 complete_analysis_item；evidencePaths 传空数组，不得调用其他工具",
+        ]
+    return [
+        "只回答 currentAnalysis 的原子管理问题和 primaryMetricFamily",
+        "优先查询 deterministicFactFile；固定事实足够时不创建脚本或 evidence，"
+        "complete_analysis_item 的 evidencePaths 传空数组",
+        "只为 deterministicFactFile 未覆盖的事实缺口创建补充 evidence",
+        "本阶段禁止生成或登记图表",
+        "最后且只调用一次 complete_analysis_item",
+    ]
+
+
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -3438,20 +3466,9 @@ class ReportWorkflowRuntime:
                 "currentAnalysisId": analysis_id,
                 "currentAnalysis": analysis_plan,
                 "analysisOutputRoot": (f"报表/智能分析/{report_run_id}/evidence/{analysis_id}"),
-                "completionConditions": (
-                    [
-                        "durable 单项事实已冻结；不要重算或改写 evidence",
-                        "使用 durableAnalysisItem 的相同字段重新调用 complete_analysis_item 完成 Task 收尾",
-                    ]
-                    if recovery_payload is not None
-                    else [
-                        "只回答 currentAnalysis 的原子管理问题和 primaryMetricFamily",
-                        "优先查询 deterministicFactFile；固定事实足够时不创建脚本或 evidence，"
-                        "complete_analysis_item 的 evidencePaths 传空数组",
-                        "只为 deterministicFactFile 未覆盖的事实缺口创建补充 evidence",
-                        "本阶段禁止生成或登记图表",
-                        "最后且只调用一次 complete_analysis_item",
-                    ]
+                "completionConditions": _analysis_item_completion_conditions(
+                    recovery_payload,
+                    last_error,
                 ),
                 "deterministicFactFile": fact_files[analysis_id].model_dump(
                     mode="json", by_alias=True

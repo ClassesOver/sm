@@ -42,6 +42,7 @@ from smart_reporting.reporting.tools import (
     build_report_worker_tools,
 )
 from smart_reporting.reporting.workflow.checkpoint import ProfileReadReceipt
+from smart_reporting.reporting.workflow.runtime import _analysis_item_completion_conditions
 from smart_reporting.reporting.workflow.state import ReportingRunState
 from smart_reporting.task_execution.acceptance import normalize_acceptance_contract
 from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
@@ -101,6 +102,21 @@ def write_functions() -> dict[str, Function]:
         name: Function(name=name, parameters=parameters, entrypoint=lambda: None)
         for name, parameters in schemas.items()
     }
+
+
+def test_analysis_item_budget_retry_forces_fixed_fact_submission() -> None:
+    conditions = _analysis_item_completion_conditions(
+        None,
+        ReportingError(
+            "report_analysis_tool_budget_exhausted",
+            "当前分析项已达到成功工具调用上限。",
+        ),
+    )
+
+    assert any("禁止继续探索 Profile" in item for item in conditions)
+    assert any("只调用一次 query_analysis_facts" in item for item in conditions)
+    assert any("立即调用 complete_analysis_item" in item for item in conditions)
+    assert not any("创建补充 evidence" in item for item in conditions)
 
 
 def test_write_analysis_files_schema_exposes_every_underlying_primitive() -> None:

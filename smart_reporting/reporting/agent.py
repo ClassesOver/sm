@@ -234,7 +234,11 @@ def _reporting_analysis_item_tool_budget(
         int(in_flight_count) if isinstance(in_flight_count, int) and in_flight_count >= 0 else 0
     )
     if successful_count + in_flight_count >= _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT:
-        _stop_exhausted_analysis_item_tool_budget(successful_count, in_flight_count)
+        _stop_exhausted_analysis_item_tool_budget(
+            run_context,
+            successful_count,
+            in_flight_count,
+        )
     budgets[identity] = {
         "successfulCount": successful_count,
         "inFlightCount": in_flight_count + 1,
@@ -268,23 +272,37 @@ def _finish_reporting_analysis_item_tool_budget(
 
 
 def _stop_exhausted_analysis_item_tool_budget(
+    run_context: RunContext,
     successful_count: int,
     in_flight_count: int,
 ) -> None:
-    receipt = {
-        "ok": False,
-        "status": "rejected",
-        "code": "report_analysis_tool_budget_exhausted",
-        "message": "当前分析项已达到成功工具调用上限，已停止本次 run。",
-        "requiredActions": ["结束本次 run，交由上层按既有重试策略重新执行当前分析项。"],
-        "retryable": False,
-        "details": {
-            "successfulToolCalls": successful_count,
-            "inFlightToolCalls": in_flight_count,
-            "limit": _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT,
-        },
+    details = {
+        "successfulToolCalls": successful_count,
+        "inFlightToolCalls": in_flight_count,
+        "limit": _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT,
     }
-    serialized = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
+    error = ReportingError(
+        "report_analysis_tool_budget_exhausted",
+        "当前分析项已达到成功工具调用上限，已停止本次 run。",
+        details=details,
+    )
+    # Agno 2.8.2 会把 StopAgentRun 收敛为 completed + stop_after_tool_call，异常本身
+    # 不会越过模型工具批次。同步记录领域错误，由 ReportWorkerOpenAIChat 在同一批次
+    # 恢复并交给 Workflow 的 fresh retry，禁止退化成笼统的“未完成验收”。
+    _record_reporting_tool_run_error(run_context, error)
+    serialized = json.dumps(
+        {
+            "ok": False,
+            "status": "rejected",
+            "code": error.code,
+            "message": error.message,
+            "requiredActions": ["结束本次 run，交由上层按既有重试策略重新执行当前分析项。"],
+            "retryable": False,
+            "details": details,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     raise StopAgentRun(serialized, agent_message=serialized)
 
 
@@ -751,6 +769,10 @@ def _forced_review_response(
         content = message.content
         if not isinstance(content, str):
             return None
+        if message.tool_name == "report_workflow_start" and message.tool_call_error:
+            return ModelResponse(
+                content=f"报表工作流执行失败：{content}",
+            )
         if message.tool_name == "report_workflow_approve" and message.tool_call_error:
             return _tool_response(
                 "report_workflow_reject",
