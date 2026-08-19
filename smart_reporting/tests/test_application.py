@@ -10,6 +10,11 @@ class FakeAssistant:
     name = "测试助手"
 
 
+class FakeWorkflow:
+    id = "test-workflow"
+    name = "测试工作流"
+
+
 class FakeWorkspace:
     def __init__(self, name):
         self.name = name
@@ -46,6 +51,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
         settings,
         object(),
         FakeAssistant(),
+        report_workflow=FakeWorkflow(),
     )
     second_context = ApplicationContext(
         settings,
@@ -64,6 +70,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["db"] is None
     assert created[0].values["agents"] == [first_context.report_agent]
     assert created[0].values["teams"] == []
+    assert created[0].values["workflows"] == [first_context.report_workflow]
     assert created[0].values["interfaces"] == []
 
 
@@ -125,4 +132,5 @@ def test_default_application_exposes_explicit_context():
     assert context.settings is app_module.settings
     assert context.workspace_service is app_module.workspace_service
     assert context.report_agent is app_module.report_agent
+    assert context.report_workflow is app_module.report_workflow
     assert app_module.agent_os.db is app_module.agent_database.async_db

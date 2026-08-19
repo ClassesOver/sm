@@ -47,6 +47,7 @@ from ..contract import (
     ReportRequestEnvelope,
     SourceSchemaSnapshot,
     parse_ddl,
+    parse_reporting_workflow_input,
 )
 from ..data_source import (
     CatalogColumn,
@@ -835,6 +836,16 @@ class GeneratedQueryBatch(_StrictModel):
     queries: tuple[GeneratedQuery, ...] = Field(min_length=1, max_length=100)
 
 
+_PLANNER_DISPLAY_NAMES = {
+    "report-request-normalizer": "需求理解",
+    "report-data-understanding-planner": "数据范围分析",
+    "report-measure-semantic-proposer": "指标口径整理",
+    "report-analysis-planner": "分析计划设计",
+    "report-sql-planner": "取数方案设计",
+    "report-outline-planner": "报告提纲规划",
+}
+
+
 class ReportWorkflowRuntime:
     """v1 报表运行时；数据库连接只存在于服务端 adapter 内。"""
 
@@ -1063,7 +1074,8 @@ class ReportWorkflowRuntime:
         agent = planner.deep_copy(
             update={
                 "id": agent_id,
-                "name": agent_id,
+                # ID 供状态恢复、日志关联和代码判断；name 只负责面向用户的 Trace 展示。
+                "name": _PLANNER_DISPLAY_NAMES.get(agent_id, agent_id),
                 "role": "只根据已批准的结构、术语和画像生成结构化报表规划。",
                 "model": planner_model,
                 "retries": 2,
@@ -1169,7 +1181,11 @@ class ReportWorkflowRuntime:
         if run_context.session_state is None:
             run_context.session_state = {}
         state = self._state(run_context)
-        workflow_input = ReportingWorkflowInput.model_validate(step_input.input)
+        workflow_input = (
+            parse_reporting_workflow_input(step_input.input)
+            if isinstance(step_input.input, str)
+            else ReportingWorkflowInput.model_validate(step_input.input)
+        )
         request = workflow_input.request()
         feedback = self._feedback(step_input)
         if isinstance(request, ReportRequestEnvelope):

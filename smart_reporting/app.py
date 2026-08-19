@@ -376,6 +376,7 @@ report_workflow_controller = ReportWorkflowController(
     cancel_cleanup=report_runtime.cleanup_cancelled,
 )
 report_agent = create_report_agent(report_worker, report_workflow_controller)
+report_workflow = report_runtime.workflow()
 
 
 def create_base_app(context: ApplicationContext) -> FastAPI:
@@ -398,6 +399,7 @@ application_context = ApplicationContext(
     settings,
     workspace_service,
     report_agent,
+    report_workflow=report_workflow,
     database=agent_database,
 )
 base_app = create_base_app(application_context)

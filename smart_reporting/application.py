@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from agno.agent import Agent
 from agno.os import AgentOS
+from agno.workflow import Workflow
 from fastapi import FastAPI
 
 from .database import AgentDatabase
@@ -17,6 +18,7 @@ class ApplicationContext:
     settings: AgentSettings
     workspace_service: WorkspaceService
     report_agent: Agent
+    report_workflow: Workflow | None = None
     database: AgentDatabase | None = None
 
 
@@ -36,6 +38,7 @@ def create_agentos_app(
         # Coding 暂不通过综合服务对外提供。
         agents=[context.report_agent],
         teams=[],
+        workflows=[context.report_workflow] if context.report_workflow is not None else [],
         interfaces=[],
         base_app=base_app,
         db=context.database.async_db if context.database is not None else None,

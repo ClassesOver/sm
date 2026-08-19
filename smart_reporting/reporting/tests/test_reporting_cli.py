@@ -229,6 +229,8 @@ def test_only_delivery_validation_step_pauses_for_error_recovery() -> None:
     assert steps["generate-outline"].human_review.requires_output_review is False
     assert steps["validate-report"].on_error is OnError.pause
     assert steps["run-coding-analysis"].on_error is OnError.fail
+    assert workflow.input_schema is None
+    assert workflow.stream_executor_events is False
 
 
 @pytest.mark.anyio
@@ -261,7 +263,7 @@ async def test_outline直接流向coding节点而不暂停() -> None:
     )
 
     output = await workflow.arun(
-        {"version": "1", "prompt": "生成 2025 年运营报告"},
+        "生成 2025 年运营报告",
         run_id="run-outline-no-review",
         session_id="session-outline-no-review",
         user_id="user-outline-no-review",

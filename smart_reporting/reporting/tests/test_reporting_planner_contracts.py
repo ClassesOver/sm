@@ -22,6 +22,7 @@ from smart_reporting.reporting.instructions import (
 from smart_reporting.reporting.model_policy import ReportingThinkingProfile
 from smart_reporting.reporting.workflow import runtime as reporting_runtime
 from smart_reporting.reporting.workflow.runtime import (
+    _PLANNER_DISPLAY_NAMES,
     REPORT_WORKFLOW_INPUT_STATE_KEY,
     AnalysisBundle,
     DataUnderstandingPlan,
@@ -30,6 +31,11 @@ from smart_reporting.reporting.workflow.runtime import (
     _normalize_requirement_periods,
     _requirement_measure_field_refs,
 )
+
+
+def test_planner_trace_names_use_human_display_labels_without_changing_ids() -> None:
+    assert _PLANNER_DISPLAY_NAMES["report-outline-planner"] == "报告提纲规划"
+    assert _PLANNER_DISPLAY_NAMES["report-sql-planner"] == "取数方案设计"
 
 
 def analysis_bundle(*, table: str, period_granularity: str) -> AnalysisBundle:

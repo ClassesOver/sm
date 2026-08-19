@@ -13,8 +13,6 @@ from agno.workflow.step import Step
 from agno.workflow.types import StepOutput
 from agno.workflow.workflow import Workflow
 
-from ..contract import ReportingWorkflowInput
-
 StepExecutor = Any
 _STEP_MODEL_METRICS: ContextVar[RunMetrics | None] = ContextVar(
     "reporting_step_model_metrics", default=None
@@ -100,7 +98,12 @@ def create_reporting_workflow(
         name="企业智能运营报表",
         description="来源绑定、分析规划、受控取数、Coding 分析和报告发布。",
         db=db,
-        input_schema=ReportingWorkflowInput,
+        # Console 的 Workflow WebSocket 只发送自然语言 message；首步骤继续使用
+        # Reporting 自己的严格输入契约完成解析和校验，避免要求通用前端了解领域 Schema。
+        input_schema=None,
+        # 主进度只公开 Workflow/Step 事件。Agent、模型和 Daytona 工具调用仍保留在
+        # Trace 中，不能混入面向用户的 14 个业务步骤列表。
+        stream_executor_events=False,
         steps=[
             Step(
                 step_id="normalize-report-request",
