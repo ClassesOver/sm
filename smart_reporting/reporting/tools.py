@@ -40,6 +40,7 @@ from ..workspace import (
 from .delivery.draft_v1 import (
     ReportChartRegistration,
     ReportDraftBlock,
+    validate_report_draft_blocks,
 )
 from .models import ReportingError
 from .phase import (
@@ -3045,6 +3046,10 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 "report_section_order_invalid", "当前 Task 只能提交 SectionWorkItem 指定章节。"
             )
         artifact = SectionArtifact.model_validate({"sectionCode": section_code, "blocks": blocks})
+        # 章节一旦签发完成就可能被 durable checkpoint 直接恢复，因此必须在写文件和
+        # complete_section 之前拒绝服务端保留标记。模型仍可在当前 section run 内根据
+        # 明确回执重试，只通过 chartIds 登记图表。
+        validate_report_draft_blocks(artifact.blocks)
         known_citations = {item.citation_id for item in work_item.citations}
         known_charts = {item.chart_id for item in work_item.charts}
         referenced_citations = {

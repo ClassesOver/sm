@@ -977,6 +977,39 @@ def test_report_worker_toolkit_registers_only_current_task_tools(
     assert "replace_text" not in (toolkit.instructions or "")
 
 
+@pytest.mark.anyio
+async def test_render_report_section_rejects_inline_image_before_writing_artifact() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
+        {"sectionOutputPath": "sections/section_003.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(section_code="section_003")
+    )
+    toolkit._write_phase_json = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(ReportingError) as raised:
+        await toolkit._render_isolated_section(
+            scope=SimpleNamespace(),
+            section_code="section_003",
+            blocks=[
+                {
+                    "blockId": "workload_trend",
+                    "markdown": "趋势如下。\n\n![工作量趋势](workload_monthly_trend)",
+                    "citationIds": ["citation_011"],
+                    "chartIds": ["workload_monthly_trend"],
+                }
+            ],
+            state={},
+            run_context=None,
+        )
+
+    assert raised.value.code == "report_draft_protocol_injection"
+    assert "chartIds" in raised.value.message
+    toolkit._write_phase_json.assert_not_awaited()
+
+
 def test_analysis_evidence_accepts_current_committed_identity() -> None:
     identity = {"path": "analysis/evidence.json", "size": 12, "sha256": "a" * 64}
 

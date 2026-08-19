@@ -81,6 +81,7 @@ from ..delivery.draft_v1 import (
     ReportDraftSection,
     ReportSectionDefinition,
     assemble_report_markdown,
+    validate_report_draft_blocks,
 )
 from ..delivery.publishing import (
     ReportArtifactPersistenceService,
@@ -4299,6 +4300,9 @@ class ReportWorkflowRuntime:
             raise ReportingError(
                 "report_section_artifact_invalid", "Durable 章节产物没有绑定当前 sectionCode。"
             )
+        # 兼容修复前已经写入 durable state 的章节：恢复时重新执行当前正文协议校验，
+        # 非法旧产物不得绕过工具接收边界进入最终装配。
+        validate_report_draft_blocks(artifact.blocks)
         return (
             CompletedSection(
                 sectionCode=section_code,
@@ -4577,6 +4581,7 @@ class ReportWorkflowRuntime:
                         "report_section_artifact_invalid",
                         "独立章节产物没有绑定当前 sectionCode。",
                     )
+                validate_report_draft_blocks(artifact.blocks)
                 checkpoint = self._replace_trace(
                     checkpoint,
                     task_id,

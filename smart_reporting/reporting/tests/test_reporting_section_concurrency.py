@@ -4,9 +4,12 @@ import asyncio
 import copy
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
+from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
     AnalysisEvidenceManifest,
@@ -17,6 +20,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
     ProfileCoverageManifest,
     ReportBrief,
     ReportingCheckpoint,
+    SectionArtifact,
 )
 from smart_reporting.reporting.workflow.runtime import (
     ReportWorkflowRuntime,
@@ -232,7 +236,16 @@ async def test_persist_reporting_checkpoint_serializes_concurrent_merges() -> No
 @pytest.mark.anyio
 async def test_durable_completed_section_reuses_bound_artifact() -> None:
     identity = FileIdentity(path="sections/section_001.json", size=1, sha256="a" * 64)
-    artifact = SimpleNamespace(section_code="section_001")
+    artifact = SectionArtifact(
+        sectionCode="section_001",
+        blocks=(
+            ReportDraftBlock(
+                blockId="summary",
+                markdown="### 经营结论\n\n收入保持增长。",
+                citationIds=("citation_001",),
+            ),
+        ),
+    )
     durable = SimpleNamespace(
         payload={
             "sectionArtifacts": {
@@ -277,6 +290,55 @@ async def test_durable_completed_section_reuses_bound_artifact() -> None:
     assert completed_section.artifact_file == identity
     assert completed_section.work_item_hash == "b" * 64
     assert restored_artifact is artifact
+
+
+@pytest.mark.anyio
+async def test_durable_completed_section_rejects_legacy_protocol_injection() -> None:
+    identity = FileIdentity(path="sections/section_003.json", size=1, sha256="c" * 64)
+    artifact = SectionArtifact(
+        sectionCode="section_003",
+        blocks=(
+            ReportDraftBlock(
+                blockId="workload_trend",
+                markdown="![工作量趋势](workload_monthly_trend)",
+                citationIds=("citation_011",),
+                chartIds=("workload_monthly_trend",),
+            ),
+        ),
+    )
+    durable = SimpleNamespace(
+        payload={
+            "sectionArtifacts": {
+                "section_003": {
+                    "analysisIds": ["analysis_003"],
+                    "workItemHash": "d" * 64,
+                    "revision": 1,
+                    "artifactFile": identity.model_dump(mode="json", by_alias=True),
+                }
+            }
+        }
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.state_repository = SimpleNamespace(
+        get_by_external_run_id=lambda _external_run_id: asyncio.sleep(0, result=durable)
+    )
+    runtime._scope = lambda _run_context: {
+        "externalRunId": "run-1",
+        "threadId": "thread-1",
+        "userId": "user-1",
+    }
+    runtime._read_identity_model = AsyncMock(return_value=artifact)
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime._durable_completed_section(
+            SimpleNamespace(),
+            revision=1,
+            section_code="section_003",
+            analysis_ids=("analysis_003",),
+            work_item_hash="d" * 64,
+        )
+
+    assert raised.value.code == "report_draft_protocol_injection"
 
 
 def checkpoint(

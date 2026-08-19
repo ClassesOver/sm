@@ -127,6 +127,32 @@ class RenderedReportDraft(StrictModel):
     auto_fixes: tuple[dict[str, Any], ...] = Field(default=(), alias="autoFixes")
 
 
+_RESERVED_BODY_MARKERS = (
+    "[[citation:",
+    "[[section:",
+    "[[analysis:",
+    "[[table:",
+    "[[/table:",
+    "<!-- repair-warning:",
+    "![",
+)
+
+
+def validate_report_body_markdown(markdown: str) -> None:
+    """拒绝只能由服务端装配器生成的正文协议与图片语法。"""
+
+    if any(marker in markdown for marker in _RESERVED_BODY_MARKERS):
+        raise ReportingError(
+            "report_draft_protocol_injection",
+            "正文不得自行包含协议标记或图片语法；图表只能通过 chartIds 引用。",
+        )
+
+
+def validate_report_draft_blocks(blocks: tuple[ReportDraftBlock, ...]) -> None:
+    for block in blocks:
+        validate_report_body_markdown(block.markdown)
+
+
 def _safe_chart_name(
     file_name: str,
     *,
@@ -256,19 +282,7 @@ def assemble_report_markdown(
                             "title": definition.title,
                         }
                     )
-            if (
-                "[[citation:" in block_markdown
-                or "[[section:" in block_markdown
-                or "[[analysis:" in block_markdown
-                or "[[table:" in block_markdown
-                or "[[/table:" in block_markdown
-                or "<!-- repair-warning:" in block_markdown
-                or "![" in block_markdown
-            ):
-                raise ReportingError(
-                    "report_draft_protocol_injection",
-                    "正文不得自行包含协议标记或图片语法。",
-                )
+            validate_report_body_markdown(block_markdown)
             unknown_citations = set(block.citation_ids) - citation_registry
             if unknown_citations:
                 raise ReportingError("report_draft_citation_unknown", "草稿引用了未注册 citation。")
