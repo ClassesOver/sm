@@ -191,13 +191,15 @@ def create_reporting_workflow(
                 name="生成动态报告提纲",
                 executor=_timed_step_executor(generate_outline),
                 max_retries=0,
-                human_review=HumanReview(
-                    requires_output_review=True,
-                    output_review_message="审核动态报告提纲；拒绝时请填写修改意见。",
-                    on_reject=OnReject.retry,
-                    on_error=OnError.fail,
-                    max_retries=5,
-                ),
+                # 当前产品入口暂不启用提纲审核交互。这里是直接流向下一节点，不是
+                # 自动批准；保留配置供审核能力上线时恢复，启用前必须补回端到端验收。
+                # human_review=HumanReview(
+                #     requires_output_review=True,
+                #     output_review_message="审核动态报告提纲；拒绝时请填写修改意见。",
+                #     on_reject=OnReject.retry,
+                #     on_error=OnError.fail,
+                #     max_retries=5,
+                # ),
                 on_error=OnError.fail,
             ),
             create_coding_analysis_step(run_coding_analysis),

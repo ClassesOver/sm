@@ -4,9 +4,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from agno.db.in_memory import InMemoryDb
 from agno.models.message import Message
 from agno.run import RunContext
+from agno.run.base import RunStatus
 from agno.workflow import OnError
+from agno.workflow.step import Step
+from agno.workflow.types import StepOutput
 
 from smart_reporting.reporting import cli as reporting_cli
 from smart_reporting.reporting.cli import (
@@ -217,9 +221,55 @@ def test_only_delivery_validation_step_pauses_for_error_recovery() -> None:
         finalize_publication=executor,
     )
 
-    steps = {step.step_id: step for step in workflow.steps}
+    assert isinstance(workflow.steps, list)
+    steps = {step.step_id: step for step in workflow.steps if isinstance(step, Step)}
+    assert steps["normalize-report-request"].human_review is not None
+    assert callable(steps["normalize-report-request"].human_review.requires_output_review)
+    assert steps["generate-outline"].human_review is not None
+    assert steps["generate-outline"].human_review.requires_output_review is False
     assert steps["validate-report"].on_error is OnError.pause
     assert steps["run-coding-analysis"].on_error is OnError.fail
+
+
+@pytest.mark.anyio
+async def test_outline直接流向coding节点而不暂停() -> None:
+    calls: list[str] = []
+
+    def executor(name: str):
+        async def execute(*_args: object, **_kwargs: object) -> StepOutput:
+            calls.append(name)
+            return StepOutput(content={"step": name})
+
+        return execute
+
+    workflow = create_reporting_workflow(
+        db=InMemoryDb(),
+        normalize_report_request=executor("normalize-report-request"),
+        confirm_source=executor("confirm-source"),
+        prepare_data_profile=executor("prepare-data-profile"),
+        propose_measure_semantics=executor("propose-measure-semantics"),
+        commit_measure_semantics=executor("commit-measure-semantics"),
+        generate_outline=executor("generate-outline"),
+        generate_analysis_plan=executor("generate-analysis-plan"),
+        generate_query_candidates=executor("generate-query-candidates"),
+        materialize_datasets=executor("materialize-datasets"),
+        prepare_analysis_context=executor("prepare-analysis-context"),
+        generate_detailed_analysis_plan=executor("generate-detailed-analysis-plan"),
+        run_coding_analysis=executor("run-coding-analysis"),
+        validate_report=executor("validate-report"),
+        finalize_publication=executor("finalize-publication"),
+    )
+
+    output = await workflow.arun(
+        {"version": "1", "prompt": "生成 2025 年运营报告"},
+        run_id="run-outline-no-review",
+        session_id="session-outline-no-review",
+        user_id="user-outline-no-review",
+    )
+
+    assert output.status is RunStatus.completed
+    outline_index = calls.index("generate-outline")
+    assert calls[outline_index + 1] == "run-coding-analysis"
 
 
 def test_reporting_cli_applies_requested_debug_setting() -> None:
