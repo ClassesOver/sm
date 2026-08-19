@@ -19,6 +19,9 @@ services:
       - "33046:7777"
     environment:
       AGENT_OS_WORKERS: "1"
+      AGENT_LOG_FILE: /var/log/agentos/agentos.log
+      AGENT_LOG_FILE_MAX_BYTES: ${AGENT_LOG_FILE_MAX_BYTES:-52428800}
+      AGENT_LOG_FILE_BACKUP_COUNT: ${AGENT_LOG_FILE_BACKUP_COUNT:-5}
       AGENT_POSTGRES_HOST: reporting-db
       AGENT_POSTGRES_PORT: "5432"
       AGENT_POSTGRES_DB: ${AGENT_POSTGRES_DB:-dev}
@@ -35,6 +38,7 @@ services:
       AGENT_REPORT_METADATA_TOKEN: ${AGENT_REPORT_METADATA_TOKEN:-}
       REPORT_STARROCKS_DSN: ${REPORT_STARROCKS_DSN:-}
     volumes:
+      - reporting_logs:/var/log/agentos
       - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
       - type: bind
         source: ${AGENT_REPORT_DATA_SOURCES_DIR:-./deploy/agentos/reporting}
@@ -69,3 +73,5 @@ services:
 volumes:
   reporting_db_data:
     name: "${AGENTOS_VOLUME_PREFIX:-agentos_}reporting_db_data"
+  reporting_logs:
+    name: "${AGENTOS_VOLUME_PREFIX:-agentos_}reporting_logs"

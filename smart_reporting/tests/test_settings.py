@@ -14,6 +14,9 @@ def test_settings_defaults():
     assert current.env_file == ".env"
     assert current.port == 7777
     assert current.workers == 1
+    assert current.log_file_path is None
+    assert current.log_file_max_bytes == 50 * 1024 * 1024
+    assert current.log_file_backup_count == 5
     assert current.database_url == DEFAULT_AGENT_DB_URL
     assert current.workspace_snapshot == DEFAULT_WORKSPACE_SNAPSHOT
     assert current.daytona_network_allow_list is None

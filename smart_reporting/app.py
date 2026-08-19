@@ -12,6 +12,7 @@ from .agno_function_arguments import install_agno_function_argument_decoder
 from .application import ApplicationContext, create_agentos_app
 from .database import check_database, create_agent_database
 from .execution_context import ExecutionContext
+from .logging_config import configure_file_logging
 from .observability import configure_tracing
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
@@ -56,6 +57,12 @@ class WorkspaceDeleteFilePayload(BaseModel):
 
 install_agno_function_argument_decoder()
 settings = AgentSettings.from_environment()
+configure_file_logging(
+    settings.log_file_path,
+    debug=settings.debug,
+    max_bytes=settings.log_file_max_bytes,
+    backup_count=settings.log_file_backup_count,
+)
 workspace_secret = settings.workspace_hmac_secret
 agent_database = create_agent_database(settings.database_url)
 configure_tracing(

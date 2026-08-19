@@ -181,6 +181,9 @@ class AgentSettings:
     workers: int
     reload: bool
     access_log: bool
+    log_file_path: str | None
+    log_file_max_bytes: int
+    log_file_backup_count: int
     debug: bool
     cors_allowed_origins: tuple[str, ...]
     database_url: str
@@ -291,6 +294,9 @@ class AgentSettings:
             workers=_positive_int(values, "AGENT_OS_WORKERS", 1, maximum=1),
             reload=_flag(values.get("AGENT_OS_RELOAD")),
             access_log=_flag(values.get("AGENT_OS_ACCESS_LOG")),
+            log_file_path=(values.get("AGENT_LOG_FILE", "").strip() or None),
+            log_file_max_bytes=_positive_int(values, "AGENT_LOG_FILE_MAX_BYTES", 50 * 1024 * 1024),
+            log_file_backup_count=_positive_int(values, "AGENT_LOG_FILE_BACKUP_COUNT", 5),
             debug=_flag(values.get("AGENT_DEBUG")),
             cors_allowed_origins=origins,
             database_url=database_url_from_environment(values),
