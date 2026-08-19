@@ -5,8 +5,11 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
+from agno.run import RunContext
+from agno.workflow.types import StepOutput
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from smart_reporting.reporting.delivery.publishing import (
@@ -26,6 +29,7 @@ from smart_reporting.reporting.tests.delivery_fakes import (
     InMemoryDownloadGrantRepository,
     InMemoryReportArtifactRepository,
 )
+from smart_reporting.reporting.workflow import runtime as runtime_module
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
 from smart_reporting.reporting_identity import (
     ReportServerIdentity,
@@ -300,3 +304,81 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
 
     assert raised.value.code == "report_artifact_changed"
     assert events == ["persist"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("with_odoo_identity", [False, True])
+async def test_workflow_publication_never_requires_odoo_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    with_odoo_identity: bool,
+) -> None:
+    pdf = b"pdf"
+    word = b"word"
+    output = {
+        "reportId": "report-1",
+        "revision": 1,
+        "pdfPath": "reports/report.pdf",
+        "pdfSize": len(pdf),
+        "pdfSha256": hashlib.sha256(pdf).hexdigest(),
+        "wordPath": "reports/report.docx",
+        "wordSize": len(word),
+        "wordSha256": hashlib.sha256(word).hexdigest(),
+        "sourceWarnings": [],
+        "codingReceipts": [],
+    }
+    captured: dict[str, Any] = {}
+
+    def capture_workflow(**values: Any) -> object:
+        captured.update(values)
+        return object()
+
+    monkeypatch.setattr(runtime_module, "create_reporting_workflow", capture_workflow)
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.db = object()
+    runtime.publish_report = AsyncMock(return_value=StepOutput(content=output))
+    runtime.issue_workspace_publication = AsyncMock(
+        return_value={
+            "path": output["pdfPath"],
+            "size": output["pdfSize"],
+            "sha256": output["pdfSha256"],
+            "word": {
+                "path": output["wordPath"],
+                "size": output["wordSize"],
+                "sha256": output["wordSha256"],
+            },
+        }
+    )
+    runtime.issue_http_publication = AsyncMock(
+        side_effect=AssertionError("报表工作流不得签发 Odoo 下载授权")
+    )
+    runtime.workflow()
+    finalize = captured["finalize_publication"]
+    context = RunContext(
+        run_id="workflow-run",
+        session_id="thread",
+        user_id="native",
+        session_state={},
+    )
+
+    async def publish() -> StepOutput:
+        return await finalize(SimpleNamespace(), context)
+
+    if with_odoo_identity:
+        identity = ReportServerIdentity("odoo", "7", "3", "session", "thread")
+        with bind_report_identity(identity):
+            result = await publish()
+    else:
+        result = await publish()
+
+    assert result.content["path"] == "reports/report.pdf"
+    runtime.issue_workspace_publication.assert_awaited_once_with(
+        {
+            "external_run_id": "workflow-run",
+            "thread_id": "thread",
+            "user_id": "native",
+        },
+        "thread",
+        "workflow-run",
+        output,
+    )
+    runtime.issue_http_publication.assert_not_awaited()

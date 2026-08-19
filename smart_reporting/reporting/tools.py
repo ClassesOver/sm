@@ -93,7 +93,6 @@ _ANALYSIS_WRITE_OPERATION_FIELDS = {
 }
 JMESPATH_FUNCTION_NAMES = tuple(sorted(jmespath.functions.Functions.FUNCTION_TABLE))
 ANALYSIS_CONTEXT_QUERY_EXAMPLES = (
-    "currentAnalysis",
     "datasets[].{datasetId: datasetId, rowCount: rowCount, periodCoverage: periodCoverage}",
     "datasets[].{datasetId: datasetId, metrics: metricSemantics[].fieldRef}",
 )
@@ -651,9 +650,10 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             Function(
                 name="query_analysis_context",
                 description=(
-                    "使用标准 JMESPath 对当前任务的类型化 analysisContext 投影执行有界查询；"
-                    "常用正确示例：currentAnalysis；datasets[].{datasetId: datasetId, "
-                    "rowCount: rowCount, periodCoverage: periodCoverage}；"
+                    "currentAnalysis 已在任务 JSON，禁止通过本工具重复读取；本工具仅用于按需读取 "
+                    "Dataset 元数据。使用标准 JMESPath 对当前任务的类型化 analysisContext 投影执行"
+                    "有界查询；常用正确示例：datasets[].{datasetId: datasetId, rowCount: rowCount, "
+                    "periodCoverage: periodCoverage}；"
                     "datasets[].{datasetId: datasetId, metrics: metricSemantics[].fieldRef}。"
                 ),
                 parameters={

@@ -932,6 +932,19 @@ def test_complete_analysis_item_schema_allows_server_derived_fact_evidence() -> 
     assert "固定事实" in evidence_paths["description"]
 
 
+def test_analysis_context_tool_reserves_current_analysis_for_task_json() -> None:
+    toolkit = ReportWorkspaceTaskToolkit(
+        fake_workspace_service(None),
+        AsyncMock(),
+        state_repository=AsyncMock(),
+    )
+
+    description = toolkit.async_functions["query_analysis_context"].description
+
+    assert "currentAnalysis 已在任务 JSON" in description
+    assert "仅用于按需读取 Dataset 元数据" in description
+
+
 @pytest.mark.parametrize(
     ("phase", "task_kind", "required", "forbidden"),
     [

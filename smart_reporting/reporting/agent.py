@@ -902,7 +902,11 @@ def _report_worker_tools_cache_key(run_context: RunContext) -> str:
 
 
 def _phase_filtered_report_messages(messages: list[Message]) -> list[Message]:
-    if _reporting_phase_from_messages(messages) != "section":
+    phase = _reporting_phase_from_messages(messages)
+    task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
+    # 单项分析不生成图表，也不需要通用沙箱能力说明；章节阶段更不持有 Skill 工具。
+    # 只为 visualization 保留 Agno Skill 提示，避免模型看到已被阶段白名单隐藏的入口。
+    if phase != "section" and not (phase == "analysis" and task_kind == "analysis_item"):
         return messages
     projected: list[Message] | None = None
     opening = "<skills_system>"

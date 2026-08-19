@@ -94,8 +94,9 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
         "并把返回的 receiptId 显式提交到 profileReadReceiptIds；不得因 Dataset 相同批量绑定未使用回执。"
     ),
     (
-        "query_analysis_context 提供当前分析、主指标族和 Dataset 类型化索引；禁止枚举完整 Profile、"
-        "完整 facts 或工作区根目录。JMESPath 查询保持有界，错误时按 code/details 精确修正。"
+        "currentAnalysis 已在任务 JSON 中，不得通过工具重复读取。只有任务 JSON 缺少所需的字段语义、"
+        "期间覆盖或质量信息时，才使用 query_analysis_context 按需读取 Dataset 类型化索引；禁止枚举"
+        "完整 Profile、完整 facts 或工作区根目录。JMESPath 查询保持有界，错误时按 code/details 精确修正。"
     ),
     (
         "补充脚本对 None、空集合和零分母失败关闭，不用 0 替代缺失，不拟合、估算、插值、外推、"

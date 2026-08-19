@@ -16,6 +16,7 @@ from smart_reporting.reporting import agent as report_agent_module
 from smart_reporting.reporting.agent import (
     ReportFacadeOpenAIChat,
     ReportWorkerOpenAIChat,
+    _phase_filtered_report_messages,
     _phase_filtered_report_tools,
     _report_worker_tools_cache_key,
     _with_reporting_durable_identities,
@@ -95,11 +96,23 @@ def test_report_worker_caps_only_long_model_timeout(
     [
         (
             "analysis_item",
-            ["query_analysis_facts", "query_profile", "complete_analysis_item"],
+            [
+                "query_analysis_context",
+                "query_analysis_facts",
+                "query_profile",
+                "complete_analysis_item",
+            ],
         ),
         (
             "visualization",
-            ["query_analysis_facts", "register_report_charts", "finalize_report_analysis"],
+            [
+                "get_skill_instructions",
+                "get_skill_reference",
+                "query_analysis_context",
+                "query_analysis_facts",
+                "register_report_charts",
+                "finalize_report_analysis",
+            ],
         ),
     ],
 )
@@ -121,6 +134,11 @@ def test_analysis_task_kind_projection_separates_item_and_visualization_tools(
     tools = [
         {"type": "function", "function": {"name": name}}
         for name in (
+            "finish_task",
+            "get_skill_instructions",
+            "get_skill_reference",
+            "get_skill_script",
+            "query_analysis_context",
             "query_analysis_facts",
             "query_profile",
             "complete_analysis_item",
@@ -135,6 +153,74 @@ def test_analysis_task_kind_projection_separates_item_and_visualization_tools(
         )
 
     assert [item["function"]["name"] for item in projected] == expected
+
+
+@pytest.mark.parametrize(
+    ("phase", "task_kind", "keeps_skills"),
+    [
+        ("analysis", "analysis_item", False),
+        ("analysis", "visualization", True),
+        ("section", "section", False),
+    ],
+)
+def test_report_worker_keeps_skill_prompt_only_for_visualization(
+    phase: str,
+    task_kind: str,
+    keeps_skills: bool,
+) -> None:
+    context = RunContext(
+        run_id=f"run-{task_kind}",
+        session_id=f"session-{task_kind}",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: phase,
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
+            }
+        },
+    )
+    messages = [
+        Message(
+            role="system",
+            content=("固定系统指令\n<skills_system>按需读取 Skill</skills_system>\nReporting 指令"),
+        ),
+        Message(role="user", content=json.dumps({"phase": phase})),
+    ]
+
+    with bind_reporting_run_context(context):
+        projected = _phase_filtered_report_messages(messages)
+
+    content = projected[0].content
+    assert isinstance(content, str)
+    assert ("<skills_system>" in content) is keeps_skills
+    assert "固定系统指令" in content
+    assert "Reporting 指令" in content
+
+
+def test_section_projection_hides_internal_finish_task() -> None:
+    context = RunContext(
+        run_id="run-section",
+        session_id="session-section",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "section",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "section",
+            }
+        },
+    )
+    tools = [
+        {"type": "function", "function": {"name": name}}
+        for name in ("finish_task", "read_file", "render_report_section")
+    ]
+
+    with bind_reporting_run_context(context):
+        projected = _phase_filtered_report_tools(
+            [Message(role="user", content='{"phase":"section"}')], tools
+        )
+
+    assert [item["function"]["name"] for item in projected] == [
+        "read_file",
+        "render_report_section",
+    ]
 
 
 def test_report_worker_tool_cache_key_separates_task_kinds_for_same_user() -> None:

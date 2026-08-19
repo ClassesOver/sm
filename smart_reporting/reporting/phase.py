@@ -30,7 +30,6 @@ REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
 # 修改工作区或浏览其他目录。大型只读结果仍可通过 outputHandle 分段恢复。
 REPORTING_SECTION_TOOL_NAMES = frozenset(
     {
-        "finish_task",
         "read_file",
         "read_tool_output",
         "render_report_section",
@@ -44,9 +43,6 @@ REPORTING_SECTION_TOOL_NAMES = frozenset(
 REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
     {
         "complete_analysis_item",
-        "get_skill_instructions",
-        "get_skill_reference",
-        "get_skill_script",
         "process",
         "query_analysis_context",
         "query_analysis_facts",
@@ -60,10 +56,8 @@ REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
 REPORTING_VISUALIZATION_TOOL_NAMES = frozenset(
     {
         "finalize_report_analysis",
-        "finish_task",
         "get_skill_instructions",
         "get_skill_reference",
-        "get_skill_script",
         "process",
         "query_analysis_context",
         "query_analysis_facts",

@@ -349,7 +349,7 @@ async def run_cli(
         context.settings,
         worker_event_sink=progress_sink.emit_worker,
     )
-    workflow = runtime.workflow(publication_issuer=runtime.issue_cli_publication)
+    workflow = runtime.workflow()
     run_id = resume_run_id or f"cli-report-{uuid4().hex}"
     session_id = resume_session_id or f"cli-report-{uuid4().hex}"
     try:

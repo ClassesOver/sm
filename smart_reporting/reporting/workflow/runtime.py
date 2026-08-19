@@ -202,7 +202,6 @@ REPORT_ARTIFACTS_STATE_KEY = "report_artifacts"
 MAX_REPORT_SECTION_PHASE_ATTEMPTS = 2
 MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION = 1
 MAX_SECTION_WORK_ITEM_BYTES = 256 * 1024
-PublicationIssuer = Callable[[dict[str, str], str, str, Any], Awaitable[dict[str, Any]]]
 
 
 async def _run_bounded(
@@ -1141,9 +1140,7 @@ class ReportWorkflowRuntime:
         agent.num_history_runs = None
         return agent
 
-    def workflow(self, *, publication_issuer: PublicationIssuer | None = None):
-        issuer = publication_issuer or self.issue_http_publication
-
+    def workflow(self):
         async def finalize_publication(
             step_input: StepInput, run_context: RunContext
         ) -> StepOutput:
@@ -1174,7 +1171,9 @@ class ReportWorkflowRuntime:
                     }
                 )
             scope = self._scope(run_context)
-            published = await issuer(
+            # 报表工作流统一返回已复核哈希的工作区产物，不读取 HTTP/Odoo 身份，
+            # 也不签发下载 grant。受保护下载接口仍是独立边界，不参与本流程发布。
+            published = await self.issue_workspace_publication(
                 {
                     "external_run_id": scope["externalRunId"],
                     "thread_id": scope["threadId"],
@@ -1404,7 +1403,7 @@ class ReportWorkflowRuntime:
             coding_receipts=content["codingReceipts"],
         )
 
-    async def issue_cli_publication(
+    async def issue_workspace_publication(
         self,
         scope: dict[str, str],
         _workflow_session_id: str,
