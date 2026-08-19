@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from agno.agent import Agent
 from agno.db.base import AsyncBaseDb
-from agno.exceptions import AgentRunException
+from agno.exceptions import AgentRunException, StopAgentRun
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from agno.models.response import ModelResponse
@@ -97,6 +97,8 @@ _CUMULATIVE_STREAM_USAGE_HOSTS = frozenset({"api.siliconflow.cn"})
 _REPORT_TOOL_FAILURE_STATE_KEY = "agentos_reporting_tool_failures"
 _REPORT_TOOL_SAME_FAILURE_LIMIT = 3
 _REPORT_TOOL_PHASE_FAILURE_LIMIT = 8
+_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY = "agentos_reporting_analysis_success_tools"
+_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT = 24
 _REPORT_ARGUMENT_MAX_ISSUES = 8
 _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
@@ -199,6 +201,91 @@ def _reporting_session_state(run_context: RunContext) -> dict[str, Any] | None:
 def _reporting_mutation_sequence(state: dict[str, Any] | None) -> int:
     progress = state.get("agentos_coding_tool_progress") if isinstance(state, dict) else None
     return int(progress.get("mutation", 0)) if isinstance(progress, dict) else 0
+
+
+def _reporting_analysis_item_tool_budget(
+    run_context: RunContext,
+    function_name: str,
+) -> tuple[dict[str, Any], str] | None:
+    if (
+        function_name == "complete_analysis_item"
+        or reporting_phase_from_run_context(run_context) != "analysis"
+        or reporting_task_kind_from_run_context(run_context) != "analysis_item"
+    ):
+        return None
+    state = _reporting_session_state(run_context)
+    if state is None:
+        return None
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    external_run_id = binding.get("externalRunId") if isinstance(binding, Mapping) else None
+    # 每个 analysis item 尝试都有独立 externalRunId/internal run。预算身份同时绑定二者，
+    # continuation 可继承当前计数，而 fresh retry、其他分析项和并发 Task 必须从零开始。
+    identity = f"{external_run_id or ''}:{run_context.run_id or ''}"
+    budgets = state.get(_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY)
+    budgets = budgets if isinstance(budgets, dict) else {}
+    stored = budgets.get(identity)
+    successful_count = stored.get("successfulCount", 0) if isinstance(stored, dict) else 0
+    successful_count = (
+        int(successful_count) if isinstance(successful_count, int) and successful_count >= 0 else 0
+    )
+    in_flight_count = stored.get("inFlightCount", 0) if isinstance(stored, dict) else 0
+    in_flight_count = (
+        int(in_flight_count) if isinstance(in_flight_count, int) and in_flight_count >= 0 else 0
+    )
+    if successful_count + in_flight_count >= _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT:
+        _stop_exhausted_analysis_item_tool_budget(successful_count, in_flight_count)
+    budgets[identity] = {
+        "successfulCount": successful_count,
+        "inFlightCount": in_flight_count + 1,
+    }
+    state[_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY] = budgets
+    return state, identity
+
+
+def _finish_reporting_analysis_item_tool_budget(
+    reservation: tuple[dict[str, Any], str] | None,
+    *,
+    succeeded: bool,
+) -> None:
+    if reservation is None:
+        return
+    state, identity = reservation
+    budgets = state.get(_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY)
+    if not isinstance(budgets, dict):
+        return
+    stored = budgets.get(identity)
+    if not isinstance(stored, dict):
+        return
+    successful_count = stored.get("successfulCount", 0)
+    successful_count = (
+        int(successful_count) if isinstance(successful_count, int) and successful_count >= 0 else 0
+    )
+    budgets[identity] = {
+        "successfulCount": successful_count + int(succeeded),
+        "inFlightCount": max(int(stored.get("inFlightCount", 1)) - 1, 0),
+    }
+
+
+def _stop_exhausted_analysis_item_tool_budget(
+    successful_count: int,
+    in_flight_count: int,
+) -> None:
+    receipt = {
+        "ok": False,
+        "status": "rejected",
+        "code": "report_analysis_tool_budget_exhausted",
+        "message": "当前分析项已达到成功工具调用上限，已停止本次 run。",
+        "requiredActions": ["结束本次 run，交由上层按既有重试策略重新执行当前分析项。"],
+        "retryable": False,
+        "details": {
+            "successfulToolCalls": successful_count,
+            "inFlightToolCalls": in_flight_count,
+            "limit": _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT,
+        },
+    }
+    serialized = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
+    raise StopAgentRun(serialized, agent_message=serialized)
 
 
 def _reporting_invalid_argument_receipt(
@@ -611,10 +698,12 @@ async def normalize_reporting_tool_arguments(
     arguments: dict[str, Any],
 ) -> Any:
     """执行 Reporting 工具并把参数错误收敛为可操作回执。"""
+    reservation = _reporting_analysis_item_tool_budget(run_context, function_name)
     try:
         result = function_call(**arguments)
         result = await result if inspect.isawaitable(result) else result
     except (TypeError, ValidationError) as error:
+        _finish_reporting_analysis_item_tool_budget(reservation, succeeded=False)
         if not _is_tool_argument_error(error):
             raise
         failure = _report_tool_argument_failure(
@@ -628,6 +717,11 @@ async def normalize_reporting_tool_arguments(
             failure,
             arguments,
         )
+    except BaseException:
+        _finish_reporting_analysis_item_tool_budget(reservation, succeeded=False)
+        raise
+    succeeded = isinstance(result, dict) and result.get("ok") is True
+    _finish_reporting_analysis_item_tool_budget(reservation, succeeded=succeeded)
     return _enforce_reporting_no_progress(run_context, function_name, result, arguments)
 
 

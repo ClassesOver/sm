@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from agno.agent import Agent
+from agno.exceptions import StopAgentRun
 from agno.models.message import Message
 from agno.models.response import ModelResponse
 from agno.run import RunContext
@@ -19,6 +20,7 @@ from smart_reporting.reporting.agent import (
     _report_worker_tools_cache_key,
     _with_reporting_durable_identities,
     create_report_worker,
+    normalize_reporting_tool_arguments,
     propagate_reporting_tool_errors,
 )
 from smart_reporting.reporting.instructions import build_report_agent_instructions
@@ -473,6 +475,172 @@ async def test_report_worker_tool_error_is_retried_by_agno_agent(monkeypatch) ->
     assert attempts == 3
     assert output.content == "completed"
     assert model.report_run_error() is None
+
+
+@pytest.mark.anyio
+async def test_report_worker_agent_stops_before_analysis_tool_budget_overflow(monkeypatch) -> None:
+    calls = 0
+    stopped = False
+    stop_messages: list[Message] = []
+    run_context = RunContext(
+        run_id="run-analysis-budget",
+        session_id="session-analysis-budget",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "analysis-task-001",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
+            }
+        },
+    )
+
+    async def successful_query() -> dict[str, bool]:
+        nonlocal calls
+        calls += 1
+        return {"ok": True}
+
+    async def fake_aresponse(model, *args, **kwargs):
+        nonlocal stopped
+        _ = args, kwargs
+        for index in range(3):
+            function = Function(name="query_profile", entrypoint=successful_query)
+            function.tool_hooks = [
+                propagate_reporting_tool_errors,
+                normalize_reporting_tool_arguments,
+            ]
+            function._run_context = run_context
+            call = FunctionCall(function=function, arguments={}, call_id=f"call-query-{index}")
+            results = []
+            additional_input: list[Message] = []
+            async for event in model.arun_function_calls(
+                [call],
+                results,
+                additional_input=additional_input,
+            ):
+                if any(tool.stop_after_tool_call for tool in event.tool_executions or ()):
+                    stopped = True
+            stop_messages.extend(additional_input)
+            if stopped:
+                break
+        return ModelResponse(content="budget was not enforced")
+
+    monkeypatch.setattr(report_agent_module, "_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT", 2)
+    monkeypatch.setattr(ProjectedOpenAIChat, "aresponse", fake_aresponse)
+    model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+    agent = Agent(model=model, retries=0)
+
+    with bind_reporting_run_context(run_context):
+        output = await agent.arun(
+            "run reporting analysis item",
+            run_context=run_context,
+        )
+
+    assert calls == 2
+    assert stopped is True
+    assert output.status == "COMPLETED"
+    assert any(
+        "report_analysis_tool_budget_exhausted" in str(item.content) for item in stop_messages
+    )
+
+
+@pytest.mark.anyio
+async def test_complete_analysis_item_is_exempt_from_analysis_tool_budget(monkeypatch) -> None:
+    run_context = RunContext(
+        run_id="run-analysis-complete",
+        session_id="session-analysis-complete",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "analysis-task-002",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
+            }
+        },
+    )
+    monkeypatch.setattr(report_agent_module, "_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT", 1)
+
+    first = await normalize_reporting_tool_arguments(
+        run_context,
+        "query_profile",
+        lambda: {"ok": True},
+        {},
+    )
+    completed = await normalize_reporting_tool_arguments(
+        run_context,
+        "complete_analysis_item",
+        lambda: {"ok": True, "status": "accepted"},
+        {},
+    )
+
+    assert first == {"ok": True}
+    assert completed == {"ok": True, "status": "accepted"}
+
+
+@pytest.mark.anyio
+async def test_analysis_tool_budget_counts_only_success_and_isolates_tasks(monkeypatch) -> None:
+    shared_state: dict[str, object] = {}
+
+    def context(run_id: str, external_run_id: str, task_kind: str = "analysis_item") -> RunContext:
+        return RunContext(
+            run_id=run_id,
+            session_id="shared-session",
+            session_state=shared_state,
+            dependencies={
+                REPORTING_TASK_DEPENDENCY: {
+                    "externalRunId": external_run_id,
+                    REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                    REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
+                }
+            },
+        )
+
+    monkeypatch.setattr(report_agent_module, "_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT", 1)
+    first_task = context("run-analysis-1", "analysis-task-1")
+
+    failed = await normalize_reporting_tool_arguments(
+        first_task,
+        "query_profile",
+        lambda: {"ok": False, "code": "profile_query_invalid"},
+        {},
+    )
+    succeeded = await normalize_reporting_tool_arguments(
+        first_task,
+        "query_profile",
+        lambda: {"ok": True},
+        {},
+    )
+    with pytest.raises(StopAgentRun, match="report_analysis_tool_budget_exhausted"):
+        await normalize_reporting_tool_arguments(
+            first_task,
+            "query_profile",
+            lambda: {"ok": True},
+            {},
+        )
+    second_task = await normalize_reporting_tool_arguments(
+        context("run-analysis-2", "analysis-task-2"),
+        "query_profile",
+        lambda: {"ok": True},
+        {},
+    )
+    with pytest.raises(StopAgentRun, match="report_analysis_tool_budget_exhausted"):
+        await normalize_reporting_tool_arguments(
+            first_task,
+            "query_profile",
+            lambda: {"ok": True},
+            {},
+        )
+    visualization = await normalize_reporting_tool_arguments(
+        context("run-visualization", "visualization-task", "visualization"),
+        "query_analysis_facts",
+        lambda: {"ok": True},
+        {},
+    )
+
+    assert failed == {"ok": False, "code": "profile_query_invalid"}
+    assert succeeded == {"ok": True}
+    assert second_task == {"ok": True}
+    assert visualization == {"ok": True}
 
 
 @pytest.mark.anyio
