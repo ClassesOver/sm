@@ -121,7 +121,7 @@ def create_reporting_workflow(
             ),
             Step(
                 step_id="confirm-source",
-                name="解析数据来源与 Schema",
+                name="解析数据来源与数据结构",
                 executor=_timed_step_executor(confirm_source),
                 max_retries=0,
                 on_error=OnError.fail,
