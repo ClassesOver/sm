@@ -447,6 +447,45 @@ async def test_异步文件哈希接受_json_回执(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_异步文件哈希从_artifacts_stdout_读取回执(tmp_path):
+    current = service(tmp_path)
+    current.create_file("thread", "dataset.csv", b"report")
+    sandbox = current.sandbox_for("thread")
+    digest = hashlib.sha256(b"report").hexdigest()
+
+    def execute_hash(command, cwd=None, timeout=None):
+        sandbox.process.calls.append({"command": command, "cwd": cwd, "timeout": timeout})
+        return type(
+            "Result",
+            (),
+            {
+                "result": "",
+                "artifacts": type(
+                    "Artifacts",
+                    (),
+                    {"stdout": json.dumps({"sha256": digest, "size": 6}) + "\n"},
+                )(),
+                "exit_code": 0,
+            },
+        )()
+
+    sandbox.process.exec = execute_hash
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+
+    assert await async_service.ahash_file("thread", "dataset.csv") == {
+        "path": "dataset.csv",
+        "size": 6,
+        "sha256": digest,
+    }
+
+
+@pytest.mark.anyio
 async def test_大文件分段读取哈希统计和目录树均在沙箱内执行(tmp_path):
     current = service(tmp_path)
     large_content = (("line value\n" * 100_000) + "last line").encode()

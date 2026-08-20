@@ -1499,6 +1499,11 @@ class WorkspaceService:
 
         exit_code = getattr(value, "exit_code", None)
         raw_output = getattr(value, "result", "")
+        if not raw_output:
+            artifacts = getattr(value, "artifacts", None)
+            raw_output = getattr(artifacts, "stdout", "") if artifacts is not None else ""
+        if not raw_output:
+            raw_output = getattr(value, "stdout", "") or getattr(value, "output", "")
         if isinstance(raw_output, bytes):
             output = raw_output.decode("utf-8", errors="replace")
         else:
