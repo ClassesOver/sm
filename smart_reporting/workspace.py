@@ -84,6 +84,10 @@ class WorkspaceError(ValueError):
     pass
 
 
+class WorkspaceHashResultError(WorkspaceError):
+    """远端哈希命令成功但返回的身份字段不符合协议。"""
+
+
 class WorkspaceProcessNotFound(WorkspaceError):
     pass
 
@@ -1609,15 +1613,18 @@ class WorkspaceService:
             expected_type="file",
             failure_message="工作区文件哈希计算失败，请检查文件后重试。",
         )
-        digest, raw_size = self._parse_null_fields(
-            output, 2, "工作区文件哈希结果无效，请稍后重试。"
-        )
+        try:
+            digest, raw_size = self._parse_null_fields(
+                output, 2, "工作区文件哈希结果无效，请稍后重试。"
+            )
+        except WorkspaceError as error:
+            raise WorkspaceHashResultError(str(error)) from error
         if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
-            raise WorkspaceError("工作区文件哈希结果无效，请稍后重试。")
+            raise WorkspaceHashResultError("工作区文件哈希结果无效，请稍后重试。")
         try:
             size = int(raw_size)
         except ValueError as error:
-            raise WorkspaceError("工作区文件哈希结果无效，请稍后重试。") from error
+            raise WorkspaceHashResultError("工作区文件哈希结果无效，请稍后重试。") from error
         return {"path": relative, "size": size, "sha256": digest}
 
     async def aworkspace_fingerprint(self, thread: str) -> str:

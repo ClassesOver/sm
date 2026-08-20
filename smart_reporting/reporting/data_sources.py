@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 import anyio
 from agno.run import RunContext
 
-from ..workspace import WorkspaceService, _thread
+from ..workspace import WorkspaceHashResultError, WorkspaceService, _thread
 from .data_source import DataSourceAdapter
 from .models import ReportingError
 from .workflow.query_pipeline import (
@@ -24,6 +24,8 @@ from .workflow.query_pipeline import (
 REPORT_DATASET_HANDLES_STATE_KEY = "report_dataset_handles"
 MAX_REPORT_INPUTS = 100
 MAX_DATASET_FILE_BYTES = 200 * 1024 * 1024
+_DATASET_HASH_ATTEMPTS = 3
+_DATASET_HASH_RETRY_DELAY_SECONDS = 0.2
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,7 @@ class ReportDatasetStore:
         workflow_run_id = str(run_context.run_id or "report")
         root = f"报表/数据集/{hashlib.sha256(workflow_run_id.encode()).hexdigest()[:24]}"
         handles: list[DatasetHandle | None] = [None] * len(validated)
+        staging_paths: list[str | None] = [None] * len(validated)
         batch_id = secrets.token_hex(16)
         final_root = f"{root}/batch-{batch_id}"
         staging_root = f"{root}/.staging-{batch_id}"
@@ -189,27 +192,19 @@ class ReportDatasetStore:
                                 staging_path, allow_root=False
                             )
                             await sandbox.fs.upload_file(content, remote_staged)
-                            current = await self.service.ahash_file(
-                                _thread(run_context), staging_path
-                            )
-                            if current.get("sha256") != digest or int(
-                                current.get("size", -1)
-                            ) != len(content):
-                                raise ReportingError(
-                                    "report_dataset_commit_failed", "数据集提交校验失败。"
-                                )
                             handles[index] = DatasetHandle(
                                 dataset_id=dataset_id,
-                                source_id=query.source_id,
                                 path=path,
-                                row_count=len(result.rows),
-                                size=len(content),
-                                sha256=digest,
+                                source_id=query.source_id,
                                 requirement_id=query.requirement_id,
                                 sql_hash=query.sql_hash,
                                 period_roles=query.period_roles,
                                 query_window_id=query.query_window_id,
+                                row_count=len(result.rows),
+                                size=len(content),
+                                sha256=digest,
                             )
+                            staging_paths[index] = staging_path
                 except Exception as error:
                     raise _BatchItemError(index, error) from error
 
@@ -219,10 +214,39 @@ class ReportDatasetStore:
                         task_group.start_soon(materialize_one, index, query, adapter, sql)
 
                 completed = tuple(item for item in handles if item is not None)
-                if len(completed) != len(validated):
+                completed_staging_paths = tuple(path for path in staging_paths if path is not None)
+                if len(completed) != len(validated) or len(completed_staging_paths) != len(
+                    validated
+                ):
                     raise ReportingError(
                         "report_dataset_commit_failed", "数据集 staging 结果不完整。"
                     )
+
+                # 真实运行曾在同一 sandbox 并发校验时收到格式异常的哈希回执；上传仍可
+                # 并发，但身份校验必须在所有文件落盘后串行执行。仅对协议格式短暂异常
+                # 重试，真实大小或摘要不一致直接失败，避免把数据漂移当成网络抖动。
+                for item, staging_path in zip(completed, completed_staging_paths, strict=True):
+                    current: dict[str, Any] | None = None
+                    for attempt in range(_DATASET_HASH_ATTEMPTS):
+                        try:
+                            current = await self.service.ahash_file(
+                                _thread(run_context), staging_path
+                            )
+                        except WorkspaceHashResultError:
+                            if attempt + 1 >= _DATASET_HASH_ATTEMPTS:
+                                raise
+                            await anyio.sleep(_DATASET_HASH_RETRY_DELAY_SECONDS * (2**attempt))
+                            continue
+                        break
+                    if current is None:
+                        raise ReportingError(
+                            "report_dataset_commit_failed", "数据集提交校验未返回结果。"
+                        )
+                    if (
+                        current.get("sha256") != item.sha256
+                        or int(current.get("size", -1)) != item.size
+                    ):
+                        raise ReportingError("report_dataset_commit_failed", "数据集提交校验失败。")
 
                 lineage = tuple(
                     DatasetLineage(
