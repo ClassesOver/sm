@@ -99,6 +99,7 @@ _REPORT_TOOL_SAME_FAILURE_LIMIT = 3
 _REPORT_TOOL_PHASE_FAILURE_LIMIT = 8
 _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY = "agentos_reporting_analysis_success_tools"
 _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT = 24
+_REPORT_PROFILE_EMPTY_QUERY_STATE_KEY = "agentos_reporting_empty_profile_queries"
 _REPORT_ARGUMENT_MAX_ISSUES = 8
 _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
@@ -108,8 +109,8 @@ _REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
 _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
 # 后端异常却可能持续数分钟才返回。Worker 仍保留既有一次同 run continuation，
-# 这里按成功最长值的两倍以上保留余量，同时避免失败关闭路径被 900 秒默认值拖长。
-_REPORT_WORKER_MODEL_TIMEOUT_CAP_SECONDS = 300
+# 这里与 900 秒模型请求配置保持一致，避免长结构化规划请求在上游返回前被截断。
+_REPORT_WORKER_MODEL_TIMEOUT_CAP_SECONDS = 900
 _REPORT_MODEL_RUN_ERROR: ContextVar[tuple[int, Exception] | None] = ContextVar(
     "reporting_model_run_error",
     default=None,
@@ -595,6 +596,58 @@ def _reporting_progress_fingerprint(state: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def _empty_profile_query_state(
+    run_context: RunContext,
+    function_name: str,
+    arguments: Mapping[str, Any],
+) -> tuple[dict[str, Any], str] | None:
+    if (
+        function_name != "query_profile"
+        or reporting_phase_from_run_context(run_context) != "analysis"
+        or reporting_task_kind_from_run_context(run_context) != "analysis_item"
+    ):
+        return None
+    dataset_id = arguments.get("datasetId")
+    query = arguments.get("query")
+    if not isinstance(dataset_id, str) or not dataset_id or not isinstance(query, str) or not query:
+        return None
+    state = _reporting_session_state(run_context)
+    if state is None:
+        return None
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    external_run_id = binding.get("externalRunId") if isinstance(binding, Mapping) else None
+    attempt_identity = f"{external_run_id or ''}:{run_context.run_id or ''}"
+    query_identity = hashlib.sha256(
+        json.dumps(
+            [dataset_id, query],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    attempts = state.get(_REPORT_PROFILE_EMPTY_QUERY_STATE_KEY)
+    attempts = attempts if isinstance(attempts, dict) else {}
+    empty_queries = attempts.get(attempt_identity)
+    empty_queries = empty_queries if isinstance(empty_queries, dict) else {}
+    attempts[attempt_identity] = empty_queries
+    state[_REPORT_PROFILE_EMPTY_QUERY_STATE_KEY] = attempts
+    return empty_queries, query_identity
+
+
+def _repeated_empty_profile_query_failure(details: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "rejected",
+        "code": "report_profile_query_repeated_empty",
+        "message": "相同 Profile 快照的相同查询已确认无结果，禁止重复执行。",
+        "requiredActions": [
+            "不要再次提交相同查询；改用当前分析已有事实、其他合法查询，或明确记录该分布不可用。"
+        ],
+        "retryable": False,
+        "details": dict(details),
+    }
+
+
 def _enforce_reporting_no_progress(
     run_context: RunContext,
     function_name: str,
@@ -716,6 +769,22 @@ async def normalize_reporting_tool_arguments(
     arguments: dict[str, Any],
 ) -> Any:
     """执行 Reporting 工具并把参数错误收敛为可操作回执。"""
+    empty_query_state = _empty_profile_query_state(run_context, function_name, arguments)
+    existing_empty = (
+        empty_query_state[0].get(empty_query_state[1]) if empty_query_state is not None else None
+    )
+    if isinstance(existing_empty, Mapping):
+        repeated_empty = _repeated_empty_profile_query_failure(existing_empty)
+        return _enforce_reporting_no_progress(
+            run_context,
+            function_name,
+            repeated_empty,
+            {
+                "datasetId": repeated_empty["details"]["datasetId"],
+                "query": repeated_empty["details"]["query"],
+                "snapshotHash": repeated_empty["details"]["snapshotHash"],
+            },
+        )
     reservation = _reporting_analysis_item_tool_budget(run_context, function_name)
     try:
         result = function_call(**arguments)
@@ -738,6 +807,36 @@ async def normalize_reporting_tool_arguments(
     except BaseException:
         _finish_reporting_analysis_item_tool_budget(reservation, succeeded=False)
         raise
+    if (
+        empty_query_state is not None
+        and isinstance(result, dict)
+        and result.get("ok") is True
+        and result.get("value") is None
+        and isinstance((receipt := result.get("readReceipt")), Mapping)
+        and isinstance((snapshot_hash := receipt.get("snapshotHash")), str)
+        and snapshot_hash
+        and isinstance((receipt_id := receipt.get("receiptId")), str)
+        and receipt_id
+        and receipt.get("datasetId") == arguments.get("datasetId")
+        and receipt.get("query") == arguments.get("query")
+    ):
+        empty_queries, query_identity = empty_query_state
+        details = {
+            "datasetId": arguments["datasetId"],
+            "query": arguments["query"],
+            "snapshotHash": snapshot_hash,
+            "receiptId": receipt_id,
+        }
+        existing_empty = empty_queries.get(query_identity)
+        if (
+            isinstance(existing_empty, Mapping)
+            and existing_empty.get("snapshotHash") == snapshot_hash
+        ):
+            result = _repeated_empty_profile_query_failure(existing_empty)
+        else:
+            # purpose 和 maxItems 不改变 JMESPath 在同一不可变快照上的结果，不能用来
+            # 绕过去重。首次空回执保留；串行重复会在执行前短路，并行重复在完成时拒绝。
+            empty_queries[query_identity] = details
     succeeded = isinstance(result, dict) and result.get("ok") is True
     _finish_reporting_analysis_item_tool_budget(reservation, succeeded=succeeded)
     return _enforce_reporting_no_progress(run_context, function_name, result, arguments)

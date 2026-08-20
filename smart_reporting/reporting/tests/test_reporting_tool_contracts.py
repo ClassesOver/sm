@@ -15,6 +15,7 @@ from daytona.common.errors import DaytonaError
 from smart_reporting.reporting.agent import (
     _REPORT_TOOL_FAILURE_STATE_KEY,
     _enforce_reporting_no_progress,
+    normalize_reporting_tool_arguments,
 )
 from smart_reporting.reporting.delivery.acceptance import build_report_phase_acceptance_contract
 from smart_reporting.reporting.models import ReportingError
@@ -666,6 +667,150 @@ def test_profile_query_receipt_identity_reuses_same_query_across_purposes() -> N
 
     assert first.receipt_id == second.receipt_id
     assert first.purpose != second.purpose
+
+
+@pytest.mark.anyio
+async def test_repeated_empty_profile_query_is_rejected_across_purpose_changes() -> None:
+    execution_count = 0
+    context = RunContext(
+        run_id="run-analysis-1",
+        session_id="session-analysis",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "analysis-task-1",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
+            }
+        },
+    )
+
+    def empty_result(purpose: str) -> dict[str, object]:
+        return {
+            "ok": True,
+            "datasetId": "dataset-1",
+            "query": "variables.department.distinct_values",
+            "value": None,
+            "readReceipt": {
+                "receiptId": "profile-read-1",
+                "datasetId": "dataset-1",
+                "query": "variables.department.distinct_values",
+                "snapshotHash": "a" * 64,
+                "purpose": purpose,
+            },
+        }
+
+    def execute(purpose: str):
+        def call(**_arguments):
+            nonlocal execution_count
+            execution_count += 1
+            return empty_result(purpose)
+
+        return call
+
+    first = await normalize_reporting_tool_arguments(
+        context,
+        "query_profile",
+        execute("读取科室分类"),
+        {
+            "datasetId": "dataset-1",
+            "query": "variables.department.distinct_values",
+            "purpose": "读取科室分类",
+            "maxItems": 50,
+        },
+    )
+    repeated = await normalize_reporting_tool_arguments(
+        context,
+        "query_profile",
+        execute("复核科室分类"),
+        {
+            "datasetId": "dataset-1",
+            "query": "variables.department.distinct_values",
+            "purpose": "复核科室分类",
+            "maxItems": 100,
+        },
+    )
+
+    assert first["ok"] is True
+    assert execution_count == 1
+    assert repeated == {
+        "ok": False,
+        "status": "rejected",
+        "code": "report_profile_query_repeated_empty",
+        "message": "相同 Profile 快照的相同查询已确认无结果，禁止重复执行。",
+        "requiredActions": [
+            "不要再次提交相同查询；改用当前分析已有事实、其他合法查询，或明确记录该分布不可用。"
+        ],
+        "retryable": False,
+        "details": {
+            "datasetId": "dataset-1",
+            "query": "variables.department.distinct_values",
+            "snapshotHash": "a" * 64,
+            "receiptId": "profile-read-1",
+        },
+    }
+
+
+@pytest.mark.anyio
+async def test_empty_profile_query_dedup_isolated_by_analysis_task() -> None:
+    shared_state: dict[str, object] = {}
+
+    def context(run_id: str, task_id: str) -> RunContext:
+        return RunContext(
+            run_id=run_id,
+            session_id="session-analysis",
+            session_state=shared_state,
+            dependencies={
+                REPORTING_TASK_DEPENDENCY: {
+                    "externalRunId": task_id,
+                    REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                    REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
+                }
+            },
+        )
+
+    def empty_result(snapshot_hash: str) -> dict[str, object]:
+        return {
+            "ok": True,
+            "datasetId": "dataset-1",
+            "query": "variables.department.distinct_values",
+            "value": None,
+            "readReceipt": {
+                "receiptId": f"profile-read-{snapshot_hash[0]}",
+                "datasetId": "dataset-1",
+                "query": "variables.department.distinct_values",
+                "snapshotHash": snapshot_hash,
+                "purpose": "读取科室分类",
+            },
+        }
+
+    arguments = {
+        "datasetId": "dataset-1",
+        "query": "variables.department.distinct_values",
+        "purpose": "读取科室分类",
+        "maxItems": 50,
+    }
+    first_task = context("run-analysis-1", "analysis-task-1")
+
+    first = await normalize_reporting_tool_arguments(
+        first_task, "query_profile", lambda **_arguments: empty_result("a" * 64), arguments
+    )
+    other_task = await normalize_reporting_tool_arguments(
+        context("run-analysis-2", "analysis-task-2"),
+        "query_profile",
+        lambda **_arguments: empty_result("a" * 64),
+        arguments,
+    )
+    changed_snapshot_task = await normalize_reporting_tool_arguments(
+        context("run-analysis-3", "analysis-task-3"),
+        "query_profile",
+        lambda **_arguments: empty_result("b" * 64),
+        arguments,
+    )
+
+    assert first["ok"] is True
+    assert other_task["ok"] is True
+    assert changed_snapshot_task["ok"] is True
 
 
 def test_profile_receipt_command_id_binds_full_receipt_payload() -> None:
