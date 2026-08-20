@@ -17,12 +17,12 @@ Daytona 使用 AGPL-3.0 许可证。官方将这套 Compose 定位为本地部�
 
 | 端口 | 服务 | 用途 |
 | --- | --- | --- |
-| `33043` | API / Dashboard | Daytona API 和管理界面 |
-| `33044` | Proxy | 沙箱 HTTP 预览和 Toolbox |
-| `33047` | Dex | OIDC 登录 |
+| `33043` | Caddy → API / Dashboard | Daytona API 和管理界面 |
+| `33044` | Caddy → Proxy | 沙箱 HTTPS 预览和 Toolbox |
+| `33047` | Caddy → Dex | OIDC 登录 |
 
-Runner、PostgreSQL、Redis、Registry 和 MinIO 仅在 Daytona 项目网络内提供。宿主机默认只
-暴露 API、Proxy 和 Dex。
+API、Proxy、Dex、Runner、PostgreSQL、Redis、Registry 和 MinIO 仅在 Daytona 项目网络内提供。
+宿主机默认只暴露 Caddy 的三个 HTTPS 端口。
 默认 Sandbox 镜像使用 `docker.m.daocloud.io/daytonaio/sandbox:0.5.0-slim`，仅为解决
 Docker Hub 在受限网络中的拉取超时；Daytona API、Runner 和 Proxy 仍使用官方 Docker Hub
 镜像。可在 `docker/.env` 中将 `DAYTONA_DEFAULT_SNAPSHOT` 改回其他可访问的完整镜像地址。
@@ -55,7 +55,9 @@ docker compose --env-file docker/.env \
 `--remove-orphans` 会清理同一 Daytona Compose 项目中已从精简配置删除的辅助容器，但不会删除
 `docker/data/` 下 PostgreSQL、Redis、Registry、MinIO、Runner 或 Dex 的持久化数据。
 
-打开 `http://127.0.0.1:33043/dashboard`，登录后激活默认 Snapshot，并创建具有沙箱创建、
+首次启动后，将 `docker/data/caddy/caddy/pki/authorities/local/root.crt` 导入浏览器或操作系统的
+受信任根证书颁发机构。局域网部署还需将 `docker/.env` 的 `DAYTONA_PUBLIC_HOST` 改为宿主机
+局域网 IP，然后重新创建服务。打开 `https://<DAYTONA_PUBLIC_HOST>:33043/dashboard`，登录后激活默认 Snapshot，并创建具有沙箱创建、
 写入和删除权限的 API Key。该 Key 属于 AgentOS 客户端，应写入根目录 `.env` 的
 `DAYTONA_API_KEY`，不要写入 `docker/.env`。
 
@@ -184,13 +186,15 @@ docker compose --env-file docker/.env \
 从其他机器访问时，在 `docker/.env` 中增加或修改：
 
 ```dotenv
-DAYTONA_PUBLIC_HOST=daytona.example.com
+DAYTONA_PUBLIC_SCHEME=https
+DAYTONA_PUBLIC_HOST=192.168.1.50
 ```
 
-浏览器在普通远程 HTTP 页面中不能使用 `Crypto.subtle`。公网或跨机器部署应在 API、Dex、
-Proxy 和通配沙箱域名前配置 HTTPS，并同步设置 `DAYTONA_PUBLIC_SCHEME=https`、
-`DAYTONA_PROXY_DOMAIN` 及相应 DNS。不要只修改 Dashboard URL，否则 Dex 会拒绝未注册的
-`redirect_uri`。
+Caddy 会为该 IP 或域名签发内部证书。将
+`docker/data/caddy/caddy/pki/authorities/local/root.crt` 复制到客户端，在 Firefox 的
+“设置 → 隐私与安全 → 证书 → 查看证书 → 证书颁发机构 → 导入”中导入，并信任其标识网站。
+然后访问 `https://192.168.1.50:33043/dashboard`。更换 `DAYTONA_PUBLIC_HOST` 后必须重新创建
+`api`、`proxy`、`dex` 和 `caddy`，否则 Dex 会继续使用旧的 issuer 和回调地址。
 
 ## 运维
 
@@ -207,5 +211,5 @@ docker compose --env-file docker/.env -f docker/docker-compose.yaml logs --tail=
 docker compose --env-file docker/.env -f docker/docker-compose.yaml down
 ```
 
-不要在未备份的情况下使用 `down -v`。需要备份的具名卷包括 PostgreSQL、Redis、Registry、
-MinIO、Runner 和 Dex 数据。
+不要在未备份的情况下删除 `docker/data/`。需要备份的目录包括 PostgreSQL、Redis、Registry、
+MinIO、Runner、Dex 和 Caddy 数据。

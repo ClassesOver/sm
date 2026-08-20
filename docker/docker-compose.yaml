@@ -23,8 +23,6 @@ services:
 
   api:
     image: ${DAYTONA_IMAGE_REGISTRY:-docker.io}/daytonaio/daytona-api:v0.189.0-${DAYTONA_IMAGE_ARCH:-amd64}
-    ports:
-      - "0.0.0.0:${DAYTONA_API_PORT:-33043}:3000"
     environment:
       OTEL_ENABLED: "false"
       DEFAULT_SNAPSHOT: ${DAYTONA_DEFAULT_SNAPSHOT:-docker.m.daocloud.io/daytonaio/sandbox:0.5.0-slim}
@@ -117,8 +115,6 @@ services:
 
   proxy:
     image: ${DAYTONA_IMAGE_REGISTRY:-docker.io}/daytonaio/daytona-proxy:v0.189.0-${DAYTONA_IMAGE_ARCH:-amd64}
-    ports:
-      - "0.0.0.0:${DAYTONA_PROXY_PORT:-33044}:4000"
     environment:
       DAYTONA_API_URL: http://api:3000/api
       PROXY_PORT: "4000"
@@ -165,8 +161,6 @@ services:
 
   dex:
     image: docker.io/dexidp/dex:v2.42.0
-    ports:
-      - "0.0.0.0:${DAYTONA_DEX_PORT:-33047}:5556"
     environment:
       DEX_ISSUER: ${DAYTONA_PUBLIC_SCHEME:-http}://${DAYTONA_PUBLIC_HOST:-127.0.0.1}:${DAYTONA_DEX_PORT:-33047}/dex
       DEX_DASHBOARD_BASE_URL: ${DAYTONA_PUBLIC_SCHEME:-http}://${DAYTONA_PUBLIC_HOST:-127.0.0.1}:${DAYTONA_API_PORT:-33043}
@@ -181,6 +175,25 @@ services:
       - -ec
       - sed -e "s|__DEX_ISSUER__|$$DEX_ISSUER|g" -e "s|__DEX_DASHBOARD_BASE_URL__|$$DEX_DASHBOARD_BASE_URL|g" -e "s|__DEX_PROXY_CALLBACK_URL__|$$DEX_PROXY_CALLBACK_URL|g" -e "s|__DEX_ADMIN_EMAIL__|$$DEX_ADMIN_EMAIL|g" -e "s|__DEX_STATIC_PASSWORD_HASH__|$$DEX_STATIC_PASSWORD_HASH|g" /etc/dex/config.yaml.template > /tmp/dex.yaml && touch /var/dex/dex.db && exec dex serve /tmp/dex.yaml
     networks: [daytona-network]
+    restart: unless-stopped
+
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    environment:
+      DAYTONA_PUBLIC_HOST: ${DAYTONA_PUBLIC_HOST:?必须设置}
+      DAYTONA_API_PORT: ${DAYTONA_API_PORT:-33043}
+      DAYTONA_PROXY_PORT: ${DAYTONA_PROXY_PORT:-33044}
+      DAYTONA_DEX_PORT: ${DAYTONA_DEX_PORT:-33047}
+    ports:
+      - "0.0.0.0:${DAYTONA_API_PORT:-33043}:${DAYTONA_API_PORT:-33043}"
+      - "0.0.0.0:${DAYTONA_PROXY_PORT:-33044}:${DAYTONA_PROXY_PORT:-33044}"
+      - "0.0.0.0:${DAYTONA_DEX_PORT:-33047}:${DAYTONA_DEX_PORT:-33047}"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+      - ./data/caddy-config:/config
+    networks: [daytona-network]
+    depends_on: [api, proxy, dex]
     restart: unless-stopped
 
   db:
