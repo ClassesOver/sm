@@ -53,7 +53,7 @@ docker compose --env-file docker/.env \
 ```
 
 `--remove-orphans` 会清理同一 Daytona Compose 项目中已从精简配置删除的辅助容器，但不会删除
-PostgreSQL、Redis、Registry、MinIO、Runner 或 Dex 的具名数据卷。
+`docker/data/` 下 PostgreSQL、Redis、Registry、MinIO、Runner 或 Dex 的持久化数据。
 
 打开 `http://127.0.0.1:33043/dashboard`，登录后激活默认 Snapshot，并创建具有沙箱创建、
 写入和删除权限的 API Key。该 Key 属于 AgentOS 客户端，应写入根目录 `.env` 的
@@ -114,7 +114,7 @@ Snapshot 时，Base Toolkit 的搜索、Git、PTY、stat、目录树、哈希和
 
 Runner 使用独立的内置 Docker，宿主机已经拉取或导入的镜像不会自动共享给 Runner。网络较慢时，
 可先在宿主机准备镜像，再导入 Runner 并推送到 Daytona 内置 Registry。内置 Registry 数据保存在
-`daytona_registry_data` 卷中。
+`docker/data/registry/` 中。
 
 宿主机已有镜像时直接导入：
 

@@ -159,7 +159,7 @@ services:
       ANDROID_BOOT_TIMEOUT_SEC: "300"
     networks: [daytona-network]
     volumes:
-      - daytona_runner_data:/home/daytona/runner
+      - ./data/runner:/home/daytona/runner
     privileged: true
     restart: unless-stopped
 
@@ -175,7 +175,7 @@ services:
       DEX_ADMIN_EMAIL: ${DEX_ADMIN_EMAIL:-admin@example.com}
     volumes:
       - ./dex/config.yaml.template:/etc/dex/config.yaml.template:ro
-      - dex_data:/var/dex
+      - ./data/dex:/var/dex
     entrypoint:
       - sh
       - -ec
@@ -195,7 +195,7 @@ services:
       timeout: 5s
       retries: 12
     volumes:
-      - daytona_db_data:/var/lib/postgresql
+      - ./data/db:/var/lib/postgresql
     networks: [daytona-network]
     restart: unless-stopped
 
@@ -210,7 +210,7 @@ services:
       timeout: 5s
       retries: 12
     volumes:
-      - daytona_redis_data:/data
+      - ./data/redis:/data
     networks: [daytona-network]
     restart: unless-stopped
 
@@ -220,7 +220,7 @@ services:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
       REGISTRY_HTTP_ADDR: registry:6000
     volumes:
-      - daytona_registry_data:/var/lib/registry
+      - ./data/registry:/var/lib/registry
     networks: [daytona-network]
     restart: unless-stopped
 
@@ -232,23 +232,9 @@ services:
       MINIO_IDENTITY_STS_EXPIRY: 24h
     command: server /data --console-address ":9001"
     volumes:
-      - daytona_minio_data:/data
+      - ./data/minio:/data
     networks: [daytona-network]
     restart: unless-stopped
-
-volumes:
-  daytona_runner_data:
-    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}daytona_runner_data"
-  daytona_db_data:
-    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}daytona_db_data"
-  daytona_redis_data:
-    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}daytona_redis_data"
-  daytona_registry_data:
-    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}daytona_registry_data"
-  daytona_minio_data:
-    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}daytona_minio_data"
-  dex_data:
-    name: "${DAYTONA_VOLUME_PREFIX:-daytona_}dex_data"
 
 networks:
   daytona-network:

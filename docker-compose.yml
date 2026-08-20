@@ -38,7 +38,7 @@ services:
       AGENT_REPORT_METADATA_TOKEN: ${AGENT_REPORT_METADATA_TOKEN:-}
       REPORT_STARROCKS_DSN: ${REPORT_STARROCKS_DSN:-}
     volumes:
-      - reporting_logs:/var/log/agentos
+      - ./data/reporting-logs:/var/log/agentos
       - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
       - type: bind
         source: ${AGENT_REPORT_DATA_SOURCES_DIR:-./deploy/agentos/reporting}
@@ -67,11 +67,5 @@ services:
       timeout: 5s
       retries: 12
     volumes:
-      - reporting_db_data:/var/lib/postgresql
+      - ./data/reporting-db:/var/lib/postgresql
     restart: unless-stopped
-
-volumes:
-  reporting_db_data:
-    name: "${AGENTOS_VOLUME_PREFIX:-agentos_}reporting_db_data"
-  reporting_logs:
-    name: "${AGENTOS_VOLUME_PREFIX:-agentos_}reporting_logs"

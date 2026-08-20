@@ -9,6 +9,10 @@
 - 根目录 `docker-compose.yml`：AgentOS 和专用 PostgreSQL。
 - `docker/docker-compose.yaml`：Daytona OSS 核心栈。
 
+持久化数据使用相对路径：AgentOS 写入根目录 `data/`，Daytona 写入 `docker/data/`。
+将仓库部署到 `/u01` 后，两套服务的数据会随项目保存在 `/u01` 文件系统；迁移既有部署时，
+必须先停止服务并将原 Docker 命名卷内容复制到对应目录，不能直接以空目录启动数据库。
+
 初始化根目录环境：
 
 ```bash
