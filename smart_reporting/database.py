@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,27 @@ def _configure_sqlite_engine(engine: Engine) -> None:
 
 
 class SerializedAsyncPostgresDb(AsyncPostgresDb):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._table_initialization_locks: dict[str, asyncio.Lock] = {}
+
+    async def _get_or_create_table(
+        self,
+        table_name: str,
+        table_type: str,
+        create_table_if_not_found: bool | None = False,
+    ) -> Any:
+        # Agno 2.8.2 的惰性建表会先查数据库再向共享 MetaData 注册 Table；同名
+        # trace/span 首次并发写入时，两个协程都可能通过不存在检查并重复注册。必须按
+        # 表名锁住完整检查与创建区间；不能用全局锁，因为建表过程会递归初始化版本表。
+        lock = self._table_initialization_locks.setdefault(table_name, asyncio.Lock())
+        async with lock:
+            return await super()._get_or_create_table(
+                table_name,
+                table_type,
+                create_table_if_not_found,
+            )
+
     async def _create_all_tables(self):
         connection = await psycopg.AsyncConnection.connect(psycopg_db_url(self.db_url))
         async with connection:

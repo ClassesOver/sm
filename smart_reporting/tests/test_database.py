@@ -82,6 +82,41 @@ async def test_session_upsert_clears_terminal_reasoning_before_database_write(mo
     assert captured == [(session, False)]
 
 
+@pytest.mark.anyio
+async def test_postgres_table_initialization_serializes_only_same_table(monkeypatch):
+    active_calls = 0
+    max_active_calls = 0
+
+    async def fake_get_or_create_table(
+        _self, table_name, table_type, create_table_if_not_found=False
+    ):
+        nonlocal active_calls, max_active_calls
+        _ = table_name, table_type, create_table_if_not_found
+        active_calls += 1
+        max_active_calls = max(max_active_calls, active_calls)
+        await asyncio.sleep(0)
+        active_calls -= 1
+        return object()
+
+    monkeypatch.setattr(AsyncPostgresDb, "_get_or_create_table", fake_get_or_create_table)
+    database = SerializedAsyncPostgresDb(db_url=DEFAULT_AGENT_DB_URL)
+
+    await asyncio.gather(
+        database._get_or_create_table("agno_traces", "traces", True),
+        database._get_or_create_table("agno_traces", "traces", True),
+    )
+
+    assert max_active_calls == 1
+
+    max_active_calls = 0
+    await asyncio.gather(
+        database._get_or_create_table("agno_traces", "traces", True),
+        database._get_or_create_table("agno_spans", "spans", True),
+    )
+
+    assert max_active_calls == 2
+
+
 def test_sqlite_database_factory_rejects_memory_and_enables_required_pragmas(tmp_path):
     with pytest.raises(ValueError, match="不能使用内存数据库"):
         create_agent_database("sqlite:///:memory:")
