@@ -1603,7 +1603,7 @@ class WorkspaceService:
         script = (
             f"digest=$(sha256sum -- {quoted}) || exit $?; digest=${{digest%% *}}; "
             f"size=$(stat --format=%s -- {quoted}) || exit $?; "
-            'printf \'%s\\0%s\\0\' "$digest" "$size"'
+            'printf \'{"sha256":"%s","size":%s}\\n\' "$digest" "$size"'
         )
         output, _truncated = await self._arun_workspace_command(
             thread,
@@ -1613,13 +1613,33 @@ class WorkspaceService:
             expected_type="file",
             failure_message="工作区文件哈希计算失败，请检查文件后重试。",
         )
+        digest: Any
+        raw_size: Any
         try:
-            digest, raw_size = self._parse_null_fields(
-                output, 2, "工作区文件哈希结果无效，请稍后重试。"
-            )
-        except WorkspaceError as error:
-            raise WorkspaceHashResultError(str(error)) from error
-        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            payload = json.loads(output)
+            if (
+                not isinstance(payload, dict)
+                or set(payload) != {"sha256", "size"}
+                or isinstance(payload.get("size"), bool)
+                or not isinstance(payload.get("size"), int)
+            ):
+                raise ValueError
+            digest = payload["sha256"]
+            raw_size = payload["size"]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            # 兼容旧版 Snapshot 仍返回的 NUL 分隔回执；新命令不再依赖该格式，
+            # 因为部分 Daytona 工具链会在传输过程中改写或截断 NUL 字节。
+            try:
+                digest, raw_size = self._parse_null_fields(
+                    output, 2, "工作区文件哈希结果无效，请稍后重试。"
+                )
+            except WorkspaceError as error:
+                raise WorkspaceHashResultError(str(error)) from error
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
             raise WorkspaceHashResultError("工作区文件哈希结果无效，请稍后重试。")
         try:
             size = int(raw_size)
