@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import shlex
+import subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
@@ -443,6 +444,45 @@ async def test_异步文件哈希接受_json_回执(tmp_path):
         "path": "dataset.csv",
         "size": 6,
         "sha256": digest,
+    }
+
+
+@pytest.mark.anyio
+async def test_异步文件哈希执行真实_shell_json回执(tmp_path):
+    current = service(tmp_path)
+    current.create_file("thread", "dataset.csv", b"report")
+    (tmp_path / "dataset.csv").write_bytes(b"report")
+    sandbox = current.sandbox_for("thread")
+
+    def execute_hash(command, cwd=None, timeout=None):
+        sandbox.process.calls.append({"command": command, "cwd": cwd, "timeout": timeout})
+        local_command = command.replace(WORKSPACE_ROOT, str(tmp_path))
+        completed = subprocess.run(
+            local_command,
+            shell=True,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return type(
+            "Result",
+            (),
+            {"result": completed.stdout, "exit_code": completed.returncode},
+        )()
+
+    sandbox.process.exec = execute_hash
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+
+    assert await async_service.ahash_file("thread", "dataset.csv") == {
+        "path": "dataset.csv",
+        "size": 6,
+        "sha256": hashlib.sha256(b"report").hexdigest(),
     }
 
 

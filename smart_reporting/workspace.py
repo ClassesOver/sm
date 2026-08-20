@@ -1608,7 +1608,7 @@ class WorkspaceService:
         script = (
             f"digest=$(sha256sum -- {quoted}) || exit $?; digest=${{digest%% *}}; "
             f"size=$(stat --format=%s -- {quoted}) || exit $?; "
-            'printf \'{"sha256":"%s","size":%s}\\n\' "$digest" "$size"'
+            'printf \'{"sha256":"%s","size":%s}\n\' "$digest" "$size"'
         )
         output, _truncated = await self._arun_workspace_command(
             thread,
