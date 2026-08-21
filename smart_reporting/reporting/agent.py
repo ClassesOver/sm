@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import inspect
 import json
@@ -1168,7 +1169,10 @@ def _forced_review_response(
         try:
             payload = json.loads(content)
         except ValueError:
-            return None
+            try:
+                payload = ast.literal_eval(content)
+            except (SyntaxError, ValueError):
+                return None
         if not isinstance(payload, dict) or payload.get("status") != "paused":
             return None
         review = payload.get("review")
