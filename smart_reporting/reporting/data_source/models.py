@@ -86,6 +86,16 @@ class QueryResult:
     byte_count: int
 
 
+@dataclass(frozen=True)
+class MaterializedQueryResult:
+    content: bytes
+    row_count: int
+
+    @property
+    def size(self) -> int:
+        return len(self.content)
+
+
 class DataSourceAdapter(Protocol):
     @property
     def config(self) -> DataSourceConfig: ...
@@ -96,6 +106,10 @@ class DataSourceAdapter(Protocol):
     async def catalog(self) -> tuple[CatalogTable, ...]: ...
 
     async def query(self, sql: str) -> QueryResult: ...
+
+    async def materialize(
+        self, sql: str, *, max_bytes: int | None = None
+    ) -> MaterializedQueryResult: ...
 
     async def aclose(self) -> None: ...
 

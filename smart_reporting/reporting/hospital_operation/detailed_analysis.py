@@ -16,6 +16,7 @@ from io import BytesIO
 from typing import Any, Literal
 
 import pandas as pd
+import polars as pl
 from data_profiling import ProfileReport
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from statsmodels.tsa.stattools import acf, adfuller, pacf
@@ -225,15 +226,16 @@ def profile_csv_dataset(
     if digest != expected_sha256:
         raise ValueError("CSV 快照哈希变化")
     try:
-        dataframe = pd.read_csv(BytesIO(content))
-    except (UnicodeDecodeError, pd.errors.EmptyDataError, pd.errors.ParserError) as error:
+        dataframe = pl.read_csv(BytesIO(content))
+    except (UnicodeDecodeError, pl.exceptions.PolarsError) as error:
         raise ValueError("CSV 解析失败") from error
     profile_dataframe, time_series_sort_field, parsed_time_index = _prepare_profile_dataframe(
         dataframe, period_fields=period_fields
     )
     duplicate_time_index = bool(
-        parsed_time_index is not None and parsed_time_index.duplicated().any()
+        parsed_time_index is not None and parsed_time_index.is_duplicated().any()
     )
+    profile_dataframe_pandas = _to_profile_pandas(profile_dataframe)
 
     # Profile 只输出统计 JSON。关闭图形型缺失分析和连续变量散点图，避免把
     # 第三方 SVG 混入受信上下文；文件类变量也必须关闭，防止 CSV 文本触发
@@ -259,7 +261,7 @@ def profile_csv_dataset(
                 category=UserWarning,
             )
             report = ProfileReport(
-                profile_dataframe,
+                profile_dataframe_pandas,
                 # 同一期间存在多行时属于面板数据。原始行顺序不代表业务时间序列，
                 # 因此关闭上游 tsmode；Coding 必须从不可变 CSV 按月和适当组织粒度
                 # 聚合后再执行趋势、ACF、PACF 或季节性分析。
@@ -317,7 +319,7 @@ def profile_csv_dataset(
     if not isinstance(table, Mapping) or not isinstance(variables, Mapping):
         raise ValueError("CSV Profile 结构无效")
     fields = tuple(str(field) for field in dataframe.columns)
-    row_count = int(table.get("n", len(dataframe)))
+    row_count = int(table.get("n", dataframe.height))
     numeric: list[str] = []
     field_stats: list[FieldStatistic] = []
     periods: set[str] = set()
@@ -345,7 +347,15 @@ def profile_csv_dataset(
         if not isinstance(value_counts, Mapping):
             value_counts = {}
         sample_values = tuple(
-            str(value) for value in dataframe[field].dropna().astype(str).drop_duplicates().head(20)
+            str(value)
+            for value in (
+                dataframe.get_column(field)
+                .drop_nulls()
+                .cast(pl.String)
+                .unique(maintain_order=True)
+                .head(20)
+                .to_list()
+            )
         )
         field_stats.append(
             FieldStatistic(
@@ -389,18 +399,24 @@ def profile_csv_dataset(
             if trusted_period_fields
             else is_temporal or _is_period_field_name(field)
         ):
-            periods.update(str(value).strip() for value in dataframe[field].dropna())
+            periods.update(
+                str(value).strip() for value in dataframe.get_column(field).drop_nulls().to_list()
+            )
     # fg-data-profiling 4.19.1 的 n_duplicates 实际是重复组合组数。保留原始
-    # Profile 值作为引擎诊断，工作流对外语义改用 keep="first" 的重复行数。
+    # Profile 值作为引擎诊断，工作流对外语义改用 Polars unique 后的重复行数。
     duplicate_group_count = int(table.get("n_duplicates", 0))
-    duplicate_row_count = int(dataframe.duplicated(keep="first").sum())
+    duplicate_row_count = dataframe.height - dataframe.unique(maintain_order=True).height
     duplicate_row_rate = _ratio(duplicate_row_count, row_count)
     profile["duplicate_analysis"] = {
         "duplicate_group_count": duplicate_group_count,
         "duplicate_row_count": duplicate_row_count,
         "duplicate_row_rate": duplicate_row_rate,
     }
-    empty_row_count = int(dataframe.isna().all(axis=1).sum())
+    empty_row_count = int(
+        dataframe.select(pl.all_horizontal(*[pl.col(field).is_null() for field in fields]))
+        .to_series()
+        .sum()
+    )
     missing_cell_count = int(table.get("n_cells_missing", 0))
     quality_warnings: list[str] = []
     if duplicate_time_index:
@@ -489,10 +505,10 @@ def _remove_redundant_profile_data(profile: dict[str, Any], *, engine_version: s
 
 
 def _prepare_profile_dataframe(
-    dataframe: pd.DataFrame,
+    dataframe: pl.DataFrame,
     *,
     period_fields: tuple[str, ...] = (),
-) -> tuple[pd.DataFrame, str | None, pd.Series | None]:
+) -> tuple[pl.DataFrame, str | None, pl.Series | None]:
     """为 ProfileReport 找到可排序的时间列，不改变不可变 CSV 本身。
 
     fg-data-profiling 只有在 `tsmode=True` 且索引可排序时才会运行专用时序摘要。
@@ -516,37 +532,55 @@ def _prepare_profile_dataframe(
     )
     for raw_column in candidates:
         column = str(raw_column)
-        values = dataframe[raw_column]
+        values = dataframe.get_column(raw_column)
         name_is_temporal = column.casefold() in trusted_period_fields or _is_period_field_name(
             column
         )
-        dtype_is_temporal = pd.api.types.is_datetime64_any_dtype(values)
+        dtype_is_temporal = values.dtype.is_temporal()
         # 日期文本只有字段名明确表达时间语义时才允许解析。普通文本即使全部形似
-        # 日期，也可能只是业务标签；数值列还会被 pandas 当作纳秒时间而误判。
+        # 日期，也可能只是业务标签；数值列不能仅凭数值形态判定为时间。
         if not name_is_temporal and not dtype_is_temporal:
             continue
         # fg-data-profiling 的时序变量会执行 ADF 和 FFT；少于 8 个观测值时，
         # statsmodels 的默认滞后阶数无效。此处回退普通画像，不丢弃原始行。
         if len(values) < 8:
             continue
-        if dtype_is_temporal:
-            parsed = pd.to_datetime(values, errors="coerce")
-        else:
-            try:
-                parsed = pd.to_datetime(values, errors="coerce", format="mixed")
-            except (TypeError, ValueError):
-                parsed = pd.to_datetime(values, errors="coerce")
-        valid_count = int(parsed.notna().sum())
+        parsed = _parse_profile_datetime(values)
+        valid_count = dataframe.height - parsed.null_count()
         # 时序模式不能携带 NaT 索引：上游时间索引摘要在排序/格式化时会失败。
         # 普通 Profile 仍会按原始值统计缺失，因此这里仅关闭专用时序分支。
         if valid_count != len(values) or valid_count < 3:
             continue
-        if int(parsed.dropna().nunique()) < 3:
+        if int(parsed.drop_nulls().n_unique()) < 3:
             continue
-        prepared = dataframe.copy()
-        prepared[raw_column] = parsed
+        prepared = dataframe.with_columns(parsed.alias(raw_column))
         return prepared, column, parsed
     return dataframe, None, None
+
+
+def _parse_profile_datetime(values: pl.Series) -> pl.Series:
+    """使用 Polars 解析常见日期格式，失败值统一为 null。"""
+    if values.dtype.is_temporal():
+        return values.cast(pl.Datetime, strict=False)
+    source = values.cast(pl.String)
+    expressions = []
+    for format_string in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%Y-%m",
+        "%Y/%m",
+        "%Y%m%d",
+        "%Y%m",
+    ):
+        expressions.append(source.str.to_datetime(format=format_string, strict=False))
+    return values.to_frame().select(pl.coalesce(expressions).alias(values.name)).to_series()
+
+
+def _to_profile_pandas(dataframe: pl.DataFrame) -> pd.DataFrame:
+    """仅在调用 Pandas 原生画像引擎前建立兼容输入，不参与业务统计。"""
+    return pd.DataFrame(dataframe.to_dict(as_series=False))
 
 
 def _is_period_field_name(field: str) -> bool:
@@ -559,8 +593,8 @@ def _is_period_field_name(field: str) -> bool:
 
 def _append_time_series_statistics(
     profile: dict[str, Any],
-    dataframe: pd.DataFrame,
-    parsed_time_index: pd.Series | None,
+    dataframe: pl.DataFrame,
+    parsed_time_index: pl.Series | None,
     sort_field: str | None,
 ) -> tuple[str, ...]:
     """把 ACF、PACF 和季节性数值写入完整 JSON Profile。
@@ -579,7 +613,7 @@ def _append_time_series_statistics(
         }
         return ()
 
-    if parsed_time_index.duplicated().any():
+    if parsed_time_index.is_duplicated().any():
         profile["time_series_analysis"] = {
             "enabled": False,
             "sort_field": sort_field,
@@ -589,8 +623,7 @@ def _append_time_series_statistics(
         }
         return ()
 
-    order = parsed_time_index.sort_values(kind="stable").index
-    ordered = dataframe.loc[order]
+    ordered = dataframe.sort(sort_field, maintain_order=True)
     series_payload: dict[str, Any] = {}
     raw_variables = profile.get("variables")
     variables: Mapping[str, Any] = raw_variables if isinstance(raw_variables, Mapping) else {}
@@ -605,13 +638,13 @@ def _append_time_series_statistics(
     ]
 
     for field in numeric_fields:
-        values = pd.to_numeric(ordered[field], errors="coerce").dropna().astype(float)
+        values = ordered.get_column(field).cast(pl.Float64, strict=False).drop_nulls().to_numpy()
         if len(values) < 8:
             continue
         max_lag = min(100, max(1, len(values) // 2 - 1))
         try:
-            acf_values = acf(values.to_numpy(), nlags=max_lag, fft=True)
-            pacf_values = pacf(values.to_numpy(), nlags=max_lag, method="ywm")
+            acf_values = acf(values, nlags=max_lag, fft=True)
+            pacf_values = pacf(values, nlags=max_lag, method="ywm")
         except (FloatingPointError, ValueError, ZeroDivisionError):
             continue
 
@@ -621,7 +654,7 @@ def _append_time_series_statistics(
             # 与 fg-data-profiling 的 TimeSeries summarizer 使用同一 FFT 检测逻辑。
             from data_profiling.model.pandas.describe_timeseries_pandas import seasonality_test
 
-            seasonality = seasonality_test(pd.Series(values.to_numpy()))
+            seasonality = seasonality_test(pd.Series(values))
             seasonality_presence = bool(seasonality.get("seasonality_presence", False))
             seasonalities = [
                 number
@@ -636,7 +669,7 @@ def _append_time_series_statistics(
         adf_p_value: float | None = None
         stationary: bool | None = None
         try:
-            adf_p_value = _optional_finite_float(adfuller(values.to_numpy(), autolag="AIC")[1])
+            adf_p_value = _optional_finite_float(adfuller(values, autolag="AIC")[1])
             stationary = adf_p_value is not None and adf_p_value < 0.05 and not seasonality_presence
         except (ValueError, FloatingPointError, ZeroDivisionError):
             pass
@@ -695,9 +728,7 @@ def build_profile_model_view(profile: Mapping[str, Any]) -> dict[str, Any]:
     negative_fields: list[dict[str, Any]] = []
     structured_detail_count = 0
     usable_time_series_fields = (
-        time_series_analysis.get("fields")
-        if isinstance(time_series_analysis, Mapping)
-        else {}
+        time_series_analysis.get("fields") if isinstance(time_series_analysis, Mapping) else {}
     )
 
     for raw_name, raw_variable in variables.items():
@@ -836,8 +867,7 @@ def build_profile_model_view(profile: Mapping[str, Any]) -> dict[str, Any]:
     del correlation_pairs[MAX_PROFILE_HIGHLIGHTS:]
 
     time_series_enabled = bool(
-        isinstance(time_series_analysis, Mapping)
-        and time_series_analysis.get("enabled") is True
+        isinstance(time_series_analysis, Mapping) and time_series_analysis.get("enabled") is True
     )
     time_series_reason = (
         time_series_analysis.get("reason")

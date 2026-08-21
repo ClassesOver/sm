@@ -65,4 +65,7 @@ DataShape 统计规约：
 7. `profileConcurrency` 限制单数据源 DataShape 查询并发数；多数据源运行时以所有源中的
    最小值作为 Workflow 总上限，避免 source/table/batch 多层并发相乘。
 8. `queryConcurrency` 限制审核 SQL 物化并发数；同一 source 使用自身上限，整批使用相关
-   source 中的最小值作为总上限。查询结果直接写入 staging，全部成功后才原子提交。
+   source 中的最小值作为总上限。StarRocks 结果按最多 10000 行分块交给 Polars 的 Rust CSV
+   writer，使用 UTF-8、CRLF、空字符串表示 NULL，并在每块写入后按实际 CSV 字节执行
+   `maxRows`/`maxBytes` 失败关闭校验；DatasetStore 不再持有完整 Python 行集合或额外 JSON
+   大小副本。物化结果写入 staging，全部成功后才原子提交。

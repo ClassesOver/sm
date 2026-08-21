@@ -14,7 +14,8 @@ from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..models import ReportingError
-from .models import CatalogColumn, CatalogTable, QueryLimits, QueryResult
+from .materialization import CsvMaterializer
+from .models import CatalogColumn, CatalogTable, MaterializedQueryResult, QueryLimits, QueryResult
 from .sql_validation import validate_starrocks_read_only_sql
 
 _SOURCE_FIELDS = frozenset(
@@ -164,6 +165,24 @@ class StarRocksDataSourceAdapter:
         )
         return await anyio.to_thread.run_sync(partial(self._query, normalized))
 
+    async def materialize(
+        self, sql: str, *, max_bytes: int | None = None
+    ) -> MaterializedQueryResult:
+        normalized = validate_starrocks_read_only_sql(
+            sql,
+            database=self.config.database,
+            allowed_tables=self.allowed_tables,
+        )
+        effective_max_bytes = min(
+            self.config.max_bytes,
+            self.config.max_bytes if max_bytes is None else max_bytes,
+        )
+        if effective_max_bytes <= 0:
+            raise ReportingError("query_result_too_large", "查询结果字节上限无效。")
+        return await anyio.to_thread.run_sync(
+            partial(self._materialize, normalized, max_bytes=effective_max_bytes)
+        )
+
     async def aclose(self) -> None:
         await anyio.to_thread.run_sync(self._engine.dispose)
 
@@ -223,6 +242,32 @@ class StarRocksDataSourceAdapter:
         if byte_count > self.config.max_bytes:
             raise ReportingError("query_result_too_large", "查询结果超过允许的数据量。")
         return QueryResult(columns=columns, rows=tuple(rows), byte_count=byte_count)
+
+    def _materialize(self, sql: str, *, max_bytes: int | None = None) -> MaterializedQueryResult:
+        try:
+            with self._engine.connect() as connection:
+                connection.execute(
+                    text(f"SET query_timeout = {self.config.statement_timeout_seconds}")
+                )
+                result = connection.execution_options(stream_results=True).execute(text(sql))
+                columns = tuple(str(name) for name in result.keys())
+                materializer = CsvMaterializer(
+                    columns,
+                    max_bytes=self.config.max_bytes if max_bytes is None else max_bytes,
+                )
+                while materializer.row_count <= self.config.max_rows:
+                    chunk = result.fetchmany(
+                        min(10_000, self.config.max_rows + 1 - materializer.row_count)
+                    )
+                    if not chunk:
+                        break
+                    rows = tuple(tuple(row) for row in chunk)
+                    if materializer.row_count + len(rows) > self.config.max_rows:
+                        raise ReportingError("query_result_too_large", "查询结果超过允许的行数。")
+                    materializer.append(rows)
+        except SQLAlchemyError as error:
+            raise ReportingError("source_query_failed", "StarRocks 查询执行失败。") from error
+        return materializer.finish()
 
 
 def _name(value: Any, source_id: str) -> str:

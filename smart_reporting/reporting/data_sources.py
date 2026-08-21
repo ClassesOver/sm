@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import csv
 import hashlib
-import io
 import secrets
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
@@ -172,9 +170,15 @@ class ReportDatasetStore:
                 try:
                     async with global_limiter:
                         async with source_limiters[query.source_id]:
-                            result = await adapter.query(sql)
-                            content = _csv_bytes(result.columns, result.rows)
-                            if len(content) > MAX_DATASET_FILE_BYTES:
+                            result = await adapter.materialize(
+                                sql,
+                                max_bytes=MAX_DATASET_FILE_BYTES,
+                            )
+                            content = result.content
+                            if result.size > min(
+                                MAX_DATASET_FILE_BYTES,
+                                adapter.config.limits.max_bytes,
+                            ):
                                 raise ReportingError(
                                     "query_result_too_large", "查询结果超过单文件限制。"
                                 )
@@ -200,7 +204,7 @@ class ReportDatasetStore:
                                 sql_hash=query.sql_hash,
                                 period_roles=query.period_roles,
                                 query_window_id=query.query_window_id,
-                                row_count=len(result.rows),
+                                row_count=result.row_count,
                                 size=len(content),
                                 sha256=digest,
                             )
@@ -335,24 +339,6 @@ def _first_batch_error(error: Exception) -> Exception:
     if failures:
         return min(failures, key=lambda item: item.index).error
     return error
-
-
-def _csv_bytes(columns: Sequence[str], rows: Sequence[Sequence[Any]]) -> bytes:
-    buffer = io.StringIO(newline="")
-    writer = csv.writer(buffer)
-    writer.writerow(_deduplicate_columns(columns))
-    writer.writerows(rows)
-    return buffer.getvalue().encode("utf-8")
-
-
-def _deduplicate_columns(columns: Sequence[str]) -> tuple[str, ...]:
-    seen: dict[str, int] = {}
-    result: list[str] = []
-    for value in columns:
-        name = str(value or "column")
-        seen[name] = seen.get(name, 0) + 1
-        result.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
-    return tuple(result)
 
 
 def _session_state(run_context: RunContext | None) -> MutableMapping[str, Any]:

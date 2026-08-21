@@ -9,7 +9,7 @@ import anyio
 import pytest
 from agno.run import RunContext
 
-from smart_reporting.reporting.data_source import QueryResult
+from smart_reporting.reporting.data_source import MaterializedQueryResult, QueryResult
 from smart_reporting.reporting.data_sources import ReportDatasetStore
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.query_pipeline import ApprovedQuery, normalized_sql_hash
@@ -101,12 +101,19 @@ class _FakeAdapter:
     def __init__(self, source_id: str) -> None:
         self.config = SimpleNamespace(
             id=source_id,
-            limits=SimpleNamespace(query_concurrency=3),
+            limits=SimpleNamespace(query_concurrency=3, max_bytes=256 * 1024 * 1024),
         )
 
     async def query(self, sql: str) -> QueryResult:
+        raise AssertionError(f"DatasetStore 不应通过行结果物化 CSV: {sql}")
+
+    async def materialize(
+        self, sql: str, *, max_bytes: int | None = None
+    ) -> MaterializedQueryResult:
         await anyio.sleep(0)
-        return QueryResult(columns=("sql",), rows=((sql,),), byte_count=len(sql))
+        content = f"sql\r\n{sql}\r\n".encode()
+        assert max_bytes == 200 * 1024 * 1024
+        return MaterializedQueryResult(content=content, row_count=1)
 
 
 def _approved_queries(count: int = 3) -> tuple[ApprovedQuery, ...]:
@@ -211,6 +218,24 @@ async def test_数据集真实身份冲突立即拒绝且不重试() -> None:
 
     assert captured.value.code == "report_dataset_commit_failed"
     assert len(service.hash_paths) == 1
+    assert service.fs.moves == []
+
+
+@pytest.mark.anyio
+async def test_数据集存储对适配器结果再次执行字节上限校验() -> None:
+    service = _FakeDatasetService()
+    adapter = _FakeAdapter("source-1")
+    adapter.config.limits.max_bytes = 1
+
+    with pytest.raises(ReportingError) as captured:
+        await ReportDatasetStore(service).materialize_batch(  # type: ignore[arg-type]
+            _approved_queries(1),
+            {"source-1": adapter},  # type: ignore[dict-item]
+            run_context=_context(),
+        )
+
+    assert captured.value.code == "query_result_too_large"
+    assert service.fs.completed_uploads == 0
     assert service.fs.moves == []
 
 
