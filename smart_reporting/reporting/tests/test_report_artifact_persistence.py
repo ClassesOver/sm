@@ -666,6 +666,8 @@ async def test_http_workflow_does_not_expose_workspace_paths_when_publication_is
         )
 
     assert raised.value.code == "report_publication_blocked"
+    assert "artifact_changed" in raised.value.message
+    assert "reports/report.pdf" not in raised.value.message
     runtime.issue_http_publication.assert_not_awaited()
     runtime.issue_workspace_publication.assert_not_awaited()
 

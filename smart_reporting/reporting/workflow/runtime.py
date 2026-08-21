@@ -1318,9 +1318,26 @@ class ReportWorkflowRuntime:
                     # AgentOS 的正式交付只承诺持久化后的公开下载 URL。门禁失败时
                     # sandbox 路径既不是 HTTP 下载地址，也可能随终态回收失效，
                     # 因此不得把它作为完成回执暴露给 facade 或前端。
+                    gate = content.get("publicationGate")
+                    raw_issues = gate.get("issues") if isinstance(gate, dict) else None
+                    issue_codes = tuple(
+                        dict.fromkeys(
+                            str(item.get("code"))
+                            for item in (raw_issues if isinstance(raw_issues, list) else ())
+                            if isinstance(item, dict)
+                            and isinstance(item.get("code"), str)
+                            and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", item["code"])
+                        )
+                    )[:10]
+                    diagnostic = ", ".join(issue_codes) or "unknown"
+                    logger.warning(
+                        "report_publication_blocked issue_codes=%s issue_count=%d",
+                        diagnostic,
+                        len(raw_issues) if isinstance(raw_issues, list) else 0,
+                    )
                     raise ReportingError(
                         "report_publication_blocked",
-                        "报告未通过正式发布门禁，未生成下载链接。",
+                        f"报告未通过正式发布门禁，未生成下载链接。问题代码：{diagnostic}。",
                     )
                 return StepOutput(
                     content={
