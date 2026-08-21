@@ -12,6 +12,13 @@ from .agno_function_arguments import install_agno_function_argument_decoder
 from .application import ApplicationContext, create_agentos_app
 from .database import check_database, create_agent_database
 from .execution_context import ExecutionContext, configure_execution_tracing
+from .http_request_limits import (
+    RequestBodyLimitError,
+    agentos_run_request_limit,
+    is_agentos_run_create,
+    read_limited_body,
+    validate_agentos_run_multipart,
+)
 from .logging_config import configure_file_logging
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
@@ -95,60 +102,47 @@ def _request_limit(path: str, method: str) -> int | None:
         return MAX_WORKSPACE_UPLOAD_REQUEST_BYTES
     if path.startswith("/workspace/") and method in {"POST", "PUT", "PATCH", "DELETE"}:
         return MAX_JSON_MUTATION_REQUEST_BYTES
-    return None
-
-
-async def _read_limited_body(request: Request, limit: int) -> bytes | None:
-    content_length = request.headers.get("content-length")
-    try:
-        if content_length is not None and int(content_length) > limit:
-            return None
-    except ValueError:
-        pass
-    chunks = []
-    size = 0
-    async for chunk in request.stream():
-        size += len(chunk)
-        if size > limit:
-            return None
-        chunks.append(chunk)
-    body = b"".join(chunks)
-    request._body = body
-    return body
+    return agentos_run_request_limit(path, method)
 
 
 async def require_workspace_capability(request: Request, call_next):
     path = request.url.path.rstrip("/") or "/"
     thread = _request_thread(request)
     capability = str(request.headers.get("X-Workspace-Capability", "")).strip()
-    if not requires_workspace_capability(
+    capability_required = requires_workspace_capability(
         path,
         has_thread=bool(thread),
         has_capability=bool(capability),
-    ):
-        return await call_next(request)
-    if not thread:
-        return JSONResponse({"error": "thread_header_required"}, status_code=400)
-    context = _application_context(request)
-    try:
-        request.state.capability = verify_capability(
-            capability,
-            context.settings.workspace_hmac_secret,
-            thread,
-        )
-    except CapabilityError as error:
-        return JSONResponse({"error": str(error)}, status_code=401)
+    )
+    if capability_required:
+        if not thread:
+            return JSONResponse({"error": "thread_header_required"}, status_code=400)
+        context = _application_context(request)
+        try:
+            request.state.capability = verify_capability(
+                capability,
+                context.settings.workspace_hmac_secret,
+                thread,
+            )
+        except CapabilityError as error:
+            return JSONResponse({"error": str(error)}, status_code=401)
     limit = _request_limit(path, request.method)
-    body = await _read_limited_body(request, limit) if limit else b""
+    body = await read_limited_body(request, limit) if limit else b""
     if body is None:
         return JSONResponse({"error": "request_too_large"}, status_code=413)
+    if body and is_agentos_run_create(path, request.method):
+        try:
+            validate_agentos_run_multipart(request.headers.get("content-type", ""), body)
+        except RequestBodyLimitError as error:
+            return JSONResponse({"error": error.code}, status_code=error.status_code)
     # AgentOS 原生 run 表单允许调用方提交 user_id/session_id。这里用已验签的
     # Odoo 身份覆盖它们，避免合法 capability 被用于访问其他用户或 thread。
-    apply_report_identity(
-        request,
-        user_id=str(request.state.capability.user),
-        thread_id=thread,
-    )
+    if capability_required:
+        apply_report_identity(
+            request,
+            user_id=str(request.state.capability.user),
+            thread_id=thread,
+        )
     return await call_next(request)
 
 
@@ -352,7 +346,7 @@ report_worker, report_runtime = create_report_runtime(
 )
 report_workflow_controller = ReportWorkflowController(
     report_runtime.workflow,
-    cancel_cleanup=report_runtime.cleanup_cancelled,
+    terminal_cleanup=report_runtime.cleanup_terminal,
 )
 report_agent = create_report_agent(report_worker, report_workflow_controller)
 report_workflow = report_runtime.workflow()

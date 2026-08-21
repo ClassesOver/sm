@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+import anyio
 from agno.db.base import AsyncBaseDb
 from sqlalchemy import (
     JSON,
@@ -23,6 +25,8 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
 from .state import (
@@ -77,12 +81,25 @@ class ReportingStateRepository:
             Column("created_at", DateTime(timezone=True), nullable=False),
             Column("updated_at", DateTime(timezone=True), nullable=False),
         )
+        self.command_receipts = Table(
+            "reporting_command_receipts",
+            self.metadata,
+            Column("report_run_id", String(256), primary_key=True),
+            Column("command_id", String(256), primary_key=True),
+            Column("fingerprint", String(64), nullable=False),
+            Column("created_at", DateTime(timezone=True), nullable=False),
+        )
         self._initialized = False
         shared_lock = getattr(db, "_agentos_reporting_state_initialize_lock", None)
         if shared_lock is None:
             shared_lock = asyncio.Lock()
             setattr(db, "_agentos_reporting_state_initialize_lock", shared_lock)
         self._initialize_lock = shared_lock
+        execution_locks = getattr(db, "_agentos_reporting_workflow_execution_locks", None)
+        if execution_locks is None:
+            execution_locks = {}
+            setattr(db, "_agentos_reporting_workflow_execution_locks", execution_locks)
+        self._workflow_execution_locks: dict[str, asyncio.Lock] = execution_locks
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -222,6 +239,18 @@ class ReportingStateRepository:
                 raise ReportingStateError(
                     "report_state_binding_conflict", "Reporting 状态绑定不一致。"
                 )
+            receipt = (
+                await connection.execute(
+                    select(self.command_receipts).where(
+                        self.command_receipts.c.report_run_id == report_run_id,
+                        self.command_receipts.c.command_id == command_value.command_id,
+                    )
+                )
+            ).first()
+            if receipt is not None:
+                self._assert_receipt_fingerprint(receipt._mapping["fingerprint"], command_value)
+                return ReportingReducerResult(state=current, idempotent=True)
+
             applied = current.payload.get("appliedCommands", {})
             if isinstance(applied, Mapping) and command_value.command_id in applied:
                 stored = applied[command_value.command_id]
@@ -232,6 +261,18 @@ class ReportingStateRepository:
                     raise ReportingStateError(
                         "report_command_replay_conflict", "幂等键已绑定其他 command。"
                     )
+                await self._insert_command_receipts(
+                    connection,
+                    [
+                        *self._receipt_values(report_run_id, applied),
+                        {
+                            "report_run_id": report_run_id,
+                            "command_id": command_value.command_id,
+                            "fingerprint": _command_fingerprint(command_value),
+                            "created_at": datetime.now(UTC),
+                        },
+                    ],
+                )
                 return ReportingReducerResult(state=current, idempotent=True)
             if current.state_version != expected_version:
                 raise ReportingStateConflict()
@@ -240,6 +281,8 @@ class ReportingStateRepository:
             result.state.payload.setdefault("appliedCommands", {}).setdefault(
                 command_value.command_id, {}
             )["fingerprint"] = _command_fingerprint(command_value)
+            needs_receipt_backfill = current.payload.get("commandReceiptsVersion") != 1
+            result.state.payload["commandReceiptsVersion"] = 1
             values = self._row_values(result.state)
             updated = await connection.execute(
                 update(self.states)
@@ -251,7 +294,108 @@ class ReportingStateRepository:
             )
             if updated.rowcount != 1:
                 raise ReportingStateConflict()
+            receipts = (
+                self._receipt_values(report_run_id, applied) if needs_receipt_backfill else []
+            )
+            receipts.append(
+                {
+                    "report_run_id": report_run_id,
+                    "command_id": command_value.command_id,
+                    "fingerprint": _command_fingerprint(command_value),
+                    "created_at": datetime.now(UTC),
+                }
+            )
+            await self._insert_command_receipts(connection, receipts)
             return result
+
+    @asynccontextmanager
+    async def workflow_execution_lock(self, external_run_id: str) -> AsyncIterator[None]:
+        """同一 Reporting run 只能由一个 CLI 进程推进。"""
+
+        engine = self.db.db_engine  # type: ignore[attr-defined]
+        if engine.dialect.name != "postgresql":
+            lock = self._workflow_execution_locks.setdefault(external_run_id, asyncio.Lock())
+            if lock.locked():
+                raise ReportingStateError(
+                    "report_workflow_run_conflict", "Reporting run 正由其他进程执行。"
+                )
+            await lock.acquire()
+            try:
+                yield
+            finally:
+                lock.release()
+            return
+
+        lock_key = f"reporting-workflow-execution:{external_run_id}"
+        async with engine.connect() as connection:
+            acquired = bool(
+                await connection.scalar(
+                    text("SELECT pg_try_advisory_lock(hashtextextended(:lock_key, 0))"),
+                    {"lock_key": lock_key},
+                )
+            )
+            await connection.commit()
+            if not acquired:
+                raise ReportingStateError(
+                    "report_workflow_run_conflict", "Reporting run 正由其他进程执行。"
+                )
+            try:
+                yield
+            finally:
+                # session advisory lock 必须在连接回池前显式释放；屏蔽调用方取消，
+                # 进程异常退出时 PostgreSQL 仍会随连接关闭自动回收该锁。
+                with anyio.CancelScope(shield=True):
+                    await connection.execute(
+                        text("SELECT pg_advisory_unlock(hashtextextended(:lock_key, 0))"),
+                        {"lock_key": lock_key},
+                    )
+                    await connection.commit()
+
+    @staticmethod
+    def _assert_receipt_fingerprint(stored: Any, command: ReportingCommand) -> None:
+        fingerprint = str(stored or "")
+        if fingerprint != _command_fingerprint(command):
+            raise ReportingStateError(
+                "report_command_replay_conflict", "幂等键已绑定其他 command。"
+            )
+
+    @staticmethod
+    def _receipt_values(report_run_id: str, applied: Mapping[str, Any]) -> list[dict[str, Any]]:
+        now = datetime.now(UTC)
+        values: list[dict[str, Any]] = []
+        for command_id, stored in applied.items():
+            if not isinstance(command_id, str) or not command_id:
+                continue
+            fingerprint = stored.get("fingerprint") if isinstance(stored, Mapping) else None
+            if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+                continue
+            values.append(
+                {
+                    "report_run_id": report_run_id,
+                    "command_id": command_id,
+                    "fingerprint": fingerprint,
+                    "created_at": now,
+                }
+            )
+        return values
+
+    async def _insert_command_receipts(self, connection: Any, values: list[dict[str, Any]]) -> None:
+        if not values:
+            return
+        index_elements = [
+            self.command_receipts.c.report_run_id,
+            self.command_receipts.c.command_id,
+        ]
+        statement: Any
+        if connection.dialect.name == "postgresql":
+            statement = postgresql_insert(self.command_receipts).values(values)
+            statement = statement.on_conflict_do_nothing(index_elements=index_elements)
+        elif connection.dialect.name == "sqlite":
+            statement = sqlite_insert(self.command_receipts).values(values)
+            statement = statement.on_conflict_do_nothing(index_elements=index_elements)
+        else:
+            statement = insert(self.command_receipts).values(values)
+        await connection.execute(statement)
 
     @staticmethod
     def _assert_binding(existing: ReportingRunState, requested: ReportingRunState) -> None:

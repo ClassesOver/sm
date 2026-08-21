@@ -416,6 +416,49 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
 
 
 @pytest.mark.anyio
+async def test_terminal_cleanup_destroys_reporting_sandbox() -> None:
+    workspace = SimpleNamespace(adestroy=AsyncMock(return_value=True))
+    repository = SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None))
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = workspace
+    runtime.task_runner = SimpleNamespace(repository=repository, cancel=AsyncMock())
+
+    await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
+
+    workspace.adestroy.assert_awaited_once_with("thread")
+
+
+@pytest.mark.anyio
+async def test_terminal_cleanup_fails_closed_when_sandbox_destroy_fails() -> None:
+    workspace = SimpleNamespace(adestroy=AsyncMock(side_effect=RuntimeError("delete failed")))
+    repository = SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None))
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = workspace
+    runtime.task_runner = SimpleNamespace(repository=repository, cancel=AsyncMock())
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
+
+    assert raised.value.code == "report_sandbox_cleanup_failed"
+
+
+@pytest.mark.anyio
+async def test_terminal_cleanup_destroys_sandbox_when_task_cleanup_fails() -> None:
+    workspace = SimpleNamespace(adestroy=AsyncMock(return_value=True))
+    repository = SimpleNamespace(
+        get_task_snapshot=AsyncMock(side_effect=RuntimeError("task cleanup failed"))
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = workspace
+    runtime.task_runner = SimpleNamespace(repository=repository, cancel=AsyncMock())
+
+    with pytest.raises(RuntimeError, match="task cleanup failed"):
+        await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
+
+    workspace.adestroy.assert_awaited_once_with("thread")
+
+
+@pytest.mark.anyio
 async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() -> None:
     events: list[str] = []
 

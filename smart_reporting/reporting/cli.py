@@ -8,6 +8,7 @@ import json
 import re
 import sys
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from time import monotonic
 from typing import Any
@@ -24,6 +25,7 @@ from .bootstrap import create_report_runtime
 from .contract import REPORT_WORKFLOW_SCOPE_STATE_KEY, parse_reporting_workflow_input
 from .models import ReportingError
 from .workflow.controller import REPORT_WORKFLOW_SCOPE_DEPENDENCY
+from .workflow.state import ReportingStateError
 
 _CLI_PROGRESS_TOOLS = frozenset(
     {
@@ -173,6 +175,31 @@ def resolve_requirement(
     raise ValueError("未知审核操作。")
 
 
+def _terminal_cleanup_scope(*, run_id: str, session_id: str, user_id: str) -> dict[str, str]:
+    # Agno Workflow dependency 使用公开 camelCase 协议；runtime 清理边界使用内部
+    # snake_case scope。两者不可混用，否则取消或失败终态会因取不到 thread_id 而泄漏 sandbox。
+    return {
+        "external_run_id": run_id,
+        "thread_id": session_id,
+        "user_id": user_id,
+    }
+
+
+@asynccontextmanager
+async def _workflow_execution_lock(runtime: Any, run_id: str):
+    repository = getattr(runtime, "state_repository", None)
+    lock = getattr(repository, "workflow_execution_lock", None)
+    if not callable(lock):
+        raise ReportingError(
+            "report_workflow_runtime_invalid", "Reporting runtime 缺少 workflow 执行锁。"
+        )
+    try:
+        async with lock(run_id):
+            yield
+    except ReportingStateError as error:
+        raise ReportingError(error.code, error.message) from error
+
+
 async def drive_workflow(
     workflow: Any,
     runtime: Any,
@@ -184,17 +211,49 @@ async def drive_workflow(
     read: Callable[[str], str] = input,
     write: Callable[[str], None] = print,
 ) -> dict[str, Any]:
+    async with _workflow_execution_lock(runtime, run_id):
+        return await _drive_workflow_unlocked(
+            workflow,
+            runtime,
+            report_input,
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            read=read,
+            write=write,
+        )
+
+
+async def _drive_workflow_unlocked(
+    workflow: Any,
+    runtime: Any,
+    report_input: dict[str, Any],
+    *,
+    run_id: str,
+    session_id: str,
+    user_id: str,
+    read: Callable[[str], str],
+    write: Callable[[str], None],
+) -> dict[str, Any]:
     scope = {"externalRunId": run_id, "threadId": session_id, "userId": user_id}
     dependencies = {REPORT_WORKFLOW_SCOPE_DEPENDENCY: scope}
-    output = await workflow.arun(
-        report_input,
-        run_id=run_id,
-        session_id=session_id,
-        user_id=user_id,
-        session_state={REPORT_WORKFLOW_SCOPE_STATE_KEY: scope},
-        dependencies=dependencies,
-        stream=False,
-    )
+    try:
+        output = await workflow.arun(
+            report_input,
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            session_state={REPORT_WORKFLOW_SCOPE_STATE_KEY: scope},
+            dependencies=dependencies,
+            stream=False,
+        )
+    except BaseException:
+        await runtime.cleanup_terminal(
+            _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
+            session_id,
+            run_id,
+        )
+        raise
 
     output = await _continue_workflow_reviews(
         workflow,
@@ -207,8 +266,12 @@ async def drive_workflow(
 
     status = _status(output)
     content = getattr(output, "content", None)
-    if status == "cancelled":
-        await runtime.cleanup_cancelled(scope, session_id, run_id)
+    if status in {"cancelled", "failed"}:
+        await runtime.cleanup_terminal(
+            _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
+            session_id,
+            run_id,
+        )
     return {
         "status": status,
         "runId": run_id,
@@ -278,6 +341,29 @@ async def resume_workflow(
 ) -> dict[str, Any]:
     """显式恢复同一 Agno run，不创建新 run。"""
 
+    async with _workflow_execution_lock(runtime, run_id):
+        return await _resume_workflow_unlocked(
+            workflow,
+            runtime,
+            run_id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            read=read,
+            write=write,
+        )
+
+
+async def _resume_workflow_unlocked(
+    workflow: Any,
+    runtime: Any,
+    *,
+    run_id: str,
+    session_id: str,
+    user_id: str,
+    read: Callable[[str], str],
+    write: Callable[[str], None],
+) -> dict[str, Any]:
+
     output = await workflow.aget_run_output(
         run_id=run_id,
         session_id=session_id,
@@ -313,8 +399,12 @@ async def resume_workflow(
         retry_delivery_error=True,
     )
     status = _status(output)
-    if status == "cancelled":
-        await runtime.cleanup_cancelled(scope, session_id, run_id)
+    if status in {"cancelled", "failed"}:
+        await runtime.cleanup_terminal(
+            _terminal_cleanup_scope(run_id=run_id, session_id=session_id, user_id=user_id),
+            session_id,
+            run_id,
+        )
     return {
         "status": status,
         "runId": run_id,

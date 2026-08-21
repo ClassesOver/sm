@@ -1485,17 +1485,28 @@ class ReportWorkflowRuntime:
             }
         )
 
-    async def cleanup_cancelled(
+    async def cleanup_terminal(
         self, scope: dict[str, str], _workflow_session_id: str, workflow_run_id: str
     ) -> None:
-        task_id = coding_task_key(workflow_run_id)
-        task = await self.task_runner.repository.get_task_snapshot(task_id)
-        if task is not None and task.state not in {
-            TaskState.COMPLETED,
-            TaskState.FAILED,
-            TaskState.CANCELLED,
-        }:
-            await self.task_runner.cancel(task.scope)
+        try:
+            task_id = coding_task_key(workflow_run_id)
+            task = await self.task_runner.repository.get_task_snapshot(task_id)
+            if task is not None and task.state not in {
+                TaskState.COMPLETED,
+                TaskState.FAILED,
+                TaskState.CANCELLED,
+            }:
+                await self.task_runner.cancel(task.scope)
+        finally:
+            try:
+                await complete_cleanup(self.workspace_service.adestroy(scope["thread_id"]))
+            except Exception as error:
+                # 终态后 sandbox 不再是可恢复事实来源。即使子任务清理失败也必须
+                # 尝试删除；删除失败则向上暴露，禁止伪装成已完整回收。
+                raise ReportingError(
+                    "report_sandbox_cleanup_failed",
+                    "报表工作流已结束，但运行环境删除失败，请重试清理。",
+                ) from error
 
     async def issue_http_publication(
         self,

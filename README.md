@@ -40,4 +40,8 @@ uv pip install --python .venv-agent/bin/python -r smart_reporting/requirements.t
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 ```
 
+AgentOS 的 agent、team 和 workflow 新建 run 请求总大小上限为 32 MiB；multipart
+请求最多包含 8 个文件，单文件上限为 24 MiB。run continuation 请求上限为 2 MiB。
+超过边界的请求会在模型调用或文件读取前被拒绝。
+
 Daytona 的端口、镜像和运维说明见 [docker/README.md](docker/README.md)。

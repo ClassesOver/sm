@@ -84,7 +84,7 @@ def _app() -> FastAPI:
         )
         return await call_next(request)
 
-    @application.post("/agents/report-agent/runs")
+    @application.post("/agents/smart-reporting/runs")
     async def report_run(request: Request):
         return {
             "requestUserId": getattr(request.state, "user_id", None),
@@ -95,7 +95,7 @@ def _app() -> FastAPI:
     async def workspace_files():
         return {"ok": True}
 
-    @application.get("/agents/report-agent/runs/run-1/resume")
+    @application.get("/agents/smart-reporting/runs/run-1/resume")
     async def resume_report_run(request: Request):
         async def body():
             yield f"{request.state.user_id}:{request.state.session_id}"
@@ -114,7 +114,7 @@ async def test_reporting_run_without_capability_uses_native_agentos_identity() -
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_app()), base_url="http://test"
     ) as client:
-        response = await client.post("/agents/report-agent/runs")
+        response = await client.post("/agents/smart-reporting/runs")
 
     assert response.status_code == 200
     assert response.json() == {"requestUserId": None, "requestSessionId": None}
@@ -171,7 +171,7 @@ async def test_reporting_run_rejects_partial_workspace_identity(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_app()), base_url="http://test"
     ) as client:
-        response = await client.post("/agents/report-agent/runs", headers=headers)
+        response = await client.post("/agents/smart-reporting/runs", headers=headers)
 
     assert response.status_code == status_code
     assert response.json() == {"error": error}
@@ -183,7 +183,7 @@ async def test_reporting_run_binds_all_odoo_identity_fields() -> None:
         transport=httpx.ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/agents/report-agent/runs",
+            "/agents/smart-reporting/runs",
             headers={
                 "X-Workspace-Thread": "thread-1",
                 "X-Workspace-Capability": _capability(),
@@ -203,7 +203,7 @@ async def test_reporting_stream_keeps_request_identity_until_body_finishes() -> 
         transport=httpx.ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.get(
-            "/agents/report-agent/runs/run-1/resume",
+            "/agents/smart-reporting/runs/run-1/resume",
             headers={
                 "X-Workspace-Thread": "thread-1",
                 "X-Workspace-Capability": _capability(),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,6 +18,7 @@ from smart_reporting.reporting import cli as reporting_cli
 from smart_reporting.reporting.cli import (
     _cli_settings,
     _CliProgressSink,
+    drive_workflow,
     parse_report_input,
     resume_workflow,
 )
@@ -37,6 +40,16 @@ class ErrorRequirement:
 
     def retry(self) -> None:
         self.decision = "retry"
+
+
+class UncontendedStateRepository:
+    @asynccontextmanager
+    async def workflow_execution_lock(self, _run_id: str):
+        yield
+
+
+def runtime(**values: object) -> SimpleNamespace:
+    return SimpleNamespace(state_repository=UncontendedStateRepository(), **values)
 
 
 def test_report_input_parsing_is_shared_with_agentos() -> None:
@@ -107,7 +120,7 @@ async def test_resume_workflow_retries_only_failed_delivery_step() -> None:
 
     result = await resume_workflow(
         workflow,
-        runtime=SimpleNamespace(),
+        runtime=runtime(),
         run_id="run-1",
         session_id="session-1",
         user_id="cli",
@@ -142,7 +155,7 @@ async def test_resume_workflow_rejects_non_delivery_error() -> None:
     with pytest.raises(ReportingError) as raised:
         await resume_workflow(
             workflow,
-            runtime=SimpleNamespace(),
+            runtime=runtime(),
             run_id="run-1",
             session_id="session-1",
             user_id="cli",
@@ -169,7 +182,7 @@ async def test_resume_workflow_continues_interrupted_running_checkpoint() -> Non
 
     result = await resume_workflow(
         workflow,
-        runtime=SimpleNamespace(),
+        runtime=runtime(),
         run_id="run-1",
         session_id="session-1",
         user_id="cli",
@@ -182,6 +195,188 @@ async def test_resume_workflow_continues_interrupted_running_checkpoint() -> Non
 
 
 @pytest.mark.anyio
+async def test_resume_workflow_cleans_up_failed_terminal_sandbox() -> None:
+    running = SimpleNamespace(
+        status="running",
+        run_id="run-1",
+        session_id="session-1",
+        content=None,
+        step_requirements=[],
+        error_requirements=[],
+    )
+    workflow = SimpleNamespace(
+        aget_run_output=AsyncMock(return_value=running),
+        acontinue_run=AsyncMock(return_value=SimpleNamespace(status="failed", content=None)),
+    )
+    cleanup = AsyncMock()
+
+    result = await resume_workflow(
+        workflow,
+        runtime=runtime(cleanup_terminal=cleanup),
+        run_id="run-1",
+        session_id="session-1",
+        user_id="cli",
+    )
+
+    assert result["status"] == "failed"
+    cleanup.assert_awaited_once_with(
+        {
+            "external_run_id": "run-1",
+            "thread_id": "session-1",
+            "user_id": "cli",
+        },
+        "session-1",
+        "run-1",
+    )
+
+
+@pytest.mark.anyio
+async def test_resume_workflow_rejects_concurrent_resume_of_same_run() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class StateRepository:
+        def __init__(self) -> None:
+            self.locked = False
+
+        @asynccontextmanager
+        async def workflow_execution_lock(self, _run_id: str):
+            if self.locked:
+                raise ReportingError("report_workflow_run_conflict", "run 正在执行。")
+            self.locked = True
+            try:
+                yield
+            finally:
+                self.locked = False
+
+    async def get_run_output(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            status="running",
+            run_id="run-1",
+            session_id="session-1",
+            content=None,
+            step_requirements=[],
+            error_requirements=[],
+        )
+
+    async def continue_run(**_kwargs: object) -> SimpleNamespace:
+        entered.set()
+        await release.wait()
+        return SimpleNamespace(status="completed", content={"path": "report.pdf"})
+
+    workflow = SimpleNamespace(
+        aget_run_output=get_run_output,
+        acontinue_run=AsyncMock(side_effect=continue_run),
+    )
+    runtime = SimpleNamespace(state_repository=StateRepository())
+    arguments = {
+        "workflow": workflow,
+        "runtime": runtime,
+        "run_id": "run-1",
+        "session_id": "session-1",
+        "user_id": "cli",
+    }
+    first = asyncio.create_task(resume_workflow(**arguments))
+    await entered.wait()
+    try:
+        with pytest.raises(ReportingError) as conflict:
+            await resume_workflow(**arguments)
+    finally:
+        release.set()
+        await first
+
+    assert conflict.value.code == "report_workflow_run_conflict"
+    assert workflow.acontinue_run.await_count == 1
+
+
+@pytest.mark.anyio
+async def test_drive_workflow_holds_execution_lock_during_initial_run() -> None:
+    events: list[str] = []
+
+    class StateRepository:
+        @asynccontextmanager
+        async def workflow_execution_lock(self, run_id: str):
+            events.append(f"lock:{run_id}")
+            try:
+                yield
+            finally:
+                events.append(f"unlock:{run_id}")
+
+    async def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        events.append("run")
+        return SimpleNamespace(status="completed", content={"path": "report.pdf"})
+
+    result = await drive_workflow(
+        SimpleNamespace(arun=run),
+        SimpleNamespace(state_repository=StateRepository()),
+        {"version": "1", "prompt": "生成运营报告"},
+        run_id="run-1",
+        session_id="session-1",
+        user_id="cli",
+    )
+
+    assert result["status"] == "completed"
+    assert events == ["lock:run-1", "run", "unlock:run-1"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("terminal_status", ["cancelled", "failed"])
+async def test_drive_workflow_cleans_up_terminal_sandbox(terminal_status: str) -> None:
+    cleanup = AsyncMock()
+
+    async def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(status=terminal_status, content=None)
+
+    result = await drive_workflow(
+        SimpleNamespace(arun=run),
+        runtime(cleanup_terminal=cleanup),
+        {"version": "1", "prompt": "生成运营报告"},
+        run_id="run-1",
+        session_id="session-1",
+        user_id="cli",
+    )
+
+    assert result["status"] == terminal_status
+    cleanup.assert_awaited_once_with(
+        {
+            "external_run_id": "run-1",
+            "thread_id": "session-1",
+            "user_id": "cli",
+        },
+        "session-1",
+        "run-1",
+    )
+
+
+@pytest.mark.anyio
+async def test_drive_workflow_cleans_up_sandbox_when_initial_run_raises() -> None:
+    cleanup = AsyncMock()
+
+    async def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        raise RuntimeError("workflow failed")
+
+    with pytest.raises(RuntimeError, match="workflow failed"):
+        await drive_workflow(
+            SimpleNamespace(arun=run),
+            runtime(cleanup_terminal=cleanup),
+            {"version": "1", "prompt": "生成运营报告"},
+            run_id="run-1",
+            session_id="session-1",
+            user_id="cli",
+        )
+
+    cleanup.assert_awaited_once_with(
+        {
+            "external_run_id": "run-1",
+            "thread_id": "session-1",
+            "user_id": "cli",
+        },
+        "session-1",
+        "run-1",
+    )
+
+
+@pytest.mark.anyio
 async def test_resume_workflow_rejects_cancelled_run() -> None:
     workflow = SimpleNamespace(
         aget_run_output=AsyncMock(return_value=SimpleNamespace(status="cancelled"))
@@ -190,7 +385,7 @@ async def test_resume_workflow_rejects_cancelled_run() -> None:
     with pytest.raises(ReportingError) as raised:
         await resume_workflow(
             workflow,
-            runtime=SimpleNamespace(),
+            runtime=runtime(),
             run_id="run-1",
             session_id="session-1",
             user_id="cli",

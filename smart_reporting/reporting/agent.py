@@ -1225,15 +1225,13 @@ def _without_facade_tool_preamble(response: Any) -> Any:
     return response
 
 
-def _without_streamed_facade_tool_preamble(responses: list[Any]) -> list[Any]:
-    if any(
-        isinstance((tool_calls := getattr(response, "tool_calls", None)), list)
-        and any(_report_model_tool_name(tool) in _REPORT_FACADE_TOOL_NAMES for tool in tool_calls)
-        for response in responses
+def _without_streamed_facade_tool_preamble(response: Any) -> Any:
+    tool_calls = getattr(response, "tool_calls", None)
+    if isinstance(tool_calls, list) and any(
+        _report_model_tool_name(tool) in _REPORT_FACADE_TOOL_NAMES for tool in tool_calls
     ):
-        for response in responses:
-            response.content = None
-    return responses
+        response.content = None
+    return response
 
 
 def _tool_response(
@@ -1906,8 +1904,8 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
         if forced is not None:
             yield forced
             return
-        responses = list(super().invoke_stream(messages, *args, **kwargs))
-        yield from _without_streamed_facade_tool_preamble(responses)
+        for response in super().invoke_stream(messages, *args, **kwargs):
+            yield _without_streamed_facade_tool_preamble(response)
 
     async def ainvoke_stream(
         self, messages: list[Message], *args: Any, **kwargs: Any
@@ -1916,11 +1914,8 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
         if forced is not None:
             yield forced
             return
-        responses = [
-            response async for response in super().ainvoke_stream(messages, *args, **kwargs)
-        ]
-        for response in _without_streamed_facade_tool_preamble(responses):
-            yield response
+        async for response in super().ainvoke_stream(messages, *args, **kwargs):
+            yield _without_streamed_facade_tool_preamble(response)
 
 
 def _report_facade_model(model: ProjectedOpenAIChat) -> ReportFacadeOpenAIChat:
@@ -2118,7 +2113,7 @@ def create_report_agent(
 
     facade = report_worker.deep_copy(
         update={
-            "id": "report-agent",
+            "id": "smart-reporting",
             "name": "智能报表",
             "role": "通过受控 Workflow 编排来源确认、分析、验收和发布审核。",
             "model": facade_model,

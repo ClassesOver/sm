@@ -18,6 +18,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 REPORTING_STATE_SCHEMA_VERSION = 3
+MAX_INLINE_APPLIED_COMMANDS = 1000
 
 
 class ReportingPhase(StrEnum):
@@ -144,6 +145,7 @@ class ReportingRunState(BaseModel):
             "writeIntents": {},
             "trace": [],
             "appliedCommands": {},
+            "commandReceiptsVersion": 1,
         }
         if payload:
             initial_payload.update(dict(payload))
@@ -582,8 +584,8 @@ def apply(
         ).hexdigest(),
     }
     # 只保留最近的幂等键，防止无限增长；状态本身仍以 state_version 作为顺序事实。
-    if len(applied) > 1000:
-        for key in list(applied)[:-1000]:
+    if len(applied) > MAX_INLINE_APPLIED_COMMANDS:
+        for key in list(applied)[:-MAX_INLINE_APPLIED_COMMANDS]:
             applied.pop(key, None)
     new_state = state.model_copy(
         update={

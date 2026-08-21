@@ -54,7 +54,7 @@ class ReviewableWorkflow(Protocol):
 
 
 WorkflowFactory = Callable[[], ReviewableWorkflow]
-CancelCleanup = Callable[[dict[str, str], str, str], Awaitable[None]]
+TerminalCleanup = Callable[[dict[str, str], str, str], Awaitable[None]]
 
 
 class ReportWorkflowController:
@@ -64,10 +64,10 @@ class ReportWorkflowController:
         self,
         workflow_factory: WorkflowFactory,
         *,
-        cancel_cleanup: CancelCleanup | None = None,
+        terminal_cleanup: TerminalCleanup | None = None,
     ):
         self._workflow_factory = workflow_factory
-        self._cancel_cleanup = cancel_cleanup
+        self._terminal_cleanup = terminal_cleanup
         self._active_external: set[tuple[str, str, str]] = set()
 
     async def start(
@@ -101,7 +101,7 @@ class ReportWorkflowController:
             state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = current.public_dict()
             if current.status in _ACTIVE_STATUSES:
                 return self._result(current, output)
-            self._active_external.discard(self._external_scope_key(existing_scope))
+            await self._finalize_control(current, existing_scope)
 
         workflow = self._workflow()
         workflow_session_id, workflow_run_id = self._workflow_ids(scope)
@@ -126,10 +126,12 @@ class ReportWorkflowController:
             )
             control = self._control_from_output(output, scope, workflow_session_id, workflow_run_id)
         except BaseException:
-            self._active_external.discard(scope_key)
+            try:
+                await self._cleanup_terminal(scope, workflow_session_id, workflow_run_id)
+            finally:
+                self._active_external.discard(scope_key)
             raise
-        if control.status not in _ACTIVE_STATUSES:
-            self._active_external.discard(scope_key)
+        await self._finalize_control(control, scope)
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
         return self._result(control, output)
 
@@ -176,8 +178,7 @@ class ReportWorkflowController:
         )
         if updated.status in _ACTIVE_STATUSES:
             raise ReportingError("report_workflow_cancel_failed", "报表工作流未进入取消终态。")
-        await self._cleanup_cancelled(updated, scope)
-        self._active_external.discard(self._external_scope_key(scope))
+        await self._finalize_control(updated, scope)
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = updated.public_dict()
         return self._result(updated, output)
 
@@ -219,9 +220,7 @@ class ReportWorkflowController:
             control.workflow_session_id,
             control.workflow_run_id,
         )
-        await self._cleanup_cancelled(updated, scope)
-        if updated.status not in _ACTIVE_STATUSES:
-            self._active_external.discard(self._external_scope_key(scope))
+        await self._finalize_control(updated, scope)
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = updated.public_dict()
         return self._result(updated, output)
 
@@ -236,11 +235,26 @@ class ReportWorkflowController:
             raise ReportingError("report_workflow_scope_mismatch", "报表工作流不属于当前用户。")
         return output
 
-    async def _cleanup_cancelled(
+    async def _finalize_control(
         self, control: ReportWorkflowControl, scope: dict[str, str]
     ) -> None:
-        if control.status == "cancelled" and self._cancel_cleanup is not None:
-            await self._cancel_cleanup(scope, control.workflow_session_id, control.workflow_run_id)
+        if control.status in _ACTIVE_STATUSES:
+            return
+        # completed 的发布步骤已经在产物持久化后删除 sandbox；这里只覆盖没有发布
+        # 收尾机会的取消和失败终态，避免成功路径二次清理反而遮蔽下载回执。
+        try:
+            if control.status in {"cancelled", "failed"}:
+                await self._cleanup_terminal(
+                    scope, control.workflow_session_id, control.workflow_run_id
+                )
+        finally:
+            self._active_external.discard(self._external_scope_key(scope))
+
+    async def _cleanup_terminal(
+        self, scope: dict[str, str], workflow_session_id: str, workflow_run_id: str
+    ) -> None:
+        if self._terminal_cleanup is not None:
+            await self._terminal_cleanup(scope, workflow_session_id, workflow_run_id)
 
     def _workflow(self) -> ReviewableWorkflow:
         workflow = self._workflow_factory()

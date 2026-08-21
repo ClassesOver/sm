@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import update
 
 from smart_reporting.database import create_agent_database
+from smart_reporting.reporting.workflow import state as reporting_state_module
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 from smart_reporting.reporting.workflow.state import (
     ReportingPhase,
@@ -461,6 +462,70 @@ async def test_repository_rejects_command_id_rebound_to_other_payload(state_repo
             expected_version=0,
         )
     assert conflict.value.code == "report_command_replay_conflict"
+
+
+@pytest.mark.anyio
+async def test_repository_keeps_idempotency_after_inline_command_cache_eviction(
+    state_repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(reporting_state_module, "MAX_INLINE_APPLIED_COMMANDS", 2)
+    state = await state_repository.create(initial_state())
+    first = {"name": "trace", "commandId": "trace-0", "payload": {"index": 0}}
+    for index in range(3):
+        command = {"name": "trace", "commandId": f"trace-{index}", "payload": {"index": index}}
+        state = (
+            await state_repository.apply(
+                state.report_run_id,
+                command,
+                expected_version=state.state_version,
+            )
+        ).state
+
+    assert "trace-0" not in state.payload["appliedCommands"]
+    replay = await state_repository.apply(
+        state.report_run_id,
+        first,
+        expected_version=0,
+    )
+
+    assert replay.idempotent is True
+    assert replay.state.state_version == state.state_version
+    assert replay.state.payload["trace"] == state.payload["trace"]
+
+
+@pytest.mark.anyio
+async def test_repository_rejects_evicted_command_id_rebound_to_other_payload(
+    state_repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(reporting_state_module, "MAX_INLINE_APPLIED_COMMANDS", 1)
+    state = await state_repository.create(initial_state())
+    for index in range(2):
+        state = (
+            await state_repository.apply(
+                state.report_run_id,
+                {"name": "trace", "commandId": f"trace-{index}", "payload": {"index": index}},
+                expected_version=state.state_version,
+            )
+        ).state
+
+    with pytest.raises(ReportingStateError) as conflict:
+        await state_repository.apply(
+            state.report_run_id,
+            {"name": "trace", "commandId": "trace-0", "payload": {"index": 99}},
+            expected_version=0,
+        )
+
+    assert conflict.value.code == "report_command_replay_conflict"
+
+
+@pytest.mark.anyio
+async def test_repository_rejects_concurrent_workflow_execution_lock(state_repository) -> None:
+    async with state_repository.workflow_execution_lock("external-run-1"):
+        with pytest.raises(ReportingStateError) as conflict:
+            async with state_repository.workflow_execution_lock("external-run-1"):
+                pass
+
+    assert conflict.value.code == "report_workflow_run_conflict"
 
 
 @pytest.mark.anyio

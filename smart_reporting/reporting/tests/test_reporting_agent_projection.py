@@ -765,8 +765,44 @@ async def test_report_facade_removes_streamed_tool_call_preamble(monkeypatch) ->
         async for response in model.ainvoke_stream([Message(role="user", content="生成运营报告")])
     ]
 
-    assert [response.content for response in responses] == [None, None]
+    assert [response.content for response in responses] == ["I'll start the report workflow.", None]
     assert responses[1].tool_calls
+
+
+@pytest.mark.anyio
+async def test_report_facade_streams_first_chunk_before_upstream_completion(monkeypatch) -> None:
+    release = asyncio.Event()
+
+    async def model_stream(*_args, **_kwargs):
+        yield ModelResponse(content="首个响应块")
+        await release.wait()
+
+    monkeypatch.setattr(report_agent_module.ReportingOpenAIChat, "ainvoke_stream", model_stream)
+    model = ReportFacadeOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+    stream = model.ainvoke_stream([Message(role="user", content="普通聊天")])
+
+    try:
+        first = await asyncio.wait_for(anext(stream), timeout=0.1)
+    finally:
+        release.set()
+        await stream.aclose()
+
+    assert first.content == "首个响应块"
+
+
+def test_report_facade_sync_stream_does_not_consume_upstream_before_first_chunk(
+    monkeypatch,
+) -> None:
+    def model_stream(*_args, **_kwargs):
+        yield ModelResponse(content="首个同步响应块")
+        raise AssertionError("首块返回前不应继续消费上游")
+
+    monkeypatch.setattr(report_agent_module.ReportingOpenAIChat, "invoke_stream", model_stream)
+    model = ReportFacadeOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+
+    first = next(model.invoke_stream([Message(role="user", content="普通聊天")]))
+
+    assert first.content == "首个同步响应块"
 
 
 @pytest.mark.anyio
@@ -1411,6 +1447,7 @@ def test_report_agent_exposes_verified_download_links_or_workspace_paths() -> No
     facade = report_agent_module.create_report_agent(worker, cast(Any, SimpleNamespace()))
     instructions = "\n".join(cast(list[str], facade.instructions))
 
+    assert facade.id == "smart-reporting"
     assert facade.telemetry is False
     assert "`pdf.downloadUrl` 和 `word.downloadUrl`" in instructions
     assert "PDF 使用 `path`，Word 使用 `word.path`" in instructions
