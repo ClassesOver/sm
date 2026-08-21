@@ -8,7 +8,7 @@ from agno.agent import Agent
 from agno.db.base import AsyncBaseDb, BaseDb
 
 from .agno_function_arguments import install_agno_function_argument_decoder
-from .database import create_agent_database
+from .database import AgentDatabase, create_agent_database
 from .observability import configure_tracing, flush_tracing
 from .settings import AgentSettings
 from .workspace import WorkspaceService
@@ -22,6 +22,22 @@ class ExecutionContext:
     trace_database: BaseDb | None = None
 
 
+def configure_execution_tracing(
+    database: AgentDatabase,
+    settings: AgentSettings,
+    *,
+    tracing_configurer: Any = configure_tracing,
+) -> None:
+    tracing_configurer(
+        database.sync_db,
+        enabled=settings.tracing_enabled,
+        batch_processing=True,
+        phoenix_endpoint=settings.tracing_phoenix_endpoint,
+        phoenix_api_key=settings.tracing_phoenix_api_key,
+        phoenix_project_name=settings.tracing_phoenix_project_name,
+    )
+
+
 def create_execution_context(
     settings: AgentSettings | None = None,
     *,
@@ -32,13 +48,10 @@ def create_execution_context(
     install_agno_function_argument_decoder()
     current_settings = settings or AgentSettings.from_environment()
     database = database_factory(current_settings.database_url)
-    tracing_configurer(
-        database.sync_db,
-        enabled=current_settings.tracing_enabled,
-        batch_processing=True,
-        phoenix_endpoint=current_settings.tracing_phoenix_endpoint,
-        phoenix_api_key=current_settings.tracing_phoenix_api_key,
-        phoenix_project_name=current_settings.tracing_phoenix_project_name,
+    configure_execution_tracing(
+        database,
+        current_settings,
+        tracing_configurer=tracing_configurer,
     )
     workspace_service = workspace_factory(
         secret=current_settings.workspace_hmac_secret,

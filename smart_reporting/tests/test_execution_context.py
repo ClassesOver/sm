@@ -2,7 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from smart_reporting.execution_context import ExecutionContext, close_execution_resources
+from smart_reporting.execution_context import (
+    ExecutionContext,
+    close_execution_resources,
+    configure_execution_tracing,
+)
 from smart_reporting.settings import AgentSettings
 
 
@@ -12,6 +16,40 @@ class _Client:
 
     async def aclose(self):
         self.closed += 1
+
+
+def test_configure_execution_tracing使用同步数据库和批处理():
+    settings = AgentSettings.from_environment(
+        {
+            "AGENT_TRACING_ENABLED": "true",
+            "AGENT_TRACING_PHOENIX_ENDPOINT": "https://phoenix.example",
+            "AGENT_TRACING_PHOENIX_API_KEY": "secret",
+            "AGENT_TRACING_PHOENIX_PROJECT": "hrp",
+        },
+        load_env_file=False,
+    )
+    sync_db = object()
+    database = SimpleNamespace(async_db=object(), sync_db=sync_db)
+    calls = []
+
+    configure_execution_tracing(
+        database,
+        settings,
+        tracing_configurer=lambda db, **values: calls.append((db, values)),
+    )
+
+    assert calls == [
+        (
+            sync_db,
+            {
+                "enabled": True,
+                "batch_processing": True,
+                "phoenix_endpoint": "https://phoenix.example/v1/traces",
+                "phoenix_api_key": "secret",
+                "phoenix_project_name": "hrp",
+            },
+        )
+    ]
 
 
 @pytest.mark.anyio

@@ -11,9 +11,8 @@ from starlette.concurrency import run_in_threadpool
 from .agno_function_arguments import install_agno_function_argument_decoder
 from .application import ApplicationContext, create_agentos_app
 from .database import check_database, create_agent_database
-from .execution_context import ExecutionContext
+from .execution_context import ExecutionContext, configure_execution_tracing
 from .logging_config import configure_file_logging
-from .observability import configure_tracing
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
 from .reporting.delivery.publishing import (
@@ -65,13 +64,7 @@ configure_file_logging(
 )
 workspace_secret = settings.workspace_hmac_secret
 agent_database = create_agent_database(settings.database_url)
-configure_tracing(
-    agent_database.async_db,
-    enabled=settings.tracing_enabled,
-    phoenix_endpoint=settings.tracing_phoenix_endpoint,
-    phoenix_api_key=settings.tracing_phoenix_api_key,
-    phoenix_project_name=settings.tracing_phoenix_project_name,
-)
+configure_execution_tracing(agent_database, settings)
 workspace_service = WorkspaceService(
     secret=workspace_secret,
     database=agent_database,
