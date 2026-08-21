@@ -1045,6 +1045,8 @@ class ReportWorkflowRuntime:
         analysis_concurrency: int = 3,
         section_concurrency: int = 2,
     ):
+        if (download_grants is None) != (artifact_persistence is None):
+            raise ValueError("下载授权和产物持久化服务必须同时配置")
         self.db = db
         self.report_worker = report_worker
         self.task_runner = task_runner
@@ -1324,21 +1326,19 @@ class ReportWorkflowRuntime:
                     }
                 )
             scope = self._scope(run_context)
-            publication = (
-                self.issue_http_publication
-                if self.download_grants is not None and self.artifact_persistence is not None
-                else self.issue_workspace_publication
-            )
-            published = await publication(
-                {
-                    "external_run_id": scope["externalRunId"],
-                    "thread_id": scope["threadId"],
-                    "user_id": scope["userId"],
-                },
-                run_context.session_id,
-                run_context.run_id,
-                content,
-            )
+            if self.download_grants is not None:
+                published = await self.issue_http_publication(
+                    thread_id=scope["threadId"],
+                    user_id=scope["userId"],
+                    workflow_session_id=run_context.session_id,
+                    workflow_run_id=run_context.run_id,
+                    output=content,
+                )
+            else:
+                published = await self.issue_workspace_publication(
+                    thread_id=scope["threadId"],
+                    output=content,
+                )
             return StepOutput(content=published)
 
         return create_reporting_workflow(
@@ -1492,27 +1492,29 @@ class ReportWorkflowRuntime:
 
     async def issue_http_publication(
         self,
-        scope: dict[str, str],
+        *,
+        thread_id: str,
+        user_id: str,
         workflow_session_id: str,
         workflow_run_id: str,
         output: Any,
     ) -> dict[str, Any]:
-        if self.download_grants is None:
-            raise ReportingError("report_publication_unavailable", "报表下载授权服务未配置。")
-        if self.artifact_persistence is None:
-            raise ReportingError("report_publication_unavailable", "报表产物存储服务未配置。")
+        download_grants = self.download_grants
+        artifact_persistence = self.artifact_persistence
+        if download_grants is None or artifact_persistence is None:
+            raise RuntimeError("HTTP 报表发布依赖配置不完整")
         content = self._publication_content(output)
         # 下载 grant 本身是 256 bit 随机 bearer 凭证。Scope 仅用于持久化产物身份、
         # 修订撤销和审计，不再作为下载时的调用方权限条件。
         download_scope = ReportDownloadScope(
             database="agentos",
-            user_id=scope["user_id"],
+            user_id=user_id,
             company_id="public",
             session_id=workflow_session_id,
-            thread_id=scope["thread_id"],
+            thread_id=thread_id,
             workflow_run_id=workflow_run_id,
         )
-        await self.artifact_persistence.persist(
+        await artifact_persistence.persist(
             scope=download_scope,
             report_id=content["reportId"],
             revision=content["revision"],
@@ -1531,7 +1533,7 @@ class ReportWorkflowRuntime:
                 ),
             ),
         )
-        raw, grant = await self.download_grants.issue(
+        raw, grant = await download_grants.issue(
             scope=download_scope,
             report_id=content["reportId"],
             revision=content["revision"],
@@ -1543,7 +1545,7 @@ class ReportWorkflowRuntime:
             word_sha256=content["wordSha256"],
         )
         try:
-            await complete_cleanup(self.workspace_service.adestroy(scope["thread_id"]))
+            await complete_cleanup(self.workspace_service.adestroy(thread_id))
         except Exception as error:
             raise ReportingError(
                 "report_sandbox_cleanup_failed",
@@ -1560,18 +1562,13 @@ class ReportWorkflowRuntime:
 
     async def issue_workspace_publication(
         self,
-        scope: dict[str, str],
-        _workflow_session_id: str,
-        _workflow_run_id: str,
+        *,
+        thread_id: str,
         output: Any,
     ) -> dict[str, Any]:
         content = self._publication_content(output)
-        current_pdf = await self.workspace_service.ahash_file(
-            scope["thread_id"], content["pdfPath"]
-        )
-        current_word = await self.workspace_service.ahash_file(
-            scope["thread_id"], content["wordPath"]
-        )
+        current_pdf = await self.workspace_service.ahash_file(thread_id, content["pdfPath"])
+        current_word = await self.workspace_service.ahash_file(thread_id, content["wordPath"])
         self._require_artifact_identity(content, current_pdf, artifact="pdf")
         self._require_artifact_identity(content, current_word, artifact="word")
         return cli_result(

@@ -190,6 +190,29 @@ async def test_download_grant_defaults_to_thirty_days() -> None:
     assert grant.expires_at == now + timedelta(days=30)
 
 
+@pytest.mark.parametrize(
+    ("download_grants", "artifact_persistence"),
+    [(object(), None), (None, object())],
+)
+def test_runtime_rejects_partial_http_publication_configuration(
+    download_grants: object | None,
+    artifact_persistence: object | None,
+) -> None:
+    with pytest.raises(ValueError, match="下载授权和产物持久化服务必须同时配置"):
+        ReportWorkflowRuntime(
+            db=object(),
+            report_worker=object(),  # type: ignore[arg-type]
+            task_runner=object(),  # type: ignore[arg-type]
+            workspace_service=object(),  # type: ignore[arg-type]
+            registry=object(),  # type: ignore[arg-type]
+            profiles=object(),  # type: ignore[arg-type]
+            planner_enable_thinking=False,
+            download_grants=download_grants,  # type: ignore[arg-type]
+            artifact_persistence=artifact_persistence,  # type: ignore[arg-type]
+            state_repository=object(),  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.anyio
 async def test_http_publication_persists_and_issues_grant_before_destroying_sandbox() -> None:
     events: list[str] = []
@@ -240,10 +263,11 @@ async def test_http_publication_persists_and_issues_grant_before_destroying_sand
     runtime.download_grants = Grants()
     runtime.workspace_service = Workspace()
     result = await runtime.issue_http_publication(
-        {"thread_id": "thread", "external_run_id": "external", "user_id": "7"},
-        "workflow-session",
-        "workflow-run",
-        content,
+        thread_id="thread",
+        user_id="7",
+        workflow_session_id="workflow-session",
+        workflow_run_id="workflow-run",
+        output=content,
     )
 
     assert events == ["persist", "grant", "destroy"]
@@ -288,10 +312,11 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
     }
     with pytest.raises(ReportingError) as raised:
         await runtime.issue_http_publication(
-            {"thread_id": "thread", "external_run_id": "external", "user_id": "7"},
-            "workflow-session",
-            "workflow-run",
-            output,
+            thread_id="thread",
+            user_id="7",
+            workflow_session_id="workflow-session",
+            workflow_run_id="workflow-run",
+            output=output,
         )
 
     assert raised.value.code == "report_artifact_changed"
@@ -348,14 +373,11 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
 
     assert result.content["pdf"]["downloadUrl"] == "/reports/v1/download/raw"
     runtime.issue_http_publication.assert_awaited_once_with(
-        {
-            "external_run_id": "workflow-run",
-            "thread_id": "thread",
-            "user_id": "native",
-        },
-        "thread",
-        "workflow-run",
-        output,
+        thread_id="thread",
+        user_id="native",
+        workflow_session_id="thread",
+        workflow_run_id="workflow-run",
+        output=output,
     )
     runtime.issue_workspace_publication.assert_not_awaited()
 
@@ -405,5 +427,8 @@ async def test_workflow_publication_keeps_workspace_paths_without_http_services(
     )
 
     assert result.content["path"] == "reports/report.pdf"
-    runtime.issue_workspace_publication.assert_awaited_once()
+    runtime.issue_workspace_publication.assert_awaited_once_with(
+        thread_id="thread",
+        output=output,
+    )
     runtime.issue_http_publication.assert_not_awaited()

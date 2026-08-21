@@ -632,13 +632,12 @@ def create_report_download_router(
                 status_code=_download_error_status(error.code),
                 detail={"code": error.code, "message": error.message},
             ) from None
-        _path, word_size, _sha256 = _grant_artifact(grant, "word")
         return StreamingResponse(
             content,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={
                 "Content-Disposition": _content_disposition(grant.word_path, artifact="word"),
-                "Content-Length": str(word_size),
+                "Content-Length": str(grant.word_size),
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
                 "X-Accel-Buffering": "no",
