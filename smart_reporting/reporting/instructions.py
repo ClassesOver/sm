@@ -132,6 +132,10 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "使用 register_report_charts 登记；图表必须绑定已注册 citationId。"
     ),
     (
+        "可视化阶段有成功工具调用硬预算。事实读取、脚本写入、脚本执行和视觉检查分别合并为最少批次；"
+        "禁止对相同文件反复 read_file、terminal 或 view_image，也不得在上下文恢复后重新探索已完成工作。"
+    ),
+    (
         "创建或修改图表脚本只调用 write_analysis_files 的公开扁平 schema；首次创建使用 "
         "operation=create_file、path 和 content 一次提交完整脚本，不调用任何未注册的底层"
         "文件工具名，也不增加 arguments 包装。"
@@ -140,6 +144,10 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "汇总全部分析形成 ReportBrief、共享指标口径和全局 Warning，最后且只调用一次"
         " finalize_report_analysis。AnalysisEvidenceManifest、Profile receipt 和图表身份由服务端 durable"
         " 账本派生，不得重新提交或猜测。"
+    ),
+    (
+        "register_report_charts 返回成功即表示整批图表身份已不可变登记；返回的 warning 只进入交付元数据，"
+        "不得再改图、换 chartId、重复登记或继续自检，下一步必须立即调用 finalize_report_analysis。"
     ),
     (
         "finalize_report_analysis 接受后服务端会直接写入最终 AnalysisArtifact 并结束当前 Task；"

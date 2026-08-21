@@ -21,12 +21,14 @@ from ..phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
     bind_reporting_run_context,
     capture_reporting_projection_metrics,
     record_reporting_tool_event,
     reporting_phase_from_acceptance_contract,
     reporting_task_kind_from_acceptance_contract,
     reporting_thinking_effort_from_acceptance_contract,
+    reporting_visualization_registered_from_acceptance_contract,
 )
 
 WorkerEventSink = Callable[[TaskScope, str, Any], Awaitable[None]]
@@ -122,6 +124,9 @@ class ReportTaskRunner:
                 reporting_thinking_effort = reporting_thinking_effort_from_acceptance_contract(
                     acceptance_contract
                 )
+                visualization_registered = (
+                    reporting_visualization_registered_from_acceptance_contract(acceptance_contract)
+                )
                 if continuing:
                     task, attempt = await self.repository.resume_current(
                         scope.external_run_id,
@@ -155,6 +160,11 @@ class ReportTaskRunner:
                         **(
                             {REPORTING_THINKING_EFFORT_DEPENDENCY_KEY: (reporting_thinking_effort)}
                             if reporting_thinking_effort is not None
+                            else {}
+                        ),
+                        **(
+                            {REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY: True}
+                            if visualization_registered
                             else {}
                         ),
                     }

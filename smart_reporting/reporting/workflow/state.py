@@ -136,6 +136,7 @@ class ReportingRunState(BaseModel):
             "profileCoverage": None,
             "profileReadReceipts": [],
             "charts": [],
+            "chartsRegistered": False,
             "citations": [],
             "metricDefinitions": [],
             "analysisEvidenceManifest": None,
@@ -172,6 +173,7 @@ class ReportingReducerResult:
     state: ReportingRunState
     effects: tuple[ReportingEffect, ...] = ()
     idempotent: bool = False
+
 
 _TRANSITIONS: dict[ReportingPhase, frozenset[ReportingPhase]] = {
     ReportingPhase.ANALYSIS_COVERAGE: frozenset(
@@ -331,6 +333,7 @@ def apply(
             # EvidenceManifest 都可能引用已失效 evidence，必须在进入新分析前清空；
             # Profile receipt 仍绑定不可变快照与查询，可按相同身份幂等复用。
             payload["charts"] = []
+            payload["chartsRegistered"] = False
             payload["reportBrief"] = None
             payload["analysisEvidenceManifest"] = None
             workflow_checkpoint = payload.get("workflowCheckpoint")
@@ -408,38 +411,35 @@ def apply(
             isinstance(item, Mapping) and item.get("receiptId") == receipt_id for item in receipts
         ):
             receipts.append(dict(receipt))
-    elif name == "record_chart":
-        chart = arguments.get("chart", arguments)
-        if not isinstance(chart, Mapping) or not isinstance(chart.get("chartId"), str):
-            raise ReportingStateError("report_chart_invalid", "图表状态缺少 chartId。")
-        charts = payload.setdefault("charts", [])
-        if not isinstance(charts, list):
-            raise ReportingStateError("report_state_invalid", "charts 状态损坏。")
-        chart_id = chart["chartId"]
-        existing = next(
-            (
-                item
-                for item in charts
-                if isinstance(item, Mapping) and item.get("chartId") == chart_id
-            ),
-            None,
-        )
-        if existing is not None and dict(existing) != dict(chart):
+    elif name == "register_charts":
+        if state.phase is not ReportingPhase.VISUALIZATION:
             raise ReportingStateError(
-                "report_chart_registration_conflict", "chartId 已绑定其他身份。"
+                "report_chart_registration_phase_invalid", "图表只能在可视化阶段登记。"
             )
-        if existing is None:
-            charts.append(dict(chart))
-    elif name == "discard_chart":
-        chart_ids = set(_tuple_unique(arguments.get("chartIds")))
-        charts = payload.setdefault("charts", [])
-        if not isinstance(charts, list):
-            raise ReportingStateError("report_state_invalid", "charts 状态损坏。")
-        charts[:] = [
-            item
-            for item in charts
-            if not isinstance(item, Mapping) or item.get("chartId") not in chart_ids
-        ]
+        charts = arguments.get("charts")
+        if not isinstance(charts, list) or not charts:
+            raise ReportingStateError("report_chart_invalid", "图表登记批次不能为空。")
+        if payload.get("chartsRegistered") is True or (
+            "chartsRegistered" not in payload and bool(payload.get("charts"))
+        ):
+            raise ReportingStateError(
+                "report_chart_registration_closed", "当前可视化阶段已经完成图表登记。"
+            )
+        registered_chart_ids = [item.get("chartId") for item in charts if isinstance(item, Mapping)]
+        if (
+            len(registered_chart_ids) != len(charts)
+            or any(
+                not isinstance(chart_id, str) or not chart_id for chart_id in registered_chart_ids
+            )
+            or len(set(registered_chart_ids)) != len(registered_chart_ids)
+        ):
+            raise ReportingStateError(
+                "report_chart_registration_duplicate", "图表登记批次包含无效或重复 chartId。"
+            )
+        # 整批图表在一次 CAS 中提交；一旦成功，后续只能冻结 AnalysisArtifact。
+        # 这保证换用新 chartId 也不能绕过首次登记形成的生命周期边界。
+        payload["charts"] = [dict(chart) for chart in charts]
+        payload["chartsRegistered"] = True
     elif name in {"set_analysis_artifact", "set_report_brief", "finalize_report_analysis"}:
         if "reportBrief" in arguments:
             payload["reportBrief"] = arguments["reportBrief"]

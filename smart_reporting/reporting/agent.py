@@ -68,6 +68,7 @@ from .phase import (
     reporting_phase_from_run_context,
     reporting_task_kind_from_run_context,
     reporting_thinking_effort_from_run_context,
+    reporting_visualization_registered_from_run_context,
 )
 from .tools import build_report_worker_tools
 from .vision import ReportVisionReviewer
@@ -99,6 +100,11 @@ _REPORT_TOOL_SAME_FAILURE_LIMIT = 3
 _REPORT_TOOL_PHASE_FAILURE_LIMIT = 8
 _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY = "agentos_reporting_analysis_success_tools"
 _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT = 24
+_REPORT_VISUALIZATION_SUCCESS_TOOL_STATE_KEY = "agentos_reporting_visualization_success_tools"
+# 可视化只需要读取已冻结事实、生成并检查图表、登记一次并冻结；成功调用预算
+# 防止模型在登记前后反复探索而无限延长当前 Task。finalize 不计入该预算。
+_REPORT_VISUALIZATION_SUCCESS_TOOL_LIMIT = 48
+_REPORT_VISUALIZATION_REGISTERED_STATE_KEY = "agentos_reporting_visualization_registered"
 _REPORT_PROFILE_EMPTY_QUERY_STATE_KEY = "agentos_reporting_empty_profile_queries"
 _REPORT_ARGUMENT_MAX_ISSUES = 8
 _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
@@ -207,13 +213,29 @@ def _reporting_mutation_sequence(state: dict[str, Any] | None) -> int:
 def _reporting_analysis_item_tool_budget(
     run_context: RunContext,
     function_name: str,
-) -> tuple[dict[str, Any], str] | None:
-    if (
-        function_name == "complete_analysis_item"
-        or reporting_phase_from_run_context(run_context) != "analysis"
-        or reporting_task_kind_from_run_context(run_context) != "analysis_item"
+) -> tuple[dict[str, Any], str, str] | None:
+    if function_name != "complete_analysis_item" and (
+        reporting_phase_from_run_context(run_context) == "analysis"
+        and reporting_task_kind_from_run_context(run_context) == "analysis_item"
     ):
-        return None
+        return _reporting_success_tool_budget(
+            run_context,
+            task_kind="analysis_item",
+            state_key=_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY,
+            limit=_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT,
+        )
+    return None
+
+
+def _reporting_success_tool_budget(
+    run_context: RunContext,
+    *,
+    task_kind: str,
+    state_key: str,
+    limit: int,
+) -> tuple[dict[str, Any], str, str] | None:
+    """为单个内部 Reporting Task 预留成功工具调用名额。"""
+
     state = _reporting_session_state(run_context)
     if state is None:
         return None
@@ -223,7 +245,7 @@ def _reporting_analysis_item_tool_budget(
     # 每个 analysis item 尝试都有独立 externalRunId/internal run。预算身份同时绑定二者，
     # continuation 可继承当前计数，而 fresh retry、其他分析项和并发 Task 必须从零开始。
     identity = f"{external_run_id or ''}:{run_context.run_id or ''}"
-    budgets = state.get(_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY)
+    budgets = state.get(state_key)
     budgets = budgets if isinstance(budgets, dict) else {}
     stored = budgets.get(identity)
     successful_count = stored.get("successfulCount", 0) if isinstance(stored, dict) else 0
@@ -234,29 +256,49 @@ def _reporting_analysis_item_tool_budget(
     in_flight_count = (
         int(in_flight_count) if isinstance(in_flight_count, int) and in_flight_count >= 0 else 0
     )
-    if successful_count + in_flight_count >= _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT:
-        _stop_exhausted_analysis_item_tool_budget(
+    if successful_count + in_flight_count >= limit:
+        _stop_exhausted_reporting_tool_budget(
             run_context,
             successful_count,
             in_flight_count,
+            task_kind=task_kind,
+            limit=limit,
         )
     budgets[identity] = {
         "successfulCount": successful_count,
         "inFlightCount": in_flight_count + 1,
     }
-    state[_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY] = budgets
-    return state, identity
+    state[state_key] = budgets
+    return state, identity, state_key
 
 
-def _finish_reporting_analysis_item_tool_budget(
-    reservation: tuple[dict[str, Any], str] | None,
+def _reporting_visualization_tool_budget(
+    run_context: RunContext,
+    function_name: str,
+) -> tuple[dict[str, Any], str, str] | None:
+    if (
+        function_name == "finalize_report_analysis"
+        or reporting_phase_from_run_context(run_context) != "analysis"
+        or reporting_task_kind_from_run_context(run_context) != "visualization"
+    ):
+        return None
+    return _reporting_success_tool_budget(
+        run_context,
+        task_kind="visualization",
+        state_key=_REPORT_VISUALIZATION_SUCCESS_TOOL_STATE_KEY,
+        limit=_REPORT_VISUALIZATION_SUCCESS_TOOL_LIMIT,
+    )
+
+
+def _finish_reporting_success_tool_budget(
+    reservation: tuple[dict[str, Any], str, str] | None,
     *,
     succeeded: bool,
 ) -> None:
     if reservation is None:
         return
-    state, identity = reservation
-    budgets = state.get(_REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY)
+    state, identity, state_key = reservation
+    budgets = state.get(state_key)
     if not isinstance(budgets, dict):
         return
     stored = budgets.get(identity)
@@ -272,19 +314,32 @@ def _finish_reporting_analysis_item_tool_budget(
     }
 
 
-def _stop_exhausted_analysis_item_tool_budget(
+def _stop_exhausted_reporting_tool_budget(
     run_context: RunContext,
     successful_count: int,
     in_flight_count: int,
+    *,
+    task_kind: str = "analysis_item",
+    limit: int = _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT,
 ) -> None:
     details = {
         "successfulToolCalls": successful_count,
         "inFlightToolCalls": in_flight_count,
-        "limit": _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT,
+        "limit": limit,
     }
+    code = (
+        "report_visualization_tool_budget_exhausted"
+        if task_kind == "visualization"
+        else "report_analysis_tool_budget_exhausted"
+    )
+    message = (
+        "当前可视化 Task 已达到成功工具调用上限，已停止本次 run。"
+        if task_kind == "visualization"
+        else "当前分析项已达到成功工具调用上限，已停止本次 run。"
+    )
     error = ReportingError(
-        "report_analysis_tool_budget_exhausted",
-        "当前分析项已达到成功工具调用上限，已停止本次 run。",
+        code,
+        message,
         details=details,
     )
     # Agno 2.8.2 会把 StopAgentRun 收敛为 completed + stop_after_tool_call，异常本身
@@ -297,9 +352,32 @@ def _stop_exhausted_analysis_item_tool_budget(
             "status": "rejected",
             "code": error.code,
             "message": error.message,
-            "requiredActions": ["结束本次 run，交由上层按既有重试策略重新执行当前分析项。"],
+            "requiredActions": ["结束本次 run，交由上层按既有重试策略重新执行当前 Task。"],
             "retryable": False,
             "details": details,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    raise StopAgentRun(serialized, agent_message=serialized)
+
+
+def _stop_closed_visualization(run_context: RunContext) -> None:
+    error = ReportingError(
+        "report_chart_registration_closed",
+        "图表已登记，当前 Task 只能调用 finalize_report_analysis 完成冻结。",
+    )
+    _record_reporting_tool_run_error(run_context, error)
+    serialized = json.dumps(
+        {
+            "ok": False,
+            "status": "rejected",
+            "code": error.code,
+            "message": error.message,
+            "requiredActions": [
+                "结束本次 run；fresh retry 必须立即且只调用 finalize_report_analysis。"
+            ],
+            "retryable": False,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -769,6 +847,21 @@ async def normalize_reporting_tool_arguments(
     arguments: dict[str, Any],
 ) -> Any:
     """执行 Reporting 工具并把参数错误收敛为可操作回执。"""
+
+    task_kind = reporting_task_kind_from_run_context(run_context)
+    state = _reporting_session_state(run_context)
+    if (
+        task_kind == "visualization"
+        and function_name != "finalize_report_analysis"
+        and (
+            (
+                isinstance(state, dict)
+                and state.get(_REPORT_VISUALIZATION_REGISTERED_STATE_KEY) is True
+            )
+            or reporting_visualization_registered_from_run_context(run_context)
+        )
+    ):
+        _stop_closed_visualization(run_context)
     empty_query_state = _empty_profile_query_state(run_context, function_name, arguments)
     existing_empty = (
         empty_query_state[0].get(empty_query_state[1]) if empty_query_state is not None else None
@@ -786,11 +879,13 @@ async def normalize_reporting_tool_arguments(
             },
         )
     reservation = _reporting_analysis_item_tool_budget(run_context, function_name)
+    visualization_reservation = _reporting_visualization_tool_budget(run_context, function_name)
+    reservation = reservation or visualization_reservation
     try:
         result = function_call(**arguments)
         result = await result if inspect.isawaitable(result) else result
     except (TypeError, ValidationError) as error:
-        _finish_reporting_analysis_item_tool_budget(reservation, succeeded=False)
+        _finish_reporting_success_tool_budget(reservation, succeeded=False)
         if not _is_tool_argument_error(error):
             raise
         failure = _report_tool_argument_failure(
@@ -805,7 +900,7 @@ async def normalize_reporting_tool_arguments(
             arguments,
         )
     except BaseException:
-        _finish_reporting_analysis_item_tool_budget(reservation, succeeded=False)
+        _finish_reporting_success_tool_budget(reservation, succeeded=False)
         raise
     if (
         empty_query_state is not None
@@ -838,7 +933,14 @@ async def normalize_reporting_tool_arguments(
             # 绕过去重。首次空回执保留；串行重复会在执行前短路，并行重复在完成时拒绝。
             empty_queries[query_identity] = details
     succeeded = isinstance(result, dict) and result.get("ok") is True
-    _finish_reporting_analysis_item_tool_budget(reservation, succeeded=succeeded)
+    if (
+        succeeded
+        and task_kind == "visualization"
+        and function_name == "register_report_charts"
+        and isinstance(state, dict)
+    ):
+        state[_REPORT_VISUALIZATION_REGISTERED_STATE_KEY] = True
+    _finish_reporting_success_tool_budget(reservation, succeeded=succeeded)
     return _enforce_reporting_no_progress(run_context, function_name, result, arguments)
 
 

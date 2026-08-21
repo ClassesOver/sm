@@ -290,14 +290,41 @@ def test_reporting_cli_debug_argument_defaults_enabled(
 ) -> None:
     calls: list[bool] = []
 
-    async def fake_run_cli(**kwargs: object) -> None:
+    async def fake_run_cli(**kwargs: object) -> dict[str, str]:
         calls.append(bool(kwargs["debug"]))
+        return {"status": "completed"}
 
     monkeypatch.setattr(reporting_cli, "run_cli", fake_run_cli)
 
     reporting_cli.main(arguments)
 
     assert calls == [expected]
+
+
+def test_reporting_cli_returns_failure_exit_for_cancelled_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_cli(**_kwargs: object) -> dict[str, str]:
+        return {"status": "cancelled"}
+
+    monkeypatch.setattr(reporting_cli, "run_cli", fake_run_cli)
+
+    with pytest.raises(SystemExit) as raised:
+        reporting_cli.main([])
+
+    assert raised.value.code == 1
+
+
+def test_reporting_cli_returns_130_for_keyboard_interrupt(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def interrupted(**_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(reporting_cli, "run_cli", interrupted)
+
+    with pytest.raises(SystemExit) as raised:
+        reporting_cli.main([])
+
+    assert raised.value.code == 130
 
 
 @pytest.mark.anyio

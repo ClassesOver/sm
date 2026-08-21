@@ -868,6 +868,8 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 },
                 strict=True,
                 entrypoint=self.register_report_charts,
+                pre_hook=_reset_stop_after_tool_call,
+                post_hook=_stop_after_nonretryable_tool_call,
             )
         )
         self.register(
@@ -3210,6 +3212,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         if code in {
             "report_analysis_already_submitted",
             "report_section_already_submitted",
+            "report_chart_registration_closed",
         }:
             retryable = False
         result: dict[str, Any] = {
@@ -3281,6 +3284,10 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             result["requiredActions"] = [
                 "保持 toolName 不变，只按 details.expectedFields 和 details.path 修正 arguments；"
                 "不要在 arguments 内嵌套 toolName 或第二层 arguments。"
+            ]
+        elif code == "report_chart_registration_closed":
+            result["requiredActions"] = [
+                "图表已完成不可变登记；不要改图或重复登记，立即调用 finalize_report_analysis。"
             ]
         elif code in {
             "report_profile_query_invalid",
@@ -3446,13 +3453,13 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                             f"chartId {registration.chart_id} 已绑定不同图表身份。",
                         )
                 inspected.append((identity, chart_warnings))
-            for identity, _chart_warnings in inspected:
-                await self._apply_durable(
-                    scope,
-                    name="record_chart",
-                    payload={"chart": identity},
-                    command_id=f"chart:{identity['chartId']}:{identity['sha256']}",
-                )
+            registration_digest = _stable_digest([identity for identity, _ in inspected])
+            await self._apply_durable(
+                scope,
+                name="register_charts",
+                payload={"charts": [identity for identity, _ in inspected]},
+                command_id=f"charts:{registration_digest}",
+            )
             for identity, chart_warnings in inspected:
                 warnings.extend(chart_warnings)
                 registered.append(

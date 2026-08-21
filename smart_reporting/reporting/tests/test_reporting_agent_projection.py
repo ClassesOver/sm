@@ -32,6 +32,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
     bind_reporting_run_context,
 )
 from smart_reporting.settings import AgentSettings
@@ -736,17 +737,106 @@ async def test_analysis_tool_budget_counts_only_success_and_isolates_tasks(monke
             lambda: {"ok": True},
             {},
         )
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_SUCCESS_TOOL_LIMIT", 1)
+    visualization_context = context("run-visualization", "visualization-task", "visualization")
     visualization = await normalize_reporting_tool_arguments(
-        context("run-visualization", "visualization-task", "visualization"),
+        visualization_context,
         "query_analysis_facts",
         lambda: {"ok": True},
         {},
     )
+    with pytest.raises(StopAgentRun, match="report_visualization_tool_budget_exhausted"):
+        await normalize_reporting_tool_arguments(
+            visualization_context,
+            "read_file",
+            lambda: {"ok": True},
+            {},
+        )
 
     assert failed == {"ok": False, "code": "profile_query_invalid"}
     assert succeeded == {"ok": True}
     assert second_task == {"ok": True}
     assert visualization == {"ok": True}
+
+
+@pytest.mark.anyio
+async def test_visualization_registration_closes_self_check_tools_but_allows_finalize() -> None:
+    run_context = RunContext(
+        run_id="run-visualization",
+        session_id="session-visualization",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    executed = False
+
+    registered = await normalize_reporting_tool_arguments(
+        run_context,
+        "register_report_charts",
+        lambda: {"ok": True, "status": "completed", "charts": [{"chartId": "income"}]},
+        {},
+    )
+
+    def unexpected_tool_call() -> dict[str, bool]:
+        nonlocal executed
+        executed = True
+        return {"ok": True}
+
+    with pytest.raises(StopAgentRun, match="report_chart_registration_closed"):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "terminal",
+            unexpected_tool_call,
+            {},
+        )
+    finalized = await normalize_reporting_tool_arguments(
+        run_context,
+        "finalize_report_analysis",
+        lambda: {"ok": True, "status": "accepted", "taskFinished": True},
+        {},
+    )
+
+    assert registered["ok"] is True
+    assert executed is False
+    assert finalized["taskFinished"] is True
+
+
+@pytest.mark.anyio
+async def test_visualization_retry_uses_durable_registration_dependency_to_block_tools() -> None:
+    run_context = RunContext(
+        run_id="run-visualization-retry",
+        session_id="session-visualization-retry",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-task-retry",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY: True,
+            }
+        },
+    )
+    executed = False
+
+    def unexpected_tool_call() -> dict[str, bool]:
+        nonlocal executed
+        executed = True
+        return {"ok": True}
+
+    with pytest.raises(StopAgentRun, match="report_chart_registration_closed"):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "read_file",
+            unexpected_tool_call,
+            {},
+        )
+
+    assert executed is False
 
 
 @pytest.mark.anyio

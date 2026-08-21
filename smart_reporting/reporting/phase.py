@@ -22,6 +22,7 @@ REPORTING_SECTION_INPUT_TOKEN_HARD_CAP = 48 * 1024
 REPORTING_PHASE_DEPENDENCY_KEY = "reportingPhase"
 REPORTING_TASK_KIND_DEPENDENCY_KEY = "reportingTaskKind"
 REPORTING_THINKING_EFFORT_DEPENDENCY_KEY = "reportingThinkingEffort"
+REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY = "reportingVisualizationRegistered"
 REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
 
 # 工具按生命周期白名单暴露。Agno callable-tool 缓存键包含 phase/taskKind，实际 Toolkit、
@@ -202,6 +203,26 @@ def reporting_thinking_effort_from_acceptance_contract(
     return effort if effort in {"off", "high", "max"} else None
 
 
+def reporting_visualization_registered_from_acceptance_contract(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    requirements = value.get("requirements")
+    if (
+        not isinstance(requirements, Sequence)
+        or isinstance(requirements, (str, bytes))
+        or len(requirements) != 1
+    ):
+        return False
+    requirement = requirements[0]
+    parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
+    phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
+    return (
+        phase_contract.get("chartsRegistered") is True
+        if isinstance(phase_contract, Mapping)
+        else False
+    )
+
+
 def reporting_phase_from_run_context(run_context: RunContext | None) -> ReportingPhase | None:
     dependencies = (
         run_context.dependencies
@@ -243,6 +264,22 @@ def reporting_thinking_effort_from_run_context(
         else None
     )
     return effort if effort in {"off", "high", "max"} else None
+
+
+def reporting_visualization_registered_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    dependencies = (
+        run_context.dependencies
+        if run_context is not None and isinstance(run_context.dependencies, Mapping)
+        else {}
+    )
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    return (
+        binding.get(REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY) is True
+        if isinstance(binding, Mapping)
+        else False
+    )
 
 
 def reporting_phase_allows_tool(

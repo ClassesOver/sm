@@ -308,6 +308,34 @@ def _analysis_item_completion_conditions(
     ]
 
 
+def _visualization_completion_conditions(
+    last_error: Exception | None,
+    charts_registered: bool,
+) -> list[str]:
+    if charts_registered:
+        return [
+            "durable state 已完成整批图表登记；禁止改图、换 chartId、重复登记或继续自检",
+            "不要调用任何读取、写入、执行、Skill 或视觉工具",
+            "立即且只调用一次 finalize_report_analysis",
+        ]
+    if (
+        isinstance(last_error, ReportingError)
+        and last_error.code == "report_visualization_tool_budget_exhausted"
+    ):
+        return [
+            "上一轮因成功工具调用达到上限而终止；禁止重新规划、重复读取事实或重新探索工作区",
+            "复用工作区已有脚本和图表，只完成尚缺的最小执行或检查",
+            "整批图表只调用一次 register_report_charts，成功后立即调用 finalize_report_analysis",
+        ]
+    return [
+        "只整合 completedAnalysisItems 和 deterministicFactFiles，不重跑单项分析",
+        "批量读取事实、生成和执行图表脚本；相同文件不得重复读取、执行或视觉检查",
+        "按批准提纲生成必要图表并整批登记 citation",
+        "最后且只调用一次 finalize_report_analysis",
+        "evidence、receipt、citation 和文件身份由服务端 durable state 派生",
+    ]
+
+
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -3844,6 +3872,14 @@ class ReportWorkflowRuntime:
                 str(run_context.run_id or scope["externalRunId"])
             )
             durable_payload = durable_state.payload if durable_state is not None else {}
+            registered_charts = [
+                dict(item)
+                for item in durable_payload.get("charts", ())
+                if isinstance(item, Mapping) and isinstance(item.get("chartId"), str)
+            ]
+            charts_registered = durable_payload.get("chartsRegistered") is True or (
+                "chartsRegistered" not in durable_payload and bool(registered_charts)
+            )
             current_analysis_id = durable_payload.get("currentAnalysisId")
             completed_analysis_ids = {
                 item
@@ -3884,12 +3920,9 @@ class ReportWorkflowRuntime:
                 "phase": "analysis",
                 "taskKind": "visualization",
                 "reportGoal": self._envelope(run_context).report_goal,
-                "completionConditions": [
-                    "只整合 completedAnalysisItems 和 deterministicFactFiles，不重跑单项分析",
-                    "按批准提纲生成必要图表并登记 citation",
-                    "最后且只调用一次 finalize_report_analysis",
-                    "evidence、receipt、citation 和文件身份由服务端 durable state 派生",
-                ],
+                "completionConditions": _visualization_completion_conditions(
+                    last_error, charts_registered
+                ),
                 "outline": self._state(run_context)[REPORT_OUTLINE_STATE_KEY],
                 "currentAnalysisId": None,
                 "completedAnalysisIds": sorted(completed_analysis_ids),
@@ -3904,6 +3937,7 @@ class ReportWorkflowRuntime:
                 "citationRegistry": [
                     item.model_dump(mode="json", by_alias=True) for item in citation_bindings
                 ],
+                "registeredCharts": registered_charts,
                 "sourceWarnings": [
                     item.model_dump(mode="json", by_alias=True)
                     for item in _source_warnings_from_state(self._state(run_context))
@@ -3926,6 +3960,7 @@ class ReportWorkflowRuntime:
                 phase_contract={
                     "reportRunId": str(run_context.run_id or scope["externalRunId"]),
                     "taskKind": "visualization",
+                    "chartsRegistered": charts_registered,
                     "thinkingEffort": self._worker_thinking_effort(
                         retry=any(
                             item.status == "failed"

@@ -23,6 +23,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
+    reporting_visualization_registered_from_acceptance_contract,
 )
 from smart_reporting.reporting.tests.workspace_fakes import service as fake_workspace_service
 from smart_reporting.reporting.tools import (
@@ -43,7 +44,10 @@ from smart_reporting.reporting.tools import (
     build_report_worker_tools,
 )
 from smart_reporting.reporting.workflow.checkpoint import ProfileReadReceipt
-from smart_reporting.reporting.workflow.runtime import _analysis_item_completion_conditions
+from smart_reporting.reporting.workflow.runtime import (
+    _analysis_item_completion_conditions,
+    _visualization_completion_conditions,
+)
 from smart_reporting.reporting.workflow.state import ReportingRunState
 from smart_reporting.task_execution.acceptance import normalize_acceptance_contract
 from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
@@ -118,6 +122,66 @@ def test_analysis_item_budget_retry_forces_fixed_fact_submission() -> None:
     assert any("只调用一次 query_analysis_facts" in item for item in conditions)
     assert any("立即调用 complete_analysis_item" in item for item in conditions)
     assert not any("创建补充 evidence" in item for item in conditions)
+
+
+def test_visualization_retry_after_registration_only_allows_finalize() -> None:
+    conditions = _visualization_completion_conditions(
+        ReportingError(
+            "report_visualization_tool_budget_exhausted",
+            "当前可视化 Task 已达到成功工具调用上限。",
+        ),
+        True,
+    )
+
+    assert any("禁止改图" in item for item in conditions)
+    assert any("不要调用任何读取" in item for item in conditions)
+    assert any("finalize_report_analysis" in item for item in conditions)
+    assert not any("register_report_charts" in item for item in conditions)
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_commits_one_atomic_durable_batch() -> None:
+    scope = SimpleNamespace(thread_id="thread-1", task=SimpleNamespace(mutation_sequence=3))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: ({}, {"citationIds": ["citation-1"]})
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+    identity = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "size": 1024,
+        "sha256": "a" * 64,
+        "format": "PNG",
+        "mediaType": "image/png",
+        "extension": ".png",
+        "width": 1200,
+        "height": 800,
+    }
+    toolkit._inspect_chart = AsyncMock(return_value=(identity, []))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+            }
+        ],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is True
+    toolkit._apply_durable.assert_awaited_once()
+    assert toolkit._apply_durable.await_args.kwargs["name"] == "register_charts"
+    assert toolkit._apply_durable.await_args.kwargs["payload"] == {"charts": [identity]}
 
 
 def test_write_analysis_files_schema_exposes_every_underlying_primitive() -> None:
@@ -1544,6 +1608,7 @@ def test_visualization_acceptance_contract_drops_unused_large_projections() -> N
     analysis_ids = [f"analysis_{index:03d}" for index in range(1, 19)]
     phase_contract = {
         "taskKind": "visualization",
+        "chartsRegistered": True,
         "analysisIds": analysis_ids,
         "analysisPlans": {
             analysis_id: {"analysisId": analysis_id, "step": "复杂分析说明" * 100}
@@ -1576,6 +1641,8 @@ def test_visualization_acceptance_contract_drops_unused_large_projections() -> N
     trusted = normalized["requirements"][0]["parameters"]["phaseContract"]
 
     assert trusted["analysisIds"] == analysis_ids
+    assert trusted["chartsRegistered"] is True
+    assert reporting_visualization_registered_from_acceptance_contract(normalized) is True
     assert trusted["deterministicFactFiles"] == phase_contract["deterministicFactFiles"]
     assert "analysisPlans" not in trusted
     assert "analysisDatasetIds" not in trusted

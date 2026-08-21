@@ -479,13 +479,6 @@ async def test_analysis_facts_survive_repository_restart(state_repository):
             "payload": {"receipt": {"receiptId": "receipt-1", "datasetId": "dataset-1"}},
         },
         {
-            "name": "record_chart",
-            "commandId": "chart-1",
-            "payload": {
-                "chart": {"chartId": "chart-1", "path": "analysis/chart.png", "sha256": "a" * 64}
-            },
-        },
-        {
             "name": "complete_analysis_item",
             "commandId": "item-1",
             "payload": {"analysisId": "analysis_001", "summary": "收入规模已复算"},
@@ -504,31 +497,53 @@ async def test_analysis_facts_survive_repository_restart(state_repository):
     assert restored.payload["currentAnalysisId"] == "analysis_002"
     assert restored.payload["profileReadReceipts"][0]["receiptId"] == "receipt-1"
     assert restored.payload["analysisItems"]["analysis_001"]["summary"] == "收入规模已复算"
-    assert restored.payload["charts"][0]["chartId"] == "chart-1"
 
 
-def test_chart_identity_conflict_fails_closed():
-    state = apply_phase(initial_state(), "start_analysis")
+def test_chart_batch_registration_is_atomic_and_closes_lifecycle():
+    state = apply_phase(apply_phase(initial_state(), "start_analysis"), "start_visualization")
     first = ReportingStateReducer.apply(
         state,
         {
-            "name": "record_chart",
-            "commandId": "chart-1",
-            "payload": {"chart": {"chartId": "chart-1", "sha256": "a" * 64}},
+            "name": "register_charts",
+            "commandId": "charts-1",
+            "payload": {
+                "charts": [
+                    {"chartId": "chart-1", "sha256": "a" * 64},
+                    {"chartId": "chart-2", "sha256": "b" * 64},
+                ]
+            },
         },
         state.state_version,
     ).state
+    assert first.payload["chartsRegistered"] is True
+    assert [item["chartId"] for item in first.payload["charts"]] == ["chart-1", "chart-2"]
+    replayed = ReportingStateReducer.apply(
+        first,
+        {
+            "name": "register_charts",
+            "commandId": "charts-1",
+            "payload": {
+                "charts": [
+                    {"chartId": "chart-1", "sha256": "a" * 64},
+                    {"chartId": "chart-2", "sha256": "b" * 64},
+                ]
+            },
+        },
+        first.state_version,
+    )
+    assert replayed.idempotent is True
+
     with pytest.raises(ReportingStateError) as conflict:
         ReportingStateReducer.apply(
             first,
             {
-                "name": "record_chart",
-                "commandId": "chart-2",
-                "payload": {"chart": {"chartId": "chart-1", "sha256": "b" * 64}},
+                "name": "register_charts",
+                "commandId": "charts-2",
+                "payload": {"charts": [{"chartId": "chart-3", "sha256": "c" * 64}]},
             },
             first.state_version,
         )
-    assert conflict.value.code == "report_chart_registration_conflict"
+    assert conflict.value.code == "report_chart_registration_closed"
 
 
 def test_profile_receipt_reuses_stable_identity_when_purpose_changes() -> None:

@@ -331,7 +331,7 @@ async def run_cli(
     resume_run_id: str | None = None,
     resume_session_id: str | None = None,
     debug: bool = True,
-) -> None:
+) -> dict[str, Any]:
     if (resume_run_id is None) != (resume_session_id is None):
         raise ReportingError(
             "report_workflow_resume_invalid",
@@ -378,6 +378,7 @@ async def run_cli(
         write(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     finally:
         await complete_cleanup(close_execution_resources(context, report_worker))
+    return result
 
 
 def _status(output: Any) -> str:
@@ -399,15 +400,17 @@ def main(argv: list[str] | None = None) -> None:
             help="启用详细调试日志（默认启用，使用 --no-debug 关闭）。",
         )
         parsed = parser.parse_args(arguments)
-        asyncio.run(
+        result = asyncio.run(
             run_cli(
                 resume_run_id=parsed.resume_run_id,
                 resume_session_id=parsed.resume_session_id,
                 debug=parsed.debug,
             )
         )
+        if result.get("status") != "completed":
+            raise SystemExit(1)
     except KeyboardInterrupt:
-        pass
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":
