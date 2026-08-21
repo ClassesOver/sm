@@ -11,6 +11,10 @@ from agno.models.response import ModelResponse
 from agno.run import RunContext
 from agno.tools import Function
 from agno.tools.function import FunctionCall
+from openai.types.chat.chat_completion_chunk import (
+    ChoiceDeltaToolCall,
+    ChoiceDeltaToolCallFunction,
+)
 
 from smart_reporting.context_management import ProjectedOpenAIChat
 from smart_reporting.reporting import agent as report_agent_module
@@ -682,9 +686,7 @@ async def test_report_facade_returns_completed_downloads_as_markdown_without_mod
             "reportId": "report-1",
             "revision": 1,
             "pdf": {"downloadUrl": "http://reports.example.com/reports/v1/download/raw"},
-            "word": {
-                "downloadUrl": "http://reports.example.com/reports/v1/download/raw/word"
-            },
+            "word": {"downloadUrl": "http://reports.example.com/reports/v1/download/raw/word"},
         },
     }
     messages = [
@@ -728,13 +730,43 @@ async def test_report_facade_removes_tool_call_preamble(monkeypatch) -> None:
             ],
         )
 
-    monkeypatch.setattr(ReportingOpenAIChat, "ainvoke", model_call)
+    monkeypatch.setattr(report_agent_module.ReportingOpenAIChat, "ainvoke", model_call)
     model = ReportFacadeOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
 
     response = await model.ainvoke([Message(role="user", content="生成运营报告")])
 
     assert response.content is None
     assert response.tool_calls
+
+
+@pytest.mark.anyio
+async def test_report_facade_removes_streamed_tool_call_preamble(monkeypatch) -> None:
+    async def model_stream(*_args, **_kwargs):
+        yield ModelResponse(content="I'll start the report workflow.")
+        yield ModelResponse(
+            tool_calls=[
+                ChoiceDeltaToolCall(
+                    index=0,
+                    id="call-report-start",
+                    type="function",
+                    function=ChoiceDeltaToolCallFunction(
+                        name="report_workflow_start",
+                        arguments="{}",
+                    ),
+                )
+            ]
+        )
+
+    monkeypatch.setattr(report_agent_module.ReportingOpenAIChat, "ainvoke_stream", model_stream)
+    model = ReportFacadeOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+
+    responses = [
+        response
+        async for response in model.ainvoke_stream([Message(role="user", content="生成运营报告")])
+    ]
+
+    assert [response.content for response in responses] == [None, None]
+    assert responses[1].tool_calls
 
 
 @pytest.mark.anyio

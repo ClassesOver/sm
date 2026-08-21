@@ -1145,6 +1145,32 @@ def _review_content(payload: dict[str, Any]) -> str | None:
     return "\n\n".join(parts)
 
 
+def _completed_report_content(payload: dict[str, Any]) -> str | None:
+    if payload.get("status") != "completed":
+        return None
+    report = payload.get("report")
+    if not isinstance(report, dict):
+        return None
+    pdf = report.get("pdf")
+    word = report.get("word")
+    pdf_url = pdf.get("downloadUrl") if isinstance(pdf, dict) else None
+    word_url = word.get("downloadUrl") if isinstance(word, dict) else None
+    if not isinstance(pdf_url, str) or not pdf_url or not isinstance(word_url, str) or not word_url:
+        return None
+    parts = ["## 报表已生成"]
+    details: list[str] = []
+    report_id = report.get("reportId")
+    revision = report.get("revision")
+    if isinstance(report_id, str) and report_id:
+        details.append(f"- 报告编号：`{report_id}`")
+    if isinstance(revision, int) and not isinstance(revision, bool):
+        details.append(f"- 修订版本：Revision {revision}")
+    if details:
+        parts.append("\n".join(details))
+    parts.append(f"### 文件下载\n\n- [下载 PDF 报告]({pdf_url})\n- [下载 Word 报告]({word_url})")
+    return "\n\n".join(parts)
+
+
 def _forced_review_response(
     messages: list[Message], *, stream: bool = False
 ) -> ModelResponse | None:
@@ -1174,7 +1200,8 @@ def _forced_review_response(
             except (SyntaxError, ValueError):
                 return None
         if not isinstance(payload, dict) or payload.get("status") != "paused":
-            return None
+            completed = _completed_report_content(payload) if isinstance(payload, dict) else None
+            return ModelResponse(content=completed) if completed is not None else None
         review = payload.get("review")
         stage = review.get("stage") if isinstance(review, dict) else None
         tool_name = (
@@ -1187,6 +1214,26 @@ def _forced_review_response(
             stream=stream,
         )
     return None
+
+
+def _without_facade_tool_preamble(response: Any) -> Any:
+    tool_calls = getattr(response, "tool_calls", None)
+    if isinstance(tool_calls, list) and any(
+        _report_model_tool_name(tool) in _REPORT_FACADE_TOOL_NAMES for tool in tool_calls
+    ):
+        response.content = None
+    return response
+
+
+def _without_streamed_facade_tool_preamble(responses: list[Any]) -> list[Any]:
+    if any(
+        isinstance((tool_calls := getattr(response, "tool_calls", None)), list)
+        and any(_report_model_tool_name(tool) in _REPORT_FACADE_TOOL_NAMES for tool in tool_calls)
+        for response in responses
+    ):
+        for response in responses:
+            response.content = None
+    return responses
 
 
 def _tool_response(
@@ -1263,7 +1310,11 @@ def _report_model_tool_name(tool: Any) -> str | None:
             return function["name"]
         return tool.get("name") if isinstance(tool.get("name"), str) else None
     name = getattr(tool, "name", None)
-    return name if isinstance(name, str) else None
+    if isinstance(name, str):
+        return name
+    function = getattr(tool, "function", None)
+    function_name = getattr(function, "name", None)
+    return function_name if isinstance(function_name, str) else None
 
 
 def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
@@ -1840,17 +1891,23 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
     """把内层 Workflow 暂停确定性提升为 facade Agent HITL。"""
 
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        return _forced_review_response(messages) or super().invoke(messages, *args, **kwargs)
+        return _forced_review_response(messages) or _without_facade_tool_preamble(
+            super().invoke(messages, *args, **kwargs)
+        )
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
-        return _forced_review_response(messages) or await super().ainvoke(messages, *args, **kwargs)
+        forced = _forced_review_response(messages)
+        if forced is not None:
+            return forced
+        return _without_facade_tool_preamble(await super().ainvoke(messages, *args, **kwargs))
 
     def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
         forced = _forced_review_response(messages, stream=True)
         if forced is not None:
             yield forced
             return
-        yield from super().invoke_stream(messages, *args, **kwargs)
+        responses = list(super().invoke_stream(messages, *args, **kwargs))
+        yield from _without_streamed_facade_tool_preamble(responses)
 
     async def ainvoke_stream(
         self, messages: list[Message], *args: Any, **kwargs: Any
@@ -1859,7 +1916,10 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
         if forced is not None:
             yield forced
             return
-        async for response in super().ainvoke_stream(messages, *args, **kwargs):
+        responses = [
+            response async for response in super().ainvoke_stream(messages, *args, **kwargs)
+        ]
+        for response in _without_streamed_facade_tool_preamble(responses):
             yield response
 
 
@@ -2082,7 +2142,8 @@ def create_report_agent(
                 "审核工具返回 paused 时重复本流程。",
                 "工具返回 completed 后只返回其正式报告产物；不得把 paused、running 或 failed "
                 "描述为完成。若发布契约返回 `pdf.downloadUrl` 和 `word.downloadUrl`，必须逐字保留并分别"
-                "展示为 PDF、Word 下载链接；CLI 契约返回 Workspace 路径时，PDF 使用 `path`，Word 使用 "
+                "展示为 PDF、Word Markdown 下载链接。调用任何报表工具的轮次不得输出前言或解释文字；"
+                "CLI 契约返回 Workspace 路径时，PDF 使用 `path`，Word 使用 "
                 "`word.path`。不得补充域名、协议或改写为示例地址，也不得虚构返回中不存在的字段。",
             ],
             "tools": workflow_tools,
