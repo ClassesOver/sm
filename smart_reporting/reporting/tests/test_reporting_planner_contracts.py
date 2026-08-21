@@ -464,6 +464,8 @@ def test_runtime_planners_start_without_thinking_and_preserve_escalation_profile
         state_repository=SimpleNamespace(),
     )
 
+    assert runtime.analysis_concurrency == 1
+    assert runtime.section_concurrency == 1
     expected_escalations = (
         (runtime._data_understanding_agent, "high"),
         (runtime._measure_semantic_agent, "max"),

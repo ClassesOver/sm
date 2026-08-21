@@ -1043,8 +1043,8 @@ class ReportWorkflowRuntime:
         artifact_persistence: ReportArtifactPersistenceService | None = None,
         report_public_base_url: str | None = None,
         state_repository: ReportingStateRepository,
-        analysis_concurrency: int = 3,
-        section_concurrency: int = 2,
+        analysis_concurrency: int = 1,
+        section_concurrency: int = 1,
     ):
         if (download_grants is None) != (artifact_persistence is None):
             raise ValueError("下载授权和产物持久化服务必须同时配置")

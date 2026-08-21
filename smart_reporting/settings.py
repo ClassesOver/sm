@@ -257,13 +257,13 @@ class AgentSettings:
         report_analysis_concurrency = _positive_int(
             values,
             "AGENT_REPORT_ANALYSIS_CONCURRENCY",
-            3,
+            1,
             maximum=4,
         )
         report_section_concurrency = _positive_int(
             values,
             "AGENT_REPORT_SECTION_CONCURRENCY",
-            2,
+            1,
             maximum=5,
         )
         return cls(

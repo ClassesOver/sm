@@ -45,8 +45,8 @@ def test_settings_defaults():
     assert current.output_token_reserve == 32768
     assert current.report_context_token_budget == 1048576
     assert current.report_output_token_reserve == 393216
-    assert current.report_analysis_concurrency == 3
-    assert current.report_section_concurrency == 2
+    assert current.report_analysis_concurrency == 1
+    assert current.report_section_concurrency == 1
     assert current.report_data_sources_dir is None
     assert current.report_metadata_url is None
     assert current.report_metadata_token is None
