@@ -665,6 +665,7 @@ def publication_result(
     revision: int,
     raw_grant: str,
     grant: ReportDownloadGrant,
+    base_url: str,
     source_warnings: list[dict[str, object]] | None = None,
     coding_receipts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
@@ -672,13 +673,13 @@ def publication_result(
         "reportId": report_id,
         "revision": revision,
         "pdf": {
-            "downloadUrl": f"/reports/v1/download/{raw_grant}",
+            "downloadUrl": f"{base_url}/reports/v1/download/{raw_grant}",
             "expiresAt": grant.expires_at.isoformat(),
             "size": grant.pdf_size,
             "sha256": grant.pdf_sha256,
         },
         "word": {
-            "downloadUrl": f"/reports/v1/download/{raw_grant}/word",
+            "downloadUrl": f"{base_url}/reports/v1/download/{raw_grant}/word",
             "expiresAt": grant.expires_at.isoformat(),
             "size": grant.word_size,
             "sha256": grant.word_sha256,

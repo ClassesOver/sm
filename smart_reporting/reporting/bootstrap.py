@@ -63,6 +63,9 @@ def create_report_runtime(
         ),
         download_grants=download_grants,
         artifact_persistence=artifact_persistence,
+        report_public_base_url=(
+            settings.report_public_base_url if download_grants is not None else None
+        ),
         state_repository=state_repository,
         analysis_concurrency=settings.report_analysis_concurrency,
         section_concurrency=settings.report_section_concurrency,

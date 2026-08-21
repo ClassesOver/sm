@@ -1041,12 +1041,15 @@ class ReportWorkflowRuntime:
         metadata_client: ReportingMetadataClient | None = None,
         download_grants: ReportDownloadGrantService | None = None,
         artifact_persistence: ReportArtifactPersistenceService | None = None,
+        report_public_base_url: str | None = None,
         state_repository: ReportingStateRepository,
         analysis_concurrency: int = 3,
         section_concurrency: int = 2,
     ):
         if (download_grants is None) != (artifact_persistence is None):
             raise ValueError("下载授权和产物持久化服务必须同时配置")
+        if download_grants is not None and report_public_base_url is None:
+            raise ValueError("启用 HTTP 报表发布时必须配置公开下载基址")
         self.db = db
         self.report_worker = report_worker
         self.task_runner = task_runner
@@ -1056,6 +1059,7 @@ class ReportWorkflowRuntime:
         self.metadata_client = metadata_client
         self.download_grants = download_grants
         self.artifact_persistence = artifact_persistence
+        self.report_public_base_url = report_public_base_url
         self.state_repository = state_repository
         if isinstance(analysis_concurrency, bool) or not 1 <= analysis_concurrency <= 4:
             raise ValueError("analysis_concurrency 必须在 1 到 4 之间")
@@ -1506,6 +1510,9 @@ class ReportWorkflowRuntime:
         artifact_persistence = self.artifact_persistence
         if download_grants is None or artifact_persistence is None:
             raise RuntimeError("HTTP 报表发布依赖配置不完整")
+        report_public_base_url = self.report_public_base_url
+        if report_public_base_url is None:
+            raise RuntimeError("HTTP 报表发布缺少公开下载基址")
         content = self._publication_content(output)
         # 下载 grant 本身是 256 bit 随机 bearer 凭证。Scope 仅用于持久化产物身份、
         # 修订撤销和审计，不再作为下载时的调用方权限条件。
@@ -1559,6 +1566,7 @@ class ReportWorkflowRuntime:
             revision=content["revision"],
             raw_grant=raw,
             grant=grant,
+            base_url=report_public_base_url,
             source_warnings=content["sourceWarnings"],
             coding_receipts=content["codingReceipts"],
         )

@@ -140,6 +140,25 @@ def _report_metadata_url(values: MutableMapping[str, str]) -> str | None:
     return raw.rstrip("/")
 
 
+def _report_public_base_url(values: MutableMapping[str, str]) -> str | None:
+    raw = values.get("AGENT_REPORT_PUBLIC_BASE_URL", "").strip()
+    if not raw:
+        return None
+    if len(raw) > 2048:
+        raise ValueError("AGENT_REPORT_PUBLIC_BASE_URL 长度不能超过 2048")
+    parsed = urlsplit(raw)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("AGENT_REPORT_PUBLIC_BASE_URL 必须是有效的 HTTP(S) 地址")
+    return raw.rstrip("/")
+
+
 @dataclass(frozen=True)
 class AgentSettings:
     env_file: str
@@ -162,6 +181,7 @@ class AgentSettings:
     report_data_sources_dir: str | None
     report_metadata_url: str | None
     report_metadata_token: str | None
+    report_public_base_url: str | None
     workspace_hmac_secret: str
     workspace_snapshot: str
     daytona_network_allow_list: str | None
@@ -274,6 +294,7 @@ class AgentSettings:
             ),
             report_metadata_url=_report_metadata_url(values),
             report_metadata_token=(values.get("AGENT_REPORT_METADATA_TOKEN", "").strip() or None),
+            report_public_base_url=_report_public_base_url(values),
             workspace_hmac_secret=values.get("AGENT_WORKSPACE_HMAC_SECRET", ""),
             workspace_snapshot=(
                 values.get("DAYTONA_DEFAULT_SNAPSHOT") or DEFAULT_WORKSPACE_SNAPSHOT

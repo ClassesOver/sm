@@ -50,6 +50,7 @@ def test_settings_defaults():
     assert current.report_data_sources_dir is None
     assert current.report_metadata_url is None
     assert current.report_metadata_token is None
+    assert current.report_public_base_url is None
 
 
 def test_agent_feature_flags_can_be_disabled():
@@ -231,6 +232,26 @@ def test_report_metadata_config_is_normalized():
 def test_report_metadata_url_rejects_unsafe_values(value):
     with pytest.raises(ValueError, match="AGENT_REPORT_METADATA_URL"):
         settings(AGENT_REPORT_METADATA_URL=value)
+
+
+def test_report_public_base_url_is_normalized() -> None:
+    current = settings(AGENT_REPORT_PUBLIC_BASE_URL=" http://10.233.32.64:27018/ ")
+
+    assert current.report_public_base_url == "http://10.233.32.64:27018"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "ftp://reports.example.com",
+        "https://user:secret@reports.example.com",
+        "https://reports.example.com/path?token=secret",
+        "https://reports.example.com/path#fragment",
+    ],
+)
+def test_report_public_base_url_rejects_unsafe_values(value: str) -> None:
+    with pytest.raises(ValueError, match="AGENT_REPORT_PUBLIC_BASE_URL"):
+        settings(AGENT_REPORT_PUBLIC_BASE_URL=value)
 
 
 def test_context_budget_rejects_invalid_reserve():

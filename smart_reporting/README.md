@@ -21,14 +21,14 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 
 通用 AgentOS Console 的 run 请求可不携带 Workspace 请求头，此时沿用原生
 `user_id/session_id`，且不会生成默认 Odoo 身份。Odoo 集成请求必须同时使用
-`X-Workspace-Thread` 和 `X-Workspace-Capability`；Workspace 和报告下载请求始终要求这
-两个请求头。Capability 必须携带并绑定 Odoo `database`、`user`、`company`、
+`X-Workspace-Thread` 和 `X-Workspace-Capability`；Workspace 请求始终要求这两个请求头，
+公开报告下载仅校验 URL 中的 bearer grant。Capability 必须携带并绑定 Odoo `database`、`user`、`company`、
 `odoo_session` 和 `thread`；服务端会用验签后的 `user/thread` 覆盖 AgentOS run 请求中的
 `user_id/session_id`。签名密钥由 `AGENT_WORKSPACE_HMAC_SECRET` 配置。
 
-Reporting 正常发布时会重新核验 PDF/Word 的大小与 SHA-256，并返回 Daytona Workspace 中的
-相对路径（PDF 为 `path`，Word 为 `word.path`）。当前 Workflow 不持久化报告文件、不签发下载
-授权，也不自动删除对应 Daytona sandbox；调用方应使用已验证的 Workspace capability 访问产物。
+AgentOS 中的 Reporting 正常发布时会将 PDF/Word 持久化到 PostgreSQL、签发默认 30 天有效的
+公开 bearer 下载授权，并返回基于 `AGENT_REPORT_PUBLIC_BASE_URL` 的完整下载 URL；持久化成功后
+删除对应 Daytona sandbox。Reporting CLI 不启动 HTTP 下载服务，仍返回 Workspace 相对路径。
 
 ## CLI
 

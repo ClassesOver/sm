@@ -209,6 +209,23 @@ def test_runtime_rejects_partial_http_publication_configuration(
             planner_enable_thinking=False,
             download_grants=download_grants,  # type: ignore[arg-type]
             artifact_persistence=artifact_persistence,  # type: ignore[arg-type]
+            report_public_base_url="https://reports.example.com",
+            state_repository=object(),  # type: ignore[arg-type]
+        )
+
+
+def test_runtime_requires_public_base_url_for_http_publication() -> None:
+    with pytest.raises(ValueError, match="公开下载基址"):
+        ReportWorkflowRuntime(
+            db=object(),
+            report_worker=object(),  # type: ignore[arg-type]
+            task_runner=object(),  # type: ignore[arg-type]
+            workspace_service=object(),  # type: ignore[arg-type]
+            registry=object(),  # type: ignore[arg-type]
+            profiles=object(),  # type: ignore[arg-type]
+            planner_enable_thinking=False,
+            download_grants=object(),  # type: ignore[arg-type]
+            artifact_persistence=object(),  # type: ignore[arg-type]
             state_repository=object(),  # type: ignore[arg-type]
         )
 
@@ -262,6 +279,7 @@ async def test_http_publication_persists_and_issues_grant_before_destroying_sand
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
     runtime.workspace_service = Workspace()
+    runtime.report_public_base_url = "http://10.233.32.64:27018"
     result = await runtime.issue_http_publication(
         thread_id="thread",
         user_id="7",
@@ -271,7 +289,10 @@ async def test_http_publication_persists_and_issues_grant_before_destroying_sand
     )
 
     assert events == ["persist", "grant", "destroy"]
-    assert result["pdf"]["downloadUrl"] == "/reports/v1/download/raw"
+    assert result["pdf"]["downloadUrl"] == ("http://10.233.32.64:27018/reports/v1/download/raw")
+    assert result["word"]["downloadUrl"] == (
+        "http://10.233.32.64:27018/reports/v1/download/raw/word"
+    )
 
 
 @pytest.mark.anyio
@@ -297,6 +318,7 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
     runtime.workspace_service = Workspace()
+    runtime.report_public_base_url = "http://10.233.32.64:27018"
     content = b"report"
     output = {
         "reportId": "report-1",
