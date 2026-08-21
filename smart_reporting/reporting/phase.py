@@ -23,6 +23,10 @@ REPORTING_PHASE_DEPENDENCY_KEY = "reportingPhase"
 REPORTING_TASK_KIND_DEPENDENCY_KEY = "reportingTaskKind"
 REPORTING_THINKING_EFFORT_DEPENDENCY_KEY = "reportingThinkingEffort"
 REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY = "reportingVisualizationRegistered"
+REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY = "reportingVisualizationToolCalls"
+REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY = "reportingVisualizationScriptFailures"
+REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY = "agentos_reporting_visualization_tool_budget"
+REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR = "_agentos_reporting_visualization_budget"
 REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
 
 # 工具按生命周期白名单暴露。Agno callable-tool 缓存键包含 phase/taskKind，实际 Toolkit、
@@ -221,6 +225,67 @@ def reporting_visualization_registered_from_acceptance_contract(value: Any) -> b
         if isinstance(phase_contract, Mapping)
         else False
     )
+
+
+def reporting_visualization_budget_from_acceptance_contract(value: Any) -> tuple[int, int]:
+    """读取 Workflow 签发的可视化累计预算，拒绝模型输入覆盖计数。"""
+
+    if not isinstance(value, Mapping):
+        return 0, 0
+    requirements = value.get("requirements")
+    if (
+        not isinstance(requirements, Sequence)
+        or isinstance(requirements, (str, bytes))
+        or len(requirements) != 1
+    ):
+        return 0, 0
+    requirement = requirements[0]
+    parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
+    phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
+    if not isinstance(phase_contract, Mapping) or phase_contract.get("taskKind") != "visualization":
+        return 0, 0
+
+    def count(key: str) -> int:
+        raw = phase_contract.get(key, 0)
+        return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
+
+    return count("visualizationToolCalls"), count("visualizationScriptFailures")
+
+
+def reporting_visualization_budget_from_run_context(
+    run_context: RunContext | None,
+) -> tuple[int, int]:
+    """读取当前 worker 的累计预算，供任意 fresh retry 保留已经发生的调用。"""
+
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return 0, 0
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    external_run_id = binding.get("externalRunId")
+    identity = f"{external_run_id or ''}:{run_context.run_id or ''}"
+    budgets = run_context.session_state.get(REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY)
+    stored = budgets.get(identity) if isinstance(budgets, Mapping) else None
+    stored = stored if isinstance(stored, Mapping) else {}
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    base_total = count(
+        stored.get(
+            "baseTotal",
+            binding.get(REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY),
+        )
+    )
+    base_failures = count(
+        stored.get(
+            "baseScriptFailures",
+            binding.get(REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY),
+        )
+    )
+    total = base_total + count(stored.get("attemptedCount")) + count(stored.get("inFlightCount"))
+    failures = base_failures + count(stored.get("scriptFailureCount"))
+    return total, failures
 
 
 def reporting_phase_from_run_context(run_context: RunContext | None) -> ReportingPhase | None:

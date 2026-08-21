@@ -33,6 +33,8 @@ from smart_reporting.reporting.phase import (
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     bind_reporting_run_context,
 )
 from smart_reporting.settings import AgentSettings
@@ -737,7 +739,8 @@ async def test_analysis_tool_budget_counts_only_success_and_isolates_tasks(monke
             lambda: {"ok": True},
             {},
         )
-    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_SUCCESS_TOOL_LIMIT", 1)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 1)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 1)
     visualization_context = context("run-visualization", "visualization-task", "visualization")
     visualization = await normalize_reporting_tool_arguments(
         visualization_context,
@@ -757,6 +760,276 @@ async def test_analysis_tool_budget_counts_only_success_and_isolates_tasks(monke
     assert succeeded == {"ok": True}
     assert second_task == {"ok": True}
     assert visualization == {"ok": True}
+
+
+@pytest.mark.anyio
+async def test_visualization_total_budget_counts_failed_and_successful_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-total-budget",
+        session_id="session-visualization-total-budget",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-total-budget-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    calls = 0
+
+    def result(ok: bool) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"ok": ok, **({} if ok else {"code": "workspace_error"})}
+
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 2)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 2)
+
+    failed = await normalize_reporting_tool_arguments(
+        run_context,
+        "read_file",
+        lambda: result(False),
+        {},
+    )
+    succeeded = await normalize_reporting_tool_arguments(
+        run_context,
+        "query_analysis_facts",
+        lambda: result(True),
+        {},
+    )
+    with pytest.raises(StopAgentRun, match="report_visualization_tool_budget_exhausted"):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "read_file",
+            lambda: result(True),
+            {},
+        )
+
+    assert failed == {"ok": False, "code": "workspace_error"}
+    assert succeeded == {"ok": True}
+    assert calls == 2
+
+
+@pytest.mark.anyio
+async def test_visualization_argument_errors_consume_total_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-argument-budget",
+        session_id="session-visualization-argument-budget",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-argument-budget-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 1)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 1)
+
+    failure = await normalize_reporting_tool_arguments(
+        run_context,
+        "read_file",
+        lambda required_path: {"ok": True, "path": required_path},
+        {},
+    )
+    with pytest.raises(StopAgentRun, match="report_visualization_tool_budget_exhausted"):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "read_file",
+            lambda: {"ok": True},
+            {},
+        )
+
+    assert failure["code"] == "report_tool_arguments_invalid"
+
+
+@pytest.mark.anyio
+async def test_visualization_third_script_failure_stops_current_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-script-failures",
+        session_id="session-visualization-script-failures",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-script-failure-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    calls = 0
+
+    def failed_script() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {
+            "ok": False,
+            "status": "completed",
+            "code": "execution_output_error",
+            "details": {"failureCode": "python_traceback"},
+        }
+
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT", 3)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 10)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 10)
+
+    for _ in range(2):
+        result = await normalize_reporting_tool_arguments(
+            run_context,
+            "terminal",
+            failed_script,
+            {},
+        )
+        assert result["code"] == "execution_output_error"
+    with pytest.raises(
+        StopAgentRun,
+        match="report_visualization_script_failure_limit_exhausted",
+    ):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "terminal",
+            failed_script,
+            {},
+        )
+
+    assert calls == 3
+
+
+@pytest.mark.anyio
+async def test_visualization_exit_zero_self_check_errors_consume_script_failure_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-self-check-failures",
+        session_id="session-visualization-self-check-failures",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-self-check-failure-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT", 1)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 10)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 10)
+
+    with pytest.raises(
+        StopAgentRun,
+        match="report_visualization_script_failure_limit_exhausted",
+    ):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "terminal",
+            lambda: {
+                "status": "completed",
+                "exit_code": 0,
+                "output": "chart_income.png: ERROR 'int' object is not subscriptable\n",
+            },
+            {},
+        )
+
+
+@pytest.mark.anyio
+async def test_visualization_retry_restores_cumulative_budget_from_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-retry-budget",
+        session_id="session-visualization-retry-budget",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-retry-budget-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: 3,
+                REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY: 2,
+            }
+        },
+    )
+    calls = 0
+
+    def failed_script() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {
+            "ok": False,
+            "code": "execution_output_error",
+            "details": {"failureCode": "python_traceback"},
+        }
+
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT", 3)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 10)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 4)
+
+    with pytest.raises(
+        StopAgentRun,
+        match="report_visualization_script_failure_limit_exhausted",
+    ):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "terminal",
+            failed_script,
+            {},
+        )
+
+    assert calls == 1
+
+
+@pytest.mark.anyio
+async def test_visualization_retry_total_budget_cannot_be_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-retry-total-budget",
+        session_id="session-visualization-retry-total-budget",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-retry-total-budget-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: 3,
+                REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY: 0,
+            }
+        },
+    )
+    calls = 0
+
+    def succeeded() -> dict[str, bool]:
+        nonlocal calls
+        calls += 1
+        return {"ok": True}
+
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 10)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 4)
+
+    result = await normalize_reporting_tool_arguments(
+        run_context,
+        "read_file",
+        succeeded,
+        {},
+    )
+    with pytest.raises(StopAgentRun, match="report_visualization_tool_budget_exhausted"):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "read_file",
+            succeeded,
+            {},
+        )
+
+    assert result == {"ok": True}
+    assert calls == 1
 
 
 @pytest.mark.anyio

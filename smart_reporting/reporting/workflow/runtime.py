@@ -125,6 +125,7 @@ from ..model_policy import (
     reporting_thinking_profile_from_model,
 )
 from ..models import ReportingError
+from ..phase import REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR
 from ..profile import (
     CapabilitySet,
     EffectiveReportingProfile,
@@ -318,12 +319,17 @@ def _visualization_completion_conditions(
             "不要调用任何读取、写入、执行、Skill 或视觉工具",
             "立即且只调用一次 finalize_report_analysis",
         ]
-    if (
+    previous_tool_calls, _ = _visualization_retry_budget(last_error)
+    if previous_tool_calls > 0 or (
         isinstance(last_error, ReportingError)
-        and last_error.code == "report_visualization_tool_budget_exhausted"
+        and last_error.code
+        in {
+            "report_visualization_tool_budget_exhausted",
+            "report_visualization_script_failure_limit_exhausted",
+        }
     ):
         return [
-            "上一轮因成功工具调用达到上限而终止；禁止重新规划、重复读取事实或重新探索工作区",
+            "上一轮因工具调用或脚本失败达到上限而终止；禁止重新规划、重复读取事实或重新探索工作区",
             "复用工作区已有脚本和图表，只完成尚缺的最小执行或检查",
             "整批图表只调用一次 register_report_charts，成功后立即调用 finalize_report_analysis",
         ]
@@ -334,6 +340,26 @@ def _visualization_completion_conditions(
         "最后且只调用一次 finalize_report_analysis",
         "evidence、receipt、citation 和文件身份由服务端 durable state 派生",
     ]
+
+
+def _visualization_retry_budget(last_error: Exception | None) -> tuple[int, int]:
+    if (
+        isinstance(last_error, ReportingError)
+        and isinstance(last_error.details, Mapping)
+        and ("totalToolCalls" in last_error.details or "scriptFailureCount" in last_error.details)
+    ):
+        source: Any = last_error.details
+    else:
+        source = getattr(last_error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, None)
+
+    def count(raw: Any) -> int:
+        return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
+
+    if isinstance(source, Mapping):
+        return count(source.get("totalToolCalls")), count(source.get("scriptFailureCount"))
+    if isinstance(source, Sequence) and not isinstance(source, (str, bytes)) and len(source) == 2:
+        return count(source[0]), count(source[1])
+    return 0, 0
 
 
 class _StrictModel(BaseModel):
@@ -3952,6 +3978,9 @@ class ReportWorkflowRuntime:
                     "report_analysis_context_too_large",
                     "全局分析投影超过模型输入边界；证据未被静默截断。",
                 )
+            visualization_tool_calls, visualization_script_failures = _visualization_retry_budget(
+                last_error
+            )
             contract = build_report_phase_acceptance_contract(
                 phase="analysis",
                 validation_context_file=validation_context_file.model_dump(
@@ -3961,6 +3990,8 @@ class ReportWorkflowRuntime:
                     "reportRunId": str(run_context.run_id or scope["externalRunId"]),
                     "taskKind": "visualization",
                     "chartsRegistered": charts_registered,
+                    "visualizationToolCalls": visualization_tool_calls,
+                    "visualizationScriptFailures": visualization_script_failures,
                     "thinkingEffort": self._worker_thinking_effort(
                         retry=any(
                             item.status == "failed"

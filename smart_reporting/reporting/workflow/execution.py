@@ -21,13 +21,18 @@ from ..phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
     REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     bind_reporting_run_context,
     capture_reporting_projection_metrics,
     record_reporting_tool_event,
     reporting_phase_from_acceptance_contract,
     reporting_task_kind_from_acceptance_contract,
     reporting_thinking_effort_from_acceptance_contract,
+    reporting_visualization_budget_from_acceptance_contract,
+    reporting_visualization_budget_from_run_context,
     reporting_visualization_registered_from_acceptance_contract,
 )
 
@@ -104,6 +109,7 @@ class ReportTaskRunner:
                 return self._finish_receipt(completed)
             continuing = task.state in {TaskState.ACTIVE, TaskState.SUSPENDED}
             reporting_phase: str | None = None
+            reporting_task_kind: str | None = None
             worker_run_context: RunContext | None = None
             try:
                 acceptance_contract = task.acceptance_contract
@@ -126,6 +132,9 @@ class ReportTaskRunner:
                 )
                 visualization_registered = (
                     reporting_visualization_registered_from_acceptance_contract(acceptance_contract)
+                )
+                visualization_tool_calls, visualization_script_failures = (
+                    reporting_visualization_budget_from_acceptance_contract(acceptance_contract)
                 )
                 if continuing:
                     task, attempt = await self.repository.resume_current(
@@ -165,6 +174,18 @@ class ReportTaskRunner:
                         **(
                             {REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY: True}
                             if visualization_registered
+                            else {}
+                        ),
+                        **(
+                            {
+                                REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: (
+                                    visualization_tool_calls
+                                ),
+                                REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY: (
+                                    visualization_script_failures
+                                ),
+                            }
+                            if reporting_task_kind == "visualization"
                             else {}
                         ),
                     }
@@ -209,7 +230,15 @@ class ReportTaskRunner:
                 return self._finish_receipt(
                     completed, output=output, projection_metrics=projection_metrics
                 )
-            except BaseException:
+            except BaseException as error:
+                if reporting_task_kind == "visualization" and isinstance(error, Exception):
+                    # fresh retry 可能由模型超时等非预算异常触发；异常本身必须原样上抛，
+                    # 但已经发生的工具调用不能因此从零开始。
+                    setattr(
+                        error,
+                        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+                        reporting_visualization_budget_from_run_context(worker_run_context),
+                    )
                 await complete_cleanup(self._cancel_and_cleanup(scope, session.lease.epoch))
                 raise
 

@@ -132,7 +132,7 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "使用 register_report_charts 登记；图表必须绑定已注册 citationId。"
     ),
     (
-        "可视化阶段有成功工具调用硬预算。事实读取、脚本写入、脚本执行和视觉检查分别合并为最少批次；"
+        "可视化阶段有总工具调用和脚本失败硬预算。事实读取、脚本写入、脚本执行和视觉检查分别合并为最少批次；"
         "禁止对相同文件反复 read_file、terminal 或 view_image，也不得在上下文恢复后重新探索已完成工作。"
     ),
     (

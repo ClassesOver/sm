@@ -23,6 +23,12 @@ from smart_reporting.reporting.phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
+    REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
+    reporting_visualization_budget_from_acceptance_contract,
+    reporting_visualization_budget_from_run_context,
     reporting_visualization_registered_from_acceptance_contract,
 )
 from smart_reporting.reporting.tests.workspace_fakes import service as fake_workspace_service
@@ -47,6 +53,7 @@ from smart_reporting.reporting.workflow.checkpoint import ProfileReadReceipt
 from smart_reporting.reporting.workflow.runtime import (
     _analysis_item_completion_conditions,
     _visualization_completion_conditions,
+    _visualization_retry_budget,
 )
 from smart_reporting.reporting.workflow.state import ReportingRunState
 from smart_reporting.task_execution.acceptance import normalize_acceptance_contract
@@ -137,6 +144,90 @@ def test_visualization_retry_after_registration_only_allows_finalize() -> None:
     assert any("不要调用任何读取" in item for item in conditions)
     assert any("finalize_report_analysis" in item for item in conditions)
     assert not any("register_report_charts" in item for item in conditions)
+
+
+def test_visualization_retry_budget_is_read_from_trusted_phase_contract() -> None:
+    contract = build_report_phase_acceptance_contract(
+        phase="analysis",
+        validation_context_file={"path": "analysis-context.json"},
+        phase_contract={
+            "taskKind": "visualization",
+            "reportRunId": "report-1",
+            "visualizationToolCalls": 48,
+            "visualizationScriptFailures": 2,
+        },
+        analysis_output_path="analysis-output.json",
+    )
+
+    assert reporting_visualization_budget_from_acceptance_contract(contract) == (48, 2)
+
+
+def test_visualization_retry_budget_is_restored_from_budget_error() -> None:
+    error = ReportingError(
+        "report_visualization_tool_budget_exhausted",
+        "当前可视化 Task 已达到工具调用上限。",
+        details={"totalToolCalls": 48, "scriptFailureCount": 2},
+    )
+
+    assert _visualization_retry_budget(error) == (48, 2)
+    assert _visualization_retry_budget(RuntimeError("other")) == (0, 0)
+
+
+def test_visualization_retry_budget_survives_unrelated_worker_error() -> None:
+    context = RunContext(
+        run_id="worker-run-2",
+        session_id="worker-session-2",
+        session_state={
+            REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY: {
+                "visualization-task-2:worker-run-2": {
+                    "baseTotal": 20,
+                    "baseScriptFailures": 1,
+                    "attemptedCount": 7,
+                    "scriptFailureCount": 1,
+                }
+            }
+        },
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-task-2",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    error = TimeoutError("model timeout")
+    setattr(
+        error,
+        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+        reporting_visualization_budget_from_run_context(context),
+    )
+
+    assert _visualization_retry_budget(error) == (27, 2)
+    conditions = _visualization_completion_conditions(error, False)
+    assert any("复用工作区已有脚本和图表" in item for item in conditions)
+
+    domain_error = ReportingError("report_worker_error", "worker failed", details={"stage": 2})
+    setattr(domain_error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, (27, 2))
+    assert _visualization_retry_budget(domain_error) == (27, 2)
+
+
+def test_visualization_retry_budget_keeps_dependency_base_before_first_tool() -> None:
+    context = RunContext(
+        run_id="worker-run-3",
+        session_id="worker-session-3",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-task-3",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: 48,
+                REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY: 2,
+            }
+        },
+    )
+
+    assert reporting_visualization_budget_from_run_context(context) == (48, 2)
 
 
 @pytest.mark.anyio

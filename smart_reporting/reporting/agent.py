@@ -61,6 +61,9 @@ from .phase import (
     REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
     REPORTING_SECTION_INPUT_TOKEN_HARD_CAP,
     REPORTING_TASK_DEPENDENCY,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
+    REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     ReportingPhase,
     current_reporting_run_context,
     record_reporting_projection_metrics,
@@ -100,10 +103,12 @@ _REPORT_TOOL_SAME_FAILURE_LIMIT = 3
 _REPORT_TOOL_PHASE_FAILURE_LIMIT = 8
 _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_STATE_KEY = "agentos_reporting_analysis_success_tools"
 _REPORT_ANALYSIS_ITEM_SUCCESS_TOOL_LIMIT = 24
-_REPORT_VISUALIZATION_SUCCESS_TOOL_STATE_KEY = "agentos_reporting_visualization_success_tools"
-# 可视化只需要读取已冻结事实、生成并检查图表、登记一次并冻结；成功调用预算
-# 防止模型在登记前后反复探索而无限延长当前 Task。finalize 不计入该预算。
-_REPORT_VISUALIZATION_SUCCESS_TOOL_LIMIT = 48
+# 可视化的第一次 attempt 最多执行 48 次工具；fresh retry 从受信契约恢复累计计数，
+# 两轮合计不得超过 64 次。失败调用同样消耗预算，避免通过不断更换错误参数绕过上限。
+# finalize 是登记后的单向收尾，不计入预算；确定性脚本失败最多允许 3 次。
+_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT = 48
+_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT = 64
+_REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT = 3
 _REPORT_VISUALIZATION_REGISTERED_STATE_KEY = "agentos_reporting_visualization_registered"
 _REPORT_PROFILE_EMPTY_QUERY_STATE_KEY = "agentos_reporting_empty_profile_queries"
 _REPORT_ARGUMENT_MAX_ISSUES = 8
@@ -282,12 +287,70 @@ def _reporting_visualization_tool_budget(
         or reporting_task_kind_from_run_context(run_context) != "visualization"
     ):
         return None
-    return _reporting_success_tool_budget(
-        run_context,
-        task_kind="visualization",
-        state_key=_REPORT_VISUALIZATION_SUCCESS_TOOL_STATE_KEY,
-        limit=_REPORT_VISUALIZATION_SUCCESS_TOOL_LIMIT,
+    state = _reporting_session_state(run_context)
+    if state is None:
+        return None
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    external_run_id = binding.get("externalRunId")
+    identity = f"{external_run_id or ''}:{run_context.run_id or ''}"
+    budgets = state.get(REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY)
+    budgets = budgets if isinstance(budgets, dict) else {}
+    stored = budgets.get(identity)
+    stored = stored if isinstance(stored, dict) else {}
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    base_total = count(binding.get(REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY))
+    base_script_failures = count(
+        binding.get(REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY)
     )
+    attempted_count = count(stored.get("attemptedCount"))
+    successful_count = count(stored.get("successfulCount"))
+    script_failure_count = count(stored.get("scriptFailureCount"))
+    in_flight_count = count(stored.get("inFlightCount"))
+    cumulative_total = base_total + attempted_count + in_flight_count
+    cumulative_script_failures = base_script_failures + script_failure_count
+    if (
+        attempted_count + in_flight_count >= _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT
+        or cumulative_total >= _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT
+    ):
+        _stop_exhausted_visualization_budget(
+            run_context,
+            code="report_visualization_tool_budget_exhausted",
+            message="当前可视化 Task 已达到工具调用上限，已停止本次 run。",
+            attempted_count=attempted_count,
+            successful_count=successful_count,
+            in_flight_count=in_flight_count,
+            total_tool_calls=cumulative_total,
+            script_failure_count=cumulative_script_failures,
+        )
+    if (
+        function_name == "terminal"
+        and cumulative_script_failures >= _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT
+    ):
+        _stop_exhausted_visualization_budget(
+            run_context,
+            code="report_visualization_script_failure_limit_exhausted",
+            message="当前可视化 Task 已达到脚本执行失败上限，已停止本次 run。",
+            attempted_count=attempted_count,
+            successful_count=successful_count,
+            in_flight_count=in_flight_count,
+            total_tool_calls=cumulative_total,
+            script_failure_count=cumulative_script_failures,
+        )
+    budgets[identity] = {
+        "baseTotal": base_total,
+        "baseScriptFailures": base_script_failures,
+        "attemptedCount": attempted_count,
+        "successfulCount": successful_count,
+        "scriptFailureCount": script_failure_count,
+        "inFlightCount": in_flight_count + 1,
+    }
+    state[REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY] = budgets
+    return state, identity, REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY
 
 
 def _finish_reporting_success_tool_budget(
@@ -312,6 +375,108 @@ def _finish_reporting_success_tool_budget(
         "successfulCount": successful_count + int(succeeded),
         "inFlightCount": max(int(stored.get("inFlightCount", 1)) - 1, 0),
     }
+
+
+def _finish_visualization_tool_budget(
+    run_context: RunContext,
+    reservation: tuple[dict[str, Any], str, str] | None,
+    function_name: str,
+    result: Any,
+    *,
+    succeeded: bool,
+) -> None:
+    if reservation is None:
+        return
+    state, identity, state_key = reservation
+    raw_budgets = state.get(state_key)
+    if not isinstance(raw_budgets, dict):
+        return
+    budgets: dict[str, Any] = raw_budgets
+    stored = budgets.get(identity)
+    if not isinstance(stored, dict):
+        return
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    attempted_count = count(stored.get("attemptedCount")) + 1
+    successful_count = count(stored.get("successfulCount")) + int(succeeded)
+    script_failure_count = count(stored.get("scriptFailureCount"))
+    script_failed = _visualization_terminal_failed(function_name, result)
+    script_failure_count += int(script_failed)
+    in_flight_count = max(count(stored.get("inFlightCount")) - 1, 0)
+    budgets[identity] = {
+        **stored,
+        "attemptedCount": attempted_count,
+        "successfulCount": successful_count,
+        "scriptFailureCount": script_failure_count,
+        "inFlightCount": in_flight_count,
+    }
+    cumulative_total = count(stored.get("baseTotal")) + attempted_count
+    cumulative_script_failures = count(stored.get("baseScriptFailures")) + script_failure_count
+    if script_failed and cumulative_script_failures >= _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT:
+        _stop_exhausted_visualization_budget(
+            run_context,
+            code="report_visualization_script_failure_limit_exhausted",
+            message="当前可视化 Task 已达到脚本执行失败上限，已停止本次 run。",
+            attempted_count=attempted_count,
+            successful_count=successful_count,
+            in_flight_count=in_flight_count,
+            total_tool_calls=cumulative_total,
+            script_failure_count=cumulative_script_failures,
+        )
+
+
+def _visualization_terminal_failed(function_name: str, result: Any) -> bool:
+    if function_name != "terminal" or not isinstance(result, Mapping):
+        return False
+    if result.get("ok") is False and result.get("code") == "execution_output_error":
+        return True
+    output = result.get("output")
+    if not isinstance(output, str):
+        return False
+    # 图表自检通常自行捕获异常并保持 exit_code=0；只识别逐项检查的明确
+    # “对象: ERROR 原因”行，避免普通日志或报告正文中的 ERROR 单词误耗预算。
+    return any(": ERROR " in line.strip() for line in output.splitlines())
+
+
+def _stop_exhausted_visualization_budget(
+    run_context: RunContext,
+    *,
+    code: str,
+    message: str,
+    attempted_count: int,
+    successful_count: int,
+    in_flight_count: int,
+    total_tool_calls: int,
+    script_failure_count: int,
+) -> None:
+    details = {
+        "attemptToolCalls": attempted_count,
+        "successfulToolCalls": successful_count,
+        "inFlightToolCalls": in_flight_count,
+        "totalToolCalls": total_tool_calls,
+        "scriptFailureCount": script_failure_count,
+        "attemptLimit": _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT,
+        "totalLimit": _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT,
+        "scriptFailureLimit": _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT,
+    }
+    error = ReportingError(code, message, details=details)
+    _record_reporting_tool_run_error(run_context, error)
+    serialized = json.dumps(
+        {
+            "ok": False,
+            "status": "rejected",
+            "code": error.code,
+            "message": error.message,
+            "requiredActions": ["结束本次 run，交由上层按既有重试策略恢复当前 Task。"],
+            "retryable": False,
+            "details": details,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    raise StopAgentRun(serialized, agent_message=serialized)
 
 
 def _stop_exhausted_reporting_tool_budget(
@@ -878,14 +1043,20 @@ async def normalize_reporting_tool_arguments(
                 "snapshotHash": repeated_empty["details"]["snapshotHash"],
             },
         )
-    reservation = _reporting_analysis_item_tool_budget(run_context, function_name)
+    analysis_reservation = _reporting_analysis_item_tool_budget(run_context, function_name)
     visualization_reservation = _reporting_visualization_tool_budget(run_context, function_name)
-    reservation = reservation or visualization_reservation
     try:
         result = function_call(**arguments)
         result = await result if inspect.isawaitable(result) else result
     except (TypeError, ValidationError) as error:
-        _finish_reporting_success_tool_budget(reservation, succeeded=False)
+        _finish_reporting_success_tool_budget(analysis_reservation, succeeded=False)
+        _finish_visualization_tool_budget(
+            run_context,
+            visualization_reservation,
+            function_name,
+            None,
+            succeeded=False,
+        )
         if not _is_tool_argument_error(error):
             raise
         failure = _report_tool_argument_failure(
@@ -900,7 +1071,14 @@ async def normalize_reporting_tool_arguments(
             arguments,
         )
     except BaseException:
-        _finish_reporting_success_tool_budget(reservation, succeeded=False)
+        _finish_reporting_success_tool_budget(analysis_reservation, succeeded=False)
+        _finish_visualization_tool_budget(
+            run_context,
+            visualization_reservation,
+            function_name,
+            None,
+            succeeded=False,
+        )
         raise
     if (
         empty_query_state is not None
@@ -940,7 +1118,14 @@ async def normalize_reporting_tool_arguments(
         and isinstance(state, dict)
     ):
         state[_REPORT_VISUALIZATION_REGISTERED_STATE_KEY] = True
-    _finish_reporting_success_tool_budget(reservation, succeeded=succeeded)
+    _finish_reporting_success_tool_budget(analysis_reservation, succeeded=succeeded)
+    _finish_visualization_tool_budget(
+        run_context,
+        visualization_reservation,
+        function_name,
+        result,
+        succeeded=succeeded,
+    )
     return _enforce_reporting_no_progress(run_context, function_name, result, arguments)
 
 
