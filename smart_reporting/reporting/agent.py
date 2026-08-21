@@ -1420,6 +1420,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
 
         base_profile = reporting_thinking_profile_from_model(self)
         profile = base_profile
+        previous_error = self.report_run_error()
         bound_effort = reporting_thinking_effort_from_run_context(current_reporting_run_context())
         if _reporting_phase_from_messages(messages) == "section" or bound_effort == "off":
             profile = ReportingThinkingProfile.off(temperature=base_profile.temperature)
@@ -1435,9 +1436,16 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         else:
             escalation_profile = getattr(self, "_report_escalation_thinking_profile", None)
             escalation_fields = getattr(self, "_report_thinking_escalation_fields", ())
+            # Planner 的 Pydantic validator 在模型响应边界失败后，Agno 会使用同一模型
+            # 自动重试，但不会改写原始 user message。错误由 ContextVar 按异步任务和
+            # 模型实例隔离；因此只有紧邻的 Schema 重试或显式 correction 才能升级，
+            # 首次请求和并发 Planner 不会继承其他请求的 thinking 状态。
             if isinstance(escalation_profile, ReportingThinkingProfile) and (
-                isinstance(escalation_fields, tuple)
-                and _reporting_request_uses_escalation(messages, escalation_fields)
+                isinstance(previous_error, ValidationError)
+                or (
+                    isinstance(escalation_fields, tuple)
+                    and _reporting_request_uses_escalation(messages, escalation_fields)
+                )
             ):
                 profile = escalation_profile
         request_model = copy(self)
@@ -1469,8 +1477,8 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         *args: Any,
         **kwargs: Any,
     ) -> ModelResponse:
-        self._clear_report_run_error()
         request_model = self._phase_request_model(messages)
+        self._clear_report_run_error()
         try:
             response = ProjectedOpenAIChat.response(request_model, messages, *args, **kwargs)
             self._clear_report_run_error()
@@ -1485,8 +1493,8 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         *args: Any,
         **kwargs: Any,
     ) -> ModelResponse:
-        self._clear_report_run_error()
         request_model = self._phase_request_model(messages)
+        self._clear_report_run_error()
         try:
             response = await ProjectedOpenAIChat.aresponse(
                 request_model,
@@ -1506,8 +1514,8 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         *args: Any,
         **kwargs: Any,
     ) -> Iterator[ModelResponse | RunOutputEvent | TeamRunOutputEvent]:
-        self._clear_report_run_error()
         request_model = self._phase_request_model(messages)
+        self._clear_report_run_error()
         try:
             yield from ProjectedOpenAIChat.response_stream(
                 request_model,
@@ -1526,8 +1534,8 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         *args: Any,
         **kwargs: Any,
     ) -> AsyncIterator[ModelResponse | RunOutputEvent | TeamRunOutputEvent]:
-        self._clear_report_run_error()
         request_model = self._phase_request_model(messages)
+        self._clear_report_run_error()
         try:
             async for response in ProjectedOpenAIChat.aresponse_stream(
                 request_model,

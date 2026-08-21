@@ -1092,9 +1092,9 @@ class ReportWorkflowRuntime:
             if planner_enable_thinking
             else planner_off
         )
-        # DeepSeek V4 只有 off/high/max 三个真实档位。确定性归一化和首次提纲关闭
-        # thinking；Schema 映射与指标分类使用 high；跨表分析计划和 SQL 使用配置的
-        # max 档位。只有指标语义纠错升级到 max；普通提纲反馈仍保持 off。
+        # DeepSeek V4 只有 off/high/max 三个真实档位。需要推理的四个 Planner 首次
+        # 请求关闭 thinking；只有 Schema 校验失败或服务端签发 correction 时才升级。
+        # 数据理解升到 high，指标语义、分析计划和 SQL 升到 max；归一化和提纲始终 off。
         self._request_normalizer = self._planning_agent(
             report_worker,
             "report-request-normalizer",
@@ -1113,7 +1113,8 @@ class ReportWorkflowRuntime:
             report_worker,
             "report-data-understanding-planner",
             DataUnderstandingPlan,
-            thinking_profile=planner_high,
+            thinking_profile=planner_off,
+            escalation_thinking_profile=planner_high,
             stage_instructions=(
                 "只选择完成报告目标所需的数据表",
                 "sourceId 必须与输入 Schema 完全一致",
@@ -1136,7 +1137,7 @@ class ReportWorkflowRuntime:
             report_worker,
             "report-measure-semantic-proposer",
             MeasureSemanticProposal,
-            thinking_profile=planner_high,
+            thinking_profile=planner_off,
             escalation_thinking_profile=planner_max,
             stage_instructions=(
                 "这是待用户审核的候选，不是已确认业务事实；只依据输入 Schema、术语和受限数据画像分类",
@@ -1174,7 +1175,8 @@ class ReportWorkflowRuntime:
             report_worker,
             "report-analysis-planner",
             AnalysisBundle,
-            thinking_profile=planner_max,
+            thinking_profile=planner_off,
+            escalation_thinking_profile=planner_max,
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
                 "每个 analyses 项只回答一个原子管理问题，并且只声明一个主要指标族；复杂问题必须拆成多个分析项",
@@ -1205,7 +1207,8 @@ class ReportWorkflowRuntime:
             report_worker,
             "report-sql-planner",
             GeneratedQueryBatch,
-            thinking_profile=planner_max,
+            thinking_profile=planner_off,
+            escalation_thinking_profile=planner_max,
             stage_instructions=(
                 "一次返回覆盖全部 requirements 的 SQL 批次",
                 "每项只生成一条 SELECT 或只读 CTE",

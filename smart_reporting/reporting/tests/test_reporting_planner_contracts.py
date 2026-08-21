@@ -23,7 +23,10 @@ from smart_reporting.reporting.hospital_operation.outline import ReportOutlinePr
 from smart_reporting.reporting.instructions import (
     REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
 )
-from smart_reporting.reporting.model_policy import ReportingThinkingProfile
+from smart_reporting.reporting.model_policy import (
+    ReportingThinkingProfile,
+    reporting_thinking_profile_from_model,
+)
 from smart_reporting.reporting.workflow import runtime as reporting_runtime
 from smart_reporting.reporting.workflow.checkpoint import MetricDefinition
 from smart_reporting.reporting.workflow.query_pipeline import _has_complete_period_filter
@@ -439,6 +442,42 @@ def test_planner_validation_runs_inside_agent_retry_boundary() -> None:
         validator("{}")
 
 
+def test_runtime_planners_start_without_thinking_and_preserve_escalation_profiles() -> None:
+    worker = Agent(
+        model=ReportWorkerOpenAIChat(
+            id="deepseek-v4-flash-0731",
+            api_key="test",
+            reasoning_effort="high",
+            extra_body={"enable_thinking": True, "thinking_budget": 8192},
+        )
+    )
+
+    runtime = ReportWorkflowRuntime(
+        db=SimpleNamespace(),
+        report_worker=worker,
+        task_runner=SimpleNamespace(),
+        workspace_service=SimpleNamespace(),
+        registry=SimpleNamespace(),
+        profiles=SimpleNamespace(),
+        planner_enable_thinking=True,
+        planner_thinking_budget=8192,
+        state_repository=SimpleNamespace(),
+    )
+
+    expected_escalations = (
+        (runtime._data_understanding_agent, "high"),
+        (runtime._measure_semantic_agent, "max"),
+        (runtime._analysis_agent, "max"),
+        (runtime._sql_agent, "max"),
+    )
+    for stage, expected_effort in expected_escalations:
+        assert reporting_thinking_profile_from_model(stage.model).enabled is False
+        escalation = getattr(stage.model, "_report_escalation_thinking_profile")
+        assert escalation.enabled is True
+        assert escalation.reasoning_effort == expected_effort
+        assert escalation.thinking_budget == 8192
+
+
 def test_analysis_planner_normalizes_repeated_source_prefix_before_schema_validation() -> None:
     planner = Agent(
         model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
@@ -515,12 +554,14 @@ def test_period_filter_accepts_exact_typed_date_bounds(sql: str) -> None:
 @pytest.mark.anyio
 async def test_planner_schema_validation_uses_agno_agent_retries(monkeypatch) -> None:
     attempts = 0
+    request_profiles: list[ReportingThinkingProfile] = []
 
-    async def fake_aresponse(_self, *args, **kwargs):
+    async def fake_aresponse(request_model, *args, **kwargs):
         nonlocal attempts
         _ = args, kwargs
         attempts += 1
-        if attempts < 3:
+        request_profiles.append(reporting_thinking_profile_from_model(request_model))
+        if attempts == 1:
             return ModelResponse(content="{}")
         return ModelResponse(
             content=(
@@ -540,10 +581,18 @@ async def test_planner_schema_validation_uses_agno_agent_retries(monkeypatch) ->
         "report-data-understanding-planner",
         DataUnderstandingPlan,
         thinking_profile=ReportingThinkingProfile.off(),
+        escalation_thinking_profile=ReportingThinkingProfile.on(
+            reasoning_effort="high",
+            thinking_budget=8192,
+        ),
     )
     stage.delay_between_retries = 0
 
     output = await stage.arun("plan")
 
-    assert attempts == 3
+    assert attempts == 2
+    assert request_profiles == [
+        ReportingThinkingProfile.off(),
+        ReportingThinkingProfile.on(reasoning_effort="high", thinking_budget=8192),
+    ]
     assert isinstance(output.content, DataUnderstandingPlan)
