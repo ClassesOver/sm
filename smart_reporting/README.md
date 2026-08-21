@@ -26,9 +26,9 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 `odoo_session` 和 `thread`；服务端会用验签后的 `user/thread` 覆盖 AgentOS run 请求中的
 `user_id/session_id`。签名密钥由 `AGENT_WORKSPACE_HMAC_SECRET` 配置。
 
-Reporting 正常发布时先将 PDF/Word 分块写入 PostgreSQL并核验大小与 SHA-256，再签发
-下载授权并删除对应 Daytona sandbox。下载接口从 PostgreSQL 流式读取产物，继续校验上述
-Odoo 身份作用域；授权过期或撤销不会删除已持久化产物。
+Reporting 正常发布时会重新核验 PDF/Word 的大小与 SHA-256，并返回 Daytona Workspace 中的
+相对路径（PDF 为 `path`，Word 为 `word.path`）。当前 Workflow 不持久化报告文件、不签发下载
+授权，也不自动删除对应 Daytona sandbox；调用方应使用已验证的 Workspace capability 访问产物。
 
 ## CLI
 
