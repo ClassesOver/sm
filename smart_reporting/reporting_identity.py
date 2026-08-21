@@ -23,9 +23,9 @@ _CURRENT_IDENTITY: ContextVar[ReportServerIdentity | None] = ContextVar(
 
 def requires_workspace_capability(path: str, *, has_thread: bool, has_capability: bool) -> bool:
     normalized = str(path or "").rstrip("/") or "/"
-    protected_resource = normalized.startswith("/workspace") or normalized.startswith(
-        "/reports/v1/download/"
-    )
+    if normalized.startswith("/reports/v1/download/"):
+        return False
+    protected_resource = normalized.startswith("/workspace")
     # 通用 AgentOS Console 只提供原生 user_id/session_id，不能生成 Odoo capability。
     # 两个扩展头均缺失时允许普通 run；访问受保护资源或任一扩展头已经出现时，
     # 必须进入完整验签流程，禁止用默认身份或部分请求头静默降级。

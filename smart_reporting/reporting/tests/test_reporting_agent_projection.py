@@ -1286,7 +1286,7 @@ def test_reporting_model_replays_reasoning_only_for_tool_call_turns() -> None:
     assert "reasoning_content" not in model._format_message(plain_turn)
 
 
-def test_report_agent_exposes_only_verified_workspace_artifact_paths() -> None:
+def test_report_agent_exposes_verified_download_links_or_workspace_paths() -> None:
     worker = Agent(
         id="report-facade-artifact-contract-test",
         model=ProjectedOpenAIChat(id="report-facade-artifact-contract-test", api_key="test"),
@@ -1295,5 +1295,6 @@ def test_report_agent_exposes_only_verified_workspace_artifact_paths() -> None:
     facade = report_agent_module.create_report_agent(worker, cast(Any, SimpleNamespace()))
     instructions = "\n".join(cast(list[str], facade.instructions))
 
+    assert "`pdf.downloadUrl` 和 `word.downloadUrl`" in instructions
     assert "PDF 使用 `path`，Word 使用 `word.path`" in instructions
-    assert "不得虚构 `downloadUrl`" in instructions
+    assert "不得虚构返回中不存在的字段" in instructions

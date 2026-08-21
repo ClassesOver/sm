@@ -13,9 +13,9 @@ from agno.workflow.types import StepOutput
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from smart_reporting.reporting.delivery.publishing import (
+    DOWNLOAD_GRANT_TTL,
     ReportArtifactPersistenceService,
     ReportArtifactSpec,
-    ReportDownloadCallerScope,
     ReportDownloadGrant,
     ReportDownloadGrantService,
     ReportDownloadHttpService,
@@ -31,10 +31,6 @@ from smart_reporting.reporting.tests.delivery_fakes import (
 )
 from smart_reporting.reporting.workflow import runtime as runtime_module
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
-from smart_reporting.reporting_identity import (
-    ReportServerIdentity,
-    bind_report_identity,
-)
 from smart_reporting.workspace import WorkspaceService
 
 
@@ -164,33 +160,34 @@ async def test_persisted_report_download_survives_sandbox_deletion() -> None:
     )
     await workspace.adestroy(scope.thread_id)
     downloads = ReportDownloadHttpService(grants, artifacts)
-    caller = ReportDownloadCallerScope(
-        database=scope.database,
-        user_id=scope.user_id,
-        company_id=scope.company_id,
-        session_id=scope.session_id,
-        thread_id=scope.thread_id,
-    )
-
-    _pdf_grant, pdf_stream = await downloads.stream(raw_grant, caller=caller)
-    _word_grant, word_stream = await downloads.stream(raw_grant, caller=caller, artifact="word")
+    _pdf_grant, pdf_stream = await downloads.stream(raw_grant)
+    _word_grant, word_stream = await downloads.stream(raw_grant, artifact="word")
 
     assert workspace.sandbox is None
     assert await _content(pdf_stream) == pdf
     assert await _content(word_stream) == word
 
-    with pytest.raises(ReportingError) as raised:
-        await downloads.stream(
-            raw_grant,
-            caller=ReportDownloadCallerScope(
-                database=scope.database,
-                user_id=scope.user_id,
-                company_id="other-company",
-                session_id=scope.session_id,
-                thread_id=scope.thread_id,
-            ),
-        )
-    assert raised.value.code == "report_download_scope_mismatch"
+
+@pytest.mark.anyio
+async def test_download_grant_defaults_to_thirty_days() -> None:
+    now = datetime(2026, 8, 21, tzinfo=UTC)
+    grants = ReportDownloadGrantService(InMemoryDownloadGrantRepository())
+
+    _raw, grant = await grants.issue(
+        scope=_scope(),
+        report_id="report-1",
+        revision=1,
+        pdf_path="reports/report.pdf",
+        pdf_size=3,
+        pdf_sha256="a" * 64,
+        word_path="reports/report.docx",
+        word_size=4,
+        word_sha256="b" * 64,
+        now=now,
+    )
+
+    assert DOWNLOAD_GRANT_TTL == timedelta(days=30)
+    assert grant.expires_at == now + timedelta(days=30)
 
 
 @pytest.mark.anyio
@@ -242,15 +239,12 @@ async def test_http_publication_persists_and_issues_grant_before_destroying_sand
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
     runtime.workspace_service = Workspace()
-    identity = ReportServerIdentity("odoo", "7", "3", "session", "thread")
-
-    with bind_report_identity(identity):
-        result = await runtime.issue_http_publication(
-            {"thread_id": "thread", "external_run_id": "external", "user_id": "7"},
-            "workflow-session",
-            "workflow-run",
-            content,
-        )
+    result = await runtime.issue_http_publication(
+        {"thread_id": "thread", "external_run_id": "external", "user_id": "7"},
+        "workflow-session",
+        "workflow-run",
+        content,
+    )
 
     assert events == ["persist", "grant", "destroy"]
     assert result["pdf"]["downloadUrl"] == "/reports/v1/download/raw"
@@ -292,9 +286,7 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
         "sourceWarnings": [],
         "codingReceipts": [],
     }
-    identity = ReportServerIdentity("odoo", "7", "3", "session", "thread")
-
-    with bind_report_identity(identity), pytest.raises(ReportingError) as raised:
+    with pytest.raises(ReportingError) as raised:
         await runtime.issue_http_publication(
             {"thread_id": "thread", "external_run_id": "external", "user_id": "7"},
             "workflow-session",
@@ -307,10 +299,8 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("with_odoo_identity", [False, True])
-async def test_workflow_publication_never_requires_odoo_scope(
+async def test_workflow_publication_uses_http_links_when_service_is_configured(
     monkeypatch: pytest.MonkeyPatch,
-    with_odoo_identity: bool,
 ) -> None:
     pdf = b"pdf"
     word = b"word"
@@ -336,20 +326,14 @@ async def test_workflow_publication_never_requires_odoo_scope(
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.db = object()
     runtime.publish_report = AsyncMock(return_value=StepOutput(content=output))
-    runtime.issue_workspace_publication = AsyncMock(
-        return_value={
-            "path": output["pdfPath"],
-            "size": output["pdfSize"],
-            "sha256": output["pdfSha256"],
-            "word": {
-                "path": output["wordPath"],
-                "size": output["wordSize"],
-                "sha256": output["wordSha256"],
-            },
-        }
-    )
+    runtime.download_grants = object()
+    runtime.artifact_persistence = object()
+    runtime.issue_workspace_publication = AsyncMock()
     runtime.issue_http_publication = AsyncMock(
-        side_effect=AssertionError("报表工作流不得签发 Odoo 下载授权")
+        return_value={
+            "pdf": {"downloadUrl": "/reports/v1/download/raw"},
+            "word": {"downloadUrl": "/reports/v1/download/raw/word"},
+        }
     )
     runtime.workflow()
     finalize = captured["finalize_publication"]
@@ -360,18 +344,10 @@ async def test_workflow_publication_never_requires_odoo_scope(
         session_state={},
     )
 
-    async def publish() -> StepOutput:
-        return await finalize(SimpleNamespace(), context)
+    result = await finalize(SimpleNamespace(), context)
 
-    if with_odoo_identity:
-        identity = ReportServerIdentity("odoo", "7", "3", "session", "thread")
-        with bind_report_identity(identity):
-            result = await publish()
-    else:
-        result = await publish()
-
-    assert result.content["path"] == "reports/report.pdf"
-    runtime.issue_workspace_publication.assert_awaited_once_with(
+    assert result.content["pdf"]["downloadUrl"] == "/reports/v1/download/raw"
+    runtime.issue_http_publication.assert_awaited_once_with(
         {
             "external_run_id": "workflow-run",
             "thread_id": "thread",
@@ -381,4 +357,53 @@ async def test_workflow_publication_never_requires_odoo_scope(
         "workflow-run",
         output,
     )
+    runtime.issue_workspace_publication.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_workflow_publication_keeps_workspace_paths_without_http_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = {
+        "reportId": "report-1",
+        "revision": 1,
+        "pdfPath": "reports/report.pdf",
+        "pdfSize": 3,
+        "pdfSha256": "a" * 64,
+        "wordPath": "reports/report.docx",
+        "wordSize": 4,
+        "wordSha256": "b" * 64,
+        "sourceWarnings": [],
+        "codingReceipts": [],
+    }
+    captured: dict[str, Any] = {}
+
+    def capture_workflow(**values: Any) -> object:
+        captured.update(values)
+        return object()
+
+    monkeypatch.setattr(runtime_module, "create_reporting_workflow", capture_workflow)
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.db = object()
+    runtime.download_grants = None
+    runtime.artifact_persistence = None
+    runtime.publish_report = AsyncMock(return_value=StepOutput(content=output))
+    runtime.issue_http_publication = AsyncMock()
+    runtime.issue_workspace_publication = AsyncMock(
+        return_value={"path": output["pdfPath"], "word": {"path": output["wordPath"]}}
+    )
+    runtime.workflow()
+
+    result = await captured["finalize_publication"](
+        SimpleNamespace(),
+        RunContext(
+            run_id="workflow-run",
+            session_id="thread",
+            user_id="native",
+            session_state={},
+        ),
+    )
+
+    assert result.content["path"] == "reports/report.pdf"
+    runtime.issue_workspace_publication.assert_awaited_once()
     runtime.issue_http_publication.assert_not_awaited()

@@ -6,14 +6,14 @@ import logging
 import re
 import secrets
 import unicodedata
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol, cast
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import (
     BigInteger,
@@ -41,7 +41,7 @@ from ...workspace import (
 )
 from ..models import ReportingError
 
-DOWNLOAD_GRANT_TTL = timedelta(hours=24)
+DOWNLOAD_GRANT_TTL = timedelta(days=30)
 REPORT_ARTIFACT_CHUNK_BYTES = 1024 * 1024
 _DOWNLOAD_ACCESS_PATH = re.compile(r"/reports/v1/download/[^?\s]+(?:\?[^\s]*)?")
 
@@ -124,15 +124,6 @@ class ReportDownloadScope:
     session_id: str
     thread_id: str
     workflow_run_id: str
-
-
-@dataclass(frozen=True)
-class ReportDownloadCallerScope:
-    database: str
-    user_id: str
-    company_id: str
-    session_id: str
-    thread_id: str
 
 
 @dataclass(frozen=True)
@@ -548,26 +539,9 @@ class ReportDownloadHttpService:
         self,
         raw_grant: str,
         *,
-        caller: ReportDownloadCallerScope,
         artifact: Literal["pdf", "word"] = "pdf",
     ) -> tuple[ReportDownloadGrant, AsyncIterator[bytes]]:
         grant = await self.grants.lookup(raw_grant)
-        expected = (
-            grant.scope.database,
-            grant.scope.user_id,
-            grant.scope.company_id,
-            grant.scope.session_id,
-            grant.scope.thread_id,
-        )
-        actual = (
-            caller.database,
-            caller.user_id,
-            caller.company_id,
-            caller.session_id,
-            caller.thread_id,
-        )
-        if actual != expected:
-            raise ReportingError("report_download_scope_mismatch", "下载授权不属于当前上下文。")
         path, size, sha256 = _grant_artifact(grant, artifact)
         if size <= 0 or size > MAX_DOWNLOAD_BYTES:
             raise ReportingError("report_download_file_changed", "报告文件已变化。")
@@ -621,20 +595,15 @@ class ReportDownloadHttpService:
 
 def create_report_download_router(
     service: ReportDownloadHttpService,
-    *,
-    scope_dependency: Callable[
-        ..., ReportDownloadCallerScope | Awaitable[ReportDownloadCallerScope]
-    ],
 ) -> APIRouter:
     router = APIRouter()
 
     @router.get("/reports/v1/download/{opaque_grant}", name="download_report_pdf")
     async def download_report_pdf(
         opaque_grant: str,
-        caller: ReportDownloadCallerScope = Depends(scope_dependency),
     ) -> StreamingResponse:
         try:
-            grant, content = await service.stream(opaque_grant, caller=caller)
+            grant, content = await service.stream(opaque_grant)
         except ReportingError as error:
             raise HTTPException(
                 status_code=_download_error_status(error.code),
@@ -655,10 +624,9 @@ def create_report_download_router(
     @router.get("/reports/v1/download/{opaque_grant}/word", name="download_report_word")
     async def download_report_word(
         opaque_grant: str,
-        caller: ReportDownloadCallerScope = Depends(scope_dependency),
     ) -> StreamingResponse:
         try:
-            grant, content = await service.stream(opaque_grant, caller=caller, artifact="word")
+            grant, content = await service.stream(opaque_grant, artifact="word")
         except ReportingError as error:
             raise HTTPException(
                 status_code=_download_error_status(error.code),
@@ -854,7 +822,6 @@ def _grant_artifact(
 
 def _download_error_status(code: str) -> int:
     return {
-        "report_download_scope_mismatch": 403,
         "report_download_grant_expired": 410,
         "report_download_revision_changed": 409,
         "report_download_file_changed": 409,

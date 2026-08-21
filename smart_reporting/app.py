@@ -17,7 +17,6 @@ from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
 from .reporting.delivery.publishing import (
     ReportArtifactPersistenceService,
-    ReportDownloadCallerScope,
     ReportDownloadGrantService,
     ReportDownloadHttpService,
     SqlAlchemyDownloadGrantRepository,
@@ -192,20 +191,6 @@ def _check_thread(request: Request, thread_id: str):
     claims = getattr(request.state, "capability", None)
     if not claims or claims.thread != thread_id or _request_thread(request) != thread_id:
         raise HTTPException(status_code=403, detail="capability_thread_mismatch")
-
-
-async def _report_download_scope(request: Request) -> ReportDownloadCallerScope:
-    claims = getattr(request.state, "capability", None)
-    thread = _request_thread(request)
-    if claims is None or claims.thread != thread:
-        raise HTTPException(status_code=403, detail="capability_thread_mismatch")
-    return ReportDownloadCallerScope(
-        database=claims.database,
-        user_id=str(claims.user),
-        company_id=str(claims.company),
-        session_id=claims.odoo_session,
-        thread_id=thread,
-    )
 
 
 def _workspace_error(error: Exception):
@@ -384,12 +369,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.state.agentos_context = context
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
-    application.include_router(
-        create_report_download_router(
-            report_downloads,
-            scope_dependency=_report_download_scope,
-        )
-    )
+    application.include_router(create_report_download_router(report_downloads))
     application.router.add_event_handler("startup", install_report_download_access_log_filter)
     application.router.add_event_handler("startup", report_download_repository.create_schema)
     return application

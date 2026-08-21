@@ -30,7 +30,6 @@ from pydantic import (
 )
 
 from ...async_utils import complete_cleanup
-from ...reporting_identity import current_report_identity
 from ...task_execution import TaskScope, TaskState
 from ...workspace import WorkspaceService
 from ..contract import (
@@ -1269,9 +1268,12 @@ class ReportWorkflowRuntime:
                     }
                 )
             scope = self._scope(run_context)
-            # 报表工作流统一返回已复核哈希的工作区产物，不读取 HTTP/Odoo 身份，
-            # 也不签发下载 grant。受保护下载接口仍是独立边界，不参与本流程发布。
-            published = await self.issue_workspace_publication(
+            publication = (
+                self.issue_http_publication
+                if self.download_grants is not None and self.artifact_persistence is not None
+                else self.issue_workspace_publication
+            )
+            published = await publication(
                 {
                     "external_run_id": scope["externalRunId"],
                     "thread_id": scope["threadId"],
@@ -1435,7 +1437,7 @@ class ReportWorkflowRuntime:
     async def issue_http_publication(
         self,
         scope: dict[str, str],
-        _workflow_session_id: str,
+        workflow_session_id: str,
         workflow_run_id: str,
         output: Any,
     ) -> dict[str, Any]:
@@ -1443,16 +1445,15 @@ class ReportWorkflowRuntime:
             raise ReportingError("report_publication_unavailable", "报表下载授权服务未配置。")
         if self.artifact_persistence is None:
             raise ReportingError("report_publication_unavailable", "报表产物存储服务未配置。")
-        identity = current_report_identity()
-        if identity is None or identity.thread_id != scope["thread_id"]:
-            raise ReportingError("report_publication_scope_missing", "报表发布作用域缺失。")
         content = self._publication_content(output)
+        # 下载 grant 本身是 256 bit 随机 bearer 凭证。Scope 仅用于持久化产物身份、
+        # 修订撤销和审计，不再作为下载时的调用方权限条件。
         download_scope = ReportDownloadScope(
-            database=identity.database,
-            user_id=identity.user_id,
-            company_id=identity.company_id,
-            session_id=identity.session_id,
-            thread_id=identity.thread_id,
+            database="agentos",
+            user_id=scope["user_id"],
+            company_id="public",
+            session_id=workflow_session_id,
+            thread_id=scope["thread_id"],
             workflow_run_id=workflow_run_id,
         )
         await self.artifact_persistence.persist(

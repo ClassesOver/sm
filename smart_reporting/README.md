@@ -17,7 +17,7 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 - `report-agent` 的报表请求支持与 CLI 相同的自然语言或 `ReportRequestEnvelope` JSON 输入。
 - `GET /ready` 服务就绪检查。
 - `/workspace/*` 工作区文件接口。
-- `/reports/v1/download/*` 报告下载接口。
+- `/reports/v1/download/*` 报告公开 bearer 下载接口，链接默认 30 天有效。
 
 通用 AgentOS Console 的 run 请求可不携带 Workspace 请求头，此时沿用原生
 `user_id/session_id`，且不会生成默认 Odoo 身份。Odoo 集成请求必须同时使用

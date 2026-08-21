@@ -147,6 +147,24 @@ async def test_workspace_still_requires_odoo_capability() -> None:
     assert response.json() == {"error": "thread_header_required"}
 
 
+@pytest.mark.parametrize(
+    ("has_thread", "has_capability"),
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_report_download_link_does_not_require_workspace_capability(
+    has_thread: bool,
+    has_capability: bool,
+) -> None:
+    assert (
+        requires_workspace_capability(
+            "/reports/v1/download/opaque-grant",
+            has_thread=has_thread,
+            has_capability=has_capability,
+        )
+        is False
+    )
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("headers", "status_code", "error"),

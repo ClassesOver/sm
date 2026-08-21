@@ -2072,9 +2072,9 @@ def create_report_agent(
                 "不得在文本回答中询问审批、猜测审批动作或宣称没有进行中的 Workflow。"
                 "审核工具返回 paused 时重复本流程。",
                 "工具返回 completed 后只返回其正式报告产物；不得把 paused、running 或 failed "
-                "描述为完成。当前发布契约只返回已核验的 Workspace 路径：PDF 使用 `path`，Word 使用 "
-                "`word.path`；必须逐字保留工具返回的相对路径，不得补充域名、协议、下载授权或改写为示例地址，"
-                "也不得虚构 `downloadUrl`。",
+                "描述为完成。若发布契约返回 `pdf.downloadUrl` 和 `word.downloadUrl`，必须逐字保留并分别"
+                "展示为 PDF、Word 下载链接；CLI 契约返回 Workspace 路径时，PDF 使用 `path`，Word 使用 "
+                "`word.path`。不得补充域名、协议或改写为示例地址，也不得虚构返回中不存在的字段。",
             ],
             "tools": workflow_tools,
             "skills": None,
