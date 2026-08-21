@@ -823,6 +823,5 @@ def _grant_artifact(
 def _download_error_status(code: str) -> int:
     return {
         "report_download_grant_expired": 410,
-        "report_download_revision_changed": 409,
         "report_download_file_changed": 409,
     }.get(code, 404)

@@ -10,10 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from smart_reporting.reporting_identity import (
-    ReportServerIdentity,
     apply_report_identity,
-    bind_report_identity,
-    current_report_identity,
     requires_workspace_capability,
 )
 from smart_reporting.security import CapabilityError, verify_capability
@@ -80,30 +77,18 @@ def _app() -> FastAPI:
             claims = verify_capability(capability, SECRET, thread)
         except CapabilityError as error:
             return JSONResponse({"error": str(error)}, status_code=401)
-        identity = ReportServerIdentity(
-            database=claims.database,
+        apply_report_identity(
+            request,
             user_id=str(claims.user),
-            company_id=str(claims.company),
-            session_id=claims.odoo_session,
             thread_id=thread,
         )
-        apply_report_identity(request, identity)
-        with bind_report_identity(identity):
-            return await call_next(request)
+        return await call_next(request)
 
     @application.post("/agents/report-agent/runs")
     async def report_run(request: Request):
-        identity = current_report_identity()
-        if identity is None:
-            return {"identity": None}
         return {
-            "database": identity.database,
-            "userId": identity.user_id,
-            "companyId": identity.company_id,
-            "sessionId": identity.session_id,
-            "threadId": identity.thread_id,
-            "requestUserId": request.state.user_id,
-            "requestSessionId": request.state.session_id,
+            "requestUserId": getattr(request.state, "user_id", None),
+            "requestSessionId": getattr(request.state, "session_id", None),
         }
 
     @application.get("/workspace/files")
@@ -111,10 +96,9 @@ def _app() -> FastAPI:
         return {"ok": True}
 
     @application.get("/agents/report-agent/runs/run-1/resume")
-    async def resume_report_run():
+    async def resume_report_run(request: Request):
         async def body():
-            identity = current_report_identity()
-            yield identity.database if identity is not None else "missing"
+            yield f"{request.state.user_id}:{request.state.session_id}"
 
         return StreamingResponse(body())
 
@@ -133,7 +117,7 @@ async def test_reporting_run_without_capability_uses_native_agentos_identity() -
         response = await client.post("/agents/report-agent/runs")
 
     assert response.status_code == 200
-    assert response.json() == {"identity": None}
+    assert response.json() == {"requestUserId": None, "requestSessionId": None}
 
 
 @pytest.mark.anyio
@@ -208,19 +192,13 @@ async def test_reporting_run_binds_all_odoo_identity_fields() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "database": "odoo",
-        "userId": "7",
-        "companyId": "3",
-        "sessionId": "a" * 64,
-        "threadId": "thread-1",
         "requestUserId": "7",
         "requestSessionId": "thread-1",
     }
-    assert current_report_identity() is None
 
 
 @pytest.mark.anyio
-async def test_reporting_stream_keeps_identity_until_body_finishes() -> None:
+async def test_reporting_stream_keeps_request_identity_until_body_finishes() -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_app()), base_url="http://test"
     ) as client:
@@ -233,8 +211,7 @@ async def test_reporting_stream_keeps_identity_until_body_finishes() -> None:
         )
 
     assert response.status_code == 200
-    assert response.text == "odoo"
-    assert current_report_identity() is None
+    assert response.text == "7:thread-1"
 
 
 @pytest.mark.anyio

@@ -26,9 +26,7 @@ from .reporting.delivery.publishing import (
 )
 from .reporting.workflow.controller import ReportWorkflowController
 from .reporting_identity import (
-    ReportServerIdentity,
     apply_report_identity,
-    bind_report_identity,
     requires_workspace_capability,
 )
 from .security import CapabilityError, verify_capability
@@ -144,18 +142,14 @@ async def require_workspace_capability(request: Request, call_next):
     body = await _read_limited_body(request, limit) if limit else b""
     if body is None:
         return JSONResponse({"error": "request_too_large"}, status_code=413)
-    identity = ReportServerIdentity(
-        database=request.state.capability.database,
-        user_id=str(request.state.capability.user),
-        company_id=str(request.state.capability.company),
-        session_id=request.state.capability.odoo_session,
-        thread_id=thread,
-    )
     # AgentOS 原生 run 表单允许调用方提交 user_id/session_id。这里用已验签的
     # Odoo 身份覆盖它们，避免合法 capability 被用于访问其他用户或 thread。
-    apply_report_identity(request, identity)
-    with bind_report_identity(identity):
-        return await call_next(request)
+    apply_report_identity(
+        request,
+        user_id=str(request.state.capability.user),
+        thread_id=thread,
+    )
+    return await call_next(request)
 
 
 def _readiness_checks(context: ApplicationContext):
