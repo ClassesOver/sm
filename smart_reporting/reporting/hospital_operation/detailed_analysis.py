@@ -24,6 +24,40 @@ MAX_PROFILE_MODEL_VIEW_BYTES = 12 * 1024
 MAX_PROFILE_HIGHLIGHTS = 10
 MAX_PROFILE_VARIABLE_INDEX = 40
 
+_REDUNDANT_PROFILE_KEYS = frozenset({"analysis", "duplicates", "missing", "sample", "scatter"})
+_REDUNDANT_TABLE_KEYS = frozenset({"memory_size", "n_duplicates", "p_duplicates", "record_size"})
+_REDUNDANT_VARIABLE_KEYS = frozenset(
+    {
+        "block_alias_char_counts",
+        "block_alias_counts",
+        "block_alias_values",
+        "cast_type",
+        "category_alias_char_counts",
+        "category_alias_counts",
+        "category_alias_values",
+        "character_counts",
+        "first_rows",
+        "hashable",
+        "histogram_length",
+        "length_histogram",
+        "max_length",
+        "mean_length",
+        "median_length",
+        "memory_size",
+        "min_length",
+        "n_block_alias",
+        "n_category",
+        "n_characters",
+        "n_characters_distinct",
+        "n_scripts",
+        "ordering",
+        "script_char_counts",
+        "script_counts",
+        "value_counts_index_sorted",
+        "word_counts",
+    }
+)
+
 
 class AnalysisModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
@@ -236,6 +270,8 @@ def profile_csv_dataset(
                 # 展示层直方图、分类频率图和时序概览无意义地调用 matplotlib。
                 lazy=True,
                 progress_bar=False,
+                samples={"head": 0, "tail": 0, "random": 0},
+                duplicates={"head": 0},
                 correlations={
                     "auto": {"calculate": True},
                     "pearson": {"calculate": True},
@@ -247,6 +283,8 @@ def profile_csv_dataset(
                 missing_diagrams={"bar": False, "matrix": False, "heatmap": False},
                 interactions={"continuous": False},
                 vars={
+                    "cat": {"length": False, "characters": False, "words": False},
+                    "text": {"length": False, "characters": False, "words": False},
                     "file": {"active": False},
                     "image": {"active": False},
                     "path": {"active": False},
@@ -260,6 +298,13 @@ def profile_csv_dataset(
         raise ValueError("CSV Profile 生成失败") from error
     if not isinstance(profile, dict):
         raise ValueError("CSV Profile 结构无效")
+    package = profile.get("package")
+    engine_version = (
+        str(package.get("data_profiling_version", "")) if isinstance(package, Mapping) else ""
+    )
+    if not engine_version:
+        raise ValueError("CSV Profile 缺少引擎版本")
+    _remove_redundant_profile_data(profile, engine_version=engine_version)
     time_series_fields = _append_time_series_statistics(
         profile,
         profile_dataframe,
@@ -269,7 +314,6 @@ def profile_csv_dataset(
 
     table = profile.get("table")
     variables = profile.get("variables")
-    package = profile.get("package")
     if not isinstance(table, Mapping) or not isinstance(variables, Mapping):
         raise ValueError("CSV Profile 结构无效")
     fields = tuple(str(field) for field in dataframe.columns)
@@ -373,11 +417,6 @@ def profile_csv_dataset(
         if isinstance(alert, str)
         and not (alert.startswith("Dataset has ") and " duplicate rows" in alert)
     )
-    engine_version = (
-        str(package.get("data_profiling_version", "")) if isinstance(package, Mapping) else ""
-    )
-    if not engine_version:
-        raise ValueError("CSV Profile 缺少引擎版本")
     profile_content = json.dumps(
         profile,
         ensure_ascii=False,
@@ -419,6 +458,34 @@ def profile_csv_dataset(
         timeSeriesFields=tuple(time_series_fields),
     )
     return ProfiledDataset(context=context, profile=profile, profile_content=profile_content)
+
+
+def _remove_redundant_profile_data(profile: dict[str, Any], *, engine_version: str) -> None:
+    """把第三方通用画像收敛为智能报表可查询的事实集合。
+
+    fg-data-profiling 4.19.1 会无条件序列化运行时间、配置快照、内存占用及内部
+    类型推断中间量；这些字段既不能证明经营结论，也可由受信 CSV 或保留统计确定。
+    重复行语义必须只来自下方 pandas keep="first" 计算，不能重新暴露上游实际表示
+    “重复组合组数”的 n_duplicates。清理发生在 Profile 哈希和 Pointer 索引生成前，
+    保证文件、模型视图与读取回执始终引用同一份规范化快照。
+    """
+    for key in _REDUNDANT_PROFILE_KEYS:
+        profile.pop(key, None)
+
+    table = profile.get("table")
+    if isinstance(table, dict):
+        for key in _REDUNDANT_TABLE_KEYS:
+            table.pop(key, None)
+
+    variables = profile.get("variables")
+    if isinstance(variables, dict):
+        for variable in variables.values():
+            if not isinstance(variable, dict):
+                continue
+            for key in _REDUNDANT_VARIABLE_KEYS:
+                variable.pop(key, None)
+
+    profile["package"] = {"data_profiling_version": engine_version}
 
 
 def _prepare_profile_dataframe(
