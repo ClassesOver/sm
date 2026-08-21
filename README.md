@@ -13,14 +13,6 @@
 将仓库部署到 `/u01` 后，两套服务的数据会随项目保存在 `/u01` 文件系统；迁移既有部署时，
 必须先停止服务并将原 Docker 命名卷内容复制到对应目录，不能直接以空目录启动数据库。
 
-初始化根目录环境：
-
-```bash
-HOST_UID=$(id -u) HOST_GID=$(id -g) \
-  docker compose --env-file .env.example \
-  --profile setup run --build --rm env-init
-```
-
 初始化并启动 Daytona：
 
 ```bash

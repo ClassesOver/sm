@@ -73,6 +73,7 @@ class ProfileCoverageManifest(StrictModel):
             raise ValueError("ProfileCoverageManifest 必须精确覆盖全部授权 Dataset")
         return self
 
+
 class ProfileReadReceipt(StrictModel):
     receipt_id: str = Field(alias="receiptId", pattern=r"^profile-read-[0-9a-f]{24}$")
     dataset_id: str = Field(alias="datasetId", min_length=1, max_length=256)

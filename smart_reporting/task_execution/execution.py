@@ -72,8 +72,9 @@ CODING_EXECUTION_MIGRATION_STATE_KEY = "agentos_coding_execution_migrated"
 DEFAULT_TERMINAL_TIMEOUT = 900
 MAX_FINISH_ARTIFACTS = 50
 MAX_VERIFICATION_IDS = 20
-# 1 MiB 足以容纳长分析命令；更大的正文仍应通过文件写入工具提交，避免复制到 shell 日志。
-MAX_TERMINAL_COMMAND_BYTES = 1024 * 1024
+# 命令会作为受控 runtime 的单个 argv 再经过 shell 包装；64 KiB 保持在 Linux
+# MAX_ARG_STRLEN 下方。更大的正文必须通过 patch 写入文件，避免启动阶段才因 E2BIG 失败。
+MAX_TERMINAL_COMMAND_BYTES = 64 * 1024
 MAX_TOOL_PREVIEW_BYTES = 48 * 1024
 MAX_REPORT_TOOL_PREVIEW_BYTES = 16 * 1024
 MAX_TOOL_OUTPUT_RESOURCE_BYTES = 16 * 1024 * 1024

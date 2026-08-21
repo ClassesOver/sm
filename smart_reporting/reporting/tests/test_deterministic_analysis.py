@@ -405,10 +405,7 @@ def test_deterministic_bundle_aligns_same_dataset_ratio_periods() -> None:
         (
             (
                 "current",
-                b"month,actual_value,budget_value\n"
-                b"2025-01,80,100\n"
-                b"2025-02,70,100\n"
-                b"2025-03,,100\n",
+                b"month,actual_value,budget_value\n2025-01,80,100\n2025-02,70,100\n2025-03,,100\n",
                 dataset_context,
                 ("current",),
             ),

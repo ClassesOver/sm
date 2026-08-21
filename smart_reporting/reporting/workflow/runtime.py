@@ -1543,6 +1543,16 @@ class ReportWorkflowRuntime:
                 ),
             ),
         )
+        try:
+            await complete_cleanup(self.workspace_service.adestroy(thread_id))
+        except Exception as error:
+            raise ReportingError(
+                "report_sandbox_cleanup_failed",
+                "报告已持久化，但运行环境删除失败，请重试发布步骤。",
+            ) from error
+        # bearer 只能在所有可能失败的外部清理完成后签发；否则 Workflow 重试前
+        # 调用方拿不到 token，但 token 已经有效。产物已经落库，签发失败后的重试
+        # 可以在 sandbox 已删除的情况下直接复用持久化身份。
         raw, grant = await download_grants.issue(
             scope=download_scope,
             report_id=content["reportId"],
@@ -1554,13 +1564,6 @@ class ReportWorkflowRuntime:
             word_size=content["wordSize"],
             word_sha256=content["wordSha256"],
         )
-        try:
-            await complete_cleanup(self.workspace_service.adestroy(thread_id))
-        except Exception as error:
-            raise ReportingError(
-                "report_sandbox_cleanup_failed",
-                "报告已持久化，但运行环境删除失败，请重试发布步骤。",
-            ) from error
         return publication_result(
             report_id=content["reportId"],
             revision=content["revision"],

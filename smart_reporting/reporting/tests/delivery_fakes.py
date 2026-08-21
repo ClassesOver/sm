@@ -24,6 +24,33 @@ class InMemoryDownloadGrantRepository:
     async def get(self, grant_hash: str) -> ReportDownloadGrant | None:
         return self.records.get(grant_hash)
 
+    async def replace(self, grant: ReportDownloadGrant, *, now: datetime) -> None:
+        active = [
+            current
+            for current in self.records.values()
+            if current.report_id == grant.report_id
+            and current.scope == grant.scope
+            and current.revoked_at is None
+            and current.expires_at > now
+        ]
+        if active and max(current.revision for current in active) > grant.revision:
+            raise ReportingError(
+                "report_download_revision_stale",
+                "不能用较低修订替换当前报告下载授权。",
+            )
+        for key, current in tuple(self.records.items()):
+            if (
+                current.report_id == grant.report_id
+                and current.scope == grant.scope
+                and current.revoked_at is None
+                and current.revision <= grant.revision
+            ):
+                self.records[key] = replace(current, revoked_at=now)
+        self.records[grant.grant_hash] = grant
+
+    async def cleanup_expired(self, *, now: datetime) -> None:
+        self.records = {key: grant for key, grant in self.records.items() if grant.expires_at > now}
+
     async def revoke_report(
         self,
         report_id: str,
@@ -71,6 +98,11 @@ class InMemoryReportArtifactRepository:
 
     async def get(self, artifact_key: str) -> StoredReportArtifact | None:
         return self.records.get(artifact_key)
+
+    async def touch(self, artifact_key: str, *, now: datetime) -> None:
+        artifact = self.records.get(artifact_key)
+        if artifact is not None:
+            self.records[artifact_key] = replace(artifact, created_at=now)
 
     async def stream(self, artifact_key: str) -> AsyncIterator[bytes]:
         for chunk in self.chunks.get(artifact_key, ()):

@@ -667,6 +667,77 @@ async def test_report_facade_returns_exact_workflow_start_error_without_model(mo
 
 
 @pytest.mark.anyio
+async def test_report_facade_returns_completed_downloads_as_markdown_without_model(
+    monkeypatch,
+) -> None:
+    async def unexpected_model_call(*_args, **_kwargs):
+        raise AssertionError("完成回执不得交给模型重新改写")
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "aresponse", unexpected_model_call)
+    model = ReportFacadeOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+    payload = {
+        "ok": True,
+        "status": "completed",
+        "report": {
+            "reportId": "report-1",
+            "revision": 1,
+            "pdf": {"downloadUrl": "http://reports.example.com/reports/v1/download/raw"},
+            "word": {
+                "downloadUrl": "http://reports.example.com/reports/v1/download/raw/word"
+            },
+        },
+    }
+    messages = [
+        Message(role="user", content="生成运营报告"),
+        Message(
+            role="tool",
+            tool_name="report_workflow_start",
+            tool_call_id="call-report-start",
+            content=json.dumps(payload, ensure_ascii=False),
+        ),
+    ]
+
+    response = await model.ainvoke(messages)
+
+    assert response.content == (
+        "## 报表已生成\n\n"
+        "- 报告编号：`report-1`\n"
+        "- 修订版本：Revision 1\n\n"
+        "### 文件下载\n\n"
+        "- [下载 PDF 报告](http://reports.example.com/reports/v1/download/raw)\n"
+        "- [下载 Word 报告](http://reports.example.com/reports/v1/download/raw/word)"
+    )
+    assert not response.tool_calls
+
+    streamed = [item async for item in model.ainvoke_stream(messages)]
+    assert [item.content for item in streamed] == [response.content]
+    assert not streamed[0].tool_calls
+
+
+@pytest.mark.anyio
+async def test_report_facade_removes_tool_call_preamble(monkeypatch) -> None:
+    async def model_call(*_args, **_kwargs):
+        return ModelResponse(
+            content="I'll start the report workflow.",
+            tool_calls=[
+                {
+                    "id": "call-report-start",
+                    "type": "function",
+                    "function": {"name": "report_workflow_start", "arguments": "{}"},
+                }
+            ],
+        )
+
+    monkeypatch.setattr(ReportingOpenAIChat, "ainvoke", model_call)
+    model = ReportFacadeOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+
+    response = await model.ainvoke([Message(role="user", content="生成运营报告")])
+
+    assert response.content is None
+    assert response.tool_calls
+
+
+@pytest.mark.anyio
 async def test_complete_analysis_item_is_exempt_from_analysis_tool_budget(monkeypatch) -> None:
     run_context = RunContext(
         run_id="run-analysis-complete",

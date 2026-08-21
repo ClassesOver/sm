@@ -17,11 +17,6 @@ from openai.types.chat.chat_completion_chunk import (
 )
 
 from smart_reporting import app
-from smart_reporting.reporting.agent import ReportFacadeOpenAIChat, create_report_agent
-from smart_reporting.reporting.workflow.controller import (
-    ReportWorkflowController,
-    ReportWorkflowToolkit,
-)
 from smart_reporting.context_management import ProjectedOpenAIChat
 from smart_reporting.instructions import (
     PURE_CODING_PARALLEL_READ_INSTRUCTIONS,
@@ -29,6 +24,11 @@ from smart_reporting.instructions import (
     build_pure_coding_agent_instructions,
 )
 from smart_reporting.model_config import OPENAI_COMPATIBLE_ROLE_MAP
+from smart_reporting.reporting.agent import ReportFacadeOpenAIChat, create_report_agent
+from smart_reporting.reporting.workflow.controller import (
+    ReportWorkflowController,
+    ReportWorkflowToolkit,
+)
 
 
 def instruction_context(*tools, dependencies=None):
@@ -38,7 +38,6 @@ def instruction_context(*tools, dependencies=None):
         client_tools=[SimpleNamespace(name=name) for name in tools],
         dependencies=dependencies,
     )
-
 
 
 @dataclass
@@ -69,13 +68,8 @@ class ScriptedModel(Model):
         return response
 
 
-
-
 def test_openai_compatible_role_map_preserves_system_instructions():
     assert OPENAI_COMPATIBLE_ROLE_MAP["system"] == "system"
-
-
-
 
 
 def test_pure_coding_agent_batches_only_independent_reads():
@@ -109,10 +103,7 @@ def test_pure_coding_agent_batches_only_independent_reads():
     )
 
 
-
-
 @pytest.mark.anyio
-
 @pytest.mark.anyio
 async def test_report_start_tool从当前用户消息启动workflow():
     calls = []
@@ -422,9 +413,6 @@ async def test_report原生确认拒绝后把备注确定性交给workflow(monke
 
 
 @pytest.mark.anyio
-
-
-
 def test_toolkit_instructions_are_injected_by_agno():
     (workflow_toolkit,) = app.report_agent.tools(
         run_context=RunContext(

@@ -4,7 +4,6 @@ import re
 import shlex
 import time
 import weakref
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -141,7 +140,9 @@ def _extract_apply_patch_command(cmd: str) -> str | None:
             raise WorkspaceError(
                 "exec_command 中的 apply_patch heredoc 闭合标记必须是最后一行，不能附加其他命令。"
             )
-        return "\n".join(lines[1:closing_index])
+        # Shell heredoc 的正文包含闭合标记前的末尾换行；保留它，避免补丁最后一行
+        # 被错误解释为无换行文件。单引号参数仍完全遵循调用方传入的字符串。
+        return "\n".join(lines[1:closing_index]) + "\n"
 
     if re.match(r"apply_patch[ \t]+['\"]", first_line) is None:
         raise WorkspaceError(

@@ -28,7 +28,8 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 
 AgentOS 中的 Reporting 正常发布时会将 PDF/Word 持久化到 PostgreSQL、签发默认 30 天有效的
 公开 bearer 下载授权，并返回基于 `AGENT_REPORT_PUBLIC_BASE_URL` 的完整下载 URL；持久化成功后
-删除对应 Daytona sandbox。Reporting CLI 不启动 HTTP 下载服务，仍返回 Workspace 相对路径。
+删除对应 Daytona sandbox。过期授权会被删除，无有效授权引用的产物在 24 小时安全窗口后分批
+回收。Reporting CLI 不启动 HTTP 下载服务，仍返回 Workspace 相对路径。
 
 ## CLI
 

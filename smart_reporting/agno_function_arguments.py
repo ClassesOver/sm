@@ -6,7 +6,6 @@ import ast
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any
 
 from agno.tools.function import Function, FunctionCall
 from agno.utils import functions as agno_functions
@@ -133,4 +132,3 @@ def install_agno_function_argument_decoder() -> None:
     agno_functions.get_function_call = _get_function_call_with_repair
     # agno.utils.tools 使用模块级导入别名，必须同步替换该真实调用点。
     agno_tools.get_function_call = _get_function_call_with_repair
-

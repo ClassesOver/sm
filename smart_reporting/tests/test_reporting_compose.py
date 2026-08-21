@@ -1,6 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml  # type: ignore[import-untyped]
 
@@ -16,6 +17,30 @@ def test_reporting_compose_uses_image_owned_package_entrypoint():
         repository_root / "Dockerfile"
     ).read_text(encoding="utf-8")
     assert service["environment"]["AGENT_OS_WORKERS"] == "1"
+
+
+def test_reporting_compose_public_download_example_uses_published_port() -> None:
+    repository_root = Path(__file__).parents[2]
+    compose = yaml.load(
+        (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    published_port = int(compose["services"]["reporting-os"]["ports"][0].split(":", 1)[0])
+    env_values = dict(
+        line.split("=", 1)
+        for line in (repository_root / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
+
+    assert urlsplit(env_values["AGENT_REPORT_PUBLIC_BASE_URL"]).port == published_port
+
+
+def test_agentos_readme_only_references_existing_compose_services() -> None:
+    repository_root = Path(__file__).parents[2]
+    readme = (repository_root / "README.md").read_text(encoding="utf-8")
+
+    assert "docker compose --env-file .env.example" not in readme
+    assert "bash scripts/configure_agentos_env.sh .env" in readme
 
 
 def test_daytona_env_init_prepares_dex_bind_mount_for_image_user(tmp_path: Path) -> None:

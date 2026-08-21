@@ -88,9 +88,7 @@ class AgentControlToolkit:
     ) -> dict[str, Any]:
         if not isinstance(plan, list) or not 1 <= len(plan) <= MAX_PLAN_STEPS:
             raise ValueError(f"计划必须包含 1 至 {MAX_PLAN_STEPS} 个步骤。")
-        value = validated_agent_plan(
-            {"plan": plan, "explanation": (explanation or "").strip()}
-        )
+        value = validated_agent_plan({"plan": plan, "explanation": (explanation or "").strip()})
         if value is None:
             raise ValueError("计划格式、状态或内容无效，且最多只能有一个 in_progress 步骤。")
         if run_context is None:

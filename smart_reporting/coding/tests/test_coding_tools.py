@@ -4,10 +4,11 @@ import subprocess
 import time
 
 import pytest
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.tools.daytona import DaytonaTools
 
-from smart_reporting import app
 from smart_reporting.coding import CodingEvent
 from smart_reporting.coding.agent import create_coding_facade_agent
 from smart_reporting.coding.tests.workspace_fakes import (
@@ -246,7 +247,7 @@ async def test_coding_facade_only_forwards_acceptance_contract_from_dependency(t
             )
 
     facade = create_coding_facade_agent(
-        app.coding_agent,
+        Agent(model=OpenAIChat(id="test", api_key="test")),
         Supervisor(),  # type: ignore[arg-type]
         workspace_service,
     )
@@ -411,12 +412,12 @@ def test_hermes_patch_supports_replace_and_native_patch_modes(tmp_path):
     )
     patched = toolkit.patch(
         "patch",
-        patch="""*** Begin Patch
-*** Update File: notes.txt
-@@
+        patch="""--- a/notes.txt
++++ b/notes.txt
+@@ -1 +1 @@
 -three two three
 +done
-*** End Patch""",
+""",
         run_context=run_context,
     )
 
@@ -476,56 +477,69 @@ def test_apply_patch_add_update_delete_move_and_multiple_files(tmp_path):
     run_context = context()
 
     added = toolkit.apply_patch(
-        """*** Begin Patch
-*** Add File: scripts/report.py
+        """diff --git a/scripts/report.py b/scripts/report.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/report.py
+@@ -0,0 +1,2 @@
 +value = 1
 +print(value)
-*** Add File: notes.txt
+diff --git a/notes.txt b/notes.txt
+new file mode 100644
+--- /dev/null
++++ b/notes.txt
+@@ -0,0 +1 @@
 +draft
-*** End Patch""",
+""",
         run_context=run_context,
     )
     assert added["operations"] == 2
     assert current.read_text("thread", "scripts/report.py") == "value = 1\nprint(value)\n"
 
     updated = toolkit.apply_patch(
-        """*** Begin Patch
-*** Update File: scripts/report.py
-@@
+        """diff --git a/scripts/report.py b/scripts/report.py
+--- a/scripts/report.py
++++ b/scripts/report.py
+@@ -1,2 +1,2 @@
 -value = 1
 +value = 2
  print(value)
-*** Update File: notes.txt
-*** Move to: archive/notes.txt
-*** End Patch""",
+diff --git a/notes.txt b/notes.txt
+deleted file mode 100644
+--- a/notes.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-draft
+diff --git a/archive/notes.txt b/archive/notes.txt
+new file mode 100644
+--- /dev/null
++++ b/archive/notes.txt
+@@ -0,0 +1 @@
++draft
+""",
         run_context=run_context,
     )
-    assert updated["operations"] == 2
+    assert updated["operations"] == 3
     assert current.read_text("thread", "scripts/report.py") == "value = 2\nprint(value)\n"
     assert current.read_text("thread", "archive/notes.txt") == "draft\n"
 
     toolkit.apply_patch(
-        """*** Begin Patch
-*** Delete File: archive/notes.txt
-*** End Patch""",
+        """--- a/archive/notes.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-draft
+""",
         run_context=run_context,
     )
     with pytest.raises(WorkspaceError, match="不存在"):
         current.read_text("thread", "archive/notes.txt")
 
 
-def test_apply_patch_accepts_safe_model_formatting_fallbacks(tmp_path):
+def test_apply_patch_accepts_crlf_unified_diff(tmp_path):
     current = service(tmp_path)
 
     result = CodingToolkit(current).apply_patch(
-        """```patch
-*** Begin Patch
-*** Add File: notes.txt
-+first
-
-+last
-*** End Patch
-```""",
+        "--- /dev/null\r\n+++ b/notes.txt\r\n@@ -0,0 +1,3 @@\r\n+first\r\n+\r\n+last\r\n",
         run_context=context(),
     )
 
@@ -533,33 +547,31 @@ def test_apply_patch_accepts_safe_model_formatting_fallbacks(tmp_path):
     assert current.read_text("thread", "notes.txt") == "first\n\nlast\n"
 
 
-def test_apply_patch_supports_codex_update_semantics_and_heredoc_fallback(tmp_path):
+def test_apply_patch_supports_multiple_standard_update_hunks(tmp_path):
     current = service(tmp_path)
     current.create_file(
         "thread",
         "module.py",
-        "def value():   \n    return 1\n\nmessage = “old”".encode(),
+        b'def value():\n    return 1\n\nmessage = "old"\n',
     )
     current.create_file("thread", "tail.txt", b"before\n")
 
     result = CodingToolkit(current).apply_patch(
-        """<<'EOF'
-*** Begin Patch
-*** Update File: module.py
- def value():
--    return 1
-+    return 2
-@@
--message = "old"
-+message = "new"
-*** Update File: tail.txt
-@@
--before
-+after
-*** End of File
-
-*** End Patch
-EOF""",
+        "--- a/module.py\n"
+        "+++ b/module.py\n"
+        "@@ -1,4 +1,4 @@\n"
+        " def value():\n"
+        "-    return 1\n"
+        "+    return 2\n"
+        " \n"
+        '-message = "old"\n'
+        '+message = "new"\n'
+        "diff --git a/tail.txt b/tail.txt\n"
+        "--- a/tail.txt\n"
+        "+++ b/tail.txt\n"
+        "@@ -1 +1 @@\n"
+        "-before\n"
+        "+after\n",
         run_context=context(),
     )
 
@@ -575,13 +587,19 @@ def test_apply_patch_move_with_update_is_atomic(tmp_path):
     current.create_file("thread", "before.py", b"value = 1\n")
 
     result = CodingToolkit(current).apply_patch(
-        """*** Begin Patch
-*** Update File: before.py
-*** Move to: after.py
-@@
+        """diff --git a/before.py b/before.py
+deleted file mode 100644
+--- a/before.py
++++ /dev/null
+@@ -1 +0,0 @@
 -value = 1
+diff --git a/after.py b/after.py
+new file mode 100644
+--- /dev/null
++++ b/after.py
+@@ -0,0 +1 @@
 +value = 2
-*** End Patch""",
+""",
         run_context=context(),
     )
 
@@ -597,45 +615,45 @@ def test_apply_patch_rejects_invalid_syntax_paths_symlinks_and_hunks(tmp_path):
     run_context = context()
     current.create_file("thread", "notes.txt", b"before\n")
 
-    with pytest.raises(WorkspaceError, match="首行"):
+    with pytest.raises(WorkspaceError, match="标准 unified diff"):
         parse_unified_diff("*** Add File: bad.txt\n+bad")
-    with pytest.raises(WorkspaceError, match="末行"):
+    with pytest.raises(WorkspaceError, match="Codex patch 方言"):
         parse_unified_diff("*** Begin Patch\n*** Add File: bad.txt\n+bad")
-    with pytest.raises(WorkspaceError, match=r"每一行.*\+"):
+    with pytest.raises(WorkspaceError, match="Codex patch 方言"):
         toolkit.apply_patch(
             "*** Begin Patch\n*** Add File: bad.txt\n+first\nmissing prefix\n*** End Patch",
             run_context=run_context,
         )
-    with pytest.raises(WorkspaceError, match="首行"):
+    with pytest.raises(WorkspaceError, match="Codex patch 方言"):
         parse_unified_diff("说明：\n*** Begin Patch\n*** Add File: bad.txt\n+bad\n*** End Patch")
-    with pytest.raises(WorkspaceError, match="首行"):
+    with pytest.raises(WorkspaceError, match="至少一个 @@ hunk"):
         parse_unified_diff("--- /dev/null\n+++ b/bad.txt\n@@\n+bad")
-    with pytest.raises(WorkspaceError, match="首行"):
+    with pytest.raises(WorkspaceError, match="Codex patch 方言"):
         parse_unified_diff(
             "```patch\n*** Begin Patch\n*** Add File: bad.txt\n+bad\n*** End Patch\n```\n说明"
         )
-    with pytest.raises(WorkspaceError, match="首行"):
+    with pytest.raises(WorkspaceError, match="Codex patch 方言"):
         parse_unified_diff(
             "<<'EOF'\n*** Begin Patch\n*** Add File: bad.txt\n+bad\n*** End Patch\nNOT_EOF"
         )
     with pytest.raises(WorkspaceError, match="绝对路径"):
         toolkit.apply_patch(
-            "*** Begin Patch\n*** Add File: /tmp/bad.txt\n+bad\n*** End Patch",
+            "--- /dev/null\n+++ b//tmp/bad.txt\n@@ -0,0 +1 @@\n+bad\n",
             run_context=run_context,
         )
     with pytest.raises(WorkspaceError, match="目录穿越"):
         toolkit.apply_patch(
-            "*** Begin Patch\n*** Add File: ../bad.txt\n+bad\n*** End Patch",
+            "--- /dev/null\n+++ b/../bad.txt\n@@ -0,0 +1 @@\n+bad\n",
             run_context=run_context,
         )
-    with pytest.raises(WorkspaceError, match="未找到 hunk 原文"):
+    with pytest.raises(WorkspaceError, match="当前文件内容不匹配"):
         toolkit.apply_patch(
-            """*** Begin Patch
-*** Update File: notes.txt
-@@
+            """--- a/notes.txt
++++ b/notes.txt
+@@ -1 +1 @@
 -missing
 +after
-*** End Patch""",
+""",
             run_context=run_context,
         )
 
@@ -646,12 +664,12 @@ def test_apply_patch_rejects_invalid_syntax_paths_symlinks_and_hunks(tmp_path):
     )
     with pytest.raises(WorkspaceError, match="符号链接"):
         toolkit.apply_patch(
-            """*** Begin Patch
-*** Update File: link.txt
-@@
+            """--- a/link.txt
++++ b/link.txt
+@@ -1 +1 @@
 -target
 +changed
-*** End Patch""",
+""",
             run_context=run_context,
         )
 
@@ -669,12 +687,12 @@ def test_apply_patch_rechecks_sha_and_keeps_multi_file_changes_atomic(tmp_path, 
     monkeypatch.setattr(current, "apply_changes", race)
     with pytest.raises(WorkspacePathConflict, match="内容已变化"):
         toolkit.apply_patch(
-            """*** Begin Patch
-*** Update File: notes.txt
-@@
+            """--- a/notes.txt
++++ b/notes.txt
+@@ -1 +1 @@
 -before
 +after
-*** End Patch""",
+""",
             run_context=context(),
         )
     assert current.read_text("thread", "notes.txt") == "concurrent\n"
@@ -683,12 +701,19 @@ def test_apply_patch_rechecks_sha_and_keeps_multi_file_changes_atomic(tmp_path, 
     current.create_file("thread", "existing.txt", b"exists\n")
     with pytest.raises(WorkspacePathConflict, match="已经存在"):
         toolkit.apply_patch(
-            """*** Begin Patch
-*** Add File: new.txt
+            """diff --git a/new.txt b/new.txt
+new file mode 100644
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1 @@
 +new
-*** Add File: existing.txt
+diff --git a/existing.txt b/existing.txt
+new file mode 100644
+--- /dev/null
++++ b/existing.txt
+@@ -0,0 +1 @@
 +replace
-*** End Patch""",
+""",
             run_context=context(),
         )
     with pytest.raises(WorkspaceError, match="不存在"):
@@ -696,7 +721,7 @@ def test_apply_patch_rechecks_sha_and_keeps_multi_file_changes_atomic(tmp_path, 
 
 
 @pytest.mark.anyio
-async def test_exec_command_intercepts_codex_apply_patch_without_remote_shell(
+async def test_exec_command_intercepts_unified_diff_apply_patch_without_remote_shell(
     tmp_path, monkeypatch
 ):
     current, toolkit = async_toolkit(tmp_path)
@@ -708,15 +733,19 @@ async def test_exec_command_intercepts_codex_apply_patch_without_remote_shell(
     monkeypatch.setattr(toolkit._workspace, "sandbox_exec", unexpected_exec)
     result = await toolkit.exec_command(
         """apply_patch <<'PATCH'
-*** Begin Patch
-*** Add File: added.sh
+diff --git a/added.sh b/added.sh
+new file mode 100644
+--- /dev/null
++++ b/added.sh
+@@ -0,0 +1,2 @@
 +echo "A & B"
 +sed -i 's/a/b/' example.txt
-*** Update File: existing.sh
-@@
+diff --git a/existing.sh b/existing.sh
+--- a/existing.sh
++++ b/existing.sh
+@@ -1 +1 @@
 -echo before
 +echo after
-*** End Patch
 PATCH""",
         yield_time_ms=0,
         run_context=context(),
@@ -752,10 +781,11 @@ async def test_exec_command_intercepts_single_quoted_apply_patch_argument(tmp_pa
 
     monkeypatch.setattr(toolkit._workspace, "sandbox_exec", unexpected_exec)
     result = await toolkit.exec_command(
-        """apply_patch '*** Begin Patch
-*** Add File: quoted.txt
+        """apply_patch '--- /dev/null
++++ b/quoted.txt
+@@ -0,0 +1 @@
 +quoted fallback
-*** End Patch'""",
+'""",
         yield_time_ms=0,
         run_context=context(),
     )
@@ -1047,10 +1077,11 @@ async def test_python_script_can_be_created_executed_fixed_and_rerun(tmp_path):
     current, toolkit = async_toolkit(tmp_path)
     run_context = context()
     toolkit.apply_patch(
-        """*** Begin Patch
-*** Add File: analyze.py
+        """--- /dev/null
++++ b/analyze.py
+@@ -0,0 +1 @@
 +raise RuntimeError("broken")
-*** End Patch""",
+""",
         run_context=run_context,
     )
     process = current.sandbox_for("thread").process
@@ -1080,12 +1111,12 @@ async def test_python_script_can_be_created_executed_fixed_and_rerun(tmp_path):
     assert "RuntimeError" in failed["output"]
 
     toolkit.apply_patch(
-        """*** Begin Patch
-*** Update File: analyze.py
-@@
+        """--- a/analyze.py
++++ b/analyze.py
+@@ -1 +1 @@
 -raise RuntimeError("broken")
 +print("analysis-ok")
-*** End Patch""",
+""",
         run_context=run_context,
     )
     succeeded = await toolkit.exec_command(
@@ -1630,9 +1661,3 @@ def test_view_image_and_update_plan_keep_workspace_and_plan_boundaries(tmp_path)
             ],
             run_context=run_context,
         )
-
-
-def test_coding_state_keys_are_removed_from_client_state():
-    assert CODEX_EXEC_SESSIONS_STATE_KEY in app.SERVER_SESSION_STATE_KEYS
-    assert CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY in app.SERVER_SESSION_STATE_KEYS
-    assert "agentos_codex_exec_next_session" in app.SERVER_SESSION_STATE_KEYS

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from agno.tools import Function
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
+from agno.tools import Function
 
 from smart_reporting.agno_function_arguments import (
     install_agno_function_argument_decoder,
@@ -70,9 +70,7 @@ def test_agno解码器在公共入口恢复容器并保留原有functioncall():
 
     assert call is not None
     assert call.error is None
-    assert call.arguments == {
-        "files": [{"path": "report.py", "content": "print(1)"}]
-    }
+    assert call.arguments == {"files": [{"path": "report.py", "content": "print(1)"}]}
 
 
 def test_agno解码器对不可恢复参数保留失败关闭():
@@ -116,7 +114,5 @@ def test_agno模型真实转换链恢复参数且不生成decode错误消息():
     )
 
     assert len(calls) == 1
-    assert calls[0].arguments == {
-        "files": [{"path": "report.py", "content": "print(1)"}]
-    }
+    assert calls[0].arguments == {"files": [{"path": "report.py", "content": "print(1)"}]}
     assert messages == []

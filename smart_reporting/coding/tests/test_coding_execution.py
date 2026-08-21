@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from agno.models.openai import OpenAIChat
@@ -1437,7 +1438,7 @@ async def test_terminal_rejects_oversized_inline_command_without_mutation(execut
 
 
 @pytest.mark.anyio
-async def test_terminal_accepts_1_mib_utf8_boundary(execution_runtime):
+async def test_terminal_accepts_configured_utf8_boundary(execution_runtime):
     runtime = execution_runtime
     command = "x" * MAX_TERMINAL_COMMAND_BYTES
 
@@ -1619,7 +1620,10 @@ async def test_reporting_analysis_terminal_retains_small_output(execution_runtim
                 {
                     "id": "report-artifact",
                     "validatorId": "report:artifact",
-                    "parameters": {"phase": "analysis"},
+                    "parameters": {
+                        "phase": "analysis",
+                        "phaseContract": {"taskKind": "analysis_item"},
+                    },
                     "artifactPatterns": [],
                 }
             ],
@@ -1646,13 +1650,12 @@ async def test_reporting_analysis_terminal_retains_small_output(execution_runtim
             }
         },
     )
-    toolkit = ReportWorkspaceTaskToolkit(runtime.workspace, runtime.repository)
-
-    created = await toolkit.coding_create_file(
-        "analysis/report_analysis.py",
-        "print('收入同比增长 8.2%')\n",
-        run_context=context,
+    toolkit = ReportWorkspaceTaskToolkit(
+        runtime.workspace,
+        runtime.repository,
+        state_repository=AsyncMock(),
     )
+
     started = await toolkit.terminal(
         "printf '收入同比增长 8.2%%'",
         background=True,
@@ -1676,7 +1679,6 @@ async def test_reporting_analysis_terminal_retains_small_output(execution_runtim
         )
     page = await toolkit.read_tool_output(result["outputHandle"], _agno_run_context=context)
 
-    assert created["mutation_sequence"] == 1
     assert "收入同比增长 8.2%" in result["output"]
     assert result["outputTruncated"] is False
     assert page["content"] == result["output"]

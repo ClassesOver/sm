@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 from agno.run import RunContext
 from agno.workflow.types import StepOutput
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from smart_reporting.reporting.delivery.publishing import (
@@ -23,6 +24,7 @@ from smart_reporting.reporting.delivery.publishing import (
     SqlAlchemyDownloadGrantRepository,
     SqlAlchemyReportArtifactRepository,
     StoredReportArtifact,
+    _artifact_key,
 )
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.delivery_fakes import (
@@ -190,6 +192,124 @@ async def test_download_grant_defaults_to_thirty_days() -> None:
     assert grant.expires_at == now + timedelta(days=30)
 
 
+@pytest.mark.anyio
+async def test_download_grant_replaces_same_revision_and_rejects_stale_revision() -> None:
+    repository = InMemoryDownloadGrantRepository()
+    grants = ReportDownloadGrantService(repository)
+    values = {
+        "scope": _scope(),
+        "report_id": "report-1",
+        "revision": 2,
+        "pdf_path": "reports/report.pdf",
+        "pdf_size": 3,
+        "pdf_sha256": "a" * 64,
+        "word_path": "reports/report.docx",
+        "word_size": 4,
+        "word_sha256": "b" * 64,
+    }
+
+    first_raw, _first = await grants.issue(**values)
+    second_raw, _second = await grants.issue(**values)
+
+    with pytest.raises(ReportingError, match="下载授权无效"):
+        await grants.lookup(first_raw)
+    assert await grants.lookup(second_raw)
+    with pytest.raises(ReportingError) as raised:
+        await grants.issue(**{**values, "revision": 1})
+    assert raised.value.code == "report_download_revision_stale"
+
+
+@pytest.mark.anyio
+async def test_sql_grant_replacement_rolls_back_revocation_when_insert_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'grants.db'}")
+    repository = SqlAlchemyDownloadGrantRepository(engine)
+    grants = ReportDownloadGrantService(repository)
+    monkeypatch.setattr(
+        "smart_reporting.reporting.delivery.publishing.secrets.token_urlsafe",
+        lambda _size: "fixed-grant",
+    )
+    values = {
+        "scope": _scope(),
+        "report_id": "report-1",
+        "revision": 1,
+        "pdf_path": "reports/report.pdf",
+        "pdf_size": 3,
+        "pdf_sha256": "a" * 64,
+        "word_path": "reports/report.docx",
+        "word_size": 4,
+        "word_sha256": "b" * 64,
+    }
+    try:
+        await repository.create_schema()
+        raw, _grant = await grants.issue(**values)
+
+        with pytest.raises(IntegrityError):
+            await grants.issue(**values)
+
+        assert await grants.lookup(raw)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_sql_cleanup_removes_expired_grant_and_unreferenced_artifacts(tmp_path) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cleanup.db'}")
+    grants_repository = SqlAlchemyDownloadGrantRepository(engine)
+    artifacts_repository = SqlAlchemyReportArtifactRepository(engine)
+    grants = ReportDownloadGrantService(grants_repository)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    scope = _scope()
+    specs = (
+        ReportArtifactSpec("pdf", "reports/report.pdf", 3, hashlib.sha256(b"pdf").hexdigest()),
+        ReportArtifactSpec("word", "reports/report.docx", 4, hashlib.sha256(b"word").hexdigest()),
+    )
+    try:
+        await grants_repository.create_schema()
+        for spec, content in zip(specs, (b"pdf", b"word"), strict=True):
+            artifact = StoredReportArtifact(
+                artifact_key=_artifact_key(scope, "report-1", 1, spec),
+                scope=scope,
+                report_id="report-1",
+                revision=1,
+                artifact=spec.artifact,
+                path=spec.path,
+                size=spec.size,
+                sha256=spec.sha256,
+                created_at=now,
+            )
+            await artifacts_repository.put(artifact, _chunks(content))
+        raw, _grant = await grants.issue(
+            scope=scope,
+            report_id="report-1",
+            revision=1,
+            pdf_path=specs[0].path,
+            pdf_size=specs[0].size,
+            pdf_sha256=specs[0].sha256,
+            word_path=specs[1].path,
+            word_size=specs[1].size,
+            word_sha256=specs[1].sha256,
+            now=now,
+        )
+
+        await grants_repository.cleanup_expired(now=now + timedelta(days=2))
+
+        assert await grants.lookup(raw, now=now + timedelta(days=2))
+        for spec in specs:
+            assert await artifacts_repository.get(_artifact_key(scope, "report-1", 1, spec))
+
+        await grants_repository.cleanup_expired(now=now + timedelta(days=32))
+
+        with pytest.raises(ReportingError, match="下载授权无效"):
+            await grants.lookup(raw, now=now + timedelta(days=32))
+        for spec in specs:
+            assert await artifacts_repository.get(_artifact_key(scope, "report-1", 1, spec)) is None
+    finally:
+        await engine.dispose()
+
+
 @pytest.mark.parametrize(
     ("download_grants", "artifact_persistence"),
     [(object(), None), (None, object())],
@@ -231,7 +351,7 @@ def test_runtime_requires_public_base_url_for_http_publication() -> None:
 
 
 @pytest.mark.anyio
-async def test_http_publication_persists_and_issues_grant_before_destroying_sandbox() -> None:
+async def test_http_publication_persists_and_destroys_sandbox_before_issuing_grant() -> None:
     events: list[str] = []
     pdf = b"pdf"
     word = b"word"
@@ -288,7 +408,7 @@ async def test_http_publication_persists_and_issues_grant_before_destroying_sand
         output=content,
     )
 
-    assert events == ["persist", "grant", "destroy"]
+    assert events == ["persist", "destroy", "grant"]
     assert result["pdf"]["downloadUrl"] == ("http://10.233.32.64:27018/reports/v1/download/raw")
     assert result["word"]["downloadUrl"] == (
         "http://10.233.32.64:27018/reports/v1/download/raw/word"
@@ -343,6 +463,56 @@ async def test_http_publication_keeps_sandbox_when_artifact_persistence_fails() 
 
     assert raised.value.code == "report_artifact_changed"
     assert events == ["persist"]
+
+
+@pytest.mark.anyio
+async def test_http_publication_does_not_issue_grant_when_sandbox_cleanup_fails() -> None:
+    events: list[str] = []
+
+    class Persistence:
+        async def persist(self, **_values: Any) -> None:
+            events.append("persist")
+
+    class Grants:
+        async def issue(self, **_values: Any):
+            events.append("grant")
+            raise AssertionError("sandbox 删除失败后不得签发 grant")
+
+    class Workspace:
+        async def adestroy(self, _thread_id: str) -> bool:
+            events.append("destroy")
+            raise RuntimeError("cleanup failed")
+
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.artifact_persistence = Persistence()
+    runtime.download_grants = Grants()
+    runtime.workspace_service = Workspace()
+    runtime.report_public_base_url = "http://127.0.0.1:33046"
+    content = b"report"
+    output = {
+        "reportId": "report-1",
+        "revision": 1,
+        "pdfPath": "reports/report.pdf",
+        "pdfSize": len(content),
+        "pdfSha256": hashlib.sha256(content).hexdigest(),
+        "wordPath": "reports/report.docx",
+        "wordSize": len(content),
+        "wordSha256": hashlib.sha256(content).hexdigest(),
+        "sourceWarnings": [],
+        "codingReceipts": [],
+    }
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime.issue_http_publication(
+            thread_id="thread",
+            user_id="7",
+            workflow_session_id="workflow-session",
+            workflow_run_id="workflow-run",
+            output=output,
+        )
+
+    assert raised.value.code == "report_sandbox_cleanup_failed"
+    assert events == ["persist", "destroy"]
 
 
 @pytest.mark.anyio

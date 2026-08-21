@@ -181,7 +181,6 @@ class ReportWorkflowController:
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = updated.public_dict()
         return self._result(updated, output)
 
-
     async def _continue(
         self,
         run_context: RunContext | None,

@@ -128,7 +128,9 @@ class ReportingMetadataClient:
                 if response.status_code < 200 or response.status_code >= 300:
                     raise ReportingError("report_metadata_rejected", "报表元数据服务拒绝了请求。")
                 if len(response.content) > MAX_METADATA_RESPONSE_BYTES:
-                    raise ReportingError("report_metadata_response_too_large", "报表元数据响应过大。")
+                    raise ReportingError(
+                        "report_metadata_response_too_large", "报表元数据响应过大。"
+                    )
                 try:
                     return response.json()
                 except ValueError as error:
@@ -237,4 +239,3 @@ def _bind_ddl_source(ddl: str, sources: tuple[DataSourceConfig, ...]) -> DataSou
         code = "report_schema_source_ambiguous" if len(matches) > 1 else "report_schema_not_allowed"
         raise ReportingError(code, "DDL 数据表无法唯一绑定到已配置数据源数据库。")
     return matches[0]
-

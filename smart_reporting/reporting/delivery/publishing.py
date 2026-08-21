@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
@@ -28,10 +28,13 @@ from sqlalchemy import (
     Table,
     Text,
     delete,
+    func,
     insert,
     select,
+    text,
     update,
 )
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ...workspace import (
@@ -43,7 +46,11 @@ from ..models import ReportingError
 
 DOWNLOAD_GRANT_TTL = timedelta(days=30)
 REPORT_ARTIFACT_CHUNK_BYTES = 1024 * 1024
+REPORT_ARTIFACT_CLEANUP_GRACE = timedelta(days=1)
+REPORT_ARTIFACT_CLEANUP_BATCH = 100
 _DOWNLOAD_ACCESS_PATH = re.compile(r"/reports/v1/download/[^?\s]+(?:\?[^\s]*)?")
+_PUBLICATION_LOCK_KEY = "report-download-publication-v2"
+logger = logging.getLogger(__name__)
 
 _metadata = MetaData()
 report_download_grants_v2 = Table(
@@ -168,6 +175,10 @@ class DownloadGrantRepository(Protocol):
 
     async def get(self, grant_hash: str) -> ReportDownloadGrant | None: ...
 
+    async def replace(self, grant: ReportDownloadGrant, *, now: datetime) -> None: ...
+
+    async def cleanup_expired(self, *, now: datetime) -> None: ...
+
     async def revoke_report(
         self,
         report_id: str,
@@ -186,7 +197,96 @@ class ReportArtifactRepository(Protocol):
 
     async def get(self, artifact_key: str) -> StoredReportArtifact | None: ...
 
+    async def touch(self, artifact_key: str, *, now: datetime) -> None: ...
+
     def stream(self, artifact_key: str) -> AsyncIterator[bytes]: ...
+
+
+def _grant_values(grant: ReportDownloadGrant) -> dict[str, object]:
+    return {
+        "grant_hash": grant.grant_hash,
+        "database_name": grant.scope.database,
+        "user_id": grant.scope.user_id,
+        "company_id": grant.scope.company_id,
+        "session_id": grant.scope.session_id,
+        "thread_id": grant.scope.thread_id,
+        "workflow_run_id": grant.scope.workflow_run_id,
+        "report_id": grant.report_id,
+        "revision": grant.revision,
+        "pdf_path": grant.pdf_path,
+        "pdf_size": grant.pdf_size,
+        "pdf_sha256": grant.pdf_sha256,
+        "word_path": grant.word_path,
+        "word_size": grant.word_size,
+        "word_sha256": grant.word_sha256,
+        "expires_at": grant.expires_at,
+        "revoked_at": grant.revoked_at,
+    }
+
+
+def _grant_scope_conditions(report_id: str, scope: ReportDownloadScope) -> tuple[Any, ...]:
+    return (
+        report_download_grants_v2.c.report_id == report_id,
+        report_download_grants_v2.c.database_name == scope.database,
+        report_download_grants_v2.c.user_id == scope.user_id,
+        report_download_grants_v2.c.company_id == scope.company_id,
+        report_download_grants_v2.c.session_id == scope.session_id,
+        report_download_grants_v2.c.thread_id == scope.thread_id,
+        report_download_grants_v2.c.workflow_run_id == scope.workflow_run_id,
+    )
+
+
+async def _lock_publication(connection: Any) -> None:
+    if connection.dialect.name == "postgresql":
+        await connection.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": _PUBLICATION_LOCK_KEY},
+        )
+
+
+async def _artifact_has_active_grant(
+    connection: Any,
+    artifact: RowMapping,
+    *,
+    now: datetime,
+) -> bool:
+    conditions = [
+        report_download_grants_v2.c.database_name == artifact["database_name"],
+        report_download_grants_v2.c.user_id == artifact["user_id"],
+        report_download_grants_v2.c.company_id == artifact["company_id"],
+        report_download_grants_v2.c.session_id == artifact["session_id"],
+        report_download_grants_v2.c.thread_id == artifact["thread_id"],
+        report_download_grants_v2.c.workflow_run_id == artifact["workflow_run_id"],
+        report_download_grants_v2.c.report_id == artifact["report_id"],
+        report_download_grants_v2.c.revision == artifact["revision"],
+        report_download_grants_v2.c.revoked_at.is_(None),
+        report_download_grants_v2.c.expires_at > now,
+    ]
+    artifact_type = artifact["artifact"]
+    if artifact_type == "pdf":
+        conditions.extend(
+            (
+                report_download_grants_v2.c.pdf_path == artifact["path"],
+                report_download_grants_v2.c.pdf_size == artifact["size"],
+                report_download_grants_v2.c.pdf_sha256 == artifact["sha256"],
+            )
+        )
+    elif artifact_type == "word":
+        conditions.extend(
+            (
+                report_download_grants_v2.c.word_path == artifact["path"],
+                report_download_grants_v2.c.word_size == artifact["size"],
+                report_download_grants_v2.c.word_sha256 == artifact["sha256"],
+            )
+        )
+    else:
+        return False
+    return (
+        await connection.scalar(
+            select(report_download_grants_v2.c.grant_hash).where(*conditions).limit(1)
+        )
+        is not None
+    )
 
 
 class SqlAlchemyDownloadGrantRepository:
@@ -200,29 +300,100 @@ class SqlAlchemyDownloadGrantRepository:
 
         async with self.engine.begin() as connection:
             await connection.run_sync(_metadata.create_all)
+            await connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_report_download_grants_v2_expires_at "
+                    "ON report_download_grants_v2 (expires_at)"
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_report_artifact_files_v1_created_at "
+                    "ON report_artifact_files_v1 (created_at)"
+                )
+            )
+        await self.cleanup_expired(now=datetime.now(UTC))
 
     async def put(self, grant: ReportDownloadGrant) -> None:
-        values = {
-            "grant_hash": grant.grant_hash,
-            "database_name": grant.scope.database,
-            "user_id": grant.scope.user_id,
-            "company_id": grant.scope.company_id,
-            "session_id": grant.scope.session_id,
-            "thread_id": grant.scope.thread_id,
-            "workflow_run_id": grant.scope.workflow_run_id,
-            "report_id": grant.report_id,
-            "revision": grant.revision,
-            "pdf_path": grant.pdf_path,
-            "pdf_size": grant.pdf_size,
-            "pdf_sha256": grant.pdf_sha256,
-            "word_path": grant.word_path,
-            "word_size": grant.word_size,
-            "word_sha256": grant.word_sha256,
-            "expires_at": grant.expires_at,
-            "revoked_at": grant.revoked_at,
-        }
         async with self.engine.begin() as connection:
-            await connection.execute(insert(report_download_grants_v2).values(**values))
+            await connection.execute(
+                insert(report_download_grants_v2).values(**_grant_values(grant))
+            )
+
+    async def replace(self, grant: ReportDownloadGrant, *, now: datetime) -> None:
+        """原子替换当前授权，禁止失败插入先撤销上一份可用授权。
+
+        PostgreSQL advisory lock 覆盖同一张授权表的并发发布与回收。较低 revision 必须
+        失败关闭；同 revision 重试则在同一事务中撤销旧 token 并插入新 token，因此
+        sandbox 清理失败后的重试不会留下多个仍可下载的 bearer。
+        """
+
+        conditions = _grant_scope_conditions(grant.report_id, grant.scope)
+        async with self.engine.begin() as connection:
+            await _lock_publication(connection)
+            active_revision = await connection.scalar(
+                select(func.max(report_download_grants_v2.c.revision)).where(
+                    *conditions,
+                    report_download_grants_v2.c.revoked_at.is_(None),
+                    report_download_grants_v2.c.expires_at > now,
+                )
+            )
+            if active_revision is not None and int(active_revision) > grant.revision:
+                raise ReportingError(
+                    "report_download_revision_stale",
+                    "不能用较低修订替换当前报告下载授权。",
+                )
+            await connection.execute(
+                update(report_download_grants_v2)
+                .where(
+                    *conditions,
+                    report_download_grants_v2.c.revoked_at.is_(None),
+                    report_download_grants_v2.c.revision <= grant.revision,
+                )
+                .values(revoked_at=now)
+            )
+            await connection.execute(
+                insert(report_download_grants_v2).values(**_grant_values(grant))
+            )
+
+    async def cleanup_expired(self, *, now: datetime) -> None:
+        """删除过期授权，并分批回收已无有效授权引用的报告产物。
+
+        产物持久化与 grant 签发是两个相邻阶段，不能把刚写入但尚未签发的文件判定为
+        孤儿。回收只处理至少静置一天的产物；复用既有产物时 ``touch`` 会刷新时间。
+        每批最多处理固定数量，避免一次启动或签发被历史数据长时间阻塞。
+        """
+
+        cutoff = now - REPORT_ARTIFACT_CLEANUP_GRACE
+        async with self.engine.begin() as connection:
+            await _lock_publication(connection)
+            await connection.execute(
+                delete(report_download_grants_v2).where(
+                    report_download_grants_v2.c.expires_at <= now
+                )
+            )
+            candidates = (
+                await connection.execute(
+                    select(report_artifact_files_v1)
+                    .where(report_artifact_files_v1.c.created_at <= cutoff)
+                    .order_by(report_artifact_files_v1.c.created_at)
+                    .limit(REPORT_ARTIFACT_CLEANUP_BATCH)
+                )
+            ).mappings()
+            for artifact in candidates:
+                if await _artifact_has_active_grant(connection, artifact, now=now):
+                    continue
+                artifact_key = cast(str, artifact["artifact_key"])
+                await connection.execute(
+                    delete(report_artifact_chunks_v1).where(
+                        report_artifact_chunks_v1.c.artifact_key == artifact_key
+                    )
+                )
+                await connection.execute(
+                    delete(report_artifact_files_v1).where(
+                        report_artifact_files_v1.c.artifact_key == artifact_key
+                    )
+                )
 
     async def get(self, grant_hash: str) -> ReportDownloadGrant | None:
         statement = select(report_download_grants_v2).where(
@@ -266,13 +437,7 @@ class SqlAlchemyDownloadGrantRepository:
         before_revision: int | None = None,
     ) -> None:
         conditions = [
-            report_download_grants_v2.c.report_id == report_id,
-            report_download_grants_v2.c.database_name == scope.database,
-            report_download_grants_v2.c.user_id == scope.user_id,
-            report_download_grants_v2.c.company_id == scope.company_id,
-            report_download_grants_v2.c.session_id == scope.session_id,
-            report_download_grants_v2.c.thread_id == scope.thread_id,
-            report_download_grants_v2.c.workflow_run_id == scope.workflow_run_id,
+            *_grant_scope_conditions(report_id, scope),
             report_download_grants_v2.c.revoked_at.is_(None),
         ]
         if before_revision is not None:
@@ -376,6 +541,14 @@ class SqlAlchemyReportArtifactRepository:
             created_at=_utc_datetime(cast(datetime, row["created_at"])),
         )
 
+    async def touch(self, artifact_key: str, *, now: datetime) -> None:
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                update(report_artifact_files_v1)
+                .where(report_artifact_files_v1.c.artifact_key == artifact_key)
+                .values(created_at=now)
+            )
+
     async def stream(self, artifact_key: str) -> AsyncIterator[bytes]:
         statement = (
             select(report_artifact_chunks_v1.c.content)
@@ -407,7 +580,6 @@ class ReportDownloadGrantService:
         now: datetime | None = None,
     ) -> tuple[str, ReportDownloadGrant]:
         current = _utc_datetime(now or datetime.now(UTC))
-        await self.repository.revoke_report(report_id, scope=scope, before_revision=revision)
         raw = secrets.token_urlsafe(32)
         grant = ReportDownloadGrant(
             grant_hash=_grant_hash(raw),
@@ -422,7 +594,13 @@ class ReportDownloadGrantService:
             word_size=word_size,
             word_sha256=word_sha256,
         )
-        await self.repository.put(grant)
+        await self.repository.replace(grant, now=current)
+        try:
+            await self.repository.cleanup_expired(now=current)
+        except Exception:
+            # grant 已原子签发，清理属于可重试维护动作；不能因清理失败把成功发布
+            # 变成调用方拿不到 token 的失败状态。下一次启动或签发会再次执行清理。
+            logger.warning("report_artifact_cleanup_failed", exc_info=True)
         return raw, grant
 
     async def lookup(self, raw_grant: str, *, now: datetime | None = None) -> ReportDownloadGrant:
@@ -481,6 +659,7 @@ class ReportArtifactPersistenceService:
             )
             existing = await self.repository.get(artifact.artifact_key)
             if existing is not None and _same_artifact_identity(existing, artifact):
+                await self.repository.touch(artifact.artifact_key, now=artifact.created_at)
                 continue
             await self.repository.put(
                 artifact,
