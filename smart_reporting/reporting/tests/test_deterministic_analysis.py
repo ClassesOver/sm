@@ -89,7 +89,7 @@ def test_measure_semantic_accepts_confirmed_unit() -> None:
 def test_deterministic_bundle_calculates_semantic_facts_and_separate_comparisons() -> None:
     current = b"month,department,amount\n2025-01,A,100\n2025-02,B,0\n2025-03,A,-10\n"
     yoy = b"month,department,amount\n2024-01,A,80\n2024-02,B,10\n2024-03,A,0\n"
-    mom = b"month,department,amount\n2024-12,A,60\n"
+    mom = b"month,department,amount\n2025-02,A,60\n"
 
     bundle = build_deterministic_analysis_bundle(
         analysis(),
@@ -121,6 +121,50 @@ def test_deterministic_bundle_calculates_semantic_facts_and_separate_comparisons
         ("yoy", "yoy"),
         ("mom", "mom"),
     }
+    mom_comparison = next(item for item in bundle.comparisons if item.comparison_type == "mom")
+    assert mom_comparison.current_total == -10
+    assert mom_comparison.baseline_total == 60
+
+
+def test_deterministic_bundle_aligns_yoy_to_common_months() -> None:
+    current = b"month,department,amount\n2025-01,A,10\n2025-02,A,20\n"
+    yoy = b"month,department,amount\n2024-01,A,5\n2024-02,A,20\n2024-03,A,100\n"
+
+    bundle = build_deterministic_analysis_bundle(
+        analysis(),
+        (
+            ("current", current, context("current"), ("current",)),
+            ("yoy", yoy, context("yoy"), ("yoy",)),
+        ),
+    )
+
+    comparison = bundle.comparisons[0]
+    assert comparison.current_total == 30
+    assert comparison.baseline_total == 25
+    assert comparison.change_rate == 20
+    assert comparison.period_start == "2025-01"
+    assert comparison.period_end == "2025-02"
+    assert any("共同连续窗口" in warning for warning in comparison.warnings)
+
+
+def test_deterministic_bundle_excludes_suspicious_trailing_zero_months() -> None:
+    current = b"month,department,amount\n2025-01,A,10\n2025-02,A,20\n2025-03,A,0\n2025-04,A,0\n"
+    yoy = b"month,department,amount\n2024-01,A,5\n2024-02,A,10\n2024-03,A,30\n2024-04,A,40\n"
+
+    bundle = build_deterministic_analysis_bundle(
+        analysis(),
+        (
+            ("current", current, context("current"), ("current",)),
+            ("yoy", yoy, context("yoy"), ("yoy",)),
+        ),
+    )
+
+    comparison = bundle.comparisons[0]
+    assert comparison.current_total == 30
+    assert comparison.baseline_total == 15
+    assert comparison.change_rate == 100
+    assert comparison.period_end == "2025-02"
+    assert any("连续 2 个零值期间" in warning for warning in comparison.warnings)
 
 
 @pytest.mark.parametrize(
@@ -262,6 +306,123 @@ def test_deterministic_bundle_builds_profile_ratio_difference_and_reconciliation
     assert reconciliation.checked_group_count == 2
     assert reconciliation.failed_group_count == 1
     assert reconciliation.grain == ("department",)
+
+
+def test_deterministic_bundle_aligns_cross_dataset_ratio_periods() -> None:
+    actual_context = context(
+        "actual",
+        fields=("month", "actual_value"),
+        semantics=(semantic("actual_value", unit="元"),),
+    )
+    budget_context = context(
+        "budget",
+        fields=("month", "budget_value"),
+        semantics=(semantic("budget_value", unit="元"),),
+    )
+    profile_metrics = (
+        {
+            "code": "actual_metric",
+            "kind": "amount",
+            "aggregation": "sum",
+            "fieldRef": "dynamic_source.dynamic_db.dynamic_table.actual_value",
+        },
+        {
+            "code": "budget_metric",
+            "kind": "amount",
+            "aggregation": "sum",
+            "fieldRef": "dynamic_source.dynamic_db.dynamic_table.budget_value",
+        },
+        {
+            "code": "execution_ratio",
+            "kind": "ratio",
+            "aggregation": "ratio",
+            "numeratorMetric": "actual_metric",
+            "denominatorMetric": "budget_metric",
+        },
+    )
+
+    bundle = build_deterministic_analysis_bundle(
+        analysis(fields=("actual_value", "budget_value")),
+        (
+            (
+                "actual",
+                b"month,actual_value\n2025-01,80\n2025-02,70\n",
+                actual_context,
+                ("current",),
+            ),
+            (
+                "budget",
+                b"month,budget_value\n2025-01,100\n2025-02,100\n2025-03,100\n",
+                budget_context,
+                ("current",),
+            ),
+        ),
+        profile_metrics=profile_metrics,
+    )
+
+    ratio = bundle.derived_metrics[0]
+    assert ratio.numerator == 150
+    assert ratio.denominator == 200
+    assert ratio.percentage == 75
+    assert ratio.period_start == "2025-01"
+    assert ratio.period_end == "2025-02"
+    assert any("共同连续窗口" in warning for warning in ratio.warnings)
+
+
+def test_deterministic_bundle_aligns_same_dataset_ratio_periods() -> None:
+    dataset_context = context(
+        "current",
+        fields=("month", "actual_value", "budget_value"),
+        semantics=(
+            semantic("actual_value", unit="元"),
+            semantic("budget_value", unit="元"),
+        ),
+    )
+    profile_metrics = (
+        {
+            "code": "actual_metric",
+            "kind": "amount",
+            "aggregation": "sum",
+            "fieldRef": "dynamic_source.dynamic_db.dynamic_table.actual_value",
+        },
+        {
+            "code": "budget_metric",
+            "kind": "amount",
+            "aggregation": "sum",
+            "fieldRef": "dynamic_source.dynamic_db.dynamic_table.budget_value",
+        },
+        {
+            "code": "execution_ratio",
+            "kind": "ratio",
+            "aggregation": "ratio",
+            "numeratorMetric": "actual_metric",
+            "denominatorMetric": "budget_metric",
+        },
+    )
+
+    bundle = build_deterministic_analysis_bundle(
+        analysis(fields=("actual_value", "budget_value")),
+        (
+            (
+                "current",
+                b"month,actual_value,budget_value\n"
+                b"2025-01,80,100\n"
+                b"2025-02,70,100\n"
+                b"2025-03,,100\n",
+                dataset_context,
+                ("current",),
+            ),
+        ),
+        profile_metrics=profile_metrics,
+    )
+
+    ratio = bundle.derived_metrics[0]
+    assert ratio.numerator == 150
+    assert ratio.denominator == 200
+    assert ratio.percentage == 75
+    assert ratio.period_start == "2025-01"
+    assert ratio.period_end == "2025-02"
+    assert any("共同连续窗口" in warning for warning in ratio.warnings)
 
 
 def test_deterministic_bundle_warns_instead_of_guessing_unconfirmed_numeric_fields() -> None:

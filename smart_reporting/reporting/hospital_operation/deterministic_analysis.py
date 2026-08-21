@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, timedelta
 from io import BytesIO
 from typing import Any, Literal
 
-import pandas as pd
+import polars as pl
 from pydantic import Field
 
 from .detailed_analysis import AnalysisModel, DatasetAnalysisContext, DetailedAnalysisItem
@@ -31,6 +33,7 @@ class DeterministicMetricFact(AnalysisModel):
     dataset_id: str = Field(alias="datasetId", min_length=1, max_length=256)
     dataset_sha256: str = Field(alias="datasetSha256", pattern=r"^[0-9a-f]{64}$")
     profile_hash: str | None = Field(default=None, alias="profileHash", pattern=r"^[0-9a-f]{64}$")
+    period_roles: tuple[PeriodRole, ...] = Field(alias="periodRoles", min_length=1, max_length=3)
     metric_codes: tuple[str, ...] = Field(default=(), alias="metricCodes", max_length=100)
     field: str = Field(min_length=1, max_length=128)
     field_ref: str = Field(alias="fieldRef", min_length=1, max_length=512)
@@ -135,7 +138,7 @@ class DeterministicAnalysisBundle(AnalysisModel):
 @dataclass(frozen=True)
 class _Dataset:
     dataset_id: str
-    frame: pd.DataFrame
+    frame: pl.DataFrame
     context: DatasetAnalysisContext
     period_roles: tuple[PeriodRole, ...]
 
@@ -155,8 +158,8 @@ def build_deterministic_analysis_bundle(
     warnings: list[str] = list(analysis.limitations)
     for dataset_id, content, context, period_roles in datasets:
         try:
-            frame = pd.read_csv(BytesIO(content))
-        except (UnicodeDecodeError, pd.errors.EmptyDataError, pd.errors.ParserError):
+            frame = pl.read_csv(BytesIO(content))
+        except (UnicodeDecodeError, pl.exceptions.PolarsError):
             warnings.append(f"Dataset {dataset_id} 无法解析为 CSV，未生成确定性事实。")
             continue
         prepared.append(_Dataset(dataset_id, frame, context, period_roles))
@@ -175,7 +178,7 @@ def build_deterministic_analysis_bundle(
         semantics_by_dataset.update(dataset_semantics)
         warnings.extend(dataset_warnings)
 
-    comparisons = _comparisons(facts, prepared)
+    comparisons, comparison_warnings = _comparisons(facts, prepared)
     derived_metrics, derived_warnings = _derived_metrics(
         facts,
         prepared,
@@ -191,6 +194,7 @@ def build_deterministic_analysis_bundle(
         profile_dimensions,
         profile_hash=profile_hash,
     )
+    warnings.extend(comparison_warnings)
     warnings.extend(derived_warnings)
     warnings.extend(reconciliation_warnings)
     correlations = _correlations(prepared, facts)
@@ -224,7 +228,7 @@ def _dataset_facts(
     for raw_semantic in dataset.context.metric_semantics:
         field_ref = str(raw_semantic.get("fieldRef", ""))
         field = field_ref.rsplit(".", 1)[-1]
-        if field not in dataset.frame or (
+        if field not in dataset.frame.columns or (
             requested_fields and field.casefold() not in requested_fields
         ):
             continue
@@ -236,10 +240,12 @@ def _dataset_facts(
         return facts, selected_semantics, warnings
 
     period_field = _period_field(dataset.frame, dataset.context)
-    group_fields = tuple(field for field in analysis.organization_grain if field in dataset.frame)
+    group_fields = tuple(
+        field for field in analysis.organization_grain if field in dataset.frame.columns
+    )
     if not group_fields:
         group_fields = tuple(
-            field for field in dataset.context.organization_grain if field in dataset.frame
+            field for field in dataset.context.organization_grain if field in dataset.frame.columns
         )
     for field_key, candidates in semantics_by_field.items():
         if len(candidates) != 1:
@@ -252,14 +258,21 @@ def _dataset_facts(
         field = field_ref.rsplit(".", 1)[-1]
         aggregation = _aggregation(semantic)
         scoped_frame, scope_warnings = _apply_scope(dataset, semantic)
+        period_values = _period_values(scoped_frame, field, period_field, aggregation)
+        scoped_frame, period_values, period_warnings = _trim_trailing_zero_periods(
+            scoped_frame,
+            period_field,
+            period_values,
+            enabled="current" in dataset.period_roles,
+        )
         series = scoped_frame[field]
         value = _aggregate(series, aggregation)
         if value is None:
             warnings.append(f"Dataset {dataset.dataset_id} 的 {field} 没有可计算值。")
             continue
-        numeric = pd.to_numeric(series, errors="coerce")
-        valid_numeric = numeric.dropna()
-        periods = _period_values(scoped_frame, field, period_field, aggregation)
+        numeric = series.cast(pl.Float64, strict=False)
+        valid_numeric = numeric.drop_nulls()
+        periods = period_values
         top, bottom = _group_contributions(scoped_frame, field, group_fields, aggregation)
         period_labels = [item.period for item in periods]
         fact_warnings = tuple(
@@ -268,6 +281,7 @@ def _dataset_facts(
                     *dataset.context.source_warnings,
                     *dataset.context.quality_warnings,
                     *scope_warnings,
+                    *period_warnings,
                 )
             )
         )[:100]
@@ -277,6 +291,7 @@ def _dataset_facts(
                 datasetId=dataset.dataset_id,
                 datasetSha256=dataset.context.sha256,
                 profileHash=profile_hash,
+                periodRoles=dataset.period_roles,
                 metricCodes=metric_codes_by_ref.get(field_ref.casefold(), ()),
                 field=field,
                 fieldRef=field_ref,
@@ -288,10 +303,16 @@ def _dataset_facts(
                 periodStart=period_labels[0] if period_labels else None,
                 periodEnd=period_labels[-1] if period_labels else None,
                 total=value,
-                average=_optional_finite(valid_numeric.mean()) if not valid_numeric.empty else None,
-                minimum=_optional_finite(valid_numeric.min()) if not valid_numeric.empty else None,
-                maximum=_optional_finite(valid_numeric.max()) if not valid_numeric.empty else None,
-                missingCount=int(series.isna().sum()),
+                average=_optional_finite(valid_numeric.mean())
+                if not valid_numeric.is_empty()
+                else None,
+                minimum=_optional_finite(valid_numeric.min())
+                if not valid_numeric.is_empty()
+                else None,
+                maximum=_optional_finite(valid_numeric.max())
+                if not valid_numeric.is_empty()
+                else None,
+                missingCount=series.null_count(),
                 zeroCount=int((valid_numeric == 0).sum()),
                 negativeCount=int((valid_numeric < 0).sum()),
                 periodValues=periods,
@@ -320,78 +341,327 @@ def _scope(semantic: Mapping[str, Any]) -> dict[str, str]:
 
 def _apply_scope(
     dataset: _Dataset, semantic: Mapping[str, Any]
-) -> tuple[pd.DataFrame, tuple[str, ...]]:
+) -> tuple[pl.DataFrame, tuple[str, ...]]:
     scope = _scope(semantic)
     frame = dataset.frame
     warnings: list[str] = []
     for column, expected in scope.items():
-        if column not in frame:
+        if column not in frame.columns:
             warnings.append(
                 f"固定范围 {column}={expected} 已由受审核 SQL 应用，CSV 未投影该范围字段。"
             )
             continue
-        frame = frame.loc[frame[column].astype(str) == expected]
+        frame = frame.filter(pl.col(column).cast(pl.String) == expected)
     return frame, tuple(warnings)
 
 
-def _aggregate(series: pd.Series, aggregation: Aggregation) -> float | None:
+def _aggregate(series: pl.Series, aggregation: Aggregation) -> float | None:
     if aggregation == "count":
-        return float(series.notna().sum())
+        return float(series.len() - series.null_count())
     if aggregation == "count_distinct":
-        return float(series.dropna().nunique())
-    numeric = pd.to_numeric(series, errors="coerce").dropna()
-    if numeric.empty:
+        return float(series.drop_nulls().n_unique())
+    numeric = series.cast(pl.Float64, strict=False).drop_nulls()
+    if numeric.is_empty():
         return None
-    operations = {
-        "sum": numeric.sum,
-        "average": numeric.mean,
-        "min": numeric.min,
-        "max": numeric.max,
+    values = {
+        "sum": numeric.sum(),
+        "average": numeric.mean(),
+        "min": numeric.min(),
+        "max": numeric.max(),
     }
-    return _finite(operations[aggregation]())
+    return _finite(values[aggregation])
 
 
 def _period_values(
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     field: str,
     period_field: str | None,
     aggregation: Aggregation,
 ) -> tuple[PeriodValue, ...]:
-    if period_field is None or period_field not in frame:
+    if period_field is None or period_field not in frame.columns:
         return ()
-    values: list[PeriodValue] = []
-    for period, group in frame.groupby(frame[period_field].astype(str), dropna=False, sort=True):
-        value = _aggregate(group[field], aggregation)
-        if value is not None:
-            values.append(PeriodValue(period=str(period), value=value))
-    return tuple(values)
+    grouped = (
+        frame.with_columns(pl.col(period_field).cast(pl.String).alias("__period"))
+        .group_by("__period")
+        .agg(
+            _aggregation_expression(field, aggregation).alias("__value"),
+            _valid_count_expression(field, aggregation).alias("__valid"),
+        )
+        .sort("__period")
+    )
+    return tuple(
+        PeriodValue(period=str(row["__period"]), value=_finite(row["__value"]))
+        for row in grouped.iter_rows(named=True)
+        if row["__period"] is not None and row["__valid"] > 0 and row["__value"] is not None
+    )
+
+
+def _aggregation_expression(field: str, aggregation: Aggregation) -> pl.Expr:
+    source = pl.col(field)
+    if aggregation == "count":
+        return source.is_not_null().sum()
+    if aggregation == "count_distinct":
+        return source.drop_nulls().n_unique()
+    numeric = source.cast(pl.Float64, strict=False)
+    operations = {
+        "sum": numeric.sum(),
+        "average": numeric.mean(),
+        "min": numeric.min(),
+        "max": numeric.max(),
+    }
+    return operations[aggregation]
+
+
+def _valid_count_expression(field: str, aggregation: Aggregation) -> pl.Expr:
+    source = pl.col(field)
+    if aggregation in {"count", "count_distinct"}:
+        return source.is_not_null().sum()
+    return source.cast(pl.Float64, strict=False).is_not_null().sum()
+
+
+def _trim_trailing_zero_periods(
+    frame: pl.DataFrame,
+    period_field: str | None,
+    periods: tuple[PeriodValue, ...],
+    *,
+    enabled: bool,
+) -> tuple[pl.DataFrame, tuple[PeriodValue, ...], tuple[str, ...]]:
+    if not enabled or period_field is None or len(periods) < 3:
+        return frame, periods, ()
+    trailing_zero_count = 0
+    for item in reversed(periods):
+        if item.value != 0:
+            break
+        trailing_zero_count += 1
+    if trailing_zero_count < 2 or trailing_zero_count == len(periods):
+        return frame, periods, ()
+    retained = periods[:-trailing_zero_count]
+    excluded = periods[-trailing_zero_count:]
+    labels = {item.period for item in retained}
+    filtered = frame.filter(pl.col(period_field).cast(pl.String).is_in(labels))
+    warning = (
+        f"当前期末发现连续 {trailing_zero_count} 个零值期间 "
+        f"{excluded[0].period} 至 {excluded[-1].period}，按疑似未入账期间排除。"
+    )
+    return filtered, retained, (warning,)
 
 
 def _group_contributions(
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     field: str,
     group_fields: tuple[str, ...],
     aggregation: Aggregation,
 ) -> tuple[tuple[GroupContribution, ...], tuple[GroupContribution, ...]]:
     if not group_fields:
         return (), ()
-    values: list[GroupContribution] = []
-    grouper: str | list[str] = group_fields[0] if len(group_fields) == 1 else list(group_fields)
-    for group, rows in frame.groupby(grouper, dropna=False, sort=False):
-        value = _aggregate(rows[field], aggregation)
-        if value is None:
-            continue
-        labels = group if isinstance(group, tuple) else (group,)
-        values.append(GroupContribution(group=" / ".join(map(str, labels)), value=value))
+    grouped = frame.group_by(list(group_fields)).agg(
+        _aggregation_expression(field, aggregation).alias("__value"),
+        _valid_count_expression(field, aggregation).alias("__valid"),
+    )
+    values = [
+        GroupContribution(
+            group=" / ".join(str(row[column]) for column in group_fields),
+            value=_finite(row["__value"]),
+        )
+        for row in grouped.iter_rows(named=True)
+        if row["__valid"] > 0 and row["__value"] is not None
+    ]
     ordered = sorted(values, key=lambda item: item.value, reverse=True)
     return tuple(ordered[:10]), tuple(reversed(ordered[-10:]))
 
 
+@dataclass(frozen=True)
+class _ParsedPeriod:
+    label: str
+    value: date
+    granularity: Literal["year", "month", "day"]
+
+
+def _parse_period(label: str) -> _ParsedPeriod | None:
+    normalized = label.strip()
+    match = re.fullmatch(r"(\d{4})", normalized)
+    if match:
+        return _ParsedPeriod(label, date(int(match.group(1)), 1, 1), "year")
+    match = re.fullmatch(r"(\d{4})[-/](\d{1,2})", normalized)
+    if match:
+        try:
+            return _ParsedPeriod(label, date(int(match.group(1)), int(match.group(2)), 1), "month")
+        except ValueError:
+            return None
+    match = re.fullmatch(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T].*)?", normalized)
+    if match:
+        try:
+            return _ParsedPeriod(
+                label,
+                date(int(match.group(1)), int(match.group(2)), int(match.group(3))),
+                "day",
+            )
+        except ValueError:
+            return None
+    match = re.fullmatch(r"(\d{4})(\d{2})(\d{2})?", normalized)
+    if match:
+        try:
+            day = int(match.group(3)) if match.group(3) else 1
+            return _ParsedPeriod(
+                label,
+                date(int(match.group(1)), int(match.group(2)), day),
+                "day" if match.group(3) else "month",
+            )
+        except ValueError:
+            return None
+    return None
+
+
+def _next_period(value: _ParsedPeriod) -> date:
+    if value.granularity == "year":
+        return date(value.value.year + 1, 1, 1)
+    if value.granularity == "month":
+        year = value.value.year + (value.value.month == 12)
+        month = 1 if value.value.month == 12 else value.value.month + 1
+        return date(year, month, 1)
+    return value.value + timedelta(days=1)
+
+
+def _previous_period(value: _ParsedPeriod) -> date:
+    if value.granularity == "year":
+        return date(value.value.year - 1, 1, 1)
+    if value.granularity == "month":
+        year = value.value.year - (value.value.month == 1)
+        month = 12 if value.value.month == 1 else value.value.month - 1
+        return date(year, month, 1)
+    return value.value - timedelta(days=1)
+
+
+def _parsed_period_values(
+    fact: DeterministicMetricFact,
+) -> list[tuple[_ParsedPeriod, PeriodValue]] | None:
+    parsed: list[tuple[_ParsedPeriod, PeriodValue]] = []
+    for item in fact.period_values:
+        period = _parse_period(item.period)
+        if period is None:
+            return None
+        parsed.append((period, item))
+    parsed.sort(key=lambda item: item[0].value)
+    return parsed
+
+
+def _fact_total_for_periods(
+    fact: DeterministicMetricFact, selected: tuple[PeriodValue, ...]
+) -> float | None:
+    if len(selected) == len(fact.period_values):
+        return fact.total
+    values = [item.value for item in selected]
+    if not values:
+        return None
+    if fact.aggregation in {"sum", "count"}:
+        return _finite(sum(values))
+    if fact.aggregation == "min":
+        return _finite(min(values))
+    if fact.aggregation == "max":
+        return _finite(max(values))
+    # average 需要各期间有效行数，count_distinct 需要跨期间去重；现有事实不足以安全重算。
+    return None
+
+
+def _latest_contiguous_pairs(
+    pairs: list[tuple[_ParsedPeriod, PeriodValue, _ParsedPeriod, PeriodValue]],
+) -> list[tuple[_ParsedPeriod, PeriodValue, _ParsedPeriod, PeriodValue]]:
+    if not pairs:
+        return []
+    runs: list[list[tuple[_ParsedPeriod, PeriodValue, _ParsedPeriod, PeriodValue]]] = []
+    current_run = [pairs[0]]
+    for pair in pairs[1:]:
+        previous = current_run[-1]
+        if (
+            pair[0].granularity == previous[0].granularity
+            and pair[2].granularity == previous[2].granularity
+            and pair[0].value == _next_period(previous[0])
+            and pair[2].value == _next_period(previous[2])
+        ):
+            current_run.append(pair)
+        else:
+            runs.append(current_run)
+            current_run = [pair]
+    runs.append(current_run)
+    return runs[-1]
+
+
+def _aligned_comparison_values(
+    current: DeterministicMetricFact,
+    baseline: DeterministicMetricFact,
+    comparison_type: Literal["yoy", "mom"],
+) -> tuple[float, float, str, str, tuple[str, ...]] | None:
+    current_values = _parsed_period_values(current)
+    baseline_values = _parsed_period_values(baseline)
+    if not current_values or not baseline_values:
+        return None
+    if comparison_type == "mom":
+        latest_current = current_values[-1]
+        candidates = [
+            item
+            for item in baseline_values
+            if item[0].granularity == latest_current[0].granularity
+            and item[0].value == _previous_period(latest_current[0])
+        ]
+        if len(candidates) != 1:
+            return None
+        latest_baseline = candidates[0]
+        return (
+            latest_current[1].value,
+            latest_baseline[1].value,
+            latest_current[1].period,
+            latest_current[1].period,
+            (),
+        )
+
+    current_by_key: dict[tuple[str, int, int], tuple[_ParsedPeriod, PeriodValue]] = {}
+    baseline_by_key: dict[tuple[str, int, int], tuple[_ParsedPeriod, PeriodValue]] = {}
+    for target, values in ((current_by_key, current_values), (baseline_by_key, baseline_values)):
+        for parsed, item in values:
+            key = (
+                parsed.granularity,
+                parsed.value.month if parsed.granularity != "year" else 0,
+                parsed.value.day if parsed.granularity == "day" else 0,
+            )
+            if key in target:
+                return None
+            target[key] = (parsed, item)
+    pairs = [
+        (*current_by_key[key], *baseline_by_key[key])
+        for key in current_by_key.keys() & baseline_by_key.keys()
+    ]
+    pairs.sort(key=lambda item: item[0].value)
+    selected = _latest_contiguous_pairs(pairs)
+    if not selected:
+        return None
+    current_periods = tuple(item[1] for item in selected)
+    baseline_periods = tuple(item[3] for item in selected)
+    current_total = _fact_total_for_periods(current, current_periods)
+    baseline_total = _fact_total_for_periods(baseline, baseline_periods)
+    if current_total is None or baseline_total is None:
+        return None
+    warnings: tuple[str, ...] = ()
+    if len(selected) != len(current_values) or len(selected) != len(baseline_values):
+        warnings = (
+            "同比仅使用共同连续窗口 "
+            f"{current_periods[0].period} 至 {current_periods[-1].period} 对比 "
+            f"{baseline_periods[0].period} 至 {baseline_periods[-1].period}。",
+        )
+    return (
+        current_total,
+        baseline_total,
+        current_periods[0].period,
+        current_periods[-1].period,
+        warnings,
+    )
+
+
 def _comparisons(
     facts: list[DeterministicMetricFact], datasets: list[_Dataset]
-) -> tuple[DeterministicComparison, ...]:
+) -> tuple[tuple[DeterministicComparison, ...], list[str]]:
     roles = {item.dataset_id: item.period_roles for item in datasets}
     result: list[DeterministicComparison] = []
+    warnings: list[str] = []
     by_ref: dict[str, list[DeterministicMetricFact]] = {}
     for fact in facts:
         by_ref.setdefault(fact.field_ref.casefold(), []).append(fact)
@@ -405,8 +675,17 @@ def _comparisons(
                     if comparison_type in roles[item.dataset_id]
                     and item.dataset_id != current.dataset_id
                 ):
-                    change = current.total - baseline.total
-                    rate = None if baseline.total == 0 else change / abs(baseline.total) * 100
+                    aligned = _aligned_comparison_values(current, baseline, comparison_type)
+                    if aligned is None:
+                        warnings.append(
+                            f"{current.field_ref} 的 {comparison_type} 期间无法形成唯一连续可比窗口，未生成比较。"
+                        )
+                        continue
+                    current_total, baseline_total, period_start, period_end, period_warnings = (
+                        aligned
+                    )
+                    change = current_total - baseline_total
+                    rate = None if baseline_total == 0 else change / abs(baseline_total) * 100
                     result.append(
                         DeterministicComparison(
                             comparisonType=comparison_type,
@@ -416,20 +695,22 @@ def _comparisons(
                             baselineDatasetId=baseline.dataset_id,
                             currentDatasetSha256=current.dataset_sha256,
                             baselineDatasetSha256=baseline.dataset_sha256,
-                            currentTotal=current.total,
-                            baselineTotal=baseline.total,
+                            currentTotal=current_total,
+                            baselineTotal=baseline_total,
                             change=_finite(change),
                             changeRate=_optional_finite(rate),
                             formula="(currentTotal-baselineTotal)/abs(baselineTotal)*100%",
                             unit=current.unit,
-                            periodStart=current.period_start,
-                            periodEnd=current.period_end,
-                            warnings=tuple(dict.fromkeys((*current.warnings, *baseline.warnings)))[
-                                :100
-                            ],
+                            periodStart=period_start,
+                            periodEnd=period_end,
+                            warnings=tuple(
+                                dict.fromkeys(
+                                    (*current.warnings, *baseline.warnings, *period_warnings)
+                                )
+                            )[:100],
                         )
                     )
-    return tuple(result)
+    return tuple(result), warnings
 
 
 def _derived_metrics(
@@ -474,11 +755,15 @@ def _derived_metrics(
                 continue
             numerator_fact = numerator_facts[0]
             denominator_fact = denominator_facts[0]
-            numerator = numerator_fact.total
-            denominator = denominator_fact.total
             ratio_warnings = list(
                 dict.fromkeys((*numerator_fact.warnings, *denominator_fact.warnings))
             )
+            aligned_ratio = _aligned_ratio_values(numerator_fact, denominator_fact)
+            if aligned_ratio is None:
+                warnings.append(f"Profile 比率指标 {code} 在 {role} 期间无法形成唯一连续可比窗口。")
+                continue
+            numerator, denominator, period_start, period_end, period_warnings = aligned_ratio
+            ratio_warnings.extend(period_warnings)
             if denominator == 0:
                 value = None
                 percentage = None
@@ -491,16 +776,6 @@ def _derived_metrics(
             )
             hashes = tuple(
                 dict.fromkeys((numerator_fact.dataset_sha256, denominator_fact.dataset_sha256))
-            )
-            periods = tuple(
-                value
-                for value in (
-                    numerator_fact.period_start,
-                    numerator_fact.period_end,
-                    denominator_fact.period_start,
-                    denominator_fact.period_end,
-                )
-                if value is not None
             )
             result.append(
                 DeterministicDerivedMetricFact(
@@ -520,8 +795,8 @@ def _derived_metrics(
                         else None
                     ),
                     formula=f"{numerator_code}/{denominator_code}; difference={numerator_code}-{denominator_code}",
-                    periodStart=min(periods) if periods else None,
-                    periodEnd=max(periods) if periods else None,
+                    periodStart=period_start,
+                    periodEnd=period_end,
                     datasetIds=dataset_ids,
                     datasetSha256s=hashes,
                     profileHash=profile_hash,
@@ -529,6 +804,65 @@ def _derived_metrics(
                 )
             )
     return tuple(result), warnings
+
+
+def _aligned_ratio_values(
+    numerator: DeterministicMetricFact,
+    denominator: DeterministicMetricFact,
+) -> tuple[float, float, str | None, str | None, tuple[str, ...]] | None:
+    numerator_values = _parsed_period_values(numerator)
+    denominator_values = _parsed_period_values(denominator)
+    if not numerator_values or not denominator_values:
+        if numerator.dataset_id != denominator.dataset_id:
+            return None
+        starts = tuple(
+            value
+            for value in (numerator.period_start, denominator.period_start)
+            if value is not None
+        )
+        ends = tuple(
+            value for value in (numerator.period_end, denominator.period_end) if value is not None
+        )
+        return (
+            numerator.total,
+            denominator.total,
+            min(starts) if starts else None,
+            max(ends) if ends else None,
+            (),
+        )
+    denominator_by_period = {
+        (parsed.granularity, parsed.value): (parsed, item) for parsed, item in denominator_values
+    }
+    if len(denominator_by_period) != len(denominator_values):
+        return None
+    pairs = [
+        (parsed, item, *denominator_by_period[(parsed.granularity, parsed.value)])
+        for parsed, item in numerator_values
+        if (parsed.granularity, parsed.value) in denominator_by_period
+    ]
+    pairs.sort(key=lambda item: item[0].value)
+    selected = _latest_contiguous_pairs(pairs)
+    if not selected:
+        return None
+    numerator_periods = tuple(item[1] for item in selected)
+    denominator_periods = tuple(item[3] for item in selected)
+    numerator_total = _fact_total_for_periods(numerator, numerator_periods)
+    denominator_total = _fact_total_for_periods(denominator, denominator_periods)
+    if numerator_total is None or denominator_total is None:
+        return None
+    warnings: tuple[str, ...] = ()
+    if len(selected) != len(numerator_values) or len(selected) != len(denominator_values):
+        warnings = (
+            "比率仅使用共同连续窗口 "
+            f"{numerator_periods[0].period} 至 {numerator_periods[-1].period}。",
+        )
+    return (
+        numerator_total,
+        denominator_total,
+        numerator_periods[0].period,
+        numerator_periods[-1].period,
+        warnings,
+    )
 
 
 def _reconciliations(
@@ -649,20 +983,20 @@ def _reconciliation_groups(
     columns = _grain_columns(fact.field_ref, frame, grain, profile_dimensions)
     if columns is None:
         return None
-    grouper: str | list[str] = columns[0] if len(columns) == 1 else list(columns)
     result: dict[tuple[str, ...], float] = {}
-    for key, rows in frame.groupby(grouper, dropna=False, sort=False):
-        value = _aggregate(rows[fact.field], fact.aggregation)
-        if value is None:
-            continue
-        labels = key if isinstance(key, tuple) else (key,)
-        result[tuple(map(str, labels))] = value
+    grouped = frame.group_by(list(columns)).agg(
+        _aggregation_expression(fact.field, fact.aggregation).alias("__value"),
+        _valid_count_expression(fact.field, fact.aggregation).alias("__valid"),
+    )
+    for row in grouped.iter_rows(named=True):
+        if row["__valid"] > 0 and row["__value"] is not None:
+            result[tuple(str(row[column]) for column in columns)] = _finite(row["__value"])
     return result
 
 
 def _grain_columns(
     metric_ref: str,
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     grain: tuple[str, ...],
     profile_dimensions: tuple[Mapping[str, Any], ...],
 ) -> tuple[str, ...] | None:
@@ -676,11 +1010,11 @@ def _grain_columns(
             str(ref).rsplit(".", 1)[-1]
             for ref in refs
             if str(ref).rsplit(".", 1)[0].casefold() == prefix
-            and str(ref).rsplit(".", 1)[-1] in frame
+            and str(ref).rsplit(".", 1)[-1] in frame.columns
         ]
         if len(candidates) == 1:
             result.append(candidates[0])
-        elif code in frame:
+        elif code in frame.columns:
             result.append(code)
         else:
             return None
@@ -698,12 +1032,16 @@ def _correlations(
         fields = tuple(dict.fromkeys(fields_by_dataset.get(dataset.dataset_id, ())))
         if len(fields) < 2:
             continue
-        numeric = dataset.frame.loc[:, list(fields)].apply(pd.to_numeric, errors="coerce")
-        correlation = numeric.corr(min_periods=3)
         for left_index, left in enumerate(fields):
             for right in fields[left_index + 1 :]:
-                value = correlation.loc[left, right]
-                if pd.notna(value):
+                pair = dataset.frame.select(
+                    pl.col(left).cast(pl.Float64, strict=False).alias("left"),
+                    pl.col(right).cast(pl.Float64, strict=False).alias("right"),
+                ).drop_nulls()
+                if pair.height < 3:
+                    continue
+                value = pair.select(pl.corr("left", "right")).item()
+                if value is not None and math.isfinite(float(value)):
                     result[f"{dataset.dataset_id}:{left}~{right}"] = _finite(value)
     return result
 
@@ -713,12 +1051,12 @@ def _coverage_warnings(dataset: _Dataset) -> list[str]:
     period_field = _period_field(dataset.frame, dataset.context)
     if period_field is None:
         warnings.append(f"Dataset {dataset.dataset_id} 未唯一识别期间字段，未计算趋势。")
-    elif dataset.frame[period_field].isna().any():
+    elif dataset.frame[period_field].null_count() > 0:
         warnings.append(f"Dataset {dataset.dataset_id} 的期间字段 {period_field} 存在缺失值。")
     return warnings
 
 
-def _period_field(frame: pd.DataFrame, context: DatasetAnalysisContext) -> str | None:
+def _period_field(frame: pl.DataFrame, context: DatasetAnalysisContext) -> str | None:
     if context.time_series_sort_field in frame.columns:
         return context.time_series_sort_field
     candidates = (

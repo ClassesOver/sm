@@ -16,6 +16,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
     CompletedSection,
     ContextTrace,
     FileIdentity,
+    MetricDefinition,
     ProfileCoverageDataset,
     ProfileCoverageManifest,
     ReportBrief,
@@ -23,10 +24,63 @@ from smart_reporting.reporting.workflow.checkpoint import (
     SectionArtifact,
 )
 from smart_reporting.reporting.workflow.runtime import (
+    REPORT_WORKFLOW_RESULT_STATE_KEY,
     ReportWorkflowRuntime,
     _run_bounded,
     _run_pending_analysis_items,
 )
+
+
+@pytest.mark.anyio
+async def test_dataset_publication_gate_blocks_frozen_incomparable_metric() -> None:
+    stored = checkpoint(completed=(), pending=())
+    assert stored.evidence_manifest is not None
+    stored = stored.model_copy(
+        update={
+            "evidence_manifest": stored.evidence_manifest.model_copy(
+                update={
+                    "metric_definitions": (
+                        MetricDefinition(
+                            code="income_yoy",
+                            name="医疗收入同比",
+                            definition="2025年1-11月相对2024年全年，仅作参考性对比",
+                            unit="%",
+                            periodBasis="2025年1-11月 vs 2024年全年（期间跨度不一致）",
+                        ),
+                    )
+                }
+            )
+        }
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.state_repository = SimpleNamespace(
+        get=AsyncMock(
+            return_value=SimpleNamespace(
+                payload={"workflowCheckpoint": stored.model_dump(mode="json", by_alias=True)}
+            )
+        )
+    )
+    runtime.workspace_service = SimpleNamespace(ahash_file=AsyncMock(return_value={}))
+    context = SimpleNamespace(
+        run_id="run-1",
+        session_id="thread-1",
+        user_id="user-1",
+        dependencies=None,
+        session_state={REPORT_WORKFLOW_RESULT_STATE_KEY: {"datasets": []}},
+    )
+
+    gate = await runtime._dataset_publication_gate(
+        context,
+        {
+            "status": "validated",
+            "markdownPath": "report.md",
+            "pdfPath": "report.pdf",
+            "wordPath": "report.docx",
+        },
+    )
+
+    assert gate["formalReleaseAllowed"] is False
+    assert any(item["code"] == "analysis_period_incomparable" for item in gate["issues"])
 
 
 @pytest.mark.anyio

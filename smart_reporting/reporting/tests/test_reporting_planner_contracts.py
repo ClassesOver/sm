@@ -21,16 +21,62 @@ from smart_reporting.reporting.instructions import (
 )
 from smart_reporting.reporting.model_policy import ReportingThinkingProfile
 from smart_reporting.reporting.workflow import runtime as reporting_runtime
+from smart_reporting.reporting.workflow.checkpoint import MetricDefinition
 from smart_reporting.reporting.workflow.runtime import (
     _PLANNER_DISPLAY_NAMES,
     REPORT_WORKFLOW_INPUT_STATE_KEY,
     AnalysisBundle,
     DataUnderstandingPlan,
     ReportWorkflowRuntime,
+    _analysis_comparability_issues,
     _coding_detailed_analysis_plan,
     _normalize_requirement_periods,
     _requirement_measure_field_refs,
 )
+
+
+def metric_definition(*, code: str, definition: str, period_basis: str) -> MetricDefinition:
+    return MetricDefinition(
+        code=code,
+        name="同比指标",
+        definition=definition,
+        unit="%",
+        periodBasis=period_basis,
+    )
+
+
+def test_publication_gate_marks_explicitly_incomparable_metrics_as_blocking() -> None:
+    metrics = (
+        metric_definition(
+            code="income_yoy",
+            definition="2025年1-11月相对2024年全年，仅作参考性对比",
+            period_basis="2025年1-11月 vs 2024年全年（期间跨度不一致）",
+        ),
+        metric_definition(
+            code="workload_yoy",
+            definition="2025年全年（11-12月为0），同比基期2024年全年",
+            period_basis="2025年全年 vs 2024年全年",
+        ),
+    )
+
+    issues = _analysis_comparability_issues(metrics, ())
+
+    assert {item["details"]["metricCode"] for item in issues} == {
+        "income_yoy",
+        "workload_yoy",
+    }
+
+
+def test_publication_gate_accepts_metrics_aligned_to_common_window() -> None:
+    metrics = (
+        metric_definition(
+            code="income_yoy",
+            definition="收入同比按服务端共同连续窗口计算",
+            period_basis="2025年1-10月 vs 2024年1-10月",
+        ),
+    )
+
+    assert _analysis_comparability_issues(metrics, ()) == ()
 
 
 def test_planner_trace_names_use_human_display_labels_without_changing_ids() -> None:

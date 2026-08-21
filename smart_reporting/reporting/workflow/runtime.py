@@ -144,6 +144,7 @@ from .checkpoint import (
     CompletedSection,
     ContextTrace,
     FileIdentity,
+    MetricDefinition,
     ProfileCoverageManifest,
     ReportingCheckpoint,
     SectionArtifact,
@@ -518,6 +519,49 @@ def _source_warnings_from_state(state: Mapping[str, Any]) -> tuple[SourceWarning
         return tuple(SourceWarning.model_validate(item) for item in raw)
     except Exception as error:
         raise ReportingError("report_source_warning_invalid", "来源差异告警状态无效。") from error
+
+
+def _analysis_comparability_issues(
+    metric_definitions: tuple[MetricDefinition, ...],
+    analysis_warnings: tuple[str, ...],
+) -> tuple[dict[str, Any], ...]:
+    """把冻结分析中明确披露的不可比期间升级为发布阻断项。"""
+
+    issues: list[dict[str, Any]] = []
+    blocking_markers = ("期间跨度不一致", "同期不可比", "仅作参考性对比")
+    for metric in metric_definitions:
+        description = f"{metric.definition} {metric.period_basis}"
+        mismatched_budget_actual = (
+            "执行" in metric.name
+            and "预算" in description
+            and "实际" in description
+            and description.count("覆盖") >= 2
+        )
+        zero_period_comparison = "同比" in description and re.search(
+            r"\d{1,2}(?:月|[-—至到]\d{1,2}月)为0", description
+        )
+        if (
+            any(marker in description for marker in blocking_markers)
+            or mismatched_budget_actual
+            or zero_period_comparison is not None
+        ):
+            issues.append(
+                {
+                    "code": "analysis_period_incomparable",
+                    "message": "冻结指标包含不可比期间，禁止正式发布。",
+                    "details": {"metricCode": metric.code, "periodBasis": metric.period_basis},
+                }
+            )
+    for warning in analysis_warnings:
+        if any(marker in warning for marker in blocking_markers):
+            issues.append(
+                {
+                    "code": "analysis_period_incomparable",
+                    "message": "冻结分析 Warning 标记了不可比期间，禁止正式发布。",
+                    "details": {"warning": warning[:500]},
+                }
+            )
+    return tuple(issues)
 
 
 def _human_label(value: str | None, fallback: str) -> str:
@@ -5515,6 +5559,40 @@ class ReportWorkflowRuntime:
         except (TypeError, ValueError, ValidationError, AttributeError):
             manifest = None
             issue("manifest_invalid", "服务端产物清单状态无效。")
+
+        try:
+            durable = await self.state_repository.get(
+                str(run_context.run_id or self._scope(run_context)["externalRunId"])
+            )
+            stored_checkpoint = (
+                durable.payload.get("workflowCheckpoint") if durable is not None else None
+            )
+            checkpoint = ReportingCheckpoint.model_validate(stored_checkpoint)
+            if checkpoint.evidence_manifest is None:
+                raise ValueError("checkpoint 缺少冻结分析产物")
+            analysis_warnings = tuple(
+                dict.fromkeys(
+                    (
+                        *checkpoint.evidence_manifest.warnings,
+                        *(
+                            warning
+                            for evidence in checkpoint.evidence_manifest.evidence
+                            for warning in evidence.warnings
+                        ),
+                    )
+                )
+            )
+            for semantic_issue in _analysis_comparability_issues(
+                checkpoint.evidence_manifest.metric_definitions,
+                analysis_warnings,
+            ):
+                issue(
+                    str(semantic_issue["code"]),
+                    str(semantic_issue["message"]),
+                    **cast(dict[str, Any], semantic_issue.get("details", {})),
+                )
+        except (TypeError, ValueError, ValidationError, AttributeError):
+            issue("analysis_checkpoint_invalid", "发布门禁无法核验冻结分析产物。")
 
         if result.get("status") != "validated":
             issue("artifact_not_validated", "Markdown、PDF 或 DOCX 尚未完成验收。")
