@@ -45,5 +45,6 @@ def create_agentos_app(
         on_route_conflict="preserve_base_app",
         cors_allowed_origins=list(context.settings.cors_allowed_origins),
         lifespan=lifespan,
+        telemetry=False,
     )
     return agent_os, agent_os.get_app()

@@ -950,6 +950,58 @@ class AnalysisBundle(_StrictModel):
     )
 
 
+def _normalize_analysis_bundle_table_refs(candidate: Any) -> Any:
+    if not isinstance(candidate, dict) or not isinstance(candidate.get("requirements"), list):
+        return candidate
+
+    # 模型偶尔把 sourceId 当成 SQL catalog 前缀，生成 sourceId.database.table。
+    # 仅精确移除当前 requirement 的 sourceId；其他三段式引用仍由严格 Schema 拒绝。
+    normalized = copy(candidate)
+    normalized_requirements: list[Any] = []
+    for raw_requirement in candidate["requirements"]:
+        if not isinstance(raw_requirement, dict):
+            normalized_requirements.append(raw_requirement)
+            continue
+        source_id = raw_requirement.get("sourceId", raw_requirement.get("source_id"))
+        if not isinstance(source_id, str):
+            normalized_requirements.append(raw_requirement)
+            continue
+
+        requirement = copy(raw_requirement)
+        for key in ("tables", "relations"):
+            raw_items = raw_requirement.get(key)
+            if not isinstance(raw_items, list):
+                continue
+            items: list[Any] = []
+            for raw_item in raw_items:
+                if not isinstance(raw_item, dict):
+                    items.append(raw_item)
+                    continue
+                item = copy(raw_item)
+                fields = (
+                    ("table",)
+                    if key == "tables"
+                    else (
+                        "leftTable",
+                        "rightTable",
+                        "left_table",
+                        "right_table",
+                    )
+                )
+                for field in fields:
+                    value = item.get(field)
+                    if not isinstance(value, str):
+                        continue
+                    parts = value.split(".")
+                    if len(parts) == 3 and parts[0] == source_id:
+                        item[field] = ".".join(parts[1:])
+                items.append(item)
+            requirement[key] = items
+        normalized_requirements.append(requirement)
+    normalized["requirements"] = normalized_requirements
+    return normalized
+
+
 class GeneratedQuery(_StrictModel):
     requirement_id: str = Field(alias="requirementId", min_length=1, max_length=128)
     source_id: str = Field(alias="sourceId", min_length=1, max_length=64)
@@ -1193,7 +1245,10 @@ class ReportWorkflowRuntime:
         setattr(planner_model, "_report_thinking_escalation_fields", thinking_escalation_fields)
 
         def validate_response(content: Any) -> BaseModel:
-            return output_schema.model_validate(_planner_candidate(content))
+            candidate = _planner_candidate(content)
+            if output_schema is AnalysisBundle:
+                candidate = _normalize_analysis_bundle_table_refs(candidate)
+            return output_schema.model_validate(candidate)
 
         setattr(planner_model, "_report_response_validator", validate_response)
         agent = planner.deep_copy(
@@ -1223,6 +1278,7 @@ class ReportWorkflowRuntime:
                 "tool_choice": None,
                 "output_schema": output_schema,
                 "parse_response": True,
+                "telemetry": False,
                 "post_hooks": [],
                 # 规划步骤的输入由 Workflow 每次完整签发，既不依赖历史，也不消费会话
                 # 摘要。若从 Coding Worker 继承摘要配置，Agno 会在每次大目录分析后再次

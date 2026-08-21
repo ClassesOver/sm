@@ -32,9 +32,6 @@ def configure_execution_tracing(
         database.sync_db,
         enabled=settings.tracing_enabled,
         batch_processing=True,
-        phoenix_endpoint=settings.tracing_phoenix_endpoint,
-        phoenix_api_key=settings.tracing_phoenix_api_key,
-        phoenix_project_name=settings.tracing_phoenix_project_name,
     )
 
 

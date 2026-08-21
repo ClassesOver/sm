@@ -37,6 +37,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     bind_reporting_run_context,
 )
+from smart_reporting.reporting.vision import ReportVisionReviewer
 from smart_reporting.settings import AgentSettings
 
 
@@ -60,9 +61,21 @@ def test_report_worker_disables_unused_session_summaries(monkeypatch: pytest.Mon
     )
 
     assert worker.add_history_to_context is False
+    assert worker.telemetry is False
     assert worker.enable_session_summaries is False
     assert worker.add_session_summary_to_context is False
     assert worker.session_summary_manager is None
+
+
+def test_report_vision_reviewer_disables_telemetry() -> None:
+    settings = AgentSettings.from_environment(
+        {"OPENAI_API_KEY": "test"},
+        load_env_file=False,
+    )
+
+    reviewer = ReportVisionReviewer(settings, cast(Any, SimpleNamespace()))
+
+    assert reviewer._new_agent().telemetry is False
 
 
 @pytest.mark.parametrize(
@@ -1295,6 +1308,7 @@ def test_report_agent_exposes_verified_download_links_or_workspace_paths() -> No
     facade = report_agent_module.create_report_agent(worker, cast(Any, SimpleNamespace()))
     instructions = "\n".join(cast(list[str], facade.instructions))
 
+    assert facade.telemetry is False
     assert "`pdf.downloadUrl` 和 `word.downloadUrl`" in instructions
     assert "PDF 使用 `path`，Word 使用 `word.path`" in instructions
     assert "不得虚构返回中不存在的字段" in instructions

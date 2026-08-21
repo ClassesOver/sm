@@ -165,6 +165,7 @@ def create_cli_agent(context: CliContext) -> Agent:
             create_coding_tool_scheduler_hook(context.coding_repository),
             create_skill_script_hook(context.workspace_service),
         ],
+        telemetry=False,
         debug_mode=settings.debug,
         markdown=True,
         tool_choice="auto",

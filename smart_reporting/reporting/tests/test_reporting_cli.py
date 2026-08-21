@@ -231,6 +231,7 @@ def test_only_delivery_validation_step_pauses_for_error_recovery() -> None:
     assert steps["run-coding-analysis"].on_error is OnError.fail
     assert workflow.input_schema is None
     assert workflow.stream_executor_events is False
+    assert workflow.telemetry is False
 
 
 @pytest.mark.anyio

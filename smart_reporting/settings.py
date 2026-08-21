@@ -121,28 +121,6 @@ def _daytona_network_allow_list(values: MutableMapping[str, str]) -> str | None:
     return ",".join(networks)
 
 
-def _phoenix_endpoint(values: MutableMapping[str, str]) -> str | None:
-    raw = values.get("AGENT_TRACING_PHOENIX_ENDPOINT", "").strip()
-    if not raw:
-        return None
-    if len(raw) > 2048:
-        raise ValueError("AGENT_TRACING_PHOENIX_ENDPOINT 长度不能超过 2048")
-    parsed = urlsplit(raw)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("AGENT_TRACING_PHOENIX_ENDPOINT 必须是有效的 HTTP(S) 地址")
-    endpoint = raw.rstrip("/")
-    if not endpoint.endswith("/v1/traces"):
-        endpoint = f"{endpoint}/v1/traces"
-    return endpoint
-
-
 def _report_metadata_url(values: MutableMapping[str, str]) -> str | None:
     raw = values.get("AGENT_REPORT_METADATA_URL", "").strip()
     if not raw:
@@ -160,13 +138,6 @@ def _report_metadata_url(values: MutableMapping[str, str]) -> str | None:
     ):
         raise ValueError("AGENT_REPORT_METADATA_URL 必须是有效的 HTTP(S) 地址")
     return raw.rstrip("/")
-
-
-def _phoenix_project_name(values: MutableMapping[str, str]) -> str:
-    name = values.get("AGENT_TRACING_PHOENIX_PROJECT", "agentos").strip()
-    if not name or len(name) > 128:
-        raise ValueError("AGENT_TRACING_PHOENIX_PROJECT 长度必须为 1 到 128")
-    return name
 
 
 @dataclass(frozen=True)
@@ -210,9 +181,6 @@ class AgentSettings:
     report_enable_vision: bool
     report_vision_model: str
     tracing_enabled: bool
-    tracing_phoenix_endpoint: str | None
-    tracing_phoenix_api_key: str | None
-    tracing_phoenix_project_name: str
     context_token_budget: int
     output_token_reserve: int
     report_context_token_budget: int
@@ -347,11 +315,6 @@ class AgentSettings:
                 or DEFAULT_REPORT_VISION_MODEL_ID
             ),
             tracing_enabled=_flag(values.get("AGENT_TRACING_ENABLED")),
-            tracing_phoenix_endpoint=_phoenix_endpoint(values),
-            tracing_phoenix_api_key=(
-                values.get("AGENT_TRACING_PHOENIX_API_KEY", "").strip() or None
-            ),
-            tracing_phoenix_project_name=_phoenix_project_name(values),
             context_token_budget=context_token_budget,
             output_token_reserve=output_token_reserve,
             report_context_token_budget=report_context_token_budget,

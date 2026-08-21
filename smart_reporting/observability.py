@@ -35,66 +35,21 @@ def configure_tracing(
     *,
     enabled: bool,
     batch_processing: bool = False,
-    phoenix_endpoint: str | None = None,
-    phoenix_api_key: str | None = None,
-    phoenix_project_name: str = "agentos",
 ) -> None:
     if not enabled:
         return
 
     try:
-        if phoenix_endpoint is None:
-            from agno.tracing import setup_tracing
+        from agno.tracing import setup_tracing
 
-            if batch_processing:
-                setup_tracing(db=database, batch_processing=True)
-            else:
-                setup_tracing(db=database)
+        if batch_processing:
+            setup_tracing(db=database, batch_processing=True)
         else:
-            _configure_phoenix_tracing(
-                database,
-                endpoint=phoenix_endpoint,
-                api_key=phoenix_api_key,
-                project_name=phoenix_project_name,
-                batch_processing=batch_processing,
-            )
+            setup_tracing(db=database)
     except ImportError as error:
         raise TracingConfigurationError("agent_tracing_dependency_missing") from error
     except Exception as error:
         raise TracingConfigurationError("agent_tracing_initialization_failed") from error
-
-
-def _configure_phoenix_tracing(
-    database: AsyncBaseDb | BaseDb,
-    *,
-    endpoint: str,
-    api_key: str | None,
-    project_name: str,
-    batch_processing: bool,
-) -> None:
-    from agno.tracing.exporter import DatabaseSpanExporter
-    from openinference.instrumentation.agno import AgnoInstrumentor
-    from opentelemetry import trace as trace_api
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk.resources import Resource
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
-
-    current_provider = trace_api.get_tracer_provider()
-    if isinstance(current_provider, TracerProvider):
-        return
-
-    provider = TracerProvider(
-        resource=Resource.create({"openinference.project.name": project_name})
-    )
-    database_processor = BatchSpanProcessor if batch_processing else SimpleSpanProcessor
-    provider.add_span_processor(database_processor(DatabaseSpanExporter(db=database)))
-    headers = {"api_key": api_key} if api_key is not None else None
-    provider.add_span_processor(
-        BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, headers=headers))
-    )
-    trace_api.set_tracer_provider(provider)
-    AgnoInstrumentor().instrument(tracer_provider=provider)
 
 
 def flush_tracing(timeout_millis: int = 30_000) -> bool:

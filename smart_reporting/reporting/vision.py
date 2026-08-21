@@ -98,6 +98,7 @@ class ReportVisionReviewer:
             retries=0,
             send_media_to_model=True,
             markdown=False,
+            telemetry=False,
             debug_mode=self._settings.debug,
         )
         agent.num_history_runs = None

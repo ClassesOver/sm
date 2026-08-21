@@ -2132,7 +2132,6 @@ opentelemetry-exporter-otlp-proto-http==1.44.0 \
     --hash=sha256:c633d7270ad6b57cd4cfbe8b0007a9e2e7c0cb50bd6c50fe2a7b245f721a09d8
     # via
     #   -c smart_reporting/requirements.txt
-    #   -r smart_reporting/requirements.in
     #   daytona
 opentelemetry-instrumentation==0.65b0 \
     --hash=sha256:071d9d9eced9bd6460444ec3b0c77229870ed05a881c22c84fdede58e4eed09b \
@@ -2391,7 +2390,9 @@ plotly==6.5.2 \
 polars==1.43.2 \
     --hash=sha256:22aa0cb92a1ee2d60d6a15a638b2e8e0dd99aea21ac0cd8fb29da8e382e075a9 \
     --hash=sha256:c699671b99eb71ff53334d237917aaa3db5ad4dda480abcb6c80e0eaee7b677b
-    # via -r smart_reporting/requirements.in
+    # via
+    #   -c smart_reporting/requirements.txt
+    #   -r smart_reporting/requirements.in
 polars-runtime-32==1.43.2 \
     --hash=sha256:00e33c28e321410c8d66e814a90043101e3bdd9ed2c6dabda07565aa8adbbdf1 \
     --hash=sha256:09339eacc6d392206e78aabbaaa37d7276eb969b798f46cb1f367fd718798c60 \
@@ -2402,7 +2403,9 @@ polars-runtime-32==1.43.2 \
     --hash=sha256:6d5a7ae004a2723ebf4427f6d6a639f30f86af4cf077075f6b35d04711154fc3 \
     --hash=sha256:91abf205d4ec93f92ba95386b7f8776559ae3dfce425ed2e527efa75d117d04a \
     --hash=sha256:d7b7c486bccee75a6af0158b87077da3d054657e3c60036b28644f4e1c7fdbf7
-    # via polars
+    # via
+    #   -c smart_reporting/requirements.txt
+    #   polars
 propcache==0.5.2 \
     --hash=sha256:01c4fc7480cd0598bb4b57022df55b9ca296da7fc5a8760bd8451a7e63a7d427 \
     --hash=sha256:04dc2390d9edbbaef7461f33322555976ffddf0b650a038649d026358714e6c5 \

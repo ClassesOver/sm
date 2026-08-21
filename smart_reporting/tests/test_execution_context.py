@@ -20,12 +20,7 @@ class _Client:
 
 def test_configure_execution_tracing使用同步数据库和批处理():
     settings = AgentSettings.from_environment(
-        {
-            "AGENT_TRACING_ENABLED": "true",
-            "AGENT_TRACING_PHOENIX_ENDPOINT": "https://phoenix.example",
-            "AGENT_TRACING_PHOENIX_API_KEY": "secret",
-            "AGENT_TRACING_PHOENIX_PROJECT": "hrp",
-        },
+        {"AGENT_TRACING_ENABLED": "true"},
         load_env_file=False,
     )
     sync_db = object()
@@ -44,9 +39,6 @@ def test_configure_execution_tracing使用同步数据库和批处理():
             {
                 "enabled": True,
                 "batch_processing": True,
-                "phoenix_endpoint": "https://phoenix.example/v1/traces",
-                "phoenix_api_key": "secret",
-                "phoenix_project_name": "hrp",
             },
         )
     ]

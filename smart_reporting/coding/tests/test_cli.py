@@ -78,6 +78,7 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert agent.model.max_retries == 0
     assert agent.model.extra_body == {"enable_thinking": True, "thinking_budget": 16384}
     assert agent.model.temperature == 0.1
+    assert agent.telemetry is False
     assert agent.model.reasoning_effort == "medium"
     assert agent.model.get_request_params()["temperature"] == 0.1
     assert agent.model.get_request_params()["reasoning_effort"] == "medium"
@@ -114,6 +115,7 @@ def test_create_cli_agent_is_independent_coding_agent():
     assert app_agent.model.request_params == {"parallel_tool_calls": True}
     assert app_agent.add_history_to_context is False
     assert app_agent.num_history_runs is None
+    assert app_agent.telemetry is False
     assert app_agent.debug_mode is False
     assert [tool.name for tool in app_agent.tools] == ["run_coding_task"]
     assert app_agent.tools[0].parameters == {
@@ -217,9 +219,7 @@ def test_create_files_patch_builds_one_native_multi_file_patch():
 
 
 def test_create_files_patch_preserves_missing_trailing_newline() -> None:
-    patch = _create_files_patch(
-        [{"path": "analysis/report.py", "content": 'print("OK")'}]
-    )
+    patch = _create_files_patch([{"path": "analysis/report.py", "content": 'print("OK")'}])
 
     changes = build_workspace_changes(
         object.__new__(WorkspaceService),
@@ -325,12 +325,7 @@ def test_cli_debug_mode_is_independent_from_thinking():
 
 def test_create_cli_context_configures_tracing_before_services(monkeypatch):
     settings = AgentSettings.from_environment(
-        {
-            "AGENT_TRACING_ENABLED": "true",
-            "AGENT_TRACING_PHOENIX_ENDPOINT": "https://phoenix.example",
-            "AGENT_TRACING_PHOENIX_API_KEY": "secret",
-            "AGENT_TRACING_PHOENIX_PROJECT": "hrp",
-        },
+        {"AGENT_TRACING_ENABLED": "true"},
         load_env_file=False,
     )
     async_db = object()
@@ -355,9 +350,6 @@ def test_create_cli_context_configures_tracing_before_services(monkeypatch):
             {
                 "enabled": True,
                 "batch_processing": True,
-                "phoenix_endpoint": "https://phoenix.example/v1/traces",
-                "phoenix_api_key": "secret",
-                "phoenix_project_name": "hrp",
             },
         )
     ]

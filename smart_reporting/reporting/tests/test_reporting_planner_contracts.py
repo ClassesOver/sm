@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import date
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -8,10 +10,12 @@ import pytest
 from agno.agent import Agent
 from agno.models.response import ModelResponse
 from pydantic import ValidationError
+from sqlglot import parse_one
 
 from smart_reporting.context_management import ProjectedOpenAIChat
 from smart_reporting.reporting import contract as reporting_contract
 from smart_reporting.reporting.agent import ReportWorkerOpenAIChat
+from smart_reporting.reporting.contract import ReportPeriod
 from smart_reporting.reporting.hospital_operation.detailed_analysis import (
     DetailedAnalysisPlan,
 )
@@ -22,6 +26,7 @@ from smart_reporting.reporting.instructions import (
 from smart_reporting.reporting.model_policy import ReportingThinkingProfile
 from smart_reporting.reporting.workflow import runtime as reporting_runtime
 from smart_reporting.reporting.workflow.checkpoint import MetricDefinition
+from smart_reporting.reporting.workflow.query_pipeline import _has_complete_period_filter
 from smart_reporting.reporting.workflow.runtime import (
     _PLANNER_DISPLAY_NAMES,
     REPORT_WORKFLOW_INPUT_STATE_KEY,
@@ -425,12 +430,86 @@ def test_planner_validation_runs_inside_agent_retry_boundary() -> None:
 
     assert stage.retries == 2
     assert stage.exponential_backoff is True
+    assert stage.telemetry is False
     assert stage.model.retries == 0
     assert stage.model.extra_body == {"enable_thinking": False}
     assert stage.model.reasoning_effort is None
     validator = getattr(stage.model, "_report_response_validator")
     with pytest.raises(ValidationError):
         validator("{}")
+
+
+def test_analysis_planner_normalizes_repeated_source_prefix_before_schema_validation() -> None:
+    planner = Agent(
+        model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+    )
+    stage = ReportWorkflowRuntime._planning_agent(
+        planner,
+        "report-analysis-planner",
+        AnalysisBundle,
+        thinking_profile=ReportingThinkingProfile.off(),
+    )
+    payload = analysis_bundle(
+        table="rj.dwd_hdc_income_summary_view",
+        period_granularity="date",
+    ).model_dump(mode="json", by_alias=True)
+    payload["requirements"][0]["tables"][0]["table"] = "rj.rj.dwd_hdc_income_summary_view"
+
+    validator = getattr(stage.model, "_report_response_validator")
+    result = validator(json.dumps(payload))
+
+    assert result.requirements[0].tables[0].table == "rj.dwd_hdc_income_summary_view"
+
+
+def test_analysis_planner_rejects_three_part_table_with_unrelated_source_prefix() -> None:
+    planner = Agent(
+        model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
+    )
+    stage = ReportWorkflowRuntime._planning_agent(
+        planner,
+        "report-analysis-planner",
+        AnalysisBundle,
+        thinking_profile=ReportingThinkingProfile.off(),
+    )
+    payload = analysis_bundle(
+        table="rj.dwd_hdc_income_summary_view",
+        period_granularity="date",
+    ).model_dump(mode="json", by_alias=True)
+    payload["requirements"][0]["tables"][0]["table"] = "other.rj.dwd_hdc_income_summary_view"
+
+    validator = getattr(stage.model, "_report_response_validator")
+    with pytest.raises(ValidationError, match="database.table"):
+        validator(json.dumps(payload))
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        (
+            "SELECT data_date, SUM(indicator_value) AS indicator_value "
+            "FROM rj.dwd_hdc_income_summary_view "
+            "WHERE data_date >= DATE '2025-01-01' "
+            "AND data_date <= DATE '2025-12-31' "
+            "GROUP BY data_date"
+        ),
+        (
+            "SELECT data_date, SUM(indicator_value) AS indicator_value "
+            "FROM rj.dwd_hdc_income_summary_view "
+            "WHERE data_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31' "
+            "GROUP BY data_date"
+        ),
+    ],
+)
+def test_period_filter_accepts_exact_typed_date_bounds(sql: str) -> None:
+    statement = parse_one(sql, read="mysql")
+
+    assert _has_complete_period_filter(
+        statement,
+        alias="dwd_hdc_income_summary_view",
+        column="data_date",
+        period=ReportPeriod(start=date(2025, 1, 1), end=date(2025, 12, 31)),
+        granularity="date",
+    )
 
 
 @pytest.mark.anyio

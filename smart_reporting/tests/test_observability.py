@@ -1,8 +1,6 @@
 import builtins
 import os
-import sys
 from contextlib import contextmanager
-from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -25,9 +23,7 @@ def test_expected_probe_uses_opentelemetry_suppression(monkeypatch):
         finally:
             calls.append("exit")
 
-    monkeypatch.setattr(
-        "opentelemetry.instrumentation.utils.suppress_instrumentation", suppress
-    )
+    monkeypatch.setattr("opentelemetry.instrumentation.utils.suppress_instrumentation", suppress)
 
     with suppress_expected_probe_tracing():
         calls.append("probe")
@@ -100,98 +96,6 @@ def test_flush_tracing_is_a_noop_without_a_flushable_provider(monkeypatch):
     monkeypatch.setattr("opentelemetry.trace.get_tracer_provider", lambda: object())
 
     assert flush_tracing() is True
-
-
-def test_configure_tracing_writes_to_database_and_phoenix(monkeypatch):
-    created = {}
-
-    class FakeDatabaseExporter:
-        def __init__(self, **values):
-            self.values = values
-
-    class FakeOtlpExporter:
-        def __init__(self, **values):
-            self.values = values
-
-    class FakeSimpleProcessor:
-        def __init__(self, exporter):
-            self.exporter = exporter
-
-    class FakeBatchProcessor:
-        def __init__(self, exporter):
-            self.exporter = exporter
-
-    class FakeProvider:
-        def __init__(self, **values):
-            self.values = values
-            self.processors = []
-
-        def add_span_processor(self, processor):
-            self.processors.append(processor)
-
-    class FakeResource:
-        @staticmethod
-        def create(attributes):
-            return attributes
-
-    class FakeInstrumentor:
-        def instrument(self, **values):
-            created["instrumented"] = values
-
-    trace_api = SimpleNamespace(
-        get_tracer_provider=lambda: object(),
-        set_tracer_provider=lambda provider: created.setdefault("provider", provider),
-    )
-
-    def module(name, **attributes):
-        value = ModuleType(name)
-        value.__dict__.update(attributes)
-        value.__path__ = []
-        monkeypatch.setitem(sys.modules, name, value)
-        return value
-
-    module("agno.tracing.exporter", DatabaseSpanExporter=FakeDatabaseExporter)
-    module("openinference")
-    module("openinference.instrumentation")
-    module("openinference.instrumentation.agno", AgnoInstrumentor=FakeInstrumentor)
-    module("opentelemetry", trace=trace_api)
-    module("opentelemetry.exporter")
-    module("opentelemetry.exporter.otlp")
-    module("opentelemetry.exporter.otlp.proto")
-    module("opentelemetry.exporter.otlp.proto.http")
-    module(
-        "opentelemetry.exporter.otlp.proto.http.trace_exporter",
-        OTLPSpanExporter=FakeOtlpExporter,
-    )
-    module("opentelemetry.sdk")
-    module("opentelemetry.sdk.resources", Resource=FakeResource)
-    module("opentelemetry.sdk.trace", TracerProvider=FakeProvider)
-    module(
-        "opentelemetry.sdk.trace.export",
-        BatchSpanProcessor=FakeBatchProcessor,
-        SimpleSpanProcessor=FakeSimpleProcessor,
-    )
-    database = object()
-
-    configure_tracing(
-        database,  # type: ignore[arg-type]
-        enabled=True,
-        phoenix_endpoint="https://phoenix.example/v1/traces",
-        phoenix_api_key="secret",
-        phoenix_project_name="hrp",
-    )
-
-    provider = created["provider"]
-    assert provider.values == {"resource": {"openinference.project.name": "hrp"}}
-    assert len(provider.processors) == 2
-    assert isinstance(provider.processors[0], FakeSimpleProcessor)
-    assert provider.processors[0].exporter.values == {"db": database}
-    assert isinstance(provider.processors[1], FakeBatchProcessor)
-    assert provider.processors[1].exporter.values == {
-        "endpoint": "https://phoenix.example/v1/traces",
-        "headers": {"api_key": "secret"},
-    }
-    assert created["instrumented"] == {"tracer_provider": provider}
 
 
 def test_configure_tracing_fails_when_dependency_is_missing(monkeypatch):

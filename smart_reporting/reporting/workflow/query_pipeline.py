@@ -900,6 +900,12 @@ def _matches_column(expression: exp.Expression | None, alias: str, column: str) 
 
 
 def _literal_date(expression: exp.Expression | None) -> date | None:
+    if (
+        isinstance(expression, exp.Cast)
+        and isinstance(expression.args.get("to"), exp.DataType)
+        and expression.args["to"].this == exp.DataType.Type.DATE
+    ):
+        expression = expression.this
     if not isinstance(expression, exp.Literal) or not expression.is_string:
         return None
     normalized = str(expression.this).replace("/", "").replace("-", "")

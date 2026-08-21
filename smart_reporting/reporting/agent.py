@@ -2000,6 +2000,7 @@ def create_report_worker(
             create_task_tool_scheduler_hook(task_repository),
             create_skill_script_hook(workspace_service),
         ],
+        telemetry=False,
         debug_mode=settings.debug,
         markdown=True,
         send_media_to_model=False,
@@ -2080,6 +2081,7 @@ def create_report_agent(
             "skills": None,
             "tool_hooks": facade_tool_hooks,
             "tool_choice": "auto",
+            "telemetry": False,
         }
     )
     facade.num_history_runs = None

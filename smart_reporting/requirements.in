@@ -7,7 +7,6 @@ markdown-it-py==4.2.0
 openai>=1.0
 openinference-instrumentation-agno>=0.1.38,<0.2.0
 openpyxl>=3.1,<4.0
-opentelemetry-exporter-otlp-proto-http>=1.44,<2.0
 pandas>=2.2,<2.4
 fg-data-profiling>=4.19,<4.20
 setuptools>=72,<81

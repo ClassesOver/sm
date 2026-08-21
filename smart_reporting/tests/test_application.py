@@ -72,6 +72,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["teams"] == []
     assert created[0].values["workflows"] == [first_context.report_workflow]
     assert created[0].values["interfaces"] == []
+    assert created[0].values["telemetry"] is False
 
 
 def test_application_passes_trace_database_to_agentos(monkeypatch):
