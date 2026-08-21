@@ -100,13 +100,23 @@ services:
       RUN_MIGRATIONS: "true"
     networks: [daytona-network]
     privileged: true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          require('http').get('http://127.0.0.1:3000/api/health', response =>
+          process.exit(response.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-      runner:
-        condition: service_started
       dex:
         condition: service_started
       registry:
@@ -158,6 +168,9 @@ services:
       SANDBOX_START_TIMEOUT_SEC: "30"
       ANDROID_BOOT_TIMEOUT_SEC: "300"
     networks: [daytona-network]
+    depends_on:
+      api:
+        condition: service_healthy
     volumes:
       - ./data/runner:/home/daytona/runner
     privileged: true

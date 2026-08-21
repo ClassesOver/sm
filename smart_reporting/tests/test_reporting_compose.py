@@ -43,6 +43,20 @@ def test_agentos_readme_only_references_existing_compose_services() -> None:
     assert "bash scripts/configure_agentos_env.sh .env" in readme
 
 
+def test_daytona_runner_waits_for_api_health_without_reverse_dependency() -> None:
+    repository_root = Path(__file__).parents[2]
+    compose = yaml.load(
+        (repository_root / "docker/docker-compose.yaml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    api = compose["services"]["api"]
+    runner = compose["services"]["runner"]
+
+    assert "/api/health" in " ".join(api["healthcheck"]["test"])
+    assert "runner" not in api["depends_on"]
+    assert runner["depends_on"]["api"]["condition"] == "service_healthy"
+
+
 def test_daytona_env_init_prepares_dex_bind_mount_for_image_user(tmp_path: Path) -> None:
     repository_root = Path(__file__).parents[2]
     scripts_dir = tmp_path / "scripts"

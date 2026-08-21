@@ -53,6 +53,9 @@ docker compose --env-file docker/.env \
   -f docker/docker-compose.yaml up -d --remove-orphans
 ```
 
+Compose 会先等待 API 的 `/api/health` 检查通过，再启动 Runner，确保 Runner 的首次健康上报
+不会早于 API 监听端口。
+
 `--remove-orphans` 会清理同一 Daytona Compose 项目中已从精简配置删除的辅助容器，但不会删除
 `docker/data/` 下 PostgreSQL、Redis、Registry、MinIO、Runner 或 Dex 的持久化数据。
 
