@@ -618,6 +618,59 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
 
 
 @pytest.mark.anyio
+async def test_http_workflow_does_not_expose_workspace_paths_when_publication_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = {
+        "formalReleaseAllowed": False,
+        "reportId": "report-1",
+        "revision": 1,
+        "pdfPath": "reports/report.pdf",
+        "pdfSize": 3,
+        "pdfSha256": "a" * 64,
+        "wordPath": "reports/report.docx",
+        "wordSize": 4,
+        "wordSha256": "b" * 64,
+        "publicationGate": {
+            "formalReleaseAllowed": False,
+            "issues": [{"code": "artifact_changed", "message": "报告文件已变化。"}],
+        },
+        "sourceWarnings": [],
+        "codingReceipts": [],
+    }
+    captured: dict[str, Any] = {}
+
+    def capture_workflow(**values: Any) -> object:
+        captured.update(values)
+        return object()
+
+    monkeypatch.setattr(runtime_module, "create_reporting_workflow", capture_workflow)
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.db = object()
+    runtime.download_grants = object()
+    runtime.artifact_persistence = object()
+    runtime.publish_report = AsyncMock(return_value=StepOutput(content=output))
+    runtime.issue_http_publication = AsyncMock()
+    runtime.issue_workspace_publication = AsyncMock()
+    runtime.workflow()
+
+    with pytest.raises(ReportingError) as raised:
+        await captured["finalize_publication"](
+            SimpleNamespace(),
+            RunContext(
+                run_id="workflow-run",
+                session_id="thread",
+                user_id="native",
+                session_state={},
+            ),
+        )
+
+    assert raised.value.code == "report_publication_blocked"
+    runtime.issue_http_publication.assert_not_awaited()
+    runtime.issue_workspace_publication.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_workflow_publication_keeps_workspace_paths_without_http_services(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1155,8 +1155,14 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
     word = report.get("word")
     pdf_url = pdf.get("downloadUrl") if isinstance(pdf, dict) else None
     word_url = word.get("downloadUrl") if isinstance(word, dict) else None
-    if not isinstance(pdf_url, str) or not pdf_url or not isinstance(word_url, str) or not word_url:
-        return None
+    urls = (pdf_url, word_url)
+    if not all(
+        isinstance(url, str)
+        and (parsed := urlparse(url)).scheme in {"http", "https"}
+        and bool(parsed.netloc)
+        for url in urls
+    ):
+        return "## 报告发布未完成\n\n未生成有效的 PDF 和 Word 下载链接，请重试报表发布。"
     parts = ["## 报表已生成"]
     details: list[str] = []
     report_id = report.get("reportId")

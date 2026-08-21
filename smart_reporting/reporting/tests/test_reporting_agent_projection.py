@@ -717,6 +717,44 @@ async def test_report_facade_returns_completed_downloads_as_markdown_without_mod
 
 
 @pytest.mark.anyio
+async def test_report_facade_rejects_relative_workspace_downloads_without_model(
+    monkeypatch,
+) -> None:
+    async def unexpected_model_call(*_args, **_kwargs):
+        raise AssertionError("无效下载回执不得交给模型包装成相对链接")
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "aresponse", unexpected_model_call)
+    model = ReportFacadeOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+    payload = {
+        "ok": True,
+        "status": "completed",
+        "report": {
+            "reportId": "report-1",
+            "revision": 1,
+            "path": "报表/智能分析/report-1/revision-1/report.pdf",
+            "word": {"path": "报表/智能分析/report-1/revision-1/report.docx"},
+        },
+    }
+    messages = [
+        Message(role="user", content="生成运营报告"),
+        Message(
+            role="tool",
+            tool_name="report_workflow_start",
+            tool_call_id="call-report-start",
+            content=json.dumps(payload, ensure_ascii=False),
+        ),
+    ]
+
+    response = await model.ainvoke(messages)
+
+    assert response.content == (
+        "## 报告发布未完成\n\n未生成有效的 PDF 和 Word 下载链接，请重试报表发布。"
+    )
+    assert "报表/智能分析" not in str(response.content)
+    assert not response.tool_calls
+
+
+@pytest.mark.anyio
 async def test_report_facade_removes_tool_call_preamble(monkeypatch) -> None:
     async def model_call(*_args, **_kwargs):
         return ModelResponse(

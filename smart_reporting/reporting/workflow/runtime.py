@@ -1314,6 +1314,14 @@ class ReportWorkflowRuntime:
             if not isinstance(content, dict):
                 raise ReportingError("report_publication_invalid", "报表发布产物无效。")
             if content.get("formalReleaseAllowed") is False:
+                if self.download_grants is not None:
+                    # AgentOS 的正式交付只承诺持久化后的公开下载 URL。门禁失败时
+                    # sandbox 路径既不是 HTTP 下载地址，也可能随终态回收失效，
+                    # 因此不得把它作为完成回执暴露给 facade 或前端。
+                    raise ReportingError(
+                        "report_publication_blocked",
+                        "报告未通过正式发布门禁，未生成下载链接。",
+                    )
                 return StepOutput(
                     content={
                         "status": "formal_release_blocked",
