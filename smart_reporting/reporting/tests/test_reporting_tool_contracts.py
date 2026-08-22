@@ -1272,6 +1272,19 @@ def test_analysis_context_tool_reserves_current_analysis_for_task_json() -> None
     assert "仅用于按需读取 Dataset 元数据" in description
 
 
+def test_analysis_facts_tool_distinguishes_projection_from_file_schema() -> None:
+    toolkit = ReportWorkspaceTaskToolkit(
+        fake_workspace_service(None),
+        AsyncMock(),
+        state_repository=AsyncMock(),
+    )
+
+    description = toolkit.async_functions["query_analysis_facts"].description
+
+    assert "analyses[].facts 只存在于本工具聚合回执" in description
+    assert "单个文件根节点就是对应 analysis 的 facts" in description
+
+
 @pytest.mark.parametrize(
     ("phase", "task_kind", "required", "forbidden"),
     [

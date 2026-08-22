@@ -442,7 +442,7 @@ def test_planner_validation_runs_inside_agent_retry_boundary() -> None:
         validator("{}")
 
 
-def test_runtime_planners_start_without_thinking_and_preserve_escalation_profiles() -> None:
+def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
     worker = Agent(
         model=ReportWorkerOpenAIChat(
             id="deepseek-v4-flash-0731",
@@ -466,14 +466,18 @@ def test_runtime_planners_start_without_thinking_and_preserve_escalation_profile
 
     assert runtime.analysis_concurrency == 1
     assert runtime.section_concurrency == 1
-    expected_escalations = (
-        (runtime._data_understanding_agent, "high"),
-        (runtime._measure_semantic_agent, "max"),
-        (runtime._analysis_agent, "max"),
-        (runtime._sql_agent, "max"),
+    expected_profiles = (
+        (runtime._data_understanding_agent, False, "high"),
+        (runtime._measure_semantic_agent, False, "max"),
+        (runtime._analysis_agent, True, "max"),
+        (runtime._sql_agent, False, "max"),
     )
-    for stage, expected_effort in expected_escalations:
-        assert reporting_thinking_profile_from_model(stage.model).enabled is False
+    for stage, enabled, expected_effort in expected_profiles:
+        profile = reporting_thinking_profile_from_model(stage.model)
+        assert profile.enabled is enabled
+        if enabled:
+            assert profile.reasoning_effort == expected_effort
+            assert profile.thinking_budget == 8192
         escalation = getattr(stage.model, "_report_escalation_thinking_profile")
         assert escalation.enabled is True
         assert escalation.reasoning_effort == expected_effort

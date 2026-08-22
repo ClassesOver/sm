@@ -304,6 +304,10 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
     assert "git_status" not in instructions
     if task_kind == "visualization":
         assert "只调用 write_analysis_files" in instructions
+        assert "completedAnalysisItems[].evidenceFiles[].path" in instructions
+        assert "不得构造 analysis/evidence" in instructions
+        assert '禁止假设 facts["analyses"]' in instructions
+        assert "visualizationWorkspace" in instructions
 
 
 def test_analysis_projection_keeps_compact_profile_receipt_identities() -> None:

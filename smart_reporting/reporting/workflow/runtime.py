@@ -1132,9 +1132,10 @@ class ReportWorkflowRuntime:
             if planner_enable_thinking
             else planner_off
         )
-        # DeepSeek V4 只有 off/high/max 三个真实档位。需要推理的四个 Planner 首次
-        # 请求关闭 thinking；只有 Schema 校验失败或服务端签发 correction 时才升级。
-        # 数据理解升到 high，指标语义、分析计划和 SQL 升到 max；归一化和提纲始终 off。
+        # DeepSeek V4 只有 off/high/max 三个真实档位。数据理解和指标语义 Planner
+        # 首次请求关闭 thinking，只有 Schema 校验失败或服务端签发 correction 时才升级；
+        # 分析计划从首次请求就使用 max，因为它必须同时满足指标、粒度、期间和关系约束。
+        # SQL 在首次请求关闭 thinking，失败后升到 max；归一化和提纲始终 off。
         self._request_normalizer = self._planning_agent(
             report_worker,
             "report-request-normalizer",
@@ -1215,7 +1216,7 @@ class ReportWorkflowRuntime:
             report_worker,
             "report-analysis-planner",
             AnalysisBundle,
-            thinking_profile=planner_off,
+            thinking_profile=planner_max,
             escalation_thinking_profile=planner_max,
             stage_instructions=(
                 "一次返回完整分析计划和全部 requirements",
@@ -4101,6 +4102,7 @@ class ReportWorkflowRuntime:
                 if isinstance(analysis_items, dict)
                 and isinstance(analysis_items.get(analysis_id), dict)
             ]
+            visualization_root = f"报表/智能分析/{run_context.run_id}/analysis"
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "visualization",
@@ -4123,6 +4125,12 @@ class ReportWorkflowRuntime:
                     item.model_dump(mode="json", by_alias=True) for item in citation_bindings
                 ],
                 "registeredCharts": registered_charts,
+                # 可视化脚本与 evidence/facts 分属兄弟目录。由服务端签发完整工作区相对路径，
+                # 禁止 Worker 依据脚本位置猜测父目录，否则会把 evidence 错拼成 analysis/evidence。
+                "visualizationWorkspace": {
+                    "scriptPath": f"{visualization_root}/charts.py",
+                    "chartOutputRoot": f"{visualization_root}/charts",
+                },
                 "sourceWarnings": [
                     item.model_dump(mode="json", by_alias=True)
                     for item in _source_warnings_from_state(self._state(run_context))

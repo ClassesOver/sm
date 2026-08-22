@@ -128,6 +128,16 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "不得重新执行单项分析、查询 Profile、连接数据库、执行 SQL 或改写已冻结 evidence。"
     ),
     (
+        "completedAnalysisItems[].evidenceFiles[].path 和 deterministicFactFiles.*.path 都是相对工作区根目录"
+        "的完整受信路径。脚本必须逐字使用这些路径；不得相对 __file__、visualizationWorkspace 或当前目录"
+        "重新拼接 evidence/facts，不得构造 analysis/evidence，也不得通过 cd 改变路径基准。"
+    ),
+    (
+        "deterministicFactFiles 中每个文件的根节点直接是该 analysis 的 facts 对象，comparisons、metrics、"
+        "correlations 等字段都位于根节点；只有 query_analysis_facts 的可视化聚合回执才使用 analyses[] 包装。"
+        "读取单个文件时禁止假设 facts[\"analyses\"]。"
+    ),
+    (
         "根据批准提纲和真实数据选择图表，不设固定数量或类型。图表源文件定稿并完成必要视觉检查后，"
         "使用 register_report_charts 登记；图表必须绑定已注册 citationId。"
     ),
@@ -138,7 +148,8 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     (
         "创建或修改图表脚本只调用 write_analysis_files 的公开扁平 schema；首次创建使用 "
         "operation=create_file、path 和 content 一次提交完整脚本，不调用任何未注册的底层"
-        "文件工具名，也不增加 arguments 包装。"
+        "文件工具名，也不增加 arguments 包装。脚本和图表只写入任务 JSON 中 visualizationWorkspace"
+        "签发的 scriptPath 和 chartOutputRoot，并从工作区根目录执行 python3 <scriptPath>。"
     ),
     (
         "汇总全部分析形成 ReportBrief、共享指标口径和全局 Warning，最后且只调用一次"

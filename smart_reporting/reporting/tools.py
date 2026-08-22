@@ -707,7 +707,9 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     "由服务端定位并校验当前 analysis 的不可变 facts 文件，再执行有界标准 "
                     "JMESPath。单项示例：metrics[].{field: field, total: total}；"
                     "visualization 示例：analyses[].{analysisId: analysisId, "
-                    "metrics: facts.metrics[].{field: field, total: total}}。"
+                    "metrics: facts.metrics[].{field: field, total: total}}。visualization 的 "
+                    "analyses[].facts 只存在于本工具聚合回执；deterministicFactFiles 指向的"
+                    "单个文件根节点就是对应 analysis 的 facts，不包含 analyses 包装。"
                 ),
                 parameters={
                     "type": "object",
