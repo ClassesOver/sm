@@ -466,8 +466,11 @@ def _group_contributions(
         for row in grouped.iter_rows(named=True)
         if row["__valid"] > 0 and row["__value"] is not None
     ]
-    ordered = sorted(values, key=lambda item: item.value, reverse=True)
-    return tuple(ordered[:10]), tuple(reversed(ordered[-10:]))
+    # facts 文件是 revision 内的不可变产物；数值相同时必须用组名打破平局，
+    # 不能继承 Polars 未承诺稳定的 group_by 输出顺序。
+    top = sorted(values, key=lambda item: (-item.value, item.group))[:10]
+    bottom = sorted(values, key=lambda item: (item.value, item.group))[:10]
+    return tuple(top), tuple(bottom)
 
 
 @dataclass(frozen=True)
@@ -932,7 +935,7 @@ def _reconciliations(
                 continue
             absolute_tolerance = float(rule.get("absoluteTolerance", 0))
             relative_tolerance = float(rule.get("relativeTolerance", 0))
-            keys = set(left_groups) | set(right_groups)
+            keys = sorted(set(left_groups) | set(right_groups))
             failed = 0
             for key in keys:
                 left = left_groups.get(key, 0.0)

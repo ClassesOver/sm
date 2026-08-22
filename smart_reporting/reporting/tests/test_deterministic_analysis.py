@@ -126,6 +126,25 @@ def test_deterministic_bundle_calculates_semantic_facts_and_separate_comparisons
     assert mom_comparison.baseline_total == 60
 
 
+def test_deterministic_bundle_orders_equal_group_contributions_stably() -> None:
+    rows = "month,department,amount\n2025-01,C,10\n2025-01,A,10\n2025-01,B,10\n"
+    reversed_rows = "month,department,amount\n2025-01,B,10\n2025-01,A,10\n2025-01,C,10\n"
+
+    first_bundle = build_deterministic_analysis_bundle(
+        analysis(),
+        (("current", rows.encode(), context("current"), ("current",)),),
+    )
+    second_bundle = build_deterministic_analysis_bundle(
+        analysis(),
+        (("current", reversed_rows.encode(), context("current"), ("current",)),),
+    )
+    first = first_bundle.metrics[0]
+
+    assert [item.group for item in first.top_groups] == ["A", "B", "C"]
+    assert [item.group for item in first.bottom_groups] == ["A", "B", "C"]
+    assert first_bundle == second_bundle
+
+
 def test_deterministic_bundle_aligns_yoy_to_common_months() -> None:
     current = b"month,department,amount\n2025-01,A,10\n2025-02,A,20\n"
     yoy = b"month,department,amount\n2024-01,A,5\n2024-02,A,20\n2024-03,A,100\n"
