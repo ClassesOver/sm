@@ -79,9 +79,15 @@ _ANALYSIS_MARKER = re.compile(r"\[\[analysis:([^\]\r\n]+)\]\]")
 _TABLE_MARKER = re.compile(r"\[\[/?table:[^\]\r\n]+\]\]")
 # markdown-it 遵循 CommonMark 的 Unicode 标点边界规则。中文引号/括号紧邻
 # `**` 时，模型生成的粗体标记可能不会被识别，最终会原样进入成稿；只对
-# 含中文的成对标记补充解析所需的空白，避免改写数学表达式或孤立星号。
+# 含中文或数值的成对标记补充解析所需的边界，避免改写数学表达式或孤立星号。
 _CJK_STRONG_MARKER = re.compile(
-    r"(?P<left>[^\s*])(?P<open>\*\*)(?P<content>[^*\r\n]*[\u3400-\u9fff][^*\r\n]*?)(?P<close>\*\*)(?P<right>[^\s*])"
+    r"(?P<left>[^\s*`])(?<!\*)(?P<open>\*\*)(?P<content>[^*\r\n`]*[\u3400-\u9fff][^*\r\n`]*?)(?P<close>\*\*)(?P<right>[^\s*`])"
+)
+_SPACED_CJK_STRONG_MARKER = re.compile(
+    r"(?<![\*`])\*\*(?P<content>[\u3400-\u9fff“「『【（《〈〔［｛][^*\r\n`]*?)\s+\*\*(?![\*`])(?=\s|[，。；：、！？）】》〉〕］｝])"
+)
+_SPACED_VALUE_STRONG_MARKER = re.compile(
+    r"(?<![\*`])\*\*(?P<content>[^*\r\n`]*(?:%|％|亿元|万元|元|万)[^*\r\n`]*)\*\*(?![\*`])"
 )
 
 
@@ -90,12 +96,21 @@ class ReportFailure(ValueError):
 
 
 def _normalize_cjk_strong_markers(markdown: str) -> str:
-    """让中文标点包裹的粗体文本进入 CommonMark 的强调解析路径。"""
+    """让报告中的中文/数值粗体文本进入 CommonMark 的强调解析路径。"""
+
+    def trim_boundaries(match: re.Match[str]) -> str:
+        content = match["content"]
+        trimmed = content.strip()
+        if not trimmed:
+            return match[0]
+        return f"**{trimmed}**"
 
     def add_boundaries(match: re.Match[str]) -> str:
         return f"{match['left']} {match['open']}{match['content']}{match['close']} {match['right']}"
 
-    return _CJK_STRONG_MARKER.sub(add_boundaries, markdown)
+    normalized = _CJK_STRONG_MARKER.sub(add_boundaries, markdown)
+    normalized = _SPACED_CJK_STRONG_MARKER.sub(trim_boundaries, normalized)
+    return _SPACED_VALUE_STRONG_MARKER.sub(trim_boundaries, normalized)
 
 
 def _pdf_markdown(

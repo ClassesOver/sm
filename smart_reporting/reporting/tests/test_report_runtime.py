@@ -33,6 +33,32 @@ def test_normalize_cjk_strong_markers_preserves_unmatched_stars() -> None:
     assert _normalize_cjk_strong_markers(markdown) == markdown
 
 
+def test_normalize_spaced_strong_markers_renders_budget_values() -> None:
+    from markdown_it import MarkdownIt
+
+    markdown = "预算为 ** 131.73 亿元 **，执行率 ** 95.14% **。"
+
+    normalized = _normalize_cjk_strong_markers(markdown)
+    rendered = MarkdownIt("commonmark", {"html": False}).render(normalized)
+
+    assert normalized == "预算为 **131.73 亿元**，执行率 **95.14%**。"
+    assert "<strong>131.73 亿元</strong>" in rendered
+    assert "<strong>95.14%</strong>" in rendered
+    assert "**" not in rendered
+
+
+def test_normalize_strong_markers_does_not_change_code_span() -> None:
+    markdown = "`** 131.73 亿元 **`"
+
+    assert _normalize_cjk_strong_markers(markdown) == markdown
+
+
+def test_normalize_strong_markers_preserves_math_stars() -> None:
+    markdown = "幂运算 2 ** 3，未格式化 ** 2 **。"
+
+    assert _normalize_cjk_strong_markers(markdown) == markdown
+
+
 @pytest.mark.parametrize(
     ("physical_page", "body_start_page", "physical_page_count", "expected"),
     [
