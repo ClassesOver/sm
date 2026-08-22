@@ -165,7 +165,6 @@ from .query_pipeline import (
     DatasetLineage,
     QueryRequirement,
     approve_query_batch,
-    coding_task_key,
     resolve_schema_snapshot,
     state_contains_connection_data,
 )
@@ -1513,25 +1512,43 @@ class ReportWorkflowRuntime:
     async def cleanup_terminal(
         self, scope: dict[str, str], _workflow_session_id: str, workflow_run_id: str
     ) -> None:
-        try:
-            task_id = coding_task_key(workflow_run_id)
-            task = await self.task_runner.repository.get_task_snapshot(task_id)
-            if task is not None and task.state not in {
-                TaskState.COMPLETED,
-                TaskState.FAILED,
-                TaskState.CANCELLED,
-            }:
-                await self.task_runner.cancel(task.scope)
-        finally:
+        durable = await complete_cleanup(self.state_repository.get(workflow_run_id))
+        stored_checkpoint = (
+            durable.payload.get("workflowCheckpoint") if durable is not None else None
+        )
+        task_ids: tuple[str, ...] = ()
+        if stored_checkpoint is not None:
+            checkpoint = ReportingCheckpoint.model_validate(stored_checkpoint)
+            task_ids = tuple(
+                dict.fromkeys(item.task_id for item in checkpoint.trace if item.task_id)
+            )
+
+        # phase task 的 ID 包含 revision、work item 和 attempt，不能由 Workflow run ID
+        # 反推。必须以启动任务前持久化的 trace 为事实来源，并在全部活动任务关闭后
+        # 才删除共享 sandbox；任一查询或取消失败都保留现场供后续重试清理。
+        task_cleanup_error: Exception | None = None
+        for task_id in task_ids:
             try:
-                await complete_cleanup(self.workspace_service.adestroy(scope["thread_id"]))
+                task = await complete_cleanup(
+                    self.task_runner.repository.get_task_snapshot(task_id)
+                )
+                if task is not None and task.state not in {
+                    TaskState.COMPLETED,
+                    TaskState.FAILED,
+                    TaskState.CANCELLED,
+                }:
+                    await complete_cleanup(self.task_runner.cancel(task.scope))
             except Exception as error:
-                # 终态后 sandbox 不再是可恢复事实来源。即使子任务清理失败也必须
-                # 尝试删除；删除失败则向上暴露，禁止伪装成已完整回收。
-                raise ReportingError(
-                    "report_sandbox_cleanup_failed",
-                    "报表工作流已结束，但运行环境删除失败，请重试清理。",
-                ) from error
+                task_cleanup_error = task_cleanup_error or error
+        if task_cleanup_error is not None:
+            raise task_cleanup_error
+        try:
+            await complete_cleanup(self.workspace_service.adestroy(scope["thread_id"]))
+        except Exception as error:
+            raise ReportingError(
+                "report_sandbox_cleanup_failed",
+                "报表工作流已结束，但运行环境删除失败，请重试清理。",
+            ) from error
 
     async def issue_http_publication(
         self,

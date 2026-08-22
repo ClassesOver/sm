@@ -6,8 +6,14 @@ from smart_reporting.settings import AgentSettings
 
 
 class FakeAssistant:
-    id = "test-assistant"
+    id = "smart-reporting"
     name = "测试助手"
+
+    def deep_copy(self, *, update=None):
+        copied = FakeAssistant()
+        for key, value in (update or {}).items():
+            setattr(copied, key, value)
+        return copied
 
 
 class FakeWorkflow:
@@ -68,7 +74,12 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["on_route_conflict"] == "preserve_base_app"
     assert created[0].values["cors_allowed_origins"] == list(settings.cors_allowed_origins)
     assert created[0].values["db"] is None
-    assert created[0].values["agents"] == [first_context.report_agent]
+    assert [agent.id for agent in created[0].values["agents"]] == [
+        "smart-reporting",
+        "report-agent",
+    ]
+    assert created[0].values["agents"][0] is first_context.report_agent
+    assert created[0].values["agents"][1] is not first_context.report_agent
     assert created[0].values["teams"] == []
     assert created[0].values["workflows"] == [first_context.report_workflow]
     assert created[0].values["interfaces"] == []
@@ -135,3 +146,7 @@ def test_default_application_exposes_explicit_context():
     assert context.report_agent is app_module.report_agent
     assert context.report_workflow is app_module.report_workflow
     assert app_module.agent_os.db is app_module.agent_database.async_db
+    assert [agent.id for agent in app_module.agent_os.agents or []] == [
+        "smart-reporting",
+        "report-agent",
+    ]

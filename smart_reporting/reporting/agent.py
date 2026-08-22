@@ -1231,13 +1231,16 @@ def _without_facade_tool_preamble(response: Any) -> Any:
     return response
 
 
-def _without_streamed_facade_tool_preamble(response: Any) -> Any:
-    tool_calls = getattr(response, "tool_calls", None)
-    if isinstance(tool_calls, list) and any(
-        _report_model_tool_name(tool) in _REPORT_FACADE_TOOL_NAMES for tool in tool_calls
-    ):
-        response.content = None
-    return response
+def _without_streamed_facade_tool_preamble(responses: list[Any]) -> list[Any]:
+    has_facade_tool_call = any(
+        isinstance(tool_calls := getattr(response, "tool_calls", None), list)
+        and any(_report_model_tool_name(tool) in _REPORT_FACADE_TOOL_NAMES for tool in tool_calls)
+        for response in responses
+    )
+    if has_facade_tool_call:
+        for response in responses:
+            response.content = None
+    return responses
 
 
 def _tool_response(
@@ -1910,8 +1913,10 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
         if forced is not None:
             yield forced
             return
-        for response in super().invoke_stream(messages, *args, **kwargs):
-            yield _without_streamed_facade_tool_preamble(response)
+        # tool call 可能到后续 chunk 才出现，已发送的前导文字无法撤回；先收齐本轮
+        # 响应再统一过滤，保证任何报表工具轮次都不会向 AgentOS 泄漏解释文本。
+        responses = list(super().invoke_stream(messages, *args, **kwargs))
+        yield from _without_streamed_facade_tool_preamble(responses)
 
     async def ainvoke_stream(
         self, messages: list[Message], *args: Any, **kwargs: Any
@@ -1920,8 +1925,12 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
         if forced is not None:
             yield forced
             return
-        async for response in super().ainvoke_stream(messages, *args, **kwargs):
-            yield _without_streamed_facade_tool_preamble(response)
+        # 与同步路径保持相同的整轮判定语义，不能根据首个文字 chunk 提前放行。
+        responses = [
+            response async for response in super().ainvoke_stream(messages, *args, **kwargs)
+        ]
+        for response in _without_streamed_facade_tool_preamble(responses):
+            yield response
 
 
 def _report_facade_model(model: ProjectedOpenAIChat) -> ReportFacadeOpenAIChat:

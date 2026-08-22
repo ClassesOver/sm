@@ -33,6 +33,7 @@ from smart_reporting.reporting.tests.delivery_fakes import (
 )
 from smart_reporting.reporting.workflow import runtime as runtime_module
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
+from smart_reporting.task_execution import TaskState
 from smart_reporting.workspace import WorkspaceService
 
 
@@ -54,6 +55,37 @@ def _scope() -> ReportDownloadScope:
         thread_id="thread",
         workflow_run_id="workflow-run",
     )
+
+
+def _checkpoint_with_traces(*traces: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "version": "1",
+        "revision": 1,
+        "phase": "analysis",
+        "outlineHash": "a" * 64,
+        "profileCoverage": {
+            "version": "1",
+            "authorizedDatasetCount": 1,
+            "coveredDatasetCount": 1,
+            "datasets": [
+                {
+                    "datasetId": "dataset-1",
+                    "datasetPath": "datasets/source.csv",
+                    "datasetSize": 1,
+                    "datasetSnapshotHash": "b" * 64,
+                    "profileFile": {
+                        "path": "profiles/source.json",
+                        "size": 1,
+                        "sha256": "c" * 64,
+                    },
+                    "rowCount": 1,
+                    "fieldCount": 1,
+                    "fields": ["amount"],
+                }
+            ],
+        },
+        "trace": list(traces),
+    }
 
 
 class _WorkspaceFs:
@@ -422,6 +454,7 @@ async def test_terminal_cleanup_destroys_reporting_sandbox() -> None:
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.workspace_service = workspace
     runtime.task_runner = SimpleNamespace(repository=repository, cancel=AsyncMock())
+    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=None))
 
     await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
 
@@ -435,6 +468,7 @@ async def test_terminal_cleanup_fails_closed_when_sandbox_destroy_fails() -> Non
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.workspace_service = workspace
     runtime.task_runner = SimpleNamespace(repository=repository, cancel=AsyncMock())
+    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=None))
 
     with pytest.raises(ReportingError) as raised:
         await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
@@ -443,19 +477,110 @@ async def test_terminal_cleanup_fails_closed_when_sandbox_destroy_fails() -> Non
 
 
 @pytest.mark.anyio
-async def test_terminal_cleanup_destroys_sandbox_when_task_cleanup_fails() -> None:
-    workspace = SimpleNamespace(adestroy=AsyncMock(return_value=True))
-    repository = SimpleNamespace(
-        get_task_snapshot=AsyncMock(side_effect=RuntimeError("task cleanup failed"))
+async def test_terminal_cleanup_cancels_phase_tasks_before_destroying_sandbox() -> None:
+    events: list[str] = []
+    task_ids = ("analysis-task", "visualization-task", "section-task")
+    scopes = {task_id: SimpleNamespace(external_run_id=task_id) for task_id in task_ids}
+
+    async def get_task_snapshot(task_id: str):
+        return SimpleNamespace(scope=scopes[task_id], state=TaskState.ACTIVE)
+
+    async def cancel(scope: Any) -> None:
+        events.append(f"cancel:{scope.external_run_id}")
+
+    async def destroy(thread_id: str) -> bool:
+        assert thread_id == "thread"
+        events.append("destroy")
+        return True
+
+    checkpoint = _checkpoint_with_traces(
+        {
+            "phase": "analysis",
+            "taskId": task_ids[0],
+            "workKind": "analysis_item",
+            "analysisId": "analysis_001",
+        },
+        {
+            "phase": "analysis",
+            "taskId": task_ids[1],
+            "workKind": "visualization",
+        },
+        {
+            "phase": "section",
+            "taskId": task_ids[2],
+            "workKind": "section",
+            "sectionCode": "executive_summary",
+        },
     )
     runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = SimpleNamespace(adestroy=destroy)
+    runtime.task_runner = SimpleNamespace(
+        repository=SimpleNamespace(get_task_snapshot=get_task_snapshot),
+        cancel=cancel,
+    )
+    runtime.state_repository = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(payload={"workflowCheckpoint": checkpoint}))
+    )
+
+    await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
+
+    runtime.state_repository.get.assert_awaited_once_with("workflow-run")
+    assert events == [*(f"cancel:{task_id}" for task_id in task_ids), "destroy"]
+
+
+@pytest.mark.anyio
+async def test_terminal_cleanup_keeps_sandbox_when_phase_task_cleanup_fails() -> None:
+    workspace = SimpleNamespace(adestroy=AsyncMock(return_value=True))
+    task_ids = ("analysis-task", "section-task")
+    task_scopes = {task_id: SimpleNamespace(external_run_id=task_id) for task_id in task_ids}
+    repository = SimpleNamespace(
+        get_task_snapshot=AsyncMock(
+            side_effect=lambda task_id: SimpleNamespace(
+                scope=task_scopes[task_id], state=TaskState.ACTIVE
+            )
+        )
+    )
+
+    async def cancel(scope: Any) -> None:
+        if scope.external_run_id == task_ids[0]:
+            raise RuntimeError("task cleanup failed")
+
+    runtime = object.__new__(ReportWorkflowRuntime)
     runtime.workspace_service = workspace
-    runtime.task_runner = SimpleNamespace(repository=repository, cancel=AsyncMock())
+    runtime.task_runner = SimpleNamespace(
+        repository=repository,
+        cancel=AsyncMock(side_effect=cancel),
+    )
+    runtime.state_repository = SimpleNamespace(
+        get=AsyncMock(
+            return_value=SimpleNamespace(
+                payload={
+                    "workflowCheckpoint": _checkpoint_with_traces(
+                        {
+                            "phase": "analysis",
+                            "taskId": task_ids[0],
+                            "workKind": "analysis_item",
+                            "analysisId": "analysis_001",
+                        },
+                        {
+                            "phase": "section",
+                            "taskId": task_ids[1],
+                            "workKind": "section",
+                            "sectionCode": "executive_summary",
+                        },
+                    )
+                }
+            )
+        )
+    )
 
     with pytest.raises(RuntimeError, match="task cleanup failed"):
         await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
 
-    workspace.adestroy.assert_awaited_once_with("thread")
+    assert [
+        call.args[0].external_run_id for call in runtime.task_runner.cancel.await_args_list
+    ] == list(task_ids)
+    workspace.adestroy.assert_not_awaited()
 
 
 @pytest.mark.anyio

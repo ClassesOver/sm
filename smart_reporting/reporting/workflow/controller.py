@@ -68,7 +68,9 @@ class ReportWorkflowController:
     ):
         self._workflow_factory = workflow_factory
         self._terminal_cleanup = terminal_cleanup
-        self._active_external: set[tuple[str, str, str]] = set()
+        # Workspace 以 thread 为唯一隔离键，服务配置也强制单 worker；共享 Controller
+        # 必须在整个暂停生命周期内保留所有权，禁止另一个 run 删除同一 sandbox。
+        self._active_threads: dict[str, str] = {}
 
     async def start(
         self,
@@ -91,6 +93,7 @@ class ReportWorkflowController:
         if existing is not None and existing.status in _ACTIVE_STATUSES:
             existing_scope = self._scope(run_context, external_run_id=existing.external_run_id)
             self._assert_scope(existing, existing_scope)
+            self._ensure_thread_owner(existing_scope)
             output = await self._load(existing)
             current = self._control_from_output(
                 output,
@@ -106,10 +109,7 @@ class ReportWorkflowController:
         workflow = self._workflow()
         workflow_session_id, workflow_run_id = self._workflow_ids(scope)
         payload = request.model_dump(mode="json", by_alias=True, exclude_none=True)
-        scope_key = self._external_scope_key(scope)
-        if scope_key in self._active_external:
-            raise ReportingError("report_workflow_active", "当前运行已有未完成的报表工作流。")
-        self._active_external.add(scope_key)
+        self._claim_thread(scope)
         try:
             output = await workflow.arun(
                 payload,
@@ -126,10 +126,8 @@ class ReportWorkflowController:
             )
             control = self._control_from_output(output, scope, workflow_session_id, workflow_run_id)
         except BaseException:
-            try:
-                await self._cleanup_terminal(scope, workflow_session_id, workflow_run_id)
-            finally:
-                self._active_external.discard(scope_key)
+            await self._cleanup_terminal(scope, workflow_session_id, workflow_run_id)
+            self._release_thread(scope)
             raise
         await self._finalize_control(control, scope)
         state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
@@ -152,6 +150,7 @@ class ReportWorkflowController:
         assert control is not None
         scope = self._scope(run_context, external_run_id=control.external_run_id)
         self._assert_scope(control, scope)
+        self._ensure_thread_owner(scope)
         output = await self._load(control)
         status = self._status(getattr(output, "status", None))
         workflow = self._workflow()
@@ -194,6 +193,7 @@ class ReportWorkflowController:
         assert control is not None
         scope = self._scope(run_context, external_run_id=control.external_run_id)
         self._assert_scope(control, scope)
+        self._ensure_thread_owner(scope)
         if approve and control.review is not None and control.review.stage == "request":
             raise ReportingError(
                 "report_request_clarification_required",
@@ -242,13 +242,11 @@ class ReportWorkflowController:
             return
         # completed 的发布步骤已经在产物持久化后删除 sandbox；这里只覆盖没有发布
         # 收尾机会的取消和失败终态，避免成功路径二次清理反而遮蔽下载回执。
-        try:
-            if control.status in {"cancelled", "failed"}:
-                await self._cleanup_terminal(
-                    scope, control.workflow_session_id, control.workflow_run_id
-                )
-        finally:
-            self._active_external.discard(self._external_scope_key(scope))
+        if control.status in {"cancelled", "failed"}:
+            await self._cleanup_terminal(
+                scope, control.workflow_session_id, control.workflow_run_id
+            )
+        self._release_thread(scope)
 
     async def _cleanup_terminal(
         self, scope: dict[str, str], workflow_session_id: str, workflow_run_id: str
@@ -312,8 +310,26 @@ class ReportWorkflowController:
         }
 
     @staticmethod
-    def _external_scope_key(scope: dict[str, str]) -> tuple[str, str, str]:
-        return scope["external_run_id"], scope["thread_id"], scope["user_id"]
+    def _thread_scope_key(scope: dict[str, str]) -> str:
+        return scope["thread_id"]
+
+    def _claim_thread(self, scope: dict[str, str]) -> None:
+        key = self._thread_scope_key(scope)
+        if key in self._active_threads:
+            raise ReportingError("report_workflow_active", "当前 thread 已有未完成的报表工作流。")
+        self._active_threads[key] = scope["external_run_id"]
+
+    def _ensure_thread_owner(self, scope: dict[str, str]) -> None:
+        key = self._thread_scope_key(scope)
+        owner = self._active_threads.get(key)
+        if owner is not None and owner != scope["external_run_id"]:
+            raise ReportingError("report_workflow_active", "当前 thread 已有未完成的报表工作流。")
+        self._active_threads[key] = scope["external_run_id"]
+
+    def _release_thread(self, scope: dict[str, str]) -> None:
+        key = self._thread_scope_key(scope)
+        if self._active_threads.get(key) == scope["external_run_id"]:
+            self._active_threads.pop(key, None)
 
     @staticmethod
     def _control(state: dict[str, Any], *, required: bool = True) -> ReportWorkflowControl | None:
