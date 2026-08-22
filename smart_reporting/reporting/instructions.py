@@ -195,6 +195,10 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
     "用户可见内容不得展示来源系统、数据表名、字段名、requirementId、datasetId、sourceId、哈希或内部处理步骤。",
     "不得修改不可变 CSV、其他阶段产物、最终 Markdown 或服务端 manifest。",
     (
+        "完成证据读取后必须立即二选一提交终态工具：证据充足调用 render_report_section，"
+        "证据不足调用 request_analysis_rework；禁止以纯文本、分析过程或待办说明结束本轮。"
+    ),
+    (
         "render_report_section 或 request_analysis_rework 接受后，服务端会签发唯一 finish_task 调用。"
         "不要继续输出或尝试生成 Markdown、PDF、DOCX 和 manifest；最终产物由 Workflow 统一装配。"
     ),

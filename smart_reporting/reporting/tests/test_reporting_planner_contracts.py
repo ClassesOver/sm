@@ -36,7 +36,7 @@ from smart_reporting.reporting.workflow.runtime import (
     AnalysisBundle,
     DataUnderstandingPlan,
     ReportWorkflowRuntime,
-    _analysis_comparability_warnings,
+    _analysis_quality_warnings,
     _coding_detailed_analysis_plan,
     _normalize_requirement_periods,
     _requirement_measure_field_refs,
@@ -67,7 +67,7 @@ def test_publication_gate_returns_warnings_for_explicitly_incomparable_metrics()
         ),
     )
 
-    warnings = _analysis_comparability_warnings(metrics, ())
+    warnings = _analysis_quality_warnings(metrics, ())
 
     assert {item["details"]["metricCode"] for item in warnings} == {
         "income_yoy",
@@ -84,7 +84,7 @@ def test_publication_gate_accepts_metrics_aligned_to_common_window() -> None:
         ),
     )
 
-    assert _analysis_comparability_warnings(metrics, ()) == ()
+    assert _analysis_quality_warnings(metrics, ()) == ()
 
 
 def test_planner_trace_names_use_human_display_labels_without_changing_ids() -> None:

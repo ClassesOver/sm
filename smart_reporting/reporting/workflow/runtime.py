@@ -216,14 +216,22 @@ async def _run_bounded(
         raise ValueError("concurrency 必须大于 0")
     semaphore = asyncio.Semaphore(concurrency)
     results: list[Any] = [None] * len(items)
+    failures: dict[int, Exception] = {}
 
     async def run_one(index: int, item: Any) -> None:
         async with semaphore:
-            results[index] = await worker(item)
+            try:
+                results[index] = await worker(item)
+            except Exception as error:
+                # 业务失败不能让 TaskGroup 取消已启动的兄弟任务，也不能让 Python 把
+                # 稳定 ReportingError 包成 ExceptionGroup。外部取消仍直接穿透。
+                failures[index] = error
 
     async with asyncio.TaskGroup() as task_group:
         for index, item in enumerate(items):
             task_group.create_task(run_one(index, item))
+    if failures:
+        raise failures[min(failures)]
     return results
 
 
@@ -573,14 +581,14 @@ def _source_warnings_from_state(state: Mapping[str, Any]) -> tuple[SourceWarning
         raise ReportingError("report_source_warning_invalid", "来源差异告警状态无效。") from error
 
 
-def _analysis_comparability_warnings(
+def _analysis_quality_warnings(
     metric_definitions: tuple[MetricDefinition, ...],
     analysis_warnings: tuple[str, ...],
 ) -> tuple[dict[str, Any], ...]:
-    """把冻结分析中明确披露的不可比期间转换为发布告警。"""
+    """把冻结分析披露的不可比与数据缺失转换为发布告警。"""
 
     warnings: list[dict[str, Any]] = []
-    blocking_markers = ("期间跨度不一致", "同期不可比", "仅作参考性对比")
+    comparability_markers = ("期间跨度不一致", "同期不可比", "仅作参考性对比")
     for metric in metric_definitions:
         description = f"{metric.definition} {metric.period_basis}"
         mismatched_budget_actual = (
@@ -593,7 +601,7 @@ def _analysis_comparability_warnings(
             r"\d{1,2}(?:月|[-—至到]\d{1,2}月)为0", description
         )
         if (
-            any(marker in description for marker in blocking_markers)
+            any(marker in description for marker in comparability_markers)
             or mismatched_budget_actual
             or zero_period_comparison is not None
         ):
@@ -605,11 +613,40 @@ def _analysis_comparability_warnings(
                 }
             )
     for warning in analysis_warnings:
-        if any(marker in warning for marker in blocking_markers):
+        classified = False
+        if any(marker in warning for marker in comparability_markers):
+            classified = True
             warnings.append(
                 {
                     "code": "analysis_period_incomparable",
                     "message": "冻结分析 Warning 标记了不可比期间，报告结论需谨慎使用。",
+                    "details": {"warning": warning[:500]},
+                }
+            )
+        if any(
+            marker in warning
+            for marker in (
+                "数据缺失",
+                "数据不完整",
+                "期间不完整",
+                "期间不足",
+                "缺失月份",
+                "疑似未入账",
+            )
+        ):
+            classified = True
+            warnings.append(
+                {
+                    "code": "analysis_data_incomplete",
+                    "message": "冻结分析披露数据缺失或期间不完整，报告结论需按实际覆盖范围使用。",
+                    "details": {"warning": warning[:500]},
+                }
+            )
+        if not classified:
+            warnings.append(
+                {
+                    "code": "analysis_data_quality",
+                    "message": "冻结分析披露数据质量限制，报告结论需结合告警内容谨慎使用。",
                     "details": {"warning": warning[:500]},
                 }
             )
@@ -4905,6 +4942,20 @@ class ReportWorkflowRuntime:
                     if isinstance(error, ReportingError)
                     else "report_section_phase_failed"
                 )
+                if isinstance(error, ReportingError) and error.code == (
+                    "report_worker_terminal_tool_missing"
+                ):
+                    error = ReportingError(
+                        error.code,
+                        f"章节 {work_item.section_code} 未提交 render_report_section 或 "
+                        "request_analysis_rework。",
+                        details={
+                            **(error.details if isinstance(error.details, Mapping) else {}),
+                            "sectionCode": work_item.section_code,
+                            "attempt": attempt + 1,
+                        },
+                    )
+                    last_error = error
                 message = (error.message if isinstance(error, ReportingError) else str(error))[
                     :2000
                 ]
@@ -5776,7 +5827,7 @@ class ReportWorkflowRuntime:
             # 口径时允许带警告发布；只有血缘、快照、路径和产物身份等完整性问题
             # 进入 issues 并关闭发布，避免把真实数据缺口误判成系统发布故障。
             warnings.extend(
-                _analysis_comparability_warnings(
+                _analysis_quality_warnings(
                     checkpoint.evidence_manifest.metric_definitions,
                     analysis_warnings,
                 )

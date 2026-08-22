@@ -119,6 +119,12 @@ _REPORT_ARGUMENT_MAX_MESSAGE_LENGTH = 512
 _REPORT_PROFILE_RECEIPT_PROJECTION_LIMIT = 100
 _REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
 _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
+# Reporting 的全局 reserve 用于上下文预算，不能直接作为每次模型请求的生成额度。
+# 章节与单项分析只需提交一个有界终态工具，16K 足以覆盖工具参数；可视化汇总需要
+# 更长的 ReportBrief，但同样限制在 32K，避免兼容后端按 196K/393K 预分配缓冲区。
+_REPORT_ANALYSIS_ITEM_OUTPUT_TOKEN_LIMIT = 16 * 1024
+_REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 32 * 1024
+_REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
 # 后端异常却可能持续数分钟才返回。Worker 仍保留既有一次同 run continuation，
 # 这里与 900 秒模型请求配置保持一致，避免长结构化规划请求在上游返回前被截断。
@@ -1507,6 +1513,22 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
             ):
                 profile = escalation_profile
         request_model = copy(self)
+        task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
+        if task_kind == "analysis_item":
+            output_limit = _REPORT_ANALYSIS_ITEM_OUTPUT_TOKEN_LIMIT
+        elif task_kind == "visualization":
+            output_limit = _REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT
+        elif task_kind == "section":
+            output_limit = _REPORT_SECTION_OUTPUT_TOKEN_LIMIT
+        else:
+            output_limit = None
+        if output_limit is not None:
+            configured = request_model.max_tokens
+            request_model.max_tokens = (
+                min(configured, output_limit)
+                if isinstance(configured, int) and configured > 0
+                else output_limit
+            )
         return apply_reporting_thinking_profile(request_model, profile)
 
     @staticmethod

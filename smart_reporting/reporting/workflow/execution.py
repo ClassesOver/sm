@@ -264,16 +264,50 @@ class ReportTaskRunner:
         """
 
         use_continuation = continuing
+        binding = dependencies.get(TASK_EXECUTION_DEPENDENCY)
+        task_kind = (
+            binding.get(REPORTING_TASK_KIND_DEPENDENCY_KEY)
+            if isinstance(binding, Mapping)
+            else None
+        )
+        terminal_tools: tuple[str, ...]
+        if task_kind == "analysis_item":
+            terminal_tools = ("complete_analysis_item",)
+        elif task_kind == "visualization":
+            terminal_tools = ("finalize_report_analysis",)
+        elif task_kind == "section":
+            terminal_tools = ("render_report_section", "request_analysis_rework")
+        else:
+            terminal_tools = ()
         for recovery_attempt in range(MAX_REPORT_WORKER_CONTINUATIONS + 1):
             try:
                 if use_continuation:
+                    if task_kind == "section" and recovery_attempt > 0:
+                        recovery_instruction = (
+                            "服务端已保留本 run 成功读取的证据。立即停止继续读取和推演；"
+                            "证据充足时只调用 render_report_section，证据不足时只调用 "
+                            "request_analysis_rework。不得输出解释性文本。"
+                        )
+                    elif task_kind == "analysis_item" and recovery_attempt > 0:
+                        recovery_instruction = (
+                            "服务端已保留本 run 成功读取和写入的事实。立即停止继续探索；"
+                            "只使用已有事实调用 complete_analysis_item，不得输出解释性文本。"
+                        )
+                    elif task_kind == "visualization" and recovery_attempt > 0:
+                        recovery_instruction = (
+                            "服务端已保留本 run 成功登记的分析进度。立即停止重新读取和推演；"
+                            "若图表尚未登记则最多调用一次 register_report_charts，随后立即调用 "
+                            "finalize_report_analysis，不得输出解释性文本。"
+                        )
+                    else:
+                        recovery_instruction = (
+                            "从失败工具调用后的已持久化消息继续；保留服务端已经接受的 analysis "
+                            "进度，只修复失败动作，不得重放原始任务或重新提交已完成 analysisId。"
+                        )
                     run_result: Any = self.worker.acontinue_run(
                         run_id=internal_run_id,
                         additional_instructions=(
-                            "从失败工具调用后的已持久化消息继续；保留服务端已经接受的 analysis "
-                            "进度，只修复失败动作，不得重放原始任务或重新提交已完成 analysisId。"
-                            if recovery_attempt > 0
-                            else None
+                            recovery_instruction if recovery_attempt > 0 else None
                         ),
                         stream=True,
                         stream_events=True,
@@ -295,7 +329,29 @@ class ReportTaskRunner:
                     )
                 output = await self._consume_run(run_result, scope, parent_run_id)
                 _raise_recorded_agent_error(self.worker)
-                return output
+                if not terminal_tools:
+                    return output
+                updated = await self.repository.get_task_snapshot(scope.external_run_id)
+                if updated is not None and updated.state is TaskState.FINISHING:
+                    return output
+                missing_terminal = ReportingError(
+                    "report_worker_terminal_tool_missing",
+                    "Reporting Worker 以普通文本结束，未提交当前阶段终态工具。",
+                    details={
+                        "taskKind": task_kind,
+                        "requiredTerminalTools": list(terminal_tools),
+                    },
+                )
+                if recovery_attempt >= MAX_REPORT_WORKER_CONTINUATIONS:
+                    raise missing_terminal
+                logger.warning(
+                    "Reporting Worker 未提交终态工具，触发同一 Agno run 收敛续跑: "
+                    "run_id=%s task_kind=%s required_tools=%s",
+                    internal_run_id,
+                    task_kind,
+                    ",".join(terminal_tools),
+                )
+                use_continuation = True
             except ReportingError:
                 raise
             except Exception as error:

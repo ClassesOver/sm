@@ -96,6 +96,31 @@ ANALYSIS_CONTEXT_QUERY_EXAMPLES = (
     "datasets[].{datasetId: datasetId, rowCount: rowCount, periodCoverage: periodCoverage}",
     "datasets[].{datasetId: datasetId, metrics: metricSemantics[].fieldRef}",
 )
+_ANALYSIS_SUMMARY_PERIOD_PATTERN = re.compile(
+    r"(?P<year>\d{4})年(?:(?P<full>全年)|(?P<start>\d{1,2})(?:[-—–至到](?P<end>\d{1,2}))?月)"
+)
+_ANALYSIS_SUMMARY_SENTENCE_PATTERN = re.compile(r"[^。！？\n]+[。！？]?|\n")
+_INCOMPARABLE_YOY_WARNING = "摘要中的比较期间长度不一致，已将“同比”规范为“参考对比”。"
+
+
+def _normalize_analysis_summary_comparability(summary: str) -> tuple[str, tuple[str, ...]]:
+    """只规范摘要中能确定识别为不等长月份窗口的“同比”表述。"""
+
+    normalized: list[str] = []
+    changed = False
+    for sentence in _ANALYSIS_SUMMARY_SENTENCE_PATTERN.findall(summary):
+        periods = list(_ANALYSIS_SUMMARY_PERIOD_PATTERN.finditer(sentence))
+        lengths = [
+            12
+            if match.group("full")
+            else int(match.group("end") or match.group("start")) - int(match.group("start")) + 1
+            for match in periods[:2]
+        ]
+        if "同比" in sentence and len(lengths) == 2 and lengths[0] != lengths[1]:
+            sentence = sentence.replace("同比", "参考对比")
+            changed = True
+        normalized.append(sentence)
+    return "".join(normalized), ((_INCOMPARABLE_YOY_WARNING,) if changed else ())
 
 
 def _stable_digest(value: Any) -> str:
@@ -2799,6 +2824,8 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 analysis_items.get(analysisId) if isinstance(analysis_items, dict) else None
             )
             self._require_analysis_output_paths(contract, evidencePaths)
+            summary, comparability_warnings = _normalize_analysis_summary_comparability(summary)
+            warnings = list(dict.fromkeys((*warnings, *comparability_warnings)))
             payload: dict[str, Any] = {
                 "analysisId": analysisId,
                 "summary": summary,

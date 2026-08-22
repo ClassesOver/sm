@@ -1437,6 +1437,44 @@ async def test_concurrent_reporting_requests_keep_off_high_max_profiles_isolated
     assert model.reasoning_effort == "high"
 
 
+@pytest.mark.parametrize(
+    ("phase", "task_kind", "expected_max_tokens"),
+    [
+        ("analysis", "analysis_item", 16_384),
+        ("analysis", "visualization", 32_768),
+        ("section", "section", 16_384),
+    ],
+)
+def test_reporting_worker_applies_phase_output_token_limits(
+    phase: str,
+    task_kind: str,
+    expected_max_tokens: int,
+) -> None:
+    model = ReportWorkerOpenAIChat(
+        id="deepseek-v4-flash-0731",
+        api_key="test",
+        max_tokens=196_608,
+    )
+    context = RunContext(
+        run_id=f"run-{task_kind}",
+        session_id=f"session-{task_kind}",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: phase,
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
+            }
+        },
+    )
+
+    with bind_reporting_run_context(context):
+        request_model = model._phase_request_model(
+            [Message(role="user", content=json.dumps({"phase": phase}))]
+        )
+
+    assert request_model.max_tokens == expected_max_tokens
+    assert model.max_tokens == 196_608
+
+
 def test_reporting_facade_tools_use_same_strict_json_boundary() -> None:
     model = ReportFacadeOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
     assistant = Message(

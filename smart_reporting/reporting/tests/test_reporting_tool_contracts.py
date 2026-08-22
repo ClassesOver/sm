@@ -43,6 +43,7 @@ from smart_reporting.reporting.tools import (
     _canonical_analysis_write_call,
     _derive_durable_analysis_binding,
     _jmespath_reporting_error,
+    _normalize_analysis_summary_comparability,
     _profile_receipt_command_id,
     _reset_stop_after_tool_call,
     _stop_after_accepted_tool_call,
@@ -129,6 +130,32 @@ def test_analysis_item_budget_retry_forces_fixed_fact_submission() -> None:
     assert any("只调用一次 query_analysis_facts" in item for item in conditions)
     assert any("立即调用 complete_analysis_item" in item for item in conditions)
     assert not any("创建补充 evidence" in item for item in conditions)
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected_summary", "expected_warnings"),
+    [
+        (
+            "2025年1-11月较2024年全年同比下降3.96%。",
+            "2025年1-11月较2024年全年参考对比下降3.96%。",
+            ("摘要中的比较期间长度不一致，已将“同比”规范为“参考对比”。",),
+        ),
+        (
+            "2025年1-10月较2024年1-10月同比增长12.33%。",
+            "2025年1-10月较2024年1-10月同比增长12.33%。",
+            (),
+        ),
+    ],
+)
+def test_analysis_summary_normalizes_only_incomparable_yoy_claims(
+    summary: str,
+    expected_summary: str,
+    expected_warnings: tuple[str, ...],
+) -> None:
+    assert _normalize_analysis_summary_comparability(summary) == (
+        expected_summary,
+        expected_warnings,
+    )
 
 
 def test_visualization_retry_after_registration_only_allows_finalize() -> None:
@@ -1451,7 +1478,7 @@ async def test_complete_analysis_item_finishes_task_and_only_accepted_stops_run(
 
     result = await toolkit.complete_analysis_item(
         analysisId="analysis_001",
-        summary="收入事实已复核",
+        summary="2025年1-11月较2024年全年同比下降3.96%。",
         datasetIds=["dataset-1"],
         evidencePaths=[item["path"] for item in identities],
         citationIds=["citation-1"],
@@ -1464,6 +1491,9 @@ async def test_complete_analysis_item_finishes_task_and_only_accepted_stops_run(
         "analysis/evidence-2.json",
     ]
     assert toolkit.kernel.finish_task.await_args.args[5] is finish_function
+    submitted = toolkit._apply_durable.await_args.kwargs["payload"]
+    assert submitted["summary"] == "2025年1-11月较2024年全年参考对比下降3.96%。"
+    assert submitted["warnings"] == ["摘要中的比较期间长度不一致，已将“同比”规范为“参考对比”。"]
     function_call = SimpleNamespace(
         function=SimpleNamespace(stop_after_tool_call=True),
         result=result,

@@ -32,7 +32,7 @@ from smart_reporting.reporting.workflow.runtime import (
 
 
 @pytest.mark.anyio
-async def test_dataset_publication_gate_classifies_frozen_incomparable_metric_as_warning() -> None:
+async def test_dataset_publication_gate_classifies_disclosed_data_limits_as_warnings() -> None:
     stored = checkpoint(completed=(), pending=())
     assert stored.evidence_manifest is not None
     stored = stored.model_copy(
@@ -47,7 +47,11 @@ async def test_dataset_publication_gate_classifies_frozen_incomparable_metric_as
                             unit="%",
                             periodBasis="2025年1-11月 vs 2024年全年（期间跨度不一致）",
                         ),
-                    )
+                    ),
+                    "warnings": (
+                        "2025年11月数据缺失，累计口径不完整。",
+                        "期间索引存在重复，需先按月及组织粒度聚合。",
+                    ),
                 }
             )
         }
@@ -79,8 +83,18 @@ async def test_dataset_publication_gate_classifies_frozen_incomparable_metric_as
         },
     )
 
-    assert not any(item["code"] == "analysis_period_incomparable" for item in gate["issues"])
-    assert any(item["code"] == "analysis_period_incomparable" for item in gate["warnings"])
+    warning_codes = {item["code"] for item in gate["warnings"]}
+    issue_codes = {item["code"] for item in gate["issues"]}
+    assert {
+        "analysis_period_incomparable",
+        "analysis_data_incomplete",
+        "analysis_data_quality",
+    }.isdisjoint(issue_codes)
+    assert {
+        "analysis_period_incomparable",
+        "analysis_data_incomplete",
+        "analysis_data_quality",
+    } <= warning_codes
 
 
 @pytest.mark.anyio
@@ -103,6 +117,33 @@ async def test_run_bounded_limits_concurrency_and_preserves_input_order() -> Non
 
     assert maximum == 2
     assert result == [10, 20, 30, 40]
+
+
+@pytest.mark.anyio
+async def test_run_bounded_finishes_siblings_and_raises_original_failure() -> None:
+    failure = ReportingError(
+        "report_worker_failed",
+        "章节 section_001 未调用终态工具。",
+        details={"sectionCode": "section_001"},
+    )
+    observed: list[str] = []
+
+    async def worker(section_code: str) -> str:
+        await asyncio.sleep(0)
+        observed.append(section_code)
+        if section_code == "section_001":
+            raise failure
+        return section_code
+
+    with pytest.raises(ReportingError) as raised:
+        await _run_bounded(
+            ("section_001", "section_002"),
+            concurrency=2,
+            worker=worker,
+        )
+
+    assert raised.value is failure
+    assert set(observed) == {"section_001", "section_002"}
 
 
 @pytest.mark.anyio
