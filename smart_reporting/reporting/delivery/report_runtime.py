@@ -77,10 +77,25 @@ _CITATION_MARKER = re.compile(r"\[\[citation:([^\]\r\n]+)\]\]")
 _SECTION_MARKER = re.compile(r"\[\[section:([^\]\r\n]+)\]\]")
 _ANALYSIS_MARKER = re.compile(r"\[\[analysis:([^\]\r\n]+)\]\]")
 _TABLE_MARKER = re.compile(r"\[\[/?table:[^\]\r\n]+\]\]")
+# markdown-it 遵循 CommonMark 的 Unicode 标点边界规则。中文引号/括号紧邻
+# `**` 时，模型生成的粗体标记可能不会被识别，最终会原样进入成稿；只对
+# 含中文的成对标记补充解析所需的空白，避免改写数学表达式或孤立星号。
+_CJK_STRONG_MARKER = re.compile(
+    r"(?P<left>[^\s*])(?P<open>\*\*)(?P<content>[^*\r\n]*[\u3400-\u9fff][^*\r\n]*?)(?P<close>\*\*)(?P<right>[^\s*])"
+)
 
 
 class ReportFailure(ValueError):
     pass
+
+
+def _normalize_cjk_strong_markers(markdown: str) -> str:
+    """让中文标点包裹的粗体文本进入 CommonMark 的强调解析路径。"""
+
+    def add_boundaries(match: re.Match[str]) -> str:
+        return f"{match['left']} {match['open']}{match['content']}{match['close']} {match['right']}"
+
+    return _CJK_STRONG_MARKER.sub(add_boundaries, markdown)
 
 
 def _pdf_markdown(
@@ -537,7 +552,11 @@ def _semantic_documents(
         ".report-signature{margin-top:18mm;text-align:right;break-inside:avoid}"
         ".report-signature p{margin:0 0 2mm}"
     )
-    pdf_document = f"<meta charset='utf-8'><style>{pdf_css}</style>{shared}"
+    pdf_document = (
+        f"<html lang='zh-CN'><head><meta charset='utf-8'><title>{title}</title>"
+        f"<style>{pdf_css}</style></head>"
+        f"<body>{shared}</body></html>"
+    )
     word_document = (
         "<meta charset='utf-8'><body>"
         f"<h1>{title}</h1><p>分析期间：{period}</p><p>{organization}</p>"
@@ -647,16 +666,19 @@ def _apply_pdf_page_decorations(
             ";padding-top:2mm}"
             ".left{text-align:left;white-space:pre-wrap;overflow-wrap:anywhere}"
             ".right{text-align:right;white-space:pre-wrap;overflow-wrap:anywhere}"
-            ".watermark{position:absolute;left:25mm;right:25mm;top:118mm;text-align:center;"
-            "transform:rotate(-32deg);font-size:32pt;line-height:1.15;font-weight:600;"
-            "color:rgba(71,84,103,.10);overflow-wrap:anywhere}"
+            ".watermark{position:absolute;left:25mm;right:25mm;top:122mm;text-align:center;"
+            "transform:rotate(-32deg);font-size:26pt;line-height:1.15;font-weight:600;"
+            "color:rgba(71,84,103,.045);overflow-wrap:anywhere}"
             f"</style><body>{''.join(decoration_pages)}</body>"
         )
-        HTML(string=document).write_pdf(str(overlay))
+        HTML(string=document).write_pdf(str(overlay), pdf_variant="pdf/ua-1")
         overlay_pages = pypdf.PdfReader(str(overlay)).pages
         if len(overlay_pages) != page_count - 1:
             raise ReportFailure("PDF 页面装饰页数不一致")
         writer = pypdf.PdfWriter(clone_from=str(path))
+        # pypdf 默认将合并产物写成 1.3，即使源文档是 PDF/UA-1（1.7）；保留
+        # PDF/UA 所需的版本声明，避免页面装饰步骤让结构化标签变成不一致的协议。
+        writer.pdf_header = "%PDF-1.7"
         # WeasyPrint 的命名页沿用绝对页计数。服务端按章节锚点一次生成全部装饰页，
         # 目录使用罗马数字，正文从 1 重启；封面明确不合并任何页面元素。
         for page, overlay_page in zip(writer.pages[1:], overlay_pages, strict=True):
@@ -1003,8 +1025,8 @@ def _postprocess_docx(path: Path, *, context: dict[str, Any], layout: dict[str, 
             'style="position:absolute;width:430pt;height:90pt;rotation:315;z-index:-251654144;'
             'mso-position-horizontal:center;mso-position-vertical:center" '
             f'fillcolor="{REPORT_VISUAL_THEME["muted"]}" stroked="f">'
-            '<v:fill opacity="0.10"/>'
-            '<v:textpath style="font-family:Noto Sans CJK SC;font-size:32pt" '
+            '<v:fill opacity="0.045"/>'
+            '<v:textpath style="font-family:Noto Sans CJK SC;font-size:26pt" '
             f'string="{escaped}"/></v:shape></w:pict></w:r>'
         )
         paragraph._p.append(watermark)
@@ -1453,6 +1475,7 @@ class ReportRuntime:
             pdf_markdown, citation_presentations = _pdf_markdown(
                 markdown, state.get("_citationPresentations")
             )
+            pdf_markdown = _normalize_cjk_strong_markers(pdf_markdown)
             parser = MarkdownIt("commonmark", {"html": False}).enable("table")
             tokens = parser.parse(pdf_markdown)
             layout = _page_layout(page_layout)
@@ -1515,7 +1538,7 @@ class ReportRuntime:
                 # 目录页码使用固定宽度，正常不会改变分页；若字体或渲染器升级导致
                 # 锚点漂移，则不能发布目录与正文不一致的产物。
                 raise ReportFailure("PDF 目录页码在最终渲染时发生漂移")
-            final_document.write_pdf(str(temporary))
+            final_document.write_pdf(str(temporary), pdf_variant="pdf/ua-1")
             if temporary.stat().st_size > MAX_PDF_BYTES:
                 raise ReportFailure("PDF 文件不能超过 200 MiB")
             base_page_count = len(final_document.pages)

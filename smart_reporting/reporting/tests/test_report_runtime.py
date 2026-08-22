@@ -8,9 +8,29 @@ import pytest
 from smart_reporting.reporting.delivery.report_runtime import (
     _WORD_PAGE_FIELDS,
     DEFAULT_PAGE_LAYOUT,
+    _normalize_cjk_strong_markers,
     _page_number_context,
     _postprocess_docx,
 )
+
+
+def test_normalize_cjk_strong_markers_supports_chinese_punctuation() -> None:
+    from markdown_it import MarkdownIt
+
+    markdown = "呈**“年初低位—3月跳升”**形态"
+
+    normalized = _normalize_cjk_strong_markers(markdown)
+    rendered = MarkdownIt("commonmark", {"html": False}).render(normalized)
+
+    assert normalized == "呈 **“年初低位—3月跳升”** 形态"
+    assert "<strong>“年初低位—3月跳升”</strong>" in rendered
+    assert "**" not in rendered
+
+
+def test_normalize_cjk_strong_markers_preserves_unmatched_stars() -> None:
+    markdown = "数量增长 * 2，备注 **未闭合"
+
+    assert _normalize_cjk_strong_markers(markdown) == markdown
 
 
 @pytest.mark.parametrize(
