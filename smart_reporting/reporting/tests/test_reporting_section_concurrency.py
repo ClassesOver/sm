@@ -32,7 +32,7 @@ from smart_reporting.reporting.workflow.runtime import (
 
 
 @pytest.mark.anyio
-async def test_dataset_publication_gate_blocks_frozen_incomparable_metric() -> None:
+async def test_dataset_publication_gate_classifies_frozen_incomparable_metric_as_warning() -> None:
     stored = checkpoint(completed=(), pending=())
     assert stored.evidence_manifest is not None
     stored = stored.model_copy(
@@ -79,8 +79,8 @@ async def test_dataset_publication_gate_blocks_frozen_incomparable_metric() -> N
         },
     )
 
-    assert gate["formalReleaseAllowed"] is False
-    assert any(item["code"] == "analysis_period_incomparable" for item in gate["issues"])
+    assert not any(item["code"] == "analysis_period_incomparable" for item in gate["issues"])
+    assert any(item["code"] == "analysis_period_incomparable" for item in gate["warnings"])
 
 
 @pytest.mark.anyio

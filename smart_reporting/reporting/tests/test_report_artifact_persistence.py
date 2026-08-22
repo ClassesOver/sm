@@ -690,6 +690,17 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
     pdf = b"pdf"
     word = b"word"
     output = {
+        "formalReleaseAllowed": True,
+        "publicationGate": {
+            "formalReleaseAllowed": True,
+            "issues": [],
+            "warnings": [
+                {
+                    "code": "analysis_period_incomparable",
+                    "message": "冻结指标包含不可比期间，报告结论需按披露口径谨慎使用。",
+                }
+            ],
+        },
         "reportId": "report-1",
         "revision": 1,
         "pdfPath": "reports/report.pdf",
@@ -732,6 +743,7 @@ async def test_workflow_publication_uses_http_links_when_service_is_configured(
     result = await finalize(SimpleNamespace(), context)
 
     assert result.content["pdf"]["downloadUrl"] == "/reports/v1/download/raw"
+    assert result.content["publicationGate"] == output["publicationGate"]
     runtime.issue_http_publication.assert_awaited_once_with(
         thread_id="thread",
         user_id="native",

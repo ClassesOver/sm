@@ -573,13 +573,13 @@ def _source_warnings_from_state(state: Mapping[str, Any]) -> tuple[SourceWarning
         raise ReportingError("report_source_warning_invalid", "来源差异告警状态无效。") from error
 
 
-def _analysis_comparability_issues(
+def _analysis_comparability_warnings(
     metric_definitions: tuple[MetricDefinition, ...],
     analysis_warnings: tuple[str, ...],
 ) -> tuple[dict[str, Any], ...]:
-    """把冻结分析中明确披露的不可比期间升级为发布阻断项。"""
+    """把冻结分析中明确披露的不可比期间转换为发布告警。"""
 
-    issues: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     blocking_markers = ("期间跨度不一致", "同期不可比", "仅作参考性对比")
     for metric in metric_definitions:
         description = f"{metric.definition} {metric.period_basis}"
@@ -597,23 +597,23 @@ def _analysis_comparability_issues(
             or mismatched_budget_actual
             or zero_period_comparison is not None
         ):
-            issues.append(
+            warnings.append(
                 {
                     "code": "analysis_period_incomparable",
-                    "message": "冻结指标包含不可比期间，禁止正式发布。",
+                    "message": "冻结指标包含不可比期间，报告结论需按披露口径谨慎使用。",
                     "details": {"metricCode": metric.code, "periodBasis": metric.period_basis},
                 }
             )
     for warning in analysis_warnings:
         if any(marker in warning for marker in blocking_markers):
-            issues.append(
+            warnings.append(
                 {
                     "code": "analysis_period_incomparable",
-                    "message": "冻结分析 Warning 标记了不可比期间，禁止正式发布。",
+                    "message": "冻结分析 Warning 标记了不可比期间，报告结论需谨慎使用。",
                     "details": {"warning": warning[:500]},
                 }
             )
-    return tuple(issues)
+    return tuple(warnings)
 
 
 def _human_label(value: str | None, fallback: str) -> str:
@@ -1370,6 +1370,7 @@ class ReportWorkflowRuntime:
                     thread_id=scope["threadId"],
                     output=content,
                 )
+            published["publicationGate"] = content.get("publicationGate")
             return StepOutput(content=published)
 
         return create_reporting_workflow(
@@ -5619,6 +5620,8 @@ class ReportWorkflowRuntime:
         """
         state = self._state(run_context)
         issues: list[dict[str, Any]] = []
+        raw_warnings = result.get("sourceWarnings", [])
+        warnings = list(raw_warnings) if isinstance(raw_warnings, list) else []
 
         def issue(code: str, message: str, **details: Any) -> None:
             item: dict[str, Any] = {"code": code, "message": message}
@@ -5769,15 +5772,15 @@ class ReportWorkflowRuntime:
                     )
                 )
             )
-            for semantic_issue in _analysis_comparability_issues(
-                checkpoint.evidence_manifest.metric_definitions,
-                analysis_warnings,
-            ):
-                issue(
-                    str(semantic_issue["code"]),
-                    str(semantic_issue["message"]),
-                    **cast(dict[str, Any], semantic_issue.get("details", {})),
+            # 缺失月份属于数据质量事实，无法通过重跑修复。报告已经明确披露不可比
+            # 口径时允许带警告发布；只有血缘、快照、路径和产物身份等完整性问题
+            # 进入 issues 并关闭发布，避免把真实数据缺口误判成系统发布故障。
+            warnings.extend(
+                _analysis_comparability_warnings(
+                    checkpoint.evidence_manifest.metric_definitions,
+                    analysis_warnings,
                 )
+            )
         except (TypeError, ValueError, ValidationError, AttributeError):
             issue("analysis_checkpoint_invalid", "发布门禁无法核验冻结分析产物。")
 
@@ -5807,11 +5810,10 @@ class ReportWorkflowRuntime:
             except Exception:
                 issue("artifact_path_invalid", "已验收产物路径不可读取或越界。", field=key)
 
-        warnings = result.get("sourceWarnings", [])
         return {
             "formalReleaseAllowed": not issues,
             "issues": issues,
-            "warnings": warnings if isinstance(warnings, list) else [],
+            "warnings": warnings,
         }
 
     async def publish_report(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
