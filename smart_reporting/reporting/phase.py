@@ -25,6 +25,7 @@ REPORTING_THINKING_EFFORT_DEPENDENCY_KEY = "reportingThinkingEffort"
 REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY = "reportingVisualizationRegistered"
 REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY = "reportingVisualizationToolCalls"
 REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY = "reportingVisualizationScriptFailures"
+REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY = "reportingVisualizationRecovery"
 REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY = "agentos_reporting_visualization_tool_budget"
 REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR = "_agentos_reporting_visualization_budget"
 REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
@@ -72,6 +73,19 @@ REPORTING_VISUALIZATION_TOOL_NAMES = frozenset(
         "write_analysis_files",
         "terminal",
         "view_image",
+    }
+)
+# 可视化阶段的探索工具必须有独立上限；否则模型可能在创建脚本前耗尽总预算。
+REPORTING_VISUALIZATION_FACT_QUERY_LIMIT = 4
+REPORTING_VISUALIZATION_READ_FILE_LIMIT = 12
+REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
+    {
+        "get_skill_instructions",
+        "get_skill_reference",
+        "query_analysis_context",
+        "query_analysis_facts",
+        "read_file",
+        "read_tool_output",
     }
 )
 _REPORTING_PROJECTION_METRICS: ContextVar[dict[str, int] | None] = ContextVar(
@@ -347,6 +361,47 @@ def reporting_visualization_registered_from_run_context(
     )
 
 
+def reporting_visualization_recovery_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    dependencies = (
+        run_context.dependencies
+        if run_context is not None and isinstance(run_context.dependencies, Mapping)
+        else {}
+    )
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    return (
+        binding.get(REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY) is True
+        if isinstance(binding, Mapping)
+        else False
+    )
+
+
+def reporting_visualization_exploration_count(
+    run_context: RunContext | None,
+    tool_name: str,
+) -> int:
+    """读取当前可视化 run 中某类探索工具的已完成调用数。"""
+
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return 0
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
+    budgets = run_context.session_state.get(REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY)
+    stored = budgets.get(identity) if isinstance(budgets, Mapping) else None
+    counts = stored.get("toolCounts") if isinstance(stored, Mapping) else None
+    in_flight = stored.get("inFlightToolCounts") if isinstance(stored, Mapping) else None
+
+    def count(raw: Any) -> int:
+        return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
+
+    return count(counts.get(tool_name) if isinstance(counts, Mapping) else 0) + count(
+        in_flight.get(tool_name) if isinstance(in_flight, Mapping) else 0
+    )
+
+
 def reporting_phase_allows_tool(
     phase: ReportingPhase | None,
     tool_name: str,
@@ -359,6 +414,22 @@ def reporting_phase_allows_tool(
         if task_kind == "analysis_item":
             return tool_name in REPORTING_ANALYSIS_ITEM_TOOL_NAMES
         if task_kind == "visualization":
+            run_context = current_reporting_run_context()
+            if reporting_visualization_recovery_from_run_context(run_context):
+                return tool_name in (
+                    REPORTING_VISUALIZATION_TOOL_NAMES
+                    - REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
+                )
+            if tool_name == "query_analysis_facts":
+                return (
+                    reporting_visualization_exploration_count(run_context, tool_name)
+                    < REPORTING_VISUALIZATION_FACT_QUERY_LIMIT
+                )
+            if tool_name in {"read_file", "read_tool_output"}:
+                return (
+                    reporting_visualization_exploration_count(run_context, "read_file")
+                    < REPORTING_VISUALIZATION_READ_FILE_LIMIT
+                )
             return tool_name in REPORTING_VISUALIZATION_TOOL_NAMES
         return False
     return True

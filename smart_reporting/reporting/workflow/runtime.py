@@ -331,6 +331,7 @@ def _visualization_completion_conditions(
         and last_error.code
         in {
             "report_visualization_tool_budget_exhausted",
+            "report_visualization_exploration_budget_exhausted",
             "report_visualization_script_failure_limit_exhausted",
         }
     ):

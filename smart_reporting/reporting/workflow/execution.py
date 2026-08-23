@@ -22,6 +22,7 @@ from ..phase import (
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+    REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
@@ -186,6 +187,12 @@ class ReportTaskRunner:
                                 ),
                             }
                             if reporting_task_kind == "visualization"
+                            else {}
+                        ),
+                        **(
+                            {REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True}
+                            if reporting_task_kind == "visualization"
+                            and (visualization_tool_calls > 0 or visualization_script_failures > 0)
                             else {}
                         ),
                     }

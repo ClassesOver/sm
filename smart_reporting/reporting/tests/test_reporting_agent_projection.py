@@ -36,10 +36,13 @@ from smart_reporting.reporting.phase import (
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     bind_reporting_run_context,
+    reporting_phase_allows_tool,
 )
 from smart_reporting.reporting.vision import ReportVisionReviewer
 from smart_reporting.settings import AgentSettings
@@ -174,6 +177,74 @@ def test_analysis_task_kind_projection_separates_item_and_visualization_tools(
         )
 
     assert [item["function"]["name"] for item in projected] == expected
+
+
+def test_visualization_recovery_projection_removes_exploration_tools() -> None:
+    context = RunContext(
+        run_id="run-visualization-recovery",
+        session_id="session-visualization-recovery",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True,
+            }
+        },
+    )
+    tools = [
+        {"type": "function", "function": {"name": name}}
+        for name in (
+            "query_analysis_facts",
+            "read_file",
+            "read_tool_output",
+            "get_skill_reference",
+            "write_analysis_files",
+            "terminal",
+            "register_report_charts",
+            "finalize_report_analysis",
+        )
+    ]
+
+    with bind_reporting_run_context(context):
+        projected = _phase_filtered_report_tools(
+            [Message(role="user", content='{"phase":"analysis"}')], tools
+        )
+
+    assert [item["function"]["name"] for item in projected] == [
+        "write_analysis_files",
+        "terminal",
+        "register_report_charts",
+        "finalize_report_analysis",
+    ]
+
+
+def test_visualization_exploration_tools_are_hidden_after_their_subbudget() -> None:
+    context = RunContext(
+        run_id="run-visualization-exploration-limit",
+        session_id="session-visualization-exploration-limit",
+        session_state={
+            REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY: {
+                "visualization-exploration:run-visualization-exploration-limit": {
+                    "toolCounts": {"query_analysis_facts": 4, "read_file": 12}
+                }
+            }
+        },
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-exploration",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+
+    with bind_reporting_run_context(context):
+        assert not reporting_phase_allows_tool(
+            "analysis", "query_analysis_facts", task_kind="visualization"
+        )
+        assert not reporting_phase_allows_tool("analysis", "read_file", task_kind="visualization")
+        assert reporting_phase_allows_tool("analysis", "terminal", task_kind="visualization")
 
 
 @pytest.mark.parametrize(
@@ -1027,6 +1098,42 @@ async def test_visualization_total_budget_counts_failed_and_successful_calls(
     assert failed == {"ok": False, "code": "workspace_error"}
     assert succeeded == {"ok": True}
     assert calls == 2
+
+
+@pytest.mark.anyio
+async def test_visualization_fact_exploration_subbudget_stops_before_total_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-fact-subbudget",
+        session_id="session-visualization-fact-subbudget",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-fact-subbudget-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 20)
+
+    for _ in range(4):
+        result = await normalize_reporting_tool_arguments(
+            run_context,
+            "query_analysis_facts",
+            lambda: {"ok": True},
+            {},
+        )
+        assert result == {"ok": True}
+
+    with pytest.raises(StopAgentRun, match="report_visualization_exploration_budget_exhausted"):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "query_analysis_facts",
+            lambda: {"ok": True},
+            {},
+        )
 
 
 @pytest.mark.anyio

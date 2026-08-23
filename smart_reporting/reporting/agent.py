@@ -62,6 +62,8 @@ from .phase import (
     REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
     REPORTING_SECTION_INPUT_TOKEN_HARD_CAP,
     REPORTING_TASK_DEPENDENCY,
+    REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
+    REPORTING_VISUALIZATION_READ_FILE_LIMIT,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
@@ -318,8 +320,42 @@ def _reporting_visualization_tool_budget(
     successful_count = count(stored.get("successfulCount"))
     script_failure_count = count(stored.get("scriptFailureCount"))
     in_flight_count = count(stored.get("inFlightCount"))
+    in_flight_tools = (
+        dict(stored.get("inFlightToolCounts", {}))
+        if isinstance(stored.get("inFlightToolCounts"), dict)
+        else {}
+    )
     cumulative_total = base_total + attempted_count + in_flight_count
     cumulative_script_failures = base_script_failures + script_failure_count
+    counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    exploration_limit = (
+        REPORTING_VISUALIZATION_FACT_QUERY_LIMIT
+        if counted_tool_name == "query_analysis_facts"
+        else REPORTING_VISUALIZATION_READ_FILE_LIMIT
+        if counted_tool_name == "read_file"
+        else None
+    )
+    if exploration_limit is not None:
+        tool_counts = stored.get("toolCounts")
+        counted_in_flight_tools = stored.get("inFlightToolCounts")
+        exploration_count = (
+            count(tool_counts.get(counted_tool_name)) if isinstance(tool_counts, Mapping) else 0
+        ) + (
+            count(counted_in_flight_tools.get(counted_tool_name))
+            if isinstance(counted_in_flight_tools, Mapping)
+            else 0
+        )
+        if exploration_count >= exploration_limit:
+            _stop_exhausted_visualization_budget(
+                run_context,
+                code="report_visualization_exploration_budget_exhausted",
+                message="可视化事实探索已达到独立上限，请立即进入图表产出阶段。",
+                attempted_count=attempted_count,
+                successful_count=successful_count,
+                in_flight_count=in_flight_count,
+                total_tool_calls=cumulative_total,
+                script_failure_count=cumulative_script_failures,
+            )
     if (
         attempted_count + in_flight_count >= _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT
         or cumulative_total >= _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT
@@ -348,13 +384,19 @@ def _reporting_visualization_tool_budget(
             total_tool_calls=cumulative_total,
             script_failure_count=cumulative_script_failures,
         )
+    counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
     budgets[identity] = {
+        **stored,
         "baseTotal": base_total,
         "baseScriptFailures": base_script_failures,
         "attemptedCount": attempted_count,
         "successfulCount": successful_count,
         "scriptFailureCount": script_failure_count,
         "inFlightCount": in_flight_count + 1,
+        "inFlightToolCounts": {
+            **in_flight_tools,
+            counted_tool_name: count(in_flight_tools.get(counted_tool_name)) + 1,
+        },
     }
     state[REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY] = budgets
     return state, identity, REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY
@@ -409,6 +451,17 @@ def _finish_visualization_tool_budget(
     attempted_count = count(stored.get("attemptedCount")) + 1
     successful_count = count(stored.get("successfulCount")) + int(succeeded)
     script_failure_count = count(stored.get("scriptFailureCount"))
+    tool_counts = (
+        dict(stored.get("toolCounts", {})) if isinstance(stored.get("toolCounts"), dict) else {}
+    )
+    counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    tool_counts[counted_tool_name] = count(tool_counts.get(counted_tool_name)) + 1
+    in_flight_tools = (
+        dict(stored.get("inFlightToolCounts", {}))
+        if isinstance(stored.get("inFlightToolCounts"), dict)
+        else {}
+    )
+    in_flight_tools[counted_tool_name] = max(count(in_flight_tools.get(counted_tool_name)) - 1, 0)
     script_failed = _visualization_terminal_failed(function_name, result)
     script_failure_count += int(script_failed)
     in_flight_count = max(count(stored.get("inFlightCount")) - 1, 0)
@@ -418,6 +471,8 @@ def _finish_visualization_tool_budget(
         "successfulCount": successful_count,
         "scriptFailureCount": script_failure_count,
         "inFlightCount": in_flight_count,
+        "toolCounts": tool_counts,
+        "inFlightToolCounts": in_flight_tools,
     }
     cumulative_total = count(stored.get("baseTotal")) + attempted_count
     cumulative_script_failures = count(stored.get("baseScriptFailures")) + script_failure_count
