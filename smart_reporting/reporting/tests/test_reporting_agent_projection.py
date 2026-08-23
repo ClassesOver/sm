@@ -1101,7 +1101,7 @@ async def test_visualization_total_budget_counts_failed_and_successful_calls(
 
 
 @pytest.mark.anyio
-async def test_visualization_fact_exploration_subbudget_stops_before_total_budget(
+async def test_visualization_fact_exploration_subbudget_returns_receipt_and_keeps_run_alive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_context = RunContext(
@@ -1127,13 +1127,21 @@ async def test_visualization_fact_exploration_subbudget_stops_before_total_budge
         )
         assert result == {"ok": True}
 
-    with pytest.raises(StopAgentRun, match="report_visualization_exploration_budget_exhausted"):
-        await normalize_reporting_tool_arguments(
-            run_context,
-            "query_analysis_facts",
-            lambda: {"ok": True},
-            {},
-        )
+    rejected = await normalize_reporting_tool_arguments(
+        run_context,
+        "query_analysis_facts",
+        lambda: {"ok": True},
+        {},
+    )
+    terminal = await normalize_reporting_tool_arguments(
+        run_context,
+        "terminal",
+        lambda: {"ok": True},
+        {},
+    )
+
+    assert rejected["code"] == "report_visualization_exploration_budget_exhausted"
+    assert terminal == {"ok": True}
 
 
 @pytest.mark.anyio

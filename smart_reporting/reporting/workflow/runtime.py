@@ -325,16 +325,7 @@ def _visualization_completion_conditions(
             "不要调用任何读取、写入、执行、Skill 或视觉工具",
             "立即且只调用一次 finalize_report_analysis",
         ]
-    previous_tool_calls, _ = _visualization_retry_budget(last_error)
-    if previous_tool_calls > 0 or (
-        isinstance(last_error, ReportingError)
-        and last_error.code
-        in {
-            "report_visualization_tool_budget_exhausted",
-            "report_visualization_exploration_budget_exhausted",
-            "report_visualization_script_failure_limit_exhausted",
-        }
-    ):
+    if _visualization_recovery_required(last_error):
         return [
             "上一轮因工具调用或脚本失败达到上限而终止；禁止重新规划、重复读取事实或重新探索工作区",
             "复用工作区已有脚本和图表，只完成尚缺的最小执行或检查",
@@ -347,6 +338,23 @@ def _visualization_completion_conditions(
         "最后且只调用一次 finalize_report_analysis",
         "evidence、receipt、citation 和文件身份由服务端 durable state 派生",
     ]
+
+
+_VISUALIZATION_RECOVERY_ERROR_CODES = frozenset(
+    {
+        "report_visualization_tool_budget_exhausted",
+        "report_visualization_exploration_budget_exhausted",
+        "report_visualization_script_failure_limit_exhausted",
+    }
+)
+
+
+def _visualization_recovery_required(last_error: Exception | None) -> bool:
+    """仅预算类终态错误进入禁止重新探索的恢复模式。"""
+
+    return isinstance(last_error, ReportingError) and last_error.code in (
+        _VISUALIZATION_RECOVERY_ERROR_CODES
+    )
 
 
 def _visualization_retry_budget(last_error: Exception | None) -> tuple[int, int]:
@@ -4158,6 +4166,7 @@ class ReportWorkflowRuntime:
                     "reportRunId": str(run_context.run_id or scope["externalRunId"]),
                     "taskKind": "visualization",
                     "chartsRegistered": charts_registered,
+                    "visualizationRecovery": _visualization_recovery_required(last_error),
                     "visualizationToolCalls": visualization_tool_calls,
                     "visualizationScriptFailures": visualization_script_failures,
                     "thinkingEffort": self._worker_thinking_effort(

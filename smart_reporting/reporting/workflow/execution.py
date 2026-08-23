@@ -34,6 +34,7 @@ from ..phase import (
     reporting_thinking_effort_from_acceptance_contract,
     reporting_visualization_budget_from_acceptance_contract,
     reporting_visualization_budget_from_run_context,
+    reporting_visualization_recovery_from_acceptance_contract,
     reporting_visualization_registered_from_acceptance_contract,
 )
 
@@ -137,6 +138,9 @@ class ReportTaskRunner:
                 visualization_tool_calls, visualization_script_failures = (
                     reporting_visualization_budget_from_acceptance_contract(acceptance_contract)
                 )
+                visualization_recovery = reporting_visualization_recovery_from_acceptance_contract(
+                    acceptance_contract
+                )
                 if continuing:
                     task, attempt = await self.repository.resume_current(
                         scope.external_run_id,
@@ -191,8 +195,7 @@ class ReportTaskRunner:
                         ),
                         **(
                             {REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True}
-                            if reporting_task_kind == "visualization"
-                            and (visualization_tool_calls > 0 or visualization_script_failures > 0)
+                            if reporting_task_kind == "visualization" and visualization_recovery
                             else {}
                         ),
                     }

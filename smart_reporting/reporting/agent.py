@@ -74,6 +74,7 @@ from .phase import (
     reporting_phase_from_run_context,
     reporting_task_kind_from_run_context,
     reporting_thinking_effort_from_run_context,
+    reporting_visualization_exploration_count,
     reporting_visualization_registered_from_run_context,
 )
 from .tools import build_report_worker_tools
@@ -286,6 +287,48 @@ def _reporting_success_tool_budget(
     return state, identity, state_key
 
 
+def _visualization_exploration_limit(function_name: str) -> int | None:
+    counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    if counted_tool_name == "query_analysis_facts":
+        return REPORTING_VISUALIZATION_FACT_QUERY_LIMIT
+    if counted_tool_name == "read_file":
+        return REPORTING_VISUALIZATION_READ_FILE_LIMIT
+    return None
+
+
+def _visualization_exploration_budget_receipt(
+    run_context: RunContext,
+    function_name: str,
+) -> dict[str, Any] | None:
+    if (
+        reporting_phase_from_run_context(run_context) != "analysis"
+        or reporting_task_kind_from_run_context(run_context) != "visualization"
+    ):
+        return None
+    limit = _visualization_exploration_limit(function_name)
+    if limit is None:
+        return None
+    counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    current_count = reporting_visualization_exploration_count(run_context, counted_tool_name)
+    if current_count < limit:
+        return None
+    return {
+        "ok": False,
+        "status": "rejected",
+        "code": "report_visualization_exploration_budget_exhausted",
+        "message": "可视化事实探索已达到独立上限，请立即进入图表产出阶段。",
+        "requiredActions": [
+            "停止读取事实和文件；复用当前上下文，直接创建或执行图表脚本。",
+        ],
+        "retryable": True,
+        "details": {
+            "tool": counted_tool_name,
+            "currentCount": current_count,
+            "limit": limit,
+        },
+    }
+
+
 def _reporting_visualization_tool_budget(
     run_context: RunContext,
     function_name: str,
@@ -327,35 +370,6 @@ def _reporting_visualization_tool_budget(
     )
     cumulative_total = base_total + attempted_count + in_flight_count
     cumulative_script_failures = base_script_failures + script_failure_count
-    counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
-    exploration_limit = (
-        REPORTING_VISUALIZATION_FACT_QUERY_LIMIT
-        if counted_tool_name == "query_analysis_facts"
-        else REPORTING_VISUALIZATION_READ_FILE_LIMIT
-        if counted_tool_name == "read_file"
-        else None
-    )
-    if exploration_limit is not None:
-        tool_counts = stored.get("toolCounts")
-        counted_in_flight_tools = stored.get("inFlightToolCounts")
-        exploration_count = (
-            count(tool_counts.get(counted_tool_name)) if isinstance(tool_counts, Mapping) else 0
-        ) + (
-            count(counted_in_flight_tools.get(counted_tool_name))
-            if isinstance(counted_in_flight_tools, Mapping)
-            else 0
-        )
-        if exploration_count >= exploration_limit:
-            _stop_exhausted_visualization_budget(
-                run_context,
-                code="report_visualization_exploration_budget_exhausted",
-                message="可视化事实探索已达到独立上限，请立即进入图表产出阶段。",
-                attempted_count=attempted_count,
-                successful_count=successful_count,
-                in_flight_count=in_flight_count,
-                total_tool_calls=cumulative_total,
-                script_failure_count=cumulative_script_failures,
-            )
     if (
         attempted_count + in_flight_count >= _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT
         or cumulative_total >= _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT
@@ -1089,6 +1103,14 @@ async def normalize_reporting_tool_arguments(
         )
     ):
         _stop_closed_visualization(run_context)
+    exploration_receipt = _visualization_exploration_budget_receipt(run_context, function_name)
+    if exploration_receipt is not None:
+        return _enforce_reporting_no_progress(
+            run_context,
+            function_name,
+            exploration_receipt,
+            arguments,
+        )
     empty_query_state = _empty_profile_query_state(run_context, function_name, arguments)
     existing_empty = (
         empty_query_state[0].get(empty_query_state[1]) if empty_query_state is not None else None

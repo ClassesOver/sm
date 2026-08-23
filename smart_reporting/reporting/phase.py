@@ -241,6 +241,26 @@ def reporting_visualization_registered_from_acceptance_contract(value: Any) -> b
     )
 
 
+def reporting_visualization_recovery_from_acceptance_contract(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    requirements = value.get("requirements")
+    if (
+        not isinstance(requirements, Sequence)
+        or isinstance(requirements, (str, bytes))
+        or len(requirements) != 1
+    ):
+        return False
+    requirement = requirements[0]
+    parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
+    phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
+    return (
+        phase_contract.get("visualizationRecovery") is True
+        if isinstance(phase_contract, Mapping)
+        else False
+    )
+
+
 def reporting_visualization_budget_from_acceptance_contract(value: Any) -> tuple[int, int]:
     """读取 Workflow 签发的可视化累计预算，拒绝模型输入覆盖计数。"""
 

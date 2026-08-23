@@ -29,6 +29,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     reporting_visualization_budget_from_acceptance_contract,
     reporting_visualization_budget_from_run_context,
+    reporting_visualization_recovery_from_acceptance_contract,
     reporting_visualization_registered_from_acceptance_contract,
 )
 from smart_reporting.reporting.tests.workspace_fakes import service as fake_workspace_service
@@ -231,11 +232,37 @@ def test_visualization_retry_budget_survives_unrelated_worker_error() -> None:
 
     assert _visualization_retry_budget(error) == (27, 2)
     conditions = _visualization_completion_conditions(error, False)
-    assert any("复用工作区已有脚本和图表" in item for item in conditions)
+    assert any("只整合 completedAnalysisItems" in item for item in conditions)
 
     domain_error = ReportingError("report_worker_error", "worker failed", details={"stage": 2})
     setattr(domain_error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, (27, 2))
     assert _visualization_retry_budget(domain_error) == (27, 2)
+
+
+def test_visualization_recovery_contract_is_only_enabled_for_budget_failures() -> None:
+    budget_error = build_report_phase_acceptance_contract(
+        phase="analysis",
+        validation_context_file={"path": "analysis-context.json"},
+        phase_contract={
+            "taskKind": "visualization",
+            "reportRunId": "report-1",
+            "visualizationRecovery": True,
+        },
+        analysis_output_path="analysis-output.json",
+    )
+    ordinary_retry = build_report_phase_acceptance_contract(
+        phase="analysis",
+        validation_context_file={"path": "analysis-context.json"},
+        phase_contract={
+            "taskKind": "visualization",
+            "reportRunId": "report-1",
+            "visualizationRecovery": False,
+        },
+        analysis_output_path="analysis-output.json",
+    )
+
+    assert reporting_visualization_recovery_from_acceptance_contract(budget_error) is True
+    assert reporting_visualization_recovery_from_acceptance_contract(ordinary_retry) is False
 
 
 def test_visualization_retry_budget_keeps_dependency_base_before_first_tool() -> None:
