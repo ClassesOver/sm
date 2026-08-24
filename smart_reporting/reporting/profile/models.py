@@ -14,16 +14,35 @@ from ..contract import MeasureSemantic
 
 PROFILE_DIRECTORY_NAME = "reporting_profiles"
 PROFILE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
-FIELD_REF_PATTERN = (
+QUALIFIED_FIELD_REF_PATTERN = (
     r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\."
     r"[A-Za-z_][A-Za-z0-9_$]{0,127}\."
     r"[A-Za-z_][A-Za-z0-9_$]{0,127}\."
     r"[A-Za-z_][A-Za-z0-9_$]{0,127}$"
 )
+PROFILE_FIELD_REF_PATTERN = (
+    r"^(?:"
+    r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\."
+    r"[A-Za-z_][A-Za-z0-9_$]{0,127}\."
+    r"[A-Za-z_][A-Za-z0-9_$]{0,127}"
+    r"|"
+    r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\."
+    r"[A-Za-z_][A-Za-z0-9_$]{0,127}\."
+    r"[A-Za-z_][A-Za-z0-9_$]{0,127}\."
+    r"[A-Za-z_][A-Za-z0-9_$]{0,127}"
+    r")$"
+)
 
 
 class ProfileModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+
+class ProfileMeasureSemantic(MeasureSemantic):
+    field_ref: str = Field(alias="fieldRef", pattern=PROFILE_FIELD_REF_PATTERN)
+    reconcile_with: str | None = Field(
+        default=None, alias="reconcileWith", pattern=PROFILE_FIELD_REF_PATTERN
+    )
 
 
 class DimensionPatch(ProfileModel):
@@ -47,7 +66,7 @@ class MetricPatch(ProfileModel):
     kind: str | None = Field(default=None, min_length=1, max_length=64)
     description: str | None = Field(default=None, max_length=2_000)
     aggregation: Literal["sum", "count", "count_distinct", "average", "ratio"] | None = None
-    field_ref: str | None = Field(default=None, alias="fieldRef", pattern=FIELD_REF_PATTERN)
+    field_ref: str | None = Field(default=None, alias="fieldRef", pattern=PROFILE_FIELD_REF_PATTERN)
     numerator_metric: str | None = Field(
         default=None, alias="numeratorMetric", pattern=PROFILE_ID_PATTERN
     )
@@ -145,7 +164,7 @@ class ReportingProfileDocument(ProfileModel):
     scope_filters: tuple[ScopeFilterPatch, ...] = Field(
         default=(), alias="scopeFilters", max_length=100
     )
-    measure_semantics: tuple[MeasureSemantic, ...] = Field(
+    measure_semantics: tuple[ProfileMeasureSemantic, ...] = Field(
         default=(), alias="measureSemantics", max_length=2_000
     )
     sections: tuple[SectionPatch, ...] = Field(default=(), max_length=200)
@@ -199,7 +218,7 @@ class EffectiveMetric(ProfileModel):
     kind: str = Field(min_length=1, max_length=64)
     description: str = Field(default="", max_length=2_000)
     aggregation: Literal["sum", "count", "count_distinct", "average", "ratio"]
-    field_ref: str | None = Field(default=None, alias="fieldRef", pattern=FIELD_REF_PATTERN)
+    field_ref: str | None = Field(default=None, alias="fieldRef", pattern=PROFILE_FIELD_REF_PATTERN)
     numerator_metric: str | None = Field(
         default=None, alias="numeratorMetric", pattern=PROFILE_ID_PATTERN
     )
@@ -322,7 +341,7 @@ class EffectiveReportingProfile(ProfileModel):
     scope_filters: tuple[EffectiveScopeFilter, ...] = Field(
         default=(), alias="scopeFilters", max_length=100
     )
-    measure_semantics: tuple[MeasureSemantic, ...] = Field(
+    measure_semantics: tuple[ProfileMeasureSemantic, ...] = Field(
         default=(), alias="measureSemantics", max_length=2_000
     )
     sections: tuple[EffectiveSection, ...] = Field(min_length=1, max_length=200)
@@ -360,7 +379,7 @@ class FieldReference:
 
 
 def parse_field_ref(value: str) -> FieldReference:
-    if not re.fullmatch(FIELD_REF_PATTERN, value):
+    if not re.fullmatch(QUALIFIED_FIELD_REF_PATTERN, value):
         raise ValueError("fieldRef 必须使用 source.database.table.column")
     source_id, database, table, column = value.rsplit(".", 3)
     return FieldReference(source_id, database.lower(), table.lower(), column.lower())
@@ -375,7 +394,7 @@ def _field_refs(value: tuple[str, ...] | None) -> tuple[str, ...] | None:
     if value is None:
         return None
     if len(set(value)) != len(value) or any(
-        not re.fullmatch(FIELD_REF_PATTERN, item) for item in value
+        not re.fullmatch(PROFILE_FIELD_REF_PATTERN, item) for item in value
     ):
         raise ValueError("fieldRefs 包含重复或无效引用")
     return value

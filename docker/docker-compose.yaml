@@ -173,6 +173,7 @@ services:
         condition: service_healthy
     volumes:
       - ./data/runner:/home/daytona/runner
+      - ${DAYTONA_RUNNER_DOCKER_ROOT:-/u01/daytona/runner-docker}:/var/lib/docker
     privileged: true
     restart: unless-stopped
 

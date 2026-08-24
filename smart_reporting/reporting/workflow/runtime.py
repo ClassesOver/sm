@@ -131,6 +131,7 @@ from ..profile import (
     EffectiveReportingProfile,
     ReconciliationShape,
     ReportingProfileRegistry,
+    bind_reporting_profile_sources,
     build_outline_shape_view,
     parse_field_ref,
     resolve_reporting_profile,
@@ -6192,7 +6193,10 @@ class ReportWorkflowRuntime:
         if len(profile_ids) != 1:
             raise ReportingError("report_profile_conflict", "本次数据源未绑定同一个报表 Profile。")
         try:
-            return resolve_reporting_profile(self.profiles, next(iter(profile_ids)))
+            profile = resolve_reporting_profile(self.profiles, next(iter(profile_ids)))
+            return bind_reporting_profile_sources(
+                profile, {source.id: source.database for source in sources}
+            )
         except ValueError as error:
             raise ReportingError("report_profile_invalid", "报表 Profile 无效。") from error
 

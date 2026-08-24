@@ -84,14 +84,17 @@ def parse_starrocks_source(
         raise ValueError("StarRocks 数据源配置包含未知字段。")
     source_id = raw.get("id")
     dsn_env = raw.get("dsnEnv")
-    database = raw.get("database")
+    configured_database = raw.get("database")
     if not isinstance(source_id, str) or not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", source_id
     ):
         raise ValueError("报表数据源 id 无效。")
     if not isinstance(dsn_env, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{1,127}", dsn_env):
         raise ValueError(f"报表数据源 {source_id} 的 dsnEnv 无效。")
-    if not isinstance(database, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", database):
+    if configured_database is not None and (
+        not isinstance(configured_database, str)
+        or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", configured_database)
+    ):
         raise ValueError(f"报表数据源 {source_id} 的 database 无效。")
     dsn = str(environ.get(dsn_env) or "").strip()
     if not dsn:
@@ -102,6 +105,14 @@ def parse_starrocks_source(
         raise ValueError(f"报表数据源 {source_id} 的 DSN 无效。") from error
     if parsed.drivername.split("+", 1)[0] != "starrocks":
         raise ValueError(f"报表数据源 {source_id} 的 DSN 不是 StarRocks。")
+    # DSN 是连接身份的唯一事实来源。新配置省略 database 时直接采用 DSN 路径；
+    # 旧配置仍允许显式声明，但必须与 DSN 一致，避免静默连接到错误数据库。
+    if configured_database is None:
+        if not parsed.database or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", parsed.database):
+            raise ValueError(f"报表数据源 {source_id} 的 DSN 必须包含数据库。")
+        database = parsed.database
+    else:
+        database = configured_database
     if parsed.database and parsed.database.lower() != database.lower():
         raise ValueError(f"报表数据源 {source_id} 的 DSN 数据库与配置不一致。")
     return StarRocksSourceConfig(

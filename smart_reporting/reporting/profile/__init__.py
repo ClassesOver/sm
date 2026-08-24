@@ -13,7 +13,11 @@ from .models import (
     ReportingProfileRegistry,
     parse_field_ref,
 )
-from .registry import load_configured_reporting_profiles, resolve_reporting_profile
+from .registry import (
+    bind_reporting_profile_sources,
+    load_configured_reporting_profiles,
+    resolve_reporting_profile,
+)
 
 __all__ = [
     "EffectiveDocumentBranding",
@@ -24,6 +28,7 @@ __all__ = [
     "ReconciliationShape",
     "ReportingProfileDocument",
     "ReportingProfileRegistry",
+    "bind_reporting_profile_sources",
     "load_configured_reporting_profiles",
     "build_outline_shape_view",
     "parse_field_ref",

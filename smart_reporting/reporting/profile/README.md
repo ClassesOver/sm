@@ -79,10 +79,12 @@ flowchart TD
   "id": "rj",
   "type": "starrocks",
   "dsnEnv": "REPORT_STARROCKS_DSN",
-  "database": "rj",
   "reportingProfile": "ruijin"
 }
 ```
+
+StarRocks 数据库名从 `dsnEnv` 指向的 DSN 路径解析，例如 DSN 末尾的 `/dwd`。旧配置仍可显式
+声明 `database`，但该值必须与 DSN 一致。
 
 一次运行选择的所有数据源必须绑定同一 `reportingProfile`。未配置时使用内置的领域无关 Profile。
 
@@ -154,9 +156,9 @@ Profile 使用严格 JSON，所有未知字段都会被拒绝：
 | `pageLayout` | 否 | 固定页眉页脚 |
 | `documentBranding` | 否 | 机构名称、生成标记和水印文案 |
 
-`fieldRef` 一律使用 `sourceId.database.table.column`。Profile 只能引用 Schema Snapshot 中存在的字段，
-不能扩大 metadata DDL 和真实 Catalog 的交集，也不能包含 SQL、Python、自由表达式、DSN、host、用户
-名、密码或其他连接字段。
+`fieldRef` 使用环境无关的 `sourceId.table.column`。运行时从所选数据源的 DSN 补充数据库后，才与
+Schema Snapshot 中的完整 `sourceId.database.table.column` 引用比较。Profile 不能扩大 metadata DDL
+和真实 Catalog 的交集，也不能包含 SQL、Python、自由表达式、DSN、host、用户名、密码或其他连接字段。
 
 ### dimensions
 
@@ -168,8 +170,8 @@ Profile 使用严格 JSON，所有未知字段都会被拒绝：
   "kind": "organization",
   "description": "院区；实际枚举和值域由运行时画像确定。",
   "fieldRefs": [
-    "rj.rj.dwd_income_budget_view.area",
-    "rj.rj.dwd_expenditure_budget_view.area"
+    "rj.dwd_income_budget_view.area",
+    "rj.dwd_expenditure_budget_view.area"
   ]
 }
 ```
@@ -223,8 +225,8 @@ Profile 使用严格 JSON，所有未知字段都会被拒绝：
   "code": "north-campus",
   "description": "本 Profile 只允许北部院区数据。",
   "fieldRefs": [
-    "rj.rj.dwd_income_budget_view.area",
-    "rj.rj.dwd_expenditure_budget_view.area"
+    "rj.dwd_income_budget_view.area",
+    "rj.dwd_expenditure_budget_view.area"
   ],
   "value": "北部院区",
   "requiredForAllTables": true
@@ -241,12 +243,12 @@ Schema 表超集；未进入本次 Snapshot 的表不会扩大运行范围。已
 
 ```json
 {
-  "fieldRef": "rj.rj.example.amount",
+  "fieldRef": "rj.example.amount",
   "aggregation": "sum",
   "unit": "元",
   "additiveAcross": ["data_date", "area"],
   "exclusiveScope": {"income_type": "开单收入"},
-  "reconcileWith": "rj.rj.example_summary.amount",
+  "reconcileWith": "rj.example_summary.amount",
   "tolerance": 0.01
 }
 ```

@@ -7,7 +7,6 @@
       "type": "starrocks",
       "name": "瑞金经营分析",
       "dsnEnv": "REPORT_STARROCKS_DSN",
-      "database": "rj",
       "reportingProfile": "ruijin"
     }
   ]

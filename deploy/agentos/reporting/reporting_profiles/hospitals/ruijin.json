@@ -9,30 +9,30 @@
       "kind": "time",
       "description": "业务发生月份；完整期间和数据水位由运行时画像确定。",
       "fieldRefs": [
-        "rj.rj.dwd_income_budget_view.data_date",
-        "rj.rj.dwd_expenditure_budget_view.data_date",
-        "rj.rj.dwd_hdc_income_summary_view.data_date",
-        "rj.rj.dwd_hdc_cost_table_view.data_date",
-        "rj.rj.dm_hdc_gongzuoliang_view.data_date"
+        "rj.dwd_income_budget_view.data_date",
+        "rj.dwd_expenditure_budget_view.data_date",
+        "rj.dwd_hdc_income_summary_view.data_date",
+        "rj.dwd_hdc_cost_table_view.data_date",
+        "rj.dm_hdc_gongzuoliang_view.data_date"
       ]
     },
     {
       "code": "year",
       "kind": "time",
       "description": "项目预算日历年度；INTEGER 类型不代表可聚合指标。",
-      "fieldRefs": ["rj.rj.dwd_project_budget_view.period_year"]
+      "fieldRefs": ["rj.dwd_project_budget_view.period_year"]
     },
     {
       "code": "area",
       "kind": "organization",
       "description": "院区或区域；枚举和值映射由运行时画像确定。",
       "fieldRefs": [
-        "rj.rj.dwd_income_budget_view.area",
-        "rj.rj.dwd_expenditure_budget_view.area",
-        "rj.rj.dwd_project_budget_view.area",
-        "rj.rj.dwd_hdc_income_summary_view.area",
-        "rj.rj.dwd_hdc_cost_table_view.area",
-        "rj.rj.dm_hdc_gongzuoliang_view.area"
+        "rj.dwd_income_budget_view.area",
+        "rj.dwd_expenditure_budget_view.area",
+        "rj.dwd_project_budget_view.area",
+        "rj.dwd_hdc_income_summary_view.area",
+        "rj.dwd_hdc_cost_table_view.area",
+        "rj.dm_hdc_gongzuoliang_view.area"
       ]
     },
     {
@@ -40,12 +40,12 @@
       "kind": "organization",
       "description": "一级核算单元；不得与明细核算单元重复累计。",
       "fieldRefs": [
-        "rj.rj.dwd_income_budget_view.stlevel_analytic_unit",
-        "rj.rj.dwd_expenditure_budget_view.stlevel_analytic_unit",
-        "rj.rj.dwd_project_budget_view.stlevel_analytic_unit",
-        "rj.rj.dwd_hdc_income_summary_view.stlevel_analytic_unit",
-        "rj.rj.dwd_hdc_cost_table_view.stlevel_analytic_unit",
-        "rj.rj.dm_hdc_gongzuoliang_view.stlevel_analytic_unit"
+        "rj.dwd_income_budget_view.stlevel_analytic_unit",
+        "rj.dwd_expenditure_budget_view.stlevel_analytic_unit",
+        "rj.dwd_project_budget_view.stlevel_analytic_unit",
+        "rj.dwd_hdc_income_summary_view.stlevel_analytic_unit",
+        "rj.dwd_hdc_cost_table_view.stlevel_analytic_unit",
+        "rj.dm_hdc_gongzuoliang_view.stlevel_analytic_unit"
       ]
     },
     {
@@ -53,11 +53,11 @@
       "kind": "organization",
       "description": "明细核算单元；运行时保留组织粒度后再聚合。",
       "fieldRefs": [
-        "rj.rj.dwd_income_budget_view.detail_analytic_unit",
-        "rj.rj.dwd_expenditure_budget_view.detail_analytic_unit",
-        "rj.rj.dwd_hdc_income_summary_view.detail_analytic_unit",
-        "rj.rj.dwd_hdc_cost_table_view.detail_analytic_unit",
-        "rj.rj.dm_hdc_gongzuoliang_view.detail_analytic_unit"
+        "rj.dwd_income_budget_view.detail_analytic_unit",
+        "rj.dwd_expenditure_budget_view.detail_analytic_unit",
+        "rj.dwd_hdc_income_summary_view.detail_analytic_unit",
+        "rj.dwd_hdc_cost_table_view.detail_analytic_unit",
+        "rj.dm_hdc_gongzuoliang_view.detail_analytic_unit"
       ]
     },
     {
@@ -65,9 +65,9 @@
       "kind": "organization",
       "description": "核算主体。",
       "fieldRefs": [
-        "rj.rj.dwd_hdc_income_summary_view.company",
-        "rj.rj.dwd_hdc_cost_table_view.company",
-        "rj.rj.dm_hdc_gongzuoliang_view.company"
+        "rj.dwd_hdc_income_summary_view.company",
+        "rj.dwd_hdc_cost_table_view.company",
+        "rj.dm_hdc_gongzuoliang_view.company"
       ]
     },
     {
@@ -75,40 +75,40 @@
       "kind": "category",
       "description": "预算业务类型。",
       "fieldRefs": [
-        "rj.rj.dwd_income_budget_view.budget_type",
-        "rj.rj.dwd_expenditure_budget_view.budget_type",
-        "rj.rj.dwd_project_budget_view.budget_type"
+        "rj.dwd_income_budget_view.budget_type",
+        "rj.dwd_expenditure_budget_view.budget_type",
+        "rj.dwd_project_budget_view.budget_type"
       ]
     },
     {
       "code": "project",
       "kind": "category",
       "description": "预算项目；项目金额粒度和可加性由运行时画像及用户审核确定。",
-      "fieldRefs": ["rj.rj.dwd_project_budget_view.project_name"]
+      "fieldRefs": ["rj.dwd_project_budget_view.project_name"]
     },
     {
       "code": "income_type",
       "kind": "category",
       "description": "收入业务类型；枚举由运行时画像确定。",
-      "fieldRefs": ["rj.rj.dwd_hdc_income_summary_view.income_type"]
+      "fieldRefs": ["rj.dwd_hdc_income_summary_view.income_type"]
     },
     {
       "code": "income_indicator",
       "kind": "category",
       "description": "收入构成指标。",
-      "fieldRefs": ["rj.rj.dwd_hdc_income_summary_view.indicator_name"]
+      "fieldRefs": ["rj.dwd_hdc_income_summary_view.indicator_name"]
     },
     {
       "code": "cost_indicator",
       "kind": "category",
       "description": "成本构成指标。",
-      "fieldRefs": ["rj.rj.dwd_hdc_cost_table_view.indicator_name"]
+      "fieldRefs": ["rj.dwd_hdc_cost_table_view.indicator_name"]
     },
     {
       "code": "fund_nature",
       "kind": "category",
       "description": "成本经费性质。",
-      "fieldRefs": ["rj.rj.dwd_hdc_cost_table_view.fund_nature"]
+      "fieldRefs": ["rj.dwd_hdc_cost_table_view.fund_nature"]
     }
   ],
   "sections": [

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -193,6 +194,83 @@ def resolve_reporting_profile(
     return EffectiveReportingProfile.model_validate(
         {**payload, "effectiveProfileHash": effective_profile_hash(payload)}
     )
+
+
+def bind_reporting_profile_sources(
+    profile: EffectiveReportingProfile,
+    source_databases: Mapping[str, str],
+) -> EffectiveReportingProfile:
+    """将环境无关的 Profile 字段引用绑定到本次所选数据源数据库。"""
+
+    normalized_sources: dict[str, tuple[str, str]] = {}
+    for source_id, database in source_databases.items():
+        normalized_id = source_id.lower()
+        if normalized_id in normalized_sources:
+            raise ValueError("Profile 数据源绑定包含重复 source id。")
+        normalized_sources[normalized_id] = (source_id, database.lower())
+    if not normalized_sources:
+        raise ValueError("Profile 数据源绑定不能为空。")
+
+    payload = profile.model_dump(mode="json", by_alias=True, exclude={"effective_profile_hash"})
+    for dimension in payload["dimensions"]:
+        dimension["fieldRefs"] = [
+            _bind_profile_field_ref(value, normalized_sources) for value in dimension["fieldRefs"]
+        ]
+    for metric in payload["metrics"]:
+        if metric.get("fieldRef") is not None:
+            metric["fieldRef"] = _bind_profile_field_ref(metric["fieldRef"], normalized_sources)
+    for scope_filter in payload["scopeFilters"]:
+        scope_filter["fieldRefs"] = [
+            _bind_profile_field_ref(value, normalized_sources)
+            for value in scope_filter["fieldRefs"]
+        ]
+    for semantic in payload["measureSemantics"]:
+        semantic["fieldRef"] = _bind_profile_field_ref(semantic["fieldRef"], normalized_sources)
+        if semantic.get("reconcileWith") is not None:
+            semantic["reconcileWith"] = _bind_profile_field_ref(
+                semantic["reconcileWith"], normalized_sources
+            )
+    semantic_refs = [item["fieldRef"].lower() for item in payload["measureSemantics"]]
+    if len(semantic_refs) != len(set(semantic_refs)):
+        raise ValueError("Profile 数据源绑定后 measureSemantics.fieldRef 重复。")
+    return EffectiveReportingProfile.model_validate(
+        {**payload, "effectiveProfileHash": effective_profile_hash(payload)}
+    )
+
+
+def _bind_profile_field_ref(
+    value: str,
+    sources: Mapping[str, tuple[str, str]],
+) -> str:
+    """解析三/四段式引用；source id 可含点，因此按已选数据源消除歧义。"""
+
+    candidates: list[str] = []
+    mismatched_database = False
+    short_parts = value.rsplit(".", 2)
+    if len(short_parts) == 3:
+        source = sources.get(short_parts[0].lower())
+        if source is not None:
+            source_id, database = source
+            candidates.append(f"{source_id}.{database}.{short_parts[1]}.{short_parts[2]}")
+    qualified_parts = value.rsplit(".", 3)
+    if len(qualified_parts) == 4:
+        source = sources.get(qualified_parts[0].lower())
+        if source is not None:
+            source_id, database = source
+            if qualified_parts[1].lower() == database:
+                candidates.append(
+                    f"{source_id}.{database}.{qualified_parts[2]}.{qualified_parts[3]}"
+                )
+            else:
+                mismatched_database = True
+    canonical = {item.lower(): item for item in candidates}
+    if len(canonical) == 1:
+        return next(iter(canonical.values()))
+    if len(canonical) > 1:
+        raise ValueError(f"Profile fieldRef 无法唯一绑定数据源: {value}")
+    if mismatched_database:
+        raise ValueError(f"Profile fieldRef 数据库与当前数据源不一致: {value}")
+    raise ValueError(f"Profile fieldRef 引用了未选择的数据源: {value}")
 
 
 def _profile_files(root: Path) -> tuple[Path, ...]:
