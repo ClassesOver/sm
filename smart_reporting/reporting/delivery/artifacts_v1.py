@@ -14,6 +14,7 @@ from ..contract import SHA256_PATTERN, StrictModel
 from ..hospital_operation.delivery import SourcePolicy, SourceWarning
 from ..models import ReportingError
 from ..workflow.query_pipeline import DatasetLineage
+from .draft_v1 import HeadingNumber
 
 _ANALYSIS_MARKER = re.compile(r"\[\[analysis:([^\]\r\n]+)\]\]")
 _TABLE_BLOCK = re.compile(
@@ -88,6 +89,8 @@ class ReportArtifactManifest(StrictModel):
     # 章节内容和顺序由 Workflow 批准提纲冻结，并通过 expectedSections 精确验收。
     # 交付模型只约束通用结构，不能再维护一份会与综合十章或专题子集冲突的业务清单。
     sections: tuple[str, ...] = Field(min_length=1, max_length=100)
+    section_numbers: tuple[str, ...] = Field(alias="sectionNumbers", min_length=1, max_length=100)
+    heading_numbers: tuple[HeadingNumber, ...] = Field(alias="headingNumbers", min_length=1)
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
 
     @model_validator(mode="after")
@@ -112,7 +115,49 @@ class ReportArtifactManifest(StrictModel):
             raise ValueError("产物路径不能重复")
         if len(self.sections) != len(set(self.sections)):
             raise ValueError("报告章节不能重复")
+        _validate_heading_numbers(self.sections, self.section_numbers, self.heading_numbers)
         return self
+
+
+def _validate_heading_numbers(
+    sections: tuple[str, ...],
+    section_numbers: tuple[str, ...],
+    heading_numbers: tuple[HeadingNumber, ...],
+) -> None:
+    expected_numbers = tuple(str(index) for index in range(1, len(sections) + 1))
+    if section_numbers != expected_numbers:
+        raise ValueError("报告一级章节编号必须从 1 连续生成")
+    primary = tuple(item for item in heading_numbers if item.level == 2)
+    if (
+        tuple(item.section_code for item in primary) != sections
+        or tuple(item.number for item in primary) != section_numbers
+    ):
+        raise ValueError("标题编号映射必须完整覆盖正式章节")
+    anchors = [item.anchor for item in heading_numbers]
+    if len(anchors) != len(set(anchors)):
+        raise ValueError("标题稳定锚点不能重复")
+    current_section = ""
+    h3_count = 0
+    h4_count = 0
+    for item in heading_numbers:
+        if item.level == 2:
+            current_section = item.section_code
+            h3_count = 0
+            h4_count = 0
+            continue
+        if item.section_code != current_section:
+            raise ValueError("子标题必须位于所属一级章节之后")
+        if item.level == 3:
+            h3_count += 1
+            h4_count = 0
+            expected = f"{section_numbers[sections.index(current_section)]}.{h3_count}"
+        else:
+            if h3_count == 0:
+                raise ValueError("H4 标题必须位于所属 H3 标题之后")
+            h4_count += 1
+            expected = f"{section_numbers[sections.index(current_section)]}.{h3_count}.{h4_count}"
+        if item.number != expected:
+            raise ValueError("子标题编号必须按当前章节顺序连续生成")
 
 
 def authoritative_citations(lineage: tuple[DatasetLineage, ...]) -> tuple[Citation, ...]:
@@ -139,6 +184,8 @@ def build_authoritative_manifest(
     accepted_artifacts: list[dict[str, Any]],
     lineage: tuple[DatasetLineage, ...],
     sections: tuple[str, ...],
+    section_numbers: tuple[str, ...],
+    heading_numbers: tuple[HeadingNumber, ...],
     source_warnings: tuple[SourceWarning, ...] = (),
 ) -> ReportArtifactManifest:
     artifacts: dict[str, dict[str, Any]] = {
@@ -206,6 +253,8 @@ def build_authoritative_manifest(
         citations=citations,
         analysisIds=analysis_ids,
         sections=sections,
+        sectionNumbers=section_numbers,
+        headingNumbers=heading_numbers,
         sourceWarnings=source_warnings,
     )
 
@@ -319,6 +368,8 @@ class PdfArtifactManifest(StrictModel):
     rendered_chart_ids: tuple[str, ...] = Field(default=(), alias="renderedChartIds")
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=2_000)
     sections: tuple[str, ...] = Field(min_length=1, max_length=100)
+    section_numbers: tuple[str, ...] = Field(alias="sectionNumbers", min_length=1, max_length=100)
+    heading_numbers: tuple[HeadingNumber, ...] = Field(alias="headingNumbers", min_length=1)
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
 
     @model_validator(mode="after")
@@ -329,6 +380,7 @@ class PdfArtifactManifest(StrictModel):
             raise ValueError("PDF 图表引用不能重复")
         if len(self.citation_ids) != len(set(self.citation_ids)):
             raise ValueError("PDF 引用不能重复")
+        _validate_heading_numbers(self.sections, self.section_numbers, self.heading_numbers)
         return self
 
 
@@ -345,6 +397,8 @@ class DocxArtifactManifest(StrictModel):
     rendered_chart_ids: tuple[str, ...] = Field(default=(), alias="renderedChartIds")
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=2_000)
     sections: tuple[str, ...] = Field(min_length=1, max_length=100)
+    section_numbers: tuple[str, ...] = Field(alias="sectionNumbers", min_length=1, max_length=100)
+    heading_numbers: tuple[HeadingNumber, ...] = Field(alias="headingNumbers", min_length=1)
     source_warnings: tuple[SourceWarning, ...] = Field(default=(), alias="sourceWarnings")
 
     @model_validator(mode="after")
@@ -360,6 +414,7 @@ class DocxArtifactManifest(StrictModel):
         ):
             if len(values) != len(set(values)):
                 raise ValueError(message)
+        _validate_heading_numbers(self.sections, self.section_numbers, self.heading_numbers)
         return self
 
 
@@ -426,3 +481,10 @@ def validate_rendered_artifacts(
             )
         if draft.sections != rendered.sections:
             raise ReportingError("report_artifact_section_missing", "PDF/Word 正式章节不一致。")
+        if (
+            draft.section_numbers != rendered.section_numbers
+            or draft.heading_numbers != rendered.heading_numbers
+        ):
+            raise ReportingError(
+                "report_artifact_heading_number_mismatch", "PDF/Word 标题编号事实不一致。"
+            )

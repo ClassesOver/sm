@@ -252,6 +252,7 @@ class SectionCitation(StrictModel):
 class SectionWorkItem(StrictModel):
     version: Literal["1"] = "1"
     section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
+    section_number: str = Field(alias="sectionNumber", pattern=r"^[1-9][0-9]*$")
     title: str = Field(min_length=1, max_length=200)
     objective: str = Field(min_length=1, max_length=4000)
     completion_conditions: tuple[str, ...] = Field(

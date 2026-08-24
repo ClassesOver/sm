@@ -346,7 +346,9 @@ def _document_context(value: Any) -> dict[str, Any]:
         "generatedByLabel",
         "watermarkText",
         "generatedDate",
+        "sectionNumbers",
         "sections",
+        "headingNumbers",
     }:
         raise ReportFailure("报告缺少服务端文档展示契约")
     normalized: dict[str, Any] = {}
@@ -376,10 +378,11 @@ def _document_context(value: Any) -> dict[str, Any]:
         raise ReportFailure("服务端正式章节契约无效")
     normalized_sections: list[dict[str, str]] = []
     for item in sections:
-        if not isinstance(item, dict) or set(item) != {"code", "title"}:
+        if not isinstance(item, dict) or set(item) != {"code", "sectionNumber", "title"}:
             raise ReportFailure("服务端正式章节契约无效")
         code = item.get("code")
         title = item.get("title")
+        section_number = item.get("sectionNumber")
         if (
             not isinstance(code, str)
             or re.fullmatch(r"[a-z][a-z0-9_]{0,127}", code) is None
@@ -387,14 +390,59 @@ def _document_context(value: Any) -> dict[str, Any]:
             or not title.strip()
             or len(title) > 300
             or any(ord(character) < 32 for character in title)
+            or not isinstance(section_number, str)
+            or re.fullmatch(r"[1-9][0-9]*", section_number) is None
         ):
             raise ReportFailure("服务端正式章节契约无效")
-        normalized_sections.append({"code": code, "title": title.strip()})
+        normalized_sections.append(
+            {"code": code, "sectionNumber": section_number, "title": title.strip()}
+        )
     codes = [item["code"] for item in normalized_sections]
     titles = [item["title"] for item in normalized_sections]
     if len(codes) != len(set(codes)) or len(titles) != len(set(titles)):
         raise ReportFailure("服务端正式章节契约包含重复项")
+    section_numbers = value.get("sectionNumbers")
+    expected_section_numbers = [str(index) for index in range(1, len(sections) + 1)]
+    if (
+        section_numbers != expected_section_numbers
+        or [item["sectionNumber"] for item in normalized_sections] != expected_section_numbers
+    ):
+        raise ReportFailure("服务端正式章节编号不连续")
+    headings = value.get("headingNumbers")
+    if not isinstance(headings, list) or not headings:
+        raise ReportFailure("报告缺少服务端标题编号映射")
+    normalized_headings: list[dict[str, Any]] = []
+    for item in headings:
+        if not isinstance(item, dict) or set(item) != {
+            "level",
+            "number",
+            "title",
+            "sectionCode",
+            "anchor",
+        }:
+            raise ReportFailure("服务端标题编号映射无效")
+        if (
+            item["level"] not in {2, 3, 4}
+            or not isinstance(item["number"], str)
+            or re.fullmatch(r"[1-9][0-9]*(?:\.[1-9][0-9]*){0,2}", item["number"]) is None
+            or not isinstance(item["title"], str)
+            or not item["title"].strip()
+            or item["sectionCode"] not in codes
+            or not isinstance(item["anchor"], str)
+            or re.fullmatch(r"report-(?:section|heading)-[a-z0-9_-]+", item["anchor"]) is None
+        ):
+            raise ReportFailure("服务端标题编号映射无效")
+        normalized_headings.append({**item, "title": item["title"].strip()})
+    primary = [item for item in normalized_headings if item["level"] == 2]
+    if (
+        [item["sectionCode"] for item in primary] != codes
+        or [item["number"] for item in primary] != expected_section_numbers
+        or len({item["anchor"] for item in normalized_headings}) != len(normalized_headings)
+    ):
+        raise ReportFailure("服务端标题编号映射与正式章节不一致")
+    normalized["sectionNumbers"] = expected_section_numbers
     normalized["sections"] = normalized_sections
+    normalized["headingNumbers"] = normalized_headings
     return normalized
 
 
@@ -407,20 +455,26 @@ def _markdown_title(tokens: list[Any]) -> str:
     return "智能运营报表"
 
 
-def _bind_section_anchors(tokens: list[Any], sections: list[dict[str, str]]) -> None:
-    headings: list[tuple[Any, str]] = []
+def _bind_heading_anchors(tokens: list[Any], headings_contract: list[dict[str, Any]]) -> None:
+    headings: list[tuple[Any, int, str]] = []
     for index, token in enumerate(tokens[:-1]):
-        if token.type == "heading_open" and token.tag == "h2":
-            headings.append((token, str(getattr(tokens[index + 1], "content", "") or "").strip()))
-    cursor = 0
-    for section in sections:
-        expected_title = section["title"]
-        while cursor < len(headings) and headings[cursor][1] != expected_title:
-            cursor += 1
-        if cursor >= len(headings):
-            raise ReportFailure("Markdown 正式章节与已批准提纲不一致")
-        headings[cursor][0].attrSet("id", f"report-section-{section['code']}")
-        cursor += 1
+        if token.type == "heading_open" and token.tag in {"h2", "h3", "h4"}:
+            headings.append(
+                (
+                    token,
+                    int(token.tag[1:]),
+                    "".join(
+                        str(item.content or "")
+                        for item in getattr(tokens[index + 1], "children", ()) or ()
+                        if item.type in {"text", "code_inline", "image"}
+                    ).strip(),
+                )
+            )
+    expected = [(item["level"], f"{item['number']} {item['title']}") for item in headings_contract]
+    if [(level, title) for _token, level, title in headings] != expected:
+        raise ReportFailure("Markdown 标题顺序与服务端编号映射不一致")
+    for (token, _level, _title), item in zip(headings, headings_contract, strict=True):
+        token.attrSet("id", item["anchor"])
 
 
 def _body_tokens(tokens: list[Any]) -> list[Any]:
@@ -479,12 +533,12 @@ def _semantic_documents(
     generated_label = html.escape(context["generatedByLabel"])
     generated_date = html.escape(context["generatedDate"])
     toc = "".join(
-        f'<p class="toc-entry"><a href="#report-section-{item["code"]}">'
-        f'<span class="toc-title">{html.escape(item["title"])}</span>'
+        f'<p class="toc-entry toc-level-{item["level"]}"><a href="#{item["anchor"]}">'
+        f'<span class="toc-title">{html.escape(item["number"] + " " + item["title"])}</span>'
         '<span class="toc-leader"></span>'
-        f'<span class="toc-page">{toc_page_numbers.get(item["code"], "") if toc_page_numbers is not None else ""}</span>'
+        f'<span class="toc-page">{toc_page_numbers.get(item["anchor"], "") if toc_page_numbers is not None else ""}</span>'
         "</a></p>"
-        for item in context["sections"]
+        for item in context["headingNumbers"]
     )
     shared = (
         f'<section class="report-cover"><h1>{title}</h1>'
@@ -529,6 +583,7 @@ def _semantic_documents(
         ".toc-entry{margin:0 0 3mm}.toc-entry a{color:"
         f"{theme['ink']}"
         ";text-decoration:none;display:flex;align-items:baseline;gap:2mm}"
+        ".toc-level-3{padding-left:6mm}.toc-level-4{padding-left:12mm}"
         ".toc-title{min-width:0}.toc-leader{flex:1;border-bottom:0.5pt dotted "
         f"{theme['grid']}"
         ";transform:translateY(-1.5mm)}.toc-page{min-width:3ch;text-align:right}"
@@ -585,31 +640,27 @@ def _semantic_documents(
 
 
 def _toc_page_numbers(
-    pages: Sequence[Any], sections: Sequence[Mapping[str, str]]
+    pages: Sequence[Any], headings: Sequence[Mapping[str, Any]]
 ) -> dict[str, int]:
     """从 WeasyPrint 页面锚点计算正文从 1 开始的稳定目录页码。"""
 
     anchor_pages: dict[str, int] = {}
-    expected_anchors = {
-        f"report-section-{section['code']}": section["code"] for section in sections
-    }
+    expected_anchors = {str(item["anchor"]): str(item["anchor"]) for item in headings}
     for physical_page, page in enumerate(pages, start=1):
         anchors = getattr(page, "anchors", None)
         if not isinstance(anchors, Mapping):
             continue
         for anchor in anchors:
-            code = expected_anchors.get(anchor)
-            if code is None:
+            heading_anchor = expected_anchors.get(anchor)
+            if heading_anchor is None:
                 continue
-            if code in anchor_pages:
-                raise ReportFailure("PDF 正文章节锚点重复")
-            anchor_pages[code] = physical_page
-    if set(anchor_pages) != {section["code"] for section in sections}:
-        raise ReportFailure("PDF 正文章节锚点不完整")
-    body_start_page = anchor_pages[sections[0]["code"]]
-    page_numbers = {
-        section["code"]: anchor_pages[section["code"]] - body_start_page + 1 for section in sections
-    }
+            if heading_anchor in anchor_pages:
+                raise ReportFailure("PDF 正文标题锚点重复")
+            anchor_pages[heading_anchor] = physical_page
+    if set(anchor_pages) != set(expected_anchors):
+        raise ReportFailure("PDF 正文标题锚点不完整")
+    body_start_page = anchor_pages[str(headings[0]["anchor"])]
+    page_numbers = {anchor: page - body_start_page + 1 for anchor, page in anchor_pages.items()}
     if any(number < 1 for number in page_numbers.values()):
         raise ReportFailure("PDF 正文章节页码顺序无效")
     return page_numbers
@@ -748,6 +799,7 @@ def _render_docx(
     return _validate_docx_structure(
         output,
         expected_sections=context["sections"],
+        expected_headings=context["headingNumbers"],
         expected_image_count=None,
         watermark_text=context["watermarkText"],
     )
@@ -924,26 +976,27 @@ def _postprocess_docx(path: Path, *, context: dict[str, Any], layout: dict[str, 
 
     body_headings: list[Any] = []
     search_index = body_start_index + 1
-    for section_index, section in enumerate(context["sections"], start=1):
+    for heading_index, item in enumerate(context["headingNumbers"], start=1):
+        expected_text = f"{item['number']} {item['title']}"
         found = next(
             (
                 (index, paragraph)
                 for index, paragraph in enumerate(paragraphs[search_index:], start=search_index)
-                if paragraph.text.strip() == section["title"]
+                if paragraph.text.strip() == expected_text
             ),
             None,
         )
         if found is None:
-            raise ReportFailure("Word 正文章节与已批准提纲不一致")
+            raise ReportFailure("Word 正文标题与服务端编号映射不一致")
         search_index, heading = found
         search_index += 1
-        heading.style = document.styles["Heading 1"]
-        bookmark_name = f"report_section_{section['code']}"
+        heading.style = document.styles[f"Heading {item['level'] - 1}"]
+        bookmark_name = item["anchor"].replace("-", "_")
         start = OxmlElement("w:bookmarkStart")
-        start.set(qn("w:id"), str(1000 + section_index))
+        start.set(qn("w:id"), str(1000 + heading_index))
         start.set(qn("w:name"), bookmark_name)
         end = OxmlElement("w:bookmarkEnd")
-        end.set(qn("w:id"), str(1000 + section_index))
+        end.set(qn("w:id"), str(1000 + heading_index))
         insert_at = 1 if heading._p.pPr is not None else 0
         heading._p.insert(insert_at, start)
         heading._p.append(end)
@@ -954,16 +1007,18 @@ def _postprocess_docx(path: Path, *, context: dict[str, Any], layout: dict[str, 
         for paragraph in paragraphs[toc_start_index + 1 : toc_end_index]
         if paragraph.text.strip()
     ]
-    if len(toc_entries) != len(context["sections"]):
-        raise ReportFailure("Word 缓存目录与正式章节不一致")
-    for paragraph, section in zip(toc_entries, context["sections"], strict=True):
+    if len(toc_entries) != len(context["headingNumbers"]):
+        raise ReportFailure("Word 缓存目录与正式标题不一致")
+    for paragraph, item in zip(toc_entries, context["headingNumbers"], strict=True):
         clear_paragraph(paragraph)
-        if "TOC 1" in document.styles:
-            paragraph.style = document.styles["TOC 1"]
+        toc_style = f"TOC {item['level'] - 1}"
+        if toc_style in document.styles:
+            paragraph.style = document.styles[toc_style]
         usable_width = sections[1].page_width - sections[1].left_margin - sections[1].right_margin
         paragraph.paragraph_format.tab_stops.add_tab_stop(usable_width, WD_TAB_ALIGNMENT.RIGHT)
         hyperlink = OxmlElement("w:hyperlink")
-        hyperlink.set(qn("w:anchor"), f"report_section_{section['code']}")
+        bookmark_name = item["anchor"].replace("-", "_")
+        hyperlink.set(qn("w:anchor"), bookmark_name)
         hyperlink.set(qn("w:history"), "1")
         run = OxmlElement("w:r")
         run_properties = OxmlElement("w:rPr")
@@ -972,20 +1027,20 @@ def _postprocess_docx(path: Path, *, context: dict[str, Any], layout: dict[str, 
         run_properties.append(run_style)
         run.append(run_properties)
         text = OxmlElement("w:t")
-        text.text = section["title"]
+        text.text = f"{item['number']} {item['title']}"
         run.append(text)
         hyperlink.append(run)
         paragraph._p.append(hyperlink)
         paragraph.add_run("\t")
         field_run(
             paragraph,
-            f"PAGEREF report_section_{section['code']} \\h",
+            f"PAGEREF {bookmark_name} \\h",
         )
 
     clear_paragraph(markers["toc_field_start"])
     field_run(
         markers["toc_field_start"],
-        'TOC \\o "1-1" \\h \\z \\u',
+        'TOC \\o "1-3" \\h \\z \\u',
         result="",
         close=False,
     )
@@ -1127,6 +1182,7 @@ def _validate_docx_structure(
     path: Path,
     *,
     expected_sections: list[dict[str, str]],
+    expected_headings: list[dict[str, Any]],
     expected_image_count: int | None,
     watermark_text: str,
 ) -> dict[str, Any]:
@@ -1154,10 +1210,10 @@ def _validate_docx_structure(
             image_names = [name for name in names if name.startswith("word/media/")]
     except (OSError, KeyError, UnicodeError, zipfile.BadZipFile, ElementTree.ParseError) as error:
         raise ReportFailure("Word OOXML 无法解析") from error
-    bookmark_names = {f"report_section_{item['code']}" for item in expected_sections}
+    bookmark_names = {item["anchor"].replace("-", "_") for item in expected_headings}
     native_toc_present = (
-        "TOC \\o" in document_xml
-        and "PAGEREF report_section_" in document_xml
+        'TOC \\o "1-3"' in document_xml
+        and "PAGEREF report_" in document_xml
         and all(name in document_xml for name in bookmark_names)
     )
     toc_entry_count = sum(name in document_xml for name in bookmark_names)
@@ -1233,6 +1289,22 @@ def _pdf_section_pages(reader: Any, sections: list[dict[str, str]]) -> dict[str,
         pages.values()
     ):
         raise ReportFailure("PDF 章节锚点顺序与已批准提纲不一致")
+    return pages
+
+
+def _pdf_heading_pages(reader: Any, headings: list[dict[str, Any]]) -> dict[str, int]:
+    destinations = getattr(reader, "named_destinations", {})
+    pages: dict[str, int] = {}
+    for item in headings:
+        destination = destinations.get(item["anchor"])
+        if destination is None:
+            raise ReportFailure("PDF 缺少稳定标题锚点")
+        try:
+            pages[item["anchor"]] = int(reader.get_destination_page_number(destination)) + 1
+        except Exception as error:
+            raise ReportFailure("PDF 标题锚点无法解析") from error
+    if list(pages.values()) != sorted(pages.values()):
+        raise ReportFailure("PDF 标题锚点顺序与编号映射不一致")
     return pages
 
 
@@ -1502,7 +1574,7 @@ class ReportRuntime:
             expected_section_codes = [item["code"] for item in context["sections"]]
             if marker_sections != expected_section_codes:
                 raise ReportFailure("Markdown 正式章节标识与已批准提纲不一致")
-            _bind_section_anchors(tokens, context["sections"])
+            _bind_heading_anchors(tokens, context["headingNumbers"])
             allowed_images = self._images(source, tokens)
             source_artifact = self._artifact(source)
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
@@ -1537,7 +1609,9 @@ class ReportRuntime:
                 base_url=str(source.parent),
                 url_fetcher=fetch_resource,
             ).render()
-            toc_page_numbers = _toc_page_numbers(preflight_document.pages, context["sections"])
+            toc_page_numbers = _toc_page_numbers(
+                preflight_document.pages, context["headingNumbers"]
+            )
             pdf_document, _ = _semantic_documents(
                 body,
                 context=context,
@@ -1549,7 +1623,10 @@ class ReportRuntime:
                 base_url=str(source.parent),
                 url_fetcher=fetch_resource,
             ).render()
-            if _toc_page_numbers(final_document.pages, context["sections"]) != toc_page_numbers:
+            if (
+                _toc_page_numbers(final_document.pages, context["headingNumbers"])
+                != toc_page_numbers
+            ):
                 # 目录页码使用固定宽度，正常不会改变分页；若字体或渲染器升级导致
                 # 锚点漂移，则不能发布目录与正文不一致的产物。
                 raise ReportFailure("PDF 目录页码在最终渲染时发生漂移")
@@ -1588,6 +1665,7 @@ class ReportRuntime:
             word_structure = _validate_docx_structure(
                 temporary_docx,
                 expected_sections=context["sections"],
+                expected_headings=context["headingNumbers"],
                 expected_image_count=len(allowed_images),
                 watermark_text=context["watermarkText"],
             )
@@ -1724,6 +1802,7 @@ class ReportRuntime:
                 title = str(render.get("reportTitle") or "智能运营报表")
                 context = _document_context(render.get("documentContext"))
                 section_pages = _pdf_section_pages(reader, context["sections"])
+                _pdf_heading_pages(reader, context["headingNumbers"])
                 body_start_page = min(section_pages.values())
                 toc_link_count = (
                     _pdf_link_count(
@@ -1834,7 +1913,8 @@ class ReportRuntime:
                     and cover_compact.count(watermark_compact) == expected_cover_occurrences
                 )
                 toc_ok = "目录" in toc_text and all(
-                    item["title"] in toc_text for item in context["sections"]
+                    f"{item['number']} {item['title']}" in toc_text
+                    for item in context["headingNumbers"]
                 )
                 signature_ok = (
                     context["organizationName"] in final_text
@@ -1846,6 +1926,7 @@ class ReportRuntime:
                 word_structure = _validate_docx_structure(
                     word,
                     expected_sections=context["sections"],
+                    expected_headings=context["headingNumbers"],
                     expected_image_count=int(render.get("imageCount") or 0),
                     watermark_text=context["watermarkText"],
                 )
@@ -1868,6 +1949,12 @@ class ReportRuntime:
                 and missing_images == 0
                 and not word_rendering["blankPages"]
                 and word_structure["embeddedImageCount"] >= markdown_image_count
+                and cover_ok
+                and toc_ok
+                and toc_link_count >= len(context["headingNumbers"])
+                and signature_ok
+                and word_structure["nativeTocPresent"]
+                and word_structure["tocEntryCount"] == len(context["headingNumbers"])
             )
             validation = {
                 "ok": ok,
@@ -1919,10 +2006,16 @@ class ReportRuntime:
         charts = manifest.get("charts")
         citations = manifest.get("citations")
         sections = manifest.get("sections")
+        section_numbers = manifest.get("sectionNumbers")
+        heading_numbers = manifest.get("headingNumbers")
+        context = render.get("documentContext")
         if (
             not isinstance(charts, list)
             or not isinstance(citations, list)
             or not isinstance(sections, list)
+            or not isinstance(context, dict)
+            or section_numbers != context.get("sectionNumbers")
+            or heading_numbers != context.get("headingNumbers")
         ):
             raise ReportFailure("报告产物清单无效")
         chart_paths = {

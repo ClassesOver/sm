@@ -27,6 +27,7 @@ def _looks_like_serialized_structure(value: str) -> bool:
 
 class ReportOutlineSection(HospitalOperationSchema):
     code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    section_number: str = Field(alias="sectionNumber", pattern=r"^[1-9][0-9]*$")
     title: str = Field(min_length=1, max_length=300)
     focus: tuple[str, ...] = Field(default=(), max_length=20)
     analysis_ids: tuple[str, ...] = Field(default=(), alias="analysisIds", max_length=2_000)
@@ -161,6 +162,9 @@ class ReportOutline(HospitalOperationSchema):
         expected = [f"section_{index:03d}" for index in range(1, len(codes) + 1)]
         if codes != expected:
             raise ValueError("动态提纲 section code 必须从 section_001 连续生成")
+        expected_numbers = [str(index) for index in range(1, len(value) + 1)]
+        if [item.section_number for item in value] != expected_numbers:
+            raise ValueError("动态提纲 sectionNumber 必须从 1 连续生成")
         return value
 
     @model_validator(mode="after")
@@ -198,6 +202,7 @@ def freeze_outline(
         sections.append(
             ReportOutlineSection(
                 code=f"section_{index:03d}",
+                sectionNumber=str(index),
                 title=section.title,
                 focus=section.focus,
                 analysisIds=section.analysis_ids,

@@ -75,6 +75,7 @@ from ..delivery.artifacts_v1 import (
     validate_rendered_artifacts,
 )
 from ..delivery.draft_v1 import (
+    HeadingNumber,
     ReportChartInput,
     ReportDraft,
     ReportDraftSection,
@@ -3190,8 +3191,14 @@ class ReportWorkflowRuntime:
                 "generatedByLabel": profile.document_branding.generated_by_label,
                 "watermarkText": profile.document_branding.watermark_text,
                 "generatedDate": generated_date,
+                "sectionNumbers": [section.section_number for section in outline.sections],
                 "sections": [
-                    {"code": section.code, "title": section.title} for section in outline.sections
+                    {
+                        "code": section.code,
+                        "sectionNumber": section.section_number,
+                        "title": section.title,
+                    }
+                    for section in outline.sections
                 ],
             },
             run_context=self._tool_context(run_context),
@@ -4531,6 +4538,7 @@ class ReportWorkflowRuntime:
         )
         return SectionWorkItem(
             sectionCode=section.code,
+            sectionNumber=section.section_number,
             title=section.title,
             objective="；".join(objective_parts),
             completionConditions=(
@@ -4552,8 +4560,8 @@ class ReportWorkflowRuntime:
             ),
             factSummaries=tuple(item.summary for item in selected_evidence),
             markdownRequirements=(
-                "章节 title 由服务端插入，正文不得重复一级或二级章节标题",
-                "章节内部标题从三级标题开始",
+                "章节编号和 title 由服务端插入，模型不得在标题中写编号或重复 H1/H2",
+                "章节内部标题只使用 H3/H4，H4 必须位于对应 H3 之后",
                 "表格直接使用标准 Markdown 管道表，不得渲染为图片",
                 "正文不得自行写 citation、analysis、section 或图片协议标记",
                 "最后且只调用一次 render_report_section；证据不足时改用 request_analysis_rework",
@@ -5069,6 +5077,7 @@ class ReportWorkflowRuntime:
             sections=tuple(
                 ReportSectionDefinition(
                     code=item.code,
+                    sectionNumber=item.section_number,
                     title=item.title,
                     protocolMarker=True,
                     analysisIds=item.analysis_ids,
@@ -5078,6 +5087,11 @@ class ReportWorkflowRuntime:
             citation_ids=tuple(item.citation_id for item in citation_bindings),
             charts=tuple(chart_inputs),
             require_table=False,
+        )
+        await self.report_tools.complete_document_heading_numbers(
+            str(self._workflow_result(self._state(run_context))["jobId"]),
+            [item.model_dump(mode="json", by_alias=True) for item in rendered.heading_numbers],
+            run_context=self._tool_context(run_context),
         )
         referenced_chart_ids = tuple(
             dict.fromkeys(
@@ -5130,6 +5144,8 @@ class ReportWorkflowRuntime:
             source_warnings=source_warnings,
             revision=revision,
             coding_task_key=analysis_task_id,
+            section_numbers=rendered.section_numbers,
+            heading_numbers=rendered.heading_numbers,
             run_context=run_context,
         )
         if not _accepted_artifacts_match_manifest(manifest, manifest_path, accepted_artifacts):
@@ -5587,6 +5603,8 @@ class ReportWorkflowRuntime:
                 renderedChartIds=tuple(validation.get("chartIds") or ()),
                 citationIds=tuple(validation.get("citationIds") or ()),
                 sections=tuple(validation.get("sectionIds") or ()),
+                sectionNumbers=draft.section_numbers,
+                headingNumbers=draft.heading_numbers,
                 sourceWarnings=source_warnings,
             )
             rendered_word = DocxArtifactManifest(
@@ -5609,6 +5627,8 @@ class ReportWorkflowRuntime:
                 renderedChartIds=tuple(validation.get("chartIds") or ()),
                 citationIds=tuple(validation.get("citationIds") or ()),
                 sections=tuple(validation.get("sectionIds") or ()),
+                sectionNumbers=draft.section_numbers,
+                headingNumbers=draft.heading_numbers,
                 sourceWarnings=source_warnings,
             )
             validate_rendered_artifacts(draft, rendered_pdf, rendered_word, lineage=lineage)
@@ -5929,6 +5949,8 @@ class ReportWorkflowRuntime:
         lineage: tuple[DatasetLineage, ...],
         revision: int,
         coding_task_key: str,
+        section_numbers: tuple[str, ...],
+        heading_numbers: tuple[HeadingNumber, ...],
         run_context: RunContext,
         source_warnings: tuple[SourceWarning, ...] = (),
     ) -> ReportArtifactManifest:
@@ -6004,6 +6026,8 @@ class ReportWorkflowRuntime:
                 sections=tuple(
                     section.code for section in _frozen_outline(self._state(run_context)).sections
                 ),
+                section_numbers=section_numbers,
+                heading_numbers=heading_numbers,
                 source_warnings=source_warnings,
             )
             content = json.dumps(

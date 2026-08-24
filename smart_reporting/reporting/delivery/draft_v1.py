@@ -4,6 +4,7 @@ import re
 from pathlib import PurePosixPath
 from typing import Any
 
+from markdown_it import MarkdownIt
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..contract import StrictModel
@@ -12,10 +13,31 @@ from ..models import ReportingError
 _LEADING_SECTION_HEADING = re.compile(
     r"\A#{1,2}[ \t]+(?P<title>[^\r\n]*?)(?:[ \t]+#+)?[ \t]*(?:\r?\n|\Z)"
 )
+_ATX_HEADING = re.compile(r"^(?P<prefix>#{1,6}[ \t]+)(?P<title>.*?)(?P<closing>[ \t]+#+)?[ \t]*$")
+_MANUAL_HEADING_NUMBER = re.compile(r"^\d+(?:\.\d+)*(?:[.、．])?[ \t]+")
+
+
+def _inline_heading_text(markdown: str) -> str:
+    tokens = MarkdownIt("commonmark").parseInline(markdown)
+    children = tokens[0].children if tokens else ()
+    return "".join(
+        str(item.content or "")
+        for item in children or ()
+        if item.type in {"text", "code_inline", "image"}
+    ).strip()
+
+
+class HeadingNumber(StrictModel):
+    level: int = Field(ge=2, le=4)
+    number: str = Field(pattern=r"^[1-9][0-9]*(?:\.[1-9][0-9]*){0,2}$")
+    title: str = Field(min_length=1, max_length=300)
+    section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
+    anchor: str = Field(pattern=r"^report-(?:section|heading)-[a-z0-9_-]+$")
 
 
 class ReportSectionDefinition(StrictModel):
     code: str = Field(min_length=1, max_length=128)
+    section_number: str = Field(alias="sectionNumber", pattern=r"^[1-9][0-9]*$")
     title: str = Field(min_length=1, max_length=200)
     protocol_marker: bool = Field(default=True, alias="protocolMarker")
     analysis_ids: tuple[str, ...] = Field(default=(), alias="analysisIds", max_length=2_000)
@@ -123,6 +145,8 @@ class RenderedReportDraft(StrictModel):
     markdown: str
     chart_paths: tuple[str, ...] = Field(alias="chartPaths")
     analysis_ids: tuple[str, ...] = Field(default=(), alias="analysisIds")
+    section_numbers: tuple[str, ...] = Field(alias="sectionNumbers")
+    heading_numbers: tuple[HeadingNumber, ...] = Field(alias="headingNumbers")
     warnings: tuple[dict[str, Any], ...] = ()
     auto_fixes: tuple[dict[str, Any], ...] = Field(default=(), alias="autoFixes")
 
@@ -200,11 +224,81 @@ def _marker_lines(
 
 def _strip_duplicate_section_heading(markdown: str, *, expected_title: str) -> tuple[str, bool]:
     match = _LEADING_SECTION_HEADING.match(markdown)
-    if match is None or match.group("title").strip() != expected_title.strip():
+    submitted_title = (
+        _MANUAL_HEADING_NUMBER.sub("", match.group("title").strip()).strip()
+        if match is not None
+        else ""
+    )
+    if match is None or submitted_title != expected_title.strip():
         return markdown, False
     # 正式章节标题以 effectiveProfile 为唯一事实来源，服务端会在所有正文块之前统一插入。
     # 这里只移除首块开头精确同名的 H1/H2，避免模型重复外层标题，同时保留其余子标题和正文。
     return markdown[match.end() :].lstrip("\r\n"), True
+
+
+def _number_block_headings(
+    markdown: str,
+    *,
+    definition: ReportSectionDefinition,
+    h3_count: int,
+    h4_count: int,
+) -> tuple[str, int, int, tuple[HeadingNumber, ...]]:
+    """只改写 CommonMark 解析出的真实标题；围栏内容不参与标题协议。"""
+
+    lines = markdown.splitlines(keepends=True)
+    headings: list[HeadingNumber] = []
+    replacements: dict[int, str] = {}
+    for token in MarkdownIt("commonmark").parse(markdown):
+        if token.type != "heading_open" or token.map is None:
+            continue
+        level = int(token.tag.removeprefix("h"))
+        if level in {1, 2, 5, 6}:
+            raise ReportingError(
+                "report_draft_heading_level_invalid",
+                "章节正文只允许 H3/H4；报告 H1 和章节 H2 由服务端生成。",
+            )
+        if level not in {3, 4}:
+            continue
+        line_index = token.map[0]
+        raw_line = lines[line_index].rstrip("\r\n")
+        match = _ATX_HEADING.fullmatch(raw_line)
+        if match is None:
+            raise ReportingError(
+                "report_draft_heading_format_invalid", "章节正文标题必须使用 ATX Markdown 格式。"
+            )
+        markdown_title = _MANUAL_HEADING_NUMBER.sub("", match.group("title").strip()).strip()
+        title = _inline_heading_text(markdown_title)
+        if not markdown_title or not title:
+            raise ReportingError("report_draft_heading_format_invalid", "章节正文标题不能为空。")
+        if level == 3:
+            h3_count += 1
+            h4_count = 0
+            number = f"{definition.section_number}.{h3_count}"
+        else:
+            if h3_count == 0:
+                raise ReportingError(
+                    "report_draft_heading_parent_missing", "H4 标题必须位于当前章节的 H3 标题之后。"
+                )
+            h4_count += 1
+            number = f"{definition.section_number}.{h3_count}.{h4_count}"
+        anchor = f"report-heading-{definition.code}-{number.replace('.', '-')}"
+        headings.append(
+            HeadingNumber(
+                level=level,
+                number=number,
+                title=title,
+                sectionCode=definition.code,
+                anchor=anchor,
+            )
+        )
+        ending = lines[line_index][len(raw_line) :]
+        replacements[line_index] = (
+            f"{match.group('prefix')}{number} {markdown_title}"
+            f"{match.group('closing') or ''}{ending}"
+        )
+    for line_index, replacement in replacements.items():
+        lines[line_index] = replacement
+    return "".join(lines), h3_count, h4_count, tuple(headings)
 
 
 def assemble_report_markdown(
@@ -220,6 +314,10 @@ def assemble_report_markdown(
     section_registry = {item.code: item for item in sections}
     if len(section_registry) != len(sections):
         raise ReportingError("report_draft_registry_invalid", "Workflow 章节注册表包含重复 code。")
+    if tuple(item.section_number for item in sections) != tuple(
+        str(index) for index in range(1, len(sections) + 1)
+    ):
+        raise ReportingError("report_draft_registry_invalid", "Workflow 一级章节编号必须连续。")
     draft_codes = tuple(item.section_code for item in draft.sections)
     if draft_codes != tuple(section_registry):
         raise ReportingError(
@@ -256,16 +354,30 @@ def assemble_report_markdown(
 
     referenced_chart_ids: list[str] = []
     referenced_analysis_ids: list[str] = []
+    heading_numbers: list[HeadingNumber] = []
     markdown_parts = [f"# {expected_title}"]
     for section in draft.sections:
         definition = section_registry[section.section_code]
         # analysisIds 的唯一事实来源是用户批准后冻结的提纲。模型无需在每个正文块
         # 重复提交，也不能通过遗漏或替换 block.analysisIds 改变最终 manifest 绑定。
         referenced_analysis_ids.extend(definition.analysis_ids)
-        heading = _marker_lines(f"## {definition.title}", (), definition.analysis_ids)
+        heading_numbers.append(
+            HeadingNumber(
+                level=2,
+                number=definition.section_number,
+                title=definition.title,
+                sectionCode=definition.code,
+                anchor=f"report-section-{definition.code}",
+            )
+        )
+        heading = _marker_lines(
+            f"## {definition.section_number} {definition.title}", (), definition.analysis_ids
+        )
         markdown_parts.append(
             f"[[section:{definition.code}]]\n{heading}" if definition.protocol_marker else heading
         )
+        h3_count = 0
+        h4_count = 0
         for block_index, block in enumerate(section.blocks):
             block_markdown = block.markdown
             if block_index == 0:
@@ -283,6 +395,13 @@ def assemble_report_markdown(
                         }
                     )
             validate_report_body_markdown(block_markdown)
+            block_markdown, h3_count, h4_count, block_headings = _number_block_headings(
+                block_markdown,
+                definition=definition,
+                h3_count=h3_count,
+                h4_count=h4_count,
+            )
+            heading_numbers.extend(block_headings)
             unknown_citations = set(block.citation_ids) - citation_registry
             if unknown_citations:
                 raise ReportingError("report_draft_citation_unknown", "草稿引用了未注册 citation。")
@@ -335,6 +454,8 @@ def assemble_report_markdown(
         markdown="\n\n".join(markdown_parts) + "\n",
         chartPaths=chart_paths,
         analysisIds=tuple(referenced_analysis_ids),
+        sectionNumbers=tuple(item.section_number for item in sections),
+        headingNumbers=tuple(heading_numbers),
         warnings=tuple(warnings),
         autoFixes=tuple(auto_fixes),
     )

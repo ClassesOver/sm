@@ -271,6 +271,35 @@ class WorkspaceReportService:
         job["_documentContext"] = copy.deepcopy(document_context)
         self._store_job(job, run_context)
 
+    async def complete_document_heading_numbers(
+        self,
+        job_id: str,
+        heading_numbers: list[dict[str, Any]],
+        run_context: RunContext | None = None,
+    ) -> None:
+        """在正文装配后一次性补全标题映射；既有封面和章节事实不可改写。"""
+        if not isinstance(heading_numbers, list) or not heading_numbers:
+            raise WorkspaceError("报告标题编号映射无效。")
+        job = self._load_job(job_id, run_context)
+        context = job.get("_documentContext")
+        if not isinstance(context, dict):
+            raise WorkspaceError("报告文档展示契约尚未绑定。")
+        existing = context.get("headingNumbers")
+        if existing is not None and existing != heading_numbers:
+            raise WorkspaceError("报告标题编号映射已经绑定且内容不同。")
+        completed = {**context, "headingNumbers": copy.deepcopy(heading_numbers)}
+        encoded = json.dumps(
+            completed,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        if len(encoded) > 32 * 1024:
+            raise WorkspaceError("报告文档展示契约超过状态边界。")
+        job["_documentContext"] = completed
+        self._store_job(job, run_context)
+
     async def bind_citation_presentations(
         self,
         job_id: str,
