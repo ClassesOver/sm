@@ -4563,6 +4563,7 @@ class ReportWorkflowRuntime:
             markdownRequirements=(
                 "章节编号和 title 由服务端插入，模型不得在标题中写编号或重复 H1/H2",
                 "章节内部标题只使用 H3/H4，H4 必须位于对应 H3 之后",
+                "粗体强调必须使用 **文本**，两个标记的内侧不得留空格",
                 "表格直接使用标准 Markdown 管道表，不得渲染为图片",
                 "正文不得自行写 citation、analysis、section 或图片协议标记",
                 "最后且只调用一次 render_report_section；证据不足时改用 request_analysis_rework",

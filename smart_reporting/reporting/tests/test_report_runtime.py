@@ -11,6 +11,7 @@ from smart_reporting.reporting.delivery.report_runtime import (
     _normalize_cjk_strong_markers,
     _page_number_context,
     _postprocess_docx,
+    normalize_report_markdown_strong_spacing,
 )
 
 
@@ -47,9 +48,38 @@ def test_normalize_spaced_strong_markers_renders_budget_values() -> None:
     assert "**" not in rendered
 
 
-def test_normalize_strong_markers_does_not_change_code_span() -> None:
-    markdown = "`** 131.73 亿元 **`"
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("由** 总部院区**、", "由**总部院区**、"),
+        ("由**总部院区 **、", "由**总部院区**、"),
+        ("由** 总部院区 **、", "由**总部院区**、"),
+        ("由**总部院区**、", "由**总部院区**、"),
+        ("** 总部院区**", "**总部院区**"),
+    ],
+)
+def test_normalize_spaced_chinese_strong_markers(source: str, expected: str) -> None:
+    from markdown_it import MarkdownIt
 
+    normalized = normalize_report_markdown_strong_spacing(source)
+    rendered = MarkdownIt("commonmark", {"html": False}).render(normalized)
+
+    assert normalized == expected
+    assert "<strong>总部院区</strong>" in rendered
+    assert "**" not in rendered
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "说明 `由** 总部院区**、`。",
+        "```markdown\n** 总部院区**\n```",
+        "~~~~\n** 总部院区**\n~~~~",
+        "    ** 总部院区**",
+    ],
+)
+def test_normalize_strong_markers_does_not_change_code(markdown: str) -> None:
+    assert normalize_report_markdown_strong_spacing(markdown) == markdown
     assert _normalize_cjk_strong_markers(markdown) == markdown
 
 

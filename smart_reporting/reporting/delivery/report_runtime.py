@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -83,34 +83,101 @@ _TABLE_MARKER = re.compile(r"\[\[/?table:[^\]\r\n]+\]\]")
 _CJK_STRONG_MARKER = re.compile(
     r"(?P<left>[^\s*`])(?<!\*)(?P<open>\*\*)(?P<content>[^*\r\n`]*[\u3400-\u9fff][^*\r\n`]*?)(?P<close>\*\*)(?P<right>[^\s*`])"
 )
+# 模型偶尔只在开始标记内侧留下空格，例如 `** 总部院区**`。CommonMark
+# 会把这种成对标记视为普通文本；这里只修复单行且内容明确包含中文的候选，
+# 未闭合标记和数学星号保持原样，不能因为展示格式问题阻断报告发布。
+_OPEN_SPACED_CJK_STRONG_MARKER = re.compile(
+    r"(?<![\*`])\*\*[ \t]+(?P<content>[\u3400-\u9fff“「『【（《〈〔［｛][^*\r\n`]*?)\*\*(?![\*`])(?=\s|[，。；：、！？）】》〉〕］｝]|$)"
+)
 _SPACED_CJK_STRONG_MARKER = re.compile(
     r"(?<![\*`])\*\*(?P<content>[\u3400-\u9fff“「『【（《〈〔［｛][^*\r\n`]*?)\s+\*\*(?![\*`])(?=\s|[，。；：、！？）】》〉〕］｝])"
 )
 _SPACED_VALUE_STRONG_MARKER = re.compile(
     r"(?<![\*`])\*\*(?P<content>[^*\r\n`]*(?:%|％|亿元|万元|元|万)[^*\r\n`]*)\*\*(?![\*`])"
 )
+_FENCED_CODE_START = re.compile(r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})")
+_INLINE_CODE_SPAN = re.compile(r"(?P<delimiter>`+).*?(?P=delimiter)")
 
 
 class ReportFailure(ValueError):
     pass
 
 
+def _trim_strong_marker_spacing(match: re.Match[str]) -> str:
+    content = match["content"]
+    trimmed = content.strip()
+    if not trimmed:
+        return match[0]
+    return f"**{trimmed}**"
+
+
+def _normalize_strong_spacing_line(line: str) -> str:
+    normalized = _OPEN_SPACED_CJK_STRONG_MARKER.sub(_trim_strong_marker_spacing, line)
+    normalized = _SPACED_CJK_STRONG_MARKER.sub(_trim_strong_marker_spacing, normalized)
+    return _SPACED_VALUE_STRONG_MARKER.sub(_trim_strong_marker_spacing, normalized)
+
+
+def _normalize_inline_text_segments(
+    line: str,
+    normalize_text: Callable[[str], str],
+) -> str:
+    normalized: list[str] = []
+    previous_end = 0
+    for code_span in _INLINE_CODE_SPAN.finditer(line):
+        normalized.append(normalize_text(line[previous_end : code_span.start()]))
+        normalized.append(code_span[0])
+        previous_end = code_span.end()
+    normalized.append(normalize_text(line[previous_end:]))
+    return "".join(normalized)
+
+
+def _normalize_report_markdown_segments(
+    markdown: str,
+    normalize_line: Callable[[str], str],
+) -> str:
+    """只规范普通 Markdown 行，保留围栏代码和缩进代码的原始文本。"""
+
+    normalized: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in markdown.splitlines(keepends=True):
+        if fence is not None:
+            normalized.append(line)
+            without_ending = line.rstrip("\r\n")
+            indent = len(without_ending) - len(without_ending.lstrip(" "))
+            candidate = without_ending.lstrip(" ").rstrip(" \t")
+            if indent <= 3 and len(candidate) >= fence[1] and set(candidate) == {fence[0]}:
+                fence = None
+            continue
+        opening = _FENCED_CODE_START.match(line)
+        if opening is not None:
+            marker = opening["fence"]
+            fence = (marker[0], len(marker))
+            normalized.append(line)
+            continue
+        if line.startswith("    ") or line.startswith("\t"):
+            normalized.append(line)
+            continue
+        normalized.append(_normalize_inline_text_segments(line, normalize_line))
+    return "".join(normalized)
+
+
+def normalize_report_markdown_strong_spacing(markdown: str) -> str:
+    """移除明确成对的中文或业务数值粗体标记内侧空白。"""
+
+    return _normalize_report_markdown_segments(markdown, _normalize_strong_spacing_line)
+
+
 def _normalize_cjk_strong_markers(markdown: str) -> str:
     """让报告中的中文/数值粗体文本进入 CommonMark 的强调解析路径。"""
-
-    def trim_boundaries(match: re.Match[str]) -> str:
-        content = match["content"]
-        trimmed = content.strip()
-        if not trimmed:
-            return match[0]
-        return f"**{trimmed}**"
 
     def add_boundaries(match: re.Match[str]) -> str:
         return f"{match['left']} {match['open']}{match['content']}{match['close']} {match['right']}"
 
-    normalized = _CJK_STRONG_MARKER.sub(add_boundaries, markdown)
-    normalized = _SPACED_CJK_STRONG_MARKER.sub(trim_boundaries, normalized)
-    return _SPACED_VALUE_STRONG_MARKER.sub(trim_boundaries, normalized)
+    def normalize_line(line: str) -> str:
+        normalized = _CJK_STRONG_MARKER.sub(add_boundaries, line)
+        return _normalize_strong_spacing_line(normalized)
+
+    return _normalize_report_markdown_segments(markdown, normalize_line)
 
 
 def _pdf_markdown(

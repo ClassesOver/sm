@@ -107,6 +107,19 @@ def test_assemble_preserves_inline_markdown_but_records_visible_title() -> None:
     assert rendered.heading_numbers[1].title == "经营结论 与 预算"
 
 
+def test_assemble_normalizes_open_spaced_chinese_strong_marker() -> None:
+    rendered = _render("下滑主要由** 总部院区**、挂号等收入构成。")
+
+    assert "下滑主要由**总部院区**、挂号等收入构成。" in rendered.markdown
+    assert rendered.auto_fixes == (
+        {
+            "code": "markdown_strong_marker_normalized",
+            "sectionCode": "section_001",
+            "blockId": "block_1",
+        },
+    )
+
+
 def test_assemble_removes_numbered_duplicate_section_heading() -> None:
     rendered = _render("## 9.9 经营分析\n\n### 结论")
 

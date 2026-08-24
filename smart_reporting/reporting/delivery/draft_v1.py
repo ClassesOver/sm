@@ -9,6 +9,7 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..contract import StrictModel
 from ..models import ReportingError
+from .report_runtime import normalize_report_markdown_strong_spacing
 
 _LEADING_SECTION_HEADING = re.compile(
     r"\A#{1,2}[ \t]+(?P<title>[^\r\n]*?)(?:[ \t]+#+)?[ \t]*(?:\r?\n|\Z)"
@@ -379,7 +380,15 @@ def assemble_report_markdown(
         h3_count = 0
         h4_count = 0
         for block_index, block in enumerate(section.blocks):
-            block_markdown = block.markdown
+            block_markdown = normalize_report_markdown_strong_spacing(block.markdown)
+            if block_markdown != block.markdown:
+                auto_fixes.append(
+                    {
+                        "code": "markdown_strong_marker_normalized",
+                        "sectionCode": definition.code,
+                        "blockId": block.block_id,
+                    }
+                )
             if block_index == 0:
                 block_markdown, heading_removed = _strip_duplicate_section_heading(
                     block_markdown,
