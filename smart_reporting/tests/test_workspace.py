@@ -140,6 +140,28 @@ async def test_async_daytona_client_is_shared_and_shutdown_resists_repeated_canc
     assert close_calls == 1
 
 
+@pytest.mark.anyio
+async def test_sandbox_service_probe_uses_read_only_bounded_list() -> None:
+    queries = []
+
+    class ProbeClient:
+        async def list(self, query):
+            queries.append(query)
+            if False:
+                yield None
+
+    current = WorkspaceService(
+        SECRET,
+        async_client=ProbeClient(),
+        async_registry=AsyncMemoryRegistry({}),
+    )
+
+    await current.check_sandbox_service()
+
+    assert len(queries) == 1
+    assert queries[0].limit == 1
+
+
 def test_sandbox_id_cache_skips_registry_and_recovers_from_not_found(tmp_path, monkeypatch):
     client = FakeClient()
     current = service(tmp_path, client)

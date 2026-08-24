@@ -22,6 +22,7 @@ from .http_request_limits import (
 from .logging_config import configure_file_logging
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
+from .reporting.data_source.starrocks import StarRocksSourceConfig
 from .reporting.delivery.publishing import (
     ReportArtifactPersistenceService,
     ReportDownloadGrantService,
@@ -30,6 +31,10 @@ from .reporting.delivery.publishing import (
     SqlAlchemyReportArtifactRepository,
     create_report_download_router,
     install_report_download_access_log_filter,
+)
+from .reporting.diagnostics import (
+    ReportingDependencyDiagnostics,
+    create_reporting_dependency_diagnostics_router,
 )
 from .reporting.workflow.controller import ReportWorkflowController
 from .reporting_identity import (
@@ -350,6 +355,18 @@ report_workflow_controller = ReportWorkflowController(
 )
 report_agent = create_report_agent(report_worker, report_workflow_controller)
 report_workflow = report_runtime.workflow()
+reporting_dependency_diagnostics = ReportingDependencyDiagnostics(
+    sources=tuple(
+        source
+        for source in report_runtime.registry.sources.values()
+        if isinstance(source, StarRocksSourceConfig)
+    ),
+    metadata_client=report_runtime.metadata_client,
+    sandbox_check=workspace_service.check_sandbox_service,
+)
+router.include_router(
+    create_reporting_dependency_diagnostics_router(reporting_dependency_diagnostics)
+)
 
 
 def create_base_app(context: ApplicationContext) -> FastAPI:

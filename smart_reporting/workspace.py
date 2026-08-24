@@ -382,6 +382,13 @@ class WorkspaceService:
         if close_task is not None:
             await complete_cleanup(close_task)
 
+    async def check_sandbox_service(self) -> None:
+        """通过只读列表请求验证 Daytona Sandbox API 可访问。"""
+
+        async with self._async_client() as client:
+            async for _sandbox in client.list(ListSandboxesQuery(limit=1)):
+                break
+
     def _cached_sandbox_id(self, value: str) -> str | None:
         with self._sandbox_ids_lock:
             sandbox_id = self._sandbox_ids.get(value)

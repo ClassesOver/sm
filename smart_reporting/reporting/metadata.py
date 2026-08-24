@@ -120,13 +120,29 @@ class ReportingMetadataClient:
                     if attempt < MAX_METADATA_ATTEMPTS:
                         await asyncio.sleep(METADATA_RETRY_DELAYS[attempt - 1])
                         continue
-                    raise ReportingError("report_metadata_unavailable", "报表元数据服务不可用。")
+                    raise ReportingError(
+                        "report_metadata_unavailable",
+                        "报表元数据服务不可用。",
+                        details={"httpStatus": response.status_code},
+                    )
                 if response.status_code in {401, 403}:
-                    raise ReportingError("report_metadata_auth_failed", "报表元数据服务鉴权失败。")
+                    raise ReportingError(
+                        "report_metadata_auth_failed",
+                        "报表元数据服务鉴权失败。",
+                        details={"httpStatus": response.status_code},
+                    )
                 if response.status_code >= 500:
-                    raise ReportingError("report_metadata_unavailable", "报表元数据服务不可用。")
+                    raise ReportingError(
+                        "report_metadata_unavailable",
+                        "报表元数据服务不可用。",
+                        details={"httpStatus": response.status_code},
+                    )
                 if response.status_code < 200 or response.status_code >= 300:
-                    raise ReportingError("report_metadata_rejected", "报表元数据服务拒绝了请求。")
+                    raise ReportingError(
+                        "report_metadata_rejected",
+                        "报表元数据服务拒绝了请求。",
+                        details={"httpStatus": response.status_code},
+                    )
                 if len(response.content) > MAX_METADATA_RESPONSE_BYTES:
                     raise ReportingError(
                         "report_metadata_response_too_large", "报表元数据响应过大。"

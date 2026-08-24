@@ -150,3 +150,6 @@ def test_default_application_exposes_explicit_context():
         "smart-reporting",
         "report-agent",
     ]
+    assert str(app_module.base_app.url_path_for("reporting_dependency_diagnostics")) == (
+        "/diagnostics/reporting-dependencies"
+    )

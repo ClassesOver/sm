@@ -67,6 +67,19 @@ Coding 与 Reporting 使用独立 Agent、指令、工具、状态和验收链�
 | `AGENT_REPORT_ENABLE_VISION` | 图表视觉审查开关 |
 | `AGENT_REPORT_DATA_SOURCES_DIR` | Reporting 数据源配置目录 |
 
+## Reporting 依赖诊断
+
+诊断接口检查服务端配置的 `REPORT_STARROCKS_DSN`、`AGENT_REPORT_METADATA_URL` 和 Daytona Sandbox API，不接受调用方传入连接参数，也不返回连接信息、凭据或上游响应正文：
+
+```bash
+curl -X POST \
+  http://127.0.0.1:33046/diagnostics/reporting-dependencies
+```
+
+三个依赖均正常时返回 HTTP 200；任一依赖未配置或检查失败时返回 HTTP 503，并在 `checks` 中返回稳定错误码和耗时。
+元数据服务返回非成功响应时还会提供纯数字 `httpStatus`，但不会透传响应正文。
+该接口不要求 Token；生产环境应通过防火墙或反向代理限制访问来源。
+
 ## 验证
 
 ```bash
