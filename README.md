@@ -32,6 +32,16 @@ bash scripts/configure_agentos_env.sh .env
 docker compose up -d --build
 ```
 
+内网机器已提前导入 `AGENTOS_REPORTING_IMAGE` 指定的镜像时，可直接挂载当前仓库中的
+`smart_reporting/` 覆盖镜像内源码，无需重新构建：
+
+```bash
+docker compose up -d --no-build --force-recreate reporting-os
+```
+
+后续只修改 Python 源码时，执行 `docker compose restart reporting-os` 即可加载新代码。
+若 `smart_reporting/requirements.txt`、基础镜像或系统依赖发生变化，仍需在联网环境重新构建并导入镜像。
+
 本地运行：
 
 ```bash

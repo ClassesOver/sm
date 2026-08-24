@@ -2,6 +2,7 @@ name: ${AGENTOS_COMPOSE_PROJECT_NAME:-agentos-reporting}
 
 services:
   reporting-os:
+    image: ${AGENTOS_REPORTING_IMAGE:-agentos-reporting-reporting-os:latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -40,6 +41,10 @@ services:
       AGENT_REPORT_PUBLIC_BASE_URL: ${AGENT_REPORT_PUBLIC_BASE_URL:-}
       REPORT_STARROCKS_DSN: ${REPORT_STARROCKS_DSN:-}
     volumes:
+      - type: bind
+        source: ./smart_reporting
+        target: /app/smart_reporting
+        read_only: true
       - ./data/reporting-logs:/var/log/agentos
       - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
       - type: bind
