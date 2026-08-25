@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import requests
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from agno.models.response import ModelResponse
@@ -18,6 +19,7 @@ from smart_reporting.context_management import (
     CODING_TOOL_BATCH_LIMIT,
     COMPRESSIBLE_HISTORY_TOOLS,
     SKILL_PRUNE_MIN_CHARS,
+    TIKTOKEN_DOWNLOAD_TIMEOUT,
     TIKTOKEN_O200K_CACHE_KEY,
     CodingContextHardLimitError,
     CodingContextProjector,
@@ -227,24 +229,72 @@ def test_configured_tiktoken_cache_downloads_missing_o200k_file(monkeypatch, tmp
         hashlib.sha256(valid_content).hexdigest(),
     )
 
-    def download_encoding(name: str) -> object:
-        assert name == "o200k_base"
-        cache_path.write_bytes(valid_content)
-        return object()
+    class Response:
+        def __enter__(self):
+            return self
 
-    monkeypatch.setattr(context_management_module.tiktoken, "get_encoding", download_encoding)
+        def __exit__(self, *_args):
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, *, chunk_size: int):
+            assert chunk_size == 64 * 1024
+            yield valid_content[:5]
+            yield valid_content[5:]
+
+    def download(url: str, **kwargs):
+        assert url == context_management_module.TIKTOKEN_O200K_URL
+        assert kwargs == {"timeout": TIKTOKEN_DOWNLOAD_TIMEOUT, "stream": True}
+        return Response()
+
+    monkeypatch.setattr(context_management_module.requests, "get", download)
     validate_configured_tiktoken_cache()
+    assert cache_path.read_bytes() == valid_content
+    assert not any(path.name.endswith(".tmp") for path in tmp_path.iterdir())
 
 
 def test_configured_tiktoken_cache_rejects_failed_download(monkeypatch, tmp_path):
     monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path))
 
-    def fail_download(_name: str) -> object:
-        raise OSError("network unavailable")
+    def fail_download(_url: str, **kwargs):
+        assert kwargs["timeout"] == TIKTOKEN_DOWNLOAD_TIMEOUT
+        raise requests.Timeout("network unavailable")
 
-    monkeypatch.setattr(context_management_module.tiktoken, "get_encoding", fail_download)
+    monkeypatch.setattr(context_management_module.requests, "get", fail_download)
     with pytest.raises(RuntimeError, match="无法下载 o200k_base"):
         validate_configured_tiktoken_cache()
+
+
+def test_configured_tiktoken_cache_removes_partial_read_after_timeout(monkeypatch, tmp_path):
+    cache_path = tmp_path / TIKTOKEN_O200K_CACHE_KEY
+    monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path))
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, *, chunk_size: int):
+            yield b"partial"
+            raise requests.ReadTimeout(f"read timeout after {chunk_size} bytes")
+
+    monkeypatch.setattr(
+        context_management_module.requests,
+        "get",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    with pytest.raises(RuntimeError, match="无法下载 o200k_base"):
+        validate_configured_tiktoken_cache()
+    assert not cache_path.exists()
+    assert not any(path.name.endswith(".tmp") for path in tmp_path.iterdir())
 
 
 def test_configured_tiktoken_cache_requires_valid_o200k_file(monkeypatch, tmp_path):
@@ -263,9 +313,9 @@ def test_configured_tiktoken_cache_requires_valid_o200k_file(monkeypatch, tmp_pa
         hashlib.sha256(valid_content).hexdigest(),
     )
     monkeypatch.setattr(
-        context_management_module.tiktoken,
-        "get_encoding",
-        lambda _name: pytest.fail("有效缓存不应触发下载"),
+        context_management_module.requests,
+        "get",
+        lambda *_args, **_kwargs: pytest.fail("有效缓存不应触发下载"),
     )
     validate_configured_tiktoken_cache()
 

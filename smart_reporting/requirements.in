@@ -24,6 +24,7 @@ loguru>=0.7,<1.0
 unidiff==0.7.5
 types-python-dateutil>=2.9,<3.0
 python-multipart>=0.0.20
+requests>=2.32,<3.0
 psycopg[binary]>=3.2,<4.0
 sqlalchemy>=2.0,<3.0
 sqlglot>=28.0,<29.0

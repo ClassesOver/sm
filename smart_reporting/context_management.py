@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 from collections.abc import AsyncIterator, Iterator
 from contextvars import ContextVar
 from copy import deepcopy
@@ -13,7 +14,7 @@ from time import perf_counter
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
-import tiktoken
+import requests
 from agno.compression.manager import CompressionManager
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
@@ -37,6 +38,9 @@ CODING_CONTEXT_REBASE_TARGET = 0.50
 CODING_TOOL_BATCH_LIMIT = 10
 TIKTOKEN_O200K_CACHE_KEY = "fb374d419588a4632f3f557e76b4b70aebbca790"
 TIKTOKEN_O200K_SHA256 = "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d"
+TIKTOKEN_O200K_URL = "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken"
+TIKTOKEN_DOWNLOAD_TIMEOUT = (5, 30)
+TIKTOKEN_DOWNLOAD_MAX_BYTES = 16 * 1024 * 1024
 _PROJECTED_INPUT_TOKEN_BUDGET_ATTR = "_coding_input_token_budget"
 CODING_TOOL_NAMES = frozenset(
     {
@@ -121,6 +125,46 @@ def _duration_ms(started_at: float) -> int:
     return max(0, round((perf_counter() - started_at) * 1000))
 
 
+def _download_tiktoken_cache(cache_path: Path) -> None:
+    """有界下载官方编码，并在身份校验后原子发布到 tiktoken 缓存路径。"""
+
+    temporary_path: Path | None = None
+    try:
+        # requests 的二元 timeout 分别约束连接和相邻响应字节等待；防火墙静默丢包时
+        # 必须在应用导入阶段有界失败，不能让健康检查永远没有启动机会。
+        with requests.get(
+            TIKTOKEN_O200K_URL,
+            timeout=TIKTOKEN_DOWNLOAD_TIMEOUT,
+            stream=True,
+        ) as response:
+            response.raise_for_status()
+            digest = hashlib.sha256()
+            total = 0
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=cache_path.parent,
+                prefix=f".{cache_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > TIKTOKEN_DOWNLOAD_MAX_BYTES:
+                        raise RuntimeError("o200k_base 下载内容超过大小上限。")
+                    digest.update(chunk)
+                    temporary.write(chunk)
+        if digest.hexdigest() != TIKTOKEN_O200K_SHA256:
+            raise RuntimeError("o200k_base 下载内容校验失败。")
+        os.replace(temporary_path, cache_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
 def validate_configured_tiktoken_cache() -> None:
     cache_dir = str(os.environ.get("TIKTOKEN_CACHE_DIR") or "").strip()
     if not cache_dir:
@@ -132,7 +176,7 @@ def validate_configured_tiktoken_cache() -> None:
         logger.info("tiktoken_cache_download_started encoding=o200k_base")
         try:
             Path(cache_dir).mkdir(parents=True, exist_ok=True)
-            tiktoken.get_encoding("o200k_base")
+            _download_tiktoken_cache(cache_path)
         except Exception as exc:
             logger.error(
                 "tiktoken_cache_download_failed encoding=o200k_base error_type={}",
