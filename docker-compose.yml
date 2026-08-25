@@ -51,7 +51,6 @@ services:
       - type: bind
         source: ${AGENT_TIKTOKEN_CACHE_DIR:-./data/tiktoken-cache}
         target: /opt/tiktoken-cache
-        read_only: true
       - type: bind
         source: ${AGENT_REPORT_DATA_SOURCES_DIR:-./deploy/agentos/reporting}
         target: /run/agentos/reporting

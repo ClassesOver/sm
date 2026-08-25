@@ -33,8 +33,9 @@ docker compose up -d --build
 ```
 
 `deepseek`、`qwen` 等 OpenAI-compatible 模型不在 tiktoken 的模型映射中，Agno
-会回退到 `o200k_base` 估算上下文 token。该编码首次加载默认访问公网；内网部署前，
-必须在联网机器生成缓存并随部署文件一起传到宿主机：
+会回退到 `o200k_base` 估算上下文 token。Compose 使用可写缓存目录，外网环境首次启动
+会自动下载并校验该编码，后续启动直接复用。内网部署前，必须在联网机器生成缓存并随
+部署文件一起传到宿主机：
 
 ```bash
 TIKTOKEN_CACHE_DIR="$PWD/data/tiktoken-cache" \
@@ -44,7 +45,7 @@ sha256sum data/tiktoken-cache/fb374d419588a4632f3f557e76b4b70aebbca790
 
 校验值必须为
 `446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d`。
-Compose 默认将 `./data/tiktoken-cache` 只读挂载为容器内 `/opt/tiktoken-cache`；
+Compose 默认将 `./data/tiktoken-cache` 挂载为容器内 `/opt/tiktoken-cache`；
 仓库不在 `/u01` 时，可在 `.env` 中用 `AGENT_TIKTOKEN_CACHE_DIR` 指向实际宿主目录。
 缓存目录不包含 Registry 数据，调整该变量不会迁移或修改 Registry。
 

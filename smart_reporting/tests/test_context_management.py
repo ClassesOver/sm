@@ -217,12 +217,39 @@ def test_context_budget_check_logs_safe_timing_without_message_content():
     assert sensitive_prompt not in log_text
 
 
+def test_configured_tiktoken_cache_downloads_missing_o200k_file(monkeypatch, tmp_path):
+    cache_path = tmp_path / TIKTOKEN_O200K_CACHE_KEY
+    monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path))
+    valid_content = b"synthetic-o200k-cache"
+    monkeypatch.setattr(
+        context_management_module,
+        "TIKTOKEN_O200K_SHA256",
+        hashlib.sha256(valid_content).hexdigest(),
+    )
+
+    def download_encoding(name: str) -> object:
+        assert name == "o200k_base"
+        cache_path.write_bytes(valid_content)
+        return object()
+
+    monkeypatch.setattr(context_management_module.tiktoken, "get_encoding", download_encoding)
+    validate_configured_tiktoken_cache()
+
+
+def test_configured_tiktoken_cache_rejects_failed_download(monkeypatch, tmp_path):
+    monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path))
+
+    def fail_download(_name: str) -> object:
+        raise OSError("network unavailable")
+
+    monkeypatch.setattr(context_management_module.tiktoken, "get_encoding", fail_download)
+    with pytest.raises(RuntimeError, match="无法下载 o200k_base"):
+        validate_configured_tiktoken_cache()
+
+
 def test_configured_tiktoken_cache_requires_valid_o200k_file(monkeypatch, tmp_path):
     cache_path = tmp_path / TIKTOKEN_O200K_CACHE_KEY
     monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path))
-
-    with pytest.raises(RuntimeError, match="缺少 o200k_base"):
-        validate_configured_tiktoken_cache()
 
     cache_path.write_bytes(b"invalid")
     with pytest.raises(RuntimeError, match="缓存校验失败"):
@@ -234,6 +261,11 @@ def test_configured_tiktoken_cache_requires_valid_o200k_file(monkeypatch, tmp_pa
         context_management_module,
         "TIKTOKEN_O200K_SHA256",
         hashlib.sha256(valid_content).hexdigest(),
+    )
+    monkeypatch.setattr(
+        context_management_module.tiktoken,
+        "get_encoding",
+        lambda _name: pytest.fail("有效缓存不应触发下载"),
     )
     validate_configured_tiktoken_cache()
 

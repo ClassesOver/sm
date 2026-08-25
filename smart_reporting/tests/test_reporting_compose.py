@@ -35,7 +35,7 @@ def test_reporting_compose_public_download_example_uses_published_port() -> None
     assert urlsplit(env_values["AGENT_REPORT_PUBLIC_BASE_URL"]).port == published_port
 
 
-def test_reporting_compose_mounts_read_only_tiktoken_cache() -> None:
+def test_reporting_compose_mounts_writable_tiktoken_cache() -> None:
     repository_root = Path(__file__).parents[2]
     compose = yaml.load(
         (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
@@ -53,7 +53,6 @@ def test_reporting_compose_mounts_read_only_tiktoken_cache() -> None:
         "type": "bind",
         "source": "${AGENT_TIKTOKEN_CACHE_DIR:-./data/tiktoken-cache}",
         "target": "/opt/tiktoken-cache",
-        "read_only": "true",
     }
 
 

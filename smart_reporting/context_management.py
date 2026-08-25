@@ -13,6 +13,7 @@ from time import perf_counter
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
+import tiktoken
 from agno.compression.manager import CompressionManager
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
@@ -124,11 +125,25 @@ def validate_configured_tiktoken_cache() -> None:
     cache_dir = str(os.environ.get("TIKTOKEN_CACHE_DIR") or "").strip()
     if not cache_dir:
         return
-    # 内网 Compose 把缓存目录只读挂载进容器。显式配置后必须在启动期校验，
-    # 不能等到首个模型轮次才尝试公网下载并按网络栈超时重试。
     cache_path = Path(cache_dir) / TIKTOKEN_O200K_CACHE_KEY
     if not cache_path.is_file():
-        raise RuntimeError("TIKTOKEN_CACHE_DIR 缺少 o200k_base 离线缓存文件。")
+        # 在启动期完成官方编码下载，避免把公网等待推迟到首个模型请求。内网部署仍可
+        # 预置同一文件；已有缓存不会发起网络请求，下载失败则保持失败关闭。
+        logger.info("tiktoken_cache_download_started encoding=o200k_base")
+        try:
+            Path(cache_dir).mkdir(parents=True, exist_ok=True)
+            tiktoken.get_encoding("o200k_base")
+        except Exception as exc:
+            logger.error(
+                "tiktoken_cache_download_failed encoding=o200k_base error_type={}",
+                type(exc).__name__,
+            )
+            raise RuntimeError(
+                "TIKTOKEN_CACHE_DIR 无法下载 o200k_base 缓存，请检查网络和目录写权限。"
+            ) from exc
+        if not cache_path.is_file():
+            raise RuntimeError("o200k_base 下载完成但 TIKTOKEN_CACHE_DIR 中未生成缓存文件。")
+        logger.info("tiktoken_cache_download_completed encoding=o200k_base")
     digest = hashlib.sha256(cache_path.read_bytes()).hexdigest()
     if digest != TIKTOKEN_O200K_SHA256:
         raise RuntimeError("TIKTOKEN_CACHE_DIR 的 o200k_base 离线缓存校验失败。")
