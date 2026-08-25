@@ -1833,6 +1833,33 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     details={"scriptPath": normalized_script},
                 )
 
+    @staticmethod
+    def _latest_committed_write_identity(
+        payload: Mapping[str, Any], path: str
+    ) -> dict[str, Any] | None:
+        """返回同一路径最后一次 committed write intent 冻结的文件身份。"""
+
+        latest: dict[str, Any] | None = None
+        intents = payload.get("writeIntents")
+        if not isinstance(intents, Mapping):
+            return None
+        # Reducer 按提交顺序保留 write intent。重试只能信任最后一次提交的身份，
+        # 否则旧 intent 会在脚本被后续合法改写后继续授权读取或执行旧内容。
+        for intent in intents.values():
+            if not isinstance(intent, Mapping) or intent.get("status") != "committed":
+                continue
+            artifacts = intent.get("artifacts")
+            if not isinstance(artifacts, Sequence) or isinstance(artifacts, (str, bytes)):
+                continue
+            for artifact in artifacts:
+                if isinstance(artifact, Mapping) and artifact.get("path") == path:
+                    latest = {
+                        "path": path,
+                        "size": artifact.get("size"),
+                        "sha256": artifact.get("sha256"),
+                    }
+        return latest
+
     async def _visualization_evidence_read_rejection(
         self, *, scope: Any, path: Any
     ) -> dict[str, Any] | None:
@@ -1873,10 +1900,27 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                             )
                         expected_by_path[canonical] = frozen
             expected = expected_by_path.get(normalized)
+            changed_code = "report_visualization_evidence_changed"
+            if expected is None:
+                committed_script = self._latest_committed_write_identity(
+                    durable.payload, normalized
+                )
+                if committed_script is not None:
+                    _parameters, contract = self._phase_parameters(scope, "analysis")
+                    workspace = contract.get("visualizationWorkspace")
+                    script_path = (
+                        workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
+                    )
+                    normalized_script = WorkspaceService.normalize_path(
+                        script_path, allow_root=False
+                    )[0]
+                    if normalized == normalized_script:
+                        expected = committed_script
+                        changed_code = "report_visualization_script_identity_changed"
             if expected is None:
                 raise ReportingError(
                     "report_visualization_evidence_path_forbidden",
-                    "visualization 只能读取 durable analysisItems 授权的 evidence 文件。",
+                    "visualization 只能读取 durable evidence 或签发的已提交脚本。",
                 )
             current = (await self.kernel.service.abatch_hash_files(scope.thread_id, [normalized]))[
                 0
@@ -1888,8 +1932,8 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             }
             if current.get("missing") is True or actual != expected:
                 raise ReportingError(
-                    "report_visualization_evidence_changed",
-                    "visualization evidence 文件身份已变化。",
+                    changed_code,
+                    "visualization evidence 或脚本身份已变化。",
                 )
             return None
         except (ReportingError, WorkspaceError) as error:
@@ -1915,14 +1959,9 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                     details={"allowedCommand": f"python3 {normalized_script}"},
                 )
             durable = await self._durable_state(scope)
-            committed = [
-                artifact
-                for intent in durable.payload.get("writeIntents", {}).values()
-                if isinstance(intent, Mapping) and intent.get("status") == "committed"
-                for artifact in intent.get("artifacts", ())
-                if isinstance(artifact, Mapping) and artifact.get("path") == normalized_script
-            ]
-            latest_committed = committed[-1] if committed else None
+            latest_committed = self._latest_committed_write_identity(
+                durable.payload, normalized_script
+            )
             current = (
                 await self.kernel.service.abatch_hash_files(scope.thread_id, [normalized_script])
             )[0]

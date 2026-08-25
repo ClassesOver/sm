@@ -2243,6 +2243,96 @@ async def test_visualization_read_rejects_untrusted_and_changed_evidence() -> No
     assert changed["code"] == "report_visualization_evidence_changed"
 
 
+@pytest.mark.anyio
+async def test_visualization_read_allows_only_latest_committed_signed_script() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._active_reporting_phase = lambda _scope: "analysis"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization",
+            "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "analysisItems": {},
+                "writeIntents": {
+                    "old": {
+                        "status": "committed",
+                        "artifacts": [
+                            {
+                                "path": "analysis/charts/trend.py",
+                                "size": 10,
+                                "sha256": "a" * 64,
+                            }
+                        ],
+                    },
+                    "latest": {
+                        "status": "committed",
+                        "artifacts": [
+                            {
+                                "path": "analysis/charts/trend.py",
+                                "size": 11,
+                                "sha256": "b" * 64,
+                            }
+                        ],
+                    },
+                    "other": {
+                        "status": "committed",
+                        "artifacts": [
+                            {
+                                "path": "analysis/charts/other.py",
+                                "size": 12,
+                                "sha256": "c" * 64,
+                            }
+                        ],
+                    },
+                },
+            }
+        )
+    )
+    toolkit.kernel = SimpleNamespace(
+        service=SimpleNamespace(
+            abatch_hash_files=AsyncMock(
+                side_effect=[
+                    [
+                        {
+                            "path": "analysis/charts/trend.py",
+                            "size": 11,
+                            "sha256": "b" * 64,
+                        }
+                    ],
+                    [
+                        {
+                            "path": "analysis/charts/trend.py",
+                            "size": 10,
+                            "sha256": "a" * 64,
+                        }
+                    ],
+                ]
+            )
+        )
+    )
+    scope = SimpleNamespace(thread_id="thread-1")
+
+    allowed = await toolkit._visualization_evidence_read_rejection(
+        scope=scope, path="analysis/charts/trend.py"
+    )
+    stale = await toolkit._visualization_evidence_read_rejection(
+        scope=scope, path="analysis/charts/trend.py"
+    )
+    unsigned = await toolkit._visualization_evidence_read_rejection(
+        scope=scope, path="analysis/charts/other.py"
+    )
+
+    assert allowed is None
+    assert stale["code"] == "report_visualization_script_identity_changed"
+    assert unsigned["code"] == "report_visualization_evidence_path_forbidden"
+
+
 def test_analysis_item_acceptance_contract_requires_single_id_and_output_root() -> None:
     base = {
         "taskKind": "analysis_item",
