@@ -67,6 +67,9 @@ uv pip install --python .venv-agent/bin/python -r smart_reporting/requirements.t
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 ```
 
+当前服务使用 Agno 3.0，部署时必须连接全新数据库。不要复用 Agno 2.x 的 PostgreSQL
+数据库或 `data/postgres` 数据目录；本项目不执行 2.x 历史数据迁移或兼容读取。
+
 AgentOS 的 agent、team 和 workflow 新建 run 请求总大小上限为 32 MiB；multipart
 请求最多包含 8 个文件，单文件上限为 24 MiB。run continuation 请求上限为 2 MiB。
 超过边界的请求会在模型调用或文件读取前被拒绝。

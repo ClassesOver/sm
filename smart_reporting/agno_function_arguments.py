@@ -128,7 +128,7 @@ def _get_function_call_with_repair(
 
 
 def install_agno_function_argument_decoder() -> None:
-    """幂等安装到 Agno 2.8.2 的公共工具调用转换入口。"""
+    """幂等安装到 Agno 的公共工具调用转换入口。"""
     agno_functions.get_function_call = _get_function_call_with_repair
     # agno.utils.tools 使用模块级导入别名，必须同步替换该真实调用点。
     agno_tools.get_function_call = _get_function_call_with_repair

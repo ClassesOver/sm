@@ -1131,7 +1131,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         _agno_run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         """核验三层文件身份后返回有界 Profile 节点。"""
-        # Agno 2.8.2 会为名为 run_context 的普通工具入口回传 session_state
+        # Agno 会为名为 run_context 的普通工具入口回传 session_state
         # 快照；并行 Profile 调用按原调用顺序合并结果时，较早完成的旧快照可能覆盖
         # 其他调用已经写入的 receipt。使用框架保留的内部注入名后仍共享同一状态引用，
         # 但不会产生可回放快照，这是并行 checkpoint 写入不可绕过的不变量。

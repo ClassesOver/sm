@@ -454,8 +454,8 @@ def test_only_delivery_validation_step_pauses_for_error_recovery() -> None:
     assert callable(steps["normalize-report-request"].human_review.requires_output_review)
     assert steps["generate-outline"].human_review is not None
     assert steps["generate-outline"].human_review.requires_output_review is False
-    assert steps["validate-report"].on_error is OnError.pause
-    assert steps["run-coding-analysis"].on_error is OnError.fail
+    assert steps["validate-report"].human_review.on_error is OnError.pause
+    assert steps["run-coding-analysis"].human_review.on_error is OnError.fail
     assert workflow.input_schema is None
     assert workflow.stream_executor_events is False
     assert workflow.telemetry is False

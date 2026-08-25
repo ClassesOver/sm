@@ -87,6 +87,7 @@ async def test_session_upsert_clears_terminal_reasoning_before_database_write(mo
 async def test_session_database_logs_safe_timing_without_identifiers(monkeypatch):
     private_session_id = "private-session-id"
     private_user_id = "private-user-id"
+    captured_get: list[tuple[object, object, object, object, object]] = []
 
     async def fake_get_session(
         _self,
@@ -94,8 +95,9 @@ async def test_session_database_logs_safe_timing_without_identifiers(monkeypatch
         session_type=None,
         user_id=None,
         deserialize=True,
+        runs_limit=None,
     ):
-        _ = session_id, session_type, user_id, deserialize
+        captured_get.append((session_id, session_type, user_id, deserialize, runs_limit))
         return SimpleNamespace(runs=[])
 
     async def fake_upsert(_self, session, deserialize=True):
@@ -114,6 +116,7 @@ async def test_session_database_logs_safe_timing_without_identifiers(monkeypatch
             private_session_id,
             session_type="agent",
             user_id=private_user_id,
+            runs_limit=3,
         )
         stored = await database.upsert_session(session)
     finally:
@@ -121,6 +124,7 @@ async def test_session_database_logs_safe_timing_without_identifiers(monkeypatch
 
     log_text = "".join(records)
     assert result is not None
+    assert captured_get == [(private_session_id, "agent", private_user_id, True, 3)]
     assert stored is session
     assert "agent_session_read_completed" in log_text
     assert "agent_session_write_completed" in log_text

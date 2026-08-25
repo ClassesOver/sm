@@ -7,7 +7,7 @@ from time import perf_counter
 from typing import Any
 
 from agno.db.base import BaseDb
-from agno.models.metrics import RunMetrics
+from agno.metrics import RunMetrics
 from agno.workflow import HumanReview, OnError, OnReject
 from agno.workflow.step import Step
 from agno.workflow.types import StepOutput
@@ -47,7 +47,7 @@ def record_step_model_metrics(value: Any) -> None:
 
 
 def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecutor:
-    # Agno 2.8.2 只自动汇总 Agent/Team executor 的 metrics；报表步骤均为 function
+    # Agno 只自动汇总 Agent/Team executor 的 metrics；报表步骤均为 function
     # executor，因此在报表自己的边界记录墙钟耗时，并保留步骤已有的 token metrics。
     @wraps(executor)
     async def execute(*args: Any, **kwargs: Any) -> Any:
@@ -136,14 +136,13 @@ def create_reporting_workflow(
                     max_retries=5,
                 ),
                 max_retries=0,
-                on_error=OnError.fail,
             ),
             Step(
                 step_id="confirm-source",
                 name="解析数据来源与数据结构",
                 executor=_timed_step_executor(confirm_source, step_id="confirm-source"),
                 max_retries=0,
-                on_error=OnError.fail,
+                human_review=HumanReview(on_error=OnError.fail),
             ),
             # 数据理解计划决定画像范围，画像结果又是后续语义和分析规划的唯一输入。
             # 两者之间没有人工审核或可恢复副作用，放在同一失败关闭步骤中可以避免把
@@ -154,7 +153,7 @@ def create_reporting_workflow(
                 name="确定数据范围并执行受限数据画像",
                 executor=_timed_step_executor(prepare_data_profile, step_id="prepare-data-profile"),
                 max_retries=0,
-                on_error=OnError.fail,
+                human_review=HumanReview(on_error=OnError.fail),
             ),
             # 指标语义候选与正式提交必须拆成两个 Workflow Step。前一步只允许模型生成
             # 候选且不能修改 session_state；后一步由确定性服务端代码重新校验候选并写入
@@ -166,7 +165,7 @@ def create_reporting_workflow(
                     propose_measure_semantics, step_id="propose-measure-semantics"
                 ),
                 max_retries=0,
-                on_error=OnError.fail,
+                human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
                 step_id="commit-measure-semantics",
@@ -175,7 +174,7 @@ def create_reporting_workflow(
                     commit_measure_semantics, step_id="commit-measure-semantics"
                 ),
                 max_retries=0,
-                on_error=OnError.fail,
+                human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
                 step_id="generate-analysis-plan",
@@ -184,7 +183,7 @@ def create_reporting_workflow(
                     generate_analysis_plan, step_id="generate-analysis-plan"
                 ),
                 max_retries=0,
-                on_error=OnError.fail,
+                human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
                 step_id="generate-query-candidates",
@@ -193,14 +192,14 @@ def create_reporting_workflow(
                     generate_query_candidates, step_id="generate-query-candidates"
                 ),
                 max_retries=0,
-                on_error=OnError.fail,
+                human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
                 step_id="materialize-datasets",
                 name="物化不可变数据集",
                 executor=_timed_step_executor(materialize_datasets, step_id="materialize-datasets"),
                 max_retries=0,
-                on_error=OnError.fail,
+                human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
                 step_id="prepare-analysis-context",
@@ -209,7 +208,7 @@ def create_reporting_workflow(
                     prepare_analysis_context, step_id="prepare-analysis-context"
                 ),
                 max_retries=0,
-                on_error=OnError.fail,
+                human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
                 step_id="generate-detailed-analysis-plan",
@@ -218,7 +217,7 @@ def create_reporting_workflow(
                     generate_detailed_analysis_plan, step_id="generate-detailed-analysis-plan"
                 ),
                 max_retries=0,
-                on_error=OnError.fail,
+                human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(
                 step_id="generate-outline",
@@ -234,7 +233,7 @@ def create_reporting_workflow(
                 #     on_error=OnError.fail,
                 #     max_retries=5,
                 # ),
-                on_error=OnError.fail,
+                human_review=HumanReview(on_error=OnError.fail),
             ),
             create_coding_analysis_step(run_coding_analysis),
             Step(
@@ -244,14 +243,14 @@ def create_reporting_workflow(
                 max_retries=0,
                 # 取数、分析和章节已经在前一步完成并持久化。末端渲染或验收失败时由
                 # Agno 保存 ErrorRequirement，恢复只重跑当前 Step，不能回到前序步骤。
-                on_error=OnError.pause,
+                human_review=HumanReview(on_error=OnError.pause),
             ),
             Step(
                 step_id="finalize-publication",
                 name="发布门禁与正式发布",
                 executor=_timed_step_executor(finalize_publication, step_id="finalize-publication"),
                 max_retries=0,
-                on_error=OnError.fail,
+                human_review=HumanReview(on_error=OnError.fail),
             ),
         ],
         telemetry=False,
@@ -267,5 +266,5 @@ def create_coding_analysis_step(executor: StepExecutor) -> Step:
         name="Coding 分析与成稿",
         executor=_timed_step_executor(executor, step_id="run-coding-analysis"),
         max_retries=0,
-        on_error=OnError.fail,
+        human_review=HumanReview(on_error=OnError.fail),
     )

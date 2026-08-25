@@ -218,7 +218,7 @@ async def propagate_reporting_tool_errors(
     except (AgentRunException, ReportingError, ValidationError):
         raise
     except Exception as error:
-        # Agno 2.8.2 Function.aexecute 会把普通异常转换成失败工具消息。只抛出并不足以
+        # Agno Function.aexecute 会把普通异常转换成失败工具消息。只抛出并不足以
         # 触发 Agent retry，因此在共享 RunContext 记录原对象，由模型批次边界立即重抛。
         _record_reporting_tool_run_error(run_context, error)
         raise
@@ -591,7 +591,7 @@ def _stop_exhausted_reporting_tool_budget(
         message,
         details=details,
     )
-    # Agno 2.8.2 会把 StopAgentRun 收敛为 completed + stop_after_tool_call，异常本身
+    # Agno 会把 StopAgentRun 收敛为 completed + stop_after_tool_call，异常本身
     # 不会越过模型工具批次。同步记录领域错误，由 ReportWorkerOpenAIChat 在同一批次
     # 恢复并交给 Workflow 的 fresh retry，禁止退化成笼统的“未完成验收”。
     _record_reporting_tool_run_error(run_context, error)
