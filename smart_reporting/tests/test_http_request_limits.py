@@ -9,8 +9,10 @@ from smart_reporting import http_request_limits
 from smart_reporting.http_request_limits import (
     RequestBodyLimitError,
     agentos_run_request_limit,
+    install_streaming_body_limit,
     is_agentos_run_create,
     read_limited_body,
+    request_body_limit_error,
     validate_agentos_run_multipart,
 )
 
@@ -73,6 +75,147 @@ def test_agentos_run_multipart_limits_individual_file_size(
         validate_agentos_run_multipart(content_type, body)
 
     assert raised.value.code == "file_too_large"
+
+
+def _streaming_request(
+    messages: list[dict[str, object]], *, content_length: int | None = None
+) -> tuple[Request, list[dict[str, object]]]:
+    received: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        message = messages[len(received)]
+        received.append(message)
+        return message
+
+    headers = []
+    if content_length is not None:
+        headers.append((b"content-length", str(content_length).encode()))
+    request = Request(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/workspace/upload",
+            "raw_path": b"/workspace/upload",
+            "query_string": b"",
+            "headers": headers,
+            "client": ("test", 123),
+            "server": ("test", 80),
+        },
+        receive,
+    )
+    return request, received
+
+
+@pytest.mark.anyio
+async def test_streaming_body_limit_preserves_chunks_without_caching_body() -> None:
+    messages: list[dict[str, object]] = [
+        {"type": "http.request", "body": b"abc", "more_body": True},
+        {"type": "http.request", "body": b"def", "more_body": False},
+    ]
+    request, received = _streaming_request(messages)
+
+    install_streaming_body_limit(request, 6)
+    body = b"".join([chunk async for chunk in request.stream()])
+
+    assert body == b"abcdef"
+    assert received == messages
+    assert not hasattr(request, "_body")
+
+
+@pytest.mark.anyio
+async def test_streaming_body_limit_stops_when_chunks_exceed_limit() -> None:
+    messages: list[dict[str, object]] = [
+        {"type": "http.request", "body": b"abc", "more_body": True},
+        {"type": "http.request", "body": b"def", "more_body": True},
+        {"type": "http.request", "body": b"unused", "more_body": False},
+    ]
+    request, received = _streaming_request(messages)
+    install_streaming_body_limit(request, 5)
+
+    with pytest.raises(RequestBodyLimitError) as raised:
+        _ = [chunk async for chunk in request.stream()]
+
+    assert raised.value.code == "request_too_large"
+    assert received == messages[:2]
+    assert not hasattr(request, "_body")
+
+
+def test_streaming_body_limit_rejects_oversized_content_length_before_reading() -> None:
+    request, received = _streaming_request([], content_length=6)
+
+    with pytest.raises(RequestBodyLimitError) as raised:
+        install_streaming_body_limit(request, 5)
+
+    assert raised.value.code == "request_too_large"
+    assert received == []
+
+
+@pytest.mark.anyio
+async def test_streaming_body_limit_middleware_returns_413_for_chunked_body() -> None:
+    application = FastAPI()
+
+    @application.middleware("http")
+    async def enforce_limit(request: Request, call_next):
+        streaming_limit = install_streaming_body_limit(request, accepted_size)
+        try:
+            response = await call_next(request)
+        except (RequestBodyLimitError, BaseExceptionGroup) as error:
+            limit_error = request_body_limit_error(error)
+            if limit_error is None:
+                raise
+            return JSONResponse({"error": limit_error.code}, status_code=limit_error.status_code)
+        if streaming_limit.error is not None:
+            return JSONResponse(
+                {"error": streaming_limit.error.code},
+                status_code=streaming_limit.error.status_code,
+            )
+        return response
+
+    @application.post("/workspace/upload")
+    async def upload(file: UploadFile = File(...)):
+        return {"body": (await file.read()).decode()}
+
+    def multipart(content: bytes) -> bytes:
+        return b"".join(
+            (
+                b"--boundary\r\n",
+                b'Content-Disposition: form-data; name="file"; filename="a.txt"\r\n',
+                b"Content-Type: text/plain\r\n\r\n",
+                content,
+                b"\r\n--boundary--\r\n",
+            )
+        )
+
+    accepted_body = multipart(b"abcdef")
+    rejected_body = multipart(b"abcdefg")
+    accepted_size = len(accepted_body)
+
+    async def accepted_chunks():
+        yield accepted_body[:20]
+        yield accepted_body[20:]
+
+    async def rejected_chunks():
+        yield rejected_body[:20]
+        yield rejected_body[20:]
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        headers = {"content-type": "multipart/form-data; boundary=boundary"}
+        accepted = await client.post(
+            "/workspace/upload", content=accepted_chunks(), headers=headers
+        )
+        rejected = await client.post(
+            "/workspace/upload", content=rejected_chunks(), headers=headers
+        )
+
+    assert accepted.status_code == 200
+    assert accepted.json() == {"body": "abcdef"}
+    assert rejected.status_code == 413
+    assert rejected.json() == {"error": "request_too_large"}
 
 
 @pytest.mark.anyio

@@ -22,6 +22,26 @@ class RequestBodyLimitError(ValueError):
         self.status_code = status_code
 
 
+class StreamingBodyLimit:
+    def __init__(self) -> None:
+        self.error: RequestBodyLimitError | None = None
+
+
+def request_body_limit_error(error: BaseException) -> RequestBodyLimitError | None:
+    if isinstance(error, RequestBodyLimitError):
+        return error
+    if not isinstance(error, BaseExceptionGroup):
+        return None
+    matched, remaining = error.split(RequestBodyLimitError)
+    if matched is None or remaining is not None:
+        return None
+    for nested in matched.exceptions:
+        limit_error = request_body_limit_error(nested)
+        if limit_error is not None:
+            return limit_error
+    return None
+
+
 def _run_path_parts(path: str, method: str) -> list[str] | None:
     if method.upper() != "POST":
         return None
@@ -64,6 +84,39 @@ async def read_limited_body(request: Any, limit: int) -> bytes | None:
     body = b"".join(chunks)
     request._body = body
     return body
+
+
+def install_streaming_body_limit(request: Any, limit: int) -> StreamingBodyLimit:
+    """在 ASGI receive 边界累计请求体大小，同时保持消息流原样交给下游。"""
+
+    content_length = request.headers.get("content-length")
+    try:
+        declared_bytes = int(content_length) if content_length is not None else None
+    except ValueError:
+        declared_bytes = None
+    if declared_bytes is not None and declared_bytes > limit:
+        raise RequestBodyLimitError("request_too_large")
+
+    receive = request._receive
+    received_bytes = 0
+    state = StreamingBodyLimit()
+
+    async def limited_receive() -> Any:
+        nonlocal received_bytes
+        message = await receive()
+        if message["type"] != "http.request":
+            return message
+        received_bytes += len(message.get("body", b""))
+        if received_bytes > limit:
+            state.error = RequestBodyLimitError("request_too_large")
+            raise state.error
+        return message
+
+    # Workspace 上传可接近 200 MiB。这里必须只包装 receive 并原样转发每个
+    # ASGI 消息，不能调用 Request.body()/stream() 或设置 _body；否则中间件会
+    # 在 Starlette multipart 临时文件之外再长期持有一份完整请求体。
+    request._receive = limited_receive
+    return state
 
 
 def validate_agentos_run_multipart(content_type: str, body: bytes) -> None:

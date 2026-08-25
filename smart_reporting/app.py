@@ -16,8 +16,10 @@ from .execution_context import ExecutionContext, configure_execution_tracing
 from .http_request_limits import (
     RequestBodyLimitError,
     agentos_run_request_limit,
+    install_streaming_body_limit,
     is_agentos_run_create,
     read_limited_body,
+    request_body_limit_error,
     validate_agentos_run_multipart,
 )
 from .logging_config import configure_file_logging
@@ -133,7 +135,19 @@ async def require_workspace_capability(request: Request, call_next):
             )
         except CapabilityError as error:
             return JSONResponse({"error": str(error)}, status_code=401)
-    limit = _request_limit(path, request.method)
+    workspace_upload = (
+        path in {"/workspace/upload", "/workspace/files"} and request.method == "POST"
+    )
+    streaming_limit = None
+    if workspace_upload:
+        try:
+            streaming_limit = install_streaming_body_limit(
+                request, MAX_WORKSPACE_UPLOAD_REQUEST_BYTES
+            )
+        except RequestBodyLimitError as error:
+            return JSONResponse({"error": error.code}, status_code=error.status_code)
+
+    limit = None if workspace_upload else _request_limit(path, request.method)
     body = await read_limited_body(request, limit) if limit else b""
     if body is None:
         return JSONResponse({"error": "request_too_large"}, status_code=413)
@@ -150,7 +164,21 @@ async def require_workspace_capability(request: Request, call_next):
             user_id=str(request.state.capability.user),
             thread_id=thread,
         )
-    return await call_next(request)
+    try:
+        response = await call_next(request)
+    except (RequestBodyLimitError, BaseExceptionGroup) as error:
+        limit_error = request_body_limit_error(error)
+        if limit_error is None:
+            raise
+        return JSONResponse({"error": limit_error.code}, status_code=limit_error.status_code)
+    # FastAPI 的 multipart 解析器会把 receive 异常统一转换为 400；传输层记录的
+    # 超限事实优先级更高，不能因解析器的异常归一化而绕过 413 契约。
+    if streaming_limit is not None and streaming_limit.error is not None:
+        return JSONResponse(
+            {"error": streaming_limit.error.code},
+            status_code=streaming_limit.error.status_code,
+        )
+    return response
 
 
 def _readiness_checks(context: ApplicationContext):
