@@ -64,11 +64,16 @@ from .phase import (
     REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
     REPORTING_SECTION_INPUT_TOKEN_HARD_CAP,
     REPORTING_TASK_DEPENDENCY,
+    REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES,
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
+    REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_READ_FILE_LIMIT,
+    REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
     ReportingPhase,
     current_reporting_run_context,
     record_reporting_projection_metrics,
@@ -77,6 +82,7 @@ from .phase import (
     reporting_task_kind_from_run_context,
     reporting_thinking_effort_from_run_context,
     reporting_visualization_exploration_count,
+    reporting_visualization_recovery_from_run_context,
     reporting_visualization_registered_from_run_context,
 )
 from .tools import build_report_worker_tools
@@ -295,12 +301,30 @@ def _reporting_success_tool_budget(
     return state, identity, state_key
 
 
-def _visualization_exploration_limit(function_name: str) -> int | None:
+def _visualization_exploration_limit(run_context: RunContext, function_name: str) -> int | None:
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+
+    def limit(key: str, default: int) -> int:
+        value = binding.get(key)
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else default
+        )
+
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
     if counted_tool_name == "query_analysis_facts":
-        return REPORTING_VISUALIZATION_FACT_QUERY_LIMIT
+        return limit(
+            REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+            REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
+        )
     if counted_tool_name == "read_file":
-        return REPORTING_VISUALIZATION_READ_FILE_LIMIT
+        return limit(
+            REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
+            REPORTING_VISUALIZATION_READ_FILE_LIMIT,
+        )
     return None
 
 
@@ -313,12 +337,12 @@ def _visualization_exploration_budget_receipt(
         or reporting_task_kind_from_run_context(run_context) != "visualization"
     ):
         return None
-    limit = _visualization_exploration_limit(function_name)
+    limit = _visualization_exploration_limit(run_context, function_name)
     if limit is None:
         return None
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
     current_count = reporting_visualization_exploration_count(run_context, counted_tool_name)
-    if current_count < limit:
+    if not reporting_visualization_recovery_from_run_context(run_context) and current_count < limit:
         return None
     return {
         "ok": False,
@@ -328,7 +352,7 @@ def _visualization_exploration_budget_receipt(
         "requiredActions": [
             "停止读取事实和文件；复用当前上下文，直接创建或执行图表脚本。",
         ],
-        "retryable": True,
+        "retryable": False,
         "details": {
             "tool": counted_tool_name,
             "currentCount": current_count,
@@ -367,6 +391,12 @@ def _reporting_visualization_tool_budget(
     base_script_failures = count(
         binding.get(REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY)
     )
+    attempt_limit = count(binding.get(REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY)) or (
+        _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT
+    )
+    total_limit = count(binding.get(REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY)) or (
+        _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT
+    )
     attempted_count = count(stored.get("attemptedCount"))
     successful_count = count(stored.get("successfulCount"))
     script_failure_count = count(stored.get("scriptFailureCount"))
@@ -378,10 +408,7 @@ def _reporting_visualization_tool_budget(
     )
     cumulative_total = base_total + attempted_count + in_flight_count
     cumulative_script_failures = base_script_failures + script_failure_count
-    if (
-        attempted_count + in_flight_count >= _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT
-        or cumulative_total >= _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT
-    ):
+    if attempted_count + in_flight_count >= attempt_limit or cumulative_total >= total_limit:
         _stop_exhausted_visualization_budget(
             run_context,
             code="report_visualization_tool_budget_exhausted",
@@ -391,6 +418,8 @@ def _reporting_visualization_tool_budget(
             in_flight_count=in_flight_count,
             total_tool_calls=cumulative_total,
             script_failure_count=cumulative_script_failures,
+            attempt_limit=attempt_limit,
+            total_limit=total_limit,
         )
     if (
         function_name == "terminal"
@@ -405,8 +434,12 @@ def _reporting_visualization_tool_budget(
             in_flight_count=in_flight_count,
             total_tool_calls=cumulative_total,
             script_failure_count=cumulative_script_failures,
+            attempt_limit=attempt_limit,
+            total_limit=total_limit,
         )
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    in_flight_read_units = count(stored.get("inFlightReadUnits"))
+    in_flight_fact_queries = count(stored.get("inFlightFactQueries"))
     budgets[identity] = {
         **stored,
         "baseTotal": base_total,
@@ -415,6 +448,9 @@ def _reporting_visualization_tool_budget(
         "successfulCount": successful_count,
         "scriptFailureCount": script_failure_count,
         "inFlightCount": in_flight_count + 1,
+        "inFlightReadUnits": in_flight_read_units + int(counted_tool_name == "read_file"),
+        "inFlightFactQueries": in_flight_fact_queries
+        + int(counted_tool_name == "query_analysis_facts"),
         "inFlightToolCounts": {
             **in_flight_tools,
             counted_tool_name: count(in_flight_tools.get(counted_tool_name)) + 1,
@@ -455,6 +491,7 @@ def _finish_visualization_tool_budget(
     result: Any,
     *,
     succeeded: bool,
+    count_exploration: bool = True,
 ) -> None:
     if reservation is None:
         return
@@ -473,6 +510,8 @@ def _finish_visualization_tool_budget(
     attempted_count = count(stored.get("attemptedCount")) + 1
     successful_count = count(stored.get("successfulCount")) + int(succeeded)
     script_failure_count = count(stored.get("scriptFailureCount"))
+    read_units_used = count(stored.get("readUnitsUsed"))
+    fact_queries_used = count(stored.get("factQueriesUsed"))
     tool_counts = (
         dict(stored.get("toolCounts", {})) if isinstance(stored.get("toolCounts"), dict) else {}
     )
@@ -486,13 +525,32 @@ def _finish_visualization_tool_budget(
     in_flight_tools[counted_tool_name] = max(count(in_flight_tools.get(counted_tool_name)) - 1, 0)
     script_failed = _visualization_terminal_failed(function_name, result)
     script_failure_count += int(script_failed)
+    read_segment_confirmed = (
+        counted_tool_name == "read_file"
+        and succeeded
+        and isinstance(result, Mapping)
+        and isinstance(result.get("content"), str)
+    )
+    if count_exploration:
+        read_units_used += int(read_segment_confirmed)
+        fact_queries_used += int(counted_tool_name == "query_analysis_facts")
     in_flight_count = max(count(stored.get("inFlightCount")) - 1, 0)
     budgets[identity] = {
         **stored,
         "attemptedCount": attempted_count,
         "successfulCount": successful_count,
         "scriptFailureCount": script_failure_count,
+        "readUnitsUsed": read_units_used,
+        "factQueriesUsed": fact_queries_used,
         "inFlightCount": in_flight_count,
+        "inFlightReadUnits": max(
+            count(stored.get("inFlightReadUnits")) - int(counted_tool_name == "read_file"), 0
+        ),
+        "inFlightFactQueries": max(
+            count(stored.get("inFlightFactQueries"))
+            - int(counted_tool_name == "query_analysis_facts"),
+            0,
+        ),
         "toolCounts": tool_counts,
         "inFlightToolCounts": in_flight_tools,
     }
@@ -508,6 +566,22 @@ def _finish_visualization_tool_budget(
             in_flight_count=in_flight_count,
             total_tool_calls=cumulative_total,
             script_failure_count=cumulative_script_failures,
+            attempt_limit=count(
+                (
+                    run_context.dependencies.get(REPORTING_TASK_DEPENDENCY, {})
+                    if isinstance(run_context.dependencies, Mapping)
+                    else {}
+                ).get(REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY)
+            )
+            or _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT,
+            total_limit=count(
+                (
+                    run_context.dependencies.get(REPORTING_TASK_DEPENDENCY, {})
+                    if isinstance(run_context.dependencies, Mapping)
+                    else {}
+                ).get(REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY)
+            )
+            or _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT,
         )
 
 
@@ -534,6 +608,8 @@ def _stop_exhausted_visualization_budget(
     in_flight_count: int,
     total_tool_calls: int,
     script_failure_count: int,
+    attempt_limit: int,
+    total_limit: int,
 ) -> None:
     details = {
         "attemptToolCalls": attempted_count,
@@ -541,8 +617,8 @@ def _stop_exhausted_visualization_budget(
         "inFlightToolCalls": in_flight_count,
         "totalToolCalls": total_tool_calls,
         "scriptFailureCount": script_failure_count,
-        "attemptLimit": _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT,
-        "totalLimit": _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT,
+        "attemptLimit": attempt_limit,
+        "totalLimit": total_limit,
         "scriptFailureLimit": _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT,
     }
     error = ReportingError(code, message, details=details)
@@ -1113,6 +1189,16 @@ async def normalize_reporting_tool_arguments(
         _stop_closed_visualization(run_context)
     exploration_receipt = _visualization_exploration_budget_receipt(run_context, function_name)
     if exploration_receipt is not None:
+        # 超出独立探索额度的调用仍是一次真实工具尝试，但不能再次增加 read/fact 用量。
+        visualization_reservation = _reporting_visualization_tool_budget(run_context, function_name)
+        _finish_visualization_tool_budget(
+            run_context,
+            visualization_reservation,
+            function_name,
+            exploration_receipt,
+            succeeded=False,
+            count_exploration=False,
+        )
         return _enforce_reporting_no_progress(
             run_context,
             function_name,
@@ -1417,7 +1503,8 @@ def _report_model_tool_name(tool: Any) -> str | None:
 
 def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
     phase = _reporting_phase_from_messages(messages)
-    task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
+    run_context = current_reporting_run_context()
+    task_kind = reporting_task_kind_from_run_context(run_context)
     if phase is None or tools is None:
         return tools
     return [
@@ -1425,6 +1512,16 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
         for tool in tools
         if (name := _report_model_tool_name(tool)) is not None
         and reporting_phase_allows_tool(phase, name, task_kind=task_kind)
+        and not (
+            task_kind == "visualization"
+            and run_context is not None
+            and _visualization_exploration_budget_receipt(run_context, name) is not None
+        )
+        and not (
+            task_kind == "visualization"
+            and reporting_visualization_recovery_from_run_context(run_context)
+            and name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
+        )
     ]
 
 

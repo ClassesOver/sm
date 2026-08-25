@@ -360,23 +360,142 @@ def _visualization_recovery_required(last_error: Exception | None) -> bool:
 
 
 def _visualization_retry_budget(last_error: Exception | None) -> tuple[int, int]:
-    if (
-        isinstance(last_error, ReportingError)
-        and isinstance(last_error.details, Mapping)
-        and ("totalToolCalls" in last_error.details or "scriptFailureCount" in last_error.details)
-    ):
-        source: Any = last_error.details
-    else:
-        source = getattr(last_error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, None)
+    usage = _visualization_retry_usage(last_error)
+    return usage["visualizationToolCalls"], usage["visualizationScriptFailures"]
+
+
+def _visualization_retry_usage(last_error: Exception | None) -> dict[str, int]:
+    source: Any = getattr(last_error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, None)
+    details = last_error.details if isinstance(last_error, ReportingError) else None
 
     def count(raw: Any) -> int:
         return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
 
     if isinstance(source, Mapping):
-        return count(source.get("totalToolCalls")), count(source.get("scriptFailureCount"))
+        usage = {
+            "visualizationReadUnitsUsed": count(source.get("visualizationReadUnitsUsed")),
+            "visualizationFactQueriesUsed": count(source.get("visualizationFactQueriesUsed")),
+            "visualizationToolCalls": count(
+                source.get("visualizationToolCalls", source.get("totalToolCalls"))
+            ),
+            "visualizationScriptFailures": count(
+                source.get("visualizationScriptFailures", source.get("scriptFailureCount"))
+            ),
+        }
+        # 预算终态错误在动态预留点生成，details 对总调用和脚本失败的计数最及时；
+        # read/fact 则只能来自 worker 退出时附加的完整累计快照，两者必须合并。
+        if isinstance(details, Mapping):
+            if "totalToolCalls" in details:
+                usage["visualizationToolCalls"] = count(details.get("totalToolCalls"))
+            if "scriptFailureCount" in details:
+                usage["visualizationScriptFailures"] = count(details.get("scriptFailureCount"))
+        return usage
     if isinstance(source, Sequence) and not isinstance(source, (str, bytes)) and len(source) == 2:
-        return count(source[0]), count(source[1])
-    return 0, 0
+        return {
+            "visualizationReadUnitsUsed": 0,
+            "visualizationFactQueriesUsed": 0,
+            "visualizationToolCalls": count(source[0]),
+            "visualizationScriptFailures": count(source[1]),
+        }
+    if isinstance(details, Mapping):
+        return {
+            "visualizationReadUnitsUsed": 0,
+            "visualizationFactQueriesUsed": 0,
+            "visualizationToolCalls": count(details.get("totalToolCalls")),
+            "visualizationScriptFailures": count(details.get("scriptFailureCount")),
+        }
+    return {
+        "visualizationReadUnitsUsed": 0,
+        "visualizationFactQueriesUsed": 0,
+        "visualizationToolCalls": 0,
+        "visualizationScriptFailures": 0,
+    }
+
+
+def _visualization_dynamic_budget(
+    analysis_items: Any,
+    fact_files: Mapping[str, FileIdentity],
+) -> dict[str, int]:
+    """从冻结文件身份计算预算，同一路径出现不同身份时失败关闭。"""
+
+    identities: dict[str, tuple[int, str]] = {}
+    evidence_paths: set[str] = set()
+    fact_paths: set[str] = set()
+
+    def register(raw: Any, *, category: str) -> None:
+        value: Mapping[str, Any]
+        if isinstance(raw, FileIdentity):
+            value = raw.model_dump(mode="python", by_alias=True)
+        elif isinstance(raw, Mapping):
+            value = raw
+        else:
+            raise ReportingError(
+                "report_visualization_evidence_identity_invalid",
+                "visualization 文件身份缺失或无效。",
+            )
+        path = value.get("path")
+        size = value.get("size")
+        sha256 = value.get("sha256")
+        if (
+            not isinstance(path, str)
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or not isinstance(sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+        ):
+            raise ReportingError(
+                "report_visualization_evidence_identity_invalid",
+                "visualization 文件身份缺失或无效。",
+            )
+        try:
+            normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
+        except Exception as error:
+            raise ReportingError(
+                "report_visualization_evidence_identity_invalid",
+                "visualization 文件路径无效。",
+            ) from error
+        identity = (size, sha256)
+        if normalized in identities and identities[normalized] != identity:
+            raise ReportingError(
+                "report_visualization_evidence_identity_conflict",
+                "同一 visualization 文件路径绑定了不同身份。",
+                details={"path": normalized},
+            )
+        identities[normalized] = identity
+        (evidence_paths if category == "evidence" else fact_paths).add(normalized)
+
+    if isinstance(analysis_items, Mapping):
+        for item in analysis_items.values():
+            evidence_files = item.get("evidenceFiles") if isinstance(item, Mapping) else None
+            if isinstance(evidence_files, Sequence) and not isinstance(
+                evidence_files, (str, bytes)
+            ):
+                for identity in evidence_files:
+                    register(identity, category="evidence")
+    for identity in fact_files.values():
+        register(identity, category="fact")
+
+    evidence_read_units = sum((identities[path][0] + 65535) // 65536 for path in evidence_paths)
+    if evidence_read_units > 512:
+        raise ReportingError(
+            "report_visualization_evidence_budget_exceeded",
+            "visualization 受信 evidence 超过读取预算上限。",
+            details={"evidenceReadUnits": evidence_read_units, "limit": 512},
+        )
+    total_fact_bytes = sum(identities[path][0] for path in fact_paths)
+    read_limit = max(12, evidence_read_units + 8)
+    fact_query_limit = min(max((total_fact_bytes + 16383) // 16384, 4), 16)
+    attempt_limit = max(48, read_limit + fact_query_limit + 16)
+    total_limit = max(64, attempt_limit + 16)
+    return {
+        "visualizationBudgetVersion": 1,
+        "visualizationEvidenceReadUnits": evidence_read_units,
+        "visualizationReadLimit": read_limit,
+        "visualizationFactQueryLimit": fact_query_limit,
+        "visualizationAttemptToolLimit": attempt_limit,
+        "visualizationTotalToolLimit": total_limit,
+    }
 
 
 class _StrictModel(BaseModel):
@@ -3118,6 +3237,16 @@ class ReportWorkflowRuntime:
                 payload={
                     "analysisIds": [item.analysis_id for item in plan.analyses],
                     "datasetIds": list(plan.dataset_ids),
+                    "analysisPlans": {
+                        item.analysis_id: {
+                            "analysisId": item.analysis_id,
+                            "domain": item.domain,
+                            "step": item.management_question,
+                            "primaryMetricFamily": item.primary_metric_family,
+                            "datasetIds": list(item.dataset_ids),
+                        }
+                        for item in plan.analyses
+                    },
                 },
             ),
         )
@@ -3858,6 +3987,7 @@ class ReportWorkflowRuntime:
                     task_scope,
                     parent_run_id=str(run_context.run_id or ""),
                 )
+                record_step_model_metrics(receipt.get("modelMetrics"))
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 trace_metrics["duration_seconds"] = time.monotonic() - started_at
                 durable_after = await self.state_repository.get(report_run_id)
@@ -4105,20 +4235,7 @@ class ReportWorkflowRuntime:
                 for item in detailed_plan.analyses
             }
             analysis_items = durable_payload.get("analysisItems")
-            completed_analysis_summaries = [
-                {
-                    "analysisId": analysis_id,
-                    "summary": analysis_items[analysis_id].get("summary"),
-                    "evidenceFiles": analysis_items[analysis_id].get("evidenceFiles", []),
-                    "citationIds": analysis_items[analysis_id].get("citationIds", []),
-                    "profileReadReceiptIds": analysis_items[analysis_id].get(
-                        "profileReadReceiptIds", []
-                    ),
-                }
-                for analysis_id in analysis_ids
-                if isinstance(analysis_items, dict)
-                and isinstance(analysis_items.get(analysis_id), dict)
-            ]
+            visualization_budget = _visualization_dynamic_budget(analysis_items, fact_files)
             visualization_root = f"报表/智能分析/{run_context.run_id}/analysis"
             instruction_payload = {
                 "phase": "analysis",
@@ -4128,19 +4245,7 @@ class ReportWorkflowRuntime:
                     last_error, charts_registered
                 ),
                 "outline": self._state(run_context)[REPORT_OUTLINE_STATE_KEY],
-                "currentAnalysisId": None,
-                "completedAnalysisIds": sorted(completed_analysis_ids),
-                "completedAnalysisItems": completed_analysis_summaries,
-                "deterministicFactFiles": {
-                    analysis_id: identity.model_dump(mode="json", by_alias=True)
-                    for analysis_id, identity in fact_files.items()
-                },
-                "detailedAnalysisPlan": _coding_detailed_analysis_plan(detailed_plan),
                 "visualTheme": REPORT_VISUAL_THEME,
-                "datasetLineage": [item.model_dump(mode="json", by_alias=True) for item in lineage],
-                "citationRegistry": [
-                    item.model_dump(mode="json", by_alias=True) for item in citation_bindings
-                ],
                 "registeredCharts": registered_charts,
                 # 可视化脚本与 evidence/facts 分属兄弟目录。由服务端签发完整工作区相对路径，
                 # 禁止 Worker 依据脚本位置猜测父目录，否则会把 evidence 错拼成 analysis/evidence。
@@ -4162,9 +4267,7 @@ class ReportWorkflowRuntime:
                     "report_analysis_context_too_large",
                     "全局分析投影超过模型输入边界；证据未被静默截断。",
                 )
-            visualization_tool_calls, visualization_script_failures = _visualization_retry_budget(
-                last_error
-            )
+            visualization_usage = _visualization_retry_usage(last_error)
             contract = build_report_phase_acceptance_contract(
                 phase="analysis",
                 validation_context_file=validation_context_file.model_dump(
@@ -4175,8 +4278,12 @@ class ReportWorkflowRuntime:
                     "taskKind": "visualization",
                     "chartsRegistered": charts_registered,
                     "visualizationRecovery": _visualization_recovery_required(last_error),
-                    "visualizationToolCalls": visualization_tool_calls,
-                    "visualizationScriptFailures": visualization_script_failures,
+                    **visualization_budget,
+                    **visualization_usage,
+                    "visualizationWorkspace": {
+                        "scriptPath": f"{visualization_root}/charts.py",
+                        "chartOutputRoot": f"{visualization_root}/charts",
+                    },
                     "thinkingEffort": self._worker_thinking_effort(
                         retry=any(
                             item.status == "failed"
@@ -4198,9 +4305,6 @@ class ReportWorkflowRuntime:
                     },
                     "datasetIds": [item.dataset_id for item in dataset_handles],
                     "citationIds": [item.citation_id for item in citation_bindings],
-                    "citationRegistry": [
-                        item.model_dump(mode="json", by_alias=True) for item in citation_bindings
-                    ],
                 },
                 analysis_output_path=output_path,
             )
@@ -4231,6 +4335,7 @@ class ReportWorkflowRuntime:
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
             trace_metrics: dict[str, Any] = {}
+            visualization_usage_metrics: Mapping[str, Any] = {}
             started_at = time.monotonic()
             try:
                 existing = await self.task_runner.repository.get_task_snapshot(task_id)
@@ -4247,6 +4352,10 @@ class ReportWorkflowRuntime:
                     task_scope,
                     parent_run_id=str(run_context.run_id or ""),
                 )
+                record_step_model_metrics(receipt.get("modelMetrics"))
+                raw_projection_metrics = receipt.get("projectionMetrics")
+                if isinstance(raw_projection_metrics, Mapping):
+                    visualization_usage_metrics = raw_projection_metrics
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 trace_metrics["duration_seconds"] = time.monotonic() - started_at
                 identity = await self._phase_artifact_from_receipt(
@@ -4283,6 +4392,12 @@ class ReportWorkflowRuntime:
                     durable_after_worker.payload.get("completedAnalysisIds", ())
                     if durable_after_worker is not None
                     else ()
+                )
+                artifact_analysis_ids = {
+                    evidence.analysis_id for evidence in artifact.evidence_manifest.evidence
+                }
+                trace_metrics["completed_analysis_count"] = len(
+                    completed_by_worker & artifact_analysis_ids
                 )
                 for evidence in artifact.evidence_manifest.evidence:
                     if evidence.analysis_id in completed_by_worker:
@@ -4361,7 +4476,11 @@ class ReportWorkflowRuntime:
                     "task_id=%s instruction_bytes=%s duration_seconds=%.3f tool_events=%s "
                     "profile_receipts=%s model_input_tokens=%s model_requests=%s "
                     "max_projected_tokens=%s rebases=%s hard_cap=%s "
-                    "completed_analysis=%s retry_reason=%s",
+                    "completed_analysis=%s retry_reason=%s budget_version=%s "
+                    "evidence_read_units=%s read_limit=%s fact_query_limit=%s "
+                    "attempt_tool_limit=%s total_tool_limit=%s read_units_used=%s "
+                    "fact_queries_used=%s tool_calls=%s script_failures=%s "
+                    "attempt_successful_tools=%s attempt_rejected_tools=%s",
                     task_id,
                     instruction_bytes,
                     trace_metrics["duration_seconds"],
@@ -4374,6 +4493,18 @@ class ReportWorkflowRuntime:
                     trace_metrics.get("input_token_hard_cap", 0),
                     trace_metrics.get("completed_analysis_count", 0),
                     retry_reason or "-",
+                    visualization_budget["visualizationBudgetVersion"],
+                    visualization_budget["visualizationEvidenceReadUnits"],
+                    visualization_budget["visualizationReadLimit"],
+                    visualization_budget["visualizationFactQueryLimit"],
+                    visualization_budget["visualizationAttemptToolLimit"],
+                    visualization_budget["visualizationTotalToolLimit"],
+                    visualization_usage_metrics.get("visualizationReadUnitsUsed", 0),
+                    visualization_usage_metrics.get("visualizationFactQueriesUsed", 0),
+                    visualization_usage_metrics.get("visualizationToolCalls", 0),
+                    visualization_usage_metrics.get("visualizationScriptFailures", 0),
+                    visualization_usage_metrics.get("visualizationAttemptSuccessfulToolCalls", 0),
+                    visualization_usage_metrics.get("visualizationAttemptRejectedToolCalls", 0),
                 )
                 return checkpoint, artifact
             except Exception as error:
@@ -4811,6 +4942,7 @@ class ReportWorkflowRuntime:
                 receipt = await self.task_runner.run(
                     task_scope, parent_run_id=str(run_context.run_id or "")
                 )
+                record_step_model_metrics(receipt.get("modelMetrics"))
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 identity = await self._phase_artifact_from_receipt(
                     scope["threadId"],

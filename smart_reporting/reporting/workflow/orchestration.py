@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextvars import ContextVar
 from functools import wraps
 from inspect import isawaitable
@@ -40,7 +41,15 @@ def record_step_model_metrics(value: Any) -> None:
         return
     incoming = RunMetrics()
     for field in _TOKEN_METRIC_FIELDS:
-        metric = getattr(value, field, None)
+        alias = {
+            "input_tokens": "inputTokens",
+            "output_tokens": "outputTokens",
+            "total_tokens": "totalTokens",
+            "reasoning_tokens": "reasoningTokens",
+            "cache_read_tokens": "cacheReadTokens",
+            "cache_write_tokens": "cacheWriteTokens",
+        }[field]
+        metric = value.get(alias) if isinstance(value, Mapping) else getattr(value, field, None)
         if isinstance(metric, int | float):
             setattr(incoming, field, metric)
     _STEP_MODEL_METRICS.set(current + incoming)
@@ -78,12 +87,16 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
             result.metrics = metrics
         logger.info(
             "report_workflow_step_completed step_id={} duration_ms={} input_tokens={} "
-            "output_tokens={} total_tokens={}",
+            "output_tokens={} total_tokens={} reasoning_tokens={} cache_read_tokens={} "
+            "cache_write_tokens={}",
             step_id,
             max(0, round(duration * 1000)),
             getattr(metrics, "input_tokens", None),
             getattr(metrics, "output_tokens", None),
             getattr(metrics, "total_tokens", None),
+            getattr(metrics, "reasoning_tokens", None),
+            getattr(metrics, "cache_read_tokens", None),
+            getattr(metrics, "cache_write_tokens", None),
         )
         return result
 

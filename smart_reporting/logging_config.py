@@ -9,7 +9,18 @@ from loguru import logger as loguru_logger
 
 _FILE_HANDLER_MARKER = "_smart_reporting_file_handler"
 _LOGURU_SINK_MARKER = "_smart_reporting_loguru_sink_id"
-_SENSITIVE_DEBUG_LOGGERS = ("starrocks.dialect",)
+_INFO_LOGGERS = (
+    "starrocks.dialect",
+    "agno",
+    "agno-team",
+    "agno-workflow",
+)
+_WARNING_LOGGERS = (
+    "openai._base_client",
+    "httpx",
+    "httpcore",
+    "markdown_it",
+)
 
 
 def configure_file_logging(
@@ -67,10 +78,14 @@ def configure_file_logging(
     # StarRocks dialect 的 DEBUG 事件包含完整 connect_args，其中包括数据库密码。
     # 即使应用开启调试日志，也必须在事件传播到控制台或持久文件前阻断该级别；
     # 部署方若已配置 WARNING/ERROR 等更严格级别，则保持原配置不变。
-    for name in _SENSITIVE_DEBUG_LOGGERS:
-        logger = logging.getLogger(name)
-        if logger.level == logging.NOTSET or logger.level < logging.INFO:
-            logger.setLevel(logging.INFO)
+    for names, minimum_level in (
+        (_INFO_LOGGERS, logging.INFO),
+        (_WARNING_LOGGERS, logging.WARNING),
+    ):
+        for name in names:
+            logger = logging.getLogger(name)
+            if logger.level == logging.NOTSET or logger.level < minimum_level:
+                logger.setLevel(minimum_level)
 
     # Agno 的默认 RichHandler 设置了 propagate=False，因此必须显式挂载同一个
     # 文件 handler；Uvicorn 日志通常通过 root 传播，仍列出以兼容自定义配置。

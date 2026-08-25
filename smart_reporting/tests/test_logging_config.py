@@ -10,6 +10,16 @@ def test_configure_file_logging_writes_root_and_agno_logs(tmp_path):
     original_root_level = logging.getLogger().level
     starrocks_logger = logging.getLogger("starrocks.dialect")
     original_starrocks_level = starrocks_logger.level
+    bounded_loggers = (
+        "openai._base_client",
+        "httpx",
+        "httpcore",
+        "markdown_it",
+        "agno",
+        "agno-team",
+        "agno-workflow",
+    )
+    original_levels = {name: logging.getLogger(name).level for name in bounded_loggers}
     configure_file_logging(str(path), debug=True, max_bytes=1024, backup_count=1)
     handler = next(
         item
@@ -22,6 +32,10 @@ def test_configure_file_logging_writes_root_and_agno_logs(tmp_path):
         logging.getLogger("agno").warning("Agno 文件日志测试")
         loguru_logger.info("Loguru 文件日志测试")
         starrocks_logger.debug("connect_args: %r", {"password": "synthetic-secret"})
+        for name in bounded_loggers:
+            logging.getLogger(name).debug(
+                "FULL_PROMPT_MARKER Authorization=Bearer TOKEN_MARKER BUSINESS_FACT_MARKER"
+            )
         handler.flush()
         content = path.read_text(encoding="utf-8")
         assert "文件日志测试" in content
@@ -29,6 +43,9 @@ def test_configure_file_logging_writes_root_and_agno_logs(tmp_path):
         assert "Agno 文件日志测试" in content
         assert "Loguru 文件日志测试" in content
         assert "synthetic-secret" not in content
+        assert "FULL_PROMPT_MARKER" not in content
+        assert "TOKEN_MARKER" not in content
+        assert "BUSINESS_FACT_MARKER" not in content
         assert path.stat().st_mode & 0o777 == 0o640
     finally:
         sink_id = getattr(handler, "_smart_reporting_loguru_sink_id", None)
@@ -49,3 +66,5 @@ def test_configure_file_logging_writes_root_and_agno_logs(tmp_path):
         handler.close()
         logging.getLogger().setLevel(original_root_level)
         starrocks_logger.setLevel(original_starrocks_level)
+        for name, level in original_levels.items():
+            logging.getLogger(name).setLevel(level)

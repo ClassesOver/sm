@@ -43,6 +43,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     bind_reporting_run_context,
     reporting_phase_allows_tool,
+    reporting_visualization_usage_from_run_context,
 )
 from smart_reporting.reporting.vision import ReportVisionReviewer
 from smart_reporting.settings import AgentSettings
@@ -240,11 +241,21 @@ def test_visualization_exploration_tools_are_hidden_after_their_subbudget() -> N
     )
 
     with bind_reporting_run_context(context):
-        assert not reporting_phase_allows_tool(
+        assert reporting_phase_allows_tool(
             "analysis", "query_analysis_facts", task_kind="visualization"
         )
-        assert not reporting_phase_allows_tool("analysis", "read_file", task_kind="visualization")
+        assert reporting_phase_allows_tool("analysis", "read_file", task_kind="visualization")
         assert reporting_phase_allows_tool("analysis", "terminal", task_kind="visualization")
+        projected = _phase_filtered_report_tools(
+            [],
+            [
+                {"type": "function", "function": {"name": "query_analysis_facts"}},
+                {"type": "function", "function": {"name": "read_file"}},
+                {"type": "function", "function": {"name": "terminal"}},
+            ],
+        )
+
+    assert [item["function"]["name"] for item in projected] == ["terminal"]
 
 
 @pytest.mark.parametrize(
@@ -375,7 +386,7 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
     assert "git_status" not in instructions
     if task_kind == "visualization":
         assert "只调用 write_analysis_files" in instructions
-        assert "completedAnalysisItems[].evidenceFiles[].path" in instructions
+        assert "analyses[].evidenceFiles[].path" in instructions
         assert "不得构造 analysis/evidence" in instructions
         assert '禁止假设 facts["analyses"]' in instructions
         assert "visualizationWorkspace" in instructions
@@ -1142,6 +1153,14 @@ async def test_visualization_fact_exploration_subbudget_returns_receipt_and_keep
 
     assert rejected["code"] == "report_visualization_exploration_budget_exhausted"
     assert terminal == {"ok": True}
+    assert reporting_visualization_usage_from_run_context(run_context) == {
+        "visualizationReadUnitsUsed": 0,
+        "visualizationFactQueriesUsed": 4,
+        "visualizationToolCalls": 6,
+        "visualizationScriptFailures": 0,
+        "visualizationAttemptSuccessfulToolCalls": 5,
+        "visualizationAttemptRejectedToolCalls": 1,
+    }
 
 
 @pytest.mark.anyio
