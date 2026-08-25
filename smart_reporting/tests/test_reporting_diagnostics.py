@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import httpx
@@ -21,10 +22,10 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def _source():
+def _source(source_id: str = "rj"):
     return parse_starrocks_source(
         {
-            "id": "rj",
+            "id": source_id,
             "type": "starrocks",
             "name": "测试数据源",
             "dsnEnv": "REPORT_STARROCKS_DSN",
@@ -113,7 +114,7 @@ async def test_reporting_dependency_diagnostics_checks_configured_services() -> 
 
 
 @pytest.mark.anyio
-async def test_reporting_dependency_diagnostics_returns_safe_failure_codes() -> None:
+async def test_reporting_dependency_diagnostics_returns_safe_failure_codes(caplog) -> None:
     adapter = FakeAdapter(
         _source(),
         error=ReportingError("source_query_failed", "包含 diagnostic-password"),
@@ -131,7 +132,8 @@ async def test_reporting_dependency_diagnostics_returns_safe_failure_codes() -> 
         starrocks_adapter_factory=lambda _source: adapter,
     )
 
-    result = await diagnostics.check()
+    with caplog.at_level(logging.INFO, logger="smart_reporting.reporting.diagnostics"):
+        result = await diagnostics.check()
     payload = result.model_dump(mode="json", by_alias=True)
 
     assert result.status == "failed"
@@ -144,6 +146,23 @@ async def test_reporting_dependency_diagnostics_returns_safe_failure_codes() -> 
     assert "diagnostic-password" not in serialized
     assert "metadata-secret" not in serialized
     assert "daytona-secret" not in serialized
+    assert "dependency=starrocks" in caplog.text
+    assert "dependency=metadata" in caplog.text
+    assert "http_status=404" in caplog.text
+    assert "dependency=sandbox" in caplog.text
+    assert "diagnostic-password" not in caplog.text
+    assert "metadata-secret" not in caplog.text
+    assert "daytona-secret" not in caplog.text
+
+
+def test_reporting_dependency_diagnostics_extracts_safe_nested_error_facts() -> None:
+    database_error = OSError(2003, "连接 root:secret@starrocks.internal 失败")
+    wrapped = ReportingError("source_query_failed", "包含 secret")
+    wrapped.__cause__ = database_error
+
+    facts = diagnostics_module._safe_error_facts(wrapped)
+
+    assert facts == (("ReportingError", "OSError"), (2003,))
 
 
 @pytest.mark.anyio
@@ -179,6 +198,58 @@ async def test_reporting_dependency_diagnostics_times_out_sandbox_probe(monkeypa
 
     assert result.status == "failed"
     assert result.checks.sandbox.code == "sandbox_timeout"
+
+
+@pytest.mark.anyio
+async def test_reporting_dependency_diagnostics_times_out_starrocks_source(monkeypatch) -> None:
+    class BlockedAdapter(FakeAdapter):
+        async def query(self, sql: str) -> None:
+            self.queries.append(sql)
+            await asyncio.Event().wait()
+
+    adapter = BlockedAdapter(_source())
+    monkeypatch.setattr(diagnostics_module, "STARROCKS_CHECK_TIMEOUT_SECONDS", 0.001)
+    diagnostics = ReportingDependencyDiagnostics(
+        sources=(_source(),),
+        metadata_client=FakeMetadataClient(),
+        sandbox_check=FakeSandboxCheck(),
+        starrocks_adapter_factory=lambda _source: adapter,
+    )
+
+    result = await diagnostics.check()
+
+    assert result.status == "failed"
+    assert result.checks.starrocks.sources[0].code == "starrocks_timeout"
+    assert adapter.closed is True
+
+
+@pytest.mark.anyio
+async def test_reporting_dependency_diagnostics_limits_starrocks_concurrency(monkeypatch) -> None:
+    active = 0
+    maximum_active = 0
+
+    class CountingAdapter(FakeAdapter):
+        async def query(self, sql: str) -> None:
+            nonlocal active, maximum_active
+            self.queries.append(sql)
+            active += 1
+            maximum_active = max(maximum_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+
+    monkeypatch.setattr(diagnostics_module, "STARROCKS_CHECK_CONCURRENCY", 2)
+    sources = tuple(_source(f"source-{index}") for index in range(5))
+    diagnostics = ReportingDependencyDiagnostics(
+        sources=sources,
+        metadata_client=FakeMetadataClient(),
+        sandbox_check=FakeSandboxCheck(),
+        starrocks_adapter_factory=CountingAdapter,
+    )
+
+    result = await diagnostics.check()
+
+    assert result.status == "ok"
+    assert maximum_active == 2
 
 
 @pytest.mark.anyio
