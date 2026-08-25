@@ -970,7 +970,7 @@ async def test_query_analysis_facts_reads_only_current_immutable_file_and_bounds
 
 
 @pytest.mark.anyio
-async def test_visualization_facts_v1_aggregates_durable_summary_plan_and_identities() -> None:
+async def test_visualization_facts_v1_aggregates_out_of_order_durable_items_in_plan_order() -> None:
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(
         scope=AsyncMock(return_value=SimpleNamespace(thread_id="thread-1"))
@@ -1007,7 +1007,7 @@ async def test_visualization_facts_v1_aggregates_durable_summary_plan_and_identi
     toolkit._durable_state = AsyncMock(
         return_value=SimpleNamespace(
             payload={
-                "completedAnalysisIds": ["analysis_001", "analysis_002"],
+                "completedAnalysisIds": ["analysis_002", "analysis_001"],
                 "analysisPlans": {
                     "analysis_001": {
                         "analysisId": "analysis_001",
@@ -1051,6 +1051,10 @@ async def test_visualization_facts_v1_aggregates_durable_summary_plan_and_identi
         query="analyses", purpose="一次聚合读取全部分析", maxItems=50
     )
 
+    assert [item["analysisId"] for item in result["value"]] == [
+        "analysis_001",
+        "analysis_002",
+    ]
     assert result["value"][0] == {
         "analysisId": "analysis_001",
         "facts": {"metrics": [1]},

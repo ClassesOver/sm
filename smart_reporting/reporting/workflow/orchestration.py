@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from contextvars import ContextVar
 from functools import wraps
 from inspect import isawaitable
+from threading import Lock
 from time import perf_counter
 from typing import Any
 
@@ -16,7 +17,27 @@ from agno.workflow.workflow import Workflow
 from loguru import logger
 
 StepExecutor = Any
-_STEP_MODEL_METRICS: ContextVar[RunMetrics | None] = ContextVar(
+
+
+class _StepModelMetricsAccumulator:
+    """汇总同一步骤及其并发子任务产生的模型指标。"""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._metrics = RunMetrics()
+
+    def add(self, incoming: RunMetrics) -> None:
+        # asyncio 子任务只继承 ContextVar 上下文，后续 set 不会回写父任务；这里共享
+        # 同一个累加器对象，并用锁保证未来从工作线程记录指标时仍不会丢失更新。
+        with self._lock:
+            self._metrics = self._metrics + incoming
+
+    def snapshot(self) -> RunMetrics:
+        with self._lock:
+            return RunMetrics() + self._metrics
+
+
+_STEP_MODEL_METRICS: ContextVar[_StepModelMetricsAccumulator | None] = ContextVar(
     "reporting_step_model_metrics", default=None
 )
 _TOKEN_METRIC_FIELDS = (
@@ -52,7 +73,7 @@ def record_step_model_metrics(value: Any) -> None:
         metric = value.get(alias) if isinstance(value, Mapping) else getattr(value, field, None)
         if isinstance(metric, int | float):
             setattr(incoming, field, metric)
-    _STEP_MODEL_METRICS.set(current + incoming)
+    current.add(incoming)
 
 
 def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecutor:
@@ -61,7 +82,8 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
     @wraps(executor)
     async def execute(*args: Any, **kwargs: Any) -> Any:
         started_at = perf_counter()
-        metrics_token = _STEP_MODEL_METRICS.set(RunMetrics())
+        accumulator = _StepModelMetricsAccumulator()
+        metrics_token = _STEP_MODEL_METRICS.set(accumulator)
         logger.info("report_workflow_step_started step_id={}", step_id)
         try:
             result = executor(*args, **kwargs)
@@ -77,7 +99,7 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
             _STEP_MODEL_METRICS.reset(metrics_token)
             raise
         duration = perf_counter() - started_at
-        collected_metrics = _STEP_MODEL_METRICS.get() or RunMetrics()
+        collected_metrics = accumulator.snapshot()
         _STEP_MODEL_METRICS.reset(metrics_token)
         metrics = collected_metrics
         if isinstance(result, StepOutput):

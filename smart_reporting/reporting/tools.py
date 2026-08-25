@@ -1580,10 +1580,10 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             completed_ids = [
                 value for value in raw_completed or () if isinstance(value, str) and value
             ]
-            if completed_ids != analysis_ids:
+            if len(completed_ids) != len(analysis_ids) or set(completed_ids) != set(analysis_ids):
                 raise ReportingError(
                     "report_analysis_facts_invalid",
-                    "visualization facts 查询与 durable 完成顺序不一致。",
+                    "visualization facts 查询与 durable 完成集合不一致。",
                 )
             raw_items = durable.payload.get("analysisItems")
             if not isinstance(raw_items, Mapping):
@@ -1593,8 +1593,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             durable_items = raw_items
         plans = (
             durable.payload.get("analysisPlans")
-            if task_kind == "visualization"
-            and contract.get("visualizationBudgetVersion") == 1
+            if task_kind == "visualization" and contract.get("visualizationBudgetVersion") == 1
             else contract.get("analysisPlans")
         )
         plans = plans if isinstance(plans, Mapping) else {}

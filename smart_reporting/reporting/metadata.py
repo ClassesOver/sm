@@ -342,8 +342,23 @@ def _bind_ddl_source(
             type(error).__name__,
         )
         raise ReportingError("report_ddl_invalid", "DDL 语法无效。") from error
-    if len(statements) != 1 or not isinstance(statements[0], exp.Create):
-        statement_types = ",".join(type(statement).__name__ for statement in statements) or "-"
+    creates = [
+        statement
+        for statement in statements
+        if isinstance(statement, exp.Create)
+        and str(statement.args.get("kind") or "").upper() == "TABLE"
+    ]
+    statement_types = ",".join(type(statement).__name__ for statement in statements) or "-"
+    if len(creates) != 1 or any(
+        not (
+            isinstance(statement, exp.Comment)
+            or (
+                isinstance(statement, exp.Create)
+                and str(statement.args.get("kind") or "").upper() == "TABLE"
+            )
+        )
+        for statement in statements
+    ):
         logger.warning(
             "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
             "statement_count={} statement_types={}",
@@ -353,25 +368,31 @@ def _bind_ddl_source(
             len(statements),
             statement_types,
         )
-        raise ReportingError("report_ddl_invalid", "每个模型只接受一条 CREATE TABLE DDL。")
-    schema = statements[0].this
+        raise ReportingError(
+            "report_ddl_invalid", "每个模型只接受一条 CREATE TABLE 及其 COMMENT DDL。"
+        )
+    schema = creates[0].this
     if not isinstance(schema, exp.Schema) or not isinstance(schema.this, exp.Table):
         logger.warning(
             "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
-            "statement_count=1 statement_types=Create reason=missing_schema",
+            "statement_count={} statement_types={} reason=missing_schema",
             model_id,
             _duration_ms(started_at),
             len(ddl.encode()),
+            len(statements),
+            statement_types,
         )
         raise ReportingError("report_ddl_invalid", "DDL 必须包含明确的表和字段。")
     table = schema.this
     if table.catalog:
         logger.warning(
             "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
-            "statement_count=1 statement_types=Create reason=catalog_qualified",
+            "statement_count={} statement_types={} reason=catalog_qualified",
             model_id,
             _duration_ms(started_at),
             len(ddl.encode()),
+            len(statements),
+            statement_types,
         )
         raise ReportingError("report_schema_not_allowed", "DDL 不允许使用 catalog 限定名。")
     database = str(table.db or "").lower()
@@ -383,18 +404,22 @@ def _bind_ddl_source(
         code = "report_schema_source_ambiguous" if len(matches) > 1 else "report_schema_not_allowed"
         logger.warning(
             "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
-            "statement_count=1 statement_types=Create reason=source_binding match_count={}",
+            "statement_count={} statement_types={} reason=source_binding match_count={}",
             model_id,
             _duration_ms(started_at),
             len(ddl.encode()),
+            len(statements),
+            statement_types,
             len(matches),
         )
         raise ReportingError(code, "DDL 数据表无法唯一绑定到已配置数据源数据库。")
     logger.info(
         "report_metadata_ddl_parse_completed model_id={} duration_ms={} ddl_bytes={} "
-        "statement_count=1 statement_types=Create",
+        "statement_count={} statement_types={}",
         model_id,
         _duration_ms(started_at),
         len(ddl.encode()),
+        len(statements),
+        statement_types,
     )
     return matches[0]

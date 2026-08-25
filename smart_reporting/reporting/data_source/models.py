@@ -65,6 +65,7 @@ class CatalogColumn:
     name: str
     data_type: str
     nullable: bool
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ class CatalogTable:
     database: str
     name: str
     columns: tuple[CatalogColumn, ...]
+    description: str = ""
 
     @property
     def qualified_name(self) -> str:

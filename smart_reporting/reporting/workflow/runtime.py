@@ -6528,8 +6528,14 @@ def _model_table(table: Any) -> ModelTable:
         sourceId=table.source_id,
         database=table.database,
         name=table.name,
+        description=table.description,
         columns=tuple(
-            ModelColumn(name=item.name, dataType=item.data_type, nullable=item.nullable)
+            ModelColumn(
+                name=item.name,
+                dataType=item.data_type,
+                nullable=item.nullable,
+                description=item.description,
+            )
             for item in table.columns
         ),
     )
@@ -6541,11 +6547,13 @@ def _catalog_scope(tables: tuple[ModelTable, ...]) -> tuple[CatalogTable, ...]:
             source_id=table.source_id,
             database=table.database,
             name=table.name,
+            description=table.description,
             columns=tuple(
                 CatalogColumn(
                     name=column.name,
                     data_type=column.data_type,
                     nullable=column.nullable,
+                    description=column.description,
                 )
                 for column in table.columns
             ),

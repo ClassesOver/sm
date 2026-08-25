@@ -28,6 +28,7 @@ from smart_reporting.reporting.workflow.controller import ReportWorkflowToolkit
 from smart_reporting.reporting.workflow.orchestration import (
     _timed_step_executor,
     create_reporting_workflow,
+    record_step_model_metrics,
 )
 from smart_reporting.settings import AgentSettings
 
@@ -82,6 +83,32 @@ async def test_timed_workflow_step_logs_safe_success_and_failure() -> None:
     assert "error_type=RuntimeError" in log_text
     assert "workflow-output" not in log_text
     assert "private-workflow-error" not in log_text
+
+
+@pytest.mark.anyio
+async def test_timed_workflow_step_aggregates_metrics_from_concurrent_child_tasks() -> None:
+    async def succeed() -> StepOutput:
+        async def record(input_tokens: int) -> None:
+            await asyncio.sleep(0)
+            record_step_model_metrics(
+                {
+                    "inputTokens": input_tokens,
+                    "outputTokens": 10,
+                    "totalTokens": input_tokens + 10,
+                }
+            )
+
+        async with asyncio.TaskGroup() as task_group:
+            task_group.create_task(record(100))
+            task_group.create_task(record(200))
+        return StepOutput(content="done")
+
+    output = await _timed_step_executor(succeed, step_id="run-coding-analysis")()
+
+    assert output.metrics is not None
+    assert output.metrics.input_tokens == 300
+    assert output.metrics.output_tokens == 20
+    assert output.metrics.total_tokens == 320
 
 
 def test_report_input_parsing_is_shared_with_agentos() -> None:

@@ -138,6 +138,13 @@ def parse_starrocks_source(
     )
 
 
+def _catalog_comment(value: Any, *, max_length: int) -> str:
+    description = str(value or "")
+    if len(description) > max_length:
+        raise ReportingError("report_catalog_drift", "实时 catalog 注释超出长度限制。")
+    return description
+
+
 class StarRocksDataSourceAdapter:
     """StarRocks 同步驱动的异步边界；公开结果不包含连接信息。"""
 
@@ -204,6 +211,7 @@ class StarRocksDataSourceAdapter:
             for qualified in self.allowed_tables:
                 database, table = qualified.split(".", 1)
                 columns = inspector.get_columns(table, schema=database)
+                table_comment = inspector.get_table_comment(table, schema=database)
                 if not columns:
                     raise ReportingError(
                         "report_catalog_drift", f"实时 catalog 缺少数据表 {qualified}。"
@@ -218,8 +226,16 @@ class StarRocksDataSourceAdapter:
                                 name=str(column.get("name") or ""),
                                 data_type=str(column.get("type") or ""),
                                 nullable=bool(column.get("nullable", True)),
+                                description=_catalog_comment(
+                                    column.get("comment"),
+                                    max_length=2_000,
+                                ),
                             )
                             for column in columns
+                        ),
+                        description=_catalog_comment(
+                            table_comment.get("text") if table_comment else None,
+                            max_length=4_000,
                         ),
                     )
                 )
