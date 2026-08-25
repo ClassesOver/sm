@@ -4,12 +4,14 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import requests
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from agno.models.response import ModelResponse
 from agno.session.summary import SessionSummary
 from agno.tools import Function
 from agno.tools.function import FunctionCall
+from loguru import logger
 
 import smart_reporting.context_management as context_management_module
 from smart_reporting.context_management import (
@@ -17,6 +19,8 @@ from smart_reporting.context_management import (
     CODING_TOOL_BATCH_LIMIT,
     COMPRESSIBLE_HISTORY_TOOLS,
     SKILL_PRUNE_MIN_CHARS,
+    TIKTOKEN_DOWNLOAD_TIMEOUT,
+    TIKTOKEN_O200K_CACHE_KEY,
     CodingContextHardLimitError,
     CodingContextProjector,
     ContextBudgetController,
@@ -29,6 +33,7 @@ from smart_reporting.context_management import (
     clear_terminal_reasoning,
     clear_terminal_session_reasoning,
     projected_coding_model,
+    validate_configured_tiktoken_cache,
 )
 
 
@@ -186,6 +191,162 @@ def test_reporting_context_controller按模型窗口保留最大输出预算():
     assert controller.context_token_limit == 1_048_576
     assert controller.output_token_reserve == 393_216
     assert controller.input_token_budget == 655_360
+
+
+def test_context_budget_check_logs_safe_timing_without_message_content():
+    controller = ContextBudgetController(
+        model=CountingModel(),
+        context_token_budget=200_000,
+    )
+    sensitive_prompt = "private-report-prompt"
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+
+    try:
+        should_compress = controller.should_compress(
+            [Message(role="user", content=sensitive_prompt)],
+            tools=[{"type": "function", "function": {"name": "safe_tool"}}],
+        )
+    finally:
+        logger.remove(sink_id)
+
+    log_text = "".join(records)
+    assert should_compress is False
+    assert "context_budget_check_started" in log_text
+    assert "context_budget_check_completed" in log_text
+    assert "message_count=1" in log_text
+    assert "tool_count=1" in log_text
+    assert sensitive_prompt not in log_text
+
+
+def test_configured_tiktoken_cache_downloads_missing_o200k_file(monkeypatch, tmp_path):
+    cache_path = tmp_path / TIKTOKEN_O200K_CACHE_KEY
+    monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path))
+    valid_content = b"synthetic-o200k-cache"
+    monkeypatch.setattr(
+        context_management_module,
+        "TIKTOKEN_O200K_SHA256",
+        hashlib.sha256(valid_content).hexdigest(),
+    )
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, *, chunk_size: int):
+            assert chunk_size == 64 * 1024
+            yield valid_content[:5]
+            yield valid_content[5:]
+
+    def download(url: str, **kwargs):
+        assert url == context_management_module.TIKTOKEN_O200K_URL
+        assert kwargs == {"timeout": TIKTOKEN_DOWNLOAD_TIMEOUT, "stream": True}
+        return Response()
+
+    monkeypatch.setattr(context_management_module.requests, "get", download)
+    validate_configured_tiktoken_cache()
+    assert cache_path.read_bytes() == valid_content
+    assert not any(path.name.endswith(".tmp") for path in tmp_path.iterdir())
+
+
+def test_configured_tiktoken_cache_rejects_failed_download(monkeypatch, tmp_path):
+    monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path))
+
+    def fail_download(_url: str, **kwargs):
+        assert kwargs["timeout"] == TIKTOKEN_DOWNLOAD_TIMEOUT
+        raise requests.Timeout("network unavailable")
+
+    monkeypatch.setattr(context_management_module.requests, "get", fail_download)
+    with pytest.raises(RuntimeError, match="无法下载 o200k_base"):
+        validate_configured_tiktoken_cache()
+
+
+def test_configured_tiktoken_cache_removes_partial_read_after_timeout(monkeypatch, tmp_path):
+    cache_path = tmp_path / TIKTOKEN_O200K_CACHE_KEY
+    monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path))
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, *, chunk_size: int):
+            yield b"partial"
+            raise requests.ReadTimeout(f"read timeout after {chunk_size} bytes")
+
+    monkeypatch.setattr(
+        context_management_module.requests,
+        "get",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    with pytest.raises(RuntimeError, match="无法下载 o200k_base"):
+        validate_configured_tiktoken_cache()
+    assert not cache_path.exists()
+    assert not any(path.name.endswith(".tmp") for path in tmp_path.iterdir())
+
+
+def test_configured_tiktoken_cache_requires_valid_o200k_file(monkeypatch, tmp_path):
+    cache_path = tmp_path / TIKTOKEN_O200K_CACHE_KEY
+    monkeypatch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path))
+
+    cache_path.write_bytes(b"invalid")
+    with pytest.raises(RuntimeError, match="缓存校验失败"):
+        validate_configured_tiktoken_cache()
+
+    valid_content = b"synthetic-o200k-cache"
+    cache_path.write_bytes(valid_content)
+    monkeypatch.setattr(
+        context_management_module,
+        "TIKTOKEN_O200K_SHA256",
+        hashlib.sha256(valid_content).hexdigest(),
+    )
+    monkeypatch.setattr(
+        context_management_module.requests,
+        "get",
+        lambda *_args, **_kwargs: pytest.fail("有效缓存不应触发下载"),
+    )
+    validate_configured_tiktoken_cache()
+
+
+def test_context_projection_logs_safe_token_count_fallback() -> None:
+    class FailingTokenModel:
+        id = "intranet-tokenizer"
+
+        @staticmethod
+        def count_tokens(_messages, _tools=None, _response_format=None):
+            raise ConnectionError("private-tokenizer-url")
+
+    sensitive_prompt = "private-projection-prompt"
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+
+    try:
+        projected = CodingContextProjector.project(
+            [Message(role="user", content=sensitive_prompt)],
+            model=FailingTokenModel(),
+        )
+    finally:
+        logger.remove(sink_id)
+
+    log_text = "".join(records)
+    assert len(projected) == 1
+    assert "context_projection_token_count_failed" in log_text
+    assert "model_id=intranet-tokenizer" in log_text
+    assert "error_type=ConnectionError" in log_text
+    assert sensitive_prompt not in log_text
+    assert "private-tokenizer-url" not in log_text
 
 
 def test_coding_context_projection_keeps_append_only_provider_prefix_stable():
@@ -582,6 +743,43 @@ async def test_projected_model_writes_request_and_batch_metrics_inside_model_str
     assert captured[1]["tool_batch_size"] == 2
     assert captured[1]["tool_batch_admission"] == "serialized"
     assert captured[1]["tool_batch_rejection_code"] == ""
+
+
+@pytest.mark.anyio
+async def test_projected_model_logs_safe_provider_timing_and_host(monkeypatch):
+    async def model_stream(_self, _messages, *_args, **_kwargs):
+        yield ModelResponse(content="private-model-output")
+
+    monkeypatch.setattr(OpenAIChat, "ainvoke_stream", model_stream)
+    model = ProjectedOpenAIChat(
+        id="intranet-model",
+        base_url="http://internal-user:internal-password@vllm.internal:8000/v1",
+        api_key="private-api-key",
+    )
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+
+    try:
+        responses = [
+            response
+            async for response in model.ainvoke_stream(
+                [Message(role="user", content="private-model-input")]
+            )
+        ]
+    finally:
+        logger.remove(sink_id)
+
+    log_text = "".join(records)
+    assert len(responses) == 1
+    assert "model_projection_completed" in log_text
+    assert "model_provider_first_chunk" in log_text
+    assert "model_provider_stream_completed" in log_text
+    assert "host=vllm.internal:8000" in log_text
+    assert "private-model-input" not in log_text
+    assert "private-model-output" not in log_text
+    assert "internal-user" not in log_text
+    assert "internal-password" not in log_text
+    assert "private-api-key" not in log_text
 
 
 @pytest.mark.anyio

@@ -5,8 +5,14 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from agno.metrics import RunMetrics
+from agno.run.agent import ModelRequestCompletedEvent
 
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.phase import (
+    capture_reporting_projection_metrics,
+    record_reporting_tool_event,
+)
 from smart_reporting.reporting.workflow.checkpoint import reporting_phase_task_key
 from smart_reporting.reporting.workflow.execution import ReportTaskRunner, _worker_session_id
 from smart_reporting.task_execution import TaskScope, TaskState
@@ -18,6 +24,43 @@ class _RecordedErrors:
 
     def report_run_error(self) -> Exception | None:
         return next(self._errors)
+
+
+def test_worker_finish_receipt_sums_every_model_request_event() -> None:
+    with capture_reporting_projection_metrics() as projection_metrics:
+        record_reporting_tool_event(
+            ModelRequestCompletedEvent(
+                input_tokens=100,
+                output_tokens=20,
+                total_tokens=120,
+                reasoning_tokens=5,
+                cache_read_tokens=40,
+            )
+        )
+        record_reporting_tool_event(
+            ModelRequestCompletedEvent(
+                input_tokens=200,
+                output_tokens=30,
+                total_tokens=230,
+                reasoning_tokens=7,
+                cache_write_tokens=9,
+            )
+        )
+
+    receipt = ReportTaskRunner._finish_receipt(
+        SimpleNamespace(finish_receipt={"ok": True}),
+        output=SimpleNamespace(metrics=RunMetrics(input_tokens=200, total_tokens=230)),
+        projection_metrics=projection_metrics,
+    )
+
+    assert receipt["modelMetrics"] == {
+        "inputTokens": 300,
+        "outputTokens": 50,
+        "totalTokens": 350,
+        "reasoningTokens": 12,
+        "cacheReadTokens": 40,
+        "cacheWriteTokens": 9,
+    }
 
 
 @pytest.mark.anyio

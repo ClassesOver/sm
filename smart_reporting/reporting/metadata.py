@@ -5,9 +5,12 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
+from time import perf_counter
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
+from loguru import logger
 from pydantic import BaseModel
 from sqlglot import exp, parse
 
@@ -31,6 +34,10 @@ METADATA_RETRY_STATUS_CODES = frozenset({502, 503, 504})
 METADATA_RETRY_DELAYS = (0.2, 0.5)
 
 
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
+
+
 class ReportingMetadataClient:
     def __init__(
         self,
@@ -44,6 +51,14 @@ class ReportingMetadataClient:
         self.token = token
         self.timeout_seconds = timeout_seconds
         self.client_factory = client_factory
+        parsed_url = urlparse(base_url)
+        self.log_target = parsed_url.hostname or "-"
+        try:
+            port = parsed_url.port
+        except ValueError:
+            port = None
+        if port is not None:
+            self.log_target = f"{self.log_target}:{port}"
 
     async def query_agent(self) -> ReportingAgent:
         payload = await self._post("/get_agent_json", {})
@@ -69,14 +84,44 @@ class ReportingMetadataClient:
             raise ReportingError("report_agent_invalid", "报表 Agent code 必须是正整数。")
         payload = await self._post("/get_model_ddl_term_json", {"agent_id": int(agent_id)})
         response = self._validate(MetadataModelResponse, payload, "report_metadata_model_invalid")
+        started_at = perf_counter()
+        logger.info(
+            "report_metadata_adaptation_started agent_id={} ddl_count={} term_count={} "
+            "measure_semantics_count={}",
+            agent_id,
+            len(response.ddl),
+            len(response.term),
+            len(response.measure_semantics),
+        )
         try:
-            return _adapt_model_response(response, sources)
-        except ReportingError:
+            adapted = _adapt_model_response(response, sources)
+        except ReportingError as error:
+            logger.warning(
+                "report_metadata_adaptation_failed agent_id={} duration_ms={} error_code={}",
+                agent_id,
+                _duration_ms(started_at),
+                error.code,
+            )
             raise
         except Exception as error:
+            logger.warning(
+                "report_metadata_adaptation_failed agent_id={} duration_ms={} error_code={} "
+                "error_type={}",
+                agent_id,
+                _duration_ms(started_at),
+                "report_metadata_model_invalid",
+                type(error).__name__,
+            )
             raise ReportingError(
                 "report_metadata_model_invalid", "报表元数据响应不符合 DDL/term 契约。"
             ) from error
+        logger.info(
+            "report_metadata_adaptation_completed agent_id={} duration_ms={} table_count={}",
+            agent_id,
+            _duration_ms(started_at),
+            len(adapted.tables),
+        )
+        return adapted
 
     async def _post(self, path: str, request: BaseModel | dict[str, Any]) -> Any:
         headers = {"Accept": "application/json"}
@@ -95,9 +140,27 @@ class ReportingMetadataClient:
         )
         try:
             for attempt in range(1, MAX_METADATA_ATTEMPTS + 1):
+                started_at = perf_counter()
+                logger.info(
+                    "report_metadata_http_started target={} path={} attempt={} timeout_seconds={}",
+                    self.log_target,
+                    path,
+                    attempt,
+                    self.timeout_seconds,
+                )
                 try:
                     response = await client.post(path, headers=headers, json=body)
                 except httpx.TimeoutException as error:
+                    logger.warning(
+                        "report_metadata_http_failed target={} path={} attempt={} duration_ms={} "
+                        "error_type={} retry={}",
+                        self.log_target,
+                        path,
+                        attempt,
+                        _duration_ms(started_at),
+                        type(error).__name__,
+                        str(attempt < MAX_METADATA_ATTEMPTS).lower(),
+                    )
                     if attempt < MAX_METADATA_ATTEMPTS:
                         await asyncio.sleep(METADATA_RETRY_DELAYS[attempt - 1])
                         continue
@@ -105,6 +168,16 @@ class ReportingMetadataClient:
                         "report_metadata_timeout", "报表元数据服务请求超时。"
                     ) from error
                 except httpx.NetworkError as error:
+                    logger.warning(
+                        "report_metadata_http_failed target={} path={} attempt={} duration_ms={} "
+                        "error_type={} retry={}",
+                        self.log_target,
+                        path,
+                        attempt,
+                        _duration_ms(started_at),
+                        type(error).__name__,
+                        str(attempt < MAX_METADATA_ATTEMPTS).lower(),
+                    )
                     if attempt < MAX_METADATA_ATTEMPTS:
                         await asyncio.sleep(METADATA_RETRY_DELAYS[attempt - 1])
                         continue
@@ -112,21 +185,57 @@ class ReportingMetadataClient:
                         "report_metadata_unavailable", "报表元数据服务不可用。"
                     ) from error
                 except httpx.HTTPError as error:
+                    logger.warning(
+                        "report_metadata_http_failed target={} path={} attempt={} duration_ms={} "
+                        "error_type={} retry=false",
+                        self.log_target,
+                        path,
+                        attempt,
+                        _duration_ms(started_at),
+                        type(error).__name__,
+                    )
                     raise ReportingError(
                         "report_metadata_unavailable", "报表元数据服务不可用。"
                     ) from error
+
+                logger.info(
+                    "report_metadata_http_completed target={} path={} attempt={} duration_ms={} "
+                    "http_status={} response_bytes={}",
+                    self.log_target,
+                    path,
+                    attempt,
+                    _duration_ms(started_at),
+                    response.status_code,
+                    len(response.content),
+                )
 
                 if response.status_code in METADATA_RETRY_STATUS_CODES:
                     if attempt < MAX_METADATA_ATTEMPTS:
                         await asyncio.sleep(METADATA_RETRY_DELAYS[attempt - 1])
                         continue
-                    raise ReportingError("report_metadata_unavailable", "报表元数据服务不可用。")
+                    raise ReportingError(
+                        "report_metadata_unavailable",
+                        "报表元数据服务不可用。",
+                        details={"httpStatus": response.status_code},
+                    )
                 if response.status_code in {401, 403}:
-                    raise ReportingError("report_metadata_auth_failed", "报表元数据服务鉴权失败。")
+                    raise ReportingError(
+                        "report_metadata_auth_failed",
+                        "报表元数据服务鉴权失败。",
+                        details={"httpStatus": response.status_code},
+                    )
                 if response.status_code >= 500:
-                    raise ReportingError("report_metadata_unavailable", "报表元数据服务不可用。")
+                    raise ReportingError(
+                        "report_metadata_unavailable",
+                        "报表元数据服务不可用。",
+                        details={"httpStatus": response.status_code},
+                    )
                 if response.status_code < 200 or response.status_code >= 300:
-                    raise ReportingError("report_metadata_rejected", "报表元数据服务拒绝了请求。")
+                    raise ReportingError(
+                        "report_metadata_rejected",
+                        "报表元数据服务拒绝了请求。",
+                        details={"httpStatus": response.status_code},
+                    )
                 if len(response.content) > MAX_METADATA_RESPONSE_BYTES:
                     raise ReportingError(
                         "report_metadata_response_too_large", "报表元数据响应过大。"
@@ -171,7 +280,7 @@ def _adapt_model_response(
     tables: list[ModelTable] = []
     seen_tables: set[tuple[str, str, str]] = set()
     for raw in response.ddl:
-        source = _bind_ddl_source(raw.ddl, sources)
+        source = _bind_ddl_source(raw.ddl, sources, model_id=raw.id)
         parsed = parse_ddl(raw.ddl, source_id=source.id, default_database=source.database)
         if len(parsed) != 1:
             raise ReportingError("report_metadata_model_invalid", "每个 DDL 模型必须只包含一张表。")
@@ -217,18 +326,74 @@ def _adapt_model_response(
     )
 
 
-def _bind_ddl_source(ddl: str, sources: tuple[DataSourceConfig, ...]) -> DataSourceConfig:
+def _bind_ddl_source(
+    ddl: str, sources: tuple[DataSourceConfig, ...], *, model_id: int
+) -> DataSourceConfig:
+    started_at = perf_counter()
     try:
         statements = parse(ddl, read="mysql")
     except Exception as error:
+        logger.warning(
+            "report_metadata_ddl_parse_failed model_id={} duration_ms={} ddl_bytes={} "
+            "error_type={}",
+            model_id,
+            _duration_ms(started_at),
+            len(ddl.encode()),
+            type(error).__name__,
+        )
         raise ReportingError("report_ddl_invalid", "DDL 语法无效。") from error
-    if len(statements) != 1 or not isinstance(statements[0], exp.Create):
-        raise ReportingError("report_ddl_invalid", "每个模型只接受一条 CREATE TABLE DDL。")
-    schema = statements[0].this
+    creates = [
+        statement
+        for statement in statements
+        if isinstance(statement, exp.Create)
+        and str(statement.args.get("kind") or "").upper() == "TABLE"
+    ]
+    statement_types = ",".join(type(statement).__name__ for statement in statements) or "-"
+    if len(creates) != 1 or any(
+        not (
+            isinstance(statement, exp.Comment)
+            or (
+                isinstance(statement, exp.Create)
+                and str(statement.args.get("kind") or "").upper() == "TABLE"
+            )
+        )
+        for statement in statements
+    ):
+        logger.warning(
+            "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
+            "statement_count={} statement_types={}",
+            model_id,
+            _duration_ms(started_at),
+            len(ddl.encode()),
+            len(statements),
+            statement_types,
+        )
+        raise ReportingError(
+            "report_ddl_invalid", "每个模型只接受一条 CREATE TABLE 及其 COMMENT DDL。"
+        )
+    schema = creates[0].this
     if not isinstance(schema, exp.Schema) or not isinstance(schema.this, exp.Table):
+        logger.warning(
+            "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
+            "statement_count={} statement_types={} reason=missing_schema",
+            model_id,
+            _duration_ms(started_at),
+            len(ddl.encode()),
+            len(statements),
+            statement_types,
+        )
         raise ReportingError("report_ddl_invalid", "DDL 必须包含明确的表和字段。")
     table = schema.this
     if table.catalog:
+        logger.warning(
+            "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
+            "statement_count={} statement_types={} reason=catalog_qualified",
+            model_id,
+            _duration_ms(started_at),
+            len(ddl.encode()),
+            len(statements),
+            statement_types,
+        )
         raise ReportingError("report_schema_not_allowed", "DDL 不允许使用 catalog 限定名。")
     database = str(table.db or "").lower()
     matches = []
@@ -237,5 +402,24 @@ def _bind_ddl_source(ddl: str, sources: tuple[DataSourceConfig, ...]) -> DataSou
             matches.append(source)
     if len(matches) != 1:
         code = "report_schema_source_ambiguous" if len(matches) > 1 else "report_schema_not_allowed"
+        logger.warning(
+            "report_metadata_ddl_rejected model_id={} duration_ms={} ddl_bytes={} "
+            "statement_count={} statement_types={} reason=source_binding match_count={}",
+            model_id,
+            _duration_ms(started_at),
+            len(ddl.encode()),
+            len(statements),
+            statement_types,
+            len(matches),
+        )
         raise ReportingError(code, "DDL 数据表无法唯一绑定到已配置数据源数据库。")
+    logger.info(
+        "report_metadata_ddl_parse_completed model_id={} duration_ms={} ddl_bytes={} "
+        "statement_count={} statement_types={}",
+        model_id,
+        _duration_ms(started_at),
+        len(ddl.encode()),
+        len(statements),
+        statement_types,
+    )
     return matches[0]

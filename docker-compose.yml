@@ -35,6 +35,7 @@ services:
       DAYTONA_NETWORK_ALLOW_LIST: ${DAYTONA_NETWORK_ALLOW_LIST:-}
       AGENT_WORKSPACE_HMAC_SECRET: ${AGENT_WORKSPACE_HMAC_SECRET:?必须设置}
       AGENT_SKILLS_DIR: /opt/agent-skills
+      TIKTOKEN_CACHE_DIR: /opt/tiktoken-cache
       AGENT_REPORT_DATA_SOURCES_DIR: /run/agentos/reporting
       AGENT_REPORT_METADATA_URL: ${AGENT_REPORT_METADATA_URL:-}
       AGENT_REPORT_METADATA_TOKEN: ${AGENT_REPORT_METADATA_TOKEN:-}
@@ -47,6 +48,9 @@ services:
         read_only: true
       - ./data/reporting-logs:/var/log/agentos
       - ${AGENT_SKILLS_DIR:-./deploy/agentos/skills}:/opt/agent-skills:ro
+      - type: bind
+        source: ${AGENT_TIKTOKEN_CACHE_DIR:-./data/tiktoken-cache}
+        target: /opt/tiktoken-cache
       - type: bind
         source: ${AGENT_REPORT_DATA_SOURCES_DIR:-./deploy/agentos/reporting}
         target: /run/agentos/reporting

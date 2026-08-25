@@ -10,7 +10,7 @@ import unicodedata
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import aclosing, asynccontextmanager, contextmanager
 from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Any
@@ -381,6 +381,16 @@ class WorkspaceService:
                 self._async_client_close_task = close_task
         if close_task is not None:
             await complete_cleanup(close_task)
+
+    async def check_sandbox_service(self) -> None:
+        """通过只读列表请求验证 Daytona Sandbox API 可访问。"""
+
+        async with self._async_client() as client:
+            # Daytona.list 返回异步生成器；提前取得首项后必须显式关闭，避免分页响应
+            # 和底层连接等待垃圾回收才释放。
+            async with aclosing(client.list(ListSandboxesQuery(limit=1))) as sandboxes:
+                async for _sandbox in sandboxes:
+                    break
 
     def _cached_sandbox_id(self, value: str) -> str | None:
         with self._sandbox_ids_lock:

@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import fields
 from functools import partial
+from time import perf_counter
 from typing import Any, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -20,6 +21,7 @@ from agno.models.response import ModelResponse
 from agno.run import RunContext
 from agno.run.agent import RunOutputEvent
 from agno.run.team import TeamRunOutputEvent
+from loguru import logger
 from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCall,
     ChoiceDeltaToolCallFunction,
@@ -62,11 +64,16 @@ from .phase import (
     REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
     REPORTING_SECTION_INPUT_TOKEN_HARD_CAP,
     REPORTING_TASK_DEPENDENCY,
+    REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES,
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
+    REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_READ_FILE_LIMIT,
+    REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
     ReportingPhase,
     current_reporting_run_context,
     record_reporting_projection_metrics,
@@ -75,6 +82,7 @@ from .phase import (
     reporting_task_kind_from_run_context,
     reporting_thinking_effort_from_run_context,
     reporting_visualization_exploration_count,
+    reporting_visualization_recovery_from_run_context,
     reporting_visualization_registered_from_run_context,
 )
 from .tools import build_report_worker_tools
@@ -118,6 +126,12 @@ _REPORT_PROFILE_EMPTY_QUERY_STATE_KEY = "agentos_reporting_empty_profile_queries
 _REPORT_ARGUMENT_MAX_ISSUES = 8
 _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
+
+
 _REPORT_ARGUMENT_MAX_MESSAGE_LENGTH = 512
 _REPORT_PROFILE_RECEIPT_PROJECTION_LIMIT = 100
 _REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
@@ -210,7 +224,7 @@ async def propagate_reporting_tool_errors(
     except (AgentRunException, ReportingError, ValidationError):
         raise
     except Exception as error:
-        # Agno 2.8.2 Function.aexecute 会把普通异常转换成失败工具消息。只抛出并不足以
+        # Agno Function.aexecute 会把普通异常转换成失败工具消息。只抛出并不足以
         # 触发 Agent retry，因此在共享 RunContext 记录原对象，由模型批次边界立即重抛。
         _record_reporting_tool_run_error(run_context, error)
         raise
@@ -287,12 +301,30 @@ def _reporting_success_tool_budget(
     return state, identity, state_key
 
 
-def _visualization_exploration_limit(function_name: str) -> int | None:
+def _visualization_exploration_limit(run_context: RunContext, function_name: str) -> int | None:
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+
+    def limit(key: str, default: int) -> int:
+        value = binding.get(key)
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else default
+        )
+
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
     if counted_tool_name == "query_analysis_facts":
-        return REPORTING_VISUALIZATION_FACT_QUERY_LIMIT
+        return limit(
+            REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+            REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
+        )
     if counted_tool_name == "read_file":
-        return REPORTING_VISUALIZATION_READ_FILE_LIMIT
+        return limit(
+            REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
+            REPORTING_VISUALIZATION_READ_FILE_LIMIT,
+        )
     return None
 
 
@@ -305,12 +337,12 @@ def _visualization_exploration_budget_receipt(
         or reporting_task_kind_from_run_context(run_context) != "visualization"
     ):
         return None
-    limit = _visualization_exploration_limit(function_name)
+    limit = _visualization_exploration_limit(run_context, function_name)
     if limit is None:
         return None
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
     current_count = reporting_visualization_exploration_count(run_context, counted_tool_name)
-    if current_count < limit:
+    if not reporting_visualization_recovery_from_run_context(run_context) and current_count < limit:
         return None
     return {
         "ok": False,
@@ -320,7 +352,7 @@ def _visualization_exploration_budget_receipt(
         "requiredActions": [
             "停止读取事实和文件；复用当前上下文，直接创建或执行图表脚本。",
         ],
-        "retryable": True,
+        "retryable": False,
         "details": {
             "tool": counted_tool_name,
             "currentCount": current_count,
@@ -359,6 +391,12 @@ def _reporting_visualization_tool_budget(
     base_script_failures = count(
         binding.get(REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY)
     )
+    attempt_limit = count(binding.get(REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY)) or (
+        _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT
+    )
+    total_limit = count(binding.get(REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY)) or (
+        _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT
+    )
     attempted_count = count(stored.get("attemptedCount"))
     successful_count = count(stored.get("successfulCount"))
     script_failure_count = count(stored.get("scriptFailureCount"))
@@ -370,10 +408,7 @@ def _reporting_visualization_tool_budget(
     )
     cumulative_total = base_total + attempted_count + in_flight_count
     cumulative_script_failures = base_script_failures + script_failure_count
-    if (
-        attempted_count + in_flight_count >= _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT
-        or cumulative_total >= _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT
-    ):
+    if attempted_count + in_flight_count >= attempt_limit or cumulative_total >= total_limit:
         _stop_exhausted_visualization_budget(
             run_context,
             code="report_visualization_tool_budget_exhausted",
@@ -383,6 +418,8 @@ def _reporting_visualization_tool_budget(
             in_flight_count=in_flight_count,
             total_tool_calls=cumulative_total,
             script_failure_count=cumulative_script_failures,
+            attempt_limit=attempt_limit,
+            total_limit=total_limit,
         )
     if (
         function_name == "terminal"
@@ -397,8 +434,12 @@ def _reporting_visualization_tool_budget(
             in_flight_count=in_flight_count,
             total_tool_calls=cumulative_total,
             script_failure_count=cumulative_script_failures,
+            attempt_limit=attempt_limit,
+            total_limit=total_limit,
         )
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    in_flight_read_units = count(stored.get("inFlightReadUnits"))
+    in_flight_fact_queries = count(stored.get("inFlightFactQueries"))
     budgets[identity] = {
         **stored,
         "baseTotal": base_total,
@@ -407,6 +448,9 @@ def _reporting_visualization_tool_budget(
         "successfulCount": successful_count,
         "scriptFailureCount": script_failure_count,
         "inFlightCount": in_flight_count + 1,
+        "inFlightReadUnits": in_flight_read_units + int(counted_tool_name == "read_file"),
+        "inFlightFactQueries": in_flight_fact_queries
+        + int(counted_tool_name == "query_analysis_facts"),
         "inFlightToolCounts": {
             **in_flight_tools,
             counted_tool_name: count(in_flight_tools.get(counted_tool_name)) + 1,
@@ -447,6 +491,7 @@ def _finish_visualization_tool_budget(
     result: Any,
     *,
     succeeded: bool,
+    count_exploration: bool = True,
 ) -> None:
     if reservation is None:
         return
@@ -465,6 +510,8 @@ def _finish_visualization_tool_budget(
     attempted_count = count(stored.get("attemptedCount")) + 1
     successful_count = count(stored.get("successfulCount")) + int(succeeded)
     script_failure_count = count(stored.get("scriptFailureCount"))
+    read_units_used = count(stored.get("readUnitsUsed"))
+    fact_queries_used = count(stored.get("factQueriesUsed"))
     tool_counts = (
         dict(stored.get("toolCounts", {})) if isinstance(stored.get("toolCounts"), dict) else {}
     )
@@ -478,13 +525,32 @@ def _finish_visualization_tool_budget(
     in_flight_tools[counted_tool_name] = max(count(in_flight_tools.get(counted_tool_name)) - 1, 0)
     script_failed = _visualization_terminal_failed(function_name, result)
     script_failure_count += int(script_failed)
+    read_segment_confirmed = (
+        counted_tool_name == "read_file"
+        and succeeded
+        and isinstance(result, Mapping)
+        and isinstance(result.get("content"), str)
+    )
+    if count_exploration:
+        read_units_used += int(read_segment_confirmed)
+        fact_queries_used += int(counted_tool_name == "query_analysis_facts")
     in_flight_count = max(count(stored.get("inFlightCount")) - 1, 0)
     budgets[identity] = {
         **stored,
         "attemptedCount": attempted_count,
         "successfulCount": successful_count,
         "scriptFailureCount": script_failure_count,
+        "readUnitsUsed": read_units_used,
+        "factQueriesUsed": fact_queries_used,
         "inFlightCount": in_flight_count,
+        "inFlightReadUnits": max(
+            count(stored.get("inFlightReadUnits")) - int(counted_tool_name == "read_file"), 0
+        ),
+        "inFlightFactQueries": max(
+            count(stored.get("inFlightFactQueries"))
+            - int(counted_tool_name == "query_analysis_facts"),
+            0,
+        ),
         "toolCounts": tool_counts,
         "inFlightToolCounts": in_flight_tools,
     }
@@ -500,6 +566,22 @@ def _finish_visualization_tool_budget(
             in_flight_count=in_flight_count,
             total_tool_calls=cumulative_total,
             script_failure_count=cumulative_script_failures,
+            attempt_limit=count(
+                (
+                    run_context.dependencies.get(REPORTING_TASK_DEPENDENCY, {})
+                    if isinstance(run_context.dependencies, Mapping)
+                    else {}
+                ).get(REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY)
+            )
+            or _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT,
+            total_limit=count(
+                (
+                    run_context.dependencies.get(REPORTING_TASK_DEPENDENCY, {})
+                    if isinstance(run_context.dependencies, Mapping)
+                    else {}
+                ).get(REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY)
+            )
+            or _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT,
         )
 
 
@@ -526,6 +608,8 @@ def _stop_exhausted_visualization_budget(
     in_flight_count: int,
     total_tool_calls: int,
     script_failure_count: int,
+    attempt_limit: int,
+    total_limit: int,
 ) -> None:
     details = {
         "attemptToolCalls": attempted_count,
@@ -533,8 +617,8 @@ def _stop_exhausted_visualization_budget(
         "inFlightToolCalls": in_flight_count,
         "totalToolCalls": total_tool_calls,
         "scriptFailureCount": script_failure_count,
-        "attemptLimit": _REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT,
-        "totalLimit": _REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT,
+        "attemptLimit": attempt_limit,
+        "totalLimit": total_limit,
         "scriptFailureLimit": _REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT,
     }
     error = ReportingError(code, message, details=details)
@@ -583,7 +667,7 @@ def _stop_exhausted_reporting_tool_budget(
         message,
         details=details,
     )
-    # Agno 2.8.2 会把 StopAgentRun 收敛为 completed + stop_after_tool_call，异常本身
+    # Agno 会把 StopAgentRun 收敛为 completed + stop_after_tool_call，异常本身
     # 不会越过模型工具批次。同步记录领域错误，由 ReportWorkerOpenAIChat 在同一批次
     # 恢复并交给 Workflow 的 fresh retry，禁止退化成笼统的“未完成验收”。
     _record_reporting_tool_run_error(run_context, error)
@@ -1105,6 +1189,16 @@ async def normalize_reporting_tool_arguments(
         _stop_closed_visualization(run_context)
     exploration_receipt = _visualization_exploration_budget_receipt(run_context, function_name)
     if exploration_receipt is not None:
+        # 超出独立探索额度的调用仍是一次真实工具尝试，但不能再次增加 read/fact 用量。
+        visualization_reservation = _reporting_visualization_tool_budget(run_context, function_name)
+        _finish_visualization_tool_budget(
+            run_context,
+            visualization_reservation,
+            function_name,
+            exploration_receipt,
+            succeeded=False,
+            count_exploration=False,
+        )
         return _enforce_reporting_no_progress(
             run_context,
             function_name,
@@ -1409,7 +1503,8 @@ def _report_model_tool_name(tool: Any) -> str | None:
 
 def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
     phase = _reporting_phase_from_messages(messages)
-    task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
+    run_context = current_reporting_run_context()
+    task_kind = reporting_task_kind_from_run_context(run_context)
     if phase is None or tools is None:
         return tools
     return [
@@ -1417,6 +1512,16 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
         for tool in tools
         if (name := _report_model_tool_name(tool)) is not None
         and reporting_phase_allows_tool(phase, name, task_kind=task_kind)
+        and not (
+            task_kind == "visualization"
+            and run_context is not None
+            and _visualization_exploration_budget_receipt(run_context, name) is not None
+        )
+        and not (
+            task_kind == "visualization"
+            and reporting_visualization_recovery_from_run_context(run_context)
+            and name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
+        )
     ]
 
 
@@ -2014,7 +2119,13 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
             return
         # tool call 可能到后续 chunk 才出现，已发送的前导文字无法撤回；先收齐本轮
         # 响应再统一过滤，保证任何报表工具轮次都不会向 AgentOS 泄漏解释文本。
+        started_at = perf_counter()
         responses = list(super().invoke_stream(messages, *args, **kwargs))
+        logger.info(
+            "report_facade_stream_buffer_completed mode=sync duration_ms={} chunk_count={}",
+            _duration_ms(started_at),
+            len(responses),
+        )
         yield from _without_streamed_facade_tool_preamble(responses)
 
     async def ainvoke_stream(
@@ -2025,9 +2136,15 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
             yield forced
             return
         # 与同步路径保持相同的整轮判定语义，不能根据首个文字 chunk 提前放行。
+        started_at = perf_counter()
         responses = [
             response async for response in super().ainvoke_stream(messages, *args, **kwargs)
         ]
+        logger.info(
+            "report_facade_stream_buffer_completed mode=async duration_ms={} chunk_count={}",
+            _duration_ms(started_at),
+            len(responses),
+        )
         for response in _without_streamed_facade_tool_preamble(responses):
             yield response
 
@@ -2222,8 +2339,23 @@ def create_report_agent(
     def workflow_tools(
         *, run_context: RunContext | None = None, agent: Agent | None = None
     ) -> list[ReportWorkflowToolkit]:
-        _ = run_context, agent
-        return [ReportWorkflowToolkit(controller)]
+        started_at = perf_counter()
+        logger.info(
+            "report_facade_tools_started run_id={} session_id_present={}",
+            getattr(run_context, "run_id", None) or "-",
+            str(bool(getattr(run_context, "session_id", None))).lower(),
+        )
+        _ = agent
+        tools = [ReportWorkflowToolkit(controller)]
+        logger.info(
+            "report_facade_tools_completed run_id={} duration_ms={} toolkit_count={} "
+            "function_count={}",
+            getattr(run_context, "run_id", None) or "-",
+            _duration_ms(started_at),
+            len(tools),
+            sum(len(tool.async_functions) for tool in tools),
+        )
+        return tools
 
     facade = report_worker.deep_copy(
         update={

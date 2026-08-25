@@ -1,4 +1,4 @@
-agno==2.8.2
+agno==3.0.0
 aiosqlite>=0.20,<1.0
 daytona==0.189.0
 fastapi>=0.115
@@ -20,9 +20,11 @@ python-dateutil>=2.9,<3.0
 jsonpointer==3.1.1
 jsonschema>=4.26,<5.0
 jmespath==1.0.1
+loguru>=0.7,<1.0
 unidiff==0.7.5
 types-python-dateutil>=2.9,<3.0
 python-multipart>=0.0.20
+requests>=2.32,<3.0
 psycopg[binary]>=3.2,<4.0
 sqlalchemy>=2.0,<3.0
 sqlglot>=28.0,<29.0

@@ -534,16 +534,28 @@ def parse_ddl(ddl: str, *, source_id: str, default_database: str) -> tuple[Model
         statements = parse(ddl, read="mysql")
     except Exception as error:
         raise ReportingError("report_ddl_invalid", "DDL 语法无效。") from error
-    if not statements or len(statements) > 200:
+    if not statements:
         raise ReportingError("report_ddl_invalid", "DDL 表数量无效。")
-    tables: list[ModelTable] = []
-    seen: set[str] = set()
+    creates: list[exp.Create] = []
+    comments: list[exp.Comment] = []
     for statement in statements:
         if (
-            not isinstance(statement, exp.Create)
-            or str(statement.args.get("kind") or "").upper() != "TABLE"
+            isinstance(statement, exp.Create)
+            and str(statement.args.get("kind") or "").upper() == "TABLE"
         ):
-            raise ReportingError("report_ddl_invalid", "只接受 CREATE TABLE DDL。")
+            creates.append(statement)
+        elif isinstance(statement, exp.Comment):
+            comments.append(statement)
+        else:
+            raise ReportingError("report_ddl_invalid", "只接受 CREATE TABLE 及其 COMMENT DDL。")
+    if not creates or len(creates) > 200:
+        raise ReportingError("report_ddl_invalid", "DDL 表数量无效。")
+
+    tables: list[ModelTable] = []
+    seen: set[str] = set()
+    table_comments: dict[tuple[str, str], str | None] = {}
+    column_comments: dict[tuple[str, str, str], str | None] = {}
+    for statement in creates:
         schema = statement.this
         if not isinstance(schema, exp.Schema) or not isinstance(schema.this, exp.Table):
             raise ReportingError("report_ddl_invalid", "DDL 必须包含明确的表和字段。")
@@ -571,40 +583,85 @@ def parse_ddl(ddl: str, *, source_id: str, default_database: str) -> tuple[Model
                 for constraint in constraints
                 if isinstance(constraint, exp.ColumnConstraint)
             )
-            description = next(
-                (
-                    str(comment_kind.this.this)
-                    for constraint in constraints
-                    if isinstance(constraint, exp.ColumnConstraint)
-                    and isinstance(
-                        (comment_kind := constraint.args.get("kind")), exp.CommentColumnConstraint
-                    )
-                    and isinstance(comment_kind.this, exp.Literal)
-                ),
-                "",
-            )
+            description = _column_comment(constraints)
             columns.append(
                 ModelColumn(
                     name=column_name,
                     dataType=kind.sql(dialect="mysql"),
                     nullable=nullable,
-                    description=description,
+                    description=description or "",
                 )
             )
             column_names.add(column_name)
+            column_comments[(database, name, column_name)] = description
         if not columns:
             raise ReportingError("report_ddl_invalid", "DDL 表必须包含字段。")
+        description = _table_comment(statement)
+        table_key = (database, name)
+        table_comments[table_key] = description
         tables.append(
             ModelTable(
                 sourceId=source_id,
                 database=database,
                 name=name,
-                description=_table_comment(statement),
+                description=description or "",
                 columns=tuple(columns),
             )
         )
         seen.add(key)
-    return tuple(tables)
+
+    # COMMENT ON 只能补充同一批 CREATE TABLE 的描述，不能成为独立修改语句。
+    # 目标必须存在且与内联 COMMENT 一致，避免两种语法互转时发生错绑或覆盖。
+    external_targets: set[tuple[str, str, str, str]] = set()
+    for statement in comments:
+        database, table_name, comment_column_name, comment_description = _separate_comment(
+            statement,
+            default_database=default_database,
+        )
+        target = (
+            "COLUMN" if comment_column_name is not None else "TABLE",
+            database,
+            table_name,
+            comment_column_name or "",
+        )
+        if target in external_targets:
+            raise ReportingError("report_ddl_invalid", "COMMENT 目标重复。")
+        external_targets.add(target)
+        table_key = (database, table_name)
+        if table_key not in table_comments:
+            raise ReportingError("report_ddl_invalid", "COMMENT 引用了未知数据表。")
+        if comment_column_name is None:
+            inline = table_comments[table_key]
+            if inline is not None and inline != comment_description:
+                raise ReportingError("report_ddl_invalid", "表 COMMENT 与内联注释冲突。")
+            table_comments[table_key] = comment_description
+            continue
+        column_key = (database, table_name, comment_column_name)
+        if column_key not in column_comments:
+            raise ReportingError("report_ddl_invalid", "COMMENT 引用了未知字段。")
+        inline = column_comments[column_key]
+        if inline is not None and inline != comment_description:
+            raise ReportingError("report_ddl_invalid", "字段 COMMENT 与内联注释冲突。")
+        column_comments[column_key] = comment_description
+
+    return tuple(
+        ModelTable(
+            sourceId=table.source_id,
+            database=table.database,
+            name=table.name,
+            description=table_comments[(table.database, table.name)] or "",
+            columns=tuple(
+                ModelColumn(
+                    name=column.name,
+                    dataType=column.data_type,
+                    nullable=column.nullable,
+                    description=(column_comments[(table.database, table.name, column.name)] or ""),
+                )
+                for column in table.columns
+            ),
+        )
+        for table in tables
+    )
 
 
 def validate_catalog(
@@ -634,29 +691,83 @@ def validate_catalog(
         resolved.append(
             table.model_copy(
                 update={
+                    "description": current.description or table.description,
                     "columns": tuple(
                         column.model_copy(
                             update={
                                 "data_type": current_columns[column.name.lower()].data_type,
                                 "nullable": current_columns[column.name.lower()].nullable,
+                                "description": (
+                                    current_columns[column.name.lower()].description
+                                    or column.description
+                                ),
                             }
                         )
                         for column in table.columns
-                    )
+                    ),
                 }
             )
         )
     return tuple(resolved)
 
 
-def _table_comment(statement: exp.Create) -> str:
+def _table_comment(statement: exp.Create) -> str | None:
     properties = statement.args.get("properties")
     if not isinstance(properties, exp.Properties):
-        return ""
-    for item in properties.expressions:
-        if isinstance(item, exp.SchemaCommentProperty) and isinstance(item.this, exp.Literal):
-            return str(item.this.this)
-    return ""
+        return None
+    values = [
+        _comment_literal(item.this)
+        for item in properties.expressions
+        if isinstance(item, exp.SchemaCommentProperty)
+    ]
+    if len(values) > 1:
+        raise ReportingError("report_ddl_invalid", "表内联 COMMENT 重复。")
+    return values[0] if values else None
+
+
+def _column_comment(constraints: tuple[exp.Expression, ...]) -> str | None:
+    values = [
+        _comment_literal(comment.this)
+        for constraint in constraints
+        if isinstance(constraint, exp.ColumnConstraint)
+        and isinstance((comment := constraint.args.get("kind")), exp.CommentColumnConstraint)
+    ]
+    if len(values) > 1:
+        raise ReportingError("report_ddl_invalid", "字段内联 COMMENT 重复。")
+    return values[0] if values else None
+
+
+def _separate_comment(
+    statement: exp.Comment,
+    *,
+    default_database: str,
+) -> tuple[str, str, str | None, str]:
+    kind = str(statement.args.get("kind") or "").upper()
+    target = statement.this
+    description = _comment_literal(statement.args.get("expression"))
+    if kind == "TABLE" and isinstance(target, exp.Table):
+        if target.catalog:
+            raise ReportingError("report_ddl_invalid", "COMMENT 不允许使用 catalog 限定名。")
+        database = str(target.db or default_database).lower()
+        table_name = str(target.name or "").lower()
+        column_name = None
+    elif kind == "COLUMN" and isinstance(target, exp.Column):
+        if target.catalog:
+            raise ReportingError("report_ddl_invalid", "COMMENT 不允许使用 catalog 限定名。")
+        database = str(target.db or default_database).lower()
+        table_name = str(target.table or "").lower()
+        column_name = str(target.name or "").lower()
+    else:
+        raise ReportingError("report_ddl_invalid", "只接受 TABLE 或 COLUMN COMMENT。")
+    if not database or not table_name or (kind == "COLUMN" and not column_name):
+        raise ReportingError("report_ddl_invalid", "COMMENT 目标无效。")
+    return database, table_name, column_name, description
+
+
+def _comment_literal(value: exp.Expression | None) -> str:
+    if not isinstance(value, exp.Literal) or not value.is_string:
+        raise ReportingError("report_ddl_invalid", "COMMENT 必须是字符串。")
+    return str(value.this)
 
 
 def _find_connection_input(value: Any) -> set[str]:

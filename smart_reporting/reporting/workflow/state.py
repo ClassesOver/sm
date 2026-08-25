@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -363,6 +364,13 @@ def apply(
         if not analysis_ids:
             raise ReportingStateError("report_analysis_plan_invalid", "分析计划不能为空。")
         payload["analysisIds"] = analysis_ids
+        raw_plans = arguments.get("analysisPlans")
+        if raw_plans is not None:
+            if not isinstance(raw_plans, dict) or set(raw_plans) != set(analysis_ids):
+                raise ReportingStateError(
+                    "report_analysis_plan_invalid", "分析计划明细与 analysisId 不一致。"
+                )
+            payload["analysisPlans"] = deepcopy(raw_plans)
         payload["completedAnalysisIds"] = [
             value
             for value in _tuple_unique(payload.get("completedAnalysisIds"))

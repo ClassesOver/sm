@@ -5,7 +5,22 @@ import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from loguru import logger as loguru_logger
+
 _FILE_HANDLER_MARKER = "_smart_reporting_file_handler"
+_LOGURU_SINK_MARKER = "_smart_reporting_loguru_sink_id"
+_INFO_LOGGERS = (
+    "starrocks.dialect",
+    "agno",
+    "agno-team",
+    "agno-workflow",
+)
+_WARNING_LOGGERS = (
+    "openai._base_client",
+    "httpx",
+    "httpcore",
+    "markdown_it",
+)
 
 
 def configure_file_logging(
@@ -49,6 +64,28 @@ def configure_file_logging(
     )
     root.addHandler(handler)
     root.setLevel(logging.DEBUG if debug else logging.INFO)
+    # 应用代码统一使用 Loguru；第三方仍通过标准 logging。两者复用同一个受控
+    # RotatingFileHandler，确保文件权限、轮转上限和保留数量只有一个事实来源。
+    sink_id = loguru_logger.add(
+        handler,
+        level="DEBUG" if debug else "INFO",
+        format="{message}",
+        backtrace=False,
+        diagnose=False,
+    )
+    setattr(handler, _LOGURU_SINK_MARKER, sink_id)
+
+    # StarRocks dialect 的 DEBUG 事件包含完整 connect_args，其中包括数据库密码。
+    # 即使应用开启调试日志，也必须在事件传播到控制台或持久文件前阻断该级别；
+    # 部署方若已配置 WARNING/ERROR 等更严格级别，则保持原配置不变。
+    for names, minimum_level in (
+        (_INFO_LOGGERS, logging.INFO),
+        (_WARNING_LOGGERS, logging.WARNING),
+    ):
+        for name in names:
+            logger = logging.getLogger(name)
+            if logger.level == logging.NOTSET or logger.level < minimum_level:
+                logger.setLevel(minimum_level)
 
     # Agno 的默认 RichHandler 设置了 propagate=False，因此必须显式挂载同一个
     # 文件 handler；Uvicorn 日志通常通过 root 传播，仍列出以兼容自定义配置。

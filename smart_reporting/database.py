@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import psycopg
 from agno.db.base import AsyncBaseDb, BaseDb
 from agno.db.postgres import AsyncPostgresDb, PostgresDb
 from agno.db.sqlite import AsyncSqliteDb, SqliteDb
+from loguru import logger
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -19,6 +21,14 @@ from .settings import database_url_from_environment
 
 DEFAULT_AGENT_DB_URL = SETTINGS_DEFAULT_AGENT_DB_URL
 SQLITE_BUSY_TIMEOUT_MS = 30_000
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
+
+
+def _session_type_name(value: Any) -> str:
+    return str(getattr(value, "value", value) or "-")
 
 
 def agent_db_url() -> str:
@@ -78,7 +88,7 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
         table_type: str,
         create_table_if_not_found: bool | None = False,
     ) -> Any:
-        # Agno 2.8.2 的惰性建表会先查数据库再向共享 MetaData 注册 Table；同名
+        # Agno 的惰性建表会先查数据库再向共享 MetaData 注册 Table；同名
         # trace/span 首次并发写入时，两个协程都可能通过不存在检查并重复注册。必须按
         # 表名锁住完整检查与创建区间；不能用全局锁，因为建表过程会递归初始化版本表。
         lock = self._table_initialization_locks.setdefault(table_name, asyncio.Lock())
@@ -98,9 +108,74 @@ class SerializedAsyncPostgresDb(AsyncPostgresDb):
             )
             return await super()._create_all_tables()
 
+    async def get_session(
+        self,
+        session_id,
+        session_type=None,
+        user_id=None,
+        deserialize=True,
+        runs_limit=None,
+    ):
+        started_at = perf_counter()
+        logger.info(
+            "agent_session_read_started backend=postgresql session_type={} user_id_present={}",
+            _session_type_name(session_type),
+            str(user_id is not None).lower(),
+        )
+        try:
+            result = await super().get_session(
+                session_id=session_id,
+                session_type=session_type,
+                user_id=user_id,
+                deserialize=deserialize,
+                runs_limit=runs_limit,
+            )
+        except BaseException as error:
+            logger.warning(
+                "agent_session_read_failed backend=postgresql session_type={} duration_ms={} "
+                "error_type={}",
+                _session_type_name(session_type),
+                _duration_ms(started_at),
+                type(error).__name__,
+            )
+            raise
+        logger.info(
+            "agent_session_read_completed backend=postgresql session_type={} duration_ms={} "
+            "found={}",
+            _session_type_name(session_type),
+            _duration_ms(started_at),
+            str(result is not None).lower(),
+        )
+        return result
+
     async def upsert_session(self, session, deserialize=True):
-        clear_terminal_session_reasoning(session)
-        return await super().upsert_session(session, deserialize=deserialize)
+        started_at = perf_counter()
+        session_type = type(session).__name__
+        logger.info(
+            "agent_session_write_started backend=postgresql session_type={} run_count={}",
+            session_type,
+            len(getattr(session, "runs", None) or []),
+        )
+        try:
+            clear_terminal_session_reasoning(session)
+            result = await super().upsert_session(session, deserialize=deserialize)
+        except BaseException as error:
+            logger.warning(
+                "agent_session_write_failed backend=postgresql session_type={} duration_ms={} "
+                "error_type={}",
+                session_type,
+                _duration_ms(started_at),
+                type(error).__name__,
+            )
+            raise
+        logger.info(
+            "agent_session_write_completed backend=postgresql session_type={} duration_ms={} "
+            "stored={}",
+            session_type,
+            _duration_ms(started_at),
+            str(result is not None).lower(),
+        )
+        return result
 
 
 class SerializedAsyncSqliteDb(AsyncSqliteDb):

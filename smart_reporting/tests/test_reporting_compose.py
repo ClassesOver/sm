@@ -35,6 +35,27 @@ def test_reporting_compose_public_download_example_uses_published_port() -> None
     assert urlsplit(env_values["AGENT_REPORT_PUBLIC_BASE_URL"]).port == published_port
 
 
+def test_reporting_compose_mounts_writable_tiktoken_cache() -> None:
+    repository_root = Path(__file__).parents[2]
+    compose = yaml.load(
+        (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    service = compose["services"]["reporting-os"]
+
+    assert service["environment"]["TIKTOKEN_CACHE_DIR"] == "/opt/tiktoken-cache"
+    cache_mount = next(
+        mount
+        for mount in service["volumes"]
+        if isinstance(mount, dict) and mount.get("target") == "/opt/tiktoken-cache"
+    )
+    assert cache_mount == {
+        "type": "bind",
+        "source": "${AGENT_TIKTOKEN_CACHE_DIR:-./data/tiktoken-cache}",
+        "target": "/opt/tiktoken-cache",
+    }
+
+
 def test_agentos_readme_only_references_existing_compose_services() -> None:
     repository_root = Path(__file__).parents[2]
     readme = (repository_root / "README.md").read_text(encoding="utf-8")

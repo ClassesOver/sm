@@ -124,18 +124,19 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
 REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     "你是 Coding Agent 的智能报表可视化 Worker，本轮只整合全部已冻结 analysis evidence。",
     (
-        "使用 query_analysis_facts 和任务 JSON 中的 completedAnalysisItems 读取全部事实、摘要与 evidence；"
+        "默认只调用一次 query_analysis_facts 聚合读取全部事实、摘要、最小计划与 evidence/citation 身份；"
+        "只有回执明确 truncated 或缺少必需字段时才追加查询；"
         "不得重新执行单项分析、查询 Profile、连接数据库、执行 SQL 或改写已冻结 evidence。"
     ),
     (
-        "completedAnalysisItems[].evidenceFiles[].path 和 deterministicFactFiles.*.path 都是相对工作区根目录"
+        "query_analysis_facts 返回的 analyses[].evidenceFiles[].path 都是相对工作区根目录"
         "的完整受信路径。脚本必须逐字使用这些路径；不得相对 __file__、visualizationWorkspace 或当前目录"
         "重新拼接 evidence/facts，不得构造 analysis/evidence，也不得通过 cd 改变路径基准。"
     ),
     (
         "deterministicFactFiles 中每个文件的根节点直接是该 analysis 的 facts 对象，comparisons、metrics、"
         "correlations 等字段都位于根节点；只有 query_analysis_facts 的可视化聚合回执才使用 analyses[] 包装。"
-        "读取单个文件时禁止假设 facts[\"analyses\"]。"
+        '读取单个文件时禁止假设 facts["analyses"]。'
     ),
     (
         "根据批准提纲和真实数据选择图表，不设固定数量或类型。图表源文件定稿并完成必要视觉检查后，"

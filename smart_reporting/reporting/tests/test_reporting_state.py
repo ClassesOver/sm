@@ -165,6 +165,44 @@ def test_complete_analysis_items_can_finish_out_of_order_and_enter_visualization
     assert completed.payload["currentAnalysisId"] is None
 
 
+def test_set_analysis_plan_freezes_matching_durable_plan_details():
+    state = apply_phase(initial_state(), "start_analysis")
+    plans = {
+        "analysis_001": {
+            "analysisId": "analysis_001",
+            "domain": "income",
+            "datasetIds": ["dataset-1"],
+        }
+    }
+
+    frozen = ReportingStateReducer.apply(
+        state,
+        {
+            "name": "set_analysis_plan",
+            "commandId": "plan-details",
+            "payload": {"analysisIds": ["analysis_001"], "analysisPlans": plans},
+        },
+        state.state_version,
+    ).state
+    plans["analysis_001"]["domain"] = "changed"
+
+    assert frozen.payload["analysisPlans"]["analysis_001"]["domain"] == "income"
+    with pytest.raises(ReportingStateError) as raised:
+        ReportingStateReducer.apply(
+            state,
+            {
+                "name": "set_analysis_plan",
+                "commandId": "plan-details-invalid",
+                "payload": {
+                    "analysisIds": ["analysis_001"],
+                    "analysisPlans": {"analysis_002": {}},
+                },
+            },
+            state.state_version,
+        )
+    assert raised.value.code == "report_analysis_plan_invalid"
+
+
 def test_targeted_rework_requires_analysis_ids_and_missing_evidence():
     state = initial_state()
     state = apply_phase(state, "start_analysis")

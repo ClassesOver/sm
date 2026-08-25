@@ -27,6 +27,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
+    reporting_visualization_budget_contract_from_acceptance_contract,
     reporting_visualization_budget_from_acceptance_contract,
     reporting_visualization_budget_from_run_context,
     reporting_visualization_recovery_from_acceptance_contract,
@@ -51,14 +52,17 @@ from smart_reporting.reporting.tools import (
     _stop_after_nonretryable_tool_call,
     build_report_worker_tools,
 )
-from smart_reporting.reporting.workflow.checkpoint import ProfileReadReceipt
+from smart_reporting.reporting.workflow.checkpoint import FileIdentity, ProfileReadReceipt
 from smart_reporting.reporting.workflow.runtime import (
     _analysis_item_completion_conditions,
     _visualization_completion_conditions,
+    _visualization_dynamic_budget,
     _visualization_retry_budget,
+    _visualization_retry_usage,
 )
 from smart_reporting.reporting.workflow.state import ReportingRunState
 from smart_reporting.task_execution.acceptance import normalize_acceptance_contract
+from smart_reporting.task_execution.execution import WorkspaceTaskToolkit
 from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
 
 
@@ -190,6 +194,133 @@ def test_visualization_retry_budget_is_read_from_trusted_phase_contract() -> Non
     assert reporting_visualization_budget_from_acceptance_contract(contract) == (48, 2)
 
 
+def test_historical_visualization_contract_keeps_fixed_budget() -> None:
+    contract = build_report_phase_acceptance_contract(
+        phase="analysis",
+        validation_context_file={"path": "analysis-context.json"},
+        phase_contract={"taskKind": "visualization", "visualizationToolCalls": 7},
+        analysis_output_path="analysis-output.json",
+    )
+
+    assert reporting_visualization_budget_contract_from_acceptance_contract(contract) == {
+        "visualizationBudgetVersion": 0,
+        "visualizationEvidenceReadUnits": 0,
+        "visualizationReadLimit": 12,
+        "visualizationFactQueryLimit": 4,
+        "visualizationAttemptToolLimit": 48,
+        "visualizationTotalToolLimit": 64,
+        "visualizationReadUnitsUsed": 0,
+        "visualizationFactQueriesUsed": 0,
+        "visualizationToolCalls": 7,
+        "visualizationScriptFailures": 0,
+    }
+
+
+def test_visualization_v1_contract_requires_every_signed_budget_scalar() -> None:
+    phase_contract = {
+        "taskKind": "visualization",
+        "visualizationBudgetVersion": 1,
+        "visualizationEvidenceReadUnits": 3,
+        "visualizationReadLimit": 12,
+        "visualizationFactQueryLimit": 4,
+        "visualizationAttemptToolLimit": 48,
+        "visualizationTotalToolLimit": 64,
+        "visualizationReadUnitsUsed": 0,
+        "visualizationFactQueriesUsed": 0,
+        "visualizationToolCalls": 0,
+        "visualizationScriptFailures": 0,
+    }
+    valid = build_report_phase_acceptance_contract(
+        phase="analysis",
+        validation_context_file={"path": "analysis-context.json"},
+        phase_contract=phase_contract,
+        analysis_output_path="analysis-output.json",
+    )
+    assert (
+        reporting_visualization_budget_contract_from_acceptance_contract(valid)[
+            "visualizationEvidenceReadUnits"
+        ]
+        == 3
+    )
+
+    for missing in phase_contract.keys() - {"taskKind", "visualizationBudgetVersion"}:
+        invalid = build_report_phase_acceptance_contract(
+            phase="analysis",
+            validation_context_file={"path": "analysis-context.json"},
+            phase_contract={key: value for key, value in phase_contract.items() if key != missing},
+            analysis_output_path="analysis-output.json",
+        )
+        with pytest.raises(ReportingError, match="report_phase_contract_invalid"):
+            reporting_visualization_budget_contract_from_acceptance_contract(invalid)
+
+
+@pytest.mark.parametrize(
+    ("evidence_sizes", "fact_size", "expected"),
+    [
+        ([], 0, (0, 12, 4, 48, 64)),
+        ([1, 65536, 65537], 16385, (4, 12, 4, 48, 64)),
+        ([65536] * 25, 16 * 16384, (25, 33, 16, 65, 81)),
+        ([65536] * 512, 1, (512, 520, 4, 540, 556)),
+    ],
+)
+def test_visualization_dynamic_budget_uses_unique_file_bytes(
+    evidence_sizes: list[int], fact_size: int, expected: tuple[int, int, int, int, int]
+) -> None:
+    evidence_files = [
+        {"path": f"evidence/{index}.json", "size": size, "sha256": f"{index:064x}"}
+        for index, size in enumerate(evidence_sizes, start=1)
+    ]
+    analysis_items = {"analysis_001": {"evidenceFiles": [*evidence_files, *evidence_files[:1]]}}
+    facts = (
+        {
+            "analysis_001": FileIdentity(
+                path="facts/analysis_001.json", size=fact_size, sha256="f" * 64
+            )
+        }
+        if fact_size
+        else {}
+    )
+
+    budget = _visualization_dynamic_budget(analysis_items, facts)
+
+    assert (
+        budget["visualizationEvidenceReadUnits"],
+        budget["visualizationReadLimit"],
+        budget["visualizationFactQueryLimit"],
+        budget["visualizationAttemptToolLimit"],
+        budget["visualizationTotalToolLimit"],
+    ) == expected
+
+
+def test_visualization_dynamic_budget_rejects_513_units_and_identity_conflicts() -> None:
+    with pytest.raises(ReportingError) as exceeded:
+        _visualization_dynamic_budget(
+            {
+                "analysis_001": {
+                    "evidenceFiles": [
+                        {"path": "evidence/large.json", "size": 513 * 65536, "sha256": "a" * 64}
+                    ]
+                }
+            },
+            {},
+        )
+    with pytest.raises(ReportingError) as conflicted:
+        _visualization_dynamic_budget(
+            {
+                "analysis_001": {
+                    "evidenceFiles": [
+                        {"path": "evidence/same.json", "size": 1, "sha256": "a" * 64},
+                        {"path": "evidence/same.json", "size": 2, "sha256": "b" * 64},
+                    ]
+                }
+            },
+            {},
+        )
+
+    assert exceeded.value.code == "report_visualization_evidence_budget_exceeded"
+    assert conflicted.value.code == "report_visualization_evidence_identity_conflict"
+
+
 def test_visualization_retry_budget_is_restored_from_budget_error() -> None:
     error = ReportingError(
         "report_visualization_tool_budget_exhausted",
@@ -199,6 +330,31 @@ def test_visualization_retry_budget_is_restored_from_budget_error() -> None:
 
     assert _visualization_retry_budget(error) == (48, 2)
     assert _visualization_retry_budget(RuntimeError("other")) == (0, 0)
+
+
+def test_visualization_retry_usage_merges_full_snapshot_with_terminal_error_details() -> None:
+    error = ReportingError(
+        "report_visualization_tool_budget_exhausted",
+        "当前可视化 Task 已达到工具调用上限。",
+        details={"totalToolCalls": 49, "scriptFailureCount": 2},
+    )
+    setattr(
+        error,
+        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+        {
+            "visualizationReadUnitsUsed": 13,
+            "visualizationFactQueriesUsed": 4,
+            "visualizationToolCalls": 48,
+            "visualizationScriptFailures": 1,
+        },
+    )
+
+    assert _visualization_retry_usage(error) == {
+        "visualizationReadUnitsUsed": 13,
+        "visualizationFactQueriesUsed": 4,
+        "visualizationToolCalls": 49,
+        "visualizationScriptFailures": 2,
+    }
 
 
 def test_visualization_retry_budget_survives_unrelated_worker_error() -> None:
@@ -813,6 +969,108 @@ async def test_query_analysis_facts_reads_only_current_immutable_file_and_bounds
     )
 
 
+@pytest.mark.anyio
+async def test_visualization_facts_v1_aggregates_out_of_order_durable_items_in_plan_order() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=SimpleNamespace(thread_id="thread-1"))
+    )
+    identities = {
+        analysis_id: {
+            "path": f"facts/{analysis_id}.json",
+            "size": 10,
+            "sha256": sha * 64,
+        }
+        for analysis_id, sha in (("analysis_001", "a"), ("analysis_002", "b"))
+    }
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization",
+            "visualizationBudgetVersion": 1,
+            "analysisIds": ["analysis_001", "analysis_002"],
+            "analysisPlans": {
+                "analysis_001": {
+                    "analysisId": "analysis_001",
+                    "domain": "income",
+                    "step": "收入趋势",
+                    "primaryMetricFamily": "收入",
+                    "datasetIds": ["dataset-1"],
+                    "ignored": "not projected",
+                }
+            },
+            "deterministicFactFiles": identities,
+        },
+    )
+    toolkit._require_phase_tool = lambda *args, **kwargs: None
+    toolkit._read_trusted_json = AsyncMock(side_effect=[{"metrics": [1]}, {"metrics": [2]}])
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "completedAnalysisIds": ["analysis_002", "analysis_001"],
+                "analysisPlans": {
+                    "analysis_001": {
+                        "analysisId": "analysis_001",
+                        "domain": "income",
+                        "step": "收入趋势",
+                        "primaryMetricFamily": "收入",
+                        "datasetIds": ["dataset-1"],
+                    },
+                    "analysis_002": {
+                        "analysisId": "analysis_002",
+                        "domain": "cost",
+                        "step": "成本趋势",
+                        "primaryMetricFamily": "成本",
+                        "datasetIds": ["dataset-2"],
+                    },
+                },
+                "analysisItems": {
+                    "analysis_001": {
+                        "summary": "收入增长",
+                        "evidenceFiles": [
+                            {"path": "evidence/one.json", "size": 8, "sha256": "c" * 64}
+                        ],
+                        "citationIds": ["citation-1"],
+                    },
+                    "analysis_002": {
+                        "summary": "成本承压",
+                        "evidenceFiles": [],
+                        "citationIds": ["citation-2"],
+                    },
+                },
+            }
+        )
+    )
+
+    async def return_result(**kwargs):
+        return kwargs["result"]
+
+    toolkit._record_and_bound_profile_result = AsyncMock(side_effect=return_result)
+
+    result = await toolkit.query_analysis_facts(
+        query="analyses", purpose="一次聚合读取全部分析", maxItems=50
+    )
+
+    assert [item["analysisId"] for item in result["value"]] == [
+        "analysis_001",
+        "analysis_002",
+    ]
+    assert result["value"][0] == {
+        "analysisId": "analysis_001",
+        "facts": {"metrics": [1]},
+        "summary": "收入增长",
+        "plan": {
+            "analysisId": "analysis_001",
+            "domain": "income",
+            "step": "收入趋势",
+            "primaryMetricFamily": "收入",
+            "datasetIds": ["dataset-1"],
+        },
+        "evidenceFiles": [{"path": "evidence/one.json", "size": 8, "sha256": "c" * 64}],
+        "citationIds": ["citation-1"],
+    }
+
+
 def test_analysis_context_projection_is_typed_compact_and_current_dataset_only() -> None:
     projection = _analysis_context_projection(
         {
@@ -1141,6 +1399,17 @@ async def test_analysis_write_path_conflict_returns_retryable_receipt() -> None:
         task_scheduler=lambda _external_run_id: context(scheduler),
         scope=AsyncMock(return_value=scope),
         patch=AsyncMock(side_effect=WorkspacePathConflict("目标文件已经存在。")),
+        service=SimpleNamespace(
+            abatch_hash_files=AsyncMock(
+                return_value=[
+                    {
+                        "path": "analysis/report.py",
+                        "size": 12,
+                        "sha256": "a" * 64,
+                    }
+                ]
+            )
+        ),
     )
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
@@ -1157,17 +1426,14 @@ async def test_analysis_write_path_conflict_returns_retryable_receipt() -> None:
         run_context=RunContext(run_id="run-1", session_id="session-1"),
     )
 
-    assert result == {
-        "ok": False,
-        "status": "rejected",
-        "code": "report_analysis_write_path_conflict",
-        "message": "写入目标文件已存在或内容身份已变化。",
-        "requiredActions": [
-            "先调用 read_file 获取目标文件及最新 SHA-256，再使用 overwrite_file 或 apply_patch。"
-        ],
-        "retryable": True,
-        "details": {"paths": ["analysis/report.py"]},
+    assert result["code"] == "report_analysis_write_path_conflict"
+    assert result["details"] == {
+        "paths": ["analysis/report.py"],
+        "currentFiles": [{"path": "analysis/report.py", "size": 12, "sha256": "a" * 64}],
+        "recoveryOperation": "overwrite_file",
     }
+    assert "当前 64 位 sha256" in result["requiredActions"][0]
+    assert "不得用 create_file 覆盖" in result["requiredActions"][0]
     toolkit._apply_durable.assert_awaited_once()
 
 
@@ -1732,13 +1998,249 @@ def test_analysis_output_paths_are_confined_to_current_item_root() -> None:
     assert raised.value.code == "report_analysis_output_path_invalid"
 
 
-def test_visualization_contract_does_not_require_analysis_item_output_root() -> None:
-    contract = {"taskKind": "visualization"}
+def test_visualization_contract_only_allows_signed_script_path() -> None:
+    contract = {
+        "taskKind": "visualization",
+        "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
+    }
 
     ReportWorkspaceTaskToolkit._require_analysis_task_output_paths(
         contract,
         ["analysis/charts/trend.py"],
     )
+    with pytest.raises(ReportingError) as raised:
+        ReportWorkspaceTaskToolkit._require_analysis_task_output_paths(
+            contract,
+            ["analysis/charts/other.py"],
+        )
+
+    assert raised.value.code == "report_visualization_write_forbidden"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 -c 'print(1)'",
+        "python3 analysis/charts/trend.py --extra",
+        "ls analysis/charts",
+        "find analysis",
+        "cat analysis/charts/trend.py",
+        "python3 analysis/charts/trend.py <<'PY'\nPY",
+    ],
+)
+async def test_visualization_terminal_rejects_every_command_except_signed_script(
+    command: str,
+) -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization",
+            "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
+        },
+    )
+
+    result = await toolkit._visualization_terminal_rejection(
+        scope=SimpleNamespace(), arguments={"command": command, "workdir": None}
+    )
+
+    assert result["code"] == "report_visualization_terminal_forbidden"
+    assert result["retryable"] is False
+
+
+@pytest.mark.anyio
+async def test_visualization_terminal_rejects_script_changed_after_committed_write() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization",
+            "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "writeIntents": {
+                    "intent": {
+                        "status": "committed",
+                        "artifacts": [
+                            {
+                                "path": "analysis/charts/trend.py",
+                                "size": 10,
+                                "sha256": "a" * 64,
+                            }
+                        ],
+                    }
+                }
+            }
+        )
+    )
+    toolkit.kernel = SimpleNamespace(
+        service=SimpleNamespace(
+            abatch_hash_files=AsyncMock(
+                return_value=[
+                    {
+                        "path": "analysis/charts/trend.py",
+                        "size": 11,
+                        "sha256": "b" * 64,
+                    }
+                ]
+            )
+        )
+    )
+
+    result = await toolkit._visualization_terminal_rejection(
+        scope=SimpleNamespace(thread_id="thread-1"),
+        arguments={"command": "python3 analysis/charts/trend.py", "workdir": None},
+    )
+
+    assert result["code"] == "report_visualization_script_identity_changed"
+
+
+@pytest.mark.anyio
+async def test_visualization_terminal_only_accepts_latest_committed_script_identity() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization",
+            "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "writeIntents": {
+                    "old": {
+                        "status": "committed",
+                        "artifacts": [
+                            {"path": "analysis/charts/trend.py", "size": 10, "sha256": "a" * 64}
+                        ],
+                    },
+                    "latest": {
+                        "status": "committed",
+                        "artifacts": [
+                            {"path": "analysis/charts/trend.py", "size": 11, "sha256": "b" * 64}
+                        ],
+                    },
+                }
+            }
+        )
+    )
+    toolkit.kernel = SimpleNamespace(
+        service=SimpleNamespace(
+            abatch_hash_files=AsyncMock(
+                return_value=[{"path": "analysis/charts/trend.py", "size": 10, "sha256": "a" * 64}]
+            )
+        )
+    )
+
+    result = await toolkit._visualization_terminal_rejection(
+        scope=SimpleNamespace(thread_id="thread-1"),
+        arguments={"command": "python3 analysis/charts/trend.py", "workdir": None},
+    )
+
+    assert result["code"] == "report_visualization_script_identity_changed"
+
+
+@pytest.mark.anyio
+async def test_visualization_terminal_records_running_session_without_ok(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._active_reporting_phase = lambda _scope: "analysis"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._visualization_terminal_rejection = AsyncMock(return_value=None)
+    toolkit._analysis_python_dependency_rejection = AsyncMock(return_value=None)
+    context = RunContext(run_id="run-1", session_id="session-1", session_state={})
+
+    async def base_invoke(_self, _tool_name, _arguments, call, _run_context):
+        return await call(SimpleNamespace())
+
+    async def running_result(_scope: Any) -> dict[str, str]:
+        return {"status": "running", "session_id": "session-42"}
+
+    monkeypatch.setattr(WorkspaceTaskToolkit, "_invoke", base_invoke)
+    result = await toolkit._invoke(
+        "terminal",
+        {"command": "python3 analysis/charts/trend.py"},
+        running_result,
+        context,
+    )
+
+    assert result == {"status": "running", "session_id": "session-42"}
+    assert context.session_state["reportingVisualizationSessions"] == ["session-42"]
+
+
+def test_visualization_process_rejects_foreign_session_and_mutating_action() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    context = RunContext(
+        run_id="run-1",
+        session_id="session-1",
+        session_state={"reportingVisualizationSessions": ["owned-session"]},
+    )
+
+    foreign = toolkit._visualization_process_rejection(
+        scope=SimpleNamespace(),
+        arguments={"action": "poll", "session_id": "foreign-session"},
+        run_context=context,
+    )
+    write = toolkit._visualization_process_rejection(
+        scope=SimpleNamespace(),
+        arguments={"action": "write", "session_id": "owned-session"},
+        run_context=context,
+    )
+
+    assert foreign["code"] == "report_visualization_process_session_forbidden"
+    assert write["code"] == "report_visualization_process_forbidden"
+
+
+@pytest.mark.anyio
+async def test_visualization_read_rejects_untrusted_and_changed_evidence() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._active_reporting_phase = lambda _scope: "analysis"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "analysisItems": {
+                    "analysis_001": {
+                        "evidenceFiles": [
+                            {
+                                "path": "evidence/one.json",
+                                "size": 8,
+                                "sha256": "a" * 64,
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+    )
+    toolkit.kernel = SimpleNamespace(
+        service=SimpleNamespace(
+            abatch_hash_files=AsyncMock(
+                return_value=[{"path": "evidence/one.json", "size": 9, "sha256": "b" * 64}]
+            )
+        )
+    )
+    scope = SimpleNamespace(thread_id="thread-1")
+
+    forbidden = await toolkit._visualization_evidence_read_rejection(
+        scope=scope, path="evidence/other.json"
+    )
+    changed = await toolkit._visualization_evidence_read_rejection(
+        scope=scope, path="evidence/one.json"
+    )
+
+    assert forbidden["code"] == "report_visualization_evidence_path_forbidden"
+    assert changed["code"] == "report_visualization_evidence_changed"
 
 
 def test_analysis_item_acceptance_contract_requires_single_id_and_output_root() -> None:

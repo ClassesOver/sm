@@ -503,6 +503,8 @@ def _catalog_scope(
         current = actual.get(qualified)
         if current is None:
             raise ReportingError("report_catalog_drift", "实时 catalog 缺少结构快照数据表。")
+        if current.description and current.description != expected.description:
+            raise ReportingError("report_catalog_drift", "实时 catalog 与结构快照注释不一致。")
         current_columns = {column.name.lower(): column for column in current.columns}
         selected: list[CatalogColumn] = []
         selected_names: set[str] = set()
@@ -515,9 +517,20 @@ def _catalog_scope(
                 or _normalized_type(current_column.data_type)
                 != _normalized_type(expected_column.data_type)
                 or current_column.nullable != expected_column.nullable
+                or (
+                    current_column.description
+                    and current_column.description != expected_column.description
+                )
             ):
                 raise ReportingError("report_catalog_drift", "实时 catalog 与结构快照不一致。")
-            selected.append(current_column)
+            selected.append(
+                CatalogColumn(
+                    name=current_column.name,
+                    data_type=current_column.data_type,
+                    nullable=current_column.nullable,
+                    description=current_column.description or expected_column.description,
+                )
+            )
             selected_names.add(name)
         scoped.append(
             CatalogTable(
@@ -525,6 +538,7 @@ def _catalog_scope(
                 database=current.database,
                 name=current.name,
                 columns=tuple(selected),
+                description=current.description or expected.description,
             )
         )
         seen.add(qualified)

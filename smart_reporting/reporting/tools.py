@@ -9,7 +9,7 @@ import io
 import json
 import re
 import shlex
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from pathlib import PurePosixPath
 from typing import Any, cast
@@ -1131,7 +1131,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         _agno_run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         """核验三层文件身份后返回有界 Profile 节点。"""
-        # Agno 2.8.2 会为名为 run_context 的普通工具入口回传 session_state
+        # Agno 会为名为 run_context 的普通工具入口回传 session_state
         # 快照；并行 Profile 调用按原调用顺序合并结果时，较早完成的旧快照可能覆盖
         # 其他调用已经写入的 receipt。使用框架保留的内部注入名后仍共享同一状态引用，
         # 但不会产生可回放快照，这是并行 checkpoint 写入不可绕过的不变量。
@@ -1573,6 +1573,30 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
             raise ReportingError(
                 "report_analysis_facts_invalid", "当前 Task 的 facts 注册表不完整。"
             )
+        durable_items: Mapping[str, Any] = {}
+        if task_kind == "visualization" and contract.get("visualizationBudgetVersion") == 1:
+            durable = await self._durable_state(scope)
+            raw_completed = durable.payload.get("completedAnalysisIds")
+            completed_ids = [
+                value for value in raw_completed or () if isinstance(value, str) and value
+            ]
+            if len(completed_ids) != len(analysis_ids) or set(completed_ids) != set(analysis_ids):
+                raise ReportingError(
+                    "report_analysis_facts_invalid",
+                    "visualization facts 查询与 durable 完成集合不一致。",
+                )
+            raw_items = durable.payload.get("analysisItems")
+            if not isinstance(raw_items, Mapping):
+                raise ReportingError(
+                    "report_analysis_facts_invalid", "durable analysisItems 注册表无效。"
+                )
+            durable_items = raw_items
+        plans = (
+            durable.payload.get("analysisPlans")
+            if task_kind == "visualization" and contract.get("visualizationBudgetVersion") == 1
+            else contract.get("analysisPlans")
+        )
+        plans = plans if isinstance(plans, Mapping) else {}
         documents = []
         for analysis_id in analysis_ids:
             document = await self._read_trusted_json(
@@ -1581,7 +1605,38 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 identity_code="report_analysis_facts_changed",
                 structure_code="report_analysis_facts_invalid",
             )
-            documents.append({"analysisId": analysis_id, "facts": document})
+            projected: dict[str, Any] = {"analysisId": analysis_id, "facts": document}
+            if durable_items:
+                item = durable_items.get(analysis_id)
+                plan = plans.get(analysis_id)
+                if not isinstance(item, Mapping):
+                    raise ReportingError(
+                        "report_analysis_facts_invalid",
+                        "durable analysis item 注册表不完整。",
+                    )
+                projected.update(
+                    {
+                        "summary": item.get("summary"),
+                        "plan": (
+                            {
+                                key: plan.get(key)
+                                for key in (
+                                    "analysisId",
+                                    "domain",
+                                    "step",
+                                    "primaryMetricFamily",
+                                    "datasetIds",
+                                )
+                                if key in plan
+                            }
+                            if isinstance(plan, Mapping)
+                            else None
+                        ),
+                        "evidenceFiles": item.get("evidenceFiles", []),
+                        "citationIds": item.get("citationIds", []),
+                    }
+                )
+            documents.append(projected)
         search_value: Any = (
             documents[0]["facts"] if task_kind == "analysis_item" else {"analyses": documents}
         )
@@ -1737,7 +1792,7 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         for value in paths:
             try:
                 path = WorkspaceService.normalize_path(value, allow_root=False)[0]
-            except WorkspaceError as error:
+            except (TypeError, WorkspaceError) as error:
                 raise ReportingError(
                     "report_analysis_output_path_invalid", "analysis 输出路径无效。"
                 ) from error
@@ -1756,6 +1811,165 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
     ) -> None:
         if contract.get("taskKind") == "analysis_item":
             cls._require_analysis_output_paths(contract, paths)
+            return
+        if contract.get("taskKind") == "visualization":
+            workspace = contract.get("visualizationWorkspace")
+            script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
+            try:
+                normalized_script = WorkspaceService.normalize_path(script_path, allow_root=False)[
+                    0
+                ]
+            except WorkspaceError as error:
+                raise ReportingError(
+                    "report_phase_contract_invalid", "visualization scriptPath 无效。"
+                ) from error
+            normalized_paths = tuple(
+                WorkspaceService.normalize_path(path, allow_root=False)[0] for path in paths
+            )
+            if normalized_paths != (normalized_script,):
+                raise ReportingError(
+                    "report_visualization_write_forbidden",
+                    "visualization 只允许写入签发的图表脚本。",
+                    details={"scriptPath": normalized_script},
+                )
+
+    async def _visualization_evidence_read_rejection(
+        self, *, scope: Any, path: Any
+    ) -> dict[str, Any] | None:
+        if (
+            self._active_reporting_phase(scope) != "analysis"
+            or self._active_reporting_task_kind(scope) != "visualization"
+        ):
+            return None
+        try:
+            normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
+            durable = await self._durable_state(scope)
+            expected_by_path: dict[str, dict[str, Any]] = {}
+            items = durable.payload.get("analysisItems")
+            if isinstance(items, Mapping):
+                for item in items.values():
+                    files = item.get("evidenceFiles") if isinstance(item, Mapping) else None
+                    if not isinstance(files, Sequence) or isinstance(files, (str, bytes)):
+                        continue
+                    for identity in files:
+                        if not isinstance(identity, Mapping):
+                            continue
+                        identity_path = identity.get("path")
+                        if not isinstance(identity_path, str):
+                            continue
+                        canonical = WorkspaceService.normalize_path(
+                            identity_path, allow_root=False
+                        )[0]
+                        frozen = {
+                            "path": canonical,
+                            "size": identity.get("size"),
+                            "sha256": identity.get("sha256"),
+                        }
+                        existing = expected_by_path.get(canonical)
+                        if existing is not None and existing != frozen:
+                            raise ReportingError(
+                                "report_visualization_evidence_identity_conflict",
+                                "durable evidence 同一路径绑定了不同身份。",
+                            )
+                        expected_by_path[canonical] = frozen
+            expected = expected_by_path.get(normalized)
+            if expected is None:
+                raise ReportingError(
+                    "report_visualization_evidence_path_forbidden",
+                    "visualization 只能读取 durable analysisItems 授权的 evidence 文件。",
+                )
+            current = (await self.kernel.service.abatch_hash_files(scope.thread_id, [normalized]))[
+                0
+            ]
+            actual = {
+                "path": current.get("path"),
+                "size": current.get("size"),
+                "sha256": current.get("sha256"),
+            }
+            if current.get("missing") is True or actual != expected:
+                raise ReportingError(
+                    "report_visualization_evidence_changed",
+                    "visualization evidence 文件身份已变化。",
+                )
+            return None
+        except (ReportingError, WorkspaceError) as error:
+            return self._failure(error, retryable=False)
+
+    async def _visualization_terminal_rejection(
+        self, *, scope: Any, arguments: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        if self._active_reporting_task_kind(scope) != "visualization":
+            return None
+        command = arguments.get("command")
+        workdir = arguments.get("workdir")
+        try:
+            _parameters, contract = self._phase_parameters(scope, "analysis")
+            workspace = contract.get("visualizationWorkspace")
+            script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
+            normalized_script = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
+            parts = shlex.split(command) if isinstance(command, str) and "\n" not in command else []
+            if workdir not in {None, ""} or parts != ["python3", normalized_script]:
+                raise ReportingError(
+                    "report_visualization_terminal_forbidden",
+                    "visualization terminal 只允许从工作区根目录执行签发脚本。",
+                    details={"allowedCommand": f"python3 {normalized_script}"},
+                )
+            durable = await self._durable_state(scope)
+            committed = [
+                artifact
+                for intent in durable.payload.get("writeIntents", {}).values()
+                if isinstance(intent, Mapping) and intent.get("status") == "committed"
+                for artifact in intent.get("artifacts", ())
+                if isinstance(artifact, Mapping) and artifact.get("path") == normalized_script
+            ]
+            latest_committed = committed[-1] if committed else None
+            current = (
+                await self.kernel.service.abatch_hash_files(scope.thread_id, [normalized_script])
+            )[0]
+            if (
+                current.get("missing") is True
+                or latest_committed is None
+                or latest_committed.get("size") != current.get("size")
+                or latest_committed.get("sha256") != current.get("sha256")
+            ):
+                raise ReportingError(
+                    "report_visualization_script_identity_changed",
+                    "签发脚本身份未提交或已发生变化。",
+                )
+            return None
+        except (ReportingError, WorkspaceError, ValueError) as error:
+            return self._failure(error, retryable=False)
+
+    def _visualization_process_rejection(
+        self,
+        *,
+        scope: Any,
+        arguments: Mapping[str, Any],
+        run_context: RunContext | None,
+    ) -> dict[str, Any] | None:
+        if self._active_reporting_task_kind(scope) != "visualization":
+            return None
+        state = self._session_state(run_context)
+        sessions = state.get("reportingVisualizationSessions", ()) if state is not None else ()
+        action = arguments.get("action")
+        session_id = arguments.get("session_id")
+        if action not in {"poll", "wait", "kill"}:
+            return self._failure(
+                ReportingError(
+                    "report_visualization_process_forbidden",
+                    "visualization process 只允许查询、等待或终止签发脚本 session。",
+                ),
+                retryable=False,
+            )
+        if not isinstance(session_id, str) or session_id not in sessions:
+            return self._failure(
+                ReportingError(
+                    "report_visualization_process_session_forbidden",
+                    "process session 不属于当前 visualization Task。",
+                ),
+                retryable=False,
+            )
+        return None
 
     async def _apply_durable(
         self,
@@ -1858,7 +2072,17 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 )
                 if rejection is not None:
                     return rejection
+                rejection = await self._visualization_evidence_read_rejection(
+                    scope=scope, path=arguments.get("path")
+                )
+                if rejection is not None:
+                    return rejection
             if phase == "analysis" and tool_name == "terminal":
+                visualization_rejection = await self._visualization_terminal_rejection(
+                    scope=scope, arguments=arguments
+                )
+                if visualization_rejection is not None:
+                    return visualization_rejection
                 dependency_rejection = await self._analysis_python_dependency_rejection(
                     scope=scope,
                     command=arguments.get("command"),
@@ -1866,7 +2090,26 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 )
                 if dependency_rejection is not None:
                     return dependency_rejection
-            return await call(scope)
+            if phase == "analysis" and tool_name == "process":
+                process_rejection = self._visualization_process_rejection(
+                    scope=scope, arguments=arguments, run_context=run_context
+                )
+                if process_rejection is not None:
+                    return process_rejection
+            result = await call(scope)
+            if (
+                phase == "analysis"
+                and task_kind == "visualization"
+                and tool_name == "terminal"
+                and isinstance(result, Mapping)
+                and result.get("status") == "running"
+                and isinstance(result.get("session_id"), str)
+                and (state := self._session_state(run_context)) is not None
+            ):
+                sessions = set(state.get("reportingVisualizationSessions", ()))
+                sessions.add(result["session_id"])
+                state["reportingVisualizationSessions"] = sorted(sessions)
+            return result
 
         return await super()._invoke(tool_name, arguments, guarded_call, run_context)
 
@@ -2170,10 +2413,26 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                         _scope=scope,
                     )
             except WorkspacePathConflict as error:
+                try:
+                    current_files = await self._analysis_write_hash_files(
+                        thread_id=scope.thread_id,
+                        paths=paths,
+                    )
+                except Exception:
+                    current_files = []
+                recovery_operation = (
+                    "overwrite_file"
+                    if canonical_tool_name in {"create_files", "overwrite_file"}
+                    else "apply_patch"
+                )
                 raise ReportingError(
                     "report_analysis_write_path_conflict",
                     "写入目标文件已存在或内容身份已变化。",
-                    details={"paths": list(paths)},
+                    details={
+                        "paths": list(paths),
+                        "currentFiles": current_files,
+                        "recoveryOperation": recovery_operation,
+                    },
                 ) from error
             if result.get("ok") is not True:
                 return result
@@ -3259,10 +3518,19 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
         ):
             paths = error.details.get("paths")
             if isinstance(paths, list):
-                result["details"] = {"paths": [path for path in paths if isinstance(path, str)]}
-            result["requiredActions"] = [
-                "先调用 read_file 获取目标文件及最新 SHA-256，再使用 overwrite_file 或 apply_patch。"
-            ]
+                result["details"] = {
+                    "paths": [path for path in paths if isinstance(path, str)],
+                    "currentFiles": error.details.get("currentFiles", []),
+                    "recoveryOperation": error.details.get("recoveryOperation"),
+                }
+            if error.details.get("recoveryOperation") == "overwrite_file":
+                result["requiredActions"] = [
+                    "只使用 details.currentFiles 中当前 64 位 sha256 调用 overwrite_file；不得用 create_file 覆盖。"
+                ]
+            else:
+                result["requiredActions"] = [
+                    "只基于 details.currentFiles 对当前内容提交非空 apply_patch；不得提交空 patch。"
+                ]
         elif (
             code == "report_analysis_dependency_missing"
             and isinstance(error, ReportingError)
