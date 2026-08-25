@@ -33,7 +33,11 @@ from ..instructions import (
     CODING_VALIDATOR_FEEDBACK_INSTRUCTION,
     PURE_CODING_PARALLEL_READ_INSTRUCTIONS,
 )
-from ..model_config import OPENAI_COMPATIBLE_ROLE_MAP
+from ..model_config import (
+    OPENAI_COMPATIBLE_ROLE_MAP,
+    openai_compatible_extra_body,
+    reasoning_transport_fields,
+)
 from ..observability import configure_tracing, flush_tracing
 from ..settings import AgentSettings
 from ..skills import (
@@ -104,7 +108,10 @@ def _create_cli_model(
         timeout=settings.model_timeout_seconds,
         max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
-        extra_body=({"enable_thinking": enable_thinking} if enable_thinking is not None else None),
+        extra_body=openai_compatible_extra_body(
+            enable_thinking=enable_thinking,
+            use_vllm_reasoning=settings.model_vllm_reasoning,
+        ),
         retries=2,
         exponential_backoff=True,
     )
@@ -122,13 +129,16 @@ def create_cli_agent(context: CliContext) -> Agent:
         input_token_budget=input_token_budget,
     )
     model.temperature = settings.coding_temperature
-    model.reasoning_effort = settings.coding_reasoning_effort
     extra_body = dict(model.extra_body or {})
     if settings.coding_enable_thinking:
         extra_body["thinking_budget"] = settings.coding_thinking_budget
     else:
         extra_body.pop("thinking_budget", None)
-    model.extra_body = extra_body
+    model.extra_body, model.reasoning_effort = reasoning_transport_fields(
+        extra_body=extra_body,
+        enabled=settings.coding_enable_thinking,
+        reasoning_effort=settings.coding_reasoning_effort,
+    )
     coding_skills = load_builtin_coding_skills(settings.skills_dir)
     validator_registry = SkillValidatorRegistry.from_skills(coding_skills)
     compression_manager = (

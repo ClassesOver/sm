@@ -56,6 +56,7 @@ Coding 与 Reporting 使用独立 Agent、指令、工具、状态和验收链�
 | --- | --- |
 | `OPENAI_API_KEY` | 模型 API 密钥 |
 | `OPENAI_BASE_URL` | OpenAI-compatible API 地址 |
+| `AGENT_MODEL_VLLM_REASONING` | 经 vLLM 提供 DeepSeek V4 时设为 `true`，使用官方 `chat_template_kwargs` reasoning 格式；默认 `false` 保持云端请求格式不变 |
 | `MODEL` | 默认模型 |
 | `AGENT_DB_URL` | AgentOS PostgreSQL 连接 |
 | `AGENT_WORKSPACE_HMAC_SECRET` | Workspace capability 签名密钥 |

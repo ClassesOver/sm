@@ -75,6 +75,41 @@ def test_report_worker_disables_unused_session_summaries(monkeypatch: pytest.Mon
     assert worker.session_summary_manager is None
 
 
+def test_report_worker_vllm_transport_preserves_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = AgentSettings.from_environment(
+        {
+            "OPENAI_API_KEY": "test",
+            "OPENAI_BASE_URL": "http://self-hosted.example/v1",
+            "AGENT_MODEL_VLLM_REASONING": "true",
+        },
+        load_env_file=False,
+    )
+    monkeypatch.setattr(report_agent_module, "load_sandbox_execution_skills", lambda _: None)
+    monkeypatch.setattr(report_agent_module, "load_reporting_skills", lambda _: None)
+
+    worker = create_report_worker(
+        settings,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        state_repository=SimpleNamespace(),
+    )
+
+    request_params = worker.model.get_request_params()
+
+    assert "reasoning_effort" not in request_params
+    assert request_params["extra_body"] == {
+        "enable_thinking": True,
+        "thinking_budget": 8192,
+        "chat_template_kwargs": {
+            "thinking": True,
+            "reasoning_effort": "high",
+        },
+    }
+
+
 def test_report_vision_reviewer_disables_telemetry() -> None:
     settings = AgentSettings.from_environment(
         {"OPENAI_API_KEY": "test"},

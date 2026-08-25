@@ -38,7 +38,7 @@ from ..context_management import (
     clear_terminal_reasoning,
     projected_coding_model,
 )
-from ..model_config import OPENAI_COMPATIBLE_ROLE_MAP
+from ..model_config import OPENAI_COMPATIBLE_ROLE_MAP, openai_compatible_extra_body
 from ..settings import AgentSettings
 from ..skills import (
     create_skill_script_hook,
@@ -2188,7 +2188,10 @@ def _report_model(
         timeout=(settings.model_timeout_seconds if timeout_seconds is None else timeout_seconds),
         max_retries=0,
         role_map=OPENAI_COMPATIBLE_ROLE_MAP,
-        extra_body={"enable_thinking": enable_thinking},
+        extra_body=openai_compatible_extra_body(
+            enable_thinking=enable_thinking,
+            use_vllm_reasoning=settings.model_vllm_reasoning,
+        ),
         temperature=1.0,
         top_p=1.0,
         collect_metrics_on_completion=(

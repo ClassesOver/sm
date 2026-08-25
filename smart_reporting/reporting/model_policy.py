@@ -7,6 +7,8 @@ from typing import Literal
 
 from agno.models.openai import OpenAIChat
 
+from ..model_config import reasoning_transport_fields
+
 ReportingReasoningEffort = Literal["high", "max"]
 
 
@@ -67,8 +69,11 @@ def apply_reporting_thinking_profile[ModelT: OpenAIChat](
     extra_body["enable_thinking"] = profile.enabled
     if profile.enabled:
         extra_body["thinking_budget"] = profile.thinking_budget
-    model.extra_body = extra_body
-    model.reasoning_effort = profile.reasoning_effort if profile.enabled else None
+    model.extra_body, model.reasoning_effort = reasoning_transport_fields(
+        extra_body=extra_body,
+        enabled=profile.enabled,
+        reasoning_effort=profile.reasoning_effort,
+    )
     model.temperature = profile.temperature
     return model
 
@@ -80,7 +85,12 @@ def reporting_thinking_profile_from_model(model: OpenAIChat) -> ReportingThinkin
     extra_body = model.extra_body if isinstance(model.extra_body, dict) else {}
     if extra_body.get("enable_thinking") is not True:
         return ReportingThinkingProfile.off(temperature=temperature)
-    raw_effort = model.reasoning_effort
+    template_kwargs = extra_body.get("chat_template_kwargs")
+    raw_effort = (
+        template_kwargs.get("reasoning_effort")
+        if isinstance(template_kwargs, dict)
+        else model.reasoning_effort
+    )
     budget = extra_body.get("thinking_budget")
     if raw_effort == "high":
         effort: ReportingReasoningEffort = "high"

@@ -143,11 +143,13 @@ def test_create_cli_agent_is_independent_coding_agent():
 @pytest.mark.parametrize(
     "base_url",
     [
+        "https://api-inference.modelscope.cn/v1",
         "https://api.siliconflow.cn/v1",
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         "http://127.0.0.1:8000/v1",
     ],
-    ids=["siliconflow", "qianwen-dashscope", "vllm"],
+    ids=["modelscope", "siliconflow", "qianwen-dashscope", "aliyun-maas", "vllm"],
 )
 def test_coding_thinking_parameters_use_openai_compatible_request_fields(base_url):
     settings = AgentSettings.from_environment({"OPENAI_BASE_URL": base_url}, load_env_file=False)
@@ -168,6 +170,63 @@ def test_coding_thinking_parameters_use_openai_compatible_request_fields(base_ur
     assert request_params["extra_body"] == {
         "enable_thinking": True,
         "thinking_budget": 16384,
+    }
+
+
+def test_vllm_reasoning_transport_preserves_coding_reasoning_effort() -> None:
+    settings = AgentSettings.from_environment(
+        {
+            "OPENAI_BASE_URL": "http://self-hosted.example/v1",
+            "AGENT_MODEL_VLLM_REASONING": "true",
+        },
+        load_env_file=False,
+    )
+    agent = create_cli_agent(
+        CliContext(
+            settings=settings,
+            database=object(),
+            workspace_service=object(),
+            coding_repository=object(),  # type: ignore[arg-type]
+        )
+    )
+
+    request_params = agent.model.get_request_params()
+
+    assert "reasoning_effort" not in request_params
+    assert request_params["extra_body"] == {
+        "enable_thinking": True,
+        "thinking_budget": 16384,
+        "chat_template_kwargs": {
+            "thinking": True,
+            "reasoning_effort": "high",
+        },
+    }
+
+
+def test_vllm_reasoning_transport_preserves_disabled_coding_thinking() -> None:
+    settings = AgentSettings.from_environment(
+        {
+            "OPENAI_BASE_URL": "http://self-hosted.example/v1",
+            "AGENT_MODEL_VLLM_REASONING": "true",
+            "AGENT_CODING_ENABLE_THINKING": "false",
+        },
+        load_env_file=False,
+    )
+    agent = create_cli_agent(
+        CliContext(
+            settings=settings,
+            database=object(),
+            workspace_service=object(),
+            coding_repository=object(),  # type: ignore[arg-type]
+        )
+    )
+
+    request_params = agent.model.get_request_params()
+
+    assert "reasoning_effort" not in request_params
+    assert request_params["extra_body"] == {
+        "enable_thinking": False,
+        "chat_template_kwargs": {"thinking": False},
     }
 
 

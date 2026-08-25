@@ -26,6 +26,7 @@ def test_settings_defaults():
     )
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
+    assert current.model_vllm_reasoning is False
     assert current.coding_temperature == 0.1
     assert current.coding_enable_thinking is True
     assert current.coding_reasoning_effort == "medium"
@@ -115,6 +116,21 @@ def test_report_analysis_concurrency_is_bounded(value):
 
 def test_model_timeout_comes_from_environment():
     assert settings(AGENT_MODEL_TIMEOUT_SECONDS="3600").model_timeout_seconds == 3600
+
+
+def test_vllm_reasoning_uses_deepseek_v4_supported_default_effort():
+    current = settings(AGENT_MODEL_VLLM_REASONING="true")
+
+    assert current.model_vllm_reasoning is True
+    assert current.coding_reasoning_effort == "high"
+
+
+def test_vllm_reasoning_rejects_unsupported_coding_effort():
+    with pytest.raises(ValueError, match="DeepSeek V4.*low、high 或 max"):
+        settings(
+            AGENT_MODEL_VLLM_REASONING="true",
+            AGENT_CODING_REASONING_EFFORT="medium",
+        )
 
 
 def test_report_vision_model_comes_from_environment():
