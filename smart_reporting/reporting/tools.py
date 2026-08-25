@@ -1839,12 +1839,14 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
     ) -> dict[str, Any] | None:
         """返回同一路径最后一次 committed write intent 冻结的文件身份。"""
 
-        latest: dict[str, Any] | None = None
+        latest_sequenced: dict[str, Any] | None = None
+        latest_sequence: int | None = None
+        latest_legacy: dict[str, Any] | None = None
         intents = payload.get("writeIntents")
         if not isinstance(intents, Mapping):
             return None
-        # Reducer 按提交顺序保留 write intent。重试只能信任最后一次提交的身份，
-        # 否则旧 intent 会在脚本被后续合法改写后继续授权读取或执行旧内容。
+        # intent 的映射位置只反映 record 顺序。新状态以 reducer 冻结的 commitSequence
+        # 为提交顺序事实；旧状态没有该字段时才按历史映射顺序回退，避免升级后中断恢复。
         for intent in intents.values():
             if not isinstance(intent, Mapping) or intent.get("status") != "committed":
                 continue
@@ -1853,12 +1855,23 @@ class ReportWorkspaceTaskToolkit(WorkspaceTaskToolkit):
                 continue
             for artifact in artifacts:
                 if isinstance(artifact, Mapping) and artifact.get("path") == path:
-                    latest = {
+                    identity = {
                         "path": path,
                         "size": artifact.get("size"),
                         "sha256": artifact.get("sha256"),
                     }
-        return latest
+                    commit_sequence = intent.get("commitSequence")
+                    if (
+                        isinstance(commit_sequence, int)
+                        and not isinstance(commit_sequence, bool)
+                        and commit_sequence >= 0
+                    ):
+                        if latest_sequence is None or commit_sequence > latest_sequence:
+                            latest_sequence = commit_sequence
+                            latest_sequenced = identity
+                    else:
+                        latest_legacy = identity
+        return latest_sequenced if latest_sequence is not None else latest_legacy
 
     async def _visualization_evidence_read_rejection(
         self, *, scope: Any, path: Any

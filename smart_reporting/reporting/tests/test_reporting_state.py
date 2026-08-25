@@ -401,6 +401,53 @@ def test_write_intent_is_durable_and_identity_conflicts_fail_closed():
     assert conflict.value.code == "report_analysis_write_identity_mismatch"
 
 
+def test_write_intent_commit_sequence_follows_actual_commit_order():
+    state = apply_phase(initial_state(), "start_analysis")
+    intents = (
+        {
+            "intentId": "a" * 64,
+            "toolName": "create_files",
+            "arguments": {"files": [{"path": "analysis/chart.py", "content": "a"}]},
+            "affectedPaths": ["analysis/chart.py"],
+            "expectedStates": {"analysis/chart.py": "present"},
+        },
+        {
+            "intentId": "b" * 64,
+            "toolName": "create_files",
+            "arguments": {"files": [{"path": "analysis/chart.py", "content": "b"}]},
+            "affectedPaths": ["analysis/chart.py"],
+            "expectedStates": {"analysis/chart.py": "present"},
+        },
+    )
+    for intent in intents:
+        state = ReportingStateReducer.apply(
+            state,
+            {
+                "name": "record_write_intent",
+                "commandId": f"record-{intent['intentId']}",
+                "payload": {"intent": intent},
+            },
+            state.state_version,
+        ).state
+
+    for intent, sha256 in ((intents[1], "b" * 64), (intents[0], "a" * 64)):
+        state = ReportingStateReducer.apply(
+            state,
+            {
+                "name": "commit_write_intent",
+                "commandId": f"commit-{intent['intentId']}",
+                "payload": {
+                    "intentId": intent["intentId"],
+                    "artifacts": [{"path": "analysis/chart.py", "size": 1, "sha256": sha256}],
+                },
+            },
+            state.state_version,
+        ).state
+
+    committed = state.payload["writeIntents"]
+    assert committed["b" * 64]["commitSequence"] < committed["a" * 64]["commitSequence"]
+
+
 def test_duplicate_section_completion_is_idempotent_only_for_same_artifact():
     state = apply_phase(initial_state(), "start_analysis")
     state = ReportingStateReducer.apply(

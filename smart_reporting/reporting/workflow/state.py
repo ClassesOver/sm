@@ -547,7 +547,16 @@ def apply(
                     "report_analysis_write_identity_mismatch", "写入意图已绑定其他文件身份。"
                 )
         else:
-            current.update({"status": "committed", "artifacts": artifacts})
+            # intent 的映射位置来自 record 顺序，不能代表写入真正完成的先后。首次提交时
+            # 冻结 reducer 即将生成的 stateVersion，供恢复读取按耐久提交事实选择最新身份；
+            # 已 committed 的幂等重试不得刷新该序号，因为它没有再次执行文件写入。
+            current.update(
+                {
+                    "status": "committed",
+                    "artifacts": artifacts,
+                    "commitSequence": state.state_version + 1,
+                }
+            )
             intents[intent_id] = current
     elif name == "record_artifact":
         artifacts = payload.setdefault("artifacts", [])

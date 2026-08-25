@@ -2260,23 +2260,25 @@ async def test_visualization_read_allows_only_latest_committed_signed_script() -
             payload={
                 "analysisItems": {},
                 "writeIntents": {
-                    "old": {
+                    "delayed_latest": {
                         "status": "committed",
-                        "artifacts": [
-                            {
-                                "path": "analysis/charts/trend.py",
-                                "size": 10,
-                                "sha256": "a" * 64,
-                            }
-                        ],
-                    },
-                    "latest": {
-                        "status": "committed",
+                        "commitSequence": 2,
                         "artifacts": [
                             {
                                 "path": "analysis/charts/trend.py",
                                 "size": 11,
                                 "sha256": "b" * 64,
+                            }
+                        ],
+                    },
+                    "committed_earlier": {
+                        "status": "committed",
+                        "commitSequence": 1,
+                        "artifacts": [
+                            {
+                                "path": "analysis/charts/trend.py",
+                                "size": 10,
+                                "sha256": "a" * 64,
                             }
                         ],
                     },
