@@ -20,6 +20,7 @@ python-dateutil>=2.9,<3.0
 jsonpointer==3.1.1
 jsonschema>=4.26,<5.0
 jmespath==1.0.1
+loguru>=0.7,<1.0
 unidiff==0.7.5
 types-python-dateutil>=2.9,<3.0
 python-multipart>=0.0.20

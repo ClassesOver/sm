@@ -13,6 +13,7 @@ from agno.run.base import RunStatus
 from agno.workflow import OnError
 from agno.workflow.step import Step
 from agno.workflow.types import StepOutput
+from loguru import logger
 
 from smart_reporting.reporting import cli as reporting_cli
 from smart_reporting.reporting.cli import (
@@ -24,7 +25,10 @@ from smart_reporting.reporting.cli import (
 )
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.controller import ReportWorkflowToolkit
-from smart_reporting.reporting.workflow.orchestration import create_reporting_workflow
+from smart_reporting.reporting.workflow.orchestration import (
+    _timed_step_executor,
+    create_reporting_workflow,
+)
 from smart_reporting.settings import AgentSettings
 
 
@@ -50,6 +54,34 @@ class UncontendedStateRepository:
 
 def runtime(**values: object) -> SimpleNamespace:
     return SimpleNamespace(state_repository=UncontendedStateRepository(), **values)
+
+
+@pytest.mark.anyio
+async def test_timed_workflow_step_logs_safe_success_and_failure() -> None:
+    async def succeed() -> StepOutput:
+        return StepOutput(content={"private": "workflow-output"})
+
+    async def fail() -> StepOutput:
+        raise RuntimeError("private-workflow-error")
+
+    records: list[str] = []
+    sink_id = logger.add(records.append, level="INFO", format="{message}")
+
+    try:
+        output = await _timed_step_executor(succeed, step_id="confirm-source")()
+        with pytest.raises(RuntimeError, match="private-workflow-error"):
+            await _timed_step_executor(fail, step_id="prepare-data-profile")()
+    finally:
+        logger.remove(sink_id)
+
+    log_text = "".join(records)
+    assert output.content == {"private": "workflow-output"}
+    assert "report_workflow_step_started step_id=confirm-source" in log_text
+    assert "report_workflow_step_completed step_id=confirm-source" in log_text
+    assert "report_workflow_step_failed step_id=prepare-data-profile" in log_text
+    assert "error_type=RuntimeError" in log_text
+    assert "workflow-output" not in log_text
+    assert "private-workflow-error" not in log_text
 
 
 def test_report_input_parsing_is_shared_with_agentos() -> None:

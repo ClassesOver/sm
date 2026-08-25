@@ -12,6 +12,7 @@ from agno.workflow import HumanReview, OnError, OnReject
 from agno.workflow.step import Step
 from agno.workflow.types import StepOutput
 from agno.workflow.workflow import Workflow
+from loguru import logger
 
 StepExecutor = Any
 _STEP_MODEL_METRICS: ContextVar[RunMetrics | None] = ContextVar(
@@ -45,18 +46,25 @@ def record_step_model_metrics(value: Any) -> None:
     _STEP_MODEL_METRICS.set(current + incoming)
 
 
-def _timed_step_executor(executor: StepExecutor) -> StepExecutor:
+def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecutor:
     # Agno 2.8.2 只自动汇总 Agent/Team executor 的 metrics；报表步骤均为 function
     # executor，因此在报表自己的边界记录墙钟耗时，并保留步骤已有的 token metrics。
     @wraps(executor)
     async def execute(*args: Any, **kwargs: Any) -> Any:
         started_at = perf_counter()
         metrics_token = _STEP_MODEL_METRICS.set(RunMetrics())
+        logger.info("report_workflow_step_started step_id={}", step_id)
         try:
             result = executor(*args, **kwargs)
             if isawaitable(result):
                 result = await result
-        except BaseException:
+        except BaseException as error:
+            logger.warning(
+                "report_workflow_step_failed step_id={} duration_ms={} error_type={}",
+                step_id,
+                max(0, round((perf_counter() - started_at) * 1000)),
+                type(error).__name__,
+            )
             _STEP_MODEL_METRICS.reset(metrics_token)
             raise
         duration = perf_counter() - started_at
@@ -68,6 +76,15 @@ def _timed_step_executor(executor: StepExecutor) -> StepExecutor:
                 metrics = metrics + result.metrics
             metrics.duration = duration
             result.metrics = metrics
+        logger.info(
+            "report_workflow_step_completed step_id={} duration_ms={} input_tokens={} "
+            "output_tokens={} total_tokens={}",
+            step_id,
+            max(0, round(duration * 1000)),
+            getattr(metrics, "input_tokens", None),
+            getattr(metrics, "output_tokens", None),
+            getattr(metrics, "total_tokens", None),
+        )
         return result
 
     return execute
@@ -108,7 +125,9 @@ def create_reporting_workflow(
             Step(
                 step_id="normalize-report-request",
                 name="规范化报表请求",
-                executor=_timed_step_executor(normalize_report_request),
+                executor=_timed_step_executor(
+                    normalize_report_request, step_id="normalize-report-request"
+                ),
                 human_review=HumanReview(
                     requires_output_review=_requires_request_review,
                     output_review_message="补充缺失的主分析领域或分析期间。",
@@ -122,7 +141,7 @@ def create_reporting_workflow(
             Step(
                 step_id="confirm-source",
                 name="解析数据来源与数据结构",
-                executor=_timed_step_executor(confirm_source),
+                executor=_timed_step_executor(confirm_source, step_id="confirm-source"),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
@@ -133,7 +152,7 @@ def create_reporting_workflow(
             Step(
                 step_id="prepare-data-profile",
                 name="确定数据范围并执行受限数据画像",
-                executor=_timed_step_executor(prepare_data_profile),
+                executor=_timed_step_executor(prepare_data_profile, step_id="prepare-data-profile"),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
@@ -143,56 +162,68 @@ def create_reporting_workflow(
             Step(
                 step_id="propose-measure-semantics",
                 name="生成指标语义候选",
-                executor=_timed_step_executor(propose_measure_semantics),
+                executor=_timed_step_executor(
+                    propose_measure_semantics, step_id="propose-measure-semantics"
+                ),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="commit-measure-semantics",
                 name="提交已确认指标语义",
-                executor=_timed_step_executor(commit_measure_semantics),
+                executor=_timed_step_executor(
+                    commit_measure_semantics, step_id="commit-measure-semantics"
+                ),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="generate-analysis-plan",
                 name="生成分析计划与取数需求",
-                executor=_timed_step_executor(generate_analysis_plan),
+                executor=_timed_step_executor(
+                    generate_analysis_plan, step_id="generate-analysis-plan"
+                ),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="generate-query-candidates",
                 name="生成并审核取数方案",
-                executor=_timed_step_executor(generate_query_candidates),
+                executor=_timed_step_executor(
+                    generate_query_candidates, step_id="generate-query-candidates"
+                ),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="materialize-datasets",
                 name="物化不可变数据集",
-                executor=_timed_step_executor(materialize_datasets),
+                executor=_timed_step_executor(materialize_datasets, step_id="materialize-datasets"),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="prepare-analysis-context",
                 name="准备分析数据上下文",
-                executor=_timed_step_executor(prepare_analysis_context),
+                executor=_timed_step_executor(
+                    prepare_analysis_context, step_id="prepare-analysis-context"
+                ),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="generate-detailed-analysis-plan",
                 name="生成详细分析计划",
-                executor=_timed_step_executor(generate_detailed_analysis_plan),
+                executor=_timed_step_executor(
+                    generate_detailed_analysis_plan, step_id="generate-detailed-analysis-plan"
+                ),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
             Step(
                 step_id="generate-outline",
                 name="生成动态报告提纲",
-                executor=_timed_step_executor(generate_outline),
+                executor=_timed_step_executor(generate_outline, step_id="generate-outline"),
                 max_retries=0,
                 # 当前产品入口暂不启用提纲审核交互。这里是直接流向下一节点，不是
                 # 自动批准；保留配置供审核能力上线时恢复，启用前必须补回端到端验收。
@@ -209,7 +240,7 @@ def create_reporting_workflow(
             Step(
                 step_id="validate-report",
                 name="PDF/Word 双格式验收",
-                executor=_timed_step_executor(validate_report),
+                executor=_timed_step_executor(validate_report, step_id="validate-report"),
                 max_retries=0,
                 # 取数、分析和章节已经在前一步完成并持久化。末端渲染或验收失败时由
                 # Agno 保存 ErrorRequirement，恢复只重跑当前 Step，不能回到前序步骤。
@@ -218,7 +249,7 @@ def create_reporting_workflow(
             Step(
                 step_id="finalize-publication",
                 name="发布门禁与正式发布",
-                executor=_timed_step_executor(finalize_publication),
+                executor=_timed_step_executor(finalize_publication, step_id="finalize-publication"),
                 max_retries=0,
                 on_error=OnError.fail,
             ),
@@ -234,7 +265,7 @@ def create_coding_analysis_step(executor: StepExecutor) -> Step:
     return Step(
         step_id="run-coding-analysis",
         name="Coding 分析与成稿",
-        executor=_timed_step_executor(executor),
+        executor=_timed_step_executor(executor, step_id="run-coding-analysis"),
         max_retries=0,
         on_error=OnError.fail,
     )

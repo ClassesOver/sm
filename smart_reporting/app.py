@@ -10,6 +10,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .agno_function_arguments import install_agno_function_argument_decoder
 from .application import ApplicationContext, create_agentos_app
+from .context_management import validate_configured_tiktoken_cache
 from .database import check_database, create_agent_database
 from .execution_context import ExecutionContext, configure_execution_tracing
 from .http_request_limits import (
@@ -71,6 +72,7 @@ configure_file_logging(
     max_bytes=settings.log_file_max_bytes,
     backup_count=settings.log_file_backup_count,
 )
+validate_configured_tiktoken_cache()
 workspace_secret = settings.workspace_hmac_secret
 agent_database = create_agent_database(settings.database_url)
 configure_execution_tracing(agent_database, settings)

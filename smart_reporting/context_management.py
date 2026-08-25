@@ -1,20 +1,24 @@
 import asyncio
 import hashlib
 import json
-import logging
+import os
 import re
 from collections.abc import AsyncIterator, Iterator
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import fields
 from datetime import UTC, datetime
+from pathlib import Path
+from time import perf_counter
 from typing import Any, ClassVar
+from urllib.parse import urlparse
 
 from agno.compression.manager import CompressionManager
 from agno.models.message import Message
 from agno.models.openai import OpenAIChat
 from agno.session.summary import SessionSummary, SessionSummaryManager
 from agno.session.team import TeamSession
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 SKILL_CONTENT_WINDOW = 10
@@ -30,6 +34,8 @@ CODING_CHECKPOINT_MAX_BYTES = 32 * 1024
 CODING_CONTEXT_REBASE_THRESHOLD = 0.75
 CODING_CONTEXT_REBASE_TARGET = 0.50
 CODING_TOOL_BATCH_LIMIT = 10
+TIKTOKEN_O200K_CACHE_KEY = "fb374d419588a4632f3f557e76b4b70aebbca790"
+TIKTOKEN_O200K_SHA256 = "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d"
 _PROJECTED_INPUT_TOKEN_BUDGET_ATTR = "_coding_input_token_budget"
 CODING_TOOL_NAMES = frozenset(
     {
@@ -108,7 +114,45 @@ _FORBIDDEN_SUMMARY_CONTENT = re.compile(
     r"[\"']?token[\"']?\s*[:=]",
     re.IGNORECASE,
 )
-logger = logging.getLogger(__name__)
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
+
+
+def validate_configured_tiktoken_cache() -> None:
+    cache_dir = str(os.environ.get("TIKTOKEN_CACHE_DIR") or "").strip()
+    if not cache_dir:
+        return
+    # 内网 Compose 把缓存目录只读挂载进容器。显式配置后必须在启动期校验，
+    # 不能等到首个模型轮次才尝试公网下载并按网络栈超时重试。
+    cache_path = Path(cache_dir) / TIKTOKEN_O200K_CACHE_KEY
+    if not cache_path.is_file():
+        raise RuntimeError("TIKTOKEN_CACHE_DIR 缺少 o200k_base 离线缓存文件。")
+    digest = hashlib.sha256(cache_path.read_bytes()).hexdigest()
+    if digest != TIKTOKEN_O200K_SHA256:
+        raise RuntimeError("TIKTOKEN_CACHE_DIR 的 o200k_base 离线缓存校验失败。")
+
+
+def _model_log_fields(model: Any) -> tuple[str, str]:
+    model_id = str(getattr(model, "id", None) or "-")
+    base_url = getattr(model, "base_url", None)
+    if not isinstance(base_url, str):
+        return model_id, "-"
+    parsed_url = urlparse(base_url)
+    host = parsed_url.hostname or "-"
+    try:
+        port = parsed_url.port
+    except ValueError:
+        port = None
+    if port is not None:
+        host = f"{host}:{port}"
+    return model_id, host
+
+
+def _tool_count(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int:
+    tools = kwargs.get("tools", args[2] if len(args) > 2 else None)
+    return len(tools) if isinstance(tools, (list, tuple)) else 0
 
 
 def _skill_resource(message: Message) -> tuple[tuple[str, str, str], str, dict[str, Any]] | None:
@@ -761,16 +805,48 @@ class ContextBudgetController(ProtectedCompressionManager):
 
     def should_compress(self, messages, tools=None, model=None, response_format=None):
         counting_model = model or self.model
+        model_id, _host = _model_log_fields(counting_model)
+        started_at = perf_counter()
+        tool_count = len(tools) if isinstance(tools, (list, tuple)) else 0
+        logger.info(
+            "context_budget_check_started model_id={} message_count={} tool_count={} "
+            "input_token_budget={}",
+            model_id,
+            len(messages),
+            tool_count,
+            self.input_token_budget,
+        )
+        fallback = False
         try:
-            return bool(
-                counting_model is not None
-                and counting_model.count_tokens(messages, tools, response_format)
-                > self.input_token_budget
+            token_count = (
+                counting_model.count_tokens(messages, tools, response_format)
+                if counting_model is not None
+                else 0
             )
-        except Exception:
-            return _fallback_context_token_count(messages, tools, response_format) > (
-                self.input_token_budget
+        except Exception as error:
+            fallback = True
+            logger.warning(
+                "context_budget_token_count_failed model_id={} duration_ms={} error_type={}",
+                model_id,
+                _duration_ms(started_at),
+                type(error).__name__,
             )
+            token_count = _fallback_context_token_count(messages, tools, response_format)
+        should_compress = token_count > self.input_token_budget
+        logger.info(
+            "context_budget_check_completed model_id={} duration_ms={} message_count={} "
+            "tool_count={} input_tokens={} input_token_budget={} fallback={} "
+            "should_compress={}",
+            model_id,
+            _duration_ms(started_at),
+            len(messages),
+            tool_count,
+            token_count,
+            self.input_token_budget,
+            str(fallback).lower(),
+            str(should_compress).lower(),
+        )
+        return should_compress
 
     async def ashould_compress(self, messages, tools=None, model=None, response_format=None):
         return self.should_compress(messages, tools, model, response_format)
@@ -909,9 +985,17 @@ class CodingContextProjector:
     def _token_count(
         messages: list[Message], model: Any, tools: Any = None, response_format: Any = None
     ) -> int:
+        started_at = perf_counter()
         try:
             return int(model.count_tokens(messages, tools, response_format))
-        except Exception:
+        except Exception as error:
+            model_id, _host = _model_log_fields(model)
+            logger.warning(
+                "context_projection_token_count_failed model_id={} duration_ms={} error_type={}",
+                model_id,
+                _duration_ms(started_at),
+                type(error).__name__,
+            )
             return _fallback_context_token_count(messages, tools, response_format)
 
     @staticmethod
@@ -1300,47 +1384,227 @@ class ProjectedOpenAIChat(OpenAIChat):
         return params
 
     def invoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+        model_id, host = _model_log_fields(self)
+        projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
+        logger.info(
+            "model_projection_completed mode=sync model_id={} host={} duration_ms={} "
+            "message_count={} projected_message_count={} tool_count={} "
+            "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
+            model_id,
+            host,
+            _duration_ms(projection_started_at),
+            len(messages),
+            len(projected),
+            _tool_count(args, kwargs),
+            metrics.get("canonical_estimated_tokens", 0),
+            metrics.get("projected_estimated_tokens", 0),
+            str(bool(metrics.get("window_rebased", False))).lower(),
+        )
         token = _CODING_REQUEST_METRICS.set(metrics)
+        provider_started_at = perf_counter()
+        failed = False
+        logger.info("model_provider_request_started mode=sync model_id={} host={}", model_id, host)
         try:
             return super().invoke(projected, *args, **kwargs)
+        except BaseException as error:
+            failed = True
+            logger.warning(
+                "model_provider_request_failed mode=sync model_id={} host={} duration_ms={} "
+                "error_type={}",
+                model_id,
+                host,
+                _duration_ms(provider_started_at),
+                type(error).__name__,
+            )
+            raise
         finally:
+            logger.info(
+                "model_provider_request_completed mode=sync model_id={} host={} duration_ms={} "
+                "failed={}",
+                model_id,
+                host,
+                _duration_ms(provider_started_at),
+                str(failed).lower(),
+            )
             _CODING_REQUEST_METRICS.reset(token)
 
     async def ainvoke(self, messages: list[Message], *args: Any, **kwargs: Any) -> Any:
+        model_id, host = _model_log_fields(self)
+        projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
+        logger.info(
+            "model_projection_completed mode=async model_id={} host={} duration_ms={} "
+            "message_count={} projected_message_count={} tool_count={} "
+            "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
+            model_id,
+            host,
+            _duration_ms(projection_started_at),
+            len(messages),
+            len(projected),
+            _tool_count(args, kwargs),
+            metrics.get("canonical_estimated_tokens", 0),
+            metrics.get("projected_estimated_tokens", 0),
+            str(bool(metrics.get("window_rebased", False))).lower(),
+        )
         token = _CODING_REQUEST_METRICS.set(metrics)
+        provider_started_at = perf_counter()
+        failed = False
+        logger.info("model_provider_request_started mode=async model_id={} host={}", model_id, host)
         try:
             return await super().ainvoke(projected, *args, **kwargs)
+        except BaseException as error:
+            failed = True
+            logger.warning(
+                "model_provider_request_failed mode=async model_id={} host={} duration_ms={} "
+                "error_type={}",
+                model_id,
+                host,
+                _duration_ms(provider_started_at),
+                type(error).__name__,
+            )
+            raise
         finally:
+            logger.info(
+                "model_provider_request_completed mode=async model_id={} host={} duration_ms={} "
+                "failed={}",
+                model_id,
+                host,
+                _duration_ms(provider_started_at),
+                str(failed).lower(),
+            )
             _CODING_REQUEST_METRICS.reset(token)
 
     def invoke_stream(self, messages: list[Message], *args: Any, **kwargs: Any) -> Iterator[Any]:
+        model_id, host = _model_log_fields(self)
+        projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
+        logger.info(
+            "model_projection_completed mode=sync_stream model_id={} host={} duration_ms={} "
+            "message_count={} projected_message_count={} tool_count={} "
+            "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
+            model_id,
+            host,
+            _duration_ms(projection_started_at),
+            len(messages),
+            len(projected),
+            _tool_count(args, kwargs),
+            metrics.get("canonical_estimated_tokens", 0),
+            metrics.get("projected_estimated_tokens", 0),
+            str(bool(metrics.get("window_rebased", False))).lower(),
+        )
         tool_calls: dict[int, dict[str, Any]] = {}
         token = _CODING_REQUEST_METRICS.set(metrics)
+        provider_started_at = perf_counter()
+        first_chunk_ms: int | None = None
+        chunk_count = 0
+        failed = False
+        logger.info("model_provider_stream_started mode=sync model_id={} host={}", model_id, host)
         try:
             for response in super().invoke_stream(projected, *args, **kwargs):
+                chunk_count += 1
+                if first_chunk_ms is None:
+                    first_chunk_ms = _duration_ms(provider_started_at)
+                    logger.info(
+                        "model_provider_first_chunk mode=sync model_id={} host={} duration_ms={}",
+                        model_id,
+                        host,
+                        first_chunk_ms,
+                    )
                 _update_stream_tool_calls(response, tool_calls)
                 if tool_calls:
                     _set_current_span_attributes(_stream_tool_batch_attributes(tool_calls))
                 yield response
+        except BaseException as error:
+            failed = True
+            logger.warning(
+                "model_provider_stream_failed mode=sync model_id={} host={} duration_ms={} "
+                "chunk_count={} error_type={}",
+                model_id,
+                host,
+                _duration_ms(provider_started_at),
+                chunk_count,
+                type(error).__name__,
+            )
+            raise
         finally:
+            logger.info(
+                "model_provider_stream_completed mode=sync model_id={} host={} duration_ms={} "
+                "first_chunk_ms={} chunk_count={} failed={}",
+                model_id,
+                host,
+                _duration_ms(provider_started_at),
+                first_chunk_ms if first_chunk_ms is not None else "-",
+                chunk_count,
+                str(failed).lower(),
+            )
             _CODING_REQUEST_METRICS.reset(token)
 
     async def ainvoke_stream(
         self, messages: list[Message], *args: Any, **kwargs: Any
     ) -> AsyncIterator[Any]:
+        model_id, host = _model_log_fields(self)
+        projection_started_at = perf_counter()
         projected, metrics = self._project(messages, args, kwargs)
+        logger.info(
+            "model_projection_completed mode=async_stream model_id={} host={} duration_ms={} "
+            "message_count={} projected_message_count={} tool_count={} "
+            "canonical_estimated_tokens={} projected_estimated_tokens={} window_rebased={}",
+            model_id,
+            host,
+            _duration_ms(projection_started_at),
+            len(messages),
+            len(projected),
+            _tool_count(args, kwargs),
+            metrics.get("canonical_estimated_tokens", 0),
+            metrics.get("projected_estimated_tokens", 0),
+            str(bool(metrics.get("window_rebased", False))).lower(),
+        )
         tool_calls: dict[int, dict[str, Any]] = {}
         token = _CODING_REQUEST_METRICS.set(metrics)
+        provider_started_at = perf_counter()
+        first_chunk_ms: int | None = None
+        chunk_count = 0
+        failed = False
+        logger.info("model_provider_stream_started mode=async model_id={} host={}", model_id, host)
         try:
             async for response in super().ainvoke_stream(projected, *args, **kwargs):
+                chunk_count += 1
+                if first_chunk_ms is None:
+                    first_chunk_ms = _duration_ms(provider_started_at)
+                    logger.info(
+                        "model_provider_first_chunk mode=async model_id={} host={} duration_ms={}",
+                        model_id,
+                        host,
+                        first_chunk_ms,
+                    )
                 _update_stream_tool_calls(response, tool_calls)
                 if tool_calls:
                     _set_current_span_attributes(_stream_tool_batch_attributes(tool_calls))
                 yield response
+        except BaseException as error:
+            failed = True
+            logger.warning(
+                "model_provider_stream_failed mode=async model_id={} host={} duration_ms={} "
+                "chunk_count={} error_type={}",
+                model_id,
+                host,
+                _duration_ms(provider_started_at),
+                chunk_count,
+                type(error).__name__,
+            )
+            raise
         finally:
+            logger.info(
+                "model_provider_stream_completed mode=async model_id={} host={} duration_ms={} "
+                "first_chunk_ms={} chunk_count={} failed={}",
+                model_id,
+                host,
+                _duration_ms(provider_started_at),
+                first_chunk_ms if first_chunk_ms is not None else "-",
+                chunk_count,
+                str(failed).lower(),
+            )
             _CODING_REQUEST_METRICS.reset(token)
 
     def run_function_calls(self, function_calls, function_call_results, *args, **kwargs):
@@ -1527,11 +1791,11 @@ class RollingSessionSummaryManager(SessionSummaryManager):
             response = model.response(messages=messages, response_format=RollingSummaryResponse)
             payload = _parse_rolling_summary(response)
         except Exception as error:
-            logger.warning("rolling_summary_failed error_type=%s", type(error).__name__)
+            logger.warning("rolling_summary_failed error_type={}", type(error).__name__)
             return getattr(session, "summary", None)
         if payload is None:
             logger.warning(
-                "rolling_summary_invalid parsed_type=%s content_type=%s",
+                "rolling_summary_invalid parsed_type={} content_type={}",
                 type(getattr(response, "parsed", None)).__name__,
                 type(getattr(response, "content", None)).__name__,
             )
@@ -1558,11 +1822,11 @@ class RollingSessionSummaryManager(SessionSummaryManager):
             )
             payload = _parse_rolling_summary(response)
         except Exception as error:
-            logger.warning("rolling_summary_failed error_type=%s", type(error).__name__)
+            logger.warning("rolling_summary_failed error_type={}", type(error).__name__)
             return getattr(session, "summary", None)
         if payload is None:
             logger.warning(
-                "rolling_summary_invalid parsed_type=%s content_type=%s",
+                "rolling_summary_invalid parsed_type={} content_type={}",
                 type(getattr(response, "parsed", None)).__name__,
                 type(getattr(response, "content", None)).__name__,
             )

@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import fields
 from functools import partial
+from time import perf_counter
 from typing import Any, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -20,6 +21,7 @@ from agno.models.response import ModelResponse
 from agno.run import RunContext
 from agno.run.agent import RunOutputEvent
 from agno.run.team import TeamRunOutputEvent
+from loguru import logger
 from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCall,
     ChoiceDeltaToolCallFunction,
@@ -118,6 +120,12 @@ _REPORT_PROFILE_EMPTY_QUERY_STATE_KEY = "agentos_reporting_empty_profile_queries
 _REPORT_ARGUMENT_MAX_ISSUES = 8
 _REPORT_ARGUMENT_MAX_TOP_LEVEL_KEYS = 32
 _REPORT_ARGUMENT_MAX_LOC_LENGTH = 256
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
+
+
 _REPORT_ARGUMENT_MAX_MESSAGE_LENGTH = 512
 _REPORT_PROFILE_RECEIPT_PROJECTION_LIMIT = 100
 _REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
@@ -2014,7 +2022,13 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
             return
         # tool call 可能到后续 chunk 才出现，已发送的前导文字无法撤回；先收齐本轮
         # 响应再统一过滤，保证任何报表工具轮次都不会向 AgentOS 泄漏解释文本。
+        started_at = perf_counter()
         responses = list(super().invoke_stream(messages, *args, **kwargs))
+        logger.info(
+            "report_facade_stream_buffer_completed mode=sync duration_ms={} chunk_count={}",
+            _duration_ms(started_at),
+            len(responses),
+        )
         yield from _without_streamed_facade_tool_preamble(responses)
 
     async def ainvoke_stream(
@@ -2025,9 +2039,15 @@ class ReportFacadeOpenAIChat(ReportingOpenAIChat):
             yield forced
             return
         # 与同步路径保持相同的整轮判定语义，不能根据首个文字 chunk 提前放行。
+        started_at = perf_counter()
         responses = [
             response async for response in super().ainvoke_stream(messages, *args, **kwargs)
         ]
+        logger.info(
+            "report_facade_stream_buffer_completed mode=async duration_ms={} chunk_count={}",
+            _duration_ms(started_at),
+            len(responses),
+        )
         for response in _without_streamed_facade_tool_preamble(responses):
             yield response
 
@@ -2222,8 +2242,23 @@ def create_report_agent(
     def workflow_tools(
         *, run_context: RunContext | None = None, agent: Agent | None = None
     ) -> list[ReportWorkflowToolkit]:
-        _ = run_context, agent
-        return [ReportWorkflowToolkit(controller)]
+        started_at = perf_counter()
+        logger.info(
+            "report_facade_tools_started run_id={} session_id_present={}",
+            getattr(run_context, "run_id", None) or "-",
+            str(bool(getattr(run_context, "session_id", None))).lower(),
+        )
+        _ = agent
+        tools = [ReportWorkflowToolkit(controller)]
+        logger.info(
+            "report_facade_tools_completed run_id={} duration_ms={} toolkit_count={} "
+            "function_count={}",
+            getattr(run_context, "run_id", None) or "-",
+            _duration_ms(started_at),
+            len(tools),
+            sum(len(tool.async_functions) for tool in tools),
+        )
+        return tools
 
     facade = report_worker.deep_copy(
         update={
