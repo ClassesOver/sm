@@ -26,7 +26,6 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
 from .state import (
@@ -64,8 +63,9 @@ class ReportingStateRepository:
     def __init__(self, db: AsyncBaseDb):
         self.db = db
         dialect = db.db_engine.dialect.name  # type: ignore[attr-defined]
-        schema = REPORTING_DB_SCHEMA if dialect == "postgresql" else None
-        self.metadata = MetaData(schema=schema)
+        if dialect != "postgresql":
+            raise ValueError("Reporting 状态仓储只支持 PostgreSQL。")
+        self.metadata = MetaData(schema=REPORTING_DB_SCHEMA)
         self.states = Table(
             "reporting_run_states",
             self.metadata,
@@ -103,11 +103,6 @@ class ReportingStateRepository:
             shared_lock = asyncio.Lock()
             setattr(db, "_agentos_reporting_state_initialize_lock", shared_lock)
         self._initialize_lock = shared_lock
-        execution_locks = getattr(db, "_agentos_reporting_workflow_execution_locks", None)
-        if execution_locks is None:
-            execution_locks = {}
-            setattr(db, "_agentos_reporting_workflow_execution_locks", execution_locks)
-        self._workflow_execution_locks: dict[str, asyncio.Lock] = execution_locks
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -116,10 +111,9 @@ class ReportingStateRepository:
             if self._initialized:
                 return
             async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-                if connection.dialect.name == "postgresql":
-                    await connection.execute(
-                        text(f'CREATE SCHEMA IF NOT EXISTS "{REPORTING_DB_SCHEMA}"')
-                    )
+                await connection.execute(
+                    text(f'CREATE SCHEMA IF NOT EXISTS "{REPORTING_DB_SCHEMA}"')
+                )
                 await connection.run_sync(self.metadata.create_all)
             self._initialized = True
 
@@ -187,26 +181,15 @@ class ReportingStateRepository:
             "created_at": datetime.now(UTC),
         }
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-            statement: Any
-            if connection.dialect.name == "postgresql":
-                statement = postgresql_insert(self.workflow_thread_owners).values(**values)
-                statement = statement.on_conflict_do_nothing(
-                    index_elements=[self.workflow_thread_owners.c.thread_id]
-                ).returning(self.workflow_thread_owners.c.thread_id)
-            elif connection.dialect.name == "sqlite":
-                statement = sqlite_insert(self.workflow_thread_owners).values(**values)
-                statement = statement.on_conflict_do_nothing(
-                    index_elements=[self.workflow_thread_owners.c.thread_id]
-                )
-            else:
-                statement = insert(self.workflow_thread_owners).values(**values)
+            statement: Any = postgresql_insert(self.workflow_thread_owners).values(**values)
+            statement = statement.on_conflict_do_nothing(
+                index_elements=[self.workflow_thread_owners.c.thread_id]
+            ).returning(self.workflow_thread_owners.c.thread_id)
             try:
                 result = await connection.execute(statement)
             except IntegrityError:
                 return False
-        if connection.dialect.name == "postgresql":
-            return result.scalar_one_or_none() == thread_id
-        return result.rowcount == 1
+        return result.scalar_one_or_none() == thread_id
 
     async def get_workflow_thread_owner(self, thread_id: str) -> dict[str, Any] | None:
         """读取 thread owner，供控制器核验旧 run 终态和安全回收孤儿记录。"""
@@ -243,29 +226,22 @@ class ReportingStateRepository:
             "created_at": datetime.now(UTC),
         }
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-            statement: Any
-            if connection.dialect.name == "postgresql":
-                statement = postgresql_insert(self.workflow_thread_owners).values(**values)
-                statement = statement.on_conflict_do_nothing(
-                    index_elements=[self.workflow_thread_owners.c.thread_id]
-                )
-            elif connection.dialect.name == "sqlite":
-                statement = sqlite_insert(self.workflow_thread_owners).values(**values)
-                statement = statement.on_conflict_do_nothing(
-                    index_elements=[self.workflow_thread_owners.c.thread_id]
-                )
-            else:
-                statement = insert(self.workflow_thread_owners).values(**values)
+            statement = postgresql_insert(self.workflow_thread_owners).values(**values)
+            statement = statement.on_conflict_do_nothing(
+                index_elements=[self.workflow_thread_owners.c.thread_id]
+            )
             try:
                 await connection.execute(statement)
             except IntegrityError:
                 return False
-            query = select(
-                self.workflow_thread_owners.c.external_run_id,
-                self.workflow_thread_owners.c.owner_user_id,
-            ).where(self.workflow_thread_owners.c.thread_id == thread_id)
-            if connection.dialect.name == "postgresql":
-                query = query.with_for_update()
+            query = (
+                select(
+                    self.workflow_thread_owners.c.external_run_id,
+                    self.workflow_thread_owners.c.owner_user_id,
+                )
+                .where(self.workflow_thread_owners.c.thread_id == thread_id)
+                .with_for_update()
+            )
             row = (await connection.execute(query)).first()
         return row is not None and tuple(row) == (external_run_id, owner_user_id)
 
@@ -432,19 +408,6 @@ class ReportingStateRepository:
         """同一 Reporting run 只能由一个 CLI 进程推进。"""
 
         engine = self.db.db_engine  # type: ignore[attr-defined]
-        if engine.dialect.name != "postgresql":
-            lock = self._workflow_execution_locks.setdefault(external_run_id, asyncio.Lock())
-            if lock.locked():
-                raise ReportingStateError(
-                    "report_workflow_run_conflict", "Reporting run 正由其他进程执行。"
-                )
-            await lock.acquire()
-            try:
-                yield
-            finally:
-                lock.release()
-            return
-
         lock_key = self._workflow_execution_lock_key(external_run_id)
         async with engine.connect() as connection:
             acquired = bool(
@@ -478,10 +441,6 @@ class ReportingStateRepository:
         """探测旧 run 是否仍被其他进程推进，供 thread owner 恢复使用。"""
 
         engine = self.db.db_engine  # type: ignore[attr-defined]
-        if engine.dialect.name != "postgresql":
-            lock = self._workflow_execution_locks.get(external_run_id)
-            return bool(lock and lock.locked())
-
         lock_key = self._workflow_execution_lock_key(external_run_id)
         async with engine.connect() as connection:
             acquired = bool(
@@ -533,15 +492,8 @@ class ReportingStateRepository:
             self.command_receipts.c.report_run_id,
             self.command_receipts.c.command_id,
         ]
-        statement: Any
-        if connection.dialect.name == "postgresql":
-            statement = postgresql_insert(self.command_receipts).values(values)
-            statement = statement.on_conflict_do_nothing(index_elements=index_elements)
-        elif connection.dialect.name == "sqlite":
-            statement = sqlite_insert(self.command_receipts).values(values)
-            statement = statement.on_conflict_do_nothing(index_elements=index_elements)
-        else:
-            statement = insert(self.command_receipts).values(values)
+        statement = postgresql_insert(self.command_receipts).values(values)
+        statement = statement.on_conflict_do_nothing(index_elements=index_elements)
         await connection.execute(statement)
 
     @staticmethod

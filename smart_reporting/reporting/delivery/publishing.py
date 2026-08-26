@@ -123,6 +123,11 @@ report_artifact_chunks_v1 = Table(
 )
 
 
+def _require_postgresql_engine(engine: AsyncEngine) -> None:
+    if engine.dialect.name != "postgresql":
+        raise ValueError("Reporting 产物持久化只支持 PostgreSQL。")
+
+
 @dataclass(frozen=True)
 class ReportDownloadScope:
     database: str
@@ -237,11 +242,10 @@ def _grant_scope_conditions(report_id: str, scope: ReportDownloadScope) -> tuple
 
 
 async def _lock_publication(connection: Any) -> None:
-    if connection.dialect.name == "postgresql":
-        await connection.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
-            {"lock_key": _PUBLICATION_LOCK_KEY},
-        )
+    await connection.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+        {"lock_key": _PUBLICATION_LOCK_KEY},
+    )
 
 
 async def _artifact_has_active_grant(
@@ -293,6 +297,7 @@ class SqlAlchemyDownloadGrantRepository:
     """基于 AgentOS AsyncEngine 的生产持久化仓，只保存 grant SHA-256。"""
 
     def __init__(self, engine: AsyncEngine):
+        _require_postgresql_engine(engine)
         self.engine = engine
 
     async def create_schema(self) -> None:
@@ -455,6 +460,7 @@ class SqlAlchemyReportArtifactRepository:
     """在 PostgreSQL 中分块保存正式 PDF/Word，避免将大文件整体载入服务内存。"""
 
     def __init__(self, engine: AsyncEngine):
+        _require_postgresql_engine(engine)
         self.engine = engine
 
     async def put(
