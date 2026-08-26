@@ -1,5 +1,10 @@
+import json
+from io import BytesIO
+from types import SimpleNamespace
+
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile
+from starlette.requests import Request
 
 from smart_reporting.application import ApplicationContext, create_agentos_app
 from smart_reporting.settings import AgentSettings
@@ -14,11 +19,6 @@ class FakeAssistant:
         for key, value in (update or {}).items():
             setattr(copied, key, value)
         return copied
-
-
-class FakeWorkflow:
-    id = "test-workflow"
-    name = "测试工作流"
 
 
 class FakeWorkspace:
@@ -57,7 +57,6 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
         settings,
         object(),
         FakeAssistant(),
-        report_workflow=FakeWorkflow(),
     )
     second_context = ApplicationContext(
         settings,
@@ -81,7 +80,7 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["agents"][0] is first_context.report_agent
     assert created[0].values["agents"][1] is not first_context.report_agent
     assert created[0].values["teams"] == []
-    assert created[0].values["workflows"] == [first_context.report_workflow]
+    assert created[0].values["workflows"] == []
     assert created[0].values["interfaces"] == []
     assert created[0].values["telemetry"] is False
 
@@ -144,7 +143,6 @@ def test_default_application_exposes_explicit_context():
     assert context.settings is app_module.settings
     assert context.workspace_service is app_module.workspace_service
     assert context.report_agent is app_module.report_agent
-    assert context.report_workflow is app_module.report_workflow
     assert app_module.agent_os.db is app_module.agent_database.async_db
     assert [agent.id for agent in app_module.agent_os.agents or []] == [
         "smart-reporting",
@@ -153,3 +151,39 @@ def test_default_application_exposes_explicit_context():
     assert str(app_module.base_app.url_path_for("reporting_dependency_diagnostics")) == (
         "/diagnostics/reporting-dependencies"
     )
+
+
+@pytest.mark.anyio
+async def test_legacy_workspace_upload_returns_413_before_workspace_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from smart_reporting import app as app_module
+
+    class Workspace:
+        def upload(self, *_args, **_kwargs):
+            raise AssertionError("超限文件不应进入 Workspace")
+
+    application = SimpleNamespace(
+        state=SimpleNamespace(agentos_context=SimpleNamespace(workspace_service=Workspace()))
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/workspace/upload",
+            "headers": [(b"x-workspace-thread", b"thread-1")],
+            "app": application,
+        }
+    )
+    request.state.capability = SimpleNamespace(thread="thread-1")
+    monkeypatch.setattr(app_module, "WORKSPACE_FILE_BYTES", 4)
+
+    response = await app_module.workspace_upload(
+        request,
+        threadId="thread-1",
+        path="oversized.bin",
+        file=UploadFile(file=BytesIO(b"12345"), filename="oversized.bin"),
+    )
+
+    assert response.status_code == 413
+    assert json.loads(response.body) == {"error": "export_file_too_large"}

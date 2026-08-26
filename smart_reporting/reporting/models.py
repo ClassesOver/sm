@@ -38,7 +38,9 @@ class ReportWorkflowControl(BaseModel):
     user_id: str = Field(alias="userId", min_length=1, max_length=256)
     status: Literal["running", "paused", "completed", "cancelled", "failed"]
     review: ReportReviewSnapshot | None = None
+    # 终态清理失败时保留该事实；下一次恢复只重试清理，不得重复执行 Workflow。
+    finalization_pending: bool | None = Field(default=None, alias="finalizationPending")
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC), alias="updatedAt")
 
     def public_dict(self) -> dict[str, Any]:
-        return self.model_dump(mode="json", by_alias=True)
+        return self.model_dump(mode="json", by_alias=True, exclude_none=True)

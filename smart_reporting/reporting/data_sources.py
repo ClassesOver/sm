@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 from collections.abc import Mapping, MutableMapping, Sequence
@@ -9,6 +10,7 @@ from typing import Any, Literal, cast
 import anyio
 from agno.run import RunContext
 
+from ..async_utils import complete_cleanup
 from ..workspace import WorkspaceHashResultError, WorkspaceService, _thread
 from .data_source import DataSourceAdapter
 from .models import ReportingError
@@ -152,7 +154,12 @@ class ReportDatasetStore:
             _relative_final, remote_final = self.service.normalize_path(
                 final_root, allow_root=False
             )
-            await self.service._aensure_directory(sandbox, remote_staging)
+            try:
+                await self.service._aensure_directory(sandbox, remote_staging)
+            except BaseException:
+                await complete_cleanup(_best_effort_delete(sandbox, remote_staging, recursive=True))
+                await complete_cleanup(_best_effort_delete(sandbox, remote_final, recursive=True))
+                raise
             global_limiter = anyio.CapacityLimiter(
                 min(item[1].config.limits.query_concurrency for item in validated)
             )
@@ -268,16 +275,22 @@ class ReportDatasetStore:
                 )
                 validate_lineage(approved, lineage)
                 await sandbox.fs.move_files(remote_staging, remote_final)
-            except Exception as error:
-                await _best_effort_delete(sandbox, remote_staging, recursive=True)
-                await _best_effort_delete(sandbox, remote_final, recursive=True)
+            # 取消也必须删除 staging/final 目录；清理完成后再保留原始取消语义，
+            # 否则取消窗口会遗留可被后续运行误用的半成品目录。
+            except BaseException as error:
+                await complete_cleanup(_best_effort_delete(sandbox, remote_staging, recursive=True))
+                await complete_cleanup(_best_effort_delete(sandbox, remote_final, recursive=True))
+                if isinstance(error, asyncio.CancelledError):
+                    raise
+                if not isinstance(error, Exception):
+                    raise
                 failure = _first_batch_error(error)
                 if isinstance(failure, ReportingError):
                     raise failure
                 raise ReportingError(
                     "report_dataset_commit_failed", "数据集原子提交失败。"
                 ) from failure
-            await _best_effort_delete(sandbox, remote_staging, recursive=True)
+            await complete_cleanup(_best_effort_delete(sandbox, remote_staging, recursive=True))
 
         self._store_handles(completed, run_context)
         return completed, lineage

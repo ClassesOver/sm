@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -106,3 +107,37 @@ def test_starrocks物化使用配置和调用方中的较小字节上限() -> No
         adapter._materialize("SELECT value FROM db.table", max_bytes=8)
 
     assert captured.value.code == "query_result_too_large"
+
+
+def test_starrocks查询增量计算json字节数() -> None:
+    rows = (("中文",), (2,))
+    adapter, _source = _adapter(rows)
+
+    result = adapter._query("SELECT value FROM db.table")
+
+    assert result.rows == rows
+    assert result.byte_count == len(
+        json.dumps(rows, ensure_ascii=False, default=str, separators=(",", ":")).encode()
+    )
+
+
+def test_starrocks空查询结果也执行字节上限() -> None:
+    adapter, _source = _adapter((), max_bytes=1)
+
+    with pytest.raises(ReportingError) as captured:
+        adapter._query("SELECT value FROM db.table")
+
+    assert captured.value.code == "query_result_too_large"
+
+
+def test_starrocks查询超过字节上限时不再读取后续批次() -> None:
+    adapter, source = _adapter(
+        (("oversized",),) + tuple((index,) for index in range(10_000)),
+        max_bytes=4,
+    )
+
+    with pytest.raises(ReportingError) as captured:
+        adapter._query("SELECT value FROM db.table")
+
+    assert captured.value.code == "query_result_too_large"
+    assert source.fetch_sizes == [10_000]

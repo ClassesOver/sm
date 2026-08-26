@@ -484,6 +484,45 @@ def test_runtime_planners_use_stage_specific_thinking_profiles() -> None:
         assert escalation.thinking_budget == 8192
 
 
+def test_runtime_planners_project_reasoning_to_vllm_chat_template() -> None:
+    worker = Agent(
+        model=ReportWorkerOpenAIChat(
+            id="deepseek-v4-flash-0731",
+            api_key="test",
+            base_url="http://self-hosted.example/v1",
+            reasoning_effort="high",
+            extra_body={
+                "enable_thinking": True,
+                "thinking_budget": 8192,
+                "chat_template_kwargs": {},
+            },
+        )
+    )
+    runtime = ReportWorkflowRuntime(
+        db=SimpleNamespace(),
+        report_worker=worker,
+        task_runner=SimpleNamespace(),
+        workspace_service=SimpleNamespace(),
+        registry=SimpleNamespace(),
+        profiles=SimpleNamespace(),
+        planner_enable_thinking=True,
+        planner_thinking_budget=8192,
+        state_repository=SimpleNamespace(),
+    )
+
+    request_params = runtime._analysis_agent.model.get_request_params()
+
+    assert "reasoning_effort" not in request_params
+    assert request_params["extra_body"] == {
+        "enable_thinking": True,
+        "thinking_budget": 8192,
+        "chat_template_kwargs": {
+            "thinking": True,
+            "reasoning_effort": "max",
+        },
+    }
+
+
 def test_analysis_planner_normalizes_repeated_source_prefix_before_schema_validation() -> None:
     planner = Agent(
         model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),

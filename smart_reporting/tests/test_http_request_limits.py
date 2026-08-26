@@ -7,10 +7,14 @@ from httpx import ASGITransport, AsyncClient
 
 from smart_reporting import http_request_limits
 from smart_reporting.http_request_limits import (
+    MAX_JSON_MUTATION_REQUEST_BYTES,
     RequestBodyLimitError,
     agentos_run_request_limit,
+    install_streaming_body_limit,
     is_agentos_run_create,
     read_limited_body,
+    request_body_limit,
+    request_body_limit_error,
     validate_agentos_run_multipart,
 )
 
@@ -53,6 +57,54 @@ def test_agentos_run_request_limit_covers_creation_and_continuation(
     assert agentos_run_request_limit(path, "GET") is None
 
 
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+def test_request_body_limit_covers_non_run_mutations(method: str) -> None:
+    assert request_body_limit("/sessions", method) == MAX_JSON_MUTATION_REQUEST_BYTES
+    assert request_body_limit("/sessions/session-1", method) == (MAX_JSON_MUTATION_REQUEST_BYTES)
+    assert request_body_limit("/sessions", "GET") is None
+
+
+def test_request_body_limit_preserves_larger_run_limits() -> None:
+    assert request_body_limit("/agents/smart-reporting/runs", "POST") == (
+        http_request_limits.MAX_AGENT_RUN_REQUEST_BYTES
+    )
+    assert request_body_limit("/agents/smart-reporting/runs/run-1/continue", "POST") == (
+        http_request_limits.MAX_AGENT_RUN_CONTINUE_REQUEST_BYTES
+    )
+
+
+@pytest.mark.anyio
+async def test_non_run_mutation_limit_rejects_body_before_downstream_parse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(http_request_limits, "MAX_JSON_MUTATION_REQUEST_BYTES", 8)
+    application = FastAPI()
+    parsed = False
+
+    @application.middleware("http")
+    async def enforce_limit(request: Request, call_next):
+        limit = request_body_limit(request.url.path, request.method)
+        body = await read_limited_body(request, limit) if limit else b""
+        if body is None:
+            return JSONResponse({"error": "request_too_large"}, status_code=413)
+        return await call_next(request)
+
+    @application.patch("/sessions/session-1")
+    async def update_session(request: Request):
+        nonlocal parsed
+        parsed = True
+        return await request.json()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.patch("/sessions/session-1", content=b'{"value":1}')
+
+    assert response.status_code == 413
+    assert response.json() == {"error": "request_too_large"}
+    assert parsed is False
+
+
 def test_agentos_run_multipart_limits_file_count(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(http_request_limits, "MAX_AGENT_RUN_FILES", 2)
     content_type, body = _multipart(("a.txt", b"a"), ("b.txt", b"b"), ("c.txt", b"c"))
@@ -73,6 +125,147 @@ def test_agentos_run_multipart_limits_individual_file_size(
         validate_agentos_run_multipart(content_type, body)
 
     assert raised.value.code == "file_too_large"
+
+
+def _streaming_request(
+    messages: list[dict[str, object]], *, content_length: int | None = None
+) -> tuple[Request, list[dict[str, object]]]:
+    received: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        message = messages[len(received)]
+        received.append(message)
+        return message
+
+    headers = []
+    if content_length is not None:
+        headers.append((b"content-length", str(content_length).encode()))
+    request = Request(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/workspace/upload",
+            "raw_path": b"/workspace/upload",
+            "query_string": b"",
+            "headers": headers,
+            "client": ("test", 123),
+            "server": ("test", 80),
+        },
+        receive,
+    )
+    return request, received
+
+
+@pytest.mark.anyio
+async def test_streaming_body_limit_preserves_chunks_without_caching_body() -> None:
+    messages: list[dict[str, object]] = [
+        {"type": "http.request", "body": b"abc", "more_body": True},
+        {"type": "http.request", "body": b"def", "more_body": False},
+    ]
+    request, received = _streaming_request(messages)
+
+    install_streaming_body_limit(request, 6)
+    body = b"".join([chunk async for chunk in request.stream()])
+
+    assert body == b"abcdef"
+    assert received == messages
+    assert not hasattr(request, "_body")
+
+
+@pytest.mark.anyio
+async def test_streaming_body_limit_stops_when_chunks_exceed_limit() -> None:
+    messages: list[dict[str, object]] = [
+        {"type": "http.request", "body": b"abc", "more_body": True},
+        {"type": "http.request", "body": b"def", "more_body": True},
+        {"type": "http.request", "body": b"unused", "more_body": False},
+    ]
+    request, received = _streaming_request(messages)
+    install_streaming_body_limit(request, 5)
+
+    with pytest.raises(RequestBodyLimitError) as raised:
+        _ = [chunk async for chunk in request.stream()]
+
+    assert raised.value.code == "request_too_large"
+    assert received == messages[:2]
+    assert not hasattr(request, "_body")
+
+
+def test_streaming_body_limit_rejects_oversized_content_length_before_reading() -> None:
+    request, received = _streaming_request([], content_length=6)
+
+    with pytest.raises(RequestBodyLimitError) as raised:
+        install_streaming_body_limit(request, 5)
+
+    assert raised.value.code == "request_too_large"
+    assert received == []
+
+
+@pytest.mark.anyio
+async def test_streaming_body_limit_middleware_returns_413_for_chunked_body() -> None:
+    application = FastAPI()
+
+    @application.middleware("http")
+    async def enforce_limit(request: Request, call_next):
+        streaming_limit = install_streaming_body_limit(request, accepted_size)
+        try:
+            response = await call_next(request)
+        except (RequestBodyLimitError, BaseExceptionGroup) as error:
+            limit_error = request_body_limit_error(error)
+            if limit_error is None:
+                raise
+            return JSONResponse({"error": limit_error.code}, status_code=limit_error.status_code)
+        if streaming_limit.error is not None:
+            return JSONResponse(
+                {"error": streaming_limit.error.code},
+                status_code=streaming_limit.error.status_code,
+            )
+        return response
+
+    @application.post("/workspace/upload")
+    async def upload(file: UploadFile = File(...)):
+        return {"body": (await file.read()).decode()}
+
+    def multipart(content: bytes) -> bytes:
+        return b"".join(
+            (
+                b"--boundary\r\n",
+                b'Content-Disposition: form-data; name="file"; filename="a.txt"\r\n',
+                b"Content-Type: text/plain\r\n\r\n",
+                content,
+                b"\r\n--boundary--\r\n",
+            )
+        )
+
+    accepted_body = multipart(b"abcdef")
+    rejected_body = multipart(b"abcdefg")
+    accepted_size = len(accepted_body)
+
+    async def accepted_chunks():
+        yield accepted_body[:20]
+        yield accepted_body[20:]
+
+    async def rejected_chunks():
+        yield rejected_body[:20]
+        yield rejected_body[20:]
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        headers = {"content-type": "multipart/form-data; boundary=boundary"}
+        accepted = await client.post(
+            "/workspace/upload", content=accepted_chunks(), headers=headers
+        )
+        rejected = await client.post(
+            "/workspace/upload", content=rejected_chunks(), headers=headers
+        )
+
+    assert accepted.status_code == 200
+    assert accepted.json() == {"body": "abcdef"}
+    assert rejected.status_code == 413
+    assert rejected.json() == {"error": "request_too_large"}
 
 
 @pytest.mark.anyio

@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import pytest
 import yaml  # type: ignore[import-untyped]
 
 
@@ -17,6 +18,18 @@ def test_reporting_compose_uses_image_owned_package_entrypoint():
         repository_root / "Dockerfile"
     ).read_text(encoding="utf-8")
     assert service["environment"]["AGENT_OS_WORKERS"] == "1"
+
+
+def test_smart_reporting_readme_uses_existing_database_service() -> None:
+    repository_root = Path(__file__).parents[2]
+    compose = yaml.load(
+        (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    readme = (repository_root / "smart_reporting" / "README.md").read_text(encoding="utf-8")
+
+    assert "reporting-db" in compose["services"]
+    assert "docker compose up -d reporting-db" in readme
 
 
 def test_reporting_compose_public_download_example_uses_published_port() -> None:
@@ -62,6 +75,56 @@ def test_agentos_readme_only_references_existing_compose_services() -> None:
 
     assert "docker compose --env-file .env.example" not in readme
     assert "bash scripts/configure_agentos_env.sh .env" in readme
+
+
+@pytest.mark.parametrize("existing_public_url", [None, "https://reports.example.com"])
+def test_agentos_env_update_adds_required_public_url_without_overwriting_existing_values(
+    tmp_path: Path, existing_public_url: str | None
+) -> None:
+    repository_root = Path(__file__).parents[2]
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    script = scripts_dir / "configure_agentos_env.sh"
+    script.write_bytes((repository_root / "scripts/configure_agentos_env.sh").read_bytes())
+    template = repository_root / ".env.example"
+    (tmp_path / ".env.example").write_bytes(template.read_bytes())
+    env_file = tmp_path / ".env"
+    lines = [
+        "OPENAI_API_KEY=existing-key",
+        "AGENT_POSTGRES_PASSWORD=existing-password",
+        "AGENT_WORKSPACE_HMAC_SECRET=01234567890123456789012345678901",
+        "CUSTOM_SETTING=keep",
+    ]
+    if existing_public_url is not None:
+        lines.append(f"AGENT_REPORT_PUBLIC_BASE_URL={existing_public_url}")
+    env_file.write_text("\n".join((*lines, "")), encoding="utf-8")
+
+    subprocess.run(
+        ["bash", str(script), str(env_file)],
+        input="n\nn\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    values = dict(
+        line.split("=", 1)
+        for line in env_file.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
+    template_values = dict(
+        line.split("=", 1)
+        for line in template.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
+    assert values["AGENT_REPORT_PUBLIC_BASE_URL"] == (
+        existing_public_url or template_values["AGENT_REPORT_PUBLIC_BASE_URL"]
+    )
+    assert values["OPENAI_API_KEY"] == "existing-key"
+    assert values["AGENT_POSTGRES_PASSWORD"] == "existing-password"
+    assert values["AGENT_WORKSPACE_HMAC_SECRET"] == "01234567890123456789012345678901"
+    assert values["CUSTOM_SETTING"] == "keep"
+    assert "AGENT_REPORT_CONTEXT_TOKEN_BUDGET" not in values
 
 
 def test_daytona_runner_waits_for_api_health_without_reverse_dependency() -> None:

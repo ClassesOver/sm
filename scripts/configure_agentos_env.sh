@@ -55,6 +55,18 @@ env_value() {
     awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$WORK_FILE"
 }
 
+# 已有 .env 是部署配置的事实来源；升级时只补启动必需项，不能覆盖其他现有或默认配置。
+ensure_template_env() {
+    local key=$1
+    local current
+    local value
+    current=$(env_value "$key")
+    [[ "$current" =~ [^[:space:]] ]] && return
+    value=$(awk -F= -v key="$key" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$TEMPLATE_FILE")
+    [[ -n "$value" ]] || die "模板缺少必需配置 $key。"
+    set_env "$key" "$value"
+}
+
 set_random_env() {
     local key=$1
     local bytes=$2
@@ -75,6 +87,7 @@ else
     cp "$ENV_FILE" "$backup"
     cp "$ENV_FILE" "$WORK_FILE"
     chmod 600 "$backup"
+    ensure_template_env AGENT_REPORT_PUBLIC_BASE_URL
     printf '已备份现有配置到 %s。\n' "$backup"
 fi
 chmod 600 "$WORK_FILE"

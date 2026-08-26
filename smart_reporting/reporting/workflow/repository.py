@@ -89,6 +89,14 @@ class ReportingStateRepository:
             Column("fingerprint", String(64), nullable=False),
             Column("created_at", DateTime(timezone=True), nullable=False),
         )
+        self.workflow_thread_owners = Table(
+            "reporting_workflow_thread_owners",
+            self.metadata,
+            Column("thread_id", String(256), primary_key=True),
+            Column("external_run_id", String(256), nullable=False),
+            Column("owner_user_id", String(256), nullable=False),
+            Column("created_at", DateTime(timezone=True), nullable=False),
+        )
         self._initialized = False
         shared_lock = getattr(db, "_agentos_reporting_state_initialize_lock", None)
         if shared_lock is None:
@@ -165,6 +173,76 @@ class ReportingStateRepository:
                 )
             ).first()
         return self._state_from_row(row) if row is not None else None
+
+    async def claim_workflow_thread(
+        self, *, thread_id: str, external_run_id: str, owner_user_id: str
+    ) -> bool:
+        """原子占用 thread；暂停期间所有权继续保存在数据库中。"""
+
+        await self.initialize()
+        values = {
+            "thread_id": thread_id,
+            "external_run_id": external_run_id,
+            "owner_user_id": owner_user_id,
+            "created_at": datetime.now(UTC),
+        }
+        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
+            statement: Any
+            if connection.dialect.name == "postgresql":
+                statement = postgresql_insert(self.workflow_thread_owners).values(**values)
+                statement = statement.on_conflict_do_nothing(
+                    index_elements=[self.workflow_thread_owners.c.thread_id]
+                )
+            elif connection.dialect.name == "sqlite":
+                statement = sqlite_insert(self.workflow_thread_owners).values(**values)
+                statement = statement.on_conflict_do_nothing(
+                    index_elements=[self.workflow_thread_owners.c.thread_id]
+                )
+            else:
+                statement = insert(self.workflow_thread_owners).values(**values)
+            try:
+                result = await connection.execute(statement)
+            except IntegrityError:
+                return False
+        return result.rowcount == 1
+
+    async def ensure_workflow_thread_owner(
+        self, *, thread_id: str, external_run_id: str, owner_user_id: str
+    ) -> bool:
+        """恢复暂停运行时认领空记录，但拒绝覆盖其他运行的所有权。"""
+
+        if await self.claim_workflow_thread(
+            thread_id=thread_id,
+            external_run_id=external_run_id,
+            owner_user_id=owner_user_id,
+        ):
+            return True
+        async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
+            row = (
+                await connection.execute(
+                    select(
+                        self.workflow_thread_owners.c.external_run_id,
+                        self.workflow_thread_owners.c.owner_user_id,
+                    ).where(self.workflow_thread_owners.c.thread_id == thread_id)
+                )
+            ).first()
+        return row is not None and tuple(row) == (external_run_id, owner_user_id)
+
+    async def release_workflow_thread(
+        self, *, thread_id: str, external_run_id: str, owner_user_id: str
+    ) -> bool:
+        """只释放完整身份匹配的所有权，避免旧运行删除新运行的记录。"""
+
+        await self.initialize()
+        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
+            result = await connection.execute(
+                self.workflow_thread_owners.delete().where(
+                    self.workflow_thread_owners.c.thread_id == thread_id,
+                    self.workflow_thread_owners.c.external_run_id == external_run_id,
+                    self.workflow_thread_owners.c.owner_user_id == owner_user_id,
+                )
+            )
+        return result.rowcount == 1
 
     async def create(self, state: ReportingRunState) -> ReportingRunState:
         await self.initialize()

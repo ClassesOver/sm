@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from smart_reporting.settings import DEFAULT_AGENT_DB_URL, DEFAULT_WORKSPACE_SNAPSHOT, AgentSettings
@@ -26,6 +28,7 @@ def test_settings_defaults():
     )
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
+    assert current.model_vllm_reasoning is False
     assert current.coding_temperature == 0.1
     assert current.coding_enable_thinking is True
     assert current.coding_reasoning_effort == "medium"
@@ -115,6 +118,21 @@ def test_report_analysis_concurrency_is_bounded(value):
 
 def test_model_timeout_comes_from_environment():
     assert settings(AGENT_MODEL_TIMEOUT_SECONDS="3600").model_timeout_seconds == 3600
+
+
+def test_vllm_reasoning_uses_deepseek_v4_supported_default_effort():
+    current = settings(AGENT_MODEL_VLLM_REASONING="true")
+
+    assert current.model_vllm_reasoning is True
+    assert current.coding_reasoning_effort == "high"
+
+
+def test_vllm_reasoning_rejects_unsupported_coding_effort():
+    with pytest.raises(ValueError, match="DeepSeek V4.*low、high 或 max"):
+        settings(
+            AGENT_MODEL_VLLM_REASONING="true",
+            AGENT_CODING_REASONING_EFFORT="medium",
+        )
 
 
 def test_report_vision_model_comes_from_environment():
@@ -287,6 +305,20 @@ def test_environment_precedes_file_and_file_populates_missing_values(tmp_path):
 def test_invalid_port_and_workers(name, value):
     with pytest.raises(ValueError, match=name):
         settings(**{name: value})
+
+
+def test_smart_reporting_env_example_matches_settings_contract() -> None:
+    env_path = Path(__file__).parents[1] / ".env.example"
+    values = dict(
+        line.split("=", 1)
+        for line in env_path.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
+
+    current = AgentSettings.from_environment(values, load_env_file=False)
+
+    assert values["AGENT_ENV_FILE"] == ".env"
+    assert current.workers == 1
 
 
 def test_cors_discards_empty_entries():

@@ -62,6 +62,17 @@ def _reasoning_effort(values: MutableMapping[str, str], name: str, default: str 
     return value
 
 
+def _coding_reasoning_effort(values: MutableMapping[str, str], *, use_vllm_reasoning: bool) -> str:
+    value = _reasoning_effort(
+        values,
+        "AGENT_CODING_REASONING_EFFORT",
+        default="high" if use_vllm_reasoning else "medium",
+    )
+    if use_vllm_reasoning and value not in {"low", "high", "max"}:
+        raise ValueError("DeepSeek V4 的 AGENT_CODING_REASONING_EFFORT 必须是 low、high 或 max")
+    return value
+
+
 def _report_reasoning_effort(
     values: MutableMapping[str, str], name: str, default: str = "high"
 ) -> str:
@@ -164,6 +175,7 @@ class AgentSettings:
     env_file: str
     model_id: str
     model_timeout_seconds: int
+    model_vllm_reasoning: bool
     openai_base_url: str
     openai_api_key: str | None
     host: str
@@ -266,6 +278,7 @@ class AgentSettings:
             1,
             maximum=5,
         )
+        model_vllm_reasoning = _flag(values.get("AGENT_MODEL_VLLM_REASONING"))
         return cls(
             env_file=env_file,
             model_id=values.get("MODEL", DEFAULT_MODEL_ID),
@@ -275,6 +288,7 @@ class AgentSettings:
                 DEFAULT_MODEL_TIMEOUT_SECONDS,
                 maximum=3600,
             ),
+            model_vllm_reasoning=model_vllm_reasoning,
             openai_base_url=values.get("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL),
             openai_api_key=values.get("OPENAI_API_KEY"),
             host=values.get("AGENT_OS_HOST", "127.0.0.1"),
@@ -309,7 +323,9 @@ class AgentSettings:
             ),
             coding_temperature=_temperature(values, "AGENT_CODING_TEMPERATURE", 0.1),
             coding_enable_thinking=_flag(values.get("AGENT_CODING_ENABLE_THINKING"), default=True),
-            coding_reasoning_effort=_reasoning_effort(values, "AGENT_CODING_REASONING_EFFORT"),
+            coding_reasoning_effort=_coding_reasoning_effort(
+                values, use_vllm_reasoning=model_vllm_reasoning
+            ),
             coding_thinking_budget=_positive_int(
                 values, "AGENT_CODING_THINKING_BUDGET", 16384, maximum=131072
             ),

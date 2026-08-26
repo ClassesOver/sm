@@ -5,7 +5,7 @@
 ## 启动
 
 ```bash
-docker compose up -d agent-db
+docker compose up -d reporting-db
 uv venv --python 3.12 .venv-agent
 uv pip install --python .venv-agent/bin/python -r smart_reporting/requirements.txt
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
@@ -15,6 +15,8 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 
 - AgentOS 原生 Agent API，公开 `smart-reporting`，同时支持普通对话和智能报表；旧
   `report-agent` ID 仅作为已有 session 和暂停 run 的兼容恢复入口保留。
+- Reporting Workflow 不直接注册为 AgentOS 原生 Workflow；报表运行统一由
+  `smart-reporting` facade 驱动，以共享 thread 独占与终态清理契约。
 - `smart-reporting` 的报表请求支持与 CLI 相同的自然语言或 `ReportRequestEnvelope` JSON 输入。
 - `GET /ready` 服务就绪检查。
 - `/workspace/*` 工作区文件接口。
@@ -56,6 +58,7 @@ Coding 与 Reporting 使用独立 Agent、指令、工具、状态和验收链�
 | --- | --- |
 | `OPENAI_API_KEY` | 模型 API 密钥 |
 | `OPENAI_BASE_URL` | OpenAI-compatible API 地址 |
+| `AGENT_MODEL_VLLM_REASONING` | 经 vLLM 提供 DeepSeek V4 时设为 `true`，使用官方 `chat_template_kwargs` reasoning 格式；默认 `false` 保持云端请求格式不变 |
 | `MODEL` | 默认模型 |
 | `AGENT_DB_URL` | AgentOS PostgreSQL 连接 |
 | `AGENT_WORKSPACE_HMAC_SECRET` | Workspace capability 签名密钥 |
