@@ -6,6 +6,7 @@ import httpx
 import pytest
 from loguru import logger
 
+from smart_reporting.reporting import metadata as metadata_module
 from smart_reporting.reporting.contract import (
     ModelColumn,
     ModelTable,
@@ -60,6 +61,43 @@ async def test_metadata_client_preserves_only_safe_upstream_status(
     assert captured.value.details == {"httpStatus": status_code}
     assert "secret-upstream-response" not in str(captured.value)
     assert "secret-metadata-token" not in str(captured.value)
+
+
+@pytest.mark.anyio
+async def test_metadata_client_stops_streaming_when_response_exceeds_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(metadata_module, "MAX_METADATA_RESPONSE_BYTES", 4)
+
+    class CountingStream(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.yielded = 0
+
+        async def __aiter__(self):
+            for chunk in (b"123", b"45", b"unread"):
+                self.yielded += len(chunk)
+                yield chunk
+
+    stream = CountingStream()
+
+    async def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    client = httpx.AsyncClient(
+        base_url="https://metadata.internal",
+        transport=httpx.MockTransport(respond),
+    )
+    metadata = ReportingMetadataClient(
+        "https://metadata.internal",
+        client_factory=lambda: client,
+    )
+
+    with pytest.raises(ReportingError) as captured:
+        await metadata.query_agent()
+
+    await client.aclose()
+    assert captured.value.code == "report_metadata_response_too_large"
+    assert stream.yielded == 5
 
 
 @pytest.mark.anyio

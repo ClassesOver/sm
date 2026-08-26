@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from agno.agent import Agent, AgentFactory, RemoteAgent
 from agno.agent.protocol import AgentProtocol
 from agno.os import AgentOS
-from agno.workflow import Workflow
 from fastapi import FastAPI
 
 from .database import AgentDatabase
@@ -19,7 +18,6 @@ class ApplicationContext:
     settings: AgentSettings
     workspace_service: WorkspaceService
     report_agent: Agent
-    report_workflow: Workflow | None = None
     database: AgentDatabase | None = None
 
 
@@ -45,7 +43,9 @@ def create_agentos_app(
         # Coding 暂不通过综合服务对外提供。
         agents=agents,
         teams=[],
-        workflows=[context.report_workflow] if context.report_workflow is not None else [],
+        # Reporting Workflow 只能由 smart-reporting facade 驱动。原生 Workflow
+        # 路由无法覆盖 facade 的 thread 所有权和终态清理契约，因此不直接注册。
+        workflows=[],
         interfaces=[],
         base_app=base_app,
         db=context.database.async_db if context.database is not None else None,

@@ -20,6 +20,18 @@ def test_reporting_compose_uses_image_owned_package_entrypoint():
     assert service["environment"]["AGENT_OS_WORKERS"] == "1"
 
 
+def test_smart_reporting_readme_uses_existing_database_service() -> None:
+    repository_root = Path(__file__).parents[2]
+    compose = yaml.load(
+        (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    readme = (repository_root / "smart_reporting" / "README.md").read_text(encoding="utf-8")
+
+    assert "reporting-db" in compose["services"]
+    assert "docker compose up -d reporting-db" in readme
+
+
 def test_reporting_compose_public_download_example_uses_published_port() -> None:
     repository_root = Path(__file__).parents[2]
     compose = yaml.load(

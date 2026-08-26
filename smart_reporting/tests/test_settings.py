@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from smart_reporting.settings import DEFAULT_AGENT_DB_URL, DEFAULT_WORKSPACE_SNAPSHOT, AgentSettings
@@ -303,6 +305,20 @@ def test_environment_precedes_file_and_file_populates_missing_values(tmp_path):
 def test_invalid_port_and_workers(name, value):
     with pytest.raises(ValueError, match=name):
         settings(**{name: value})
+
+
+def test_smart_reporting_env_example_matches_settings_contract() -> None:
+    env_path = Path(__file__).parents[1] / ".env.example"
+    values = dict(
+        line.split("=", 1)
+        for line in env_path.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
+
+    current = AgentSettings.from_environment(values, load_env_file=False)
+
+    assert values["AGENT_ENV_FILE"] == ".env"
+    assert current.workers == 1
 
 
 def test_cors_discards_empty_entries():

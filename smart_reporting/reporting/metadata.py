@@ -149,7 +149,16 @@ class ReportingMetadataClient:
                     self.timeout_seconds,
                 )
                 try:
-                    response = await client.post(path, headers=headers, json=body)
+                    response_content = bytearray()
+                    async with client.stream("POST", path, headers=headers, json=body) as response:
+                        if 200 <= response.status_code < 300:
+                            async for chunk in response.aiter_bytes():
+                                response_content.extend(chunk)
+                                if len(response_content) > MAX_METADATA_RESPONSE_BYTES:
+                                    raise ReportingError(
+                                        "report_metadata_response_too_large", "报表元数据响应过大。"
+                                    )
+                    response_bytes = bytes(response_content)
                 except httpx.TimeoutException as error:
                     logger.warning(
                         "report_metadata_http_failed target={} path={} attempt={} duration_ms={} "
@@ -206,7 +215,7 @@ class ReportingMetadataClient:
                     attempt,
                     _duration_ms(started_at),
                     response.status_code,
-                    len(response.content),
+                    len(response_bytes),
                 )
 
                 if response.status_code in METADATA_RETRY_STATUS_CODES:
@@ -236,12 +245,8 @@ class ReportingMetadataClient:
                         "报表元数据服务拒绝了请求。",
                         details={"httpStatus": response.status_code},
                     )
-                if len(response.content) > MAX_METADATA_RESPONSE_BYTES:
-                    raise ReportingError(
-                        "report_metadata_response_too_large", "报表元数据响应过大。"
-                    )
                 try:
-                    return response.json()
+                    return json.loads(response_bytes)
                 except ValueError as error:
                     raise ReportingError(
                         "report_metadata_invalid_json", "报表元数据响应不是合法 JSON。"

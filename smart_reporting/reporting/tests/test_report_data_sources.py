@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -253,6 +254,37 @@ async def test_数据集哈希命令失败立即拒绝且不重试() -> None:
     assert captured.value.code == "report_dataset_commit_failed"
     assert len(service.hash_paths) == 1
     assert service.fs.moves == []
+
+
+@pytest.mark.anyio
+async def test_数据集物化取消时清理暂存和目标目录() -> None:
+    entered = asyncio.Event()
+    service = _FakeDatasetService()
+
+    class BlockingAdapter(_FakeAdapter):
+        async def materialize(
+            self, sql: str, *, max_bytes: int | None = None
+        ) -> MaterializedQueryResult:
+            del sql, max_bytes
+            entered.set()
+            await asyncio.Future()
+
+    task = asyncio.create_task(
+        ReportDatasetStore(service).materialize_batch(  # type: ignore[arg-type]
+            _approved_queries(1),
+            {"source-1": BlockingAdapter("source-1")},  # type: ignore[dict-item]
+            run_context=_context(),
+        )
+    )
+    await entered.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(service.fs.deletes) == 2
+    assert any("/.staging-" in path for path in service.fs.deletes)
+    assert any("/batch-" in path for path in service.fs.deletes)
 
 
 @pytest.mark.anyio

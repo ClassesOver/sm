@@ -254,20 +254,32 @@ class StarRocksDataSourceAdapter:
                 )
                 result = connection.execution_options(stream_results=True).execute(text(sql))
                 columns = tuple(str(name) for name in result.keys())
+                byte_count = 2
+                if byte_count > self.config.max_bytes:
+                    raise ReportingError("query_result_too_large", "查询结果超过允许的数据量。")
                 while len(rows) <= self.config.max_rows:
                     chunk = result.fetchmany(min(10_000, self.config.max_rows + 1 - len(rows)))
                     if not chunk:
                         break
-                    rows.extend(tuple(row) for row in chunk)
+                    chunk_rows = tuple(tuple(row) for row in chunk)
+                    if len(rows) + len(chunk_rows) > self.config.max_rows:
+                        raise ReportingError("query_result_too_large", "查询结果超过允许的行数。")
+                    for row in chunk_rows:
+                        encoded = json.dumps(
+                            row,
+                            ensure_ascii=False,
+                            default=str,
+                            separators=(",", ":"),
+                        ).encode()
+                        next_byte_count = byte_count + len(encoded) + (1 if rows else 0)
+                        if next_byte_count > self.config.max_bytes:
+                            raise ReportingError(
+                                "query_result_too_large", "查询结果超过允许的数据量。"
+                            )
+                        rows.append(row)
+                        byte_count = next_byte_count
         except SQLAlchemyError as error:
             raise ReportingError("source_query_failed", "StarRocks 查询执行失败。") from error
-        if len(rows) > self.config.max_rows:
-            raise ReportingError("query_result_too_large", "查询结果超过允许的行数。")
-        byte_count = len(
-            json.dumps(rows, ensure_ascii=False, default=str, separators=(",", ":")).encode()
-        )
-        if byte_count > self.config.max_bytes:
-            raise ReportingError("query_result_too_large", "查询结果超过允许的数据量。")
         return QueryResult(columns=columns, rows=tuple(rows), byte_count=byte_count)
 
     def _materialize(self, sql: str, *, max_bytes: int | None = None) -> MaterializedQueryResult:

@@ -614,6 +614,45 @@ async def test_repository_rejects_concurrent_workflow_execution_lock(state_repos
 
 
 @pytest.mark.anyio
+async def test_repository_persists_workflow_thread_owner_across_instances(
+    state_repository,
+) -> None:
+    assert await state_repository.claim_workflow_thread(
+        thread_id="thread-1", external_run_id="run-1", owner_user_id="user-1"
+    )
+
+    restarted = ReportingStateRepository(state_repository.db)
+    assert await restarted.ensure_workflow_thread_owner(
+        thread_id="thread-1", external_run_id="run-1", owner_user_id="user-1"
+    )
+    assert not await restarted.claim_workflow_thread(
+        thread_id="thread-1", external_run_id="run-2", owner_user_id="user-1"
+    )
+    assert not await restarted.ensure_workflow_thread_owner(
+        thread_id="thread-1", external_run_id="run-2", owner_user_id="user-1"
+    )
+
+
+@pytest.mark.anyio
+async def test_repository_only_releases_matching_workflow_thread_owner(
+    state_repository,
+) -> None:
+    await state_repository.claim_workflow_thread(
+        thread_id="thread-1", external_run_id="run-1", owner_user_id="user-1"
+    )
+
+    assert not await state_repository.release_workflow_thread(
+        thread_id="thread-1", external_run_id="run-2", owner_user_id="user-1"
+    )
+    assert await state_repository.release_workflow_thread(
+        thread_id="thread-1", external_run_id="run-1", owner_user_id="user-1"
+    )
+    assert await state_repository.claim_workflow_thread(
+        thread_id="thread-1", external_run_id="run-2", owner_user_id="user-1"
+    )
+
+
+@pytest.mark.anyio
 async def test_analysis_facts_survive_repository_restart(state_repository):
     state = await state_repository.create(initial_state())
     for command in (

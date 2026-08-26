@@ -12,6 +12,7 @@ MAX_AGENT_RUN_REQUEST_BYTES = 32 * 1024 * 1024
 MAX_AGENT_RUN_CONTINUE_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_AGENT_RUN_FILE_BYTES = 24 * 1024 * 1024
 MAX_AGENT_RUN_FILES = 8
+MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
 _AGENTOS_COMPONENT_PATHS = frozenset({"agents", "teams", "workflows"})
 
 
@@ -64,6 +65,15 @@ def agentos_run_request_limit(path: str, method: str) -> int | None:
         return MAX_AGENT_RUN_REQUEST_BYTES
     if len(parts) == 5 and parts[4] == "continue":
         return MAX_AGENT_RUN_CONTINUE_REQUEST_BYTES
+    return None
+
+
+def request_body_limit(path: str, method: str) -> int | None:
+    run_limit = agentos_run_request_limit(path, method)
+    if run_limit is not None:
+        return run_limit
+    if method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+        return MAX_JSON_MUTATION_REQUEST_BYTES
     return None
 
 

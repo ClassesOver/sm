@@ -15,10 +15,10 @@ from .database import check_database, create_agent_database
 from .execution_context import ExecutionContext, configure_execution_tracing
 from .http_request_limits import (
     RequestBodyLimitError,
-    agentos_run_request_limit,
     install_streaming_body_limit,
     is_agentos_run_create,
     read_limited_body,
+    request_body_limit,
     request_body_limit_error,
     validate_agentos_run_multipart,
 )
@@ -54,7 +54,6 @@ from .workspace import (
 
 MAX_WORKSPACE_UPLOAD_REQUEST_BYTES = 202 * 1024 * 1024
 WORKSPACE_FILE_BYTES = 200 * 1024 * 1024
-MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
 logger = logging.getLogger(__name__)
 
 
@@ -109,9 +108,7 @@ def _request_thread(request: Request) -> str:
 def _request_limit(path: str, method: str) -> int | None:
     if path in {"/workspace/upload", "/workspace/files"} and method == "POST":
         return MAX_WORKSPACE_UPLOAD_REQUEST_BYTES
-    if path.startswith("/workspace/") and method in {"POST", "PUT", "PATCH", "DELETE"}:
-        return MAX_JSON_MUTATION_REQUEST_BYTES
-    return agentos_run_request_limit(path, method)
+    return request_body_limit(path, method)
 
 
 async def require_workspace_capability(request: Request, call_next):
@@ -253,6 +250,8 @@ async def workspace_upload(
     context = _application_context(request)
     _check_thread(request, threadId)
     content = await file.read(WORKSPACE_FILE_BYTES + 1)
+    if len(content) > WORKSPACE_FILE_BYTES:
+        return JSONResponse({"error": "export_file_too_large"}, status_code=413)
     try:
         entry = await run_in_threadpool(context.workspace_service.upload, threadId, path, content)
         return {"ok": True, "entry": entry}
@@ -381,10 +380,10 @@ report_worker, report_runtime = create_report_runtime(
 )
 report_workflow_controller = ReportWorkflowController(
     report_runtime.workflow,
+    thread_ownership=report_runtime.state_repository,
     terminal_cleanup=report_runtime.cleanup_terminal,
 )
 report_agent = create_report_agent(report_worker, report_workflow_controller)
-report_workflow = report_runtime.workflow()
 reporting_dependency_diagnostics = ReportingDependencyDiagnostics(
     sources=tuple(
         source
@@ -414,7 +413,6 @@ application_context = ApplicationContext(
     settings,
     workspace_service,
     report_agent,
-    report_workflow=report_workflow,
     database=agent_database,
 )
 base_app = create_base_app(application_context)
