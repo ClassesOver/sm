@@ -1066,6 +1066,9 @@ class RuntimeAnalysisMixin:
                 "outline": self._state(run_context)[REPORT_OUTLINE_STATE_KEY],
                 "visualTheme": REPORT_VISUAL_THEME,
                 "registeredCharts": registered_charts,
+                "analysisCitationIds": _visualization_analysis_citation_ids(
+                    detailed_plan, citation_bindings
+                ),
                 # 可视化脚本与 evidence/facts 分属兄弟目录。由服务端签发完整工作区相对路径，
                 # 禁止 Worker 依据脚本位置猜测父目录，否则会把 evidence 错拼成 analysis/evidence。
                 "visualizationWorkspace": {
@@ -1520,6 +1523,20 @@ def _coding_detailed_analysis_plan(
             for item in plan.analyses
             if allowed is None or item.analysis_id in allowed
         ],
+    }
+
+
+def _visualization_analysis_citation_ids(
+    plan: DetailedAnalysisPlan,
+    citations: tuple[Citation, ...],
+) -> dict[str, list[str]]:
+    return {
+        analysis.analysis_id: [
+            citation.citation_id
+            for citation in citations
+            if citation.dataset_id in analysis.dataset_ids
+        ]
+        for analysis in plan.analyses
     }
 
 

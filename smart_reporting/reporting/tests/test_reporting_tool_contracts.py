@@ -20,6 +20,11 @@ from smart_reporting.reporting.agent import (
     normalize_reporting_tool_arguments,
 )
 from smart_reporting.reporting.delivery.acceptance import build_report_phase_acceptance_contract
+from smart_reporting.reporting.delivery.artifacts_v1 import Citation
+from smart_reporting.reporting.hospital_operation.detailed_analysis import (
+    DetailedAnalysisItem,
+    DetailedAnalysisPlan,
+)
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
@@ -63,6 +68,7 @@ from smart_reporting.reporting.tools.validation import (
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity, ProfileReadReceipt
 from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_item_completion_conditions,
+    _visualization_analysis_citation_ids,
     _visualization_completion_conditions,
     _visualization_dynamic_budget,
     _visualization_retry_budget,
@@ -327,6 +333,67 @@ def test_visualization_dynamic_budget_rejects_513_units_and_identity_conflicts()
 
     assert exceeded.value.code == "report_visualization_evidence_budget_exceeded"
     assert conflicted.value.code == "report_visualization_evidence_identity_conflict"
+
+
+def test_visualization_analysis_citation_ids_only_projects_bound_ids() -> None:
+    plan = DetailedAnalysisPlan(
+        datasetIds=("dataset-income", "dataset-budget", "dataset-unused"),
+        analyses=(
+            DetailedAnalysisItem(
+                analysisId="analysis_001",
+                domain="income",
+                managementQuestion="收入趋势",
+                primaryMetricFamily="收入",
+                datasetIds=("dataset-income",),
+                fields=(),
+                metrics=(),
+                periods=(),
+                actions=("趋势",),
+                evidenceSummary="固定事实",
+                suggestedSection="收入",
+                completionConditions=("完成",),
+            ),
+            DetailedAnalysisItem(
+                analysisId="analysis_002",
+                domain="budget",
+                managementQuestion="预算执行",
+                primaryMetricFamily="预算",
+                datasetIds=("dataset-budget", "dataset-income"),
+                fields=(),
+                metrics=(),
+                periods=(),
+                actions=("对比",),
+                evidenceSummary="固定事实",
+                suggestedSection="预算",
+                completionConditions=("完成",),
+            ),
+        ),
+    )
+    citations = (
+        Citation(
+            citationId="citation-income",
+            datasetId="dataset-income",
+            requirementId="r1",
+            snapshotHash="a" * 64,
+        ),
+        Citation(
+            citationId="citation-budget",
+            datasetId="dataset-budget",
+            requirementId="r2",
+            snapshotHash="b" * 64,
+        ),
+        Citation(
+            citationId="citation-unused",
+            datasetId="dataset-unused",
+            requirementId="r3",
+            snapshotHash="c" * 64,
+        ),
+    )
+
+    assert _visualization_analysis_citation_ids(plan, citations) == {
+        "analysis_001": ["citation-income"],
+        "analysis_002": ["citation-income", "citation-budget"],
+    }
 
 
 def test_visualization_retry_budget_is_restored_from_budget_error() -> None:
