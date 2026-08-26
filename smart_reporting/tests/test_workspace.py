@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import uuid
@@ -11,6 +12,7 @@ from io import BytesIO
 import pytest
 from agno.run import RunContext
 from pypdf import PdfWriter
+from sqlalchemy import delete, select
 
 import smart_reporting.workspace as workspace_module
 from smart_reporting.database import create_agent_database
@@ -138,6 +140,68 @@ async def test_async_daytona_client_is_shared_and_shutdown_resists_repeated_canc
     await shutdown
     await current.aclose()
     assert close_calls == 1
+
+
+@pytest.mark.anyio
+async def test_quarantine_rotates_workspace_generation_without_reusing_old_sandbox(
+    tmp_path,
+) -> None:
+    current = service(tmp_path)
+    async_registry = AsyncMemoryRegistry(current.registry.values)
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=async_registry,
+    )
+
+    async with async_service._async_client() as client:
+        first = await async_service._asandbox_for(client, "thread")
+
+    old_label = first.labels["agent-thread"]
+    await async_service.aquarantine("thread")
+
+    async with async_service._async_client() as client:
+        second = await async_service._asandbox_for(client, "thread")
+
+    assert second.id != first.id
+    assert second.labels["agent-thread"] != old_label
+    assert first.id in current.client.sandboxes
+    assert async_registry.cleanup_labels == {old_label}
+
+    assert await async_service.acleanup_quarantined() == 1
+    assert first.id not in current.client.sandboxes
+    assert async_registry.cleanup_labels == set()
+
+
+@pytest.mark.anyio
+async def test_quarantined_cleanup_job_survives_temporary_daytona_failure(tmp_path) -> None:
+    current = service(tmp_path)
+    async_registry = AsyncMemoryRegistry(current.registry.values)
+
+    class FailingListClient(AsyncFakeClient):
+        async def list(self, query):
+            del query
+            raise RuntimeError("temporary auth failure")
+            yield
+
+    async_service = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=async_registry,
+    )
+    async with async_service._async_client() as client:
+        first = await async_service._asandbox_for(client, "thread")
+    old_label = first.labels["agent-thread"]
+    await async_service.aquarantine("thread")
+    async_service._async_client_override = FailingListClient(current.client)
+
+    assert await async_service.acleanup_quarantined() == 0
+    assert first.id in current.client.sandboxes
+    assert async_registry.cleanup_labels == {old_label}
 
 
 @pytest.mark.anyio
@@ -1940,3 +2004,71 @@ def test_数据库注册表会串行化两个工作区服务():
         assert len(client.created) == 1
     finally:
         first.destroy(thread)
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_postgres注册表持久化工作区隔离并跨同步异步实例可见():
+    database_url = os.getenv("REPORTING_TEST_DB_URL", "").strip()
+    if not database_url:
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL workspace 集成测试。")
+    first_database = create_agent_database(database_url)
+    restarted_database = create_agent_database(database_url)
+    first = AsyncSandboxRegistry(first_database.async_db)
+    restarted = AsyncSandboxRegistry(restarted_database.async_db)
+    sync_registry = SandboxRegistry(restarted_database.sync_db)
+    base_label = hashlib.sha256(f"integration-workspace-{uuid.uuid4().hex}".encode()).hexdigest()
+
+    try:
+        assert await first.workspace_label(base_label) == base_label
+        async with first.locked(base_label) as transaction:
+            await transaction.set(base_label, "integration-old-sandbox")
+
+        assert await first.quarantine_workspace(base_label) == base_label
+        rotated_label = await restarted.workspace_label(base_label)
+
+        assert rotated_label != base_label
+        assert await asyncio.to_thread(sync_registry.workspace_label, base_label) == rotated_label
+        async with restarted.locked(base_label) as transaction:
+            assert await transaction.get(base_label) is None
+        async with restarted._connect() as connection:
+            cleanup_label = (
+                await connection.execute(
+                    select(restarted.cleanup_table.c.workspace_label).where(
+                        restarted.cleanup_table.c.workspace_label == base_label
+                    )
+                )
+            ).scalar_one_or_none()
+        assert cleanup_label == base_label
+
+        await restarted.complete_cleanup(base_label)
+        async with first._connect() as connection:
+            cleanup_label = (
+                await connection.execute(
+                    select(first.cleanup_table.c.workspace_label).where(
+                        first.cleanup_table.c.workspace_label == base_label
+                    )
+                )
+            ).scalar_one_or_none()
+        assert cleanup_label is None
+    finally:
+        await first.ensure_initialized()
+        async with first._connect() as connection:
+            async with connection.begin():
+                await connection.execute(
+                    delete(first.cleanup_table).where(
+                        first.cleanup_table.c.workspace_label == base_label
+                    )
+                )
+                await connection.execute(
+                    delete(first.generation_table).where(
+                        first.generation_table.c.thread_hash == base_label
+                    )
+                )
+                await connection.execute(
+                    delete(first.table).where(first.table.c.thread_hash == base_label)
+                )
+        await first_database.async_engine.dispose()
+        first_database.sync_engine.dispose()
+        await restarted_database.async_engine.dispose()
+        restarted_database.sync_engine.dispose()

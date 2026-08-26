@@ -70,7 +70,7 @@
 - 新增行为覆盖正常路径和与改动直接相关的失败路径。鉴权、幂等、重放、过期、跨用户/公司/thread 和输入边界变更必须有负向测试。
 - 默认先运行与改动直接对应的定点测试节点或最小测试文件，不得用整个目录、全部单元测试或端到端测试代替定点验证。只有定点测试无法覆盖跨模块契约、改动确实跨越完整服务流程或用户明确要求时，才按风险逐级扩大测试范围。
 - 修改 `smart_reporting/` 的 Python 实现、测试或依赖时，默认运行定点 pytest，并对改动文件运行 Ruff format、Ruff lint 和必要的 Mypy；只有跨模块影响需要完整非集成回归或用户明确要求全量检查时，才在仓库根目录运行 `bash scripts/check_agentos.sh`。
-- 沙箱内运行异步 SQLite 测试时，若 `aiosqlite` worker 已完成操作但 asyncio self-pipe 唤醒报 `PermissionError: [Errno 1] Operation not permitted`，表现为首次连接或 fixture 假死，应将其识别为沙箱限制而非业务死锁；在获得权限后于沙箱外重跑相同检查，不得为绕过该环境限制修改业务实现。
+- AgentOS 的持久化实现与测试只以 PostgreSQL 为支持目标；不得新增 SQLite/aiosqlite 运行路径、兼容逻辑或测试用例。需要验证数据库事务、并发、锁、持久化或重启恢复时，必须使用隔离的 PostgreSQL 集成测试，并将其标记为 `integration`。
 - Python 单元测试使用小而明确的 fixture、`tmp_path`、`monkeypatch`/mock 和异步测试；不得访问真实网络或共享用户目录。外部 PostgreSQL/Daytona 场景标记为 `integration`。
 - 修改根目录 Compose 或环境变量时运行 `docker compose config`；修改 Daytona Compose 时运行 `docker compose --env-file docker/.env -f docker/docker-compose.yaml config`。同步相应 `.env.example` 和部署文档。
 - 纯文档改动至少运行 `git diff --check -- <文件>` 并人工检查最终差异，不需要运行业务测试。

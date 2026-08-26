@@ -28,6 +28,7 @@ from daytona import (
     SessionExecuteRequest,
 )
 from daytona.common.errors import DaytonaNotFoundError
+from loguru import logger
 from sqlalchemy import Column, DateTime, MetaData, String, Table, insert, select, update
 from sqlalchemy.sql import func
 
@@ -74,6 +75,8 @@ MAX_BRANCH_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_BRANCH_FILE_BYTES = 200 * 1024 * 1024
 MAX_INSPECT_PDF_PAGES = 200
 MAX_SANDBOX_ID_CACHE_ENTRIES = 1024
+WORKSPACE_CLEANUP_BATCH_SIZE = 20
+WORKSPACE_CLEANUP_INTERVAL_SECONDS = 60
 IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 MANAGED_PROCESS_PREFIX = "agent-exec-"
 MANAGED_TIMEOUT_ENV = "AGENT_MANAGED_TIMEOUT_MARKER"
@@ -94,6 +97,41 @@ class WorkspaceProcessNotFound(WorkspaceError):
 
 class WorkspacePathConflict(WorkspaceError):
     pass
+
+
+def _workspace_generation_table(metadata: MetaData) -> Table:
+    return Table(
+        "agent_workspace_generation",
+        metadata,
+        Column("thread_hash", String(64), primary_key=True),
+        Column("generation", String(32), nullable=False),
+        Column(
+            "updated_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.current_timestamp(),
+        ),
+    )
+
+
+def _workspace_cleanup_table(metadata: MetaData) -> Table:
+    return Table(
+        "agent_workspace_cleanup",
+        metadata,
+        Column("workspace_label", String(64), primary_key=True),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.current_timestamp(),
+        ),
+    )
+
+
+def _workspace_generation_label(base_label: str, generation: str | None) -> str:
+    if generation is None:
+        return base_label
+    return hashlib.sha256(f"{base_label}:{generation}".encode()).hexdigest()
 
 
 class SandboxRegistry:
@@ -123,6 +161,8 @@ class SandboxRegistry:
                 server_default=func.current_timestamp(),
             ),
         )
+        self.generation_table = _workspace_generation_table(self.metadata)
+        self.cleanup_table = _workspace_cleanup_table(self.metadata)
         self._initialized = False
 
     def _connect(self):
@@ -144,6 +184,16 @@ class SandboxRegistry:
             self.metadata.create_all(connection)
         self.db.upsert_schema_version(self.table.name, "1.0.0")
         self._initialized = True
+
+    def workspace_label(self, base_label: str) -> str:
+        self.ensure_initialized()
+        with self._connect() as connection:
+            generation = connection.execute(
+                select(self.generation_table.c.generation).where(
+                    self.generation_table.c.thread_hash == base_label
+                )
+            ).scalar_one_or_none()
+        return _workspace_generation_label(base_label, generation)
 
     @contextmanager
     def locked(self, value: str):
@@ -221,6 +271,8 @@ class AsyncSandboxRegistry:
                 server_default=func.current_timestamp(),
             ),
         )
+        self.generation_table = _workspace_generation_table(self.metadata)
+        self.cleanup_table = _workspace_cleanup_table(self.metadata)
         self._initialized = False
         self._initialize_lock = asyncio.Lock()
 
@@ -247,6 +299,97 @@ class AsyncSandboxRegistry:
                     await connection.run_sync(self.metadata.create_all)
             await self.db.upsert_schema_version(self.table.name, "1.0.0")
             self._initialized = True
+
+    async def workspace_label(self, base_label: str) -> str:
+        await self.ensure_initialized()
+        async with self._connect() as connection:
+            generation = (
+                await connection.execute(
+                    select(self.generation_table.c.generation).where(
+                        self.generation_table.c.thread_hash == base_label
+                    )
+                )
+            ).scalar_one_or_none()
+        return _workspace_generation_label(base_label, generation)
+
+    async def quarantine_workspace(self, base_label: str) -> str:
+        await self.ensure_initialized()
+        async with self._connect() as connection:
+            async with connection.begin():
+                if connection.dialect.name == "postgresql":
+                    await connection.exec_driver_sql(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (f"agent-workspace-generation:{base_label}",),
+                    )
+                generation = (
+                    await connection.execute(
+                        select(self.generation_table.c.generation).where(
+                            self.generation_table.c.thread_hash == base_label
+                        )
+                    )
+                ).scalar_one_or_none()
+                old_label = _workspace_generation_label(base_label, generation)
+                cleanup_exists = (
+                    await connection.execute(
+                        select(self.cleanup_table.c.workspace_label).where(
+                            self.cleanup_table.c.workspace_label == old_label
+                        )
+                    )
+                ).first()
+                if cleanup_exists is None:
+                    await connection.execute(
+                        insert(self.cleanup_table).values(workspace_label=old_label)
+                    )
+                next_generation = uuid.uuid4().hex
+                generation_exists = (
+                    await connection.execute(
+                        select(self.generation_table.c.thread_hash).where(
+                            self.generation_table.c.thread_hash == base_label
+                        )
+                    )
+                ).first()
+                statement = (
+                    update(self.generation_table)
+                    .where(self.generation_table.c.thread_hash == base_label)
+                    .values(
+                        generation=next_generation,
+                        updated_at=func.current_timestamp(),
+                    )
+                    if generation_exists is not None
+                    else insert(self.generation_table).values(
+                        thread_hash=base_label,
+                        generation=next_generation,
+                    )
+                )
+                await connection.execute(statement)
+                await connection.execute(
+                    self.table.delete().where(self.table.c.thread_hash == old_label)
+                )
+        return old_label
+
+    async def pending_cleanup_labels(
+        self, limit: int = WORKSPACE_CLEANUP_BATCH_SIZE
+    ) -> tuple[str, ...]:
+        await self.ensure_initialized()
+        async with self._connect() as connection:
+            rows = (
+                await connection.execute(
+                    select(self.cleanup_table.c.workspace_label)
+                    .order_by(self.cleanup_table.c.created_at)
+                    .limit(limit)
+                )
+            ).all()
+        return tuple(str(row[0]) for row in rows)
+
+    async def complete_cleanup(self, workspace_label: str) -> None:
+        await self.ensure_initialized()
+        async with self._connect() as connection:
+            async with connection.begin():
+                await connection.execute(
+                    self.cleanup_table.delete().where(
+                        self.cleanup_table.c.workspace_label == workspace_label
+                    )
+                )
 
     @asynccontextmanager
     async def locked(self, value: str):
@@ -411,8 +554,18 @@ class WorkspaceService:
             if sandbox_id is None or self._sandbox_ids.get(value) == sandbox_id:
                 self._sandbox_ids.pop(value, None)
 
-    def _hash(self, thread: str) -> str:
+    def _base_hash(self, thread: str) -> str:
         return thread_label(thread, self.secret)
+
+    def _hash(self, thread: str) -> str:
+        base_label = self._base_hash(thread)
+        resolver = getattr(self.registry, "workspace_label", None)
+        return str(resolver(base_label)) if callable(resolver) else base_label
+
+    async def _ahash(self, thread: str) -> str:
+        base_label = self._base_hash(thread)
+        resolver = getattr(self.async_registry, "workspace_label", None)
+        return str(await resolver(base_label)) if callable(resolver) else base_label
 
     def _sandbox_network_settings(self) -> dict[str, Any]:
         if self.network_allow_list:
@@ -577,7 +730,7 @@ class WorkspaceService:
         return sandbox
 
     async def _asandbox_for(self, client: Any, thread: str, create: bool = True):
-        value = self._hash(thread)
+        value = await self._ahash(thread)
         sandbox = None
         sandbox_id = self._cached_sandbox_id(value)
         if sandbox_id is not None:
@@ -610,7 +763,7 @@ class WorkspaceService:
         return await self._aready_sandbox(client, sandbox)
 
     async def _adestroy(self, client: Any, thread: str) -> bool:
-        value = self._hash(thread)
+        value = await self._ahash(thread)
         self._invalidate_sandbox_id(value)
         async with self.async_registry.locked(value) as registry:
             sandboxes = {}
@@ -639,6 +792,68 @@ class WorkspaceService:
     async def adestroy(self, thread: str) -> bool:
         async with self._async_client() as client:
             return await self._adestroy(client, thread)
+
+    async def aquarantine(self, thread: str) -> str:
+        """隔离当前 workspace generation，使后续请求无法复用旧 sandbox。"""
+
+        base_label = self._base_hash(thread)
+        quarantine = getattr(self.async_registry, "quarantine_workspace", None)
+        if not callable(quarantine):
+            raise WorkspaceError("工作区注册表不支持隔离失败运行环境。")
+        old_label = str(await quarantine(base_label))
+        self._invalidate_sandbox_id(old_label)
+        logger.warning("workspace_sandbox_quarantined workspace_label={}", old_label)
+        return old_label
+
+    async def acleanup_quarantined(self, *, limit: int = WORKSPACE_CLEANUP_BATCH_SIZE) -> int:
+        pending = getattr(self.async_registry, "pending_cleanup_labels", None)
+        complete = getattr(self.async_registry, "complete_cleanup", None)
+        if not callable(pending) or not callable(complete):
+            return 0
+        labels = await pending(limit)
+        completed = 0
+        async with self._async_client() as client:
+            for workspace_label in labels:
+                try:
+                    sandboxes = [
+                        sandbox
+                        async for sandbox in client.list(
+                            ListSandboxesQuery(labels={"agent-thread": workspace_label})
+                        )
+                    ]
+                    for sandbox in sandboxes:
+                        try:
+                            await client.delete(sandbox)
+                        except DaytonaNotFoundError:
+                            pass
+                except Exception as error:
+                    logger.warning(
+                        "workspace_quarantine_cleanup_failed workspace_label={} error_type={}",
+                        workspace_label,
+                        type(error).__name__,
+                    )
+                    continue
+                await complete(workspace_label)
+                completed += 1
+                logger.info(
+                    "workspace_quarantine_cleanup_completed workspace_label={} sandbox_count={}",
+                    workspace_label,
+                    len(sandboxes),
+                )
+        return completed
+
+    async def run_quarantine_cleanup_loop(self) -> None:
+        while True:
+            try:
+                await self.acleanup_quarantined()
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning(
+                    "workspace_quarantine_cleanup_batch_failed error_type={}",
+                    type(error).__name__,
+                )
+            await asyncio.sleep(WORKSPACE_CLEANUP_INTERVAL_SECONDS)
 
     async def _abranch_inventory(self, client: Any, thread: str):
         sandbox = await self._asandbox_for(client, thread, create=False)

@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import threading
+import uuid
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import PurePosixPath
 
@@ -331,6 +333,8 @@ class AsyncMemoryRegistry:
     def __init__(self, values):
         self.values = values
         self.lock = asyncio.Lock()
+        self.generations = {}
+        self.cleanup_labels = set()
 
     @asynccontextmanager
     async def locked(self, _value):
@@ -345,6 +349,25 @@ class AsyncMemoryRegistry:
 
     async def delete(self, value):
         self.values.pop(value, None)
+
+    async def workspace_label(self, base_label):
+        generation = self.generations.get(base_label)
+        if generation is None:
+            return base_label
+        return hashlib.sha256(f"{base_label}:{generation}".encode()).hexdigest()
+
+    async def quarantine_workspace(self, base_label):
+        old_label = await self.workspace_label(base_label)
+        self.values.pop(old_label, None)
+        self.cleanup_labels.add(old_label)
+        self.generations[base_label] = uuid.uuid4().hex
+        return old_label
+
+    async def pending_cleanup_labels(self, limit=20):
+        return tuple(sorted(self.cleanup_labels))[:limit]
+
+    async def complete_cleanup(self, workspace_label):
+        self.cleanup_labels.discard(workspace_label)
 
 
 def service(_tmp_path, client=None):

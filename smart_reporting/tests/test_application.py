@@ -1,3 +1,4 @@
+import asyncio
 import json
 from io import BytesIO
 from types import SimpleNamespace
@@ -26,12 +27,21 @@ class FakeWorkspace:
     def __init__(self, name):
         self.name = name
         self.close_calls = 0
+        self.cleanup_started = asyncio.Event()
+        self.cleanup_stopped = asyncio.Event()
 
     def list_files(self, _thread_id, _path):
         return [{"name": self.name}]
 
     async def aclose(self):
         self.close_calls += 1
+
+    async def run_quarantine_cleanup_loop(self):
+        self.cleanup_started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            self.cleanup_stopped.set()
 
 
 @pytest.fixture
@@ -133,8 +143,10 @@ async def test_application_lifespan_closes_workspace_service(monkeypatch):
 
     create_agentos_app(context, FastAPI())
     async with captured["lifespan"](FastAPI()):
+        await asyncio.wait_for(workspace.cleanup_started.wait(), timeout=0.1)
         assert workspace.close_calls == 0
     assert workspace.close_calls == 1
+    assert workspace.cleanup_stopped.is_set()
 
 
 @pytest.mark.anyio

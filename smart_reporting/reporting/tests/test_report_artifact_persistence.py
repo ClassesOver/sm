@@ -463,7 +463,10 @@ async def test_terminal_cleanup_destroys_reporting_sandbox() -> None:
 
 @pytest.mark.anyio
 async def test_terminal_cleanup_fails_closed_when_sandbox_destroy_fails() -> None:
-    workspace = SimpleNamespace(adestroy=AsyncMock(side_effect=RuntimeError("delete failed")))
+    workspace = SimpleNamespace(
+        adestroy=AsyncMock(side_effect=RuntimeError("delete failed")),
+        aquarantine=AsyncMock(return_value="old-workspace-label"),
+    )
     repository = SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None))
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.workspace_service = workspace
@@ -474,6 +477,26 @@ async def test_terminal_cleanup_fails_closed_when_sandbox_destroy_fails() -> Non
         await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
 
     assert raised.value.code == "report_sandbox_cleanup_failed"
+    workspace.aquarantine.assert_awaited_once_with("thread")
+
+
+@pytest.mark.anyio
+async def test_terminal_cleanup_fails_closed_when_sandbox_quarantine_fails() -> None:
+    workspace = SimpleNamespace(
+        adestroy=AsyncMock(side_effect=RuntimeError("delete failed")),
+        aquarantine=AsyncMock(side_effect=RuntimeError("quarantine failed")),
+    )
+    repository = SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None))
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = workspace
+    runtime.task_runner = SimpleNamespace(repository=repository, cancel=AsyncMock())
+    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=None))
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime.cleanup_terminal({"thread_id": "thread"}, "workflow-session", "workflow-run")
+
+    assert raised.value.code == "report_sandbox_quarantine_failed"
+    workspace.aquarantine.assert_awaited_once_with("thread")
 
 
 @pytest.mark.anyio
@@ -651,6 +674,10 @@ async def test_http_publication_does_not_issue_grant_when_sandbox_cleanup_fails(
             events.append("destroy")
             raise RuntimeError("cleanup failed")
 
+        async def aquarantine(self, _thread_id: str) -> str:
+            events.append("quarantine")
+            return "old-workspace-label"
+
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
@@ -680,7 +707,7 @@ async def test_http_publication_does_not_issue_grant_when_sandbox_cleanup_fails(
         )
 
     assert raised.value.code == "report_sandbox_cleanup_failed"
-    assert events == ["persist", "destroy"]
+    assert events == ["persist", "destroy", "quarantine"]
 
 
 @pytest.mark.anyio

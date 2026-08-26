@@ -20,6 +20,7 @@ from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 from agno.run import RunContext
 from agno.workflow.types import StepInput, StepOutput
+from loguru import logger as loguru_logger
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -1711,13 +1712,37 @@ class ReportWorkflowRuntime:
                 task_cleanup_error = task_cleanup_error or error
         if task_cleanup_error is not None:
             raise task_cleanup_error
+        await self._destroy_or_quarantine_workspace(
+            scope["thread_id"],
+            message="报表工作流已结束，但运行环境删除失败，已隔离并转入后台清理。",
+        )
+
+    async def _destroy_or_quarantine_workspace(self, thread_id: str, *, message: str) -> None:
+        """删除失败时先轮换持久化 generation，再允许控制器释放 owner。"""
+
         try:
-            await complete_cleanup(self.workspace_service.adestroy(scope["thread_id"]))
-        except Exception as error:
-            raise ReportingError(
-                "report_sandbox_cleanup_failed",
-                "报表工作流已结束，但运行环境删除失败，请重试清理。",
-            ) from error
+            await complete_cleanup(self.workspace_service.adestroy(thread_id))
+            return
+        except Exception as cleanup_error:
+            try:
+                workspace_label = await complete_cleanup(
+                    self.workspace_service.aquarantine(thread_id)
+                )
+            except Exception as quarantine_error:
+                # 只有 generation 已持久化轮换，旧 sandbox 才对新请求不可达。隔离本身
+                # 失败时必须使用不同错误码，让 Controller 保留 owner，不能为了可用性
+                # 绕过运行环境隔离不变量。
+                raise ReportingError(
+                    "report_sandbox_quarantine_failed",
+                    "报表工作流已结束，但失败运行环境无法隔离，请稍后重试。",
+                ) from quarantine_error
+            loguru_logger.warning(
+                "report_sandbox_cleanup_deferred thread_id={} workspace_label={} error_type={}",
+                thread_id,
+                workspace_label,
+                type(cleanup_error).__name__,
+            )
+            raise ReportingError("report_sandbox_cleanup_failed", message) from cleanup_error
 
     async def issue_http_publication(
         self,
@@ -1765,13 +1790,10 @@ class ReportWorkflowRuntime:
                 ),
             ),
         )
-        try:
-            await complete_cleanup(self.workspace_service.adestroy(thread_id))
-        except Exception as error:
-            raise ReportingError(
-                "report_sandbox_cleanup_failed",
-                "报告已持久化，但运行环境删除失败，请重试发布步骤。",
-            ) from error
+        await self._destroy_or_quarantine_workspace(
+            thread_id,
+            message="报告已持久化，但运行环境删除失败，已隔离并转入后台清理。",
+        )
         # bearer 只能在所有可能失败的外部清理完成后签发；否则 Workflow 重试前
         # 调用方拿不到 token，但 token 已经有效。产物已经落库，签发失败后的重试
         # 可以在 sandbox 已删除的情况下直接复用持久化身份。
