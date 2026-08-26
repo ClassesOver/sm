@@ -426,7 +426,7 @@ class ReportingStateRepository:
                 lock.release()
             return
 
-        lock_key = f"reporting-workflow-execution:{external_run_id}"
+        lock_key = self._workflow_execution_lock_key(external_run_id)
         async with engine.connect() as connection:
             acquired = bool(
                 await connection.scalar(
@@ -450,6 +450,34 @@ class ReportingStateRepository:
                         {"lock_key": lock_key},
                     )
                     await connection.commit()
+
+    @staticmethod
+    def _workflow_execution_lock_key(external_run_id: str) -> str:
+        return f"reporting-workflow-execution:{external_run_id}"
+
+    async def is_workflow_run_active(self, external_run_id: str) -> bool:
+        """探测旧 run 是否仍被其他进程推进，供 thread owner 恢复使用。"""
+
+        engine = self.db.db_engine  # type: ignore[attr-defined]
+        if engine.dialect.name != "postgresql":
+            lock = self._workflow_execution_locks.get(external_run_id)
+            return bool(lock and lock.locked())
+
+        lock_key = self._workflow_execution_lock_key(external_run_id)
+        async with engine.connect() as connection:
+            acquired = bool(
+                await connection.scalar(
+                    text("SELECT pg_try_advisory_lock(hashtextextended(:lock_key, 0))"),
+                    {"lock_key": lock_key},
+                )
+            )
+            if acquired:
+                await connection.execute(
+                    text("SELECT pg_advisory_unlock(hashtextextended(:lock_key, 0))"),
+                    {"lock_key": lock_key},
+                )
+            await connection.commit()
+            return not acquired
 
     @staticmethod
     def _assert_receipt_fingerprint(stored: Any, command: ReportingCommand) -> None:

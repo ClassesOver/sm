@@ -48,6 +48,10 @@ class _ThreadOwnership:
 
         return locked()
 
+    async def is_workflow_run_active(self, external_run_id: str) -> bool:
+        lock = self.execution_locks.get(external_run_id)
+        return bool(lock and lock.locked())
+
     async def claim_workflow_thread(
         self, *, thread_id: str, external_run_id: str, owner_user_id: str
     ) -> bool:
@@ -217,14 +221,18 @@ async def test_controller_terminal_duplicate_approval_does_not_reclaim_thread() 
 
     class Workflow:
         id = "enterprise-reporting-workflow-v1"
+        known_runs: set[str] = set()
 
         async def arun(self, *_args, **_kwargs):
             nonlocal run_calls
             run_calls += 1
+            self.known_runs.add(_kwargs["run_id"])
             return SimpleNamespace(status=RunStatus.completed)
 
         async def aget_run(self, *_args, **_kwargs):
-            return SimpleNamespace(status=RunStatus.completed, user_id="user")
+            if _args and _args[0] in self.known_runs:
+                return SimpleNamespace(status=RunStatus.completed, user_id="user")
+            return None
 
     ownership = _ThreadOwnership()
     controller = ReportWorkflowController(
@@ -415,7 +423,8 @@ async def test_controller_serializes_concurrent_approvals_for_same_run() -> None
             return SimpleNamespace(status=RunStatus.completed)
 
     ownership = _ThreadOwnership()
-    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    workflow = Workflow()
+    controller = ReportWorkflowController(lambda: workflow, thread_ownership=ownership)
     initial = _context()
     await controller.start(ReportingWorkflowInput(prompt="生成报表"), initial)
     first = asyncio.create_task(
@@ -448,3 +457,138 @@ async def test_controller_serializes_concurrent_approvals_for_same_run() -> None
         isinstance(result, ReportingError) and result.code == "report_workflow_run_conflict"
         for result in results
     )
+
+
+@pytest.mark.anyio
+async def test_controller_does_not_reclaim_owner_when_run_lookup_fails() -> None:
+    _, old_workflow_run_id = reporting_workflow_ids(
+        user_id="user", thread_id="thread", external_run_id="external-run"
+    )
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+        started = False
+
+        async def arun(self, *_args, **_kwargs):
+            self.started = True
+            return SimpleNamespace(status=RunStatus.running)
+
+        async def aget_run(self, *_args, **_kwargs):
+            if self.started and _args and _args[0] == old_workflow_run_id:
+                raise RuntimeError("storage unavailable")
+            return None
+
+    ownership = _ThreadOwnership()
+    workflow = Workflow()
+    controller = ReportWorkflowController(lambda: workflow, thread_ownership=ownership)
+    await controller.start(ReportingWorkflowInput(prompt="生成报表"), _context())
+
+    second_context = RunContext(
+        run_id="external-run-2",
+        session_id="thread",
+        user_id="user",
+        session_state={},
+    )
+    with pytest.raises(ReportingError) as raised:
+        await controller.start(ReportingWorkflowInput(prompt="生成第二份报表"), second_context)
+
+    assert raised.value.code == "report_workflow_owner_lookup_failed"
+    assert ownership.owners == {"thread": ("external-run", "user")}
+
+
+@pytest.mark.anyio
+async def test_controller_rejects_unknown_workflow_status() -> None:
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            return SimpleNamespace(status="UNKNOWN")
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+
+    with pytest.raises(ReportingError) as raised:
+        await controller.start(ReportingWorkflowInput(prompt="生成报表"), _context())
+
+    assert raised.value.code == "report_workflow_status_invalid"
+    assert ownership.owners == {}
+
+
+@pytest.mark.anyio
+async def test_controller_retries_different_run_after_previous_run_releases_thread() -> None:
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    run_calls = 0
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            nonlocal run_calls
+            run_calls += 1
+            if run_calls == 1:
+                first_started.set()
+                await release_first.wait()
+                return SimpleNamespace(status=RunStatus.cancelled)
+            return SimpleNamespace(status=RunStatus.completed)
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    first = asyncio.create_task(
+        controller.start(ReportingWorkflowInput(prompt="第一份报表"), _context())
+    )
+    await first_started.wait()
+    second = asyncio.create_task(
+        controller.start(
+            ReportingWorkflowInput(prompt="第二份报表"),
+            RunContext(
+                run_id="external-run-2",
+                session_id="thread",
+                user_id="user",
+                session_state={},
+            ),
+        )
+    )
+    await asyncio.sleep(0.15)
+    release_first.set()
+
+    first_result, second_result = await asyncio.gather(first, second)
+    assert first_result["status"] == "cancelled"
+    assert second_result["status"] == "completed"
+    assert run_calls == 2
+
+
+@pytest.mark.anyio
+async def test_controller_restarts_same_run_when_persisted_running_owner_is_orphaned() -> None:
+    run_calls = 0
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            nonlocal run_calls
+            run_calls += 1
+            return SimpleNamespace(
+                status=RunStatus.running if run_calls == 1 else RunStatus.completed
+            )
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    await controller.start(ReportingWorkflowInput(prompt="第一次运行"), _context())
+
+    restarted = await controller.start(
+        ReportingWorkflowInput(prompt="重启后重试"),
+        RunContext(
+            run_id="external-run",
+            session_id="thread",
+            user_id="user",
+            session_state={},
+        ),
+    )
+
+    assert restarted["status"] == "completed"
+    assert run_calls == 2
+    assert ownership.owners == {}

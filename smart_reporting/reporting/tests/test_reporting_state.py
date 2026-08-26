@@ -606,11 +606,13 @@ async def test_repository_rejects_evicted_command_id_rebound_to_other_payload(
 @pytest.mark.anyio
 async def test_repository_rejects_concurrent_workflow_execution_lock(state_repository) -> None:
     async with state_repository.workflow_execution_lock("external-run-1"):
+        assert await state_repository.is_workflow_run_active("external-run-1")
         with pytest.raises(ReportingStateError) as conflict:
             async with state_repository.workflow_execution_lock("external-run-1"):
                 pass
 
     assert conflict.value.code == "report_workflow_run_conflict"
+    assert not await state_repository.is_workflow_run_active("external-run-1")
 
 
 @pytest.mark.anyio
