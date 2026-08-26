@@ -10,7 +10,7 @@
 
 ## 实施状态（2026-08-26）
 
-- 已提交并推送：Controller 失败关闭、Workflow Runtime、Reporting Toolkit、Delivery Runtime 的职责拆分，以及 Delivery 主题导入归属修正；旧单文件已删除，MR 为 [!10](http://gitlab2.dingyi-china.cn:65080/dingyi-develop-group/agno/smart_reporting/-/merge_requests/10)，目标分支为 `f2`，以避免把 Coding 移除历史带入 Reporting MR。
+- 已提交并推送：Controller 失败关闭、Workflow Runtime、Reporting Toolkit、Delivery Runtime 的职责拆分，以及 Delivery 主题导入归属修正；旧单文件已删除。此前拆分提交的 MR 为 [!10](http://gitlab2.dingyi-china.cn:65080/dingyi-develop-group/agno/smart_reporting/-/merge_requests/10)。当前分支的后续持久化契约收紧应创建新的独立 MR，并以 `f2` 为目标分支，避免把 Coding 移除历史带入 Reporting MR。
 - 已通过定点验证：报告运行时、标题编号、引用展示、Controller、规划契约、章节并发、工具契约和 Worker 执行测试；相关 Ruff format/lint、Mypy 与旧路径扫描通过。
 - 已完成持久化契约收紧：Reporting state、下载授权和产物仓储均在构造时拒绝非 PostgreSQL；SQLite/`aiosqlite` 用例已迁为带 `integration` 标记的 PostgreSQL 测试，默认测试不再启动 SQLite worker。使用隔离库 `reporting_boundary_20260826_102204` 验证 12 个持久化节点通过。
 - 仍未完成的仓外门禁：完整 `scripts/check_agentos.sh` 在 `task_execution/tests/test_execution.py` 停滞；该路径不属于本次仅 Reporting 的改动范围，未在本 MR 中扩大处理。
@@ -293,7 +293,7 @@ git diff --summary main...HEAD
 - [ ] **Step 4: 推送分支并创建独立 MR**
 
 ```bash
-git push -u origin1 refactor/reporting-module-boundaries -o merge_request.create -o merge_request.target=main -o merge_request.title="refactor: organize reporting module boundaries"
+git push -u origin1 refactor/reporting-module-boundaries -o merge_request.create -o merge_request.target=f2 -o merge_request.title="refactor: require PostgreSQL for reporting persistence"
 ```
 
-预期：GitLab 创建目标为 `main` 的独立 Merge Request，并返回 MR 地址。
+预期：GitLab 创建目标为 `f2` 的独立 Merge Request，并返回 MR 地址。
