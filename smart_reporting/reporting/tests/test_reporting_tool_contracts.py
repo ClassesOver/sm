@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -34,23 +36,29 @@ from smart_reporting.reporting.phase import (
     reporting_visualization_registered_from_acceptance_contract,
 )
 from smart_reporting.reporting.tests.workspace_fakes import service as fake_workspace_service
-from smart_reporting.reporting.tools import (
-    ANALYSIS_WRITE_PUBLIC_TOOL_NAMES,
-    ANALYSIS_WRITE_TOOL_NAMES,
+from smart_reporting.reporting.tools.analysis import (
     MAX_ANALYSIS_WRITE_INTENT_BYTES,
-    ReportWorkspaceTaskToolkit,
-    _analysis_context_projection,
-    _analysis_write_operation_arguments,
-    _analysis_write_parameters,
-    _canonical_analysis_write_call,
     _derive_durable_analysis_binding,
-    _jmespath_reporting_error,
     _normalize_analysis_summary_comparability,
+)
+from smart_reporting.reporting.tools.factory import build_report_worker_tools
+from smart_reporting.reporting.tools.profile import (
+    _analysis_context_projection,
     _profile_receipt_command_id,
+)
+from smart_reporting.reporting.tools.toolkit import (
+    ReportWorkspaceTaskToolkit,
     _reset_stop_after_tool_call,
     _stop_after_accepted_tool_call,
     _stop_after_nonretryable_tool_call,
-    build_report_worker_tools,
+)
+from smart_reporting.reporting.tools.validation import (
+    ANALYSIS_WRITE_PUBLIC_TOOL_NAMES,
+    ANALYSIS_WRITE_TOOL_NAMES,
+    _analysis_write_operation_arguments,
+    _analysis_write_parameters,
+    _canonical_analysis_write_call,
+    _jmespath_reporting_error,
 )
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity, ProfileReadReceipt
 from smart_reporting.reporting.workflow.runtime.analysis import (
@@ -1576,6 +1584,63 @@ def test_analysis_facts_tool_distinguishes_projection_from_file_schema() -> None
 
     assert "analyses[].facts 只存在于本工具聚合回执" in description
     assert "单个文件根节点就是对应 analysis 的 facts" in description
+
+
+_WORKER_TOOL_SCHEMA_NAMES = (
+    "finish_task",
+    "read_profile_pointer",
+    "query_profile",
+    "query_analysis_context",
+    "query_analysis_facts",
+    "write_analysis_files",
+    "complete_analysis_item",
+    "finalize_report_analysis",
+    "register_report_charts",
+    "render_report_section",
+)
+_WORKER_TOOL_SCHEMA_FINGERPRINTS = {
+    "finish_task": "8f2c3da628346e18a879213d6b2201da58e68eae5dda3e9477c6d2875aeb878e",
+    "read_profile_pointer": "a6287140ea3b87551c1126cbe2d4e0df034223e59937ac33276e30e627785018",
+    "query_profile": "442fe01a0e251791e117648a28d4c25e2041307ea7b26aae490ef7f3dadf87f6",
+    "query_analysis_context": "fb2d26cd963d66da970742c6a543fad0d492669f895fca01e536f123cc70cd0e",
+    "query_analysis_facts": "b1b463cc581dc8e66a40dc86570bfca698dba8562cefe66ca6987d8552cbdc68",
+    "write_analysis_files": "30f1cf3bd9ab5077d66c0373858dc6b1b8e889927d7d0cd41528ada4ef487125",
+    "complete_analysis_item": "cb93f40d4226ced6a1a2ac96d2b26ffe51e0e1fb3eba1e25d05e73d2496f2073",
+    "finalize_report_analysis": "198d0662d1589b8961b784c5a11b138da322e0577320251d47adaaa37b9be7ec",
+    "register_report_charts": "c512a28f7b2bc55752a42652f53688450a5252f6a51d06f21e106573cf74e841",
+    "render_report_section": "59f1b6252af25b741cd13d455d86d0d72c9c67cd958816d1451dd681224ec452",
+}
+
+
+def _worker_tool_schema_snapshot(toolkit: ReportWorkspaceTaskToolkit) -> dict[str, dict[str, Any]]:
+    return {
+        name: {
+            "name": toolkit.async_functions[name].name,
+            "parameters": toolkit.async_functions[name].parameters,
+        }
+        for name in _WORKER_TOOL_SCHEMA_NAMES
+    }
+
+
+def test_report_worker_tool_schema_is_stable_from_toolkit_module() -> None:
+    module = importlib.import_module("smart_reporting.reporting.tools.toolkit")
+    package = importlib.import_module("smart_reporting.reporting.tools")
+    toolkit_class = module.ReportWorkspaceTaskToolkit
+    toolkit = toolkit_class(
+        fake_workspace_service(None),
+        AsyncMock(),
+        state_repository=AsyncMock(),
+    )
+    snapshot = _worker_tool_schema_snapshot(toolkit)
+    fingerprints = {
+        name: hashlib.sha256(
+            json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        for name, value in snapshot.items()
+    }
+
+    assert package.ReportWorkspaceTaskToolkit is toolkit_class
+    assert fingerprints == _WORKER_TOOL_SCHEMA_FINGERPRINTS
 
 
 @pytest.mark.parametrize(
