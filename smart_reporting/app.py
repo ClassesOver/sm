@@ -1,10 +1,12 @@
 import logging
 import unicodedata
+from os import getenv
 from pathlib import PurePosixPath
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
+from loguru import logger as loguru_logger
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.concurrency import run_in_threadpool
 
@@ -40,6 +42,7 @@ from .reporting.diagnostics import (
     create_reporting_dependency_diagnostics_router,
 )
 from .reporting.workflow.controller import ReportWorkflowController
+from .reporting.workflow.repository import REPORTING_DB_SCHEMA
 from .reporting_identity import (
     apply_report_identity,
     requires_workspace_capability,
@@ -95,6 +98,20 @@ report_downloads = ReportDownloadHttpService(
     report_artifact_repository,
 )
 router = APIRouter()
+
+
+async def _log_reporting_runtime_identity() -> None:
+    """记录实际启动的 Reporting 版本和数据库边界，便于确认镜像是否已更新。"""
+
+    loguru_logger.info(
+        "reporting_runtime_started workflow_id={} build_id={} database_backend={} "
+        "reporting_schema={} workers={}",
+        "enterprise-reporting-workflow-v1",
+        getenv("REPORTING_BUILD_ID", "unknown"),
+        agent_database.backend,
+        REPORTING_DB_SCHEMA,
+        settings.workers,
+    )
 
 
 def _application_context(request: Request) -> ApplicationContext:
@@ -404,6 +421,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
+    application.router.add_event_handler("startup", _log_reporting_runtime_identity)
     application.router.add_event_handler("startup", install_report_download_access_log_filter)
     application.router.add_event_handler("startup", report_download_repository.create_schema)
     return application

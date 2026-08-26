@@ -6,6 +6,7 @@ import pytest
 from agno.run import RunContext
 from agno.run.base import RunStatus
 
+import smart_reporting.reporting.workflow.controller as controller_module
 from smart_reporting.reporting.contract import ReportingWorkflowInput
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.controller import (
@@ -639,27 +640,36 @@ async def test_controller_allows_parallel_runs_for_different_sessions() -> None:
 
 
 @pytest.mark.anyio
-async def test_controller_rejects_duplicate_start_for_same_external_run() -> None:
+async def test_controller_reuses_result_for_duplicate_start_same_external_run() -> None:
     started = asyncio.Event()
     release = asyncio.Event()
+    run_calls = 0
 
     class Workflow:
         id = "enterprise-reporting-workflow-v1"
+        completed = False
 
         async def arun(self, *_args, **_kwargs):
+            nonlocal run_calls
+            run_calls += 1
             started.set()
             await release.wait()
+            self.completed = True
             return SimpleNamespace(status=RunStatus.completed)
 
+        async def aget_run(self, *_args, **_kwargs):
+            return SimpleNamespace(status=RunStatus.completed) if self.completed else None
+
     ownership = _ThreadOwnership()
-    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    workflow = Workflow()
+    controller = ReportWorkflowController(lambda: workflow, thread_ownership=ownership)
     first = asyncio.create_task(
         controller.start(ReportingWorkflowInput(prompt="重复请求"), _context())
     )
     await started.wait()
 
-    with pytest.raises(ReportingError) as raised:
-        await controller.start(
+    duplicate = asyncio.create_task(
+        controller.start(
             ReportingWorkflowInput(prompt="重复请求"),
             RunContext(
                 run_id="external-run",
@@ -668,10 +678,52 @@ async def test_controller_rejects_duplicate_start_for_same_external_run() -> Non
                 session_state={},
             ),
         )
-
+    )
+    await asyncio.sleep(0)
     release.set()
-    await first
-    assert raised.value.code == "report_workflow_run_conflict"
+    first_result, duplicate_result = await asyncio.gather(first, duplicate)
+    assert first_result["status"] == "completed"
+    assert duplicate_result["status"] == "completed"
+    assert run_calls == 1
+
+
+@pytest.mark.anyio
+async def test_controller_duplicate_retry_keeps_original_wait_deadline(monkeypatch) -> None:
+    class AlwaysConflictingOwnership(_ThreadOwnership):
+        def workflow_execution_lock(self, external_run_id: str):
+            from contextlib import asynccontextmanager
+
+            @asynccontextmanager
+            async def conflicting():
+                raise ReportingError(
+                    "report_workflow_run_conflict", "Reporting run 正由其他进程执行。"
+                )
+                yield
+
+            return conflicting()
+
+        async def is_workflow_run_active(self, external_run_id: str) -> bool:
+            return False
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(controller_module, "_THREAD_CLAIM_WAIT_SECONDS", 0.03)
+    monkeypatch.setattr(controller_module, "_THREAD_CLAIM_RETRY_DELAY_SECONDS", 0.01)
+    controller = ReportWorkflowController(
+        lambda: Workflow(), thread_ownership=AlwaysConflictingOwnership()
+    )
+
+    with pytest.raises(ReportingError, match="同一报表请求正在执行") as error:
+        await asyncio.wait_for(
+            controller.start(ReportingWorkflowInput(prompt="重复请求"), _context()),
+            timeout=0.2,
+        )
+
+    assert error.value.code == "report_workflow_run_conflict"
 
 
 @pytest.mark.anyio
