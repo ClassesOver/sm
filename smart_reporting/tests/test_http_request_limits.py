@@ -7,13 +7,11 @@ from httpx import ASGITransport, AsyncClient
 
 from smart_reporting import http_request_limits
 from smart_reporting.http_request_limits import (
-    MAX_JSON_MUTATION_REQUEST_BYTES,
     RequestBodyLimitError,
     agentos_run_request_limit,
     install_streaming_body_limit,
     is_agentos_run_create,
     read_limited_body,
-    request_body_limit,
     request_body_limit_error,
     validate_agentos_run_multipart,
 )
@@ -57,52 +55,13 @@ def test_agentos_run_request_limit_covers_creation_and_continuation(
     assert agentos_run_request_limit(path, "GET") is None
 
 
-@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
-def test_request_body_limit_covers_non_run_mutations(method: str) -> None:
-    assert request_body_limit("/sessions", method) == MAX_JSON_MUTATION_REQUEST_BYTES
-    assert request_body_limit("/sessions/session-1", method) == (MAX_JSON_MUTATION_REQUEST_BYTES)
-    assert request_body_limit("/sessions", "GET") is None
-
-
-def test_request_body_limit_preserves_larger_run_limits() -> None:
-    assert request_body_limit("/agents/smart-reporting/runs", "POST") == (
+def test_agentos_run_request_limit_preserves_larger_run_limits() -> None:
+    assert agentos_run_request_limit("/agents/smart-reporting/runs", "POST") == (
         http_request_limits.MAX_AGENT_RUN_REQUEST_BYTES
     )
-    assert request_body_limit("/agents/smart-reporting/runs/run-1/continue", "POST") == (
+    assert agentos_run_request_limit("/agents/smart-reporting/runs/run-1/continue", "POST") == (
         http_request_limits.MAX_AGENT_RUN_CONTINUE_REQUEST_BYTES
     )
-
-
-@pytest.mark.anyio
-async def test_non_run_mutation_limit_rejects_body_before_downstream_parse(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(http_request_limits, "MAX_JSON_MUTATION_REQUEST_BYTES", 8)
-    application = FastAPI()
-    parsed = False
-
-    @application.middleware("http")
-    async def enforce_limit(request: Request, call_next):
-        limit = request_body_limit(request.url.path, request.method)
-        body = await read_limited_body(request, limit) if limit else b""
-        if body is None:
-            return JSONResponse({"error": "request_too_large"}, status_code=413)
-        return await call_next(request)
-
-    @application.patch("/sessions/session-1")
-    async def update_session(request: Request):
-        nonlocal parsed
-        parsed = True
-        return await request.json()
-
-    async with AsyncClient(
-        transport=ASGITransport(app=application), base_url="http://test"
-    ) as client:
-        response = await client.patch("/sessions/session-1", content=b'{"value":1}')
-
-    assert response.status_code == 413
-    assert response.json() == {"error": "request_too_large"}
-    assert parsed is False
 
 
 def test_agentos_run_multipart_limits_file_count(monkeypatch: pytest.MonkeyPatch) -> None:

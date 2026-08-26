@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,25 @@ class _ThreadOwnership:
     def __init__(self) -> None:
         self.owners: dict[str, tuple[str, str]] = {}
         self.lock = asyncio.Lock()
+        self.execution_locks: dict[str, asyncio.Lock] = {}
+
+    def workflow_execution_lock(self, external_run_id: str):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def locked():
+            lock = self.execution_locks.setdefault(external_run_id, asyncio.Lock())
+            if lock.locked():
+                raise ReportingError(
+                    "report_workflow_run_conflict", "Reporting run 正由其他进程执行。"
+                )
+            await lock.acquire()
+            try:
+                yield
+            finally:
+                lock.release()
+
+        return locked()
 
     async def claim_workflow_thread(
         self, *, thread_id: str, external_run_id: str, owner_user_id: str
@@ -52,6 +72,18 @@ class _ThreadOwnership:
                 return False
             self.owners.pop(thread_id)
             return True
+
+    async def get_workflow_thread_owner(self, thread_id: str):
+        owner = self.owners.get(thread_id)
+        if owner is None:
+            return None
+        external_run_id, owner_user_id = owner
+        return {
+            "thread_id": thread_id,
+            "external_run_id": external_run_id,
+            "owner_user_id": owner_user_id,
+            "created_at": datetime.now(UTC),
+        }
 
 
 @pytest.mark.anyio
@@ -341,3 +373,78 @@ async def test_controller_retries_pending_terminal_cleanup_without_rerunning_wor
     assert cleanup_calls == 2
     assert ownership.owners == {}
     assert "finalizationPending" not in context.session_state[REPORT_WORKFLOW_CONTROL_STATE_KEY]
+
+
+@pytest.mark.anyio
+async def test_controller_serializes_concurrent_approvals_for_same_run() -> None:
+    continue_calls = 0
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class Requirement:
+        step_name = "提纲审核"
+        confirmation_message = "确认提纲"
+        step_output = SimpleNamespace(content={"title": "报告", "sections": [], "assumptions": []})
+        is_resolved = False
+
+        def confirm(self) -> None:
+            self.is_resolved = True
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+        status = RunStatus.paused
+
+        async def arun(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=RunStatus.paused, active_step_requirements=[Requirement()]
+            )
+
+        async def aget_run(self, *_args, **_kwargs):
+            if self.status != RunStatus.paused:
+                return SimpleNamespace(status=self.status)
+            return SimpleNamespace(
+                status=RunStatus.paused, active_step_requirements=[Requirement()]
+            )
+
+        async def acontinue_run(self, *_args, **_kwargs):
+            nonlocal continue_calls
+            continue_calls += 1
+            started.set()
+            await release.wait()
+            self.status = RunStatus.completed
+            return SimpleNamespace(status=RunStatus.completed)
+
+    ownership = _ThreadOwnership()
+    controller = ReportWorkflowController(lambda: Workflow(), thread_ownership=ownership)
+    initial = _context()
+    await controller.start(ReportingWorkflowInput(prompt="生成报表"), initial)
+    first = asyncio.create_task(
+        controller.approve(
+            RunContext(
+                run_id="request-1",
+                session_id="thread",
+                user_id="user",
+                session_state=dict(initial.session_state),
+            )
+        )
+    )
+    await started.wait()
+    second = asyncio.create_task(
+        controller.approve(
+            RunContext(
+                run_id="request-2",
+                session_id="thread",
+                user_id="user",
+                session_state=dict(initial.session_state),
+            )
+        )
+    )
+    await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(first, second, return_exceptions=True)
+
+    assert continue_calls == 1
+    assert any(
+        isinstance(result, ReportingError) and result.code == "report_workflow_run_conflict"
+        for result in results
+    )
