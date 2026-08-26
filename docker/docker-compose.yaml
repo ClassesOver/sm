@@ -129,6 +129,7 @@ services:
     image: ${DAYTONA_IMAGE_REGISTRY:-docker.io}/daytonaio/daytona-proxy:v0.189.0-${DAYTONA_IMAGE_ARCH:-amd64}
     ports:
       - "0.0.0.0:${DAYTONA_PROXY_PORT:-33044}:4000"
+      - "[::]:${DAYTONA_PROXY_PORT:-33044}:4000"
     environment:
       DAYTONA_API_URL: http://api:3000/api
       PROXY_PORT: "4000"
