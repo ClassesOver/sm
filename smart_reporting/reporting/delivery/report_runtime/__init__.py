@@ -1,6 +1,7 @@
 """Reporting 交付运行时的稳定入口。"""
 
-from .cli import main
+from typing import Any
+
 from .docx import _WORD_PAGE_FIELDS, _postprocess_docx
 from .markdown import (
     _document_context,
@@ -15,6 +16,15 @@ from .pdf import (
 )
 from .runtime import ReportRuntime
 from .validation import ReportFailure
+
+
+def __getattr__(name: str) -> Any:
+    if name == "main":
+        from .cli import main
+
+        return main
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "DEFAULT_PAGE_LAYOUT",
