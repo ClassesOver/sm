@@ -1287,6 +1287,7 @@ class ReportWorkspaceTaskToolkit(
             code
             in {
                 "report_analysis_write_intent_invalid",
+                "report_analysis_python_syntax_invalid",
                 "report_analysis_evidence_missing",
                 "report_analysis_evidence_not_registered",
                 "report_analysis_evidence_identity_mismatch",
@@ -1323,6 +1324,10 @@ class ReportWorkspaceTaskToolkit(
             result["requiredActions"] = [
                 "保持 toolName 不变，只按 details.expectedFields 和 details.path 修正 arguments；"
                 "不要在 arguments 内嵌套 toolName 或第二层 arguments。"
+            ]
+        elif code == "report_analysis_python_syntax_invalid":
+            result["requiredActions"] = [
+                "修正 details.path 指向的 Python 语法错误后，使用原 operation 重新提交。"
             ]
         elif code == "report_chart_registration_closed":
             result["requiredActions"] = [

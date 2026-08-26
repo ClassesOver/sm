@@ -1446,6 +1446,112 @@ async def test_analysis_write_path_conflict_returns_retryable_receipt() -> None:
 
 
 @pytest.mark.anyio
+async def test_analysis_write_rejects_invalid_python_before_workspace_mutation() -> None:
+    @asynccontextmanager
+    async def context(value):
+        yield value
+
+    source = "print('ok')\n"
+    scope = SimpleNamespace(thread_id="thread-1")
+    identity = {
+        "path": "analysis/report.py",
+        "size": len(source.encode()),
+        "sha256": hashlib.sha256(source.encode()).hexdigest(),
+    }
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.async_functions = write_functions()
+    toolkit.kernel = SimpleNamespace(
+        bound_external_run_id=lambda _run_context: "external-run-1",
+        task_scheduler=lambda _external_run_id: context(
+            SimpleNamespace(write=lambda: context(None))
+        ),
+        scope=AsyncMock(return_value=scope),
+        patch=AsyncMock(return_value={"ok": True}),
+        service=SimpleNamespace(
+            file_bytes=lambda _thread_id, _path: (source.encode(), "text/x-python"),
+            abatch_hash_files=AsyncMock(return_value=[identity]),
+        ),
+    )
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis"},
+    )
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.write_analysis_files(
+        operation="replace_text",
+        path="analysis/report.py",
+        old_string="print('ok')",
+        new_string="print('",
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_analysis_python_syntax_invalid"
+    assert result["details"]["path"] == "analysis/report.py"
+    assert source == "print('ok')\n"
+    toolkit.kernel.patch.assert_not_awaited()
+    toolkit._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_analysis_write_allows_valid_python_replace() -> None:
+    @asynccontextmanager
+    async def context(value):
+        yield value
+
+    source = "print('ok')\n"
+    updated = "print('done')\n"
+    scope = SimpleNamespace(thread_id="thread-1")
+    identity = {
+        "path": "analysis/report.py",
+        "size": len(updated.encode()),
+        "sha256": hashlib.sha256(updated.encode()).hexdigest(),
+    }
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.async_functions = write_functions()
+    toolkit.kernel = SimpleNamespace(
+        bound_external_run_id=lambda _run_context: "external-run-1",
+        task_scheduler=lambda _external_run_id: context(
+            SimpleNamespace(write=lambda: context(None))
+        ),
+        scope=AsyncMock(return_value=scope),
+        patch=AsyncMock(return_value={"ok": True}),
+        service=SimpleNamespace(
+            file_bytes=lambda _thread_id, _path: (source.encode(), "text/x-python"),
+            abatch_hash_files=AsyncMock(return_value=[identity]),
+        ),
+    )
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis"},
+    )
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.write_analysis_files(
+        operation="replace_text",
+        path="analysis/report.py",
+        old_string="print('ok')",
+        new_string="print('done')",
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "committed"
+    assert result["artifacts"] == [identity]
+    toolkit.kernel.patch.assert_awaited_once()
+    assert toolkit._apply_durable.await_args_list[-1].kwargs == {
+        "name": "commit_write_intent",
+        "payload": {"intentId": result["intentSha256"], "artifacts": [identity]},
+        "command_id": f"write-commit:{result['intentSha256']}",
+    }
+
+
+@pytest.mark.anyio
 async def test_analysis_write_hash_failure_preserves_original_error() -> None:
     error = DaytonaError("temporary download failure")
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)

@@ -22,7 +22,7 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 
 from ...task_execution.execution import _create_files_patch
-from ...task_execution.tools import parse_unified_diff
+from ...task_execution.tools import build_workspace_changes, parse_unified_diff
 from ...workspace import WORKSPACE_ROOT, WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
 from ..workflow.checkpoint import (
@@ -267,6 +267,91 @@ class RuntimeAnalysisMixin:
             )
         return None
 
+    async def _preflight_analysis_python_write(
+        self,
+        *,
+        scope: Any,
+        tool_name: str,
+        canonical: Mapping[str, Any],
+    ) -> None:
+        """在提交 Workspace mutation 前拒绝会破坏 Python 语法的写入。"""
+
+        if tool_name == "create_files":
+            changes = [
+                {
+                    "operation": "create",
+                    "path": WorkspaceService.normalize_path(item["path"], allow_root=False)[0],
+                    "content": item["content"],
+                }
+                for item in canonical["files"]
+            ]
+        elif tool_name == "overwrite_file":
+            changes = [
+                {
+                    "operation": "update",
+                    "path": WorkspaceService.normalize_path(canonical["path"], allow_root=False)[0],
+                    "content": canonical["content"],
+                }
+            ]
+        elif tool_name == "replace_text":
+
+            def replacement() -> list[dict[str, Any]]:
+                path = WorkspaceService.normalize_path(canonical["path"], allow_root=False)[0]
+                content, _mime = self.kernel.service.file_bytes(scope.thread_id, path)
+                try:
+                    original = content.decode("utf-8")
+                except UnicodeDecodeError as error:
+                    raise WorkspaceError("replace 模式只支持 UTF-8 文本文件。") from error
+                count = original.count(canonical["old_string"])
+                if count == 0:
+                    raise WorkspaceError("old_string 在目标文件中不存在。")
+                if count != 1 and not canonical["replace_all"]:
+                    raise WorkspaceError(
+                        "old_string 在目标文件中不唯一；请扩大上下文或启用 replace_all。"
+                    )
+                return [
+                    {
+                        "operation": "update",
+                        "path": path,
+                        "content": original.replace(
+                            canonical["old_string"],
+                            canonical["new_string"],
+                            -1 if canonical["replace_all"] else 1,
+                        ),
+                    }
+                ]
+
+            changes = await asyncio.to_thread(replacement)
+        else:
+            changes = await asyncio.to_thread(
+                build_workspace_changes,
+                self.kernel.service,
+                scope.thread_id,
+                canonical["patch"],
+            )
+
+        # Kernel patch 的实际提交发生在这之后；预检只使用同一候选文本，保证语法错误时
+        # Workspace 与 write intent 都不产生可恢复但无效的中间状态。
+        for change in changes:
+            path = change.get("path")
+            content = change.get("content")
+            if (
+                change.get("operation") not in {"create", "update"}
+                or not isinstance(path, str)
+                or not path.endswith(".py")
+                or not isinstance(content, str)
+            ):
+                continue
+            try:
+                tree = ast.parse(content, filename=path)
+                compile(tree, path, "exec")
+            except SyntaxError as error:
+                raise ReportingError(
+                    "report_analysis_python_syntax_invalid",
+                    "写入会使分析 Python 脚本语法无效，已拒绝写入。",
+                    details={"path": path, "line": error.lineno, "offset": error.offset},
+                ) from error
+
     async def write_analysis_files(
         self,
         operation: str,
@@ -303,6 +388,11 @@ class RuntimeAnalysisMixin:
                 self._validate_analysis_write_arguments(canonical_tool_name, canonical_input)
             )
             self._require_analysis_task_output_paths(contract, paths)
+            await self._preflight_analysis_python_write(
+                scope=scope,
+                tool_name=canonical_tool_name,
+                canonical=canonical,
+            )
             payload = json.dumps(
                 {
                     "version": "1",
