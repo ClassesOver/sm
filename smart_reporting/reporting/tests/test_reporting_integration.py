@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import os
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from agno.run import RunContext
+from agno.run.base import RunStatus
 from agno.workflow import Step, Workflow
 
 from smart_reporting.database import create_agent_database
+from smart_reporting.reporting.contract import ReportingWorkflowInput
+from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.workflow.controller import ReportWorkflowController
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 
 
@@ -133,6 +139,76 @@ async def test_reporting_postgres_execution_lock_matrix() -> None:
 
     assert not await second.is_workflow_run_active(first_run_id)
     assert not await first.is_workflow_run_active(second_run_id)
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_reporting_postgres_controller_releases_owner_after_deferred_sandbox_cleanup() -> (
+    None
+):
+    database = create_agent_database(_integration_database_url())
+    repository = ReportingStateRepository(database.async_db)
+    suffix = uuid4().hex
+    thread_id = f"integration-deferred-cleanup-{suffix}"
+    run_calls = 0
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            nonlocal run_calls
+            run_calls += 1
+            if run_calls == 1:
+                raise RuntimeError("materialize failed")
+            return SimpleNamespace(status=RunStatus.completed)
+
+    async def cleanup(*_args, **_kwargs) -> None:
+        raise ReportingError(
+            "report_sandbox_cleanup_failed",
+            "失败运行环境已隔离并转入后台清理。",
+        )
+
+    controller = ReportWorkflowController(
+        lambda: Workflow(),
+        thread_ownership=repository,
+        terminal_cleanup=cleanup,
+    )
+    first_context = RunContext(
+        run_id=f"integration-run-a-{suffix}",
+        session_id=thread_id,
+        user_id="integration-user",
+        session_state={},
+    )
+    second_context = RunContext(
+        run_id=f"integration-run-b-{suffix}",
+        session_id=thread_id,
+        user_id="integration-user",
+        session_state={},
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="materialize failed"):
+            await controller.start(ReportingWorkflowInput(prompt="第一次运行"), first_context)
+        assert await repository.get_workflow_thread_owner(thread_id) is None
+
+        result = await controller.start(ReportingWorkflowInput(prompt="第二次运行"), second_context)
+
+        assert result["status"] == "completed"
+        assert run_calls == 2
+        assert await repository.get_workflow_thread_owner(thread_id) is None
+    finally:
+        await repository.release_workflow_thread(
+            thread_id=thread_id,
+            external_run_id=str(first_context.run_id),
+            owner_user_id="integration-user",
+        )
+        await repository.release_workflow_thread(
+            thread_id=thread_id,
+            external_run_id=str(second_context.run_id),
+            owner_user_id="integration-user",
+        )
+        await database.async_engine.dispose()
+        database.sync_engine.dispose()
 
 
 @pytest.mark.integration

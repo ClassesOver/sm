@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -8,6 +9,7 @@ from agno.agent.protocol import AgentProtocol
 from agno.os import AgentOS
 from fastapi import FastAPI
 
+from .async_utils import complete_cleanup
 from .database import AgentDatabase
 from .settings import AgentSettings
 from .workspace import WorkspaceService
@@ -27,9 +29,15 @@ def create_agentos_app(
 ) -> tuple[AgentOS, FastAPI]:
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
+        cleanup_task = asyncio.create_task(context.workspace_service.run_quarantine_cleanup_loop())
         try:
             yield
         finally:
+            cleanup_task.cancel()
+            try:
+                await complete_cleanup(cleanup_task)
+            except asyncio.CancelledError:
+                pass
             await context.workspace_service.aclose()
 
     agents: list[Agent | RemoteAgent | AgentProtocol | AgentFactory] = [context.report_agent]
