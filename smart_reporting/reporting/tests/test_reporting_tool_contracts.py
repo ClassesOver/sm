@@ -53,7 +53,7 @@ from smart_reporting.reporting.tools import (
     build_report_worker_tools,
 )
 from smart_reporting.reporting.workflow.checkpoint import FileIdentity, ProfileReadReceipt
-from smart_reporting.reporting.workflow.runtime import (
+from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_item_completion_conditions,
     _visualization_completion_conditions,
     _visualization_dynamic_budget,

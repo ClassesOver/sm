@@ -31,8 +31,8 @@ from smart_reporting.reporting.tests.delivery_fakes import (
     InMemoryDownloadGrantRepository,
     InMemoryReportArtifactRepository,
 )
-from smart_reporting.reporting.workflow import runtime as runtime_module
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
+from smart_reporting.reporting.workflow.runtime import base as runtime_module
 from smart_reporting.task_execution import TaskState
 from smart_reporting.workspace import WorkspaceService
 

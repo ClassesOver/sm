@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import json
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -27,20 +29,53 @@ from smart_reporting.reporting.model_policy import (
     ReportingThinkingProfile,
     reporting_thinking_profile_from_model,
 )
-from smart_reporting.reporting.workflow import runtime as reporting_runtime
 from smart_reporting.reporting.workflow.checkpoint import MetricDefinition
 from smart_reporting.reporting.workflow.query_pipeline import _has_complete_period_filter
 from smart_reporting.reporting.workflow.runtime import (
-    _PLANNER_DISPLAY_NAMES,
     REPORT_WORKFLOW_INPUT_STATE_KEY,
-    AnalysisBundle,
-    DataUnderstandingPlan,
     ReportWorkflowRuntime,
+)
+from smart_reporting.reporting.workflow.runtime import planning as reporting_runtime
+from smart_reporting.reporting.workflow.runtime.base import (
     _analysis_quality_warnings,
     _coding_detailed_analysis_plan,
-    _normalize_requirement_periods,
     _requirement_measure_field_refs,
 )
+from smart_reporting.reporting.workflow.runtime.models import (
+    AnalysisBundle,
+    DataUnderstandingPlan,
+)
+from smart_reporting.reporting.workflow.runtime.planning import _PLANNER_DISPLAY_NAMES
+from smart_reporting.reporting.workflow.runtime.validation import _normalize_requirement_periods
+
+
+def test_workflow_runtime_uses_package_boundaries() -> None:
+    """运行时入口和规划模型必须来自拆分后的实际模块。"""
+    assert ReportWorkflowRuntime.__module__ == ("smart_reporting.reporting.workflow.runtime.facade")
+    assert AnalysisBundle.__module__ == "smart_reporting.reporting.workflow.runtime.models"
+    assert DataUnderstandingPlan.__module__ == ("smart_reporting.reporting.workflow.runtime.models")
+
+
+def test_runtime_capability_modules_do_not_import_facade() -> None:
+    """能力模块只能依赖中立层，Facade 只负责最终组合。"""
+    runtime_dir = Path(__file__).parents[1] / "workflow" / "runtime"
+    capability_modules = (
+        "validation.py",
+        "planning.py",
+        "datasets.py",
+        "analysis.py",
+        "sections.py",
+        "publication.py",
+    )
+    for filename in capability_modules:
+        tree = ast.parse((runtime_dir / filename).read_text(encoding="utf-8"))
+        assert all(
+            not isinstance(node, ast.ImportFrom) or node.module != "facade"
+            for node in ast.walk(tree)
+        ), f"{filename} 不得运行时导入 facade"
+    assert _normalize_requirement_periods.__module__ == (
+        "smart_reporting.reporting.workflow.runtime.validation"
+    )
 
 
 def metric_definition(*, code: str, definition: str, period_basis: str) -> MetricDefinition:
