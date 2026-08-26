@@ -27,9 +27,9 @@ def test_reporting_compose_disables_fg_data_profiling_analytics():
         Loader=yaml.BaseLoader,
     )
 
-    assert compose["services"]["reporting-os"]["environment"][
-        "YDATA_PROFILING_NO_ANALYTICS"
-    ] == "true"
+    assert (
+        compose["services"]["reporting-os"]["environment"]["YDATA_PROFILING_NO_ANALYTICS"] == "true"
+    )
 
 
 def test_smart_reporting_readme_uses_existing_database_service() -> None:
