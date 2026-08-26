@@ -32,7 +32,6 @@ _WORKFLOW_ID = "enterprise-reporting-workflow-v1"
 _ACTIVE_STATUSES = frozenset({"running", "paused"})
 _THREAD_CLAIM_WAIT_SECONDS = 2.0
 _THREAD_CLAIM_RETRY_DELAY_SECONDS = 0.1
-_THREAD_OWNER_STALE_SECONDS = 60.0
 ReportWorkflowStatus = Literal["running", "paused", "completed", "cancelled", "failed"]
 ReviewStage = Literal["request", "outline"]
 
@@ -75,6 +74,8 @@ class WorkflowThreadOwnership(Protocol):
     def workflow_execution_lock(self, external_run_id: str) -> Any: ...
 
     async def get_workflow_thread_owner(self, thread_id: str) -> dict[str, Any] | None: ...
+
+    async def is_workflow_run_active(self, external_run_id: str) -> bool: ...
 
 
 WorkflowFactory = Callable[[], ReviewableWorkflow]
@@ -152,6 +153,37 @@ class ReportWorkflowController:
         workflow = self._workflow()
         workflow_session_id, workflow_run_id = self._workflow_ids(scope)
         payload = request.model_dump(mode="json", by_alias=True, exclude_none=True)
+        persisted_output = await self._load_run_output(
+            workflow, workflow_run_id, workflow_session_id
+        )
+        if persisted_output is not None:
+            control = self._control_from_output(
+                persisted_output, scope, workflow_session_id, workflow_run_id
+            )
+            if control.status == "running":
+                # arun 是同步等待的；拿到执行锁后仍读到 running，只能是进程崩溃或
+                # 旧版本留下的半成品。继续返回 running 会让同一个请求永久卡住，必须
+                # 在当前 owner 身份一致时清理后按确定性 run_id 重新执行。
+                owner = await self._get_thread_owner(scope["thread_id"])
+                owner_matches = owner is None or (
+                    str(owner.get("external_run_id")) == scope["external_run_id"]
+                    and str(owner.get("owner_user_id")) == scope["user_id"]
+                )
+                if owner_matches:
+                    await self._cleanup_terminal(scope, workflow_session_id, workflow_run_id)
+                    await self._release_thread(scope)
+                    persisted_output = None
+                else:
+                    # 另一个 run 占用同一 thread 时，不能清理其 sandbox；交给下面的
+                    # thread claim 路径返回明确冲突。
+                    persisted_output = None
+            if persisted_output is not None:
+                if control.status in _ACTIVE_STATUSES:
+                    await self._ensure_thread_owner(scope)
+                else:
+                    await self._finalize_control(control, scope, state=state)
+                state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
+                return self._result(control, persisted_output)
         owned_output = await self._claim_thread_with_recovery(scope)
         if owned_output is not None:
             control = self._control_from_output(
@@ -422,7 +454,7 @@ class ReportWorkflowController:
                 ) == (scope["external_run_id"], scope["user_id"])
                 if same_run and output is not None:
                     return output
-                if await self._reclaim_inactive_owner(owner, output):
+                if await self._reclaim_inactive_owner(owner, output, same_run=same_run):
                     continue
                 if same_run:
                     raise ReportingError(
@@ -443,30 +475,38 @@ class ReportWorkflowController:
         return owner if isinstance(owner, dict) else None
 
     async def _load_owner_output(self, owner: dict[str, Any]) -> Any:
-        try:
-            session_id, run_id = reporting_workflow_ids(
-                user_id=str(owner["owner_user_id"]),
-                thread_id=str(owner["thread_id"]),
-                external_run_id=str(owner["external_run_id"]),
-            )
-            return await self._workflow().aget_run(run_id, session_id=session_id)
-        except Exception:
+        session_id, run_id = reporting_workflow_ids(
+            user_id=str(owner["owner_user_id"]),
+            thread_id=str(owner["thread_id"]),
+            external_run_id=str(owner["external_run_id"]),
+        )
+        getter = getattr(self._workflow(), "aget_run", None)
+        if not callable(getter):
             return None
+        try:
+            return await getter(run_id, session_id=session_id)
+        except Exception as error:
+            raise ReportingError(
+                "report_workflow_owner_lookup_failed",
+                "无法确认 thread 当前报表工作流状态，请稍后重试。",
+            ) from error
 
-    async def _reclaim_inactive_owner(self, owner: dict[str, Any], output: Any) -> bool:
+    async def _reclaim_inactive_owner(
+        self, owner: dict[str, Any], output: Any, *, same_run: bool
+    ) -> bool:
         raw_status = getattr(output, "status", None) if output is not None else None
         status = self._status(raw_status) if raw_status is not None else None
-        if status in _ACTIVE_STATUSES:
+        # paused 是正常的人审等待，必须跨重启保留；running 则只有在对应执行锁
+        # 已释放后才可认定为进程遗留。缺失的 run 同样用执行锁排除仍在运行的进程。
+        if status == "paused":
             return False
-        created_at = owner.get("created_at")
-        stale = (
-            isinstance(created_at, datetime)
-            and (datetime.now(UTC) - created_at.astimezone(UTC)).total_seconds()
-            >= _THREAD_OWNER_STALE_SECONDS
-        )
-        if output is None and not stale:
-            return False
-        if output is not None and status not in {"completed", "cancelled", "failed"}:
+        if status in _ACTIVE_STATUSES or output is None:
+            if not same_run and await self._owner_run_active(owner["external_run_id"]):
+                return False
+            # 当前 start 已持有自己的 external_run_id 执行锁，因此同 run 的探测
+            # 不会误判自身；旧 run 的锁释放后即可安全回收。durable 非终态不再
+            # 阻塞新请求，旧 workflow 的 workspace 会由 cleanup 统一销毁。
+        elif status not in {"completed", "cancelled", "failed"}:
             return False
         owner_scope = {
             "thread_id": str(owner["thread_id"]),
@@ -474,13 +514,34 @@ class ReportWorkflowController:
             "user_id": str(owner["owner_user_id"]),
         }
         session_id, run_id = self._workflow_ids(owner_scope)
-        if output is None or status in {"cancelled", "failed"}:
-            await self._cleanup_terminal(owner_scope, session_id, run_id)
+        if output is None or status in {"running", "cancelled", "failed"}:
+            try:
+                await self._cleanup_terminal(owner_scope, session_id, run_id)
+            except BaseException:
+                # 清理失败时保留 owner，避免新 run 与旧 sandbox 并发；调用方会在
+                # 有界等待后收到明确的 active，而不是把底层异常误当成已回收。
+                if same_run:
+                    raise
+                return False
         return await self._thread_ownership.release_workflow_thread(
             thread_id=owner_scope["thread_id"],
             external_run_id=owner_scope["external_run_id"],
             owner_user_id=owner_scope["user_id"],
         )
+
+    async def _owner_run_active(self, external_run_id: str) -> bool:
+        getter = getattr(self._thread_ownership, "is_workflow_run_active", None)
+        if not callable(getter):
+            # 生产仓储始终提供锁探测；缺失时宁可保持旧行为，避免测试替身或
+            # 其他实现误删真实运行中的 owner。
+            return True
+        try:
+            return bool(await getter(str(external_run_id)))
+        except Exception as error:
+            raise ReportingError(
+                "report_workflow_owner_lookup_failed",
+                "无法确认 thread 当前报表工作流状态，请稍后重试。",
+            ) from error
 
     async def _ensure_thread_owner(self, scope: dict[str, str]) -> None:
         if not await self._thread_ownership.ensure_workflow_thread_owner(
@@ -570,7 +631,10 @@ class ReportWorkflowController:
             "ERROR": "failed",
             "FAILED": "failed",
         }
-        return statuses.get(normalized, "failed")
+        status = statuses.get(normalized)
+        if status is None:
+            raise ReportingError("report_workflow_status_invalid", "报表工作流状态无效。")
+        return status
 
     @staticmethod
     def _active_requirement(output: Any) -> Any:
