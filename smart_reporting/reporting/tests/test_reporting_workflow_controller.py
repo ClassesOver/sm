@@ -115,7 +115,7 @@ class _ThreadOwnershipWithoutExecutionLock:
 
 
 @pytest.mark.anyio
-async def test_controller_start_fails_closed_without_execution_lock() -> None:
+async def test_controller_fails_closed_when_execution_lock_is_missing() -> None:
     run_calls = 0
 
     class Workflow:
