@@ -11,6 +11,7 @@ from agno.run import RunContext
 from agno.run.base import RunStatus
 from agno.tools import Toolkit, tool
 from agno.workflow import OnReject
+from loguru import logger
 from pydantic import BaseModel
 
 from ..contract import (
@@ -102,8 +103,102 @@ class ReportWorkflowController:
         run_context: RunContext | None,
     ) -> dict[str, Any]:
         scope = self._scope(run_context)
-        async with self._execution_lock(scope["external_run_id"]):
-            return await self._start_unlocked(workflow_input, run_context)
+        logger.info(
+            "report_workflow_start_requested external_run_id={} thread_id={} user_id_present={}",
+            scope["external_run_id"],
+            scope["thread_id"],
+            bool(scope["user_id"]),
+        )
+        try:
+            async with self._execution_lock(scope["external_run_id"]):
+                return await self._start_unlocked(workflow_input, run_context)
+        except ReportingError as error:
+            if error.code != "report_workflow_run_conflict":
+                raise
+            logger.warning(
+                "report_workflow_duplicate_wait_started external_run_id={} thread_id={}",
+                scope["external_run_id"],
+                scope["thread_id"],
+            )
+            return await self._wait_for_duplicate_start(workflow_input, run_context, scope)
+
+    async def _wait_for_duplicate_start(
+        self,
+        workflow_input: ReportingWorkflowInput | ReportRequestEnvelope | dict[str, Any],
+        run_context: RunContext | None,
+        scope: dict[str, str],
+        *,
+        deadline: float | None = None,
+    ) -> dict[str, Any]:
+        """有限等待同一 run 的首个请求，避免重复调用立即失败或无限等待。"""
+
+        if deadline is None:
+            deadline = asyncio.get_running_loop().time() + _THREAD_CLAIM_WAIT_SECONDS
+        workflow = self._workflow()
+        workflow_session_id, workflow_run_id = self._workflow_ids(scope)
+        while True:
+            run_active = await self._owner_run_active(scope["external_run_id"])
+            output = (
+                None
+                if run_active
+                else await self._load_run_output(workflow, workflow_run_id, workflow_session_id)
+            )
+            if output is not None:
+                status = self._status(getattr(output, "status", None))
+                if status != "running":
+                    control = self._control_from_output(
+                        output, scope, workflow_session_id, workflow_run_id
+                    )
+                    return self._result(control, output)
+                if not run_active:
+                    # 持久化的 running 记录但执行锁已释放，说明首个进程已崩溃或
+                    # 重启遗留；交给正常 start 路径清理并按确定性 run_id 重跑。
+                    return await self._retry_duplicate_within_deadline(
+                        workflow_input, run_context, scope, deadline
+                    )
+            elif not run_active:
+                # 首个请求已经释放执行锁但没有留下可读结果，交给正常恢复路径
+                # 重新校验 owner、清理现场并按相同身份启动，保持幂等键语义。
+                return await self._retry_duplicate_within_deadline(
+                    workflow_input, run_context, scope, deadline
+                )
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                logger.warning(
+                    "report_workflow_duplicate_wait_timeout external_run_id={} thread_id={}",
+                    scope["external_run_id"],
+                    scope["thread_id"],
+                )
+                raise ReportingError(
+                    "report_workflow_run_conflict", "同一报表请求正在执行，请稍后重试。"
+                )
+            await asyncio.sleep(min(_THREAD_CLAIM_RETRY_DELAY_SECONDS, remaining))
+
+    async def _retry_duplicate_within_deadline(
+        self,
+        workflow_input: ReportingWorkflowInput | ReportRequestEnvelope | dict[str, Any],
+        run_context: RunContext | None,
+        scope: dict[str, str],
+        deadline: float,
+    ) -> dict[str, Any]:
+        try:
+            async with self._execution_lock(scope["external_run_id"]):
+                return await self._start_unlocked(workflow_input, run_context)
+        except ReportingError as error:
+            if error.code != "report_workflow_run_conflict":
+                raise
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise ReportingError(
+                    "report_workflow_run_conflict", "同一报表请求正在执行，请稍后重试。"
+                ) from error
+            await asyncio.sleep(min(_THREAD_CLAIM_RETRY_DELAY_SECONDS, remaining))
+            return await self._wait_for_duplicate_start(
+                workflow_input,
+                run_context,
+                scope,
+                deadline=deadline,
+            )
 
     async def _start_unlocked(
         self,
@@ -444,24 +539,59 @@ class ReportWorkflowController:
                 external_run_id=scope["external_run_id"],
                 owner_user_id=scope["user_id"],
             ):
+                logger.info(
+                    "report_workflow_owner_claimed external_run_id={} thread_id={}",
+                    scope["external_run_id"],
+                    scope["thread_id"],
+                )
                 return None
             owner = await self._get_thread_owner(scope["thread_id"])
             if owner is not None:
-                output = await self._load_owner_output(owner)
                 same_run = (
                     owner["external_run_id"],
                     owner["owner_user_id"],
                 ) == (scope["external_run_id"], scope["user_id"])
+                if not same_run and await self._owner_run_active(owner["external_run_id"]):
+                    logger.info(
+                        "report_workflow_owner_active old_external_run_id={} "
+                        "new_external_run_id={} thread_id={}",
+                        owner.get("external_run_id"),
+                        scope["external_run_id"],
+                        scope["thread_id"],
+                    )
+                    output = None
+                else:
+                    output = await self._load_owner_output(owner)
                 if same_run and output is not None:
                     return output
                 if await self._reclaim_inactive_owner(owner, output, same_run=same_run):
+                    logger.warning(
+                        "report_workflow_owner_reclaimed old_external_run_id={} "
+                        "new_external_run_id={} thread_id={} same_run={}",
+                        owner.get("external_run_id"),
+                        scope["external_run_id"],
+                        scope["thread_id"],
+                        same_run,
+                    )
                     continue
                 if same_run:
+                    logger.warning(
+                        "report_workflow_same_run_conflict external_run_id={} thread_id={}",
+                        scope["external_run_id"],
+                        scope["thread_id"],
+                    )
                     raise ReportingError(
                         "report_workflow_run_conflict", "同一报表请求正在启动，请稍后重试。"
                     )
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
+                logger.warning(
+                    "report_workflow_thread_active external_run_id={} thread_id={} "
+                    "owner_external_run_id={}",
+                    scope["external_run_id"],
+                    scope["thread_id"],
+                    owner.get("external_run_id") if owner is not None else "-",
+                )
                 raise ReportingError(
                     "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
                 )

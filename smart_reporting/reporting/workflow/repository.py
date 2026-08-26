@@ -231,23 +231,40 @@ class ReportingStateRepository:
     async def ensure_workflow_thread_owner(
         self, *, thread_id: str, external_run_id: str, owner_user_id: str
     ) -> bool:
-        """恢复暂停运行时认领空记录，但拒绝覆盖其他运行的所有权。"""
+        """在同一事务内恢复 owner，避免检查后被其他 run 替换。"""
 
-        if await self.claim_workflow_thread(
-            thread_id=thread_id,
-            external_run_id=external_run_id,
-            owner_user_id=owner_user_id,
-        ):
-            return True
-        async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
-            row = (
-                await connection.execute(
-                    select(
-                        self.workflow_thread_owners.c.external_run_id,
-                        self.workflow_thread_owners.c.owner_user_id,
-                    ).where(self.workflow_thread_owners.c.thread_id == thread_id)
+        await self.initialize()
+        values = {
+            "thread_id": thread_id,
+            "external_run_id": external_run_id,
+            "owner_user_id": owner_user_id,
+            "created_at": datetime.now(UTC),
+        }
+        async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
+            statement: Any
+            if connection.dialect.name == "postgresql":
+                statement = postgresql_insert(self.workflow_thread_owners).values(**values)
+                statement = statement.on_conflict_do_nothing(
+                    index_elements=[self.workflow_thread_owners.c.thread_id]
                 )
-            ).first()
+            elif connection.dialect.name == "sqlite":
+                statement = sqlite_insert(self.workflow_thread_owners).values(**values)
+                statement = statement.on_conflict_do_nothing(
+                    index_elements=[self.workflow_thread_owners.c.thread_id]
+                )
+            else:
+                statement = insert(self.workflow_thread_owners).values(**values)
+            try:
+                await connection.execute(statement)
+            except IntegrityError:
+                return False
+            query = select(
+                self.workflow_thread_owners.c.external_run_id,
+                self.workflow_thread_owners.c.owner_user_id,
+            ).where(self.workflow_thread_owners.c.thread_id == thread_id)
+            if connection.dialect.name == "postgresql":
+                query = query.with_for_update()
+            row = (await connection.execute(query)).first()
         return row is not None and tuple(row) == (external_run_id, owner_user_id)
 
     async def release_workflow_thread(

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, UploadFile
+from loguru import logger as loguru_logger
 from starlette.requests import Request
 
 from smart_reporting.application import ApplicationContext, create_agentos_app
@@ -134,6 +135,35 @@ async def test_application_lifespan_closes_workspace_service(monkeypatch):
     async with captured["lifespan"](FastAPI()):
         assert workspace.close_calls == 0
     assert workspace.close_calls == 1
+
+
+@pytest.mark.anyio
+async def test_reporting_runtime_identity_log_contains_deployment_boundary(monkeypatch):
+    from smart_reporting import app as app_module
+
+    records: list[str] = []
+    sink_id = loguru_logger.add(
+        lambda message: records.append(str(message).rstrip("\n")),
+        format="{message}",
+        level="INFO",
+    )
+    try:
+        monkeypatch.setattr(
+            app_module,
+            "agent_database",
+            type("Database", (), {"backend": "postgresql"})(),
+        )
+        monkeypatch.setattr(app_module, "settings", type("Settings", (), {"workers": 2})())
+        monkeypatch.setenv("REPORTING_BUILD_ID", "test-build")
+
+        await app_module._log_reporting_runtime_identity()
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert records == [
+        "reporting_runtime_started workflow_id=enterprise-reporting-workflow-v1 "
+        "build_id=test-build database_backend=postgresql reporting_schema=agentos_reporting workers=2"
+    ]
 
 
 def test_default_application_exposes_explicit_context():
