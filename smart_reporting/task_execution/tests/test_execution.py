@@ -20,15 +20,6 @@ from daytona.common.errors import DaytonaNotFoundError
 
 import smart_reporting.task_execution.execution as execution_module
 from smart_reporting.agent_control import AGENT_PLAN_STATE_KEY
-from smart_reporting.coding import CodingScope, Lease
-from smart_reporting.coding.executor import CODING_FINISH_FAILURE_STATE_KEY
-from smart_reporting.coding.tests.workspace_fakes import (
-    AsyncFakeClient,
-    AsyncFakeFs,
-    AsyncFakeProcess,
-    AsyncMemoryRegistry,
-    service,
-)
 from smart_reporting.database import create_agent_database
 from smart_reporting.reporting.tools import ReportWorkspaceTaskToolkit
 from smart_reporting.skills import (
@@ -39,6 +30,7 @@ from smart_reporting.skills import (
 )
 from smart_reporting.task_execution.execution import (
     CODING_EXECUTION_MIGRATION_STATE_KEY,
+    CODING_FINISH_FAILURE_STATE_KEY,
     CODING_TASK_DEPENDENCY,
     CODING_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
     CODING_TOOL_FAILURE_STATE_KEY,
@@ -54,7 +46,15 @@ from smart_reporting.task_execution.execution import (
     create_coding_tool_scheduler_hook,
     normalize_coding_function_call_arguments,
 )
+from smart_reporting.task_execution.models import CodingScope, Lease
 from smart_reporting.task_execution.repository import CodingRepositoryError, CodingTaskRepository
+from smart_reporting.task_execution.tests.workspace_fakes import (
+    AsyncFakeClient,
+    AsyncFakeFs,
+    AsyncFakeProcess,
+    AsyncMemoryRegistry,
+    service,
+)
 from smart_reporting.task_execution.tools import (
     CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
     CODEX_EXEC_SESSIONS_STATE_KEY,

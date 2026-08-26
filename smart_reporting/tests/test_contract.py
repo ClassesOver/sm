@@ -18,11 +18,6 @@ from openai.types.chat.chat_completion_chunk import (
 
 from smart_reporting import app
 from smart_reporting.context_management import ProjectedOpenAIChat
-from smart_reporting.instructions import (
-    PURE_CODING_PARALLEL_READ_INSTRUCTIONS,
-    build_coding_agent_instructions,
-    build_pure_coding_agent_instructions,
-)
 from smart_reporting.model_config import OPENAI_COMPATIBLE_ROLE_MAP
 from smart_reporting.reporting.agent import ReportFacadeOpenAIChat, create_report_agent
 from smart_reporting.reporting.workflow.controller import (
@@ -70,37 +65,6 @@ class ScriptedModel(Model):
 
 def test_openai_compatible_role_map_preserves_system_instructions():
     assert OPENAI_COMPATIBLE_ROLE_MAP["system"] == "system"
-
-
-def test_pure_coding_agent_batches_only_independent_reads():
-    context = instruction_context()
-    base = build_coding_agent_instructions(context)
-    instructions = build_pure_coding_agent_instructions(context)
-    text = "\n".join(instructions)
-
-    assert instructions == [*base, *PURE_CODING_PARALLEL_READ_INSTRUCTIONS]
-    assert "2 到 10 个只读操作" in text
-    assert "同一次模型响应中并行调用" in text
-    assert "彼此独立且服务于同一当前步骤" in text
-    assert "路径未知" in text and "数据依赖的读取必须串行" in text
-    assert "不得批量调用无关读取、超大范围读取" in text
-    for tool_name in (
-        "list_files",
-        "read_file",
-        "read_lines",
-        "search_text",
-        "tree",
-        "git_status",
-        "git_diff",
-        "read_tool_output",
-        "view_image",
-    ):
-        assert tool_name in text
-    assert "非执行型 Skill 读取" in text
-    assert (
-        "并行批次不得包含 terminal、process、update_plan、任何 mutation、verify 或 finish_task"
-        in text
-    )
 
 
 @pytest.mark.anyio

@@ -62,17 +62,6 @@ def _reasoning_effort(values: MutableMapping[str, str], name: str, default: str 
     return value
 
 
-def _coding_reasoning_effort(values: MutableMapping[str, str], *, use_vllm_reasoning: bool) -> str:
-    value = _reasoning_effort(
-        values,
-        "AGENT_CODING_REASONING_EFFORT",
-        default="high" if use_vllm_reasoning else "medium",
-    )
-    if use_vllm_reasoning and value not in {"low", "high", "max"}:
-        raise ValueError("DeepSeek V4 的 AGENT_CODING_REASONING_EFFORT 必须是 low、high 或 max")
-    return value
-
-
 def _report_reasoning_effort(
     values: MutableMapping[str, str], name: str, default: str = "high"
 ) -> str:
@@ -199,10 +188,6 @@ class AgentSettings:
     daytona_network_allow_list: str | None
     enable_tool_result_compression: bool
     enable_session_summaries: bool
-    coding_temperature: float
-    coding_enable_thinking: bool
-    coding_reasoning_effort: str
-    coding_thinking_budget: int
     report_coding_enable_thinking: bool
     report_coding_temperature: float
     report_coding_reasoning_effort: str
@@ -320,14 +305,6 @@ class AgentSettings:
             ),
             enable_session_summaries=_flag(
                 values.get("AGENT_ENABLE_SESSION_SUMMARIES"), default=True
-            ),
-            coding_temperature=_temperature(values, "AGENT_CODING_TEMPERATURE", 0.1),
-            coding_enable_thinking=_flag(values.get("AGENT_CODING_ENABLE_THINKING"), default=True),
-            coding_reasoning_effort=_coding_reasoning_effort(
-                values, use_vllm_reasoning=model_vllm_reasoning
-            ),
-            coding_thinking_budget=_positive_int(
-                values, "AGENT_CODING_THINKING_BUDGET", 16384, maximum=131072
             ),
             report_coding_enable_thinking=_flag(
                 values.get("AGENT_REPORT_CODING_ENABLE_THINKING"), default=True

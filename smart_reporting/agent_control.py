@@ -2,7 +2,6 @@ import re
 from typing import Any
 
 from agno.run import RunContext
-from agno.tools import Toolkit
 
 from .workspace import WorkspaceService
 
@@ -50,28 +49,6 @@ def validated_agent_plan(value: object) -> dict[str, Any] | None:
     if active > 1:
         return None
     return {"plan": normalized, "explanation": explanation.strip()}
-
-
-def build_coding_agent_tools(
-    workspace_service: WorkspaceService,
-    coding_repository,
-    validator_registry=None,
-    *,
-    run_context: RunContext,
-    agent: Any | None = None,
-    context_token_budget: int = 262144,
-    output_token_reserve: int = 32768,
-) -> list[Toolkit]:
-    """Coding Agent 固定使用受约束的工作区工具。"""
-    from .task_execution.execution import WorkspaceCodingToolkit
-
-    return [
-        WorkspaceCodingToolkit(
-            workspace_service,
-            coding_repository,
-            validator_registry=validator_registry,
-        )
-    ]
 
 
 class AgentControlToolkit:

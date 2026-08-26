@@ -10,10 +10,10 @@ from agno.run import RunContext
 from daytona import AsyncDaytona, CreateSandboxFromSnapshotParams
 from daytona.common.errors import DaytonaNotFoundError
 
-from smart_reporting.coding import CodingScope, Lease
 from smart_reporting.database import create_agent_database
 from smart_reporting.skills import skill_script_receipt_hook
 from smart_reporting.task_execution.execution import CODING_TASK_DEPENDENCY, CodingExecutionKernel
+from smart_reporting.task_execution.models import CodingScope, Lease
 from smart_reporting.task_execution.repository import CodingTaskRepository
 from smart_reporting.workspace import (
     WORKSPACE_ROOT,
