@@ -4,15 +4,69 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from agno.run import RunContext
 
-from smart_reporting.reporting.delivery.report_runtime import (
+from smart_reporting.reporting.delivery.report_runtime.docx import (
     _WORD_PAGE_FIELDS,
-    DEFAULT_PAGE_LAYOUT,
-    _normalize_cjk_strong_markers,
-    _page_number_context,
     _postprocess_docx,
+)
+from smart_reporting.reporting.delivery.report_runtime.markdown import (
+    _normalize_cjk_strong_markers,
     normalize_report_markdown_strong_spacing,
 )
+from smart_reporting.reporting.delivery.report_runtime.pdf import (
+    DEFAULT_PAGE_LAYOUT,
+    _page_number_context,
+)
+from smart_reporting.reporting.tests.workspace_fakes import (
+    AsyncFakeClient,
+    AsyncMemoryRegistry,
+    service,
+)
+from smart_reporting.reporting.workspace import WorkspaceReportService
+from smart_reporting.workspace import WorkspaceService
+
+
+@pytest.mark.anyio
+async def test_report_runtime_uploads_complete_package_and_uses_module_cli(tmp_path: Path) -> None:
+    current = service(tmp_path)
+    workspace = WorkspaceService(
+        current.secret,
+        client=current.client,
+        registry=current.registry,
+        async_client=AsyncFakeClient(current.client),
+        async_registry=AsyncMemoryRegistry(current.registry.values),
+    )
+    report_workspace = WorkspaceReportService(workspace)
+    workspace._bounded_output = lambda _value: {
+        "exitCode": 0,
+        "output": '{"status":"ok"}',
+        "truncated": False,
+    }
+
+    result = await report_workspace._run_report_runtime(
+        "validate_pdf",
+        {"job": {}},
+        RunContext(run_id="report-runtime-run", session_id="report-runtime-package"),
+    )
+
+    sandbox = next(iter(current.client.sandboxes.values()))
+    uploaded = {
+        Path(path).name
+        for path in sandbox.fs.entries
+        if "/report_runtime/" in path and path.endswith(".py")
+    }
+    assert uploaded == {
+        "__init__.py",
+        "cli.py",
+        "docx.py",
+        "markdown.py",
+        "pdf.py",
+        "runtime.py",
+        "validation.py",
+    }
+    assert "python -m report_runtime.cli validate_pdf" in sandbox.process.calls[-1]["command"]
+    assert result == {"status": "ok"}
 
 
 def test_normalize_cjk_strong_markers_supports_chinese_punctuation() -> None:

@@ -9,7 +9,7 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..contract import StrictModel
 from ..models import ReportingError
-from .report_runtime import normalize_report_markdown_strong_spacing
+from .report_runtime.markdown import normalize_report_markdown_strong_spacing
 
 _LEADING_SECTION_HEADING = re.compile(
     r"\A#{1,2}[ \t]+(?P<title>[^\r\n]*?)(?:[ \t]+#+)?[ \t]*(?:\r?\n|\Z)"

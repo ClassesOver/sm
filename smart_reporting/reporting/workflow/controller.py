@@ -719,16 +719,16 @@ class ReportWorkflowController:
     async def _execution_lock(self, external_run_id: str) -> Any:
         """串行化同一 paused run 的审批/取消，避免重复调用 Agno continue。"""
 
-        lock_factory = getattr(self._thread_ownership, "workflow_execution_lock", None)
-        if callable(lock_factory):
-            try:
-                async with lock_factory(external_run_id):
-                    yield
-            except ReportingStateError as error:
-                raise ReportingError(error.code, error.message) from error
-            return
-        # 仅兼容不提供执行锁的单元测试替身；生产仓储始终实现该接口。
-        yield
+        lock = getattr(self._thread_ownership, "workflow_execution_lock", None)
+        if not callable(lock):
+            raise ReportingError(
+                "report_workflow_runtime_invalid", "Reporting runtime 缺少 workflow 执行锁。"
+            )
+        try:
+            async with lock(external_run_id):
+                yield
+        except ReportingStateError as error:
+            raise ReportingError(error.code, error.message) from error
 
     @staticmethod
     def _control(state: dict[str, Any], *, required: bool = True) -> ReportWorkflowControl | None:

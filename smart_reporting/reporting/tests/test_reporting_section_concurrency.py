@@ -26,9 +26,9 @@ from smart_reporting.reporting.workflow.checkpoint import (
 from smart_reporting.reporting.workflow.runtime import (
     REPORT_WORKFLOW_RESULT_STATE_KEY,
     ReportWorkflowRuntime,
-    _run_bounded,
-    _run_pending_analysis_items,
 )
+from smart_reporting.reporting.workflow.runtime.analysis import _run_pending_analysis_items
+from smart_reporting.reporting.workflow.runtime.sections import _run_bounded
 
 
 @pytest.mark.anyio

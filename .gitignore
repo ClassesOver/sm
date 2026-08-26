@@ -322,3 +322,4 @@ cython_debug/
 # 合并和补丁残留
 *.orig
 *.rej
+.worktrees/

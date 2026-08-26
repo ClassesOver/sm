@@ -16,10 +16,12 @@ from smart_reporting.reporting.delivery.draft_v1 import (
     ReportSectionDefinition,
     assemble_report_markdown,
 )
-from smart_reporting.reporting.delivery.report_runtime import (
-    DEFAULT_PAGE_LAYOUT,
+from smart_reporting.reporting.delivery.report_runtime.markdown import (
     _document_context,
     _semantic_documents,
+)
+from smart_reporting.reporting.delivery.report_runtime.pdf import (
+    DEFAULT_PAGE_LAYOUT,
 )
 from smart_reporting.reporting.hospital_operation.outline import ReportOutline, freeze_outline
 from smart_reporting.reporting.models import ReportingError
