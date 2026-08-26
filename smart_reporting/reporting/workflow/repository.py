@@ -192,7 +192,7 @@ class ReportingStateRepository:
                 statement = postgresql_insert(self.workflow_thread_owners).values(**values)
                 statement = statement.on_conflict_do_nothing(
                     index_elements=[self.workflow_thread_owners.c.thread_id]
-                )
+                ).returning(self.workflow_thread_owners.c.thread_id)
             elif connection.dialect.name == "sqlite":
                 statement = sqlite_insert(self.workflow_thread_owners).values(**values)
                 statement = statement.on_conflict_do_nothing(
@@ -204,6 +204,8 @@ class ReportingStateRepository:
                 result = await connection.execute(statement)
             except IntegrityError:
                 return False
+        if connection.dialect.name == "postgresql":
+            return result.scalar_one_or_none() == thread_id
         return result.rowcount == 1
 
     async def get_workflow_thread_owner(self, thread_id: str) -> dict[str, Any] | None:
