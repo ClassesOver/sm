@@ -29,10 +29,6 @@ def test_settings_defaults():
     assert current.enable_tool_result_compression is True
     assert current.enable_session_summaries is True
     assert current.model_vllm_reasoning is False
-    assert current.coding_temperature == 0.1
-    assert current.coding_enable_thinking is True
-    assert current.coding_reasoning_effort == "medium"
-    assert current.coding_thinking_budget == 16384
     assert current.report_coding_enable_thinking is True
     assert current.report_coding_temperature == 0.1
     assert current.report_coding_reasoning_effort == "high"
@@ -60,10 +56,6 @@ def test_agent_feature_flags_can_be_disabled():
     current = settings(
         AGENT_ENABLE_TOOL_RESULT_COMPRESSION="false",
         AGENT_ENABLE_SESSION_SUMMARIES="0",
-        AGENT_CODING_TEMPERATURE="0.25",
-        AGENT_CODING_ENABLE_THINKING="off",
-        AGENT_CODING_REASONING_EFFORT="high",
-        AGENT_CODING_THINKING_BUDGET="8192",
         AGENT_REPORT_CODING_ENABLE_THINKING="no",
         AGENT_REPORT_CODING_TEMPERATURE="0.35",
         AGENT_REPORT_CODING_REASONING_EFFORT="max",
@@ -83,10 +75,6 @@ def test_agent_feature_flags_can_be_disabled():
 
     assert current.enable_tool_result_compression is False
     assert current.enable_session_summaries is False
-    assert current.coding_temperature == 0.25
-    assert current.coding_enable_thinking is False
-    assert current.coding_reasoning_effort == "high"
-    assert current.coding_thinking_budget == 8192
     assert current.report_coding_enable_thinking is False
     assert current.report_coding_temperature == 0.35
     assert current.report_coding_reasoning_effort == "max"
@@ -120,19 +108,10 @@ def test_model_timeout_comes_from_environment():
     assert settings(AGENT_MODEL_TIMEOUT_SECONDS="3600").model_timeout_seconds == 3600
 
 
-def test_vllm_reasoning_uses_deepseek_v4_supported_default_effort():
+def test_vllm_reasoning_flag_is_preserved():
     current = settings(AGENT_MODEL_VLLM_REASONING="true")
 
     assert current.model_vllm_reasoning is True
-    assert current.coding_reasoning_effort == "high"
-
-
-def test_vllm_reasoning_rejects_unsupported_coding_effort():
-    with pytest.raises(ValueError, match="DeepSeek V4.*low、high 或 max"):
-        settings(
-            AGENT_MODEL_VLLM_REASONING="true",
-            AGENT_CODING_REASONING_EFFORT="medium",
-        )
 
 
 def test_report_vision_model_comes_from_environment():
@@ -141,7 +120,7 @@ def test_report_vision_model_comes_from_environment():
     )
 
 
-@pytest.mark.parametrize("name", ["AGENT_CODING_TEMPERATURE", "AGENT_REPORT_CODING_TEMPERATURE"])
+@pytest.mark.parametrize("name", ["AGENT_REPORT_CODING_TEMPERATURE"])
 @pytest.mark.parametrize("value", ["invalid", "-0.1", "2.1"])
 def test_invalid_coding_temperature_is_rejected(name, value):
     with pytest.raises(ValueError, match=name):
@@ -151,7 +130,6 @@ def test_invalid_coding_temperature_is_rejected(name, value):
 @pytest.mark.parametrize(
     "name",
     [
-        "AGENT_CODING_REASONING_EFFORT",
         "AGENT_REPORT_CODING_REASONING_EFFORT",
         "AGENT_REPORT_PLANNER_REASONING_EFFORT",
     ],
@@ -177,7 +155,6 @@ def test_reporting_reasoning_effort_only_accepts_deepseek_v4_levels(name, value)
 @pytest.mark.parametrize(
     "name",
     [
-        "AGENT_CODING_THINKING_BUDGET",
         "AGENT_REPORT_CODING_THINKING_BUDGET",
         "AGENT_REPORT_PLANNER_THINKING_BUDGET",
     ],

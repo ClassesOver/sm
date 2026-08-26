@@ -9,7 +9,9 @@
 - 删除 `smart_reporting/coding/` 下全部生产代码和测试。
 - 从 pytest 收集路径中移除 `smart_reporting/coding/tests`。
 - 删除 README 中失效的 Coding CLI 启动说明。
-- 将 Coding 测试中唯一直接覆盖 `ReportWorkspaceTaskToolkit` 的 Reporting 行为迁入 `smart_reporting/reporting/tests/`。
+- 将实际覆盖共享执行底座的仓储、session、验收、Daytona 和执行内核测试迁入
+  `smart_reporting/task_execution/tests/`，删除只覆盖 Coding CLI、Facade、Supervisor、
+  Adapter、Policy 和旧 Toolkit 的测试。
 - 补充静态边界检查，确保仓库入口和文档不再引用 `smart_reporting.coding`。
 
 ## 非目标
@@ -22,7 +24,9 @@
 
 ## 实施设计
 
-先把 `smart_reporting/coding/tests/test_coding_execution.py` 中使用 `ReportWorkspaceTaskToolkit` 的报表输出保留测试迁移到 Reporting 测试目录。迁移后的测试继续通过已有 Reporting fake 和任务执行 fixture 验证大输出可通过 `outputHandle` 完整读取，不复用 Coding 测试模块。
+先把 `smart_reporting/coding/tests/` 中实际覆盖 Reporting 仍使用的任务执行底座测试迁移到
+`smart_reporting/task_execution/tests/`。迁移后的测试继续验证仓储 CAS、租约、验收、受控执行、
+输出句柄和 Reporting Toolkit 委托行为，不再从 Coding 产品包导入类型或 fixture。
 
 测试接管后，整体删除 `smart_reporting/coding/`，同步更新 `pyproject.toml` 和 `smart_reporting/README.md`。生产装配不需要改动：`smart_reporting/application.py` 当前只向 AgentOS 注册 `report_agent`，Reporting 运行时通过 `task_execution` 使用受控执行底座，并不导入 `smart_reporting.coding`。
 
@@ -31,7 +35,8 @@
 ## 成功标准
 
 1. `smart_reporting/coding/` 不再存在。
-2. 全仓没有 `smart_reporting.coding`、`smart_reporting/coding` 或 `python -m smart_reporting.coding.cli` 引用。
+2. 生产代码、测试配置和用户运行文档没有 `smart_reporting.coding`、`smart_reporting/coding`
+   或 `python -m smart_reporting.coding.cli` 引用；本次设计和实施记录可以保留历史路径说明。
 3. Reporting 相关测试不从 Coding 测试目录导入 fixture 或实现。
 4. Reporting 定点测试、测试收集、Ruff 和 Mypy 通过。
 5. Git 差异只包含 Coding 产品移除、必要的 Reporting 测试接管、测试配置和文档更新。

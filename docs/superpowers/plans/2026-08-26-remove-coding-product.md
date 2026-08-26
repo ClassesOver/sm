@@ -17,21 +17,21 @@
 - Move: `smart_reporting/coding/tests/test_coding_acceptance.py` -> `smart_reporting/task_execution/tests/test_acceptance.py`
 - Move: `smart_reporting/coding/tests/test_coding_daytona.py` -> `smart_reporting/task_execution/tests/test_daytona.py`
 - Move: `smart_reporting/coding/tests/test_coding_execution.py` -> `smart_reporting/task_execution/tests/test_execution.py`
-- Move: `smart_reporting/coding/tests/test_coding_repository.py` -> `smart_reporting/task_execution/tests/test_repository_legacy.py`
+- Move: `smart_reporting/coding/tests/test_coding_repository.py` -> `smart_reporting/task_execution/tests/test_repository_execution.py`
 - Move: `smart_reporting/coding/tests/test_coding_repository_v2.py` -> `smart_reporting/task_execution/tests/test_repository.py`
 - Move: `smart_reporting/coding/tests/test_coding_session.py` -> `smart_reporting/task_execution/tests/test_session.py`
-- Move: `smart_reporting/coding/tests/test_coding_tools.py` -> `smart_reporting/task_execution/tests/test_tools.py`
+- Delete: `smart_reporting/coding/tests/test_coding_tools.py`
 - Create: `smart_reporting/task_execution/tests/__init__.py`
 
-- [ ] **Step 1: 移动测试文件并修正包引用**
+- [x] **Step 1: 移动测试文件并修正包引用**
 
 将 `CodingScope`、`Lease`、`CodingEvent` 等共享类型改从 `smart_reporting.task_execution` 或其 `models` 导入；将 fake 引用改为 `smart_reporting.task_execution.tests.workspace_fakes`；将 `CODING_FINISH_FAILURE_STATE_KEY` 改从 `task_execution.execution` 导入。
 
-- [ ] **Step 2: 删除测试中唯一的 Coding Facade 用例**
+- [x] **Step 2: 删除纯 Coding Toolkit 测试**
 
-从迁移后的 `test_tools.py` 删除 `create_coding_facade_agent` 导入和 `test_coding_facade_only_forwards_acceptance_contract_from_dependency`。其余测试继续覆盖当前 Reporting 使用的受控执行、补丁、命令策略和输出句柄能力。
+删除 `test_coding_tools.py` 整个文件。该文件覆盖已废弃的 `CodingToolkit`/`HermesCodingToolkit` 和 Coding Facade，Reporting 生产路径不使用这些实现；共享的受控执行、补丁、命令策略和输出句柄测试保留在迁移后的 `test_execution.py`。
 
-- [ ] **Step 3: 运行迁移后的定点测试**
+- [x] **Step 3: 运行迁移后的定点测试**
 
 Run:
 
@@ -52,7 +52,7 @@ Expected: 所有用例通过，且测试收集不导入 `smart_reporting.coding`
 - Modify: `smart_reporting/agent_control.py`
 - Modify: `smart_reporting/tests/test_contract.py`
 
-- [ ] **Step 1: 添加边界失败检查**
+- [x] **Step 1: 添加边界失败检查**
 
 先运行以下扫描，确认删除前仍能发现 Coding 产品引用：
 
@@ -63,15 +63,15 @@ rg -n 'smart_reporting\.coding|smart_reporting/coding|smart_reporting\.coding\.c
 
 Expected: 扫描命中现有 Coding 包、测试配置和 README 入口。
 
-- [ ] **Step 2: 删除纯 Coding 包与孤立指令**
+- [x] **Step 2: 删除纯 Coding 包与孤立指令**
 
 删除剩余 `smart_reporting/coding/`；删除仅由该包消费的 `smart_reporting/instructions.py`；从 `agent_control.py` 删除仅构造 `WorkspaceCodingToolkit` 的 `build_coding_agent_tools`，保留 Reporting 使用的计划状态契约。
 
-- [ ] **Step 3: 删除顶层契约测试中的纯 Coding 断言**
+- [x] **Step 3: 删除顶层契约测试中的纯 Coding 断言**
 
 从 `smart_reporting/tests/test_contract.py` 删除 `smart_reporting.instructions` 导入和 `test_pure_coding_agent_batches_only_independent_reads`，保留 Reporting AgentOS 契约测试。
 
-- [ ] **Step 4: 验证包独立导入**
+- [x] **Step 4: 验证包独立导入**
 
 Run:
 
@@ -91,19 +91,19 @@ Expected: 退出码为 0。
 - Modify: `smart_reporting/.env.example`
 - Modify: `smart_reporting/README.md`
 
-- [ ] **Step 1: 更新 pytest 收集路径**
+- [x] **Step 1: 更新 pytest 收集路径**
 
 把 `smart_reporting/coding/tests` 替换为 `smart_reporting/task_execution/tests`。
 
-- [ ] **Step 2: 删除纯 Coding 配置字段**
+- [x] **Step 2: 删除纯 Coding 配置字段**
 
 删除 `AgentSettings` 的 `coding_temperature`、`coding_enable_thinking`、`coding_reasoning_effort`、`coding_thinking_budget` 及 `_coding_reasoning_effort`。保留 Reporting 实际消费的 `report_coding_*` 配置。
 
-- [ ] **Step 3: 同步测试和示例配置**
+- [x] **Step 3: 同步测试和示例配置**
 
 删除 `AGENT_CODING_*` 示例、README 表项和相应设置测试；收窄参数化测试，使其只覆盖 `AGENT_REPORT_CODING_*` 与 planner 配置。
 
-- [ ] **Step 4: 运行配置定点测试**
+- [x] **Step 4: 运行配置定点测试**
 
 Run:
 
@@ -122,19 +122,19 @@ Expected: 所有设置测试通过。
 - Verify: `smart_reporting/.env.example`
 - Verify: `smart_reporting/README.md`
 
-- [ ] **Step 1: 验证旧产品路径清零**
+- [x] **Step 1: 验证旧产品路径清零**
 
 Run:
 
 ```bash
 test ! -d smart_reporting/coding
 ! rg -n 'smart_reporting\.coding|smart_reporting/coding|python -m smart_reporting\.coding\.cli' \
-  smart_reporting pyproject.toml README.md docs scripts
+  smart_reporting pyproject.toml README.md scripts
 ```
 
 Expected: 两条命令退出码均为 0。
 
-- [ ] **Step 2: 运行定点 Reporting 和执行层回归**
+- [x] **Step 2: 运行定点 Reporting 和执行层回归**
 
 Run:
 
@@ -159,7 +159,11 @@ bash scripts/check_agentos.sh
 
 Expected: Ruff format、Ruff lint、Mypy 和默认非 integration pytest 全部通过。
 
-- [ ] **Step 4: 检查差异边界**
+Actual: 脚本在 Ruff format 阶段被本次未修改的
+`smart_reporting/tests/test_reporting_compose.py` 既有格式差异阻断；未顺带格式化该无关文件。
+Ruff lint、Mypy 和默认 pytest 已分别执行并通过。
+
+- [x] **Step 4: 检查差异边界**
 
 Run:
 

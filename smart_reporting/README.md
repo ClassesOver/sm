@@ -36,19 +36,13 @@ AgentOS 中的 Reporting 正常发布时会将 PDF/Word 持久化到 PostgreSQL�
 
 ## CLI
 
-Coding CLI：
-
-```bash
-AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.coding.cli
-```
-
 Reporting CLI：
 
 ```bash
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.reporting.cli
 ```
 
-Coding 与 Reporting 使用独立 Agent、指令、工具、状态和验收链路。Coding 通过 `CodingTaskSupervisor` 管理 Task、Attempt、Execution、租约、验证和完成门禁；Reporting 通过顶层 Workflow 编排数据准备、分析、章节生成、双格式验收和发布。
+服务仅提供 Reporting 产品入口，通过顶层 Workflow 编排数据准备、分析、章节生成、双格式验收和发布。
 
 ## 配置
 
@@ -64,7 +58,6 @@ Coding 与 Reporting 使用独立 Agent、指令、工具、状态和验收链�
 | `AGENT_WORKSPACE_HMAC_SECRET` | Workspace capability 签名密钥 |
 | `AGENT_DAYTONA_API_URL` | Daytona API 地址 |
 | `DAYTONA_API_KEY` | Daytona API Key |
-| `AGENT_CODING_ENABLE_THINKING` | Coding Agent thinking 开关 |
 | `AGENT_REPORT_CODING_ENABLE_THINKING` | Reporting worker thinking 开关 |
 | `AGENT_REPORT_ENABLE_THINKING` | Reporting planner thinking 开关 |
 | `AGENT_REPORT_ENABLE_VISION` | 图表视觉审查开关 |

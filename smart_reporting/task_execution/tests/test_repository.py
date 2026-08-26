@@ -2,18 +2,21 @@ from datetime import timedelta
 
 import pytest
 
-from smart_reporting.coding import (
+from smart_reporting.database import create_agent_database
+from smart_reporting.task_execution.models import (
     AttemptOutcome,
     AttemptState,
-    CodingRepositoryError,
     CodingScope,
-    CodingTaskRepository,
     InstructionState,
     Lease,
     TaskState,
 )
-from smart_reporting.database import create_agent_database
-from smart_reporting.task_execution.repository import MAX_INSTRUCTION_BYTES, utcnow
+from smart_reporting.task_execution.repository import (
+    MAX_INSTRUCTION_BYTES,
+    CodingRepositoryError,
+    CodingTaskRepository,
+    utcnow,
+)
 
 
 @pytest.fixture
