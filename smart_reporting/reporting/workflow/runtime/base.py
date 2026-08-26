@@ -96,7 +96,7 @@ from ...delivery.publishing import (
     cli_result,
     publication_result,
 )
-from ...delivery.report_runtime.pdf import REPORT_VISUAL_THEME
+from ...delivery.report_runtime.markdown import REPORT_VISUAL_THEME
 from ...hospital_operation.delivery import (
     PlanExecutionReceipt,
     SourceWarning,
