@@ -69,7 +69,7 @@ def test_visualization_analysis_citation_ids_only_projects_bound_ids() -> None:
 
 - [ ] **Step 3: 运行测试，确认其因缺少函数而失败**
 
-Run: `uv run --python 3.12 pytest smart_reporting/reporting/tests/test_reporting_tool_contracts.py::test_visualization_analysis_citation_ids_only_projects_bound_ids -q`
+Run: `.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_tool_contracts.py::test_visualization_analysis_citation_ids_only_projects_bound_ids -q`
 
 Expected: FAIL，错误指向无法导入 `_visualization_analysis_citation_ids`。
 
@@ -111,7 +111,7 @@ def _visualization_analysis_citation_ids(
 
 - [ ] **Step 3: 运行定点测试，确认转绿**
 
-Run: `uv run --python 3.12 pytest smart_reporting/reporting/tests/test_reporting_tool_contracts.py::test_visualization_analysis_citation_ids_only_projects_bound_ids -q`
+Run: `.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_tool_contracts.py::test_visualization_analysis_citation_ids_only_projects_bound_ids -q`
 
 Expected: PASS。
 
@@ -120,10 +120,10 @@ Expected: PASS。
 Run:
 
 ```bash
-uv run --python 3.12 pytest smart_reporting/reporting/tests/test_reporting_tool_contracts.py -q
-uv run --python 3.12 ruff format --check smart_reporting/reporting/workflow/runtime/analysis.py smart_reporting/reporting/tests/test_reporting_tool_contracts.py
-uv run --python 3.12 ruff check smart_reporting/reporting/workflow/runtime/analysis.py smart_reporting/reporting/tests/test_reporting_tool_contracts.py
-uv run --python 3.12 mypy smart_reporting/reporting/workflow/runtime/analysis.py
+.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_tool_contracts.py -q
+.venv-agent/bin/python -m ruff format --check smart_reporting/reporting/workflow/runtime/analysis.py smart_reporting/reporting/tests/test_reporting_tool_contracts.py
+.venv-agent/bin/python -m ruff check smart_reporting/reporting/workflow/runtime/analysis.py smart_reporting/reporting/tests/test_reporting_tool_contracts.py
+.venv-agent/bin/python -m mypy smart_reporting/reporting/workflow/runtime/analysis.py
 ```
 
 Expected: 全部命令以退出码 0 结束。
