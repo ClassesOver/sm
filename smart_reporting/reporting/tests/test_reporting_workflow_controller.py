@@ -131,9 +131,13 @@ async def test_controller_fails_closed_when_execution_lock_is_missing() -> None:
         thread_ownership=_ThreadOwnershipWithoutExecutionLock(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises((AttributeError, TypeError)):
+    with pytest.raises(
+        ReportingError,
+        match="Reporting runtime 缺少 workflow 执行锁",
+    ) as error:
         await controller.start(ReportingWorkflowInput(prompt="生成报表"), _context())
 
+    assert error.value.code == "report_workflow_runtime_invalid"
     assert run_calls == 0
 
 
