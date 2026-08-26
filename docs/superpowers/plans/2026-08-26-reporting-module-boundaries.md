@@ -8,6 +8,12 @@
 
 **Tech Stack:** Python 3.12、pytest、Agno 3.0.0、Pydantic、Ruff、Mypy、PostgreSQL 持久化契约。
 
+## 实施状态（2026-08-26）
+
+- 已提交并推送：Controller 失败关闭、Workflow Runtime、Reporting Toolkit、Delivery Runtime 的职责拆分，以及 Delivery 主题导入归属修正；旧单文件已删除，MR 为 [!10](http://gitlab2.dingyi-china.cn:65080/dingyi-develop-group/agno/smart_reporting/-/merge_requests/10)，目标分支为 `f2`，以避免把 Coding 移除历史带入 Reporting MR。
+- 已通过定点验证：报告运行时、标题编号、引用展示、Controller、规划契约、章节并发、工具契约和 Worker 执行测试；相关 Ruff format/lint、Mypy 与旧路径扫描通过。
+- 未完成的验收门禁：`test_report_artifact_persistence.py` 与 `test_reporting_state.py` 的 SQLite/`aiosqlite` 持久化用例在工作线程等待；全量 `scripts/check_agentos.sh` 在 `task_execution/tests/test_execution.py` 停滞。两者均不属于本次模块移动的业务改动，且 SQLite 路径与本计划的 PostgreSQL 持久化契约不一致，未在本 MR 中扩大修复范围。
+
 ---
 
 ## 全局不变量与验证基线
