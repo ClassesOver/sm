@@ -14,6 +14,7 @@ MAX_AGENT_RUN_FILE_BYTES = 24 * 1024 * 1024
 MAX_AGENT_RUN_FILES = 8
 MAX_JSON_MUTATION_REQUEST_BYTES = 64 * 1024
 _AGENTOS_COMPONENT_PATHS = frozenset({"agents", "teams", "workflows"})
+_AGENTOS_KNOWLEDGE_MULTIPART_PATHS = frozenset({"/knowledge/content", "/knowledge/remote-content"})
 
 
 class RequestBodyLimitError(ValueError):
@@ -72,6 +73,13 @@ def request_body_limit(path: str, method: str) -> int | None:
     run_limit = agentos_run_request_limit(path, method)
     if run_limit is not None:
         return run_limit
+    # Agno Knowledge 使用 multipart 接收文件或远程内容参数，不属于受 64 KiB
+    # 约束的 JSON mutation；这里不缓存请求体，也不施加本应用自己的上传上限。
+    if (
+        method.upper() == "POST"
+        and str(path or "").rstrip("/") in _AGENTOS_KNOWLEDGE_MULTIPART_PATHS
+    ):
+        return None
     if method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
         return MAX_JSON_MUTATION_REQUEST_BYTES
     return None

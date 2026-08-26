@@ -73,6 +73,13 @@ def test_request_body_limit_preserves_larger_run_limits() -> None:
     )
 
 
+@pytest.mark.parametrize("path", ["/knowledge/content", "/knowledge/remote-content"])
+def test_request_body_limit_does_not_limit_knowledge_multipart(path: str) -> None:
+    assert request_body_limit(path, "POST") is None
+    assert request_body_limit(path, "GET") is None
+    assert request_body_limit(path, "PATCH") == MAX_JSON_MUTATION_REQUEST_BYTES
+
+
 @pytest.mark.anyio
 async def test_non_run_mutation_limit_rejects_body_before_downstream_parse(
     monkeypatch: pytest.MonkeyPatch,
