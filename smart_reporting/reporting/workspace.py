@@ -155,7 +155,7 @@ class WorkspaceReportService:
         payload: dict[str, Any],
         run_context: RunContext | None,
     ) -> dict[str, Any]:
-        from .delivery import report_runtime
+        from .delivery.report_runtime import runtime as report_runtime
 
         with open(report_runtime.__file__, "rb") as runtime_file:
             content = runtime_file.read()

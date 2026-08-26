@@ -1,0 +1,43 @@
+"""Reporting 运行时路径、图片和产物边界校验。"""
+
+from .runtime import (
+    MAX_DOCX_BYTES,
+    MAX_IMAGE_BYTES,
+    MAX_MARKDOWN_BYTES,
+    MAX_PDF_BYTES,
+    MAX_RESULT_BYTES,
+    MAX_TOTAL_IMAGE_BYTES,
+    ReportFailure,
+    _check_image_signature,
+    _cleanup_directory,
+    _input_path,
+    _output_path,
+    _reject_symlinks,
+    _relative_path,
+    _sha256,
+    _temporary_docx_path,
+    _temporary_pdf_path,
+    _validation_directory,
+    _word_output_path,
+)
+
+__all__ = [
+    "MAX_DOCX_BYTES",
+    "MAX_IMAGE_BYTES",
+    "MAX_MARKDOWN_BYTES",
+    "MAX_PDF_BYTES",
+    "MAX_RESULT_BYTES",
+    "MAX_TOTAL_IMAGE_BYTES",
+    "ReportFailure",
+    "_check_image_signature",
+    "_cleanup_directory",
+    "_input_path",
+    "_output_path",
+    "_relative_path",
+    "_reject_symlinks",
+    "_sha256",
+    "_temporary_docx_path",
+    "_temporary_pdf_path",
+    "_validation_directory",
+    "_word_output_path",
+]

@@ -5,13 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from smart_reporting.reporting.delivery.report_runtime import (
+from smart_reporting.reporting.delivery.report_runtime.docx import (
     _WORD_PAGE_FIELDS,
-    DEFAULT_PAGE_LAYOUT,
-    _normalize_cjk_strong_markers,
-    _page_number_context,
     _postprocess_docx,
+)
+from smart_reporting.reporting.delivery.report_runtime.markdown import (
+    _normalize_cjk_strong_markers,
     normalize_report_markdown_strong_spacing,
+)
+from smart_reporting.reporting.delivery.report_runtime.pdf import (
+    DEFAULT_PAGE_LAYOUT,
+    _page_number_context,
 )
 
 
