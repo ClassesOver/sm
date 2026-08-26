@@ -596,6 +596,50 @@ async def test_controller_restarts_same_run_when_persisted_running_owner_is_orph
 
 
 @pytest.mark.anyio
+async def test_controller_stops_after_single_failed_orphan_cleanup() -> None:
+    cleanup_calls = 0
+    run_calls = 0
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            nonlocal run_calls
+            run_calls += 1
+            return SimpleNamespace(status=RunStatus.completed)
+
+        async def aget_run(self, *_args, **_kwargs):
+            return None
+
+    async def cleanup(*_args, **_kwargs) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        raise ReportingError(
+            "report_sandbox_cleanup_failed",
+            "报表工作流已结束，但运行环境删除失败，请重试清理。",
+        )
+
+    ownership = _ThreadOwnership()
+    ownership.owners["thread"] = ("external-run", "user")
+    controller = ReportWorkflowController(
+        lambda: Workflow(),
+        thread_ownership=ownership,
+        terminal_cleanup=cleanup,
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await asyncio.wait_for(
+            controller.start(ReportingWorkflowInput(prompt="恢复遗留运行"), _context()),
+            timeout=0.2,
+        )
+
+    assert raised.value.code == "report_sandbox_cleanup_failed"
+    assert cleanup_calls == 1
+    assert run_calls == 0
+    assert ownership.owners == {"thread": ("external-run", "user")}
+
+
+@pytest.mark.anyio
 async def test_controller_allows_parallel_runs_for_different_sessions() -> None:
     started = asyncio.Event()
     release = asyncio.Event()

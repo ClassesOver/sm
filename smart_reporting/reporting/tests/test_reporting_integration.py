@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from uuid import uuid4
 
@@ -19,32 +20,119 @@ def _integration_database_url() -> str:
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_reporting_postgres_owner_and_execution_lock_across_repository_instances() -> None:
+async def test_reporting_postgres_owner_claim_release_matrix() -> None:
     database = create_agent_database(_integration_database_url())
     first = ReportingStateRepository(database.async_db)
     second = ReportingStateRepository(database.async_db)
     suffix = uuid4().hex
     thread_id = f"integration-thread-{suffix}"
-    external_run_id = f"integration-run-{suffix}"
+    first_run_id = f"integration-run-a-{suffix}"
+    second_run_id = f"integration-run-b-{suffix}"
 
     assert await first.claim_workflow_thread(
         thread_id=thread_id,
-        external_run_id=external_run_id,
+        external_run_id=first_run_id,
+        owner_user_id="integration-user",
+    )
+    assert not await second.claim_workflow_thread(
+        thread_id=thread_id,
+        external_run_id=first_run_id,
+        owner_user_id="integration-user",
+    )
+    assert not await second.claim_workflow_thread(
+        thread_id=thread_id,
+        external_run_id=second_run_id,
+        owner_user_id="integration-user",
+    )
+    assert await second.ensure_workflow_thread_owner(
+        thread_id=thread_id,
+        external_run_id=first_run_id,
+        owner_user_id="integration-user",
+    )
+    assert not await second.ensure_workflow_thread_owner(
+        thread_id=thread_id,
+        external_run_id=second_run_id,
         owner_user_id="integration-user",
     )
     owner = await second.get_workflow_thread_owner(thread_id)
     assert owner is not None
-    assert owner["external_run_id"] == external_run_id
+    assert owner["external_run_id"] == first_run_id
 
-    async with first.workflow_execution_lock(external_run_id):
-        assert await second.is_workflow_run_active(external_run_id)
-
-    assert not await second.is_workflow_run_active(external_run_id)
-    assert await second.release_workflow_thread(
+    assert not await second.release_workflow_thread(
         thread_id=thread_id,
-        external_run_id=external_run_id,
+        external_run_id=second_run_id,
         owner_user_id="integration-user",
     )
+    assert await second.release_workflow_thread(
+        thread_id=thread_id,
+        external_run_id=first_run_id,
+        owner_user_id="integration-user",
+    )
+    assert await second.claim_workflow_thread(
+        thread_id=thread_id,
+        external_run_id=second_run_id,
+        owner_user_id="integration-user",
+    )
+    assert await second.release_workflow_thread(
+        thread_id=thread_id,
+        external_run_id=second_run_id,
+        owner_user_id="integration-user",
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_reporting_postgres_concurrent_owner_claim_has_single_winner() -> None:
+    database = create_agent_database(_integration_database_url())
+    first = ReportingStateRepository(database.async_db)
+    second = ReportingStateRepository(database.async_db)
+    suffix = uuid4().hex
+    thread_id = f"integration-thread-race-{suffix}"
+    run_ids = (f"integration-run-a-{suffix}", f"integration-run-b-{suffix}")
+
+    results = await asyncio.gather(
+        first.claim_workflow_thread(
+            thread_id=thread_id,
+            external_run_id=run_ids[0],
+            owner_user_id="integration-user",
+        ),
+        second.claim_workflow_thread(
+            thread_id=thread_id,
+            external_run_id=run_ids[1],
+            owner_user_id="integration-user",
+        ),
+    )
+
+    assert sorted(results) == [False, True]
+    owner = await first.get_workflow_thread_owner(thread_id)
+    assert owner is not None
+    winner = run_ids[results.index(True)]
+    assert owner["external_run_id"] == winner
+    assert await first.release_workflow_thread(
+        thread_id=thread_id,
+        external_run_id=winner,
+        owner_user_id="integration-user",
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_reporting_postgres_execution_lock_matrix() -> None:
+    database = create_agent_database(_integration_database_url())
+    first = ReportingStateRepository(database.async_db)
+    second = ReportingStateRepository(database.async_db)
+    suffix = uuid4().hex
+    first_run_id = f"integration-lock-a-{suffix}"
+    second_run_id = f"integration-lock-b-{suffix}"
+
+    async with first.workflow_execution_lock(first_run_id):
+        assert await second.is_workflow_run_active(first_run_id)
+        assert not await second.is_workflow_run_active(second_run_id)
+        async with second.workflow_execution_lock(second_run_id):
+            assert await first.is_workflow_run_active(second_run_id)
+
+    assert not await second.is_workflow_run_active(first_run_id)
+    assert not await first.is_workflow_run_active(second_run_id)
 
 
 @pytest.mark.integration
@@ -74,4 +162,4 @@ async def test_real_agno_workflow_persists_and_reads_reporting_run() -> None:
     assert output.status.value == "COMPLETED"
     assert restored is not None
     assert restored.run_id == run_id
-    assert restored.status.value == "COMPLETED"
+    assert getattr(restored.status, "value", restored.status) == "COMPLETED"
