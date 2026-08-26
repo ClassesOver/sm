@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
@@ -22,11 +24,15 @@ from ..models import (
     ReportReviewSnapshot,
     ReportWorkflowControl,
 )
+from .state import ReportingStateError
 
 REPORT_WORKFLOW_CONTROL_STATE_KEY = "report_workflow_control"
 REPORT_WORKFLOW_SCOPE_DEPENDENCY = "AgentOS 报表工作流"
 _WORKFLOW_ID = "enterprise-reporting-workflow-v1"
 _ACTIVE_STATUSES = frozenset({"running", "paused"})
+_THREAD_CLAIM_WAIT_SECONDS = 2.0
+_THREAD_CLAIM_RETRY_DELAY_SECONDS = 0.1
+_THREAD_OWNER_STALE_SECONDS = 60.0
 ReportWorkflowStatus = Literal["running", "paused", "completed", "cancelled", "failed"]
 ReviewStage = Literal["request", "outline"]
 
@@ -66,6 +72,10 @@ class WorkflowThreadOwnership(Protocol):
         self, *, thread_id: str, external_run_id: str, owner_user_id: str
     ) -> bool: ...
 
+    def workflow_execution_lock(self, external_run_id: str) -> Any: ...
+
+    async def get_workflow_thread_owner(self, thread_id: str) -> dict[str, Any] | None: ...
+
 
 WorkflowFactory = Callable[[], ReviewableWorkflow]
 TerminalCleanup = Callable[[dict[str, str], str, str], Awaitable[None]]
@@ -86,6 +96,15 @@ class ReportWorkflowController:
         self._terminal_cleanup = terminal_cleanup
 
     async def start(
+        self,
+        workflow_input: ReportingWorkflowInput | ReportRequestEnvelope | dict[str, Any],
+        run_context: RunContext | None,
+    ) -> dict[str, Any]:
+        scope = self._scope(run_context)
+        async with self._execution_lock(scope["external_run_id"]):
+            return await self._start_unlocked(workflow_input, run_context)
+
+    async def _start_unlocked(
         self,
         workflow_input: ReportingWorkflowInput | ReportRequestEnvelope | dict[str, Any],
         run_context: RunContext | None,
@@ -133,7 +152,16 @@ class ReportWorkflowController:
         workflow = self._workflow()
         workflow_session_id, workflow_run_id = self._workflow_ids(scope)
         payload = request.model_dump(mode="json", by_alias=True, exclude_none=True)
-        await self._claim_thread(scope)
+        owned_output = await self._claim_thread_with_recovery(scope)
+        if owned_output is not None:
+            control = self._control_from_output(
+                owned_output, scope, workflow_session_id, workflow_run_id
+            )
+            state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
+            if control.status not in _ACTIVE_STATUSES:
+                await self._finalize_control(control, scope, state=state)
+                state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = control.public_dict()
+            return self._result(control, owned_output)
         try:
             output = await workflow.arun(
                 payload,
@@ -190,36 +218,37 @@ class ReportWorkflowController:
         assert control is not None
         scope = self._scope(run_context, external_run_id=control.external_run_id)
         self._assert_scope(control, scope)
-        await self._ensure_thread_owner(scope)
-        output = await self._load(control)
-        status = self._status(getattr(output, "status", None))
-        workflow = self._workflow()
-        if status == "paused":
-            requirement = self._active_requirement(output)
-            requirement.on_reject = OnReject.cancel
-            requirement.reject(feedback="用户取消报表工作流。")
-            output = await workflow.acontinue_run(
-                run_response=output,
-                step_requirements=list(getattr(output, "step_requirements", None) or []),
-                dependencies=self._workflow_dependencies(scope),
-                stream=False,
+        async with self._execution_lock(control.external_run_id):
+            await self._ensure_thread_owner(scope)
+            output = await self._load(control)
+            status = self._status(getattr(output, "status", None))
+            workflow = self._workflow()
+            if status == "paused":
+                requirement = self._active_requirement(output)
+                requirement.on_reject = OnReject.cancel
+                requirement.reject(feedback="用户取消报表工作流。")
+                output = await workflow.acontinue_run(
+                    run_response=output,
+                    step_requirements=list(getattr(output, "step_requirements", None) or []),
+                    dependencies=self._workflow_dependencies(scope),
+                    stream=False,
+                )
+            elif status == "running":
+                await workflow.acancel_run(control.workflow_run_id)
+                output = await workflow.aget_run(
+                    control.workflow_run_id, session_id=control.workflow_session_id
+                )
+            updated = self._control_from_output(
+                output,
+                scope,
+                control.workflow_session_id,
+                control.workflow_run_id,
             )
-        elif status == "running":
-            await workflow.acancel_run(control.workflow_run_id)
-            output = await workflow.aget_run(
-                control.workflow_run_id, session_id=control.workflow_session_id
-            )
-        updated = self._control_from_output(
-            output,
-            scope,
-            control.workflow_session_id,
-            control.workflow_run_id,
-        )
-        if updated.status in _ACTIVE_STATUSES:
-            raise ReportingError("report_workflow_cancel_failed", "报表工作流未进入取消终态。")
-        await self._finalize_control(updated, scope, state=state)
-        state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = updated.public_dict()
-        return self._result(updated, output)
+            if updated.status in _ACTIVE_STATUSES:
+                raise ReportingError("report_workflow_cancel_failed", "报表工作流未进入取消终态。")
+            await self._finalize_control(updated, scope, state=state)
+            state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = updated.public_dict()
+            return self._result(updated, output)
 
     async def _continue(
         self,
@@ -238,37 +267,38 @@ class ReportWorkflowController:
                 "report_request_clarification_required",
                 "当前审核项必须补充报表分析期间。",
             )
-        output = await self._load(control)
-        if self._status(getattr(output, "status", None)) != "paused":
-            raise ReportingError("report_workflow_not_paused", "报表工作流当前不等待审核。")
-        # ensure 会在服务重启后补写持久化所有权，必须先以 Agno 存储的真实状态确认
-        # Workflow 仍在暂停；否则终态 run 的重复审批会重新占用 thread 且没有释放路径。
-        await self._ensure_thread_owner(scope)
-        requirement = self._active_requirement(output)
-        if approve:
-            requirement.confirm()
-        else:
-            requirement.reject(feedback=feedback)
-        workflow = self._workflow()
-        output = await workflow.acontinue_run(
-            run_response=output,
-            step_requirements=list(getattr(output, "step_requirements", None) or []),
-            dependencies=self._workflow_dependencies(scope),
-            stream=False,
-        )
-        updated = self._control_from_output(
-            output,
-            scope,
-            control.workflow_session_id,
-            control.workflow_run_id,
-        )
-        await self._finalize_control(updated, scope, state=state)
-        state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = updated.public_dict()
-        return self._result(updated, output)
+        async with self._execution_lock(control.external_run_id):
+            output = await self._load(control)
+            if self._status(getattr(output, "status", None)) != "paused":
+                raise ReportingError("report_workflow_not_paused", "报表工作流当前不等待审核。")
+            # ensure 会在服务重启后补写持久化所有权，必须先以 Agno 存储的真实状态确认
+            # Workflow 仍在暂停；否则终态 run 的重复审批会重新占用 thread 且没有释放路径。
+            await self._ensure_thread_owner(scope)
+            requirement = self._active_requirement(output)
+            if approve:
+                requirement.confirm()
+            else:
+                requirement.reject(feedback=feedback)
+            workflow = self._workflow()
+            output = await workflow.acontinue_run(
+                run_response=output,
+                step_requirements=list(getattr(output, "step_requirements", None) or []),
+                dependencies=self._workflow_dependencies(scope),
+                stream=False,
+            )
+            updated = self._control_from_output(
+                output,
+                scope,
+                control.workflow_session_id,
+                control.workflow_run_id,
+            )
+            await self._finalize_control(updated, scope, state=state)
+            state[REPORT_WORKFLOW_CONTROL_STATE_KEY] = updated.public_dict()
+            return self._result(updated, output)
 
     async def _load(self, control: ReportWorkflowControl) -> Any:
-        output = await self._workflow().aget_run(
-            control.workflow_run_id, session_id=control.workflow_session_id
+        output = await self._load_run_output(
+            self._workflow(), control.workflow_run_id, control.workflow_session_id
         )
         if output is None:
             raise ReportingError("report_workflow_not_found", "报表工作流不存在或已经失效。")
@@ -276,6 +306,13 @@ class ReportWorkflowController:
         if stored_user is not None and str(stored_user) != control.user_id:
             raise ReportingError("report_workflow_scope_mismatch", "报表工作流不属于当前用户。")
         return output
+
+    @staticmethod
+    async def _load_run_output(workflow: Any, run_id: str, session_id: str) -> Any:
+        getter = getattr(workflow, "aget_run", None)
+        if not callable(getter):
+            return None
+        return await getter(run_id, session_id=session_id)
 
     async def _finalize_control(
         self,
@@ -365,13 +402,85 @@ class ReportWorkflowController:
     def _thread_scope_key(scope: dict[str, str]) -> str:
         return scope["thread_id"]
 
-    async def _claim_thread(self, scope: dict[str, str]) -> None:
-        if not await self._thread_ownership.claim_workflow_thread(
-            thread_id=self._thread_scope_key(scope),
-            external_run_id=scope["external_run_id"],
-            owner_user_id=scope["user_id"],
-        ):
-            raise ReportingError("report_workflow_active", "当前 thread 已有未完成的报表工作流。")
+    async def _claim_thread_with_recovery(self, scope: dict[str, str]) -> Any:
+        """占用 thread；冲突时恢复同 run、回收终态 owner，或短暂等待前序 run。"""
+
+        deadline = asyncio.get_running_loop().time() + _THREAD_CLAIM_WAIT_SECONDS
+        while True:
+            if await self._thread_ownership.claim_workflow_thread(
+                thread_id=self._thread_scope_key(scope),
+                external_run_id=scope["external_run_id"],
+                owner_user_id=scope["user_id"],
+            ):
+                return None
+            owner = await self._get_thread_owner(scope["thread_id"])
+            if owner is not None:
+                output = await self._load_owner_output(owner)
+                same_run = (
+                    owner["external_run_id"],
+                    owner["owner_user_id"],
+                ) == (scope["external_run_id"], scope["user_id"])
+                if same_run and output is not None:
+                    return output
+                if await self._reclaim_inactive_owner(owner, output):
+                    continue
+                if same_run:
+                    raise ReportingError(
+                        "report_workflow_run_conflict", "同一报表请求正在启动，请稍后重试。"
+                    )
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise ReportingError(
+                    "report_workflow_active", "当前 thread 已有未完成的报表工作流。"
+                )
+            await asyncio.sleep(min(_THREAD_CLAIM_RETRY_DELAY_SECONDS, remaining))
+
+    async def _get_thread_owner(self, thread_id: str) -> dict[str, Any] | None:
+        getter = getattr(self._thread_ownership, "get_workflow_thread_owner", None)
+        if not callable(getter):
+            return None
+        owner = await getter(thread_id)
+        return owner if isinstance(owner, dict) else None
+
+    async def _load_owner_output(self, owner: dict[str, Any]) -> Any:
+        try:
+            session_id, run_id = reporting_workflow_ids(
+                user_id=str(owner["owner_user_id"]),
+                thread_id=str(owner["thread_id"]),
+                external_run_id=str(owner["external_run_id"]),
+            )
+            return await self._workflow().aget_run(run_id, session_id=session_id)
+        except Exception:
+            return None
+
+    async def _reclaim_inactive_owner(self, owner: dict[str, Any], output: Any) -> bool:
+        raw_status = getattr(output, "status", None) if output is not None else None
+        status = self._status(raw_status) if raw_status is not None else None
+        if status in _ACTIVE_STATUSES:
+            return False
+        created_at = owner.get("created_at")
+        stale = (
+            isinstance(created_at, datetime)
+            and (datetime.now(UTC) - created_at.astimezone(UTC)).total_seconds()
+            >= _THREAD_OWNER_STALE_SECONDS
+        )
+        if output is None and not stale:
+            return False
+        if output is not None and status not in {"completed", "cancelled", "failed"}:
+            return False
+        owner_scope = {
+            "thread_id": str(owner["thread_id"]),
+            "external_run_id": str(owner["external_run_id"]),
+            "user_id": str(owner["owner_user_id"]),
+        }
+        session_id, run_id = self._workflow_ids(owner_scope)
+        if output is None or status in {"cancelled", "failed"}:
+            await self._cleanup_terminal(owner_scope, session_id, run_id)
+        return await self._thread_ownership.release_workflow_thread(
+            thread_id=owner_scope["thread_id"],
+            external_run_id=owner_scope["external_run_id"],
+            owner_user_id=owner_scope["user_id"],
+        )
 
     async def _ensure_thread_owner(self, scope: dict[str, str]) -> None:
         if not await self._thread_ownership.ensure_workflow_thread_owner(
@@ -387,6 +496,21 @@ class ReportWorkflowController:
             external_run_id=scope["external_run_id"],
             owner_user_id=scope["user_id"],
         )
+
+    @asynccontextmanager
+    async def _execution_lock(self, external_run_id: str) -> Any:
+        """串行化同一 paused run 的审批/取消，避免重复调用 Agno continue。"""
+
+        lock_factory = getattr(self._thread_ownership, "workflow_execution_lock", None)
+        if callable(lock_factory):
+            try:
+                async with lock_factory(external_run_id):
+                    yield
+            except ReportingStateError as error:
+                raise ReportingError(error.code, error.message) from error
+            return
+        # 仅兼容不提供执行锁的单元测试替身；生产仓储始终实现该接口。
+        yield
 
     @staticmethod
     def _control(state: dict[str, Any], *, required: bool = True) -> ReportWorkflowControl | None:

@@ -206,6 +206,28 @@ class ReportingStateRepository:
                 return False
         return result.rowcount == 1
 
+    async def get_workflow_thread_owner(self, thread_id: str) -> dict[str, Any] | None:
+        """读取 thread owner，供控制器核验旧 run 终态和安全回收孤儿记录。"""
+
+        await self.initialize()
+        async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
+            row = (
+                await connection.execute(
+                    select(self.workflow_thread_owners).where(
+                        self.workflow_thread_owners.c.thread_id == thread_id
+                    )
+                )
+            ).first()
+        if row is None:
+            return None
+        value = row._mapping
+        return {
+            "thread_id": str(value["thread_id"]),
+            "external_run_id": str(value["external_run_id"]),
+            "owner_user_id": str(value["owner_user_id"]),
+            "created_at": _utc(value["created_at"]),
+        }
+
     async def ensure_workflow_thread_owner(
         self, *, thread_id: str, external_run_id: str, owner_user_id: str
     ) -> bool:
