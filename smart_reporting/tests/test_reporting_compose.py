@@ -20,6 +20,18 @@ def test_reporting_compose_uses_image_owned_package_entrypoint():
     assert service["environment"]["AGENT_OS_WORKERS"] == "1"
 
 
+def test_reporting_compose_disables_fg_data_profiling_analytics():
+    repository_root = Path(__file__).parents[2]
+    compose = yaml.load(
+        (repository_root / "docker-compose.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+
+    assert compose["services"]["reporting-os"]["environment"][
+        "YDATA_PROFILING_NO_ANALYTICS"
+    ] == "true"
+
+
 def test_smart_reporting_readme_uses_existing_database_service() -> None:
     repository_root = Path(__file__).parents[2]
     compose = yaml.load(

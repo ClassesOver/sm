@@ -21,6 +21,7 @@ services:
     environment:
       AGENT_OS_WORKERS: "1"
       AGNO_TELEMETRY: "false"
+      YDATA_PROFILING_NO_ANALYTICS: "true"
       AGENT_LOG_FILE: /var/log/agentos/agentos.log
       AGENT_LOG_FILE_MAX_BYTES: ${AGENT_LOG_FILE_MAX_BYTES:-52428800}
       AGENT_LOG_FILE_BACKUP_COUNT: ${AGENT_LOG_FILE_BACKUP_COUNT:-5}
