@@ -2,6 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+from .analysis import _run_bounded
 from .base import (
     MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION,
     MAX_REPORT_INSTRUCTION_BYTES,
@@ -46,11 +47,9 @@ from .base import (
     TaskScope,
     TaskState,
     ValidationError,
-    _accepted_artifacts_match_manifest,
     _coding_observed_data_facts,
     _frozen_outline,
     _report_machine_terms,
-    _run_bounded,
     _source_warnings_from_state,
     assemble_report_markdown,
     authoritative_citations,
@@ -64,6 +63,7 @@ from .base import (
     reporting_phase_task_key,
     validate_report_draft_blocks,
 )
+from .publication import _accepted_artifacts_match_manifest
 
 
 class RuntimeSectionsMixin:

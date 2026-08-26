@@ -11,15 +11,13 @@ from .base import (
     AnalysisBundle,
     AnalysisItem,
     DataUnderstandingPlan,
+    ModelColumn,
+    ModelTable,
     QueryRequirement,
     ReportingError,
     ReportRequestEnvelope,
+    SequenceMatcher,
     SourceSchemaSnapshot,
-    _analysis_table_columns,
-    _available_table_columns,
-    _available_tables,
-    _resolve_requirement_comparison_roles,
-    _suggested_replacement,
 )
 from .models import _NUMERIC_MEASURE_TYPE_PATTERN
 
@@ -858,3 +856,93 @@ __all__ = [
     "_normalize_requirement_periods",
     "_validate_requirements_match_understanding",
 ]
+
+
+def _suggested_replacement(rejected: Any, allowed_values: list[str]) -> str | None:
+    if isinstance(rejected, list) and len(rejected) == 1:
+        rejected = rejected[0]
+    if not isinstance(rejected, str) or not allowed_values:
+        return None
+    ranked = sorted(
+        (
+            (SequenceMatcher(None, rejected, candidate).ratio(), candidate)
+            for candidate in allowed_values
+        ),
+        reverse=True,
+    )
+    best_score, best = ranked[0]
+    next_score = ranked[1][0] if len(ranked) > 1 else 0.0
+    if best_score < 0.85 or best_score - next_score < 0.1:
+        return None
+    return best
+
+
+def _analysis_table_columns(
+    source_id: str,
+    table: str,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> tuple[ModelColumn, ...]:
+    matches = [
+        model.columns
+        for (candidate_source, qualified), model in _available_tables(snapshots).items()
+        if candidate_source == source_id
+        and (qualified == table.lower() or qualified.endswith(f".{table.lower()}"))
+    ]
+    return matches[0] if len(matches) == 1 else ()
+
+
+def _resolve_requirement_comparison_roles(
+    requirement: QueryRequirement,
+    requirement_index: int,
+    envelope: ReportRequestEnvelope,
+) -> tuple[tuple[Literal["yoy", "mom"], ...] | None, dict[str, Any] | None]:
+    """把 Planner 的比较范围越界转换为可定点修正的结构化反馈。"""
+    try:
+        return requirement.resolved_comparison_roles(envelope.comparison_roles), None
+    except ValueError as error:
+        selected = (
+            envelope.comparison_roles
+            if requirement.comparison_roles is None
+            else requirement.comparison_roles
+        )
+        rejected = [role for role in selected if role not in envelope.comparison_roles]
+        if rejected:
+            reason = "comparisonRoles 超出请求允许的比较范围"
+            allowed = list(envelope.comparison_roles)
+            required_action = (
+                "删除 rejectedValue，只保留 allowedValues；省略 comparisonRoles 表示继承请求范围"
+            )
+        else:
+            rejected = ["mom"] if "mom" in selected else list(selected)
+            allowed = [role for role in envelope.comparison_roles if role != "mom"]
+            reason = str(error)
+            required_action = "删除 rejectedValue，只保留当前期间粒度支持的 allowedValues"
+        return None, {
+            "path": f"requirements[{requirement_index}].comparisonRoles",
+            "rejectedValue": rejected,
+            "reason": reason,
+            "allowedValues": allowed,
+            "requiredAction": required_action,
+        }
+
+
+def _available_table_columns(
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    return {
+        (table.source_id, f"{table.database.lower()}.{table.name.lower()}"): tuple(
+            column.name for column in table.columns
+        )
+        for snapshot in snapshots
+        for table in snapshot.tables
+    }
+
+
+def _available_tables(
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> dict[tuple[str, str], ModelTable]:
+    return {
+        (table.source_id, f"{table.database.lower()}.{table.name.lower()}"): table
+        for snapshot in snapshots
+        for table in snapshot.tables
+    }

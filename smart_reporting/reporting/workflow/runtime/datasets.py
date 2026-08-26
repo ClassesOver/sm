@@ -15,22 +15,24 @@ from .base import (
     REPORT_PROFILE_COVERAGE_STATE_KEY,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
     AnalysisItem,
+    Any,
     ApprovedQuery,
     DatasetAnalysisContext,
     DatasetHandle,
     DetailedAnalysisItem,
     DetailedAnalysisPlan,
+    FileIdentity,
     Mapping,
     ProfileCoverageManifest,
     QueryRequirement,
     ReportingCommand,
     ReportingError,
     RunContext,
+    SourceSchemaSnapshot,
     StepInput,
     StepOutput,
     ValidationError,
     _payload_sha256,
-    _requirement_measure_field_refs,
     _source_warnings_from_state,
     anyio,
     build_profile_coverage_manifest,
@@ -41,6 +43,9 @@ from .base import (
     resolve_domain_mentions,
     ruijin_profile,
     time,
+)
+from .validation import (
+    _available_tables,
 )
 
 
@@ -630,3 +635,123 @@ class RuntimeDatasetsMixin:
         )
         self._assert_state_safe(state)
         return StepOutput(content=plan)
+
+
+def _analysis_context_payload(outline_context: Any) -> dict[str, Any]:
+    if not isinstance(outline_context, Mapping):
+        return {}
+    context: dict[str, Any] = {}
+    profile = outline_context.get("profile")
+    if isinstance(profile, Mapping):
+        context["profile"] = {
+            key: profile[key]
+            for key in (
+                "profileId",
+                "revision",
+                "effectiveProfileHash",
+                "dimensions",
+                "metrics",
+                "reconciliations",
+            )
+            if key in profile
+        }
+    for key in ("capabilities", "terms", "reconciliations"):
+        if key in outline_context:
+            context[key] = outline_context[key]
+    tables = outline_context.get("tables")
+    if isinstance(tables, list):
+        context["observedDataFacts"] = [
+            {
+                key: table[key]
+                for key in (
+                    "sourceId",
+                    "table",
+                    "periodGranularity",
+                    "periodRowCount",
+                    "periodCoverage",
+                    "missingPeriods",
+                )
+                if key in table
+            }
+            for table in tables
+            if isinstance(table, Mapping)
+        ]
+    return context
+
+
+def _profile_coverage_instruction_projection(
+    manifest: ProfileCoverageManifest,
+    analysis_context_file: FileIdentity,
+    *,
+    dataset_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """投影高优先级 coverage 事实；长序列和完整字段仍从受信文件定点恢复。"""
+
+    def bounded_periods(values: tuple[str, ...]) -> tuple[list[str], bool]:
+        if len(values) <= 24:
+            return list(values), False
+        return [*values[:12], *values[-12:]], True
+
+    def bounded_warnings(values: tuple[str, ...]) -> tuple[list[str], bool]:
+        return list(values[:10]), len(values) > 10
+
+    datasets: list[dict[str, Any]] = []
+    for item in manifest.datasets:
+        if dataset_ids is not None and item.dataset_id not in dataset_ids:
+            continue
+        periods, periods_truncated = bounded_periods(item.period_coverage)
+        source_warnings, source_warnings_truncated = bounded_warnings(item.source_warnings)
+        quality_warnings, quality_warnings_truncated = bounded_warnings(item.quality_warnings)
+        datasets.append(
+            {
+                "datasetId": item.dataset_id,
+                "fieldCount": item.field_count,
+                "coverageStart": item.period_coverage[0] if item.period_coverage else None,
+                "coverageEnd": item.period_coverage[-1] if item.period_coverage else None,
+                "coveragePeriodCount": len(item.period_coverage),
+                "periodCoverage": periods,
+                "periodCoverageTruncated": periods_truncated,
+                "sourceWarnings": source_warnings,
+                "sourceWarningsTruncated": source_warnings_truncated,
+                "qualityWarnings": quality_warnings,
+                "qualityWarningsTruncated": quality_warnings_truncated,
+            }
+        )
+
+    return {
+        "manifestFile": analysis_context_file.model_dump(mode="json", by_alias=True),
+        "manifestPointer": "/profileCoverageManifest",
+        "authorizedDatasetCount": len(datasets),
+        "coveredDatasetCount": len(datasets),
+        "datasets": datasets,
+    }
+
+
+def _requirement_measure_field_refs(
+    requirement: QueryRequirement,
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+) -> set[str]:
+    """把 Requirement 的裸指标列绑定到结构快照中的标准四段 fieldRef。"""
+
+    available_tables = _available_tables(snapshots)
+    field_refs: set[str] = set()
+    for table in requirement.tables:
+        table_ref = table.table.lower()
+        matches = [
+            model
+            for (source_id, qualified), model in available_tables.items()
+            if source_id == requirement.source_id
+            and (qualified == table_ref or qualified.endswith(f".{table_ref}"))
+        ]
+        # 裸表名只能在当前 source 下唯一命中。多义时不绑定任何指标语义，避免把
+        # 同名表的聚合规则混入不可变 Dataset；前置计划校验会把该歧义作为错误关闭。
+        if len(matches) != 1:
+            continue
+        model = matches[0]
+        available_columns = {column.name.lower() for column in model.columns}
+        field_refs.update(
+            f"{model.source_id}.{model.database}.{model.name}.{measure}".lower()
+            for measure in table.measure_columns
+            if measure.lower() in available_columns
+        )
+    return field_refs

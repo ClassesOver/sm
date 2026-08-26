@@ -19,6 +19,7 @@ from .base import (
     DurableReportingPhase,
     HeadingNumber,
     Mapping,
+    MetricDefinition,
     PdfArtifactManifest,
     PurePosixPath,
     QueryRequirement,
@@ -26,16 +27,17 @@ from .base import (
     ReportingCheckpoint,
     ReportingCommand,
     ReportingError,
+    ReportPeriod,
     RunContext,
+    SourceSchemaSnapshot,
     SourceWarning,
     StepInput,
     StepOutput,
     ValidationError,
-    _analysis_quality_warnings,
-    _citation_presentations,
     _coding_observed_data_facts,
     _frozen_outline,
-    _report_pdf_path,
+    _human_label,
+    _report_pdf_filename,
     _source_warnings_from_state,
     authoritative_citations,
     build_authoritative_manifest,
@@ -43,6 +45,7 @@ from .base import (
     dataset_snapshot_hash,
     hashlib,
     json,
+    re,
     validate_rendered_artifacts,
 )
 
@@ -629,3 +632,178 @@ class RuntimePublicationMixin:
                 "report_artifact_manifest_invalid", "服务端无法生成报告产物清单。"
             ) from error
         return manifest
+
+
+def _analysis_quality_warnings(
+    metric_definitions: tuple[MetricDefinition, ...],
+    analysis_warnings: tuple[str, ...],
+) -> tuple[dict[str, Any], ...]:
+    """把冻结分析披露的不可比与数据缺失转换为发布告警。"""
+
+    warnings: list[dict[str, Any]] = []
+    comparability_markers = ("期间跨度不一致", "同期不可比", "仅作参考性对比")
+    for metric in metric_definitions:
+        description = f"{metric.definition} {metric.period_basis}"
+        mismatched_budget_actual = (
+            "执行" in metric.name
+            and "预算" in description
+            and "实际" in description
+            and description.count("覆盖") >= 2
+        )
+        zero_period_comparison = "同比" in description and re.search(
+            r"\d{1,2}(?:月|[-—至到]\d{1,2}月)为0", description
+        )
+        if (
+            any(marker in description for marker in comparability_markers)
+            or mismatched_budget_actual
+            or zero_period_comparison is not None
+        ):
+            warnings.append(
+                {
+                    "code": "analysis_period_incomparable",
+                    "message": "冻结指标包含不可比期间，报告结论需按披露口径谨慎使用。",
+                    "details": {"metricCode": metric.code, "periodBasis": metric.period_basis},
+                }
+            )
+    for warning in analysis_warnings:
+        classified = False
+        if any(marker in warning for marker in comparability_markers):
+            classified = True
+            warnings.append(
+                {
+                    "code": "analysis_period_incomparable",
+                    "message": "冻结分析 Warning 标记了不可比期间，报告结论需谨慎使用。",
+                    "details": {"warning": warning[:500]},
+                }
+            )
+        if any(
+            marker in warning
+            for marker in (
+                "数据缺失",
+                "数据不完整",
+                "期间不完整",
+                "期间不足",
+                "缺失月份",
+                "疑似未入账",
+            )
+        ):
+            classified = True
+            warnings.append(
+                {
+                    "code": "analysis_data_incomplete",
+                    "message": "冻结分析披露数据缺失或期间不完整，报告结论需按实际覆盖范围使用。",
+                    "details": {"warning": warning[:500]},
+                }
+            )
+        if not classified:
+            warnings.append(
+                {
+                    "code": "analysis_data_quality",
+                    "message": "冻结分析披露数据质量限制，报告结论需结合告警内容谨慎使用。",
+                    "details": {"warning": warning[:500]},
+                }
+            )
+    return tuple(warnings)
+
+
+def _citation_presentations(
+    *,
+    lineage: tuple[DatasetLineage, ...],
+    requirements: tuple[QueryRequirement, ...],
+    analyses: tuple[AnalysisItem, ...],
+    snapshots: tuple[SourceSchemaSnapshot, ...],
+    observed_facts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    requirements_by_id = {item.requirement_id: item for item in requirements}
+    table_descriptions: dict[tuple[str, str], str] = {}
+    for snapshot in snapshots:
+        for table in snapshot.tables:
+            qualified = f"{table.database}.{table.name}".lower()
+            label = _human_label(table.description, "")
+            if label:
+                table_descriptions[(table.source_id, qualified)] = label
+                table_descriptions[(table.source_id, table.name.lower())] = label
+    presentations: list[dict[str, Any]] = []
+    for index, citation in enumerate(authoritative_citations(lineage), start=1):
+        requirement = requirements_by_id.get(citation.requirement_id)
+        metadata_labels = []
+        if requirement is not None:
+            metadata_labels = [
+                table_descriptions.get((requirement.source_id, table.table.lower()), "")
+                for table in requirement.tables
+            ]
+            metadata_labels = list(dict.fromkeys(item for item in metadata_labels if item))
+        analysis_label = next(
+            (
+                analysis.description
+                for analysis in analyses
+                if citation.requirement_id in analysis.requirement_ids
+            ),
+            None,
+        )
+        label = _human_label(
+            "、".join(metadata_labels) if metadata_labels else analysis_label,
+            f"第 {index} 项已审核业务数据",
+        )
+        coverage_items: list[dict[str, Any]] = []
+        bound_facts = [
+            fact
+            for fact in observed_facts
+            if fact.get("datasetId") == citation.dataset_id
+            and fact.get("requirementId") == citation.requirement_id
+        ]
+        for coverage_index, fact in enumerate(bound_facts, start=1):
+            table_name = str(fact.get("table") or "").lower()
+            source_id = str(fact.get("sourceId") or "")
+            coverage_label = _human_label(
+                table_descriptions.get((source_id, table_name)),
+                f"来源项 {coverage_index}",
+            )
+            coverage = {
+                str(period) for period in fact.get("periodCoverage", []) if isinstance(period, str)
+            }
+            missing = {
+                str(period) for period in fact.get("missingPeriods", []) if isinstance(period, str)
+            }
+            coverage_items.append({"label": coverage_label, "periods": sorted(coverage - missing)})
+        presentations.append(
+            {
+                "citationId": citation.citation_id,
+                "label": label,
+                "coverageItems": coverage_items,
+            }
+        )
+    return presentations
+
+
+def _accepted_artifacts_match_manifest(
+    manifest: ReportArtifactManifest,
+    manifest_path: str,
+    accepted_artifacts: list[dict[str, Any]],
+) -> bool:
+    accepted: dict[str, dict[str, Any]] = {
+        path: item
+        for item in accepted_artifacts
+        if isinstance(item, dict) and isinstance(path := item.get("path"), str)
+    }
+    if len(accepted) != len(accepted_artifacts):
+        return False
+    declared = [manifest.markdown, *manifest.charts]
+    declared_paths = {item.path for item in declared}
+    extra_paths = set(accepted) - declared_paths
+    if manifest_path in accepted or any(
+        PurePosixPath(path).suffix.lower() not in {".png", ".jpg", ".jpeg"} for path in extra_paths
+    ):
+        return False
+    if not declared_paths.issubset(accepted):
+        return False
+    return all(
+        accepted[item.path].get("size") == item.size
+        and accepted[item.path].get("sha256") == item.sha256
+        for item in declared
+    )
+
+
+def _report_pdf_path(run_id: str, revision: int, title: str, period: ReportPeriod) -> str:
+    filename = _report_pdf_filename(title, period)
+    return f"报表/智能分析/{run_id}/revision-{revision}/{filename}"

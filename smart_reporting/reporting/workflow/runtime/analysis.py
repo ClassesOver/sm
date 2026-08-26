@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import (
+    _VISUALIZATION_RECOVERY_ERROR_CODES,
     MAX_REPORT_INSTRUCTION_BYTES,
     MAX_REPORT_SECTION_PHASE_ATTEMPTS,
     REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
@@ -12,10 +13,13 @@ from .base import (
     REPORT_OUTLINE_HASH_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
     REPORT_VISUAL_THEME,
+    REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
     AnalysisArtifact,
     AnalysisReworkRequest,
     Any,
+    Awaitable,
     BaseModel,
+    Callable,
     Citation,
     ContextTrace,
     DatasetAnalysisContext,
@@ -33,25 +37,19 @@ from .base import (
     ReportingStateError,
     ReportOutline,
     RunContext,
+    Sequence,
     StepInput,
     StepOutput,
     TaskScope,
     TaskState,
     ValidationError,
+    WorkspaceService,
     ZoneInfo,
-    _analysis_item_completion_conditions,
-    _coding_detailed_analysis_plan,
     _frozen_outline,
     _payload_sha256,
-    _profile_coverage_instruction_projection,
-    _run_pending_analysis_items,
     _source_warnings_from_state,
-    _visualization_completion_conditions,
-    _visualization_dynamic_budget,
-    _visualization_recovery_required,
-    _visualization_retry_budget,
-    _visualization_retry_usage,
     anyio,
+    asyncio,
     build_deterministic_analysis_bundle,
     build_report_phase_acceptance_contract,
     cast,
@@ -62,11 +60,13 @@ from .base import (
     logger,
     partial,
     payload_sha256,
+    re,
     record_step_model_metrics,
     reporting_phase_task_key,
     reporting_thinking_profile_from_model,
     time,
 )
+from .datasets import _profile_coverage_instruction_projection
 
 __all__ = ["RuntimeAnalysisMixin", "_visualization_retry_budget"]
 
@@ -1438,3 +1438,286 @@ class RuntimeAnalysisMixin:
                 ),
             )
         return identities
+
+
+async def _run_bounded(
+    items: Sequence[Any],
+    *,
+    concurrency: int,
+    worker: Callable[[Any], Awaitable[Any]],
+) -> list[Any]:
+    """按输入索引返回并发结果；完成顺序不改变最终提纲顺序。"""
+
+    if isinstance(concurrency, bool) or concurrency < 1:
+        raise ValueError("concurrency 必须大于 0")
+    semaphore = asyncio.Semaphore(concurrency)
+    results: list[Any] = [None] * len(items)
+    failures: dict[int, Exception] = {}
+
+    async def run_one(index: int, item: Any) -> None:
+        async with semaphore:
+            try:
+                results[index] = await worker(item)
+            except Exception as error:
+                # 业务失败不能让 TaskGroup 取消已启动的兄弟任务，也不能让 Python 把
+                # 稳定 ReportingError 包成 ExceptionGroup。外部取消仍直接穿透。
+                failures[index] = error
+
+    async with asyncio.TaskGroup() as task_group:
+        for index, item in enumerate(items):
+            task_group.create_task(run_one(index, item))
+    if failures:
+        raise failures[min(failures)]
+    return results
+
+
+async def _run_pending_analysis_items(
+    analysis_ids: Sequence[str],
+    *,
+    completed_analysis_ids: set[str],
+    concurrency: int,
+    worker: Callable[[str], Awaitable[Any]],
+) -> tuple[str, ...]:
+    """并发执行未完成分析项；返回本轮实际调度的稳定计划顺序。"""
+
+    pending = tuple(item for item in analysis_ids if item not in completed_analysis_ids)
+    if pending:
+        failures: dict[str, Exception] = {}
+
+        async def run_one(analysis_id: str) -> None:
+            try:
+                await worker(analysis_id)
+            except Exception as error:
+                # 单项业务失败不能取消已经并发运行的其他 analysis；成功项已通过
+                # durable CAS 冻结，下一轮只重试失败项。外部取消仍由 CancelledError
+                # 直接穿透 TaskGroup，确保用户终止不会被吞掉。
+                failures[analysis_id] = error
+
+        await _run_bounded(pending, concurrency=concurrency, worker=run_one)
+        for analysis_id in pending:
+            if analysis_id in failures:
+                raise failures[analysis_id]
+    return pending
+
+
+def _coding_detailed_analysis_plan(
+    plan: DetailedAnalysisPlan,
+    *,
+    analysis_ids: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """向成稿 Worker 投影 Codex 风格步骤，完整事实继续由受信上下文承载。"""
+    allowed = set(analysis_ids) if analysis_ids is not None else None
+    return {
+        "version": plan.version,
+        "analyses": [
+            {
+                "analysisId": item.analysis_id,
+                "domain": item.domain,
+                "step": item.management_question,
+                "primaryMetricFamily": item.primary_metric_family,
+                "datasetIds": list(item.dataset_ids),
+            }
+            for item in plan.analyses
+            if allowed is None or item.analysis_id in allowed
+        ],
+    }
+
+
+def _analysis_item_completion_conditions(
+    recovery_payload: dict[str, Any] | None,
+    last_error: Exception | None,
+) -> list[str]:
+    if recovery_payload is not None:
+        return [
+            "durable 单项事实已冻结；不要重算或改写 evidence",
+            "使用 durableAnalysisItem 的相同字段重新调用 complete_analysis_item 完成 Task 收尾",
+        ]
+    if (
+        isinstance(last_error, ReportingError)
+        and last_error.code == "report_analysis_tool_budget_exhausted"
+    ):
+        return [
+            "上一轮因成功工具调用达到上限而终止；禁止继续探索 Profile、创建脚本或生成补充 evidence",
+            "只调用一次 query_analysis_facts 读取 deterministicFactFile 中当前管理问题所需的最小事实",
+            "随后立即调用 complete_analysis_item；evidencePaths 传空数组，不得调用其他工具",
+        ]
+    return [
+        "只回答 currentAnalysis 的原子管理问题和 primaryMetricFamily",
+        "优先查询 deterministicFactFile；固定事实足够时不创建脚本或 evidence，"
+        "complete_analysis_item 的 evidencePaths 传空数组",
+        "只为 deterministicFactFile 未覆盖的事实缺口创建补充 evidence",
+        "本阶段禁止生成或登记图表",
+        "最后且只调用一次 complete_analysis_item",
+    ]
+
+
+def _visualization_completion_conditions(
+    last_error: Exception | None,
+    charts_registered: bool,
+) -> list[str]:
+    if charts_registered:
+        return [
+            "durable state 已完成整批图表登记；禁止改图、换 chartId、重复登记或继续自检",
+            "不要调用任何读取、写入、执行、Skill 或视觉工具",
+            "立即且只调用一次 finalize_report_analysis",
+        ]
+    if _visualization_recovery_required(last_error):
+        return [
+            "上一轮因工具调用或脚本失败达到上限而终止；禁止重新规划、重复读取事实或重新探索工作区",
+            "复用工作区已有脚本和图表，只完成尚缺的最小执行或检查",
+            "整批图表只调用一次 register_report_charts，成功后立即调用 finalize_report_analysis",
+        ]
+    return [
+        "只整合 completedAnalysisItems 和 deterministicFactFiles，不重跑单项分析",
+        "批量读取事实、生成和执行图表脚本；相同文件不得重复读取、执行或视觉检查",
+        "按批准提纲生成必要图表并整批登记 citation",
+        "最后且只调用一次 finalize_report_analysis",
+        "evidence、receipt、citation 和文件身份由服务端 durable state 派生",
+    ]
+
+
+def _visualization_recovery_required(last_error: Exception | None) -> bool:
+    """仅预算类终态错误进入禁止重新探索的恢复模式。"""
+
+    return isinstance(last_error, ReportingError) and last_error.code in (
+        _VISUALIZATION_RECOVERY_ERROR_CODES
+    )
+
+
+def _visualization_retry_budget(last_error: Exception | None) -> tuple[int, int]:
+    usage = _visualization_retry_usage(last_error)
+    return usage["visualizationToolCalls"], usage["visualizationScriptFailures"]
+
+
+def _visualization_retry_usage(last_error: Exception | None) -> dict[str, int]:
+    source: Any = getattr(last_error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, None)
+    details = last_error.details if isinstance(last_error, ReportingError) else None
+
+    def count(raw: Any) -> int:
+        return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
+
+    if isinstance(source, Mapping):
+        usage = {
+            "visualizationReadUnitsUsed": count(source.get("visualizationReadUnitsUsed")),
+            "visualizationFactQueriesUsed": count(source.get("visualizationFactQueriesUsed")),
+            "visualizationToolCalls": count(
+                source.get("visualizationToolCalls", source.get("totalToolCalls"))
+            ),
+            "visualizationScriptFailures": count(
+                source.get("visualizationScriptFailures", source.get("scriptFailureCount"))
+            ),
+        }
+        # 预算终态错误在动态预留点生成，details 对总调用和脚本失败的计数最及时；
+        # read/fact 则只能来自 worker 退出时附加的完整累计快照，两者必须合并。
+        if isinstance(details, Mapping):
+            if "totalToolCalls" in details:
+                usage["visualizationToolCalls"] = count(details.get("totalToolCalls"))
+            if "scriptFailureCount" in details:
+                usage["visualizationScriptFailures"] = count(details.get("scriptFailureCount"))
+        return usage
+    if isinstance(source, Sequence) and not isinstance(source, (str, bytes)) and len(source) == 2:
+        return {
+            "visualizationReadUnitsUsed": 0,
+            "visualizationFactQueriesUsed": 0,
+            "visualizationToolCalls": count(source[0]),
+            "visualizationScriptFailures": count(source[1]),
+        }
+    if isinstance(details, Mapping):
+        return {
+            "visualizationReadUnitsUsed": 0,
+            "visualizationFactQueriesUsed": 0,
+            "visualizationToolCalls": count(details.get("totalToolCalls")),
+            "visualizationScriptFailures": count(details.get("scriptFailureCount")),
+        }
+    return {
+        "visualizationReadUnitsUsed": 0,
+        "visualizationFactQueriesUsed": 0,
+        "visualizationToolCalls": 0,
+        "visualizationScriptFailures": 0,
+    }
+
+
+def _visualization_dynamic_budget(
+    analysis_items: Any,
+    fact_files: Mapping[str, FileIdentity],
+) -> dict[str, int]:
+    """从冻结文件身份计算预算，同一路径出现不同身份时失败关闭。"""
+
+    identities: dict[str, tuple[int, str]] = {}
+    evidence_paths: set[str] = set()
+    fact_paths: set[str] = set()
+
+    def register(raw: Any, *, category: str) -> None:
+        value: Mapping[str, Any]
+        if isinstance(raw, FileIdentity):
+            value = raw.model_dump(mode="python", by_alias=True)
+        elif isinstance(raw, Mapping):
+            value = raw
+        else:
+            raise ReportingError(
+                "report_visualization_evidence_identity_invalid",
+                "visualization 文件身份缺失或无效。",
+            )
+        path = value.get("path")
+        size = value.get("size")
+        sha256 = value.get("sha256")
+        if (
+            not isinstance(path, str)
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or not isinstance(sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+        ):
+            raise ReportingError(
+                "report_visualization_evidence_identity_invalid",
+                "visualization 文件身份缺失或无效。",
+            )
+        try:
+            normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
+        except Exception as error:
+            raise ReportingError(
+                "report_visualization_evidence_identity_invalid",
+                "visualization 文件路径无效。",
+            ) from error
+        identity = (size, sha256)
+        if normalized in identities and identities[normalized] != identity:
+            raise ReportingError(
+                "report_visualization_evidence_identity_conflict",
+                "同一 visualization 文件路径绑定了不同身份。",
+                details={"path": normalized},
+            )
+        identities[normalized] = identity
+        (evidence_paths if category == "evidence" else fact_paths).add(normalized)
+
+    if isinstance(analysis_items, Mapping):
+        for item in analysis_items.values():
+            evidence_files = item.get("evidenceFiles") if isinstance(item, Mapping) else None
+            if isinstance(evidence_files, Sequence) and not isinstance(
+                evidence_files, (str, bytes)
+            ):
+                for identity in evidence_files:
+                    register(identity, category="evidence")
+    for identity in fact_files.values():
+        register(identity, category="fact")
+
+    evidence_read_units = sum((identities[path][0] + 65535) // 65536 for path in evidence_paths)
+    if evidence_read_units > 512:
+        raise ReportingError(
+            "report_visualization_evidence_budget_exceeded",
+            "visualization 受信 evidence 超过读取预算上限。",
+            details={"evidenceReadUnits": evidence_read_units, "limit": 512},
+        )
+    total_fact_bytes = sum(identities[path][0] for path in fact_paths)
+    read_limit = max(12, evidence_read_units + 8)
+    fact_query_limit = min(max((total_fact_bytes + 16383) // 16384, 4), 16)
+    attempt_limit = max(48, read_limit + fact_query_limit + 16)
+    total_limit = max(64, attempt_limit + 16)
+    return {
+        "visualizationBudgetVersion": 1,
+        "visualizationEvidenceReadUnits": evidence_read_units,
+        "visualizationReadLimit": read_limit,
+        "visualizationFactQueryLimit": fact_query_limit,
+        "visualizationAttemptToolLimit": attempt_limit,
+        "visualizationTotalToolLimit": total_limit,
+    }
