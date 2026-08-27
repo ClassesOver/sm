@@ -134,6 +134,30 @@ def test_profile_csv从生成源关闭冗余画像计算(monkeypatch: pytest.Mon
     assert set(profiled.profile["package"]) == {"data_profiling_version"}
 
 
+def test_profile_csv空数据集生成零行画像而不调用画像引擎(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"period,amount\n"
+    monkeypatch.setattr(
+        "smart_reporting.reporting.hospital_operation.detailed_analysis.ProfileReport",
+        lambda *_args, **_kwargs: pytest.fail("空数据集不得调用 ProfileReport"),
+    )
+
+    profiled = profile_csv_dataset(
+        content,
+        dataset_id="dataset-empty",
+        path="empty.csv",
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+        period_fields=("period",),
+    )
+
+    assert profiled.context.row_count == 0
+    assert profiled.context.fields == ("period", "amount")
+    assert profiled.profile["table"]["n"] == 0
+    assert profiled.profile["variables"]["amount"]["count"] == 0
+    assert "数据集为空，无法进行趋势、分布和相关性分析。" in profiled.context.quality_warnings
+
+
 # 三组数据沿用迁移前 test_detailed_analysis.py 的混合缺失、面板期间和唯一时序
 # 样本，固定验证 Profile 收敛不能改变既有业务统计与时序判定。
 @pytest.mark.parametrize(
