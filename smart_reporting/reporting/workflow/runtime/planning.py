@@ -831,7 +831,21 @@ class RuntimePlanningMixin:
                         "每个章节必须引用已注册 analysisId；不返回正文、解释或 Markdown"
                     ),
                 }
-            output = await self._run_planner(self._outline_agent, payload, run_context)
+            try:
+                output = await self._run_planner(self._outline_agent, payload, run_context)
+            except ValidationError as error:
+                # Agno 的 Agent 重试只对同一输入盲重试，无法携带结构校验失败的原因；
+                # 这里把 planner 抛出的 ValidationError 转成 correction 回灌，让模型
+                # 在下一次调用时看到 previousOutput 与逐项 issues 并修正，而不是直接
+                # 让整条 workflow 失败。
+                previous_output = _outline_candidate(error)
+                allowed_paths = ("sections",)
+                validation_feedback = {
+                    "code": "report_outline_invalid",
+                    "summary": "报告提纲未通过结构校验",
+                    "issues": _outline_validation_issues(error),
+                }
+                continue
             assert isinstance(output, ReportOutlineProposal)
             issues: list[dict[str, Any]] = []
             if output.report_type != envelope.report_type:
@@ -2124,6 +2138,38 @@ def _analysis_allowed_mutation_paths(
                 ):
                     paths.append(f"analyses[{index}].requirementIds")
     return tuple(dict.fromkeys(paths))
+
+
+def _outline_candidate(error: ValidationError) -> dict[str, Any] | None:
+    """从响应校验异常中恢复候选载荷，作为纠错 previousOutput 基线。
+
+    优先使用校验边界附带的 _report_candidate（解码后的原始 JSON），它在字段级
+    校验失败时仍能给出整体结构；退化到模型级 error.input，最后返回 None。
+    """
+    candidate = getattr(error, "_report_candidate", None)
+    if isinstance(candidate, Mapping):
+        return dict(candidate)
+    for issue in error.errors():
+        if not issue.get("loc"):
+            value = issue.get("input")
+            if isinstance(value, Mapping):
+                return dict(value)
+    return None
+
+
+def _outline_validation_issues(error: ValidationError) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for issue in error.errors():
+        loc = issue.get("loc") or ()
+        path = ".".join(str(part) for part in loc) or "sections"
+        issues.append(
+            {
+                "path": path,
+                "rejectedValue": _bounded_rejected_value(issue.get("input")),
+                "reason": str(issue.get("msg")),
+            }
+        )
+    return issues
 
 
 def _compact_validation_feedback(value: dict[str, Any] | None) -> dict[str, Any] | None:

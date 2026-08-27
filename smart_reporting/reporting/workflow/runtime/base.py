@@ -614,7 +614,14 @@ class _ReportWorkflowRuntimeBase:
             candidate = _planner_candidate(content)
             if output_schema is AnalysisBundle:
                 candidate = _normalize_analysis_bundle_table_refs(candidate)
-            return output_schema.model_validate(candidate)
+            try:
+                return output_schema.model_validate(candidate)
+            except ValidationError as error:
+                # 把候选载荷附在异常上。Agno 的 Agent 重试只对同一输入盲重试，无法把
+                # 结构错误回灌给模型；规划层的纠错循环需要 previousOutput 基线和
+                # 逐项 issues，因此在校验边界先捕获候选，避免重试时丢失原输出。
+                error._report_candidate = candidate  # type: ignore[attr-defined]
+                raise
 
         setattr(planner_model, "_report_response_validator", validate_response)
         agent = planner.deep_copy(
