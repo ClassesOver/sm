@@ -38,8 +38,10 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) \
   run --build --rm env-init
 ```
 
-脚本会生成 Daytona 服务密钥、12 位服务密码及 Dex 密码哈希，并创建 `docker/data/` 下的持久化
-目录；Runner 内部 Docker 默认使用 `/u01/daytona/runner-docker`，其中 Dex 目录会授权给镜像固定使用的 `1001:1001` 用户。Dex 明文登录密码只显示一次，
+脚本会生成 Daytona 服务密钥、12 位服务密码及 Dex 密码哈希，并初始化 Docker 命名卷
+`${DAYTONA_VOLUME_PREFIX:-daytona_}dex` 的权限；PostgreSQL、Redis、MinIO 和 Dex 使用以
+`DAYTONA_VOLUME_PREFIX` 为前缀的 Docker 命名卷，Runner 和 Registry 继续使用 `docker/data/`
+下的 bind mount。Runner 内部 Docker 默认使用 `/u01/daytona/runner-docker`。Dex 明文登录密码只显示一次，
 默认账号为 `admin@example.com`，应立即保存。初始化容器以 root 运行，完成后根据 `HOST_UID`、
 `HOST_GID` 恢复环境文件的宿主所有权；配置只有在全部密钥生成成功后才会一次性替换。
 
@@ -57,8 +59,9 @@ Compose 会先等待 API 的 `/api/health` 检查通过，再启动 Runner，确
 不会早于 API 监听端口。
 
 `--remove-orphans` 会清理同一 Daytona Compose 项目中已从精简配置删除的辅助容器，但不会删除
-`docker/data/` 下 PostgreSQL、Redis、Registry、MinIO、Runner 和 Dex 的持久化数据，以及
-`/u01/daytona/runner-docker` 下的 Runner Docker 数据。
+Docker 命名卷中的 PostgreSQL、Redis、MinIO 和 Dex 持久化数据、`docker/data/` 下的 Runner 和
+Registry 数据，以及 `/u01/daytona/runner-docker` 下的 Runner Docker 数据。需要查看命名卷时，可执行
+`docker volume ls --filter name=daytona_`。
 
 打开 `http://127.0.0.1:33043/dashboard`，登录后激活默认 Snapshot，并创建具有沙箱创建、
 写入和删除权限的 API Key。该 Key 属于 AgentOS 客户端，应写入根目录 `.env` 的
@@ -212,5 +215,6 @@ docker compose --env-file docker/.env -f docker/docker-compose.yaml logs --tail=
 docker compose --env-file docker/.env -f docker/docker-compose.yaml down
 ```
 
-不要在未备份的情况下删除 `docker/data/` 或 `/u01/daytona/runner-docker`。需要备份的目录包括 PostgreSQL、
-Redis、Registry、MinIO、Runner 和 Dex 数据。
+不要在未备份的情况下删除 Daytona 命名卷、`docker/data/` 或 `/u01/daytona/runner-docker`。需要备份
+PostgreSQL、Redis、Registry、MinIO、Runner 和 Dex 数据。已有 `docker/data/` 中 PostgreSQL、Redis、
+MinIO 和 Dex 的 bind mount 数据不会自动迁移；切换前请停止旧部署并单独完成备份和迁移，确认无误后再手动清理旧目录。

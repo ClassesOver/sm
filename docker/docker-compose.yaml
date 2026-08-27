@@ -17,6 +17,7 @@ services:
       HOST_GID: "${HOST_GID:-1000}"
     volumes:
       - ..:/workspace
+      - dex:/var/dex
     network_mode: none
     entrypoint: ["bash", "/workspace/scripts/configure_daytona_env.sh"]
     command: ["/workspace/docker/.env"]
@@ -190,7 +191,7 @@ services:
       DEX_ADMIN_EMAIL: ${DEX_ADMIN_EMAIL:-admin@example.com}
     volumes:
       - ./dex/config.yaml.template:/etc/dex/config.yaml.template:ro
-      - ./data/dex:/var/dex
+      - dex:/var/dex
     entrypoint:
       - sh
       - -ec
@@ -210,7 +211,7 @@ services:
       timeout: 5s
       retries: 12
     volumes:
-      - ./data/db:/var/lib/postgresql
+      - db:/var/lib/postgresql
     networks: [daytona-network]
     restart: unless-stopped
 
@@ -225,7 +226,7 @@ services:
       timeout: 5s
       retries: 12
     volumes:
-      - ./data/redis:/data
+      - redis:/data
     networks: [daytona-network]
     restart: unless-stopped
 
@@ -247,7 +248,7 @@ services:
       MINIO_IDENTITY_STS_EXPIRY: 24h
     command: server /data --console-address ":9001"
     volumes:
-      - ./data/minio:/data
+      - minio:/data
     networks: [daytona-network]
     restart: unless-stopped
 
@@ -257,3 +258,13 @@ networks:
     ipam:
       config:
         - subnet: 172.31.0.0/16
+
+volumes:
+  db:
+    name: ${DAYTONA_VOLUME_PREFIX:-daytona_}db
+  redis:
+    name: ${DAYTONA_VOLUME_PREFIX:-daytona_}redis
+  minio:
+    name: ${DAYTONA_VOLUME_PREFIX:-daytona_}minio
+  dex:
+    name: ${DAYTONA_VOLUME_PREFIX:-daytona_}dex
