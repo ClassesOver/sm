@@ -104,21 +104,49 @@ class RuntimeSectionsMixin:
         validate_report_draft_blocks(artifact.blocks)
         known_citations = {item.citation_id for item in work_item.citations}
         known_charts = {item.chart_id for item in work_item.charts}
+        charts_by_id = {item.chart_id: item for item in work_item.charts}
         referenced_citations = {
             citation_id for block in artifact.blocks for citation_id in block.citation_ids
         }
-        referenced_charts = {chart_id for block in artifact.blocks for chart_id in block.chart_ids}
         if referenced_citations - known_citations:
             raise ReportingError(
                 "report_section_citation_unknown", "当前章节引用了 SectionWorkItem 外的 citation。"
             )
-        if known_citations - referenced_citations:
-            raise ReportingError(
-                "report_section_citation_missing", "当前章节没有覆盖全部相关 evidence citation。"
-            )
+        referenced_charts = {chart_id for block in artifact.blocks for chart_id in block.chart_ids}
         if referenced_charts - known_charts:
             raise ReportingError(
                 "report_section_chart_unknown", "当前章节引用了 SectionWorkItem 外的 chart。"
+            )
+        normalized_blocks = []
+        for block in artifact.blocks:
+            bound_citations = list(block.citation_ids)
+            for chart_id in block.chart_ids:
+                chart = charts_by_id[chart_id]
+                unknown_chart_citations = set(chart.citation_ids) - known_citations
+                if unknown_chart_citations:
+                    raise ReportingError(
+                        "report_section_chart_citation_unknown",
+                        f"图表 {chart_id} 引用了当前章节外的 citation。",
+                        details={
+                            "sectionCode": section_code,
+                            "blockId": block.block_id,
+                            "chartId": chart_id,
+                            "unknownCitationIds": sorted(unknown_chart_citations),
+                        },
+                    )
+                for citation_id in chart.citation_ids:
+                    if citation_id not in bound_citations:
+                        bound_citations.append(citation_id)
+            normalized_blocks.append(
+                block.model_copy(update={"citation_ids": tuple(bound_citations)})
+            )
+        artifact = artifact.model_copy(update={"blocks": tuple(normalized_blocks)})
+        referenced_citations = {
+            citation_id for block in artifact.blocks for citation_id in block.citation_ids
+        }
+        if known_citations - referenced_citations:
+            raise ReportingError(
+                "report_section_citation_missing", "当前章节没有覆盖全部相关 evidence citation。"
             )
         phase_state = state.get(REPORT_PHASE_OUTPUT_STATE_KEY) if isinstance(state, dict) else None
         serialized = artifact.model_dump(mode="json", by_alias=True)

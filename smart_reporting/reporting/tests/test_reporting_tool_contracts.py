@@ -2051,6 +2051,50 @@ async def test_render_report_section_rejects_inline_image_before_writing_artifac
     toolkit._write_phase_json.assert_not_awaited()
 
 
+@pytest.mark.anyio
+async def test_render_report_section_binds_chart_citations_into_block() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
+        {"sectionOutputPath": "sections/budget.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            section_code="section_002",
+            citations=(
+                SimpleNamespace(citation_id="citation_004"),
+                SimpleNamespace(citation_id="citation_010"),
+            ),
+            charts=(
+                SimpleNamespace(
+                    chart_id="revenue_budget",
+                    citation_ids=("citation_004", "citation_010"),
+                ),
+            ),
+        )
+    )
+    toolkit._write_phase_json = AsyncMock(return_value={"path": "sections/budget.json"})  # type: ignore[method-assign]
+    toolkit._finish_phase_task = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    await toolkit._render_isolated_section(
+        scope=SimpleNamespace(),
+        section_code="section_002",
+        blocks=[
+            {
+                "blockId": "budget_overall",
+                "markdown": "预算执行情况。",
+                "citationIds": ["citation_004"],
+                "chartIds": ["revenue_budget"],
+            }
+        ],
+        state={},
+        run_context=None,
+    )
+
+    payload = toolkit._write_phase_json.await_args.kwargs["payload"]
+    assert payload["blocks"][0]["citationIds"] == ["citation_004", "citation_010"]
+
+
 def test_analysis_evidence_accepts_current_committed_identity() -> None:
     identity = {"path": "analysis/evidence.json", "size": 12, "sha256": "a" * 64}
 
