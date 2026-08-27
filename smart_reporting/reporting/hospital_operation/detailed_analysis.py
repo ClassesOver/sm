@@ -18,6 +18,7 @@ from typing import Any, Literal
 import pandas as pd
 import polars as pl
 from data_profiling import ProfileReport
+from data_profiling import __version__ as DATA_PROFILING_VERSION
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from statsmodels.tsa.stattools import acf, adfuller, pacf
 
@@ -240,64 +241,94 @@ def profile_csv_dataset(
     # Profile 只输出统计 JSON。关闭图形型缺失分析和连续变量散点图，避免把
     # 第三方 SVG 混入受信上下文；文件类变量也必须关闭，防止 CSV 文本触发
     # 工作区路径、图片或 URL 读取。直方图 bins、相关矩阵及文本统计仍完整保留。
-    try:
-        # fg-data-profiling 为生成直方图统计会短暂调用 matplotlib.savefig；其内置
-        # 绘图上下文固定使用 DejaVu Sans，中文分类值会产生无害的 Glyph warning。
-        # 这里仅过滤该已知提示，不吞掉 Profile 计算、解析或其他数据质量异常。
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=r"Glyph .* missing from font.*",
-                category=UserWarning,
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=r"divide by zero encountered in log10",
-                category=RuntimeWarning,
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=r"Discarding nonzero nanoseconds in conversion.*",
-                category=UserWarning,
-            )
-            report = ProfileReport(
-                profile_dataframe_pandas,
-                # 同一期间存在多行时属于面板数据。原始行顺序不代表业务时间序列，
-                # 因此关闭上游 tsmode；Coding 必须从不可变 CSV 按月和适当组织粒度
-                # 聚合后再执行趋势、ACF、PACF 或季节性分析。
-                tsmode=time_series_sort_field is not None and not duplicate_time_index,
-                sortby=time_series_sort_field if not duplicate_time_index else None,
-                # 本工作流只消费完整 JSON description_set。保持 lazy=True 让
-                # to_json() 计算全部统计，但不提前构建 HTML/Widget report，避免
-                # 展示层直方图、分类频率图和时序概览无意义地调用 matplotlib。
-                lazy=True,
-                progress_bar=False,
-                samples={"head": 0, "tail": 0, "random": 0},
-                duplicates={"head": 0},
-                correlations={
-                    "auto": {"calculate": True},
-                    "pearson": {"calculate": True},
-                    "spearman": {"calculate": True},
-                    "kendall": {"calculate": True},
-                    "phi_k": {"calculate": True},
-                    "cramers": {"calculate": True},
-                },
-                missing_diagrams={"bar": False, "matrix": False, "heatmap": False},
-                interactions={"continuous": False},
-                vars={
-                    "cat": {"length": False, "characters": False, "words": False},
-                    "text": {"length": False, "characters": False, "words": False},
-                    "file": {"active": False},
-                    "image": {"active": False},
-                    "path": {"active": False},
-                    "url": {"active": False},
-                },
-            )
-            # 上游 JSON 会把缺失的样本值编码为非标准 NaN。受信上下文必须能够
-            # 严格 JSON 往返并稳定比较，因此仅把这些非有限占位规范为 null。
-            profile = json.loads(report.to_json(), parse_constant=lambda _value: None)
-    except Exception as error:
-        raise ValueError("CSV Profile 生成失败") from error
+    if profile_dataframe.height == 0:
+        # fg-data-profiling 拒绝零行 DataFrame。空查询结果仍需保留字段和零行事实，
+        # 供后续数据覆盖检查和报告告警使用；这里不伪造样本行或任何统计值。
+        fields = tuple(str(field) for field in dataframe.columns)
+        profile = {
+            "table": {
+                "n": 0,
+                "n_var": len(fields),
+                "n_cells_missing": 0,
+                "p_cells_missing": 0.0,
+                "n_duplicates": 0,
+            },
+            "variables": {
+                field: {
+                    "type": "Unsupported",
+                    "count": 0,
+                    "n_missing": 0,
+                    "p_missing": 0.0,
+                    "n_distinct": 0,
+                    "p_distinct": 0.0,
+                    "is_unique": False,
+                    "value_counts_without_nan": {},
+                }
+                for field in fields
+            },
+            "correlations": {},
+            "alerts": [],
+            "package": {"data_profiling_version": DATA_PROFILING_VERSION},
+        }
+    else:
+        try:
+            # fg-data-profiling 为生成直方图统计会短暂调用 matplotlib.savefig；其内置
+            # 绘图上下文固定使用 DejaVu Sans，中文分类值会产生无害的 Glyph warning。
+            # 这里仅过滤该已知提示，不吞掉 Profile 计算、解析或其他数据质量异常。
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Glyph .* missing from font.*",
+                    category=UserWarning,
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"divide by zero encountered in log10",
+                    category=RuntimeWarning,
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Discarding nonzero nanoseconds in conversion.*",
+                    category=UserWarning,
+                )
+                report = ProfileReport(
+                    profile_dataframe_pandas,
+                    # 同一期间存在多行时属于面板数据。原始行顺序不代表业务时间序列，
+                    # 因此关闭上游 tsmode；Coding 必须从不可变 CSV 按月和适当组织粒度
+                    # 聚合后再执行趋势、ACF、PACF 或季节性分析。
+                    tsmode=time_series_sort_field is not None and not duplicate_time_index,
+                    sortby=time_series_sort_field if not duplicate_time_index else None,
+                    # 本工作流只消费完整 JSON description_set。保持 lazy=True 让
+                    # to_json() 计算全部统计，但不提前构建 HTML/Widget report，避免
+                    # 展示层直方图、分类频率图和时序概览无意义地调用 matplotlib。
+                    lazy=True,
+                    progress_bar=False,
+                    samples={"head": 0, "tail": 0, "random": 0},
+                    duplicates={"head": 0},
+                    correlations={
+                        "auto": {"calculate": True},
+                        "pearson": {"calculate": True},
+                        "spearman": {"calculate": True},
+                        "kendall": {"calculate": True},
+                        "phi_k": {"calculate": True},
+                        "cramers": {"calculate": True},
+                    },
+                    missing_diagrams={"bar": False, "matrix": False, "heatmap": False},
+                    interactions={"continuous": False},
+                    vars={
+                        "cat": {"length": False, "characters": False, "words": False},
+                        "text": {"length": False, "characters": False, "words": False},
+                        "file": {"active": False},
+                        "image": {"active": False},
+                        "path": {"active": False},
+                        "url": {"active": False},
+                    },
+                )
+                # 上游 JSON 会把缺失的样本值编码为非标准 NaN。受信上下文必须能够
+                # 严格 JSON 往返并稳定比较，因此仅把这些非有限占位规范为 null。
+                profile = json.loads(report.to_json(), parse_constant=lambda _value: None)
+        except Exception as error:
+            raise ValueError("CSV Profile 生成失败") from error
     if not isinstance(profile, dict):
         raise ValueError("CSV Profile 结构无效")
     package = profile.get("package")
@@ -419,6 +450,8 @@ def profile_csv_dataset(
     )
     missing_cell_count = int(table.get("n_cells_missing", 0))
     quality_warnings: list[str] = []
+    if dataframe.height == 0:
+        quality_warnings.append("数据集为空，无法进行趋势、分布和相关性分析。")
     if duplicate_time_index:
         quality_warnings.append(
             "期间索引存在重复，行级 ACF/PACF 和季节性统计已禁用；需先按月及组织粒度聚合。"
