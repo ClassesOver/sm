@@ -38,6 +38,13 @@ REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY = "visualizationTotalToolLimi
 REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY = "reportingVisualizationRecovery"
 REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY = "agentos_reporting_visualization_tool_budget"
 REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR = "_agentos_reporting_visualization_budget"
+REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY = "analysisFactBudgetVersion"
+REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY = "analysisFactQueryLimit"
+REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY = "analysisFactQueriesUsed"
+REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY = "analysisRecovery"
+REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY = "agentos_reporting_analysis_fact_budget"
+REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR = "_agentos_reporting_analysis_fact_budget"
+REPORTING_ANALYSIS_FACT_QUERY_LIMIT = 2
 REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
 
 # 工具按生命周期白名单暴露。Agno callable-tool 缓存键包含 phase/taskKind，实际 Toolkit、
@@ -385,6 +392,60 @@ def reporting_visualization_budget_contract_from_acceptance_contract(
     }
 
 
+def reporting_analysis_fact_budget_contract_from_acceptance_contract(
+    value: Any,
+) -> dict[str, int | bool]:
+    """读取单项分析 facts 子预算；新版本契约缺字段时不得退回宽松默认。"""
+
+    phase_contract: Mapping[str, Any] = {}
+    if isinstance(value, Mapping):
+        requirements = value.get("requirements")
+        if (
+            isinstance(requirements, Sequence)
+            and not isinstance(requirements, (str, bytes))
+            and len(requirements) == 1
+            and isinstance(requirements[0], Mapping)
+        ):
+            parameters = requirements[0].get("parameters")
+            candidate = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
+            if isinstance(candidate, Mapping) and candidate.get("taskKind") == "analysis_item":
+                phase_contract = candidate
+
+    if "analysisFactBudgetVersion" not in phase_contract:
+        return {
+            "analysisFactBudgetVersion": 0,
+            "analysisFactQueryLimit": REPORTING_ANALYSIS_FACT_QUERY_LIMIT,
+            "analysisFactQueriesUsed": 0,
+            "analysisRecovery": False,
+        }
+
+    required_counts = ("analysisFactQueryLimit", "analysisFactQueriesUsed")
+    invalid = [
+        key
+        for key in required_counts
+        if not isinstance(phase_contract.get(key), int)
+        or isinstance(phase_contract.get(key), bool)
+        or phase_contract[key] < int(key == "analysisFactQueryLimit")
+    ]
+    if not isinstance(phase_contract.get("analysisRecovery"), bool):
+        invalid.append("analysisRecovery")
+    if phase_contract.get("analysisFactBudgetVersion") != 1 or invalid:
+        raise ReportingError(
+            "report_phase_contract_invalid",
+            "analysis item v1 facts 子预算标量缺失或无效。",
+            details={
+                "invalidFields": invalid,
+                "version": phase_contract.get("analysisFactBudgetVersion"),
+            },
+        )
+    return {
+        "analysisFactBudgetVersion": 1,
+        "analysisFactQueryLimit": phase_contract["analysisFactQueryLimit"],
+        "analysisFactQueriesUsed": phase_contract["analysisFactQueriesUsed"],
+        "analysisRecovery": phase_contract["analysisRecovery"],
+    }
+
+
 def reporting_visualization_budget_from_run_context(
     run_context: RunContext | None,
 ) -> tuple[int, int]:
@@ -469,6 +530,29 @@ def reporting_visualization_usage_from_run_context(
     }
 
 
+def reporting_analysis_fact_usage_from_run_context(run_context: RunContext | None) -> int:
+    """读取当前分析项 facts 查询总数，fresh retry 必须继承已发生的额度。"""
+
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return 0
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
+    budgets = run_context.session_state.get(REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY)
+    stored = budgets.get(identity) if isinstance(budgets, Mapping) else None
+    stored = stored if isinstance(stored, Mapping) else {}
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    return (
+        count(binding.get(REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY))
+        + count(stored.get("queriesUsed"))
+        + count(stored.get("inFlightQueries"))
+    )
+
+
 def reporting_phase_from_run_context(run_context: RunContext | None) -> ReportingPhase | None:
     dependencies = (
         run_context.dependencies
@@ -539,6 +623,20 @@ def reporting_visualization_recovery_from_run_context(
     binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
     return (
         binding.get(REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY) is True
+        if isinstance(binding, Mapping)
+        else False
+    )
+
+
+def reporting_analysis_recovery_from_run_context(run_context: RunContext | None) -> bool:
+    dependencies = (
+        run_context.dependencies
+        if run_context is not None and isinstance(run_context.dependencies, Mapping)
+        else {}
+    )
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    return (
+        binding.get(REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY) is True
         if isinstance(binding, Mapping)
         else False
     )

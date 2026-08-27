@@ -6,7 +6,7 @@ import json
 import shlex
 import uuid
 from collections.abc import MutableMapping
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from agno.run import RunContext
@@ -155,17 +155,33 @@ class WorkspaceReportService:
         payload: dict[str, Any],
         run_context: RunContext | None,
     ) -> dict[str, Any]:
-        from .delivery import report_runtime
+        from .delivery.report_runtime import runtime as report_runtime
 
-        with open(report_runtime.__file__, "rb") as runtime_file:
-            content = runtime_file.read()
-        digest = hashlib.sha256(content).hexdigest()
-        remote = f"/tmp/workspace-report-runtime-{digest}.py"
+        package_root = Path(report_runtime.__file__).parent
+        runtime_files = [
+            (path.name, path.read_bytes()) for path in sorted(package_root.glob("*.py"))
+        ]
+        digest = hashlib.sha256()
+        for name, content in runtime_files:
+            digest.update(name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(content)
+        remote_root = f"/tmp/workspace-report-runtime-{digest.hexdigest()}"
+        remote_package = f"{remote_root}/report_runtime"
         async with self.service._async_client() as client:
             sandbox = await self.service._asandbox_for(client, _thread(run_context))
-            await sandbox.fs.upload_file(content, remote)
+            created = await sandbox.process.exec(
+                self.service._shell_command(f"mkdir -p -- {shlex.quote(remote_package)}"),
+                cwd=WORKSPACE_ROOT,
+                timeout=30,
+            )
+            if getattr(created, "exit_code", None) != 0:
+                raise WorkspaceError("报表运行时目录创建失败。")
+            for name, content in runtime_files:
+                await sandbox.fs.upload_file(content, f"{remote_package}/{name}")
             command = (
-                f"python {shlex.quote(remote)} {shlex.quote(action)} "
+                f"PYTHONPATH={shlex.quote(remote_root)} python -m report_runtime.cli "
+                f"{shlex.quote(action)} "
                 f"{shlex.quote(json.dumps(payload, ensure_ascii=False))}"
             )
             value = await sandbox.process.exec(

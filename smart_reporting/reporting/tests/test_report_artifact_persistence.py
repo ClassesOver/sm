@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from agno.run import RunContext
 from agno.workflow.types import StepOutput
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import create_async_engine
 
+from smart_reporting.database import create_agent_database
 from smart_reporting.reporting.delivery.publishing import (
     DOWNLOAD_GRANT_TTL,
     ReportArtifactPersistenceService,
@@ -31,8 +34,8 @@ from smart_reporting.reporting.tests.delivery_fakes import (
     InMemoryDownloadGrantRepository,
     InMemoryReportArtifactRepository,
 )
-from smart_reporting.reporting.workflow import runtime as runtime_module
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
+from smart_reporting.reporting.workflow.runtime import base as runtime_module
 from smart_reporting.task_execution import TaskState
 from smart_reporting.workspace import WorkspaceService
 
@@ -46,15 +49,62 @@ async def _content(stream) -> bytes:
     return b"".join([chunk async for chunk in stream])
 
 
-def _scope() -> ReportDownloadScope:
+def test_sql_publication_repositories_require_postgresql() -> None:
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+
+    for repository_type in (
+        SqlAlchemyDownloadGrantRepository,
+        SqlAlchemyReportArtifactRepository,
+    ):
+        with pytest.raises(ValueError, match="只支持 PostgreSQL"):
+            repository_type(engine)  # type: ignore[arg-type]
+
+
+def _scope(database: str = "odoo") -> ReportDownloadScope:
     return ReportDownloadScope(
-        database="odoo",
+        database=database,
         user_id="7",
         company_id="3",
         session_id="session",
         thread_id="thread",
         workflow_run_id="workflow-run",
     )
+
+
+def _integration_database_url() -> str:
+    value = os.getenv("REPORTING_TEST_DB_URL", "").strip()
+    if not value:
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 产物持久化集成测试。")
+    return value
+
+
+@pytest.fixture
+async def publication_database():
+    database = create_agent_database(_integration_database_url())
+    engine = database.async_engine
+    scope = _scope(f"integration-publication-{uuid4().hex}")
+    try:
+        yield engine, scope
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM report_artifact_chunks_v1 WHERE artifact_key IN "
+                    "(SELECT artifact_key FROM report_artifact_files_v1 "
+                    "WHERE database_name = :database_name)"
+                ),
+                {"database_name": scope.database},
+            )
+            await connection.execute(
+                text("DELETE FROM report_artifact_files_v1 WHERE database_name = :database_name"),
+                {"database_name": scope.database},
+            )
+            await connection.execute(
+                text("DELETE FROM report_download_grants_v2 WHERE database_name = :database_name"),
+                {"database_name": scope.database},
+            )
+        await database.async_engine.dispose()
+        database.sync_engine.dispose()
 
 
 def _checkpoint_with_traces(*traces: dict[str, Any]) -> dict[str, Any]:
@@ -119,16 +169,17 @@ class _Workspace:
 
 
 @pytest.mark.anyio
+@pytest.mark.integration
 async def test_sql_artifact_repository_streams_chunks_and_rolls_back_invalid_replacement(
-    tmp_path,
+    publication_database,
 ) -> None:
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'artifacts.db'}")
+    engine, scope = publication_database
     schema = SqlAlchemyDownloadGrantRepository(engine)
     repository = SqlAlchemyReportArtifactRepository(engine)
     content = b"persistent-report"
     artifact = StoredReportArtifact(
-        artifact_key="a" * 64,
-        scope=_scope(),
+        artifact_key=hashlib.sha256(scope.database.encode("utf-8")).hexdigest(),
+        scope=scope,
         report_id="report-1",
         revision=2,
         artifact="pdf",
@@ -137,19 +188,16 @@ async def test_sql_artifact_repository_streams_chunks_and_rolls_back_invalid_rep
         sha256=hashlib.sha256(content).hexdigest(),
         created_at=datetime.now(UTC),
     )
-    try:
-        await schema.create_schema()
-        await repository.put(artifact, _chunks(content[:4], content[4:]))
+    await schema.create_schema()
+    await repository.put(artifact, _chunks(content[:4], content[4:]))
 
-        assert await repository.get(artifact.artifact_key) == artifact
-        assert await _content(repository.stream(artifact.artifact_key)) == content
+    assert await repository.get(artifact.artifact_key) == artifact
+    assert await _content(repository.stream(artifact.artifact_key)) == content
 
-        with pytest.raises(ReportingError) as raised:
-            await repository.put(artifact, _chunks(b"changed"))
-        assert raised.value.code == "report_artifact_changed"
-        assert await _content(repository.stream(artifact.artifact_key)) == content
-    finally:
-        await engine.dispose()
+    with pytest.raises(ReportingError) as raised:
+        await repository.put(artifact, _chunks(b"changed"))
+    assert raised.value.code == "report_artifact_changed"
+    assert await _content(repository.stream(artifact.artifact_key)) == content
 
 
 @pytest.mark.anyio
@@ -252,19 +300,20 @@ async def test_download_grant_replaces_same_revision_and_rejects_stale_revision(
 
 
 @pytest.mark.anyio
+@pytest.mark.integration
 async def test_sql_grant_replacement_rolls_back_revocation_when_insert_fails(
-    tmp_path,
+    publication_database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'grants.db'}")
+    engine, scope = publication_database
     repository = SqlAlchemyDownloadGrantRepository(engine)
     grants = ReportDownloadGrantService(repository)
     monkeypatch.setattr(
         "smart_reporting.reporting.delivery.publishing.secrets.token_urlsafe",
-        lambda _size: "fixed-grant",
+        lambda _size: f"fixed-grant-{scope.database}",
     )
     values = {
-        "scope": _scope(),
+        "scope": scope,
         "report_id": "report-1",
         "revision": 1,
         "pdf_path": "reports/report.pdf",
@@ -274,72 +323,68 @@ async def test_sql_grant_replacement_rolls_back_revocation_when_insert_fails(
         "word_size": 4,
         "word_sha256": "b" * 64,
     }
-    try:
-        await repository.create_schema()
-        raw, _grant = await grants.issue(**values)
+    await repository.create_schema()
+    raw, _grant = await grants.issue(**values)
 
-        with pytest.raises(IntegrityError):
-            await grants.issue(**values)
+    with pytest.raises(IntegrityError):
+        await grants.issue(**values)
 
-        assert await grants.lookup(raw)
-    finally:
-        await engine.dispose()
+    assert await grants.lookup(raw)
 
 
 @pytest.mark.anyio
-async def test_sql_cleanup_removes_expired_grant_and_unreferenced_artifacts(tmp_path) -> None:
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cleanup.db'}")
+@pytest.mark.integration
+async def test_sql_cleanup_removes_expired_grant_and_unreferenced_artifacts(
+    publication_database,
+) -> None:
+    engine, scope = publication_database
     grants_repository = SqlAlchemyDownloadGrantRepository(engine)
     artifacts_repository = SqlAlchemyReportArtifactRepository(engine)
     grants = ReportDownloadGrantService(grants_repository)
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    scope = _scope()
     specs = (
         ReportArtifactSpec("pdf", "reports/report.pdf", 3, hashlib.sha256(b"pdf").hexdigest()),
         ReportArtifactSpec("word", "reports/report.docx", 4, hashlib.sha256(b"word").hexdigest()),
     )
-    try:
-        await grants_repository.create_schema()
-        for spec, content in zip(specs, (b"pdf", b"word"), strict=True):
-            artifact = StoredReportArtifact(
-                artifact_key=_artifact_key(scope, "report-1", 1, spec),
-                scope=scope,
-                report_id="report-1",
-                revision=1,
-                artifact=spec.artifact,
-                path=spec.path,
-                size=spec.size,
-                sha256=spec.sha256,
-                created_at=now,
-            )
-            await artifacts_repository.put(artifact, _chunks(content))
-        raw, _grant = await grants.issue(
+    await grants_repository.create_schema()
+    for spec, content in zip(specs, (b"pdf", b"word"), strict=True):
+        artifact = StoredReportArtifact(
+            artifact_key=_artifact_key(scope, "report-1", 1, spec),
             scope=scope,
             report_id="report-1",
             revision=1,
-            pdf_path=specs[0].path,
-            pdf_size=specs[0].size,
-            pdf_sha256=specs[0].sha256,
-            word_path=specs[1].path,
-            word_size=specs[1].size,
-            word_sha256=specs[1].sha256,
-            now=now,
+            artifact=spec.artifact,
+            path=spec.path,
+            size=spec.size,
+            sha256=spec.sha256,
+            created_at=now,
         )
+        await artifacts_repository.put(artifact, _chunks(content))
+    raw, _grant = await grants.issue(
+        scope=scope,
+        report_id="report-1",
+        revision=1,
+        pdf_path=specs[0].path,
+        pdf_size=specs[0].size,
+        pdf_sha256=specs[0].sha256,
+        word_path=specs[1].path,
+        word_size=specs[1].size,
+        word_sha256=specs[1].sha256,
+        now=now,
+    )
 
-        await grants_repository.cleanup_expired(now=now + timedelta(days=2))
+    await grants_repository.cleanup_expired(now=now + timedelta(days=2))
 
-        assert await grants.lookup(raw, now=now + timedelta(days=2))
-        for spec in specs:
-            assert await artifacts_repository.get(_artifact_key(scope, "report-1", 1, spec))
+    assert await grants.lookup(raw, now=now + timedelta(days=2))
+    for spec in specs:
+        assert await artifacts_repository.get(_artifact_key(scope, "report-1", 1, spec))
 
-        await grants_repository.cleanup_expired(now=now + timedelta(days=32))
+    await grants_repository.cleanup_expired(now=now + timedelta(days=32))
 
-        with pytest.raises(ReportingError, match="下载授权无效"):
-            await grants.lookup(raw, now=now + timedelta(days=32))
-        for spec in specs:
-            assert await artifacts_repository.get(_artifact_key(scope, "report-1", 1, spec)) is None
-    finally:
-        await engine.dispose()
+    with pytest.raises(ReportingError, match="下载授权无效"):
+        await grants.lookup(raw, now=now + timedelta(days=32))
+    for spec in specs:
+        assert await artifacts_repository.get(_artifact_key(scope, "report-1", 1, spec)) is None
 
 
 @pytest.mark.parametrize(

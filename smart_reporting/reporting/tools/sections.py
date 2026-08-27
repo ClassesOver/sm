@@ -1,0 +1,429 @@
+"""Reporting 章节、返工与图表登记能力。"""
+
+# mypy: disable-error-code="attr-defined"
+# 运行时由 toolkit 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
+
+from __future__ import annotations
+
+import hashlib
+import io
+from pathlib import PurePosixPath
+from typing import Any
+
+from agno.run import RunContext
+from PIL import Image, UnidentifiedImageError
+from pydantic import ValidationError
+
+from ...workspace import WorkspaceError, WorkspaceService
+from ..delivery.draft_v1 import (
+    ReportChartRegistration,
+    validate_report_draft_blocks,
+)
+from ..models import ReportingError
+from ..workflow.checkpoint import (
+    AnalysisReworkRequest,
+    FileIdentity,
+    SectionArtifact,
+    SectionWorkItem,
+)
+from .phase_output import REPORT_PHASE_OUTPUT_STATE_KEY
+from .validation import _stable_digest
+
+MAX_REPORT_CHART_BYTES = 10 * 1024 * 1024
+
+
+class RuntimeSectionsMixin:
+    async def _section_work_item(
+        self,
+        *,
+        scope: Any,
+        contract: dict[str, Any],
+    ) -> SectionWorkItem:
+        inline = contract.get("sectionWorkItem")
+        if isinstance(inline, dict):
+            return SectionWorkItem.model_validate(inline)
+        payload = await self._read_trusted_json(
+            thread_id=scope.thread_id,
+            identity=contract.get("sectionWorkItemFile"),
+            identity_code="report_section_work_item_changed",
+            structure_code="report_section_work_item_invalid",
+        )
+        return SectionWorkItem.model_validate(payload)
+
+    async def _section_evidence_read_rejection(
+        self,
+        *,
+        scope: Any,
+        path: Any,
+    ) -> dict[str, Any] | None:
+        try:
+            if self._active_reporting_phase(scope) != "section":
+                return None
+            _parameters, contract = self._phase_parameters(scope, "section")
+            work_item = await self._section_work_item(scope=scope, contract=contract)
+            normalized_path = WorkspaceService.normalize_path(path, allow_root=False)[0]
+            allowed_paths = {
+                evidence_file.path
+                for evidence in work_item.evidence
+                for evidence_file in evidence.evidence_files
+            }
+            if normalized_path in allowed_paths:
+                return None
+            # 章节 run 的事实边界就是当前 WorkItem 冻结的 evidenceFiles。即使模型猜到
+            # 其他章节或分析上下文的真实路径，也不能把那些内容重新带入当前章节历史。
+            return self._failure(
+                ReportingError(
+                    "report_section_evidence_path_forbidden",
+                    "section phase 只能读取当前 SectionWorkItem 授权的 evidence 文件。",
+                ),
+                retryable=False,
+            )
+        except (ReportingError, ValidationError, WorkspaceError) as error:
+            return self._failure(error)
+
+    async def _render_isolated_section(
+        self,
+        *,
+        scope: Any,
+        section_code: str,
+        blocks: list[dict[str, Any]],
+        state: dict[str, Any] | None,
+        run_context: RunContext | None,
+    ) -> dict[str, Any]:
+        parameters, contract = self._phase_parameters(scope, "section")
+        output_path = parameters.get("sectionOutputPath")
+        work_item = await self._section_work_item(scope=scope, contract=contract)
+        if not isinstance(output_path, str) or section_code != work_item.section_code:
+            raise ReportingError(
+                "report_section_order_invalid", "当前 Task 只能提交 SectionWorkItem 指定章节。"
+            )
+        artifact = SectionArtifact.model_validate({"sectionCode": section_code, "blocks": blocks})
+        # 章节一旦签发完成就可能被 durable checkpoint 直接恢复，因此必须在写文件和
+        # complete_section 之前拒绝服务端保留标记。模型仍可在当前 section run 内根据
+        # 明确回执重试，只通过 chartIds 登记图表。
+        validate_report_draft_blocks(artifact.blocks)
+        known_citations = {item.citation_id for item in work_item.citations}
+        known_charts = {item.chart_id for item in work_item.charts}
+        referenced_citations = {
+            citation_id for block in artifact.blocks for citation_id in block.citation_ids
+        }
+        referenced_charts = {chart_id for block in artifact.blocks for chart_id in block.chart_ids}
+        if referenced_citations - known_citations:
+            raise ReportingError(
+                "report_section_citation_unknown", "当前章节引用了 SectionWorkItem 外的 citation。"
+            )
+        if known_citations - referenced_citations:
+            raise ReportingError(
+                "report_section_citation_missing", "当前章节没有覆盖全部相关 evidence citation。"
+            )
+        if referenced_charts - known_charts:
+            raise ReportingError(
+                "report_section_chart_unknown", "当前章节引用了 SectionWorkItem 外的 chart。"
+            )
+        phase_state = state.get(REPORT_PHASE_OUTPUT_STATE_KEY) if isinstance(state, dict) else None
+        serialized = artifact.model_dump(mode="json", by_alias=True)
+        if isinstance(phase_state, dict):
+            if phase_state.get("phase") != "section" or phase_state.get("payload") != serialized:
+                raise ReportingError(
+                    "report_section_already_submitted", "当前独立章节 run 已提交，不能替换正文。"
+                )
+            identity = FileIdentity.model_validate(phase_state.get("artifactFile")).model_dump(
+                mode="json", by_alias=True
+            )
+        else:
+            identity = await self._write_phase_json(
+                scope=scope,
+                path=output_path,
+                payload=serialized,
+                run_context=run_context,
+            )
+            if state is not None:
+                state[REPORT_PHASE_OUTPUT_STATE_KEY] = {
+                    "phase": "section",
+                    "payload": serialized,
+                    "artifactFile": identity,
+                }
+        return await self._finish_phase_task(
+            scope=scope,
+            phase="section",
+            identity=identity,
+            summary=f"章节 {section_code} 已按冻结证据完成。",
+            state=state,
+            run_context=run_context,
+            extra={"sectionCode": section_code},
+        )
+
+    async def request_analysis_rework(
+        self,
+        analysisIds: list[str],
+        reason: str,
+        missingEvidence: list[str],
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        state = self._session_state(run_context)
+        try:
+            scope = await self.kernel.scope(run_context)
+            parameters, contract = self._phase_parameters(scope, "section")
+            output_path = parameters.get("reworkRequestPath")
+            work_item = await self._section_work_item(scope=scope, contract=contract)
+            if not isinstance(output_path, str) or not set(analysisIds).issubset(
+                work_item.analysis_ids
+            ):
+                raise ReportingError(
+                    "report_analysis_rework_invalid",
+                    "返工请求只能引用当前 SectionWorkItem 的 analysisIds。",
+                )
+            request = AnalysisReworkRequest(
+                sectionCode=work_item.section_code,
+                analysisIds=tuple(analysisIds),
+                reason=reason,
+                missingEvidence=tuple(missingEvidence),
+            )
+            serialized = request.model_dump(mode="json", by_alias=True)
+            phase_state = (
+                state.get(REPORT_PHASE_OUTPUT_STATE_KEY) if isinstance(state, dict) else None
+            )
+            if isinstance(phase_state, dict):
+                if (
+                    phase_state.get("phase") != "analysis_rework"
+                    or phase_state.get("payload") != serialized
+                ):
+                    raise ReportingError(
+                        "report_section_already_submitted",
+                        "当前章节 run 已产生阶段产物。",
+                    )
+                identity = FileIdentity.model_validate(phase_state.get("artifactFile")).model_dump(
+                    mode="json", by_alias=True
+                )
+            else:
+                identity = await self._write_phase_json(
+                    scope=scope,
+                    path=output_path,
+                    payload=serialized,
+                    run_context=run_context,
+                )
+                if state is not None:
+                    state[REPORT_PHASE_OUTPUT_STATE_KEY] = {
+                        "phase": "analysis_rework",
+                        "payload": serialized,
+                        "artifactFile": identity,
+                    }
+            return await self._finish_phase_task(
+                scope=scope,
+                phase="analysis_rework",
+                identity=identity,
+                summary=f"章节 {work_item.section_code} 已提交分析补证请求。",
+                state=state,
+                run_context=run_context,
+                extra={"sectionCode": work_item.section_code},
+            )
+        except (ReportingError, ValidationError, WorkspaceError) as error:
+            return self._failure(error)
+
+    async def _inspect_chart(
+        self,
+        *,
+        thread_id: str,
+        registration: ReportChartRegistration,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        source_path, remote = self.kernel.service.normalize_path(
+            registration.source_path, allow_root=False
+        )
+        async with self.kernel.service._async_client() as client:
+            sandbox = await self.kernel.service._asandbox_for(client, thread_id)
+            await self.kernel.service._avalidate_existing_path(sandbox, source_path)
+            info = await self.kernel.service._ainfo(sandbox, remote)
+            if not self.kernel.service._is_regular_file(info):
+                raise ReportingError("report_chart_source_invalid", "图表源路径必须指向普通文件。")
+            size = int(getattr(info, "size", 0) or 0)
+            if not 0 < size <= MAX_REPORT_CHART_BYTES:
+                raise ReportingError(
+                    "report_chart_source_invalid", "单张图表必须大于 0 且不超过 10 MiB。"
+                )
+            content = await self.kernel.service._adownload_file(
+                sandbox, remote, MAX_REPORT_CHART_BYTES
+            )
+        digest = hashlib.sha256(content).hexdigest()
+        try:
+            with Image.open(io.BytesIO(content)) as image:
+                image.load()
+                image_format = str(image.format or "").upper()
+                width, height = image.size
+                colors = image.convert("RGBA").getcolors(maxcolors=2)
+        except (UnidentifiedImageError, OSError) as error:
+            raise ReportingError(
+                "report_chart_source_invalid", "图表源文件无法解码或图片签名无效。"
+            ) from error
+        suffix = PurePosixPath(source_path).suffix.lower()
+        if image_format == "PNG" and suffix == ".png":
+            media_type = "image/png"
+            extension = ".png"
+        elif image_format == "JPEG" and suffix in {".jpg", ".jpeg"}:
+            media_type = "image/jpeg"
+            extension = ".jpg"
+        else:
+            raise ReportingError(
+                "report_chart_source_invalid", "图表仅允许签名与扩展名一致的 PNG 或 JPEG。"
+            )
+        if width < 1 or height < 1 or (colors is not None and len(colors) <= 1):
+            raise ReportingError("report_chart_blank", "图表图片完全空白，不能登记。")
+        warnings: list[dict[str, Any]] = []
+        if width < 800 or height < 450:
+            warnings.append(
+                {
+                    "code": "chart_low_resolution",
+                    "chartId": registration.chart_id,
+                    "width": width,
+                    "height": height,
+                    "message": "图表分辨率偏低，已进入发布质量审核。",
+                }
+            )
+        ratio = width / height
+        if ratio > 4 or ratio < 0.25:
+            warnings.append(
+                {
+                    "code": "chart_extreme_aspect_ratio",
+                    "chartId": registration.chart_id,
+                    "width": width,
+                    "height": height,
+                    "message": "图表宽高比极端，已进入发布质量审核。",
+                }
+            )
+        return (
+            {
+                **registration.model_dump(mode="json", by_alias=True),
+                "sourcePath": source_path,
+                "size": len(content),
+                "sha256": digest,
+                "format": image_format,
+                "mediaType": media_type,
+                "extension": extension,
+                "width": width,
+                "height": height,
+            },
+            warnings,
+        )
+
+    async def register_report_charts(
+        self,
+        charts: list[dict[str, Any]],
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        try:
+            scope = await self.kernel.scope(run_context)
+            self._require_phase_tool(
+                scope,
+                allowed=frozenset({"analysis"}),
+                tool_name="register_report_charts",
+                run_context=run_context,
+                task_kinds=frozenset({"visualization"}),
+            )
+            if self._active_reporting_task_kind(scope) != "visualization":
+                raise ReportingError(
+                    "report_phase_contract_invalid",
+                    "register_report_charts 只允许 visualization Task 调用。",
+                )
+            _parameters, phase_contract = self._phase_parameters(scope, "analysis")
+            raw_citation_ids = phase_contract.get("citationIds")
+            if (
+                not isinstance(raw_citation_ids, list)
+                or len(raw_citation_ids) != len(set(raw_citation_ids))
+                or any(not isinstance(item, str) or not item for item in raw_citation_ids)
+            ):
+                raise ReportingError(
+                    "report_phase_contract_invalid",
+                    "Analysis Task citation 注册表无效。",
+                )
+            citation_ids = tuple(raw_citation_ids)
+            parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
+            if len({item.chart_id for item in parsed}) != len(parsed):
+                raise ReportingError(
+                    "report_chart_registration_duplicate", "同一次登记的 chartId 不能重复。"
+                )
+            if any(set(item.citation_ids) - set(citation_ids) for item in parsed):
+                raise ReportingError("report_chart_citation_unknown", "图表引用了未注册 citation。")
+            durable = await self._durable_state(scope)
+            registry = {
+                item["chartId"]: item
+                for item in durable.payload.get("charts", ())
+                if isinstance(item, dict) and isinstance(item.get("chartId"), str)
+            }
+            warnings: list[dict[str, Any]] = []
+            registered: list[dict[str, Any]] = []
+            inspected: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+            for registration in parsed:
+                identity, chart_warnings = await self._inspect_chart(
+                    thread_id=scope.thread_id,
+                    registration=registration,
+                )
+                existing = registry.get(registration.chart_id)
+                if isinstance(existing, dict):
+                    immutable_file_keys = {
+                        "sourcePath",
+                        "size",
+                        "sha256",
+                        "format",
+                        "mediaType",
+                        "extension",
+                        "width",
+                        "height",
+                    }
+                    if any(existing.get(key) != identity.get(key) for key in immutable_file_keys):
+                        raise ReportingError(
+                            "report_chart_registration_conflict",
+                            f"chartId {registration.chart_id} 已绑定不同图表身份。",
+                        )
+                inspected.append((identity, chart_warnings))
+            registration_digest = _stable_digest([identity for identity, _ in inspected])
+            await self._apply_durable(
+                scope,
+                name="register_charts",
+                payload={"charts": [identity for identity, _ in inspected]},
+                command_id=f"charts:{registration_digest}",
+            )
+            for identity, chart_warnings in inspected:
+                warnings.extend(chart_warnings)
+                registered.append(
+                    {
+                        "chartId": identity["chartId"],
+                        "sourcePath": identity["sourcePath"],
+                        "size": identity["size"],
+                        "sha256": identity["sha256"],
+                        "format": identity["format"],
+                        "width": identity["width"],
+                        "height": identity["height"],
+                    }
+                )
+        except (ReportingError, ValidationError, WorkspaceError) as error:
+            return self._failure(error)
+        return {
+            "ok": True,
+            "status": "completed",
+            "charts": registered,
+            "warnings": warnings,
+            "mutation_sequence": getattr(scope.task, "mutation_sequence", 0),
+        }
+
+    async def render_report_section(
+        self,
+        sectionCode: str,
+        blocks: list[dict[str, Any]],
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        state = self._session_state(run_context)
+        try:
+            scope = await self.kernel.scope(run_context)
+            if self._active_reporting_phase(scope) != "section":
+                raise ReportingError(
+                    "report_phase_tool_forbidden",
+                    "render_report_section 只允许 section Task 调用。",
+                )
+            return await self._render_isolated_section(
+                scope=scope,
+                section_code=sectionCode,
+                blocks=blocks,
+                state=state,
+                run_context=run_context,
+            )
+        except (ReportingError, ValidationError, WorkspaceError) as error:
+            return self._failure(error)

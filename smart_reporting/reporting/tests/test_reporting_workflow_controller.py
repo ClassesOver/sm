@@ -91,6 +91,56 @@ class _ThreadOwnership:
         }
 
 
+class _ThreadOwnershipWithoutExecutionLock:
+    async def claim_workflow_thread(
+        self, *, thread_id: str, external_run_id: str, owner_user_id: str
+    ) -> bool:
+        return True
+
+    async def ensure_workflow_thread_owner(
+        self, *, thread_id: str, external_run_id: str, owner_user_id: str
+    ) -> bool:
+        return True
+
+    async def release_workflow_thread(
+        self, *, thread_id: str, external_run_id: str, owner_user_id: str
+    ) -> bool:
+        return True
+
+    async def get_workflow_thread_owner(self, thread_id: str):
+        return None
+
+    async def is_workflow_run_active(self, external_run_id: str) -> bool:
+        return False
+
+
+@pytest.mark.anyio
+async def test_controller_fails_closed_when_execution_lock_is_missing() -> None:
+    run_calls = 0
+
+    class Workflow:
+        id = "enterprise-reporting-workflow-v1"
+
+        async def arun(self, *_args, **_kwargs):
+            nonlocal run_calls
+            run_calls += 1
+            return SimpleNamespace(status=RunStatus.completed)
+
+    controller = ReportWorkflowController(
+        lambda: Workflow(),
+        thread_ownership=_ThreadOwnershipWithoutExecutionLock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(
+        ReportingError,
+        match="Reporting runtime 缺少 workflow 执行锁",
+    ) as error:
+        await controller.start(ReportingWorkflowInput(prompt="生成报表"), _context())
+
+    assert error.value.code == "report_workflow_runtime_invalid"
+    assert run_calls == 0
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("workflow_status", "expected_status"),

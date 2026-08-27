@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import json
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -22,25 +24,59 @@ from smart_reporting.reporting.hospital_operation.detailed_analysis import (
 from smart_reporting.reporting.hospital_operation.outline import ReportOutlineProposal
 from smart_reporting.reporting.instructions import (
     REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
+    REPORT_VISUALIZATION_AGENT_INSTRUCTIONS,
 )
 from smart_reporting.reporting.model_policy import (
     ReportingThinkingProfile,
     reporting_thinking_profile_from_model,
 )
-from smart_reporting.reporting.workflow import runtime as reporting_runtime
 from smart_reporting.reporting.workflow.checkpoint import MetricDefinition
 from smart_reporting.reporting.workflow.query_pipeline import _has_complete_period_filter
 from smart_reporting.reporting.workflow.runtime import (
-    _PLANNER_DISPLAY_NAMES,
     REPORT_WORKFLOW_INPUT_STATE_KEY,
+    ReportWorkflowRuntime,
+)
+from smart_reporting.reporting.workflow.runtime import planning as reporting_runtime
+from smart_reporting.reporting.workflow.runtime.analysis import _coding_detailed_analysis_plan
+from smart_reporting.reporting.workflow.runtime.datasets import _requirement_measure_field_refs
+from smart_reporting.reporting.workflow.runtime.models import (
     AnalysisBundle,
     DataUnderstandingPlan,
-    ReportWorkflowRuntime,
-    _analysis_quality_warnings,
-    _coding_detailed_analysis_plan,
-    _normalize_requirement_periods,
-    _requirement_measure_field_refs,
 )
+from smart_reporting.reporting.workflow.runtime.planning import _PLANNER_DISPLAY_NAMES
+from smart_reporting.reporting.workflow.runtime.publication import (
+    _analysis_quality_warnings,
+)
+from smart_reporting.reporting.workflow.runtime.validation import _normalize_requirement_periods
+
+
+def test_workflow_runtime_uses_package_boundaries() -> None:
+    """运行时入口和规划模型必须来自拆分后的实际模块。"""
+    assert ReportWorkflowRuntime.__module__ == ("smart_reporting.reporting.workflow.runtime.facade")
+    assert AnalysisBundle.__module__ == "smart_reporting.reporting.workflow.runtime.models"
+    assert DataUnderstandingPlan.__module__ == ("smart_reporting.reporting.workflow.runtime.models")
+
+
+def test_runtime_capability_modules_do_not_import_facade() -> None:
+    """能力模块只能依赖中立层，Facade 只负责最终组合。"""
+    runtime_dir = Path(__file__).parents[1] / "workflow" / "runtime"
+    capability_modules = (
+        "validation.py",
+        "planning.py",
+        "datasets.py",
+        "analysis.py",
+        "sections.py",
+        "publication.py",
+    )
+    for filename in capability_modules:
+        tree = ast.parse((runtime_dir / filename).read_text(encoding="utf-8"))
+        assert all(
+            not isinstance(node, ast.ImportFrom) or node.module != "facade"
+            for node in ast.walk(tree)
+        ), f"{filename} 不得运行时导入 facade"
+    assert _normalize_requirement_periods.__module__ == (
+        "smart_reporting.reporting.workflow.runtime.validation"
+    )
 
 
 def metric_definition(*, code: str, definition: str, period_basis: str) -> MetricDefinition:
@@ -246,11 +282,13 @@ def test_coding_analysis_plan_projects_only_unfinished_items() -> None:
                     "managementQuestion": f"分析 {analysis_id}",
                     "primaryMetricFamily": "收入",
                     "datasetIds": ["dataset-1"],
-                    "fields": [],
-                    "metrics": [],
+                    "fields": ["income_amount"],
+                    "metrics": ["收入"],
                     "periods": [],
-                    "actions": ["复算"],
+                    "organizationGrain": ["department"],
+                    "actions": ["趋势", "复算"],
                     "evidenceSummary": "保存证据",
+                    "limitations": ["月度数据不完整"],
                     "suggestedSection": "overview",
                     "completionConditions": ["完成"],
                 }
@@ -265,6 +303,18 @@ def test_coding_analysis_plan_projects_only_unfinished_items() -> None:
     )
 
     assert [item["analysisId"] for item in projected["analyses"]] == ["analysis_002"]
+    assert projected["analyses"][0] == {
+        "analysisId": "analysis_002",
+        "domain": "income",
+        "step": "分析 analysis_002",
+        "primaryMetricFamily": "收入",
+        "datasetIds": ["dataset-1"],
+        "fields": ["income_amount"],
+        "metrics": ["收入"],
+        "organizationGrain": ["department"],
+        "actions": ["趋势", "复算"],
+        "limitations": ["月度数据不完整"],
+    }
 
 
 def test_outline_section_can_reference_multiple_atomic_analysis_items() -> None:
@@ -401,6 +451,15 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "固定事实足够时不得创建脚本或 evidence 文件" in instructions
     assert "evidencePaths 传空数组" in instructions
     assert "deterministicFactFile 直接冻结为 evidence" in instructions
+    assert "首次任务默认只调用一次 query_analysis_facts" in instructions
+    assert (
+        "currentAnalysis 已固定 fields、metrics、organizationGrain、actions 和 limitations"
+        in instructions
+    )
+    assert "不得为探索 facts 结构" in instructions
+    assert "固定事实足够时立即调用 complete_analysis_item" in instructions
+    assert "truncated 或当前管理问题缺少必需事实" in instructions
+    assert "不得猜测、补齐或替代缺失事实" in instructions
     assert "不执行摘要百分比启发式匹配" in instructions
     assert "脚本必须从工作区根目录执行" in instructions
     assert "python3 <analysisOutputRoot>/script.py" in instructions
@@ -408,6 +467,18 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "不得猜测 /workspace" in instructions
     assert "不得用 pwd、ls、find 或 wc 探测" in instructions
     assert "不要给成功的脚本执行附加探测命令" in instructions
+
+
+def test_visualization_instructions_fail_closed_for_untrusted_or_missing_chart_data() -> None:
+    instructions = "\n".join(REPORT_VISUALIZATION_AGENT_INSTRUCTIONS)
+
+    assert "未签发文件" in instructions
+    assert "缺失、为空或无法解析" in instructions
+    assert "跳过对应图表" in instructions
+    assert "结构化诊断" in instructions
+    assert "不得让单张图表失败终止整批脚本" in instructions
+    assert "先规范化为可迭代的空行集合" in instructions
+    assert "查询结果为 None 时必须使用空行集合" in instructions
 
 
 def test_planner_validation_runs_inside_agent_retry_boundary() -> None:

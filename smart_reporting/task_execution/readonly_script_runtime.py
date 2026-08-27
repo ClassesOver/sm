@@ -127,7 +127,11 @@ def main(argv: list[str] | None = None) -> int:
     if values.shell_command is not None:
         if values.script is not None or values.args:
             raise RuntimeError("shell command 参数无效。")
-        restrict_writes([str(Path(root).resolve(strict=True)) for root in values.write_root])
+        # Daytona 为每个 thread 提供独立 sandbox；当前 Docker runner 宿主未启用
+        # Landlock，若在这里安装规则会在业务脚本启动前以 ENOSYS 失败。保留
+        # write-root 参数和其余运行时校验以维持上层命令契约，但暂不启用进程内
+        # 文件写入白名单。重新启用时必须先在 managed session 验证 Landlock ABI。
+        # restrict_writes([str(Path(root).resolve(strict=True)) for root in values.write_root])
         os.execv(values.shell, [values.shell, "-l", "-c", values.shell_command])
         return 127
     if values.script is None:
@@ -135,8 +139,10 @@ def main(argv: list[str] | None = None) -> int:
     script = Path(values.script)
     if not script.is_absolute() or script.is_symlink() or not script.is_file():
         raise RuntimeError("validator 脚本路径无效。")
-    roots = [str(Path(root).resolve(strict=True)) for root in values.write_root]
-    restrict_writes(roots)
+    # 与 shell-command 分支保持一致：当前由 Daytona sandbox 提供执行隔离，
+    # 不将不可用的 Landlock 作为 validator 启动前置条件。
+    # roots = [str(Path(root).resolve(strict=True)) for root in values.write_root]
+    # restrict_writes(roots)
     os.execv(
         sys.executable,
         [sys.executable, "-I", "-B", str(script), *values.args],

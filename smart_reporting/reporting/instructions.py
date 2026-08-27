@@ -90,6 +90,14 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
         "完成事实、摘要、evidence 和引用绑定后，最后且只调用一次 complete_analysis_item。"
     ),
     (
+        "首次任务默认只调用一次 query_analysis_facts，读取当前原子管理问题所需的最小固定事实；"
+        "currentAnalysis 已固定 fields、metrics、organizationGrain、actions 和 limitations，"
+        "须据此构造首查，不得为探索 facts 结构、重复验证任务 JSON 已投影的元数据或空命中反复查询。"
+        "只有首个回执 truncated 或当前管理问题缺少必需事实时，才按缺口精确追加查询或读取实际使用的 Profile；"
+        "不得猜测、补齐或替代缺失事实。"
+        "固定事实足够时立即调用 complete_analysis_item。"
+    ),
+    (
         "ProfileCoverage 由服务端确定性验证。只有结论实际使用某个 Profile 分布时才调用 query_profile，"
         "并把返回的 receiptId 显式提交到 profileReadReceiptIds；不得因 Dataset 相同批量绑定未使用回执。"
     ),
@@ -134,9 +142,22 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "重新拼接 evidence/facts，不得构造 analysis/evidence，也不得通过 cd 改变路径基准。"
     ),
     (
+        "任务 JSON 的 analysisCitationIds 是图表 citationId 的唯一受信来源，按 analysisId 直接使用其中"
+        "列出的值；不得猜测、重建，不得用 read_file、terminal 或目录探测寻找 citationId。"
+        "若需要读取冻结事实，只调用 query_analysis_facts；evidence 文件仅由签发图表脚本按"
+        "analyses[].evidenceFiles[].path 逐字读取。"
+    ),
+    (
         "deterministicFactFiles 中每个文件的根节点直接是该 analysis 的 facts 对象，comparisons、metrics、"
         "correlations 等字段都位于根节点；只有 query_analysis_facts 的可视化聚合回执才使用 analyses[] 包装。"
         '读取单个文件时禁止假设 facts["analyses"]。'
+    ),
+    (
+        "脚本只能依赖 query_analysis_facts 回执或任务 JSON 签发的 deterministicFactFiles/evidenceFiles 路径；"
+        "禁止读取未签发文件、外部绝对路径或硬编码字典。事实文件、分类分组或字段缺失、为空或无法解析时，"
+        "必须跳过对应图表并输出结构化诊断；任何查询结果在循环前先规范化为可迭代的空行集合，"
+        "查询结果为 None 时必须使用空行集合，不能继续访问其 rows()；"
+        "不得对可能为空的对象调用 .rows()，也不得让单张图表失败终止整批脚本。"
     ),
     (
         "根据批准提纲和真实数据选择图表，不设固定数量或类型。图表源文件定稿并完成必要视觉检查后，"
@@ -150,7 +171,8 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "创建或修改图表脚本只调用 write_analysis_files 的公开扁平 schema；首次创建使用 "
         "operation=create_file、path 和 content 一次提交完整脚本，不调用任何未注册的底层"
         "文件工具名，也不增加 arguments 包装。脚本和图表只写入任务 JSON 中 visualizationWorkspace"
-        "签发的 scriptPath 和 chartOutputRoot，并从工作区根目录执行 python3 <scriptPath>。"
+        "签发的 scriptPath 和 chartOutputRoot；服务端提交脚本后，terminal 仅可执行 python3 <scriptPath>，"
+        "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。"
     ),
     (
         "汇总全部分析形成 ReportBrief、共享指标口径和全局 Warning，最后且只调用一次"

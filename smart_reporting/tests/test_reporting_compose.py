@@ -27,9 +27,9 @@ def test_reporting_compose_disables_fg_data_profiling_analytics():
         Loader=yaml.BaseLoader,
     )
 
-    assert compose["services"]["reporting-os"]["environment"][
-        "YDATA_PROFILING_NO_ANALYTICS"
-    ] == "true"
+    assert (
+        compose["services"]["reporting-os"]["environment"]["YDATA_PROFILING_NO_ANALYTICS"] == "true"
+    )
 
 
 def test_smart_reporting_readme_uses_existing_database_service() -> None:
@@ -153,7 +153,43 @@ def test_daytona_runner_waits_for_api_health_without_reverse_dependency() -> Non
     assert runner["depends_on"]["api"]["condition"] == "service_healthy"
 
 
-def test_daytona_env_init_prepares_dex_bind_mount_for_image_user(tmp_path: Path) -> None:
+def test_daytona_compose_uses_named_volumes_for_selected_persistent_services() -> None:
+    repository_root = Path(__file__).parents[2]
+    compose = yaml.load(
+        (repository_root / "docker/docker-compose.yaml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+
+    assert {volume_name: volume["name"] for volume_name, volume in compose["volumes"].items()} == {
+        "db": "${DAYTONA_VOLUME_PREFIX:-daytona_}db",
+        "redis": "${DAYTONA_VOLUME_PREFIX:-daytona_}redis",
+        "minio": "${DAYTONA_VOLUME_PREFIX:-daytona_}minio",
+        "dex": "${DAYTONA_VOLUME_PREFIX:-daytona_}dex",
+    }
+    for service_name, volume_name in {
+        "db": "db",
+        "redis": "redis",
+        "minio": "minio",
+        "dex": "dex",
+    }.items():
+        assert any(
+            mount.startswith(f"{volume_name}:")
+            for mount in compose["services"][service_name]["volumes"]
+        )
+
+    assert "./data/runner:/home/daytona/runner" in compose["services"]["runner"]["volumes"]
+    assert "./data/registry:/var/lib/registry" in compose["services"]["registry"]["volumes"]
+    assert all(
+        f"./data/{service_name}" not in mount
+        for service_name in ("db", "redis", "minio", "dex")
+        for service in compose["services"].values()
+        for mount in service.get("volumes", [])
+        if isinstance(mount, str)
+    )
+    assert "dex:/var/dex" in compose["services"]["env-init"]["volumes"]
+
+
+def test_daytona_env_init_prepares_dex_named_volume_for_image_user(tmp_path: Path) -> None:
     repository_root = Path(__file__).parents[2]
     scripts_dir = tmp_path / "scripts"
     docker_dir = tmp_path / "docker"
@@ -166,6 +202,7 @@ def test_daytona_env_init_prepares_dex_bind_mount_for_image_user(tmp_path: Path)
     (docker_dir / ".env.example").write_bytes(
         (repository_root / "docker/.env.example").read_bytes()
     )
+    dex_volume = tmp_path / "dex-volume"
     chown_log = tmp_path / "chown.log"
     commands = {
         "id": '#!/bin/sh\nprintf "0\\n"\n',
@@ -189,16 +226,10 @@ def test_daytona_env_init_prepares_dex_bind_mount_for_image_user(tmp_path: Path)
             "HOST_UID": "1000",
             "HOST_GID": "1000",
             "CHOWN_LOG": str(chown_log),
+            "DEX_DATA_DIR": str(dex_volume),
         },
     )
 
-    data_root = docker_dir / "data"
-    assert {path.name for path in data_root.iterdir()} == {
-        "db",
-        "redis",
-        "registry",
-        "minio",
-        "runner",
-        "dex",
-    }
-    assert f"-R 1001:1001 {data_root / 'dex'}" in chown_log.read_text(encoding="utf-8")
+    assert dex_volume.is_dir()
+    assert {path.name for path in (docker_dir / "data").iterdir()} == {"runner", "registry"}
+    assert f"-R 1001:1001 {dex_volume}" in chown_log.read_text(encoding="utf-8")

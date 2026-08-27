@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import delete, update
 
 from smart_reporting.database import create_agent_database
 from smart_reporting.reporting.workflow import state as reporting_state_module
@@ -34,6 +36,20 @@ def apply_phase(state: ReportingRunState, name: str) -> ReportingRunState:
         {"name": name, "commandId": f"{name}-{state.state_version}"},
         state.state_version,
     ).state
+
+
+def test_repository_requires_postgresql() -> None:
+    database = SimpleNamespace(db_engine=SimpleNamespace(dialect=SimpleNamespace(name="sqlite")))
+
+    with pytest.raises(ValueError, match="只支持 PostgreSQL"):
+        ReportingStateRepository(database)  # type: ignore[arg-type]
+
+
+def _integration_database_url() -> str:
+    value = os.getenv("REPORTING_TEST_DB_URL", "").strip()
+    if not value:
+        pytest.skip("未设置 REPORTING_TEST_DB_URL，跳过 PostgreSQL 持久化集成测试。")
+    return value
 
 
 @pytest.mark.parametrize(
@@ -490,15 +506,51 @@ def test_duplicate_section_completion_is_idempotent_only_for_same_artifact():
 
 
 @pytest.fixture
-async def state_repository(tmp_path):
-    database = create_agent_database(f"sqlite:///{tmp_path / 'reporting-state.db'}")
+async def state_repository():
+    database = create_agent_database(_integration_database_url())
     repository = ReportingStateRepository(database.async_db)
-    yield repository
-    await database.async_engine.dispose()
-    database.sync_engine.dispose()
+    try:
+        await repository.initialize()
+        async with database.async_engine.begin() as connection:
+            await connection.execute(
+                delete(repository.command_receipts).where(
+                    repository.command_receipts.c.report_run_id == "workflow-run-1"
+                )
+            )
+            await connection.execute(
+                delete(repository.states).where(
+                    repository.states.c.report_run_id == "workflow-run-1"
+                )
+            )
+            await connection.execute(
+                delete(repository.workflow_thread_owners).where(
+                    repository.workflow_thread_owners.c.thread_id == "thread-1"
+                )
+            )
+        yield repository
+    finally:
+        async with database.async_engine.begin() as connection:
+            await connection.execute(
+                delete(repository.command_receipts).where(
+                    repository.command_receipts.c.report_run_id == "workflow-run-1"
+                )
+            )
+            await connection.execute(
+                delete(repository.states).where(
+                    repository.states.c.report_run_id == "workflow-run-1"
+                )
+            )
+            await connection.execute(
+                delete(repository.workflow_thread_owners).where(
+                    repository.workflow_thread_owners.c.thread_id == "thread-1"
+                )
+            )
+        await database.async_engine.dispose()
+        database.sync_engine.dispose()
 
 
 @pytest.mark.anyio
+@pytest.mark.integration
 async def test_repository_create_cas_idempotency_and_conflict(state_repository):
     created = await state_repository.create(initial_state())
     assert created.state_version == 0
@@ -525,6 +577,7 @@ async def test_repository_create_cas_idempotency_and_conflict(state_repository):
 
 
 @pytest.mark.anyio
+@pytest.mark.integration
 async def test_repository_rejects_command_id_rebound_to_other_payload(state_repository):
     created = await state_repository.create(initial_state())
     await state_repository.apply(
@@ -550,6 +603,7 @@ async def test_repository_rejects_command_id_rebound_to_other_payload(state_repo
 
 
 @pytest.mark.anyio
+@pytest.mark.integration
 async def test_repository_keeps_idempotency_after_inline_command_cache_eviction(
     state_repository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -579,6 +633,7 @@ async def test_repository_keeps_idempotency_after_inline_command_cache_eviction(
 
 
 @pytest.mark.anyio
+@pytest.mark.integration
 async def test_repository_rejects_evicted_command_id_rebound_to_other_payload(
     state_repository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -604,6 +659,7 @@ async def test_repository_rejects_evicted_command_id_rebound_to_other_payload(
 
 
 @pytest.mark.anyio
+@pytest.mark.integration
 async def test_repository_rejects_concurrent_workflow_execution_lock(state_repository) -> None:
     async with state_repository.workflow_execution_lock("external-run-1"):
         assert await state_repository.is_workflow_run_active("external-run-1")
@@ -616,6 +672,7 @@ async def test_repository_rejects_concurrent_workflow_execution_lock(state_repos
 
 
 @pytest.mark.anyio
+@pytest.mark.integration
 async def test_repository_persists_workflow_thread_owner_across_instances(
     state_repository,
 ) -> None:
@@ -636,6 +693,7 @@ async def test_repository_persists_workflow_thread_owner_across_instances(
 
 
 @pytest.mark.anyio
+@pytest.mark.integration
 async def test_repository_only_releases_matching_workflow_thread_owner(
     state_repository,
 ) -> None:
@@ -655,6 +713,7 @@ async def test_repository_only_releases_matching_workflow_thread_owner(
 
 
 @pytest.mark.anyio
+@pytest.mark.integration
 async def test_analysis_facts_survive_repository_restart(state_repository):
     state = await state_repository.create(initial_state())
     for command in (
@@ -771,6 +830,7 @@ def test_profile_receipt_reuses_stable_identity_when_purpose_changes() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.integration
 async def test_repository_rejects_legacy_schema_row(state_repository):
     state = await state_repository.create(initial_state())
     async with state_repository.db.db_engine.begin() as connection:  # type: ignore[attr-defined]

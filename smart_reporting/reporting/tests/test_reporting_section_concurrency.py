@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
+from smart_reporting.reporting.delivery.artifacts_v1 import Citation
 from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
+from smart_reporting.reporting.hospital_operation.detailed_analysis import (
+    DetailedAnalysisItem,
+    DetailedAnalysisPlan,
+)
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
@@ -26,9 +32,10 @@ from smart_reporting.reporting.workflow.checkpoint import (
 from smart_reporting.reporting.workflow.runtime import (
     REPORT_WORKFLOW_RESULT_STATE_KEY,
     ReportWorkflowRuntime,
-    _run_bounded,
-    _run_pending_analysis_items,
 )
+from smart_reporting.reporting.workflow.runtime import analysis as runtime_analysis
+from smart_reporting.reporting.workflow.runtime.analysis import _run_pending_analysis_items
+from smart_reporting.reporting.workflow.runtime.sections import _run_bounded
 
 
 @pytest.mark.anyio
@@ -194,6 +201,144 @@ async def test_run_pending_analysis_items_finishes_siblings_before_raising_failu
         )
 
     assert set(observed) == {"analysis_001", "analysis_002", "analysis_003"}
+
+
+@pytest.mark.anyio
+async def test_visualization_retry_projects_citation_ids_into_each_worker_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = DetailedAnalysisPlan(
+        datasetIds=("dataset-income",),
+        analyses=(
+            DetailedAnalysisItem(
+                analysisId="analysis_001",
+                domain="income",
+                managementQuestion="收入趋势",
+                primaryMetricFamily="收入",
+                datasetIds=("dataset-income",),
+                fields=(),
+                metrics=(),
+                periods=(),
+                actions=("趋势",),
+                evidenceSummary="固定事实",
+                suggestedSection="收入",
+                completionConditions=("完成",),
+            ),
+        ),
+    )
+    checkpoint_before_visualization = checkpoint(completed=(), pending=()).model_copy(
+        update={
+            "phase": "analysis",
+            "report_brief": None,
+            "evidence_manifest": None,
+            "analysis_manifest_file": None,
+        }
+    )
+    fact_file = FileIdentity(path="facts/analysis_001.json", size=1, sha256="f" * 64)
+    durable = SimpleNamespace(
+        payload={
+            "completedAnalysisIds": ["analysis_001"],
+            "analysisItems": {},
+            "charts": [],
+        }
+    )
+    task_runner = SimpleNamespace(
+        repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
+        start=AsyncMock(),
+        run=AsyncMock(
+            side_effect=(
+                ReportingError(
+                    "report_visualization_tool_budget_exhausted",
+                    "当前可视化 Task 已达到工具调用上限。",
+                ),
+                RuntimeError("stop after visualization retry"),
+            )
+        ),
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.analysis_concurrency = 1
+    runtime.report_worker = SimpleNamespace(id="report-worker")
+    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=durable))
+    runtime.task_runner = task_runner
+    runtime._scope = lambda _run_context: {
+        "externalRunId": "run-1",
+        "threadId": "thread-1",
+        "userId": "user-1",
+    }
+    runtime._envelope = lambda _run_context: SimpleNamespace(report_goal="经营分析")
+    runtime._state = lambda _run_context: {"report_outline": {"title": "经营分析"}}
+    runtime._worker_thinking_effort = lambda *, retry: "off"
+
+    async def prepare_facts(**_kwargs: Any) -> dict[str, FileIdentity]:
+        return {"analysis_001": fact_file}
+
+    async def run_analysis_item(*_args: Any, **_kwargs: Any) -> ReportingCheckpoint:
+        return checkpoint_before_visualization
+
+    async def current_checkpoint(*_args: Any, **_kwargs: Any) -> ReportingCheckpoint:
+        return checkpoint_before_visualization
+
+    async def persist_checkpoint(
+        _run_context: Any, stored: ReportingCheckpoint
+    ) -> ReportingCheckpoint:
+        return stored
+
+    runtime._prepare_deterministic_analysis_facts = prepare_facts
+    runtime._run_analysis_item_task = run_analysis_item
+    runtime._current_reporting_checkpoint = current_checkpoint
+    runtime._persist_reporting_checkpoint = persist_checkpoint
+    monkeypatch.setattr(runtime_analysis, "MAX_REPORT_SECTION_PHASE_ATTEMPTS", 2)
+
+    with pytest.raises(RuntimeError, match="stop after visualization retry"):
+        await runtime._run_analysis_phase(
+            SimpleNamespace(run_id="run-1"),
+            checkpoint=checkpoint_before_visualization,
+            revision=1,
+            sandbox_id="sandbox-1",
+            validation_context_file=FileIdentity(
+                path="validation/context.json", size=1, sha256="b" * 64
+            ),
+            detailed_plan=plan,
+            dataset_handles=(),
+            lineage=(),
+            citation_bindings=(
+                Citation(
+                    citationId="citation-income",
+                    datasetId="dataset-income",
+                    requirementId="requirement-income",
+                    snapshotHash="c" * 64,
+                ),
+            ),
+            analysis_context_file=FileIdentity(
+                path="analysis/context.json", size=1, sha256="a" * 64
+            ),
+            feedback=None,
+            rework_request=None,
+        )
+
+    assert task_runner.start.await_count == 2
+    instructions = [json.loads(call.args[1]) for call in task_runner.start.await_args_list]
+    expected_mapping = {"analysis_001": ["citation-income"]}
+    assert [item["analysisCitationIds"] for item in instructions] == [
+        expected_mapping,
+        expected_mapping,
+    ]
+    assert [item["visualizationWorkspace"]["allowedTerminalCommand"] for item in instructions] == [
+        "python3 报表/智能分析/run-1/analysis/charts.py",
+        "python3 报表/智能分析/run-1/analysis/charts.py",
+    ]
+    expected_fact_files = {
+        "analysis_001": {"path": "facts/analysis_001.json", "size": 1, "sha256": "f" * 64}
+    }
+    assert [item["deterministicFactFiles"] for item in instructions] == [
+        expected_fact_files,
+        expected_fact_files,
+    ]
+    assert all("citationRegistry" not in item for item in instructions)
+    assert all("snapshotHash" not in item for item in instructions)
+    contracts = [call.kwargs["acceptance_contract"] for call in task_runner.start.await_args_list]
+    phase_contracts = [item["requirements"][0]["parameters"]["phaseContract"] for item in contracts]
+    assert [item["visualizationRecovery"] for item in phase_contracts] == [False, True]
 
 
 def test_merge_reporting_checkpoints_keeps_out_of_order_section_results() -> None:

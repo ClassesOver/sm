@@ -223,6 +223,7 @@ async def test_real_agno_workflow_persists_and_reads_reporting_run() -> None:
 
     workflow = Workflow(
         id="enterprise-reporting-workflow-v1",
+        name="集成测试报表工作流",
         db=database.async_db,
         steps=[Step(name="integration-step", executor=execute)],
     )

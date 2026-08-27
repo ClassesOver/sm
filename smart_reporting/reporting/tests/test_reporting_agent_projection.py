@@ -32,6 +32,9 @@ from smart_reporting.reporting.agent import (
 from smart_reporting.reporting.instructions import build_report_agent_instructions
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
+    REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY,
+    REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+    REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY,
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
@@ -293,6 +296,63 @@ def test_visualization_exploration_tools_are_hidden_after_their_subbudget() -> N
     assert [item["function"]["name"] for item in projected] == ["terminal"]
 
 
+def test_analysis_item_hides_facts_tool_after_its_subbudget() -> None:
+    context = RunContext(
+        run_id="run-analysis-facts-limit",
+        session_id="session-analysis-facts-limit",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "analysis-facts-limit",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
+                REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY: 2,
+                REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY: 2,
+            }
+        },
+    )
+
+    with bind_reporting_run_context(context):
+        projected = _phase_filtered_report_tools(
+            [],
+            [
+                {"type": "function", "function": {"name": "query_analysis_facts"}},
+                {"type": "function", "function": {"name": "complete_analysis_item"}},
+            ],
+        )
+
+    assert [item["function"]["name"] for item in projected] == ["complete_analysis_item"]
+
+
+def test_analysis_recovery_projection_keeps_only_completion() -> None:
+    context = RunContext(
+        run_id="run-analysis-recovery",
+        session_id="session-analysis-recovery",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
+                REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY: True,
+            }
+        },
+    )
+    tools = [
+        {"type": "function", "function": {"name": name}}
+        for name in (
+            "query_analysis_facts",
+            "query_profile",
+            "write_analysis_files",
+            "complete_analysis_item",
+        )
+    ]
+
+    with bind_reporting_run_context(context):
+        projected = _phase_filtered_report_tools([], tools)
+
+    assert [item["function"]["name"] for item in projected] == ["complete_analysis_item"]
+
+
 @pytest.mark.parametrize(
     ("phase", "task_kind", "keeps_skills"),
     [
@@ -425,6 +485,9 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
         assert "不得构造 analysis/evidence" in instructions
         assert '禁止假设 facts["analyses"]' in instructions
         assert "visualizationWorkspace" in instructions
+        assert "analysisCitationIds" in instructions
+        assert "不得用 read_file、terminal 或目录探测寻找 citationId" in instructions
+        assert "仅可执行 python3 <scriptPath>" in instructions
 
 
 def test_analysis_projection_keeps_compact_profile_receipt_identities() -> None:
@@ -1020,6 +1083,68 @@ async def test_complete_analysis_item_is_exempt_from_analysis_tool_budget(monkey
 
 
 @pytest.mark.anyio
+async def test_analysis_fact_query_subbudget_stops_before_third_call() -> None:
+    run_context = RunContext(
+        run_id="run-analysis-fact-budget",
+        session_id="session-analysis-fact-budget",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "analysis-fact-budget",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
+                REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY: 2,
+            }
+        },
+    )
+    calls = 0
+
+    def facts() -> dict[str, bool]:
+        nonlocal calls
+        calls += 1
+        return {"ok": True}
+
+    assert await normalize_reporting_tool_arguments(
+        run_context, "query_analysis_facts", facts, {}
+    ) == {"ok": True}
+    assert await normalize_reporting_tool_arguments(
+        run_context, "query_analysis_facts", facts, {}
+    ) == {"ok": True}
+    with pytest.raises(StopAgentRun, match="report_analysis_fact_query_budget_exhausted"):
+        await normalize_reporting_tool_arguments(run_context, "query_analysis_facts", facts, {})
+
+    assert calls == 2
+
+
+@pytest.mark.anyio
+async def test_analysis_recovery_rejects_old_tool_schema_before_execution() -> None:
+    run_context = RunContext(
+        run_id="run-analysis-recovery-closed",
+        session_id="session-analysis-recovery-closed",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "analysis-recovery-closed",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "analysis_item",
+                REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY: True,
+            }
+        },
+    )
+    called = False
+
+    def old_schema_tool() -> dict[str, bool]:
+        nonlocal called
+        called = True
+        return {"ok": True}
+
+    with pytest.raises(StopAgentRun, match="report_analysis_recovery_closed"):
+        await normalize_reporting_tool_arguments(run_context, "query_profile", old_schema_tool, {})
+
+    assert called is False
+
+
+@pytest.mark.anyio
 async def test_analysis_tool_budget_counts_only_success_and_isolates_tasks(monkeypatch) -> None:
     shared_state: dict[str, object] = {}
 
@@ -1274,6 +1399,55 @@ async def test_visualization_third_script_failure_stops_current_run(
             {},
         )
         assert result["code"] == "execution_output_error"
+    with pytest.raises(
+        StopAgentRun,
+        match="report_visualization_script_failure_limit_exhausted",
+    ):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "terminal",
+            failed_script,
+            {},
+        )
+
+    assert calls == 3
+
+
+@pytest.mark.anyio
+async def test_visualization_nonzero_terminal_exit_consumes_script_failure_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-terminal-exit",
+        session_id="session-visualization-terminal-exit",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-terminal-exit-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    calls = 0
+
+    def failed_script() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"status": "failed", "exit_code": 1, "output": "Traceback"}
+
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT", 3)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 10)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 10)
+
+    for _ in range(2):
+        result = await normalize_reporting_tool_arguments(
+            run_context,
+            "terminal",
+            failed_script,
+            {},
+        )
+        assert result["exit_code"] == 1
     with pytest.raises(
         StopAgentRun,
         match="report_visualization_script_failure_limit_exhausted",

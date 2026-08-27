@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from smart_reporting.reporting.delivery.report_runtime import ReportFailure, _pdf_markdown
+from smart_reporting.reporting.delivery.report_runtime.pdf import _pdf_markdown
+from smart_reporting.reporting.delivery.report_runtime.validation import ReportFailure
 
 
 def presentation(citation_id: str) -> dict[str, object]:

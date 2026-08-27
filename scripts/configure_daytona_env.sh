@@ -8,6 +8,7 @@ ENV_DIR=$(dirname "$ENV_FILE")
 BACKUP_DIR="$ENV_DIR/.env.backups"
 WORK_FILE=
 DAYTONA_DATA_ROOT="$ROOT_DIR/docker/data"
+DEX_DATA_DIR=${DEX_DATA_DIR:-/var/dex}
 
 die() {
     printf '错误：%s\n' "$*" >&2
@@ -29,12 +30,13 @@ cleanup() {
     restore_host_ownership
 }
 
-prepare_persistent_data() {
-    [[ $(id -u) -eq 0 ]] || die "持久化目录初始化必须以 root 运行。"
-    mkdir -p "$DAYTONA_DATA_ROOT"/{db,redis,registry,minio,runner,dex}
-    # Dex 2.42.0 镜像固定以 1001:1001 运行；bind mount 首次由 Compose 创建时通常属于 root，
-    # 必须在容器启动前修复目录身份，否则入口的 dex.db touch 会直接失败。
-    chown -R 1001:1001 "$DAYTONA_DATA_ROOT/dex"
+prepare_dex_volume() {
+    [[ $(id -u) -eq 0 ]] || die "持久化存储初始化必须以 root 运行。"
+    mkdir -p "$DAYTONA_DATA_ROOT"/{runner,registry}
+    # Dex 2.42.0 镜像固定以 1001:1001 运行；Docker 新建的命名卷由 root 所有，
+    # 必须在服务启动前授权挂载点，否则入口的 dex.db touch 会直接失败。
+    mkdir -p "$DEX_DATA_DIR"
+    chown -R 1001:1001 "$DEX_DATA_DIR"
 }
 
 trap cleanup EXIT
@@ -43,7 +45,7 @@ for command in openssl htpasswd awk; do
     command -v "$command" >/dev/null 2>&1 || die "缺少 $command。"
 done
 [[ -f "$TEMPLATE_FILE" ]] || die "未找到 $TEMPLATE_FILE。"
-prepare_persistent_data
+prepare_dex_volume
 if [[ -n ${HOST_UID:-} || -n ${HOST_GID:-} ]]; then
     [[ ${HOST_UID:-} =~ ^[0-9]+$ && ${HOST_GID:-} =~ ^[0-9]+$ ]] || die "HOST_UID 和 HOST_GID 必须同时为数字。"
 fi
