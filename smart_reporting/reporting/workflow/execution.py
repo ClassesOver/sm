@@ -18,6 +18,11 @@ from ...task_execution.execution import TASK_EXECUTION_DEPENDENCY, TaskExecution
 from ...task_execution.session import TaskSession
 from ..models import ReportingError
 from ..phase import (
+    REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
+    REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY,
+    REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY,
+    REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+    REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY,
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
@@ -37,6 +42,8 @@ from ..phase import (
     bind_reporting_run_context,
     capture_reporting_projection_metrics,
     record_reporting_tool_event,
+    reporting_analysis_fact_budget_contract_from_acceptance_contract,
+    reporting_analysis_fact_usage_from_run_context,
     reporting_phase_from_acceptance_contract,
     reporting_task_kind_from_acceptance_contract,
     reporting_thinking_effort_from_acceptance_contract,
@@ -155,6 +162,11 @@ class ReportTaskRunner:
                 visualization_recovery = reporting_visualization_recovery_from_acceptance_contract(
                     acceptance_contract
                 )
+                analysis_fact_budget = (
+                    reporting_analysis_fact_budget_contract_from_acceptance_contract(
+                        acceptance_contract
+                    )
+                )
                 if continuing:
                     task, attempt = await self.repository.resume_current(
                         scope.external_run_id,
@@ -236,6 +248,24 @@ class ReportTaskRunner:
                             if reporting_task_kind == "visualization" and visualization_recovery
                             else {}
                         ),
+                        **(
+                            {
+                                REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY: (
+                                    analysis_fact_budget["analysisFactBudgetVersion"]
+                                ),
+                                REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY: (
+                                    analysis_fact_budget["analysisFactQueryLimit"]
+                                ),
+                                REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY: (
+                                    analysis_fact_budget["analysisFactQueriesUsed"]
+                                ),
+                                REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY: (
+                                    analysis_fact_budget["analysisRecovery"]
+                                ),
+                            }
+                            if reporting_task_kind == "analysis_item"
+                            else {}
+                        ),
                     }
                 }
                 initial_session_state: dict[str, Any] = {}
@@ -290,6 +320,16 @@ class ReportTaskRunner:
                         error,
                         REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
                         reporting_visualization_usage_from_run_context(worker_run_context),
+                    )
+                if reporting_task_kind == "analysis_item" and isinstance(error, Exception):
+                    setattr(
+                        error,
+                        REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
+                        {
+                            "queryCount": reporting_analysis_fact_usage_from_run_context(
+                                worker_run_context
+                            )
+                        },
                     )
                 await complete_cleanup(self._cancel_and_cleanup(scope, session.lease.epoch))
                 raise

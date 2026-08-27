@@ -61,6 +61,10 @@ from .model_policy import (
 )
 from .models import ReportingError
 from .phase import (
+    REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
+    REPORTING_ANALYSIS_FACT_QUERY_LIMIT,
+    REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+    REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY,
     REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP,
     REPORTING_SECTION_INPUT_TOKEN_HARD_CAP,
     REPORTING_TASK_DEPENDENCY,
@@ -77,6 +81,8 @@ from .phase import (
     ReportingPhase,
     current_reporting_run_context,
     record_reporting_projection_metrics,
+    reporting_analysis_fact_usage_from_run_context,
+    reporting_analysis_recovery_from_run_context,
     reporting_phase_allows_tool,
     reporting_phase_from_run_context,
     reporting_task_kind_from_run_context,
@@ -326,6 +332,122 @@ def _visualization_exploration_limit(run_context: RunContext, function_name: str
             REPORTING_VISUALIZATION_READ_FILE_LIMIT,
         )
     return None
+
+
+def _analysis_fact_query_limit(run_context: RunContext) -> int:
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    value = (
+        binding.get(REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY)
+        if isinstance(binding, Mapping)
+        else None
+    )
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        else REPORTING_ANALYSIS_FACT_QUERY_LIMIT
+    )
+
+
+def _reserve_analysis_fact_query(
+    run_context: RunContext,
+    function_name: str,
+) -> tuple[dict[str, Any], str] | None:
+    if (
+        function_name != "query_analysis_facts"
+        or reporting_phase_from_run_context(run_context) != "analysis"
+        or reporting_task_kind_from_run_context(run_context) != "analysis_item"
+    ):
+        return None
+    state = _reporting_session_state(run_context)
+    if state is None:
+        return None
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
+    budgets = state.get(REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY)
+    budgets = budgets if isinstance(budgets, dict) else {}
+    stored = budgets.get(identity)
+    stored = stored if isinstance(stored, dict) else {}
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    budgets[identity] = {
+        "queriesUsed": count(stored.get("queriesUsed")),
+        "inFlightQueries": count(stored.get("inFlightQueries")) + 1,
+    }
+    state[REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY] = budgets
+    return state, identity
+
+
+def _finish_analysis_fact_query(
+    reservation: tuple[dict[str, Any], str] | None,
+) -> None:
+    if reservation is None:
+        return
+    state, identity = reservation
+    budgets = state.get(REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY)
+    if not isinstance(budgets, dict) or not isinstance((stored := budgets.get(identity)), dict):
+        return
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    budgets[identity] = {
+        "queriesUsed": count(stored.get("queriesUsed")) + 1,
+        "inFlightQueries": max(count(stored.get("inFlightQueries")) - 1, 0),
+    }
+
+
+def _stop_analysis_fact_query_budget(run_context: RunContext) -> None:
+    details = {
+        "queryCount": reporting_analysis_fact_usage_from_run_context(run_context),
+        "queryLimit": _analysis_fact_query_limit(run_context),
+    }
+    error = ReportingError(
+        "report_analysis_fact_query_budget_exhausted",
+        "当前分析项已达到 facts 查询上限，已停止本次 run。",
+        details=details,
+    )
+    _record_reporting_tool_run_error(run_context, error)
+    setattr(error, REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR, details)
+    serialized = json.dumps(
+        {
+            "ok": False,
+            "status": "rejected",
+            "code": error.code,
+            "message": error.message,
+            "requiredActions": ["结束本次 run，使用已内联的受信 facts 完成当前分析项。"],
+            "retryable": False,
+            "details": details,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    raise StopAgentRun(serialized, agent_message=serialized)
+
+
+def _stop_analysis_recovery(run_context: RunContext) -> None:
+    error = ReportingError(
+        "report_analysis_recovery_closed",
+        "分析项 facts 恢复任务只能调用 complete_analysis_item。",
+    )
+    _record_reporting_tool_run_error(run_context, error)
+    serialized = json.dumps(
+        {
+            "ok": False,
+            "status": "rejected",
+            "code": error.code,
+            "message": error.message,
+            "requiredActions": ["使用 instruction 中已内联的受信 facts，立即完成当前分析项。"],
+            "retryable": False,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    raise StopAgentRun(serialized, agent_message=serialized)
 
 
 def _visualization_exploration_budget_receipt(
@@ -1176,6 +1298,19 @@ async def normalize_reporting_tool_arguments(
     task_kind = reporting_task_kind_from_run_context(run_context)
     state = _reporting_session_state(run_context)
     if (
+        task_kind == "analysis_item"
+        and reporting_analysis_recovery_from_run_context(run_context)
+        and function_name != "complete_analysis_item"
+    ):
+        _stop_analysis_recovery(run_context)
+    if (
+        task_kind == "analysis_item"
+        and function_name == "query_analysis_facts"
+        and reporting_analysis_fact_usage_from_run_context(run_context)
+        >= _analysis_fact_query_limit(run_context)
+    ):
+        _stop_analysis_fact_query_budget(run_context)
+    if (
         task_kind == "visualization"
         and function_name != "finalize_report_analysis"
         and (
@@ -1222,12 +1357,14 @@ async def normalize_reporting_tool_arguments(
             },
         )
     analysis_reservation = _reporting_analysis_item_tool_budget(run_context, function_name)
+    analysis_fact_reservation = _reserve_analysis_fact_query(run_context, function_name)
     visualization_reservation = _reporting_visualization_tool_budget(run_context, function_name)
     try:
         result = function_call(**arguments)
         result = await result if inspect.isawaitable(result) else result
     except (TypeError, ValidationError) as error:
         _finish_reporting_success_tool_budget(analysis_reservation, succeeded=False)
+        _finish_analysis_fact_query(analysis_fact_reservation)
         _finish_visualization_tool_budget(
             run_context,
             visualization_reservation,
@@ -1250,6 +1387,7 @@ async def normalize_reporting_tool_arguments(
         )
     except BaseException:
         _finish_reporting_success_tool_budget(analysis_reservation, succeeded=False)
+        _finish_analysis_fact_query(analysis_fact_reservation)
         _finish_visualization_tool_budget(
             run_context,
             visualization_reservation,
@@ -1297,6 +1435,7 @@ async def normalize_reporting_tool_arguments(
     ):
         state[_REPORT_VISUALIZATION_REGISTERED_STATE_KEY] = True
     _finish_reporting_success_tool_budget(analysis_reservation, succeeded=succeeded)
+    _finish_analysis_fact_query(analysis_fact_reservation)
     _finish_visualization_tool_budget(
         run_context,
         visualization_reservation,
@@ -1512,6 +1651,19 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
         for tool in tools
         if (name := _report_model_tool_name(tool)) is not None
         and reporting_phase_allows_tool(phase, name, task_kind=task_kind)
+        and not (
+            task_kind == "analysis_item"
+            and run_context is not None
+            and reporting_analysis_recovery_from_run_context(run_context)
+            and name != "complete_analysis_item"
+        )
+        and not (
+            task_kind == "analysis_item"
+            and run_context is not None
+            and name == "query_analysis_facts"
+            and reporting_analysis_fact_usage_from_run_context(run_context)
+            >= _analysis_fact_query_limit(run_context)
+        )
         and not (
             task_kind == "visualization"
             and run_context is not None

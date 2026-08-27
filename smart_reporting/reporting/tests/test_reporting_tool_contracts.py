@@ -34,6 +34,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
+    reporting_analysis_fact_budget_contract_from_acceptance_contract,
     reporting_visualization_budget_contract_from_acceptance_contract,
     reporting_visualization_budget_from_acceptance_contract,
     reporting_visualization_budget_from_run_context,
@@ -62,6 +63,7 @@ from smart_reporting.reporting.tools.validation import (
     ANALYSIS_WRITE_TOOL_NAMES,
     _analysis_write_operation_arguments,
     _analysis_write_parameters,
+    _bound_profile_pointer_value,
     _canonical_analysis_write_call,
     _jmespath_reporting_error,
 )
@@ -151,6 +153,16 @@ def test_analysis_item_budget_retry_forces_fixed_fact_submission() -> None:
     assert not any("创建补充 evidence" in item for item in conditions)
 
 
+def test_analysis_item_first_attempt_converges_on_fixed_facts() -> None:
+    conditions = _analysis_item_completion_conditions(None, None)
+
+    assert any("deterministicFacts 已内联" in item for item in conditions)
+    assert any("不得为探索 facts 结构" in item for item in conditions)
+    assert any("固定事实足够时立即调用 complete_analysis_item" in item for item in conditions)
+    assert any("当前管理问题确实缺少必需事实" in item for item in conditions)
+    assert any("不得猜测、补齐或替代缺失事实" in item for item in conditions)
+
+
 @pytest.mark.parametrize(
     ("summary", "expected_summary", "expected_warnings"),
     [
@@ -192,6 +204,16 @@ def test_visualization_retry_after_registration_only_allows_finalize() -> None:
     assert not any("register_report_charts" in item for item in conditions)
 
 
+def test_visualization_completion_conditions_forbid_citation_and_workspace_exploration() -> None:
+    conditions = _visualization_completion_conditions(None, False)
+
+    assert any("analysisCitationIds" in item for item in conditions)
+    assert any(
+        "不得用 read_file、terminal 或目录探测寻找 citationId" in item for item in conditions
+    )
+    assert any("仅可执行 python3 <scriptPath>" in item for item in conditions)
+
+
 def test_visualization_retry_budget_is_read_from_trusted_phase_contract() -> None:
     contract = build_report_phase_acceptance_contract(
         phase="analysis",
@@ -227,6 +249,70 @@ def test_historical_visualization_contract_keeps_fixed_budget() -> None:
         "visualizationFactQueriesUsed": 0,
         "visualizationToolCalls": 7,
         "visualizationScriptFailures": 0,
+    }
+
+
+def test_analysis_fact_budget_contract_requires_all_v1_scalars_and_recovery_flag() -> None:
+    phase_contract = {
+        "taskKind": "analysis_item",
+        "analysisIds": ["analysis_001"],
+        "analysisOutputRoot": "evidence/analysis_001",
+        "analysisFactBudgetVersion": 1,
+        "analysisFactQueryLimit": 2,
+        "analysisFactQueriesUsed": 1,
+        "analysisRecovery": False,
+    }
+    valid = build_report_phase_acceptance_contract(
+        phase="analysis",
+        validation_context_file={"path": "analysis-context.json"},
+        phase_contract=phase_contract,
+    )
+
+    assert reporting_analysis_fact_budget_contract_from_acceptance_contract(valid) == {
+        "analysisFactBudgetVersion": 1,
+        "analysisFactQueryLimit": 2,
+        "analysisFactQueriesUsed": 1,
+        "analysisRecovery": False,
+    }
+
+    for missing in {
+        "analysisFactQueryLimit",
+        "analysisFactQueriesUsed",
+        "analysisRecovery",
+    }:
+        invalid = build_report_phase_acceptance_contract(
+            phase="analysis",
+            validation_context_file={"path": "analysis-context.json"},
+            phase_contract={key: value for key, value in phase_contract.items() if key != missing},
+        )
+        with pytest.raises(ReportingError, match="report_phase_contract_invalid"):
+            reporting_analysis_fact_budget_contract_from_acceptance_contract(invalid)
+
+    invalid_bool = build_report_phase_acceptance_contract(
+        phase="analysis",
+        validation_context_file={"path": "analysis-context.json"},
+        phase_contract={**phase_contract, "analysisFactQueriesUsed": True},
+    )
+    with pytest.raises(ReportingError, match="report_phase_contract_invalid"):
+        reporting_analysis_fact_budget_contract_from_acceptance_contract(invalid_bool)
+
+
+def test_historical_analysis_fact_contract_uses_fixed_defaults() -> None:
+    contract = build_report_phase_acceptance_contract(
+        phase="analysis",
+        validation_context_file={"path": "analysis-context.json"},
+        phase_contract={
+            "taskKind": "analysis_item",
+            "analysisIds": ["analysis_001"],
+            "analysisOutputRoot": "evidence/analysis_001",
+        },
+    )
+
+    assert reporting_analysis_fact_budget_contract_from_acceptance_contract(contract) == {
+        "analysisFactBudgetVersion": 0,
+        "analysisFactQueryLimit": 2,
+        "analysisFactQueriesUsed": 0,
+        "analysisRecovery": False,
     }
 
 
@@ -880,7 +966,7 @@ def test_reporting_tool_workspace_error_escapes_for_agent_retry() -> None:
 
 
 @pytest.mark.anyio
-async def test_analysis_python_syntax_error_escapes_for_agent_retry(monkeypatch) -> None:
+async def test_analysis_python_syntax_error_returns_retryable_receipt(monkeypatch) -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
 
     async def invalid_source(*, thread_id: str, path: str) -> bytes:
@@ -890,12 +976,18 @@ async def test_analysis_python_syntax_error_escapes_for_agent_retry(monkeypatch)
 
     monkeypatch.setattr(toolkit, "_analysis_python_source", invalid_source)
 
-    with pytest.raises(SyntaxError):
-        await toolkit._analysis_python_dependency_rejection(
-            scope=SimpleNamespace(thread_id="thread"),
-            command="python3 analysis/report.py",
-            workdir=None,
-        )
+    result = await toolkit._analysis_python_dependency_rejection(
+        scope=SimpleNamespace(thread_id="thread"),
+        command="python3 analysis/report.py",
+        workdir=None,
+    )
+
+    assert result is not None
+    assert result["ok"] is False
+    assert result["code"] == "report_analysis_python_syntax_invalid"
+    assert result["details"]["path"] == "analysis/report.py"
+    assert result["details"]["line"] == 1
+    assert result["retryable"] is True
 
 
 def test_unknown_jmespath_function_returns_short_supported_function_receipt() -> None:
@@ -1042,6 +1134,28 @@ async def test_query_analysis_facts_reads_only_current_immutable_file_and_bounds
         identity_code="report_analysis_facts_changed",
         structure_code="report_analysis_facts_invalid",
     )
+
+
+def test_bound_profile_pointer_value_does_not_truncate_metric_scalars_for_array_limit() -> None:
+    value, truncated = _bound_profile_pointer_value(
+        {
+            "field": "income",
+            "total": 12,
+            "aggregation": "sum",
+            "periodStart": "2025-01-01",
+            "periodEnd": "2025-12-31",
+        },
+        max_items=1,
+    )
+
+    assert value == {
+        "field": "income",
+        "total": 12,
+        "aggregation": "sum",
+        "periodStart": "2025-01-01",
+        "periodEnd": "2025-12-31",
+    }
+    assert truncated is False
 
 
 @pytest.mark.anyio
@@ -1746,6 +1860,33 @@ def test_analysis_context_tool_reserves_current_analysis_for_task_json() -> None
     assert "仅用于按需读取 Dataset 元数据" in description
 
 
+def test_analysis_tool_schemas_expose_flat_writes_and_standard_jmespath_patterns() -> None:
+    toolkit = ReportWorkspaceTaskToolkit(
+        fake_workspace_service(None),
+        AsyncMock(),
+        state_repository=AsyncMock(),
+    )
+
+    write_tool = toolkit.async_functions["write_analysis_files"]
+    operation = write_tool.parameters["properties"]["operation"]
+
+    assert "不得嵌套 arguments" in write_tool.description
+    assert "不得嵌套 arguments" in operation["description"]
+    assert '"operation":"create_file"' in operation["description"]
+
+    expected_examples = {
+        "query_profile": '"query":"values(variables)[0]"',
+        "query_analysis_context": '"query":"datasets[0]"',
+        "query_analysis_facts": '"query":"metrics[0]"',
+    }
+    for name, expected_example in expected_examples.items():
+        description = toolkit.async_functions[name].description
+        assert "数组首项" in description
+        assert "字段投影" in description
+        assert "空值不补值" in description
+        assert expected_example in description
+
+
 def test_analysis_facts_tool_distinguishes_projection_from_file_schema() -> None:
     toolkit = ReportWorkspaceTaskToolkit(
         fake_workspace_service(None),
@@ -1777,7 +1918,7 @@ _WORKER_TOOL_SCHEMA_FINGERPRINTS = {
     "query_profile": "442fe01a0e251791e117648a28d4c25e2041307ea7b26aae490ef7f3dadf87f6",
     "query_analysis_context": "fb2d26cd963d66da970742c6a543fad0d492669f895fca01e536f123cc70cd0e",
     "query_analysis_facts": "b1b463cc581dc8e66a40dc86570bfca698dba8562cefe66ca6987d8552cbdc68",
-    "write_analysis_files": "30f1cf3bd9ab5077d66c0373858dc6b1b8e889927d7d0cd41528ada4ef487125",
+    "write_analysis_files": "adb1fec9483ecde21f0ab92b3e804207dc8bffb4a9c7ecb22c77a9babded0687",
     "complete_analysis_item": "cb93f40d4226ced6a1a2ac96d2b26ffe51e0e1fb3eba1e25d05e73d2496f2073",
     "finalize_report_analysis": "198d0662d1589b8961b784c5a11b138da322e0577320251d47adaaa37b9be7ec",
     "register_report_charts": "c512a28f7b2bc55752a42652f53688450a5252f6a51d06f21e106573cf74e841",

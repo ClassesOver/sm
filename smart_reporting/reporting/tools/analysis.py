@@ -756,6 +756,18 @@ class RuntimeAnalysisMixin:
                 ),
                 retryable=False,
             )
+        except SyntaxError as error:
+            return self._failure(
+                ReportingError(
+                    "report_analysis_python_syntax_invalid",
+                    "待执行分析 Python 脚本语法无效，已拒绝执行。",
+                    details={
+                        "path": script_path,
+                        "line": error.lineno,
+                        "offset": error.offset,
+                    },
+                )
+            )
         except (ReportingError, WorkspaceError) as error:
             return self._failure(error, retryable=False)
 

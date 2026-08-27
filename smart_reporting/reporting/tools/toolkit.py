@@ -142,7 +142,7 @@ class ReportWorkspaceTaskToolkit(
                 name="write_analysis_files",
                 description=(
                     "执行一次 analysis 文件写入；服务端保存写入意图，完成写入和 SHA-256 "
-                    "校验后提交意图。公开参数使用扁平格式："
+                    "校验后提交意图。公开参数必须使用扁平格式，不得嵌套 arguments："
                     '{"operation":"create_file","path":"analysis/report.py",'
                     '"content":"def main():\\n    pass\\n"}。'
                     "create_file 的 content 可以一次提交完整长脚本，整体受 4 MiB 写入意图"
@@ -204,8 +204,11 @@ class ReportWorkspaceTaskToolkit(
                 description=(
                     "使用标准 JMESPath 对当前 Dataset 的完整 Profile 执行有界结构化查询；"
                     "适合字段筛选、列表过滤和投影。精确节点引用仍使用 read_profile_pointer。"
-                    '示例：{"datasetId":"dataset-001","query":'
-                    '"variables.amount.{min: min, max: max, average: average}",'
+                    "可复制的 query 范例：数组首项 values(variables)[0]；字段投影 "
+                    "variables.amount.{min: min, max: max}；空值不补值，只过滤空值 "
+                    "values(variables)[?min != `null`].{min: min, max: max}。"
+                    '完整参数示例：{"datasetId":"dataset-001","query":'
+                    '"values(variables)[0]",'
                     '"purpose":"读取金额分布摘要","maxItems":50}'
                 ),
                 parameters={
@@ -246,9 +249,12 @@ class ReportWorkspaceTaskToolkit(
                 description=(
                     "currentAnalysis 已在任务 JSON，禁止通过本工具重复读取；本工具仅用于按需读取 "
                     "Dataset 元数据。使用标准 JMESPath 对当前任务的类型化 analysisContext 投影执行"
-                    "有界查询；常用正确示例：datasets[].{datasetId: datasetId, rowCount: rowCount, "
-                    "periodCoverage: periodCoverage}；"
-                    "datasets[].{datasetId: datasetId, metrics: metricSemantics[].fieldRef}。"
+                    "有界查询；可复制的 query 范例：数组首项 datasets[0]；字段投影 "
+                    "datasets[].{datasetId: datasetId, rowCount: rowCount, periodCoverage: periodCoverage}；"
+                    "空值不补值，只过滤空值 datasets[?rowCount != `null`].{datasetId: datasetId, "
+                    "rowCount: rowCount}。"
+                    '完整参数示例：{"query":"datasets[0]","purpose":"读取首个 Dataset 元数据",'
+                    '"maxItems":1}。'
                 ),
                 parameters={
                     "type": "object",
@@ -274,7 +280,12 @@ class ReportWorkspaceTaskToolkit(
                 name="query_analysis_facts",
                 description=(
                     "由服务端定位并校验当前 analysis 的不可变 facts 文件，再执行有界标准 "
-                    "JMESPath。单项示例：metrics[].{field: field, total: total}；"
+                    "JMESPath。可复制的 query 范例：数组首项 metrics[0]；字段投影 "
+                    "metrics[].{field: field, total: total}；空值不补值，只过滤空值 "
+                    "metrics[?total != `null`].{field: field, total: total}。"
+                    "单项 facts 根节点没有 analyses 包装；"
+                    '完整参数示例：{"query":"metrics[0]","purpose":"读取首个指标事实",'
+                    '"maxItems":1}。'
                     "visualization 示例：analyses[].{analysisId: analysisId, "
                     "metrics: facts.metrics[].{field: field, total: total}}。visualization 的 "
                     "analyses[].facts 只存在于本工具聚合回执；deterministicFactFiles 指向的"

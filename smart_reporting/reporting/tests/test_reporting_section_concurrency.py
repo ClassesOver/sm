@@ -323,6 +323,10 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
         expected_mapping,
         expected_mapping,
     ]
+    assert [item["visualizationWorkspace"]["allowedTerminalCommand"] for item in instructions] == [
+        "python3 报表/智能分析/run-1/analysis/charts.py",
+        "python3 报表/智能分析/run-1/analysis/charts.py",
+    ]
     assert all("citationRegistry" not in item for item in instructions)
     assert all("snapshotHash" not in item for item in instructions)
     contracts = [call.kwargs["acceptance_contract"] for call in task_runner.start.await_args_list]

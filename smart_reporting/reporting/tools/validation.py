@@ -62,7 +62,8 @@ def _analysis_write_parameters(functions: Mapping[str, Function]) -> dict[str, A
                 "type": "string",
                 "enum": sorted(ANALYSIS_WRITE_PUBLIC_TOOL_NAMES),
                 "description": (
-                    "选择一次写入操作。新建完整脚本示例："
+                    "选择一次写入操作。所有字段直接放在最外层，不得嵌套 arguments。"
+                    "新建完整脚本示例："
                     '{"operation":"create_file","path":"analysis/report.py",'
                     '"content":"def main():\\n    pass\\n"}。'
                 ),
@@ -235,13 +236,7 @@ def _bound_profile_pointer_value(value: Any, *, max_items: int) -> tuple[Any, bo
         edges = item.get("bin_edges")
         if not isinstance(counts, list) or not isinstance(edges, list):
             return None
-        result: dict[str, Any] = {}
-        for key in ("counts", "bin_edges"):
-            if remaining <= 0:
-                truncated = True
-                return result
-            remaining -= 1
-            result[key] = []
+        result: dict[str, Any] = {"counts": [], "bin_edges": []}
         positions = {"counts": 0, "bin_edges": 0}
         sources = {"counts": counts, "bin_edges": edges}
         while remaining > 0 and any(
@@ -272,10 +267,9 @@ def _bound_profile_pointer_value(value: Any, *, max_items: int) -> tuple[Any, bo
                 return balanced_histogram
             result: dict[str, Any] = {}
             for key, child in sorted(item.items(), key=lambda pair: key_priority(pair[0], pair[1])):
-                if remaining <= 0:
-                    truncated = True
-                    break
-                remaining -= 1
+                # maxItems 是数组输出的元素上限，不得把 object 的标量字段当作待裁剪项。
+                # facts 的指标对象必须完整返回 total、期间和聚合方式，否则模型会把同一
+                # 受信事实误判为缺失并重复查询；深度、长字符串和数组元素仍受下方边界约束。
                 result[str(key)] = visit(child, depth + 1)
             return result
         if isinstance(item, list):

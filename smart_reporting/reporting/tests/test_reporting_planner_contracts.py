@@ -281,11 +281,13 @@ def test_coding_analysis_plan_projects_only_unfinished_items() -> None:
                     "managementQuestion": f"分析 {analysis_id}",
                     "primaryMetricFamily": "收入",
                     "datasetIds": ["dataset-1"],
-                    "fields": [],
-                    "metrics": [],
+                    "fields": ["income_amount"],
+                    "metrics": ["收入"],
                     "periods": [],
-                    "actions": ["复算"],
+                    "organizationGrain": ["department"],
+                    "actions": ["趋势", "复算"],
                     "evidenceSummary": "保存证据",
+                    "limitations": ["月度数据不完整"],
                     "suggestedSection": "overview",
                     "completionConditions": ["完成"],
                 }
@@ -300,6 +302,18 @@ def test_coding_analysis_plan_projects_only_unfinished_items() -> None:
     )
 
     assert [item["analysisId"] for item in projected["analyses"]] == ["analysis_002"]
+    assert projected["analyses"][0] == {
+        "analysisId": "analysis_002",
+        "domain": "income",
+        "step": "分析 analysis_002",
+        "primaryMetricFamily": "收入",
+        "datasetIds": ["dataset-1"],
+        "fields": ["income_amount"],
+        "metrics": ["收入"],
+        "organizationGrain": ["department"],
+        "actions": ["趋势", "复算"],
+        "limitations": ["月度数据不完整"],
+    }
 
 
 def test_outline_section_can_reference_multiple_atomic_analysis_items() -> None:
@@ -436,6 +450,15 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "固定事实足够时不得创建脚本或 evidence 文件" in instructions
     assert "evidencePaths 传空数组" in instructions
     assert "deterministicFactFile 直接冻结为 evidence" in instructions
+    assert "首次任务默认只调用一次 query_analysis_facts" in instructions
+    assert (
+        "currentAnalysis 已固定 fields、metrics、organizationGrain、actions 和 limitations"
+        in instructions
+    )
+    assert "不得为探索 facts 结构" in instructions
+    assert "固定事实足够时立即调用 complete_analysis_item" in instructions
+    assert "truncated 或当前管理问题缺少必需事实" in instructions
+    assert "不得猜测、补齐或替代缺失事实" in instructions
     assert "不执行摘要百分比启发式匹配" in instructions
     assert "脚本必须从工作区根目录执行" in instructions
     assert "python3 <analysisOutputRoot>/script.py" in instructions

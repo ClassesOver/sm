@@ -108,6 +108,7 @@ from ...hospital_operation.detailed_analysis import (
     profile_csv_dataset,
 )
 from ...hospital_operation.deterministic_analysis import (
+    DeterministicAnalysisBundle,
     build_deterministic_analysis_bundle,
 )
 from ...hospital_operation.domains import DOMAIN_CODES, resolve_domain_mentions
@@ -130,7 +131,10 @@ from ...model_policy import (
     reporting_thinking_profile_from_model,
 )
 from ...models import ReportingError
-from ...phase import REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR
+from ...phase import (
+    REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
+    REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+)
 from ...profile import (
     CapabilitySet,
     EffectiveReportingProfile,

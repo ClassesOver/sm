@@ -13,6 +13,7 @@ from .base import (
     REPORT_OUTLINE_HASH_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
     REPORT_VISUAL_THEME,
+    REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
     AnalysisArtifact,
     AnalysisReworkRequest,
@@ -26,6 +27,7 @@ from .base import (
     DatasetHandle,
     DatasetLineage,
     DetailedAnalysisPlan,
+    DeterministicAnalysisBundle,
     DurableReportingPhase,
     FileIdentity,
     Mapping,
@@ -615,13 +617,22 @@ class RuntimeAnalysisMixin:
         selected_citations = tuple(
             item for item in citation_bindings if item.dataset_id in selected_dataset_ids
         )
-        analysis_plan = {
-            "analysisId": analysis.analysis_id,
-            "domain": analysis.domain,
-            "step": analysis.management_question,
-            "primaryMetricFamily": analysis.primary_metric_family,
-            "datasetIds": list(analysis.dataset_ids),
-        }
+        coding_analysis_plan = _coding_detailed_analysis_plan(
+            detailed_plan,
+            analysis_ids=(analysis_id,),
+        )
+        analysis_plan = coding_analysis_plan["analyses"][0]
+        deterministic_facts = cast(
+            DeterministicAnalysisBundle,
+            await self._read_identity_model(
+                scope["threadId"], fact_files[analysis_id], DeterministicAnalysisBundle
+            ),
+        )
+        if deterministic_facts.analysis_id != analysis_id:
+            raise ReportingError(
+                "report_analysis_facts_invalid",
+                "固定 facts 文件与当前分析项身份不一致。",
+            )
         last_error: Exception | None = None
 
         for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
@@ -695,10 +706,8 @@ class RuntimeAnalysisMixin:
                 "deterministicFactFile": fact_files[analysis_id].model_dump(
                     mode="json", by_alias=True
                 ),
-                "detailedAnalysisPlan": _coding_detailed_analysis_plan(
-                    detailed_plan,
-                    analysis_ids=(analysis_id,),
-                ),
+                "deterministicFacts": deterministic_facts.model_dump(mode="json", by_alias=True),
+                "detailedAnalysisPlan": coding_analysis_plan,
                 "profileCoverage": _profile_coverage_instruction_projection(
                     checkpoint.profile_coverage,
                     analysis_context_file,
@@ -733,6 +742,8 @@ class RuntimeAnalysisMixin:
                     "单项分析投影超过模型输入边界；证据未被静默截断。",
                 )
             retry = any(item.status == "failed" for item in matching_traces)
+            analysis_fact_queries_used = _analysis_fact_retry_usage(last_error)
+            analysis_recovery = _analysis_fact_recovery_required(last_error)
             contract = build_report_phase_acceptance_contract(
                 phase="analysis",
                 validation_context_file=validation_context_file.model_dump(
@@ -749,6 +760,10 @@ class RuntimeAnalysisMixin:
                     ),
                     "analysisIds": [analysis_id],
                     "currentAnalysisId": analysis_id,
+                    "analysisFactBudgetVersion": 1,
+                    "analysisFactQueryLimit": 2,
+                    "analysisFactQueriesUsed": analysis_fact_queries_used,
+                    "analysisRecovery": analysis_recovery,
                     "analysisOutputRoot": (f"报表/智能分析/{report_run_id}/evidence/{analysis_id}"),
                     "analysisPlans": {analysis_id: analysis_plan},
                     "analysisDatasetIds": {analysis_id: list(analysis.dataset_ids)},
@@ -1074,6 +1089,7 @@ class RuntimeAnalysisMixin:
                 "visualizationWorkspace": {
                     "scriptPath": f"{visualization_root}/charts.py",
                     "chartOutputRoot": f"{visualization_root}/charts",
+                    "allowedTerminalCommand": f"python3 {visualization_root}/charts.py",
                 },
                 "sourceWarnings": [
                     item.model_dump(mode="json", by_alias=True)
@@ -1519,6 +1535,11 @@ def _coding_detailed_analysis_plan(
                 "step": item.management_question,
                 "primaryMetricFamily": item.primary_metric_family,
                 "datasetIds": list(item.dataset_ids),
+                "fields": list(item.fields),
+                "metrics": list(item.metrics),
+                "organizationGrain": list(item.organization_grain),
+                "actions": list(item.actions),
+                "limitations": list(item.limitations),
             }
             for item in plan.analyses
             if allowed is None or item.analysis_id in allowed
@@ -1549,6 +1570,11 @@ def _analysis_item_completion_conditions(
             "durable 单项事实已冻结；不要重算或改写 evidence",
             "使用 durableAnalysisItem 的相同字段重新调用 complete_analysis_item 完成 Task 收尾",
         ]
+    if _analysis_fact_recovery_required(last_error):
+        return [
+            "上一轮已耗尽 facts 查询额度；不得重新查询、读取、写入或执行任何工具",
+            "直接使用 deterministicFacts 中已内联的受信事实，立即且只调用一次 complete_analysis_item",
+        ]
     if (
         isinstance(last_error, ReportingError)
         and last_error.code == "report_analysis_tool_budget_exhausted"
@@ -1560,8 +1586,12 @@ def _analysis_item_completion_conditions(
         ]
     return [
         "只回答 currentAnalysis 的原子管理问题和 primaryMetricFamily",
-        "优先查询 deterministicFactFile；固定事实足够时不创建脚本或 evidence，"
-        "complete_analysis_item 的 evidencePaths 传空数组",
+        "deterministicFacts 已内联当前分析项的完整受信固定事实；不得为探索 facts 结构、"
+        "重复验证任务 JSON 已投影的元数据或空命中调用 query_analysis_facts",
+        "只有当前管理问题确实缺少必需事实时，才按缺口精确调用 query_analysis_facts 或读取实际使用的 Profile；"
+        "不得猜测、补齐或替代缺失事实",
+        "固定事实足够时立即调用 complete_analysis_item；不创建脚本或 evidence，"
+        "evidencePaths 传空数组",
         "只为 deterministicFactFile 未覆盖的事实缺口创建补充 evidence",
         "本阶段禁止生成或登记图表",
         "最后且只调用一次 complete_analysis_item",
@@ -1586,6 +1616,9 @@ def _visualization_completion_conditions(
         ]
     return [
         "只整合 completedAnalysisItems 和 deterministicFactFiles，不重跑单项分析",
+        "analysisCitationIds 是 citationId 的唯一受信来源；不得用 read_file、terminal 或目录探测寻找 citationId",
+        "图表脚本只写入 visualizationWorkspace.scriptPath，服务端提交后 terminal 仅可执行 python3 <scriptPath>；"
+        "不得传 workdir、cd、ls、find、wc、管道、heredoc 或运行其他脚本",
         "批量读取事实、生成和执行图表脚本；相同文件不得重复读取、执行或视觉检查",
         "按批准提纲生成必要图表并整批登记 citation",
         "最后且只调用一次 finalize_report_analysis",
@@ -1599,6 +1632,27 @@ def _visualization_recovery_required(last_error: Exception | None) -> bool:
     return isinstance(last_error, ReportingError) and last_error.code in (
         _VISUALIZATION_RECOVERY_ERROR_CODES
     )
+
+
+def _analysis_fact_recovery_required(last_error: Exception | None) -> bool:
+    return (
+        isinstance(last_error, ReportingError)
+        and last_error.code == "report_analysis_fact_query_budget_exhausted"
+    )
+
+
+def _analysis_fact_retry_usage(last_error: Exception | None) -> int:
+    source: Any = getattr(last_error, REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR, None)
+    details = last_error.details if isinstance(last_error, ReportingError) else None
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    if isinstance(source, Mapping):
+        return count(source.get("queryCount"))
+    if isinstance(details, Mapping):
+        return count(details.get("queryCount"))
+    return 0
 
 
 def _visualization_retry_budget(last_error: Exception | None) -> tuple[int, int]:
