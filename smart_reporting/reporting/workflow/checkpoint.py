@@ -12,6 +12,7 @@ from pydantic import Field, field_validator, model_validator
 
 from ..contract import SHA256_PATTERN, StrictModel
 from ..delivery.draft_v1 import ReportDraftBlock
+from ..models import ReportingError
 
 
 class FileIdentity(StrictModel):
@@ -189,12 +190,57 @@ class AnalysisEvidence(StrictModel):
         return self
 
 
+class ChartVisualInspectionIssue(StrictModel):
+    category: Literal[
+        "blank",
+        "cropping",
+        "text_overlap",
+        "legend_occlusion",
+        "missing_units",
+        "misleading",
+    ]
+    severity: Literal["warning", "critical"]
+    description: str = Field(min_length=1, max_length=500)
+
+
+class ChartVisualInspectionReceipt(StrictModel):
+    source_path: str = Field(alias="sourcePath", min_length=1, max_length=1024)
+    sha256: str = Field(pattern=SHA256_PATTERN)
+    model_id: str = Field(alias="modelId", min_length=1, max_length=256)
+    reviewed: bool
+    requires_revision: bool = Field(alias="requiresRevision")
+    issues: tuple[ChartVisualInspectionIssue, ...] = Field(default=(), max_length=20)
+    summary: str | None = Field(default=None, min_length=1, max_length=2000)
+    warnings: tuple[str, ...] = Field(default=(), max_length=20)
+    suggestions: tuple[str, ...] = Field(default=(), max_length=20)
+
+    @field_validator("source_path")
+    @classmethod
+    def validate_source_path(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
+            raise ValueError("图表视觉回执路径必须是安全工作区相对路径")
+        return path.as_posix()
+
+
 class AnalysisChart(StrictModel):
     chart_id: str = Field(alias="chartId", min_length=1, max_length=128)
     source_file: FileIdentity = Field(alias="sourceFile")
     title: str = Field(min_length=1, max_length=200)
     alt_text: str = Field(alias="altText", min_length=1, max_length=200)
     citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
+    metric_codes: tuple[str, ...] = Field(alias="metricCodes", min_length=1, max_length=100)
+    current_period: str = Field(alias="currentPeriod", min_length=1, max_length=200)
+    comparison_period: str | None = Field(default=None, alias="comparisonPeriod", max_length=200)
+    comparison_type: Literal["none", "yoy", "mom", "period"] = Field(
+        default="none", alias="comparisonType"
+    )
+    source_dataset_id: str = Field(alias="sourceDatasetId", min_length=1, max_length=256)
+    aggregation_grain: str = Field(alias="aggregationGrain", min_length=1, max_length=128)
+    comparability: Literal["strict", "reference_only"] = "strict"
+    visual_inspection_receipt: ChartVisualInspectionReceipt | None = Field(
+        default=None, alias="visualInspectionReceipt"
+    )
 
     @field_validator("citation_ids")
     @classmethod
@@ -203,14 +249,45 @@ class AnalysisChart(StrictModel):
             raise ValueError("图表 citationIds 不能重复")
         return value
 
+    @model_validator(mode="after")
+    def validate_semantics(self) -> AnalysisChart:
+        if self.comparison_type != "none" and not self.comparison_period:
+            raise ValueError("比较图表必须声明 comparisonPeriod")
+        if self.comparability == "reference_only" and self.comparison_type in {"yoy", "mom"}:
+            raise ValueError("reference_only 图表不得声明严格同比或环比")
+        if self.comparability == "reference_only" and (
+            "参考" not in self.title or "参考" not in self.alt_text
+        ):
+            raise ValueError("reference_only 图表标题和图注必须明确标记为参考")
+        receipt = self.visual_inspection_receipt
+        if receipt is not None and (
+            receipt.source_path != self.source_file.path
+            or receipt.sha256 != self.source_file.sha256
+        ):
+            raise ValueError("图表视觉检查回执与源文件身份不一致")
+        return self
+
+
+class AnalysisDatasetSemantics(StrictModel):
+    """冻结影响指标聚合的 Dataset 粒度与确定性去重结论。"""
+
+    dataset_id: str = Field(alias="datasetId", min_length=1, max_length=256)
+    row_grain: str = Field(alias="rowGrain", min_length=1, max_length=128)
+    duplicate_resolution: Literal["not_applicable", "resolved", "unresolved"] = Field(
+        alias="duplicateResolution"
+    )
+
 
 class AnalysisEvidenceManifest(StrictModel):
-    version: Literal["1"] = "1"
+    version: Literal["1", "2"] = "2"
     evidence: tuple[AnalysisEvidence, ...] = Field(min_length=1, max_length=200)
     metric_definitions: tuple[MetricDefinition, ...] = Field(
         default=(), alias="metricDefinitions", max_length=500
     )
     charts: tuple[AnalysisChart, ...] = Field(default=(), max_length=100)
+    dataset_semantics: tuple[AnalysisDatasetSemantics, ...] = Field(
+        default=(), alias="datasetSemantics", max_length=100
+    )
     warnings: tuple[str, ...] = Field(default=(), max_length=500)
 
     @model_validator(mode="after")
@@ -218,20 +295,37 @@ class AnalysisEvidenceManifest(StrictModel):
         analysis_ids = [item.analysis_id for item in self.evidence]
         metric_codes = [item.code for item in self.metric_definitions]
         chart_ids = [item.chart_id for item in self.charts]
+        semantic_dataset_ids = [item.dataset_id for item in self.dataset_semantics]
         if len(analysis_ids) != len(set(analysis_ids)):
             raise ValueError("AnalysisEvidenceManifest analysisId 不能重复")
         if len(metric_codes) != len(set(metric_codes)):
             raise ValueError("MetricDefinition code 不能重复")
         if len(chart_ids) != len(set(chart_ids)):
             raise ValueError("AnalysisChart chartId 不能重复")
+        if len(semantic_dataset_ids) != len(set(semantic_dataset_ids)):
+            raise ValueError("AnalysisDatasetSemantics datasetId 不能重复")
         known_charts = set(chart_ids)
+        known_metrics = set(metric_codes)
+        known_datasets = {dataset_id for item in self.evidence for dataset_id in item.dataset_ids}
         if any(set(item.chart_ids) - known_charts for item in self.evidence):
             raise ValueError("analysis evidence 引用了未登记图表")
+        if self.version == "2" and not self.dataset_semantics:
+            raise ValueError("v2 AnalysisEvidenceManifest 必须冻结 Dataset 语义")
+        if self.version == "2" and any(
+            item.visual_inspection_receipt is None for item in self.charts
+        ):
+            raise ValueError("v2 AnalysisEvidenceManifest 每张图表必须绑定视觉检查回执")
+        if any(set(item.metric_codes) - known_metrics for item in self.charts):
+            raise ValueError("AnalysisChart 引用了未冻结指标")
+        if any(item.source_dataset_id not in known_datasets for item in self.charts):
+            raise ValueError("AnalysisChart 引用了未冻结 Dataset")
+        if self.dataset_semantics and set(semantic_dataset_ids) != known_datasets:
+            raise ValueError("AnalysisDatasetSemantics 必须精确覆盖 evidence Dataset")
         return self
 
 
 class AnalysisArtifact(StrictModel):
-    version: Literal["1"] = "1"
+    version: Literal["1", "2"] = "2"
     report_brief: ReportBrief = Field(alias="reportBrief")
     evidence_manifest: AnalysisEvidenceManifest = Field(alias="evidenceManifest")
     profile_read_receipts: tuple[ProfileReadReceipt, ...] = Field(
@@ -240,6 +334,12 @@ class AnalysisArtifact(StrictModel):
     profile_read_receipt_ids: tuple[str, ...] = Field(
         default=(), alias="profileReadReceiptIds", max_length=1000
     )
+
+    @model_validator(mode="after")
+    def validate_nested_version(self) -> AnalysisArtifact:
+        if self.version == "2" and self.evidence_manifest.version != "2":
+            raise ValueError("v2 AnalysisArtifact 只能包含 v2 EvidenceManifest")
+        return self
 
 
 class SectionCitation(StrictModel):
@@ -255,6 +355,7 @@ class SectionWorkItem(StrictModel):
     section_number: str = Field(alias="sectionNumber", pattern=r"^[1-9][0-9]*$")
     title: str = Field(min_length=1, max_length=200)
     objective: str = Field(min_length=1, max_length=4000)
+    report_brief: ReportBrief = Field(alias="reportBrief")
     completion_conditions: tuple[str, ...] = Field(
         alias="completionConditions", min_length=1, max_length=100
     )
@@ -313,10 +414,80 @@ class SectionWorkItem(StrictModel):
         )
 
 
+class SectionClaim(StrictModel):
+    claim_id: str = Field(alias="claimId", min_length=1, max_length=128)
+    metric_code: str = Field(alias="metricCode", min_length=1, max_length=128)
+    value: Any
+    period_basis: str = Field(alias="periodBasis", min_length=1, max_length=200)
+    comparison: str | None = Field(default=None, max_length=200)
+    management_question: str = Field(alias="managementQuestion", min_length=1, max_length=4000)
+    current_period: str = Field(alias="currentPeriod", min_length=1, max_length=200)
+    comparison_period: str | None = Field(default=None, alias="comparisonPeriod", max_length=200)
+    comparison_type: Literal["none", "yoy", "mom", "period"] = Field(
+        default="none", alias="comparisonType"
+    )
+    citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
+    chart_ids: tuple[str, ...] = Field(default=(), alias="chartIds", max_length=100)
+    comparability: Literal["strict", "reference_only"] = "strict"
+    conclusion_type: Literal["value", "comparison", "profit", "efficiency", "entity_ratio"] = Field(
+        default="value", alias="conclusionType"
+    )
+    aggregation_grain: str | None = Field(
+        default=None, alias="aggregationGrain", min_length=1, max_length=128
+    )
+    entity_grain: str | None = Field(
+        default=None, alias="entityGrain", min_length=1, max_length=128
+    )
+
+    @model_validator(mode="after")
+    def validate_entity_ratio(self) -> SectionClaim:
+        if self.comparison_type != "none" and self.comparison_period is None:
+            raise ValueError("比较 claim 必须声明 comparisonPeriod")
+        if self.conclusion_type == "entity_ratio" and (
+            self.aggregation_grain is None or self.entity_grain is None
+        ):
+            raise ValueError("实体级比例必须同时声明 aggregationGrain 与 entityGrain")
+        return self
+
+
 class SectionArtifact(StrictModel):
-    version: Literal["1"] = "1"
+    version: Literal["1", "2"] = "2"
     section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
     blocks: tuple[ReportDraftBlock, ...] = Field(min_length=1, max_length=200)
+    claims: tuple[SectionClaim, ...] = Field(default=(), max_length=500)
+
+    @model_validator(mode="after")
+    def validate_claim_references(self) -> SectionArtifact:
+        known = {claim.claim_id for claim in self.claims}
+        if self.version == "2" and not self.claims:
+            raise ValueError("v2 章节必须提交结构化 claims")
+        if len(known) != len(self.claims):
+            raise ValueError("章节 claimId 不能重复")
+        referenced = {claim_id for block in self.blocks for claim_id in block.claim_ids}
+        if referenced - known:
+            raise ValueError("正文 block 引用了未声明的 claim")
+        if known - referenced:
+            raise ValueError("章节 claim 必须由正文 block 引用")
+        if self.version == "2" and any(not block.claim_ids for block in self.blocks):
+            raise ValueError("v2 章节的每个正文 block 必须引用至少一个 claim")
+        return self
+
+
+def read_analysis_artifact(
+    payload: Mapping[str, Any], *, running: bool = False
+) -> AnalysisArtifact:
+    """读取内部分析产物；运行中的 v1 不得猜测缺失的 v2 语义字段。"""
+    version = str(payload.get("version", ""))
+    if version == "1" and running:
+        raise ReportingError(
+            "report_semantic_contract_upgrade_required",
+            "运行中的 v1 分析产物缺少 v2 语义契约，必须重新分析。",
+        )
+    if version == "1":
+        legacy = dict(payload)
+        legacy.pop("version", None)
+        return AnalysisArtifact.model_construct(version="1", **legacy)
+    return AnalysisArtifact.model_validate(payload)
 
 
 class AnalysisReworkRequest(StrictModel):
@@ -334,12 +505,37 @@ class CompletedSection(StrictModel):
     retry_count: int = Field(default=0, alias="retryCount", ge=0, le=10)
 
 
+class CheckpointRetryUsage(StrictModel):
+    analysis_fact_queries_used: int = Field(default=0, alias="analysisFactQueriesUsed", ge=0)
+    visualization_read_units_used: int = Field(default=0, alias="visualizationReadUnitsUsed", ge=0)
+    visualization_fact_queries_used: int = Field(
+        default=0, alias="visualizationFactQueriesUsed", ge=0
+    )
+    visualization_tool_calls: int = Field(default=0, alias="visualizationToolCalls", ge=0)
+    visualization_script_failures: int = Field(default=0, alias="visualizationScriptFailures", ge=0)
+    visualization_attempt_successful_tool_calls: int = Field(
+        default=0, alias="visualizationAttemptSuccessfulToolCalls", ge=0
+    )
+    visualization_attempt_rejected_tool_calls: int = Field(
+        default=0, alias="visualizationAttemptRejectedToolCalls", ge=0
+    )
+
+
 class CheckpointError(StrictModel):
     phase: Literal["analysis", "section", "finalize"]
     code: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=2000)
     section_code: str | None = Field(default=None, alias="sectionCode", max_length=128)
     retry_reason: str | None = Field(default=None, alias="retryReason", max_length=2000)
+    task_id: str | None = Field(default=None, alias="taskId", max_length=128)
+    work_kind: Literal["analysis_item", "visualization", "section", "finalize"] | None = Field(
+        default=None, alias="workKind"
+    )
+    analysis_id: str | None = Field(
+        default=None, alias="analysisId", pattern=r"^analysis_[0-9]{3,6}$"
+    )
+    attempt: int | None = Field(default=None, ge=0, le=100)
+    retry_usage: CheckpointRetryUsage | None = Field(default=None, alias="retryUsage")
 
 
 class ContextTrace(StrictModel):
@@ -373,7 +569,7 @@ class ContextTrace(StrictModel):
 
 
 class ReportingCheckpoint(StrictModel):
-    version: Literal["1"] = "1"
+    version: Literal["1", "2"] = "2"
     revision: int = Field(ge=1)
     phase: Literal["analysis", "sections", "finalize", "completed"]
     outline_hash: str = Field(alias="outlineHash", pattern=SHA256_PATTERN)
@@ -397,6 +593,16 @@ class ReportingCheckpoint(StrictModel):
 
     @model_validator(mode="after")
     def validate_sections(self) -> ReportingCheckpoint:
+        if self.version == "1" and self.phase != "completed":
+            raise ValueError(
+                "report_semantic_contract_upgrade_required: 运行中的 v1 checkpoint 必须重新分析"
+            )
+        if (
+            self.version == "2"
+            and self.evidence_manifest is not None
+            and self.evidence_manifest.version != "2"
+        ):
+            raise ValueError("v2 ReportingCheckpoint 只能包含 v2 EvidenceManifest")
         completed = [item.section_code for item in self.completed_sections]
         if len(completed) != len(set(completed)):
             raise ValueError("checkpoint completedSections 不能重复")

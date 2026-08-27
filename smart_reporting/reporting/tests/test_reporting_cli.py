@@ -92,9 +92,11 @@ async def test_timed_workflow_step_aggregates_metrics_from_concurrent_child_task
             await asyncio.sleep(0)
             record_step_model_metrics(
                 {
+                    "requestCount": 1,
                     "inputTokens": input_tokens,
                     "outputTokens": 10,
                     "totalTokens": input_tokens + 10,
+                    "timeToFirstTokenSeconds": 0.5,
                 }
             )
 
@@ -109,6 +111,10 @@ async def test_timed_workflow_step_aggregates_metrics_from_concurrent_child_task
     assert output.metrics.input_tokens == 300
     assert output.metrics.output_tokens == 20
     assert output.metrics.total_tokens == 320
+    assert output.metrics.additional_metrics == {
+        "request_count": 2,
+        "time_to_first_token_seconds": 1.0,
+    }
 
 
 def test_report_input_parsing_is_shared_with_agentos() -> None:

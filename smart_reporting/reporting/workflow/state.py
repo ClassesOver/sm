@@ -16,7 +16,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from .checkpoint import ChartVisualInspectionReceipt
 
 REPORTING_STATE_SCHEMA_VERSION = 3
 MAX_INLINE_APPLIED_COMMANDS = 1000
@@ -420,6 +422,37 @@ def apply(
         if not any(
             isinstance(item, Mapping) and item.get("receiptId") == receipt_id for item in receipts
         ):
+            receipts.append(dict(receipt))
+    elif name == "record_chart_inspection":
+        try:
+            receipt = ChartVisualInspectionReceipt.model_validate(
+                arguments.get("receipt")
+            ).model_dump(mode="json", by_alias=True)
+        except ValidationError as error:
+            raise ReportingStateError(
+                "report_chart_inspection_invalid", "图表视觉检查回执无效。"
+            ) from error
+        source_path = receipt["sourcePath"]
+        sha256 = receipt["sha256"]
+        receipts = payload.setdefault("chartInspectionReceipts", [])
+        if not isinstance(receipts, list):
+            raise ReportingStateError("report_state_invalid", "chartInspectionReceipts 状态损坏。")
+        existing = next(
+            (
+                item
+                for item in receipts
+                if isinstance(item, Mapping)
+                and item.get("sourcePath") == source_path
+                and item.get("sha256") == sha256
+            ),
+            None,
+        )
+        if existing is not None and dict(existing) != dict(receipt):
+            raise ReportingStateError(
+                "report_chart_inspection_conflict",
+                "同一图表文件身份已绑定不同视觉检查回执。",
+            )
+        if existing is None:
             receipts.append(dict(receipt))
     elif name == "register_charts":
         if state.phase is not ReportingPhase.VISUALIZATION:

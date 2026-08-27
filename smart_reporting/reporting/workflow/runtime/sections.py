@@ -59,7 +59,6 @@ from .base import (
     json,
     logger,
     payload_sha256,
-    record_step_model_metrics,
     reporting_phase_task_key,
     validate_report_draft_blocks,
 )
@@ -120,6 +119,7 @@ class RuntimeSectionsMixin:
             sectionNumber=section.section_number,
             title=section.title,
             objective="；".join(objective_parts),
+            reportBrief=analysis_artifact.report_brief,
             completionConditions=(
                 "完整呈现当前章节全部冻结事实及其管理结论",
                 "保持期间、单位和共享指标口径一致",
@@ -187,6 +187,11 @@ class RuntimeSectionsMixin:
             raise ReportingError(
                 "report_section_artifact_invalid", "Durable 章节产物身份无效。"
             ) from error
+        if artifact.version == "1":
+            raise ReportingError(
+                "report_semantic_contract_upgrade_required",
+                "运行中的 v1 章节产物缺少 v2 语义契约，必须重新分析。",
+            )
         if artifact.section_code != section_code:
             raise ReportingError(
                 "report_section_artifact_invalid", "Durable 章节产物没有绑定当前 sectionCode。"
@@ -389,7 +394,6 @@ class RuntimeSectionsMixin:
                 receipt = await self.task_runner.run(
                     task_scope, parent_run_id=str(run_context.run_id or "")
                 )
-                record_step_model_metrics(receipt.get("modelMetrics"))
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 identity = await self._phase_artifact_from_receipt(
                     scope["threadId"],
@@ -622,6 +626,11 @@ class RuntimeSectionsMixin:
             if artifact.section_code != section.code:
                 raise ReportingError(
                     "report_section_artifact_invalid", "章节产物顺序或 sectionCode 已变化。"
+                )
+            if artifact.version == "1":
+                raise ReportingError(
+                    "report_semantic_contract_upgrade_required",
+                    "运行中的 v1 章节产物缺少 v2 语义契约，必须重新分析。",
                 )
             section_artifacts.append(artifact)
 
@@ -935,6 +944,11 @@ class RuntimeSectionsMixin:
                     AnalysisArtifact,
                 ),
             )
+            if analysis_artifact.version == "1":
+                raise ReportingError(
+                    "report_semantic_contract_upgrade_required",
+                    "运行中的 v1 分析产物缺少 v2 语义契约，必须重新分析。",
+                )
 
         while True:
             checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)

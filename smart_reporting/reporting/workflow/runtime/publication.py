@@ -2,6 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+from ..checkpoint import AnalysisEvidenceManifest, SectionArtifact, SectionCitation
 from .base import (
     REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_ARTIFACTS_STATE_KEY,
@@ -48,6 +49,73 @@ from .base import (
     re,
     validate_rendered_artifacts,
 )
+
+
+def evaluate_publication_semantics(
+    *,
+    evidence_manifest: AnalysisEvidenceManifest,
+    section_artifacts: tuple[SectionArtifact, ...],
+    citations: tuple[SectionCitation, ...],
+) -> dict[str, Any]:
+    """交叉核对冻结指标、Dataset 语义与正文 claim，只阻断实际发布的结论。"""
+
+    issues: list[dict[str, Any]] = []
+    metrics = {item.code: item for item in evidence_manifest.metric_definitions}
+    citation_datasets = {item.citation_id: item.dataset_id for item in citations}
+    dataset_semantics = {item.dataset_id: item for item in evidence_manifest.dataset_semantics}
+
+    def issue(code: str, claim_id: str) -> None:
+        issues.append(
+            {
+                "code": code,
+                "message": code,
+                "details": {"claimId": claim_id},
+            }
+        )
+
+    for artifact in section_artifacts:
+        referenced_claims = {claim_id for block in artifact.blocks for claim_id in block.claim_ids}
+        for claim in artifact.claims:
+            if claim.claim_id not in referenced_claims:
+                continue
+            metric = metrics.get(claim.metric_code)
+            if metric is None or claim.period_basis != metric.period_basis:
+                issue("report_period_basis_conflict", claim.claim_id)
+            datasets = {
+                citation_datasets[citation_id]
+                for citation_id in claim.citation_ids
+                if citation_id in citation_datasets
+            }
+            if any(
+                dataset_semantics.get(dataset_id) is not None
+                and dataset_semantics[dataset_id].duplicate_resolution == "unresolved"
+                for dataset_id in datasets
+            ):
+                issue("report_aggregation_duplicate_unresolved", claim.claim_id)
+            if claim.conclusion_type == "entity_ratio" and (
+                claim.aggregation_grain != claim.entity_grain
+                or any(
+                    dataset_semantics.get(dataset_id) is None
+                    or dataset_semantics[dataset_id].row_grain != claim.entity_grain
+                    for dataset_id in datasets
+                )
+            ):
+                issue("report_entity_grain_unproven", claim.claim_id)
+            referenced_charts = {
+                item.chart_id: item
+                for item in evidence_manifest.charts
+                if item.chart_id in claim.chart_ids
+            }
+            non_strict_source = claim.comparability == "reference_only" or any(
+                item.comparability == "reference_only" for item in referenced_charts.values()
+            )
+            if non_strict_source and claim.conclusion_type in {
+                "comparison",
+                "profit",
+                "efficiency",
+            }:
+                issue("report_cross_source_inference_unsupported", claim.claim_id)
+    return {"formalReleaseAllowed": not issues, "issues": issues}
 
 
 class RuntimePublicationMixin:
@@ -443,6 +511,33 @@ class RuntimePublicationMixin:
                     analysis_warnings,
                 )
             )
+            parsed_section_artifacts: list[SectionArtifact] = []
+            for completed in checkpoint.completed_sections:
+                stored_section = await self._read_identity_model(
+                    thread_id,
+                    completed.artifact_file,
+                    SectionArtifact,
+                )
+                parsed_section_artifacts.append(
+                    SectionArtifact.model_validate(
+                        stored_section.model_dump(mode="json", by_alias=True)
+                    )
+                )
+            section_artifacts = tuple(parsed_section_artifacts)
+            semantic_gate = evaluate_publication_semantics(
+                evidence_manifest=checkpoint.evidence_manifest,
+                section_artifacts=section_artifacts,
+                citations=tuple(
+                    SectionCitation(
+                        citationId=item.citation_id,
+                        datasetId=item.dataset_id,
+                        requirementId=item.requirement_id,
+                        snapshotHash=item.snapshot_hash,
+                    )
+                    for item in authoritative_citations(lineage)
+                ),
+            )
+            issues.extend(semantic_gate["issues"])
         except (TypeError, ValueError, ValidationError, AttributeError):
             issue("analysis_checkpoint_invalid", "发布门禁无法核验冻结分析产物。")
 

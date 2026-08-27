@@ -38,8 +38,9 @@ def build_report_worker_tools(
         vision_reviewer=vision_reviewer,
     )
     if vision_reviewer is None:
-        toolkit.functions.pop("view_image", None)
-        toolkit.async_functions.pop("view_image", None)
+        for functions in (toolkit.functions, toolkit.async_functions):
+            functions.pop("view_image", None)
+            functions.pop("inspect_chart", None)
     phase = reporting_phase_from_run_context(run_context)
     task_kind = reporting_task_kind_from_run_context(run_context)
     if phase is not None:

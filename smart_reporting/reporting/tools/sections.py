@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -17,11 +18,13 @@ from pydantic import ValidationError
 from ...workspace import WorkspaceError, WorkspaceService
 from ..delivery.draft_v1 import (
     ReportChartRegistration,
+    ReportDraftBlock,
     validate_report_draft_blocks,
 )
 from ..models import ReportingError
 from ..workflow.checkpoint import (
     AnalysisReworkRequest,
+    ChartVisualInspectionReceipt,
     FileIdentity,
     SectionArtifact,
     SectionWorkItem,
@@ -87,6 +90,7 @@ class RuntimeSectionsMixin:
         scope: Any,
         section_code: str,
         blocks: list[dict[str, Any]],
+        claims: list[dict[str, Any]],
         state: dict[str, Any] | None,
         run_context: RunContext | None,
     ) -> dict[str, Any]:
@@ -97,14 +101,78 @@ class RuntimeSectionsMixin:
             raise ReportingError(
                 "report_section_order_invalid", "当前 Task 只能提交 SectionWorkItem 指定章节。"
             )
-        artifact = SectionArtifact.model_validate({"sectionCode": section_code, "blocks": blocks})
         # 章节一旦签发完成就可能被 durable checkpoint 直接恢复，因此必须在写文件和
         # complete_section 之前拒绝服务端保留标记。模型仍可在当前 section run 内根据
         # 明确回执重试，只通过 chartIds 登记图表。
-        validate_report_draft_blocks(artifact.blocks)
+        parsed_blocks = tuple(ReportDraftBlock.model_validate(item) for item in blocks)
+        validate_report_draft_blocks(parsed_blocks)
+        artifact = SectionArtifact.model_validate(
+            {"sectionCode": section_code, "blocks": parsed_blocks, "claims": claims}
+        )
         known_citations = {item.citation_id for item in work_item.citations}
         known_charts = {item.chart_id for item in work_item.charts}
+        metrics_by_code = {item.code: item for item in work_item.metric_definitions}
         charts_by_id = {item.chart_id: item for item in work_item.charts}
+        citation_datasets = {item.citation_id: item.dataset_id for item in work_item.citations}
+        for claim in artifact.claims:
+            metric = metrics_by_code.get(claim.metric_code)
+            if metric is None:
+                raise ReportingError(
+                    "report_section_claim_metric_unknown",
+                    "章节 claim 引用了未冻结指标。",
+                )
+            if claim.period_basis != metric.period_basis:
+                raise ReportingError(
+                    "report_period_basis_conflict",
+                    "章节 claim 的期间口径与冻结指标不一致。",
+                )
+            if claim.management_question not in work_item.report_brief.management_questions:
+                raise ReportingError(
+                    "report_section_claim_brief_conflict",
+                    "章节 claim 未绑定 ReportBrief 的管理问题。",
+                )
+            if set(claim.citation_ids) - known_citations:
+                raise ReportingError(
+                    "report_section_claim_citation_unknown",
+                    "章节 claim 引用了 SectionWorkItem 外的 citation。",
+                )
+            if set(claim.chart_ids) - known_charts:
+                raise ReportingError(
+                    "report_section_claim_chart_unknown",
+                    "章节 claim 引用了 SectionWorkItem 外的 chart。",
+                )
+            claim_datasets = {citation_datasets[citation_id] for citation_id in claim.citation_ids}
+            for chart_id in claim.chart_ids:
+                chart = charts_by_id[chart_id]
+                if (
+                    claim.metric_code not in chart.metric_codes
+                    or set(chart.citation_ids) - set(claim.citation_ids)
+                    or chart.source_dataset_id not in claim_datasets
+                    or chart.current_period != claim.current_period
+                    or chart.comparison_period != claim.comparison_period
+                    or chart.comparison_type != claim.comparison_type
+                ):
+                    raise ReportingError(
+                        "report_section_claim_chart_conflict",
+                        "章节 claim 与冻结图表的指标、来源或期间语义不一致。",
+                    )
+                if (
+                    chart.comparability == "reference_only"
+                    and claim.comparability != "reference_only"
+                ):
+                    raise ReportingError(
+                        "report_cross_source_inference_unsupported",
+                        "reference_only 图表只能支持 reference_only claim。",
+                    )
+            if claim.comparability == "reference_only":
+                claim_blocks = [
+                    block for block in artifact.blocks if claim.claim_id in block.claim_ids
+                ]
+                if not claim_blocks or any("参考" not in block.markdown for block in claim_blocks):
+                    raise ReportingError(
+                        "report_cross_source_inference_unsupported",
+                        "reference_only claim 的正文必须明确标记为参考。",
+                    )
         referenced_citations = {
             citation_id for block in artifact.blocks for citation_id in block.citation_ids
         }
@@ -248,15 +316,38 @@ class RuntimeSectionsMixin:
         except (ReportingError, ValidationError, WorkspaceError) as error:
             return self._failure(error)
 
-    async def _inspect_chart(
+    @staticmethod
+    def _chart_output_root(contract: Mapping[str, Any]) -> str:
+        workspace = contract.get("visualizationWorkspace")
+        raw_root = workspace.get("chartOutputRoot") if isinstance(workspace, Mapping) else None
+        try:
+            return WorkspaceService.normalize_path(raw_root, allow_root=False)[0]
+        except (TypeError, WorkspaceError) as error:
+            raise ReportingError(
+                "report_phase_contract_invalid",
+                "visualization chartOutputRoot 无效。",
+            ) from error
+
+    @staticmethod
+    def _require_chart_output_path(path: str, output_root: str) -> str:
+        try:
+            normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
+        except (TypeError, WorkspaceError) as error:
+            raise ReportingError("report_chart_source_invalid", "图表源路径无效。") from error
+        if not normalized.startswith(f"{output_root}/"):
+            raise ReportingError(
+                "report_chart_source_path_forbidden",
+                "图表只能读取当前 visualization Task 的签发输出目录。",
+            )
+        return normalized
+
+    async def _inspect_chart_file(
         self,
         *,
         thread_id: str,
-        registration: ReportChartRegistration,
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        source_path, remote = self.kernel.service.normalize_path(
-            registration.source_path, allow_root=False
-        )
+        path: str,
+    ) -> dict[str, Any]:
+        source_path, remote = self.kernel.service.normalize_path(path, allow_root=False)
         async with self.kernel.service._async_client() as client:
             sandbox = await self.kernel.service._asandbox_for(client, thread_id)
             await self.kernel.service._avalidate_existing_path(sandbox, source_path)
@@ -295,6 +386,29 @@ class RuntimeSectionsMixin:
             )
         if width < 1 or height < 1 or (colors is not None and len(colors) <= 1):
             raise ReportingError("report_chart_blank", "图表图片完全空白，不能登记。")
+        return {
+            "sourcePath": source_path,
+            "size": len(content),
+            "sha256": digest,
+            "format": image_format,
+            "mediaType": media_type,
+            "extension": extension,
+            "width": width,
+            "height": height,
+        }
+
+    async def _inspect_chart(
+        self,
+        *,
+        thread_id: str,
+        registration: ReportChartRegistration,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        file_identity = await self._inspect_chart_file(
+            thread_id=thread_id,
+            path=registration.source_path,
+        )
+        width = int(file_identity["width"])
+        height = int(file_identity["height"])
         warnings: list[dict[str, Any]] = []
         if width < 800 or height < 450:
             warnings.append(
@@ -320,17 +434,66 @@ class RuntimeSectionsMixin:
         return (
             {
                 **registration.model_dump(mode="json", by_alias=True),
-                "sourcePath": source_path,
-                "size": len(content),
-                "sha256": digest,
-                "format": image_format,
-                "mediaType": media_type,
-                "extension": extension,
-                "width": width,
-                "height": height,
+                **file_identity,
             },
             warnings,
         )
+
+    async def inspect_chart(
+        self,
+        path: str,
+        detail: str = "high",
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        try:
+            scope = await self.kernel.scope(run_context)
+            self._require_phase_tool(
+                scope,
+                allowed=frozenset({"analysis"}),
+                tool_name="inspect_chart",
+                run_context=run_context,
+                task_kinds=frozenset({"visualization"}),
+            )
+            if self._active_reporting_task_kind(scope) != "visualization":
+                raise ReportingError(
+                    "report_phase_contract_invalid",
+                    "inspect_chart 只允许 visualization Task 调用。",
+                )
+            if detail not in {"high", "original"}:
+                raise ReportingError("report_chart_inspection_invalid", "图片 detail 无效。")
+            _parameters, contract = self._phase_parameters(scope, "analysis")
+            output_root = self._chart_output_root(contract)
+            source_path = self._require_chart_output_path(path, output_root)
+            reviewer = self._vision_reviewer
+            if reviewer is None:
+                raise WorkspaceError("当前 Reporting Worker 未启用图片视觉审查。")
+            identity = await self._inspect_chart_file(thread_id=scope.thread_id, path=source_path)
+            receipt = ChartVisualInspectionReceipt.model_validate(
+                await reviewer.review(scope.thread_id, source_path, detail=detail)
+            )
+            # 文件在像素检查和模型审查之间发生变化时，两份哈希会不一致。此时任何一份
+            # 视觉结论都不能证明当前候选图表，必须失败关闭并要求重新检查。
+            if receipt.sha256 != identity["sha256"]:
+                raise ReportingError(
+                    "report_chart_inspection_changed",
+                    "图表在视觉审查期间发生变化，请重新检查最终文件。",
+                )
+            await self._apply_durable(
+                scope,
+                name="record_chart_inspection",
+                payload={"receipt": receipt.model_dump(mode="json", by_alias=True)},
+                command_id=(
+                    f"chart-inspection:{identity['sha256']}:"
+                    f"{_stable_digest(receipt.model_dump(mode='json', by_alias=True))}"
+                ),
+            )
+        except (ReportingError, ValidationError, WorkspaceError) as error:
+            return self._failure(error)
+        return {
+            "ok": True,
+            "status": "reviewed",
+            "receipt": receipt.model_dump(mode="json", by_alias=True),
+        }
 
     async def register_report_charts(
         self,
@@ -352,6 +515,7 @@ class RuntimeSectionsMixin:
                     "register_report_charts 只允许 visualization Task 调用。",
                 )
             _parameters, phase_contract = self._phase_parameters(scope, "analysis")
+            output_root = self._chart_output_root(phase_contract)
             raw_citation_ids = phase_contract.get("citationIds")
             if (
                 not isinstance(raw_citation_ids, list)
@@ -363,6 +527,21 @@ class RuntimeSectionsMixin:
                     "Analysis Task citation 注册表无效。",
                 )
             citation_ids = tuple(raw_citation_ids)
+            raw_citation_datasets = phase_contract.get("citationDatasetIds")
+            if not isinstance(raw_citation_datasets, Mapping) or any(
+                not isinstance(citation_id, str) or not isinstance(dataset_id, str)
+                for citation_id, dataset_id in raw_citation_datasets.items()
+            ):
+                raise ReportingError(
+                    "report_phase_contract_invalid",
+                    "Analysis Task 缺少权威 citation 注册表。",
+                )
+            citation_datasets = dict(raw_citation_datasets)
+            if set(citation_datasets) != set(citation_ids):
+                raise ReportingError(
+                    "report_phase_contract_invalid",
+                    "Analysis Task citation 注册表未精确覆盖 citationIds。",
+                )
             parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
             if len({item.chart_id for item in parsed}) != len(parsed):
                 raise ReportingError(
@@ -370,6 +549,15 @@ class RuntimeSectionsMixin:
                 )
             if any(set(item.citation_ids) - set(citation_ids) for item in parsed):
                 raise ReportingError("report_chart_citation_unknown", "图表引用了未注册 citation。")
+            if any(
+                {citation_datasets[citation_id] for citation_id in item.citation_ids}
+                != {item.source_dataset_id}
+                for item in parsed
+            ):
+                raise ReportingError(
+                    "report_chart_citation_dataset_mismatch",
+                    "图表 citation 必须全部属于声明的 sourceDatasetId。",
+                )
             durable = await self._durable_state(scope)
             registry = {
                 item["chartId"]: item
@@ -380,9 +568,48 @@ class RuntimeSectionsMixin:
             registered: list[dict[str, Any]] = []
             inspected: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
             for registration in parsed:
+                self._require_chart_output_path(registration.source_path, output_root)
                 identity, chart_warnings = await self._inspect_chart(
                     thread_id=scope.thread_id,
                     registration=registration,
+                )
+                raw_receipts = durable.payload.get("chartInspectionReceipts")
+                receipts = raw_receipts if isinstance(raw_receipts, list) else []
+                same_path = [
+                    item
+                    for item in receipts
+                    if isinstance(item, Mapping)
+                    and item.get("sourcePath") == identity["sourcePath"]
+                ]
+                receipt = next(
+                    (item for item in same_path if item.get("sha256") == identity["sha256"]),
+                    None,
+                )
+                if receipt is None:
+                    code = (
+                        "report_chart_inspection_changed"
+                        if same_path
+                        else "report_chart_inspection_missing"
+                    )
+                    raise ReportingError(
+                        code,
+                        "正式图表缺少绑定当前文件哈希的视觉检查回执。",
+                    )
+                parsed_receipt = ChartVisualInspectionReceipt.model_validate(receipt)
+                has_critical_issue = any(
+                    item.severity == "critical" for item in parsed_receipt.issues
+                )
+                if (
+                    parsed_receipt.reviewed is not True
+                    or parsed_receipt.requires_revision is True
+                    or has_critical_issue
+                ):
+                    raise ReportingError(
+                        "report_chart_inspection_failed",
+                        "图表视觉检查未通过，修正并重新检查后才能登记。",
+                    )
+                identity["visualInspectionReceipt"] = parsed_receipt.model_dump(
+                    mode="json", by_alias=True
                 )
                 existing = registry.get(registration.chart_id)
                 if isinstance(existing, dict):
@@ -436,6 +663,7 @@ class RuntimeSectionsMixin:
         self,
         sectionCode: str,
         blocks: list[dict[str, Any]],
+        claims: list[dict[str, Any]],
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         state = self._session_state(run_context)
@@ -450,6 +678,7 @@ class RuntimeSectionsMixin:
                 scope=scope,
                 section_code=sectionCode,
                 blocks=blocks,
+                claims=claims,
                 state=state,
                 run_context=run_context,
             )

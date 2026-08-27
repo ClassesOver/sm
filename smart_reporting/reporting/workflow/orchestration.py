@@ -73,6 +73,16 @@ def record_step_model_metrics(value: Any) -> None:
         metric = value.get(alias) if isinstance(value, Mapping) else getattr(value, field, None)
         if isinstance(metric, int | float):
             setattr(incoming, field, metric)
+    additional_metrics: dict[str, int | float] = {}
+    for alias, field in (
+        ("requestCount", "request_count"),
+        ("timeToFirstTokenSeconds", "time_to_first_token_seconds"),
+    ):
+        metric = value.get(alias) if isinstance(value, Mapping) else None
+        if isinstance(metric, int | float) and not isinstance(metric, bool) and metric >= 0:
+            additional_metrics[field] = metric
+    if additional_metrics:
+        incoming.additional_metrics = additional_metrics
     current.add(incoming)
 
 
@@ -90,11 +100,24 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
             if isawaitable(result):
                 result = await result
         except BaseException as error:
+            failed_metrics = accumulator.snapshot()
+            failed_additional = failed_metrics.additional_metrics or {}
             logger.warning(
-                "report_workflow_step_failed step_id={} duration_ms={} error_type={}",
+                "report_workflow_step_failed step_id={} duration_ms={} error_type={} "
+                "request_count={} input_tokens={} output_tokens={} total_tokens={} "
+                "reasoning_tokens={} cache_read_tokens={} cache_write_tokens={} "
+                "time_to_first_token_seconds={}",
                 step_id,
                 max(0, round((perf_counter() - started_at) * 1000)),
                 type(error).__name__,
+                failed_additional.get("request_count", 0),
+                failed_metrics.input_tokens,
+                failed_metrics.output_tokens,
+                failed_metrics.total_tokens,
+                failed_metrics.reasoning_tokens,
+                failed_metrics.cache_read_tokens,
+                failed_metrics.cache_write_tokens,
+                failed_additional.get("time_to_first_token_seconds"),
             )
             _STEP_MODEL_METRICS.reset(metrics_token)
             raise
@@ -110,7 +133,7 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
         logger.info(
             "report_workflow_step_completed step_id={} duration_ms={} input_tokens={} "
             "output_tokens={} total_tokens={} reasoning_tokens={} cache_read_tokens={} "
-            "cache_write_tokens={}",
+            "cache_write_tokens={} request_count={} time_to_first_token_seconds={}",
             step_id,
             max(0, round(duration * 1000)),
             getattr(metrics, "input_tokens", None),
@@ -119,6 +142,8 @@ def _timed_step_executor(executor: StepExecutor, *, step_id: str) -> StepExecuto
             getattr(metrics, "reasoning_tokens", None),
             getattr(metrics, "cache_read_tokens", None),
             getattr(metrics, "cache_write_tokens", None),
+            (metrics.additional_metrics or {}).get("request_count", 0),
+            (metrics.additional_metrics or {}).get("time_to_first_token_seconds"),
         )
         return result
 

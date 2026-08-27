@@ -160,12 +160,12 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "不得对可能为空的对象调用 .rows()，也不得让单张图表失败终止整批脚本。"
     ),
     (
-        "根据批准提纲和真实数据选择图表，不设固定数量或类型。图表源文件定稿并完成必要视觉检查后，"
-        "使用 register_report_charts 登记；图表必须绑定已注册 citationId。"
+        "根据批准提纲和真实数据选择图表，不设固定数量或类型。每张最终图表必须先调用 inspect_chart，"
+        "取得绑定当前文件哈希的通过回执后再使用 register_report_charts 登记；图表必须绑定已注册 citationId。"
     ),
     (
         "可视化阶段有总工具调用和脚本失败硬预算。事实读取、脚本写入、脚本执行和视觉检查分别合并为最少批次；"
-        "禁止对相同文件反复 read_file、terminal 或 view_image，也不得在上下文恢复后重新探索已完成工作。"
+        "禁止对相同文件反复 read_file、terminal 或 inspect_chart，也不得在上下文恢复后重新探索已完成工作。"
     ),
     (
         "创建或修改图表脚本只调用 write_analysis_files 的公开扁平 schema；首次创建使用 "
@@ -175,7 +175,8 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。"
     ),
     (
-        "汇总全部分析形成 ReportBrief、共享指标口径和全局 Warning，最后且只调用一次"
+        "汇总全部分析形成 ReportBrief、共享指标口径、覆盖全部 Dataset 的 rowGrain/duplicateResolution"
+        " 语义和全局 Warning，最后且只调用一次"
         " finalize_report_analysis。AnalysisEvidenceManifest、Profile receipt 和图表身份由服务端 durable"
         " 账本派生，不得重新提交或猜测。"
     ),
@@ -216,9 +217,14 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
         "登记为 chartId。具体图表类型、表格数量和列项根据数据实际决定。"
     ),
     (
-        "正文块只提交 blockId、Markdown、citationIds 和 chartIds，不提交 analysisIds。"
+        "正文块提交 blockId、Markdown、citationIds、chartIds 和 claimIds，不提交 analysisIds。"
         "引用由 datasetId、requirementId、snapshotHash 共同绑定，不得猜测或改写。当前 WorkItem 的"
         " citationIds 必须在对应数据事实正文块中引用。"
+    ),
+    (
+        "每个正文块必须引用至少一个结构化 claim；claim 必须绑定 ReportBrief 中的 managementQuestion、"
+        "冻结 metricCode、当前/比较期间、citationIds 与实际使用的 chartIds。reference_only 结论及其"
+        "正文必须明确标记为“参考”，不得据此生成严格同比、利润或效率结论。"
     ),
     "报告结论、数字、表格和图表必须来自当前冻结 evidence；不得年化、拟合、外推、补齐、平滑或作无依据归因。",
     "deterministicFactFiles 是服务端复算并校验哈希的固定事实，优先读取并沿用；可补充解释和非标准分析，但不得覆盖其中数值。",

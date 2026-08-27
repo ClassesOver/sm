@@ -796,6 +796,55 @@ def test_chart_batch_registration_is_atomic_and_closes_lifecycle():
     assert conflict.value.code == "report_chart_registration_closed"
 
 
+def test_chart_inspection_receipt_is_durable_idempotent_and_identity_bound() -> None:
+    state = apply_phase(apply_phase(initial_state(), "start_analysis"), "start_visualization")
+    receipt = {
+        "sourcePath": "analysis/charts/income.png",
+        "sha256": "a" * 64,
+        "modelId": "vision-model",
+        "reviewed": True,
+        "requiresRevision": False,
+        "issues": [],
+        "summary": "检查完成",
+        "warnings": [],
+        "suggestions": [],
+    }
+    first = ReportingStateReducer.apply(
+        state,
+        {
+            "name": "record_chart_inspection",
+            "commandId": "chart-inspection-1",
+            "payload": {"receipt": receipt},
+        },
+        state.state_version,
+    ).state
+
+    assert first.payload["chartInspectionReceipts"] == [receipt]
+    replayed = ReportingStateReducer.apply(
+        first,
+        {
+            "name": "record_chart_inspection",
+            "commandId": "chart-inspection-2",
+            "payload": {"receipt": receipt},
+        },
+        first.state_version,
+    ).state
+    assert replayed.payload["chartInspectionReceipts"] == [receipt]
+
+    changed = {**receipt, "modelId": "different-model"}
+    with pytest.raises(ReportingStateError) as conflict:
+        ReportingStateReducer.apply(
+            replayed,
+            {
+                "name": "record_chart_inspection",
+                "commandId": "chart-inspection-conflict",
+                "payload": {"receipt": changed},
+            },
+            replayed.state_version,
+        )
+    assert conflict.value.code == "report_chart_inspection_conflict"
+
+
 def test_profile_receipt_reuses_stable_identity_when_purpose_changes() -> None:
     state = apply_phase(initial_state(), "start_analysis")
     first_receipt = {

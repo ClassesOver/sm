@@ -81,6 +81,7 @@ REPORTING_VISUALIZATION_TOOL_NAMES = frozenset(
         "finalize_report_analysis",
         "get_skill_instructions",
         "get_skill_reference",
+        "inspect_chart",
         "process",
         "query_analysis_context",
         "query_analysis_facts",

@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import json
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from agno.agent import Agent
@@ -50,6 +52,7 @@ from smart_reporting.reporting.phase import (
 )
 from smart_reporting.reporting.vision import ReportVisionReviewer
 from smart_reporting.settings import AgentSettings
+from smart_reporting.workspace import WorkspaceError
 
 
 def test_report_worker_disables_unused_session_summaries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,6 +127,62 @@ def test_report_vision_reviewer_disables_telemetry() -> None:
     assert reviewer._new_agent().telemetry is False
 
 
+@pytest.mark.anyio
+async def test_report_vision_reviewer_sends_native_image_and_binds_receipt_hash() -> None:
+    content = b"\x89PNG\r\n\x1a\nchart-bytes"
+    workspace = SimpleNamespace(
+        view_image=lambda _thread_id, _path: SimpleNamespace(
+            images=[SimpleNamespace(content=content, mime_type="image/png", format="png")]
+        )
+    )
+    agent = SimpleNamespace(arun=AsyncMock())
+    agent.arun.return_value = SimpleNamespace(
+        content={
+            "summary": "图表存在裁切和文字重叠。",
+            "requiresRevision": True,
+            "issues": [
+                {"category": "cropping", "severity": "critical", "description": "标题被裁切"},
+                {
+                    "category": "text_overlap",
+                    "severity": "critical",
+                    "description": "坐标轴文字重叠",
+                },
+            ],
+            "warnings": [],
+            "suggestions": ["增加边距"],
+        }
+    )
+    settings = AgentSettings.from_environment({"OPENAI_API_KEY": "test"}, load_env_file=False)
+    reviewer = ReportVisionReviewer(settings, cast(Any, workspace), agent_factory=lambda: agent)
+
+    receipt = await reviewer.review("thread-1", "analysis/charts/income.png")
+
+    assert receipt["sourcePath"] == "analysis/charts/income.png"
+    assert receipt["sha256"] == hashlib.sha256(content).hexdigest()
+    assert receipt["modelId"] == settings.report_vision_model
+    assert receipt["reviewed"] is True
+    assert receipt["requiresRevision"] is True
+    assert {item["category"] for item in receipt["issues"]} == {"cropping", "text_overlap"}
+    assert len(agent.arun.await_args.kwargs["images"]) == 1
+    assert agent.arun.await_args.kwargs["images"][0].content == content
+
+
+@pytest.mark.anyio
+async def test_report_vision_reviewer_fails_closed_when_model_is_unavailable() -> None:
+    content = b"\x89PNG\r\n\x1a\nchart-bytes"
+    workspace = SimpleNamespace(
+        view_image=lambda _thread_id, _path: SimpleNamespace(
+            images=[SimpleNamespace(content=content, mime_type="image/png", format="png")]
+        )
+    )
+    agent = SimpleNamespace(arun=AsyncMock(side_effect=RuntimeError("provider secret")))
+    settings = AgentSettings.from_environment({"OPENAI_API_KEY": "test"}, load_env_file=False)
+    reviewer = ReportVisionReviewer(settings, cast(Any, workspace), agent_factory=lambda: agent)
+
+    with pytest.raises(WorkspaceError, match="视觉审查暂不可用"):
+        await reviewer.review("thread-1", "analysis/charts/income.png")
+
+
 @pytest.mark.parametrize(
     ("configured_timeout", "expected_timeout"),
     [("900", 900), ("120", 120)],
@@ -173,6 +232,7 @@ def test_report_worker_caps_only_long_model_timeout(
                 "get_skill_reference",
                 "query_analysis_context",
                 "query_analysis_facts",
+                "inspect_chart",
                 "register_report_charts",
                 "finalize_report_analysis",
             ],
@@ -205,6 +265,7 @@ def test_analysis_task_kind_projection_separates_item_and_visualization_tools(
             "query_analysis_facts",
             "query_profile",
             "complete_analysis_item",
+            "inspect_chart",
             "register_report_charts",
             "finalize_report_analysis",
         )

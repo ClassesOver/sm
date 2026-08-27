@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from markdown_it import MarkdownIt
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -76,6 +76,15 @@ class ReportChartRegistration(StrictModel):
     title: str = Field(min_length=1, max_length=200)
     alt_text: str = Field(alias="altText", min_length=1, max_length=200)
     citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
+    metric_codes: tuple[str, ...] = Field(alias="metricCodes", min_length=1, max_length=100)
+    current_period: str = Field(alias="currentPeriod", min_length=1, max_length=200)
+    comparison_period: str | None = Field(default=None, alias="comparisonPeriod", max_length=200)
+    comparison_type: Literal["none", "yoy", "mom", "period"] = Field(
+        default="none", alias="comparisonType"
+    )
+    source_dataset_id: str = Field(alias="sourceDatasetId", min_length=1, max_length=256)
+    aggregation_grain: str = Field(alias="aggregationGrain", min_length=1, max_length=128)
+    comparability: Literal["strict", "reference_only"] = "strict"
 
     @field_validator("source_path")
     @classmethod
@@ -92,19 +101,31 @@ class ReportChartRegistration(StrictModel):
     def deduplicate_citations(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(dict.fromkeys(value))
 
+    @model_validator(mode="after")
+    def validate_comparability(self) -> ReportChartRegistration:
+        if self.comparison_type != "none" and not self.comparison_period:
+            raise ValueError("比较图表必须声明 comparisonPeriod")
+        if self.comparability == "reference_only":
+            if self.comparison_type in {"yoy", "mom"}:
+                raise ValueError("reference_only 图表不得声明严格同比或环比")
+            if "参考" not in self.title or "参考" not in self.alt_text:
+                raise ValueError("reference_only 图表标题和图注必须明确标记为参考")
+        return self
+
 
 class ReportDraftBlock(StrictModel):
     block_id: str = Field(alias="blockId", min_length=1, max_length=128)
     markdown: str = Field(min_length=1, max_length=64_000)
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=100)
     chart_ids: tuple[str, ...] = Field(default=(), alias="chartIds")
+    claim_ids: tuple[str, ...] = Field(default=(), alias="claimIds", max_length=100)
 
     @field_validator("markdown")
     @classmethod
     def strip_markdown(cls, value: str) -> str:
         return value.strip()
 
-    @field_validator("citation_ids", "chart_ids")
+    @field_validator("citation_ids", "chart_ids", "claim_ids")
     @classmethod
     def deduplicate_references(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(dict.fromkeys(value))

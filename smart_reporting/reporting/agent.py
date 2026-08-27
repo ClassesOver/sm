@@ -180,6 +180,13 @@ _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
                 "title": "医疗收入月度趋势",
                 "altText": "2025年医疗收入月度变化",
                 "citationIds": ["citation_003"],
+                "metricCodes": ["income"],
+                "currentPeriod": "2025年",
+                "comparisonPeriod": None,
+                "comparisonType": "none",
+                "sourceDatasetId": "dataset_001",
+                "aggregationGrain": "month",
+                "comparability": "strict",
             }
         ]
     },
@@ -189,6 +196,19 @@ _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
             {
                 "blockId": "overview",
                 "markdown": "### 核心结论\n\n- 医疗收入同比增长 8.2%",
+                "citationIds": ["citation_001"],
+                "chartIds": ["income_trend"],
+                "claimIds": ["claim_income"],
+            }
+        ],
+        "claims": [
+            {
+                "claimId": "claim_income",
+                "metricCode": "income",
+                "value": "8.2%",
+                "periodBasis": "2025年",
+                "managementQuestion": "收入增长是否可持续？",
+                "currentPeriod": "2025年",
                 "citationIds": ["citation_001"],
                 "chartIds": ["income_trend"],
             }
@@ -2129,7 +2149,7 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                     task_kind=reporting_task_kind_from_run_context(current_reporting_run_context()),
                 )
             )
-            vision_disabled = name == "view_image" and not getattr(
+            vision_disabled = name in {"view_image", "inspect_chart"} and not getattr(
                 self, "_report_vision_enabled", True
             )
             if not phase_forbidden and not vision_disabled:

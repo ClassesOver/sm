@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from ..checkpoint import CheckpointRetryUsage
 from .base import (
     _VISUALIZATION_RECOVERY_ERROR_CODES,
     MAX_REPORT_INSTRUCTION_BYTES,
@@ -63,7 +64,6 @@ from .base import (
     partial,
     payload_sha256,
     re,
-    record_step_model_metrics,
     reporting_phase_task_key,
     reporting_thinking_profile_from_model,
     time,
@@ -424,6 +424,14 @@ class RuntimeAnalysisMixin:
             durable.payload.get("workflowCheckpoint") if durable is not None else None
         )
         if isinstance(stored_checkpoint, dict):
+            if (
+                stored_checkpoint.get("version") == "1"
+                and stored_checkpoint.get("phase") != "completed"
+            ):
+                raise ReportingError(
+                    "report_semantic_contract_upgrade_required",
+                    "运行中的 v1 checkpoint 缺少 v2 语义契约，必须重新分析。",
+                )
             try:
                 checkpoint = ReportingCheckpoint.model_validate(stored_checkpoint)
             except (TypeError, ValueError, ValidationError) as error:
@@ -633,7 +641,12 @@ class RuntimeAnalysisMixin:
                 "report_analysis_facts_invalid",
                 "固定 facts 文件与当前分析项身份不一致。",
             )
-        last_error: Exception | None = None
+        last_error: Exception | None = _checkpoint_retry_error(
+            checkpoint,
+            work_kind="analysis_item",
+            analysis_id=analysis_id,
+            retry_reason=retry_reason,
+        )
 
         for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
             matching_traces = [
@@ -821,7 +834,6 @@ class RuntimeAnalysisMixin:
                     task_scope,
                     parent_run_id=str(run_context.run_id or ""),
                 )
-                record_step_model_metrics(receipt.get("modelMetrics"))
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 trace_metrics["duration_seconds"] = time.monotonic() - started_at
                 durable_after = await self.state_repository.get(report_run_id)
@@ -902,6 +914,13 @@ class RuntimeAnalysisMixin:
                         "code": code,
                         "message": message or "独立分析项失败。",
                         "retryReason": retry_reason or code,
+                        "taskId": task_id,
+                        "workKind": "analysis_item",
+                        "analysisId": analysis_id,
+                        "attempt": attempt,
+                        "retryUsage": _checkpoint_retry_usage(
+                            error, work_kind="analysis_item"
+                        ).model_dump(mode="json", by_alias=True),
                     },
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
@@ -997,7 +1016,12 @@ class RuntimeAnalysisMixin:
         )
         if scheduled_analysis_ids:
             checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)
-        last_error: Exception | None = None
+        last_error: Exception | None = _checkpoint_retry_error(
+            checkpoint,
+            work_kind="visualization",
+            analysis_id=None,
+            retry_reason=retry_reason,
+        )
 
         for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
             started_trace = next(
@@ -1147,6 +1171,12 @@ class RuntimeAnalysisMixin:
                     },
                     "datasetIds": [item.dataset_id for item in dataset_handles],
                     "citationIds": [item.citation_id for item in citation_bindings],
+                    "citationRegistry": [
+                        item.model_dump(mode="json", by_alias=True) for item in citation_bindings
+                    ],
+                    "citationDatasetIds": {
+                        item.citation_id: item.dataset_id for item in citation_bindings
+                    },
                 },
                 analysis_output_path=output_path,
             )
@@ -1194,7 +1224,6 @@ class RuntimeAnalysisMixin:
                     task_scope,
                     parent_run_id=str(run_context.run_id or ""),
                 )
-                record_step_model_metrics(receipt.get("modelMetrics"))
                 raw_projection_metrics = receipt.get("projectionMetrics")
                 if isinstance(raw_projection_metrics, Mapping):
                     visualization_usage_metrics = raw_projection_metrics
@@ -1374,6 +1403,12 @@ class RuntimeAnalysisMixin:
                         "code": code,
                         "message": message or "可视化冻结阶段失败。",
                         "retryReason": retry_reason,
+                        "taskId": task_id,
+                        "workKind": "visualization",
+                        "attempt": attempt,
+                        "retryUsage": _checkpoint_retry_usage(
+                            error, work_kind="visualization"
+                        ).model_dump(mode="json", by_alias=True),
                     },
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
@@ -1521,6 +1556,83 @@ async def _run_pending_analysis_items(
             if analysis_id in failures:
                 raise failures[analysis_id]
     return pending
+
+
+def _checkpoint_retry_error(
+    checkpoint: ReportingCheckpoint,
+    *,
+    work_kind: Literal["analysis_item", "visualization"],
+    analysis_id: str | None,
+    retry_reason: str | None,
+) -> ReportingError | None:
+    """仅将当前失败工作对应的稳定错误恢复为 fresh attempt 状态。"""
+
+    matching_failure = next(
+        (
+            item
+            for item in reversed(checkpoint.trace)
+            if item.phase == "analysis"
+            and item.work_kind == work_kind
+            and item.analysis_id == analysis_id
+            and item.retry_reason == retry_reason
+            and item.status == "failed"
+        ),
+        None,
+    )
+    if matching_failure is None:
+        return None
+    stored = checkpoint.last_error
+    if (
+        stored is None
+        or stored.phase != "analysis"
+        or stored.task_id != matching_failure.task_id
+        or stored.work_kind != matching_failure.work_kind
+        or stored.analysis_id != matching_failure.analysis_id
+        or stored.attempt != matching_failure.attempt
+        or stored.retry_usage is None
+    ):
+        raise ReportingError(
+            "report_semantic_contract_upgrade_required",
+            "运行中的 Reporting checkpoint 缺少可信恢复身份或预算，请重新分析。",
+        )
+    error = ReportingError(stored.code, stored.message)
+    usage = stored.retry_usage
+    if work_kind == "analysis_item":
+        setattr(
+            error,
+            REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
+            {"queryCount": usage.analysis_fact_queries_used},
+        )
+    else:
+        setattr(
+            error,
+            REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+            usage.model_dump(mode="python", by_alias=True),
+        )
+    return error
+
+
+def _checkpoint_retry_usage(
+    error: Exception,
+    *,
+    work_kind: Literal["analysis_item", "visualization"],
+) -> CheckpointRetryUsage:
+    if work_kind == "analysis_item":
+        return CheckpointRetryUsage(analysisFactQueriesUsed=_analysis_fact_retry_usage(error))
+    source = getattr(error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, None)
+    attempt_successes = (
+        source.get("visualizationAttemptSuccessfulToolCalls", 0)
+        if isinstance(source, Mapping)
+        else 0
+    )
+    attempt_rejections = (
+        source.get("visualizationAttemptRejectedToolCalls", 0) if isinstance(source, Mapping) else 0
+    )
+    return CheckpointRetryUsage(
+        **_visualization_retry_usage(error),
+        visualizationAttemptSuccessfulToolCalls=attempt_successes,
+        visualizationAttemptRejectedToolCalls=attempt_rejections,
+    )
 
 
 def _coding_detailed_analysis_plan(

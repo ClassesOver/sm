@@ -16,9 +16,13 @@ from smart_reporting.reporting.hospital_operation.detailed_analysis import (
     DetailedAnalysisPlan,
 )
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.phase import REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR
 from smart_reporting.reporting.workflow.checkpoint import (
+    AnalysisDatasetSemantics,
     AnalysisEvidence,
     AnalysisEvidenceManifest,
+    CheckpointError,
+    CheckpointRetryUsage,
     CompletedSection,
     ContextTrace,
     FileIdentity,
@@ -28,13 +32,19 @@ from smart_reporting.reporting.workflow.checkpoint import (
     ReportBrief,
     ReportingCheckpoint,
     SectionArtifact,
+    SectionClaim,
 )
 from smart_reporting.reporting.workflow.runtime import (
     REPORT_WORKFLOW_RESULT_STATE_KEY,
     ReportWorkflowRuntime,
 )
 from smart_reporting.reporting.workflow.runtime import analysis as runtime_analysis
-from smart_reporting.reporting.workflow.runtime.analysis import _run_pending_analysis_items
+from smart_reporting.reporting.workflow.runtime.analysis import (
+    _analysis_fact_retry_usage,
+    _checkpoint_retry_error,
+    _run_pending_analysis_items,
+    _visualization_retry_usage,
+)
 from smart_reporting.reporting.workflow.runtime.sections import _run_bounded
 
 
@@ -201,6 +211,164 @@ async def test_run_pending_analysis_items_finishes_siblings_before_raising_failu
         )
 
     assert set(observed) == {"analysis_001", "analysis_002", "analysis_003"}
+
+
+def test_fresh_retry_restores_stable_error_for_matching_failed_work() -> None:
+    stored = checkpoint(completed=(), pending=()).model_copy(
+        update={
+            "phase": "analysis",
+            "report_brief": None,
+            "evidence_manifest": None,
+            "analysis_manifest_file": None,
+            "last_error": CheckpointError(
+                phase="analysis",
+                code="report_analysis_fact_query_budget_exhausted",
+                message="事实查询预算耗尽。",
+                retryReason="report_analysis_fact_query_budget_exhausted",
+                taskId="analysis-task-1",
+                workKind="analysis_item",
+                analysisId="analysis_001",
+                attempt=0,
+                retryUsage=CheckpointRetryUsage(analysisFactQueriesUsed=2),
+            ),
+            "trace": (
+                ContextTrace(
+                    phase="analysis",
+                    taskId="analysis-task-1",
+                    workKind="analysis_item",
+                    analysisId="analysis_001",
+                    status="failed",
+                    retryReason=None,
+                ),
+            ),
+        }
+    )
+
+    restored = _checkpoint_retry_error(
+        stored,
+        work_kind="analysis_item",
+        analysis_id="analysis_001",
+        retry_reason=None,
+    )
+
+    assert isinstance(restored, ReportingError)
+    assert restored.code == "report_analysis_fact_query_budget_exhausted"
+    assert restored.message == "事实查询预算耗尽。"
+    assert _analysis_fact_retry_usage(restored) == 2
+    assert (
+        _checkpoint_retry_error(
+            stored,
+            work_kind="visualization",
+            analysis_id=None,
+            retry_reason=None,
+        )
+        is None
+    )
+
+
+def test_fresh_retry_does_not_bind_another_work_items_error() -> None:
+    stored = checkpoint(completed=(), pending=()).model_copy(
+        update={
+            "phase": "analysis",
+            "report_brief": None,
+            "evidence_manifest": None,
+            "analysis_manifest_file": None,
+            "last_error": CheckpointError(
+                phase="analysis",
+                code="report_visualization_tool_budget_exhausted",
+                message="A 的预算耗尽。",
+                taskId="visualization-task-a",
+                workKind="visualization",
+                attempt=0,
+                retryUsage=CheckpointRetryUsage(
+                    visualizationReadUnitsUsed=11,
+                    visualizationFactQueriesUsed=3,
+                    visualizationToolCalls=47,
+                    visualizationScriptFailures=2,
+                    visualizationAttemptSuccessfulToolCalls=40,
+                    visualizationAttemptRejectedToolCalls=7,
+                ),
+            ),
+            "trace": (
+                ContextTrace(
+                    phase="analysis",
+                    taskId="visualization-task-a",
+                    workKind="visualization",
+                    attempt=0,
+                    status="failed",
+                ),
+                ContextTrace(
+                    phase="analysis",
+                    taskId="visualization-task-b",
+                    workKind="visualization",
+                    attempt=1,
+                    status="failed",
+                ),
+            ),
+        }
+    )
+
+    with pytest.raises(ReportingError) as mismatch:
+        _checkpoint_retry_error(
+            stored,
+            work_kind="visualization",
+            analysis_id=None,
+            retry_reason=None,
+        )
+    assert mismatch.value.code == "report_semantic_contract_upgrade_required"
+
+    only_a = stored.model_copy(update={"trace": stored.trace[:1]})
+    restored = _checkpoint_retry_error(
+        only_a,
+        work_kind="visualization",
+        analysis_id=None,
+        retry_reason=None,
+    )
+    assert _visualization_retry_usage(restored) == {
+        "visualizationReadUnitsUsed": 11,
+        "visualizationFactQueriesUsed": 3,
+        "visualizationToolCalls": 47,
+        "visualizationScriptFailures": 2,
+    }
+    restored_usage = getattr(restored, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR)
+    assert restored_usage["visualizationAttemptSuccessfulToolCalls"] == 40
+    assert restored_usage["visualizationAttemptRejectedToolCalls"] == 7
+
+
+def test_fresh_retry_rejects_incomplete_checkpoint_instead_of_resetting_budget() -> None:
+    stored = checkpoint(completed=(), pending=()).model_copy(
+        update={
+            "phase": "analysis",
+            "report_brief": None,
+            "evidence_manifest": None,
+            "analysis_manifest_file": None,
+            "last_error": CheckpointError(
+                phase="analysis",
+                code="report_analysis_fact_query_budget_exhausted",
+                message="旧 checkpoint 未保存恢复身份和预算。",
+            ),
+            "trace": (
+                ContextTrace(
+                    phase="analysis",
+                    taskId="analysis-task-legacy",
+                    workKind="analysis_item",
+                    analysisId="analysis_001",
+                    attempt=0,
+                    status="failed",
+                ),
+            ),
+        }
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        _checkpoint_retry_error(
+            stored,
+            work_kind="analysis_item",
+            analysis_id="analysis_001",
+            retry_reason=None,
+        )
+
+    assert raised.value.code == "report_semantic_contract_upgrade_required"
 
 
 @pytest.mark.anyio
@@ -483,6 +651,18 @@ async def test_durable_completed_section_reuses_bound_artifact() -> None:
                 blockId="summary",
                 markdown="### 经营结论\n\n收入保持增长。",
                 citationIds=("citation_001",),
+                claimIds=("claim_001",),
+            ),
+        ),
+        claims=(
+            SectionClaim(
+                claimId="claim_001",
+                metricCode="revenue",
+                value=1,
+                periodBasis="2026-01",
+                managementQuestion="问题",
+                currentPeriod="2026-01",
+                citationIds=("citation_001",),
             ),
         ),
     )
@@ -541,6 +721,19 @@ async def test_durable_completed_section_rejects_legacy_protocol_injection() -> 
             ReportDraftBlock(
                 blockId="workload_trend",
                 markdown="![工作量趋势](workload_monthly_trend)",
+                citationIds=("citation_011",),
+                chartIds=("workload_monthly_trend",),
+                claimIds=("claim_003",),
+            ),
+        ),
+        claims=(
+            SectionClaim(
+                claimId="claim_003",
+                metricCode="workload",
+                value=1,
+                periodBasis="2026-01",
+                managementQuestion="问题",
+                currentPeriod="2026-01",
                 citationIds=("citation_011",),
                 chartIds=("workload_monthly_trend",),
             ),
@@ -621,7 +814,14 @@ def checkpoint(
                     ),
                     citationIds=("citation_001",),
                 ),
-            )
+            ),
+            datasetSemantics=(
+                AnalysisDatasetSemantics(
+                    datasetId="dataset-1",
+                    rowGrain="record",
+                    duplicateResolution="not_applicable",
+                ),
+            ),
         ),
         analysisManifestFile=FileIdentity(path="analysis/final.json", size=1, sha256="d" * 64),
         completedSections=completed,
