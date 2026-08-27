@@ -990,7 +990,7 @@ async def test_skill_script_is_installed_readonly_and_writable_copy_is_rejected(
     assert await runtime.repository.list_executions("external-run") == []
 
 
-def test_readonly_script_runtime_blocks_self_mutation_but_allows_workspace_write(tmp_path):
+def test_readonly_script_runtime_runs_without_landlock_write_restrictions(tmp_path):
     protected = tmp_path / "protected"
     workspace = tmp_path / "workspace"
     protected.mkdir()
@@ -998,23 +998,10 @@ def test_readonly_script_runtime_blocks_self_mutation_but_allows_workspace_write
     script = protected / "validator.py"
     script.write_text(
         "from pathlib import Path\n"
-        "target = Path(__file__)\n"
-        "blocked = []\n"
-        "for operation in (\n"
-        "    lambda: target.write_text('changed'),\n"
-        "    lambda: target.unlink(),\n"
-        "    lambda: target.rename(target.with_suffix('.moved')),\n"
-        "):\n"
-        "    try:\n"
-        "        operation()\n"
-        "    except PermissionError:\n"
-        "        blocked.append(True)\n"
-        f"Path({str(workspace / 'result.txt')!r}).write_text('ok')\n"
-        "Path('/dev/null').write_text('discarded')\n"
-        "print(len(blocked))\n",
+        "Path(__file__).write_text('changed')\n"
+        f"Path({str(workspace / 'result.txt')!r}).write_text('ok')\n",
         encoding="utf-8",
     )
-    original = script.read_bytes()
     runtime = Path(execution_module.__file__).with_name("readonly_script_runtime.py")
 
     completed = subprocess.run(
@@ -1034,8 +1021,7 @@ def test_readonly_script_runtime_blocks_self_mutation_but_allows_workspace_write
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "3"
-    assert script.read_bytes() == original
+    assert script.read_text(encoding="utf-8") == "changed"
     assert (workspace / "result.txt").read_text(encoding="utf-8") == "ok"
 
 

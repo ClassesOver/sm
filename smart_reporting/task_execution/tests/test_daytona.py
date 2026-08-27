@@ -44,7 +44,7 @@ class _BoundWorkspaceService(WorkspaceService):
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_coding_model_cannot_modify_installed_skill_script_in_daytona(tmp_path):
+async def test_daytona_without_landlock_keeps_root_owned_skill_file_contents_readonly(tmp_path):
     if not os.getenv("DAYTONA_API_KEY"):
         pytest.skip("需要 Daytona API Key")
 
@@ -185,15 +185,18 @@ async def test_coding_model_cannot_modify_installed_skill_script_in_daytona(tmp_
             mutation_result = next(
                 line for line in reversed(mutation["output"].splitlines()) if line.strip()
             )
+            # Landlock 已停用，Daytona 只提供 sandbox 外层隔离；普通用户仍不能
+            # 改写 root:root 555 的文件，但可以重命名其上级 .agentos 目录。
             assert json.loads(mutation_result) == {
                 "chmod": True,
                 "delete": True,
                 "move": True,
-                "move_root": True,
+                "move_root": False,
                 "overwrite": True,
                 "sudo": True,
             }
-            installed = await sandbox.fs.download_file(readonly_path)
+            moved_readonly_path = readonly_path.replace("/.agentos/", "/.agentos-moved/", 1)
+            installed = await sandbox.fs.download_file(moved_readonly_path)
             assert hashlib.sha256(installed).hexdigest() == expected_sha256
             with pytest.raises(WorkspaceError):
                 WorkspaceService.normalize_path(readonly_path, allow_root=False)
