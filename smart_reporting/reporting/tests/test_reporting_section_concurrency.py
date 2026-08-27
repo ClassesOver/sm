@@ -327,6 +327,13 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
         "python3 报表/智能分析/run-1/analysis/charts.py",
         "python3 报表/智能分析/run-1/analysis/charts.py",
     ]
+    expected_fact_files = {
+        "analysis_001": {"path": "facts/analysis_001.json", "size": 1, "sha256": "f" * 64}
+    }
+    assert [item["deterministicFactFiles"] for item in instructions] == [
+        expected_fact_files,
+        expected_fact_files,
+    ]
     assert all("citationRegistry" not in item for item in instructions)
     assert all("snapshotHash" not in item for item in instructions)
     contracts = [call.kwargs["acceptance_contract"] for call in task_runner.start.await_args_list]

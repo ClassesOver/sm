@@ -1414,6 +1414,55 @@ async def test_visualization_third_script_failure_stops_current_run(
 
 
 @pytest.mark.anyio
+async def test_visualization_nonzero_terminal_exit_consumes_script_failure_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-terminal-exit",
+        session_id="session-visualization-terminal-exit",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-terminal-exit-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    calls = 0
+
+    def failed_script() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"status": "failed", "exit_code": 1, "output": "Traceback"}
+
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_SCRIPT_FAILURE_LIMIT", 3)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 10)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 10)
+
+    for _ in range(2):
+        result = await normalize_reporting_tool_arguments(
+            run_context,
+            "terminal",
+            failed_script,
+            {},
+        )
+        assert result["exit_code"] == 1
+    with pytest.raises(
+        StopAgentRun,
+        match="report_visualization_script_failure_limit_exhausted",
+    ):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "terminal",
+            failed_script,
+            {},
+        )
+
+    assert calls == 3
+
+
+@pytest.mark.anyio
 async def test_visualization_exit_zero_self_check_errors_consume_script_failure_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

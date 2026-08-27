@@ -153,6 +153,13 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         '读取单个文件时禁止假设 facts["analyses"]。'
     ),
     (
+        "脚本只能依赖 query_analysis_facts 回执或任务 JSON 签发的 deterministicFactFiles/evidenceFiles 路径；"
+        "禁止读取未签发文件、外部绝对路径或硬编码字典。事实文件、分类分组或字段缺失、为空或无法解析时，"
+        "必须跳过对应图表并输出结构化诊断；任何查询结果在循环前先规范化为可迭代的空行集合，"
+        "查询结果为 None 时必须使用空行集合，不能继续访问其 rows()；"
+        "不得对可能为空的对象调用 .rows()，也不得让单张图表失败终止整批脚本。"
+    ),
+    (
         "根据批准提纲和真实数据选择图表，不设固定数量或类型。图表源文件定稿并完成必要视觉检查后，"
         "使用 register_report_charts 登记；图表必须绑定已注册 citationId。"
     ),

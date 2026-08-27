@@ -24,6 +24,7 @@ from smart_reporting.reporting.hospital_operation.detailed_analysis import (
 from smart_reporting.reporting.hospital_operation.outline import ReportOutlineProposal
 from smart_reporting.reporting.instructions import (
     REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
+    REPORT_VISUALIZATION_AGENT_INSTRUCTIONS,
 )
 from smart_reporting.reporting.model_policy import (
     ReportingThinkingProfile,
@@ -466,6 +467,18 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "不得猜测 /workspace" in instructions
     assert "不得用 pwd、ls、find 或 wc 探测" in instructions
     assert "不要给成功的脚本执行附加探测命令" in instructions
+
+
+def test_visualization_instructions_fail_closed_for_untrusted_or_missing_chart_data() -> None:
+    instructions = "\n".join(REPORT_VISUALIZATION_AGENT_INSTRUCTIONS)
+
+    assert "未签发文件" in instructions
+    assert "缺失、为空或无法解析" in instructions
+    assert "跳过对应图表" in instructions
+    assert "结构化诊断" in instructions
+    assert "不得让单张图表失败终止整批脚本" in instructions
+    assert "先规范化为可迭代的空行集合" in instructions
+    assert "查询结果为 None 时必须使用空行集合" in instructions
 
 
 def test_planner_validation_runs_inside_agent_retry_boundary() -> None:

@@ -1084,6 +1084,10 @@ class RuntimeAnalysisMixin:
                 "analysisCitationIds": _visualization_analysis_citation_ids(
                     detailed_plan, citation_bindings
                 ),
+                "deterministicFactFiles": {
+                    analysis_id: identity.model_dump(mode="json", by_alias=True)
+                    for analysis_id, identity in fact_files.items()
+                },
                 # 可视化脚本与 evidence/facts 分属兄弟目录。由服务端签发完整工作区相对路径，
                 # 禁止 Worker 依据脚本位置猜测父目录，否则会把 evidence 错拼成 analysis/evidence。
                 "visualizationWorkspace": {
@@ -1611,7 +1615,7 @@ def _visualization_completion_conditions(
     if _visualization_recovery_required(last_error):
         return [
             "上一轮因工具调用或脚本失败达到上限而终止；禁止重新规划、重复读取事实或重新探索工作区",
-            "复用工作区已有脚本和图表，只完成尚缺的最小执行或检查",
+            "仅使用任务 JSON 中 deterministicFactFiles 签发的路径以及既有脚本和图表，完成尚缺的最小修复或执行",
             "整批图表只调用一次 register_report_charts，成功后立即调用 finalize_report_analysis",
         ]
     return [

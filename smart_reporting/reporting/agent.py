@@ -712,6 +712,9 @@ def _visualization_terminal_failed(function_name: str, result: Any) -> bool:
         return False
     if result.get("ok") is False and result.get("code") == "execution_output_error":
         return True
+    exit_code = result.get("exit_code")
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0:
+        return True
     output = result.get("output")
     if not isinstance(output, str):
         return False
