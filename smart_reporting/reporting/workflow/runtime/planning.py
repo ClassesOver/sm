@@ -395,8 +395,10 @@ class RuntimePlanningMixin:
         content = self._publication_content(output)
         current_pdf = await self.workspace_service.ahash_file(thread_id, content["pdfPath"])
         current_word = await self.workspace_service.ahash_file(thread_id, content["wordPath"])
+        current_html = await self.workspace_service.ahash_file(thread_id, content["htmlPath"])
         self._require_artifact_identity(content, current_pdf, artifact="pdf")
         self._require_artifact_identity(content, current_word, artifact="word")
+        self._require_artifact_identity(content, current_html, artifact="html")
         return cli_result(
             path=content["pdfPath"],
             size=content["pdfSize"],
