@@ -53,6 +53,7 @@ from .validation import (
     _relative_path,
     _sha256,
     _temporary_docx_path,
+    _temporary_html_path,
     _temporary_pdf_path,
     _validation_directory,
     _word_output_path,
@@ -170,6 +171,7 @@ class ReportRuntime:
         self._validate_datasets(state)
         temporary: Path | None = None
         html_output: Path | None = None
+        temporary_html: Path | None = None
         succeeded = False
         try:
             source = _input_path(self.workspace, markdown_path, ".md")
@@ -214,6 +216,7 @@ class ReportRuntime:
                 raise ReportFailure("PDF、Word 和 HTML 必须发布到同一 revision 目录")
             temporary = _temporary_pdf_path(temporary_path)
             temporary_docx = _temporary_docx_path(temporary)
+            temporary_html = _temporary_html_path(temporary)
             file_fetcher = URLFetcher(allowed_protocols={"file"}, fail_on_errors=True)
 
             def fetch_resource(url: str) -> dict[str, Any]:
@@ -299,7 +302,7 @@ class ReportRuntime:
             html_bytes = html_document.encode("utf-8")
             if len(html_bytes) > MAX_HTML_BYTES:
                 raise ReportFailure("HTML 文件不能超过 200 MiB")
-            html_output.write_bytes(html_bytes)
+            temporary_html.write_bytes(html_bytes)
             if self._artifact(source)["sha256"] != source_artifact["sha256"] or any(
                 self._artifact(path)["sha256"] != artifact["sha256"]
                 for path, artifact in zip(sorted(allowed_images), image_artifacts, strict=True)
@@ -318,7 +321,7 @@ class ReportRuntime:
             html_artifact = {
                 "path": str(html_output.relative_to(self.workspace)),
                 "size": len(html_bytes),
-                "sha256": _sha256(html_output),
+                "sha256": _sha256(temporary_html),
             }
             render = {
                 "markdown": source_artifact,
@@ -356,8 +359,6 @@ class ReportRuntime:
         finally:
             if temporary is not None and not succeeded:
                 shutil.rmtree(temporary.parent, ignore_errors=True)
-            if html_output is not None and not succeeded:
-                html_output.unlink(missing_ok=True)
 
     def validate_pdf(
         self,
