@@ -82,7 +82,12 @@ class ReportChartRegistration(StrictModel):
     comparison_type: Literal["none", "yoy", "mom", "period"] = Field(
         default="none", alias="comparisonType"
     )
-    source_dataset_id: str = Field(alias="sourceDatasetId", min_length=1, max_length=256)
+    source_dataset_id: str = Field(
+        alias="sourceDatasetId",
+        min_length=1,
+        max_length=256,
+        description="图表的主 Dataset；完整跨 Dataset 血缘由 citationIds 提供。",
+    )
     aggregation_grain: str = Field(alias="aggregationGrain", min_length=1, max_length=128)
     comparability: Literal["strict", "reference_only"] = "strict"
 

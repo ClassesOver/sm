@@ -350,6 +350,40 @@ async def test_worker_error_continues_same_agno_run_without_replaying_instructio
 
 
 @pytest.mark.anyio
+async def test_worker_reporting_error_is_raised_without_continuation() -> None:
+    terminal = ReportingError(
+        "report_tool_arguments_invalid",
+        "Reporting 工具参数不符合严格调用 schema。",
+        details={"terminalReason": "tool_no_progress"},
+    )
+    worker = SimpleNamespace(
+        model=_RecordedErrors([terminal]),
+        arun=MagicMock(return_value="initial-run"),
+        acontinue_run=MagicMock(return_value="unexpected-continuation"),
+    )
+    runner = cast(Any, object.__new__(ReportTaskRunner))
+    runner.worker = worker
+    runner._consume_run = AsyncMock(return_value="failed-output")
+
+    with pytest.raises(ReportingError) as raised:
+        await runner._run_worker(
+            continuing=False,
+            instruction="original instruction",
+            internal_run_id="worker-run-1",
+            worker_session_id="worker-session-1",
+            owner_user_id="user-1",
+            dependencies={},
+            run_context=SimpleNamespace(),
+            scope=SimpleNamespace(),
+            parent_run_id="workflow-run-1",
+        )
+
+    assert raised.value is terminal
+    worker.arun.assert_called_once()
+    worker.acontinue_run.assert_not_called()
+
+
+@pytest.mark.anyio
 async def test_worker_continuation_exhaustion_raises_original_error() -> None:
     terminal = RuntimeError("terminal tool failure")
     worker = SimpleNamespace(

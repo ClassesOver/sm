@@ -206,7 +206,16 @@ class ChartVisualInspectionIssue(StrictModel):
 class ChartVisualInspectionReceipt(StrictModel):
     source_path: str = Field(alias="sourcePath", min_length=1, max_length=1024)
     sha256: str = Field(pattern=SHA256_PATTERN)
-    model_id: str = Field(alias="modelId", min_length=1, max_length=256)
+    inspection_mode: Literal["vision", "deterministic"] = Field(
+        default="vision", alias="inspectionMode"
+    )
+    visual_review_status: Literal["passed", "not_run"] = Field(
+        default="passed", alias="visualReviewStatus"
+    )
+    inspector_id: str | None = Field(
+        default=None, alias="inspectorId", min_length=1, max_length=256
+    )
+    model_id: str | None = Field(default=None, alias="modelId", min_length=1, max_length=256)
     reviewed: bool
     requires_revision: bool = Field(alias="requiresRevision")
     issues: tuple[ChartVisualInspectionIssue, ...] = Field(default=(), max_length=20)
@@ -221,6 +230,27 @@ class ChartVisualInspectionReceipt(StrictModel):
         if "\\" in value or path.is_absolute() or ".." in path.parts or value.endswith("/"):
             raise ValueError("图表视觉回执路径必须是安全工作区相对路径")
         return path.as_posix()
+
+    @model_validator(mode="after")
+    def validate_inspection_mode(self) -> ChartVisualInspectionReceipt:
+        if self.inspection_mode == "vision":
+            if self.visual_review_status != "passed" or self.model_id is None:
+                raise ValueError("vision 回执必须记录已通过的真实视觉模型审查")
+            return self
+        # 确定性检查只证明文件签名、解码和像素级门禁，不能携带或暗示模型视觉结论。
+        # 固定 inspectorId 让下游可以稳定区分两类证据，禁止借用 modelId、issues 或
+        # suggestions 把未执行的视觉审查包装成已通过。
+        if (
+            self.visual_review_status != "not_run"
+            or self.inspector_id != "deterministic-raster-inspector-v1"
+            or self.model_id is not None
+            or self.reviewed is not True
+            or self.requires_revision is not False
+            or self.issues
+            or self.suggestions
+        ):
+            raise ValueError("deterministic 回执只能记录确定性文件检查且不得声称视觉审查")
+        return self
 
 
 class AnalysisChart(StrictModel):
@@ -566,6 +596,9 @@ class ContextTrace(StrictModel):
         default=(), alias="pointerReceiptIds", max_length=1000
     )
     retry_reason: str | None = Field(default=None, alias="retryReason", max_length=2000)
+    visual_inspection_mode: Literal["vision", "deterministic"] | None = Field(
+        default=None, alias="visualInspectionMode"
+    )
 
 
 class ReportingCheckpoint(StrictModel):
@@ -588,6 +621,11 @@ class ReportingCheckpoint(StrictModel):
     pending_sections: tuple[str, ...] = Field(default=(), alias="pendingSections", max_length=100)
     warnings: tuple[dict[str, Any], ...] = Field(default=(), max_length=500)
     last_error: CheckpointError | None = Field(default=None, alias="lastError")
+    deterministic_fact_files: dict[str, FileIdentity] = Field(
+        default_factory=dict,
+        alias="deterministicFactFiles",
+        max_length=200,
+    )
     files: tuple[FileIdentity, ...] = Field(default=(), max_length=500)
     trace: tuple[ContextTrace, ...] = Field(default=(), max_length=2000)
 

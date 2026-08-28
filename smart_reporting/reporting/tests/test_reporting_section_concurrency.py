@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -21,6 +22,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisDatasetSemantics,
     AnalysisEvidence,
     AnalysisEvidenceManifest,
+    AnalysisReworkRequest,
     CheckpointError,
     CheckpointRetryUsage,
     CompletedSection,
@@ -33,12 +35,14 @@ from smart_reporting.reporting.workflow.checkpoint import (
     ReportingCheckpoint,
     SectionArtifact,
     SectionClaim,
+    SectionWorkItem,
 )
 from smart_reporting.reporting.workflow.runtime import (
     REPORT_WORKFLOW_RESULT_STATE_KEY,
     ReportWorkflowRuntime,
 )
 from smart_reporting.reporting.workflow.runtime import analysis as runtime_analysis
+from smart_reporting.reporting.workflow.runtime import sections as runtime_sections
 from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_fact_retry_usage,
     _checkpoint_retry_error,
@@ -163,6 +167,217 @@ async def test_run_bounded_finishes_siblings_and_raises_original_failure() -> No
     assert set(observed) == {"section_001", "section_002"}
 
 
+def test_analysis_rework_constraints_bind_frozen_plan_and_profile_receipts() -> None:
+    plan = DetailedAnalysisPlan(
+        datasetIds=("dataset-1",),
+        analyses=(
+            DetailedAnalysisItem(
+                analysisId="analysis_001",
+                domain="income",
+                managementQuestion="收入表现如何？",
+                primaryMetricFamily="收入",
+                datasetIds=("dataset-1",),
+                fields=("month", "revenue"),
+                metrics=("revenue",),
+                periods=("2026-01",),
+                actions=("趋势",),
+                evidenceSummary="收入趋势事实。",
+                suggestedSection="收入分析",
+                completionConditions=("说明收入趋势",),
+            ),
+        ),
+    )
+    profile_coverage = checkpoint(completed=(), pending=()).profile_coverage
+
+    constraints = ReportWorkflowRuntime._analysis_rework_constraints(
+        detailed_plan=plan,
+        profile_coverage=profile_coverage,
+        analysis_ids=("analysis_001",),
+    )
+
+    assert constraints["analysis_001"]["datasetIds"] == ["dataset-1"]
+    assert constraints["analysis_001"]["periods"] == ["2026-01"]
+    assert constraints["analysis_001"]["metrics"] == ["revenue"]
+    assert constraints["analysis_001"]["profileDatasets"] == [
+        {
+            "datasetId": "dataset-1",
+            "rowCount": 1,
+            "profileSnapshotHash": "b" * 64,
+        }
+    ]
+    assert len(constraints["analysis_001"]["planHash"]) == 64
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("concurrency", "expected_started"),
+    [
+        (1, ["section_001"]),
+        (2, ["section_001", "section_002"]),
+    ],
+)
+async def test_section_batches_stop_scheduling_after_completed_batch_requests_rework(
+    concurrency: int,
+    expected_started: list[str],
+) -> None:
+    started: list[str] = []
+    rework = AnalysisReworkRequest(
+        sectionCode="section_001",
+        analysisIds=("analysis_001",),
+        reason="当前冻结事实不足。",
+        missingEvidence=("重算当前冻结期间。",),
+    )
+
+    async def worker(section_code: str) -> tuple[None, None, AnalysisReworkRequest | None]:
+        started.append(section_code)
+        await asyncio.sleep(0)
+        return None, None, rework if section_code == "section_001" else None
+
+    results = await runtime_sections._run_section_batches_until_rework(
+        ("section_001", "section_002", "section_003"),
+        concurrency=concurrency,
+        worker=worker,
+    )
+
+    assert started == expected_started
+    assert len(results) == concurrency
+    assert results[0][2] == rework
+
+
+@pytest.mark.anyio
+async def test_section_worker_defers_rework_transition_until_batch_finishes() -> None:
+    stored = checkpoint(completed=(), pending=("section_001",))
+    work_item = section_work_item("section_001")
+    request = AnalysisReworkRequest(
+        sectionCode="section_001",
+        analysisIds=("analysis_001",),
+        reason="当前冻结事实不足。",
+        missingEvidence=("重算当前冻结期间。",),
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.report_worker = SimpleNamespace(id="worker-1")
+    runtime._scope = lambda _run_context: {
+        "externalRunId": "run-1",
+        "threadId": "thread-1",
+        "userId": "user-1",
+    }
+    runtime._state = lambda _run_context: {
+        "report_outline": {
+            "reportType": "comprehensive",
+            "title": "经营分析",
+            "sections": [
+                {
+                    "code": "section_001",
+                    "sectionNumber": "1",
+                    "title": "收入分析",
+                    "analysisIds": ["analysis_001"],
+                }
+            ],
+        }
+    }
+    runtime._durable_completed_section = AsyncMock(return_value=None)
+    runtime._write_artifact_validation_context = AsyncMock(
+        return_value={"path": "sections/work-item.json", "size": 1, "sha256": "a" * 64}
+    )
+    runtime._persist_reporting_checkpoint = AsyncMock(side_effect=lambda _context, value: value)
+    runtime._apply_durable_command = AsyncMock()
+    runtime._trace_metrics_from_receipt = lambda _receipt: {}
+    runtime.task_runner = SimpleNamespace(
+        repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
+        start=AsyncMock(),
+        run=AsyncMock(return_value={}),
+    )
+
+    async def rework_identity(
+        _thread_id: str, _receipt: Any, expected_paths: tuple[str, ...]
+    ) -> FileIdentity:
+        return FileIdentity(path=expected_paths[1], size=1, sha256="b" * 64)
+
+    runtime._phase_artifact_from_receipt = rework_identity
+    runtime._read_identity_model = AsyncMock(return_value=request)
+
+    candidate, artifact, returned_request = await runtime._run_section_phase(
+        SimpleNamespace(run_id="run-1"),
+        checkpoint=stored,
+        revision=1,
+        sandbox_id="sandbox-1",
+        validation_context_file=FileIdentity(
+            path="validation/context.json", size=1, sha256="c" * 64
+        ),
+        work_item=work_item,
+        analysis_rework_constraints={},
+    )
+
+    assert artifact is None
+    assert returned_request == request
+    assert candidate.phase == "sections"
+    assert candidate.report_brief == stored.report_brief
+    assert candidate.evidence_manifest == stored.evidence_manifest
+    assert candidate.analysis_manifest_file == stored.analysis_manifest_file
+    assert [call.args[1].name for call in runtime._apply_durable_command.await_args_list] == [
+        "start_section"
+    ]
+
+
+def test_pending_analysis_rework_survives_fresh_retry_without_analysis_manifest() -> None:
+    rework_file = FileIdentity(path="sections/income.rework.json", size=1, sha256="a" * 64)
+    stored = checkpoint(completed=(), pending=("section_001",)).model_copy(
+        update={
+            "phase": "analysis",
+            "report_brief": None,
+            "evidence_manifest": None,
+            "analysis_manifest_file": None,
+            "trace": (
+                ContextTrace(
+                    phase="section",
+                    taskId="section-income",
+                    workKind="section",
+                    sectionCode="section_001",
+                    status="rework",
+                    artifactFile=rework_file,
+                ),
+                ContextTrace(
+                    phase="analysis",
+                    taskId="analysis-income",
+                    workKind="analysis_item",
+                    analysisId="analysis_001",
+                    status="completed",
+                    retryReason="analysis_rework:targeted",
+                ),
+            ),
+        }
+    )
+
+    assert runtime_sections._pending_analysis_rework_file(stored) == rework_file
+
+
+def test_pending_analysis_rework_is_covered_by_later_visualization_freeze() -> None:
+    rework_file = FileIdentity(path="sections/income.rework.json", size=1, sha256="a" * 64)
+    stored = checkpoint(completed=(), pending=("section_001",)).model_copy(
+        update={
+            "phase": "analysis",
+            "trace": (
+                ContextTrace(
+                    phase="section",
+                    taskId="section-income",
+                    workKind="section",
+                    sectionCode="section_001",
+                    status="rework",
+                    artifactFile=rework_file,
+                ),
+                ContextTrace(
+                    phase="analysis",
+                    taskId="analysis-visualization",
+                    workKind="visualization",
+                    status="completed",
+                ),
+            ),
+        }
+    )
+
+    assert runtime_sections._pending_analysis_rework_file(stored) is None
+
+
 @pytest.mark.anyio
 async def test_run_pending_analysis_items_skips_completed_and_limits_concurrency() -> None:
     active = 0
@@ -211,6 +426,238 @@ async def test_run_pending_analysis_items_finishes_siblings_before_raising_failu
         )
 
     assert set(observed) == {"analysis_001", "analysis_002", "analysis_003"}
+
+
+def test_reporting_checkpoint_serializes_deterministic_fact_file_mapping() -> None:
+    fact_file = FileIdentity(
+        path="报表/智能分析/run-1/facts/revision-1/analysis_001.json",
+        size=12,
+        sha256="f" * 64,
+    )
+
+    stored = analysis_checkpoint(deterministic_fact_files={"analysis_001": fact_file})
+
+    assert stored.model_dump(mode="json", by_alias=True)["deterministicFactFiles"] == {
+        "analysis_001": fact_file.model_dump(mode="json", by_alias=True)
+    }
+
+
+@pytest.mark.anyio
+async def test_deterministic_fact_mapping_is_revalidated_without_recalculation() -> None:
+    fact_file = FileIdentity(
+        path="报表/智能分析/run-1/facts/revision-1/analysis_001.json",
+        size=12,
+        sha256="f" * 64,
+    )
+    stored = analysis_checkpoint(deterministic_fact_files={"analysis_001": fact_file})
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = SimpleNamespace(
+        ahash_file=AsyncMock(return_value=fact_file.model_dump(mode="json", by_alias=True))
+    )
+    runtime._prepare_deterministic_analysis_facts = AsyncMock()
+    runtime._persist_reporting_checkpoint = AsyncMock()
+
+    restored, fact_files = await runtime._restore_or_create_deterministic_analysis_facts(
+        run_context=SimpleNamespace(run_id="run-1"),
+        checkpoint=stored,
+        thread_id="thread-1",
+        report_run_id="run-1",
+        revision=1,
+        detailed_plan=analysis_plan("analysis_001"),
+        dataset_handles=(),
+    )
+
+    assert restored is stored
+    assert fact_files == {"analysis_001": fact_file}
+    runtime.workspace_service.ahash_file.assert_awaited_once_with("thread-1", fact_file.path)
+    runtime._prepare_deterministic_analysis_facts.assert_not_awaited()
+    runtime._persist_reporting_checkpoint.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_legacy_v2_checkpoint_recovers_fact_mapping_only_from_canonical_files() -> None:
+    fact_files = {
+        analysis_id: FileIdentity(
+            path=f"报表/智能分析/run-1/facts/revision-1/{analysis_id}.json",
+            size=index,
+            sha256=str(index) * 64,
+        )
+        for index, analysis_id in enumerate(("analysis_001", "analysis_002"), start=1)
+    }
+    stored = analysis_checkpoint(
+        files=tuple(fact_files.values()),
+        trace=(
+            ContextTrace(
+                phase="analysis",
+                taskId="legacy-analysis-task",
+                workKind="analysis_item",
+                analysisId="analysis_001",
+            ),
+        ),
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = SimpleNamespace(
+        ahash_file=AsyncMock(
+            side_effect=[
+                identity.model_dump(mode="json", by_alias=True) for identity in fact_files.values()
+            ]
+        )
+    )
+    runtime._prepare_deterministic_analysis_facts = AsyncMock()
+    runtime._persist_reporting_checkpoint = AsyncMock(side_effect=lambda _context, value: value)
+
+    restored, recovered = await runtime._restore_or_create_deterministic_analysis_facts(
+        run_context=SimpleNamespace(run_id="run-1"),
+        checkpoint=stored,
+        thread_id="thread-1",
+        report_run_id="run-1",
+        revision=1,
+        detailed_plan=analysis_plan("analysis_001", "analysis_002"),
+        dataset_handles=(),
+    )
+
+    assert recovered == fact_files
+    assert restored.deterministic_fact_files == fact_files
+    runtime._prepare_deterministic_analysis_facts.assert_not_awaited()
+    runtime._persist_reporting_checkpoint.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_legacy_checkpoint_rejects_noncanonical_deterministic_fact_file() -> None:
+    stored = analysis_checkpoint(
+        files=(
+            FileIdentity(
+                path="报表/智能分析/run-1/facts/revision-2/analysis_001.json",
+                size=1,
+                sha256="a" * 64,
+            ),
+        )
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = SimpleNamespace(ahash_file=AsyncMock())
+    runtime._prepare_deterministic_analysis_facts = AsyncMock()
+    runtime._persist_reporting_checkpoint = AsyncMock()
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime._restore_or_create_deterministic_analysis_facts(
+            run_context=SimpleNamespace(run_id="run-1"),
+            checkpoint=stored,
+            thread_id="thread-1",
+            report_run_id="run-1",
+            revision=1,
+            detailed_plan=analysis_plan("analysis_001"),
+            dataset_handles=(),
+        )
+
+    assert raised.value.code == "report_semantic_contract_upgrade_required"
+    runtime.workspace_service.ahash_file.assert_not_awaited()
+    runtime._prepare_deterministic_analysis_facts.assert_not_awaited()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "fact_files",
+    [
+        {
+            "analysis_999": FileIdentity(
+                path="报表/智能分析/run-1/facts/revision-1/analysis_001.json",
+                size=1,
+                sha256="a" * 64,
+            )
+        },
+        {
+            "analysis_001": FileIdentity(
+                path="报表/智能分析/run-1/facts/revision-1/analysis_002.json",
+                size=1,
+                sha256="a" * 64,
+            )
+        },
+    ],
+)
+async def test_checkpoint_rejects_wrong_analysis_fact_mapping(
+    fact_files: dict[str, FileIdentity],
+) -> None:
+    stored = analysis_checkpoint(deterministic_fact_files=fact_files)
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = SimpleNamespace(ahash_file=AsyncMock())
+    runtime._prepare_deterministic_analysis_facts = AsyncMock()
+    runtime._persist_reporting_checkpoint = AsyncMock()
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime._restore_or_create_deterministic_analysis_facts(
+            run_context=SimpleNamespace(run_id="run-1"),
+            checkpoint=stored,
+            thread_id="thread-1",
+            report_run_id="run-1",
+            revision=1,
+            detailed_plan=analysis_plan("analysis_001"),
+            dataset_handles=(),
+        )
+
+    assert raised.value.code == "report_semantic_contract_upgrade_required"
+    runtime.workspace_service.ahash_file.assert_not_awaited()
+    runtime._prepare_deterministic_analysis_facts.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_checkpoint_rejects_changed_deterministic_fact_file() -> None:
+    fact_file = FileIdentity(
+        path="报表/智能分析/run-1/facts/revision-1/analysis_001.json",
+        size=12,
+        sha256="f" * 64,
+    )
+    stored = analysis_checkpoint(deterministic_fact_files={"analysis_001": fact_file})
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = SimpleNamespace(
+        ahash_file=AsyncMock(return_value={"path": fact_file.path, "size": 13, "sha256": "e" * 64})
+    )
+    runtime._prepare_deterministic_analysis_facts = AsyncMock()
+    runtime._persist_reporting_checkpoint = AsyncMock()
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime._restore_or_create_deterministic_analysis_facts(
+            run_context=SimpleNamespace(run_id="run-1"),
+            checkpoint=stored,
+            thread_id="thread-1",
+            report_run_id="run-1",
+            revision=1,
+            detailed_plan=analysis_plan("analysis_001"),
+            dataset_handles=(),
+        )
+
+    assert raised.value.code == "report_analysis_facts_changed"
+    runtime._prepare_deterministic_analysis_facts.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_new_deterministic_facts_are_checkpointed_before_analysis_workers() -> None:
+    fact_file = FileIdentity(
+        path="报表/智能分析/run-1/facts/revision-1/analysis_001.json",
+        size=12,
+        sha256="f" * 64,
+    )
+    stored = analysis_checkpoint()
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.workspace_service = SimpleNamespace(ahash_file=AsyncMock())
+    runtime._prepare_deterministic_analysis_facts = AsyncMock(
+        return_value={"analysis_001": fact_file}
+    )
+    runtime._persist_reporting_checkpoint = AsyncMock(side_effect=lambda _context, value: value)
+
+    restored, fact_files = await runtime._restore_or_create_deterministic_analysis_facts(
+        run_context=SimpleNamespace(run_id="run-1"),
+        checkpoint=stored,
+        thread_id="thread-1",
+        report_run_id="run-1",
+        revision=1,
+        detailed_plan=analysis_plan("analysis_001"),
+        dataset_handles=(),
+    )
+
+    assert fact_files == {"analysis_001": fact_file}
+    assert restored.deterministic_fact_files == fact_files
+    assert fact_file in restored.files
+    runtime._persist_reporting_checkpoint.assert_awaited_once()
 
 
 def test_fresh_retry_restores_stable_error_for_matching_failed_work() -> None:
@@ -371,6 +818,44 @@ def test_fresh_retry_rejects_incomplete_checkpoint_instead_of_resetting_budget()
     assert raised.value.code == "report_semantic_contract_upgrade_required"
 
 
+@pytest.mark.parametrize(
+    ("previous_mode", "current_mode"),
+    [("vision", "deterministic"), ("deterministic", "vision")],
+)
+def test_visualization_capability_drift_fails_closed(
+    previous_mode: str,
+    current_mode: str,
+) -> None:
+    trace = ContextTrace.model_construct(
+        phase="analysis",
+        task_id="visualization-task-1",
+        work_kind="visualization",
+        attempt=0,
+        status="failed",
+        visual_inspection_mode=previous_mode,
+    )
+    stored = checkpoint(completed=(), pending=()).model_copy(update={"trace": (trace,)})
+
+    with pytest.raises(ReportingError) as raised:
+        runtime_analysis._ensure_visual_inspection_capability(stored, current_mode)
+
+    assert raised.value.code == "report_visualization_capability_changed"
+
+
+def test_visualization_capability_is_stable_across_fresh_retry() -> None:
+    trace = ContextTrace.model_construct(
+        phase="analysis",
+        task_id="visualization-task-1",
+        work_kind="visualization",
+        attempt=0,
+        status="failed",
+        visual_inspection_mode="deterministic",
+    )
+    stored = checkpoint(completed=(), pending=()).model_copy(update={"trace": (trace,)})
+
+    runtime_analysis._ensure_visual_inspection_capability(stored, "deterministic")
+
+
 @pytest.mark.anyio
 async def test_visualization_retry_projects_citation_ids_into_each_worker_instruction(
     monkeypatch: pytest.MonkeyPatch,
@@ -425,7 +910,10 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     )
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.analysis_concurrency = 1
-    runtime.report_worker = SimpleNamespace(id="report-worker")
+    runtime.report_worker = SimpleNamespace(
+        id="report-worker",
+        model=SimpleNamespace(_report_vision_enabled=False),
+    )
     runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=durable))
     runtime.task_runner = task_runner
     runtime._scope = lambda _run_context: {
@@ -437,8 +925,10 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     runtime._state = lambda _run_context: {"report_outline": {"title": "经营分析"}}
     runtime._worker_thinking_effort = lambda *, retry: "off"
 
-    async def prepare_facts(**_kwargs: Any) -> dict[str, FileIdentity]:
-        return {"analysis_001": fact_file}
+    async def restore_facts(
+        **kwargs: Any,
+    ) -> tuple[ReportingCheckpoint, dict[str, FileIdentity]]:
+        return kwargs["checkpoint"], {"analysis_001": fact_file}
 
     async def run_analysis_item(*_args: Any, **_kwargs: Any) -> ReportingCheckpoint:
         return checkpoint_before_visualization
@@ -451,7 +941,7 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     ) -> ReportingCheckpoint:
         return stored
 
-    runtime._prepare_deterministic_analysis_facts = prepare_facts
+    runtime._restore_or_create_deterministic_analysis_facts = restore_facts
     runtime._run_analysis_item_task = run_analysis_item
     runtime._current_reporting_checkpoint = current_checkpoint
     runtime._persist_reporting_checkpoint = persist_checkpoint
@@ -469,13 +959,14 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
             detailed_plan=plan,
             dataset_handles=(),
             lineage=(),
-            citation_bindings=(
+            citation_bindings=tuple(
                 Citation(
-                    citationId="citation-income",
+                    citationId=f"citation-{index:03}",
                     datasetId="dataset-income",
-                    requirementId="requirement-income",
-                    snapshotHash="c" * 64,
-                ),
+                    requirementId=f"requirement-{index:03}",
+                    snapshotHash=f"{index:064x}",
+                )
+                for index in range(100)
             ),
             analysis_context_file=FileIdentity(
                 path="analysis/context.json", size=1, sha256="a" * 64
@@ -486,10 +977,20 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
 
     assert task_runner.start.await_count == 2
     instructions = [json.loads(call.args[1]) for call in task_runner.start.await_args_list]
-    expected_mapping = {"analysis_001": ["citation-income"]}
+    citation_ids = [f"citation-{index:03}" for index in range(100)]
+    expected_mapping = {"analysis_001": citation_ids}
     assert [item["analysisCitationIds"] for item in instructions] == [
         expected_mapping,
         expected_mapping,
+    ]
+    expected_dataset_mapping = {citation_id: "dataset-income" for citation_id in citation_ids}
+    assert [item["citationDatasetIds"] for item in instructions] == [
+        expected_dataset_mapping,
+        expected_dataset_mapping,
+    ]
+    assert [item["visualInspectionMode"] for item in instructions] == [
+        "deterministic",
+        "deterministic",
     ]
     assert [item["visualizationWorkspace"]["allowedTerminalCommand"] for item in instructions] == [
         "python3 报表/智能分析/run-1/analysis/charts.py",
@@ -504,9 +1005,75 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     ]
     assert all("citationRegistry" not in item for item in instructions)
     assert all("snapshotHash" not in item for item in instructions)
+    assert all(
+        len(call.args[1].encode("utf-8")) < 512 * 1024 for call in task_runner.start.await_args_list
+    )
     contracts = [call.kwargs["acceptance_contract"] for call in task_runner.start.await_args_list]
     phase_contracts = [item["requirements"][0]["parameters"]["phaseContract"] for item in contracts]
     assert [item["visualizationRecovery"] for item in phase_contracts] == [False, True]
+    assert [item["visualInspectionMode"] for item in phase_contracts] == [
+        "deterministic",
+        "deterministic",
+    ]
+
+
+@pytest.mark.anyio
+async def test_targeted_rework_schedules_only_requested_analysis_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = analysis_plan("analysis_001", "analysis_002", "analysis_003")
+    fact_files = {
+        analysis_id: FileIdentity(
+            path=f"报表/智能分析/run-1/facts/revision-1/{analysis_id}.json",
+            size=1,
+            sha256=str(index) * 64,
+        )
+        for index, analysis_id in enumerate(
+            ("analysis_001", "analysis_002", "analysis_003"), start=1
+        )
+    }
+    stored = analysis_checkpoint(deterministic_fact_files=fact_files)
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.analysis_concurrency = 2
+    runtime._scope = lambda _run_context: {
+        "externalRunId": "run-1",
+        "threadId": "thread-1",
+        "userId": "user-1",
+    }
+    runtime._restore_or_create_deterministic_analysis_facts = AsyncMock(
+        return_value=(stored, fact_files)
+    )
+    runtime._apply_durable_command = AsyncMock()
+    runtime._persist_reporting_checkpoint = AsyncMock(side_effect=lambda _context, value: value)
+    scheduled = AsyncMock(side_effect=RuntimeError("stop after scheduling"))
+    monkeypatch.setattr(runtime_analysis, "_run_pending_analysis_items", scheduled)
+
+    with pytest.raises(RuntimeError, match="stop after scheduling"):
+        await runtime._run_analysis_phase(
+            SimpleNamespace(run_id="run-1"),
+            checkpoint=stored,
+            revision=1,
+            sandbox_id="sandbox-1",
+            validation_context_file=FileIdentity(
+                path="validation/context.json", size=1, sha256="b" * 64
+            ),
+            detailed_plan=plan,
+            dataset_handles=(),
+            lineage=(),
+            citation_bindings=(),
+            analysis_context_file=FileIdentity(
+                path="analysis/context.json", size=1, sha256="a" * 64
+            ),
+            feedback=None,
+            rework_request=runtime_analysis.AnalysisReworkRequest(
+                sectionCode="income",
+                analysisIds=("analysis_002",),
+                reason="补充证据",
+                missingEvidence=("同比",),
+            ),
+        )
+
+    assert scheduled.await_args.args[0] == ("analysis_002",)
 
 
 def test_merge_reporting_checkpoints_keeps_out_of_order_section_results() -> None:
@@ -574,6 +1141,48 @@ def test_merge_reporting_checkpoints_keeps_concurrent_analysis_traces_and_files(
     assert {item.analysis_id for item in merged.trace} == {"analysis_001", "analysis_002"}
 
 
+def test_merge_reporting_checkpoints_preserves_deterministic_fact_mapping() -> None:
+    fact_file = FileIdentity(
+        path="报表/智能分析/run-1/facts/revision-1/analysis_001.json",
+        size=1,
+        sha256="a" * 64,
+    )
+    current = analysis_checkpoint(deterministic_fact_files={"analysis_001": fact_file})
+    incoming = analysis_checkpoint()
+
+    merged = ReportWorkflowRuntime._merge_reporting_checkpoints(current, incoming)
+
+    assert merged.deterministic_fact_files == {"analysis_001": fact_file}
+
+
+def test_merge_reporting_checkpoints_rejects_deterministic_fact_identity_conflict() -> None:
+    path = "报表/智能分析/run-1/facts/revision-1/analysis_001.json"
+    current = analysis_checkpoint(
+        deterministic_fact_files={"analysis_001": FileIdentity(path=path, size=1, sha256="a" * 64)}
+    )
+    incoming = analysis_checkpoint(
+        deterministic_fact_files={"analysis_001": FileIdentity(path=path, size=2, sha256="b" * 64)}
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        ReportWorkflowRuntime._merge_reporting_checkpoints(current, incoming)
+
+    assert raised.value.code == "report_checkpoint_conflict"
+
+
+def test_merge_reporting_checkpoints_rejects_mapped_fact_overwrite_from_files() -> None:
+    path = "报表/智能分析/run-1/facts/revision-1/analysis_001.json"
+    current = analysis_checkpoint(
+        deterministic_fact_files={"analysis_001": FileIdentity(path=path, size=1, sha256="a" * 64)}
+    )
+    incoming = analysis_checkpoint(files=(FileIdentity(path=path, size=2, sha256="b" * 64),))
+
+    with pytest.raises(ReportingError) as raised:
+        ReportWorkflowRuntime._merge_reporting_checkpoints(current, incoming)
+
+    assert raised.value.code == "report_checkpoint_conflict"
+
+
 @pytest.mark.anyio
 async def test_persist_reporting_checkpoint_serializes_concurrent_merges() -> None:
     base = checkpoint(completed=(), pending=("section_001", "section_002"))
@@ -639,6 +1248,148 @@ async def test_persist_reporting_checkpoint_serializes_concurrent_merges() -> No
         "section_002",
     }
     assert stored.pending_sections == ()
+
+
+@pytest.mark.anyio
+async def test_batch_rework_commit_prevents_late_section_checkpoint_backflow() -> None:
+    base = checkpoint(completed=(), pending=("section_001", "section_002"))
+    rework_file = FileIdentity(path="sections/section_001.rework.json", size=1, sha256="a" * 64)
+    section_file = FileIdentity(path="sections/section_002.json", size=1, sha256="b" * 64)
+    rework_request = AnalysisReworkRequest(
+        sectionCode="section_001",
+        analysisIds=("analysis_001",),
+        reason="当前冻结事实不足。",
+        missingEvidence=("重算当前冻结期间。",),
+    )
+    rework_candidate = base.model_copy(
+        update={
+            "trace": (
+                ContextTrace(
+                    phase="section",
+                    taskId="section-001",
+                    workKind="section",
+                    sectionCode="section_001",
+                    status="rework",
+                    artifactFile=rework_file,
+                ),
+            ),
+            "files": (*base.files, rework_file),
+        }
+    )
+    late_completion = base.model_copy(
+        update={
+            "completed_sections": (
+                CompletedSection(
+                    sectionCode="section_002",
+                    workItemHash="c" * 64,
+                    artifactFile=section_file,
+                ),
+            ),
+            "pending_sections": ("section_001",),
+            "trace": (
+                ContextTrace(
+                    phase="section",
+                    taskId="section-002",
+                    workKind="section",
+                    sectionCode="section_002",
+                    status="completed",
+                    artifactFile=section_file,
+                ),
+            ),
+            "files": (*base.files, section_file),
+        }
+    )
+
+    class StateRepository:
+        def __init__(self) -> None:
+            self.payload = {"workflowCheckpoint": base.model_dump(mode="json", by_alias=True)}
+
+        async def get(self, _report_run_id: str) -> Any:
+            return SimpleNamespace(payload=copy.deepcopy(self.payload))
+
+    repository = StateRepository()
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.state_repository = repository
+    runtime._checkpoint_persist_lock = asyncio.Lock()
+    runtime._scope = lambda _run_context: {
+        "externalRunId": "run-1",
+        "threadId": "thread-1",
+        "userId": "user-1",
+    }
+    runtime._state = lambda _run_context: {
+        "report_outline": {
+            "reportType": "comprehensive",
+            "title": "经营分析",
+            "sections": [
+                {
+                    "code": "section_001",
+                    "sectionNumber": "1",
+                    "title": "收入分析",
+                    "analysisIds": ["analysis_001"],
+                },
+                {
+                    "code": "section_002",
+                    "sectionNumber": "2",
+                    "title": "收入补充",
+                    "analysisIds": ["analysis_001"],
+                },
+            ],
+        }
+    }
+    commands: list[str] = []
+
+    async def write_identity(_thread_id: str, path: str, serialized: bytes) -> FileIdentity:
+        return FileIdentity(
+            path=path,
+            size=len(serialized),
+            sha256=hashlib.sha256(serialized).hexdigest(),
+        )
+
+    async def apply_command(_run_context: Any, command: Any) -> None:
+        commands.append(command.name)
+        if command.name == "request_analysis_rework":
+            stored = repository.payload["workflowCheckpoint"]
+            repository.payload["workflowCheckpoint"] = {
+                **stored,
+                "phase": "analysis",
+                "reportBrief": None,
+                "evidenceManifest": None,
+                "analysisManifestFile": None,
+            }
+        elif command.name == "set_workflow_checkpoint":
+            repository.payload["workflowCheckpoint"] = copy.deepcopy(command.payload["checkpoint"])
+
+    runtime._write_immutable_artifact = write_identity
+    runtime._apply_durable_command = apply_command
+    run_context = SimpleNamespace(run_id="run-1")
+
+    await runtime._persist_reporting_checkpoint(run_context, rework_candidate)
+    await runtime._persist_reporting_checkpoint(run_context, late_completion)
+    checkpoint_before_commit = ReportingCheckpoint.model_validate(
+        repository.payload["workflowCheckpoint"]
+    )
+    assert checkpoint_before_commit.phase == "sections"
+    assert {item.section_code for item in checkpoint_before_commit.completed_sections} == {
+        "section_002"
+    }
+
+    committed, aggregated = await runtime._commit_section_rework_batch(
+        run_context,
+        checkpoint=checkpoint_before_commit,
+        revision=1,
+        rework_results=((rework_candidate, rework_request),),
+    )
+
+    durable = ReportingCheckpoint.model_validate(repository.payload["workflowCheckpoint"])
+    assert aggregated == rework_request
+    assert committed == durable
+    assert durable.phase == "analysis"
+    assert durable.report_brief is None
+    assert durable.evidence_manifest is None
+    assert durable.analysis_manifest_file is None
+    assert durable.completed_sections == ()
+    assert durable.pending_sections == ("section_001", "section_002")
+    assert commands[-2:] == ["request_analysis_rework", "set_workflow_checkpoint"]
 
 
 @pytest.mark.anyio
@@ -826,6 +1577,91 @@ def checkpoint(
         analysisManifestFile=FileIdentity(path="analysis/final.json", size=1, sha256="d" * 64),
         completedSections=completed,
         pendingSections=pending,
+    )
+
+
+def analysis_checkpoint(
+    *,
+    deterministic_fact_files: dict[str, FileIdentity] | None = None,
+    files: tuple[FileIdentity, ...] = (),
+    trace: tuple[ContextTrace, ...] = (),
+) -> ReportingCheckpoint:
+    payload = checkpoint(completed=(), pending=()).model_dump(mode="json", by_alias=True)
+    payload.update(
+        {
+            "phase": "analysis",
+            "reportBrief": None,
+            "evidenceManifest": None,
+            "analysisManifestFile": None,
+            "files": [item.model_dump(mode="json", by_alias=True) for item in files],
+            "trace": [item.model_dump(mode="json", by_alias=True) for item in trace],
+        }
+    )
+    if deterministic_fact_files is not None:
+        payload["deterministicFactFiles"] = {
+            analysis_id: identity.model_dump(mode="json", by_alias=True)
+            for analysis_id, identity in deterministic_fact_files.items()
+        }
+    return ReportingCheckpoint.model_validate(payload)
+
+
+def analysis_plan(*analysis_ids: str) -> DetailedAnalysisPlan:
+    return DetailedAnalysisPlan(
+        datasetIds=("dataset-1",),
+        analyses=tuple(
+            DetailedAnalysisItem(
+                analysisId=analysis_id,
+                domain="income",
+                managementQuestion=f"{analysis_id} 管理问题",
+                primaryMetricFamily="收入",
+                datasetIds=("dataset-1",),
+                fields=(),
+                metrics=(),
+                periods=(),
+                actions=("趋势",),
+                evidenceSummary="固定事实",
+                suggestedSection="收入",
+                completionConditions=("完成",),
+            )
+            for analysis_id in analysis_ids
+        ),
+    )
+
+
+def section_work_item(section_code: str) -> SectionWorkItem:
+    evidence_file = FileIdentity(path="analysis/evidence.json", size=1, sha256="e" * 64)
+    return SectionWorkItem(
+        sectionCode=section_code,
+        sectionNumber="1",
+        title="收入分析",
+        objective="说明收入表现。",
+        reportBrief={
+            "objective": "经营分析",
+            "executiveSummary": "收入表现摘要。",
+            "managementQuestions": ["问题"],
+        },
+        completionConditions=("说明收入表现",),
+        analysisIds=("analysis_001",),
+        evidence=(
+            AnalysisEvidence(
+                analysisId="analysis_001",
+                summary="当前冻结事实。",
+                datasetIds=("dataset-1",),
+                evidenceFiles=(evidence_file,),
+                citationIds=("citation_001",),
+            ),
+        ),
+        citations=(
+            {
+                "citationId": "citation_001",
+                "datasetId": "dataset-1",
+                "requirementId": "requirement-1",
+                "snapshotHash": "f" * 64,
+            },
+        ),
+        factFiles=(evidence_file,),
+        factSummaries=("当前冻结事实。",),
+        markdownRequirements=("只使用冻结事实",),
     )
 
 

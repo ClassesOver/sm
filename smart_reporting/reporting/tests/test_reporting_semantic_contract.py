@@ -108,6 +108,86 @@ def test_chart_visual_inspection_receipt_rejects_unknown_issue_and_invalid_hash(
         )
 
 
+def test_legacy_chart_visual_inspection_receipt_defaults_to_vision_passed() -> None:
+    receipt = ChartVisualInspectionReceipt(
+        sourcePath="analysis/charts/x.png",
+        sha256="0" * 64,
+        modelId="vision-model",
+        reviewed=True,
+        requiresRevision=False,
+    )
+
+    assert receipt.inspection_mode == "vision"
+    assert receipt.visual_review_status == "passed"
+    assert receipt.inspector_id is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"inspectionMode": "vision", "visualReviewStatus": "not_run"},
+        {
+            "inspectionMode": "deterministic",
+            "visualReviewStatus": "passed",
+            "modelId": None,
+            "inspectorId": "deterministic-raster-inspector-v1",
+        },
+        {
+            "inspectionMode": "deterministic",
+            "visualReviewStatus": "not_run",
+            "modelId": None,
+            "inspectorId": "deterministic-raster-inspector-v1",
+            "issues": (
+                {
+                    "category": "cropping",
+                    "severity": "warning",
+                    "description": "视觉问题",
+                },
+            ),
+        },
+        {
+            "inspectionMode": "deterministic",
+            "visualReviewStatus": "not_run",
+            "modelId": None,
+            "inspectorId": "deterministic-raster-inspector-v1",
+            "suggestions": ("调整布局",),
+        },
+        {"inspectionMode": "vision", "visualReviewStatus": "passed", "modelId": None},
+    ],
+)
+def test_chart_visual_inspection_receipt_rejects_inconsistent_mode(
+    overrides: dict[str, object],
+) -> None:
+    payload: dict[str, object] = {
+        "sourcePath": "analysis/charts/x.png",
+        "sha256": "0" * 64,
+        "modelId": "vision-model",
+        "reviewed": True,
+        "requiresRevision": False,
+    }
+    payload.update(overrides)
+
+    with pytest.raises(ValueError):
+        ChartVisualInspectionReceipt.model_validate(payload)
+
+
+def test_deterministic_chart_visual_inspection_receipt_is_honest() -> None:
+    receipt = ChartVisualInspectionReceipt(
+        sourcePath="analysis/charts/x.png",
+        sha256="0" * 64,
+        inspectionMode="deterministic",
+        visualReviewStatus="not_run",
+        inspectorId="deterministic-raster-inspector-v1",
+        modelId=None,
+        reviewed=True,
+        requiresRevision=False,
+        warnings=("未运行模型视觉审查。",),
+    )
+
+    assert receipt.model_id is None
+    assert receipt.visual_review_status == "not_run"
+
+
 def test_v2_manifest_requires_every_chart_visual_inspection_receipt() -> None:
     with pytest.raises(ValueError, match="视觉检查回执"):
         AnalysisEvidenceManifest(

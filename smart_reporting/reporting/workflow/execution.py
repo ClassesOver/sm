@@ -27,6 +27,7 @@ from ..phase import (
     REPORTING_PHASE_DEPENDENCY_KEY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
+    REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
     REPORTING_VISUALIZATION_BUDGET_VERSION_DEPENDENCY_KEY,
@@ -48,6 +49,7 @@ from ..phase import (
     reporting_phase_from_acceptance_contract,
     reporting_task_kind_from_acceptance_contract,
     reporting_thinking_effort_from_acceptance_contract,
+    reporting_visual_inspection_mode_from_acceptance_contract,
     reporting_visualization_budget_contract_from_acceptance_contract,
     reporting_visualization_budget_from_acceptance_contract,
     reporting_visualization_recovery_from_acceptance_contract,
@@ -259,6 +261,9 @@ class ReportTaskRunner:
                 visualization_recovery = reporting_visualization_recovery_from_acceptance_contract(
                     acceptance_contract
                 )
+                visual_inspection_mode = reporting_visual_inspection_mode_from_acceptance_contract(
+                    acceptance_contract
+                )
                 analysis_fact_budget = (
                     reporting_analysis_fact_budget_contract_from_acceptance_contract(
                         acceptance_contract
@@ -348,6 +353,16 @@ class ReportTaskRunner:
                         **(
                             {REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True}
                             if reporting_task_kind == "visualization" and visualization_recovery
+                            else {}
+                        ),
+                        **(
+                            {
+                                REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY: (
+                                    visual_inspection_mode
+                                )
+                            }
+                            if reporting_task_kind == "visualization"
+                            and visual_inspection_mode is not None
                             else {}
                         ),
                         **(

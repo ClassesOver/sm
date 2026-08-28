@@ -1040,6 +1040,21 @@ class RuntimeAnalysisMixin:
                     )
                 )
 
+            deterministic_chart_ids = [
+                item.chart_id
+                for item in parsed_charts
+                if item.visual_inspection_receipt is not None
+                and item.visual_inspection_receipt.inspection_mode == "deterministic"
+            ]
+            if deterministic_chart_ids:
+                warning = "图表仅通过确定性图片文件检查，未运行模型视觉审查：" + "、".join(
+                    deterministic_chart_ids
+                )
+                if warning not in warnings:
+                    if len(warnings) >= 500:
+                        warnings = warnings[:499]
+                    warnings.append(warning)
+
             artifact = AnalysisArtifact(
                 reportBrief=ReportBrief.model_validate(reportBrief),
                 evidenceManifest=AnalysisEvidenceManifest(

@@ -41,6 +41,14 @@ def build_report_worker_tools(
         for functions in (toolkit.functions, toolkit.async_functions):
             functions.pop("view_image", None)
             functions.pop("inspect_chart", None)
+            register = functions.get("register_report_charts")
+            if register is not None:
+                register.description = register.description.replace(
+                    "每张图必须先调用 inspect_chart，服务端校验当前文件哈希的视觉回执、Dataset "
+                    "citation 并决定发布路径。",
+                    "服务端执行确定性图片文件检查、校验 Dataset citation，并如实记录未运行模型"
+                    "视觉审查后决定发布路径。",
+                )
     phase = reporting_phase_from_run_context(run_context)
     task_kind = reporting_task_kind_from_run_context(run_context)
     if phase is not None:

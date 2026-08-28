@@ -36,6 +36,90 @@ MAX_REPORT_CHART_BYTES = 10 * 1024 * 1024
 
 
 class RuntimeSectionsMixin:
+    @staticmethod
+    def _require_analysis_rework_constraints(
+        *,
+        contract: Mapping[str, Any],
+        work_item: SectionWorkItem,
+        analysis_ids: tuple[str, ...],
+    ) -> None:
+        raw_constraints = contract.get("analysisReworkConstraints")
+        evidence_by_id = {item.analysis_id: item for item in work_item.evidence}
+        if not isinstance(raw_constraints, Mapping) or set(raw_constraints) != set(
+            work_item.analysis_ids
+        ):
+            raise ReportingError(
+                "report_analysis_rework_invalid",
+                "返工请求缺少当前 SectionWorkItem 的冻结补算约束。",
+            )
+        for analysis_id in analysis_ids:
+            constraint = raw_constraints.get(analysis_id)
+            evidence = evidence_by_id.get(analysis_id)
+            if not isinstance(constraint, Mapping) or evidence is None:
+                raise ReportingError(
+                    "report_analysis_rework_invalid",
+                    "返工请求没有绑定当前冻结 analysis。",
+                )
+            dataset_ids = constraint.get("datasetIds")
+            periods = constraint.get("periods")
+            metrics = constraint.get("metrics")
+            profile_datasets = constraint.get("profileDatasets")
+            plan_hash = constraint.get("planHash")
+            if (
+                not isinstance(dataset_ids, list)
+                or not dataset_ids
+                or any(not isinstance(item, str) or not item for item in dataset_ids)
+                or len(dataset_ids) != len(set(dataset_ids))
+                or set(dataset_ids) != set(evidence.dataset_ids)
+                or not isinstance(periods, list)
+                or any(not isinstance(item, str) for item in periods)
+                or not isinstance(metrics, list)
+                or any(not isinstance(item, str) for item in metrics)
+                or not isinstance(profile_datasets, list)
+                or not isinstance(plan_hash, str)
+                or len(plan_hash) != 64
+                or any(character not in "0123456789abcdef" for character in plan_hash)
+            ):
+                raise ReportingError(
+                    "report_analysis_rework_invalid",
+                    "返工请求与冻结 Dataset、期间或指标约束不一致。",
+                )
+            rows_by_dataset: dict[str, int] = {}
+            for profile in profile_datasets:
+                if not isinstance(profile, Mapping):
+                    raise ReportingError(
+                        "report_analysis_rework_invalid",
+                        "返工请求缺少受信 Profile Dataset 回执。",
+                    )
+                dataset_id = profile.get("datasetId")
+                row_count = profile.get("rowCount")
+                snapshot_hash = profile.get("profileSnapshotHash")
+                if (
+                    not isinstance(dataset_id, str)
+                    or dataset_id in rows_by_dataset
+                    or isinstance(row_count, bool)
+                    or not isinstance(row_count, int)
+                    or row_count < 0
+                    or not isinstance(snapshot_hash, str)
+                    or len(snapshot_hash) != 64
+                    or any(character not in "0123456789abcdef" for character in snapshot_hash)
+                ):
+                    raise ReportingError(
+                        "report_analysis_rework_invalid",
+                        "返工请求的 Profile Dataset 回执无效。",
+                    )
+                rows_by_dataset[dataset_id] = row_count
+            if set(rows_by_dataset) != set(dataset_ids):
+                raise ReportingError(
+                    "report_analysis_rework_invalid",
+                    "返工请求没有精确绑定当前 analysis 的全部 Profile Dataset。",
+                )
+            if all(rows_by_dataset[dataset_id] == 0 for dataset_id in dataset_ids):
+                raise ReportingError(
+                    "report_analysis_rework_unresolvable",
+                    "当前 analysis 绑定的 Dataset 均为零行，重复补算不能产生新证据。",
+                )
+
     async def _section_work_item(
         self,
         *,
@@ -262,16 +346,25 @@ class RuntimeSectionsMixin:
             parameters, contract = self._phase_parameters(scope, "section")
             output_path = parameters.get("reworkRequestPath")
             work_item = await self._section_work_item(scope=scope, contract=contract)
-            if not isinstance(output_path, str) or not set(analysisIds).issubset(
-                work_item.analysis_ids
+            requested_analysis_ids = tuple(analysisIds)
+            if (
+                not isinstance(output_path, str)
+                or not requested_analysis_ids
+                or len(requested_analysis_ids) != len(set(requested_analysis_ids))
+                or not set(requested_analysis_ids).issubset(work_item.analysis_ids)
             ):
                 raise ReportingError(
                     "report_analysis_rework_invalid",
                     "返工请求只能引用当前 SectionWorkItem 的 analysisIds。",
                 )
+            self._require_analysis_rework_constraints(
+                contract=contract,
+                work_item=work_item,
+                analysis_ids=requested_analysis_ids,
+            )
             request = AnalysisReworkRequest(
                 sectionCode=work_item.section_code,
-                analysisIds=tuple(analysisIds),
+                analysisIds=requested_analysis_ids,
                 reason=reason,
                 missingEvidence=tuple(missingEvidence),
             )
@@ -314,7 +407,15 @@ class RuntimeSectionsMixin:
                 extra={"sectionCode": work_item.section_code},
             )
         except (ReportingError, ValidationError, WorkspaceError) as error:
-            return self._failure(error)
+            result = self._failure(error)
+            if (
+                isinstance(error, ReportingError)
+                and error.code == "report_analysis_rework_unresolvable"
+            ):
+                result["requiredActions"] = [
+                    "停止重复补算；基于冻结零行事实提交明确披露数据限制的 v2 claim 和正文。"
+                ]
+            return result
 
     @staticmethod
     def _chart_output_root(contract: Mapping[str, Any]) -> str:
@@ -462,6 +563,11 @@ class RuntimeSectionsMixin:
             if detail not in {"high", "original"}:
                 raise ReportingError("report_chart_inspection_invalid", "图片 detail 无效。")
             _parameters, contract = self._phase_parameters(scope, "analysis")
+            if contract.get("visualInspectionMode", "vision") != "vision":
+                raise ReportingError(
+                    "report_phase_tool_forbidden",
+                    "deterministic 图表检查模式不允许调用 inspect_chart。",
+                )
             output_root = self._chart_output_root(contract)
             source_path = self._require_chart_output_path(path, output_root)
             reviewer = self._vision_reviewer
@@ -516,6 +622,12 @@ class RuntimeSectionsMixin:
                 )
             _parameters, phase_contract = self._phase_parameters(scope, "analysis")
             output_root = self._chart_output_root(phase_contract)
+            visual_inspection_mode = phase_contract.get("visualInspectionMode", "vision")
+            if visual_inspection_mode not in {"vision", "deterministic"}:
+                raise ReportingError(
+                    "report_phase_contract_invalid",
+                    "Analysis Task 图表检查模式无效。",
+                )
             raw_citation_ids = phase_contract.get("citationIds")
             if (
                 not isinstance(raw_citation_ids, list)
@@ -547,17 +659,38 @@ class RuntimeSectionsMixin:
                 raise ReportingError(
                     "report_chart_registration_duplicate", "同一次登记的 chartId 不能重复。"
                 )
-            if any(set(item.citation_ids) - set(citation_ids) for item in parsed):
-                raise ReportingError("report_chart_citation_unknown", "图表引用了未注册 citation。")
-            if any(
-                {citation_datasets[citation_id] for citation_id in item.citation_ids}
-                != {item.source_dataset_id}
-                for item in parsed
+            raw_retained_chart_ids = phase_contract.get("retainedChartIds", [])
+            if (
+                not isinstance(raw_retained_chart_ids, list)
+                or len(raw_retained_chart_ids) != len(set(raw_retained_chart_ids))
+                or any(not isinstance(item, str) or not item for item in raw_retained_chart_ids)
             ):
                 raise ReportingError(
-                    "report_chart_citation_dataset_mismatch",
-                    "图表 citation 必须全部属于声明的 sourceDatasetId。",
+                    "report_phase_contract_invalid", "Analysis Task 保留图表注册表无效。"
                 )
+            retained_chart_ids = set(raw_retained_chart_ids)
+            if retained_chart_ids & {item.chart_id for item in parsed}:
+                raise ReportingError(
+                    "report_chart_registration_duplicate",
+                    "返工只能登记缺失图表，不得重新生成或检查保留图表。",
+                    details={"retainedChartIds": sorted(retained_chart_ids)},
+                )
+            if any(set(item.citation_ids) - set(citation_ids) for item in parsed):
+                raise ReportingError("report_chart_citation_unknown", "图表引用了未注册 citation。")
+            for item in parsed:
+                cited_dataset_ids = {
+                    citation_datasets[citation_id] for citation_id in item.citation_ids
+                }
+                if item.source_dataset_id not in cited_dataset_ids:
+                    raise ReportingError(
+                        "report_chart_citation_dataset_mismatch",
+                        "图表主 Dataset 必须至少由一个 citation 绑定。",
+                        details={
+                            "chartId": item.chart_id,
+                            "sourceDatasetId": item.source_dataset_id,
+                            "citationDatasetIds": sorted(cited_dataset_ids)[:100],
+                        },
+                    )
             durable = await self._durable_state(scope)
             registry = {
                 item["chartId"]: item
@@ -573,41 +706,64 @@ class RuntimeSectionsMixin:
                     thread_id=scope.thread_id,
                     registration=registration,
                 )
-                raw_receipts = durable.payload.get("chartInspectionReceipts")
-                receipts = raw_receipts if isinstance(raw_receipts, list) else []
-                same_path = [
-                    item
-                    for item in receipts
-                    if isinstance(item, Mapping)
-                    and item.get("sourcePath") == identity["sourcePath"]
-                ]
-                receipt = next(
-                    (item for item in same_path if item.get("sha256") == identity["sha256"]),
-                    None,
-                )
-                if receipt is None:
-                    code = (
-                        "report_chart_inspection_changed"
-                        if same_path
-                        else "report_chart_inspection_missing"
+                if visual_inspection_mode == "deterministic":
+                    parsed_receipt = ChartVisualInspectionReceipt(
+                        sourcePath=identity["sourcePath"],
+                        sha256=identity["sha256"],
+                        inspectionMode="deterministic",
+                        visualReviewStatus="not_run",
+                        inspectorId="deterministic-raster-inspector-v1",
+                        modelId=None,
+                        reviewed=True,
+                        requiresRevision=False,
+                        summary="已通过确定性图片文件检查；未运行模型视觉审查。",
+                        warnings=("未运行模型视觉审查。",),
                     )
-                    raise ReportingError(
-                        code,
-                        "正式图表缺少绑定当前文件哈希的视觉检查回执。",
+                    chart_warnings.append(
+                        {
+                            "code": "chart_visual_review_not_run",
+                            "chartId": registration.chart_id,
+                            "message": "未运行模型视觉审查；图表仅通过确定性图片文件检查。",
+                        }
                     )
-                parsed_receipt = ChartVisualInspectionReceipt.model_validate(receipt)
-                has_critical_issue = any(
-                    item.severity == "critical" for item in parsed_receipt.issues
-                )
-                if (
-                    parsed_receipt.reviewed is not True
-                    or parsed_receipt.requires_revision is True
-                    or has_critical_issue
-                ):
-                    raise ReportingError(
-                        "report_chart_inspection_failed",
-                        "图表视觉检查未通过，修正并重新检查后才能登记。",
+                else:
+                    raw_receipts = durable.payload.get("chartInspectionReceipts")
+                    receipts = raw_receipts if isinstance(raw_receipts, list) else []
+                    same_path = [
+                        item
+                        for item in receipts
+                        if isinstance(item, Mapping)
+                        and item.get("sourcePath") == identity["sourcePath"]
+                    ]
+                    receipt = next(
+                        (item for item in same_path if item.get("sha256") == identity["sha256"]),
+                        None,
                     )
+                    if receipt is None:
+                        code = (
+                            "report_chart_inspection_changed"
+                            if same_path
+                            else "report_chart_inspection_missing"
+                        )
+                        raise ReportingError(
+                            code,
+                            "正式图表缺少绑定当前文件哈希的视觉检查回执。",
+                        )
+                    parsed_receipt = ChartVisualInspectionReceipt.model_validate(receipt)
+                    has_critical_issue = any(
+                        item.severity == "critical" for item in parsed_receipt.issues
+                    )
+                    if (
+                        parsed_receipt.inspection_mode != "vision"
+                        or parsed_receipt.visual_review_status != "passed"
+                        or parsed_receipt.reviewed is not True
+                        or parsed_receipt.requires_revision is True
+                        or has_critical_issue
+                    ):
+                        raise ReportingError(
+                            "report_chart_inspection_failed",
+                            "图表视觉检查未通过，修正并重新检查后才能登记。",
+                        )
                 identity["visualInspectionReceipt"] = parsed_receipt.model_dump(
                     mode="json", by_alias=True
                 )

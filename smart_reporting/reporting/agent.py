@@ -235,6 +235,18 @@ def _take_reporting_tool_run_error() -> Exception | None:
     return None
 
 
+def _reporting_tool_run_error_is_terminal() -> bool:
+    run_context = current_reporting_run_context()
+    error = (
+        getattr(run_context, _REPORT_TOOL_RUN_ERROR_ATTR, None) if run_context is not None else None
+    )
+    return (
+        isinstance(error, ReportingError)
+        and isinstance(error.details, dict)
+        and error.details.get("terminalReason") == "tool_no_progress"
+    )
+
+
 async def propagate_reporting_tool_errors(
     run_context: RunContext,
     function_name: str,
@@ -1114,24 +1126,15 @@ def _reporting_progress_fingerprint(state: dict[str, Any]) -> str:
     agent_plan = state.get(AGENT_PLAN_STATE_KEY)
     coding_progress = coding_progress if isinstance(coding_progress, dict) else {}
     agent_plan = agent_plan if isinstance(agent_plan, dict) else {}
-    progress_entries = coding_progress.get("entries")
-    progress_entries = progress_entries if isinstance(progress_entries, list) else []
     plan_steps = agent_plan.get("plan")
     plan_steps = plan_steps if isinstance(plan_steps, list) else []
     snapshot = {
-        # Reporting 运行会通过阶段提交、update_plan 和 finish_task 推进。
-        # 工具状态或 mutation 变化即重新计数。
+        # 通用 Coding Toolkit 会把失败回执也写入 progress.entries；若把这些 entry
+        # 纳入指纹，不同参数的连续拒绝会被误判为真实进展并永久重置阶段失败计数。
+        # Reporting 成功工具已在 _enforce_reporting_no_progress 中显式清空失败状态，
+        # 因此这里只信任耐久 mutation 和模型计划状态，不信任失败调用生成的观测记录。
         "codingProgress": {
             "mutation": coding_progress.get("mutation"),
-            "entries": [
-                {
-                    "tool": item.get("tool"),
-                    "mutation": item.get("mutation"),
-                    "resultHash": item.get("resultHash"),
-                }
-                for item in progress_entries
-                if isinstance(item, dict)
-            ],
         },
         "agentPlan": [
             {"step": item.get("step"), "status": item.get("status")}
@@ -1261,8 +1264,8 @@ def _enforce_reporting_no_progress(
     if count < 2 and phase_failure_count < _REPORT_TOOL_PHASE_FAILURE_LIMIT:
         return result
 
-    # 精确重复失败只增加 DeepSeek Harness 风格的纠错提示。重复次数是可观测指标，
-    # 不是运行预算或业务门禁；模型仍可缩小查询、修改参数或选择其他合法工具继续。
+    # 第二次精确失败增加 DeepSeek Harness 风格的纠错提示；同指纹第三次或阶段累计
+    # 第八次仍无成功进展时必须失败关闭当前 run，避免模型继续扩大无效工具历史。
     guided = dict(result)
     raw_details = result.get("details")
     details = dict(raw_details) if isinstance(raw_details, dict) else {}
@@ -1294,17 +1297,34 @@ def _enforce_reporting_no_progress(
         required_actions = [
             "当前 Task 在没有任何成功工具进展时重复失败；结束本次 run，交由上层按既有重试策略恢复。"
         ]
+        details["terminalReason"] = "tool_no_progress"
+        message = result.get("message")
+        if not isinstance(message, str) or not message:
+            message = "Reporting 工具连续失败且没有可观察进展，已停止当前 run。"
+        error = ReportingError(code, message, details=details)
+        _record_reporting_tool_run_error(run_context, error)
+        guided.update(
+            {
+                "code": error.code,
+                "message": error.message,
+                "details": details,
+                "requiredActions": required_actions,
+                "retryable": False,
+            }
+        )
+        serialized = json.dumps(
+            guided,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        raise StopAgentRun(serialized, agent_message=serialized)
     guided.update(
         {
-            "code": "tool_no_progress" if terminal_no_progress else code,
-            "message": (
-                "Reporting 工具连续失败且没有可观察进展，已停止当前 run。"
-                if terminal_no_progress
-                else result.get("message")
-            ),
+            "code": code,
+            "message": result.get("message"),
             "details": details,
             "requiredActions": required_actions,
-            "retryable": False if terminal_no_progress else result.get("retryable", True),
+            "retryable": result.get("retryable", True),
         }
     )
     return guided
@@ -1939,6 +1959,17 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
                 *args,
                 **kwargs,
             )
+            terminal_error = _take_reporting_tool_run_error()
+            if (
+                isinstance(terminal_error, ReportingError)
+                and isinstance(terminal_error.details, dict)
+                and terminal_error.details.get("terminalReason") == "tool_no_progress"
+            ):
+                # StopAgentRun 已由 Agno 公共模型循环转换为 stop_after_tool_call，不能在
+                # Agent retry 边界重新抛普通异常；只记录原领域错误，交给 Task runner
+                # 在本次 Agno run 正常停止后恢复，确保不会产生同 run continuation。
+                self._record_report_run_error(terminal_error)
+                return self._validated_reporting_response(request_model, response)
             self._clear_report_run_error()
             return self._validated_reporting_response(request_model, response)
         except Exception as error:
@@ -2100,22 +2131,51 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
         self,
         function_calls: Any,
         function_call_results: Any,
-        *args: Any,
-        **kwargs: Any,
+        additional_input: Any = None,
+        current_function_call_count: int = 0,
+        function_call_limit: int | None = None,
+        skip_pause_check: bool = False,
+        result_store: Any = None,
     ) -> AsyncIterator[Any]:
-        async for event in super().arun_function_calls(
-            function_calls,
-            function_call_results,
-            *args,
-            **kwargs,
-        ):
+        from agno.offload.types import NEVER_OFFLOADED_TOOLS
+
+        calls = list(function_calls)
+        if not calls:
+            if additional_input:
+                function_call_results.extend(additional_input)
             error = _take_reporting_tool_run_error()
             if error is not None:
                 raise error
-            yield event
-        error = _take_reporting_tool_run_error()
-        if error is not None:
-            raise error
+            return
+
+        # Agno 3.0.0 默认用 gather 并行执行整批工具；即使某个 hook 抛 StopAgentRun，
+        # 同批其余副作用也已执行。Reporting 的 no-progress 是失败关闭边界，因此逐个
+        # 委托公共实现并在每次完成后恢复领域错误，同时按公共实现的 offload 豁免规则
+        # 累加调用计数，不能通过拆批改变 function_call_limit。
+        call_count = current_function_call_count
+        for index, function_call in enumerate(calls):
+            call_additional_input = additional_input if index == len(calls) - 1 else None
+            async for event in super().arun_function_calls(
+                [function_call],
+                function_call_results,
+                additional_input=call_additional_input,
+                current_function_call_count=call_count,
+                function_call_limit=function_call_limit,
+                skip_pause_check=skip_pause_check,
+                result_store=result_store,
+            ):
+                if not _reporting_tool_run_error_is_terminal():
+                    error = _take_reporting_tool_run_error()
+                    if error is not None:
+                        raise error
+                yield event
+            if _reporting_tool_run_error_is_terminal():
+                return
+            error = _take_reporting_tool_run_error()
+            if error is not None:
+                raise error
+            if result_store is None or function_call.function.name not in NEVER_OFFLOADED_TOOLS:
+                call_count += 1
 
     def get_function_calls_to_run(
         self,

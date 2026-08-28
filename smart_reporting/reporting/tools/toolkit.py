@@ -430,7 +430,8 @@ class ReportWorkspaceTaskToolkit(
                 name="request_analysis_rework",
                 description=(
                     "仅当当前 SectionWorkItem 的证据不足以成稿时，提交缺口和受影响 analysisIds；"
-                    "服务端只补全局分析并重跑当前章节。"
+                    "服务端只按该 analysis 的冻结 Dataset、期间和指标口径补算，reason 与 missingEvidence "
+                    "不能新增数据源、扩大期间或改变口径；零行 Dataset 无法通过重复补算解决。"
                     '示例：{"analysisIds":["analysis_001"],"reason":"缺少同比基准",'
                     '"missingEvidence":["补充上年同期收入"]}'
                 ),
@@ -960,56 +961,23 @@ class ReportWorkspaceTaskToolkit(
         try:
             normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
             durable = await self._durable_state(scope)
-            expected_by_path: dict[str, dict[str, Any]] = {}
-            items = durable.payload.get("analysisItems")
-            if isinstance(items, Mapping):
-                for item in items.values():
-                    files = item.get("evidenceFiles") if isinstance(item, Mapping) else None
-                    if not isinstance(files, Sequence) or isinstance(files, (str, bytes)):
-                        continue
-                    for identity in files:
-                        if not isinstance(identity, Mapping):
-                            continue
-                        identity_path = identity.get("path")
-                        if not isinstance(identity_path, str):
-                            continue
-                        canonical = WorkspaceService.normalize_path(
-                            identity_path, allow_root=False
-                        )[0]
-                        frozen = {
-                            "path": canonical,
-                            "size": identity.get("size"),
-                            "sha256": identity.get("sha256"),
-                        }
-                        existing = expected_by_path.get(canonical)
-                        if existing is not None and existing != frozen:
-                            raise ReportingError(
-                                "report_visualization_evidence_identity_conflict",
-                                "durable evidence 同一路径绑定了不同身份。",
-                            )
-                        expected_by_path[canonical] = frozen
-            expected = expected_by_path.get(normalized)
-            changed_code = "report_visualization_evidence_changed"
-            if expected is None:
-                committed_script = self._latest_committed_write_identity(
-                    durable.payload, normalized
+            expected = None
+            committed_script = self._latest_committed_write_identity(durable.payload, normalized)
+            if committed_script is not None:
+                _parameters, contract = self._phase_parameters(scope, "analysis")
+                workspace = contract.get("visualizationWorkspace")
+                script_path = (
+                    workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
                 )
-                if committed_script is not None:
-                    _parameters, contract = self._phase_parameters(scope, "analysis")
-                    workspace = contract.get("visualizationWorkspace")
-                    script_path = (
-                        workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
-                    )
-                    normalized_script = WorkspaceService.normalize_path(
-                        script_path, allow_root=False
-                    )[0]
-                    if normalized == normalized_script:
-                        expected = committed_script
-                        changed_code = "report_visualization_script_identity_changed"
+                normalized_script = WorkspaceService.normalize_path(script_path, allow_root=False)[
+                    0
+                ]
+                if normalized == normalized_script:
+                    expected = committed_script
             if expected is None:
                 raise ReportingError(
                     "report_visualization_evidence_path_forbidden",
-                    "visualization 只能读取 durable evidence 或签发的已提交脚本。",
+                    "visualization 只能读取签发的最新已提交脚本；冻结事实只能通过查询工具访问。",
                 )
             current = (await self.kernel.service.abatch_hash_files(scope.thread_id, [normalized]))[
                 0
@@ -1021,8 +989,8 @@ class ReportWorkspaceTaskToolkit(
             }
             if current.get("missing") is True or actual != expected:
                 raise ReportingError(
-                    changed_code,
-                    "visualization evidence 或脚本身份已变化。",
+                    "report_visualization_script_identity_changed",
+                    "visualization 签发脚本身份已变化。",
                 )
             return None
         except (ReportingError, WorkspaceError) as error:
@@ -1355,6 +1323,16 @@ class ReportWorkspaceTaskToolkit(
             result["details"] = {
                 key: error.details[key]
                 for key in ("path", "matchCount", "preview")
+                if key in error.details
+            }
+        elif (
+            code == "report_chart_citation_dataset_mismatch"
+            and isinstance(error, ReportingError)
+            and isinstance(error.details, Mapping)
+        ):
+            result["details"] = {
+                key: error.details[key]
+                for key in ("chartId", "sourceDatasetId", "citationDatasetIds")
                 if key in error.details
             }
         elif (
