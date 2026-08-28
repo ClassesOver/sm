@@ -6,11 +6,13 @@ from pathlib import Path
 import pytest
 from agno.run import RunContext
 
+from smart_reporting.reporting.delivery.report_runtime import cli as runtime_cli
 from smart_reporting.reporting.delivery.report_runtime.docx import (
     _WORD_PAGE_FIELDS,
     _postprocess_docx,
 )
 from smart_reporting.reporting.delivery.report_runtime.markdown import (
+    _html_document,
     _normalize_cjk_strong_markers,
     normalize_report_markdown_strong_spacing,
 )
@@ -25,6 +27,69 @@ from smart_reporting.reporting.tests.workspace_fakes import (
 )
 from smart_reporting.reporting.workspace import WorkspaceReportService
 from smart_reporting.workspace import WorkspaceService
+
+
+def test_html_document_is_static_and_self_contained() -> None:
+    document = _html_document(
+        '<p>正文</p><img src="data:image/png;base64,AAAA">',
+        context={
+            "title": "测试报告",
+            "periodLabel": "2026 年",
+            "organizationName": "测试机构",
+            "generatedByLabel": "Reporting Agent",
+            "watermarkText": "内部资料",
+            "generatedDate": "2026-08-17",
+            "sections": [{"code": "overview", "title": "经营概览", "sectionNumber": "1"}],
+            "sectionNumbers": ["1"],
+            "headingNumbers": [
+                {
+                    "level": 2,
+                    "number": "1",
+                    "title": "经营概览",
+                    "sectionCode": "overview",
+                    "anchor": "report-heading-overview",
+                }
+            ],
+        },
+        layout=DEFAULT_PAGE_LAYOUT,
+    )
+
+    assert document.startswith("<!doctype html>")
+    assert "<html lang='zh-CN'>" in document
+    assert "<style>" in document
+    assert "<script" not in document.lower()
+    assert "<form" not in document.lower()
+    assert "http://" not in document
+    assert "https://" not in document
+    assert "data:image/png;base64,AAAA" in document
+
+
+def test_cli_forwards_optional_html_output_path(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeRuntime:
+        def __init__(self, _workspace: Path) -> None:
+            pass
+
+        def render_markdown(self, *args: object) -> dict[str, object]:
+            captured["args"] = args
+            return {"status": "rendered", "htmlPath": "reports/report.html"}
+
+    monkeypatch.setattr(runtime_cli, "ReportRuntime", FakeRuntime)
+    assert (
+        runtime_cli.main(
+            [
+                "render_markdown",
+                '{"job": {}, "markdown_path": "report.md", "output_path": "report.pdf", '
+                '"temporary_path": "/tmp/workspace-report-test/render.pdf", '
+                '"html_output_path": "report.html"}',
+            ]
+        )
+        == 0
+    )
+
+    assert captured["args"][-1] == "report.html"
+    assert '"htmlPath": "reports/report.html"' in capsys.readouterr().out
 
 
 @pytest.mark.anyio

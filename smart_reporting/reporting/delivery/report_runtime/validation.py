@@ -10,6 +10,7 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_TOTAL_IMAGE_BYTES = 50 * 1024 * 1024
 MAX_PDF_BYTES = 200 * 1024 * 1024
 MAX_DOCX_BYTES = 200 * 1024 * 1024
+MAX_HTML_BYTES = 200 * 1024 * 1024
 IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 
 
@@ -70,6 +71,17 @@ def _word_output_path(workspace: Path, value: str) -> Path:
         raise ReportFailure("Word revision 父目录不存在")
     if path.exists() or path.is_symlink():
         raise ReportFailure("Word 输出文件已经存在")
+    return path
+
+
+def _html_output_path(workspace: Path, value: str) -> Path:
+    relative = _relative_path(value, ".html")
+    path = workspace.joinpath(*relative.parts)
+    _reject_symlinks(workspace, path.parent)
+    if not path.parent.is_dir() and not path.parent.parent.is_dir():
+        raise ReportFailure("HTML revision 父目录不存在")
+    if path.exists() or path.is_symlink():
+        raise ReportFailure("HTML 输出文件已经存在")
     return path
 
 
@@ -143,6 +155,7 @@ def _check_image_signature(path: Path) -> None:
 __all__ = [
     "IMAGE_SUFFIXES",
     "MAX_DOCX_BYTES",
+    "MAX_HTML_BYTES",
     "MAX_IMAGE_BYTES",
     "MAX_MARKDOWN_BYTES",
     "MAX_PDF_BYTES",
@@ -151,6 +164,7 @@ __all__ = [
     "_check_image_signature",
     "_cleanup_directory",
     "_input_path",
+    "_html_output_path",
     "_output_path",
     "_relative_path",
     "_reject_symlinks",

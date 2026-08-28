@@ -5,6 +5,7 @@ from typing import Any
 from .docx import _WORD_PAGE_FIELDS, _postprocess_docx
 from .markdown import (
     _document_context,
+    _html_document,
     _normalize_cjk_strong_markers,
     _semantic_documents,
     normalize_report_markdown_strong_spacing,
@@ -33,6 +34,7 @@ __all__ = [
     "ReportRuntime",
     "_WORD_PAGE_FIELDS",
     "_document_context",
+    "_html_document",
     "_normalize_cjk_strong_markers",
     "_pdf_markdown",
     "_postprocess_docx",

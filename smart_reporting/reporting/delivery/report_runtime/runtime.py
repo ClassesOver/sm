@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from .markdown import (
     _bind_heading_anchors,
     _body_tokens,
     _document_context,
+    _html_document,
     _markdown_title,
     _normalize_cjk_strong_markers,
     _semantic_documents,
@@ -36,6 +38,7 @@ from .pdf import (
 from .validation import (
     IMAGE_SUFFIXES,
     MAX_DOCX_BYTES,
+    MAX_HTML_BYTES,
     MAX_IMAGE_BYTES,
     MAX_MARKDOWN_BYTES,
     MAX_PDF_BYTES,
@@ -43,6 +46,7 @@ from .validation import (
     ReportFailure,
     _check_image_signature,
     _cleanup_directory,
+    _html_output_path,
     _input_path,
     _output_path,
     _reject_symlinks,
@@ -126,6 +130,26 @@ class ReportRuntime:
             raise ReportFailure("Markdown 图片合计超过 50 MiB")
         return unique
 
+    @staticmethod
+    def _inline_images(body: str, source_parent: Path, allowed_images: set[Path]) -> str:
+        image_pattern = re.compile(r'(<img\b[^>]*\bsrc=)(["\'])([^"\']+)(\2)', re.I)
+
+        def replace(match: re.Match[str]) -> str:
+            source = match.group(3)
+            parsed = urlsplit(source)
+            if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+                raise ReportFailure("HTML 图片只能引用已校验的工作区资源")
+            path = (source_parent / unquote(parsed.path)).resolve()
+            if path not in allowed_images:
+                raise ReportFailure("HTML 图片引用了未校验资源")
+            mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(
+                path.suffix.lower(), f"image/{path.suffix.lower().lstrip('.')}"
+            )
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            return f"{match.group(1)}{match.group(2)}data:{mime};base64,{encoded}{match.group(4)}"
+
+        return image_pattern.sub(replace, body)
+
     def render_markdown(
         self,
         state: dict[str, Any],
@@ -134,6 +158,7 @@ class ReportRuntime:
         temporary_path: str,
         page_layout: dict[str, str] | None = None,
         word_output_path: str | None = None,
+        html_output_path: str | None = None,
     ) -> dict[str, Any]:
         try:
             import pypdf
@@ -144,6 +169,7 @@ class ReportRuntime:
 
         self._validate_datasets(state)
         temporary: Path | None = None
+        html_output: Path | None = None
         succeeded = False
         try:
             source = _input_path(self.workspace, markdown_path, ".md")
@@ -174,13 +200,18 @@ class ReportRuntime:
             source_artifact = self._artifact(source)
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
             body = parser.renderer.render(_body_tokens(tokens), parser.options, {})
+            html_body = self._inline_images(body, source.parent, allowed_images)
             output = _output_path(self.workspace, output_path)
             word_output = _word_output_path(
                 self.workspace,
                 word_output_path or str(PurePosixPath(output_path).with_suffix(".docx")),
             )
-            if output.parent != word_output.parent:
-                raise ReportFailure("PDF 和 Word 必须发布到同一 revision 目录")
+            html_output = _html_output_path(
+                self.workspace,
+                html_output_path or str(PurePosixPath(output_path).with_suffix(".html")),
+            )
+            if output.parent != word_output.parent or output.parent != html_output.parent:
+                raise ReportFailure("PDF、Word 和 HTML 必须发布到同一 revision 目录")
             temporary = _temporary_pdf_path(temporary_path)
             temporary_docx = _temporary_docx_path(temporary)
             file_fetcher = URLFetcher(allowed_protocols={"file"}, fail_on_errors=True)
@@ -264,6 +295,11 @@ class ReportRuntime:
                 expected_image_count=len(allowed_images),
                 watermark_text=context["watermarkText"],
             )
+            html_document = _html_document(html_body, context=context, layout=layout)
+            html_bytes = html_document.encode("utf-8")
+            if len(html_bytes) > MAX_HTML_BYTES:
+                raise ReportFailure("HTML 文件不能超过 200 MiB")
+            html_output.write_bytes(html_bytes)
             if self._artifact(source)["sha256"] != source_artifact["sha256"] or any(
                 self._artifact(path)["sha256"] != artifact["sha256"]
                 for path, artifact in zip(sorted(allowed_images), image_artifacts, strict=True)
@@ -279,10 +315,16 @@ class ReportRuntime:
                 "size": docx_size,
                 "sha256": _sha256(temporary_docx),
             }
+            html_artifact = {
+                "path": str(html_output.relative_to(self.workspace)),
+                "size": len(html_bytes),
+                "sha256": _sha256(html_output),
+            }
             render = {
                 "markdown": source_artifact,
                 "pdf": pdf_artifact,
                 "word": word_artifact,
+                "html": html_artifact,
                 "images": image_artifacts,
                 "pageCount": page_count,
                 "imageCount": len(allowed_images),
@@ -300,6 +342,9 @@ class ReportRuntime:
                 "markdownPath": str(source.relative_to(self.workspace)),
                 "pdfPath": str(output.relative_to(self.workspace)),
                 "wordPath": str(word_output.relative_to(self.workspace)),
+                "htmlPath": str(html_output.relative_to(self.workspace)),
+                "htmlSize": len(html_bytes),
+                "htmlSha256": html_artifact["sha256"],
                 "pageCount": page_count,
                 "imageCount": len(allowed_images),
                 "size": pdf_size,
@@ -311,6 +356,8 @@ class ReportRuntime:
         finally:
             if temporary is not None and not succeeded:
                 shutil.rmtree(temporary.parent, ignore_errors=True)
+            if html_output is not None and not succeeded:
+                html_output.unlink(missing_ok=True)
 
     def validate_pdf(
         self,

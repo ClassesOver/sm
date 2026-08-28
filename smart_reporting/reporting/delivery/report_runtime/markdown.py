@@ -398,12 +398,25 @@ def _semantic_documents(
     return pdf_document, word_document
 
 
+def _html_document(
+    body: str,
+    *,
+    context: dict[str, Any],
+    layout: dict[str, str],
+) -> str:
+    """构造浏览器预览文档；调用方必须先将图片替换为 data URL。"""
+
+    pdf_document, _ = _semantic_documents(body, context=context, layout=layout)
+    return "<!doctype html>" + pdf_document
+
+
 __all__ = [
     "REPORT_VISUAL_THEME",
     "_WORD_MARKERS",
     "_bind_heading_anchors",
     "_body_tokens",
     "_document_context",
+    "_html_document",
     "_markdown_title",
     "_normalize_cjk_strong_markers",
     "_normalize_report_markdown_segments",
