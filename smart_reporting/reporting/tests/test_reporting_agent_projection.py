@@ -550,6 +550,8 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
         assert "analysisCitationIds" in instructions
         assert "不得用 read_file、terminal 或目录探测寻找 citationId" in instructions
         assert "仅可执行 python3 <scriptPath>" in instructions
+        assert "聚合回执使用完整窗口" in instructions
+        assert "outputTruncated=false 时禁止再次读取" in instructions
 
 
 def test_deterministic_visualization_instructions_forbid_inspect_chart() -> None:

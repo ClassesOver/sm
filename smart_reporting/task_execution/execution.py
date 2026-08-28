@@ -674,12 +674,14 @@ class CodingExecutionKernel:
         run_context: RunContext | None,
         *,
         retain: bool = False,
+        preview_bytes: int | None = None,
     ) -> dict[str, Any]:
-        preview_bytes = (
-            MAX_REPORT_TOOL_PREVIEW_BYTES
-            if scope.external_run_id.startswith("report-coding-")
-            else MAX_TOOL_PREVIEW_BYTES
-        )
+        if preview_bytes is None:
+            preview_bytes = (
+                MAX_REPORT_TOOL_PREVIEW_BYTES
+                if scope.external_run_id.startswith("report-coding-")
+                else MAX_TOOL_PREVIEW_BYTES
+            )
         serialized = json.dumps(
             result, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
         )
@@ -4304,6 +4306,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     result,
                     run_context,
                     retain=self._retain_bounded_tool_result(scope, tool_name),
+                    preview_bytes=self._tool_preview_bytes(scope, tool_name, arguments, result),
                 )
             if (
                 tool_name == "verify"
@@ -4380,6 +4383,18 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
 
         _ = scope, tool_name
         return False
+
+    def _tool_preview_bytes(
+        self,
+        scope: CodingTaskScope,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        result: Any,
+    ) -> int | None:
+        """允许专用 Toolkit 精确扩大单个工具回执，默认边界保持不变。"""
+
+        _ = scope, tool_name, arguments, result
+        return None
 
     def _no_progress_exempt(
         self,

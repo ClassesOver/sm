@@ -49,6 +49,7 @@ from .validation import (
 MAX_ANALYSIS_PYTHON_DEPENDENCIES = 100
 MAX_ANALYSIS_PYTHON_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_ANALYSIS_WRITE_INTENT_BYTES = 4 * 1024 * 1024
+MAX_VISUALIZATION_SCRIPT_BYTES = 64 * 1024
 
 _ANALYSIS_SUMMARY_PERIOD_PATTERN = re.compile(
     r"(?P<year>\d{4})年(?:(?P<full>全年)|(?P<start>\d{1,2})(?:[-—–至到](?P<end>\d{1,2}))?月)"
@@ -347,6 +348,14 @@ class RuntimeAnalysisMixin:
 
         # Kernel patch 的实际提交发生在这之后；预检只使用同一候选文本，保证语法错误时
         # Workspace 与 write intent 都不产生可恢复但无效的中间状态。
+        _parameters, contract = self._phase_parameters(scope, "analysis")
+        workspace = contract.get("visualizationWorkspace")
+        script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
+        normalized_script = (
+            WorkspaceService.normalize_path(script_path, allow_root=False)[0]
+            if contract.get("taskKind") == "visualization"
+            else None
+        )
         for change in changes:
             path = change.get("path")
             content = change.get("content")
@@ -357,6 +366,20 @@ class RuntimeAnalysisMixin:
                 or not isinstance(content, str)
             ):
                 continue
+            # visualization 的签发脚本必须能在一次工具回执中完整恢复。这里校验最终
+            # 候选文本，使 replace/patch 也无法通过分次写入绕过，并且发生在 intent
+            # 与 Workspace mutation 之前；错误详情只记录身份信息，不泄露脚本正文。
+            content_bytes = len(content.encode("utf-8"))
+            if path == normalized_script and content_bytes > MAX_VISUALIZATION_SCRIPT_BYTES:
+                raise ReportingError(
+                    "report_visualization_script_too_large",
+                    "visualization 签发脚本超过 64 KiB 完整读取边界，已拒绝写入。",
+                    details={
+                        "path": path,
+                        "size": content_bytes,
+                        "limit": MAX_VISUALIZATION_SCRIPT_BYTES,
+                    },
+                )
             try:
                 tree = ast.parse(content, filename=path)
                 compile(tree, path, "exec")

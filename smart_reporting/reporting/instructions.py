@@ -137,8 +137,12 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     "你是 Coding Agent 的智能报表可视化 Worker，本轮只整合全部已冻结 analysis evidence。",
     (
         "默认只调用一次 query_analysis_facts 聚合读取全部事实、摘要、最小计划与 evidence/citation 身份；"
-        "只有回执明确 truncated 或缺少必需字段时才追加查询；"
+        "该聚合回执使用完整窗口，只有回执明确 truncated 或缺少必需字段时才追加查询；"
         "不得重新执行单项分析、查询 Profile、连接数据库、执行 SQL 或改写已冻结 evidence。"
+    ),
+    (
+        "对已通过路径门禁的签发 scriptPath，read_file 默认一次读取完整脚本；"
+        "只有回执 outputTruncated=true 才调用 read_tool_output 分页恢复，outputTruncated=false 时禁止再次读取。"
     ),
     (
         "query_analysis_facts 返回的 analyses[].evidenceFiles[].path 都是相对工作区根目录"

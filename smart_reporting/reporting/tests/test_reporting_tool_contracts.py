@@ -1728,6 +1728,75 @@ async def test_visualization_facts_v1_aggregates_out_of_order_durable_items_in_p
     }
 
 
+@pytest.mark.anyio
+async def test_visualization_facts_keeps_complete_aggregate_in_128_kib_window() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=SimpleNamespace(thread_id="thread-1"))
+    )
+    identity = {"path": "facts/analysis_001.json", "size": 10, "sha256": "a" * 64}
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization",
+            "analysisIds": ["analysis_001"],
+            "deterministicFactFiles": {"analysis_001": identity},
+        },
+    )
+    toolkit._require_phase_tool = lambda *args, **kwargs: None
+    toolkit._read_trusted_json = AsyncMock(
+        return_value={"metrics": [{"label": "x" * 800, "value": index} for index in range(50)]}
+    )
+
+    async def return_result(**kwargs):
+        return kwargs["result"]
+
+    toolkit._record_and_bound_profile_result = AsyncMock(side_effect=return_result)
+
+    result = await toolkit.query_analysis_facts(
+        query="analyses[0].facts.metrics", purpose="一次读取完整指标", maxItems=50
+    )
+
+    assert result["itemLimit"] == 50
+    assert result["truncated"] is False
+    assert len(result["value"]) == 50
+    assert toolkit._record_and_bound_profile_result.await_args.kwargs["preview_bytes"] == 128 * 1024
+
+
+@pytest.mark.anyio
+async def test_analysis_item_facts_keeps_16_kib_output_boundary() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=SimpleNamespace(thread_id="thread-1"))
+    )
+    identity = {"path": "facts/analysis_001.json", "size": 10, "sha256": "a" * 64}
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "analysis_item",
+            "currentAnalysisId": "analysis_001",
+            "deterministicFactFiles": {"analysis_001": identity},
+        },
+    )
+    toolkit._require_phase_tool = lambda *args, **kwargs: None
+    toolkit._read_trusted_json = AsyncMock(
+        return_value={"metrics": [{"label": "x" * 800, "value": index} for index in range(50)]}
+    )
+
+    async def return_result(**kwargs):
+        return kwargs["result"]
+
+    toolkit._record_and_bound_profile_result = AsyncMock(side_effect=return_result)
+
+    result = await toolkit.query_analysis_facts(
+        query="metrics", purpose="读取当前分析指标", maxItems=50
+    )
+
+    assert result["itemLimit"] < 50
+    assert result["truncated"] is True
+    assert "preview_bytes" not in toolkit._record_and_bound_profile_result.await_args.kwargs
+
+
 def test_analysis_context_projection_is_typed_compact_and_current_dataset_only() -> None:
     projection = _analysis_context_projection(
         {
@@ -3657,6 +3726,69 @@ async def test_visualization_read_allows_only_latest_committed_signed_script() -
     assert allowed is None
     assert stale["code"] == "report_visualization_script_identity_changed"
     assert unsigned["code"] == "report_visualization_evidence_path_forbidden"
+
+
+def test_visualization_signed_script_read_uses_64_kib_preview_window() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._active_reporting_phase = lambda _scope: "analysis"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization",
+            "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
+        },
+    )
+    scope = SimpleNamespace()
+
+    selected = toolkit._tool_preview_bytes(
+        scope,
+        "read_file",
+        {"path": "analysis/charts/trend.py"},
+        {"content": "x" * (40 * 1024)},
+    )
+    ordinary = toolkit._tool_preview_bytes(
+        scope,
+        "read_file",
+        {"path": "analysis/charts/other.py"},
+        {"content": "x" * (40 * 1024)},
+    )
+
+    assert selected == 64 * 1024
+    assert ordinary is None
+
+
+@pytest.mark.anyio
+async def test_visualization_script_over_64_kib_fails_before_write_intent() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization",
+            "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
+        },
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await toolkit._preflight_analysis_python_write(
+            scope=SimpleNamespace(thread_id="thread-1"),
+            tool_name="create_files",
+            canonical={
+                "files": [
+                    {
+                        "path": "analysis/charts/trend.py",
+                        "content": "#" * (64 * 1024 + 1),
+                    }
+                ]
+            },
+        )
+
+    assert raised.value.code == "report_visualization_script_too_large"
+    assert raised.value.details == {
+        "path": "analysis/charts/trend.py",
+        "size": 64 * 1024 + 1,
+        "limit": 64 * 1024,
+    }
 
 
 def test_analysis_item_acceptance_contract_requires_single_id_and_output_root() -> None:

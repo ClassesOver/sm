@@ -43,7 +43,7 @@ from ..workflow.checkpoint import (
 )
 from ..workflow.repository import ReportingStateRepository
 from ..workflow.state import ReportingCommand, ReportingRunState, ReportingStateError
-from .analysis import RuntimeAnalysisMixin
+from .analysis import MAX_VISUALIZATION_SCRIPT_BYTES, RuntimeAnalysisMixin
 from .profile import MAX_PROFILE_POINTER_ITEMS, RuntimeProfileMixin
 from .sections import RuntimeSectionsMixin
 from .validation import _analysis_write_parameters
@@ -655,6 +655,30 @@ class ReportWorkspaceTaskToolkit(
             "finish_task",
         }
 
+    def _tool_preview_bytes(
+        self,
+        scope: Any,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        result: Any,
+    ) -> int | None:
+        _ = result
+        if (
+            self._active_reporting_phase(scope) != "analysis"
+            or self._active_reporting_task_kind(scope) != "visualization"
+            or tool_name != "read_file"
+        ):
+            return None
+        try:
+            requested = WorkspaceService.normalize_path(arguments.get("path"), allow_root=False)[0]
+            _parameters, contract = self._phase_parameters(scope, "analysis")
+            workspace = contract.get("visualizationWorkspace")
+            script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
+            signed = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
+        except WorkspaceError:
+            return None
+        return MAX_VISUALIZATION_SCRIPT_BYTES if requested == signed else None
+
     def _no_progress_exempt(
         self,
         *,
@@ -673,6 +697,7 @@ class ReportWorkspaceTaskToolkit(
         tool_name: str,
         result: dict[str, Any],
         run_context: RunContext | None,
+        preview_bytes: int | None = None,
     ) -> dict[str, Any]:
         if (
             self._active_reporting_phase(scope) != "analysis"
@@ -685,6 +710,7 @@ class ReportWorkspaceTaskToolkit(
             result,
             run_context,
             retain=True,
+            preview_bytes=preview_bytes,
         )
 
     async def _record_and_bound_profile_result(
@@ -695,12 +721,14 @@ class ReportWorkspaceTaskToolkit(
         arguments: dict[str, Any],
         result: dict[str, Any],
         run_context: RunContext | None,
+        preview_bytes: int | None = None,
     ) -> dict[str, Any]:
         bounded = await self._bound_analysis_result(
             scope=scope,
             tool_name=tool_name,
             result=result,
             run_context=run_context,
+            preview_bytes=preview_bytes,
         )
         return bounded
 

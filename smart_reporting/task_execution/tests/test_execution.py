@@ -1568,6 +1568,23 @@ async def test_large_tool_output_has_stable_preview_and_exact_handle_reads(execu
 
 
 @pytest.mark.anyio
+async def test_report_tool_output_honors_explicit_preview_window():
+    kernel = object.__new__(CodingExecutionKernel)
+    scope = SimpleNamespace(external_run_id="report-coding-visualization")
+    output = "x" * (40 * 1024)
+
+    bounded = await kernel.bound_tool_result(
+        scope,
+        {"output": output},
+        None,
+        preview_bytes=64 * 1024,
+    )
+
+    assert bounded["output"] == output
+    assert "TOOL_OUTPUT_TRUNCATED" not in bounded["output"]
+
+
+@pytest.mark.anyio
 async def test_small_tool_output_only_gets_handle_when_explicitly_retained(execution_runtime):
     runtime = execution_runtime
     scope = await runtime.kernel.scope(runtime.context)

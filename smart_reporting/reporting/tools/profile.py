@@ -27,6 +27,7 @@ from .validation import (
 
 MAX_PROFILE_POINTER_ITEMS = 200
 MAX_PROFILE_POINTER_OUTPUT_BYTES = 16 * 1024
+MAX_VISUALIZATION_FACTS_OUTPUT_BYTES = 128 * 1024
 ANALYSIS_CONTEXT_QUERY_EXAMPLES = (
     "datasets[].{datasetId: datasetId, rowCount: rowCount, periodCoverage: periodCoverage}",
     "datasets[].{datasetId: datasetId, metrics: metricSemantics[].fieldRef}",
@@ -640,6 +641,11 @@ class RuntimeProfileMixin:
                 )
             )
         effective_limit = min(maxItems, MAX_PROFILE_POINTER_ITEMS)
+        output_limit = (
+            MAX_VISUALIZATION_FACTS_OUTPUT_BYTES
+            if task_kind == "visualization"
+            else MAX_PROFILE_POINTER_OUTPUT_BYTES
+        )
         while True:
             bounded_value, truncated = _bound_profile_pointer_value(
                 value, max_items=effective_limit
@@ -653,13 +659,19 @@ class RuntimeProfileMixin:
                 "itemLimit": effective_limit,
             }
             encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            if len(encoded) <= MAX_PROFILE_POINTER_OUTPUT_BYTES:
+            if len(encoded) <= output_limit:
+                bound_options = (
+                    {"preview_bytes": MAX_VISUALIZATION_FACTS_OUTPUT_BYTES}
+                    if task_kind == "visualization"
+                    else {}
+                )
                 return await self._record_and_bound_profile_result(
                     scope=scope,
                     tool_name="query_analysis_facts",
                     arguments={"query": query, "purpose": purpose, "maxItems": maxItems},
                     result=result,
                     run_context=run_context,
+                    **bound_options,
                 )
             if effective_limit <= 1:
                 raise ReportingError(
