@@ -376,6 +376,7 @@ class ReportRuntime:
         temporary_directory: str,
         artifact_manifest: dict[str, Any] | None = None,
         word_path: str | None = None,
+        html_path: str | None = None,
     ) -> dict[str, Any]:
         try:
             import pypdf
@@ -401,6 +402,16 @@ class ReportRuntime:
                 or registered_word.get("path") != current_word_path
             ):
                 raise ReportFailure("Word 未登记为当前分析任务的渲染产物")
+            registered_html = render.get("html")
+            current_html_path = html_path or (
+                registered_html.get("path") if isinstance(registered_html, dict) else None
+            )
+            if (
+                not isinstance(registered_html, dict)
+                or not isinstance(current_html_path, str)
+                or registered_html.get("path") != current_html_path
+            ):
+                raise ReportFailure("HTML 未登记为当前分析任务的渲染产物")
             supporting_artifacts = [render["markdown"], *render.get("images", [])]
             for artifact in supporting_artifacts:
                 supporting = self.workspace.joinpath(*_relative_path(artifact["path"]).parts)
@@ -417,6 +428,13 @@ class ReportRuntime:
             word_current = self._artifact(word)
             if word_current["sha256"] != registered_word.get("sha256"):
                 raise ReportFailure("Word 产物发生变化，请重新渲染后验收")
+            html_relative = _relative_path(current_html_path, ".html")
+            html = self.workspace.joinpath(*html_relative.parts)
+            html_current = self._artifact(html)
+            if html_current["sha256"] != registered_html.get("sha256") or html_current[
+                "size"
+            ] != registered_html.get("size"):
+                raise ReportFailure("HTML 产物发生变化，请重新渲染后验收")
             pages: list[dict[str, Any]] = []
             blank_pages: list[int] = []
             missing_page_layout: list[int] = []
@@ -615,6 +633,9 @@ class ReportRuntime:
                 "pdfSha256": current["sha256"],
                 "wordPath": current_word_path,
                 "wordSha256": word_current["sha256"],
+                "htmlPath": current_html_path,
+                "htmlSha256": html_current["sha256"],
+                "htmlSize": html_current["size"],
                 "pageCount": len(pages),
                 "markdownImageCount": markdown_image_count,
                 "renderedImageCount": rendered_image_count,
@@ -641,6 +662,11 @@ class ReportRuntime:
                 or word.stat().st_size != word_current["size"]
             ):
                 raise ReportFailure("Word 产物在验收期间发生变化，请重新验收")
+            if (
+                _sha256(html) != html_current["sha256"]
+                or html.stat().st_size != html_current["size"]
+            ):
+                raise ReportFailure("HTML 产物在验收期间发生变化，请重新验收")
             return validation
         finally:
             if temp_path is not None:

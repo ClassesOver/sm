@@ -37,6 +37,7 @@ def main(arguments: list[str] | None = None) -> int:
                 payload["temporary_directory"],
                 payload.get("artifact_manifest"),
                 payload.get("word_path"),
+                payload.get("html_path"),
             )
         else:
             raise ReportFailure("未知报表操作")

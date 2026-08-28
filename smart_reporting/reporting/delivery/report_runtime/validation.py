@@ -107,6 +107,13 @@ def _temporary_docx_path(pdf_path: Path) -> Path:
     return path
 
 
+def _temporary_html_path(pdf_path: Path) -> Path:
+    path = pdf_path.with_name("render.html")
+    if path.exists() or path.is_symlink():
+        raise ReportFailure("HTML 临时路径已经存在")
+    return path
+
+
 def _validation_directory(value: str) -> Path:
     if not isinstance(value, str) or not value.startswith("/tmp/workspace-report-"):
         raise ReportFailure("PDF 验收临时路径无效")
@@ -170,6 +177,7 @@ __all__ = [
     "_reject_symlinks",
     "_sha256",
     "_temporary_docx_path",
+    "_temporary_html_path",
     "_temporary_pdf_path",
     "_validation_directory",
     "_word_output_path",

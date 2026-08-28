@@ -126,6 +126,7 @@ class WorkspaceReportService:
             markdown_artifact = await self._current_artifact(render.get("markdown"), run_context)
             pdf_artifact = await self._current_artifact(render.get("pdf"), run_context)
             word_artifact = await self._current_artifact(render.get("word"), run_context)
+            html_artifact = await self._current_artifact(render.get("html"), run_context)
             image_artifacts = [
                 await self._current_artifact(item, run_context) for item in render.get("images", [])
             ]
@@ -133,6 +134,7 @@ class WorkspaceReportService:
                 "markdown": markdown_artifact,
                 "pdf": pdf_artifact,
                 "word": word_artifact,
+                "html": html_artifact,
                 "images": image_artifacts,
             }
             result["artifacts"] = artifacts
@@ -140,6 +142,7 @@ class WorkspaceReportService:
                 markdown_artifact["changed"]
                 or pdf_artifact["changed"]
                 or word_artifact["changed"]
+                or html_artifact["changed"]
                 or any(item["changed"] for item in image_artifacts)
             ):
                 result["status"] = "artifact_changed"
@@ -350,7 +353,7 @@ class WorkspaceReportService:
         artifact_manifest: dict[str, Any] | None,
         run_context: RunContext | None = None,
     ):
-        """从同一 Markdown 生成并验收 PDF/Word，再原子发布整个 revision。"""
+        """从同一 Markdown 生成并验收三种产物，再原子发布整个 revision。"""
         job = self._load_job(job_id, run_context)
         await self._job_status(job, run_context)
         relative_output, _remote_output = self.service.normalize_path(output_path, allow_root=False)
@@ -358,18 +361,25 @@ class WorkspaceReportService:
         requested_word = str(output.with_suffix(".docx"))
         relative_word, _remote_word = self.service.normalize_path(requested_word, allow_root=False)
         word_output = PurePosixPath(relative_word)
+        requested_html = str(output.with_suffix(".html"))
+        relative_html, _remote_html = self.service.normalize_path(requested_html, allow_root=False)
+        html_output = PurePosixPath(relative_html)
         if (
             output.suffix.lower() != ".pdf"
             or word_output.suffix.lower() != ".docx"
             or output.parent != word_output.parent
             or output.stem != word_output.stem
+            or html_output.suffix.lower() != ".html"
+            or html_output.parent != output.parent
+            or html_output.stem != output.stem
             or output.parent == PurePosixPath(".")
         ):
-            raise WorkspaceError("PDF 和 Word 必须使用同一 revision 目录和文件名主体。")
+            raise WorkspaceError("PDF、Word 和 HTML 必须使用同一 revision 目录和文件名主体。")
         invocation = uuid.uuid4().hex
         temporary_root = f"/tmp/workspace-report-{invocation}-render"
         temporary_pdf = f"{temporary_root}/render.pdf"
         temporary_word = f"{temporary_root}/render.docx"
+        temporary_html = f"{temporary_root}/render.html"
         staging_directory = output.parent.with_name(f".{output.parent.name}.{invocation}.tmp")
         staging_relative = staging_directory.as_posix()
         _normalized_staging, remote_staging = self.service.normalize_path(
@@ -377,11 +387,15 @@ class WorkspaceReportService:
         )
         staged_pdf_relative = str(staging_directory / output.name)
         staged_word_relative = str(staging_directory / word_output.name)
+        staged_html_relative = str(staging_directory / html_output.name)
         _staged_pdf, remote_staged_pdf = self.service.normalize_path(
             staged_pdf_relative, allow_root=False
         )
         _staged_word, remote_staged_word = self.service.normalize_path(
             staged_word_relative, allow_root=False
+        )
+        _staged_html, remote_staged_html = self.service.normalize_path(
+            staged_html_relative, allow_root=False
         )
         final_directory_relative = output.parent.as_posix()
         _normalized_final, remote_final_directory = self.service.normalize_path(
@@ -410,6 +424,7 @@ class WorkspaceReportService:
                     "temporary_path": temporary_pdf,
                     "page_layout": job.get("_pageLayout"),
                     "word_output_path": relative_word,
+                    "html_output_path": relative_html,
                 },
                 run_context,
             )
@@ -418,6 +433,7 @@ class WorkspaceReportService:
                 not isinstance(render, dict)
                 or render.get("pdf", {}).get("path") != relative_output
                 or render.get("word", {}).get("path") != relative_word
+                or render.get("html", {}).get("path") != relative_html
             ):
                 raise WorkspaceError("报表运行时返回无效产物。")
             async with self.service._async_client() as client:
@@ -428,10 +444,11 @@ class WorkspaceReportService:
                     timeout=30,
                 )
                 if getattr(created, "exit_code", None) != 0:
-                    raise WorkspaceError("双格式报告暂存目录创建失败。")
+                    raise WorkspaceError("三格式报告暂存目录创建失败。")
                 for source, target in (
                     (temporary_pdf, remote_staged_pdf),
                     (temporary_word, remote_staged_word),
+                    (temporary_html, remote_staged_html),
                 ):
                     copied = await sandbox.process.exec(
                         self.service._shell_command(
@@ -441,19 +458,25 @@ class WorkspaceReportService:
                         timeout=30,
                     )
                     if getattr(copied, "exit_code", None) != 0:
-                        raise WorkspaceError("双格式报告暂存失败。")
+                        raise WorkspaceError("三格式报告暂存失败。")
             staged_pdf = await self.service.ahash_file(_thread(run_context), staged_pdf_relative)
             staged_word = await self.service.ahash_file(_thread(run_context), staged_word_relative)
+            staged_html = await self.service.ahash_file(_thread(run_context), staged_html_relative)
             if any(
                 staged.get("sha256") != render[key].get("sha256")
                 or staged.get("size") != render[key].get("size")
-                for key, staged in (("pdf", staged_pdf), ("word", staged_word))
+                for key, staged in (
+                    ("pdf", staged_pdf),
+                    ("word", staged_word),
+                    ("html", staged_html),
+                )
             ):
-                raise WorkspaceError("双格式报告暂存身份校验失败。")
+                raise WorkspaceError("三格式报告暂存身份校验失败。")
 
             staged_render = copy.deepcopy(render)
             staged_render["pdf"]["path"] = staged_pdf_relative
             staged_render["word"]["path"] = staged_word_relative
+            staged_render["html"]["path"] = staged_html_relative
             staged_job = copy.deepcopy(job)
             staged_job["render"] = staged_render
             validation = await self._run_report_runtime(
@@ -462,13 +485,14 @@ class WorkspaceReportService:
                     "job": staged_job,
                     "pdf_path": staged_pdf_relative,
                     "word_path": staged_word_relative,
+                    "html_path": staged_html_relative,
                     "temporary_directory": validation_directory,
                     "artifact_manifest": artifact_manifest,
                 },
                 run_context,
             )
             if validation.get("ok") is not True:
-                raise WorkspaceError("PDF/Word 联合验收未通过。")
+                raise WorkspaceError("PDF/Word/HTML 联合验收未通过。")
             async with self.service._async_client() as client:
                 sandbox = await self.service._asandbox_for(client, _thread(run_context))
                 publish_result = await sandbox.process.exec(
@@ -480,20 +504,26 @@ class WorkspaceReportService:
                     timeout=30,
                 )
             if getattr(publish_result, "exit_code", None) != 0:
-                raise WorkspaceError("双格式报告 revision 原子发布失败。")
+                raise WorkspaceError("三格式报告 revision 原子发布失败。")
             published = True
             current_pdf = await self.service.ahash_file(_thread(run_context), relative_output)
             current_word = await self.service.ahash_file(_thread(run_context), relative_word)
+            current_html = await self.service.ahash_file(_thread(run_context), relative_html)
             if any(
                 current.get("sha256") != render[key].get("sha256")
                 or current.get("size") != render[key].get("size")
-                for key, current in (("pdf", current_pdf), ("word", current_word))
+                for key, current in (
+                    ("pdf", current_pdf),
+                    ("word", current_word),
+                    ("html", current_html),
+                )
             ):
-                raise WorkspaceError("双格式报告发布身份校验失败。")
+                raise WorkspaceError("三格式报告发布身份校验失败。")
             validation["pdfPath"] = relative_output
             validation["wordPath"] = relative_word
             render["pdf"]["path"] = relative_output
             render["word"]["path"] = relative_word
+            render["html"]["path"] = relative_html
             job["render"] = render
             job["validation"] = validation
             self._store_job(job, run_context)
@@ -502,6 +532,9 @@ class WorkspaceReportService:
                     "status": "validated",
                     "pdfPath": relative_output,
                     "wordPath": relative_word,
+                    "htmlPath": relative_html,
+                    "htmlSize": current_html["size"],
+                    "htmlSha256": current_html["sha256"],
                     "validation": validation,
                 }
             )
@@ -535,21 +568,28 @@ class WorkspaceReportService:
         word_relative, _word_remote = self.service.normalize_path(word_path, allow_root=False)
         pdf = PurePosixPath(pdf_relative)
         word = PurePosixPath(word_relative)
+        html_relative = str(pdf.with_suffix(".html"))
+        html_relative, _html_remote = self.service.normalize_path(html_relative, allow_root=False)
+        html = PurePosixPath(html_relative)
         if (
             pdf.suffix.lower() != ".pdf"
             or word.suffix.lower() != ".docx"
             or pdf.parent != word.parent
             or pdf.stem != word.stem
+            or html.suffix.lower() != ".html"
+            or pdf.parent != html.parent
+            or pdf.stem != html.stem
         ):
-            raise WorkspaceError("待清理的 PDF/Word revision 身份不一致。")
+            raise WorkspaceError("待清理的 PDF、Word 和 HTML revision 身份不一致。")
         job = self._load_job(job_id, run_context)
         render = job.get("render")
         if (
             not isinstance(render, dict)
             or render.get("pdf", {}).get("path") != pdf_relative
             or render.get("word", {}).get("path") != word_relative
+            or render.get("html", {}).get("path") != html_relative
         ):
-            raise WorkspaceError("待清理的 revision 不属于当前报表 job。")
+            raise WorkspaceError("待清理的三格式 revision 不属于当前报表 job。")
         _revision_relative, revision_remote = self.service.normalize_path(
             pdf.parent.as_posix(), allow_root=False
         )
