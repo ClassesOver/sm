@@ -626,6 +626,7 @@ def test_runtime_requires_public_base_url_for_http_publication() -> None:
 @pytest.mark.anyio
 async def test_http_publication_persists_and_destroys_sandbox_before_issuing_grant() -> None:
     events: list[str] = []
+    persisted_artifacts: tuple[object, ...] = ()
     pdf = b"pdf"
     word = b"word"
     html = b"html"
@@ -646,7 +647,9 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
     }
 
     class Persistence:
-        async def persist(self, **_values: Any) -> None:
+        async def persist(self, **values: Any) -> None:
+            nonlocal persisted_artifacts
+            persisted_artifacts = values["artifacts"]
             events.append("persist")
 
     class Grants:
@@ -686,9 +689,13 @@ async def test_http_publication_persists_and_destroys_sandbox_before_issuing_gra
     )
 
     assert events == ["persist", "destroy", "grant"]
+    assert {item.artifact for item in persisted_artifacts} == {"pdf", "word", "html"}
     assert result["pdf"]["downloadUrl"] == ("http://10.233.32.64:27018/reports/v1/download/raw")
     assert result["word"]["downloadUrl"] == (
         "http://10.233.32.64:27018/reports/v1/download/raw/word"
+    )
+    assert result["html"]["previewUrl"] == (
+        "http://10.233.32.64:27018/reports/v1/download/raw/html"
     )
 
 

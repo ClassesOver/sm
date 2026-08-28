@@ -356,6 +356,12 @@ class RuntimePlanningMixin:
                     size=content["wordSize"],
                     sha256=content["wordSha256"],
                 ),
+                ReportArtifactSpec(
+                    artifact="html",
+                    path=content["htmlPath"],
+                    size=content["htmlSize"],
+                    sha256=content["htmlSha256"],
+                ),
             ),
         )
         await self._destroy_or_quarantine_workspace(
@@ -406,6 +412,9 @@ class RuntimePlanningMixin:
             word_path=content["wordPath"],
             word_size=content["wordSize"],
             word_sha256=content["wordSha256"],
+            html_path=content["htmlPath"],
+            html_size=content["htmlSize"],
+            html_sha256=content["htmlSha256"],
             source_warnings=content["sourceWarnings"],
             coding_receipts=content["codingReceipts"],
         )

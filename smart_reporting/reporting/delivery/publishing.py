@@ -961,6 +961,10 @@ def publication_result(
             "size": grant.word_size,
             "sha256": grant.word_sha256,
         },
+        "html": {
+            "previewUrl": f"{base_url}/reports/v1/download/{raw_grant}/html",
+            "expiresAt": grant.expires_at.isoformat(),
+        },
         "sourceWarnings": list(source_warnings or ()),
         "codingReceipts": list(coding_receipts or ()),
     }
@@ -974,6 +978,9 @@ def cli_result(
     word_path: str,
     word_size: int,
     word_sha256: str,
+    html_path: str,
+    html_size: int,
+    html_sha256: str,
     source_warnings: list[dict[str, object]] | None = None,
     coding_receipts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
@@ -982,6 +989,7 @@ def cli_result(
         "size": size,
         "sha256": sha256,
         "word": {"path": word_path, "size": word_size, "sha256": word_sha256},
+        "html": {"path": html_path, "size": html_size, "sha256": html_sha256},
         "sourceWarnings": list(source_warnings or ()),
         "codingReceipts": list(coding_receipts or ()),
     }
