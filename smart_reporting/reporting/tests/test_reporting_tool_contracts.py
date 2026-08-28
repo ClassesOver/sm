@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import jmespath
 import pytest
+from agno.exceptions import StopAgentRun
 from agno.run import RunContext
 from agno.tools import Function
 from daytona.common.errors import DaytonaError
@@ -67,7 +68,12 @@ from smart_reporting.reporting.tools.validation import (
     _canonical_analysis_write_call,
     _jmespath_reporting_error,
 )
-from smart_reporting.reporting.workflow.checkpoint import FileIdentity, ProfileReadReceipt
+from smart_reporting.reporting.workflow.checkpoint import (
+    AnalysisEvidence,
+    FileIdentity,
+    ProfileReadReceipt,
+    SectionWorkItem,
+)
 from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_item_completion_conditions,
     _visualization_analysis_citation_ids,
@@ -359,8 +365,8 @@ def test_visualization_v1_contract_requires_every_signed_budget_scalar() -> None
     [
         ([], 0, (0, 12, 4, 48, 64)),
         ([1, 65536, 65537], 16385, (4, 12, 4, 48, 64)),
-        ([65536] * 25, 16 * 16384, (25, 33, 16, 65, 81)),
-        ([65536] * 512, 1, (512, 520, 4, 540, 556)),
+        ([65536] * 25, 16 * 16384, (25, 12, 16, 48, 64)),
+        ([65536] * 512, 1, (512, 12, 4, 48, 64)),
     ],
 )
 def test_visualization_dynamic_budget_uses_unique_file_bytes(
@@ -602,20 +608,122 @@ def test_visualization_retry_budget_keeps_dependency_base_before_first_tool() ->
 
 
 @pytest.mark.anyio
-async def test_register_report_charts_commits_one_atomic_durable_batch() -> None:
+async def test_register_report_charts_accepts_cross_dataset_comparison() -> None:
     scope = SimpleNamespace(thread_id="thread-1", task=SimpleNamespace(mutation_sequence=3))
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
     toolkit._active_reporting_task_kind = lambda *_args: "visualization"
-    toolkit._phase_parameters = lambda *_args: ({}, {"citationIds": ["citation-1"]})
-    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-current", "citation-yoy"],
+            "citationDatasetIds": {
+                "citation-current": "dataset-current",
+                "citation-yoy": "dataset-yoy",
+            },
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    receipt = {
+        "sourcePath": "analysis/charts/income.png",
+        "sha256": "a" * 64,
+        "inspectionMode": "vision",
+        "visualReviewStatus": "passed",
+        "inspectorId": None,
+        "modelId": "vision-model",
+        "reviewed": True,
+        "requiresRevision": False,
+        "issues": [],
+        "summary": "检查完成",
+        "warnings": [],
+        "suggestions": [],
+    }
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"charts": [], "chartInspectionReceipts": [receipt]})
+    )
+    identity = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-current", "citation-yoy"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "comparisonPeriod": "2025-01",
+        "comparisonType": "yoy",
+        "sourceDatasetId": "dataset-current",
+        "aggregationGrain": "month",
+        "comparability": "strict",
+        "size": 1024,
+        "sha256": "a" * 64,
+        "format": "PNG",
+        "mediaType": "image/png",
+        "extension": ".png",
+        "width": 1200,
+        "height": 800,
+    }
+    toolkit._inspect_chart = AsyncMock(return_value=(identity, []))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-current", "citation-yoy"],
+                "metricCodes": ["income"],
+                "currentPeriod": "2026-01",
+                "comparisonPeriod": "2025-01",
+                "comparisonType": "yoy",
+                "sourceDatasetId": "dataset-current",
+                "aggregationGrain": "month",
+                "comparability": "strict",
+            }
+        ],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is True
+    toolkit._apply_durable.assert_awaited_once()
+    assert toolkit._apply_durable.await_args.kwargs["name"] == "register_charts"
+    assert toolkit._apply_durable.await_args.kwargs["payload"] == {"charts": [identity]}
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_creates_honest_deterministic_receipt() -> None:
+    scope = SimpleNamespace(thread_id="thread-1", task=SimpleNamespace(mutation_sequence=3))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "visualInspectionMode": "deterministic",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"charts": [], "chartInspectionReceipts": []})
+    )
     identity = {
         "chartId": "income",
         "sourcePath": "analysis/charts/income.png",
         "title": "收入趋势",
         "altText": "收入趋势图",
         "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "comparisonPeriod": None,
+        "comparisonType": "none",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+        "comparability": "strict",
         "size": 1024,
         "sha256": "a" * 64,
         "format": "PNG",
@@ -635,15 +743,375 @@ async def test_register_report_charts_commits_one_atomic_durable_batch() -> None
                 "title": "收入趋势",
                 "altText": "收入趋势图",
                 "citationIds": ["citation-1"],
+                "metricCodes": ["income"],
+                "currentPeriod": "2026-01",
+                "comparisonType": "none",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+                "comparability": "strict",
             }
         ],
         run_context=RunContext(run_id="run-1", session_id="session-1"),
     )
 
     assert result["ok"] is True
+    receipt = toolkit._apply_durable.await_args.kwargs["payload"]["charts"][0][
+        "visualInspectionReceipt"
+    ]
+    assert receipt == {
+        "sourcePath": "analysis/charts/income.png",
+        "sha256": "a" * 64,
+        "inspectionMode": "deterministic",
+        "visualReviewStatus": "not_run",
+        "inspectorId": "deterministic-raster-inspector-v1",
+        "modelId": None,
+        "reviewed": True,
+        "requiresRevision": False,
+        "issues": [],
+        "summary": "已通过确定性图片文件检查；未运行模型视觉审查。",
+        "warnings": ["未运行模型视觉审查。"],
+        "suggestions": [],
+    }
+    assert result["warnings"] == [
+        {
+            "code": "chart_visual_review_not_run",
+            "chartId": "income",
+            "message": "未运行模型视觉审查；图表仅通过确定性图片文件检查。",
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_primary_dataset_absent_from_citations() -> None:
+    scope = SimpleNamespace(thread_id="thread-1", task=SimpleNamespace(mutation_sequence=3))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-yoy"],
+            "citationDatasetIds": {"citation-yoy": "dataset-yoy"},
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._inspect_chart = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-yoy"],
+                "metricCodes": ["income"],
+                "currentPeriod": "2026-01",
+                "comparisonPeriod": "2025-01",
+                "comparisonType": "yoy",
+                "sourceDatasetId": "dataset-current",
+                "aggregationGrain": "month",
+                "comparability": "strict",
+            }
+        ],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["code"] == "report_chart_citation_dataset_mismatch"
+    assert result["details"] == {
+        "chartId": "income",
+        "sourceDatasetId": "dataset-current",
+        "citationDatasetIds": ["dataset-yoy"],
+    }
+    toolkit._inspect_chart.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_retained_chart_before_inspection() -> None:
+    scope = SimpleNamespace(thread_id="thread-1", task=SimpleNamespace(mutation_sequence=0))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "retainedChartIds": ["income"],
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"charts": [], "chartInspectionReceipts": []})
+    )
+    toolkit._inspect_chart = AsyncMock()
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["income"],
+                "currentPeriod": "2026-01",
+                "comparisonPeriod": "2025-01",
+                "comparisonType": "yoy",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+                "comparability": "strict",
+            }
+        ],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["code"] == "report_chart_registration_duplicate"
+    assert "只能登记缺失图表" in result["message"]
+    toolkit._inspect_chart.assert_not_awaited()
+    toolkit._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_inspect_chart_rejects_path_outside_signed_output_root() -> None:
+    scope = SimpleNamespace(thread_id="thread-1", task=SimpleNamespace(mutation_sequence=0))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {"visualizationWorkspace": {"chartOutputRoot": "analysis/charts"}},
+    )
+    toolkit._vision_reviewer = SimpleNamespace(review=AsyncMock())
+
+    result = await toolkit.inspect_chart(
+        path="analysis/private.png",
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_chart_source_path_forbidden"
+    toolkit._vision_reviewer.review.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_inspect_chart_rejects_deterministic_mode_before_reading_file() -> None:
+    scope = SimpleNamespace(thread_id="thread-1", task=SimpleNamespace(mutation_sequence=0))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "visualInspectionMode": "deterministic",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._inspect_chart_file = AsyncMock()
+    toolkit._vision_reviewer = SimpleNamespace(review=AsyncMock())
+
+    result = await toolkit.inspect_chart(
+        path="analysis/charts/income.png",
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["code"] == "report_phase_tool_forbidden"
+    toolkit._inspect_chart_file.assert_not_awaited()
+    toolkit._vision_reviewer.review.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_inspect_chart_persists_hash_bound_receipt() -> None:
+    scope = SimpleNamespace(thread_id="thread-1", task=SimpleNamespace(mutation_sequence=0))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {"visualizationWorkspace": {"chartOutputRoot": "analysis/charts"}},
+    )
+    toolkit._inspect_chart_file = AsyncMock(
+        return_value={"sourcePath": "analysis/charts/income.png", "sha256": "a" * 64}
+    )
+    receipt = {
+        "sourcePath": "analysis/charts/income.png",
+        "sha256": "a" * 64,
+        "inspectionMode": "vision",
+        "visualReviewStatus": "passed",
+        "inspectorId": None,
+        "modelId": "vision-model",
+        "reviewed": True,
+        "requiresRevision": False,
+        "issues": [],
+        "summary": "检查完成",
+        "warnings": [],
+        "suggestions": [],
+    }
+    toolkit._vision_reviewer = SimpleNamespace(review=AsyncMock(return_value=receipt))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.inspect_chart(
+        path="analysis/charts/income.png",
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result == {"ok": True, "status": "reviewed", "receipt": receipt}
     toolkit._apply_durable.assert_awaited_once()
-    assert toolkit._apply_durable.await_args.kwargs["name"] == "register_charts"
-    assert toolkit._apply_durable.await_args.kwargs["payload"] == {"charts": [identity]}
+    assert toolkit._apply_durable.await_args.kwargs["name"] == "record_chart_inspection"
+    assert toolkit._apply_durable.await_args.kwargs["payload"] == {"receipt": receipt}
+
+
+@pytest.mark.anyio
+async def test_inspect_chart_file_rejects_non_image_content() -> None:
+    @asynccontextmanager
+    async def client_context():
+        yield object()
+
+    service = SimpleNamespace(
+        normalize_path=lambda path, **_kwargs: (path, f"/workspace/{path}"),
+        _async_client=client_context,
+        _asandbox_for=AsyncMock(return_value=object()),
+        _avalidate_existing_path=AsyncMock(),
+        _ainfo=AsyncMock(return_value=SimpleNamespace(size=12)),
+        _is_regular_file=lambda _info: True,
+        _adownload_file=AsyncMock(return_value=b"not-an-image"),
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(service=service)
+
+    with pytest.raises(ReportingError) as raised:
+        await toolkit._inspect_chart_file(
+            thread_id="thread-1",
+            path="analysis/charts/not-image.png",
+        )
+
+    assert raised.value.code == "report_chart_source_invalid"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("receipts", "code"),
+    [
+        ([], "report_chart_inspection_missing"),
+        (
+            [
+                {
+                    "sourcePath": "analysis/charts/income.png",
+                    "sha256": "b" * 64,
+                    "modelId": "vision-model",
+                    "reviewed": True,
+                    "requiresRevision": False,
+                    "issues": [],
+                }
+            ],
+            "report_chart_inspection_changed",
+        ),
+        (
+            [
+                {
+                    "sourcePath": "analysis/charts/income.png",
+                    "sha256": "a" * 64,
+                    "modelId": "vision-model",
+                    "reviewed": True,
+                    "requiresRevision": True,
+                    "issues": [
+                        {
+                            "category": "cropping",
+                            "severity": "critical",
+                            "description": "标题裁切",
+                        },
+                        {
+                            "category": "text_overlap",
+                            "severity": "critical",
+                            "description": "文字重叠",
+                        },
+                    ],
+                }
+            ],
+            "report_chart_inspection_failed",
+        ),
+        (
+            [
+                {
+                    "sourcePath": "analysis/charts/income.png",
+                    "sha256": "a" * 64,
+                    "inspectionMode": "deterministic",
+                    "visualReviewStatus": "not_run",
+                    "inspectorId": "deterministic-raster-inspector-v1",
+                    "modelId": None,
+                    "reviewed": True,
+                    "requiresRevision": False,
+                    "issues": [],
+                }
+            ],
+            "report_chart_inspection_failed",
+        ),
+    ],
+)
+async def test_register_report_charts_requires_current_acceptable_inspection(
+    receipts: list[dict[str, Any]], code: str
+) -> None:
+    scope = SimpleNamespace(thread_id="thread-1", task=SimpleNamespace(mutation_sequence=3))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"charts": [], "chartInspectionReceipts": receipts})
+    )
+    toolkit._inspect_chart = AsyncMock(
+        return_value=(
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "sha256": "a" * 64,
+                "size": 1024,
+                "format": "PNG",
+                "mediaType": "image/png",
+                "extension": ".png",
+                "width": 1200,
+                "height": 800,
+            },
+            [],
+        )
+    )
+
+    result = await toolkit.register_report_charts(
+        charts=[
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["income"],
+                "currentPeriod": "2026-01",
+                "comparisonPeriod": "2025-01",
+                "comparisonType": "yoy",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+                "comparability": "strict",
+            }
+        ],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == code
 
 
 def test_write_analysis_files_schema_exposes_every_underlying_primitive() -> None:
@@ -1733,6 +2201,89 @@ async def test_analysis_write_allows_valid_python_replace() -> None:
 
 
 @pytest.mark.anyio
+async def test_replace_text_not_found_returns_retryable_stable_error() -> None:
+    @asynccontextmanager
+    async def context(value):
+        yield value
+
+    source = "print('ok')\n"
+    scope = SimpleNamespace(thread_id="thread-1")
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.async_functions = write_functions()
+    toolkit.kernel = SimpleNamespace(
+        bound_external_run_id=lambda _run_context: "external-run-1",
+        task_scheduler=lambda _external_run_id: context(
+            SimpleNamespace(write=lambda: context(None))
+        ),
+        scope=AsyncMock(return_value=scope),
+        patch=AsyncMock(return_value={"ok": True}),
+        service=SimpleNamespace(
+            file_bytes=lambda _thread_id, _path: (source.encode(), "text/plain")
+        ),
+    )
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis"},
+    )
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+
+    result = await toolkit.write_analysis_files(
+        operation="replace_text",
+        path="analysis/report.py",
+        old_string="missing",
+        new_string="done",
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["code"] == "report_replace_target_not_found"
+    assert result["retryable"] is True
+    assert result["details"]["path"] == "analysis/report.py"
+    assert result["details"]["matchCount"] == 0
+    assert len(result["details"]["preview"]) <= 200
+    assert "/" not in result["details"]["path"] or result["details"]["path"].startswith("analysis/")
+
+
+@pytest.mark.anyio
+async def test_replace_text_ambiguous_returns_retryable_stable_error() -> None:
+    @asynccontextmanager
+    async def context(value):
+        yield value
+
+    source = "x\nx\n"
+    scope = SimpleNamespace(thread_id="thread-1")
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.async_functions = write_functions()
+    toolkit.kernel = SimpleNamespace(
+        bound_external_run_id=lambda _run_context: "external-run-1",
+        task_scheduler=lambda _external_run_id: context(
+            SimpleNamespace(write=lambda: context(None))
+        ),
+        scope=AsyncMock(return_value=scope),
+        patch=AsyncMock(return_value={"ok": True}),
+        service=SimpleNamespace(
+            file_bytes=lambda _thread_id, _path: (source.encode(), "text/plain")
+        ),
+    )
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis"},
+    )
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+
+    result = await toolkit.write_analysis_files(
+        operation="replace_text",
+        path="analysis/report.py",
+        old_string="x",
+        new_string="y",
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["code"] == "report_replace_target_ambiguous"
+    assert result["retryable"] is True
+    assert result["details"]["matchCount"] == 2
+
+
+@pytest.mark.anyio
 async def test_analysis_write_hash_failure_preserves_original_error() -> None:
     error = DaytonaError("temporary download failure")
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
@@ -1754,11 +2305,10 @@ def test_successful_tool_call_resets_no_progress_failure_count() -> None:
     failure = {"ok": False, "code": "report_tool_arguments_invalid"}
 
     assert _enforce_reporting_no_progress(context, "terminal", failure) == failure
-    for expected_count in range(2, 5):
-        guided = _enforce_reporting_no_progress(context, "terminal", failure)
-        assert guided["details"]["sameFailureCount"] == expected_count
-        assert guided["requiredActions"]
-    assert context.session_state[_REPORT_TOOL_FAILURE_STATE_KEY]["phaseFailureCount"] == 4
+    guided = _enforce_reporting_no_progress(context, "terminal", failure)
+    assert guided["details"]["sameFailureCount"] == 2
+    assert guided["requiredActions"]
+    assert context.session_state[_REPORT_TOOL_FAILURE_STATE_KEY]["phaseFailureCount"] == 2
 
     success = {"ok": True, "status": "accepted"}
     assert _enforce_reporting_no_progress(context, "write_analysis_files", success) == success
@@ -1772,14 +2322,21 @@ def test_repeated_failure_without_progress_stops_after_same_failure_limit() -> N
     context = RunContext(run_id="run-1", session_id="session-1", session_state={})
     failure = {"ok": False, "code": "report_tool_arguments_invalid"}
 
-    results = [_enforce_reporting_no_progress(context, "terminal", failure) for _ in range(3)]
+    first = _enforce_reporting_no_progress(context, "terminal", failure)
+    second = _enforce_reporting_no_progress(context, "terminal", failure)
+    with pytest.raises(StopAgentRun) as stopped:
+        _enforce_reporting_no_progress(context, "terminal", failure)
 
-    assert results[0] == failure
-    assert results[1]["details"]["sameFailureCount"] == 2
-    assert "只修改服务端 code/details" in results[1]["requiredActions"][-1]
-    assert results[-1]["code"] == "tool_no_progress"
-    assert results[-1]["retryable"] is False
-    assert results[-1]["details"]["sameFailureCount"] == 3
+    receipt = json.loads(str(stopped.value))
+    assert first == failure
+    assert second["details"]["sameFailureCount"] == 2
+    assert "只修改服务端 code/details" in second["requiredActions"][-1]
+    assert receipt["code"] == "report_tool_arguments_invalid"
+    assert receipt["retryable"] is False
+    assert receipt["details"]["terminalReason"] == "tool_no_progress"
+    assert receipt["details"]["failureFingerprint"]
+    assert receipt["details"]["sameFailureCount"] == 3
+    assert receipt["details"]["phaseFailureCount"] == 3
 
 
 def test_nonretryable_reporting_tool_result_stops_function_run() -> None:
@@ -1796,19 +2353,77 @@ def test_nonretryable_reporting_tool_result_stops_function_run() -> None:
 def test_phase_failure_limit_stops_distinct_failures_without_progress() -> None:
     context = RunContext(run_id="run-1", session_id="session-1", session_state={})
 
-    results = [
-        _enforce_reporting_no_progress(
+    for index in range(7):
+        result = _enforce_reporting_no_progress(
             context,
             "write_analysis_files",
             {"ok": False, "code": "report_analysis_write_intent_invalid"},
             {"path": f"analysis/{index}.py"},
         )
-        for index in range(8)
-    ]
+        assert result["code"] == "report_analysis_write_intent_invalid"
+    with pytest.raises(StopAgentRun) as stopped:
+        _enforce_reporting_no_progress(
+            context,
+            "write_analysis_files",
+            {"ok": False, "code": "report_analysis_write_intent_invalid"},
+            {"path": "analysis/7.py"},
+        )
 
-    assert results[-1]["code"] == "tool_no_progress"
-    assert results[-1]["retryable"] is False
-    assert results[-1]["details"]["phaseFailureCount"] == 8
+    receipt = json.loads(str(stopped.value))
+    assert receipt["code"] == "report_analysis_write_intent_invalid"
+    assert receipt["retryable"] is False
+    assert receipt["details"]["terminalReason"] == "tool_no_progress"
+    assert receipt["details"]["failureFingerprint"]
+    assert receipt["details"]["sameFailureCount"] == 1
+    assert receipt["details"]["phaseFailureCount"] == 8
+
+
+def test_phase_failure_limit_ignores_generic_progress_entries_from_rejections() -> None:
+    context = RunContext(run_id="run-1", session_id="session-1", session_state={})
+
+    for index in range(7):
+        context.session_state["agentos_coding_tool_progress"] = {
+            "mutation": 0,
+            "entries": [
+                {
+                    "tool": "process:submit",
+                    "mutation": 0,
+                    "resultHash": f"rejected-{item}",
+                }
+                for item in range(index + 1)
+            ],
+        }
+        result = _enforce_reporting_no_progress(
+            context,
+            "process",
+            {"ok": False, "code": "report_visualization_process_forbidden"},
+            {"action": "submit", "session_id": f"chart-inspect-{index}"},
+        )
+        assert result["code"] == "report_visualization_process_forbidden"
+
+    context.session_state["agentos_coding_tool_progress"] = {
+        "mutation": 0,
+        "entries": [
+            {
+                "tool": "process:submit",
+                "mutation": 0,
+                "resultHash": f"rejected-{item}",
+            }
+            for item in range(8)
+        ],
+    }
+    with pytest.raises(StopAgentRun) as stopped:
+        _enforce_reporting_no_progress(
+            context,
+            "process",
+            {"ok": False, "code": "report_visualization_process_forbidden"},
+            {"action": "submit", "session_id": "chart-inspect-7"},
+        )
+
+    receipt = json.loads(str(stopped.value))
+    assert receipt["code"] == "report_visualization_process_forbidden"
+    assert receipt["details"]["terminalReason"] == "tool_no_progress"
+    assert receipt["details"]["phaseFailureCount"] == 8
 
 
 def reporting_state_with_artifacts(*artifacts: dict[str, object]) -> ReportingRunState:
@@ -1900,6 +2515,166 @@ def test_analysis_facts_tool_distinguishes_projection_from_file_schema() -> None
     assert "单个文件根节点就是对应 analysis 的 facts" in description
 
 
+def _section_rework_work_item(*, dataset_ids: tuple[str, ...] = ("dataset-1",)) -> SectionWorkItem:
+    return SectionWorkItem(
+        sectionCode="section_001",
+        sectionNumber="1",
+        title="收入分析",
+        objective="说明收入表现。",
+        reportBrief={
+            "objective": "经营分析",
+            "executiveSummary": "收入表现摘要。",
+            "managementQuestions": ["收入表现如何？"],
+        },
+        completionConditions=("说明限制",),
+        analysisIds=("analysis_001",),
+        evidence=(
+            AnalysisEvidence(
+                analysisId="analysis_001",
+                summary="当前冻结事实。",
+                datasetIds=dataset_ids,
+                evidenceFiles=(FileIdentity(path="evidence/income.json", size=1, sha256="a" * 64),),
+                citationIds=("citation-1",),
+            ),
+        ),
+        citations=(
+            {
+                "citationId": "citation-1",
+                "datasetId": "dataset-1",
+                "requirementId": "requirement-1",
+                "snapshotHash": "b" * 64,
+            },
+        ),
+        factFiles=(FileIdentity(path="evidence/income.json", size=1, sha256="a" * 64),),
+        factSummaries=("当前冻结事实。",),
+        markdownRequirements=("明确限制",),
+    )
+
+
+def _section_rework_contract(
+    *, row_counts: tuple[int, ...], bind_datasets: bool = True
+) -> dict[str, Any]:
+    dataset_ids = tuple(f"dataset-{index}" for index in range(1, len(row_counts) + 1))
+    profile_datasets = (
+        [
+            {
+                "datasetId": dataset_id,
+                "rowCount": row_count,
+                "profileSnapshotHash": "c" * 64,
+            }
+            for dataset_id, row_count in zip(dataset_ids, row_counts, strict=True)
+        ]
+        if bind_datasets
+        else []
+    )
+    return {
+        "taskKind": "section",
+        "analysisReworkConstraints": {
+            "analysis_001": {
+                "datasetIds": list(dataset_ids),
+                "periods": ["2026-01"],
+                "metrics": ["revenue"],
+                "profileDatasets": profile_datasets,
+                "planHash": "e" * 64,
+            }
+        },
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("row_counts", "bind_datasets", "expected_code"),
+    [
+        ((0,), True, "report_analysis_rework_unresolvable"),
+        ((0,), False, "report_analysis_rework_invalid"),
+    ],
+)
+async def test_analysis_rework_rejects_zero_row_or_unbound_profile_datasets(
+    row_counts: tuple[int, ...],
+    bind_datasets: bool,
+    expected_code: str,
+) -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=SimpleNamespace()))
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {"reworkRequestPath": "sections/income.rework.json"},
+        _section_rework_contract(row_counts=row_counts, bind_datasets=bind_datasets),
+    )
+    toolkit._section_work_item = AsyncMock(return_value=_section_rework_work_item())
+    toolkit._write_phase_json = AsyncMock(
+        return_value={"path": "sections/income.rework.json", "size": 1, "sha256": "d" * 64}
+    )
+    toolkit._finish_phase_task = AsyncMock(return_value={"ok": True, "status": "accepted"})
+
+    result = await toolkit.request_analysis_rework(
+        analysisIds=["analysis_001"],
+        reason="需要补算。",
+        missingEvidence=["重算当前冻结范围。"],
+    )
+
+    assert result["code"] == expected_code
+    assert result["retryable"] is True
+    if expected_code == "report_analysis_rework_unresolvable":
+        assert result["requiredActions"] == [
+            "停止重复补算；基于冻结零行事实提交明确披露数据限制的 v2 claim 和正文。"
+        ]
+    toolkit._write_phase_json.assert_not_awaited()
+    toolkit._finish_phase_task.assert_not_awaited()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("row_counts", [(1,), (0, 1)])
+async def test_analysis_rework_allows_nonzero_frozen_dataset_without_expanding_schema(
+    row_counts: tuple[int, ...],
+) -> None:
+    dataset_ids = tuple(f"dataset-{index}" for index in range(1, len(row_counts) + 1))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=SimpleNamespace()))
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {"reworkRequestPath": "sections/income.rework.json"},
+        _section_rework_contract(row_counts=row_counts),
+    )
+    toolkit._section_work_item = AsyncMock(
+        return_value=_section_rework_work_item(dataset_ids=dataset_ids)
+    )
+    toolkit._write_phase_json = AsyncMock(
+        return_value={"path": "sections/income.rework.json", "size": 1, "sha256": "d" * 64}
+    )
+    toolkit._finish_phase_task = AsyncMock(return_value={"ok": True, "status": "accepted"})
+
+    result = await toolkit.request_analysis_rework(
+        analysisIds=["analysis_001"],
+        reason="需要按原口径复核。",
+        missingEvidence=["复算当前冻结期间。"],
+    )
+
+    assert result["status"] == "accepted"
+    payload = toolkit._write_phase_json.await_args.kwargs["payload"]
+    assert set(payload) == {"version", "sectionCode", "analysisIds", "reason", "missingEvidence"}
+    assert payload["analysisIds"] == ["analysis_001"]
+
+
+@pytest.mark.anyio
+async def test_analysis_rework_rejects_analysis_outside_current_work_item() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=SimpleNamespace()))
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {"reworkRequestPath": "sections/income.rework.json"},
+        _section_rework_contract(row_counts=(1,)),
+    )
+    toolkit._section_work_item = AsyncMock(return_value=_section_rework_work_item())
+    toolkit._write_phase_json = AsyncMock()
+
+    result = await toolkit.request_analysis_rework(
+        analysisIds=["analysis_002"],
+        reason="需要其他数据。",
+        missingEvidence=["新增数据源。"],
+    )
+
+    assert result["code"] == "report_analysis_rework_invalid"
+    toolkit._write_phase_json.assert_not_awaited()
+
+
 _WORKER_TOOL_SCHEMA_NAMES = (
     "finish_task",
     "read_profile_pointer",
@@ -1909,6 +2684,7 @@ _WORKER_TOOL_SCHEMA_NAMES = (
     "write_analysis_files",
     "complete_analysis_item",
     "finalize_report_analysis",
+    "inspect_chart",
     "register_report_charts",
     "render_report_section",
 )
@@ -1920,9 +2696,10 @@ _WORKER_TOOL_SCHEMA_FINGERPRINTS = {
     "query_analysis_facts": "b1b463cc581dc8e66a40dc86570bfca698dba8562cefe66ca6987d8552cbdc68",
     "write_analysis_files": "adb1fec9483ecde21f0ab92b3e804207dc8bffb4a9c7ecb22c77a9babded0687",
     "complete_analysis_item": "cb93f40d4226ced6a1a2ac96d2b26ffe51e0e1fb3eba1e25d05e73d2496f2073",
-    "finalize_report_analysis": "198d0662d1589b8961b784c5a11b138da322e0577320251d47adaaa37b9be7ec",
-    "register_report_charts": "c512a28f7b2bc55752a42652f53688450a5252f6a51d06f21e106573cf74e841",
-    "render_report_section": "59f1b6252af25b741cd13d455d86d0d72c9c67cd958816d1451dd681224ec452",
+    "finalize_report_analysis": "72be07cfdd398672e02fd705ddded6e3d2780a44ff9ce0c282799063bc7a2d10",
+    "inspect_chart": "c68d47005ca812279d27542dea8ab4cdcc2958f20ecff7bf93d3f2d569d65adf",
+    "register_report_charts": "ef621148cfda9ec63c7889da077d35ee5fb12aa38a5f864614c3b5136f1b261a",
+    "render_report_section": "9806426527bb1d3c94bfce71e3a98421994b28121ea1315ef9c0007e6a2bc671",
 }
 
 
@@ -2016,6 +2793,40 @@ def test_report_worker_toolkit_registers_only_current_task_tools(
         assert not ANALYSIS_WRITE_TOOL_NAMES & names
     assert "update_plan" not in (toolkit.instructions or "")
     assert "replace_text" not in (toolkit.instructions or "")
+    if task_kind == "visualization":
+        assert "inspect_chart" not in names
+        assert (
+            "每张图必须先调用 inspect_chart"
+            not in toolkit.async_functions["register_report_charts"].description
+        )
+
+
+def test_vision_enabled_visualization_toolkit_exposes_inspection() -> None:
+    context = RunContext(
+        run_id="run-visualization-vision",
+        session_id="session-visualization-vision",
+        user_id="user-1",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+
+    [toolkit] = build_report_worker_tools(
+        fake_workspace_service(None),
+        AsyncMock(),
+        state_repository=AsyncMock(),
+        run_context=context,
+        vision_reviewer=SimpleNamespace(),
+    )
+
+    assert "inspect_chart" in toolkit.async_functions
+    assert (
+        "每张图必须先调用 inspect_chart"
+        in toolkit.async_functions["register_report_charts"].description
+    )
 
 
 @pytest.mark.anyio
@@ -2042,6 +2853,7 @@ async def test_render_report_section_rejects_inline_image_before_writing_artifac
                     "chartIds": ["workload_monthly_trend"],
                 }
             ],
+            claims=[],
             state={},
             run_context=None,
         )
@@ -2061,15 +2873,23 @@ async def test_render_report_section_binds_chart_citations_into_block() -> None:
     toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
         return_value=SimpleNamespace(
             section_code="section_002",
-            citations=(
-                SimpleNamespace(citation_id="citation_004"),
-                SimpleNamespace(citation_id="citation_010"),
-            ),
+            report_brief=SimpleNamespace(management_questions=("预算执行如何？",)),
+            metric_definitions=(SimpleNamespace(code="revenue", period_basis="2026-01"),),
             charts=(
                 SimpleNamespace(
                     chart_id="revenue_budget",
                     citation_ids=("citation_004", "citation_010"),
+                    metric_codes=("revenue",),
+                    source_dataset_id="dataset-1",
+                    current_period="2026-01",
+                    comparison_period=None,
+                    comparison_type="none",
+                    comparability="strict",
                 ),
+            ),
+            citations=(
+                SimpleNamespace(citation_id="citation_004", dataset_id="dataset-1"),
+                SimpleNamespace(citation_id="citation_010", dataset_id="dataset-1"),
             ),
         )
     )
@@ -2084,6 +2904,19 @@ async def test_render_report_section_binds_chart_citations_into_block() -> None:
                 "blockId": "budget_overall",
                 "markdown": "预算执行情况。",
                 "citationIds": ["citation_004"],
+                "chartIds": ["revenue_budget"],
+                "claimIds": ["claim_revenue"],
+            }
+        ],
+        claims=[
+            {
+                "claimId": "claim_revenue",
+                "metricCode": "revenue",
+                "value": 100,
+                "periodBasis": "2026-01",
+                "managementQuestion": "预算执行如何？",
+                "currentPeriod": "2026-01",
+                "citationIds": ["citation_004", "citation_010"],
                 "chartIds": ["revenue_budget"],
             }
         ],
@@ -2625,7 +3458,7 @@ def test_visualization_process_rejects_foreign_session_and_mutating_action() -> 
 
 
 @pytest.mark.anyio
-async def test_visualization_read_rejects_untrusted_and_changed_evidence() -> None:
+async def test_visualization_read_rejects_all_direct_evidence_access() -> None:
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit._active_reporting_phase = lambda _scope: "analysis"
     toolkit._active_reporting_task_kind = lambda _scope: "visualization"
@@ -2646,24 +3479,19 @@ async def test_visualization_read_rejects_untrusted_and_changed_evidence() -> No
             }
         )
     )
-    toolkit.kernel = SimpleNamespace(
-        service=SimpleNamespace(
-            abatch_hash_files=AsyncMock(
-                return_value=[{"path": "evidence/one.json", "size": 9, "sha256": "b" * 64}]
-            )
-        )
-    )
+    toolkit.kernel = SimpleNamespace(service=SimpleNamespace(abatch_hash_files=AsyncMock()))
     scope = SimpleNamespace(thread_id="thread-1")
 
     forbidden = await toolkit._visualization_evidence_read_rejection(
         scope=scope, path="evidence/other.json"
     )
-    changed = await toolkit._visualization_evidence_read_rejection(
+    frozen = await toolkit._visualization_evidence_read_rejection(
         scope=scope, path="evidence/one.json"
     )
 
     assert forbidden["code"] == "report_visualization_evidence_path_forbidden"
-    assert changed["code"] == "report_visualization_evidence_changed"
+    assert frozen["code"] == "report_visualization_evidence_path_forbidden"
+    toolkit.kernel.service.abatch_hash_files.assert_not_awaited()
 
 
 @pytest.mark.anyio
@@ -2807,6 +3635,7 @@ def test_visualization_acceptance_contract_drops_unused_large_projections() -> N
             {"citationId": f"citation-{index:03d}", "quote": "大型引用正文" * 200}
             for index in range(1, 19)
         ],
+        "citationDatasetIds": {f"citation-{index:03d}": "dataset-1" for index in range(1, 19)},
     }
 
     contract = build_report_phase_acceptance_contract(
@@ -2825,6 +3654,7 @@ def test_visualization_acceptance_contract_drops_unused_large_projections() -> N
     assert "analysisPlans" not in trusted
     assert "analysisDatasetIds" not in trusted
     assert "citationRegistry" not in trusted
+    assert trusted["citationDatasetIds"] == phase_contract["citationDatasetIds"]
 
 
 @pytest.mark.parametrize(

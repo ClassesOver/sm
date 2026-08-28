@@ -34,7 +34,13 @@ from ..phase import (
     reporting_phase_allows_tool,
 )
 from ..vision import ReportVisionReviewer
-from ..workflow.checkpoint import FileIdentity, MetricDefinition, ReportBrief
+from ..workflow.checkpoint import (
+    AnalysisDatasetSemantics,
+    FileIdentity,
+    MetricDefinition,
+    ReportBrief,
+    SectionClaim,
+)
 from ..workflow.repository import ReportingStateRepository
 from ..workflow.state import ReportingCommand, ReportingRunState, ReportingStateError
 from .analysis import RuntimeAnalysisMixin
@@ -109,9 +115,8 @@ class ReportWorkspaceTaskToolkit(
         self.functions.pop("verify", None)
         self.async_functions.pop("verify", None)
         self.async_functions["view_image"].description = (
-            "使用独立视觉模型检查工作区最终图片，只返回 reviewed、modelId、summary、"
-            "requiresRevision、criticalIssues、warnings 和 suggestions 等结构化文字；"
-            "视觉模型不可用时返回非阻断 warning，不向 Report Worker 回传媒体。"
+            "使用独立视觉模型临时查看工作区图片；正式图表必须改用 inspect_chart 生成"
+            "绑定文件哈希的耐久检查回执。"
             '示例：{"path":"analysis/charts/trend.png","detail":"high"}'
         )
         # Toolkit 指令由通用 Coding 实现注入，其中仍声明了已删除的 verify 工具。
@@ -386,12 +391,20 @@ class ReportWorkspaceTaskToolkit(
                     "服务端从 durable state 派生逐 analysis evidence、Profile 回执和已登记图表。"
                     '示例：{"reportBrief":{"objective":"分析经营表现","executiveSummary":'
                     '"收入增长但成本承压","managementQuestions":["增长是否可持续？"],'
-                    '"warnings":[]},"metricDefinitions":[],"warnings":[]}'
+                    '"warnings":[]},"datasetSemantics":[{"datasetId":"dataset_001",'
+                    '"rowGrain":"record","duplicateResolution":"not_applicable"}],'
+                    '"metricDefinitions":[],"warnings":[]}'
                 ),
                 parameters={
                     "type": "object",
                     "properties": {
                         "reportBrief": ReportBrief.model_json_schema(by_alias=True),
+                        "datasetSemantics": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 100,
+                            "items": AnalysisDatasetSemantics.model_json_schema(by_alias=True),
+                        },
                         "metricDefinitions": {
                             "type": "array",
                             "maxItems": 500,
@@ -403,7 +416,7 @@ class ReportWorkspaceTaskToolkit(
                             "items": {"type": "string", "maxLength": 2000},
                         },
                     },
-                    "required": ["reportBrief"],
+                    "required": ["reportBrief", "datasetSemantics"],
                     "additionalProperties": False,
                 },
                 strict=True,
@@ -417,7 +430,8 @@ class ReportWorkspaceTaskToolkit(
                 name="request_analysis_rework",
                 description=(
                     "仅当当前 SectionWorkItem 的证据不足以成稿时，提交缺口和受影响 analysisIds；"
-                    "服务端只补全局分析并重跑当前章节。"
+                    "服务端只按该 analysis 的冻结 Dataset、期间和指标口径补算，reason 与 missingEvidence "
+                    "不能新增数据源、扩大期间或改变口径；零行 Dataset 无法通过重复补算解决。"
                     '示例：{"analysisIds":["analysis_001"],"reason":"缺少同比基准",'
                     '"missingEvidence":["补充上年同期收入"]}'
                 ),
@@ -451,14 +465,45 @@ class ReportWorkspaceTaskToolkit(
         )
         self.register(
             Function(
+                name="inspect_chart",
+                description=(
+                    "只读检查 visualizationWorkspace.chartOutputRoot 内的最终 PNG/JPEG。"
+                    "服务端执行文件类型、大小、解码、空白像素和视觉模型检查，并耐久保存"
+                    "绑定 sourcePath、sha256 与 modelId 的回执；文件修改后必须重新检查。"
+                    '示例：{"path":"analysis/charts/income.png","detail":"high"}'
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "minLength": 1, "maxLength": 512},
+                        "detail": {
+                            "type": "string",
+                            "enum": ["high", "original"],
+                            "default": "high",
+                        },
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+                strict=True,
+                entrypoint=self.inspect_chart,
+                pre_hook=_reset_stop_after_tool_call,
+                post_hook=_stop_after_nonretryable_tool_call,
+            )
+        )
+        self.register(
+            Function(
                 name="register_report_charts",
                 description=(
                     "在图表源文件最终定稿后一次登记 Coding 根据本轮不可变 CSV 生成的报告图表；"
-                    "服务端校验文件身份、Dataset citation 并决定发布路径。登记后不得改写或复用"
-                    "同一 chartId 的源文件。"
+                    "每张图必须先调用 inspect_chart，服务端校验当前文件哈希的视觉回执、Dataset "
+                    "citation 并决定发布路径。登记后不得改写或复用同一 chartId 的源文件。"
                     '示例：{"charts":[{"chartId":"income_trend","sourcePath":'
                     '"analysis/charts/income.png","title":"医疗收入月度趋势",'
-                    '"altText":"2025年医疗收入月度变化","citationIds":["citation_001"]}]}'
+                    '"altText":"2025年医疗收入月度变化","citationIds":["citation_001"],'
+                    '"metricCodes":["income"],"currentPeriod":"2025年",'
+                    '"comparisonType":"none","sourceDatasetId":"dataset_001",'
+                    '"aggregationGrain":"month","comparability":"strict"}]}'
                 ),
                 parameters={
                     "type": "object",
@@ -488,6 +533,10 @@ class ReportWorkspaceTaskToolkit(
                     "图片通过 chartIds 引用。"
                     '示例：{"sectionCode":"executive_summary","blocks":[{"blockId":'
                     '"overview","markdown":"### 核心结论\n\n- 医疗收入同比增长 8.2%",'
+                    '"citationIds":["citation_001"],"chartIds":["income_trend"],'
+                    '"claimIds":["claim_income"]}],"claims":[{"claimId":"claim_income",'
+                    '"metricCode":"income","value":"8.2%","periodBasis":"2025年",'
+                    '"managementQuestion":"收入增长是否可持续？","currentPeriod":"2025年",'
                     '"citationIds":["citation_001"],"chartIds":["income_trend"]}]}'
                 ),
                 parameters={
@@ -500,8 +549,13 @@ class ReportWorkspaceTaskToolkit(
                             "maxItems": 200,
                             "items": ReportDraftBlock.model_json_schema(by_alias=True),
                         },
+                        "claims": {
+                            "type": "array",
+                            "maxItems": 500,
+                            "items": SectionClaim.model_json_schema(by_alias=True),
+                        },
                     },
-                    "required": ["sectionCode", "blocks"],
+                    "required": ["sectionCode", "blocks", "claims"],
                     "additionalProperties": False,
                 },
                 strict=True,
@@ -907,56 +961,23 @@ class ReportWorkspaceTaskToolkit(
         try:
             normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
             durable = await self._durable_state(scope)
-            expected_by_path: dict[str, dict[str, Any]] = {}
-            items = durable.payload.get("analysisItems")
-            if isinstance(items, Mapping):
-                for item in items.values():
-                    files = item.get("evidenceFiles") if isinstance(item, Mapping) else None
-                    if not isinstance(files, Sequence) or isinstance(files, (str, bytes)):
-                        continue
-                    for identity in files:
-                        if not isinstance(identity, Mapping):
-                            continue
-                        identity_path = identity.get("path")
-                        if not isinstance(identity_path, str):
-                            continue
-                        canonical = WorkspaceService.normalize_path(
-                            identity_path, allow_root=False
-                        )[0]
-                        frozen = {
-                            "path": canonical,
-                            "size": identity.get("size"),
-                            "sha256": identity.get("sha256"),
-                        }
-                        existing = expected_by_path.get(canonical)
-                        if existing is not None and existing != frozen:
-                            raise ReportingError(
-                                "report_visualization_evidence_identity_conflict",
-                                "durable evidence 同一路径绑定了不同身份。",
-                            )
-                        expected_by_path[canonical] = frozen
-            expected = expected_by_path.get(normalized)
-            changed_code = "report_visualization_evidence_changed"
-            if expected is None:
-                committed_script = self._latest_committed_write_identity(
-                    durable.payload, normalized
+            expected = None
+            committed_script = self._latest_committed_write_identity(durable.payload, normalized)
+            if committed_script is not None:
+                _parameters, contract = self._phase_parameters(scope, "analysis")
+                workspace = contract.get("visualizationWorkspace")
+                script_path = (
+                    workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
                 )
-                if committed_script is not None:
-                    _parameters, contract = self._phase_parameters(scope, "analysis")
-                    workspace = contract.get("visualizationWorkspace")
-                    script_path = (
-                        workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
-                    )
-                    normalized_script = WorkspaceService.normalize_path(
-                        script_path, allow_root=False
-                    )[0]
-                    if normalized == normalized_script:
-                        expected = committed_script
-                        changed_code = "report_visualization_script_identity_changed"
+                normalized_script = WorkspaceService.normalize_path(script_path, allow_root=False)[
+                    0
+                ]
+                if normalized == normalized_script:
+                    expected = committed_script
             if expected is None:
                 raise ReportingError(
                     "report_visualization_evidence_path_forbidden",
-                    "visualization 只能读取 durable evidence 或签发的已提交脚本。",
+                    "visualization 只能读取签发的最新已提交脚本；冻结事实只能通过查询工具访问。",
                 )
             current = (await self.kernel.service.abatch_hash_files(scope.thread_id, [normalized]))[
                 0
@@ -968,8 +989,8 @@ class ReportWorkspaceTaskToolkit(
             }
             if current.get("missing") is True or actual != expected:
                 raise ReportingError(
-                    changed_code,
-                    "visualization evidence 或脚本身份已变化。",
+                    "report_visualization_script_identity_changed",
+                    "visualization 签发脚本身份已变化。",
                 )
             return None
         except (ReportingError, WorkspaceError) as error:
@@ -1292,6 +1313,26 @@ class ReportWorkspaceTaskToolkit(
             result["details"] = {
                 key: error.details[key]
                 for key in ("scriptPath", "missingModules", "missingPaths")
+                if key in error.details
+            }
+        elif (
+            code in {"report_replace_target_not_found", "report_replace_target_ambiguous"}
+            and isinstance(error, ReportingError)
+            and isinstance(error.details, Mapping)
+        ):
+            result["details"] = {
+                key: error.details[key]
+                for key in ("path", "matchCount", "preview")
+                if key in error.details
+            }
+        elif (
+            code == "report_chart_citation_dataset_mismatch"
+            and isinstance(error, ReportingError)
+            and isinstance(error.details, Mapping)
+        ):
+            result["details"] = {
+                key: error.details[key]
+                for key in ("chartId", "sourceDatasetId", "citationDatasetIds")
                 if key in error.details
             }
         elif (

@@ -3,7 +3,11 @@
 from agno.run import RunContext
 
 from .hospital_operation.domains import build_domain_stage_guidance
-from .phase import reporting_phase_from_run_context, reporting_task_kind_from_run_context
+from .phase import (
+    reporting_phase_from_run_context,
+    reporting_task_kind_from_run_context,
+    reporting_visual_inspection_mode_from_run_context,
+)
 
 # 医院运营规则必须按 Workflow 阶段唯一归属：数据理解只选表，分析规划负责
 # 趋势、异常和归因，Report Worker 只依据已批准计划和不可变 CSV 成稿。指标口径仍以
@@ -142,8 +146,9 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "重新拼接 evidence/facts，不得构造 analysis/evidence，也不得通过 cd 改变路径基准。"
     ),
     (
-        "任务 JSON 的 analysisCitationIds 是图表 citationId 的唯一受信来源，按 analysisId 直接使用其中"
-        "列出的值；不得猜测、重建，不得用 read_file、terminal 或目录探测寻找 citationId。"
+        "任务 JSON 的 analysisCitationIds 是图表 citationId 的唯一受信来源，citationDatasetIds 是"
+        " citationId 所属 Dataset 的唯一受信映射；必须逐字复用，不得查询 datasets[].citationIds、猜测或"
+        "重建 Dataset 归属，也不得用 read_file、terminal 或目录探测寻找 citationId。"
         "若需要读取冻结事实，只调用 query_analysis_facts；evidence 文件仅由签发图表脚本按"
         "analyses[].evidenceFiles[].path 逐字读取。"
     ),
@@ -160,12 +165,12 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "不得对可能为空的对象调用 .rows()，也不得让单张图表失败终止整批脚本。"
     ),
     (
-        "根据批准提纲和真实数据选择图表，不设固定数量或类型。图表源文件定稿并完成必要视觉检查后，"
-        "使用 register_report_charts 登记；图表必须绑定已注册 citationId。"
+        "根据批准提纲和真实数据选择图表，不设固定数量或类型。每张最终图表必须先调用 inspect_chart，"
+        "取得绑定当前文件哈希的通过回执后再使用 register_report_charts 登记；图表必须绑定已注册 citationId。"
     ),
     (
         "可视化阶段有总工具调用和脚本失败硬预算。事实读取、脚本写入、脚本执行和视觉检查分别合并为最少批次；"
-        "禁止对相同文件反复 read_file、terminal 或 view_image，也不得在上下文恢复后重新探索已完成工作。"
+        "禁止对相同文件反复 read_file、terminal 或 inspect_chart，也不得在上下文恢复后重新探索已完成工作。"
     ),
     (
         "创建或修改图表脚本只调用 write_analysis_files 的公开扁平 schema；首次创建使用 "
@@ -175,7 +180,8 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。"
     ),
     (
-        "汇总全部分析形成 ReportBrief、共享指标口径和全局 Warning，最后且只调用一次"
+        "汇总全部分析形成 ReportBrief、共享指标口径、覆盖全部 Dataset 的 rowGrain/duplicateResolution"
+        " 语义和全局 Warning，最后且只调用一次"
         " finalize_report_analysis。AnalysisEvidenceManifest、Profile receipt 和图表身份由服务端 durable"
         " 账本派生，不得重新提交或猜测。"
     ),
@@ -216,15 +222,23 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
         "登记为 chartId。具体图表类型、表格数量和列项根据数据实际决定。"
     ),
     (
-        "正文块只提交 blockId、Markdown、citationIds 和 chartIds，不提交 analysisIds。"
+        "正文块提交 blockId、Markdown、citationIds、chartIds 和 claimIds，不提交 analysisIds。"
         "引用由 datasetId、requirementId、snapshotHash 共同绑定，不得猜测或改写。当前 WorkItem 的"
         " citationIds 必须在对应数据事实正文块中引用。"
+    ),
+    (
+        "每个正文块必须引用至少一个结构化 claim；claim 必须绑定 ReportBrief 中的 managementQuestion、"
+        "冻结 metricCode、当前/比较期间、citationIds 与实际使用的 chartIds。reference_only 结论及其"
+        "正文必须明确标记为“参考”，不得据此生成严格同比、利润或效率结论。"
     ),
     "报告结论、数字、表格和图表必须来自当前冻结 evidence；不得年化、拟合、外推、补齐、平滑或作无依据归因。",
     "deterministicFactFiles 是服务端复算并校验哈希的固定事实，优先读取并沿用；可补充解释和非标准分析，但不得覆盖其中数值。",
     (
         "禁止提交示意、估算、占位或按常识补写的数字。若当前 evidence 无法满足完成条件，"
-        "不要猜测或生成半成品章节，提交受影响 analysisIds、原因和缺失证据。"
+        "不要猜测或生成半成品章节，提交受影响 analysisIds、原因和缺失证据。返工只会按"
+        "当前 analysis 已冻结的 Dataset、期间与指标口径补算，reason 和 missingEvidence 不得"
+        "要求新增数据源、扩大期间或改变口径。若服务端返回 report_analysis_rework_unresolvable，"
+        "应停止重复返工，并在 v2 claim 和正文中明确披露零行数据限制。"
     ),
     "用户可见内容不得展示来源系统、数据表名、字段名、requirementId、datasetId、sourceId、哈希或内部处理步骤。",
     "不得修改不可变 CSV、其他阶段产物、最终 Markdown 或服务端 manifest。",
@@ -246,7 +260,16 @@ def build_report_agent_instructions(run_context: RunContext) -> list[str]:
     if phase == "section":
         return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *REPORT_SECTION_AGENT_INSTRUCTIONS]
     if task_kind == "visualization":
-        return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *REPORT_VISUALIZATION_AGENT_INSTRUCTIONS]
+        visualization = list(REPORT_VISUALIZATION_AGENT_INSTRUCTIONS)
+        if reporting_visual_inspection_mode_from_run_context(run_context) == "deterministic":
+            visualization = [
+                item for item in visualization if "每张最终图表必须先调用 inspect_chart" not in item
+            ]
+            visualization.append(
+                "本 Task 的 visualInspectionMode=deterministic：禁止调用 inspect_chart；"
+                "register_report_charts 会执行确定性图片文件检查，并如实记录未运行模型视觉审查。"
+            )
+        return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *visualization]
     if task_kind == "analysis_item":
         return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS]
     raise ValueError("Reporting Worker 缺少受信 taskKind。")

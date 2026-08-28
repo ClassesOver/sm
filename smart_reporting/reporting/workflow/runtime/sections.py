@@ -20,6 +20,8 @@ from .base import (
     AnalysisArtifact,
     AnalysisReworkRequest,
     Any,
+    Awaitable,
+    Callable,
     Citation,
     CompletedSection,
     ContextTrace,
@@ -43,6 +45,7 @@ from .base import (
     SectionArtifact,
     SectionCitation,
     SectionWorkItem,
+    Sequence,
     SourceWarning,
     TaskScope,
     TaskState,
@@ -56,17 +59,198 @@ from .base import (
     build_report_artifact_validation_context,
     build_report_phase_acceptance_contract,
     cast,
+    hashlib,
     json,
     logger,
     payload_sha256,
-    record_step_model_metrics,
     reporting_phase_task_key,
     validate_report_draft_blocks,
 )
 from .publication import _accepted_artifacts_match_manifest
 
 
+async def _run_section_batches_until_rework(
+    items: Sequence[Any],
+    *,
+    concurrency: int,
+    worker: Callable[[Any], Awaitable[Any]],
+) -> list[Any]:
+    """每批只启动 concurrency 个章节；批内返工会阻止下一批启动。"""
+
+    results: list[Any] = []
+    for offset in range(0, len(items), concurrency):
+        batch_results = await _run_bounded(
+            items[offset : offset + concurrency],
+            concurrency=concurrency,
+            worker=worker,
+        )
+        results.extend(batch_results)
+        if any(result[2] is not None for result in batch_results):
+            break
+    return results
+
+
+def _pending_analysis_rework_file(checkpoint: ReportingCheckpoint) -> FileIdentity | None:
+    """返回尚未被后续全局分析冻结覆盖的最新章节返工身份。"""
+
+    if checkpoint.phase != "analysis":
+        return None
+    latest_rework = next(
+        (
+            (index, item.artifact_file)
+            for index, item in reversed(tuple(enumerate(checkpoint.trace)))
+            if item.phase == "section"
+            and item.status == "rework"
+            and item.artifact_file is not None
+        ),
+        None,
+    )
+    if latest_rework is None:
+        return None
+    rework_index, rework_file = latest_rework
+    later_freeze = any(
+        index > rework_index
+        and item.phase == "analysis"
+        and item.work_kind == "visualization"
+        and item.status == "completed"
+        for index, item in enumerate(checkpoint.trace)
+    )
+    return None if later_freeze else rework_file
+
+
 class RuntimeSectionsMixin:
+    @staticmethod
+    def _analysis_rework_constraints(
+        *,
+        detailed_plan: DetailedAnalysisPlan,
+        profile_coverage: ProfileCoverageManifest,
+        analysis_ids: tuple[str, ...],
+    ) -> dict[str, Any]:
+        analyses = {item.analysis_id: item for item in detailed_plan.analyses}
+        profiles = {item.dataset_id: item for item in profile_coverage.datasets}
+        constraints: dict[str, Any] = {}
+        try:
+            for analysis_id in analysis_ids:
+                analysis = analyses[analysis_id]
+                bound_profiles = tuple(profiles[dataset_id] for dataset_id in analysis.dataset_ids)
+                constraints[analysis_id] = {
+                    "datasetIds": list(analysis.dataset_ids),
+                    "periods": list(analysis.periods),
+                    "metrics": list(analysis.metrics),
+                    "profileDatasets": [
+                        {
+                            "datasetId": item.dataset_id,
+                            "rowCount": item.row_count,
+                            "profileSnapshotHash": item.profile_file.sha256,
+                        }
+                        for item in bound_profiles
+                    ],
+                    "planHash": payload_sha256(analysis.model_dump(mode="json", by_alias=True)),
+                }
+        except KeyError as error:
+            raise ReportingError(
+                "report_analysis_rework_invalid",
+                "章节返工约束没有绑定冻结分析计划或完整 Profile Dataset。",
+            ) from error
+        return constraints
+
+    async def _commit_section_rework_batch(
+        self,
+        run_context: RunContext,
+        *,
+        checkpoint: ReportingCheckpoint,
+        revision: int,
+        rework_results: Sequence[tuple[ReportingCheckpoint, AnalysisReworkRequest]],
+    ) -> tuple[ReportingCheckpoint, AnalysisReworkRequest]:
+        """批内 worker 全部结束后，一次性提交返工并撤销受影响章节。"""
+
+        requests = tuple(request for _candidate, request in rework_results)
+        affected_analysis_ids = tuple(
+            dict.fromkeys(
+                analysis_id for request in requests for analysis_id in request.analysis_ids
+            )
+        )
+        rework = AnalysisReworkRequest(
+            sectionCode=requests[0].section_code,
+            analysisIds=affected_analysis_ids,
+            reason="；".join(dict.fromkeys(item.reason for item in requests)),
+            missingEvidence=tuple(
+                dict.fromkeys(item for request in requests for item in request.missing_evidence)
+            ),
+        )
+        await self._apply_durable_command(
+            run_context,
+            ReportingCommand(
+                name="request_analysis_rework",
+                commandId=(
+                    f"analysis-rework:{revision}:"
+                    f"{payload_sha256(rework.model_dump(mode='json', by_alias=True))}"
+                ),
+                payload={
+                    "analysisIds": list(rework.analysis_ids),
+                    "missingEvidence": list(rework.missing_evidence),
+                    "reason": rework.reason,
+                    "sectionCode": rework.section_code,
+                },
+            ),
+        )
+        invalid_section_codes = {
+            section.code
+            for section in _frozen_outline(self._state(run_context)).sections
+            if set(section.analysis_ids) & set(affected_analysis_ids)
+        }
+        checkpoint = self._update_reporting_checkpoint(
+            checkpoint,
+            phase="analysis",
+            report_brief=None,
+            evidence_manifest=None,
+            analysis_manifest_file=None,
+            completed_sections=tuple(
+                item
+                for item in checkpoint.completed_sections
+                if item.section_code not in invalid_section_codes
+            ),
+            pending_sections=tuple(
+                dict.fromkeys([*checkpoint.pending_sections, *sorted(invalid_section_codes)])
+            ),
+            last_error={
+                "phase": "section",
+                "code": "report_analysis_evidence_insufficient",
+                "message": rework.reason,
+                "sectionCode": rework.section_code,
+                "retryReason": payload_sha256(rework.model_dump(mode="json", by_alias=True)),
+            },
+        )
+        # 通用并发 merge 会保留 completedSections 的并集；这里是批次收口后的有意撤销，
+        # 必须以已读取的最新 checkpoint 为基线精确替换，否则 sibling 的旧完成态会被回灌。
+        serialized = json.dumps(
+            checkpoint.model_dump(mode="json", by_alias=True),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest = hashlib.sha256(serialized).hexdigest()
+        identity = await self._write_immutable_artifact(
+            self._scope(run_context)["threadId"],
+            (
+                f"报表/智能分析/{run_context.run_id}/audit/"
+                f"reporting-checkpoint-{checkpoint.revision}-{digest}.json"
+            ),
+            serialized,
+        )
+        await self._apply_durable_command(
+            run_context,
+            ReportingCommand(
+                name="set_workflow_checkpoint",
+                commandId=f"workflow-checkpoint:{checkpoint.revision}:{digest}",
+                payload={
+                    "checkpoint": checkpoint.model_dump(mode="json", by_alias=True),
+                    "mirrorFile": identity.model_dump(mode="json", by_alias=True),
+                },
+            ),
+        )
+        return checkpoint, rework
+
     @staticmethod
     def _build_section_work_item(
         section: Any,
@@ -120,6 +304,7 @@ class RuntimeSectionsMixin:
             sectionNumber=section.section_number,
             title=section.title,
             objective="；".join(objective_parts),
+            reportBrief=analysis_artifact.report_brief,
             completionConditions=(
                 "完整呈现当前章节全部冻结事实及其管理结论",
                 "保持期间、单位和共享指标口径一致",
@@ -187,6 +372,11 @@ class RuntimeSectionsMixin:
             raise ReportingError(
                 "report_section_artifact_invalid", "Durable 章节产物身份无效。"
             ) from error
+        if artifact.version == "1":
+            raise ReportingError(
+                "report_semantic_contract_upgrade_required",
+                "运行中的 v1 章节产物缺少 v2 语义契约，必须重新分析。",
+            )
         if artifact.section_code != section_code:
             raise ReportingError(
                 "report_section_artifact_invalid", "Durable 章节产物没有绑定当前 sectionCode。"
@@ -212,6 +402,7 @@ class RuntimeSectionsMixin:
         sandbox_id: str,
         validation_context_file: FileIdentity,
         work_item: SectionWorkItem,
+        analysis_rework_constraints: Mapping[str, Any],
     ) -> tuple[
         ReportingCheckpoint,
         SectionArtifact | None,
@@ -345,6 +536,7 @@ class RuntimeSectionsMixin:
                     "taskKind": "section",
                     "thinkingEffort": "off",
                     "sectionWorkItemFile": work_item_file.model_dump(mode="json", by_alias=True),
+                    "analysisReworkConstraints": dict(analysis_rework_constraints),
                 },
                 section_output_path=section_output_path,
                 rework_request_path=rework_request_path,
@@ -389,7 +581,6 @@ class RuntimeSectionsMixin:
                 receipt = await self.task_runner.run(
                     task_scope, parent_run_id=str(run_context.run_id or "")
                 )
-                record_step_model_metrics(receipt.get("modelMetrics"))
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 identity = await self._phase_artifact_from_receipt(
                     scope["threadId"],
@@ -408,24 +599,6 @@ class RuntimeSectionsMixin:
                             "report_analysis_rework_invalid",
                             "分析补证请求没有绑定当前章节。",
                         )
-                    await self._apply_durable_command(
-                        run_context,
-                        ReportingCommand(
-                            name="request_analysis_rework",
-                            commandId=f"analysis-rework:{revision}:{identity.sha256}",
-                            payload={
-                                "analysisIds": list(request.analysis_ids),
-                                "missingEvidence": list(request.missing_evidence),
-                                "reason": request.reason,
-                                "sectionCode": request.section_code,
-                            },
-                        ),
-                    )
-                    invalid_section_codes = {
-                        section.code
-                        for section in _frozen_outline(self._state(run_context)).sections
-                        if set(section.analysis_ids) & set(request.analysis_ids)
-                    }
                     checkpoint = self._replace_trace(
                         checkpoint,
                         task_id,
@@ -436,29 +609,6 @@ class RuntimeSectionsMixin:
                     )
                     checkpoint = self._update_reporting_checkpoint(
                         checkpoint,
-                        phase="analysis",
-                        report_brief=None,
-                        evidence_manifest=None,
-                        analysis_manifest_file=None,
-                        completed_sections=tuple(
-                            item
-                            for item in checkpoint.completed_sections
-                            if item.section_code not in invalid_section_codes
-                        ),
-                        pending_sections=tuple(
-                            dict.fromkeys(
-                                [*checkpoint.pending_sections, *sorted(invalid_section_codes)]
-                            )
-                        ),
-                        last_error={
-                            "phase": "section",
-                            "code": "report_analysis_evidence_insufficient",
-                            "message": request.reason,
-                            "sectionCode": work_item.section_code,
-                            "retryReason": payload_sha256(
-                                request.model_dump(mode="json", by_alias=True)
-                            ),
-                        },
                         files=self._merge_checkpoint_files(checkpoint.files, identity),
                     )
                     await self._persist_reporting_checkpoint(run_context, checkpoint)
@@ -622,6 +772,11 @@ class RuntimeSectionsMixin:
             if artifact.section_code != section.code:
                 raise ReportingError(
                     "report_section_artifact_invalid", "章节产物顺序或 sectionCode 已变化。"
+                )
+            if artifact.version == "1":
+                raise ReportingError(
+                    "report_semantic_contract_upgrade_required",
+                    "运行中的 v1 章节产物缺少 v2 语义契约，必须重新分析。",
                 )
             section_artifacts.append(artifact)
 
@@ -878,34 +1033,14 @@ class RuntimeSectionsMixin:
         await self._persist_reporting_checkpoint(run_context, checkpoint)
 
         pending_rework: AnalysisReworkRequest | None = None
-        if checkpoint.phase == "analysis" and checkpoint.analysis_manifest_file is not None:
-            last_rework_index = max(
-                (
-                    index
-                    for index, item in enumerate(checkpoint.trace)
-                    if item.phase == "section"
-                    and item.status == "rework"
-                    and item.artifact_file is not None
+        rework_file = _pending_analysis_rework_file(checkpoint)
+        if rework_file is not None:
+            pending_rework = cast(
+                AnalysisReworkRequest,
+                await self._read_identity_model(
+                    scope["threadId"], rework_file, AnalysisReworkRequest
                 ),
-                default=-1,
             )
-            last_analysis_index = max(
-                (
-                    index
-                    for index, item in enumerate(checkpoint.trace)
-                    if item.phase == "analysis" and item.status == "completed"
-                ),
-                default=-1,
-            )
-            if last_rework_index > last_analysis_index:
-                rework_file = checkpoint.trace[last_rework_index].artifact_file
-                assert rework_file is not None
-                pending_rework = cast(
-                    AnalysisReworkRequest,
-                    await self._read_identity_model(
-                        scope["threadId"], rework_file, AnalysisReworkRequest
-                    ),
-                )
 
         if checkpoint.phase == "analysis":
             checkpoint, analysis_artifact = await self._run_analysis_phase(
@@ -935,6 +1070,11 @@ class RuntimeSectionsMixin:
                     AnalysisArtifact,
                 ),
             )
+            if analysis_artifact.version == "1":
+                raise ReportingError(
+                    "report_semantic_contract_upgrade_required",
+                    "运行中的 v1 分析产物缺少 v2 语义契约，必须重新分析。",
+                )
 
         while True:
             checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)
@@ -954,6 +1094,11 @@ class RuntimeSectionsMixin:
                     analysis_artifact=analysis_artifact,
                     citation_bindings=citation_bindings,
                 )
+                rework_constraints = self._analysis_rework_constraints(
+                    detailed_plan=detailed_plan,
+                    profile_coverage=profile_coverage,
+                    analysis_ids=work_item.analysis_ids,
+                )
                 return await self._run_section_phase(
                     run_context,
                     checkpoint=checkpoint,
@@ -961,35 +1106,27 @@ class RuntimeSectionsMixin:
                     sandbox_id=sandbox_id,
                     validation_context_file=validation_context_file,
                     work_item=work_item,
+                    analysis_rework_constraints=rework_constraints,
                 )
 
-            results = await _run_bounded(
+            results = await _run_section_batches_until_rework(
                 pending_sections,
                 concurrency=self.section_concurrency,
                 worker=run_one,
             )
 
             checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)
-            rework_requests = [result[2] for result in results if result[2] is not None]
-            if not rework_requests:
+            rework_results = [(result[0], result[2]) for result in results if result[2] is not None]
+            if not rework_results:
                 continue
-            affected_analysis_ids = tuple(
-                dict.fromkeys(
-                    analysis_id
-                    for request in rework_requests
-                    for analysis_id in request.analysis_ids
-                )
-            )
-            missing_evidence = tuple(
-                dict.fromkeys(
-                    item for request in rework_requests for item in request.missing_evidence
-                )
-            )
-            rework = AnalysisReworkRequest(
-                sectionCode=rework_requests[0].section_code,
-                analysisIds=affected_analysis_ids,
-                reason="；".join(dict.fromkeys(item.reason for item in rework_requests)),
-                missingEvidence=missing_evidence,
+            checkpoint, rework = await self._commit_section_rework_batch(
+                run_context,
+                checkpoint=checkpoint,
+                revision=revision,
+                rework_results=cast(
+                    Sequence[tuple[ReportingCheckpoint, AnalysisReworkRequest]],
+                    rework_results,
+                ),
             )
             checkpoint, analysis_artifact = await self._run_analysis_phase(
                 run_context,

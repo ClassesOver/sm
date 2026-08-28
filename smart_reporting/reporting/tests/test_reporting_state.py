@@ -300,6 +300,22 @@ def test_section_start_is_idempotent_and_rejects_other_work_item() -> None:
 
 
 def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sections():
+    income_receipt = {
+        "sourcePath": "analysis/charts/income.png",
+        "sha256": "a" * 64,
+        "modelId": "vision-model",
+        "reviewed": True,
+        "requiresRevision": False,
+        "issues": [],
+    }
+    overview_receipt = {
+        "sourcePath": "analysis/charts/overview.png",
+        "sha256": "b" * 64,
+        "modelId": "vision-model",
+        "reviewed": True,
+        "requiresRevision": False,
+        "issues": [],
+    }
     state = initial_state().model_copy(
         update={
             "phase": ReportingPhase.SECTIONS,
@@ -316,9 +332,30 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
                     "overview": {"sectionCode": "overview", "analysisIds": ["analysis_002"]},
                     "income": {"sectionCode": "income", "analysisIds": ["analysis_001"]},
                 },
-                "charts": [{"chartId": "income", "sha256": "a" * 64}],
+                "charts": [
+                    {
+                        "chartId": "income",
+                        "sourcePath": "analysis/charts/income.png",
+                        "sha256": "a" * 64,
+                        "visualInspectionReceipt": income_receipt,
+                    },
+                    {
+                        "chartId": "overview",
+                        "sourcePath": "analysis/charts/overview.png",
+                        "sha256": "b" * 64,
+                        "visualInspectionReceipt": overview_receipt,
+                    },
+                ],
+                "chartsRegistered": True,
+                "chartInspectionReceipts": [income_receipt, overview_receipt],
                 "reportBrief": {"objective": "旧目标"},
-                "analysisEvidenceManifest": {"version": "1"},
+                "analysisEvidenceManifest": {
+                    "version": "2",
+                    "evidence": [
+                        {"analysisId": "analysis_001", "chartIds": ["income"]},
+                        {"analysisId": "analysis_002", "chartIds": ["overview"]},
+                    ],
+                },
                 "profileReadReceipts": [{"receiptId": "receipt-1", "datasetId": "dataset-1"}],
                 "workflowCheckpoint": {
                     "phase": "sections",
@@ -356,7 +393,9 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
     assert rework.payload["completedSections"] == ["overview"]
     assert set(rework.payload["sectionArtifacts"]) == {"overview"}
     assert rework.payload["pendingSections"] == ["income"]
-    assert rework.payload["charts"] == []
+    assert [item["chartId"] for item in rework.payload["charts"]] == ["overview"]
+    assert rework.payload["chartsRegistered"] is False
+    assert rework.payload["chartInspectionReceipts"] == [overview_receipt]
     assert rework.payload["reportBrief"] is None
     assert rework.payload["analysisEvidenceManifest"] is None
     assert rework.payload["profileReadReceipts"] == [
@@ -371,6 +410,39 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
     running = apply_phase(rework, "start_analysis")
     assert running.phase is ReportingPhase.ANALYSIS_RUNNING
     assert running.payload["currentAnalysisId"] == "analysis_001"
+
+    visualization = ReportingStateReducer.apply(
+        running,
+        {
+            "name": "complete_analysis_item",
+            "commandId": "rework-analysis-complete",
+            "payload": {"analysisId": "analysis_001", "summary": "收入已复算"},
+        },
+        running.state_version,
+    ).state
+    supplemented = ReportingStateReducer.apply(
+        visualization,
+        {
+            "name": "register_charts",
+            "commandId": "rework-charts",
+            "payload": {
+                "charts": [
+                    {
+                        "chartId": "income",
+                        "sourcePath": "analysis/charts/income-v2.png",
+                        "sha256": "d" * 64,
+                    }
+                ]
+            },
+        },
+        visualization.state_version,
+    ).state
+
+    assert [item["chartId"] for item in supplemented.payload["charts"]] == [
+        "overview",
+        "income",
+    ]
+    assert supplemented.payload["chartsRegistered"] is True
 
 
 def test_write_intent_is_durable_and_identity_conflicts_fail_closed():
@@ -794,6 +866,58 @@ def test_chart_batch_registration_is_atomic_and_closes_lifecycle():
             first.state_version,
         )
     assert conflict.value.code == "report_chart_registration_closed"
+
+
+def test_chart_inspection_receipt_is_durable_idempotent_and_identity_bound() -> None:
+    state = apply_phase(apply_phase(initial_state(), "start_analysis"), "start_visualization")
+    receipt = {
+        "sourcePath": "analysis/charts/income.png",
+        "sha256": "a" * 64,
+        "inspectionMode": "vision",
+        "visualReviewStatus": "passed",
+        "inspectorId": None,
+        "modelId": "vision-model",
+        "reviewed": True,
+        "requiresRevision": False,
+        "issues": [],
+        "summary": "检查完成",
+        "warnings": [],
+        "suggestions": [],
+    }
+    first = ReportingStateReducer.apply(
+        state,
+        {
+            "name": "record_chart_inspection",
+            "commandId": "chart-inspection-1",
+            "payload": {"receipt": receipt},
+        },
+        state.state_version,
+    ).state
+
+    assert first.payload["chartInspectionReceipts"] == [receipt]
+    replayed = ReportingStateReducer.apply(
+        first,
+        {
+            "name": "record_chart_inspection",
+            "commandId": "chart-inspection-2",
+            "payload": {"receipt": receipt},
+        },
+        first.state_version,
+    ).state
+    assert replayed.payload["chartInspectionReceipts"] == [receipt]
+
+    changed = {**receipt, "modelId": "different-model"}
+    with pytest.raises(ReportingStateError) as conflict:
+        ReportingStateReducer.apply(
+            replayed,
+            {
+                "name": "record_chart_inspection",
+                "commandId": "chart-inspection-conflict",
+                "payload": {"receipt": changed},
+            },
+            replayed.state_version,
+        )
+    assert conflict.value.code == "report_chart_inspection_conflict"
 
 
 def test_profile_receipt_reuses_stable_identity_when_purpose_changes() -> None:

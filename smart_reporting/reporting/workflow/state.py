@@ -16,7 +16,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from .checkpoint import ChartVisualInspectionReceipt
 
 REPORTING_STATE_SCHEMA_VERSION = 3
 MAX_INLINE_APPLIED_COMMANDS = 1000
@@ -332,10 +334,57 @@ def apply(
             payload["pendingSections"] = _tuple_unique(
                 [*payload.get("pendingSections", []), *invalid_sections]
             )
-            # targeted rework 会重新生成全局可视化和冻结分析产物。旧图表、Brief 和
-            # EvidenceManifest 都可能引用已失效 evidence，必须在进入新分析前清空；
-            # Profile receipt 仍绑定不可变快照与查询，可按相同身份幂等复用。
-            payload["charts"] = []
+            # targeted rework 只撤销目标 evidence 明确绑定的图表。未受影响图表仍绑定
+            # 原文件身份与视觉回执，必须保留，避免返工把稳定产物重新生成或重复检查；
+            # 若旧 manifest 不具备可判定的 v2 绑定，则失败关闭为清空全部图表。
+            affected_chart_ids: set[str] | None = set()
+            evidence_manifest = payload.get("analysisEvidenceManifest")
+            evidence_items = (
+                evidence_manifest.get("evidence")
+                if isinstance(evidence_manifest, Mapping)
+                else None
+            )
+            if not isinstance(evidence_items, list):
+                affected_chart_ids = None
+            else:
+                for evidence in evidence_items:
+                    if not isinstance(evidence, Mapping):
+                        affected_chart_ids = None
+                        break
+                    if evidence.get("analysisId") not in analysis_ids:
+                        continue
+                    chart_ids = evidence.get("chartIds")
+                    if not isinstance(chart_ids, list) or not all(
+                        isinstance(chart_id, str) and chart_id for chart_id in chart_ids
+                    ):
+                        affected_chart_ids = None
+                        break
+                    assert affected_chart_ids is not None
+                    affected_chart_ids.update(chart_ids)
+            charts = payload.get("charts")
+            retained_charts = (
+                [
+                    dict(chart)
+                    for chart in charts
+                    if isinstance(chart, Mapping)
+                    and affected_chart_ids is not None
+                    and chart.get("chartId") not in affected_chart_ids
+                ]
+                if isinstance(charts, list)
+                else []
+            )
+            payload["charts"] = retained_charts
+            retained_identities = {
+                (chart.get("sourcePath"), chart.get("sha256")) for chart in retained_charts
+            }
+            receipts = payload.get("chartInspectionReceipts")
+            if isinstance(receipts, list):
+                payload["chartInspectionReceipts"] = [
+                    dict(receipt)
+                    for receipt in receipts
+                    if isinstance(receipt, Mapping)
+                    and (receipt.get("sourcePath"), receipt.get("sha256")) in retained_identities
+                ]
             payload["chartsRegistered"] = False
             payload["reportBrief"] = None
             payload["analysisEvidenceManifest"] = None
@@ -421,6 +470,37 @@ def apply(
             isinstance(item, Mapping) and item.get("receiptId") == receipt_id for item in receipts
         ):
             receipts.append(dict(receipt))
+    elif name == "record_chart_inspection":
+        try:
+            receipt = ChartVisualInspectionReceipt.model_validate(
+                arguments.get("receipt")
+            ).model_dump(mode="json", by_alias=True)
+        except ValidationError as error:
+            raise ReportingStateError(
+                "report_chart_inspection_invalid", "图表视觉检查回执无效。"
+            ) from error
+        source_path = receipt["sourcePath"]
+        sha256 = receipt["sha256"]
+        receipts = payload.setdefault("chartInspectionReceipts", [])
+        if not isinstance(receipts, list):
+            raise ReportingStateError("report_state_invalid", "chartInspectionReceipts 状态损坏。")
+        existing = next(
+            (
+                item
+                for item in receipts
+                if isinstance(item, Mapping)
+                and item.get("sourcePath") == source_path
+                and item.get("sha256") == sha256
+            ),
+            None,
+        )
+        if existing is not None and dict(existing) != dict(receipt):
+            raise ReportingStateError(
+                "report_chart_inspection_conflict",
+                "同一图表文件身份已绑定不同视觉检查回执。",
+            )
+        if existing is None:
+            receipts.append(dict(receipt))
     elif name == "register_charts":
         if state.phase is not ReportingPhase.VISUALIZATION:
             raise ReportingStateError(
@@ -446,9 +526,19 @@ def apply(
             raise ReportingStateError(
                 "report_chart_registration_duplicate", "图表登记批次包含无效或重复 chartId。"
             )
-        # 整批图表在一次 CAS 中提交；一旦成功，后续只能冻结 AnalysisArtifact。
-        # 这保证换用新 chartId 也不能绕过首次登记形成的生命周期边界。
-        payload["charts"] = [dict(chart) for chart in charts]
+        existing_charts = payload.get("charts")
+        if not isinstance(existing_charts, list):
+            raise ReportingStateError("report_state_invalid", "charts 状态损坏。")
+        retained_chart_ids = {
+            chart.get("chartId") for chart in existing_charts if isinstance(chart, Mapping)
+        }
+        if retained_chart_ids & set(registered_chart_ids):
+            raise ReportingStateError(
+                "report_chart_registration_duplicate", "补充图表与保留图表包含重复 chartId。"
+            )
+        # 返工时只提交缺失图表，并与仍绑定原 evidence 的图表在同一次 CAS 中合并；
+        # chartsRegistered 随后重新关闭登记窗口，保持全局 manifest 冻结边界不变。
+        payload["charts"] = [*existing_charts, *(dict(chart) for chart in charts)]
         payload["chartsRegistered"] = True
     elif name in {"set_analysis_artifact", "set_report_brief", "finalize_report_analysis"}:
         if "reportBrief" in arguments:

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 from agno.agent import Agent
 from agno.models.response import ModelResponse
+from agno.workflow.step import StepOutput
 from pydantic import ValidationError
 from sqlglot import parse_one
 
@@ -21,7 +22,10 @@ from smart_reporting.reporting.contract import ReportPeriod
 from smart_reporting.reporting.hospital_operation.detailed_analysis import (
     DetailedAnalysisPlan,
 )
-from smart_reporting.reporting.hospital_operation.outline import ReportOutlineProposal
+from smart_reporting.reporting.hospital_operation.outline import (
+    ReportOutline,
+    ReportOutlineProposal,
+)
 from smart_reporting.reporting.instructions import (
     REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
     REPORT_VISUALIZATION_AGENT_INSTRUCTIONS,
@@ -30,6 +34,7 @@ from smart_reporting.reporting.model_policy import (
     ReportingThinkingProfile,
     reporting_thinking_profile_from_model,
 )
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.checkpoint import MetricDefinition
 from smart_reporting.reporting.workflow.query_pipeline import _has_complete_period_filter
 from smart_reporting.reporting.workflow.runtime import (
@@ -38,12 +43,20 @@ from smart_reporting.reporting.workflow.runtime import (
 )
 from smart_reporting.reporting.workflow.runtime import planning as reporting_runtime
 from smart_reporting.reporting.workflow.runtime.analysis import _coding_detailed_analysis_plan
+from smart_reporting.reporting.workflow.runtime.base import (
+    REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
+    REPORT_OUTLINE_STATE_KEY,
+)
 from smart_reporting.reporting.workflow.runtime.datasets import _requirement_measure_field_refs
 from smart_reporting.reporting.workflow.runtime.models import (
     AnalysisBundle,
     DataUnderstandingPlan,
 )
-from smart_reporting.reporting.workflow.runtime.planning import _PLANNER_DISPLAY_NAMES
+from smart_reporting.reporting.workflow.runtime.planning import (
+    _PLANNER_DISPLAY_NAMES,
+    _outline_candidate,
+    _outline_validation_issues,
+)
 from smart_reporting.reporting.workflow.runtime.publication import (
     _analysis_quality_warnings,
 )
@@ -712,3 +725,204 @@ async def test_planner_schema_validation_uses_agno_agent_retries(monkeypatch) ->
         ReportingThinkingProfile.on(reasoning_effort="high", thinking_budget=8192),
     ]
     assert isinstance(output.content, DataUnderstandingPlan)
+
+
+def _duplicate_analysis_outline_payload() -> dict[str, Any]:
+    """复现同一 analysisId 被多个动态章节引用的非法提纲候选。"""
+    return {
+        "reportType": "comprehensive",
+        "title": "整体运营分析报告",
+        "sections": [
+            {
+                "title": "收入与成本",
+                "focus": ["比较收入与成本"],
+                "analysisIds": ["analysis_001"],
+            },
+            {
+                "title": "利润与效率",
+                "focus": ["比较利润与效率"],
+                "analysisIds": ["analysis_001"],
+            },
+        ],
+        "assumptions": ["收入数据来自财务系统"],
+    }
+
+
+def test_outline_validator_attaches_candidate_on_validation_error() -> None:
+    """响应校验失败时把候选载荷附在异常上，供纠错循环用作 previousOutput 基线。"""
+    planner = Agent(model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"))
+    stage = ReportWorkflowRuntime._planning_agent(
+        planner,
+        "report-outline-planner",
+        ReportOutlineProposal,
+        thinking_profile=ReportingThinkingProfile.off(),
+    )
+    validator = getattr(stage.model, "_report_response_validator")
+
+    with pytest.raises(ValidationError) as raised:
+        validator(json.dumps(_duplicate_analysis_outline_payload()))
+
+    candidate = getattr(raised.value, "_report_candidate", None)
+    assert isinstance(candidate, dict)
+    assert candidate["reportType"] == "comprehensive"
+    assert candidate["sections"][1]["analysisIds"] == ["analysis_001"]
+
+
+def test_outline_candidate_falls_back_to_model_level_input() -> None:
+    payload = _duplicate_analysis_outline_payload()
+    with pytest.raises(ValidationError) as raised:
+        ReportOutlineProposal.model_validate(payload)
+
+    candidate = _outline_candidate(raised.value)
+
+    assert candidate is not None
+    assert candidate["reportType"] == "comprehensive"
+
+
+def test_outline_validation_issues_report_duplicate_analysis_id() -> None:
+    payload = _duplicate_analysis_outline_payload()
+    with pytest.raises(ValidationError) as raised:
+        ReportOutlineProposal.model_validate(payload)
+
+    issues = _outline_validation_issues(raised.value)
+    reasons = " ".join(issue["reason"] for issue in issues)
+
+    assert "同一 analysisId 只能归属一个动态章节" in reasons
+    assert any(issue["path"] == "sections" for issue in issues)
+
+
+def _detailed_analysis_plan_payload() -> dict[str, Any]:
+    return {
+        "analyses": [
+            {
+                "analysisId": "analysis_001",
+                "domain": "revenue",
+                "managementQuestion": "收入趋势如何",
+                "primaryMetricFamily": "收入",
+                "datasetIds": ["dataset_1"],
+                "fields": ["data_date"],
+                "metrics": ["indicator_value"],
+                "periods": ["2025-01"],
+                "actions": ["描述收入趋势"],
+                "evidenceSummary": "收入逐月上升",
+                "suggestedSection": "经营结果",
+                "completionConditions": ["完成趋势描述"],
+            }
+        ],
+        "datasetIds": ["dataset_1"],
+    }
+
+
+def _valid_outline_proposal() -> ReportOutlineProposal:
+    return ReportOutlineProposal.model_validate(
+        {
+            "reportType": "comprehensive",
+            "title": "整体运营分析报告",
+            "sections": [
+                {
+                    "title": "经营结果与资源效率",
+                    "focus": ["比较经营结果与资源投入"],
+                    "analysisIds": ["analysis_001"],
+                }
+            ],
+            "assumptions": ["收入数据来自财务系统"],
+        }
+    )
+
+
+def _outline_planner_stage() -> Agent:
+    return ReportWorkflowRuntime._planning_agent(
+        Agent(model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")),
+        "report-outline-planner",
+        ReportOutlineProposal,
+        thinking_profile=ReportingThinkingProfile.off(),
+    )
+
+
+@pytest.mark.anyio
+async def test_generate_outline_retries_on_validation_error_instead_of_crashing() -> None:
+    """planner 首次返回重复 analysisId 的非法提纲时，generate_outline 应回灌 correction
+    并重试，而不是让整条 workflow 失败。"""
+    planner_calls = 0
+    stage = _outline_planner_stage()
+
+    async def fake_run_planner(_agent, payload, _run_context):
+        nonlocal planner_calls
+        planner_calls += 1
+        if planner_calls == 1:
+            # 模拟 Agno Agent 重试耗尽后由 _raise_recorded_agent_error 抛出的校验异常。
+            validator = getattr(_agent.model, "_report_response_validator")
+            validator(json.dumps(_duplicate_analysis_outline_payload()))
+        assert isinstance(payload.get("correction"), dict)
+        feedback = payload["correction"]["validationFeedback"]
+        assert feedback["code"] == "report_outline_invalid"
+        return _valid_outline_proposal()
+
+    envelope = reporting_contract.ReportRequestEnvelope.model_validate(
+        {
+            "reportGoal": "整体运营分析",
+            "reportType": "comprehensive",
+            "period": {"start": "2025-01-01", "end": "2025-12-31"},
+            "sourceIds": ["source-1"],
+        }
+    )
+    state: dict[str, Any] = {
+        REPORT_WORKFLOW_INPUT_STATE_KEY: envelope.model_dump(mode="json", by_alias=True),
+        REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY: _detailed_analysis_plan_payload(),
+    }
+    run_context = SimpleNamespace(session_state=state)
+    step_input = SimpleNamespace(additional_data=None)
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._outline_agent = stage
+    runtime._state = lambda _run_context: state
+    runtime._envelope = lambda _run_context: envelope
+    runtime._assert_state_safe = lambda _state: None
+    runtime._run_planner = fake_run_planner
+
+    output = await runtime.generate_outline(step_input, run_context)
+
+    assert planner_calls == 2
+    assert isinstance(output, StepOutput)
+    outline = ReportOutline.model_validate(output.content)
+    assert outline.sections[0].analysis_ids == ("analysis_001",)
+    assert state[REPORT_OUTLINE_STATE_KEY]["sections"][0]["code"] == "section_001"
+
+
+@pytest.mark.anyio
+async def test_generate_outline_fails_after_exhausting_correction_attempts() -> None:
+    """连续五次校验失败时以 report_outline_invalid 失败关闭，而非抛出原始 ValidationError。"""
+    planner_calls = 0
+    stage = _outline_planner_stage()
+
+    async def fake_run_planner(_agent, _payload, _run_context):
+        nonlocal planner_calls
+        planner_calls += 1
+        validator = getattr(_agent.model, "_report_response_validator")
+        validator(json.dumps(_duplicate_analysis_outline_payload()))
+
+    envelope = reporting_contract.ReportRequestEnvelope.model_validate(
+        {
+            "reportGoal": "整体运营分析",
+            "reportType": "comprehensive",
+            "period": {"start": "2025-01-01", "end": "2025-12-31"},
+            "sourceIds": ["source-1"],
+        }
+    )
+    state: dict[str, Any] = {
+        REPORT_WORKFLOW_INPUT_STATE_KEY: envelope.model_dump(mode="json", by_alias=True),
+        REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY: _detailed_analysis_plan_payload(),
+    }
+    run_context = SimpleNamespace(session_state=state)
+    step_input = SimpleNamespace(additional_data=None)
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._outline_agent = stage
+    runtime._state = lambda _run_context: state
+    runtime._envelope = lambda _run_context: envelope
+    runtime._assert_state_safe = lambda _state: None
+    runtime._run_planner = fake_run_planner
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime.generate_outline(step_input, run_context)
+
+    assert raised.value.code == "report_outline_invalid"
+    assert planner_calls == 5

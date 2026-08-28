@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from ..checkpoint import CheckpointRetryUsage
 from .base import (
     _VISUALIZATION_RECOVERY_ERROR_CODES,
     MAX_REPORT_INSTRUCTION_BYTES,
@@ -60,10 +61,10 @@ from .base import (
     hashlib,
     json,
     logger,
+    loguru_logger,
     partial,
     payload_sha256,
     re,
-    record_step_model_metrics,
     reporting_phase_task_key,
     reporting_thinking_profile_from_model,
     time,
@@ -288,6 +289,25 @@ class RuntimeAnalysisMixin:
                 "report_checkpoint_conflict",
                 "并发任务 checkpoint 与当前冻结分析身份不一致。",
             )
+        current_fact_files = current.deterministic_fact_files
+        incoming_fact_files = incoming.deterministic_fact_files
+        if current_fact_files and incoming_fact_files and current_fact_files != incoming_fact_files:
+            raise ReportingError(
+                "report_checkpoint_conflict",
+                "并发任务 checkpoint 与当前确定性 facts 身份不一致。",
+            )
+        deterministic_fact_files = current_fact_files or incoming_fact_files
+        merged_files = RuntimeAnalysisMixin._merge_checkpoint_files(current.files, *incoming.files)
+        merged_files_by_path = {item.path: item for item in merged_files}
+        if any(
+            identity.path in merged_files_by_path
+            and merged_files_by_path[identity.path] != identity
+            for identity in deterministic_fact_files.values()
+        ):
+            raise ReportingError(
+                "report_checkpoint_conflict",
+                "并发任务 files 账本试图覆盖已冻结的确定性 facts 身份。",
+            )
         completed_by_code = {item.section_code: item for item in current.completed_sections}
         for item in incoming.completed_sections:
             existing = completed_by_code.get(item.section_code)
@@ -324,7 +344,8 @@ class RuntimeAnalysisMixin:
             pending_sections=pending,
             warnings=tuple((*current.warnings, *incoming.warnings)[-500:]),
             last_error=incoming.last_error or current.last_error,
-            files=RuntimeAnalysisMixin._merge_checkpoint_files(current.files, *incoming.files),
+            deterministic_fact_files=dict(deterministic_fact_files),
+            files=merged_files,
             trace=tuple((*anonymous_trace, *trace_by_task.values())),
         )
 
@@ -424,6 +445,14 @@ class RuntimeAnalysisMixin:
             durable.payload.get("workflowCheckpoint") if durable is not None else None
         )
         if isinstance(stored_checkpoint, dict):
+            if (
+                stored_checkpoint.get("version") == "1"
+                and stored_checkpoint.get("phase") != "completed"
+            ):
+                raise ReportingError(
+                    "report_semantic_contract_upgrade_required",
+                    "运行中的 v1 checkpoint 缺少 v2 语义契约，必须重新分析。",
+                )
             try:
                 checkpoint = ReportingCheckpoint.model_validate(stored_checkpoint)
             except (TypeError, ValueError, ValidationError) as error:
@@ -633,7 +662,12 @@ class RuntimeAnalysisMixin:
                 "report_analysis_facts_invalid",
                 "固定 facts 文件与当前分析项身份不一致。",
             )
-        last_error: Exception | None = None
+        last_error: Exception | None = _checkpoint_retry_error(
+            checkpoint,
+            work_kind="analysis_item",
+            analysis_id=analysis_id,
+            retry_reason=retry_reason,
+        )
 
         for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
             matching_traces = [
@@ -821,7 +855,6 @@ class RuntimeAnalysisMixin:
                     task_scope,
                     parent_run_id=str(run_context.run_id or ""),
                 )
-                record_step_model_metrics(receipt.get("modelMetrics"))
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 trace_metrics["duration_seconds"] = time.monotonic() - started_at
                 durable_after = await self.state_repository.get(report_run_id)
@@ -902,6 +935,13 @@ class RuntimeAnalysisMixin:
                         "code": code,
                         "message": message or "独立分析项失败。",
                         "retryReason": retry_reason or code,
+                        "taskId": task_id,
+                        "workKind": "analysis_item",
+                        "analysisId": analysis_id,
+                        "attempt": attempt,
+                        "retryUsage": _checkpoint_retry_usage(
+                            error, work_kind="analysis_item"
+                        ).model_dump(mode="json", by_alias=True),
                     },
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
@@ -925,8 +965,9 @@ class RuntimeAnalysisMixin:
         rework_request: AnalysisReworkRequest | None,
     ) -> tuple[ReportingCheckpoint, AnalysisArtifact]:
         scope = self._scope(run_context)
-        fact_files = await self._prepare_deterministic_analysis_facts(
+        checkpoint, fact_files = await self._restore_or_create_deterministic_analysis_facts(
             run_context=run_context,
+            checkpoint=checkpoint,
             thread_id=scope["threadId"],
             report_run_id=str(run_context.run_id or scope["externalRunId"]),
             revision=revision,
@@ -934,6 +975,9 @@ class RuntimeAnalysisMixin:
             dataset_handles=dataset_handles,
         )
         analysis_ids = tuple(item.analysis_id for item in detailed_plan.analyses)
+        candidate_analysis_ids = (
+            rework_request.analysis_ids if rework_request is not None else analysis_ids
+        )
         if rework_request is not None:
             checkpoint = self._update_reporting_checkpoint(
                 checkpoint,
@@ -990,14 +1034,25 @@ class RuntimeAnalysisMixin:
             )
 
         scheduled_analysis_ids = await _run_pending_analysis_items(
-            analysis_ids,
+            candidate_analysis_ids,
             completed_analysis_ids=completed_task_ids,
             concurrency=self.analysis_concurrency,
             worker=run_one,
         )
         if scheduled_analysis_ids:
             checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)
-        last_error: Exception | None = None
+        last_error: Exception | None = _checkpoint_retry_error(
+            checkpoint,
+            work_kind="visualization",
+            analysis_id=None,
+            retry_reason=retry_reason,
+        )
+        visual_inspection_mode: Literal["vision", "deterministic"] = (
+            "vision"
+            if getattr(getattr(self.report_worker, "model", None), "_report_vision_enabled", True)
+            else "deterministic"
+        )
+        _ensure_visual_inspection_capability(checkpoint, visual_inspection_mode)
 
         for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
             started_trace = next(
@@ -1076,14 +1131,20 @@ class RuntimeAnalysisMixin:
                 "taskKind": "visualization",
                 "reportGoal": self._envelope(run_context).report_goal,
                 "completionConditions": _visualization_completion_conditions(
-                    last_error, charts_registered
+                    last_error,
+                    charts_registered,
+                    tuple(item["chartId"] for item in registered_charts),
                 ),
                 "outline": self._state(run_context)[REPORT_OUTLINE_STATE_KEY],
                 "visualTheme": REPORT_VISUAL_THEME,
                 "registeredCharts": registered_charts,
+                "visualInspectionMode": visual_inspection_mode,
                 "analysisCitationIds": _visualization_analysis_citation_ids(
                     detailed_plan, citation_bindings
                 ),
+                "citationDatasetIds": {
+                    item.citation_id: item.dataset_id for item in citation_bindings
+                },
                 "deterministicFactFiles": {
                     analysis_id: identity.model_dump(mode="json", by_alias=True)
                     for analysis_id, identity in fact_files.items()
@@ -1119,7 +1180,9 @@ class RuntimeAnalysisMixin:
                     "reportRunId": str(run_context.run_id or scope["externalRunId"]),
                     "taskKind": "visualization",
                     "chartsRegistered": charts_registered,
+                    "retainedChartIds": [item["chartId"] for item in registered_charts],
                     "visualizationRecovery": _visualization_recovery_required(last_error),
+                    "visualInspectionMode": visual_inspection_mode,
                     **visualization_budget,
                     **visualization_usage,
                     "visualizationWorkspace": {
@@ -1147,6 +1210,12 @@ class RuntimeAnalysisMixin:
                     },
                     "datasetIds": [item.dataset_id for item in dataset_handles],
                     "citationIds": [item.citation_id for item in citation_bindings],
+                    "citationRegistry": [
+                        item.model_dump(mode="json", by_alias=True) for item in citation_bindings
+                    ],
+                    "citationDatasetIds": {
+                        item.citation_id: item.dataset_id for item in citation_bindings
+                    },
                 },
                 analysis_output_path=output_path,
             )
@@ -1171,6 +1240,7 @@ class RuntimeAnalysisMixin:
                             instructionBytes=instruction_bytes,
                             projectedContextBytes=instruction_bytes,
                             retryReason=retry_reason,
+                            visualInspectionMode=visual_inspection_mode,
                         ),
                     ),
                     last_error=None,
@@ -1194,7 +1264,6 @@ class RuntimeAnalysisMixin:
                     task_scope,
                     parent_run_id=str(run_context.run_id or ""),
                 )
-                record_step_model_metrics(receipt.get("modelMetrics"))
                 raw_projection_metrics = receipt.get("projectionMetrics")
                 if isinstance(raw_projection_metrics, Mapping):
                     visualization_usage_metrics = raw_projection_metrics
@@ -1374,11 +1443,163 @@ class RuntimeAnalysisMixin:
                         "code": code,
                         "message": message or "可视化冻结阶段失败。",
                         "retryReason": retry_reason,
+                        "taskId": task_id,
+                        "workKind": "visualization",
+                        "attempt": attempt,
+                        "retryUsage": _checkpoint_retry_usage(
+                            error, work_kind="visualization"
+                        ).model_dump(mode="json", by_alias=True),
                     },
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)
         assert last_error is not None
         raise last_error
+
+    async def _restore_or_create_deterministic_analysis_facts(
+        self,
+        *,
+        run_context: RunContext,
+        checkpoint: ReportingCheckpoint,
+        thread_id: str,
+        report_run_id: str,
+        revision: int,
+        detailed_plan: DetailedAnalysisPlan,
+        dataset_handles: tuple[DatasetHandle, ...],
+    ) -> tuple[ReportingCheckpoint, dict[str, FileIdentity]]:
+        """恢复同 revision 的 facts 权威身份；只有无分析进度的新 checkpoint 可生成。"""
+
+        analysis_ids = tuple(item.analysis_id for item in detailed_plan.analyses)
+        facts_root = f"报表/智能分析/{report_run_id}/facts/revision-{revision}"
+        expected_paths = {
+            analysis_id: f"{facts_root}/{analysis_id}.json" for analysis_id in analysis_ids
+        }
+        fact_files = dict(checkpoint.deterministic_fact_files)
+        recovered_legacy_mapping = False
+
+        if not fact_files:
+            # 旧 v2 没有 analysisId 映射，只允许从通用账本中精确恢复当前 run/revision
+            # 的规范文件集；部分匹配或额外 facts 都无法证明计划绑定，必须失败关闭。
+            candidates_by_path: dict[str, list[FileIdentity]] = {}
+            for identity in checkpoint.files:
+                if identity.path.startswith(f"{facts_root}/"):
+                    candidates_by_path.setdefault(identity.path, []).append(identity)
+            if candidates_by_path:
+                if set(candidates_by_path) != set(expected_paths.values()) or any(
+                    len(candidates) != 1 for candidates in candidates_by_path.values()
+                ):
+                    raise ReportingError(
+                        "report_semantic_contract_upgrade_required",
+                        "运行中的 Reporting checkpoint 缺少完整的确定性 facts 身份映射。",
+                    )
+                fact_files = {
+                    analysis_id: candidates_by_path[path][0]
+                    for analysis_id, path in expected_paths.items()
+                }
+                recovered_legacy_mapping = True
+            else:
+                has_unmapped_fact_identity = any(
+                    "/facts/revision-" in identity.path for identity in checkpoint.files
+                )
+                has_analysis_progress = (
+                    checkpoint.phase != "analysis"
+                    or checkpoint.report_brief is not None
+                    or checkpoint.evidence_manifest is not None
+                    or checkpoint.analysis_manifest_file is not None
+                    or has_unmapped_fact_identity
+                    or (
+                        checkpoint.last_error is not None
+                        and checkpoint.last_error.phase == "analysis"
+                    )
+                    or any(item.phase == "analysis" for item in checkpoint.trace)
+                )
+                if has_analysis_progress:
+                    raise ReportingError(
+                        "report_semantic_contract_upgrade_required",
+                        "运行中的 Reporting checkpoint 缺少确定性 facts 身份映射。",
+                    )
+                fact_files = await self._prepare_deterministic_analysis_facts(
+                    run_context=run_context,
+                    thread_id=thread_id,
+                    report_run_id=report_run_id,
+                    revision=revision,
+                    detailed_plan=detailed_plan,
+                    dataset_handles=dataset_handles,
+                )
+                if set(fact_files) != set(analysis_ids) or any(
+                    fact_files[analysis_id].path != expected_paths[analysis_id]
+                    for analysis_id in analysis_ids
+                ):
+                    raise ReportingError(
+                        "report_analysis_facts_invalid",
+                        "确定性 facts 没有精确覆盖冻结分析计划。",
+                    )
+                checkpoint = self._update_reporting_checkpoint(
+                    checkpoint,
+                    deterministic_fact_files=fact_files,
+                    files=self._merge_checkpoint_files(checkpoint.files, *fact_files.values()),
+                )
+                checkpoint = await self._persist_reporting_checkpoint(run_context, checkpoint)
+                return checkpoint, fact_files
+
+        # 映射是后续 Worker 的唯一 facts 来源。每次恢复均先核验计划、规范路径和普通
+        # 文件的 size/SHA-256；不允许重新读取 Dataset 重算后覆盖已签发的事实身份。
+        if set(fact_files) != set(analysis_ids) or any(
+            fact_files[analysis_id].path != expected_paths[analysis_id]
+            for analysis_id in analysis_ids
+        ):
+            raise ReportingError(
+                "report_semantic_contract_upgrade_required",
+                "运行中的 Reporting checkpoint 缺少完整的确定性 facts 身份映射。",
+            )
+
+        for analysis_id in analysis_ids:
+            expected = fact_files[analysis_id]
+            actual_value: Any = None
+            try:
+                actual_value = await self.workspace_service.ahash_file(thread_id, expected.path)
+                actual = FileIdentity.model_validate(actual_value)
+            except Exception as error:
+                actual_size = (
+                    actual_value.get("size") if isinstance(actual_value, Mapping) else None
+                )
+                actual_sha256 = (
+                    actual_value.get("sha256") if isinstance(actual_value, Mapping) else None
+                )
+                loguru_logger.warning(
+                    "report_analysis_facts_changed path={} expected_size={} actual_size={} "
+                    "expected_sha256={} actual_sha256={}",
+                    expected.path,
+                    expected.size,
+                    actual_size,
+                    expected.sha256,
+                    actual_sha256,
+                )
+                raise ReportingError(
+                    "report_analysis_facts_changed",
+                    "确定性 facts 文件缺失、类型无效或身份已变化。",
+                ) from error
+            if actual != expected:
+                loguru_logger.warning(
+                    "report_analysis_facts_changed path={} expected_size={} actual_size={} "
+                    "expected_sha256={} actual_sha256={}",
+                    expected.path,
+                    expected.size,
+                    actual.size,
+                    expected.sha256,
+                    actual.sha256,
+                )
+                raise ReportingError(
+                    "report_analysis_facts_changed",
+                    "确定性 facts 文件身份已变化。",
+                )
+
+        if recovered_legacy_mapping:
+            checkpoint = self._update_reporting_checkpoint(
+                checkpoint,
+                deterministic_fact_files=fact_files,
+            )
+            checkpoint = await self._persist_reporting_checkpoint(run_context, checkpoint)
+        return checkpoint, fact_files
 
     async def _prepare_deterministic_analysis_facts(
         self,
@@ -1523,6 +1744,104 @@ async def _run_pending_analysis_items(
     return pending
 
 
+def _ensure_visual_inspection_capability(
+    checkpoint: ReportingCheckpoint,
+    current_mode: Literal["vision", "deterministic"],
+) -> None:
+    previous_mode = next(
+        (
+            item.visual_inspection_mode
+            for item in reversed(checkpoint.trace)
+            if item.phase == "analysis"
+            and item.work_kind == "visualization"
+            and item.visual_inspection_mode is not None
+        ),
+        None,
+    )
+    if previous_mode is not None and previous_mode != current_mode:
+        raise ReportingError(
+            "report_visualization_capability_changed",
+            "visualization fresh retry 的图表检查能力与已签发 checkpoint 不一致。",
+        )
+
+
+def _checkpoint_retry_error(
+    checkpoint: ReportingCheckpoint,
+    *,
+    work_kind: Literal["analysis_item", "visualization"],
+    analysis_id: str | None,
+    retry_reason: str | None,
+) -> ReportingError | None:
+    """仅将当前失败工作对应的稳定错误恢复为 fresh attempt 状态。"""
+
+    matching_failure = next(
+        (
+            item
+            for item in reversed(checkpoint.trace)
+            if item.phase == "analysis"
+            and item.work_kind == work_kind
+            and item.analysis_id == analysis_id
+            and item.retry_reason == retry_reason
+            and item.status == "failed"
+        ),
+        None,
+    )
+    if matching_failure is None:
+        return None
+    stored = checkpoint.last_error
+    if (
+        stored is None
+        or stored.phase != "analysis"
+        or stored.task_id != matching_failure.task_id
+        or stored.work_kind != matching_failure.work_kind
+        or stored.analysis_id != matching_failure.analysis_id
+        or stored.attempt != matching_failure.attempt
+        or stored.retry_usage is None
+    ):
+        raise ReportingError(
+            "report_semantic_contract_upgrade_required",
+            "运行中的 Reporting checkpoint 缺少可信恢复身份或预算，请重新分析。",
+        )
+    error = ReportingError(stored.code, stored.message)
+    usage = stored.retry_usage
+    if work_kind == "analysis_item":
+        setattr(
+            error,
+            REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
+            {"queryCount": usage.analysis_fact_queries_used},
+        )
+    else:
+        setattr(
+            error,
+            REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+            usage.model_dump(mode="python", by_alias=True),
+        )
+    return error
+
+
+def _checkpoint_retry_usage(
+    error: Exception,
+    *,
+    work_kind: Literal["analysis_item", "visualization"],
+) -> CheckpointRetryUsage:
+    if work_kind == "analysis_item":
+        return CheckpointRetryUsage(analysisFactQueriesUsed=_analysis_fact_retry_usage(error))
+    source = getattr(error, REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR, None)
+    attempt_successes = (
+        source.get("visualizationAttemptSuccessfulToolCalls", 0)
+        if isinstance(source, Mapping)
+        else 0
+    )
+    attempt_rejections = (
+        source.get("visualizationAttemptRejectedToolCalls", 0) if isinstance(source, Mapping) else 0
+    )
+    return CheckpointRetryUsage(
+        **_visualization_retry_usage(error),
+        visualizationAttemptSuccessfulToolCalls=attempt_successes,
+        visualizationAttemptRejectedToolCalls=attempt_rejections,
+    )
+
+
 def _coding_detailed_analysis_plan(
     plan: DetailedAnalysisPlan,
     *,
@@ -1605,6 +1924,7 @@ def _analysis_item_completion_conditions(
 def _visualization_completion_conditions(
     last_error: Exception | None,
     charts_registered: bool,
+    retained_chart_ids: tuple[str, ...] = (),
 ) -> list[str]:
     if charts_registered:
         return [
@@ -1612,14 +1932,21 @@ def _visualization_completion_conditions(
             "不要调用任何读取、写入、执行、Skill 或视觉工具",
             "立即且只调用一次 finalize_report_analysis",
         ]
+    retained_requirement = (
+        "registeredCharts 是已冻结的保留图表；不得重新生成、改写、检查或登记其中 chartId，只补缺失图表"
+        if retained_chart_ids
+        else "当前没有保留图表，按批准提纲生成必要图表"
+    )
     if _visualization_recovery_required(last_error):
         return [
             "上一轮因工具调用或脚本失败达到上限而终止；禁止重新规划、重复读取事实或重新探索工作区",
+            retained_requirement,
             "仅使用任务 JSON 中 deterministicFactFiles 签发的路径以及既有脚本和图表，完成尚缺的最小修复或执行",
             "整批图表只调用一次 register_report_charts，成功后立即调用 finalize_report_analysis",
         ]
     return [
         "只整合 completedAnalysisItems 和 deterministicFactFiles，不重跑单项分析",
+        retained_requirement,
         "analysisCitationIds 是 citationId 的唯一受信来源；不得用 read_file、terminal 或目录探测寻找 citationId",
         "图表脚本只写入 visualizationWorkspace.scriptPath，服务端提交后 terminal 仅可执行 python3 <scriptPath>；"
         "不得传 workdir、cd、ls、find、wc、管道、heredoc 或运行其他脚本",
@@ -1784,7 +2111,7 @@ def _visualization_dynamic_budget(
             details={"evidenceReadUnits": evidence_read_units, "limit": 512},
         )
     total_fact_bytes = sum(identities[path][0] for path in fact_paths)
-    read_limit = max(12, evidence_read_units + 8)
+    read_limit = 12
     fact_query_limit = min(max((total_fact_bytes + 16383) // 16384, 4), 16)
     attempt_limit = max(48, read_limit + fact_query_limit + 16)
     total_limit = max(64, attempt_limit + 16)

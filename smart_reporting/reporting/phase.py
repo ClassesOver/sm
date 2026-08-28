@@ -36,6 +36,7 @@ REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY = "visualizationFactQuer
 REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY = "visualizationAttemptToolLimit"
 REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY = "visualizationTotalToolLimit"
 REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY = "reportingVisualizationRecovery"
+REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY = "reportingVisualInspectionMode"
 REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY = "agentos_reporting_visualization_tool_budget"
 REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR = "_agentos_reporting_visualization_budget"
 REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY = "analysisFactBudgetVersion"
@@ -81,6 +82,7 @@ REPORTING_VISUALIZATION_TOOL_NAMES = frozenset(
         "finalize_report_analysis",
         "get_skill_instructions",
         "get_skill_reference",
+        "inspect_chart",
         "process",
         "query_analysis_context",
         "query_analysis_facts",
@@ -126,6 +128,24 @@ def bind_reporting_run_context(run_context: RunContext) -> Iterator[None]:
 
 def current_reporting_run_context() -> RunContext | None:
     return _REPORTING_RUN_CONTEXT.get()
+
+
+def reporting_visual_inspection_mode_from_run_context(
+    run_context: RunContext | None,
+) -> Literal["vision", "deterministic"]:
+    dependencies = (
+        run_context.dependencies
+        if run_context is not None and isinstance(run_context.dependencies, Mapping)
+        else {}
+    )
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    mode = (
+        binding.get(REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY)
+        if isinstance(binding, Mapping)
+        else None
+    )
+    # 历史 v2 Task 没有该字段，沿用当时强制视觉回执的语义，不能静默解释成降级模式。
+    return mode if mode in {"vision", "deterministic"} else "vision"
 
 
 @contextmanager
@@ -294,6 +314,27 @@ def reporting_visualization_recovery_from_acceptance_contract(value: Any) -> boo
         if isinstance(phase_contract, Mapping)
         else False
     )
+
+
+def reporting_visual_inspection_mode_from_acceptance_contract(
+    value: Any,
+) -> Literal["vision", "deterministic"] | None:
+    if not isinstance(value, Mapping):
+        return None
+    requirements = value.get("requirements")
+    if (
+        not isinstance(requirements, Sequence)
+        or isinstance(requirements, (str, bytes))
+        or len(requirements) != 1
+    ):
+        return None
+    requirement = requirements[0]
+    parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
+    phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
+    mode = (
+        phase_contract.get("visualInspectionMode") if isinstance(phase_contract, Mapping) else None
+    )
+    return mode if mode in {"vision", "deterministic"} else None
 
 
 def reporting_visualization_budget_from_acceptance_contract(value: Any) -> tuple[int, int]:

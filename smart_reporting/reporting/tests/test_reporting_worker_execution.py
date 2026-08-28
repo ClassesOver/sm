@@ -5,16 +5,15 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from agno.metrics import RunMetrics
-from agno.run.agent import ModelRequestCompletedEvent
+from agno.run.agent import ModelRequestCompletedEvent, RunContinuedEvent
 
 from smart_reporting.reporting.models import ReportingError
-from smart_reporting.reporting.phase import (
-    capture_reporting_projection_metrics,
-    record_reporting_tool_event,
-)
 from smart_reporting.reporting.workflow.checkpoint import reporting_phase_task_key
-from smart_reporting.reporting.workflow.execution import ReportTaskRunner, _worker_session_id
+from smart_reporting.reporting.workflow.execution import (
+    ReportTaskRunner,
+    _TaskModelMetricsSettlement,
+    _worker_session_id,
+)
 from smart_reporting.task_execution import TaskScope, TaskState
 
 
@@ -27,33 +26,37 @@ class _RecordedErrors:
 
 
 def test_worker_finish_receipt_sums_every_model_request_event() -> None:
-    with capture_reporting_projection_metrics() as projection_metrics:
-        record_reporting_tool_event(
-            ModelRequestCompletedEvent(
-                input_tokens=100,
-                output_tokens=20,
-                total_tokens=120,
-                reasoning_tokens=5,
-                cache_read_tokens=40,
-            )
+    settlement = _TaskModelMetricsSettlement(
+        task_id="analysis-task-1",
+        phase_attempt=1,
+        agno_run_id="agno-run-1",
+    )
+    settlement.record(
+        ModelRequestCompletedEvent(
+            input_tokens=100,
+            output_tokens=20,
+            total_tokens=120,
+            reasoning_tokens=5,
+            cache_read_tokens=40,
         )
-        record_reporting_tool_event(
-            ModelRequestCompletedEvent(
-                input_tokens=200,
-                output_tokens=30,
-                total_tokens=230,
-                reasoning_tokens=7,
-                cache_write_tokens=9,
-            )
+    )
+    settlement.record(
+        ModelRequestCompletedEvent(
+            input_tokens=200,
+            output_tokens=30,
+            total_tokens=230,
+            reasoning_tokens=7,
+            cache_write_tokens=9,
         )
+    )
 
     receipt = ReportTaskRunner._finish_receipt(
         SimpleNamespace(finish_receipt={"ok": True}),
-        output=SimpleNamespace(metrics=RunMetrics(input_tokens=200, total_tokens=230)),
-        projection_metrics=projection_metrics,
+        model_metrics=settlement.snapshot(),
     )
 
     assert receipt["modelMetrics"] == {
+        "requestCount": 2,
         "inputTokens": 300,
         "outputTokens": 50,
         "totalTokens": 350,
@@ -61,6 +64,256 @@ def test_worker_finish_receipt_sums_every_model_request_event() -> None:
         "cacheReadTokens": 40,
         "cacheWriteTokens": 9,
     }
+
+
+def test_task_model_metrics_settles_failed_requests_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: list[dict[str, int | float]] = []
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.execution.record_step_model_metrics",
+        lambda value: recorded.append(value),
+    )
+    settlement = _TaskModelMetricsSettlement(
+        task_id="analysis-task-1",
+        phase_attempt=2,
+        agno_run_id="agno-run-1",
+    )
+    settlement.record(
+        ModelRequestCompletedEvent(
+            input_tokens=100,
+            output_tokens=20,
+            total_tokens=120,
+            reasoning_tokens=5,
+            cache_read_tokens=40,
+            cache_write_tokens=3,
+            time_to_first_token=1.25,
+        )
+    )
+
+    settlement.settle(outcome="failed")
+    settlement.settle(outcome="failed")
+
+    assert recorded == [
+        {
+            "requestCount": 1,
+            "inputTokens": 100,
+            "outputTokens": 20,
+            "totalTokens": 120,
+            "reasoningTokens": 5,
+            "cacheReadTokens": 40,
+            "cacheWriteTokens": 3,
+            "timeToFirstTokenSeconds": 1.25,
+        }
+    ]
+
+
+def test_task_model_metrics_settles_cancelled_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: list[dict[str, int | float]] = []
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.execution.record_step_model_metrics",
+        lambda value: recorded.append(value),
+    )
+    settlement = _TaskModelMetricsSettlement(
+        task_id="section-task-1",
+        phase_attempt=1,
+        agno_run_id="agno-run-2",
+    )
+    settlement.record(ModelRequestCompletedEvent(total_tokens=42))
+    settlement.settle(outcome="cancelled")
+
+    assert recorded == [
+        {
+            "requestCount": 1,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "totalTokens": 42,
+            "reasoningTokens": 0,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+        }
+    ]
+
+
+def test_task_model_metrics_deduplicates_replayed_continuation_response() -> None:
+    settlement = _TaskModelMetricsSettlement(
+        task_id="visualization-task-1",
+        phase_attempt=3,
+        agno_run_id="agno-run-3",
+    )
+    first = ModelRequestCompletedEvent(total_tokens=230, reasoning_tokens=7)
+    second = ModelRequestCompletedEvent(total_tokens=310, reasoning_tokens=11)
+
+    settlement.record(first, model_response_index=0)
+    settlement.record(second, model_response_index=1)
+    settlement.record(first, model_response_index=0)
+    settlement.record(second, model_response_index=1)
+    settlement.record(
+        ModelRequestCompletedEvent(total_tokens=400, reasoning_tokens=13),
+        model_response_index=2,
+    )
+
+    assert settlement.snapshot()["requestCount"] == 3
+    assert settlement.snapshot()["totalTokens"] == 940
+    assert settlement.snapshot()["reasoningTokens"] == 31
+
+
+@pytest.mark.anyio
+async def test_consume_run_deduplicates_replayed_continuation_model_events() -> None:
+    first = ModelRequestCompletedEvent(
+        created_at=1_700_000_001,
+        run_id="agno-run-3",
+        total_tokens=230,
+        reasoning_tokens=7,
+    )
+    second = ModelRequestCompletedEvent(
+        created_at=1_700_000_002,
+        run_id="agno-run-3",
+        total_tokens=310,
+        reasoning_tokens=11,
+    )
+    third = ModelRequestCompletedEvent(
+        created_at=1_700_000_003,
+        run_id="agno-run-3",
+        total_tokens=400,
+        reasoning_tokens=13,
+    )
+
+    async def events(*values: Any):
+        for value in values:
+            yield value
+
+    settlement = _TaskModelMetricsSettlement(
+        task_id="visualization-task-1",
+        phase_attempt=3,
+        agno_run_id="agno-run-3",
+    )
+    runner = cast(Any, object.__new__(ReportTaskRunner))
+    runner.idle_timeout_seconds = 1
+    runner.event_sink = None
+    scope = SimpleNamespace()
+
+    await runner._consume_run(
+        events(first, second),
+        scope,
+        "workflow-run-1",
+        model_metrics_settlement=settlement,
+    )
+    await runner._consume_run(
+        events(first, second, RunContinuedEvent(run_id="agno-run-3"), third),
+        scope,
+        "workflow-run-1",
+        continuation=True,
+        model_metrics_settlement=settlement,
+    )
+
+    assert settlement.snapshot()["requestCount"] == 3
+    assert settlement.snapshot()["totalTokens"] == 940
+    assert settlement.snapshot()["reasoningTokens"] == 31
+
+
+@pytest.mark.anyio
+async def test_consume_run_counts_distinct_model_events_with_equal_token_metrics() -> None:
+    first = ModelRequestCompletedEvent(
+        created_at=1_700_000_001,
+        run_id="agno-run-equal",
+        total_tokens=230,
+    )
+    same_second_continuation = ModelRequestCompletedEvent(
+        created_at=1_700_000_001,
+        run_id="agno-run-equal",
+        total_tokens=230,
+    )
+
+    async def events(*values: Any):
+        for value in values:
+            yield value
+
+    settlement = _TaskModelMetricsSettlement(
+        task_id="analysis-task-equal",
+        phase_attempt=1,
+        agno_run_id="agno-run-equal",
+    )
+    runner = cast(Any, object.__new__(ReportTaskRunner))
+    runner.idle_timeout_seconds = 1
+    runner.event_sink = None
+
+    await runner._consume_run(
+        events(first),
+        SimpleNamespace(),
+        "workflow-run-1",
+        model_metrics_settlement=settlement,
+    )
+    await runner._consume_run(
+        events(
+            RunContinuedEvent(run_id="agno-run-equal"),
+            same_second_continuation,
+        ),
+        SimpleNamespace(),
+        "workflow-run-1",
+        continuation=True,
+        model_metrics_settlement=settlement,
+    )
+
+    assert settlement.snapshot()["requestCount"] == 2
+    assert settlement.snapshot()["totalTokens"] == 460
+
+
+@pytest.mark.anyio
+async def test_consume_run_ignores_replayed_prefix_when_continuation_breaks_before_boundary() -> (
+    None
+):
+    historical = ModelRequestCompletedEvent(
+        created_at=1_700_000_001,
+        run_id="agno-run-broken-continuation",
+        total_tokens=230,
+    )
+
+    async def broken_replay():
+        yield historical
+        raise RuntimeError("stream disconnected before RunContinued")
+
+    settlement = _TaskModelMetricsSettlement(
+        task_id="analysis-task-broken-continuation",
+        phase_attempt=1,
+        agno_run_id="agno-run-broken-continuation",
+    )
+    settlement.record(historical, model_response_index=0)
+    runner = cast(Any, object.__new__(ReportTaskRunner))
+    runner.idle_timeout_seconds = 1
+    runner.event_sink = None
+
+    with pytest.raises(RuntimeError, match="stream disconnected"):
+        await runner._consume_run(
+            broken_replay(),
+            SimpleNamespace(),
+            "workflow-run-1",
+            continuation=True,
+            model_metrics_settlement=settlement,
+        )
+
+    assert settlement.snapshot()["requestCount"] == 1
+    assert settlement.snapshot()["totalTokens"] == 230
+
+
+def test_task_model_metrics_matches_historical_sample() -> None:
+    settlement = _TaskModelMetricsSettlement(
+        task_id="historical-task",
+        phase_attempt=1,
+        agno_run_id="historical-agno-run",
+    )
+    for index in range(97):
+        settlement.record(
+            ModelRequestCompletedEvent(total_tokens=30_000, reasoning_tokens=1_000),
+            model_response_index=index,
+        )
+    settlement.record(
+        ModelRequestCompletedEvent(total_tokens=263_436, reasoning_tokens=12_509),
+        model_response_index=97,
+    )
+
+    metrics = settlement.snapshot()
+    assert metrics["requestCount"] == 98
+    assert metrics["totalTokens"] == 3_173_436
+    assert metrics["reasoningTokens"] == 109_509
 
 
 @pytest.mark.anyio
@@ -92,7 +345,42 @@ async def test_worker_error_continues_same_agno_run_without_replaying_instructio
     assert worker.arun.call_args.args == ("original analysis_001 instruction",)
     worker.acontinue_run.assert_called_once()
     assert worker.acontinue_run.call_args.kwargs["run_id"] == "worker-run-1"
-    assert "不得重放原始任务" in worker.acontinue_run.call_args.kwargs["additional_instructions"]
+    assert "不得重放原始任务" in worker.acontinue_run.call_args.kwargs["input"]
+    assert "additional_instructions" not in worker.acontinue_run.call_args.kwargs
+
+
+@pytest.mark.anyio
+async def test_worker_reporting_error_is_raised_without_continuation() -> None:
+    terminal = ReportingError(
+        "report_tool_arguments_invalid",
+        "Reporting 工具参数不符合严格调用 schema。",
+        details={"terminalReason": "tool_no_progress"},
+    )
+    worker = SimpleNamespace(
+        model=_RecordedErrors([terminal]),
+        arun=MagicMock(return_value="initial-run"),
+        acontinue_run=MagicMock(return_value="unexpected-continuation"),
+    )
+    runner = cast(Any, object.__new__(ReportTaskRunner))
+    runner.worker = worker
+    runner._consume_run = AsyncMock(return_value="failed-output")
+
+    with pytest.raises(ReportingError) as raised:
+        await runner._run_worker(
+            continuing=False,
+            instruction="original instruction",
+            internal_run_id="worker-run-1",
+            worker_session_id="worker-session-1",
+            owner_user_id="user-1",
+            dependencies={},
+            run_context=SimpleNamespace(),
+            scope=SimpleNamespace(),
+            parent_run_id="workflow-run-1",
+        )
+
+    assert raised.value is terminal
+    worker.arun.assert_called_once()
+    worker.acontinue_run.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -161,7 +449,8 @@ async def test_section_worker_plain_text_continues_once_then_reports_missing_ter
     }
     worker.arun.assert_called_once()
     worker.acontinue_run.assert_called_once()
-    recovery = worker.acontinue_run.call_args.kwargs["additional_instructions"]
+    recovery = worker.acontinue_run.call_args.kwargs["input"]
+    assert "additional_instructions" not in worker.acontinue_run.call_args.kwargs
     assert "立即停止继续读取和推演" in recovery
     assert "render_report_section" in recovery
     assert "request_analysis_rework" in recovery

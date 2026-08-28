@@ -28,6 +28,7 @@ from ..models import ReportingError
 from ..workflow.checkpoint import (
     AnalysisArtifact,
     AnalysisChart,
+    AnalysisDatasetSemantics,
     AnalysisEvidence,
     AnalysisEvidenceManifest,
     FileIdentity,
@@ -304,10 +305,24 @@ class RuntimeAnalysisMixin:
                     raise WorkspaceError("replace 模式只支持 UTF-8 文本文件。") from error
                 count = original.count(canonical["old_string"])
                 if count == 0:
-                    raise WorkspaceError("old_string 在目标文件中不存在。")
+                    raise ReportingError(
+                        "report_replace_target_not_found",
+                        "old_string 在目标文件中不存在。",
+                        details={
+                            "path": path,
+                            "matchCount": 0,
+                            "preview": original[:200],
+                        },
+                    )
                 if count != 1 and not canonical["replace_all"]:
-                    raise WorkspaceError(
-                        "old_string 在目标文件中不唯一；请扩大上下文或启用 replace_all。"
+                    raise ReportingError(
+                        "report_replace_target_ambiguous",
+                        "old_string 在目标文件中不唯一；请扩大上下文或启用 replace_all。",
+                        details={
+                            "path": path,
+                            "matchCount": count,
+                            "preview": original[:200],
+                        },
                     )
                 return [
                     {
@@ -774,6 +789,7 @@ class RuntimeAnalysisMixin:
     async def finalize_report_analysis(
         self,
         reportBrief: dict[str, Any],
+        datasetSemantics: list[dict[str, Any]],
         metricDefinitions: list[dict[str, Any]] | None = None,
         warnings: list[str] | None = None,
         run_context: RunContext | None = None,
@@ -827,6 +843,14 @@ class RuntimeAnalysisMixin:
             ]
             metricDefinitions = metricDefinitions or []
             warnings = warnings or []
+            parsed_dataset_semantics = tuple(
+                AnalysisDatasetSemantics.model_validate(item) for item in datasetSemantics
+            )
+            if {item.dataset_id for item in parsed_dataset_semantics} != set(known_dataset_ids):
+                raise ReportingError(
+                    "report_analysis_dataset_semantics_incomplete",
+                    "Dataset 语义必须精确覆盖全部授权 Dataset。",
+                )
 
             receipts = tuple(
                 ProfileReadReceipt.model_validate(item)
@@ -1004,9 +1028,32 @@ class RuntimeAnalysisMixin:
                             "title": chart.get("title"),
                             "altText": chart.get("altText"),
                             "citationIds": chart.get("citationIds"),
+                            "metricCodes": chart.get("metricCodes"),
+                            "currentPeriod": chart.get("currentPeriod"),
+                            "comparisonPeriod": chart.get("comparisonPeriod"),
+                            "comparisonType": chart.get("comparisonType"),
+                            "sourceDatasetId": chart.get("sourceDatasetId"),
+                            "aggregationGrain": chart.get("aggregationGrain"),
+                            "comparability": chart.get("comparability"),
+                            "visualInspectionReceipt": chart.get("visualInspectionReceipt"),
                         }
                     )
                 )
+
+            deterministic_chart_ids = [
+                item.chart_id
+                for item in parsed_charts
+                if item.visual_inspection_receipt is not None
+                and item.visual_inspection_receipt.inspection_mode == "deterministic"
+            ]
+            if deterministic_chart_ids:
+                warning = "图表仅通过确定性图片文件检查，未运行模型视觉审查：" + "、".join(
+                    deterministic_chart_ids
+                )
+                if warning not in warnings:
+                    if len(warnings) >= 500:
+                        warnings = warnings[:499]
+                    warnings.append(warning)
 
             artifact = AnalysisArtifact(
                 reportBrief=ReportBrief.model_validate(reportBrief),
@@ -1016,6 +1063,7 @@ class RuntimeAnalysisMixin:
                         MetricDefinition.model_validate(item) for item in metricDefinitions
                     ),
                     charts=tuple(parsed_charts),
+                    datasetSemantics=parsed_dataset_semantics,
                     warnings=tuple(warnings),
                 ),
                 profileReadReceipts=tuple(

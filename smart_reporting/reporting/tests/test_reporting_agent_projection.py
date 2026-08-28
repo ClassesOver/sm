@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import json
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from agno.agent import Agent
@@ -49,7 +51,9 @@ from smart_reporting.reporting.phase import (
     reporting_visualization_usage_from_run_context,
 )
 from smart_reporting.reporting.vision import ReportVisionReviewer
+from smart_reporting.reporting.workflow.checkpoint import SectionArtifact
 from smart_reporting.settings import AgentSettings
+from smart_reporting.workspace import WorkspaceError
 
 
 def test_report_worker_disables_unused_session_summaries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,6 +128,62 @@ def test_report_vision_reviewer_disables_telemetry() -> None:
     assert reviewer._new_agent().telemetry is False
 
 
+@pytest.mark.anyio
+async def test_report_vision_reviewer_sends_native_image_and_binds_receipt_hash() -> None:
+    content = b"\x89PNG\r\n\x1a\nchart-bytes"
+    workspace = SimpleNamespace(
+        view_image=lambda _thread_id, _path: SimpleNamespace(
+            images=[SimpleNamespace(content=content, mime_type="image/png", format="png")]
+        )
+    )
+    agent = SimpleNamespace(arun=AsyncMock())
+    agent.arun.return_value = SimpleNamespace(
+        content={
+            "summary": "图表存在裁切和文字重叠。",
+            "requiresRevision": True,
+            "issues": [
+                {"category": "cropping", "severity": "critical", "description": "标题被裁切"},
+                {
+                    "category": "text_overlap",
+                    "severity": "critical",
+                    "description": "坐标轴文字重叠",
+                },
+            ],
+            "warnings": [],
+            "suggestions": ["增加边距"],
+        }
+    )
+    settings = AgentSettings.from_environment({"OPENAI_API_KEY": "test"}, load_env_file=False)
+    reviewer = ReportVisionReviewer(settings, cast(Any, workspace), agent_factory=lambda: agent)
+
+    receipt = await reviewer.review("thread-1", "analysis/charts/income.png")
+
+    assert receipt["sourcePath"] == "analysis/charts/income.png"
+    assert receipt["sha256"] == hashlib.sha256(content).hexdigest()
+    assert receipt["modelId"] == settings.report_vision_model
+    assert receipt["reviewed"] is True
+    assert receipt["requiresRevision"] is True
+    assert {item["category"] for item in receipt["issues"]} == {"cropping", "text_overlap"}
+    assert len(agent.arun.await_args.kwargs["images"]) == 1
+    assert agent.arun.await_args.kwargs["images"][0].content == content
+
+
+@pytest.mark.anyio
+async def test_report_vision_reviewer_fails_closed_when_model_is_unavailable() -> None:
+    content = b"\x89PNG\r\n\x1a\nchart-bytes"
+    workspace = SimpleNamespace(
+        view_image=lambda _thread_id, _path: SimpleNamespace(
+            images=[SimpleNamespace(content=content, mime_type="image/png", format="png")]
+        )
+    )
+    agent = SimpleNamespace(arun=AsyncMock(side_effect=RuntimeError("provider secret")))
+    settings = AgentSettings.from_environment({"OPENAI_API_KEY": "test"}, load_env_file=False)
+    reviewer = ReportVisionReviewer(settings, cast(Any, workspace), agent_factory=lambda: agent)
+
+    with pytest.raises(WorkspaceError, match="视觉审查暂不可用"):
+        await reviewer.review("thread-1", "analysis/charts/income.png")
+
+
 @pytest.mark.parametrize(
     ("configured_timeout", "expected_timeout"),
     [("900", 900), ("120", 120)],
@@ -173,6 +233,7 @@ def test_report_worker_caps_only_long_model_timeout(
                 "get_skill_reference",
                 "query_analysis_context",
                 "query_analysis_facts",
+                "inspect_chart",
                 "register_report_charts",
                 "finalize_report_analysis",
             ],
@@ -205,6 +266,7 @@ def test_analysis_task_kind_projection_separates_item_and_visualization_tools(
             "query_analysis_facts",
             "query_profile",
             "complete_analysis_item",
+            "inspect_chart",
             "register_report_charts",
             "finalize_report_analysis",
         )
@@ -490,6 +552,25 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
         assert "仅可执行 python3 <scriptPath>" in instructions
 
 
+def test_deterministic_visualization_instructions_forbid_inspect_chart() -> None:
+    context = RunContext(
+        run_id="run-visualization-deterministic",
+        session_id="session-visualization-deterministic",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                "reportingVisualInspectionMode": "deterministic",
+            }
+        },
+    )
+
+    instructions = "\n".join(build_report_agent_instructions(context))
+
+    assert "禁止调用 inspect_chart" in instructions
+    assert "每张最终图表必须先调用 inspect_chart" not in instructions
+
+
 def test_analysis_projection_keeps_compact_profile_receipt_identities() -> None:
     receipt = {
         "receiptId": "profile-read-1",
@@ -706,6 +787,135 @@ def test_reporting_worker_tools_share_raw_malformed_json_failure() -> None:
 
 
 @pytest.mark.anyio
+async def test_render_report_section_real_json_arrays_reach_tuple_contract() -> None:
+    received: tuple[Any, Any] | None = None
+
+    async def render_report_section(
+        blocks: list[dict[str, Any]],
+        claims: list[dict[str, Any]],
+    ) -> dict[str, bool]:
+        nonlocal received
+        artifact = SectionArtifact.model_validate(
+            {"sectionCode": "section_003", "blocks": blocks, "claims": claims}
+        )
+        received = (artifact.blocks, artifact.claims)
+        return {"ok": True}
+
+    function = Function(name="render_report_section", entrypoint=render_report_section)
+    function.tool_hooks = [
+        propagate_reporting_tool_errors,
+        normalize_reporting_tool_arguments,
+    ]
+    run_context = RunContext(run_id="run-section-json", session_id="session-section-json")
+    function._run_context = run_context
+    raw_arguments = json.dumps(
+        {
+            "blocks": [
+                {
+                    "blockId": "block-1",
+                    "markdown": "收入增长 8.2%。",
+                    "citationIds": ["citation-1"],
+                    "claimIds": ["claim-1"],
+                }
+            ],
+            "claims": [
+                {
+                    "claimId": "claim-1",
+                    "metricCode": "income",
+                    "value": "8.2%",
+                    "periodBasis": "2025年",
+                    "managementQuestion": "收入增长如何？",
+                    "currentPeriod": "2025年",
+                    "citationIds": ["citation-1"],
+                }
+            ],
+        }
+    )
+    assistant = Message(
+        role="assistant",
+        tool_calls=[
+            {
+                "id": "call-section-json",
+                "type": "function",
+                "function": {"name": function.name, "arguments": raw_arguments},
+            }
+        ],
+    )
+    model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+
+    with bind_reporting_run_context(run_context):
+        calls = model.get_function_calls_to_run(
+            assistant,
+            [Message(role="user", content='{"phase":"section"}')],
+            functions={function.name: function},
+        )
+        results: list[Message] = []
+        async for _event in model.arun_function_calls(calls, results):
+            pass
+
+    assert received is not None
+    assert isinstance(received[0], tuple)
+    assert isinstance(received[1], tuple)
+    assert results[-1].content == "{'ok': True}"
+
+
+@pytest.mark.anyio
+async def test_render_report_section_stringified_blocks_are_rejected() -> None:
+    executed = False
+
+    async def render_report_section(
+        blocks: list[dict[str, Any]],
+        claims: list[dict[str, Any]],
+    ) -> dict[str, bool]:
+        nonlocal executed
+        SectionArtifact.model_validate(
+            {"sectionCode": "section_003", "blocks": blocks, "claims": claims}
+        )
+        executed = True
+        return {"ok": True}
+
+    function = Function(name="render_report_section", entrypoint=render_report_section)
+    function.tool_hooks = [
+        propagate_reporting_tool_errors,
+        normalize_reporting_tool_arguments,
+    ]
+    run_context = RunContext(run_id="run-section-string", session_id="session-section-string")
+    function._run_context = run_context
+    assistant = Message(
+        role="assistant",
+        tool_calls=[
+            {
+                "id": "call-section-string",
+                "type": "function",
+                "function": {
+                    "name": function.name,
+                    "arguments": json.dumps(
+                        {
+                            "blocks": '[{"blockId":"block-1"}]',
+                            "claims": [{"claimId": "claim-1", "value": "8.2%"}],
+                        }
+                    ),
+                },
+            }
+        ],
+    )
+    model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+
+    with bind_reporting_run_context(run_context):
+        calls = model.get_function_calls_to_run(
+            assistant,
+            [Message(role="user", content='{"phase":"section"}')],
+            functions={function.name: function},
+        )
+        results: list[Message] = []
+        async for _event in model.arun_function_calls(calls, results):
+            pass
+
+    assert executed is False
+    assert "'code': 'report_tool_arguments_invalid'" in results[-1].content
+
+
+@pytest.mark.anyio
 async def test_report_worker_model_error_is_retried_by_agno_agent(monkeypatch) -> None:
     attempts = 0
     transient = RuntimeError("transient worker failure")
@@ -767,6 +977,116 @@ async def test_report_worker_tool_error_is_retried_by_agno_agent(monkeypatch) ->
     assert attempts == 3
     assert output.content == "completed"
     assert model.report_run_error() is None
+
+
+@pytest.mark.anyio
+async def test_report_worker_no_progress_stops_before_remaining_batch_calls() -> None:
+    run_context = RunContext(
+        run_id="run-tool-no-progress",
+        session_id="session-tool-no-progress",
+        session_state={},
+    )
+    remaining_calls = 0
+
+    async def render_report_section(blocks: list[dict[str, Any]]) -> dict[str, bool]:
+        _ = blocks
+        return {"ok": True}
+
+    async def remaining_tool() -> dict[str, bool]:
+        nonlocal remaining_calls
+        remaining_calls += 1
+        return {"ok": True}
+
+    invalid = Function(name="render_report_section", entrypoint=render_report_section)
+    invalid.tool_hooks = [
+        propagate_reporting_tool_errors,
+        normalize_reporting_tool_arguments,
+    ]
+    invalid._run_context = run_context
+    invalid_arguments: dict[str, Any] = {}
+    for _ in range(2):
+        failure = await normalize_reporting_tool_arguments(
+            run_context,
+            invalid.name,
+            invalid.entrypoint,
+            invalid_arguments,
+        )
+        assert failure["code"] == "report_tool_arguments_invalid"
+
+    remaining = Function(name="remaining_tool", entrypoint=remaining_tool)
+    remaining._run_context = run_context
+    function_calls = [
+        FunctionCall(
+            function=invalid,
+            arguments=invalid_arguments,
+            call_id="call-invalid-third",
+        ),
+        FunctionCall(function=remaining, arguments={}, call_id="call-remaining"),
+    ]
+    model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+
+    with bind_reporting_run_context(run_context):
+        async for _event in model.arun_function_calls(function_calls, []):
+            pass
+        terminal = report_agent_module._take_reporting_tool_run_error()
+
+    assert isinstance(terminal, ReportingError)
+    assert terminal.code == "report_tool_arguments_invalid"
+    assert terminal.details["terminalReason"] == "tool_no_progress"
+    assert remaining_calls == 0
+
+
+@pytest.mark.anyio
+async def test_report_worker_no_progress_does_not_retry_agent_model(monkeypatch) -> None:
+    model_requests = 0
+    run_context = RunContext(
+        run_id="run-tool-no-progress-agent",
+        session_id="session-tool-no-progress-agent",
+        session_state={},
+    )
+
+    async def render_report_section(blocks: list[dict[str, Any]]) -> dict[str, bool]:
+        _ = blocks
+        return {"ok": True}
+
+    invalid_arguments: dict[str, Any] = {}
+    for _ in range(2):
+        failure = await normalize_reporting_tool_arguments(
+            run_context,
+            "render_report_section",
+            render_report_section,
+            invalid_arguments,
+        )
+        assert failure["code"] == "report_tool_arguments_invalid"
+
+    async def fake_aresponse(model, *args, **kwargs):
+        nonlocal model_requests
+        _ = args, kwargs
+        model_requests += 1
+        function = Function(name="render_report_section", entrypoint=render_report_section)
+        function.tool_hooks = [
+            propagate_reporting_tool_errors,
+            normalize_reporting_tool_arguments,
+        ]
+        function._run_context = run_context
+        call = FunctionCall(function=function, arguments={}, call_id="call-terminal")
+        async for _event in model.arun_function_calls([call], []):
+            pass
+        return ModelResponse(content="stopped")
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "aresponse", fake_aresponse)
+    model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+    agent = Agent(model=model, retries=2, delay_between_retries=0)
+
+    with bind_reporting_run_context(run_context):
+        output = await agent.arun("run reporting tool", run_context=run_context)
+
+    assert model_requests == 1
+    assert output.content == "stopped"
+    error = model.report_run_error()
+    assert isinstance(error, ReportingError)
+    assert error.code == "report_tool_arguments_invalid"
+    assert error.details["terminalReason"] == "tool_no_progress"
 
 
 @pytest.mark.anyio
