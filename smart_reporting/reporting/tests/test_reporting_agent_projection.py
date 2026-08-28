@@ -1248,6 +1248,7 @@ async def test_report_facade_returns_completed_downloads_as_markdown_without_mod
             "revision": 1,
             "pdf": {"downloadUrl": "http://reports.example.com/reports/v1/download/raw"},
             "word": {"downloadUrl": "http://reports.example.com/reports/v1/download/raw/word"},
+            "html": {"previewUrl": "http://reports.example.com/reports/v1/download/raw/html"},
         },
     }
     messages = [
@@ -1268,7 +1269,92 @@ async def test_report_facade_returns_completed_downloads_as_markdown_without_mod
         "- 修订版本：Revision 1\n\n"
         "### 文件下载\n\n"
         "- [下载 PDF 报告](http://reports.example.com/reports/v1/download/raw)\n"
-        "- [下载 Word 报告](http://reports.example.com/reports/v1/download/raw/word)"
+        "- [下载 Word 报告](http://reports.example.com/reports/v1/download/raw/word)\n"
+        "- [预览 HTML 报告](http://reports.example.com/reports/v1/download/raw/html)"
+    )
+    assert not response.tool_calls
+
+
+@pytest.mark.anyio
+async def test_report_facade_rejects_invalid_html_delivery_url_without_model(
+    monkeypatch,
+) -> None:
+    async def unexpected_model_call(*_args, **_kwargs):
+        raise AssertionError("无效 HTML 回执不得交给模型包装成链接")
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "aresponse", unexpected_model_call)
+    model = ReportFacadeOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+    payload = {
+        "ok": True,
+        "status": "completed",
+        "report": {
+            "reportId": "report-1",
+            "revision": 1,
+            "pdf": {"downloadUrl": "http://reports.example.com/reports/v1/download/raw"},
+            "word": {"downloadUrl": "http://reports.example.com/reports/v1/download/raw/word"},
+            "html": {"previewUrl": "http://bad host/reports/v1/download/raw/html"},
+        },
+    }
+    messages = [
+        Message(role="user", content="生成运营报告"),
+        Message(
+            role="tool",
+            tool_name="report_workflow_start",
+            tool_call_id="call-report-start",
+            content=json.dumps(payload, ensure_ascii=False),
+        ),
+    ]
+
+    response = await model.ainvoke(messages)
+
+    assert response.content == (
+        "## 报告发布未完成\n\n未生成有效的 PDF、Word 和 HTML 交付链接，请重试报表发布。"
+    )
+    assert not response.tool_calls
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "html_url",
+    [
+        "http://reports.example.com/path with space",
+        "http://user name@reports.example.com/reports/v1/download/raw/html",
+        "http://reports.example.com/reports/v1/download/raw/html\x7f",
+    ],
+)
+async def test_report_facade_rejects_malformed_html_delivery_urls_without_model(
+    monkeypatch, html_url: str
+) -> None:
+    async def unexpected_model_call(*_args, **_kwargs):
+        raise AssertionError("格式错误的 HTML 回执不得交给模型包装成链接")
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "aresponse", unexpected_model_call)
+    model = ReportFacadeOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+    payload = {
+        "ok": True,
+        "status": "completed",
+        "report": {
+            "reportId": "report-1",
+            "revision": 1,
+            "pdf": {"downloadUrl": "http://reports.example.com/reports/v1/download/raw"},
+            "word": {"downloadUrl": "http://reports.example.com/reports/v1/download/raw/word"},
+            "html": {"previewUrl": html_url},
+        },
+    }
+    messages = [
+        Message(role="user", content="生成运营报告"),
+        Message(
+            role="tool",
+            tool_name="report_workflow_start",
+            tool_call_id="call-report-start",
+            content=json.dumps(payload, ensure_ascii=False),
+        ),
+    ]
+
+    response = await model.ainvoke(messages)
+
+    assert response.content == (
+        "## 报告发布未完成\n\n未生成有效的 PDF、Word 和 HTML 交付链接，请重试报表发布。"
     )
     assert not response.tool_calls
 
@@ -1309,7 +1395,7 @@ async def test_report_facade_rejects_relative_workspace_downloads_without_model(
     response = await model.ainvoke(messages)
 
     assert response.content == (
-        "## 报告发布未完成\n\n未生成有效的 PDF 和 Word 下载链接，请重试报表发布。"
+        "## 报告发布未完成\n\n未生成有效的 PDF、Word 和 HTML 交付链接，请重试报表发布。"
     )
     assert "报表/智能分析" not in str(response.content)
     assert not response.tool_calls

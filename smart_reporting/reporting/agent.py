@@ -1519,16 +1519,34 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
         return None
     pdf = report.get("pdf")
     word = report.get("word")
+    html = report.get("html")
     pdf_url = pdf.get("downloadUrl") if isinstance(pdf, dict) else None
     word_url = word.get("downloadUrl") if isinstance(word, dict) else None
-    urls = (pdf_url, word_url)
-    if not all(
-        isinstance(url, str)
-        and (parsed := urlparse(url)).scheme in {"http", "https"}
-        and bool(parsed.netloc)
-        for url in urls
-    ):
-        return "## 报告发布未完成\n\n未生成有效的 PDF 和 Word 下载链接，请重试报表发布。"
+    html_url = html.get("previewUrl") if isinstance(html, dict) else None
+    urls = (pdf_url, word_url, html_url)
+
+    def is_valid_delivery_url(url: object) -> bool:
+        if (
+            not isinstance(url, str)
+            or not url
+            or any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in url)
+        ):
+            return False
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+            parsed.port
+        except ValueError:
+            return False
+        return (
+            parsed.scheme in {"http", "https"}
+            and bool(parsed.netloc)
+            and bool(hostname)
+            and not any(char.isspace() for char in hostname)
+        )
+
+    if not all(is_valid_delivery_url(url) for url in urls):
+        return "## 报告发布未完成\n\n未生成有效的 PDF、Word 和 HTML 交付链接，请重试报表发布。"
     parts = ["## 报表已生成"]
     details: list[str] = []
     report_id = report.get("reportId")
@@ -1539,7 +1557,10 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
         details.append(f"- 修订版本：Revision {revision}")
     if details:
         parts.append("\n".join(details))
-    parts.append(f"### 文件下载\n\n- [下载 PDF 报告]({pdf_url})\n- [下载 Word 报告]({word_url})")
+    parts.append(
+        f"### 文件下载\n\n- [下载 PDF 报告]({pdf_url})\n"
+        f"- [下载 Word 报告]({word_url})\n- [预览 HTML 报告]({html_url})"
+    )
     return "\n\n".join(parts)
 
 
@@ -2639,7 +2660,8 @@ def create_report_agent(
                 "审核工具返回 paused 时重复本流程。",
                 "工具返回 completed 后只返回其正式报告产物；不得把 paused、running 或 failed "
                 "描述为完成。若发布契约返回 `pdf.downloadUrl` 和 `word.downloadUrl`，必须逐字保留并分别"
-                "展示为 PDF、Word Markdown 下载链接。调用任何报表工具的轮次不得输出前言或解释文字；"
+                "展示为 PDF、Word Markdown 下载链接；若返回 `html.previewUrl`，必须逐字保留并展示为"
+                "HTML Markdown 预览链接。调用任何报表工具的轮次不得输出前言或解释文字；"
                 "CLI 契约返回 Workspace 路径时，PDF 使用 `path`，Word 使用 "
                 "`word.path`。不得补充域名、协议或改写为示例地址，也不得虚构返回中不存在的字段。",
             ],
