@@ -2928,6 +2928,79 @@ async def test_render_report_section_binds_chart_citations_into_block() -> None:
     assert payload["blocks"][0]["citationIds"] == ["citation_004", "citation_010"]
 
 
+@pytest.mark.anyio
+async def test_render_report_section_reports_structured_chart_citation_conflict() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
+        {"sectionOutputPath": "sections/budget.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            section_code="section_002",
+            report_brief=SimpleNamespace(management_questions=("预算执行如何？",)),
+            metric_definitions=(SimpleNamespace(code="revenue", period_basis="2026-01"),),
+            charts=(
+                SimpleNamespace(
+                    chart_id="revenue_budget",
+                    citation_ids=("citation_004", "citation_010"),
+                    metric_codes=("revenue",),
+                    source_dataset_id="dataset-1",
+                    current_period="2026-01",
+                    comparison_period=None,
+                    comparison_type="none",
+                    comparability="strict",
+                ),
+            ),
+            citations=(
+                SimpleNamespace(citation_id="citation_004", dataset_id="dataset-1"),
+                SimpleNamespace(citation_id="citation_010", dataset_id="dataset-1"),
+            ),
+        )
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await toolkit._render_isolated_section(
+            scope=SimpleNamespace(),
+            section_code="section_002",
+            blocks=[
+                {
+                    "blockId": "budget_overall",
+                    "markdown": "预算执行情况。",
+                    "citationIds": ["citation_004"],
+                    "chartIds": ["revenue_budget"],
+                    "claimIds": ["claim_revenue"],
+                }
+            ],
+            claims=[
+                {
+                    "claimId": "claim_revenue",
+                    "metricCode": "revenue",
+                    "value": 100,
+                    "periodBasis": "2026-01",
+                    "managementQuestion": "预算执行如何？",
+                    "currentPeriod": "2026-01",
+                    "citationIds": ["citation_004"],
+                    "chartIds": ["revenue_budget"],
+                }
+            ],
+            state={},
+            run_context=None,
+        )
+
+    assert raised.value.code == "report_section_claim_chart_conflict"
+    assert raised.value.details == {
+        "sectionCode": "section_002",
+        "claimId": "claim_revenue",
+        "chartId": "revenue_budget",
+        "conflictType": "citation_ids",
+        "expectedCitationIds": ["citation_004", "citation_010"],
+        "actualCitationIds": ["citation_004"],
+    }
+    failure = ReportWorkspaceTaskToolkit._failure(raised.value)
+    assert failure["details"] == raised.value.details
+
+
 def test_analysis_evidence_accepts_current_committed_identity() -> None:
     identity = {"path": "analysis/evidence.json", "size": 12, "sha256": "a" * 64}
 

@@ -228,17 +228,78 @@ class RuntimeSectionsMixin:
             claim_datasets = {citation_datasets[citation_id] for citation_id in claim.citation_ids}
             for chart_id in claim.chart_ids:
                 chart = charts_by_id[chart_id]
-                if (
-                    claim.metric_code not in chart.metric_codes
-                    or set(chart.citation_ids) - set(claim.citation_ids)
-                    or chart.source_dataset_id not in claim_datasets
-                    or chart.current_period != claim.current_period
-                    or chart.comparison_period != claim.comparison_period
-                    or chart.comparison_type != claim.comparison_type
-                ):
+                # 每类冲突都返回冻结值和模型提交值，模型可据此修正单个字段；不能只给
+                # 一个复合布尔结果，否则 chart citation/期间冲突会反复消耗同一 run。
+                chart_details = {
+                    "sectionCode": section_code,
+                    "claimId": claim.claim_id,
+                    "chartId": chart_id,
+                }
+                if claim.metric_code not in chart.metric_codes:
                     raise ReportingError(
                         "report_section_claim_chart_conflict",
                         "章节 claim 与冻结图表的指标、来源或期间语义不一致。",
+                        details={
+                            **chart_details,
+                            "conflictType": "metric_code",
+                            "expectedMetricCodes": list(chart.metric_codes),
+                            "actualMetricCode": claim.metric_code,
+                        },
+                    )
+                if set(chart.citation_ids) - set(claim.citation_ids):
+                    raise ReportingError(
+                        "report_section_claim_chart_conflict",
+                        "章节 claim 与冻结图表的指标、来源或期间语义不一致。",
+                        details={
+                            **chart_details,
+                            "conflictType": "citation_ids",
+                            "expectedCitationIds": list(chart.citation_ids),
+                            "actualCitationIds": list(claim.citation_ids),
+                        },
+                    )
+                if chart.source_dataset_id not in claim_datasets:
+                    raise ReportingError(
+                        "report_section_claim_chart_conflict",
+                        "章节 claim 与冻结图表的指标、来源或期间语义不一致。",
+                        details={
+                            **chart_details,
+                            "conflictType": "source_dataset_id",
+                            "expectedSourceDatasetId": chart.source_dataset_id,
+                            "actualCitationDatasetIds": sorted(claim_datasets),
+                        },
+                    )
+                if chart.current_period != claim.current_period:
+                    raise ReportingError(
+                        "report_section_claim_chart_conflict",
+                        "章节 claim 与冻结图表的指标、来源或期间语义不一致。",
+                        details={
+                            **chart_details,
+                            "conflictType": "current_period",
+                            "expectedCurrentPeriod": chart.current_period,
+                            "actualCurrentPeriod": claim.current_period,
+                        },
+                    )
+                if chart.comparison_period != claim.comparison_period:
+                    raise ReportingError(
+                        "report_section_claim_chart_conflict",
+                        "章节 claim 与冻结图表的指标、来源或期间语义不一致。",
+                        details={
+                            **chart_details,
+                            "conflictType": "comparison_period",
+                            "expectedComparisonPeriod": chart.comparison_period,
+                            "actualComparisonPeriod": claim.comparison_period,
+                        },
+                    )
+                if chart.comparison_type != claim.comparison_type:
+                    raise ReportingError(
+                        "report_section_claim_chart_conflict",
+                        "章节 claim 与冻结图表的指标、来源或期间语义不一致。",
+                        details={
+                            **chart_details,
+                            "conflictType": "comparison_type",
+                            "expectedComparisonType": chart.comparison_type,
+                            "actualComparisonType": claim.comparison_type,
+                        },
                     )
                 if (
                     chart.comparability == "reference_only"

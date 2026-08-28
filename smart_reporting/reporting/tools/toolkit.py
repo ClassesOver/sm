@@ -1336,6 +1336,33 @@ class ReportWorkspaceTaskToolkit(
                 if key in error.details
             }
         elif (
+            code == "report_section_claim_chart_conflict"
+            and isinstance(error, ReportingError)
+            and isinstance(error.details, Mapping)
+        ):
+            result["details"] = {
+                key: error.details[key]
+                for key in (
+                    "sectionCode",
+                    "claimId",
+                    "chartId",
+                    "conflictType",
+                    "expectedMetricCodes",
+                    "actualMetricCode",
+                    "expectedCitationIds",
+                    "actualCitationIds",
+                    "expectedSourceDatasetId",
+                    "actualCitationDatasetIds",
+                    "expectedCurrentPeriod",
+                    "actualCurrentPeriod",
+                    "expectedComparisonPeriod",
+                    "actualComparisonPeriod",
+                    "expectedComparisonType",
+                    "actualComparisonType",
+                )
+                if key in error.details
+            }
+        elif (
             code
             in {
                 "report_analysis_write_intent_invalid",
