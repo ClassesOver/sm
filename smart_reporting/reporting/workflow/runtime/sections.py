@@ -2,6 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+from ..checkpoint import CheckpointError
 from .analysis import _run_bounded
 from .base import (
     MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION,
@@ -88,6 +89,23 @@ async def _run_section_batches_until_rework(
         if any(result[2] is not None for result in batch_results):
             break
     return results
+
+
+def _section_retry_context(error: Exception | CheckpointError | None) -> dict[str, Any] | None:
+    """把章节上轮失败的稳定字段带入 fresh retry，避免模型重新猜测冲突原因。"""
+
+    if error is None:
+        return None
+    if isinstance(error, CheckpointError):
+        return {
+            "code": error.code,
+            "message": error.message,
+            "details": dict(error.details) if isinstance(error.details, Mapping) else {},
+        }
+    if isinstance(error, ReportingError):
+        details = dict(error.details) if isinstance(error.details, Mapping) else {}
+        return {"code": error.code, "message": error.message, "details": details}
+    return {"code": "report_section_phase_failed", "message": str(error), "details": {}}
 
 
 def _pending_analysis_rework_file(checkpoint: ReportingCheckpoint) -> FileIdentity | None:
@@ -469,7 +487,18 @@ class RuntimeSectionsMixin:
             files=self._merge_checkpoint_files(checkpoint.files, work_item_file),
         )
         await self._persist_reporting_checkpoint(run_context, checkpoint)
-        last_error: Exception | None = None
+        checkpoint_error = checkpoint.last_error
+        last_error: Exception | None = (
+            ReportingError(
+                checkpoint_error.code,
+                checkpoint_error.message,
+                details=checkpoint_error.details,
+            )
+            if checkpoint_error is not None
+            and checkpoint_error.phase == "section"
+            and checkpoint_error.section_code == work_item.section_code
+            else None
+        )
         max_attempts = MAX_REPORT_SECTION_PHASE_ATTEMPTS * (
             MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION + 1
         )
@@ -519,6 +548,9 @@ class RuntimeSectionsMixin:
                 "sectionOutputPath": section_output_path,
                 "reworkRequestPath": rework_request_path,
             }
+            retry_context = _section_retry_context(last_error)
+            if retry_context is not None:
+                instruction_payload["retryContext"] = retry_context
             instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
             instruction_bytes = len(instruction.encode("utf-8"))
             if instruction_bytes > MAX_REPORT_INSTRUCTION_BYTES:
@@ -731,6 +763,9 @@ class RuntimeSectionsMixin:
                         "message": message or "独立章节阶段失败。",
                         "sectionCode": work_item.section_code,
                         "retryReason": code,
+                        "details": dict(error.details)
+                        if isinstance(error, ReportingError) and isinstance(error.details, Mapping)
+                        else None,
                     },
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)

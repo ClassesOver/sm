@@ -1734,6 +1734,9 @@ async def test_visualization_fact_exploration_subbudget_returns_receipt_and_keep
         lambda: {"ok": True},
         {},
     )
+    assert rejected["details"]["phaseState"] == "production_only"
+    assert "register_report_charts" in rejected["details"]["allowedTerminalTools"]
+    assert "finalize_report_analysis" in rejected["details"]["allowedTerminalTools"]
     terminal = await normalize_reporting_tool_arguments(
         run_context,
         "terminal",

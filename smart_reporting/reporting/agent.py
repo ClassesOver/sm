@@ -511,6 +511,11 @@ def _visualization_exploration_budget_receipt(
             "tool": counted_tool_name,
             "currentCount": current_count,
             "limit": limit,
+            "phaseState": "production_only",
+            "allowedTerminalTools": [
+                "register_report_charts",
+                "finalize_report_analysis",
+            ],
         },
     }
 

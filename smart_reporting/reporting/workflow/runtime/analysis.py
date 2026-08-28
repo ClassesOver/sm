@@ -1939,7 +1939,7 @@ def _visualization_completion_conditions(
     )
     if _visualization_recovery_required(last_error):
         return [
-            "上一轮因工具调用或脚本失败达到上限而终止；禁止重新规划、重复读取事实或重新探索工作区",
+            "上一轮因工具调用或脚本失败达到上限而终止，且已关闭事实探索；禁止重新规划、重复读取事实或重新探索工作区",
             retained_requirement,
             "仅使用任务 JSON 中 deterministicFactFiles 签发的路径以及既有脚本和图表，完成尚缺的最小修复或执行",
             "整批图表只调用一次 register_report_charts，成功后立即调用 finalize_report_analysis",

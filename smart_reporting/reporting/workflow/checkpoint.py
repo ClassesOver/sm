@@ -557,6 +557,7 @@ class CheckpointError(StrictModel):
     message: str = Field(min_length=1, max_length=2000)
     section_code: str | None = Field(default=None, alias="sectionCode", max_length=128)
     retry_reason: str | None = Field(default=None, alias="retryReason", max_length=2000)
+    details: dict[str, Any] | None = Field(default=None, max_length=50)
     task_id: str | None = Field(default=None, alias="taskId", max_length=128)
     work_kind: Literal["analysis_item", "visualization", "section", "finalize"] | None = Field(
         default=None, alias="workKind"

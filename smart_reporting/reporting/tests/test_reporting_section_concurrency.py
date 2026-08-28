@@ -49,7 +49,7 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _run_pending_analysis_items,
     _visualization_retry_usage,
 )
-from smart_reporting.reporting.workflow.runtime.sections import _run_bounded
+from smart_reporting.reporting.workflow.runtime.sections import _run_bounded, _section_retry_context
 
 
 @pytest.mark.anyio
@@ -376,6 +376,40 @@ def test_pending_analysis_rework_is_covered_by_later_visualization_freeze() -> N
     )
 
     assert runtime_sections._pending_analysis_rework_file(stored) is None
+
+
+def test_section_retry_context_preserves_structured_failure_details() -> None:
+    error = ReportingError(
+        "report_section_completion_conflict",
+        "章节图表绑定冲突。",
+        details={
+            "chartId": "chart-income",
+            "claimId": "claim-income",
+            "conflictType": "metric_mismatch",
+            "expected": "income_yoy",
+            "actual": "income_total",
+        },
+    )
+
+    assert _section_retry_context(error) == {
+        "code": "report_section_completion_conflict",
+        "message": "章节图表绑定冲突。",
+        "details": {
+            "chartId": "chart-income",
+            "claimId": "claim-income",
+            "conflictType": "metric_mismatch",
+            "expected": "income_yoy",
+            "actual": "income_total",
+        },
+    }
+    checkpoint_error = CheckpointError(
+        phase="section",
+        code=error.code,
+        message=error.message,
+        sectionCode="section_001",
+        details=error.details,
+    )
+    assert _section_retry_context(checkpoint_error) == _section_retry_context(error)
 
 
 @pytest.mark.anyio
