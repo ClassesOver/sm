@@ -735,6 +735,80 @@ async def test_register_report_charts_rejects_metric_code_outside_frozen_catalog
 
 
 @pytest.mark.anyio
+async def test_register_report_charts_allows_defined_metric_when_catalog_is_absent() -> None:
+    """null 目录允许 Worker 定义指标；finalize 的 manifest 仍负责冻结同名定义。"""
+
+    scope = SimpleNamespace(
+        thread_id="thread-no-metric-catalog", task=SimpleNamespace(mutation_sequence=1)
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "allowedMetricCodes": None,
+            "visualInspectionMode": "deterministic",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+    toolkit._inspect_chart = AsyncMock(
+        return_value=(
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["income_total"],
+                "currentPeriod": "2026-01",
+                "comparisonPeriod": None,
+                "comparisonType": "none",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+                "comparability": "strict",
+                "size": 1024,
+                "sha256": "a" * 64,
+                "format": "PNG",
+                "mediaType": "image/png",
+                "extension": ".png",
+                "width": 1200,
+                "height": 800,
+            },
+            [],
+        )
+    )
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["income_total"],
+                "currentPeriod": "2026-01",
+                "comparisonType": "none",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+            }
+        ],
+        run_context=RunContext(
+            run_id="run-no-metric-catalog", session_id="session-no-metric-catalog"
+        ),
+    )
+
+    assert result["ok"] is True
+    toolkit._apply_durable.assert_awaited_once()
+
+
+@pytest.mark.anyio
 async def test_register_report_charts_creates_honest_deterministic_receipt() -> None:
     scope = SimpleNamespace(thread_id="thread-1", task=SimpleNamespace(mutation_sequence=3))
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)

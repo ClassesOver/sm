@@ -234,6 +234,54 @@ def test_v2_manifest_requires_every_chart_visual_inspection_receipt() -> None:
         )
 
 
+def test_manifest_rejects_chart_metric_without_definition() -> None:
+    with pytest.raises(ValueError, match="未冻结指标"):
+        AnalysisEvidenceManifest(
+            evidence=(
+                AnalysisEvidence(
+                    analysisId="analysis_001",
+                    summary="冻结证据",
+                    datasetIds=("dataset-1",),
+                    evidenceFiles=(_identity("analysis/evidence.json"),),
+                    citationIds=("c1",),
+                    chartIds=("chart-1",),
+                ),
+            ),
+            metricDefinitions=(),
+            charts=(
+                AnalysisChart(
+                    chartId="chart-1",
+                    sourceFile={"path": "analysis/charts/x.png", "size": 1, "sha256": "0" * 64},
+                    title="收入",
+                    altText="收入",
+                    citationIds=("c1",),
+                    metricCodes=("income_total",),
+                    currentPeriod="2026-01",
+                    comparisonType="none",
+                    sourceDatasetId="dataset-1",
+                    aggregationGrain="month",
+                    visualInspectionReceipt=ChartVisualInspectionReceipt(
+                        sourcePath="analysis/charts/x.png",
+                        sha256="0" * 64,
+                        inspectionMode="deterministic",
+                        visualReviewStatus="not_run",
+                        inspectorId="deterministic-raster-inspector-v1",
+                        modelId=None,
+                        reviewed=True,
+                        requiresRevision=False,
+                    ),
+                ),
+            ),
+            datasetSemantics=(
+                AnalysisDatasetSemantics(
+                    datasetId="dataset-1",
+                    rowGrain="record",
+                    duplicateResolution="not_applicable",
+                ),
+            ),
+        )
+
+
 def test_section_block_claim_reference_must_exist() -> None:
     with pytest.raises(ValueError, match="claim"):
         SectionArtifact(

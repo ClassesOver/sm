@@ -571,10 +571,10 @@ class ReportTaskRunner:
                 )
                 if recovery_attempt >= MAX_REPORT_WORKER_CONTINUATIONS:
                     raise missing_terminal
-                if task_kind == "section":
-                    # Section 的终态是一次性章节提交；普通文本没有推进任何持久化状态。
-                    # 继续同一 Agno run 只会把完整章节历史再次带入模型，日志已证明这会
-                    # 触发长 continuation。交给外层 fresh attempt，恢复原始错误和章节边界。
+                if task_kind in {"section", "visualization"}:
+                    # 章节提交和可视化登记/完成都是一次性阶段终态；普通文本没有推进任何
+                    # 持久化状态。继续同一 Agno run 会把完整历史再次带入模型并放大探索，
+                    # 交给外层 fresh attempt，恢复原始错误和阶段边界。
                     raise missing_terminal
                 logger.warning(
                     "report_worker_terminal_tool_missing_continuation run_id={} task_kind={} "

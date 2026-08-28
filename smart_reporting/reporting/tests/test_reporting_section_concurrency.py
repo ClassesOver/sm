@@ -972,7 +972,7 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     fact_metrics = [
         {
             "field": f"income_{metric_index:03}",
-            "metricCodes": [f"income_total_{metric_index:03}"],
+            "metricCodes": [],
             "unit": "元",
             "periodRoles": ["current"],
             "periodStart": "2025-01-01",
@@ -1099,19 +1099,39 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
             "factFile": expected_fact_files["analysis_001"],
             "metrics": [
                 {
+                    "datasetId": None,
+                    "metricIndex": metric_index,
                     "field": f"income_{metric_index:03}",
-                    "metricCodes": [f"income_total_{metric_index:03}"],
+                    "metricCodes": [],
+                    "aggregation": None,
                     "unit": "元",
+                    "scope": None,
                     "periodRoles": ["current"],
                     "periodStart": "2025-01-01",
                     "periodEnd": "2025-12-31",
+                    "total": None,
+                    "periodValueCount": 1200,
+                    "topGroupCount": 0,
+                    "bottomGroupCount": 0,
+                    "dataPaths": {
+                        "metric": f"metrics[{metric_index}]",
+                        "periodValues": f"metrics[{metric_index}].periodValues",
+                        "topGroups": f"metrics[{metric_index}].topGroups",
+                        "bottomGroups": f"metrics[{metric_index}].bottomGroups",
+                    },
                 }
                 for metric_index in range(12)
             ],
             "derivedMetrics": [],
             "comparisons": [],
+            "correlationCount": 0,
+            "correlationsPath": "correlations",
+            "reconciliationCount": 0,
+            "reconciliationsPath": "reconciliations",
+            "warningCount": 0,
+            "warningsPath": "warnings",
             "fields": [f"income_{metric_index:03}" for metric_index in range(12)],
-            "allowedMetricCodes": [f"income_total_{metric_index:03}" for metric_index in range(12)],
+            "allowedMetricCodes": [],
             "evidenceFiles": [{"path": "evidence/income.json", "size": 2, "sha256": "e" * 64}],
             "citationIds": ["citation-000"],
         }
@@ -1119,6 +1139,10 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     assert [item["visualizationFacts"] for item in instructions] == [
         expected_visualization_facts,
         expected_visualization_facts,
+    ]
+    assert [item["chartRegistrationRules"]["allowedMetricCodes"] for item in instructions] == [
+        None,
+        None,
     ]
     assert all("facts" not in item["visualizationFacts"][0] for item in instructions)
     assert all(
@@ -1134,6 +1158,7 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     contracts = [call.kwargs["acceptance_contract"] for call in task_runner.start.await_args_list]
     phase_contracts = [item["requirements"][0]["parameters"]["phaseContract"] for item in contracts]
     assert [item["visualizationRecovery"] for item in phase_contracts] == [False, True]
+    assert [item["allowedMetricCodes"] for item in phase_contracts] == [None, None]
     assert [item["visualInspectionMode"] for item in phase_contracts] == [
         "deterministic",
         "deterministic",

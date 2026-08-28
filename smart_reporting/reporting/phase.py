@@ -680,6 +680,21 @@ def reporting_visualization_recovery_from_run_context(
     )
 
 
+def reporting_visualization_script_session_available_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    """仅在当前 Task 已登记脚本 session 时开放 process 的轮询能力。"""
+
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return False
+    sessions = run_context.session_state.get("reportingVisualizationSessions")
+    return (
+        isinstance(sessions, Sequence)
+        and not isinstance(sessions, (str, bytes))
+        and any(isinstance(session_id, str) and session_id for session_id in sessions)
+    )
+
+
 def reporting_visualization_production_only_from_run_context(
     run_context: RunContext | None,
 ) -> bool:

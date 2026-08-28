@@ -1160,55 +1160,93 @@ class RuntimeAnalysisMixin:
                             "factFile": fact_files[analysis.analysis_id].model_dump(
                                 mode="json", by_alias=True
                             ),
-                            # 模型只需要知道可画哪些字段、指标、期间和单位。完整数值序列
-                            # 继续留在已验哈希的 facts 文件，由图表脚本按签发路径一次读取；
-                            # 禁止把 periodValues/topGroups 等大数组复制进 instruction。
+                            # 模型只需要知道可画哪些字段及其在真实 facts schema 中的精确位置。
+                            # 完整数值序列继续留在已验哈希的 facts 文件，由图表脚本按签发路径
+                            # 一次读取；禁止复制大数组，也禁止让模型猜 periodValues/topGroups
+                            # 位于根节点还是 metric 内。
                             "metrics": [
                                 {
-                                    key: metric.get(key)
-                                    for key in (
-                                        "field",
-                                        "metricCodes",
-                                        "unit",
-                                        "periodRoles",
-                                        "periodStart",
-                                        "periodEnd",
-                                    )
+                                    "metricIndex": metric_index,
+                                    **{
+                                        key: metric.get(key)
+                                        for key in (
+                                            "datasetId",
+                                            "field",
+                                            "metricCodes",
+                                            "aggregation",
+                                            "unit",
+                                            "scope",
+                                            "periodRoles",
+                                            "periodStart",
+                                            "periodEnd",
+                                            "total",
+                                        )
+                                    },
+                                    "periodValueCount": len(metric.get("periodValues", ())),
+                                    "topGroupCount": len(metric.get("topGroups", ())),
+                                    "bottomGroupCount": len(metric.get("bottomGroups", ())),
+                                    "dataPaths": {
+                                        "metric": f"metrics[{metric_index}]",
+                                        "periodValues": f"metrics[{metric_index}].periodValues",
+                                        "topGroups": f"metrics[{metric_index}].topGroups",
+                                        "bottomGroups": f"metrics[{metric_index}].bottomGroups",
+                                    },
                                 }
-                                for metric in raw_metrics
+                                for metric_index, metric in enumerate(raw_metrics)
                                 if isinstance(metric, Mapping)
                             ],
                             "derivedMetrics": [
                                 {
-                                    key: metric.get(key)
-                                    for key in (
-                                        "code",
-                                        "unit",
-                                        "periodRole",
-                                        "periodStart",
-                                        "periodEnd",
-                                        "datasetIds",
-                                    )
+                                    "derivedMetricIndex": metric_index,
+                                    **{
+                                        key: metric.get(key)
+                                        for key in (
+                                            "code",
+                                            "kind",
+                                            "unit",
+                                            "periodRole",
+                                            "periodStart",
+                                            "periodEnd",
+                                            "datasetIds",
+                                            "value",
+                                            "percentage",
+                                        )
+                                    },
+                                    "dataPath": f"derivedMetrics[{metric_index}]",
                                 }
-                                for metric in raw_derived_metrics
+                                for metric_index, metric in enumerate(raw_derived_metrics)
                                 if isinstance(metric, Mapping)
                             ],
                             "comparisons": [
                                 {
-                                    key: comparison.get(key)
-                                    for key in (
-                                        "comparisonType",
-                                        "field",
-                                        "unit",
-                                        "periodStart",
-                                        "periodEnd",
-                                        "currentDatasetId",
-                                        "baselineDatasetId",
-                                    )
+                                    "comparisonIndex": comparison_index,
+                                    **{
+                                        key: comparison.get(key)
+                                        for key in (
+                                            "comparisonType",
+                                            "field",
+                                            "unit",
+                                            "periodStart",
+                                            "periodEnd",
+                                            "currentDatasetId",
+                                            "baselineDatasetId",
+                                            "currentTotal",
+                                            "baselineTotal",
+                                            "change",
+                                            "changeRate",
+                                        )
+                                    },
+                                    "dataPath": f"comparisons[{comparison_index}]",
                                 }
-                                for comparison in raw_comparisons
+                                for comparison_index, comparison in enumerate(raw_comparisons)
                                 if isinstance(comparison, Mapping)
                             ],
+                            "correlationCount": len(fact_payload.get("correlations", {})),
+                            "correlationsPath": "correlations",
+                            "reconciliationCount": len(fact_payload.get("reconciliations", ())),
+                            "reconciliationsPath": "reconciliations",
+                            "warningCount": len(fact_payload.get("warnings", ())),
+                            "warningsPath": "warnings",
                             "fields": sorted(
                                 {
                                     *(
@@ -1249,6 +1287,13 @@ class RuntimeAnalysisMixin:
                         }
                     )
             visualization_root = f"报表/智能分析/{run_context.run_id}/analysis"
+            allowed_metric_codes = sorted(
+                {
+                    code
+                    for item in visualization_facts_package
+                    for code in item["allowedMetricCodes"]
+                }
+            )
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "visualization",
@@ -1274,13 +1319,10 @@ class RuntimeAnalysisMixin:
                 },
                 "visualizationFacts": visualization_facts_package,
                 "chartRegistrationRules": {
-                    "allowedMetricCodes": sorted(
-                        {
-                            code
-                            for item in visualization_facts_package
-                            for code in item["allowedMetricCodes"]
-                        }
-                    ),
+                    # null 明确表示冻结 facts 没有 Profile metric code，Worker 可定义
+                    # 图表 code，但 finalize 时必须以同名 metricDefinitions 冻结语义；
+                    # 非空目录仍由 register_report_charts 严格拒绝未知 code。
+                    "allowedMetricCodes": allowed_metric_codes or None,
                     "comparisonPeriodRequiredFor": ["period", "yoy", "mom"],
                     "referenceOnlyTitleAndAltTextMustContain": "参考",
                     "vision": visual_inspection_mode == "vision",
@@ -1340,13 +1382,7 @@ class RuntimeAnalysisMixin:
                     "analysisDatasetIds": {
                         item.analysis_id: list(item.dataset_ids) for item in detailed_plan.analyses
                     },
-                    "allowedMetricCodes": sorted(
-                        {
-                            code
-                            for item in visualization_facts_package
-                            for code in item["allowedMetricCodes"]
-                        }
-                    ),
+                    "allowedMetricCodes": allowed_metric_codes or None,
                     "deterministicFactFiles": {
                         analysis_id: identity.model_dump(mode="json", by_alias=True)
                         for analysis_id, identity in fact_files.items()
@@ -2089,8 +2125,8 @@ def _visualization_completion_conditions(
         ]
     return [
         "只整合 completedAnalysisItems 和 deterministicFactFiles，不重跑单项分析",
-        "visualizationFacts 已一次性内联当前图表所需事实；不得调用 query_analysis_facts 进行探索，"
-        "也不得用 read_file 读取 facts 或 evidence",
+        "visualizationFacts 已提供完整字段目录和真实 dataPaths；图表脚本按 factFile.path 一次读取 facts，"
+        "不得调用 query_analysis_facts 或用 read_file 探索 facts/evidence",
         retained_requirement,
         "analysisCitationIds 是 citationId 的唯一受信来源；不得用 read_file、terminal 或目录探测寻找 citationId",
         "图表脚本只写入 visualizationWorkspace.scriptPath，服务端提交后 terminal 仅可执行 python3 <scriptPath>；"

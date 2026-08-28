@@ -95,6 +95,7 @@ from .phase import (
     reporting_visualization_production_only_from_run_context,
     reporting_visualization_recovery_from_run_context,
     reporting_visualization_registered_from_run_context,
+    reporting_visualization_script_session_available_from_run_context,
     reporting_visualization_usage_from_run_context,
 )
 from .tools import build_report_worker_tools
@@ -501,6 +502,13 @@ def _visualization_exploration_budget_receipt(
         reporting_phase_from_run_context(run_context) != "analysis"
         or reporting_task_kind_from_run_context(run_context) != "visualization"
     ):
+        return None
+    # fresh recovery 只允许 read_file/read_tool_output 恢复已提交脚本；实际路径仍由
+    # Toolkit 的脚本身份门禁校验。这不是 facts/evidence 探索，不能被旧探索预算拦截。
+    if reporting_visualization_recovery_from_run_context(run_context) and function_name in {
+        "read_file",
+        "read_tool_output",
+    }:
         return None
     limit = _visualization_exploration_limit(run_context, function_name)
     is_exploration = function_name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
@@ -1790,10 +1798,44 @@ def _visualization_production_tool_allowed(
         run_context
     ):
         return True
-    return tool_name in REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES or (
-        tool_name == "inspect_chart"
-        and reporting_visual_inspection_mode_from_run_context(run_context) == "vision"
+    return (
+        tool_name in REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES
+        or (
+            reporting_visualization_recovery_from_run_context(run_context)
+            and tool_name in {"read_file", "read_tool_output"}
+        )
+        or (
+            tool_name == "process"
+            and reporting_visualization_script_session_available_from_run_context(run_context)
+        )
+        or (
+            tool_name == "inspect_chart"
+            and reporting_visual_inspection_mode_from_run_context(run_context) == "vision"
+        )
     )
+
+
+def _visualization_lifecycle_tool_allowed(
+    run_context: RunContext | None,
+    tool_name: str,
+) -> bool:
+    """让模型 schema 与旧历史工具调用共享同一可视化生命周期门禁。"""
+
+    if reporting_task_kind_from_run_context(run_context) != "visualization":
+        return True
+    if tool_name == "process":
+        return reporting_visualization_script_session_available_from_run_context(run_context)
+    if reporting_visualization_recovery_from_run_context(run_context):
+        return tool_name not in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES or tool_name in {
+            "read_file",
+            "read_tool_output",
+        }
+    return tool_name not in {
+        "query_analysis_context",
+        "query_analysis_facts",
+        "read_file",
+        "read_tool_output",
+    }
 
 
 def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
@@ -1807,6 +1849,7 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
         for tool in tools
         if (name := _report_model_tool_name(tool)) is not None
         and reporting_phase_allows_tool(phase, name, task_kind=task_kind)
+        and _visualization_lifecycle_tool_allowed(run_context, name)
         and not (
             task_kind == "analysis_item"
             and run_context is not None
@@ -1824,17 +1867,16 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
             task_kind == "visualization"
             and run_context is not None
             and name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
+            and not (
+                reporting_visualization_recovery_from_run_context(run_context)
+                and name in {"read_file", "read_tool_output"}
+            )
             and (
                 _visualization_exploration_budget_receipt(run_context, name) is not None
                 or reporting_visualization_exploration_budget_exhausted_from_run_context(
                     run_context
                 )
             )
-        )
-        and not (
-            task_kind == "visualization"
-            and reporting_visualization_recovery_from_run_context(run_context)
-            and name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
         )
         and not (
             task_kind == "visualization"
@@ -2338,10 +2380,18 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
             production_forbidden = isinstance(
                 name, str
             ) and not _visualization_production_tool_allowed(current_reporting_run_context(), name)
+            lifecycle_forbidden = isinstance(
+                name, str
+            ) and not _visualization_lifecycle_tool_allowed(current_reporting_run_context(), name)
             vision_disabled = name in {"view_image", "inspect_chart"} and not getattr(
                 self, "_report_vision_enabled", True
             )
-            if not phase_forbidden and not production_forbidden and not vision_disabled:
+            if (
+                not phase_forbidden
+                and not production_forbidden
+                and not lifecycle_forbidden
+                and not vision_disabled
+            ):
                 allowed_calls.append(tool_call)
                 continue
             if not isinstance(call_id, str) or not call_id:
@@ -2367,7 +2417,7 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                                 "code": "report_vision_disabled",
                                 "message": "当前 Reporting Worker 未启用图片视觉工具，继续使用文本和文件证据。",
                             }
-                            if not production_forbidden
+                            if not production_forbidden and not lifecycle_forbidden
                             else {
                                 "ok": False,
                                 "status": "rejected",

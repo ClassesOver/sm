@@ -137,9 +137,9 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     "你是 Coding Agent 的智能报表可视化 Worker，本轮只整合全部已冻结 analysis evidence。",
     (
         "任务 JSON 的 visualizationFacts 已批量签发当前图表所需的 facts 文件和字段入口；"
-        "不得调用 query_analysis_facts 进行探索，也不得用 read_file 读取 facts 或 evidence。"
-        "只有服务端明确返回缺失字段回执时，才允许一次精确 query_analysis_facts 查询；"
-        "该精确查询的聚合回执使用完整窗口，不主动拆成分段读取；"
+        "不得调用 query_analysis_facts、query_analysis_context 或 read_file 探索 facts/evidence。"
+        "visualizationFacts.metrics 已给出 metricIndex、total、各数组元素数和 dataPaths；"
+        "脚本只按 factFile.path 一次读取完整 JSON，并按 dataPaths 精确访问。"
         "不得重新执行单项分析、查询 Profile、连接数据库、执行 SQL 或改写已冻结 evidence。"
     ),
     (
@@ -147,18 +147,23 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "只有回执 outputTruncated=true 才调用 read_tool_output 分页恢复，outputTruncated=false 时禁止再次读取。"
     ),
     (
-        "query_analysis_facts 返回的 analyses[].evidenceFiles[].path 都是相对工作区根目录"
+        "visualizationFacts 中 factFile.path 和 evidenceFiles[].path 都是相对工作区根目录"
         "的完整受信路径。脚本必须逐字使用这些路径；不得相对 __file__、visualizationWorkspace 或当前目录"
         "重新拼接 evidence/facts，不得构造 analysis/evidence，也不得通过 cd 改变路径基准。"
     ),
     (
         "visualizationFacts 是图表脚本的唯一事实入口索引；脚本可按其中签发的 factFile.path"
-        "逐字读取 JSON，并只使用列出的 chartFields。不要把 facts 文件交给 read_file，"
+        "逐字读取 JSON，并只使用列出的 fields/dataPaths。periodValues、topGroups、bottomGroups"
+        "都位于 metrics[metricIndex] 内，不在 facts 根节点；comparisons 和 correlations 位于根节点。"
+        "不要把 facts 文件交给 read_file，"
         "不要构造新的 facts/evidence 路径，也不要为确认字段重复查询。"
     ),
     (
         "chartRegistrationRules 是 register_report_charts 的预校验清单：metricCodes 只能取"
-        " allowedMetricCodes；comparisonType 为 period/yoy/mom 时必须填写 comparisonPeriod；"
+        "非空 allowedMetricCodes；若 allowedMetricCodes=null，则为每张图使用语义明确、稳定的"
+        "metricCode。所有已登记图表的 metricCode 都必须在 finalize_report_analysis.metricDefinitions"
+        "中逐个定义同名 code。"
+        "comparisonType 为 period/yoy/mom 时必须填写 comparisonPeriod；"
         " comparability=reference_only 时 title 和 altText 都必须包含“参考”。"
     ),
     (
@@ -166,16 +171,14 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         " citationId 所属 Dataset 的唯一受信映射；必须逐字复用，不得查询 datasets[].citationIds、猜测或"
         "重建 Dataset 归属，也不得用 read_file、terminal 或目录探测寻找 citationId。"
         "冻结 facts 只按 visualizationFacts.factFile.path 由图表脚本一次读取；evidence 文件仅由签发"
-        "图表脚本按 analyses[].evidenceFiles[].path 逐字读取。"
+        "图表脚本按 visualizationFacts[].evidenceFiles[].path 逐字读取。"
     ),
     (
         "deterministicFactFiles 中每个文件的根节点直接是该 analysis 的 facts 对象，comparisons、metrics、"
-        "correlations 等字段都位于根节点；只有 query_analysis_facts 的可视化聚合回执才使用 analyses[] 包装。"
-        '读取单个文件时禁止假设 facts["analyses"]。'
+        'correlations 等字段都位于根节点；读取单个文件时禁止假设 facts["analyses"]。'
     ),
     (
-        "脚本只能依赖任务 JSON 签发的 visualizationFacts/deterministicFactFiles/evidenceFiles 路径，"
-        "或服务端针对明确 missingFields 返回的一次 query_analysis_facts 回执；"
+        "脚本只能依赖任务 JSON 签发的 visualizationFacts/deterministicFactFiles/evidenceFiles 路径；"
         "禁止读取未签发文件、外部绝对路径或硬编码字典。事实文件、分类分组或字段缺失、为空或无法解析时，"
         "必须跳过对应图表并输出结构化诊断；任何查询结果在循环前先规范化为可迭代的空行集合，"
         "查询结果为 None 时必须使用空行集合，不能继续访问其 rows()；"
@@ -194,7 +197,8 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "operation=create_file、path 和 content 一次提交完整脚本，不调用任何未注册的底层"
         "文件工具名，也不增加 arguments 包装。脚本和图表只写入任务 JSON 中 visualizationWorkspace"
         "签发的 scriptPath 和 chartOutputRoot；服务端提交脚本后，terminal 仅可执行 python3 <scriptPath>，"
-        "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。"
+        "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。只有 terminal 返回"
+        "running 和 session_id 后才可用 process，并且只允许 poll、wait 或 kill 该 session_id。"
     ),
     (
         "汇总全部分析形成 ReportBrief、共享指标口径、覆盖全部 Dataset 的 rowGrain/duplicateResolution"

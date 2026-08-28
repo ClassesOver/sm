@@ -233,8 +233,6 @@ def test_report_worker_caps_only_long_model_timeout(
             [
                 "get_skill_instructions",
                 "get_skill_reference",
-                "query_analysis_context",
-                "query_analysis_facts",
                 "inspect_chart",
                 "register_report_charts",
                 "finalize_report_analysis",
@@ -282,6 +280,116 @@ def test_analysis_task_kind_projection_separates_item_and_visualization_tools(
     assert [item["function"]["name"] for item in projected] == expected
 
 
+def test_visualization_projection_hides_process_until_script_session_exists() -> None:
+    """可视化初始请求不应暴露无法执行的 process(list) 探索入口。"""
+    context = RunContext(
+        run_id="run-visualization-no-session",
+        session_id="session-visualization-no-session",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    tools = [
+        {"type": "function", "function": {"name": name}}
+        for name in (
+            "query_analysis_facts",
+            "read_file",
+            "read_tool_output",
+            "process",
+            "terminal",
+            "write_analysis_files",
+            "register_report_charts",
+            "finalize_report_analysis",
+        )
+    ]
+
+    with bind_reporting_run_context(context):
+        projected = _phase_filtered_report_tools(
+            [Message(role="user", content='{"phase":"analysis"}')], tools
+        )
+
+    names = [item["function"]["name"] for item in projected]
+    assert "query_analysis_facts" not in names
+    assert "read_file" not in names
+    assert "process" not in names
+
+
+def test_visualization_projection_exposes_process_for_signed_script_session() -> None:
+    context = RunContext(
+        run_id="run-visualization-session",
+        session_id="session-visualization-session",
+        session_state={"reportingVisualizationSessions": ["script-session-1"]},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-session",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+
+    with bind_reporting_run_context(context):
+        projected = _phase_filtered_report_tools(
+            [Message(role="user", content='{"phase":"analysis"}')],
+            [{"type": "function", "function": {"name": "process"}}],
+        )
+
+    assert [item["function"]["name"] for item in projected] == ["process"]
+
+
+def test_visualization_initial_admission_rejects_hidden_exploration_calls() -> None:
+    context = RunContext(
+        run_id="visualization-initial-admission",
+        session_id="visualization-initial-admission",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    assistant = Message(
+        role="assistant",
+        tool_calls=[
+            {
+                "id": "stale-query",
+                "type": "function",
+                "function": {"name": "query_analysis_facts", "arguments": "{}"},
+            },
+            {
+                "id": "stale-process",
+                "type": "function",
+                "function": {"name": "process", "arguments": "{}"},
+            },
+            {
+                "id": "produce-script",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": "{}"},
+            },
+        ],
+    )
+    messages = [Message(role="user", content='{"phase":"analysis"}')]
+    functions = {
+        name: Function(name=name, entrypoint=lambda: None)
+        for name in ("query_analysis_facts", "process", "terminal")
+    }
+    model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+
+    with bind_reporting_run_context(context):
+        calls = model.get_function_calls_to_run(assistant, messages, functions=functions)
+
+    assert [call.function.name for call in calls] == ["terminal"]
+    assert {message.tool_call_id for message in messages if message.role == "tool"} == {
+        "stale-query",
+        "stale-process",
+    }
+
+
 def test_visualization_recovery_projection_removes_exploration_tools() -> None:
     context = RunContext(
         run_id="run-visualization-recovery",
@@ -315,6 +423,8 @@ def test_visualization_recovery_projection_removes_exploration_tools() -> None:
         )
 
     assert [item["function"]["name"] for item in projected] == [
+        "read_file",
+        "read_tool_output",
         "write_analysis_files",
         "terminal",
         "register_report_charts",
@@ -578,17 +688,16 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
     assert "git_status" not in instructions
     if task_kind == "visualization":
         assert "只调用 write_analysis_files" in instructions
-        assert "analyses[].evidenceFiles[].path" in instructions
+        assert "evidenceFiles[].path" in instructions
         assert "不得构造 analysis/evidence" in instructions
         assert '禁止假设 facts["analyses"]' in instructions
         assert "visualizationWorkspace" in instructions
         assert "analysisCitationIds" in instructions
         assert "不得用 read_file、terminal 或目录探测寻找 citationId" in instructions
         assert "仅可执行 python3 <scriptPath>" in instructions
-        assert "聚合回执使用完整窗口" in instructions
         assert "outputTruncated=false 时禁止再次读取" in instructions
         assert "visualizationFacts" in instructions
-        assert "不得调用 query_analysis_facts 进行探索" in instructions
+        assert "不得调用 query_analysis_facts" in instructions
 
 
 def test_deterministic_visualization_instructions_forbid_inspect_chart() -> None:
@@ -1999,6 +2108,7 @@ def test_visualization_recovery_projection_is_production_only_on_fresh_run() -> 
         )
 
     assert [item["function"]["name"] for item in projected] == [
+        "read_file",
         "write_analysis_files",
         "terminal",
         "register_report_charts",
@@ -2006,7 +2116,7 @@ def test_visualization_recovery_projection_is_production_only_on_fresh_run() -> 
     ]
 
 
-def test_visualization_recovery_admission_rejects_stale_exploration_calls() -> None:
+def test_visualization_recovery_admission_keeps_script_read_and_production_calls() -> None:
     context = RunContext(
         run_id="fresh-retry-admission",
         session_id="fresh-retry-admission",
@@ -2045,12 +2155,7 @@ def test_visualization_recovery_admission_rejects_stale_exploration_calls() -> N
     with bind_reporting_run_context(context):
         calls = model.get_function_calls_to_run(assistant, messages, functions=functions)
 
-    assert [call.function.name for call in calls] == ["terminal"]
-    assert any(
-        message.tool_call_id == "stale-read"
-        and "report_visualization_production_only" in str(message.content)
-        for message in messages
-    )
+    assert [call.function.name for call in calls] == ["read_file", "terminal"]
 
 
 @pytest.mark.anyio

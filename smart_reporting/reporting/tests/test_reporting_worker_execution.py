@@ -451,6 +451,44 @@ async def test_section_worker_plain_text_reports_missing_terminal_tool_without_c
     worker.acontinue_run.assert_not_called()
 
 
+@pytest.mark.anyio
+async def test_visualization_worker_plain_text_reports_missing_terminal_tool_without_continuation() -> (
+    None
+):
+    worker = SimpleNamespace(
+        model=_RecordedErrors([None, None]),
+        arun=MagicMock(return_value="initial-run"),
+        acontinue_run=MagicMock(return_value="continued-run"),
+    )
+    runner = cast(Any, object.__new__(ReportTaskRunner))
+    runner.worker = worker
+    runner.repository = SimpleNamespace(
+        get_task_snapshot=AsyncMock(return_value=SimpleNamespace(state=TaskState.ACTIVE))
+    )
+    runner._consume_run = AsyncMock(side_effect=["plain-text", "plain-text-again"])
+
+    with pytest.raises(ReportingError) as raised:
+        await runner._run_worker(
+            continuing=False,
+            instruction="render visualization",
+            internal_run_id="worker-run-visualization-1",
+            worker_session_id="worker-session-visualization-1",
+            owner_user_id="user-1",
+            dependencies={"AgentOS 编码任务": {"reportingTaskKind": "visualization"}},
+            run_context=SimpleNamespace(),
+            scope=SimpleNamespace(external_run_id="visualization-task-1"),
+            parent_run_id="workflow-run-1",
+        )
+
+    assert raised.value.code == "report_worker_terminal_tool_missing"
+    assert raised.value.details == {
+        "taskKind": "visualization",
+        "requiredTerminalTools": ["finalize_report_analysis"],
+    }
+    worker.arun.assert_called_once()
+    worker.acontinue_run.assert_not_called()
+
+
 def test_each_analysis_and_visualization_use_distinct_task_and_session_identities() -> None:
     analysis_001 = reporting_phase_task_key(
         "workflow-run-1", 1, "analysis", analysis_id="analysis_001"
