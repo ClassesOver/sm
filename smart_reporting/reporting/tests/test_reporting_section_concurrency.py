@@ -901,8 +901,9 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
         run=AsyncMock(
             side_effect=(
                 ReportingError(
-                    "report_visualization_tool_budget_exhausted",
-                    "当前可视化 Task 已达到工具调用上限。",
+                    "report_visualization_evidence_path_forbidden",
+                    "visualization 只能读取签发的最新已提交脚本。",
+                    details={"terminalReason": "tool_no_progress"},
                 ),
                 RuntimeError("stop after visualization retry"),
             )
@@ -992,6 +993,7 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
         "deterministic",
         "deterministic",
     ]
+    assert any("上一轮因工具调用" in item for item in instructions[1]["completionConditions"])
     assert [item["visualizationWorkspace"]["allowedTerminalCommand"] for item in instructions] == [
         "python3 报表/智能分析/run-1/analysis/charts.py",
         "python3 报表/智能分析/run-1/analysis/charts.py",

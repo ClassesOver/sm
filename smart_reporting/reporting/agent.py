@@ -520,10 +520,12 @@ def _reporting_visualization_tool_budget(
     function_name: str,
 ) -> tuple[dict[str, Any], str, str] | None:
     if (
-        function_name == "finalize_report_analysis"
+        function_name in {"register_report_charts", "finalize_report_analysis"}
         or reporting_phase_from_run_context(run_context) != "analysis"
         or reporting_task_kind_from_run_context(run_context) != "visualization"
     ):
+        # register/finalize 是可视化阶段的终态提交，不得被此前的探索调用挤占。
+        # 图表登记仍受 durable registration 与 no-progress 门禁约束，重复提交不会绕过验收。
         return None
     state = _reporting_session_state(run_context)
     if state is None:
@@ -2012,6 +2014,17 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
                 **kwargs,
             ):
                 yield response
+            terminal_error = _take_reporting_tool_run_error()
+            if (
+                isinstance(terminal_error, ReportingError)
+                and isinstance(terminal_error.details, dict)
+                and terminal_error.details.get("terminalReason") == "tool_no_progress"
+            ):
+                # Agno 把 StopAgentRun 收敛成 stop_after_tool_call 后会正常结束异步流。
+                # 必须在清理模型错误前恢复原领域错误，Task runner 才能停止当前 Task，
+                # 而不是把它误判成缺少终态工具并发起同 run continuation。
+                self._record_report_run_error(terminal_error)
+                return
             self._clear_report_run_error()
         except Exception as error:
             self._record_report_run_error(error)

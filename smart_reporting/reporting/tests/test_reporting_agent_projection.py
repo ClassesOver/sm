@@ -1090,6 +1090,63 @@ async def test_report_worker_no_progress_does_not_retry_agent_model(monkeypatch)
 
 
 @pytest.mark.anyio
+async def test_report_worker_stream_no_progress_records_original_error(monkeypatch) -> None:
+    model_requests = 0
+    run_context = RunContext(
+        run_id="run-tool-no-progress-stream",
+        session_id="session-tool-no-progress-stream",
+        session_state={},
+    )
+
+    async def render_report_section(blocks: list[dict[str, Any]]) -> dict[str, bool]:
+        _ = blocks
+        return {"ok": True}
+
+    invalid_arguments: dict[str, Any] = {}
+    for _ in range(2):
+        failure = await normalize_reporting_tool_arguments(
+            run_context,
+            "render_report_section",
+            render_report_section,
+            invalid_arguments,
+        )
+        assert failure["code"] == "report_tool_arguments_invalid"
+
+    async def fake_aresponse_stream(model, *args, **kwargs):
+        nonlocal model_requests
+        _ = args, kwargs
+        model_requests += 1
+        function = Function(name="render_report_section", entrypoint=render_report_section)
+        function.tool_hooks = [
+            propagate_reporting_tool_errors,
+            normalize_reporting_tool_arguments,
+        ]
+        function._run_context = run_context
+        call = FunctionCall(function=function, arguments={}, call_id="call-terminal-stream")
+        async for event in model.arun_function_calls([call], []):
+            yield event
+        yield ModelResponse(content="stopped")
+
+    monkeypatch.setattr(ProjectedOpenAIChat, "aresponse_stream", fake_aresponse_stream)
+    model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+
+    with bind_reporting_run_context(run_context):
+        responses = [
+            response
+            async for response in model.aresponse_stream(
+                [Message(role="user", content='{"phase":"section"}')]
+            )
+        ]
+
+    assert model_requests == 1
+    assert responses[-1].content == "stopped"
+    error = model.report_run_error()
+    assert isinstance(error, ReportingError)
+    assert error.code == "report_tool_arguments_invalid"
+    assert error.details["terminalReason"] == "tool_no_progress"
+
+
+@pytest.mark.anyio
 async def test_report_worker_agent_stops_before_analysis_tool_budget_overflow(monkeypatch) -> None:
     calls = 0
     run_context = RunContext(
@@ -1589,6 +1646,59 @@ async def test_visualization_total_budget_counts_failed_and_successful_calls(
     assert failed == {"ok": False, "code": "workspace_error"}
     assert succeeded == {"ok": True}
     assert calls == 2
+
+
+@pytest.mark.anyio
+async def test_visualization_registration_is_reserved_outside_tool_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-register-budget",
+        session_id="session-visualization-register-budget",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-register-budget-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    registered = False
+
+    def register() -> dict[str, bool]:
+        nonlocal registered
+        registered = True
+        return {"ok": True}
+
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 1)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 1)
+
+    await normalize_reporting_tool_arguments(
+        run_context,
+        "read_file",
+        lambda: {"ok": True},
+        {},
+    )
+    result = await normalize_reporting_tool_arguments(
+        run_context,
+        "register_report_charts",
+        register,
+        {},
+    )
+    with pytest.raises(StopAgentRun, match="report_chart_registration_closed"):
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "read_file",
+            lambda: {"ok": True},
+            {},
+        )
+
+    assert result == {"ok": True}
+    assert registered is True
+    assert (
+        reporting_visualization_usage_from_run_context(run_context)["visualizationToolCalls"] == 1
+    )
 
 
 @pytest.mark.anyio

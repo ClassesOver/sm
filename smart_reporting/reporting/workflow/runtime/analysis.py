@@ -1958,10 +1958,14 @@ def _visualization_completion_conditions(
 
 
 def _visualization_recovery_required(last_error: Exception | None) -> bool:
-    """仅预算类终态错误进入禁止重新探索的恢复模式。"""
+    """预算耗尽或 no-progress 终止后只允许复用既有可视化产物。"""
 
-    return isinstance(last_error, ReportingError) and last_error.code in (
-        _VISUALIZATION_RECOVERY_ERROR_CODES
+    return isinstance(last_error, ReportingError) and (
+        last_error.code in _VISUALIZATION_RECOVERY_ERROR_CODES
+        or (
+            isinstance(last_error.details, dict)
+            and last_error.details.get("terminalReason") == "tool_no_progress"
+        )
     )
 
 
