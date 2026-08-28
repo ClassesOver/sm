@@ -41,6 +41,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY,
     REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
@@ -48,6 +49,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     bind_reporting_run_context,
     reporting_phase_allows_tool,
+    reporting_visualization_production_only_from_run_context,
     reporting_visualization_usage_from_run_context,
 )
 from smart_reporting.reporting.vision import ReportVisionReviewer
@@ -320,6 +322,39 @@ def test_visualization_recovery_projection_removes_exploration_tools() -> None:
     ]
 
 
+def test_visualization_production_only_projection_keeps_required_vision_inspection() -> None:
+    context = RunContext(
+        run_id="run-visualization-production-vision",
+        session_id="session-visualization-production-vision",
+        session_state={REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY: True},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-production-vision",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                "reportingVisualInspectionMode": "vision",
+            }
+        },
+    )
+
+    with bind_reporting_run_context(context):
+        projected = _phase_filtered_report_tools(
+            [Message(role="user", content='{"phase":"analysis"}')],
+            [
+                {"type": "function", "function": {"name": "view_image"}},
+                {"type": "function", "function": {"name": "inspect_chart"}},
+                {"type": "function", "function": {"name": "register_report_charts"}},
+                {"type": "function", "function": {"name": "finalize_report_analysis"}},
+            ],
+        )
+
+    assert [item["function"]["name"] for item in projected] == [
+        "inspect_chart",
+        "register_report_charts",
+        "finalize_report_analysis",
+    ]
+
+
 def test_visualization_exploration_tools_are_hidden_after_their_subbudget() -> None:
     context = RunContext(
         run_id="run-visualization-exploration-limit",
@@ -327,7 +362,7 @@ def test_visualization_exploration_tools_are_hidden_after_their_subbudget() -> N
         session_state={
             REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY: {
                 "visualization-exploration:run-visualization-exploration-limit": {
-                    "toolCounts": {"query_analysis_facts": 4, "read_file": 12}
+                    "toolCounts": {"query_analysis_facts": 4, "read_file": 0}
                 }
             }
         },
@@ -552,6 +587,8 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
         assert "仅可执行 python3 <scriptPath>" in instructions
         assert "聚合回执使用完整窗口" in instructions
         assert "outputTruncated=false 时禁止再次读取" in instructions
+        assert "visualizationFacts" in instructions
+        assert "不得调用 query_analysis_facts 进行探索" in instructions
 
 
 def test_deterministic_visualization_instructions_forbid_inspect_chart() -> None:
@@ -1790,7 +1827,7 @@ async def test_visualization_registration_is_reserved_outside_tool_budget(
 
 
 @pytest.mark.anyio
-async def test_visualization_fact_exploration_subbudget_returns_receipt_and_keeps_run_alive(
+async def test_visualization_fact_exploration_subbudget_stops_current_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_context = RunContext(
@@ -1815,33 +1852,205 @@ async def test_visualization_fact_exploration_subbudget_returns_receipt_and_keep
             {},
         )
         assert result == {"ok": True}
+    assert reporting_visualization_production_only_from_run_context(run_context) is True
 
-    rejected = await normalize_reporting_tool_arguments(
-        run_context,
-        "query_analysis_facts",
-        lambda: {"ok": True},
-        {},
-    )
-    assert rejected["details"]["phaseState"] == "production_only"
-    assert "register_report_charts" in rejected["details"]["allowedTerminalTools"]
-    assert "finalize_report_analysis" in rejected["details"]["allowedTerminalTools"]
-    terminal = await normalize_reporting_tool_arguments(
-        run_context,
-        "terminal",
-        lambda: {"ok": True},
-        {},
-    )
+    with pytest.raises(StopAgentRun) as raised:
+        await normalize_reporting_tool_arguments(
+            run_context,
+            "query_analysis_facts",
+            lambda: {"ok": True},
+            {},
+        )
 
-    assert rejected["code"] == "report_visualization_exploration_budget_exhausted"
-    assert terminal == {"ok": True}
+    assert "report_visualization_exploration_budget_exhausted" in str(raised.value)
+    assert run_context.session_state[REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY]
     assert reporting_visualization_usage_from_run_context(run_context) == {
         "visualizationReadUnitsUsed": 0,
         "visualizationFactQueriesUsed": 4,
-        "visualizationToolCalls": 6,
+        "visualizationToolCalls": 5,
         "visualizationScriptFailures": 0,
-        "visualizationAttemptSuccessfulToolCalls": 5,
+        "visualizationAttemptSuccessfulToolCalls": 4,
         "visualizationAttemptRejectedToolCalls": 1,
     }
+
+
+@pytest.mark.anyio
+async def test_visualization_exploration_stop_skips_remaining_batch_calls() -> None:
+    run_context = RunContext(
+        run_id="run-visualization-exploration-batch",
+        session_id="session-visualization-exploration-batch",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-exploration-batch",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+    for _ in range(4):
+        await normalize_reporting_tool_arguments(
+            run_context, "query_analysis_facts", lambda: {"ok": True}, {}
+        )
+    remaining_calls = 0
+
+    async def query_facts() -> dict[str, bool]:
+        return {"ok": True}
+
+    async def remaining() -> dict[str, bool]:
+        nonlocal remaining_calls
+        remaining_calls += 1
+        return {"ok": True}
+
+    query = Function(name="query_analysis_facts", entrypoint=query_facts)
+    query.tool_hooks = [normalize_reporting_tool_arguments]
+    query._run_context = run_context
+    tail = Function(name="remaining", entrypoint=remaining)
+    tail._run_context = run_context
+    calls = [
+        FunctionCall(function=query, arguments={}, call_id="exploration-limit"),
+        FunctionCall(function=tail, arguments={}, call_id="must-not-run"),
+    ]
+    model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+
+    with bind_reporting_run_context(run_context):
+        async for _event in model.arun_function_calls(calls, []):
+            pass
+
+    assert remaining_calls == 0
+
+
+def test_visualization_production_only_projection_keeps_only_production_tools() -> None:
+    context = RunContext(
+        run_id="run-visualization-production-only",
+        session_id="session-visualization-production-only",
+        session_state={REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY: True},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-production-only",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                "reportingVisualInspectionMode": "deterministic",
+            }
+        },
+    )
+    tools = [
+        {"type": "function", "function": {"name": name}}
+        for name in (
+            "query_analysis_facts",
+            "read_file",
+            "read_tool_output",
+            "get_skill_reference",
+            "write_analysis_files",
+            "terminal",
+            "inspect_chart",
+            "view_image",
+            "register_report_charts",
+            "finalize_report_analysis",
+        )
+    ]
+
+    with bind_reporting_run_context(context):
+        projected = _phase_filtered_report_tools(
+            [Message(role="user", content='{"phase":"analysis"}')], tools
+        )
+
+    assert [item["function"]["name"] for item in projected] == [
+        "write_analysis_files",
+        "terminal",
+        "register_report_charts",
+        "finalize_report_analysis",
+    ]
+
+
+def test_visualization_recovery_projection_is_production_only_on_fresh_run() -> None:
+    context = RunContext(
+        run_id="fresh-retry-run",
+        session_id="fresh-retry-session",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-retry",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True,
+                "reportingVisualInspectionMode": "deterministic",
+            }
+        },
+    )
+    tools = [
+        {"type": "function", "function": {"name": name}}
+        for name in (
+            "query_analysis_facts",
+            "read_file",
+            "process",
+            "view_image",
+            "inspect_chart",
+            "write_analysis_files",
+            "terminal",
+            "register_report_charts",
+            "finalize_report_analysis",
+        )
+    ]
+
+    with bind_reporting_run_context(context):
+        projected = _phase_filtered_report_tools(
+            [Message(role="user", content='{"phase":"analysis"}')], tools
+        )
+
+    assert [item["function"]["name"] for item in projected] == [
+        "write_analysis_files",
+        "terminal",
+        "register_report_charts",
+        "finalize_report_analysis",
+    ]
+
+
+def test_visualization_recovery_admission_rejects_stale_exploration_calls() -> None:
+    context = RunContext(
+        run_id="fresh-retry-admission",
+        session_id="fresh-retry-admission",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-retry-admission",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True,
+                "reportingVisualInspectionMode": "deterministic",
+            }
+        },
+    )
+    assistant = Message(
+        role="assistant",
+        tool_calls=[
+            {
+                "id": "stale-read",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            },
+            {
+                "id": "produce-script",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": "{}"},
+            },
+        ],
+    )
+    messages = [Message(role="user", content='{"phase":"analysis"}')]
+    functions = {
+        name: Function(name=name, entrypoint=lambda: None) for name in ("read_file", "terminal")
+    }
+    model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+
+    with bind_reporting_run_context(context):
+        calls = model.get_function_calls_to_run(assistant, messages, functions=functions)
+
+    assert [call.function.name for call in calls] == ["terminal"]
+    assert any(
+        message.tool_call_id == "stale-read"
+        and "report_visualization_production_only" in str(message.content)
+        for message in messages
+    )
 
 
 @pytest.mark.anyio

@@ -149,6 +149,18 @@ def test_report_download_link_does_not_require_workspace_capability(
     )
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/reports/v1/download/opaque-grant",
+        "/reports/v1/download/opaque-grant/word",
+        "/reports/v1/download/opaque-grant/html",
+    ],
+)
+def test_all_report_download_formats_do_not_require_workspace_capability(path: str) -> None:
+    assert requires_workspace_capability(path, has_thread=False, has_capability=False) is False
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("headers", "status_code", "error"),

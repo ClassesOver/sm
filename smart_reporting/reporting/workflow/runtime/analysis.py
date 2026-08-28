@@ -1054,6 +1054,12 @@ class RuntimeAnalysisMixin:
         )
         _ensure_visual_inspection_capability(checkpoint, visual_inspection_mode)
 
+        # 图表 Worker 需要一次拿到完整的、已校验身份的事实包；把 facts 读取放在
+        # Workflow 边界而不是交给模型反复 query/read，消除日志中因路径歧义产生的
+        # 探索往返。包只在本次 visualization 阶段首次构建，fresh retry 复用内存对象，
+        # 不重新下载或计算 deterministic facts。
+        visualization_facts_package: list[dict[str, Any]] | None = None
+
         for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
             started_trace = next(
                 (
@@ -1125,6 +1131,123 @@ class RuntimeAnalysisMixin:
             }
             analysis_items = durable_payload.get("analysisItems")
             visualization_budget = _visualization_dynamic_budget(analysis_items, fact_files)
+            if visualization_facts_package is None:
+                visualization_facts_package = []
+                for analysis in detailed_plan.analyses:
+                    fact_model = await self._read_identity_model(
+                        scope["threadId"],
+                        fact_files[analysis.analysis_id],
+                        DeterministicAnalysisBundle,
+                    )
+                    fact_payload = fact_model.model_dump(mode="json", by_alias=True)
+                    raw_metrics = fact_payload.get("metrics", [])
+                    raw_derived_metrics = fact_payload.get("derivedMetrics", [])
+                    raw_comparisons = fact_payload.get("comparisons", [])
+                    durable_item = (
+                        analysis_items.get(analysis.analysis_id)
+                        if isinstance(analysis_items, Mapping)
+                        else None
+                    )
+                    visualization_facts_package.append(
+                        {
+                            "analysisId": analysis.analysis_id,
+                            "plan": analysis_plans[analysis.analysis_id],
+                            "summary": (
+                                durable_item.get("summary")
+                                if isinstance(durable_item, Mapping)
+                                else None
+                            ),
+                            "factFile": fact_files[analysis.analysis_id].model_dump(
+                                mode="json", by_alias=True
+                            ),
+                            # 模型只需要知道可画哪些字段、指标、期间和单位。完整数值序列
+                            # 继续留在已验哈希的 facts 文件，由图表脚本按签发路径一次读取；
+                            # 禁止把 periodValues/topGroups 等大数组复制进 instruction。
+                            "metrics": [
+                                {
+                                    key: metric.get(key)
+                                    for key in (
+                                        "field",
+                                        "metricCodes",
+                                        "unit",
+                                        "periodRoles",
+                                        "periodStart",
+                                        "periodEnd",
+                                    )
+                                }
+                                for metric in raw_metrics
+                                if isinstance(metric, Mapping)
+                            ],
+                            "derivedMetrics": [
+                                {
+                                    key: metric.get(key)
+                                    for key in (
+                                        "code",
+                                        "unit",
+                                        "periodRole",
+                                        "periodStart",
+                                        "periodEnd",
+                                        "datasetIds",
+                                    )
+                                }
+                                for metric in raw_derived_metrics
+                                if isinstance(metric, Mapping)
+                            ],
+                            "comparisons": [
+                                {
+                                    key: comparison.get(key)
+                                    for key in (
+                                        "comparisonType",
+                                        "field",
+                                        "unit",
+                                        "periodStart",
+                                        "periodEnd",
+                                        "currentDatasetId",
+                                        "baselineDatasetId",
+                                    )
+                                }
+                                for comparison in raw_comparisons
+                                if isinstance(comparison, Mapping)
+                            ],
+                            "fields": sorted(
+                                {
+                                    *(
+                                        metric["field"]
+                                        for metric in raw_metrics
+                                        if isinstance(metric, Mapping)
+                                        and isinstance(metric.get("field"), str)
+                                    ),
+                                }
+                            ),
+                            "allowedMetricCodes": sorted(
+                                {
+                                    *(
+                                        code
+                                        for metric in raw_metrics
+                                        if isinstance(metric, Mapping)
+                                        for code in metric.get("metricCodes", ())
+                                        if isinstance(code, str)
+                                    ),
+                                    *(
+                                        metric["code"]
+                                        for metric in raw_derived_metrics
+                                        if isinstance(metric, Mapping)
+                                        and isinstance(metric.get("code"), str)
+                                    ),
+                                }
+                            ),
+                            "evidenceFiles": (
+                                durable_item.get("evidenceFiles", [])
+                                if isinstance(durable_item, Mapping)
+                                else []
+                            ),
+                            "citationIds": (
+                                durable_item.get("citationIds", [])
+                                if isinstance(durable_item, Mapping)
+                                else []
+                            ),
+                        }
+                    )
             visualization_root = f"报表/智能分析/{run_context.run_id}/analysis"
             instruction_payload = {
                 "phase": "analysis",
@@ -1148,6 +1271,19 @@ class RuntimeAnalysisMixin:
                 "deterministicFactFiles": {
                     analysis_id: identity.model_dump(mode="json", by_alias=True)
                     for analysis_id, identity in fact_files.items()
+                },
+                "visualizationFacts": visualization_facts_package,
+                "chartRegistrationRules": {
+                    "allowedMetricCodes": sorted(
+                        {
+                            code
+                            for item in visualization_facts_package
+                            for code in item["allowedMetricCodes"]
+                        }
+                    ),
+                    "comparisonPeriodRequiredFor": ["period", "yoy", "mom"],
+                    "referenceOnlyTitleAndAltTextMustContain": "参考",
+                    "vision": visual_inspection_mode == "vision",
                 },
                 # 可视化脚本与 evidence/facts 分属兄弟目录。由服务端签发完整工作区相对路径，
                 # 禁止 Worker 依据脚本位置猜测父目录，否则会把 evidence 错拼成 analysis/evidence。
@@ -1204,6 +1340,13 @@ class RuntimeAnalysisMixin:
                     "analysisDatasetIds": {
                         item.analysis_id: list(item.dataset_ids) for item in detailed_plan.analyses
                     },
+                    "allowedMetricCodes": sorted(
+                        {
+                            code
+                            for item in visualization_facts_package
+                            for code in item["allowedMetricCodes"]
+                        }
+                    ),
                     "deterministicFactFiles": {
                         analysis_id: identity.model_dump(mode="json", by_alias=True)
                         for analysis_id, identity in fact_files.items()
@@ -1946,6 +2089,8 @@ def _visualization_completion_conditions(
         ]
     return [
         "只整合 completedAnalysisItems 和 deterministicFactFiles，不重跑单项分析",
+        "visualizationFacts 已一次性内联当前图表所需事实；不得调用 query_analysis_facts 进行探索，"
+        "也不得用 read_file 读取 facts 或 evidence",
         retained_requirement,
         "analysisCitationIds 是 citationId 的唯一受信来源；不得用 read_file、terminal 或目录探测寻找 citationId",
         "图表脚本只写入 visualizationWorkspace.scriptPath，服务端提交后 terminal 仅可执行 python3 <scriptPath>；"

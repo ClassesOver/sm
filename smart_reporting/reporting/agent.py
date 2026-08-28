@@ -72,6 +72,8 @@ from .phase import (
     REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES,
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY,
+    REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES,
     REPORTING_VISUALIZATION_READ_FILE_LIMIT,
     REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
@@ -87,9 +89,13 @@ from .phase import (
     reporting_phase_from_run_context,
     reporting_task_kind_from_run_context,
     reporting_thinking_effort_from_run_context,
+    reporting_visual_inspection_mode_from_run_context,
+    reporting_visualization_exploration_budget_exhausted_from_run_context,
     reporting_visualization_exploration_count,
+    reporting_visualization_production_only_from_run_context,
     reporting_visualization_recovery_from_run_context,
     reporting_visualization_registered_from_run_context,
+    reporting_visualization_usage_from_run_context,
 )
 from .tools import build_report_worker_tools
 from .vision import ReportVisionReviewer
@@ -240,10 +246,15 @@ def _reporting_tool_run_error_is_terminal() -> bool:
     error = (
         getattr(run_context, _REPORT_TOOL_RUN_ERROR_ATTR, None) if run_context is not None else None
     )
+    return _is_terminal_reporting_error(error)
+
+
+def _is_terminal_reporting_error(error: Any) -> bool:
     return (
         isinstance(error, ReportingError)
         and isinstance(error.details, dict)
-        and error.details.get("terminalReason") == "tool_no_progress"
+        and error.details.get("terminalReason")
+        in {"tool_no_progress", "visualization_exploration_budget_exhausted"}
     )
 
 
@@ -492,12 +503,44 @@ def _visualization_exploration_budget_receipt(
     ):
         return None
     limit = _visualization_exploration_limit(run_context, function_name)
-    if limit is None:
+    is_exploration = function_name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
+    if not is_exploration:
         return None
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    if reporting_visualization_exploration_budget_exhausted_from_run_context(run_context):
+        if reporting_visualization_exploration_count(run_context, "query_analysis_facts") >= (
+            _visualization_exploration_limit(run_context, "query_analysis_facts")
+            or REPORTING_VISUALIZATION_FACT_QUERY_LIMIT
+        ):
+            counted_tool_name = "query_analysis_facts"
+            limit = _visualization_exploration_limit(run_context, counted_tool_name) or (
+                REPORTING_VISUALIZATION_FACT_QUERY_LIMIT
+            )
+        else:
+            counted_tool_name = "read_file"
+            limit = _visualization_exploration_limit(run_context, counted_tool_name) or (
+                REPORTING_VISUALIZATION_READ_FILE_LIMIT
+            )
     current_count = reporting_visualization_exploration_count(run_context, counted_tool_name)
-    if not reporting_visualization_recovery_from_run_context(run_context) and current_count < limit:
+    if (
+        not reporting_visualization_recovery_from_run_context(run_context)
+        and not reporting_visualization_exploration_budget_exhausted_from_run_context(run_context)
+        and (limit is None or current_count < limit)
+    ):
         return None
+    usage = reporting_visualization_usage_from_run_context(run_context)
+    failure_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "code": "report_visualization_exploration_budget_exhausted",
+                "tool": counted_tool_name,
+                "currentCount": current_count,
+                "limit": limit,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
     return {
         "ok": False,
         "status": "rejected",
@@ -512,6 +555,9 @@ def _visualization_exploration_budget_receipt(
             "currentCount": current_count,
             "limit": limit,
             "phaseState": "production_only",
+            "terminalReason": "visualization_exploration_budget_exhausted",
+            "failureFingerprint": failure_fingerprint,
+            "visualizationUsage": usage,
             "allowedTerminalTools": [
                 "register_report_charts",
                 "finalize_report_analysis",
@@ -1384,12 +1430,35 @@ async def normalize_reporting_tool_arguments(
             succeeded=False,
             count_exploration=False,
         )
-        return _enforce_reporting_no_progress(
-            run_context,
-            function_name,
-            exploration_receipt,
-            arguments,
+        state = _reporting_session_state(run_context)
+        if isinstance(state, dict):
+            dependencies = (
+                run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+            )
+            binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+            binding = binding if isinstance(binding, Mapping) else {}
+            identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
+            production_states = state.get(REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY)
+            production_states = (
+                dict(production_states) if isinstance(production_states, Mapping) else {}
+            )
+            production_states[identity] = True
+            state[REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY] = production_states
+        details = exploration_receipt["details"]
+        if reporting_visual_inspection_mode_from_run_context(run_context) == "vision":
+            details["allowedTerminalTools"] = [
+                "inspect_chart",
+                "register_report_charts",
+                "finalize_report_analysis",
+            ]
+        error = ReportingError(
+            exploration_receipt["code"],
+            exploration_receipt["message"],
+            details=details,
         )
+        _record_reporting_tool_run_error(run_context, error)
+        serialized = json.dumps(exploration_receipt, ensure_ascii=False, separators=(",", ":"))
+        raise StopAgentRun(serialized, agent_message=serialized)
     empty_query_state = _empty_profile_query_state(run_context, function_name, arguments)
     existing_empty = (
         empty_query_state[0].get(empty_query_state[1]) if empty_query_state is not None else None
@@ -1711,6 +1780,22 @@ def _report_model_tool_name(tool: Any) -> str | None:
     return function_name if isinstance(function_name, str) else None
 
 
+def _visualization_production_tool_allowed(
+    run_context: RunContext | None,
+    tool_name: str,
+) -> bool:
+    if reporting_task_kind_from_run_context(
+        run_context
+    ) != "visualization" or not reporting_visualization_production_only_from_run_context(
+        run_context
+    ):
+        return True
+    return tool_name in REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES or (
+        tool_name == "inspect_chart"
+        and reporting_visual_inspection_mode_from_run_context(run_context) == "vision"
+    )
+
+
 def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
     phase = _reporting_phase_from_messages(messages)
     run_context = current_reporting_run_context()
@@ -1738,12 +1823,22 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
         and not (
             task_kind == "visualization"
             and run_context is not None
-            and _visualization_exploration_budget_receipt(run_context, name) is not None
+            and name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
+            and (
+                _visualization_exploration_budget_receipt(run_context, name) is not None
+                or reporting_visualization_exploration_budget_exhausted_from_run_context(
+                    run_context
+                )
+            )
         )
         and not (
             task_kind == "visualization"
             and reporting_visualization_recovery_from_run_context(run_context)
             and name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
+        )
+        and not (
+            task_kind == "visualization"
+            and not _visualization_production_tool_allowed(run_context, name)
         )
     ]
 
@@ -1988,15 +2083,11 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
                 **kwargs,
             )
             terminal_error = _take_reporting_tool_run_error()
-            if (
-                isinstance(terminal_error, ReportingError)
-                and isinstance(terminal_error.details, dict)
-                and terminal_error.details.get("terminalReason") == "tool_no_progress"
-            ):
+            if _is_terminal_reporting_error(terminal_error):
                 # StopAgentRun 已由 Agno 公共模型循环转换为 stop_after_tool_call，不能在
                 # Agent retry 边界重新抛普通异常；只记录原领域错误，交给 Task runner
                 # 在本次 Agno run 正常停止后恢复，确保不会产生同 run continuation。
-                self._record_report_run_error(terminal_error)
+                self._record_report_run_error(cast(Exception, terminal_error))
                 return self._validated_reporting_response(request_model, response)
             self._clear_report_run_error()
             return self._validated_reporting_response(request_model, response)
@@ -2041,15 +2132,11 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
             ):
                 yield response
             terminal_error = _take_reporting_tool_run_error()
-            if (
-                isinstance(terminal_error, ReportingError)
-                and isinstance(terminal_error.details, dict)
-                and terminal_error.details.get("terminalReason") == "tool_no_progress"
-            ):
+            if _is_terminal_reporting_error(terminal_error):
                 # Agno 把 StopAgentRun 收敛成 stop_after_tool_call 后会正常结束异步流。
                 # 必须在清理模型错误前恢复原领域错误，Task runner 才能停止当前 Task，
                 # 而不是把它误判成缺少终态工具并发起同 run continuation。
-                self._record_report_run_error(terminal_error)
+                self._record_report_run_error(cast(Exception, terminal_error))
                 return
             self._clear_report_run_error()
         except Exception as error:
@@ -2248,10 +2335,13 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                     task_kind=reporting_task_kind_from_run_context(current_reporting_run_context()),
                 )
             )
+            production_forbidden = isinstance(
+                name, str
+            ) and not _visualization_production_tool_allowed(current_reporting_run_context(), name)
             vision_disabled = name in {"view_image", "inspect_chart"} and not getattr(
                 self, "_report_vision_enabled", True
             )
-            if not phase_forbidden and not vision_disabled:
+            if not phase_forbidden and not production_forbidden and not vision_disabled:
                 allowed_calls.append(tool_call)
                 continue
             if not isinstance(call_id, str) or not call_id:
@@ -2276,6 +2366,13 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                                 "status": "skipped",
                                 "code": "report_vision_disabled",
                                 "message": "当前 Reporting Worker 未启用图片视觉工具，继续使用文本和文件证据。",
+                            }
+                            if not production_forbidden
+                            else {
+                                "ok": False,
+                                "status": "rejected",
+                                "code": "report_visualization_production_only",
+                                "message": "当前可视化已进入生产态，请直接生成、登记或完成图表。",
                             }
                         ),
                         ensure_ascii=False,

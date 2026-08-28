@@ -294,6 +294,7 @@ class RuntimeSectionsMixin:
         citation_ids = {
             citation_id for item in selected_evidence for citation_id in item.citation_ids
         }
+        selected_metric_codes = {metric for item in selected_analyses for metric in item.metrics}
         receipts = tuple(
             item
             for item in analysis_artifact.profile_read_receipts
@@ -304,6 +305,7 @@ class RuntimeSectionsMixin:
             for item in analysis_artifact.evidence_manifest.charts
             if item.chart_id in chart_ids
         )
+        selected_metric_codes.update(code for chart in charts for code in chart.metric_codes)
         citations = tuple(
             SectionCitation(
                 citationId=item.citation_id,
@@ -331,7 +333,11 @@ class RuntimeSectionsMixin:
             ),
             analysisIds=tuple(section.analysis_ids),
             evidence=selected_evidence,
-            metricDefinitions=analysis_artifact.evidence_manifest.metric_definitions,
+            metricDefinitions=tuple(
+                item
+                for item in analysis_artifact.evidence_manifest.metric_definitions
+                if item.code in selected_metric_codes
+            ),
             # receipt 的完整查询正文只用于服务端血缘与最终 Manifest。章节只需要知道
             # 当前 evidence 已绑定哪些受信回执，避免把几十次 Profile 导航重复注入模型。
             profileReadReceiptIds=tuple(item.receipt_id for item in receipts),
@@ -347,6 +353,23 @@ class RuntimeSectionsMixin:
                 "粗体强调必须使用 **文本**，两个标记的内侧不得留空格",
                 "表格直接使用标准 Markdown 管道表，不得渲染为图片",
                 "正文不得自行写 citation、analysis、section 或图片协议标记",
+                *(
+                    (
+                        "图表 claim 语义必须逐项严格匹配："
+                        + "; ".join(
+                            (
+                                f"{chart.chart_id}: metricCode 属于 {list(chart.metric_codes)}，"
+                                f"currentPeriod={chart.current_period}，"
+                                f"comparisonPeriod={chart.comparison_period}，"
+                                f"comparisonType={chart.comparison_type}，"
+                                f"citationIds 至少包含 {list(chart.citation_ids)}"
+                            )
+                            for chart in charts
+                        ),
+                    )
+                    if charts
+                    else ()
+                ),
                 "最后且只调用一次 render_report_section；证据不足时改用 request_analysis_rework",
             ),
         )

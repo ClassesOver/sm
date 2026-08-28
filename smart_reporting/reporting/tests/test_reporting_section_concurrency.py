@@ -19,10 +19,12 @@ from smart_reporting.reporting.hospital_operation.detailed_analysis import (
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR
 from smart_reporting.reporting.workflow.checkpoint import (
+    AnalysisChart,
     AnalysisDatasetSemantics,
     AnalysisEvidence,
     AnalysisEvidenceManifest,
     AnalysisReworkRequest,
+    ChartVisualInspectionReceipt,
     CheckpointError,
     CheckpointRetryUsage,
     CompletedSection,
@@ -925,7 +927,15 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     durable = SimpleNamespace(
         payload={
             "completedAnalysisIds": ["analysis_001"],
-            "analysisItems": {},
+            "analysisItems": {
+                "analysis_001": {
+                    "summary": "收入同比增长。",
+                    "evidenceFiles": [
+                        {"path": "evidence/income.json", "size": 2, "sha256": "e" * 64}
+                    ],
+                    "citationIds": ["citation-000"],
+                }
+            },
             "charts": [],
         }
     )
@@ -959,6 +969,42 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     runtime._envelope = lambda _run_context: SimpleNamespace(report_goal="经营分析")
     runtime._state = lambda _run_context: {"report_outline": {"title": "经营分析"}}
     runtime._worker_thinking_effort = lambda *, retry: "off"
+    fact_metrics = [
+        {
+            "field": f"income_{metric_index:03}",
+            "metricCodes": [f"income_total_{metric_index:03}"],
+            "unit": "元",
+            "periodRoles": ["current"],
+            "periodStart": "2025-01-01",
+            "periodEnd": "2025-12-31",
+            "periodValues": [
+                {"period": f"period-{period_index:04}", "value": float(period_index)}
+                for period_index in range(1200)
+            ],
+        }
+        for metric_index in range(12)
+    ]
+    full_fact_payload = {
+        "version": "1",
+        "analysisId": "analysis_001",
+        "metrics": fact_metrics,
+        "derivedMetrics": [],
+        "comparisons": [],
+        "reconciliations": [],
+        "correlations": {},
+        "warnings": [],
+    }
+    assert len(json.dumps(full_fact_payload, ensure_ascii=False).encode("utf-8")) > (
+        runtime_analysis.MAX_REPORT_INSTRUCTION_BYTES
+    )
+
+    async def read_fact_model(*_args: Any, **_kwargs: Any) -> Any:
+        return SimpleNamespace(
+            analysis_id="analysis_001",
+            model_dump=lambda **_options: full_fact_payload,
+        )
+
+    runtime._read_identity_model = read_fact_model
 
     async def restore_facts(
         **kwargs: Any,
@@ -1039,6 +1085,47 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
         expected_fact_files,
         expected_fact_files,
     ]
+    expected_visualization_facts = [
+        {
+            "analysisId": "analysis_001",
+            "plan": {
+                "analysisId": "analysis_001",
+                "domain": "income",
+                "step": "收入趋势",
+                "primaryMetricFamily": "收入",
+                "datasetIds": ["dataset-income"],
+            },
+            "summary": "收入同比增长。",
+            "factFile": expected_fact_files["analysis_001"],
+            "metrics": [
+                {
+                    "field": f"income_{metric_index:03}",
+                    "metricCodes": [f"income_total_{metric_index:03}"],
+                    "unit": "元",
+                    "periodRoles": ["current"],
+                    "periodStart": "2025-01-01",
+                    "periodEnd": "2025-12-31",
+                }
+                for metric_index in range(12)
+            ],
+            "derivedMetrics": [],
+            "comparisons": [],
+            "fields": [f"income_{metric_index:03}" for metric_index in range(12)],
+            "allowedMetricCodes": [f"income_total_{metric_index:03}" for metric_index in range(12)],
+            "evidenceFiles": [{"path": "evidence/income.json", "size": 2, "sha256": "e" * 64}],
+            "citationIds": ["citation-000"],
+        }
+    ]
+    assert [item["visualizationFacts"] for item in instructions] == [
+        expected_visualization_facts,
+        expected_visualization_facts,
+    ]
+    assert all("facts" not in item["visualizationFacts"][0] for item in instructions)
+    assert all(
+        len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+        < runtime_analysis.MAX_REPORT_INSTRUCTION_BYTES
+        for item in instructions
+    )
     assert all("citationRegistry" not in item for item in instructions)
     assert all("snapshotHash" not in item for item in instructions)
     assert all(
@@ -1699,6 +1786,115 @@ def section_work_item(section_code: str) -> SectionWorkItem:
         factSummaries=("当前冻结事实。",),
         markdownRequirements=("只使用冻结事实",),
     )
+
+
+def test_build_section_work_item_projects_selected_metrics_and_chart_semantics() -> None:
+    runtime = object.__new__(ReportWorkflowRuntime)
+    evidence_file = FileIdentity(path="analysis/evidence.json", size=1, sha256="e" * 64)
+    evidence = AnalysisEvidence(
+        analysisId="analysis_001",
+        summary="当前冻结事实。",
+        datasetIds=("dataset-1",),
+        evidenceFiles=(evidence_file,),
+        citationIds=("citation_001",),
+        chartIds=("revenue_trend",),
+    )
+    chart = AnalysisChart(
+        chartId="revenue_trend",
+        sourceFile={"path": "analysis/charts/revenue.png", "size": 1, "sha256": "a" * 64},
+        title="收入趋势",
+        altText="收入趋势图",
+        citationIds=("citation_001",),
+        metricCodes=("revenue",),
+        currentPeriod="2026-01",
+        comparisonPeriod="2025-01",
+        comparisonType="yoy",
+        sourceDatasetId="dataset-1",
+        aggregationGrain="month",
+        visualInspectionReceipt=ChartVisualInspectionReceipt(
+            sourcePath="analysis/charts/revenue.png",
+            sha256="a" * 64,
+            inspectionMode="deterministic",
+            visualReviewStatus="not_run",
+            inspectorId="deterministic-raster-inspector-v1",
+            reviewed=True,
+            requiresRevision=False,
+        ),
+    )
+    analysis_artifact = SimpleNamespace(
+        report_brief=ReportBrief(
+            objective="经营分析",
+            executiveSummary="收入表现摘要。",
+            managementQuestions=("收入表现如何？",),
+        ),
+        evidence_manifest=SimpleNamespace(
+            evidence=(evidence,),
+            metric_definitions=(
+                MetricDefinition(
+                    code="revenue",
+                    name="收入",
+                    definition="收入金额",
+                    unit="元",
+                    periodBasis="2026-01",
+                ),
+                MetricDefinition(
+                    code="margin",
+                    name="毛利率",
+                    definition="毛利率",
+                    unit="%",
+                    periodBasis="2026-01",
+                ),
+            ),
+            charts=(chart,),
+        ),
+        profile_read_receipts=(),
+    )
+    section = SimpleNamespace(
+        code="section_001",
+        section_number="1",
+        title="收入分析",
+        analysis_ids=("analysis_001",),
+        focus=("收入表现如何？",),
+    )
+    citation = Citation(
+        citationId="citation_001",
+        datasetId="dataset-1",
+        requirementId="requirement-1",
+        snapshotHash="f" * 64,
+    )
+
+    work_item = runtime._build_section_work_item(
+        section,
+        detailed_plan=DetailedAnalysisPlan(
+            datasetIds=("dataset-1",),
+            analyses=(
+                DetailedAnalysisItem(
+                    analysisId="analysis_001",
+                    domain="income",
+                    managementQuestion="收入表现如何？",
+                    primaryMetricFamily="收入",
+                    datasetIds=("dataset-1",),
+                    fields=("month", "revenue"),
+                    metrics=("revenue",),
+                    periods=("2026-01",),
+                    actions=("趋势",),
+                    evidenceSummary="固定事实",
+                    suggestedSection="收入分析",
+                    completionConditions=("完成",),
+                ),
+            ),
+        ),
+        analysis_artifact=analysis_artifact,
+        citation_bindings=(citation,),
+    )
+
+    assert tuple(item.code for item in work_item.metric_definitions) == ("revenue",)
+    assert len(work_item.markdown_requirements) <= 50
+    chart_rule = next(item for item in work_item.markdown_requirements if "revenue_trend" in item)
+    assert "currentPeriod=2026-01" in chart_rule
+    assert "comparisonPeriod=2025-01" in chart_rule
+    assert "comparisonType=yoy" in chart_rule
+    assert "citationIds 至少包含 ['citation_001']" in chart_rule
 
 
 def completed(section_code: str, digest: str) -> CompletedSection:

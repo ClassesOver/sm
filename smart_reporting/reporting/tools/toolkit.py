@@ -1364,32 +1364,19 @@ class ReportWorkspaceTaskToolkit(
                 if key in error.details
             }
         elif (
-            code == "report_section_claim_chart_conflict"
+            code
+            in {
+                "report_period_basis_conflict",
+                "report_section_claim_brief_conflict",
+                "report_section_claim_chart_conflict",
+                "report_cross_source_inference_unsupported",
+            }
             and isinstance(error, ReportingError)
             and isinstance(error.details, Mapping)
         ):
-            result["details"] = {
-                key: error.details[key]
-                for key in (
-                    "sectionCode",
-                    "claimId",
-                    "chartId",
-                    "conflictType",
-                    "expectedMetricCodes",
-                    "actualMetricCode",
-                    "expectedCitationIds",
-                    "actualCitationIds",
-                    "expectedSourceDatasetId",
-                    "actualCitationDatasetIds",
-                    "expectedCurrentPeriod",
-                    "actualCurrentPeriod",
-                    "expectedComparisonPeriod",
-                    "actualComparisonPeriod",
-                    "expectedComparisonType",
-                    "actualComparisonType",
-                )
-                if key in error.details
-            }
+            # Section 语义校验可能一次发现多个 claim/chart 冲突；完整保留受信
+            # expected/actual 字段，避免模型只能看到第一个错误后重新生成整个章节。
+            result["details"] = dict(error.details)
         elif (
             code
             in {

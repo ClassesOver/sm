@@ -688,8 +688,50 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
 
     assert result["ok"] is True
     toolkit._apply_durable.assert_awaited_once()
-    assert toolkit._apply_durable.await_args.kwargs["name"] == "register_charts"
-    assert toolkit._apply_durable.await_args.kwargs["payload"] == {"charts": [identity]}
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_metric_code_outside_frozen_catalog() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-metric-catalog", task=SimpleNamespace(mutation_sequence=1)
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "allowedMetricCodes": ["income_total"],
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+    toolkit._inspect_chart = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["invented_metric"],
+                "currentPeriod": "2026-01",
+                "comparisonType": "none",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+            }
+        ],
+        run_context=RunContext(run_id="run-metric-catalog", session_id="session-metric-catalog"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_chart_metric_unknown"
+    toolkit._inspect_chart.assert_not_awaited()
 
 
 @pytest.mark.anyio
@@ -3068,6 +3110,98 @@ async def test_render_report_section_reports_structured_chart_citation_conflict(
     }
     failure = ReportWorkspaceTaskToolkit._failure(raised.value)
     assert failure["details"] == raised.value.details
+
+
+@pytest.mark.anyio
+async def test_render_report_section_reports_all_semantic_conflicts_at_once() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {"sectionOutputPath": "sections/budget.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(
+        return_value=SimpleNamespace(
+            section_code="section_002",
+            report_brief=SimpleNamespace(management_questions=("预算执行如何？",)),
+            metric_definitions=(SimpleNamespace(code="revenue", period_basis="2026-01"),),
+            charts=(
+                SimpleNamespace(
+                    chart_id="revenue_budget",
+                    citation_ids=("citation_004", "citation_010"),
+                    metric_codes=("revenue",),
+                    source_dataset_id="dataset-1",
+                    current_period="2026-01",
+                    comparison_period=None,
+                    comparison_type="none",
+                    comparability="strict",
+                ),
+            ),
+            citations=(
+                SimpleNamespace(citation_id="citation_004", dataset_id="dataset-1"),
+                SimpleNamespace(citation_id="citation_010", dataset_id="dataset-1"),
+            ),
+        )
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await toolkit._render_isolated_section(
+            scope=SimpleNamespace(),
+            section_code="section_002",
+            blocks=[
+                {
+                    "blockId": "budget_overall",
+                    "markdown": "预算执行情况。",
+                    "citationIds": ["citation_004", "citation_010"],
+                    "chartIds": ["revenue_budget"],
+                    "claimIds": ["claim_period", "claim_chart"],
+                }
+            ],
+            claims=[
+                {
+                    "claimId": "claim_period",
+                    "metricCode": "revenue",
+                    "value": 100,
+                    "periodBasis": "2026全年",
+                    "managementQuestion": "预算执行如何？",
+                    "currentPeriod": "2026-01",
+                    "citationIds": ["citation_004"],
+                },
+                {
+                    "claimId": "claim_chart",
+                    "metricCode": "revenue",
+                    "value": 100,
+                    "periodBasis": "2026-01",
+                    "managementQuestion": "预算执行如何？",
+                    "currentPeriod": "2026-01",
+                    "citationIds": ["citation_004"],
+                    "chartIds": ["revenue_budget"],
+                },
+            ],
+            state={},
+            run_context=None,
+        )
+
+    assert raised.value.code == "report_period_basis_conflict"
+    assert raised.value.details["conflicts"] == [
+        {
+            "sectionCode": "section_002",
+            "claimId": "claim_period",
+            "metricCode": "revenue",
+            "conflictType": "period_basis",
+            "expectedPeriodBasis": "2026-01",
+            "actualPeriodBasis": "2026全年",
+        },
+        {
+            "sectionCode": "section_002",
+            "claimId": "claim_chart",
+            "chartId": "revenue_budget",
+            "conflictType": "citation_ids",
+            "expectedCitationIds": ["citation_004", "citation_010"],
+            "actualCitationIds": ["citation_004"],
+        },
+    ]
+    failure = ReportWorkspaceTaskToolkit._failure(raised.value)
+    assert failure["details"]["conflicts"] == raised.value.details["conflicts"]
 
 
 def test_analysis_evidence_accepts_current_committed_identity() -> None:

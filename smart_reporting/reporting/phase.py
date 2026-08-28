@@ -36,6 +36,9 @@ REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY = "visualizationFactQuer
 REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY = "visualizationAttemptToolLimit"
 REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY = "visualizationTotalToolLimit"
 REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY = "reportingVisualizationRecovery"
+REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY = (
+    "agentos_reporting_visualization_production_only"
+)
 REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY = "reportingVisualInspectionMode"
 REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY = "agentos_reporting_visualization_tool_budget"
 REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR = "_agentos_reporting_visualization_budget"
@@ -105,6 +108,14 @@ REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
         "query_analysis_facts",
         "read_file",
         "read_tool_output",
+    }
+)
+REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES = frozenset(
+    {
+        "write_analysis_files",
+        "terminal",
+        "register_report_charts",
+        "finalize_report_analysis",
     }
 )
 _REPORTING_PROJECTION_METRICS: ContextVar[dict[str, int] | None] = ContextVar(
@@ -669,6 +680,29 @@ def reporting_visualization_recovery_from_run_context(
     )
 
 
+def reporting_visualization_production_only_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    """读取当前可视化 Task 的持久生产态，避免继续暴露探索工具。"""
+
+    if reporting_visualization_recovery_from_run_context(
+        run_context
+    ) or reporting_visualization_exploration_budget_exhausted_from_run_context(run_context):
+        return True
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return False
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
+    stored = run_context.session_state.get(REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY)
+    if stored is True:
+        return True
+    if not isinstance(stored, Mapping):
+        return False
+    return stored.get(identity) is True
+
+
 def reporting_analysis_recovery_from_run_context(run_context: RunContext | None) -> bool:
     dependencies = (
         run_context.dependencies
@@ -718,6 +752,50 @@ def reporting_visualization_exploration_count(
         count(binding.get(base_key))
         + count(stored_value)
         + count(stored.get(in_flight_key) if isinstance(stored, Mapping) else 0)
+    )
+
+
+def reporting_visualization_exploration_budget_exhausted_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    """只要任一探索子预算用尽，就把当前可视化 run 收窄到生产工具。"""
+
+    if (
+        run_context is None
+        or reporting_phase_from_run_context(run_context) != "analysis"
+        or reporting_task_kind_from_run_context(run_context) != "visualization"
+    ):
+        return False
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+
+    def limit(key: str, default: int) -> int:
+        value = binding.get(key)
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+            else default
+        )
+
+    return any(
+        reporting_visualization_exploration_count(run_context, tool_name) >= maximum
+        for tool_name, maximum in (
+            (
+                "query_analysis_facts",
+                limit(
+                    REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+                    REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
+                ),
+            ),
+            (
+                "read_file",
+                limit(
+                    REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
+                    REPORTING_VISUALIZATION_READ_FILE_LIMIT,
+                ),
+            ),
+        )
     )
 
 

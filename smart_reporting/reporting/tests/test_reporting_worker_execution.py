@@ -414,7 +414,7 @@ async def test_worker_continuation_exhaustion_raises_original_error() -> None:
 
 
 @pytest.mark.anyio
-async def test_section_worker_plain_text_continues_once_then_reports_missing_terminal_tool() -> (
+async def test_section_worker_plain_text_reports_missing_terminal_tool_without_continuation() -> (
     None
 ):
     worker = SimpleNamespace(
@@ -448,12 +448,7 @@ async def test_section_worker_plain_text_continues_once_then_reports_missing_ter
         "requiredTerminalTools": ["render_report_section", "request_analysis_rework"],
     }
     worker.arun.assert_called_once()
-    worker.acontinue_run.assert_called_once()
-    recovery = worker.acontinue_run.call_args.kwargs["input"]
-    assert "additional_instructions" not in worker.acontinue_run.call_args.kwargs
-    assert "立即停止继续读取和推演" in recovery
-    assert "render_report_section" in recovery
-    assert "request_analysis_rework" in recovery
+    worker.acontinue_run.assert_not_called()
 
 
 def test_each_analysis_and_visualization_use_distinct_task_and_session_identities() -> None:

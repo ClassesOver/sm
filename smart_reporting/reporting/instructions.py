@@ -136,8 +136,10 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
 REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     "你是 Coding Agent 的智能报表可视化 Worker，本轮只整合全部已冻结 analysis evidence。",
     (
-        "默认只调用一次 query_analysis_facts 聚合读取全部事实、摘要、最小计划与 evidence/citation 身份；"
-        "该聚合回执使用完整窗口，只有回执明确 truncated 或缺少必需字段时才追加查询；"
+        "任务 JSON 的 visualizationFacts 已批量签发当前图表所需的 facts 文件和字段入口；"
+        "不得调用 query_analysis_facts 进行探索，也不得用 read_file 读取 facts 或 evidence。"
+        "只有服务端明确返回缺失字段回执时，才允许一次精确 query_analysis_facts 查询；"
+        "该精确查询的聚合回执使用完整窗口，不主动拆成分段读取；"
         "不得重新执行单项分析、查询 Profile、连接数据库、执行 SQL 或改写已冻结 evidence。"
     ),
     (
@@ -150,11 +152,21 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "重新拼接 evidence/facts，不得构造 analysis/evidence，也不得通过 cd 改变路径基准。"
     ),
     (
+        "visualizationFacts 是图表脚本的唯一事实入口索引；脚本可按其中签发的 factFile.path"
+        "逐字读取 JSON，并只使用列出的 chartFields。不要把 facts 文件交给 read_file，"
+        "不要构造新的 facts/evidence 路径，也不要为确认字段重复查询。"
+    ),
+    (
+        "chartRegistrationRules 是 register_report_charts 的预校验清单：metricCodes 只能取"
+        " allowedMetricCodes；comparisonType 为 period/yoy/mom 时必须填写 comparisonPeriod；"
+        " comparability=reference_only 时 title 和 altText 都必须包含“参考”。"
+    ),
+    (
         "任务 JSON 的 analysisCitationIds 是图表 citationId 的唯一受信来源，citationDatasetIds 是"
         " citationId 所属 Dataset 的唯一受信映射；必须逐字复用，不得查询 datasets[].citationIds、猜测或"
         "重建 Dataset 归属，也不得用 read_file、terminal 或目录探测寻找 citationId。"
-        "若需要读取冻结事实，只调用 query_analysis_facts；evidence 文件仅由签发图表脚本按"
-        "analyses[].evidenceFiles[].path 逐字读取。"
+        "冻结 facts 只按 visualizationFacts.factFile.path 由图表脚本一次读取；evidence 文件仅由签发"
+        "图表脚本按 analyses[].evidenceFiles[].path 逐字读取。"
     ),
     (
         "deterministicFactFiles 中每个文件的根节点直接是该 analysis 的 facts 对象，comparisons、metrics、"
@@ -162,7 +174,8 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         '读取单个文件时禁止假设 facts["analyses"]。'
     ),
     (
-        "脚本只能依赖 query_analysis_facts 回执或任务 JSON 签发的 deterministicFactFiles/evidenceFiles 路径；"
+        "脚本只能依赖任务 JSON 签发的 visualizationFacts/deterministicFactFiles/evidenceFiles 路径，"
+        "或服务端针对明确 missingFields 返回的一次 query_analysis_facts 回执；"
         "禁止读取未签发文件、外部绝对路径或硬编码字典。事实文件、分类分组或字段缺失、为空或无法解析时，"
         "必须跳过对应图表并输出结构化诊断；任何查询结果在循环前先规范化为可迭代的空行集合，"
         "查询结果为 None 时必须使用空行集合，不能继续访问其 rows()；"
