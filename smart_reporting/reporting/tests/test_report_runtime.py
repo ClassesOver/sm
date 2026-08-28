@@ -68,6 +68,18 @@ def test_html_document_is_static_and_self_contained() -> None:
     assert "data:image/png;base64,AAAA" in document
 
 
+@pytest.mark.parametrize(
+    "href", ["https://example.com", "//example.com", "report.md", "mailto:a@example.com"]
+)
+def test_html_rejects_markdown_links(href: str) -> None:
+    from markdown_it import MarkdownIt
+
+    body = MarkdownIt("commonmark", {"html": False}).render(f"[链接]({href})")
+
+    with pytest.raises(ValueError, match="不允许外部或工作区链接"):
+        runtime_module.ReportRuntime._reject_html_links(body)
+
+
 def test_cli_forwards_optional_html_output_path(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     captured: dict[str, object] = {}
 

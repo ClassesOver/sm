@@ -151,6 +151,14 @@ class ReportRuntime:
 
         return image_pattern.sub(replace, body)
 
+    @staticmethod
+    def _reject_html_links(body: str) -> None:
+        link_pattern = re.compile(r'<a\b[^>]*\bhref=(?:"([^"]*)"|\'([^\']*)\')', re.I)
+        for match in link_pattern.finditer(body):
+            href = match.group(1) if match.group(1) is not None else match.group(2)
+            if not href.startswith("#") or urlsplit(href).scheme or urlsplit(href).netloc:
+                raise ReportFailure("HTML 预览不允许外部或工作区链接")
+
     def render_markdown(
         self,
         state: dict[str, Any],
@@ -203,6 +211,7 @@ class ReportRuntime:
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
             body = parser.renderer.render(_body_tokens(tokens), parser.options, {})
             html_body = self._inline_images(body, source.parent, allowed_images)
+            self._reject_html_links(html_body)
             output = _output_path(self.workspace, output_path)
             word_output = _word_output_path(
                 self.workspace,
