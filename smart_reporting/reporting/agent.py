@@ -76,6 +76,7 @@ from .phase import (
     REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES,
     REPORTING_VISUALIZATION_READ_FILE_LIMIT,
     REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
@@ -742,6 +743,36 @@ def _finish_visualization_tool_budget(
     in_flight_tools[counted_tool_name] = max(count(in_flight_tools.get(counted_tool_name)) - 1, 0)
     script_failed = _visualization_terminal_failed(function_name, result)
     script_failure_count += int(script_failed)
+    if function_name == "terminal" and isinstance(result, Mapping):
+        pending = state.get(REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY)
+        pending = dict(pending) if isinstance(pending, Mapping) else {}
+        dependencies = (
+            run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+        )
+        binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+        external_run_id = binding.get("externalRunId") if isinstance(binding, Mapping) else None
+        if script_failed:
+            diagnostics = [
+                line.strip()
+                for line in str(result.get("output", "")).splitlines()
+                if "[FAIL]" in line
+            ][:20]
+            pending[identity] = {
+                "lastScriptFailed": True,
+                "diagnostics": diagnostics,
+            }
+        elif (
+            isinstance(result.get("exit_code"), int)
+            and not isinstance(result.get("exit_code"), bool)
+            and result.get("exit_code") == 0
+        ):
+            pending.pop(identity, None)
+            if isinstance(external_run_id, str) and external_run_id:
+                prefix = f"{external_run_id}:"
+                for key in tuple(pending):
+                    if key == external_run_id or key.startswith(prefix):
+                        pending.pop(key, None)
+        state[REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY] = pending
     read_segment_confirmed = (
         counted_tool_name == "read_file"
         and succeeded
@@ -814,8 +845,12 @@ def _visualization_terminal_failed(function_name: str, result: Any) -> bool:
     if not isinstance(output, str):
         return False
     # 图表自检通常自行捕获异常并保持 exit_code=0；只识别逐项检查的明确
-    # “对象: ERROR 原因”行，避免普通日志或报告正文中的 ERROR 单词误耗预算。
-    return any(": ERROR " in line.strip() for line in output.splitlines())
+    # “对象: ERROR 原因”或 “[FAIL] 对象: 原因”行，避免普通日志中的 ERROR 单词
+    # 误耗预算。
+    return any(
+        ": ERROR " in line.strip() or line.strip().startswith("[FAIL]")
+        for line in output.splitlines()
+    )
 
 
 def _stop_exhausted_visualization_budget(

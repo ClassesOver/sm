@@ -26,6 +26,7 @@ from smart_reporting.reporting.agent import (
     _phase_filtered_report_messages,
     _phase_filtered_report_tools,
     _report_worker_tools_cache_key,
+    _visualization_terminal_failed,
     _with_reporting_durable_identities,
     create_report_worker,
     normalize_reporting_tool_arguments,
@@ -44,6 +45,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY,
     REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
@@ -57,6 +59,51 @@ from smart_reporting.reporting.vision import ReportVisionReviewer
 from smart_reporting.reporting.workflow.checkpoint import SectionArtifact
 from smart_reporting.settings import AgentSettings
 from smart_reporting.workspace import WorkspaceError
+
+
+def test_visualization_terminal_fail_lines_consume_script_failure_budget() -> None:
+    assert (
+        _visualization_terminal_failed(
+            "terminal",
+            {
+                "exit_code": 0,
+                "output": "[FAIL] budget_income_execution: TypeError: bad value\n",
+            },
+        )
+        is True
+    )
+
+
+@pytest.mark.anyio
+async def test_visualization_terminal_success_clears_pending_script_failure() -> None:
+    run_context = RunContext(
+        run_id="run-visualization-pending",
+        session_id="session-visualization-pending",
+        session_state={
+            REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY: {
+                "visualization-pending:run-visualization-pending": {
+                    "lastScriptFailed": True,
+                }
+            }
+        },
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-pending",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+
+    result = await normalize_reporting_tool_arguments(
+        run_context,
+        "terminal",
+        lambda: {"ok": True, "status": "completed", "exit_code": 0, "output": "all good"},
+        {},
+    )
+
+    assert result["ok"] is True
+    assert run_context.session_state[REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY] == {}
 
 
 def test_report_worker_disables_unused_session_summaries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -743,7 +790,9 @@ def test_section_instructions_match_server_derived_claim_contract() -> None:
 
     assert "managementQuestionRef" in instructions
     assert "periodBasis、managementQuestion 由服务端补齐" in instructions
-    assert "绑定图表时 currentPeriod、comparisonPeriod、comparisonType、comparability" in instructions
+    assert (
+        "绑定图表时 currentPeriod、comparisonPeriod、comparisonType、comparability" in instructions
+    )
     assert "claim 必须绑定 ReportBrief 中的 managementQuestion" not in instructions
 
 

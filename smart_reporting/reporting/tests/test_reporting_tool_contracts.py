@@ -32,6 +32,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
@@ -685,6 +686,97 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
         ],
         run_context=RunContext(run_id="run-1", session_id="session-1"),
     )
+
+    assert result["ok"] is True
+    toolkit._apply_durable.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_after_recent_script_failure() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-script-failure", task=SimpleNamespace(mutation_sequence=1)
+    )
+    run_context = RunContext(
+        run_id="run-script-failure",
+        session_id="session-script-failure",
+        session_state={
+            REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY: {
+                "visualization-task:run-script-failure": {
+                    "lastScriptFailed": True,
+                    "diagnostics": ["[FAIL] chart: TypeError"],
+                }
+            }
+        },
+        dependencies={"AgentOS 编码任务": {"externalRunId": "visualization-task"}},
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: ({}, {})
+    toolkit._inspect_chart = AsyncMock()
+
+    result = await toolkit.register_report_charts([], run_context=run_context)
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_script_failed"
+    toolkit._inspect_chart.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_pending_failure_from_previous_retry() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-script-retry", task=SimpleNamespace(mutation_sequence=1)
+    )
+    run_context = RunContext(
+        run_id="run-script-failure-retry",
+        session_id="session-script-failure-retry",
+        session_state={
+            REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY: {
+                "visualization-task:run-script-failure": {
+                    "lastScriptFailed": True,
+                    "diagnostics": ["[FAIL] chart: TypeError"],
+                }
+            }
+        },
+        dependencies={REPORTING_TASK_DEPENDENCY: {"externalRunId": "visualization-task"}},
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: ({}, {})
+    toolkit._inspect_chart = AsyncMock()
+
+    result = await toolkit.register_report_charts([], run_context=run_context)
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_script_failed"
+    toolkit._inspect_chart.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_accepts_missing_optional_run_context() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-no-run-context", task=SimpleNamespace(mutation_sequence=1)
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": [],
+            "citationDatasetIds": {},
+            "visualInspectionMode": "deterministic",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts([], run_context=None)
 
     assert result["ok"] is True
     toolkit._apply_durable.assert_awaited_once()

@@ -37,7 +37,6 @@ from .base import (
     DetailedAnalysisPlan,
     EffectiveReportingProfile,
     GeneratedQueryBatch,
-    HospitalOperationProfile,
     Mapping,
     MeasureSemantic,
     MeasureSemanticProposal,
@@ -91,7 +90,6 @@ from .base import (
     resolve_domain_mentions,
     resolve_profile_capabilities,
     resolve_schema_snapshot,
-    ruijin_profile,
 )
 from .datasets import _analysis_context_payload
 from .validation import (
@@ -472,8 +470,7 @@ class RuntimePlanningMixin:
             )
 
         snapshots = list(_apply_profile_scope_filters_to_snapshots(tuple(snapshots), profile))
-        if any(source.id == "rj" for source in sources):
-            _validate_hospital_operation_profile_schema(ruijin_profile(), tuple(snapshots))
+        _validate_reporting_profile_schema(profile, tuple(snapshots))
         state = self._state(run_context)
         workflow_input = envelope.workflow_payload(
             default_source_ids=self.registry.default_source_ids
@@ -1196,7 +1193,7 @@ class RuntimePlanningMixin:
             item.model_dump(mode="json", by_alias=True) for item in bundle.requirements
         ]
         state[REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY] = list(
-            _row_preserving_requirement_ids(bundle.requirements, ruijin_profile())
+            _row_preserving_requirement_ids(bundle.requirements, self._profile(run_context))
         )
         return StepOutput(content=bundle)
 
@@ -2227,12 +2224,18 @@ def _compact_validation_feedback(value: dict[str, Any] | None) -> dict[str, Any]
 
 def _row_preserving_requirement_ids(
     requirements: tuple[QueryRequirement, ...],
-    profile: HospitalOperationProfile,
+    profile: EffectiveReportingProfile,
 ) -> tuple[str, ...]:
-    """只有 Profile 明确要求重复核验的单表需求才能绕过聚合，模型不能自行扩大权限。"""
+    """只有当前 Profile 明确声明重复冲突策略时才允许保留原始行。"""
+    # EffectiveReportingProfile 是跨领域公共契约，不包含医院旧 Profile 的
+    # duplicateConflicts 扩展；未声明该能力时必须关闭而不是猜测表名。
     governed_tables = {
-        rule.table_ref.rsplit(".", 1)[-1].lower() for rule in profile.duplicate_conflicts
+        str(rule.table_ref).rsplit(".", 1)[-1].lower()
+        for rule in getattr(profile, "duplicate_conflicts", ())
+        if getattr(rule, "table_ref", None)
     }
+    if not governed_tables:
+        return ()
     return tuple(
         requirement.requirement_id
         for requirement in requirements
@@ -2241,11 +2244,11 @@ def _row_preserving_requirement_ids(
     )
 
 
-def _validate_hospital_operation_profile_schema(
-    profile: HospitalOperationProfile,
+def _validate_reporting_profile_schema(
+    profile: EffectiveReportingProfile,
     snapshots: tuple[SourceSchemaSnapshot, ...],
 ) -> None:
-    """启动前核对已存在物理表的绑定列，避免列名漂移到 CSV 物化后才暴露。"""
+    """启动前核对当前 Profile 的物理字段，避免列名漂移到 CSV 后才暴露。"""
     table_columns = {
         (table.source_id.lower(), table.database.lower(), table.name.lower()): {
             column.name.lower() for column in table.columns
@@ -2254,8 +2257,14 @@ def _validate_hospital_operation_profile_schema(
         for table in snapshot.tables
     }
     missing: list[str] = []
-    field_refs = tuple(item.field_ref for item in profile.bindings) + tuple(
-        item.field_ref for item in profile.dimension_bindings
+    field_refs = tuple(item.field_ref for item in profile.metrics if item.field_ref is not None)
+    field_refs += tuple(field_ref for item in profile.dimensions for field_ref in item.field_refs)
+    field_refs += tuple(
+        field_ref for item in profile.scope_filters for field_ref in item.field_refs
+    )
+    field_refs += tuple(item.field_ref for item in profile.measure_semantics)
+    field_refs += tuple(
+        item.reconcile_with for item in profile.measure_semantics if item.reconcile_with is not None
     )
     for field_ref in field_refs:
         parts = field_ref.lower().split(".")
@@ -2268,8 +2277,8 @@ def _validate_hospital_operation_profile_schema(
             missing.append(field_ref)
     if missing:
         raise ReportingError(
-            "hospital_operation_profile_schema_mismatch",
-            "医院运营 Profile 与当前 Schema 不一致：" + ", ".join(sorted(missing)),
+            "report_profile_schema_mismatch",
+            "报表 Profile 与当前 Schema 不一致：" + ", ".join(sorted(missing)),
         )
 
 

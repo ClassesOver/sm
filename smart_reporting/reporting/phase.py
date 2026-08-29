@@ -41,6 +41,9 @@ REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY = (
     "agentos_reporting_visualization_production_only"
 )
 REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY = "agentos_reporting_visualization_script_written"
+REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY = (
+    "agentos_reporting_visualization_script_failure_pending"
+)
 REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY = "reportingVisualInspectionMode"
 REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY = "agentos_reporting_visualization_tool_budget"
 REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR = "_agentos_reporting_visualization_budget"

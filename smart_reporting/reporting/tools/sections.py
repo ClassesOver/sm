@@ -22,6 +22,10 @@ from ..delivery.draft_v1 import (
     validate_report_draft_blocks,
 )
 from ..models import ReportingError
+from ..phase import (
+    REPORTING_TASK_DEPENDENCY,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
+)
 from ..workflow.checkpoint import (
     AnalysisReworkRequest,
     ChartVisualInspectionReceipt,
@@ -849,6 +853,44 @@ class RuntimeSectionsMixin:
                 raise ReportingError(
                     "report_phase_contract_invalid",
                     "register_report_charts 只允许 visualization Task 调用。",
+                )
+            state = self._session_state(run_context)
+            dependencies = (
+                run_context.dependencies
+                if run_context is not None and isinstance(run_context.dependencies, Mapping)
+                else {}
+            )
+            task_binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+            external_run_id = (
+                task_binding.get("externalRunId") if isinstance(task_binding, Mapping) else None
+            )
+            task_identity = (
+                f"{external_run_id or ''}:{run_context.run_id if run_context is not None else ''}"
+            )
+            pending = (
+                state.get(REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY)
+                if isinstance(state, Mapping)
+                else None
+            )
+            pending_failure = pending.get(task_identity) if isinstance(pending, Mapping) else None
+            if pending_failure is None and isinstance(external_run_id, str) and external_run_id:
+                prefix = f"{external_run_id}:"
+                for key, value in (
+                    reversed(tuple(pending.items())) if isinstance(pending, Mapping) else ()
+                ):
+                    if key == external_run_id or key.startswith(prefix):
+                        pending_failure = value
+                        break
+            if (
+                isinstance(pending_failure, Mapping)
+                and pending_failure.get("lastScriptFailed") is True
+            ):
+                raise ReportingError(
+                    "report_visualization_script_failed",
+                    "最近一次可视化脚本执行包含失败项，修正脚本并重新执行成功后才能登记图表。",
+                    details={
+                        "diagnostics": list(pending_failure.get("diagnostics", ()))[:20],
+                    },
                 )
             _parameters, phase_contract = self._phase_parameters(scope, "analysis")
             output_root = self._chart_output_root(phase_contract)

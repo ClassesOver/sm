@@ -56,11 +56,57 @@ from smart_reporting.reporting.workflow.runtime.planning import (
     _PLANNER_DISPLAY_NAMES,
     _outline_candidate,
     _outline_validation_issues,
+    _row_preserving_requirement_ids,
+    _validate_reporting_profile_schema,
 )
 from smart_reporting.reporting.workflow.runtime.publication import (
     _analysis_quality_warnings,
 )
 from smart_reporting.reporting.workflow.runtime.validation import _normalize_requirement_periods
+
+
+def test_row_preserving_requirements_follow_effective_profile_without_legacy_fields() -> None:
+    requirement = type(
+        "Requirement",
+        (),
+        {"requirement_id": "r1", "tables": (type("Table", (), {"table": "custom.metrics"})(),)},
+    )()
+    profile = type("EffectiveProfile", (), {})()
+    profile.reconciliations = ()
+    assert _row_preserving_requirement_ids((requirement,), profile) == ()
+
+
+def test_reporting_profile_schema_validation_uses_replaced_profile_bindings() -> None:
+    profile = type(
+        "EffectiveProfile",
+        (),
+        {
+            "metrics": (type("Metric", (), {"field_ref": "custom.analytics.fact.amount"})(),),
+            "dimensions": (),
+            "scope_filters": (),
+            "measure_semantics": (),
+        },
+    )()
+    snapshot = type(
+        "Snapshot",
+        (),
+        {
+            "tables": (
+                type(
+                    "Table",
+                    (),
+                    {
+                        "source_id": "custom",
+                        "database": "analytics",
+                        "name": "fact",
+                        "columns": (type("Column", (), {"name": "amount"})(),),
+                    },
+                )(),
+            )
+        },
+    )()
+
+    _validate_reporting_profile_schema(profile, (snapshot,))
 
 
 def test_workflow_runtime_uses_package_boundaries() -> None:
@@ -360,6 +406,10 @@ async def test_confirm_source_keeps_internal_agent_out_of_request_state(
     source_id = "source-1"
     source = SimpleNamespace(id=source_id, name="测试数据源", database="reporting")
     profile = SimpleNamespace(
+        dimensions=(),
+        metrics=(),
+        reconciliations=(),
+        scope_filters=(),
         measure_semantics=(),
         profile_id="profile-1",
         effective_profile_hash="a" * 64,
@@ -371,6 +421,7 @@ async def test_confirm_source_keeps_internal_agent_out_of_request_state(
     snapshot = SimpleNamespace(
         revision="revision-1",
         schema_hash="b" * 64,
+        tables=(),
         model_dump=lambda **_: {
             "source": "metadata_api",
             "revision": "revision-1",

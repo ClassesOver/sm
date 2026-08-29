@@ -41,7 +41,6 @@ from .base import (
     logger,
     profile_csv_dataset,
     resolve_domain_mentions,
-    ruijin_profile,
     time,
 )
 from .validation import (
@@ -367,7 +366,7 @@ class RuntimeDatasetsMixin:
         # 才依据 Profile 的真实指标字段收敛。步骤 13 只做计划编排，不重新解释
         # 用户范围，也不在此阶段读取 CSV 或生成经营数字。
         profile_domains: set[str] = set()
-        known_bindings = tuple(ruijin_profile().bindings)
+        profile = self._profile(run_context)
         for context in contexts:
             fields = {field.rsplit(".", 1)[-1].casefold() for field in context.fields}
             semantic_fields = {
@@ -376,11 +375,16 @@ class RuntimeDatasetsMixin:
                 if isinstance(item, Mapping)
             }
             observed_fields = fields | semantic_fields
-            profile_domains.update(
-                binding.domain
-                for binding in known_bindings
-                if binding.field_ref.rsplit(".", 1)[-1].casefold() in observed_fields
-            )
+            for metric in profile.metrics:
+                if metric.field_ref is None:
+                    continue
+                if metric.field_ref.rsplit(".", 1)[-1].casefold() not in observed_fields:
+                    continue
+                profile_domains.update(
+                    resolve_domain_mentions(
+                        f"{metric.code} {metric.kind} {metric.description}"
+                    ).selected
+                )
         candidate_domains = covered_domains or profile_domains
         domains = tuple(
             code
