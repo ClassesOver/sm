@@ -2884,7 +2884,7 @@ _WORKER_TOOL_SCHEMA_FINGERPRINTS = {
     "finalize_report_analysis": "72be07cfdd398672e02fd705ddded6e3d2780a44ff9ce0c282799063bc7a2d10",
     "inspect_chart": "c68d47005ca812279d27542dea8ab4cdcc2958f20ecff7bf93d3f2d569d65adf",
     "register_report_charts": "ef621148cfda9ec63c7889da077d35ee5fb12aa38a5f864614c3b5136f1b261a",
-    "render_report_section": "9806426527bb1d3c94bfce71e3a98421994b28121ea1315ef9c0007e6a2bc671",
+    "render_report_section": "1505d9293a4db37dc5c833fc096471406f43468a2b83134c8d5152aea7cc0a95",
 }
 
 
@@ -3014,6 +3014,25 @@ def test_vision_enabled_visualization_toolkit_exposes_inspection() -> None:
     )
 
 
+def test_render_report_section_schema_does_not_require_server_derived_claim_fields() -> None:
+    toolkit = ReportWorkspaceTaskToolkit(
+        fake_workspace_service(None),
+        AsyncMock(),
+        state_repository=AsyncMock(),
+    )
+
+    claim_schema = toolkit.async_functions["render_report_section"].parameters["properties"][
+        "claims"
+    ]["items"]
+
+    assert "managementQuestionRef" in claim_schema["properties"]
+    assert "periodBasis" not in claim_schema["properties"]
+    assert "managementQuestion" not in claim_schema["properties"]
+    assert "currentPeriod" not in claim_schema["required"]
+    assert "comparisonPeriod" not in claim_schema["required"]
+    assert "comparisonType" not in claim_schema["required"]
+
+
 @pytest.mark.anyio
 async def test_render_report_section_rejects_inline_image_before_writing_artifact() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
@@ -3058,7 +3077,9 @@ async def test_render_report_section_binds_chart_citations_into_block() -> None:
     toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
         return_value=SimpleNamespace(
             section_code="section_002",
-            report_brief=SimpleNamespace(management_questions=("预算执行如何？",)),
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_002", question="预算执行如何？"),
+            ),
             metric_definitions=(SimpleNamespace(code="revenue", period_basis="2026-01"),),
             charts=(
                 SimpleNamespace(
@@ -3098,10 +3119,8 @@ async def test_render_report_section_binds_chart_citations_into_block() -> None:
                 "claimId": "claim_revenue",
                 "metricCode": "revenue",
                 "value": 100,
-                "periodBasis": "2026-01",
-                "managementQuestion": "预算执行如何？",
-                "currentPeriod": "2026-01",
-                "citationIds": ["citation_004", "citation_010"],
+                "managementQuestionRef": "analysis_002",
+                "citationIds": ["citation_004"],
                 "chartIds": ["revenue_budget"],
             }
         ],
@@ -3114,7 +3133,237 @@ async def test_render_report_section_binds_chart_citations_into_block() -> None:
 
 
 @pytest.mark.anyio
-async def test_render_report_section_reports_structured_chart_citation_conflict() -> None:
+async def test_render_report_section_derives_frozen_claim_semantics_on_first_submission() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
+        {"sectionOutputPath": "sections/income.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            section_code="section_001",
+            management_question_catalog=(
+                SimpleNamespace(
+                    ref="analysis_001",
+                    question="2025年医疗收入总体规模及收入类型与构成结构如何？",
+                ),
+            ),
+            metric_definitions=(
+                SimpleNamespace(
+                    code="medical_income",
+                    period_basis="2025年1-11月累计口径",
+                ),
+            ),
+            charts=(
+                SimpleNamespace(
+                    chart_id="income_monthly_trend",
+                    citation_ids=("citation_007", "citation_008"),
+                    metric_codes=("medical_income",),
+                    source_dataset_id="dataset-1",
+                    current_period="2025年1-11月",
+                    comparison_period="2024年全年",
+                    comparison_type="period",
+                    comparability="reference_only",
+                ),
+            ),
+            citations=(
+                SimpleNamespace(citation_id="citation_007", dataset_id="dataset-1"),
+                SimpleNamespace(citation_id="citation_008", dataset_id="dataset-1"),
+            ),
+        )
+    )
+    toolkit._write_phase_json = AsyncMock(return_value={"path": "sections/income.json"})  # type: ignore[method-assign]
+    toolkit._finish_phase_task = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    await toolkit._render_isolated_section(
+        scope=SimpleNamespace(),
+        section_code="section_001",
+        blocks=[
+            {
+                "blockId": "income_overall",
+                "markdown": "医疗收入总体保持稳定。",
+                "citationIds": ["citation_007"],
+                "chartIds": ["income_monthly_trend"],
+                "claimIds": ["claim_income_total"],
+            }
+        ],
+        claims=[
+            {
+                "claimId": "claim_income_total",
+                "metricCode": "medical_income",
+                "value": "111.24亿元",
+                "managementQuestionRef": "analysis_001",
+                "citationIds": ["citation_007"],
+                "chartIds": ["income_monthly_trend"],
+                "conclusionType": "value",
+            }
+        ],
+        state={},
+        run_context=None,
+    )
+
+    payload = toolkit._write_phase_json.await_args.kwargs["payload"]
+    assert payload["claims"] == [
+        {
+            "claimId": "claim_income_total",
+            "metricCode": "medical_income",
+            "value": "111.24亿元",
+            "periodBasis": "2025年1-11月累计口径",
+            "comparison": None,
+            "managementQuestion": "2025年医疗收入总体规模及收入类型与构成结构如何？",
+            "currentPeriod": "2025年1-11月",
+            "comparisonPeriod": "2024年全年",
+            "comparisonType": "period",
+            "citationIds": ["citation_007", "citation_008"],
+            "chartIds": ["income_monthly_trend"],
+            "comparability": "reference_only",
+            "conclusionType": "value",
+            "aggregationGrain": None,
+            "entityGrain": None,
+        }
+    ]
+    assert payload["blocks"][0]["citationIds"] == ["citation_007", "citation_008"]
+    assert "参考" in payload["blocks"][0]["markdown"]
+
+
+@pytest.mark.anyio
+async def test_render_report_section_rejects_unknown_management_question_ref() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
+        {"sectionOutputPath": "sections/income.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            section_code="section_001",
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_001", question="收入表现如何？"),
+            ),
+            metric_definitions=(
+                SimpleNamespace(code="medical_income", period_basis="2025年累计口径"),
+            ),
+            charts=(),
+            citations=(SimpleNamespace(citation_id="citation_007", dataset_id="dataset-1"),),
+        )
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await toolkit._render_isolated_section(
+            scope=SimpleNamespace(),
+            section_code="section_001",
+            blocks=[
+                {
+                    "blockId": "income_overall",
+                    "markdown": "医疗收入总体保持稳定。",
+                    "citationIds": ["citation_007"],
+                    "claimIds": ["claim_income_total"],
+                }
+            ],
+            claims=[
+                {
+                    "claimId": "claim_income_total",
+                    "metricCode": "medical_income",
+                    "value": "111.24亿元",
+                    "managementQuestionRef": "analysis_999",
+                    "currentPeriod": "2025年1-11月",
+                    "citationIds": ["citation_007"],
+                }
+            ],
+            state={},
+            run_context=None,
+        )
+
+    assert raised.value.code == "report_section_claim_question_unknown"
+    assert raised.value.details == {
+        "sectionCode": "section_001",
+        "claimId": "claim_income_total",
+        "managementQuestionRef": "analysis_999",
+        "expectedManagementQuestionRefs": ["analysis_001"],
+    }
+
+
+@pytest.mark.anyio
+async def test_render_report_section_rejects_conflicting_chart_semantics() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
+        {"sectionOutputPath": "sections/income.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            section_code="section_001",
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_001", question="收入表现如何？"),
+            ),
+            metric_definitions=(
+                SimpleNamespace(code="medical_income", period_basis="2025年累计口径"),
+            ),
+            charts=(
+                SimpleNamespace(
+                    chart_id="income_monthly",
+                    citation_ids=("citation_007",),
+                    metric_codes=("medical_income",),
+                    source_dataset_id="dataset-1",
+                    current_period="2025年1-11月",
+                    comparison_period=None,
+                    comparison_type="none",
+                    comparability="strict",
+                ),
+                SimpleNamespace(
+                    chart_id="income_annual",
+                    citation_ids=("citation_008",),
+                    metric_codes=("medical_income",),
+                    source_dataset_id="dataset-1",
+                    current_period="2025年全年",
+                    comparison_period=None,
+                    comparison_type="none",
+                    comparability="strict",
+                ),
+            ),
+            citations=(
+                SimpleNamespace(citation_id="citation_007", dataset_id="dataset-1"),
+                SimpleNamespace(citation_id="citation_008", dataset_id="dataset-1"),
+            ),
+        )
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await toolkit._render_isolated_section(
+            scope=SimpleNamespace(),
+            section_code="section_001",
+            blocks=[
+                {
+                    "blockId": "income_overall",
+                    "markdown": "医疗收入总体保持稳定。",
+                    "citationIds": ["citation_007", "citation_008"],
+                    "chartIds": ["income_monthly", "income_annual"],
+                    "claimIds": ["claim_income_total"],
+                }
+            ],
+            claims=[
+                {
+                    "claimId": "claim_income_total",
+                    "metricCode": "medical_income",
+                    "value": "111.24亿元",
+                    "managementQuestionRef": "analysis_001",
+                    "citationIds": ["citation_007", "citation_008"],
+                    "chartIds": ["income_monthly", "income_annual"],
+                }
+            ],
+            state={},
+            run_context=None,
+        )
+
+    assert raised.value.code == "report_section_claim_chart_semantics_conflict"
+    assert raised.value.details == {
+        "sectionCode": "section_001",
+        "claimId": "claim_income_total",
+        "chartIds": ["income_monthly", "income_annual"],
+    }
+
+
+@pytest.mark.anyio
+async def test_render_report_section_reports_structured_chart_metric_conflict() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
         {"sectionOutputPath": "sections/budget.json"},
@@ -3123,8 +3372,13 @@ async def test_render_report_section_reports_structured_chart_citation_conflict(
     toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
         return_value=SimpleNamespace(
             section_code="section_002",
-            report_brief=SimpleNamespace(management_questions=("预算执行如何？",)),
-            metric_definitions=(SimpleNamespace(code="revenue", period_basis="2026-01"),),
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_002", question="预算执行如何？"),
+            ),
+            metric_definitions=(
+                SimpleNamespace(code="revenue", period_basis="2026-01"),
+                SimpleNamespace(code="margin", period_basis="2026-01"),
+            ),
             charts=(
                 SimpleNamespace(
                     chart_id="revenue_budget",
@@ -3160,11 +3414,9 @@ async def test_render_report_section_reports_structured_chart_citation_conflict(
             claims=[
                 {
                     "claimId": "claim_revenue",
-                    "metricCode": "revenue",
+                    "metricCode": "margin",
                     "value": 100,
-                    "periodBasis": "2026-01",
-                    "managementQuestion": "预算执行如何？",
-                    "currentPeriod": "2026-01",
+                    "managementQuestionRef": "analysis_002",
                     "citationIds": ["citation_004"],
                     "chartIds": ["revenue_budget"],
                 }
@@ -3178,16 +3430,18 @@ async def test_render_report_section_reports_structured_chart_citation_conflict(
         "sectionCode": "section_002",
         "claimId": "claim_revenue",
         "chartId": "revenue_budget",
-        "conflictType": "citation_ids",
-        "expectedCitationIds": ["citation_004", "citation_010"],
-        "actualCitationIds": ["citation_004"],
+        "conflictType": "metric_code",
+        "expectedMetricCodes": ["revenue"],
+        "actualMetricCode": "margin",
     }
     failure = ReportWorkspaceTaskToolkit._failure(raised.value)
     assert failure["details"] == raised.value.details
 
 
 @pytest.mark.anyio
-async def test_render_report_section_reports_all_semantic_conflicts_at_once() -> None:
+async def test_render_report_section_overrides_submitted_chart_semantics_with_frozen_values() -> (
+    None
+):
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit._phase_parameters = lambda _scope, _phase: (
         {"sectionOutputPath": "sections/budget.json"},
@@ -3196,7 +3450,9 @@ async def test_render_report_section_reports_all_semantic_conflicts_at_once() ->
     toolkit._section_work_item = AsyncMock(
         return_value=SimpleNamespace(
             section_code="section_002",
-            report_brief=SimpleNamespace(management_questions=("预算执行如何？",)),
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_002", question="预算执行如何？"),
+            ),
             metric_definitions=(SimpleNamespace(code="revenue", period_basis="2026-01"),),
             charts=(
                 SimpleNamespace(
@@ -3216,66 +3472,46 @@ async def test_render_report_section_reports_all_semantic_conflicts_at_once() ->
             ),
         )
     )
+    toolkit._write_phase_json = AsyncMock(return_value={"path": "sections/budget.json"})
+    toolkit._finish_phase_task = AsyncMock(return_value={})
 
-    with pytest.raises(ReportingError) as raised:
-        await toolkit._render_isolated_section(
-            scope=SimpleNamespace(),
-            section_code="section_002",
-            blocks=[
-                {
-                    "blockId": "budget_overall",
-                    "markdown": "预算执行情况。",
-                    "citationIds": ["citation_004", "citation_010"],
-                    "chartIds": ["revenue_budget"],
-                    "claimIds": ["claim_period", "claim_chart"],
-                }
-            ],
-            claims=[
-                {
-                    "claimId": "claim_period",
-                    "metricCode": "revenue",
-                    "value": 100,
-                    "periodBasis": "2026全年",
-                    "managementQuestion": "预算执行如何？",
-                    "currentPeriod": "2026-01",
-                    "citationIds": ["citation_004"],
-                },
-                {
-                    "claimId": "claim_chart",
-                    "metricCode": "revenue",
-                    "value": 100,
-                    "periodBasis": "2026-01",
-                    "managementQuestion": "预算执行如何？",
-                    "currentPeriod": "2026-01",
-                    "citationIds": ["citation_004"],
-                    "chartIds": ["revenue_budget"],
-                },
-            ],
-            state={},
-            run_context=None,
-        )
+    await toolkit._render_isolated_section(
+        scope=SimpleNamespace(),
+        section_code="section_002",
+        blocks=[
+            {
+                "blockId": "budget_overall",
+                "markdown": "预算执行情况。",
+                "citationIds": ["citation_004"],
+                "chartIds": ["revenue_budget"],
+                "claimIds": ["claim_revenue"],
+            }
+        ],
+        claims=[
+            {
+                "claimId": "claim_revenue",
+                "metricCode": "revenue",
+                "value": 100,
+                "managementQuestionRef": "analysis_002",
+                "currentPeriod": "错误期间",
+                "comparisonPeriod": "错误比较期间",
+                "comparisonType": "yoy",
+                "citationIds": ["citation_004"],
+                "chartIds": ["revenue_budget"],
+                "comparability": "reference_only",
+            },
+        ],
+        state={},
+        run_context=None,
+    )
 
-    assert raised.value.code == "report_period_basis_conflict"
-    assert raised.value.details["conflicts"] == [
-        {
-            "sectionCode": "section_002",
-            "claimId": "claim_period",
-            "metricCode": "revenue",
-            "conflictType": "period_basis",
-            "expectedPeriodBasis": "2026-01",
-            "actualPeriodBasis": "2026全年",
-        },
-        {
-            "sectionCode": "section_002",
-            "claimId": "claim_chart",
-            "chartId": "revenue_budget",
-            "conflictType": "citation_ids",
-            "expectedCitationIds": ["citation_004", "citation_010"],
-            "actualCitationIds": ["citation_004"],
-        },
-    ]
-    failure = ReportWorkspaceTaskToolkit._failure(raised.value)
-    assert failure["details"]["conflicts"] == raised.value.details["conflicts"]
+    [claim] = toolkit._write_phase_json.await_args.kwargs["payload"]["claims"]
+    assert claim["periodBasis"] == "2026-01"
+    assert claim["currentPeriod"] == "2026-01"
+    assert claim["comparisonPeriod"] is None
+    assert claim["comparisonType"] == "none"
+    assert claim["comparability"] == "strict"
+    assert claim["citationIds"] == ["citation_004", "citation_010"]
 
 
 def test_analysis_evidence_accepts_current_committed_identity() -> None:

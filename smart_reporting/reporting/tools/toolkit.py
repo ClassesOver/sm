@@ -39,7 +39,7 @@ from ..workflow.checkpoint import (
     FileIdentity,
     MetricDefinition,
     ReportBrief,
-    SectionClaim,
+    SectionClaimSubmission,
 )
 from ..workflow.repository import ReportingStateRepository
 from ..workflow.state import ReportingCommand, ReportingRunState, ReportingStateError
@@ -530,13 +530,15 @@ class ReportWorkspaceTaskToolkit(
                 description=(
                     "提交当前 SectionWorkItem 指定章节。每个 block 的 markdown 不得重复"
                     "服务端章节 title，内部标题从 ### 开始；可使用列表、引用、强调和表格，"
-                    "图片通过 chartIds 引用。"
+                    "图片通过 chartIds 引用。claim 使用 managementQuestionRef 绑定当前章节"
+                    "问题目录；periodBasis 和问题全文由服务端补齐，绑定图表时周期、比较语义、"
+                    "可比性和图表 citation 也由服务端补齐。"
                     '示例：{"sectionCode":"executive_summary","blocks":[{"blockId":'
                     '"overview","markdown":"### 核心结论\n\n- 医疗收入同比增长 8.2%",'
                     '"citationIds":["citation_001"],"chartIds":["income_trend"],'
                     '"claimIds":["claim_income"]}],"claims":[{"claimId":"claim_income",'
-                    '"metricCode":"income","value":"8.2%","periodBasis":"2025年",'
-                    '"managementQuestion":"收入增长是否可持续？","currentPeriod":"2025年",'
+                    '"metricCode":"income","value":"8.2%",'
+                    '"managementQuestionRef":"analysis_001",'
                     '"citationIds":["citation_001"],"chartIds":["income_trend"]}]}'
                 ),
                 parameters={
@@ -552,7 +554,7 @@ class ReportWorkspaceTaskToolkit(
                         "claims": {
                             "type": "array",
                             "maxItems": 500,
-                            "items": SectionClaim.model_json_schema(by_alias=True),
+                            "items": SectionClaimSubmission.model_json_schema(by_alias=True),
                         },
                     },
                     "required": ["sectionCode", "blocks", "claims"],

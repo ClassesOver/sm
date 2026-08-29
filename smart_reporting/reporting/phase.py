@@ -15,8 +15,9 @@ ReportingPhase = Literal["analysis", "section"]
 ReportingTaskKind = Literal["analysis_item", "visualization", "section"]
 
 # Reporting 使用 1M 模型窗口。phase hard cap 是注意力预算，不是事实层上限：
-# 全局分析和独立章节只投影当前任务需要的事实摘要；完整 Profile、证据正文和
-# 工具结果继续通过受信文件与 outputHandle 按需读取。
+# 单项分析和独立章节只投影当前任务需要的事实摘要；完整 Profile、证据正文和
+# 工具结果继续通过受信文件与 outputHandle 按需读取。Visualization 需要在同一请求
+# 中保留全局冻结 facts 与 Skill 回执，直接使用 Reporting 已配置的输入预算。
 # 输出仍由模型级 reserve 单独预留，完整 Profile、工具原文和历史继续留在 checkpoint/handle。
 REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP = 128 * 1024
 REPORTING_SECTION_INPUT_TOKEN_HARD_CAP = 48 * 1024
@@ -39,6 +40,7 @@ REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY = "reportingVisualizationRecover
 REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY = (
     "agentos_reporting_visualization_production_only"
 )
+REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY = "agentos_reporting_visualization_script_written"
 REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY = "reportingVisualInspectionMode"
 REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY = "agentos_reporting_visualization_tool_budget"
 REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR = "_agentos_reporting_visualization_budget"

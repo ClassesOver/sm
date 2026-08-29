@@ -489,6 +489,102 @@ async def test_visualization_worker_plain_text_reports_missing_terminal_tool_wit
     worker.acontinue_run.assert_not_called()
 
 
+@pytest.mark.anyio
+async def test_visualization_worker_with_persisted_progress_continues_same_run() -> None:
+    worker = SimpleNamespace(
+        model=_RecordedErrors([None, None]),
+        arun=MagicMock(return_value="initial-run"),
+        acontinue_run=MagicMock(return_value="continued-run"),
+    )
+    runner = cast(Any, object.__new__(ReportTaskRunner))
+    runner.worker = worker
+    runner.repository = SimpleNamespace(
+        get_task_snapshot=AsyncMock(
+            side_effect=[
+                SimpleNamespace(state=TaskState.ACTIVE),
+                SimpleNamespace(state=TaskState.FINISHING),
+            ]
+        )
+    )
+    runner._consume_run = AsyncMock(side_effect=["plain-text", "completed-output"])
+    run_context = SimpleNamespace(
+        run_id="worker-run-visualization-progress",
+        session_state={
+            "agentos_reporting_visualization_script_written": True,
+        },
+    )
+
+    output = await runner._run_worker(
+        continuing=False,
+        instruction="render visualization",
+        internal_run_id="worker-run-visualization-progress",
+        worker_session_id="worker-session-visualization-progress",
+        owner_user_id="user-1",
+        dependencies={
+            "AgentOS 编码任务": {
+                "reportingTaskKind": "visualization",
+                "externalRunId": "visualization-task-1",
+            }
+        },
+        run_context=run_context,
+        scope=SimpleNamespace(external_run_id="visualization-task-1"),
+        parent_run_id="workflow-run-1",
+    )
+
+    assert output == "completed-output"
+    worker.arun.assert_called_once()
+    worker.acontinue_run.assert_called_once()
+    recovery_input = worker.acontinue_run.call_args.kwargs["input"]
+    assert "terminal" in recovery_input
+    assert "不得输出解释性文本" in recovery_input
+
+
+@pytest.mark.anyio
+async def test_visualization_worker_with_only_successful_exploration_does_not_continue() -> None:
+    worker = SimpleNamespace(
+        model=_RecordedErrors([None, None]),
+        arun=MagicMock(return_value="initial-run"),
+        acontinue_run=MagicMock(return_value="continued-run"),
+    )
+    runner = cast(Any, object.__new__(ReportTaskRunner))
+    runner.worker = worker
+    runner.repository = SimpleNamespace(
+        get_task_snapshot=AsyncMock(return_value=SimpleNamespace(state=TaskState.ACTIVE))
+    )
+    runner._consume_run = AsyncMock(return_value="plain-text")
+    run_context = SimpleNamespace(
+        run_id="worker-run-visualization-exploration",
+        session_state={
+            "agentos_reporting_visualization_tool_budget": {
+                "visualization-task-1:worker-run-visualization-exploration": {
+                    "attemptedCount": 1,
+                    "successfulCount": 1,
+                }
+            }
+        },
+    )
+
+    with pytest.raises(ReportingError, match="report_worker_terminal_tool_missing"):
+        await runner._run_worker(
+            continuing=False,
+            instruction="render visualization",
+            internal_run_id="worker-run-visualization-exploration",
+            worker_session_id="worker-session-visualization-exploration",
+            owner_user_id="user-1",
+            dependencies={
+                "AgentOS 编码任务": {
+                    "reportingTaskKind": "visualization",
+                    "externalRunId": "visualization-task-1",
+                }
+            },
+            run_context=run_context,
+            scope=SimpleNamespace(external_run_id="visualization-task-1"),
+            parent_run_id="workflow-run-1",
+        )
+
+    worker.acontinue_run.assert_not_called()
+
+
 def test_each_analysis_and_visualization_use_distinct_task_and_session_identities() -> None:
     analysis_001 = reporting_phase_task_key(
         "workflow-run-1", 1, "analysis", analysis_id="analysis_001"

@@ -45,6 +45,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     bind_reporting_run_context,
@@ -82,6 +83,32 @@ def test_report_worker_disables_unused_session_summaries(monkeypatch: pytest.Mon
     assert worker.enable_session_summaries is False
     assert worker.add_session_summary_to_context is False
     assert worker.session_summary_manager is None
+
+
+@pytest.mark.anyio
+async def test_visualization_successful_script_write_records_recoverable_progress() -> None:
+    run_context = RunContext(
+        run_id="run-visualization-script-write",
+        session_id="session-visualization-script-write",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-script-write-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+
+    result = await normalize_reporting_tool_arguments(
+        run_context,
+        "write_analysis_files",
+        lambda: {"ok": True, "status": "committed"},
+        {},
+    )
+
+    assert result["ok"] is True
+    assert run_context.session_state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] is True
 
 
 def test_report_worker_vllm_transport_preserves_reasoning_effort(
@@ -698,6 +725,26 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
         assert "outputTruncated=false 时禁止再次读取" in instructions
         assert "visualizationFacts" in instructions
         assert "不得调用 query_analysis_facts" in instructions
+
+
+def test_section_instructions_match_server_derived_claim_contract() -> None:
+    context = RunContext(
+        run_id="run-section-contract",
+        session_id="session-section-contract",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "section",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "section",
+            }
+        },
+    )
+
+    instructions = "\n".join(build_report_agent_instructions(context))
+
+    assert "managementQuestionRef" in instructions
+    assert "periodBasis、managementQuestion 由服务端补齐" in instructions
+    assert "绑定图表时 currentPeriod、comparisonPeriod、comparisonType、comparability" in instructions
+    assert "claim 必须绑定 ReportBrief 中的 managementQuestion" not in instructions
 
 
 def test_deterministic_visualization_instructions_forbid_inspect_chart() -> None:
@@ -2623,7 +2670,7 @@ async def test_concurrent_reporting_requests_keep_off_high_max_profiles_isolated
     ("phase", "task_kind", "expected_max_tokens"),
     [
         ("analysis", "analysis_item", 16_384),
-        ("analysis", "visualization", 32_768),
+        ("analysis", "visualization", 65_536),
         ("section", "section", 16_384),
     ],
 )
@@ -2655,6 +2702,119 @@ def test_reporting_worker_applies_phase_output_token_limits(
 
     assert request_model.max_tokens == expected_max_tokens
     assert model.max_tokens == 196_608
+
+
+@pytest.mark.parametrize(
+    ("phase", "task_kind", "expected_hard_cap"),
+    [
+        ("analysis", "analysis_item", 128 * 1024),
+        ("analysis", "visualization", 196_608),
+        ("section", "section", 48 * 1024),
+    ],
+)
+def test_reporting_worker_applies_task_input_hard_caps(
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    task_kind: str,
+    expected_hard_cap: int,
+) -> None:
+    observed: dict[str, int] = {}
+
+    def capture_project(
+        _projector: type[Any],
+        messages: list[Message],
+        **kwargs: Any,
+    ) -> list[Message]:
+        observed["hard_cap"] = kwargs["hard_cap"]
+        return messages
+
+    monkeypatch.setattr(
+        report_agent_module.CodingContextProjector,
+        "project",
+        classmethod(capture_project),
+    )
+    model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
+    model._coding_input_token_budget = 196_608
+    context = RunContext(
+        run_id=f"run-input-cap-{task_kind}",
+        session_id=f"session-input-cap-{task_kind}",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: phase,
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
+            }
+        },
+    )
+
+    with bind_reporting_run_context(context):
+        model._project(
+            [Message(role="user", content=json.dumps({"phase": phase}))],
+            (),
+            {"tools": []},
+        )
+
+    assert observed["hard_cap"] == expected_hard_cap
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("phase", "task_kind", "expected_tool_choice"),
+    [
+        ("analysis", "analysis_item", "auto"),
+        ("analysis", "visualization", "required"),
+        ("section", "section", "auto"),
+    ],
+)
+async def test_reporting_worker_requires_tool_calls_only_for_visualization_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    task_kind: str,
+    expected_tool_choice: str,
+) -> None:
+    forwarded: list[str | dict[str, Any] | None] = []
+
+    async def capture_response_stream(
+        _model: ProjectedOpenAIChat,
+        _messages: list[Message],
+        *_args: Any,
+        **kwargs: Any,
+    ):
+        forwarded.append(kwargs.get("tool_choice"))
+        yield ModelResponse(content="captured")
+
+    monkeypatch.setattr(
+        ProjectedOpenAIChat,
+        "aresponse_stream",
+        capture_response_stream,
+    )
+    model = ReportWorkerOpenAIChat(
+        id="deepseek-v4-flash-0731",
+        api_key="test",
+        max_tokens=196_608,
+    )
+    context = RunContext(
+        run_id=f"run-tool-choice-{task_kind}",
+        session_id=f"session-tool-choice-{task_kind}",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: phase,
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
+            }
+        },
+    )
+
+    with bind_reporting_run_context(context):
+        responses = [
+            response
+            async for response in model.aresponse_stream(
+                [Message(role="user", content="execute")],
+                tools=[{"type": "function", "function": {"name": "test_tool"}}],
+                tool_choice="auto",
+            )
+        ]
+
+    assert [response.content for response in responses] == ["captured"]
+    assert forwarded == [expected_tool_choice]
 
 
 def test_reporting_facade_tools_use_same_strict_json_boundary() -> None:

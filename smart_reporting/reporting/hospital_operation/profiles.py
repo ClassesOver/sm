@@ -131,6 +131,34 @@ def ruijin_profile() -> HospitalOperationProfile:
             parentMetric="actual_medical_income",
         ),
         PhysicalFieldBinding(
+            domain="budget",
+            metric="budget_medicine_income",
+            fieldRef="rj.rj.dwd_income_budget_view.budget_medicine_income",
+            rawUnit="元",
+            grain=("month", "campus", "accounting_unit"),
+        ),
+        PhysicalFieldBinding(
+            domain="budget",
+            metric="budget_material_income",
+            fieldRef="rj.rj.dwd_income_budget_view.budget_material_income",
+            rawUnit="元",
+            grain=("month", "campus", "accounting_unit"),
+        ),
+        PhysicalFieldBinding(
+            domain="budget",
+            metric="budget_service_income",
+            fieldRef="rj.rj.dwd_income_budget_view.budget_service_income",
+            rawUnit="元",
+            grain=("month", "campus", "accounting_unit"),
+        ),
+        PhysicalFieldBinding(
+            domain="budget",
+            metric="budget_test_income",
+            fieldRef="rj.rj.dwd_income_budget_view.budget_test_income",
+            rawUnit="元",
+            grain=("month", "campus", "accounting_unit"),
+        ),
+        PhysicalFieldBinding(
             domain="workload",
             metric="actual_person_time",
             fieldRef="rj.rj.dwd_income_budget_view.actual_person_time",
@@ -148,6 +176,20 @@ def ruijin_profile() -> HospitalOperationProfile:
             domain="workload",
             metric="discharges",
             fieldRef="rj.rj.dm_hdc_gongzuoliang_view.mantime_discharges",
+            rawUnit="人次",
+            grain=("month", "campus", "accounting_unit"),
+        ),
+        PhysicalFieldBinding(
+            domain="workload",
+            metric="outpatient_visits_non",
+            fieldRef="rj.rj.dm_hdc_gongzuoliang_view.mantime_outpatient_non",
+            rawUnit="人次",
+            grain=("month", "campus", "accounting_unit"),
+        ),
+        PhysicalFieldBinding(
+            domain="workload",
+            metric="discharges_non",
+            fieldRef="rj.rj.dm_hdc_gongzuoliang_view.mantime_discharges_non",
             rawUnit="人次",
             grain=("month", "campus", "accounting_unit"),
         ),
@@ -202,7 +244,7 @@ def ruijin_profile() -> HospitalOperationProfile:
     )
     return HospitalOperationProfile(
         profileId="ruijin-hospital-operation",
-        revision="2025-acceptance-2",
+        revision="2025-acceptance-3",
         hospital="瑞金医院",
         bindings=bindings,
         dimensionBindings=tuple(
@@ -281,6 +323,8 @@ def ruijin_profile() -> HospitalOperationProfile:
             "actual_person_time": ("2025-11", "2025-12"),
             "outpatient_visits": ("2025-11", "2025-12"),
             "discharges": ("2025-11", "2025-12"),
+            "outpatient_visits_non": ("2025-11", "2025-12"),
+            "discharges_non": ("2025-11", "2025-12"),
         },
         # 项目表没有版本字段。即使 SQL 暂时只返回一行，也不能证明该行是唯一版本；
         # 因此确认前所有项目金额都只能作为冲突核验材料，不能进入可累计指标层。

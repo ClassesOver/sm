@@ -379,6 +379,11 @@ class SectionCitation(StrictModel):
     snapshot_hash: str = Field(alias="snapshotHash", pattern=SHA256_PATTERN)
 
 
+class SectionManagementQuestion(StrictModel):
+    ref: str = Field(pattern=r"^analysis_[0-9]{3,6}$")
+    question: str = Field(min_length=1, max_length=4000)
+
+
 class SectionWorkItem(StrictModel):
     version: Literal["1"] = "1"
     section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
@@ -393,6 +398,9 @@ class SectionWorkItem(StrictModel):
     evidence: tuple[AnalysisEvidence, ...] = Field(min_length=1, max_length=200)
     metric_definitions: tuple[MetricDefinition, ...] = Field(
         default=(), alias="metricDefinitions", max_length=500
+    )
+    management_question_catalog: tuple[SectionManagementQuestion, ...] = Field(
+        default=(), alias="managementQuestionCatalog", max_length=200
     )
     profile_read_receipts: tuple[ProfileReadReceipt, ...] = Field(
         default=(), alias="profileReadReceipts", max_length=1000
@@ -415,6 +423,9 @@ class SectionWorkItem(StrictModel):
             set(self.analysis_ids)
         ):
             raise ValueError("SectionWorkItem evidence 必须按顺序精确覆盖 analysisIds")
+        question_refs = tuple(item.ref for item in self.management_question_catalog)
+        if question_refs and question_refs != self.analysis_ids:
+            raise ValueError("SectionWorkItem 管理问题目录必须按顺序精确覆盖 analysisIds")
         known_receipts = {
             *self.profile_read_receipt_ids,
             *(item.receipt_id for item in self.profile_read_receipts),
@@ -477,6 +488,49 @@ class SectionClaim(StrictModel):
             self.aggregation_grain is None or self.entity_grain is None
         ):
             raise ValueError("实体级比例必须同时声明 aggregationGrain 与 entityGrain")
+        return self
+
+
+class SectionClaimSubmission(StrictModel):
+    """模型提交的 claim；冻结字段由服务端在写入 SectionArtifact 前补齐。"""
+
+    claim_id: str = Field(alias="claimId", min_length=1, max_length=128)
+    metric_code: str = Field(alias="metricCode", min_length=1, max_length=128)
+    value: Any
+    comparison: str | None = Field(default=None, max_length=200)
+    management_question_ref: str = Field(
+        alias="managementQuestionRef", pattern=r"^analysis_[0-9]{3,6}$"
+    )
+    current_period: str | None = Field(
+        default=None, alias="currentPeriod", min_length=1, max_length=200
+    )
+    comparison_period: str | None = Field(
+        default=None, alias="comparisonPeriod", min_length=1, max_length=200
+    )
+    comparison_type: Literal["none", "yoy", "mom", "period"] = Field(
+        default="none", alias="comparisonType"
+    )
+    citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
+    chart_ids: tuple[str, ...] = Field(default=(), alias="chartIds", max_length=100)
+    comparability: Literal["strict", "reference_only"] = "strict"
+    conclusion_type: Literal["value", "comparison", "profit", "efficiency", "entity_ratio"] = Field(
+        default="value", alias="conclusionType"
+    )
+    aggregation_grain: str | None = Field(
+        default=None, alias="aggregationGrain", min_length=1, max_length=128
+    )
+    entity_grain: str | None = Field(
+        default=None, alias="entityGrain", min_length=1, max_length=128
+    )
+
+    @model_validator(mode="after")
+    def validate_submission(self) -> SectionClaimSubmission:
+        if len(self.citation_ids) != len(set(self.citation_ids)):
+            raise ValueError("章节 claim citationIds 不能重复")
+        if len(self.chart_ids) != len(set(self.chart_ids)):
+            raise ValueError("章节 claim chartIds 不能重复")
+        if not self.chart_ids and self.comparison_type != "none" and self.comparison_period is None:
+            raise ValueError("无图表的比较 claim 必须声明 comparisonPeriod")
         return self
 
 

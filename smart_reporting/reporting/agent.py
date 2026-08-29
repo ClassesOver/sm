@@ -77,6 +77,7 @@ from .phase import (
     REPORTING_VISUALIZATION_READ_FILE_LIMIT,
     REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
@@ -151,9 +152,10 @@ _REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
 _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 # Reporting 的全局 reserve 用于上下文预算，不能直接作为每次模型请求的生成额度。
 # 章节与单项分析只需提交一个有界终态工具，16K 足以覆盖工具参数；可视化汇总需要
-# 更长的 ReportBrief，但同样限制在 32K，避免兼容后端按 196K/393K 预分配缓冲区。
+# 更长的脚本参数和 ReportBrief。真实 CLI 已证明 32K 会在工具调用前截断，因此
+# visualization 使用 64K；仍不直接放开到全局 reserve，避免兼容后端过量预分配。
 _REPORT_ANALYSIS_ITEM_OUTPUT_TOKEN_LIMIT = 16 * 1024
-_REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 32 * 1024
+_REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 64 * 1024
 _REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
 # 后端异常却可能持续数分钟才返回。Worker 仍保留既有一次同 run continuation，
@@ -1557,6 +1559,13 @@ async def normalize_reporting_tool_arguments(
     if (
         succeeded
         and task_kind == "visualization"
+        and function_name == "write_analysis_files"
+        and isinstance(state, dict)
+    ):
+        state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True
+    if (
+        succeeded
+        and task_kind == "visualization"
         and function_name == "register_report_charts"
         and isinstance(state, dict)
     ):
@@ -2074,6 +2083,15 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         return apply_reporting_thinking_profile(request_model, profile)
 
     @staticmethod
+    def _phase_request_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+        if reporting_task_kind_from_run_context(current_reporting_run_context()) != "visualization":
+            return kwargs
+        # visualization 没有合法的纯文本终态，每一轮都必须通过当前生命周期投影出的
+        # 工具推进。使用 Agno 公共 tool_choice 契约保留工具选择自由，同时阻止模型把
+        # 整个生成窗口耗在规划文本后才尝试调用工具。
+        return {**kwargs, "tool_choice": "required"}
+
+    @staticmethod
     def _validated_reporting_response(
         model: "ReportingOpenAIChat",
         response: ModelResponse,
@@ -2100,6 +2118,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> ModelResponse:
         request_model = self._phase_request_model(messages)
+        kwargs = self._phase_request_kwargs(kwargs)
         self._clear_report_run_error()
         try:
             response = ProjectedOpenAIChat.response(request_model, messages, *args, **kwargs)
@@ -2116,6 +2135,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> ModelResponse:
         request_model = self._phase_request_model(messages)
+        kwargs = self._phase_request_kwargs(kwargs)
         self._clear_report_run_error()
         try:
             response = await ProjectedOpenAIChat.aresponse(
@@ -2144,6 +2164,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> Iterator[ModelResponse | RunOutputEvent | TeamRunOutputEvent]:
         request_model = self._phase_request_model(messages)
+        kwargs = self._phase_request_kwargs(kwargs)
         self._clear_report_run_error()
         try:
             yield from ProjectedOpenAIChat.response_stream(
@@ -2164,6 +2185,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> AsyncIterator[ModelResponse | RunOutputEvent | TeamRunOutputEvent]:
         request_model = self._phase_request_model(messages)
+        kwargs = self._phase_request_kwargs(kwargs)
         self._clear_report_run_error()
         try:
             async for response in ProjectedOpenAIChat.aresponse_stream(
@@ -2465,9 +2487,13 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
         ):
             configured_cap = CODING_CONTEXT_TOKEN_LIMIT - CODING_OUTPUT_TOKEN_RESERVE
         phase = _reporting_phase_from_messages(messages)
+        task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
+        # Visualization 的首个请求已携带全局冻结 facts，随后还必须保留已读取的 Skill
+        # 回合才能生成脚本。继续套用单项分析的 128K 上限会在 Skill 返回后立即 rebase，
+        # 只留下可重载哈希并诱发重复读取；因此它直接使用 Reporting 已配置的输入预算。
         phase_cap = (
             REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
-            if phase == "analysis"
+            if phase == "analysis" and task_kind != "visualization"
             else REPORTING_SECTION_INPUT_TOKEN_HARD_CAP
             if phase == "section"
             else None

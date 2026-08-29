@@ -110,6 +110,7 @@ from ...hospital_operation.detailed_analysis import (
 from ...hospital_operation.deterministic_analysis import (
     DeterministicAnalysisBundle,
     build_deterministic_analysis_bundle,
+    validate_metric_code_bindings,
 )
 from ...hospital_operation.domains import DOMAIN_CODES, resolve_domain_mentions
 from ...hospital_operation.outline import (
@@ -160,6 +161,7 @@ from ..checkpoint import (
     ReportingCheckpoint,
     SectionArtifact,
     SectionCitation,
+    SectionManagementQuestion,
     SectionWorkItem,
     build_profile_coverage_manifest,
     payload_sha256,

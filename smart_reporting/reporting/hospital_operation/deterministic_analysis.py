@@ -209,6 +209,16 @@ def build_deterministic_analysis_bundle(
     )
 
 
+def validate_metric_code_bindings(bundle: DeterministicAnalysisBundle) -> None:
+    """拒绝没有权威指标 code 的数值事实，避免下游章节让模型猜指标身份。"""
+
+    missing = [
+        f"{fact.dataset_id}:{fact.field_ref}" for fact in bundle.metrics if not fact.metric_codes
+    ]
+    if missing:
+        raise ValueError("numeric facts missing authoritative metric code: " + ", ".join(missing))
+
+
 def _dataset_facts(
     dataset: _Dataset,
     analysis: DetailedAnalysisItem,

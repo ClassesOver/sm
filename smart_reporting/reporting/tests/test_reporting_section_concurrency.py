@@ -319,6 +319,24 @@ async def test_section_worker_defers_rework_transition_until_batch_finishes() ->
     assert [call.args[1].name for call in runtime._apply_durable_command.await_args_list] == [
         "start_section"
     ]
+    instruction = json.loads(runtime.task_runner.start.await_args.args[1])
+    assert instruction["claimAuthoringContract"] == {
+        "managementQuestionRefs": [
+            {
+                "ref": "analysis_001",
+                "question": "收入表现如何？",
+            }
+        ],
+        "serverDerivedFields": ["periodBasis", "managementQuestion"],
+        "chartDerivedFields": [
+            "currentPeriod",
+            "comparisonPeriod",
+            "comparisonType",
+            "comparability",
+            "chartCitationIds",
+        ],
+        "standaloneClaimRequiredFields": ["currentPeriod"],
+    }
 
 
 def test_pending_analysis_rework_survives_fresh_retry_without_analysis_manifest() -> None:
@@ -1790,6 +1808,12 @@ def section_work_item(section_code: str) -> SectionWorkItem:
         },
         completionConditions=("说明收入表现",),
         analysisIds=("analysis_001",),
+        managementQuestionCatalog=(
+            {
+                "ref": "analysis_001",
+                "question": "收入表现如何？",
+            },
+        ),
         evidence=(
             AnalysisEvidence(
                 analysisId="analysis_001",
@@ -1914,12 +1938,21 @@ def test_build_section_work_item_projects_selected_metrics_and_chart_semantics()
     )
 
     assert tuple(item.code for item in work_item.metric_definitions) == ("revenue",)
+    assert [
+        item.model_dump(mode="json", by_alias=True)
+        for item in work_item.management_question_catalog
+    ] == [
+        {
+            "ref": "analysis_001",
+            "question": "收入表现如何？",
+        }
+    ]
     assert len(work_item.markdown_requirements) <= 50
-    chart_rule = next(item for item in work_item.markdown_requirements if "revenue_trend" in item)
-    assert "currentPeriod=2026-01" in chart_rule
-    assert "comparisonPeriod=2025-01" in chart_rule
-    assert "comparisonType=yoy" in chart_rule
-    assert "citationIds 至少包含 ['citation_001']" in chart_rule
+    assert work_item.charts[0].current_period == "2026-01"
+    assert work_item.charts[0].comparison_period == "2025-01"
+    assert work_item.charts[0].comparison_type == "yoy"
+    assert work_item.charts[0].citation_ids == ("citation_001",)
+    assert not any("currentPeriod=" in item for item in work_item.markdown_requirements)
 
 
 def completed(section_code: str, digest: str) -> CompletedSection:

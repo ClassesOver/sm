@@ -39,6 +39,7 @@ from ..phase import (
     REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
     bind_reporting_run_context,
@@ -516,10 +517,12 @@ class ReportTaskRunner:
                         )
                     elif task_kind == "visualization" and recovery_attempt > 0:
                         recovery_instruction = (
-                            "先读取当前脚本和图表并确认实际内容。服务端已保留本 run 成功登记的分析进度。"
-                            "立即停止重新读取和推演；"
-                            "若图表尚未登记则最多调用一次 register_report_charts，随后立即调用 "
-                            "finalize_report_analysis，不得输出解释性文本。"
+                            "服务端已保留本 run 已成功提交的可视化工具进度。立即停止推演和重新探索；"
+                            "若脚本尚未执行，先且只调用一次 terminal 执行签发的脚本；"
+                            "脚本成功后按需调用 process 等待同一脚本会话结束；"
+                            "图表未登记时只调用一次 register_report_charts，随后立即调用 "
+                            "finalize_report_analysis。不得调用 read_file/query_analysis_facts，"
+                            "不得输出解释性文本。"
                         )
                     else:
                         recovery_instruction = (
@@ -571,11 +574,26 @@ class ReportTaskRunner:
                 )
                 if recovery_attempt >= MAX_REPORT_WORKER_CONTINUATIONS:
                     raise missing_terminal
-                if task_kind in {"section", "visualization"}:
-                    # 章节提交和可视化登记/完成都是一次性阶段终态；普通文本没有推进任何
-                    # 持久化状态。继续同一 Agno run 会把完整历史再次带入模型并放大探索，
-                    # 交给外层 fresh attempt，恢复原始错误和阶段边界。
+                if task_kind == "section":
+                    # 章节提交是一次性阶段终态；普通文本没有推进任何持久化状态。
+                    # 继续同一 Agno run 会把完整章节历史再次带入模型并放大探索，
+                    # 交给外层 fresh attempt，恢复原始错误和章节边界。
                     raise missing_terminal
+                if task_kind == "visualization":
+                    session_state = getattr(run_context, "session_state", None)
+                    script_written = (
+                        session_state.get(REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY) is True
+                        if isinstance(session_state, Mapping)
+                        else False
+                    )
+                    if not script_written:
+                        # 没有已提交脚本时，continuation 只能重放探索，保持
+                        # fresh attempt 语义并让上层恢复原始错误与预算。
+                        raise missing_terminal
+                    # 脚本写入等成功 mutation 已由服务端持久化；同 run continuation
+                    # 可以从最后一条工具回执继续执行，避免重新携带完整 facts 投影。
+                    use_continuation = True
+                    continue
                 logger.warning(
                     "report_worker_terminal_tool_missing_continuation run_id={} task_kind={} "
                     "required_tools={}",

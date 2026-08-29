@@ -248,9 +248,12 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
         " citationIds 必须在对应数据事实正文块中引用。"
     ),
     (
-        "每个正文块必须引用至少一个结构化 claim；claim 必须绑定 ReportBrief 中的 managementQuestion、"
-        "冻结 metricCode、当前/比较期间、citationIds 与实际使用的 chartIds。reference_only 结论及其"
-        "正文必须明确标记为“参考”，不得据此生成严格同比、利润或效率结论。"
+        "每个正文块必须引用至少一个结构化 claim；claim 使用 SectionWorkItem 的"
+        "managementQuestionCatalog 中的 managementQuestionRef 绑定管理问题，提交冻结 metricCode、"
+        "value、citationIds 和实际使用的 chartIds。periodBasis、managementQuestion 由服务端补齐；"
+        "绑定图表时 currentPeriod、comparisonPeriod、comparisonType、comparability 和图表 citation"
+        "也由服务端从冻结图表派生，无需重复提交。无图表 claim 才需要提交 currentPeriod；"
+        "reference_only 结论及其正文必须明确标记为“参考”，不得据此生成严格同比、利润或效率结论。"
     ),
     "报告结论、数字、表格和图表必须来自当前冻结 evidence；不得年化、拟合、外推、补齐、平滑或作无依据归因。",
     "deterministicFactFiles 是服务端复算并校验哈希的固定事实，优先读取并沿用；可补充解释和非标准分析，但不得覆盖其中数值。",

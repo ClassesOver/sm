@@ -331,6 +331,15 @@ def apply(
                 for item in _tuple_unique(payload.get("completedSections"))
                 if item not in invalid_sections
             ]
+            running_sections = payload.get("runningSections")
+            if isinstance(running_sections, dict):
+                # 返工会重新构造失效章节的 WorkItem，必须先撤销旧运行绑定；
+                # 否则新 hash 会被 start_section 的并发冲突保护误判为另一任务。
+                payload["runningSections"] = {
+                    section_code: work_item_hash
+                    for section_code, work_item_hash in running_sections.items()
+                    if section_code not in invalid_sections
+                }
             payload["pendingSections"] = _tuple_unique(
                 [*payload.get("pendingSections", []), *invalid_sections]
             )

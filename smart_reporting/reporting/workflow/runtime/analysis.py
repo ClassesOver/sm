@@ -68,6 +68,7 @@ from .base import (
     reporting_phase_task_key,
     reporting_thinking_profile_from_model,
     time,
+    validate_metric_code_bindings,
 )
 from .datasets import _profile_coverage_instruction_projection
 
@@ -1839,6 +1840,14 @@ class RuntimeAnalysisMixin:
                     profile_hash=profile.effective_profile_hash,
                 )
             )
+            try:
+                validate_metric_code_bindings(bundle)
+            except ValueError as error:
+                raise ReportingError(
+                    "report_analysis_metric_definition_incomplete",
+                    "确定性数值事实缺少 Effective Profile 提供的权威指标定义，已拒绝冻结。",
+                    details={"analysisId": analysis.analysis_id, "reason": str(error)},
+                ) from error
             content = json.dumps(
                 bundle.model_dump(mode="json", by_alias=True),
                 ensure_ascii=False,
