@@ -5053,7 +5053,5 @@ TASK_EXECUTION_DEPENDENCY = CODING_TASK_DEPENDENCY
 TaskExecutionKernel = CodingExecutionKernel
 WorkspaceTaskToolkit = WorkspaceCodingToolkit
 
-# 旧内部调用方迁移期间保留模块内别名；跨包消费者应使用 create_files_patch。
-_create_files_patch = create_files_patch
 create_task_tool_scheduler_hook = create_coding_tool_scheduler_hook
 is_task_tool_scheduler_hook = is_coding_tool_scheduler_hook
