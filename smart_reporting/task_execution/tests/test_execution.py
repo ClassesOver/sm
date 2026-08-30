@@ -46,6 +46,10 @@ from smart_reporting.task_execution.execution import (
     create_coding_tool_scheduler_hook,
     normalize_coding_function_call_arguments,
 )
+from smart_reporting.task_execution.execution_support import (
+    CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
+    CODEX_EXEC_SESSIONS_STATE_KEY,
+)
 from smart_reporting.task_execution.models import CodingScope, Lease
 from smart_reporting.task_execution.repository import CodingRepositoryError, CodingTaskRepository
 from smart_reporting.task_execution.tests.workspace_fakes import (
@@ -54,10 +58,6 @@ from smart_reporting.task_execution.tests.workspace_fakes import (
     AsyncFakeProcess,
     AsyncMemoryRegistry,
     service,
-)
-from smart_reporting.task_execution.tools import (
-    CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
-    CODEX_EXEC_SESSIONS_STATE_KEY,
 )
 from smart_reporting.workspace import (
     MANAGED_PROCESS_PREFIX,
