@@ -56,22 +56,9 @@ REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR = "_agentos_reporting_analysis_fact_bu
 REPORTING_ANALYSIS_FACT_QUERY_LIMIT = 2
 REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
 
-# 工具按生命周期白名单暴露。Agno callable-tool 缓存键包含 phase/taskKind，实际 Toolkit、
-# 模型请求和执行入口都只接受当前阶段白名单中的工具。
-# SectionWorkItem 已给出全部授权 evidence 路径和引用；章节 run 不得再执行脚本、
-# 修改工作区或浏览其他目录。大型只读结果仍可通过 outputHandle 分段恢复。
 REPORTING_SECTION_TOOL_NAMES = frozenset(
-    {
-        "read_file",
-        "read_tool_output",
-        "render_report_section",
-        "request_analysis_rework",
-    }
+    {"read_file", "read_tool_output", "render_report_section", "request_analysis_rework"}
 )
-# 全局分析只保留当前事实、证据生成和 checkpoint 所需工具。Profile 精确读取统一走
-# query_profile；read_profile_pointer 仍保留为内部持久化/历史回放 API，但不再给模型第二
-# 个等价入口。原始文件统一用 read_file，避免 read_lines/search_text 与 JMESPath 查询
-# 形成三套检索方式。process 是 terminal 后台执行的必要伴随工具，不能与 terminal 合并。
 REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
     {
         "complete_analysis_item",
@@ -102,6 +89,7 @@ REPORTING_VISUALIZATION_TOOL_NAMES = frozenset(
         "view_image",
     }
 )
+
 # 可视化阶段的探索工具必须有独立上限；否则模型可能在创建脚本前耗尽总预算。
 REPORTING_VISUALIZATION_FACT_QUERY_LIMIT = 4
 REPORTING_VISUALIZATION_READ_FILE_LIMIT = 12
