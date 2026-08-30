@@ -865,11 +865,12 @@ class RuntimePlanningMixin:
                 # 在下一次调用时看到 previousOutput 与逐项 issues 并修正，而不是直接
                 # 让整条 workflow 失败。
                 previous_output = _outline_candidate(error)
-                allowed_paths = ("sections",)
+                validation_issues = _outline_validation_issues(error)
+                allowed_paths = _outline_allowed_paths(validation_issues)
                 validation_feedback = {
                     "code": "report_outline_invalid",
                     "summary": "报告提纲未通过结构校验",
-                    "issues": _outline_validation_issues(error),
+                    "issues": validation_issues,
                 }
                 continue
             assert isinstance(output, ReportOutlineProposal)
@@ -896,11 +897,20 @@ class RuntimePlanningMixin:
                 outline = freeze_outline(output, analyses=detailed_plan.analyses)
             except ValueError as error:
                 previous_output = output.model_dump(mode="json", by_alias=True)
-                allowed_paths = ("sections",)
+                # freeze_outline 会再次校验服务端生成的稳定提纲。Pydantic 错误必须
+                # 保留真实顶层字段，否则 assumptions 失败却只授权修改 sections，
+                # 模型无论重试多少次都无法满足门禁。普通引用错误没有结构化位置，
+                # 继续只授权 sections，不能借异常文本扩大可修改范围。
+                freeze_issues = (
+                    _outline_validation_issues(error)
+                    if isinstance(error, ValidationError)
+                    else [{"path": "sections", "reason": str(error)}]
+                )
+                allowed_paths = _outline_allowed_paths(freeze_issues)
                 validation_feedback = {
                     "code": "report_outline_invalid",
                     "summary": "报告提纲引用的分析未通过服务端冻结校验",
-                    "issues": [{"path": "sections", "reason": str(error)}],
+                    "issues": freeze_issues,
                 }
                 continue
             break
@@ -2196,6 +2206,17 @@ def _outline_validation_issues(error: ValidationError) -> list[dict[str, Any]]:
             }
         )
     return issues
+
+
+def _outline_allowed_paths(issues: list[dict[str, Any]]) -> tuple[str, ...]:
+    allowed_fields = {"reportType", "title", "sections", "assumptions"}
+    paths: list[str] = []
+    for issue in issues:
+        raw_path = issue.get("path")
+        path = raw_path.split(".", 1)[0] if isinstance(raw_path, str) else ""
+        if path in allowed_fields and path not in paths:
+            paths.append(path)
+    return tuple(paths) or ("sections",)
 
 
 def _compact_validation_feedback(value: dict[str, Any] | None) -> dict[str, Any] | None:
