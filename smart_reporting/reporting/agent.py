@@ -1659,11 +1659,12 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
             parsed.port
         except ValueError:
             return False
+        hostname_text = hostname if isinstance(hostname, str) else ""
         return (
             parsed.scheme in {"http", "https"}
             and bool(parsed.netloc)
-            and bool(hostname)
-            and not any(char.isspace() for char in hostname)
+            and bool(hostname_text)
+            and not any(char.isspace() for char in hostname_text)
         )
 
     if not all(is_valid_delivery_url(url) for url in urls):
