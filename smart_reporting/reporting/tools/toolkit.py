@@ -44,9 +44,10 @@ from ..workflow.checkpoint import (
 from ..workflow.repository import ReportingStateRepository
 from ..workflow.state import ReportingCommand, ReportingRunState, ReportingStateError
 from .analysis import MAX_VISUALIZATION_SCRIPT_BYTES, RuntimeAnalysisMixin
+from .capabilities import tools_for_task
 from .profile import MAX_PROFILE_POINTER_ITEMS, RuntimeProfileMixin
 from .sections import RuntimeSectionsMixin
-from .validation import _analysis_write_parameters
+from .validation import ANALYSIS_WRITE_TOOL_NAMES, _analysis_write_parameters
 
 REPORT_WORKER_TOOLKIT_INSTRUCTIONS = (
     "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\n"
@@ -102,23 +103,34 @@ class ReportWorkspaceTaskToolkit(
         *args: Any,
         state_repository: ReportingStateRepository,
         vision_reviewer: ReportVisionReviewer | None = None,
+        phase: ReportingPhase | None = None,
+        task_kind: ReportingTaskKind | None = None,
         **kwargs: Any,
     ) -> None:
         self._vision_reviewer = vision_reviewer
         self._state_repository = state_repository
+        allowed_tools = tools_for_task(phase, task_kind)
+        self._assembly_allowed_tools = allowed_tools
+        self._assembly_internal_tools = {"finish_task"}
+        if phase == "analysis":
+            self._assembly_internal_tools.update(ANALYSIS_WRITE_TOOL_NAMES)
         super().__init__(*args, **kwargs)
         # Reporting 在 finalize 后由 Workflow 继续执行独立产物验收。Worker 收尾只绑定
         # 当前产物哈希，不重复要求 verify 或执行 Task acceptance validator。
         self.kernel.require_finish_verification = False
         self.kernel.evaluate_finish_acceptance = False
-        self.async_functions["finish_task"].parameters["properties"].pop("verification_ids", None)
+        finish_function = self.async_functions.get("finish_task")
+        if finish_function is not None:
+            finish_function.parameters["properties"].pop("verification_ids", None)
         self.functions.pop("verify", None)
         self.async_functions.pop("verify", None)
-        self.async_functions["view_image"].description = (
-            "使用独立视觉模型临时查看工作区图片；正式图表必须改用 inspect_chart 生成"
-            "绑定文件哈希的耐久检查回执。"
-            '示例：{"path":"analysis/charts/trend.png","detail":"high"}'
-        )
+        view_image = self.async_functions.get("view_image")
+        if view_image is not None:
+            view_image.description = (
+                "使用独立视觉模型临时查看工作区图片；正式图表必须改用 inspect_chart 生成"
+                "绑定文件哈希的耐久检查回执。"
+                '{"path":"analysis/charts/trend.png","detail":"high"}'
+            )
         # Toolkit 指令由通用 Coding 实现注入，其中仍声明了已删除的 verify 工具。
         # Reporting 必须让模型看到与实际 schema 一致的能力，避免 finalize 后进入
         # 不可满足的 verify -> finish_task 循环。
@@ -153,13 +165,18 @@ class ReportWorkspaceTaskToolkit(
                     "create_file 的 content 可以一次提交完整长脚本，整体受 4 MiB 写入意图"
                     "上限约束。后续精确修改使用 apply_patch/replace_text。"
                 ),
-                parameters=_analysis_write_parameters(self.async_functions),
+                parameters=(
+                    _analysis_write_parameters(self.async_functions)
+                    if phase != "section"
+                    else {"type": "object", "properties": {}, "additionalProperties": False}
+                ),
                 strict=True,
                 entrypoint=self.write_analysis_files,
                 pre_hook=_reset_stop_after_tool_call,
                 post_hook=_stop_after_nonretryable_tool_call,
             )
         )
+
         self.register(
             Function(
                 name="read_profile_pointer",
@@ -566,6 +583,22 @@ class ReportWorkspaceTaskToolkit(
                 post_hook=_stop_after_finished_phase_call,
             )
         )
+
+    def register(self, function: Any, name: str | None = None) -> None:
+        """按阶段能力在注册瞬间过滤工具，避免先暴露再删除。"""
+
+        allowed = self._assembly_allowed_tools
+        if allowed is not None:
+            tool_name = (
+                name or getattr(function, "name", None) or getattr(function, "__name__", None)
+            )
+            if (
+                isinstance(tool_name, str)
+                and tool_name not in allowed
+                and tool_name not in self._assembly_internal_tools
+            ):
+                return
+        super().register(function, name=name)
 
     async def view_image(
         self,
