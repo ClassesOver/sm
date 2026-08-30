@@ -25,7 +25,7 @@ from smart_reporting.reporting.tools import ReportWorkspaceTaskToolkit
 from smart_reporting.skills import (
     CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillValidatorRegistry,
-    load_builtin_coding_skills,
+    load_sandbox_execution_skills,
     skill_script_receipt_hook,
 )
 from smart_reporting.task_execution.execution import (
@@ -537,7 +537,7 @@ def create_acceptance_registry(tmp_path):
         "Validate analysis artifacts.\n",
         encoding="utf-8",
     )
-    registry = SkillValidatorRegistry.from_skills(load_builtin_coding_skills(str(skill_root)))
+    registry = SkillValidatorRegistry.from_skills(load_sandbox_execution_skills(str(skill_root)))
     return registry, script
 
 

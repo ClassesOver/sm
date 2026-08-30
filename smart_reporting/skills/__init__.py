@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     skill_script_receipt_hook: Any
     load_skills: Any
     load_sandbox_execution_skills: Any
-    load_builtin_coding_skills: Any
     public_skill_metadata: Any
 
 __all__ = [
@@ -37,7 +36,6 @@ __all__ = [
     "is_skill_script_hook",
     "load_skills",
     "load_sandbox_execution_skills",
-    "load_builtin_coding_skills",
     "lock_sandbox_paths",
     "public_skill_metadata",
     "skill_script_receipt_hook",

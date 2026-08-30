@@ -9,7 +9,7 @@ from smart_reporting.skills import (
     CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
     SkillValidatorRegistry,
-    load_builtin_coding_skills,
+    load_sandbox_execution_skills,
     load_skills,
     public_skill_metadata,
     skill_script_receipt_hook,
@@ -54,8 +54,8 @@ def test_load_skills_without_path_uses_no_loaders(monkeypatch):
     assert skills.get_all_skills() == []
 
 
-def test_load_builtin_coding_skills_describes_sandbox_image_capabilities():
-    skills = load_builtin_coding_skills()
+def test_load_sandbox_execution_skills_describes_sandbox_image_capabilities():
+    skills = load_sandbox_execution_skills()
 
     assert [skill.name for skill in skills.get_all_skills()] == ["sandbox-tooling"]
     skill = skills.get_all_skills()[0]
@@ -123,7 +123,7 @@ async def test_skill_script_hook_records_read_content_but_not_execution_output()
     assert len(context.session_state[CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY]) == 1
 
 
-def test_load_builtin_coding_skills_appends_additional_directory(tmp_path):
+def test_load_sandbox_execution_skills_appends_additional_directory(tmp_path):
     create_skill(tmp_path)
     skill_file = tmp_path / "review" / "SKILL.md"
     skill_file.write_text(
@@ -134,7 +134,7 @@ def test_load_builtin_coding_skills_appends_additional_directory(tmp_path):
         encoding="utf-8",
     )
 
-    skills = load_builtin_coding_skills(str(tmp_path))
+    skills = load_sandbox_execution_skills(str(tmp_path))
 
     assert [skill.name for skill in skills.get_all_skills()] == ["sandbox-tooling", "review"]
     assert len(skills.loaders) == 2

@@ -331,10 +331,6 @@ def load_sandbox_execution_skills(additional_path: str | None = None) -> Skills:
     return Skills(loaders=loaders)
 
 
-def load_builtin_coding_skills(additional_path: str | None = None) -> Skills:
-    return load_sandbox_execution_skills(additional_path)
-
-
 def public_skill_metadata(skills: Skills) -> list[dict[str, str]]:
     return [
         {
