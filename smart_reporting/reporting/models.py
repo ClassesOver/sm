@@ -44,3 +44,16 @@ class ReportWorkflowControl(BaseModel):
 
     def public_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+
+class VisualizationSkillCacheEntry(BaseModel):
+    """可视化阶段只读 Skill 缓存条目，绑定到单次 run 的身份和工具。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    run_id: str = Field(alias="runId", min_length=1, max_length=256)
+    session_id: str = Field(alias="sessionId", min_length=1, max_length=256)
+    user_id: str = Field(alias="userId", min_length=1, max_length=256)
+    external_run_id: str = Field(alias="externalRunId", min_length=1, max_length=256)
+    tool_name: Literal["get_skill_instructions", "get_skill_reference"] = Field(alias="toolName")
+    result: Any

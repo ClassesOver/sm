@@ -168,6 +168,7 @@ class AnalysisEvidence(StrictModel):
         alias="evidenceFiles", min_length=1, max_length=50
     )
     citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
+    metrics: tuple[str, ...] = Field(default=(), max_length=100)
     chart_ids: tuple[str, ...] = Field(default=(), alias="chartIds", max_length=100)
     profile_read_receipt_ids: tuple[str, ...] = Field(
         default=(), alias="profileReadReceiptIds", max_length=500
@@ -179,6 +180,7 @@ class AnalysisEvidence(StrictModel):
         for name, values in (
             ("datasetIds", self.dataset_ids),
             ("citationIds", self.citation_ids),
+            ("metrics", self.metrics),
             ("chartIds", self.chart_ids),
             ("profileReadReceiptIds", self.profile_read_receipt_ids),
         ):

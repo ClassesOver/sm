@@ -109,6 +109,30 @@ def _section_retry_context(error: Exception | CheckpointError | None) -> dict[st
     return {"code": "report_section_phase_failed", "message": str(error), "details": {}}
 
 
+def _section_claim_authoring_contract(work_item: SectionWorkItem) -> dict[str, Any]:
+    """从当前冻结 WorkItem 生成章节 claim 的动态约束，避免模型猜测业务指标代码。"""
+
+    return {
+        "allowedMetricCodes": [item.code for item in work_item.metric_definitions],
+        "managementQuestionRefs": [
+            item.model_dump(mode="json", by_alias=True)
+            for item in work_item.management_question_catalog
+        ],
+        "serverDerivedFields": ["periodBasis", "managementQuestion"],
+        "chartDerivedFields": [
+            "currentPeriod",
+            "comparisonPeriod",
+            "comparisonType",
+            "comparability",
+            "chartCitationIds",
+        ],
+        "standaloneClaimRequiredFields": ["currentPeriod"],
+        "comparisonRule": (
+            "comparisonType 非 none 时必须提供 comparisonPeriod；绑定图表时以图表冻结语义为准"
+        ),
+    }
+
+
 def _pending_analysis_rework_file(checkpoint: ReportingCheckpoint) -> FileIdentity | None:
     """返回尚未被后续全局分析冻结覆盖的最新章节返工身份。"""
 
@@ -559,21 +583,7 @@ class RuntimeSectionsMixin:
                 "phase": "section",
                 "sectionWorkItem": work_item_payload,
                 "completionConditions": list(work_item.completion_conditions),
-                "claimAuthoringContract": {
-                    "managementQuestionRefs": [
-                        item.model_dump(mode="json", by_alias=True)
-                        for item in work_item.management_question_catalog
-                    ],
-                    "serverDerivedFields": ["periodBasis", "managementQuestion"],
-                    "chartDerivedFields": [
-                        "currentPeriod",
-                        "comparisonPeriod",
-                        "comparisonType",
-                        "comparability",
-                        "chartCitationIds",
-                    ],
-                    "standaloneClaimRequiredFields": ["currentPeriod"],
-                },
+                "claimAuthoringContract": _section_claim_authoring_contract(work_item),
                 "sectionOutputPath": section_output_path,
                 "reworkRequestPath": rework_request_path,
             }

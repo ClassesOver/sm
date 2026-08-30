@@ -760,7 +760,34 @@ class WorkspaceService:
                     self._cache_sandbox_id(value, sandbox.id)
         if sandbox is None:
             return None
-        return await self._aready_sandbox(client, sandbox)
+        try:
+            return await self._aready_sandbox(client, sandbox)
+        except DaytonaNotFoundError:
+            # Daytona 资源可能在查找成功后才被回收；清除旧绑定并只重建一次，
+            # 让长任务下一次工具调用继续使用同一 thread 的新工作区。
+            self._invalidate_sandbox_id(value, getattr(sandbox, "id", None))
+            async with self.async_registry.locked(value) as registry:
+                await registry.delete(value)
+            if not create:
+                return None
+            replacement = await client.create(
+                CreateSandboxFromSnapshotParams(
+                    snapshot=self.snapshot,
+                    name=f"agent-{value[:20]}",
+                    language="python",
+                    labels={"agent-thread": value},
+                    public=False,
+                    ephemeral=False,
+                    auto_stop_interval=60,
+                    auto_archive_interval=0,
+                    auto_delete_interval=-1,
+                    **self._sandbox_network_settings(),
+                )
+            )
+            async with self.async_registry.locked(value) as registry:
+                await registry.set(value, replacement.id)
+            self._cache_sandbox_id(value, replacement.id)
+            return await self._aready_sandbox(client, replacement)
 
     async def _adestroy(self, client: Any, thread: str) -> bool:
         value = await self._ahash(thread)

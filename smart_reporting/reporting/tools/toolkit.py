@@ -19,6 +19,7 @@ from ...task_execution.execution import (
     MAX_TOOL_OUTPUT_READ_BYTES,
     WorkspaceTaskToolkit,
 )
+from ...task_execution.repository_impl import TERMINAL_EXECUTION_STATUSES
 from ...workspace import (
     WorkspaceError,
     WorkspaceService,
@@ -336,10 +337,10 @@ class ReportWorkspaceTaskToolkit(
             Function(
                 name="complete_analysis_item",
                 description=(
-                    "提交当前 analysisId 的摘要、Dataset、引用、Profile 回执和 Warning；"
+                    "提交当前 analysisId 的摘要、Dataset、引用、Profile 回执、图表绑定和 Warning；"
                     "服务端自动把当前不可变固定事实绑定为 evidence。只有固定事实未覆盖时才在 "
                     "evidencePaths 提交补充 evidence；服务端接受后结束当前独立 run。"
-                    "图表只能在后续 visualization 阶段登记。"
+                    "chartIds 仅用于绑定已有图表，不会触发图表生成。"
                 ),
                 parameters={
                     "type": "object",
@@ -367,6 +368,12 @@ class ReportWorkspaceTaskToolkit(
                         "citationIds": {
                             "type": "array",
                             "minItems": 1,
+                            "maxItems": 100,
+                            "uniqueItems": True,
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                        "chartIds": {
+                            "type": "array",
                             "maxItems": 100,
                             "uniqueItems": True,
                             "items": {"type": "string", "minLength": 1},
@@ -515,12 +522,8 @@ class ReportWorkspaceTaskToolkit(
                     "在图表源文件最终定稿后一次登记 Coding 根据本轮不可变 CSV 生成的报告图表；"
                     "每张图必须先调用 inspect_chart，服务端校验当前文件哈希的视觉回执、Dataset "
                     "citation 并决定发布路径。登记后不得改写或复用同一 chartId 的源文件。"
-                    '示例：{"charts":[{"chartId":"income_trend","sourcePath":'
-                    '"analysis/charts/income.png","title":"医疗收入月度趋势",'
-                    '"altText":"2025年医疗收入月度变化","citationIds":["citation_001"],'
-                    '"metricCodes":["income"],"currentPeriod":"2025年",'
-                    '"comparisonType":"none","sourceDatasetId":"dataset_001",'
-                    '"aggregationGrain":"month","comparability":"strict"}]}'
+                    "metricCodes、周期和 Dataset 必须逐字取自本轮已冻结分析事实，禁止使用"
+                    "income、revenue 等自然语言别名或猜测期间。"
                 ),
                 parameters={
                     "type": "object",
@@ -549,14 +552,9 @@ class ReportWorkspaceTaskToolkit(
                     "服务端章节 title，内部标题从 ### 开始；可使用列表、引用、强调和表格，"
                     "图片通过 chartIds 引用。claim 使用 managementQuestionRef 绑定当前章节"
                     "问题目录；periodBasis 和问题全文由服务端补齐，绑定图表时周期、比较语义、"
-                    "可比性和图表 citation 也由服务端补齐。"
-                    '示例：{"sectionCode":"executive_summary","blocks":[{"blockId":'
-                    '"overview","markdown":"### 核心结论\n\n- 医疗收入同比增长 8.2%",'
-                    '"citationIds":["citation_001"],"chartIds":["income_trend"],'
-                    '"claimIds":["claim_income"]}],"claims":[{"claimId":"claim_income",'
-                    '"metricCode":"income","value":"8.2%",'
-                    '"managementQuestionRef":"analysis_001",'
-                    '"citationIds":["citation_001"],"chartIds":["income_trend"]}]}'
+                    "可比性和图表 citation 也由服务端补齐。metricCode 必须逐字取自当前"
+                    "SectionWorkItem.metricDefinitions.code，禁止使用 income、revenue 等自然语言别名；"
+                    "comparisonType 非 none 时必须填写 comparisonPeriod。"
                 ),
                 parameters={
                     "type": "object",
@@ -906,6 +904,51 @@ class ReportWorkspaceTaskToolkit(
         if state is None:
             raise ReportingError("report_state_not_found", "Reporting 运行状态不存在。")
         return state
+
+    async def _ensure_visualization_terminal_settled(self, scope: Any) -> None:
+        """拒绝在签发脚本的 terminal execution 仍运行时推进生产阶段。
+
+        terminal 默认只等待有限时间，超时后会返回 ``status=running``；模型随后可能在同一
+        工具批次提交 register/finalize。文件尚未写完时，登记会得到 Daytona NotFound，
+        finalize 还可能绕过图表登记。执行记录是服务端唯一受信的完成状态，因此这里按当前
+        externalRunId、internalRunId 和 terminal kind 精确筛选未终态执行，要求模型先用
+        process poll/wait 收敛会话，再重试后续工具。
+        """
+
+        repository = getattr(self, "repository", None)
+        list_executions = getattr(repository, "list_executions", None)
+        external_run_id = getattr(scope, "external_run_id", None)
+        internal_run_id = getattr(scope, "internal_run_id", None)
+        if (
+            not callable(list_executions)
+            or not isinstance(external_run_id, str)
+            or not external_run_id
+            or not isinstance(internal_run_id, str)
+            or not internal_run_id
+        ):
+            return
+        executions = await list_executions(external_run_id)
+        pending = [
+            execution
+            for execution in executions
+            if getattr(execution, "internal_run_id", None) == internal_run_id
+            and getattr(execution, "kind", None) == "terminal"
+            and getattr(execution, "status", None) not in TERMINAL_EXECUTION_STATUSES
+        ]
+        if pending:
+            raise ReportingError(
+                "report_visualization_script_running",
+                "可视化脚本仍在执行，请先使用 process 等待同一脚本会话结束后再登记或完成。",
+                details={
+                    "executions": [
+                        {
+                            "executionId": str(getattr(item, "execution_id", "")),
+                            "status": str(getattr(item, "status", "")),
+                        }
+                        for item in pending[:10]
+                    ]
+                },
+            )
 
     @staticmethod
     def _analysis_output_root(contract: Mapping[str, Any]) -> str:

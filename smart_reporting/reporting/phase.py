@@ -10,11 +10,7 @@ from typing import Any, Literal
 from agno.run import RunContext
 
 from .models import ReportingError
-from .tools.capabilities import (
-    REPORTING_ANALYSIS_ITEM_TOOL_NAMES,
-    REPORTING_SECTION_TOOL_NAMES,
-    REPORTING_VISUALIZATION_TOOL_NAMES,
-)
+from .tools.capabilities import tools_for_task
 
 ReportingPhase = Literal["analysis", "section"]
 ReportingTaskKind = Literal["analysis_item", "visualization", "section"]
@@ -24,7 +20,9 @@ ReportingTaskKind = Literal["analysis_item", "visualization", "section"]
 # 工具结果继续通过受信文件与 outputHandle 按需读取。Visualization 需要在同一请求
 # 中保留全局冻结 facts 与 Skill 回执，直接使用 Reporting 已配置的输入预算。
 # 输出仍由模型级 reserve 单独预留，完整 Profile、工具原文和历史继续留在 checkpoint/handle。
-REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP = 128 * 1024
+# 单项分析的任务 JSON 可能包含跨 Dataset 的冻结 facts；上限需要覆盖真实的
+# 不可压缩首轮前缀，同时仍低于默认 Reporting 输入预算，给工具回执和重试留余量。
+REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP = 160 * 1024
 REPORTING_SECTION_INPUT_TOKEN_HARD_CAP = 48 * 1024
 
 REPORTING_PHASE_DEPENDENCY_KEY = "reportingPhase"
@@ -51,6 +49,7 @@ REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY = (
 )
 REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY = "reportingVisualInspectionMode"
 REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY = "agentos_reporting_visualization_tool_budget"
+REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY = "agentos_reporting_visualization_skill_cache"
 REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR = "_agentos_reporting_visualization_budget"
 REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY = "analysisFactBudgetVersion"
 REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY = "analysisFactQueryLimit"
@@ -58,7 +57,8 @@ REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY = "analysisFactQueriesUsed"
 REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY = "analysisRecovery"
 REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY = "agentos_reporting_analysis_fact_budget"
 REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR = "_agentos_reporting_analysis_fact_budget"
-REPORTING_ANALYSIS_FACT_QUERY_LIMIT = 2
+# 单项分析按计划复杂度可提升到 8 次；4 次是缺少复杂度信息时的安全默认值。
+REPORTING_ANALYSIS_FACT_QUERY_LIMIT = 4
 REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
 
 # 可视化阶段的探索工具必须有独立上限；否则模型可能在创建脚本前耗尽总预算。
@@ -784,12 +784,9 @@ def reporting_phase_allows_tool(
     *,
     task_kind: ReportingTaskKind | None = None,
 ) -> bool:
-    if phase == "section":
-        return tool_name in REPORTING_SECTION_TOOL_NAMES
+    allowed = tools_for_task(phase, task_kind)
+    if allowed is not None:
+        return tool_name in allowed
     if phase == "analysis":
-        if task_kind == "analysis_item":
-            return tool_name in REPORTING_ANALYSIS_ITEM_TOOL_NAMES
-        if task_kind == "visualization":
-            return tool_name in REPORTING_VISUALIZATION_TOOL_NAMES
         return False
     return True

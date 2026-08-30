@@ -61,6 +61,28 @@ _ANALYSIS_SUMMARY_SENTENCE_PATTERN = re.compile(r"[^。！？\n]+[。！？]?|\n
 _INCOMPARABLE_YOY_WARNING = "摘要中的比较期间长度不一致，已将“同比”规范为“参考对比”。"
 
 
+def _missing_metric_definition_codes(
+    *,
+    fact_bundles: tuple[Mapping[str, Any], ...],
+    chart_metric_codes: tuple[str, ...],
+    metric_definitions: tuple[MetricDefinition, ...],
+) -> tuple[str, ...]:
+    """返回冻结事实或图表引用、但没有完整定义的指标 code。"""
+
+    referenced: set[str] = {code for code in chart_metric_codes if isinstance(code, str) and code}
+    for bundle in fact_bundles:
+        for metric in bundle.get("metrics", ()):
+            if isinstance(metric, Mapping):
+                referenced.update(
+                    code for code in metric.get("metricCodes", ()) if isinstance(code, str) and code
+                )
+        for metric in bundle.get("derivedMetrics", ()):
+            if isinstance(metric, Mapping) and isinstance(metric.get("code"), str):
+                referenced.add(metric["code"])
+    defined = {item.code for item in metric_definitions}
+    return tuple(sorted(referenced - defined))
+
+
 def _normalize_analysis_summary_comparability(summary: str) -> tuple[str, tuple[str, ...]]:
     """只规范摘要中能确定识别为不等长月份窗口的“同比”表述。"""
 
@@ -832,7 +854,13 @@ class RuntimeAnalysisMixin:
                 run_context=run_context,
                 task_kinds=frozenset({"visualization"}),
             )
+            await self._ensure_visualization_terminal_settled(scope)
             durable = await self._durable_state(scope)
+            if not isinstance(durable.payload.get("charts"), list) or not durable.payload["charts"]:
+                raise ReportingError(
+                    "report_visualization_charts_not_registered",
+                    "图表尚未完成登记，不能冻结可视化分析；请先成功调用 register_report_charts。",
+                )
             parameters, contract = self._phase_parameters(scope, "analysis")
             output_path = parameters.get("analysisOutputPath")
             expected_analysis_ids = contract.get("analysisIds")
@@ -902,6 +930,7 @@ class RuntimeAnalysisMixin:
                     "datasetIds",
                     "evidencePaths",
                     "citationIds",
+                    "metrics",
                     "chartIds",
                     "profileReadReceiptIds",
                     "warnings",
@@ -997,6 +1026,64 @@ class RuntimeAnalysisMixin:
                     "report_analysis_evidence_incomplete",
                     "analysis evidence 必须按冻结顺序精确覆盖全部 analysisId。",
                 )
+            supplied_metric_definitions = tuple(
+                MetricDefinition.model_validate(item) for item in metricDefinitions
+            )
+            fact_bundles: list[Mapping[str, Any]] = []
+            deterministic_files = contract.get("deterministicFactFiles")
+            if isinstance(deterministic_files, Mapping):
+                for analysis_id in expected_analysis_ids:
+                    identity = deterministic_files.get(analysis_id)
+                    if not isinstance(identity, Mapping):
+                        continue
+                    path = identity.get("path")
+                    if not isinstance(path, str) or not path:
+                        continue
+                    _relative, remote = self.kernel.service.normalize_path(path, allow_root=False)
+                    async with self.kernel.service._async_client() as client:
+                        sandbox = await self.kernel.service._asandbox_for(client, scope.thread_id)
+                        content = await self.kernel.service._adownload_file(
+                            sandbox, remote, 10 * 1024 * 1024
+                        )
+                    expected_size = identity.get("size")
+                    expected_sha256 = identity.get("sha256")
+                    if (
+                        not isinstance(expected_size, int)
+                        or len(content) != expected_size
+                        or not isinstance(expected_sha256, str)
+                        or hashlib.sha256(content).hexdigest() != expected_sha256
+                    ):
+                        raise ReportingError(
+                            "report_analysis_evidence_identity_mismatch",
+                            "固定事实文件身份在分析冻结前发生变化。",
+                            details={"path": path},
+                        )
+                    try:
+                        payload = json.loads(content)
+                    except (TypeError, ValueError) as error:
+                        raise ReportingError(
+                            "report_analysis_evidence_invalid", "固定事实文件不是有效 JSON。"
+                        ) from error
+                    if isinstance(payload, Mapping):
+                        fact_bundles.append(payload)
+            chart_metric_codes = tuple(
+                code
+                for chart in chart_registry.values()
+                if isinstance(chart, Mapping)
+                for code in chart.get("metricCodes", ())
+                if isinstance(code, str)
+            )
+            missing_metric_codes = _missing_metric_definition_codes(
+                fact_bundles=tuple(fact_bundles),
+                chart_metric_codes=chart_metric_codes,
+                metric_definitions=supplied_metric_definitions,
+            )
+            if missing_metric_codes:
+                raise ReportingError(
+                    "report_analysis_metric_definition_missing",
+                    "冻结事实或图表引用的指标缺少完整定义。",
+                    details={"missingMetricCodes": list(missing_metric_codes)},
+                )
             bound_profile_receipt_ids = {
                 receipt_id
                 for item in parsed_evidence
@@ -1085,9 +1172,7 @@ class RuntimeAnalysisMixin:
                 reportBrief=ReportBrief.model_validate(reportBrief),
                 evidenceManifest=AnalysisEvidenceManifest(
                     evidence=tuple(parsed_evidence),
-                    metricDefinitions=tuple(
-                        MetricDefinition.model_validate(item) for item in metricDefinitions
-                    ),
+                    metricDefinitions=supplied_metric_definitions,
                     charts=tuple(parsed_charts),
                     datasetSemantics=parsed_dataset_semantics,
                     warnings=tuple(warnings),
@@ -1151,6 +1236,7 @@ class RuntimeAnalysisMixin:
         citationIds: list[str],
         profileReadReceiptIds: list[str],
         warnings: list[str],
+        chartIds: list[str] | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         """把不可变固定事实直接绑定为 evidence，并结束对应的独立 Task。
@@ -1177,6 +1263,19 @@ class RuntimeAnalysisMixin:
             durable_item = (
                 analysis_items.get(analysisId) if isinstance(analysis_items, dict) else None
             )
+            raw_plans = contract.get("analysisPlans")
+            planned = raw_plans.get(analysisId) if isinstance(raw_plans, Mapping) else None
+            planned_metrics = (
+                list(dict.fromkeys(value for value in planned.get("metrics", ()) if isinstance(value, str)))
+                if isinstance(planned, Mapping)
+                else []
+            )
+            chart_ids = list(dict.fromkeys(value for value in (chartIds or ()) if isinstance(value, str)))
+            if chartIds is not None and len(chart_ids) != len(chartIds):
+                raise ReportingError(
+                    "report_analysis_chart_invalid",
+                    "chartIds 必须是不重复的字符串数组。",
+                )
             self._require_analysis_output_paths(contract, evidencePaths)
             summary, comparability_warnings = _normalize_analysis_summary_comparability(summary)
             warnings = list(dict.fromkeys((*warnings, *comparability_warnings)))
@@ -1189,6 +1288,10 @@ class RuntimeAnalysisMixin:
                 "profileReadReceiptIds": profileReadReceiptIds,
                 "warnings": warnings,
             }
+            if isinstance(planned, Mapping):
+                payload["metrics"] = planned_metrics
+            if chartIds is not None or isinstance(planned, Mapping):
+                payload["chartIds"] = chart_ids
             deterministic_files = contract.get("deterministicFactFiles")
             deterministic_identity = (
                 deterministic_files.get(analysisId)

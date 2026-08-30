@@ -51,7 +51,11 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _run_pending_analysis_items,
     _visualization_retry_usage,
 )
-from smart_reporting.reporting.workflow.runtime.sections import _run_bounded, _section_retry_context
+from smart_reporting.reporting.workflow.runtime.sections import (
+    _run_bounded,
+    _section_claim_authoring_contract,
+    _section_retry_context,
+)
 
 
 @pytest.mark.anyio
@@ -321,6 +325,7 @@ async def test_section_worker_defers_rework_transition_until_batch_finishes() ->
     ]
     instruction = json.loads(runtime.task_runner.start.await_args.args[1])
     assert instruction["claimAuthoringContract"] == {
+        "allowedMetricCodes": [],
         "managementQuestionRefs": [
             {
                 "ref": "analysis_001",
@@ -336,7 +341,37 @@ async def test_section_worker_defers_rework_transition_until_batch_finishes() ->
             "chartCitationIds",
         ],
         "standaloneClaimRequiredFields": ["currentPeriod"],
+        "comparisonRule": (
+            "comparisonType 非 none 时必须提供 comparisonPeriod；绑定图表时以图表冻结语义为准"
+        ),
     }
+
+
+def test_section_instruction_uses_frozen_metric_codes() -> None:
+    work_item = section_work_item("section_001").model_copy(
+        update={
+            "metric_definitions": (
+                MetricDefinition(
+                    code="income_summary_total",
+                    name="医疗收入",
+                    definition="冻结医疗收入",
+                    unit="元",
+                    periodBasis="2025年",
+                ),
+                MetricDefinition(
+                    code="cost_total",
+                    name="总成本",
+                    definition="冻结总成本",
+                    unit="元",
+                    periodBasis="2025年",
+                ),
+            )
+        }
+    )
+
+    contract = _section_claim_authoring_contract(work_item)
+
+    assert contract["allowedMetricCodes"] == ["income_summary_total", "cost_total"]
 
 
 def test_pending_analysis_rework_survives_fresh_retry_without_analysis_manifest() -> None:

@@ -65,6 +65,12 @@ class RuntimeSectionsMixin:
                 raise ReportingError(
                     "report_section_claim_metric_unknown",
                     "章节 claim 引用了未冻结指标。",
+                    details={
+                        "sectionCode": section_code,
+                        "claimId": submission.claim_id,
+                        "metricCode": submission.metric_code,
+                        "expectedMetricCodes": sorted(metrics_by_code),
+                    },
                 )
             management_question = questions_by_ref.get(submission.management_question_ref)
             if management_question is None:
@@ -343,6 +349,12 @@ class RuntimeSectionsMixin:
                 raise ReportingError(
                     "report_section_claim_metric_unknown",
                     "章节 claim 引用了未冻结指标。",
+                    details={
+                        "sectionCode": section_code,
+                        "claimId": claim.claim_id,
+                        "metricCode": claim.metric_code,
+                        "expectedMetricCodes": sorted(metrics_by_code),
+                    },
                 )
             if claim.period_basis != metric.period_basis:
                 semantic_conflicts.append(
@@ -854,6 +866,7 @@ class RuntimeSectionsMixin:
                     "report_phase_contract_invalid",
                     "register_report_charts 只允许 visualization Task 调用。",
                 )
+            await self._ensure_visualization_terminal_settled(scope)
             state = self._session_state(run_context)
             dependencies = (
                 run_context.dependencies

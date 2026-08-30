@@ -14,10 +14,12 @@ from agno.exceptions import StopAgentRun
 from agno.run import RunContext
 from agno.tools import Function
 from daytona.common.errors import DaytonaError
+from pydantic import ValidationError
 
 from smart_reporting.reporting.agent import (
     _REPORT_TOOL_FAILURE_STATE_KEY,
     _enforce_reporting_no_progress,
+    _report_tool_argument_failure,
     normalize_reporting_tool_arguments,
 )
 from smart_reporting.reporting.delivery.acceptance import build_report_phase_acceptance_contract
@@ -47,6 +49,7 @@ from smart_reporting.reporting.tests.workspace_fakes import service as fake_work
 from smart_reporting.reporting.tools.analysis import (
     MAX_ANALYSIS_WRITE_INTENT_BYTES,
     _derive_durable_analysis_binding,
+    _missing_metric_definition_codes,
     _normalize_analysis_summary_comparability,
 )
 from smart_reporting.reporting.tools.factory import build_report_worker_tools
@@ -72,6 +75,7 @@ from smart_reporting.reporting.tools.validation import (
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
     FileIdentity,
+    MetricDefinition,
     ProfileReadReceipt,
     SectionWorkItem,
 )
@@ -87,6 +91,58 @@ from smart_reporting.reporting.workflow.state import ReportingRunState
 from smart_reporting.task_execution.acceptance import normalize_acceptance_contract
 from smart_reporting.task_execution.execution import WorkspaceTaskToolkit
 from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
+
+
+def test_missing_metric_definition_codes_covers_facts_derived_and_charts() -> None:
+    missing = _missing_metric_definition_codes(
+        fact_bundles=(
+            {
+                "metrics": [{"metricCodes": ["income_summary_total", "defined_metric"]}],
+                "derivedMetrics": [{"code": "income_margin"}],
+            },
+        ),
+        chart_metric_codes=("chart_only", "defined_metric"),
+        metric_definitions=(
+            MetricDefinition(
+                code="defined_metric",
+                name="已定义",
+                definition="测试指标",
+                periodBasis="月",
+            ),
+        ),
+    )
+
+    assert missing == ("chart_only", "income_margin", "income_summary_total")
+
+
+def test_section_unknown_metric_reports_current_work_item_contract() -> None:
+    with pytest.raises(ReportingError) as raised:
+        ReportWorkspaceTaskToolkit._normalize_section_claims(
+            section_code="section_002",
+            claims=[
+                {
+                    "claimId": "claim_001",
+                    "metricCode": "unknown_metric",
+                    "value": 1,
+                    "managementQuestionRef": "analysis_002",
+                    "citationIds": ["citation_001"],
+                }
+            ],
+            work_item=SimpleNamespace(
+                metric_definitions=(SimpleNamespace(code="revenue"),),
+                charts=(),
+                citations=(),
+                management_question_catalog=(),
+            ),
+        )
+
+    assert raised.value.code == "report_section_claim_metric_unknown"
+    assert raised.value.details == {
+        "sectionCode": "section_002",
+        "claimId": "claim_001",
+        "metricCode": "unknown_metric",
+        "expectedMetricCodes": ["revenue"],
+    }
 
 
 def write_functions() -> dict[str, Function]:
@@ -265,7 +321,7 @@ def test_analysis_fact_budget_contract_requires_all_v1_scalars_and_recovery_flag
         "analysisIds": ["analysis_001"],
         "analysisOutputRoot": "evidence/analysis_001",
         "analysisFactBudgetVersion": 1,
-        "analysisFactQueryLimit": 2,
+        "analysisFactQueryLimit": 4,
         "analysisFactQueriesUsed": 1,
         "analysisRecovery": False,
     }
@@ -277,7 +333,7 @@ def test_analysis_fact_budget_contract_requires_all_v1_scalars_and_recovery_flag
 
     assert reporting_analysis_fact_budget_contract_from_acceptance_contract(valid) == {
         "analysisFactBudgetVersion": 1,
-        "analysisFactQueryLimit": 2,
+        "analysisFactQueryLimit": 4,
         "analysisFactQueriesUsed": 1,
         "analysisRecovery": False,
     }
@@ -317,7 +373,7 @@ def test_historical_analysis_fact_contract_uses_fixed_defaults() -> None:
 
     assert reporting_analysis_fact_budget_contract_from_acceptance_contract(contract) == {
         "analysisFactBudgetVersion": 0,
-        "analysisFactQueryLimit": 2,
+        "analysisFactQueryLimit": 4,
         "analysisFactQueriesUsed": 0,
         "analysisRecovery": False,
     }
@@ -752,6 +808,47 @@ async def test_register_report_charts_rejects_pending_failure_from_previous_retr
 
     assert result["ok"] is False
     assert result["code"] == "report_visualization_script_failed"
+    toolkit._inspect_chart.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_running_visualization_script() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-script-running",
+        external_run_id="visualization-task-running",
+        internal_run_id="run-script-running",
+        task=SimpleNamespace(mutation_sequence=1),
+    )
+    run_context = RunContext(
+        run_id="run-script-running",
+        session_id="session-script-running",
+        session_state={},
+        dependencies={REPORTING_TASK_DEPENDENCY: {"externalRunId": "visualization-task-running"}},
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit.repository = SimpleNamespace(
+        list_executions=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    execution_id="execution-running",
+                    internal_run_id="run-script-running",
+                    kind="terminal",
+                    status="running",
+                )
+            ]
+        )
+    )
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: ({}, {})
+    toolkit._inspect_chart = AsyncMock()
+
+    result = await toolkit.register_report_charts([], run_context=run_context)
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_script_running"
+    assert result["retryable"] is True
     toolkit._inspect_chart.assert_not_awaited()
 
 
@@ -3123,6 +3220,42 @@ def test_render_report_section_schema_does_not_require_server_derived_claim_fiel
     assert "currentPeriod" not in claim_schema["required"]
     assert "comparisonPeriod" not in claim_schema["required"]
     assert "comparisonType" not in claim_schema["required"]
+
+
+def test_render_report_section_description_does_not_invent_metric_code() -> None:
+    toolkit = ReportWorkspaceTaskToolkit(
+        fake_workspace_service(None),
+        AsyncMock(),
+        state_repository=AsyncMock(),
+    )
+
+    description = toolkit.async_functions["render_report_section"].description or ""
+
+    assert '"metricCode":"income"' not in description
+    assert "SectionWorkItem.metricDefinitions.code" in description
+
+    chart_description = toolkit.async_functions["register_report_charts"].description or ""
+    assert '"metricCodes":["income"]' not in chart_description
+    assert "已冻结分析事实" in chart_description
+
+
+def test_dynamic_metric_tools_do_not_return_static_correction_examples() -> None:
+    error = ValidationError.from_exception_data(
+        "SectionClaimSubmission",
+        [
+            {
+                "type": "missing",
+                "loc": ("claims", 0, "comparisonPeriod"),
+                "input": None,
+            }
+        ],
+    )
+
+    section_failure = _report_tool_argument_failure("render_report_section", error, {})
+    chart_failure = _report_tool_argument_failure("register_report_charts", error, {})
+
+    assert "correctCallExample" not in section_failure
+    assert "correctCallExample" not in chart_failure
 
 
 @pytest.mark.anyio

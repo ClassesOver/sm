@@ -117,3 +117,19 @@ def test_ruijin_profile覆盖收入预算取数指标() -> None:
     }
     assert {code: metrics[code].field_ref for code in expected} == expected
     assert all(metrics[code].aggregation == "sum" for code in expected)
+
+
+def test_ruijin_profile覆盖项目预算三个权威金额指标() -> None:
+    registry = load_configured_reporting_profiles(Path("deploy/agentos/reporting"))
+    profile = bind_reporting_profile_sources(
+        resolve_reporting_profile(registry, "ruijin"), {"rj": "rj"}
+    )
+
+    metrics = {item.code: item for item in profile.metrics}
+    expected = {
+        "project_budget": "rj.rj.dwd_project_budget_view.budget_project_amount",
+        "project_contract_amount": "rj.rj.dwd_project_budget_view.contract_amount",
+        "project_payment_amount": "rj.rj.dwd_project_budget_view.payment_amount",
+    }
+    assert {code: metrics[code].field_ref for code in expected} == expected
+    assert all(metrics[code].aggregation == "sum" for code in expected)

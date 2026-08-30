@@ -86,7 +86,8 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
     (
         "优先使用 query_analysis_facts 读取当前 analysis 的服务端固定事实；只有固定事实不能满足"
         "当前原子管理问题时，才读取授权 CSV 并用 write_analysis_files 创建最小补充脚本和 evidence。"
-        "固定事实足够时不得创建脚本或 evidence 文件，complete_analysis_item 的 evidencePaths 传空数组。"
+        "固定事实足够时不得创建脚本或 evidence 文件，complete_analysis_item 的 evidencePaths 传空数组；"
+        "如当前结论绑定已生成的图表，必须在 chartIds 中提交其 chartId。"
         "不得连接数据库、执行 SQL、扩大 Dataset 范围或处理其他 analysisId。"
     ),
     (

@@ -75,6 +75,20 @@ from .datasets import _profile_coverage_instruction_projection
 __all__ = ["RuntimeAnalysisMixin", "_visualization_retry_budget"]
 
 
+def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int:
+    """按当前分析项复杂度分配事实查询额度，并保留硬上限。"""
+
+    metrics = analysis_plan.get("metrics") if isinstance(analysis_plan, Mapping) else None
+    datasets = analysis_plan.get("datasetIds") if isinstance(analysis_plan, Mapping) else None
+    periods = analysis_plan.get("periods") if isinstance(analysis_plan, Mapping) else None
+    complexity = sum(
+        len(value)
+        for value in (metrics, datasets, periods)
+        if isinstance(value, (list, tuple))
+    )
+    return min(8, max(4, 2 + (complexity + 2) // 3))
+
+
 class RuntimeAnalysisMixin:
     async def run_coding_analysis(
         self, _step_input: StepInput, run_context: RunContext
@@ -723,6 +737,8 @@ class RuntimeAnalysisMixin:
                         "datasetIds",
                         "evidencePaths",
                         "citationIds",
+                        "metrics",
+                        "chartIds",
                         "profileReadReceiptIds",
                         "warnings",
                     }
@@ -796,7 +812,7 @@ class RuntimeAnalysisMixin:
                     "analysisIds": [analysis_id],
                     "currentAnalysisId": analysis_id,
                     "analysisFactBudgetVersion": 1,
-                    "analysisFactQueryLimit": 2,
+                    "analysisFactQueryLimit": _analysis_fact_query_limit_for_plan(analysis_plan),
                     "analysisFactQueriesUsed": analysis_fact_queries_used,
                     "analysisRecovery": analysis_recovery,
                     "analysisOutputRoot": (f"报表/智能分析/{report_run_id}/evidence/{analysis_id}"),

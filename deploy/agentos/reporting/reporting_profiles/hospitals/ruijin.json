@@ -157,6 +157,27 @@
       "description": "成本汇总指标金额",
       "aggregation": "sum",
       "fieldRef": "rj.dwd_hdc_cost_table_view.indicator_value"
+    },
+    {
+      "code": "project_budget",
+      "kind": "currency",
+      "description": "项目预算金额",
+      "aggregation": "sum",
+      "fieldRef": "rj.dwd_project_budget_view.budget_project_amount"
+    },
+    {
+      "code": "project_contract_amount",
+      "kind": "currency",
+      "description": "项目合同金额",
+      "aggregation": "sum",
+      "fieldRef": "rj.dwd_project_budget_view.contract_amount"
+    },
+    {
+      "code": "project_payment_amount",
+      "kind": "currency",
+      "description": "项目付款金额",
+      "aggregation": "sum",
+      "fieldRef": "rj.dwd_project_budget_view.payment_amount"
     }
   ],
   "dimensions": [
