@@ -21,7 +21,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 
-from ...task_execution.execution import _create_files_patch
+from ...task_execution.execution import create_files_patch
 from ...task_execution.tools import build_workspace_changes, parse_unified_diff
 from ...workspace import WORKSPACE_ROOT, WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
@@ -514,7 +514,7 @@ class RuntimeAnalysisMixin:
                     )
                 else:
                     patch = (
-                        _create_files_patch(canonical["files"])
+                        create_files_patch(canonical["files"])
                         if canonical_tool_name == "create_files"
                         else canonical["patch"]
                     )

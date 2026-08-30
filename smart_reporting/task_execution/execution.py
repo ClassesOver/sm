@@ -200,7 +200,7 @@ def _normalize_function_call_arguments(
     state[state_key] = items[-50:]
 
 
-def _create_files_patch(files: list[dict[str, str]]) -> str:
+def create_files_patch(files: list[dict[str, str]]) -> str:
     lines: list[str] = []
     for item in files:
         content = item["content"].replace("\r\n", "\n").replace("\r", "\n")
@@ -4731,7 +4731,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         files: list[dict[str, str]],
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        patch = _create_files_patch(files)
+        patch = create_files_patch(files)
         return await self._invoke(
             "create_files",
             {"files": files},
@@ -5052,5 +5052,8 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
 TASK_EXECUTION_DEPENDENCY = CODING_TASK_DEPENDENCY
 TaskExecutionKernel = CodingExecutionKernel
 WorkspaceTaskToolkit = WorkspaceCodingToolkit
+
+# 旧内部调用方迁移期间保留模块内别名；跨包消费者应使用 create_files_patch。
+_create_files_patch = create_files_patch
 create_task_tool_scheduler_hook = create_coding_tool_scheduler_hook
 is_task_tool_scheduler_hook = is_coding_tool_scheduler_hook
