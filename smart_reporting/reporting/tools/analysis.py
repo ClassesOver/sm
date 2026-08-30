@@ -21,8 +21,11 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 
-from ...task_execution.execution import create_files_patch
-from ...task_execution.tools import build_workspace_changes, parse_unified_diff
+from ...task_execution.changes import (
+    build_workspace_changes,
+    create_files_patch,
+    parse_unified_diff,
+)
 from ...workspace import WORKSPACE_ROOT, WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
 from ..workflow.checkpoint import (

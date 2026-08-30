@@ -16,6 +16,8 @@ __all__ = [
     "TaskExecutionKernel",
     "WorkspaceTaskToolkit",
     "create_files_patch",
+    "build_workspace_changes",
+    "parse_unified_diff",
 ]
 
 
@@ -27,5 +29,12 @@ def __getattr__(name: str):
             "TaskExecutionKernel": TaskExecutionKernel,
             "WorkspaceTaskToolkit": WorkspaceTaskToolkit,
             "create_files_patch": create_files_patch,
+        }[name]
+    if name in {"build_workspace_changes", "parse_unified_diff"}:
+        from .changes import build_workspace_changes, parse_unified_diff
+
+        return {
+            "build_workspace_changes": build_workspace_changes,
+            "parse_unified_diff": parse_unified_diff,
         }[name]
     raise AttributeError(name)
