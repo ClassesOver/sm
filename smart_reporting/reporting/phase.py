@@ -10,6 +10,11 @@ from typing import Any, Literal
 from agno.run import RunContext
 
 from .models import ReportingError
+from .tools.capabilities import (
+    REPORTING_ANALYSIS_ITEM_TOOL_NAMES,
+    REPORTING_SECTION_TOOL_NAMES,
+    REPORTING_VISUALIZATION_TOOL_NAMES,
+)
 
 ReportingPhase = Literal["analysis", "section"]
 ReportingTaskKind = Literal["analysis_item", "visualization", "section"]
@@ -55,40 +60,6 @@ REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY = "agentos_reporting_analysis_fact
 REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR = "_agentos_reporting_analysis_fact_budget"
 REPORTING_ANALYSIS_FACT_QUERY_LIMIT = 2
 REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
-
-REPORTING_SECTION_TOOL_NAMES = frozenset(
-    {"read_file", "read_tool_output", "render_report_section", "request_analysis_rework"}
-)
-REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
-    {
-        "complete_analysis_item",
-        "process",
-        "query_analysis_context",
-        "query_analysis_facts",
-        "query_profile",
-        "read_file",
-        "read_tool_output",
-        "write_analysis_files",
-        "terminal",
-    }
-)
-REPORTING_VISUALIZATION_TOOL_NAMES = frozenset(
-    {
-        "finalize_report_analysis",
-        "get_skill_instructions",
-        "get_skill_reference",
-        "inspect_chart",
-        "process",
-        "query_analysis_context",
-        "query_analysis_facts",
-        "read_file",
-        "read_tool_output",
-        "register_report_charts",
-        "write_analysis_files",
-        "terminal",
-        "view_image",
-    }
-)
 
 # 可视化阶段的探索工具必须有独立上限；否则模型可能在创建脚本前耗尽总预算。
 REPORTING_VISUALIZATION_FACT_QUERY_LIMIT = 4
