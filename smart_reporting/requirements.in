@@ -1,4 +1,4 @@
-agno==3.0.0
+agno==3.0.1
 aiosqlite>=0.20,<1.0
 daytona==0.189.0
 fastapi>=0.115
