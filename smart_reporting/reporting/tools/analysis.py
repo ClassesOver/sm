@@ -876,6 +876,37 @@ class RuntimeAnalysisMixin:
                     "report_visualization_charts_not_registered",
                     "图表尚未完成登记，不能冻结可视化分析；请先成功调用 register_report_charts。",
                 )
+            # Finalize 必须消费章节 worker 已提交的 durable 草案，而不能仅信任全局 charts
+            # registry。register 的门禁负责阻止新非法登记；这里再次验证当前 registry 的
+            # 每个图表都有对应章节草案和冻结文件身份，防止旧状态、人工写入或部分恢复绕过
+            # 章节收口契约后进入正式 AnalysisArtifact。
+            draft_charts_by_id, draft_files_by_path = self._section_chart_draft_catalog(
+                durable.payload
+            )
+            for chart in durable.payload["charts"]:
+                if not isinstance(chart, Mapping) or not isinstance(chart.get("chartId"), str):
+                    raise ReportingError(
+                        "report_visualization_section_draft_missing",
+                        "已登记图表缺少有效章节草案身份。",
+                    )
+                chart_id = chart["chartId"]
+                draft = draft_charts_by_id.get(chart_id)
+                source_path = chart.get("sourcePath")
+                draft_file = (
+                    draft_files_by_path.get(source_path) if isinstance(source_path, str) else None
+                )
+                if (
+                    draft is None
+                    or draft.get("sourcePath") != source_path
+                    or draft_file is None
+                    or draft_file.get("size") != chart.get("size")
+                    or draft_file.get("sha256") != chart.get("sha256")
+                ):
+                    raise ReportingError(
+                        "report_visualization_section_draft_missing",
+                        "已登记图表未被 durable 章节草案完整解释。",
+                        details={"chartId": chart_id, "sourcePath": source_path},
+                    )
             parameters, contract = self._phase_parameters(scope, "analysis")
             output_path = parameters.get("analysisOutputPath")
             expected_analysis_ids = contract.get("analysisIds")

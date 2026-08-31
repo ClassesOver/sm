@@ -18,7 +18,13 @@ from smart_reporting.reporting.hospital_operation.detailed_analysis import (
     DetailedAnalysisPlan,
 )
 from smart_reporting.reporting.models import ReportingError
-from smart_reporting.reporting.phase import REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR
+from smart_reporting.reporting.phase import (
+    REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+    reporting_visualization_budget_contract_from_acceptance_contract,
+    reporting_visualization_budget_from_acceptance_contract,
+    reporting_visualization_recovery_from_acceptance_contract,
+)
+from smart_reporting.reporting.tools.toolkit import ReportWorkspaceTaskToolkit
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisChart,
     AnalysisDatasetSemantics,
@@ -53,6 +59,7 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _run_pending_analysis_items,
     _run_pending_visualization_sections,
     _visualization_retry_usage,
+    _visualization_section_retry_error,
 )
 from smart_reporting.reporting.workflow.runtime.sections import (
     _run_bounded,
@@ -467,6 +474,406 @@ async def test_visualization_finalize_starts_and_runs_bound_task() -> None:
     runtime.task_runner.start.assert_awaited_once()
     runtime.task_runner.run.assert_awaited_once()
     assert receipt["status"] == "completed"
+
+
+def _section_worker_runtime(
+    *,
+    durable_payload: dict[str, Any],
+    stored_checkpoint: ReportingCheckpoint,
+) -> tuple[
+    Any,
+    SimpleNamespace,
+    list[ReportingCheckpoint],
+    list[tuple[Any, str, dict[str, Any]]],
+]:
+    """构造可完整执行 `_run_visualization_section_task` 的最小 runtime。
+
+    task start 记录 (scope, instruction, acceptance_contract);persist 捕获每次
+    checkpoint 写回;durable payload 可变,测试用 run 副作用模拟章节 submit 收口。
+    """
+
+    starts: list[tuple[Any, str, dict[str, Any]]] = []
+    persisted: list[ReportingCheckpoint] = []
+
+    async def start(
+        task_scope: Any, instruction: str, *, acceptance_contract: dict[str, Any]
+    ) -> None:
+        starts.append((task_scope, instruction, acceptance_contract))
+
+    task_runner = SimpleNamespace(
+        repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
+        start=AsyncMock(side_effect=start),
+        run=AsyncMock(),
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime._visualization_context = {
+        "run_context": SimpleNamespace(run_id="run-1"),
+        "checkpoint": stored_checkpoint,
+        "revision": 1,
+        "sandbox_id": "sandbox-1",
+        "external_run_id": "run-1",
+        "thread_id": "thread-1",
+        "validation_context_file": FileIdentity(
+            path="validation/context.json", size=1, sha256="a" * 64
+        ),
+        "fact_files": {
+            "analysis_001": FileIdentity(
+                path="报表/智能分析/run-1/facts/revision-1/analysis_001.json",
+                size=32768,
+                sha256="f" * 64,
+            )
+        },
+        "visual_inspection_mode": "deterministic",
+    }
+    runtime._scope = lambda _context: {
+        "externalRunId": "run-1",
+        "threadId": "thread-1",
+        "userId": "user-1",
+    }
+    runtime._state = lambda _context: {
+        "report_outline": {
+            "reportType": "topic",
+            "title": "报告",
+            "sections": [
+                {
+                    "code": "section_001",
+                    "sectionNumber": "1",
+                    "title": "收入",
+                    "analysisIds": ["analysis_001"],
+                }
+            ],
+        }
+    }
+    runtime.state_repository = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(payload=durable_payload))
+    )
+    runtime.task_runner = task_runner
+    runtime.report_worker = SimpleNamespace(id="report-worker")
+
+    async def read_fact_model(*_args: Any, **_kwargs: Any) -> Any:
+        return SimpleNamespace(
+            analysis_id="analysis_001",
+            model_dump=lambda **_options: {
+                "version": "1",
+                "analysisId": "analysis_001",
+                "metrics": [],
+                "derivedMetrics": [],
+                "comparisons": [],
+                "reconciliations": [],
+                "correlations": {},
+                "warnings": [],
+            },
+        )
+
+    async def current_checkpoint(*_args: Any, **_kwargs: Any) -> ReportingCheckpoint:
+        return stored_checkpoint
+
+    async def persist(_context: Any, stored: ReportingCheckpoint) -> ReportingCheckpoint:
+        persisted.append(stored)
+        return stored
+
+    runtime._read_identity_model = read_fact_model
+    runtime._current_reporting_checkpoint = current_checkpoint
+    runtime._persist_reporting_checkpoint = persist
+    return runtime, task_runner, persisted, starts
+
+
+def _section_durable_payload() -> dict[str, Any]:
+    return {
+        "completedAnalysisIds": ["analysis_001"],
+        "analysisItems": {
+            "analysis_001": {
+                "analysisId": "analysis_001",
+                "summary": "收入事实已冻结。",
+                "datasetIds": ["dataset-1"],
+                "evidenceFiles": [{"path": "evidence/income.json", "size": 1, "sha256": "e" * 64}],
+                "citationIds": ["citation-001"],
+                "profileReadReceiptIds": [],
+                "chartIds": [],
+                "warnings": [],
+            }
+        },
+        "charts": [],
+        "visualizationSections": {},
+        "completedVisualizationSections": [],
+    }
+
+
+def _section_budget_failure(**usage: int) -> ReportingError:
+    error = ReportingError("report_visualization_tool_budget_exhausted", "本章预算耗尽。")
+    setattr(
+        error,
+        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+        {
+            "visualizationReadUnitsUsed": usage.get("read_units", 0),
+            "visualizationFactQueriesUsed": usage.get("fact_queries", 0),
+            "visualizationToolCalls": usage.get("tool_calls", 0),
+            "visualizationScriptFailures": usage.get("script_failures", 0),
+            "visualizationAttemptSuccessfulToolCalls": 0,
+            "visualizationAttemptRejectedToolCalls": 0,
+        },
+    )
+    return error
+
+
+@pytest.mark.anyio
+async def test_visualization_section_contract_injects_budget_and_script_path() -> None:
+    durable_payload = _section_durable_payload()
+
+    async def run_success(task_scope: Any, parent_run_id: str = "") -> dict[str, Any]:
+        durable_payload["completedVisualizationSections"].append("section_001")
+        durable_payload["visualizationSections"]["section_001"] = {"charts": [], "files": []}
+        return {"status": "completed"}
+
+    runtime, task_runner, persisted, starts = _section_worker_runtime(
+        durable_payload=durable_payload,
+        stored_checkpoint=analysis_checkpoint(),
+    )
+    task_runner.run = AsyncMock(side_effect=run_success)
+
+    await runtime._run_visualization_section_task("section_001")
+
+    assert len(starts) == 1
+    _scope, instruction_text, contract = starts[0]
+    instruction = json.loads(instruction_text)
+    phase_contract = contract["requirements"][0]["parameters"]["phaseContract"]
+    script_path = instruction["visualizationWorkspace"]["scriptPath"]
+    # 章节 contract 必须携带与 instruction 一致的受信 scriptPath,否则 write 门禁
+    # (toolkit._require_analysis_task_output_paths) 会拒绝章节脚本写入。
+    assert phase_contract["visualizationWorkspace"] == {
+        "scriptPath": script_path,
+        "chartOutputRoot": instruction["visualizationWorkspace"]["chartOutputRoot"],
+    }
+    ReportWorkspaceTaskToolkit._require_analysis_task_output_paths(phase_contract, [script_path])
+    with pytest.raises(ReportingError) as rejected:
+        ReportWorkspaceTaskToolkit._require_analysis_task_output_paths(
+            phase_contract, [f"{script_path}.bak"]
+        )
+    assert rejected.value.code == "report_visualization_write_forbidden"
+
+    # 按章动态预算:facts 32768 字节 -> fact_query_limit 4;evidence 1 个文件 -> 1 unit。
+    expected_budget = {
+        "visualizationBudgetVersion": 1,
+        "visualizationEvidenceReadUnits": 1,
+        "visualizationReadLimit": 12,
+        "visualizationFactQueryLimit": 4,
+        "visualizationAttemptToolLimit": 48,
+        "visualizationTotalToolLimit": 64,
+        "visualizationReadUnitsUsed": 0,
+        "visualizationFactQueriesUsed": 0,
+        "visualizationToolCalls": 0,
+        "visualizationScriptFailures": 0,
+    }
+    assert reporting_visualization_budget_contract_from_acceptance_contract(contract) == (
+        expected_budget
+    )
+    assert reporting_visualization_budget_from_acceptance_contract(contract) == (0, 0)
+    assert reporting_visualization_recovery_from_acceptance_contract(contract) is False
+    assert persisted[-1].visualization_section_errors == {}
+
+
+@pytest.mark.anyio
+async def test_visualization_section_consecutive_failures_retry_with_budget_inheritance() -> None:
+    durable_payload = _section_durable_payload()
+    failures = [
+        _section_budget_failure(tool_calls=47, script_failures=2),
+        _section_budget_failure(tool_calls=50, read_units=3, fact_queries=2),
+    ]
+    final_failure = failures[-1]
+
+    async def run_failure(task_scope: Any, parent_run_id: str = "") -> dict[str, Any]:
+        raise failures.pop(0)
+
+    runtime, task_runner, persisted, starts = _section_worker_runtime(
+        durable_payload=durable_payload,
+        stored_checkpoint=analysis_checkpoint(),
+    )
+    task_runner.run = AsyncMock(side_effect=run_failure)
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime._run_visualization_section_task("section_001")
+
+    # MAX_REPORT_SECTION_PHASE_ATTEMPTS=2:同章最多两次 fresh attempt 后透传最后错误。
+    assert raised.value is final_failure
+    assert len(starts) == 2
+    first_contract = starts[0][2]["requirements"][0]["parameters"]["phaseContract"]
+    second_contract = starts[1][2]["requirements"][0]["parameters"]["phaseContract"]
+    assert first_contract["visualizationRecovery"] is False
+    assert second_contract["visualizationRecovery"] is True
+    # 第二次 attempt 继承第一次失败时已消耗的预算,不再从零计数。
+    assert second_contract["visualizationToolCalls"] == 47
+    assert second_contract["visualizationScriptFailures"] == 2
+    assert second_contract["visualizationReadUnitsUsed"] == 0
+    assert second_contract["visualizationFactQueriesUsed"] == 0
+    assert starts[0][0].external_run_id != starts[1][0].external_run_id
+    second_instruction = json.loads(starts[1][1])
+    assert any("上一轮" in item for item in second_instruction["completionConditions"])
+
+    ledger = persisted[-1].visualization_section_errors["section_001"]
+    assert ledger.attempt == 1
+    assert ledger.retry_usage is not None
+    assert ledger.retry_usage.visualization_tool_calls == 50
+    assert ledger.retry_usage.visualization_read_units_used == 3
+    assert ledger.retry_usage.visualization_fact_queries_used == 2
+
+
+@pytest.mark.anyio
+async def test_visualization_section_phase_reentry_recovers_ledger_error() -> None:
+    durable_payload = _section_durable_payload()
+    failed_trace = ContextTrace(
+        phase="analysis",
+        taskId="section-task-attempt-0",
+        workKind="visualization_section",
+        sectionCode="section_001",
+        attempt=0,
+        status="failed",
+    )
+    stored = analysis_checkpoint().model_copy(
+        update={
+            "visualization_section_errors": {
+                "section_001": CheckpointError(
+                    phase="analysis",
+                    code="report_visualization_tool_budget_exhausted",
+                    message="上一轮本章预算耗尽。",
+                    sectionCode="section_001",
+                    taskId="section-task-attempt-0",
+                    workKind="visualization_section",
+                    attempt=0,
+                    retryUsage=CheckpointRetryUsage(
+                        visualizationReadUnitsUsed=3,
+                        visualizationFactQueriesUsed=2,
+                        visualizationToolCalls=47,
+                        visualizationScriptFailures=2,
+                    ),
+                )
+            },
+            "trace": (failed_trace,),
+        }
+    )
+
+    async def run_success(task_scope: Any, parent_run_id: str = "") -> dict[str, Any]:
+        durable_payload["completedVisualizationSections"].append("section_001")
+        durable_payload["visualizationSections"]["section_001"] = {"charts": [], "files": []}
+        return {"status": "completed"}
+
+    runtime, task_runner, persisted, starts = _section_worker_runtime(
+        durable_payload=durable_payload,
+        stored_checkpoint=stored,
+    )
+    task_runner.run = AsyncMock(side_effect=run_success)
+
+    await runtime._run_visualization_section_task("section_001")
+
+    # 账本驱动的跨阶段恢复:首个 contract 即携带 recovery 标志与已消耗预算。
+    assert len(starts) == 1
+    phase_contract = starts[0][2]["requirements"][0]["parameters"]["phaseContract"]
+    assert phase_contract["visualizationRecovery"] is True
+    assert phase_contract["visualizationToolCalls"] == 47
+    assert phase_contract["visualizationScriptFailures"] == 2
+    assert phase_contract["visualizationReadUnitsUsed"] == 3
+    assert phase_contract["visualizationFactQueriesUsed"] == 2
+    assert (
+        reporting_visualization_budget_contract_from_acceptance_contract(starts[0][2])[
+            "visualizationToolCalls"
+        ]
+        == 47
+    )
+    # 成功后清账:章节错误账本不再保留该 sectionCode。
+    assert "section_001" not in persisted[-1].visualization_section_errors
+    assert (
+        persisted[-1].trace[-1].model_dump(mode="json", by_alias=True)["sectionCode"]
+        == "section_001"
+    )
+    assert persisted[-1].trace[-1].status == "completed"
+
+
+@pytest.mark.anyio
+async def test_visualization_section_skips_completed_section_without_new_task() -> None:
+    durable_payload = _section_durable_payload()
+    durable_payload["completedVisualizationSections"].append("section_001")
+
+    runtime, task_runner, _persisted, starts = _section_worker_runtime(
+        durable_payload=durable_payload,
+        stored_checkpoint=analysis_checkpoint(),
+    )
+    task_runner.run = AsyncMock()
+
+    await runtime._run_visualization_section_task("section_001")
+
+    task_runner.start.assert_not_awaited()
+    task_runner.run.assert_not_awaited()
+    assert starts == []
+
+
+def test_visualization_section_ledger_recovery_fails_closed_on_inconsistent_trace() -> None:
+    stored = analysis_checkpoint().model_copy(
+        update={
+            "visualization_section_errors": {
+                "section_001": CheckpointError(
+                    phase="analysis",
+                    code="report_visualization_tool_budget_exhausted",
+                    message="账本与 trace 不一致。",
+                    sectionCode="section_001",
+                    taskId="section-task-attempt-0",
+                    workKind="visualization_section",
+                    attempt=0,
+                    retryUsage=CheckpointRetryUsage(visualizationToolCalls=5),
+                )
+            }
+        }
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        _visualization_section_retry_error(stored, section_code="section_001")
+
+    assert raised.value.code == "report_semantic_contract_upgrade_required"
+
+
+def test_visualization_section_ledger_recovery_returns_usage_for_matching_trace() -> None:
+    stored = analysis_checkpoint().model_copy(
+        update={
+            "visualization_section_errors": {
+                "section_001": CheckpointError(
+                    phase="analysis",
+                    code="report_visualization_tool_budget_exhausted",
+                    message="账本一致。",
+                    sectionCode="section_001",
+                    taskId="section-task-attempt-0",
+                    workKind="visualization_section",
+                    attempt=0,
+                    retryUsage=CheckpointRetryUsage(
+                        visualizationReadUnitsUsed=3,
+                        visualizationFactQueriesUsed=2,
+                        visualizationToolCalls=47,
+                        visualizationScriptFailures=2,
+                    ),
+                )
+            },
+            "trace": (
+                ContextTrace(
+                    phase="analysis",
+                    taskId="section-task-attempt-0",
+                    workKind="visualization_section",
+                    sectionCode="section_001",
+                    attempt=0,
+                    status="failed",
+                ),
+            ),
+        }
+    )
+
+    restored = _visualization_section_retry_error(stored, section_code="section_001")
+    other = _visualization_section_retry_error(stored, section_code="section_002")
+
+    assert other is None
+    assert restored is not None
+    assert restored.code == "report_visualization_tool_budget_exhausted"
+    assert _visualization_retry_usage(restored) == {
+        "visualizationReadUnitsUsed": 3,
+        "visualizationFactQueriesUsed": 2,
+        "visualizationToolCalls": 47,
+        "visualizationScriptFailures": 2,
+    }
 
 
 @pytest.mark.anyio

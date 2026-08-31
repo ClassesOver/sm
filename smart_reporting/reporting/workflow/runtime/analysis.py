@@ -110,7 +110,12 @@ class RuntimeAnalysisMixin:
         return await self.task_runner.run(task_scope, parent_run_id=parent_run_id)
 
     async def _run_visualization_section_task(self, section_code: str) -> None:
-        """执行单章图表 worker；章节草案由 durable submit 工具作为唯一完成信号。"""
+        """执行单章图表 worker；章节草案由 durable submit 工具作为唯一完成信号。
+
+        失败按 sectionCode 记入 checkpoint 账本并驱动同章 fresh retry(上限
+        MAX_REPORT_SECTION_PHASE_ATTEMPTS);重试章继承已消耗预算并关闭探索
+        (visualizationRecovery),已完成章由入口 durable 判定直接跳过。
+        """
         context = self._visualization_context
         run_context = context["run_context"]
         checkpoint = await self._current_reporting_checkpoint(run_context, context["checkpoint"])
@@ -127,6 +132,8 @@ class RuntimeAnalysisMixin:
             return
         analysis_items = payload.get("analysisItems", {})
         facts = []
+        section_analysis_items: dict[str, Mapping[str, Any]] = {}
+        section_fact_files: dict[str, FileIdentity] = {}
         for analysis_id in section.analysis_ids:
             fact_file = context["fact_files"].get(analysis_id)
             durable_item = (
@@ -142,136 +149,155 @@ class RuntimeAnalysisMixin:
                     analysis_id, fact_file, durable_item
                 )
             )
-        matching = [
-            item
-            for item in checkpoint.trace
-            if item.phase == "analysis"
-            and item.work_kind == "visualization_section"
-            and item.section_code == section_code
-        ]
-        attempt = max((item.attempt for item in matching), default=-1) + 1
-        root = f"报表/智能分析/{run_context.run_id}/analysis/charts/{section_code}/attempt-{attempt + 1}"
-        task_id = reporting_phase_task_key(
-            str(run_context.run_id or "report"),
-            context["revision"],
-            "analysis",
-            section_code=section_code,
-            task_kind="visualization_section",
-            attempt=attempt,
-        )
-        instruction_payload = {
-            "phase": "analysis",
-            "taskKind": "visualization_section",
-            "sectionCode": section_code,
-            "section": section.model_dump(mode="json", by_alias=True),
-            "analysisIds": list(section.analysis_ids),
-            "visualInspectionMode": context["visual_inspection_mode"],
-            "visualizationFacts": facts,
-            "visualizationWorkspace": {
-                "scriptPath": f"{root}/charts.py",
-                "chartOutputRoot": root,
-                "allowedTerminalCommand": f"python3 {root}/charts.py",
-            },
-            "completionConditions": [
-                "只处理当前 sectionCode 及其 outline.analysisIds；跨域章节不得扩大事实范围",
-                "脚本只写入签发的 scriptPath 和 chartOutputRoot",
-                "允许零图，最后且只调用一次 submit_visualization_charts",
-            ],
-        }
-        instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
-        if len(instruction.encode("utf-8")) > MAX_REPORT_INSTRUCTION_BYTES:
-            raise ReportingError(
-                "report_analysis_context_too_large", "单章可视化投影超过输入边界。"
-            )
-        contract = build_report_phase_acceptance_contract(
-            phase="analysis",
-            validation_context_file=context["validation_context_file"].model_dump(
-                mode="json", by_alias=True
-            ),
-            phase_contract={
-                "reportRunId": str(run_context.run_id or context["external_run_id"]),
-                "taskKind": "visualization_section",
-                "sectionCode": section_code,
-                "analysisIds": list(section.analysis_ids),
-                "visualInspectionMode": context["visual_inspection_mode"],
-                "visualizationWorkspace": {"chartOutputRoot": root},
-            },
-            analysis_output_path=f"{root}/section.json",
+            section_analysis_items[analysis_id] = durable_item
+            section_fact_files[analysis_id] = fact_file
+        # 按章动态预算以该章 analysisIds 的 evidence/fact 文件为基数,与全局汇总预算
+        # 同构但互不共享;TaskRunner 解析(visualizationBudgetVersion 等 10 个标量)
+        # 缺一即拒绝,因此必须整组注入 acceptance contract。
+        section_budget = _visualization_dynamic_budget(section_analysis_items, section_fact_files)
+        last_error: Exception | None = _visualization_section_retry_error(
+            checkpoint, section_code=section_code
         )
         scope = self._scope(run_context)
-        task_scope = TaskScope(
-            task_id,
-            scope["userId"],
-            scope["threadId"],
-            context["sandbox_id"],
-            str(self.report_worker.id),
-        )
-        checkpoint = self._update_reporting_checkpoint(
-            checkpoint,
-            trace=(
-                *checkpoint.trace,
-                ContextTrace(
-                    phase="analysis",
-                    taskId=task_id,
-                    workKind="visualization_section",
-                    sectionCode=section_code,
-                    attempt=attempt,
-                    instructionBytes=len(instruction.encode("utf-8")),
-                    projectedContextBytes=len(instruction.encode("utf-8")),
-                    visualInspectionMode=context["visual_inspection_mode"],
-                ),
-            ),
-        )
-        await self._persist_reporting_checkpoint(run_context, checkpoint)
-        try:
-            existing = await self.task_runner.repository.get_task_snapshot(task_id)
-            if existing is None:
-                await self.task_runner.start(task_scope, instruction, acceptance_contract=contract)
-            elif existing.state in {TaskState.FAILED, TaskState.CANCELLED}:
-                raise ReportingError(
-                    "report_visualization_section_task_terminal", "章节图表 Task 未完成收尾即终止。"
-                )
-            await self.task_runner.run(task_scope, parent_run_id=str(run_context.run_id or ""))
-            latest = await self.state_repository.get(
-                str(run_context.run_id or context["external_run_id"])
+        for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
+            matching = [
+                item
+                for item in checkpoint.trace
+                if item.phase == "analysis"
+                and item.work_kind == "visualization_section"
+                and item.section_code == section_code
+            ]
+            attempt = max((item.attempt for item in matching), default=-1) + 1
+            root = f"报表/智能分析/{run_context.run_id}/analysis/charts/{section_code}/attempt-{attempt + 1}"
+            task_id = reporting_phase_task_key(
+                str(run_context.run_id or "report"),
+                context["revision"],
+                "analysis",
+                section_code=section_code,
+                task_kind="visualization_section",
+                attempt=attempt,
             )
-            latest_payload = latest.payload if latest is not None else {}
-            if section_code not in latest_payload.get("completedVisualizationSections", ()):
-                raise ReportingError(
-                    "report_visualization_section_incomplete", "章节图表 durable 收口缺失。"
-                )
-            checkpoint = self._replace_trace(checkpoint, task_id, status="completed")
-            checkpoint = self._update_reporting_checkpoint(
-                checkpoint,
-                visualization_section_errors={
-                    key: value
-                    for key, value in checkpoint.visualization_section_errors.items()
-                    if key != section_code
+            script_path = f"{root}/charts.py"
+            instruction_payload = {
+                "phase": "analysis",
+                "taskKind": "visualization_section",
+                "sectionCode": section_code,
+                "section": section.model_dump(mode="json", by_alias=True),
+                "analysisIds": list(section.analysis_ids),
+                "visualInspectionMode": context["visual_inspection_mode"],
+                "visualizationFacts": facts,
+                "visualizationWorkspace": {
+                    "scriptPath": script_path,
+                    "chartOutputRoot": root,
+                    "allowedTerminalCommand": f"python3 {script_path}",
                 },
-            )
-            await self._persist_reporting_checkpoint(run_context, checkpoint)
-        except Exception as error:
-            checkpoint = self._replace_trace(checkpoint, task_id, status="failed")
-            checkpoint = self._update_reporting_checkpoint(
-                checkpoint,
-                visualization_section_errors={
-                    **checkpoint.visualization_section_errors,
-                    section_code: {
-                        "phase": "analysis",
-                        "code": getattr(error, "code", "report_visualization_section_failed"),
-                        "message": str(getattr(error, "message", error))[:2000],
-                        "sectionCode": section_code,
-                        "taskId": task_id,
-                        "workKind": "visualization_section",
-                        "attempt": attempt,
-                        "retryUsage": _checkpoint_retry_usage(
-                            error, work_kind="visualization_section"
-                        ).model_dump(mode="json", by_alias=True),
+                "completionConditions": _visualization_section_completion_conditions(last_error),
+            }
+            instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
+            if len(instruction.encode("utf-8")) > MAX_REPORT_INSTRUCTION_BYTES:
+                raise ReportingError(
+                    "report_analysis_context_too_large", "单章可视化投影超过输入边界。"
+                )
+            contract = build_report_phase_acceptance_contract(
+                phase="analysis",
+                validation_context_file=context["validation_context_file"].model_dump(
+                    mode="json", by_alias=True
+                ),
+                phase_contract={
+                    "reportRunId": str(run_context.run_id or context["external_run_id"]),
+                    "taskKind": "visualization_section",
+                    "sectionCode": section_code,
+                    "analysisIds": list(section.analysis_ids),
+                    "visualInspectionMode": context["visual_inspection_mode"],
+                    "visualizationRecovery": _visualization_recovery_required(last_error),
+                    **section_budget,
+                    **_visualization_retry_usage(last_error),
+                    "visualizationWorkspace": {
+                        "scriptPath": script_path,
+                        "chartOutputRoot": root,
                     },
                 },
+                analysis_output_path=f"{root}/section.json",
+            )
+            task_scope = TaskScope(
+                task_id,
+                scope["userId"],
+                scope["threadId"],
+                context["sandbox_id"],
+                str(self.report_worker.id),
+            )
+            checkpoint = self._update_reporting_checkpoint(
+                checkpoint,
+                trace=(
+                    *checkpoint.trace,
+                    ContextTrace(
+                        phase="analysis",
+                        taskId=task_id,
+                        workKind="visualization_section",
+                        sectionCode=section_code,
+                        attempt=attempt,
+                        instructionBytes=len(instruction.encode("utf-8")),
+                        projectedContextBytes=len(instruction.encode("utf-8")),
+                        visualInspectionMode=context["visual_inspection_mode"],
+                    ),
+                ),
             )
             await self._persist_reporting_checkpoint(run_context, checkpoint)
-            raise
+            try:
+                existing = await self.task_runner.repository.get_task_snapshot(task_id)
+                if existing is None:
+                    await self.task_runner.start(
+                        task_scope, instruction, acceptance_contract=contract
+                    )
+                elif existing.state in {TaskState.FAILED, TaskState.CANCELLED}:
+                    raise ReportingError(
+                        "report_visualization_section_task_terminal",
+                        "章节图表 Task 未完成收尾即终止。",
+                    )
+                await self.task_runner.run(task_scope, parent_run_id=str(run_context.run_id or ""))
+                latest = await self.state_repository.get(
+                    str(run_context.run_id or context["external_run_id"])
+                )
+                latest_payload = latest.payload if latest is not None else {}
+                if section_code not in latest_payload.get("completedVisualizationSections", ()):
+                    raise ReportingError(
+                        "report_visualization_section_incomplete", "章节图表 durable 收口缺失。"
+                    )
+                checkpoint = self._replace_trace(checkpoint, task_id, status="completed")
+                checkpoint = self._update_reporting_checkpoint(
+                    checkpoint,
+                    visualization_section_errors={
+                        key: value
+                        for key, value in checkpoint.visualization_section_errors.items()
+                        if key != section_code
+                    },
+                )
+                await self._persist_reporting_checkpoint(run_context, checkpoint)
+                return
+            except Exception as error:
+                last_error = error
+                checkpoint = self._replace_trace(checkpoint, task_id, status="failed")
+                checkpoint = self._update_reporting_checkpoint(
+                    checkpoint,
+                    visualization_section_errors={
+                        **checkpoint.visualization_section_errors,
+                        section_code: {
+                            "phase": "analysis",
+                            "code": getattr(error, "code", "report_visualization_section_failed"),
+                            "message": str(getattr(error, "message", error))[:2000],
+                            "sectionCode": section_code,
+                            "taskId": task_id,
+                            "workKind": "visualization_section",
+                            "attempt": attempt,
+                            "retryUsage": _checkpoint_retry_usage(
+                                error, work_kind="visualization_section"
+                            ).model_dump(mode="json", by_alias=True),
+                        },
+                    },
+                )
+                await self._persist_reporting_checkpoint(run_context, checkpoint)
+        assert last_error is not None
+        raise last_error
 
     async def _visualization_section_fact_projection(
         self,
@@ -2391,6 +2417,68 @@ def _ensure_visual_inspection_capability(
             "report_visualization_capability_changed",
             "visualization fresh retry 的图表检查能力与已签发 checkpoint 不一致。",
         )
+
+
+def _visualization_section_retry_error(
+    checkpoint: ReportingCheckpoint,
+    *,
+    section_code: str,
+) -> ReportingError | None:
+    """按 sectionCode 从失败账本恢复该章的稳定错误与预算,驱动章节 fresh retry。
+
+    账本条目必须与 trace 中该章最近一次失败记录的 taskId/attempt 完全一致,
+    且携带完整 retryUsage;否则说明 checkpoint 状态不可信(例如账本与 trace
+    来自不同写入轮次),必须失败关闭而不是静默重置预算。
+    """
+
+    stored = checkpoint.visualization_section_errors.get(section_code)
+    if stored is None:
+        return None
+    matching_failure = next(
+        (
+            item
+            for item in reversed(checkpoint.trace)
+            if item.phase == "analysis"
+            and item.work_kind == "visualization_section"
+            and item.section_code == section_code
+            and item.status == "failed"
+        ),
+        None,
+    )
+    if (
+        stored.phase != "analysis"
+        or stored.work_kind != "visualization_section"
+        or stored.section_code != section_code
+        or stored.retry_usage is None
+        or matching_failure is None
+        or stored.task_id != matching_failure.task_id
+        or stored.attempt != matching_failure.attempt
+    ):
+        raise ReportingError(
+            "report_semantic_contract_upgrade_required",
+            "运行中的 Reporting checkpoint 缺少可信章节恢复身份或预算，请重新分析。",
+        )
+    error = ReportingError(stored.code, stored.message)
+    setattr(
+        error,
+        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+        stored.retry_usage.model_dump(mode="python", by_alias=True),
+    )
+    return error
+
+
+def _visualization_section_completion_conditions(last_error: Exception | None) -> list[str]:
+    if _visualization_recovery_required(last_error):
+        return [
+            "上一轮本章因预算耗尽或无进展终止;禁止重新规划、探索事实或重复读取",
+            "脚本尚未执行或需要修复时,只把签发的 scriptPath 修复后执行一次",
+            "立即且只调用一次 submit_visualization_charts 提交该章现存图表草案;缺失的图表不要提交",
+        ]
+    return [
+        "只处理当前 sectionCode 及其 outline.analysisIds；跨域章节不得扩大事实范围",
+        "脚本只写入签发的 scriptPath 和 chartOutputRoot",
+        "允许零图，最后且只调用一次 submit_visualization_charts",
+    ]
 
 
 def _checkpoint_retry_error(

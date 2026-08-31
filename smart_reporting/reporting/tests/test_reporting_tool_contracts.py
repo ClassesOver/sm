@@ -126,6 +126,28 @@ def _chart_identity(*, width: int, height: int) -> dict[str, Any]:
     }
 
 
+def _section_draft_payload(
+    chart: dict[str, Any],
+    *,
+    file: dict[str, Any] | None = None,
+    section_code: str = "section_001",
+) -> dict[str, Any]:
+    """构造 durable 章节草案:chart 为提交时的完整 registration dump。"""
+
+    return {
+        "visualizationSections": {
+            section_code: {
+                "charts": [
+                    ReportChartRegistration.model_validate(chart).model_dump(
+                        mode="json", by_alias=True
+                    )
+                ],
+                "files": [file or {"path": chart["sourcePath"], "size": 1024, "sha256": "a" * 64}],
+            }
+        }
+    }
+
+
 def test_missing_metric_definition_codes_covers_facts_derived_and_charts() -> None:
     missing = _missing_metric_definition_codes(
         fact_bundles=(
@@ -724,8 +746,28 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
         "warnings": [],
         "suggestions": [],
     }
+    registered_chart = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-current", "citation-yoy"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "comparisonPeriod": "2025-01",
+        "comparisonType": "yoy",
+        "sourceDatasetId": "dataset-current",
+        "aggregationGrain": "month",
+        "comparability": "strict",
+    }
     toolkit._durable_state = AsyncMock(
-        return_value=SimpleNamespace(payload={"charts": [], "chartInspectionReceipts": [receipt]})
+        return_value=SimpleNamespace(
+            payload={
+                "charts": [],
+                "chartInspectionReceipts": [receipt],
+                **_section_draft_payload(registered_chart),
+            }
+        )
     )
     toolkit._inspect_chart_file = AsyncMock(return_value=_chart_identity(width=1000, height=700))
     expected_warnings = [
@@ -751,22 +793,7 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
     toolkit._apply_durable = AsyncMock()
 
     result = await toolkit.register_report_charts(
-        charts=[
-            {
-                "chartId": "income",
-                "sourcePath": "analysis/charts/income.png",
-                "title": "收入趋势",
-                "altText": "收入趋势图",
-                "citationIds": ["citation-current", "citation-yoy"],
-                "metricCodes": ["income"],
-                "currentPeriod": "2026-01",
-                "comparisonPeriod": "2025-01",
-                "comparisonType": "yoy",
-                "sourceDatasetId": "dataset-current",
-                "aggregationGrain": "month",
-                "comparability": "strict",
-            }
-        ],
+        charts=[registered_chart],
         run_context=RunContext(run_id="run-1", session_id="session-1"),
     )
 
@@ -1097,7 +1124,26 @@ async def test_register_report_charts_missing_file_returns_recoverable_failure()
             "visualInspectionMode": "deterministic",
         },
     )
-    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "charts": [],
+                **_section_draft_payload(
+                    {
+                        "chartId": "chart_missing",
+                        "sourcePath": "analysis/charts/section_001/attempt-1/chart_x.png",
+                        "title": "标题",
+                        "altText": "图注",
+                        "citationIds": ["citation-1"],
+                        "metricCodes": ["income"],
+                        "currentPeriod": "2026-01",
+                        "sourceDatasetId": "dataset-1",
+                        "aggregationGrain": "month",
+                    }
+                ),
+            }
+        )
+    )
 
     result = await toolkit.register_report_charts(
         charts=[
@@ -1321,7 +1367,27 @@ async def test_register_report_charts_allows_defined_metric_when_catalog_is_abse
             "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
         },
     )
-    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "charts": [],
+                **_section_draft_payload(
+                    {
+                        "chartId": "income",
+                        "sourcePath": "analysis/charts/income.png",
+                        "title": "收入趋势",
+                        "altText": "收入趋势图",
+                        "citationIds": ["citation-1"],
+                        "metricCodes": ["income_total"],
+                        "currentPeriod": "2026-01",
+                        "comparisonType": "none",
+                        "sourceDatasetId": "dataset-1",
+                        "aggregationGrain": "month",
+                    }
+                ),
+            }
+        )
+    )
     toolkit._inspect_chart = AsyncMock(
         return_value=(
             {
@@ -1391,7 +1457,27 @@ async def test_register_report_charts_creates_honest_deterministic_receipt() -> 
         },
     )
     toolkit._durable_state = AsyncMock(
-        return_value=SimpleNamespace(payload={"charts": [], "chartInspectionReceipts": []})
+        return_value=SimpleNamespace(
+            payload={
+                "charts": [],
+                "chartInspectionReceipts": [],
+                **_section_draft_payload(
+                    {
+                        "chartId": "income",
+                        "sourcePath": "analysis/charts/income.png",
+                        "title": "收入趋势",
+                        "altText": "收入趋势图",
+                        "citationIds": ["citation-1"],
+                        "metricCodes": ["income"],
+                        "currentPeriod": "2026-01",
+                        "comparisonType": "none",
+                        "sourceDatasetId": "dataset-1",
+                        "aggregationGrain": "month",
+                        "comparability": "strict",
+                    }
+                ),
+            }
+        )
     )
     identity = {
         "chartId": "income",
@@ -1554,6 +1640,303 @@ async def test_register_report_charts_rejects_retained_chart_before_inspection()
     assert result["code"] == "report_chart_registration_duplicate"
     assert "只能登记缺失图表" in result["message"]
     toolkit._inspect_chart.assert_not_awaited()
+    toolkit._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_consumes_durable_section_drafts() -> None:
+    scope = SimpleNamespace(thread_id="thread-draft", task=SimpleNamespace(mutation_sequence=2))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "visualInspectionMode": "deterministic",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    chart = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/attempt-1/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "comparisonType": "none",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "charts": [],
+                **_section_draft_payload(
+                    chart,
+                    file={
+                        "path": chart["sourcePath"],
+                        "size": 1024,
+                        "sha256": "a" * 64,
+                    },
+                ),
+            }
+        )
+    )
+    toolkit._inspect_chart = AsyncMock(
+        return_value=(
+            {
+                **ReportChartRegistration.model_validate(chart).model_dump(
+                    mode="json", by_alias=True
+                ),
+                "sourcePath": chart["sourcePath"],
+                "size": 1024,
+                "sha256": "a" * 64,
+                "format": "PNG",
+                "mediaType": "image/png",
+                "extension": ".png",
+                "width": 1200,
+                "height": 800,
+            },
+            [],
+        )
+    )
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[chart],
+        run_context=RunContext(run_id="run-draft", session_id="session-draft"),
+    )
+
+    assert result["ok"] is True
+    toolkit._apply_durable.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_path_missing_from_section_drafts() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-draft-missing", task=SimpleNamespace(mutation_sequence=2)
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "visualInspectionMode": "deterministic",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    drafted = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/attempt-1/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "comparisonType": "none",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+    unsubmitted = {
+        **drafted,
+        "chartId": "cost",
+        "sourcePath": "analysis/charts/section_002/attempt-1/cost.png",
+    }
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"charts": [], **_section_draft_payload(drafted)})
+    )
+    toolkit._inspect_chart = AsyncMock()
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[unsubmitted],
+        run_context=RunContext(run_id="run-draft-missing", session_id="session-draft-missing"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_chart_draft_unknown"
+    toolkit._inspect_chart.assert_not_awaited()
+    toolkit._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_tampered_draft_metadata() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-draft-tamper", task=SimpleNamespace(mutation_sequence=2)
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "visualInspectionMode": "deterministic",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    drafted = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/attempt-2/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "comparisonType": "none",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+    tampered = {**drafted, "title": "被篡改的标题"}
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"charts": [], **_section_draft_payload(drafted)})
+    )
+    toolkit._inspect_chart = AsyncMock()
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[tampered],
+        run_context=RunContext(run_id="run-draft-tamper", session_id="session-draft-tamper"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_chart_draft_conflict"
+    toolkit._inspect_chart.assert_not_awaited()
+    toolkit._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_stale_attempt_path() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-draft-stale", task=SimpleNamespace(mutation_sequence=2)
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "visualInspectionMode": "deterministic",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    # 章节重试后草案已替换为 attempt-2;attempt-1 的旧路径不再受 durable 账本承认。
+    drafted = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/attempt-2/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "comparisonType": "none",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+    stale = {**drafted, "sourcePath": "analysis/charts/section_001/attempt-1/income.png"}
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(payload={"charts": [], **_section_draft_payload(drafted)})
+    )
+    toolkit._inspect_chart = AsyncMock()
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[stale],
+        run_context=RunContext(run_id="run-draft-stale", session_id="session-draft-stale"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_chart_draft_conflict"
+    toolkit._inspect_chart.assert_not_awaited()
+    toolkit._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_file_identity_drift_from_draft() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-draft-drift", task=SimpleNamespace(mutation_sequence=2)
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "visualInspectionMode": "deterministic",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    drafted = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/attempt-1/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "comparisonType": "none",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "charts": [],
+                **_section_draft_payload(
+                    drafted,
+                    file={
+                        "path": drafted["sourcePath"],
+                        "size": 1024,
+                        "sha256": "a" * 64,
+                    },
+                ),
+            }
+        )
+    )
+    # 登记时文件哈希与草案提交时的身份不同:文件在提交后被改写,必须失败关闭。
+    toolkit._inspect_chart = AsyncMock(
+        return_value=(
+            {
+                **ReportChartRegistration.model_validate(drafted).model_dump(
+                    mode="json", by_alias=True
+                ),
+                "sourcePath": drafted["sourcePath"],
+                "size": 1024,
+                "sha256": "b" * 64,
+                "format": "PNG",
+                "mediaType": "image/png",
+                "extension": ".png",
+                "width": 1200,
+                "height": 800,
+            },
+            [],
+        )
+    )
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[drafted],
+        run_context=RunContext(run_id="run-draft-drift", session_id="session-draft-drift"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_chart_draft_conflict"
     toolkit._apply_durable.assert_not_awaited()
 
 
@@ -1837,7 +2220,28 @@ async def test_register_report_charts_requires_current_acceptable_inspection(
         },
     )
     toolkit._durable_state = AsyncMock(
-        return_value=SimpleNamespace(payload={"charts": [], "chartInspectionReceipts": receipts})
+        return_value=SimpleNamespace(
+            payload={
+                "charts": [],
+                "chartInspectionReceipts": receipts,
+                **_section_draft_payload(
+                    {
+                        "chartId": "income",
+                        "sourcePath": "analysis/charts/income.png",
+                        "title": "收入趋势",
+                        "altText": "收入趋势图",
+                        "citationIds": ["citation-1"],
+                        "metricCodes": ["income"],
+                        "currentPeriod": "2026-01",
+                        "comparisonPeriod": "2025-01",
+                        "comparisonType": "yoy",
+                        "sourceDatasetId": "dataset-1",
+                        "aggregationGrain": "month",
+                        "comparability": "strict",
+                    }
+                ),
+            }
+        )
     )
     toolkit._inspect_chart = AsyncMock(
         return_value=(
@@ -5151,6 +5555,18 @@ async def test_finalize_submit_semantics_from_projected_catalog() -> None:
     durable = SimpleNamespace(
         payload={
             "charts": [registered_chart],
+            "visualizationSections": {
+                "section_001": {
+                    "charts": [
+                        {
+                            key: value
+                            for key, value in registered_chart.items()
+                            if key not in {"size", "sha256", "visualInspectionReceipt"}
+                        }
+                    ],
+                    "files": [chart_identity],
+                }
+            },
             "analysisItems": {
                 "analysis_001": {
                     "analysisId": "analysis_001",
@@ -5258,6 +5674,42 @@ async def test_finalize_submit_semantics_from_projected_catalog() -> None:
             "periodBasis": "2026-01",
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_finalize_rejects_registered_chart_missing_from_durable_section_drafts() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=SimpleNamespace(thread_id="thread-1"))
+    )
+    toolkit._session_state = lambda _run_context: {}
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._ensure_visualization_terminal_settled = AsyncMock()
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "charts": [{"chartId": "registered-but-not-drafted"}],
+                "visualizationSections": {"section_001": {"charts": [], "files": []}},
+            }
+        )
+    )
+    toolkit._phase_parameters = lambda *_args: pytest.fail(
+        "章节草案消费校验失败时不应读取 finalize phase contract"
+    )
+
+    result = await toolkit.finalize_report_analysis(
+        reportBrief={
+            "objective": "经营分析",
+            "executiveSummary": "摘要。",
+            "managementQuestions": ["经营表现如何？"],
+        },
+        datasetSemantics=[],
+        metricDefinitions=[],
+        run_context=RunContext(run_id="run-finalize", session_id="session-finalize"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_section_draft_missing"
 
 
 def test_finalize_semantic_catalog_fails_closed_on_ambiguous_facts() -> None:
@@ -5407,7 +5859,28 @@ async def test_finalize_rejects_malformed_durable_dataset_ids(dataset_ids: objec
     toolkit._durable_state = AsyncMock(
         return_value=SimpleNamespace(
             payload={
-                "charts": [{"chartId": "chart-1"}],
+                "charts": [
+                    {
+                        "chartId": "chart-1",
+                        "sourcePath": "analysis/charts/chart-1.png",
+                        "size": 1,
+                        "sha256": "a" * 64,
+                    }
+                ],
+                "visualizationSections": {
+                    "section_001": {
+                        "charts": [
+                            {"chartId": "chart-1", "sourcePath": "analysis/charts/chart-1.png"}
+                        ],
+                        "files": [
+                            {
+                                "path": "analysis/charts/chart-1.png",
+                                "size": 1,
+                                "sha256": "a" * 64,
+                            }
+                        ],
+                    }
+                },
                 "analysisItems": {"analysis_001": {"datasetIds": dataset_ids}},
             }
         )
