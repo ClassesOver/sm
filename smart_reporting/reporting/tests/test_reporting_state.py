@@ -242,6 +242,24 @@ def test_submit_visualization_charts_rejects_malformed_chart_and_file_payload() 
     assert exc_info.value.code == "report_visualization_section_invalid"
 
 
+def test_submit_visualization_charts_rejects_malformed_file_identity() -> None:
+    with pytest.raises(ReportingStateError) as exc_info:
+        ReportingStateReducer.apply(
+            make_visualization_state(),
+            {
+                "name": "submit_visualization_charts",
+                "commandId": "viz-section:1:malformed-file",
+                "payload": {
+                    "sectionCode": "section_001",
+                    "charts": [make_chart_registration("chart_a")],
+                    "files": [{"path": "charts/chart_a.png", "size": 1, "sha256": "invalid"}],
+                },
+            },
+        )
+
+    assert exc_info.value.code == "report_visualization_section_invalid"
+
+
 def _integration_database_url() -> str:
     value = os.getenv("REPORTING_TEST_DB_URL", "").strip()
     if not value:
