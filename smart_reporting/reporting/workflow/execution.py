@@ -493,6 +493,10 @@ class ReportTaskRunner:
         terminal_tools: tuple[str, ...]
         if task_kind == "analysis_item":
             terminal_tools = ("complete_analysis_item",)
+        elif task_kind == "visualization_section":
+            terminal_tools = ("submit_visualization_charts",)
+        elif task_kind == "visualization_finalize":
+            terminal_tools = ("finalize_report_analysis",)
         elif task_kind == "visualization":
             terminal_tools = ("finalize_report_analysis",)
         elif task_kind == "section":
@@ -514,6 +518,20 @@ class ReportTaskRunner:
                             "先读取当前文件并确认实际内容。服务端已保留本 run 成功读取和写入的事实。"
                             "立即停止继续探索；"
                             "只使用已有事实调用 complete_analysis_item，不得输出解释性文本。"
+                        )
+                    elif task_kind == "visualization_section" and recovery_attempt > 0:
+                        recovery_instruction = (
+                            "服务端已保留本 run 已生成的该章图表文件。立即停止重新探索;"
+                            "脚本尚未执行时先且只执行一次签发的本章脚本;"
+                            "随后只调用一次 submit_visualization_charts 提交该章全部图表草案,"
+                            "缺失的图表不要提交。不得调用 read_file,不得输出解释性文本。"
+                        )
+                    elif task_kind == "visualization_finalize" and recovery_attempt > 0:
+                        recovery_instruction = (
+                            "服务端已保留全部章节图表草案。立即停止重新探索;"
+                            "只调用一次 register_report_charts 整批登记,随后立即调用 "
+                            "finalize_report_analysis。不得调用 read_file/query_analysis_facts,"
+                            "不得输出解释性文本。"
                         )
                     elif task_kind == "visualization" and recovery_attempt > 0:
                         recovery_instruction = (
