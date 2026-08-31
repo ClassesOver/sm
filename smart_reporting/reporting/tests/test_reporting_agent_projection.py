@@ -231,6 +231,37 @@ def test_reporting_task_kind_from_acceptance_contract_accepts_new_kinds(
     assert reporting_task_kind_from_acceptance_contract(contract) == task_kind
 
 
+def test_old_visualization_task_kind_is_rejected() -> None:
+    contract = {
+        "requirements": [
+            {
+                "parameters": {
+                    "phase": "analysis",
+                    "phaseContract": {"taskKind": "visualization"},
+                }
+            }
+        ]
+    }
+
+    assert reporting_task_kind_from_acceptance_contract(contract) is None
+
+
+def test_old_visualization_run_context_task_kind_is_rejected() -> None:
+    run_context = RunContext(
+        run_id="run-old-visualization",
+        session_id="session-old-visualization",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+
+    assert reporting_task_kind_from_run_context(run_context) is None
+
+
 @pytest.mark.parametrize(
     ("task_kind",),
     [

@@ -617,12 +617,10 @@ class CheckpointError(StrictModel):
     retry_reason: str | None = Field(default=None, alias="retryReason", max_length=2000)
     details: dict[str, Any] | None = Field(default=None, max_length=50)
     task_id: str | None = Field(default=None, alias="taskId", max_length=128)
-    # work_kind 只增值不改值:visualization 保留用于历史 trace 校验,
-    # visualization_section/visualization_finalize 供并行章节图表 worker 与汇总 worker 区分身份。
+    # visualization_section/visualization_finalize 区分并行章节图表 worker 与汇总 worker。
     work_kind: (
         Literal[
             "analysis_item",
-            "visualization",
             "visualization_section",
             "visualization_finalize",
             "section",
@@ -643,7 +641,6 @@ class ContextTrace(StrictModel):
     work_kind: (
         Literal[
             "analysis_item",
-            "visualization",
             "visualization_section",
             "visualization_finalize",
             "section",
