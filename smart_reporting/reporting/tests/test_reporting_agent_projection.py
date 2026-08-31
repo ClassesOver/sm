@@ -32,6 +32,7 @@ from smart_reporting.reporting.agent import (
     normalize_reporting_tool_arguments,
     propagate_reporting_tool_errors,
 )
+from smart_reporting.reporting.delivery.acceptance import REPORTING_BUILTIN_SKILLS_DIR
 from smart_reporting.reporting.instructions import (
     REPORT_VISUALIZATION_AGENT_INSTRUCTIONS,
     build_report_agent_instructions,
@@ -984,6 +985,34 @@ def test_visualization_instructions_require_readable_chart_layouts() -> None:
     assert "横向条形图" in instructions
     assert "动态调整画布高度" in instructions
     assert "紧凑对比图" in instructions
+    for phrase in (
+        "完整组织层级",
+        "日期",
+        "Dataset 路径",
+        "血缘信息",
+        "不直接进入坐标轴",
+        "语义缩写或换行",
+        "哑铃图或表格",
+        "为标题、坐标轴、图例和标签保留清晰边界",
+        "不限制其他更合适的图形",
+        "固定模板或图表白名单",
+    ):
+        assert phrase in instructions
+
+
+def test_visualization_skill_contains_readable_chart_guidance() -> None:
+    skill_path = REPORTING_BUILTIN_SKILLS_DIR / "report-visualization" / "SKILL.md"
+    skill = skill_path.read_text(encoding="utf-8")
+
+    for phrase in (
+        "最短业务名称",
+        "完整组织层级",
+        "1200 x 675",
+        "动态调整画布高度",
+        "紧凑对比图",
+        "不构成固定模板或图表白名单",
+    ):
+        assert phrase in skill
 
 
 def test_deterministic_visualization_instructions_forbid_inspect_chart() -> None:
