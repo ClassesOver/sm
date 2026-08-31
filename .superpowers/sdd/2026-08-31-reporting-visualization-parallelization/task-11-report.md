@@ -48,3 +48,28 @@
   - 通过
 
 未运行 live CLI、PostgreSQL 或 Mypy；本轮未派发子代理，未使用或 cherry-pick 共享 f2 commit。
+
+## Fix Round 3
+
+### 修复内容
+
+- 在 `_run_analysis_phase` 的可视化 finalize 编排边界校验授权 `dataset_handles`；为空时以 `report_analysis_dataset_inconsistent` fail closed，不构造 finalize contract、不写入 finalize trace，也不启动 finalize Task。
+- 新增空授权 Dataset 的 finalize 编排回归测试，断言稳定错误码和 finalize worker 未被调用。
+- 更新全局零图测试夹具，提供合法授权 Dataset 与 organization grain，继续验证单章零图允许但全局零图 finalize 拒绝。
+
+### 验证
+
+- `/home/junge/pros/chat/.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_section_concurrency.py -k 'rejects_empty_authorized_datasets_before_finalize' -q`
+  - 1 passed
+- `/home/junge/pros/chat/.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_section_concurrency.py smart_reporting/reporting/tests/test_reporting_tool_contracts.py -q`
+  - 231 passed
+- `/home/junge/pros/chat/.venv-agent/bin/python -m pytest smart_reporting/reporting/tests/test_reporting_agent_projection.py smart_reporting/reporting/tests/test_reporting_tool_contracts.py smart_reporting/reporting/tests/test_reporting_state.py smart_reporting/reporting/tests/test_reporting_section_concurrency.py -q`
+  - 374 passed, 9 deselected
+- `/home/junge/pros/chat/.venv-agent/bin/ruff format --check smart_reporting/reporting/workflow/runtime/analysis.py smart_reporting/reporting/tests/test_reporting_section_concurrency.py smart_reporting/reporting/tests/test_reporting_tool_contracts.py`
+  - 3 files already formatted
+- `/home/junge/pros/chat/.venv-agent/bin/ruff check smart_reporting/reporting/workflow/runtime/analysis.py smart_reporting/reporting/tests/test_reporting_section_concurrency.py smart_reporting/reporting/tests/test_reporting_tool_contracts.py`
+  - All checks passed
+- `git diff --check`
+  - 通过
+
+未运行 live CLI、PostgreSQL 或 Mypy；未派发子代理。

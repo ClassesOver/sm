@@ -473,7 +473,14 @@ async def test_visualization_finalize_starts_and_runs_bound_task() -> None:
 async def test_global_zero_chart_finalize_fails_closed_after_all_sections_submit_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan = analysis_plan("analysis_001")
+    plan = analysis_plan("analysis_001").model_copy(
+        update={
+            "analyses": tuple(
+                item.model_copy(update={"organization_grain": ("record",)})
+                for item in analysis_plan("analysis_001").analyses
+            )
+        }
+    )
     checkpoint_before_visualization = checkpoint(completed=(), pending=()).model_copy(
         update={
             "phase": "analysis",
@@ -617,7 +624,18 @@ async def test_global_zero_chart_finalize_fails_closed_after_all_sections_submit
                 path="validation/context.json", size=1, sha256="b" * 64
             ),
             detailed_plan=plan,
-            dataset_handles=(),
+            dataset_handles=(
+                DatasetHandle(
+                    dataset_id="dataset-1",
+                    source_id="source-1",
+                    path="datasets/a.csv",
+                    row_count=1,
+                    size=1,
+                    sha256="d" * 64,
+                    requirement_id="requirement-001",
+                    sql_hash="s" * 64,
+                ),
+            ),
             lineage=(),
             citation_bindings=(
                 Citation(
@@ -1725,6 +1743,100 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
             }
         ],
     ]
+
+
+@pytest.mark.anyio
+async def test_analysis_phase_rejects_empty_authorized_datasets_before_finalize() -> None:
+    plan = analysis_plan("analysis_001")
+    fact_file = FileIdentity(path="facts/analysis_001.json", size=1, sha256="f" * 64)
+    stored = analysis_checkpoint(deterministic_fact_files={"analysis_001": fact_file})
+    durable = SimpleNamespace(
+        payload={
+            "completedAnalysisIds": ["analysis_001"],
+            "analysisItems": {"analysis_001": {"datasetIds": ["dataset-1"]}},
+            "completedVisualizationSections": ["section_001"],
+            "charts": [],
+        }
+    )
+    task_runner = SimpleNamespace(
+        repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
+        start=AsyncMock(),
+        run=AsyncMock(),
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.analysis_concurrency = 1
+    runtime.visualization_concurrency = 1
+    runtime.report_worker = SimpleNamespace(
+        id="report-worker", model=SimpleNamespace(_report_vision_enabled=False)
+    )
+    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=durable))
+    runtime.task_runner = task_runner
+    runtime._scope = lambda _run_context: {
+        "externalRunId": "run-1",
+        "threadId": "thread-1",
+        "userId": "user-1",
+    }
+    runtime._state = lambda _run_context: {
+        "report_outline": {
+            "reportType": "comprehensive",
+            "title": "经营分析",
+            "sections": [
+                {
+                    "code": "section_001",
+                    "sectionNumber": "1",
+                    "title": "收入分析",
+                    "analysisIds": ["analysis_001"],
+                }
+            ],
+        }
+    }
+    runtime._envelope = lambda _run_context: SimpleNamespace(report_goal="经营分析")
+    runtime._worker_thinking_effort = lambda *, retry: "off"
+    runtime._restore_or_create_deterministic_analysis_facts = AsyncMock(
+        return_value=(stored, {"analysis_001": fact_file})
+    )
+    runtime._run_analysis_item_task = AsyncMock(return_value=stored)
+    runtime._current_reporting_checkpoint = AsyncMock(return_value=stored)
+    runtime._persist_reporting_checkpoint = AsyncMock(side_effect=lambda _context, value: value)
+    runtime._run_visualization_finalize = AsyncMock(side_effect=RuntimeError("finalize started"))
+    runtime._read_identity_model = AsyncMock(
+        return_value=SimpleNamespace(
+            analysis_id="analysis_001",
+            model_dump=lambda **_options: {
+                "version": "1",
+                "analysisId": "analysis_001",
+                "metrics": [],
+                "derivedMetrics": [],
+                "comparisons": [],
+                "reconciliations": [],
+                "correlations": {},
+                "warnings": [],
+            },
+        )
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime._run_analysis_phase(
+            SimpleNamespace(run_id="run-1"),
+            checkpoint=stored,
+            revision=1,
+            sandbox_id="sandbox-1",
+            validation_context_file=FileIdentity(
+                path="validation/context.json", size=1, sha256="b" * 64
+            ),
+            detailed_plan=plan,
+            dataset_handles=(),
+            lineage=(),
+            citation_bindings=(),
+            analysis_context_file=FileIdentity(
+                path="analysis/context.json", size=1, sha256="a" * 64
+            ),
+            feedback=None,
+            rework_request=None,
+        )
+
+    assert raised.value.code == "report_analysis_dataset_inconsistent"
+    runtime._run_visualization_finalize.assert_not_awaited()
 
 
 @pytest.mark.anyio

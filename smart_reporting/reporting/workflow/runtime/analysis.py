@@ -1403,6 +1403,14 @@ class RuntimeAnalysisMixin:
             retry_reason=retry_reason,
         )
         _ensure_visual_inspection_capability(checkpoint, visual_inspection_mode)
+        # finalize 的 Dataset 语义必须来自本次已授权的 snapshot；空 handles 没有可绑定的
+        # 身份和语义，继续构造空目录会把不完整输入交给 worker，并可能产生无效 finalize
+        # Task。此校验位于 finalize Task 启动前，确保运行时边界直接拒绝且不产生副作用。
+        if not dataset_handles:
+            raise ReportingError(
+                "report_analysis_dataset_inconsistent",
+                "可视化汇总缺少授权 Dataset snapshot。",
+            )
 
         # 图表 Worker 需要一次拿到完整的、已校验身份的事实包；把 facts 读取放在
         # Workflow 边界而不是交给模型反复 query/read，消除日志中因路径歧义产生的
