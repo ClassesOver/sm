@@ -84,6 +84,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
 from smart_reporting.reporting.workflow.runtime import analysis as runtime_analysis
 from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_item_completion_conditions,
+    _finalize_semantic_catalog,
     _visualization_analysis_citation_ids,
     _visualization_completion_conditions,
     _visualization_dynamic_budget,
@@ -5353,3 +5354,85 @@ async def test_global_zero_charts_fails_at_finalize() -> None:
 
     assert result["ok"] is False
     assert result["code"] == "report_visualization_charts_not_registered"
+
+
+@pytest.mark.parametrize("dataset_ids", [None, [], ["dataset-1", 2]])
+def test_finalize_semantic_catalog_rejects_inconsistent_dataset_ids(
+    dataset_ids: object,
+) -> None:
+    with pytest.raises(ReportingError) as raised:
+        _finalize_semantic_catalog(
+            analysis_plans={
+                "analysis_001": {
+                    "analysisId": "analysis_001",
+                    "datasetIds": dataset_ids,
+                    "organizationGrain": ["record"],
+                }
+            },
+            fact_bundles={"analysis_001": {"metrics": [], "derivedMetrics": []}},
+            dataset_ids=("dataset-1",),
+        )
+
+    assert raised.value.code == "report_analysis_dataset_inconsistent"
+
+
+@pytest.mark.parametrize(
+    ("analysis_plans", "dataset_ids"),
+    [({}, ("dataset-1",)), ({"analysis_001": {}}, ())],
+)
+def test_finalize_semantic_catalog_rejects_empty_inputs(
+    analysis_plans: dict[str, dict[str, object]],
+    dataset_ids: tuple[str, ...],
+) -> None:
+    with pytest.raises(ReportingError) as raised:
+        _finalize_semantic_catalog(
+            analysis_plans=analysis_plans,
+            fact_bundles={},
+            dataset_ids=dataset_ids,
+        )
+
+    assert raised.value.code == "report_analysis_semantic_invalid"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("dataset_ids", [None, ["dataset-1", 2]])
+async def test_finalize_rejects_malformed_durable_dataset_ids(dataset_ids: object) -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=SimpleNamespace(thread_id="thread-1"))
+    )
+    toolkit._session_state = lambda _run_context: {}
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._ensure_visualization_terminal_settled = AsyncMock()
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            payload={
+                "charts": [{"chartId": "chart-1"}],
+                "analysisItems": {"analysis_001": {"datasetIds": dataset_ids}},
+            }
+        )
+    )
+    toolkit._phase_parameters = lambda *_args: (
+        {"analysisOutputPath": "analysis/final.json"},
+        {
+            "analysisIds": ["analysis_001"],
+            "datasetIds": ["dataset-1"],
+            "authorizedDatasetIds": ["dataset-1"],
+            "citationIds": ["citation-1"],
+            "datasetSemantics": [],
+            "metricDefinitions": [],
+        },
+    )
+
+    result = await toolkit.finalize_report_analysis(
+        reportBrief={
+            "objective": "经营分析",
+            "executiveSummary": "摘要。",
+            "managementQuestions": ["经营表现如何？"],
+        },
+        datasetSemantics=[],
+        run_context=RunContext(run_id="run-finalize", session_id="session-finalize"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_analysis_dataset_inconsistent"

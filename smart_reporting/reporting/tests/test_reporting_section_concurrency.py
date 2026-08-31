@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from smart_reporting.reporting.data_sources import DatasetHandle
 from smart_reporting.reporting.delivery.artifacts_v1 import Citation
 from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
 from smart_reporting.reporting.hospital_operation.detailed_analysis import (
@@ -1435,6 +1436,7 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
                 evidenceSummary="固定事实",
                 suggestedSection="收入",
                 completionConditions=("完成",),
+                organizationGrain=("record",),
             ),
         ),
     )
@@ -1453,6 +1455,7 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
             "analysisItems": {
                 "analysis_001": {
                     "summary": "收入同比增长。",
+                    "datasetIds": ["dataset-income"],
                     "evidenceFiles": [
                         {"path": "evidence/income.json", "size": 2, "sha256": "e" * 64}
                     ],
@@ -1561,7 +1564,18 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
                 path="validation/context.json", size=1, sha256="b" * 64
             ),
             detailed_plan=plan,
-            dataset_handles=(),
+            dataset_handles=(
+                DatasetHandle(
+                    dataset_id="dataset-income",
+                    source_id="source-1",
+                    path="datasets/income.csv",
+                    row_count=1,
+                    size=1,
+                    sha256="d" * 64,
+                    requirement_id="requirement-1",
+                    sql_hash="s" * 64,
+                ),
+            ),
             lineage=(),
             citation_bindings=tuple(
                 Citation(
@@ -1617,7 +1631,7 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
                 "step": "收入趋势",
                 "primaryMetricFamily": "收入",
                 "datasetIds": ["dataset-income"],
-                "organizationGrain": [],
+                "organizationGrain": ["record"],
             },
             "summary": "收入同比增长。",
             "factFile": expected_fact_files["analysis_001"],
@@ -1686,6 +1700,30 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     assert [item["visualInspectionMode"] for item in phase_contracts] == [
         "deterministic",
         "deterministic",
+    ]
+    assert [item["datasetIds"] for item in phase_contracts] == [
+        ["dataset-income"],
+        ["dataset-income"],
+    ]
+    assert [item["authorizedDatasetIds"] for item in phase_contracts] == [
+        ["dataset-income"],
+        ["dataset-income"],
+    ]
+    assert [item["datasetSemantics"] for item in phase_contracts] == [
+        [
+            {
+                "datasetId": "dataset-income",
+                "rowGrain": "record",
+                "duplicateResolution": "not_applicable",
+            }
+        ],
+        [
+            {
+                "datasetId": "dataset-income",
+                "rowGrain": "record",
+                "duplicateResolution": "not_applicable",
+            }
+        ],
     ]
 
 

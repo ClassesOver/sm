@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 import shlex
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from pathlib import PurePosixPath
 from typing import Any
@@ -887,16 +887,16 @@ class RuntimeAnalysisMixin:
             if (
                 not isinstance(output_path, str)
                 or not isinstance(expected_analysis_ids, list)
-                or not isinstance(known_dataset_ids, list)
                 or not isinstance(known_citation_ids, list)
                 or not isinstance(contract_dataset_semantics, list)
                 or not isinstance(contract_metric_definitions, list)
-                or not isinstance(authorized_dataset_ids, list)
             ):
                 raise ReportingError(
                     "report_phase_contract_invalid",
                     "Analysis Task 缺少冻结注册表或服务端投影的语义目录。",
                 )
+            known_dataset_ids = _require_dataset_id_sequence(known_dataset_ids)
+            authorized_dataset_ids = _require_dataset_id_sequence(authorized_dataset_ids)
             submitted = durable.payload.get("analysisItems")
             if not isinstance(submitted, dict) or any(
                 not isinstance(submitted.get(item), dict) for item in expected_analysis_ids
@@ -920,8 +920,7 @@ class RuntimeAnalysisMixin:
             evidence_dataset_ids = {
                 dataset_id
                 for item in evidence
-                for dataset_id in item.get("datasetIds", ())
-                if isinstance(dataset_id, str) and dataset_id
+                for dataset_id in _require_dataset_id_sequence(item.get("datasetIds"))
             }
             if set(known_dataset_ids) != evidence_dataset_ids:
                 raise ReportingError(
@@ -1569,3 +1568,14 @@ class RuntimeAnalysisMixin:
             identities=identities,
         )
         return durable
+
+
+def _require_dataset_id_sequence(value: object) -> list[str]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or not value
+        or any(not isinstance(item, str) or not item for item in value)
+    ):
+        raise ReportingError("report_analysis_dataset_inconsistent", "Dataset ID 序列无效。")
+    return list(value)

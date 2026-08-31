@@ -1663,8 +1663,9 @@ class RuntimeAnalysisMixin:
                     else ()
                 )
                 if isinstance(item, Mapping)
-                for dataset_id in item.get("datasetIds", ())
-                if isinstance(dataset_id, str) and dataset_id
+                for dataset_id in _require_dataset_id_sequence(
+                    item.get("datasetIds"), error_message="durable analysis Dataset 无效。"
+                )
             }
             authorized_dataset_ids = {item.dataset_id for item in dataset_handles}
             if authorized_dataset_ids and (
@@ -2497,17 +2498,22 @@ def _finalize_semantic_catalog(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """从冻结计划与 facts 投影目录；语义事实不完整时拒绝冻结。"""
 
+    _require_dataset_id_sequence(
+        dataset_ids,
+        error_message="evidence Dataset 集合不能为空。",
+        error_code="report_analysis_semantic_invalid",
+    )
+    if not analysis_plans:
+        raise ReportingError("report_analysis_semantic_invalid", "分析计划不能为空。")
+
     grains_by_dataset: dict[str, set[str]] = {dataset_id: set() for dataset_id in dataset_ids}
     planned_dataset_ids: set[str] = set()
     for plan in analysis_plans.values():
         raw_dataset_ids = plan.get("datasetIds")
         raw_grain = plan.get("organizationGrain")
-        if (
-            not isinstance(raw_dataset_ids, Sequence)
-            or isinstance(raw_dataset_ids, (str, bytes))
-            or not isinstance(raw_grain, Sequence)
-            or isinstance(raw_grain, (str, bytes))
-        ):
+        if not isinstance(raw_dataset_ids, Sequence) or isinstance(raw_dataset_ids, (str, bytes)):
+            raise ReportingError("report_analysis_dataset_inconsistent", "分析计划 Dataset 无效。")
+        if not isinstance(raw_grain, Sequence) or isinstance(raw_grain, (str, bytes)):
             raise ReportingError(
                 "report_analysis_semantic_invalid", "分析计划缺少 organization grain。"
             )
@@ -2519,7 +2525,7 @@ def _finalize_semantic_catalog(
         for dataset_id in raw_dataset_ids:
             if not isinstance(dataset_id, str) or not dataset_id:
                 raise ReportingError(
-                    "report_analysis_semantic_invalid", "分析计划包含无效 Dataset。"
+                    "report_analysis_dataset_inconsistent", "分析计划包含无效 Dataset。"
                 )
             planned_dataset_ids.add(dataset_id)
             if dataset_id not in grains_by_dataset:
@@ -2530,7 +2536,7 @@ def _finalize_semantic_catalog(
             grains_by_dataset[dataset_id].update(grains)
     if planned_dataset_ids != set(dataset_ids):
         raise ReportingError(
-            "report_analysis_semantic_invalid",
+            "report_analysis_dataset_inconsistent",
             "分析计划 Dataset 必须精确覆盖 evidence-derived Dataset。",
         )
     if any(not grains for grains in grains_by_dataset.values()):
@@ -2613,6 +2619,22 @@ def _finalize_semantic_catalog(
             }
         )
     return dataset_semantics, metric_definitions
+
+
+def _require_dataset_id_sequence(
+    value: object,
+    *,
+    error_message: str,
+    error_code: str = "report_analysis_dataset_inconsistent",
+) -> tuple[str, ...]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or not value
+        or any(not isinstance(item, str) or not item for item in value)
+    ):
+        raise ReportingError(error_code, error_message)
+    return tuple(value)
 
 
 def _visualization_analysis_citation_ids(

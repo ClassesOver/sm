@@ -22,3 +22,29 @@
   - 通过
 
 未运行 live CLI 或 PostgreSQL，符合本次任务约束。
+
+## Fix Round 2 Re-review
+
+### 修复内容
+
+- 新增 runtime projection 回归断言，直接调用 `_run_analysis_phase` 并从 task runner 的 acceptance contract 检查 `datasetIds`、`authorizedDatasetIds` 与 `datasetSemantics`，不再预注入 `_phase_parameters` 的语义目录。
+- durable finalize binding 与 runtime projection 对 Dataset ID 做严格序列校验；`None`、空序列、空字符串和非字符串成员统一拒绝并返回 `report_analysis_dataset_inconsistent`。
+- `_finalize_semantic_catalog` 对空 analysis plans、空 Dataset 集合 fail closed，缺失 grain、计划 Dataset 越界和空/冲突指标语义继续拒绝，不再静默生成默认语义。
+- 保留模型语义改写保护与全局零图 finalize 拒绝行为。
+
+### 验证
+
+- `/home/junge/pros/chat/.venv-agent/bin/python -m pytest reporting/tests/test_reporting_tool_contracts.py -k 'projected_catalog or zero_charts or ambiguous_facts or inconsistent_dataset_ids or empty_inputs or malformed_durable' -q`
+  - 10 passed
+- `/home/junge/pros/chat/.venv-agent/bin/python -m pytest reporting/tests/test_reporting_section_concurrency.py -k 'visualization_retry_projects_citation_ids' -q`
+  - 1 passed
+- `/home/junge/pros/chat/.venv-agent/bin/python -m pytest reporting/tests/test_reporting_agent_projection.py reporting/tests/test_reporting_tool_contracts.py reporting/tests/test_reporting_state.py reporting/tests/test_reporting_section_concurrency.py -q`
+  - 373 passed, 9 deselected
+- `/home/junge/pros/chat/.venv-agent/bin/ruff format --check ...`
+  - 4 files already formatted
+- `/home/junge/pros/chat/.venv-agent/bin/ruff check ...`
+  - All checks passed
+- `git diff --check`
+  - 通过
+
+未运行 live CLI、PostgreSQL 或 Mypy；本轮未派发子代理，未使用或 cherry-pick 共享 f2 commit。
