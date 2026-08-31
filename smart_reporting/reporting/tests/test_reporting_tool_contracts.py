@@ -881,7 +881,120 @@ async def test_submit_visualization_charts_commit_flow() -> None:
             }
         ],
     }
-    assert durable_call["command_id"].startswith("viz-section:7:section_001:")
+    expected_digest = hashlib.sha256(
+        json.dumps(
+            {
+                "charts": durable_call["payload"]["charts"],
+                "files": durable_call["payload"]["files"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    assert durable_call["command_id"] == f"viz-section:7:section_001:{expected_digest}"
+
+
+@pytest.mark.anyio
+async def test_submit_visualization_charts_rejects_section_code_mismatch() -> None:
+    scope = SimpleNamespace(thread_id="thread-section-mismatch", task=SimpleNamespace())
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "sectionCode": "section_002",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_002"},
+        },
+    )
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[],
+        run_context=RunContext(run_id="run-mismatch", session_id="session-mismatch"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_section_invalid"
+    toolkit._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_submit_visualization_charts_allows_empty_charts() -> None:
+    scope = SimpleNamespace(thread_id="thread-empty", task=SimpleNamespace())
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "sectionCode": "section_001",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(revision=9))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[],
+        run_context=RunContext(run_id="run-empty", session_id="session-empty"),
+    )
+
+    assert result["ok"] is True
+    assert result["chartCount"] == 0
+    durable_call = toolkit._apply_durable.await_args.kwargs
+    assert durable_call["payload"] == {"sectionCode": "section_001", "charts": [], "files": []}
+
+
+@pytest.mark.anyio
+async def test_submit_visualization_charts_missing_file_returns_recoverable_failure() -> None:
+    scope = SimpleNamespace(thread_id="thread-submit-missing", task=SimpleNamespace())
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "sectionCode": "section_001",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
+        },
+    )
+    toolkit._inspect_chart_file = AsyncMock(
+        side_effect=ReportingError(
+            "report_chart_file_missing",
+            "图表源文件不存在。",
+            details={"sourcePath": "analysis/charts/section_001/missing.png"},
+        )
+    )
+    toolkit._apply_durable = AsyncMock()
+    chart = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/missing.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[chart],
+        run_context=RunContext(run_id="run-submit-missing", session_id="session-submit-missing"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_chart_file_missing"
+    assert result["retryable"] is True
+    toolkit._apply_durable.assert_not_awaited()
 
 
 @pytest.mark.anyio
