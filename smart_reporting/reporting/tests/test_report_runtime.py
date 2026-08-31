@@ -13,6 +13,7 @@ from smart_reporting.reporting.delivery.report_runtime import cli as runtime_cli
 from smart_reporting.reporting.delivery.report_runtime import runtime as runtime_module
 from smart_reporting.reporting.delivery.report_runtime.docx import (
     _WORD_PAGE_FIELDS,
+    _fit_image_dimensions,
     _postprocess_docx,
 )
 from smart_reporting.reporting.delivery.report_runtime.markdown import (
@@ -31,6 +32,24 @@ from smart_reporting.reporting.tests.workspace_fakes import (
 )
 from smart_reporting.reporting.workspace import WorkspaceReportService
 from smart_reporting.workspace import WorkspaceService
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "maximum_width", "maximum_height", "expected"),
+    [
+        (2_000, 1_000, 1_000, 1_500, (1_000, 500)),
+        (1_000, 2_000, 1_500, 1_000, (500, 1_000)),
+        (1_000, 500, 1_500, 1_000, (1_000, 500)),
+    ],
+)
+def test_fit_image_dimensions_preserves_aspect_ratio_within_bounds(
+    width: int,
+    height: int,
+    maximum_width: int,
+    maximum_height: int,
+    expected: tuple[int, int],
+) -> None:
+    assert _fit_image_dimensions(width, height, maximum_width, maximum_height) == expected
 
 
 def test_html_document_is_static_and_self_contained() -> None:

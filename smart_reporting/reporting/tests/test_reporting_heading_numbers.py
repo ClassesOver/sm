@@ -175,6 +175,9 @@ def test_document_context_and_manifest_share_heading_number_contract() -> None:
     assert 'class="toc-entry toc-level-4"' in pdf_html
     assert 'href="#report-heading-section_001-1-1-1"' in pdf_html
     assert "1.1.1 收入" in word_html
+    assert "max-height:180mm" in pdf_html
+    assert "object-fit:contain" in pdf_html
+    assert "p:has(>img)+p{break-before:avoid;break-after:avoid" in pdf_html
 
 
 def test_manifest_rejects_non_contiguous_nested_heading_numbers() -> None:
