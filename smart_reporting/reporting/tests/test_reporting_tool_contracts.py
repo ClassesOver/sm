@@ -3519,20 +3519,22 @@ _WORKER_TOOL_SCHEMA_NAMES = (
     "finalize_report_analysis",
     "inspect_chart",
     "register_report_charts",
+    "submit_visualization_charts",
     "render_report_section",
 )
 _WORKER_TOOL_SCHEMA_FINGERPRINTS = {
-    "finish_task": "8f2c3da628346e18a879213d6b2201da58e68eae5dda3e9477c6d2875aeb878e",
-    "read_profile_pointer": "a6287140ea3b87551c1126cbe2d4e0df034223e59937ac33276e30e627785018",
-    "query_profile": "442fe01a0e251791e117648a28d4c25e2041307ea7b26aae490ef7f3dadf87f6",
-    "query_analysis_context": "fb2d26cd963d66da970742c6a543fad0d492669f895fca01e536f123cc70cd0e",
-    "query_analysis_facts": "b1b463cc581dc8e66a40dc86570bfca698dba8562cefe66ca6987d8552cbdc68",
-    "write_analysis_files": "adb1fec9483ecde21f0ab92b3e804207dc8bffb4a9c7ecb22c77a9babded0687",
-    "complete_analysis_item": "cb93f40d4226ced6a1a2ac96d2b26ffe51e0e1fb3eba1e25d05e73d2496f2073",
-    "finalize_report_analysis": "72be07cfdd398672e02fd705ddded6e3d2780a44ff9ce0c282799063bc7a2d10",
-    "inspect_chart": "c68d47005ca812279d27542dea8ab4cdcc2958f20ecff7bf93d3f2d569d65adf",
-    "register_report_charts": "ef621148cfda9ec63c7889da077d35ee5fb12aa38a5f864614c3b5136f1b261a",
-    "render_report_section": "1505d9293a4db37dc5c833fc096471406f43468a2b83134c8d5152aea7cc0a95",
+    "finish_task": "ab5eb78da519bcfeb7b4d312e2febb3407b8aa43f6d5362e7cd555472f9a6ff4",
+    "read_profile_pointer": "b2519d0e7b882bf1ef9cb0943daecf776a012225b5376e08b939684aadfd733d",
+    "query_profile": "985e869a7ec204ff3b7ff3b9d411338ce26bfacca34e004f878ccddab01731ec",
+    "query_analysis_context": "1c4c56570eb9217299fc221e62d8ba48e08f5fac0c65f3b27df480360f7982d0",
+    "query_analysis_facts": "ae90792e199a1560dbd951861bcc197d508d860f6cdbf0d6ffc0f89632a53c9d",
+    "write_analysis_files": "9a646ca7f0d6b907829aba11ee9094481221ffa1b4db9a6e611ddde742f423f5",
+    "complete_analysis_item": "9c2e0d1eff9bb28aec286154573bbc38c025bd1f3a5d30bb129593beed755fb9",
+    "finalize_report_analysis": "0a5a381b7eda6a4b5cdf93302bdc5bd1bcb3aa411bc52745a972dee6f0e99d67",
+    "inspect_chart": "c038586b8d6fa4ecefe1c9d75d4d35e217d9e3cf91719c4fd2a7ad78f775c9c6",
+    "register_report_charts": "4522acf4b9385c526b7403964b4496ce179ccac2935246da7265de5daebb228c",
+    "submit_visualization_charts": "874571111efc572f8e47b837faf3b1a00ea4560f8f0257a8a69cd213e4505451",
+    "render_report_section": "b74f37e7093dad682128cfe205c17116dd1bd3578b13575adb6d1ee3da20e724",
 }
 
 
@@ -3540,6 +3542,7 @@ def _worker_tool_schema_snapshot(toolkit: ReportWorkspaceTaskToolkit) -> dict[st
     return {
         name: {
             "name": toolkit.async_functions[name].name,
+            "description": toolkit.async_functions[name].description,
             "parameters": toolkit.async_functions[name].parameters,
         }
         for name in _WORKER_TOOL_SCHEMA_NAMES
@@ -3564,7 +3567,7 @@ def test_report_worker_tool_schema_is_stable_from_toolkit_module() -> None:
     }
 
     assert package.ReportWorkspaceTaskToolkit is toolkit_class
-    assert set(fingerprints) == set(_WORKER_TOOL_SCHEMA_FINGERPRINTS)
+    assert fingerprints == _WORKER_TOOL_SCHEMA_FINGERPRINTS
 
 
 @pytest.mark.parametrize(
