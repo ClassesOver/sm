@@ -999,6 +999,29 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
         assert "不得调用 query_analysis_facts" in instructions
 
 
+def test_build_report_agent_instructions_for_visualization_task_kinds() -> None:
+    def context(task_kind: str) -> RunContext:
+        return RunContext(
+            run_id=f"run-{task_kind}",
+            session_id=f"session-{task_kind}",
+            dependencies={
+                REPORTING_TASK_DEPENDENCY: {
+                    REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                    REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
+                }
+            },
+        )
+
+    section_instructions = build_report_agent_instructions(context("visualization_section"))
+    finalize_instructions = build_report_agent_instructions(context("visualization_finalize"))
+
+    assert any("submit_visualization_charts" in item for item in section_instructions)
+    assert not any("register_report_charts" in item for item in section_instructions)
+    assert any("register_report_charts" in item for item in finalize_instructions)
+    assert any("finalize_report_analysis" in item for item in finalize_instructions)
+    assert not any("submit_visualization_charts" in item for item in finalize_instructions)
+
+
 def test_section_instructions_match_server_derived_claim_contract() -> None:
     context = RunContext(
         run_id="run-section-contract",

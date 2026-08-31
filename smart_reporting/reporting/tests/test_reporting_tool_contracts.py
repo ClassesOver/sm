@@ -708,7 +708,7 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {
@@ -784,6 +784,27 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
     assert result["status"] == "completed"
     assert result["warnings"] == expected_warnings
     toolkit._apply_durable.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_legacy_visualization_kind() -> None:
+    scope = SimpleNamespace(thread_id="thread-legacy", task=SimpleNamespace(mutation_sequence=1))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+
+    def reject_legacy(*_args: Any, **kwargs: Any) -> None:
+        assert kwargs["task_kinds"] == frozenset({"visualization_finalize"})
+        raise ReportingError("report_phase_tool_forbidden", "旧 visualization Task 无权登记图表。")
+
+    toolkit._require_phase_tool = reject_legacy
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+
+    result = await toolkit.register_report_charts(
+        [], run_context=RunContext(run_id="run-legacy", session_id="session-legacy")
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_phase_tool_forbidden"
 
 
 @pytest.mark.anyio
@@ -1016,7 +1037,7 @@ async def test_register_report_charts_missing_file_returns_recoverable_failure()
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope), service=service)
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {
@@ -1074,7 +1095,7 @@ async def test_register_report_charts_rejects_after_recent_script_failure() -> N
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: ({}, {})
     toolkit._inspect_chart = AsyncMock()
 
@@ -1106,7 +1127,7 @@ async def test_register_report_charts_rejects_pending_failure_from_previous_retr
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: ({}, {})
     toolkit._inspect_chart = AsyncMock()
 
@@ -1146,7 +1167,7 @@ async def test_register_report_charts_rejects_running_visualization_script() -> 
         )
     )
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: ({}, {})
     toolkit._inspect_chart = AsyncMock()
 
@@ -1166,7 +1187,7 @@ async def test_register_report_charts_accepts_missing_optional_run_context() -> 
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {
@@ -1193,7 +1214,7 @@ async def test_register_report_charts_rejects_metric_code_outside_frozen_catalog
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {
@@ -1239,7 +1260,7 @@ async def test_register_report_charts_allows_defined_metric_when_catalog_is_abse
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {
@@ -1309,7 +1330,7 @@ async def test_register_report_charts_creates_honest_deterministic_receipt() -> 
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {
@@ -1398,7 +1419,7 @@ async def test_register_report_charts_rejects_primary_dataset_absent_from_citati
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {
@@ -1444,7 +1465,7 @@ async def test_register_report_charts_rejects_retained_chart_before_inspection()
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {
@@ -1756,7 +1777,7 @@ async def test_register_report_charts_requires_current_acceptable_inspection(
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {

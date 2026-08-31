@@ -1026,12 +1026,12 @@ class RuntimeSectionsMixin:
                 allowed=frozenset({"analysis"}),
                 tool_name="register_report_charts",
                 run_context=run_context,
-                task_kinds=frozenset({"visualization"}),
+                task_kinds=frozenset({"visualization_finalize"}),
             )
-            if self._active_reporting_task_kind(scope) != "visualization":
+            if self._active_reporting_task_kind(scope) != "visualization_finalize":
                 raise ReportingError(
                     "report_phase_contract_invalid",
-                    "register_report_charts 只允许 visualization Task 调用。",
+                    "register_report_charts 只允许 visualization_finalize Task 调用。",
                 )
             await self._ensure_visualization_terminal_settled(scope)
             state = self._session_state(run_context)

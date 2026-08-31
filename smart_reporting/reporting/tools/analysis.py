@@ -863,7 +863,7 @@ class RuntimeAnalysisMixin:
                 allowed=frozenset({"analysis"}),
                 tool_name="finalize_report_analysis",
                 run_context=run_context,
-                task_kinds=frozenset({"visualization"}),
+                task_kinds=frozenset({"visualization_finalize"}),
             )
             await self._ensure_visualization_terminal_settled(scope)
             durable = await self._durable_state(scope)
