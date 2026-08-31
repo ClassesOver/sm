@@ -265,6 +265,11 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
         "也由服务端从冻结图表派生，无需重复提交。无图表 claim 才需要提交 currentPeriod；"
         "reference_only 结论及其正文必须明确标记为“参考”，不得据此生成严格同比、利润或效率结论。"
     ),
+    (
+        "claim 的结构或语义不确定性不触发章节返工：仍应优先使用当前 WorkItem 的冻结目录提交，"
+        "服务端会对无法验证的 claim 做确定性归一化、移除无效绑定或省略 claim，并把问题写入交付警告；"
+        "不得因 claim 警告重复调用 render_report_section。"
+    ),
     "报告结论、数字、表格和图表必须来自当前冻结 evidence；不得年化、拟合、外推、补齐、平滑或作无依据归因。",
     "deterministicFactFiles 是服务端复算并校验哈希的固定事实，优先读取并沿用；可补充解释和非标准分析，但不得覆盖其中数值。",
     (
