@@ -136,6 +136,9 @@ def test_submit_visualization_charts_persists_section_submission() -> None:
 
     payload = result.state.payload
     assert payload["visualizationSections"]["section_001"]["charts"][0]["chartId"] == "chart_a"
+    assert payload["visualizationSections"]["section_001"]["files"] == [
+        make_file_identity("charts/section_001/attempt-1/chart_a.png")
+    ]
     assert "section_001" in payload["completedVisualizationSections"]
 
 
@@ -201,6 +204,42 @@ def test_submit_visualization_charts_rejects_cross_section_duplicate_source_path
 def test_submit_visualization_charts_blocked_after_registration_closed() -> None:
     with pytest.raises(ReportingStateError):
         ReportingStateReducer.apply(register_charts_state(), make_submit_command("section_003"))
+
+
+def test_submit_visualization_charts_rejects_malformed_top_level_payload() -> None:
+    with pytest.raises(ReportingStateError) as exc_info:
+        ReportingStateReducer.apply(
+            make_visualization_state(),
+            {
+                "name": "submit_visualization_charts",
+                "commandId": "viz-section:1:malformed-top-level",
+                "payload": {
+                    "sectionCode": "section_001",
+                    "charts": {},
+                    "files": [],
+                },
+            },
+        )
+
+    assert exc_info.value.code == "report_visualization_section_invalid"
+
+
+def test_submit_visualization_charts_rejects_malformed_chart_and_file_payload() -> None:
+    with pytest.raises(ReportingStateError) as exc_info:
+        ReportingStateReducer.apply(
+            make_visualization_state(),
+            {
+                "name": "submit_visualization_charts",
+                "commandId": "viz-section:1:malformed-items",
+                "payload": {
+                    "sectionCode": "section_001",
+                    "charts": [{"chartId": "chart_a"}],
+                    "files": [{"path": "charts/chart_a.png", "size": 0, "sha256": "invalid"}],
+                },
+            },
+        )
+
+    assert exc_info.value.code == "report_visualization_section_invalid"
 
 
 def _integration_database_url() -> str:
