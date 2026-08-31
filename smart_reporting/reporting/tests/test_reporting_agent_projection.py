@@ -32,7 +32,10 @@ from smart_reporting.reporting.agent import (
     normalize_reporting_tool_arguments,
     propagate_reporting_tool_errors,
 )
-from smart_reporting.reporting.instructions import build_report_agent_instructions
+from smart_reporting.reporting.instructions import (
+    REPORT_VISUALIZATION_AGENT_INSTRUCTIONS,
+    build_report_agent_instructions,
+)
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import (
     REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY,
@@ -971,6 +974,16 @@ def test_section_instructions_match_server_derived_claim_contract() -> None:
         "绑定图表时 currentPeriod、comparisonPeriod、comparisonType、comparability" in instructions
     )
     assert "claim 必须绑定 ReportBrief 中的 managementQuestion" not in instructions
+
+
+def test_visualization_instructions_require_readable_chart_layouts() -> None:
+    instructions = "\n".join(REPORT_VISUALIZATION_AGENT_INSTRUCTIONS)
+
+    assert "最短业务名称" in instructions
+    assert "1200 x 675" in instructions
+    assert "横向条形图" in instructions
+    assert "动态调整画布高度" in instructions
+    assert "紧凑对比图" in instructions
 
 
 def test_deterministic_visualization_instructions_forbid_inspect_chart() -> None:
