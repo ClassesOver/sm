@@ -44,11 +44,163 @@ def apply_phase(state: ReportingRunState, name: str) -> ReportingRunState:
     ).state
 
 
+def make_visualization_state() -> ReportingRunState:
+    return apply_phase(apply_phase(initial_state(), "start_analysis"), "start_visualization")
+
+
+def make_chart_registration(chart_id: str, source_path: str | None = None) -> dict[str, object]:
+    return {
+        "chartId": chart_id,
+        "sourcePath": source_path or f"analysis/charts/{chart_id}.png",
+        "title": chart_id,
+        "altText": f"{chart_id} chart",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["metric-1"],
+        "currentPeriod": "2026",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+
+
+def make_file_identity(path: str) -> dict[str, object]:
+    return {"path": path, "size": 1, "sha256": "a" * 64}
+
+
+def submit_section(
+    state: ReportingRunState,
+    section_code: str,
+    *,
+    chart_id: str = "chart_a",
+    source_path: str | None = None,
+) -> ReportingRunState:
+    return ReportingStateReducer.apply(
+        state,
+        {
+            "name": "submit_visualization_charts",
+            "commandId": f"submit-{section_code}",
+            "payload": {
+                "sectionCode": section_code,
+                "charts": [make_chart_registration(chart_id, source_path)],
+                "files": [],
+            },
+        },
+        state.state_version,
+    ).state
+
+
+def register_charts_state() -> ReportingRunState:
+    state = make_visualization_state()
+    return ReportingStateReducer.apply(
+        state,
+        {
+            "name": "register_charts",
+            "commandId": "register-charts",
+            "payload": {"charts": [{"chartId": "chart_a", "sha256": "a" * 64}]},
+        },
+        state.state_version,
+    ).state
+
+
+def state_with_chart(chart_id: str, section_code: str) -> ReportingRunState:
+    return submit_section(make_visualization_state(), section_code, chart_id=chart_id)
+
+
+def make_submit_command(section_code: str) -> dict[str, object]:
+    return {
+        "name": "submit_visualization_charts",
+        "commandId": f"submit-{section_code}",
+        "payload": {"sectionCode": section_code, "charts": [], "files": []},
+    }
+
+
 def test_repository_requires_postgresql() -> None:
     database = SimpleNamespace(db_engine=SimpleNamespace(dialect=SimpleNamespace(name="sqlite")))
 
     with pytest.raises(ValueError, match="只支持 PostgreSQL"):
         ReportingStateRepository(database)  # type: ignore[arg-type]
+
+
+def test_submit_visualization_charts_persists_section_submission() -> None:
+    result = ReportingStateReducer.apply(
+        make_visualization_state(),
+        {
+            "name": "submit_visualization_charts",
+            "commandId": "viz-section:1:section_001:abc",
+            "payload": {
+                "sectionCode": "section_001",
+                "charts": [make_chart_registration("chart_a")],
+                "files": [make_file_identity("charts/section_001/attempt-1/chart_a.png")],
+            },
+        },
+    )
+
+    payload = result.state.payload
+    assert payload["visualizationSections"]["section_001"]["charts"][0]["chartId"] == "chart_a"
+    assert "section_001" in payload["completedVisualizationSections"]
+
+
+def test_submit_visualization_charts_allows_empty_charts() -> None:
+    result = ReportingStateReducer.apply(
+        make_visualization_state(),
+        {
+            "name": "submit_visualization_charts",
+            "commandId": "viz-section:1:section_002:empty",
+            "payload": {"sectionCode": "section_002", "charts": [], "files": []},
+        },
+    )
+
+    payload = result.state.payload
+    assert payload["visualizationSections"]["section_002"] == {"charts": [], "files": []}
+    assert "section_002" in payload["completedVisualizationSections"]
+
+
+def test_submit_visualization_charts_rejects_cross_section_duplicate() -> None:
+    state = state_with_chart("chart_a", "section_001")
+    with pytest.raises(ReportingStateError) as exc_info:
+        ReportingStateReducer.apply(
+            state,
+            {
+                "name": "submit_visualization_charts",
+                "commandId": "viz-section:1:section_002:def",
+                "payload": {
+                    "sectionCode": "section_002",
+                    "charts": [make_chart_registration("chart_a")],
+                    "files": [],
+                },
+            },
+        )
+    assert exc_info.value.code == "report_visualization_section_conflict"
+
+
+def test_submit_visualization_charts_rejects_cross_section_duplicate_source_path() -> None:
+    source_path = "analysis/charts/shared.png"
+    state = submit_section(
+        make_visualization_state(),
+        "section_001",
+        chart_id="chart_a",
+        source_path=source_path,
+    )
+
+    with pytest.raises(ReportingStateError) as exc_info:
+        ReportingStateReducer.apply(
+            state,
+            {
+                "name": "submit_visualization_charts",
+                "commandId": "viz-section:1:section_002:source-path-conflict",
+                "payload": {
+                    "sectionCode": "section_002",
+                    "charts": [make_chart_registration("chart_b", source_path)],
+                    "files": [],
+                },
+            },
+        )
+
+    assert exc_info.value.code == "report_visualization_section_conflict"
+
+
+def test_submit_visualization_charts_blocked_after_registration_closed() -> None:
+    with pytest.raises(ReportingStateError):
+        ReportingStateReducer.apply(register_charts_state(), make_submit_command("section_003"))
 
 
 def _integration_database_url() -> str:

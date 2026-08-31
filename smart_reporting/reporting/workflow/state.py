@@ -18,7 +18,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from .checkpoint import ChartVisualInspectionReceipt
+from ..delivery.draft_v1 import ReportChartRegistration
+from .checkpoint import ChartVisualInspectionReceipt, FileIdentity
 
 REPORTING_STATE_SCHEMA_VERSION = 3
 MAX_INLINE_APPLIED_COMMANDS = 1000
@@ -510,6 +511,86 @@ def apply(
             )
         if existing is None:
             receipts.append(dict(receipt))
+    elif name == "submit_visualization_charts":
+        # 章节图表草案提交允许零图，但 sectionCode 一旦写入就代表该章节已完成；
+        # chartId/sourcePath 必须在所有章节中全局唯一，且登记关闭后不得再改变提交事实。
+        if state.phase is not ReportingPhase.VISUALIZATION:
+            raise ReportingStateError(
+                "report_visualization_section_phase_invalid", "章节图表只能在可视化阶段提交。"
+            )
+        if payload.get("chartsRegistered") is True:
+            raise ReportingStateError(
+                "report_visualization_section_closed", "图表登记窗口已关闭，章节草案不可再变更。"
+            )
+        section_code = arguments.get("sectionCode")
+        charts = arguments.get("charts")
+        files = arguments.get("files")
+        if not isinstance(section_code, str) or not 1 <= len(section_code) <= 128:
+            raise ReportingStateError(
+                "report_visualization_section_invalid", "章节图表提交缺少有效 sectionCode。"
+            )
+        if not isinstance(charts, list) or not isinstance(files, list):
+            raise ReportingStateError(
+                "report_visualization_section_invalid",
+                "章节图表提交的 charts 和 files 必须是列表。",
+            )
+        try:
+            parsed_charts = [
+                ReportChartRegistration.model_validate(chart).model_dump(mode="json", by_alias=True)
+                for chart in charts
+            ]
+            parsed_files = [
+                FileIdentity.model_validate(file).model_dump(mode="json", by_alias=True)
+                for file in files
+            ]
+        except ValidationError as error:
+            raise ReportingStateError(
+                "report_visualization_section_invalid", "章节图表提交包含无效图表或文件身份。"
+            ) from error
+
+        chart_ids = [chart["chartId"] for chart in parsed_charts]
+        source_paths = [chart["sourcePath"] for chart in parsed_charts]
+        if len(chart_ids) != len(set(chart_ids)) or len(source_paths) != len(set(source_paths)):
+            raise ReportingStateError(
+                "report_visualization_section_conflict",
+                "章节图表提交包含重复 chartId 或 sourcePath。",
+            )
+        sections = payload.setdefault("visualizationSections", {})
+        if not isinstance(sections, dict):
+            raise ReportingStateError("report_state_invalid", "visualizationSections 状态损坏。")
+        existing_chart_ids: set[str] = set()
+        existing_source_paths: set[str] = set()
+        for existing_section in sections.values():
+            if not isinstance(existing_section, Mapping):
+                raise ReportingStateError(
+                    "report_state_invalid", "visualizationSections 状态损坏。"
+                )
+            existing_charts = existing_section.get("charts", [])
+            if not isinstance(existing_charts, list):
+                raise ReportingStateError(
+                    "report_state_invalid", "visualizationSections 状态损坏。"
+                )
+            for chart in existing_charts:
+                if isinstance(chart, Mapping):
+                    chart_id = chart.get("chartId")
+                    source_path = chart.get("sourcePath")
+                    if isinstance(chart_id, str):
+                        existing_chart_ids.add(chart_id)
+                    if isinstance(source_path, str):
+                        existing_source_paths.add(source_path)
+        if set(chart_ids) & existing_chart_ids or set(source_paths) & existing_source_paths:
+            raise ReportingStateError(
+                "report_visualization_section_conflict",
+                "章节图表与既有章节包含重复 chartId 或 sourcePath。",
+            )
+        sections[section_code] = {"charts": parsed_charts, "files": parsed_files}
+        completed = payload.setdefault("completedVisualizationSections", [])
+        if not isinstance(completed, list):
+            raise ReportingStateError(
+                "report_state_invalid", "completedVisualizationSections 状态损坏。"
+            )
+        if section_code not in completed:
+            completed.append(section_code)
     elif name == "register_charts":
         if state.phase is not ReportingPhase.VISUALIZATION:
             raise ReportingStateError(
