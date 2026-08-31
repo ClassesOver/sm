@@ -49,6 +49,7 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_fact_retry_usage,
     _checkpoint_retry_error,
     _run_pending_analysis_items,
+    _run_pending_visualization_sections,
     _visualization_retry_usage,
 )
 from smart_reporting.reporting.workflow.runtime.sections import (
@@ -171,6 +172,71 @@ async def test_run_bounded_finishes_siblings_and_raises_original_failure() -> No
 
     assert raised.value is failure
     assert set(observed) == {"section_001", "section_002"}
+
+
+@pytest.mark.anyio
+async def test_visualization_sections_run_with_bounded_concurrency() -> None:
+    active = 0
+    maximum = 0
+    started: list[str] = []
+    lock = asyncio.Lock()
+
+    async def worker(section_code: str) -> None:
+        nonlocal active, maximum
+        async with lock:
+            active += 1
+            maximum = max(maximum, active)
+            started.append(section_code)
+        await asyncio.sleep(0.005)
+        async with lock:
+            active -= 1
+
+    await _run_pending_visualization_sections(
+        ("section_001", "section_002", "section_003", "section_004"),
+        completed_section_codes=set(),
+        concurrency=2,
+        worker=worker,
+    )
+
+    assert maximum == 2
+    assert started == ["section_001", "section_002", "section_003", "section_004"]
+
+
+@pytest.mark.anyio
+async def test_visualization_section_failure_does_not_cancel_siblings() -> None:
+    observed: list[str] = []
+
+    async def worker(section_code: str) -> None:
+        observed.append(section_code)
+        if section_code == "section_002":
+            raise RuntimeError("section failed")
+
+    with pytest.raises(ExceptionGroup):
+        await _run_pending_visualization_sections(
+            ("section_001", "section_002", "section_003", "section_004"),
+            completed_section_codes=set(),
+            concurrency=4,
+            worker=worker,
+        )
+
+    assert set(observed) == {"section_001", "section_002", "section_003", "section_004"}
+
+
+@pytest.mark.anyio
+async def test_completed_visualization_sections_are_skipped() -> None:
+    observed: list[str] = []
+
+    async def worker(section_code: str) -> None:
+        observed.append(section_code)
+
+    await _run_pending_visualization_sections(
+        ("section_001", "section_002", "section_003"),
+        completed_section_codes={"section_001"},
+        concurrency=2,
+        worker=worker,
+    )
+
+    assert observed == ["section_002", "section_003"]
 
 
 def test_analysis_rework_constraints_bind_frozen_plan_and_profile_receipts() -> None:
