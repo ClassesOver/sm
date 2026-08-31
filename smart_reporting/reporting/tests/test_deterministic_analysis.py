@@ -10,6 +10,7 @@ from smart_reporting.reporting.hospital_operation.detailed_analysis import (
 )
 from smart_reporting.reporting.hospital_operation.deterministic_analysis import (
     build_deterministic_analysis_bundle,
+    validate_metric_code_bindings,
 )
 
 
@@ -84,6 +85,47 @@ def test_measure_semantic_accepts_confirmed_unit() -> None:
     value = MeasureSemantic.model_validate(semantic("dynamic_value", unit="元"))
 
     assert value.unit == "元"
+
+
+def test_validate_metric_code_bindings_rejects_numeric_fact_without_authoritative_code() -> None:
+    bundle = build_deterministic_analysis_bundle(
+        analysis(),
+        (
+            (
+                "current",
+                b"month,department,amount\n2025-01,A,100\n",
+                context("current"),
+                ("current",),
+            ),
+        ),
+        profile_hash="c" * 64,
+    )
+
+    with pytest.raises(ValueError, match="metric code"):
+        validate_metric_code_bindings(bundle)
+
+
+def test_validate_metric_code_bindings_accepts_profile_metric_code() -> None:
+    bundle = build_deterministic_analysis_bundle(
+        analysis(),
+        (
+            (
+                "current",
+                b"month,department,amount\n2025-01,A,100\n",
+                context("current"),
+                ("current",),
+            ),
+        ),
+        profile_metrics=(
+            {
+                "code": "income_total",
+                "fieldRef": "dynamic_source.dynamic_db.dynamic_table.amount",
+            },
+        ),
+        profile_hash="c" * 64,
+    )
+
+    validate_metric_code_bindings(bundle)
 
 
 def test_deterministic_bundle_calculates_semantic_facts_and_separate_comparisons() -> None:

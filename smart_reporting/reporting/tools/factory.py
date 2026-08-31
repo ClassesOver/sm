@@ -8,15 +8,10 @@ from agno.run import RunContext
 from agno.tools import Toolkit
 
 from ...workspace import WorkspaceService
-from ..phase import (
-    reporting_phase_allows_tool,
-    reporting_phase_from_run_context,
-    reporting_task_kind_from_run_context,
-)
+from ..phase import reporting_phase_from_run_context, reporting_task_kind_from_run_context
 from ..vision import ReportVisionReviewer
 from ..workflow.repository import ReportingStateRepository
 from .toolkit import REPORT_WORKER_TOOLKIT_INSTRUCTIONS, ReportWorkspaceTaskToolkit
-from .validation import ANALYSIS_WRITE_TOOL_NAMES
 
 
 def build_report_worker_tools(
@@ -36,6 +31,8 @@ def build_report_worker_tools(
         state_repository=state_repository,
         validator_registry=validator_registry,
         vision_reviewer=vision_reviewer,
+        phase=reporting_phase_from_run_context(run_context),
+        task_kind=reporting_task_kind_from_run_context(run_context),
     )
     if vision_reviewer is None:
         for functions in (toolkit.functions, toolkit.async_functions):
@@ -43,14 +40,14 @@ def build_report_worker_tools(
             functions.pop("inspect_chart", None)
             register = functions.get("register_report_charts")
             if register is not None:
-                register.description = register.description.replace(
+                description = register.description or ""
+                register.description = description.replace(
                     "每张图必须先调用 inspect_chart，服务端校验当前文件哈希的视觉回执、Dataset "
                     "citation 并决定发布路径。",
                     "服务端执行确定性图片文件检查、校验 Dataset citation，并如实记录未运行模型"
                     "视觉审查后决定发布路径。",
                 )
     phase = reporting_phase_from_run_context(run_context)
-    task_kind = reporting_task_kind_from_run_context(run_context)
     if phase is not None:
         # Agent callable-tools 缓存键已包含 phase/taskKind，因此这里可以让实际
         # Toolkit、工具说明和模型 schema 使用同一最小能力集。执行入口仍保留受信
@@ -58,14 +55,5 @@ def build_report_worker_tools(
         # 工具在服务端收尾时依赖的内部函数对象，即使当前模型不应直接调用，也不能
         # 从 Toolkit 删除；write_analysis_files 同样依赖四个底层写入原语完成校验与
         # 提交。模型请求层会按 phase 白名单继续隐藏这些内部依赖。
-        for functions in (toolkit.functions, toolkit.async_functions):
-            for name in tuple(functions):
-                internal_dependency = name == "finish_task" or (
-                    phase == "analysis" and name in ANALYSIS_WRITE_TOOL_NAMES
-                )
-                if not internal_dependency and not reporting_phase_allows_tool(
-                    phase, name, task_kind=task_kind
-                ):
-                    functions.pop(name, None)
         toolkit.instructions = REPORT_WORKER_TOOLKIT_INSTRUCTIONS
     return [toolkit]

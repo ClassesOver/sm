@@ -4,6 +4,7 @@ import hashlib
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import Literal
 
 from ...workspace import MAX_DOWNLOAD_BYTES
 from ..delivery.publishing import (
@@ -98,6 +99,26 @@ class InMemoryReportArtifactRepository:
 
     async def get(self, artifact_key: str) -> StoredReportArtifact | None:
         return self.records.get(artifact_key)
+
+    async def resolve(
+        self,
+        *,
+        scope: ReportDownloadScope,
+        report_id: str,
+        revision: int,
+        artifact: Literal["pdf", "word", "html"],
+    ) -> StoredReportArtifact | None:
+        matches = [
+            item
+            for item in self.records.values()
+            if item.scope == scope
+            and item.report_id == report_id
+            and item.revision == revision
+            and item.artifact == artifact
+        ]
+        if len(matches) > 1:
+            raise ReportingError("report_artifact_invalid", "持久化报告产物无效。")
+        return matches[0] if matches else None
 
     async def touch(self, artifact_key: str, *, now: datetime) -> None:
         artifact = self.records.get(artifact_key)

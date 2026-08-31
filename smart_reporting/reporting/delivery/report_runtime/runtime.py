@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from .markdown import (
     _bind_heading_anchors,
     _body_tokens,
     _document_context,
+    _html_document,
     _markdown_title,
     _normalize_cjk_strong_markers,
     _semantic_documents,
@@ -36,6 +38,7 @@ from .pdf import (
 from .validation import (
     IMAGE_SUFFIXES,
     MAX_DOCX_BYTES,
+    MAX_HTML_BYTES,
     MAX_IMAGE_BYTES,
     MAX_MARKDOWN_BYTES,
     MAX_PDF_BYTES,
@@ -43,12 +46,14 @@ from .validation import (
     ReportFailure,
     _check_image_signature,
     _cleanup_directory,
+    _html_output_path,
     _input_path,
     _output_path,
     _reject_symlinks,
     _relative_path,
     _sha256,
     _temporary_docx_path,
+    _temporary_html_path,
     _temporary_pdf_path,
     _validation_directory,
     _word_output_path,
@@ -126,6 +131,34 @@ class ReportRuntime:
             raise ReportFailure("Markdown 图片合计超过 50 MiB")
         return unique
 
+    @staticmethod
+    def _inline_images(body: str, source_parent: Path, allowed_images: set[Path]) -> str:
+        image_pattern = re.compile(r'(<img\b[^>]*\bsrc=)(["\'])([^"\']+)(\2)', re.I)
+
+        def replace(match: re.Match[str]) -> str:
+            source = match.group(3)
+            parsed = urlsplit(source)
+            if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+                raise ReportFailure("HTML 图片只能引用已校验的工作区资源")
+            path = (source_parent / unquote(parsed.path)).resolve()
+            if path not in allowed_images:
+                raise ReportFailure("HTML 图片引用了未校验资源")
+            mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(
+                path.suffix.lower(), f"image/{path.suffix.lower().lstrip('.')}"
+            )
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            return f"{match.group(1)}{match.group(2)}data:{mime};base64,{encoded}{match.group(4)}"
+
+        return image_pattern.sub(replace, body)
+
+    @staticmethod
+    def _reject_html_links(body: str) -> None:
+        link_pattern = re.compile(r'<a\b[^>]*\bhref=(?:"([^"]*)"|\'([^\']*)\')', re.I)
+        for match in link_pattern.finditer(body):
+            href = match.group(1) if match.group(1) is not None else match.group(2)
+            if not href.startswith("#") or urlsplit(href).scheme or urlsplit(href).netloc:
+                raise ReportFailure("HTML 预览不允许外部或工作区链接")
+
     def render_markdown(
         self,
         state: dict[str, Any],
@@ -134,6 +167,7 @@ class ReportRuntime:
         temporary_path: str,
         page_layout: dict[str, str] | None = None,
         word_output_path: str | None = None,
+        html_output_path: str | None = None,
     ) -> dict[str, Any]:
         try:
             import pypdf
@@ -144,6 +178,8 @@ class ReportRuntime:
 
         self._validate_datasets(state)
         temporary: Path | None = None
+        html_output: Path | None = None
+        temporary_html: Path | None = None
         succeeded = False
         try:
             source = _input_path(self.workspace, markdown_path, ".md")
@@ -174,15 +210,22 @@ class ReportRuntime:
             source_artifact = self._artifact(source)
             image_artifacts = [self._artifact(path) for path in sorted(allowed_images)]
             body = parser.renderer.render(_body_tokens(tokens), parser.options, {})
+            html_body = self._inline_images(body, source.parent, allowed_images)
+            self._reject_html_links(html_body)
             output = _output_path(self.workspace, output_path)
             word_output = _word_output_path(
                 self.workspace,
                 word_output_path or str(PurePosixPath(output_path).with_suffix(".docx")),
             )
-            if output.parent != word_output.parent:
-                raise ReportFailure("PDF 和 Word 必须发布到同一 revision 目录")
+            html_output = _html_output_path(
+                self.workspace,
+                html_output_path or str(PurePosixPath(output_path).with_suffix(".html")),
+            )
+            if output.parent != word_output.parent or output.parent != html_output.parent:
+                raise ReportFailure("PDF、Word 和 HTML 必须发布到同一 revision 目录")
             temporary = _temporary_pdf_path(temporary_path)
             temporary_docx = _temporary_docx_path(temporary)
+            temporary_html = _temporary_html_path(temporary)
             file_fetcher = URLFetcher(allowed_protocols={"file"}, fail_on_errors=True)
 
             def fetch_resource(url: str) -> dict[str, Any]:
@@ -264,6 +307,11 @@ class ReportRuntime:
                 expected_image_count=len(allowed_images),
                 watermark_text=context["watermarkText"],
             )
+            html_document = _html_document(html_body, context=context, layout=layout)
+            html_bytes = html_document.encode("utf-8")
+            if len(html_bytes) > MAX_HTML_BYTES:
+                raise ReportFailure("HTML 文件不能超过 200 MiB")
+            temporary_html.write_bytes(html_bytes)
             if self._artifact(source)["sha256"] != source_artifact["sha256"] or any(
                 self._artifact(path)["sha256"] != artifact["sha256"]
                 for path, artifact in zip(sorted(allowed_images), image_artifacts, strict=True)
@@ -279,10 +327,16 @@ class ReportRuntime:
                 "size": docx_size,
                 "sha256": _sha256(temporary_docx),
             }
+            html_artifact = {
+                "path": str(html_output.relative_to(self.workspace)),
+                "size": len(html_bytes),
+                "sha256": _sha256(temporary_html),
+            }
             render = {
                 "markdown": source_artifact,
                 "pdf": pdf_artifact,
                 "word": word_artifact,
+                "html": html_artifact,
                 "images": image_artifacts,
                 "pageCount": page_count,
                 "imageCount": len(allowed_images),
@@ -300,6 +354,9 @@ class ReportRuntime:
                 "markdownPath": str(source.relative_to(self.workspace)),
                 "pdfPath": str(output.relative_to(self.workspace)),
                 "wordPath": str(word_output.relative_to(self.workspace)),
+                "htmlPath": str(html_output.relative_to(self.workspace)),
+                "htmlSize": len(html_bytes),
+                "htmlSha256": html_artifact["sha256"],
                 "pageCount": page_count,
                 "imageCount": len(allowed_images),
                 "size": pdf_size,
@@ -319,6 +376,7 @@ class ReportRuntime:
         temporary_directory: str,
         artifact_manifest: dict[str, Any] | None = None,
         word_path: str | None = None,
+        html_path: str | None = None,
     ) -> dict[str, Any]:
         try:
             import pypdf
@@ -344,6 +402,16 @@ class ReportRuntime:
                 or registered_word.get("path") != current_word_path
             ):
                 raise ReportFailure("Word 未登记为当前分析任务的渲染产物")
+            registered_html = render.get("html")
+            current_html_path = html_path or (
+                registered_html.get("path") if isinstance(registered_html, dict) else None
+            )
+            if (
+                not isinstance(registered_html, dict)
+                or not isinstance(current_html_path, str)
+                or registered_html.get("path") != current_html_path
+            ):
+                raise ReportFailure("HTML 未登记为当前分析任务的渲染产物")
             supporting_artifacts = [render["markdown"], *render.get("images", [])]
             for artifact in supporting_artifacts:
                 supporting = self.workspace.joinpath(*_relative_path(artifact["path"]).parts)
@@ -360,6 +428,13 @@ class ReportRuntime:
             word_current = self._artifact(word)
             if word_current["sha256"] != registered_word.get("sha256"):
                 raise ReportFailure("Word 产物发生变化，请重新渲染后验收")
+            html_relative = _relative_path(current_html_path, ".html")
+            html = self.workspace.joinpath(*html_relative.parts)
+            html_current = self._artifact(html)
+            if html_current["sha256"] != registered_html.get("sha256") or html_current[
+                "size"
+            ] != registered_html.get("size"):
+                raise ReportFailure("HTML 产物发生变化，请重新渲染后验收")
             pages: list[dict[str, Any]] = []
             blank_pages: list[int] = []
             missing_page_layout: list[int] = []
@@ -558,6 +633,9 @@ class ReportRuntime:
                 "pdfSha256": current["sha256"],
                 "wordPath": current_word_path,
                 "wordSha256": word_current["sha256"],
+                "htmlPath": current_html_path,
+                "htmlSha256": html_current["sha256"],
+                "htmlSize": html_current["size"],
                 "pageCount": len(pages),
                 "markdownImageCount": markdown_image_count,
                 "renderedImageCount": rendered_image_count,
@@ -584,6 +662,11 @@ class ReportRuntime:
                 or word.stat().st_size != word_current["size"]
             ):
                 raise ReportFailure("Word 产物在验收期间发生变化，请重新验收")
+            if (
+                _sha256(html) != html_current["sha256"]
+                or html.stat().st_size != html_current["size"]
+            ):
+                raise ReportFailure("HTML 产物在验收期间发生变化，请重新验收")
             return validation
         finally:
             if temp_path is not None:

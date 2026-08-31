@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import hashlib
 import inspect
 import json
@@ -8,7 +9,7 @@ from copy import copy, deepcopy
 from dataclasses import fields
 from functools import partial
 from time import perf_counter
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -59,7 +60,7 @@ from .model_policy import (
     apply_reporting_thinking_profile,
     reporting_thinking_profile_from_model,
 )
-from .models import ReportingError
+from .models import ReportingError, VisualizationSkillCacheEntry
 from .phase import (
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT,
@@ -72,9 +73,14 @@ from .phase import (
     REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES,
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
     REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY,
+    REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES,
     REPORTING_VISUALIZATION_READ_FILE_LIMIT,
     REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
+    REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
@@ -87,9 +93,14 @@ from .phase import (
     reporting_phase_from_run_context,
     reporting_task_kind_from_run_context,
     reporting_thinking_effort_from_run_context,
+    reporting_visual_inspection_mode_from_run_context,
+    reporting_visualization_exploration_budget_exhausted_from_run_context,
     reporting_visualization_exploration_count,
+    reporting_visualization_production_only_from_run_context,
     reporting_visualization_recovery_from_run_context,
     reporting_visualization_registered_from_run_context,
+    reporting_visualization_script_session_available_from_run_context,
+    reporting_visualization_usage_from_run_context,
 )
 from .tools import build_report_worker_tools
 from .vision import ReportVisionReviewer
@@ -144,9 +155,10 @@ _REPORT_PROFILE_QUERY_IDENTITY_MAX_LENGTH = 256
 _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 # Reporting 的全局 reserve 用于上下文预算，不能直接作为每次模型请求的生成额度。
 # 章节与单项分析只需提交一个有界终态工具，16K 足以覆盖工具参数；可视化汇总需要
-# 更长的 ReportBrief，但同样限制在 32K，避免兼容后端按 196K/393K 预分配缓冲区。
+# 更长的脚本参数和 ReportBrief。真实 CLI 已证明 32K 会在工具调用前截断，因此
+# visualization 使用 64K；仍不直接放开到全局 reserve，避免兼容后端过量预分配。
 _REPORT_ANALYSIS_ITEM_OUTPUT_TOKEN_LIMIT = 16 * 1024
-_REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 32 * 1024
+_REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 64 * 1024
 _REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
 # 后端异常却可能持续数分钟才返回。Worker 仍保留既有一次同 run continuation，
@@ -171,48 +183,6 @@ _REPORT_EXPECTED_CALL_SHAPES: dict[str, dict[str, Any]] = {
         "analysisIds": ["analysis_001"],
         "reason": "缺少同比基准",
         "missingEvidence": ["补充上年同期收入"],
-    },
-    "register_report_charts": {
-        "charts": [
-            {
-                "chartId": "income_trend",
-                "sourcePath": "analysis/charts/income-trend.png",
-                "title": "医疗收入月度趋势",
-                "altText": "2025年医疗收入月度变化",
-                "citationIds": ["citation_003"],
-                "metricCodes": ["income"],
-                "currentPeriod": "2025年",
-                "comparisonPeriod": None,
-                "comparisonType": "none",
-                "sourceDatasetId": "dataset_001",
-                "aggregationGrain": "month",
-                "comparability": "strict",
-            }
-        ]
-    },
-    "render_report_section": {
-        "sectionCode": "executive_summary",
-        "blocks": [
-            {
-                "blockId": "overview",
-                "markdown": "### 核心结论\n\n- 医疗收入同比增长 8.2%",
-                "citationIds": ["citation_001"],
-                "chartIds": ["income_trend"],
-                "claimIds": ["claim_income"],
-            }
-        ],
-        "claims": [
-            {
-                "claimId": "claim_income",
-                "metricCode": "income",
-                "value": "8.2%",
-                "periodBasis": "2025年",
-                "managementQuestion": "收入增长是否可持续？",
-                "currentPeriod": "2025年",
-                "citationIds": ["citation_001"],
-                "chartIds": ["income_trend"],
-            }
-        ],
     },
 }
 
@@ -240,10 +210,15 @@ def _reporting_tool_run_error_is_terminal() -> bool:
     error = (
         getattr(run_context, _REPORT_TOOL_RUN_ERROR_ATTR, None) if run_context is not None else None
     )
+    return _is_terminal_reporting_error(error)
+
+
+def _is_terminal_reporting_error(error: Any) -> bool:
     return (
         isinstance(error, ReportingError)
         and isinstance(error.details, dict)
-        and error.details.get("terminalReason") == "tool_no_progress"
+        and error.details.get("terminalReason")
+        in {"tool_no_progress", "visualization_exploration_budget_exhausted"}
     )
 
 
@@ -270,6 +245,117 @@ async def propagate_reporting_tool_errors(
 
 def _reporting_session_state(run_context: RunContext) -> dict[str, Any] | None:
     return run_context.session_state if isinstance(run_context.session_state, dict) else None
+
+
+_VISUALIZATION_SKILL_CACHE_LOCKS: dict[str, asyncio.Lock] = {}
+_VISUALIZATION_SKILL_CACHE_MAX_LOCKS = 128
+
+
+def _visualization_skill_cache_key(
+    run_context: RunContext,
+    function_name: str,
+    arguments: Mapping[str, Any],
+) -> str | None:
+    # 只读 Skill 结果可以在同一可视化 run 内复用；身份和参数必须完整参与键值，
+    # 防止不同用户、任务、重试或 Skill 路径之间发生结果串用。
+    if function_name not in {"get_skill_instructions", "get_skill_reference"}:
+        return None
+    if reporting_phase_from_run_context(run_context) != "analysis":
+        return None
+    if reporting_task_kind_from_run_context(run_context) != "visualization":
+        return None
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    external_run_id = binding.get("externalRunId")
+    if not isinstance(external_run_id, str) or not external_run_id:
+        return None
+    try:
+        normalized = json.dumps(
+            arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+    except (TypeError, ValueError):
+        return None
+    identity = {
+        "externalRunId": external_run_id,
+        "runId": str(run_context.run_id or ""),
+        "sessionId": str(run_context.session_id or ""),
+        "userId": str(run_context.user_id or ""),
+        "tool": function_name,
+        "arguments": normalized,
+    }
+    return hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _cached_visualization_skill_result(
+    run_context: RunContext,
+    cache_key: str | None,
+) -> Any:
+    state = _reporting_session_state(run_context)
+    if state is None or cache_key is None:
+        return None
+    cache = state.get(REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY)
+    if not isinstance(cache, Mapping) or cache_key not in cache:
+        return None
+    try:
+        entry = VisualizationSkillCacheEntry.model_validate(cache[cache_key])
+    except ValidationError:
+        return None
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    external_run_id = binding.get("externalRunId")
+    expected_user_id = str(run_context.user_id or "anonymous")
+    if (
+        entry.run_id != str(run_context.run_id or "")
+        or entry.session_id != str(run_context.session_id or "")
+        or entry.user_id != expected_user_id
+        or entry.external_run_id != external_run_id
+        or entry.tool_name not in {"get_skill_instructions", "get_skill_reference"}
+    ):
+        return None
+    return entry.result
+
+
+def _cache_visualization_skill_result(
+    run_context: RunContext,
+    cache_key: str | None,
+    function_name: str,
+    result: Any,
+) -> None:
+    if cache_key is None:
+        return
+    state = _reporting_session_state(run_context)
+    if state is None:
+        return
+    try:
+        json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    external_run_id = binding.get("externalRunId")
+    if not isinstance(external_run_id, str) or not external_run_id:
+        return
+    try:
+        entry = VisualizationSkillCacheEntry(
+            runId=str(run_context.run_id or ""),
+            sessionId=str(run_context.session_id or ""),
+            userId=str(run_context.user_id or "anonymous"),
+            externalRunId=external_run_id,
+            toolName=cast(Literal["get_skill_instructions", "get_skill_reference"], function_name),
+            result=result,
+        )
+    except ValidationError:
+        return
+    cache = state.setdefault(REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY, {})
+    if isinstance(cache, dict):
+        cache[cache_key] = entry.model_dump(mode="json", by_alias=True)
+        while len(cache) > 64:
+            cache.pop(next(iter(cache)))
 
 
 def _reporting_mutation_sequence(state: dict[str, Any] | None) -> int:
@@ -491,13 +577,52 @@ def _visualization_exploration_budget_receipt(
         or reporting_task_kind_from_run_context(run_context) != "visualization"
     ):
         return None
+    # fresh recovery 只允许 read_file/read_tool_output 恢复已提交脚本；实际路径仍由
+    # Toolkit 的脚本身份门禁校验。这不是 facts/evidence 探索，不能被旧探索预算拦截。
+    if reporting_visualization_recovery_from_run_context(run_context) and function_name in {
+        "read_file",
+        "read_tool_output",
+    }:
+        return None
     limit = _visualization_exploration_limit(run_context, function_name)
-    if limit is None:
+    is_exploration = function_name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
+    if not is_exploration:
         return None
     counted_tool_name = "read_file" if function_name == "read_tool_output" else function_name
+    if reporting_visualization_exploration_budget_exhausted_from_run_context(run_context):
+        if reporting_visualization_exploration_count(run_context, "query_analysis_facts") >= (
+            _visualization_exploration_limit(run_context, "query_analysis_facts")
+            or REPORTING_VISUALIZATION_FACT_QUERY_LIMIT
+        ):
+            counted_tool_name = "query_analysis_facts"
+            limit = _visualization_exploration_limit(run_context, counted_tool_name) or (
+                REPORTING_VISUALIZATION_FACT_QUERY_LIMIT
+            )
+        else:
+            counted_tool_name = "read_file"
+            limit = _visualization_exploration_limit(run_context, counted_tool_name) or (
+                REPORTING_VISUALIZATION_READ_FILE_LIMIT
+            )
     current_count = reporting_visualization_exploration_count(run_context, counted_tool_name)
-    if not reporting_visualization_recovery_from_run_context(run_context) and current_count < limit:
+    if (
+        not reporting_visualization_recovery_from_run_context(run_context)
+        and not reporting_visualization_exploration_budget_exhausted_from_run_context(run_context)
+        and (limit is None or current_count < limit)
+    ):
         return None
+    usage = reporting_visualization_usage_from_run_context(run_context)
+    failure_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "code": "report_visualization_exploration_budget_exhausted",
+                "tool": counted_tool_name,
+                "currentCount": current_count,
+                "limit": limit,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
     return {
         "ok": False,
         "status": "rejected",
@@ -511,6 +636,14 @@ def _visualization_exploration_budget_receipt(
             "tool": counted_tool_name,
             "currentCount": current_count,
             "limit": limit,
+            "phaseState": "production_only",
+            "terminalReason": "visualization_exploration_budget_exhausted",
+            "failureFingerprint": failure_fingerprint,
+            "visualizationUsage": usage,
+            "allowedTerminalTools": [
+                "register_report_charts",
+                "finalize_report_analysis",
+            ],
         },
     }
 
@@ -520,10 +653,12 @@ def _reporting_visualization_tool_budget(
     function_name: str,
 ) -> tuple[dict[str, Any], str, str] | None:
     if (
-        function_name == "finalize_report_analysis"
+        function_name in {"register_report_charts", "finalize_report_analysis"}
         or reporting_phase_from_run_context(run_context) != "analysis"
         or reporting_task_kind_from_run_context(run_context) != "visualization"
     ):
+        # register/finalize 是可视化阶段的终态提交，不得被此前的探索调用挤占。
+        # 图表登记仍受 durable registration 与 no-progress 门禁约束，重复提交不会绕过验收。
         return None
     state = _reporting_session_state(run_context)
     if state is None:
@@ -679,6 +814,36 @@ def _finish_visualization_tool_budget(
     in_flight_tools[counted_tool_name] = max(count(in_flight_tools.get(counted_tool_name)) - 1, 0)
     script_failed = _visualization_terminal_failed(function_name, result)
     script_failure_count += int(script_failed)
+    if function_name == "terminal" and isinstance(result, Mapping):
+        pending = state.get(REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY)
+        pending = dict(pending) if isinstance(pending, Mapping) else {}
+        dependencies = (
+            run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+        )
+        binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+        external_run_id = binding.get("externalRunId") if isinstance(binding, Mapping) else None
+        if script_failed:
+            diagnostics = [
+                line.strip()
+                for line in str(result.get("output", "")).splitlines()
+                if "[FAIL]" in line
+            ][:20]
+            pending[identity] = {
+                "lastScriptFailed": True,
+                "diagnostics": diagnostics,
+            }
+        elif (
+            isinstance(result.get("exit_code"), int)
+            and not isinstance(result.get("exit_code"), bool)
+            and result.get("exit_code") == 0
+        ):
+            pending.pop(identity, None)
+            if isinstance(external_run_id, str) and external_run_id:
+                prefix = f"{external_run_id}:"
+                for key in tuple(pending):
+                    if key == external_run_id or key.startswith(prefix):
+                        pending.pop(key, None)
+        state[REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY] = pending
     read_segment_confirmed = (
         counted_tool_name == "read_file"
         and succeeded
@@ -751,8 +916,12 @@ def _visualization_terminal_failed(function_name: str, result: Any) -> bool:
     if not isinstance(output, str):
         return False
     # 图表自检通常自行捕获异常并保持 exit_code=0；只识别逐项检查的明确
-    # “对象: ERROR 原因”行，避免普通日志或报告正文中的 ERROR 单词误耗预算。
-    return any(": ERROR " in line.strip() for line in output.splitlines())
+    # “对象: ERROR 原因”或 “[FAIL] 对象: 原因”行，避免普通日志中的 ERROR 单词
+    # 误耗预算。
+    return any(
+        ": ERROR " in line.strip() or line.strip().startswith("[FAIL]")
+        for line in output.splitlines()
+    )
 
 
 def _stop_exhausted_visualization_budget(
@@ -1062,6 +1231,8 @@ def _report_tool_argument_failure(
         "retryable": True,
         "details": _report_tool_argument_details(error, arguments),
     }
+    # 图表和章节 claim 的 metricCode/周期来自本次运行冻结的上下文，不能用
+    # 静态示例回填，否则参数错误回执会再次诱导模型提交无效业务代码。
     expected = _REPORT_EXPECTED_CALL_SHAPES.get(function_name)
     if expected is not None:
         result["expectedCallShape"] = expected
@@ -1335,8 +1506,35 @@ async def normalize_reporting_tool_arguments(
     function_name: str,
     function_call: Any,
     arguments: dict[str, Any],
+    *,
+    _skip_skill_cache: bool = False,
 ) -> Any:
     """执行 Reporting 工具并把参数错误收敛为可操作回执。"""
+
+    if not _skip_skill_cache:
+        cache_key = _visualization_skill_cache_key(run_context, function_name, arguments)
+        if cache_key is not None:
+            lock = _VISUALIZATION_SKILL_CACHE_LOCKS.setdefault(cache_key, asyncio.Lock())
+            if len(_VISUALIZATION_SKILL_CACHE_LOCKS) > _VISUALIZATION_SKILL_CACHE_MAX_LOCKS:
+                for stale_key, stale_lock in list(_VISUALIZATION_SKILL_CACHE_LOCKS.items()):
+                    if stale_key != cache_key and not stale_lock.locked():
+                        _VISUALIZATION_SKILL_CACHE_LOCKS.pop(stale_key, None)
+                        if (
+                            len(_VISUALIZATION_SKILL_CACHE_LOCKS)
+                            <= _VISUALIZATION_SKILL_CACHE_MAX_LOCKS
+                        ):
+                            break
+            async with lock:
+                cached = _cached_visualization_skill_result(run_context, cache_key)
+                if cached is not None:
+                    return cached
+                return await normalize_reporting_tool_arguments(
+                    run_context,
+                    function_name,
+                    function_call,
+                    arguments,
+                    _skip_skill_cache=True,
+                )
 
     task_kind = reporting_task_kind_from_run_context(run_context)
     state = _reporting_session_state(run_context)
@@ -1365,6 +1563,11 @@ async def normalize_reporting_tool_arguments(
         )
     ):
         _stop_closed_visualization(run_context)
+    skill_cache_key = _visualization_skill_cache_key(run_context, function_name, arguments)
+    if skill_cache_key is not None:
+        cached = _cached_visualization_skill_result(run_context, skill_cache_key)
+        if cached is not None:
+            return cached
     exploration_receipt = _visualization_exploration_budget_receipt(run_context, function_name)
     if exploration_receipt is not None:
         # 超出独立探索额度的调用仍是一次真实工具尝试，但不能再次增加 read/fact 用量。
@@ -1377,12 +1580,35 @@ async def normalize_reporting_tool_arguments(
             succeeded=False,
             count_exploration=False,
         )
-        return _enforce_reporting_no_progress(
-            run_context,
-            function_name,
-            exploration_receipt,
-            arguments,
+        state = _reporting_session_state(run_context)
+        if isinstance(state, dict):
+            dependencies = (
+                run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+            )
+            binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+            binding = binding if isinstance(binding, Mapping) else {}
+            identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
+            production_states = state.get(REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY)
+            production_states = (
+                dict(production_states) if isinstance(production_states, Mapping) else {}
+            )
+            production_states[identity] = True
+            state[REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY] = production_states
+        details = exploration_receipt["details"]
+        if reporting_visual_inspection_mode_from_run_context(run_context) == "vision":
+            details["allowedTerminalTools"] = [
+                "inspect_chart",
+                "register_report_charts",
+                "finalize_report_analysis",
+            ]
+        error = ReportingError(
+            exploration_receipt["code"],
+            exploration_receipt["message"],
+            details=details,
         )
+        _record_reporting_tool_run_error(run_context, error)
+        serialized = json.dumps(exploration_receipt, ensure_ascii=False, separators=(",", ":"))
+        raise StopAgentRun(serialized, agent_message=serialized)
     empty_query_state = _empty_profile_query_state(run_context, function_name, arguments)
     existing_empty = (
         empty_query_state[0].get(empty_query_state[1]) if empty_query_state is not None else None
@@ -1473,6 +1699,16 @@ async def normalize_reporting_tool_arguments(
     if (
         succeeded
         and task_kind == "visualization"
+        and function_name == "write_analysis_files"
+        and isinstance(state, dict)
+    ):
+        state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True
+    if succeeded:
+        # 仅缓存成功且可序列化的只读 Skill 结果；失败必须保留真实重试机会。
+        _cache_visualization_skill_result(run_context, skill_cache_key, function_name, result)
+    if (
+        succeeded
+        and task_kind == "visualization"
         and function_name == "register_report_charts"
         and isinstance(state, dict)
     ):
@@ -1512,16 +1748,35 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
         return None
     pdf = report.get("pdf")
     word = report.get("word")
+    html = report.get("html")
     pdf_url = pdf.get("downloadUrl") if isinstance(pdf, dict) else None
     word_url = word.get("downloadUrl") if isinstance(word, dict) else None
-    urls = (pdf_url, word_url)
-    if not all(
-        isinstance(url, str)
-        and (parsed := urlparse(url)).scheme in {"http", "https"}
-        and bool(parsed.netloc)
-        for url in urls
-    ):
-        return "## 报告发布未完成\n\n未生成有效的 PDF 和 Word 下载链接，请重试报表发布。"
+    html_url = html.get("previewUrl") if isinstance(html, dict) else None
+    urls = (pdf_url, word_url, html_url)
+
+    def is_valid_delivery_url(url: object) -> bool:
+        if (
+            not isinstance(url, str)
+            or not url
+            or any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in url)
+        ):
+            return False
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+            parsed.port
+        except ValueError:
+            return False
+        hostname_text = hostname if isinstance(hostname, str) else ""
+        return (
+            parsed.scheme in {"http", "https"}
+            and bool(parsed.netloc)
+            and bool(hostname_text)
+            and not any(char.isspace() for char in hostname_text)
+        )
+
+    if not all(is_valid_delivery_url(url) for url in urls):
+        return "## 报告发布未完成\n\n未生成有效的 PDF、Word 和 HTML 交付链接，请重试报表发布。"
     parts = ["## 报表已生成"]
     details: list[str] = []
     report_id = report.get("reportId")
@@ -1532,7 +1787,10 @@ def _completed_report_content(payload: dict[str, Any]) -> str | None:
         details.append(f"- 修订版本：Revision {revision}")
     if details:
         parts.append("\n".join(details))
-    parts.append(f"### 文件下载\n\n- [下载 PDF 报告]({pdf_url})\n- [下载 Word 报告]({word_url})")
+    parts.append(
+        f"### 文件下载\n\n- [下载 PDF 报告]({pdf_url})\n"
+        f"- [下载 Word 报告]({word_url})\n- [预览 HTML 报告]({html_url})"
+    )
     return "\n\n".join(parts)
 
 
@@ -1683,6 +1941,62 @@ def _report_model_tool_name(tool: Any) -> str | None:
     return function_name if isinstance(function_name, str) else None
 
 
+def _visualization_production_tool_allowed(
+    run_context: RunContext | None,
+    tool_name: str,
+) -> bool:
+    if reporting_task_kind_from_run_context(
+        run_context
+    ) != "visualization" or not reporting_visualization_production_only_from_run_context(
+        run_context
+    ):
+        return True
+    return (
+        tool_name in REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES
+        or (
+            reporting_visualization_recovery_from_run_context(run_context)
+            and tool_name in {"read_file", "read_tool_output"}
+        )
+        or (
+            tool_name == "process"
+            and reporting_visualization_script_session_available_from_run_context(run_context)
+        )
+        or (
+            tool_name == "inspect_chart"
+            and reporting_visual_inspection_mode_from_run_context(run_context) == "vision"
+        )
+    )
+
+
+def _visualization_lifecycle_tool_allowed(
+    run_context: RunContext | None,
+    tool_name: str,
+) -> bool:
+    """让模型 schema 与旧历史工具调用共享同一可视化生命周期门禁。"""
+
+    if reporting_task_kind_from_run_context(run_context) != "visualization":
+        return True
+    state = _reporting_session_state(run_context)
+    if (
+        isinstance(state, Mapping)
+        and state.get(_REPORT_VISUALIZATION_REGISTERED_STATE_KEY) is True
+    ) or reporting_visualization_registered_from_run_context(run_context):
+        return tool_name == "finalize_report_analysis"
+    if tool_name == "process":
+        return reporting_visualization_script_session_available_from_run_context(run_context)
+    if reporting_visualization_recovery_from_run_context(run_context):
+        return tool_name not in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES or tool_name in {
+            "read_file",
+            "read_tool_output",
+        }
+    return tool_name not in {
+        "query_analysis_context",
+        "query_analysis_facts",
+        "read_file",
+        "read_tool_output",
+    }
+
+
 def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
     phase = _reporting_phase_from_messages(messages)
     run_context = current_reporting_run_context()
@@ -1694,6 +2008,7 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
         for tool in tools
         if (name := _report_model_tool_name(tool)) is not None
         and reporting_phase_allows_tool(phase, name, task_kind=task_kind)
+        and _visualization_lifecycle_tool_allowed(run_context, name)
         and not (
             task_kind == "analysis_item"
             and run_context is not None
@@ -1710,12 +2025,21 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
         and not (
             task_kind == "visualization"
             and run_context is not None
-            and _visualization_exploration_budget_receipt(run_context, name) is not None
+            and name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
+            and not (
+                reporting_visualization_recovery_from_run_context(run_context)
+                and name in {"read_file", "read_tool_output"}
+            )
+            and (
+                _visualization_exploration_budget_receipt(run_context, name) is not None
+                or reporting_visualization_exploration_budget_exhausted_from_run_context(
+                    run_context
+                )
+            )
         )
         and not (
             task_kind == "visualization"
-            and reporting_visualization_recovery_from_run_context(run_context)
-            and name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
+            and not _visualization_production_tool_allowed(run_context, name)
         )
     ]
 
@@ -1909,6 +2233,15 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         return apply_reporting_thinking_profile(request_model, profile)
 
     @staticmethod
+    def _phase_request_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+        if reporting_task_kind_from_run_context(current_reporting_run_context()) != "visualization":
+            return kwargs
+        # visualization 没有合法的纯文本终态，每一轮都必须通过当前生命周期投影出的
+        # 工具推进。使用 Agno 公共 tool_choice 契约保留工具选择自由，同时阻止模型把
+        # 整个生成窗口耗在规划文本后才尝试调用工具。
+        return {**kwargs, "tool_choice": "required"}
+
+    @staticmethod
     def _validated_reporting_response(
         model: "ReportingOpenAIChat",
         response: ModelResponse,
@@ -1935,6 +2268,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> ModelResponse:
         request_model = self._phase_request_model(messages)
+        kwargs = self._phase_request_kwargs(kwargs)
         self._clear_report_run_error()
         try:
             response = ProjectedOpenAIChat.response(request_model, messages, *args, **kwargs)
@@ -1951,6 +2285,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> ModelResponse:
         request_model = self._phase_request_model(messages)
+        kwargs = self._phase_request_kwargs(kwargs)
         self._clear_report_run_error()
         try:
             response = await ProjectedOpenAIChat.aresponse(
@@ -1960,15 +2295,11 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
                 **kwargs,
             )
             terminal_error = _take_reporting_tool_run_error()
-            if (
-                isinstance(terminal_error, ReportingError)
-                and isinstance(terminal_error.details, dict)
-                and terminal_error.details.get("terminalReason") == "tool_no_progress"
-            ):
+            if _is_terminal_reporting_error(terminal_error):
                 # StopAgentRun 已由 Agno 公共模型循环转换为 stop_after_tool_call，不能在
                 # Agent retry 边界重新抛普通异常；只记录原领域错误，交给 Task runner
                 # 在本次 Agno run 正常停止后恢复，确保不会产生同 run continuation。
-                self._record_report_run_error(terminal_error)
+                self._record_report_run_error(cast(Exception, terminal_error))
                 return self._validated_reporting_response(request_model, response)
             self._clear_report_run_error()
             return self._validated_reporting_response(request_model, response)
@@ -1983,6 +2314,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> Iterator[ModelResponse | RunOutputEvent | TeamRunOutputEvent]:
         request_model = self._phase_request_model(messages)
+        kwargs = self._phase_request_kwargs(kwargs)
         self._clear_report_run_error()
         try:
             yield from ProjectedOpenAIChat.response_stream(
@@ -2003,6 +2335,7 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         **kwargs: Any,
     ) -> AsyncIterator[ModelResponse | RunOutputEvent | TeamRunOutputEvent]:
         request_model = self._phase_request_model(messages)
+        kwargs = self._phase_request_kwargs(kwargs)
         self._clear_report_run_error()
         try:
             async for response in ProjectedOpenAIChat.aresponse_stream(
@@ -2012,6 +2345,13 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
                 **kwargs,
             ):
                 yield response
+            terminal_error = _take_reporting_tool_run_error()
+            if _is_terminal_reporting_error(terminal_error):
+                # Agno 把 StopAgentRun 收敛成 stop_after_tool_call 后会正常结束异步流。
+                # 必须在清理模型错误前恢复原领域错误，Task runner 才能停止当前 Task，
+                # 而不是把它误判成缺少终态工具并发起同 run continuation。
+                self._record_report_run_error(cast(Exception, terminal_error))
+                return
             self._clear_report_run_error()
         except Exception as error:
             self._record_report_run_error(error)
@@ -2209,10 +2549,21 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                     task_kind=reporting_task_kind_from_run_context(current_reporting_run_context()),
                 )
             )
+            production_forbidden = isinstance(
+                name, str
+            ) and not _visualization_production_tool_allowed(current_reporting_run_context(), name)
+            lifecycle_forbidden = isinstance(
+                name, str
+            ) and not _visualization_lifecycle_tool_allowed(current_reporting_run_context(), name)
             vision_disabled = name in {"view_image", "inspect_chart"} and not getattr(
                 self, "_report_vision_enabled", True
             )
-            if not phase_forbidden and not vision_disabled:
+            if (
+                not phase_forbidden
+                and not production_forbidden
+                and not lifecycle_forbidden
+                and not vision_disabled
+            ):
                 allowed_calls.append(tool_call)
                 continue
             if not isinstance(call_id, str) or not call_id:
@@ -2237,6 +2588,13 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                                 "status": "skipped",
                                 "code": "report_vision_disabled",
                                 "message": "当前 Reporting Worker 未启用图片视觉工具，继续使用文本和文件证据。",
+                            }
+                            if not production_forbidden and not lifecycle_forbidden
+                            else {
+                                "ok": False,
+                                "status": "rejected",
+                                "code": "report_visualization_production_only",
+                                "message": "当前可视化已进入生产态，请直接生成、登记或完成图表。",
                             }
                         ),
                         ensure_ascii=False,
@@ -2279,9 +2637,13 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
         ):
             configured_cap = CODING_CONTEXT_TOKEN_LIMIT - CODING_OUTPUT_TOKEN_RESERVE
         phase = _reporting_phase_from_messages(messages)
+        task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
+        # Visualization 的首个请求已携带全局冻结 facts，随后还必须保留已读取的 Skill
+        # 回合才能生成脚本。继续套用单项分析的 128K 上限会在 Skill 返回后立即 rebase，
+        # 只留下可重载哈希并诱发重复读取；因此它直接使用 Reporting 已配置的输入预算。
         phase_cap = (
             REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
-            if phase == "analysis"
+            if phase == "analysis" and task_kind != "visualization"
             else REPORTING_SECTION_INPUT_TOKEN_HARD_CAP
             if phase == "section"
             else None
@@ -2621,7 +2983,8 @@ def create_report_agent(
                 "审核工具返回 paused 时重复本流程。",
                 "工具返回 completed 后只返回其正式报告产物；不得把 paused、running 或 failed "
                 "描述为完成。若发布契约返回 `pdf.downloadUrl` 和 `word.downloadUrl`，必须逐字保留并分别"
-                "展示为 PDF、Word Markdown 下载链接。调用任何报表工具的轮次不得输出前言或解释文字；"
+                "展示为 PDF、Word Markdown 下载链接；若返回 `html.previewUrl`，必须逐字保留并展示为"
+                "HTML Markdown 预览链接。调用任何报表工具的轮次不得输出前言或解释文字；"
                 "CLI 契约返回 Workspace 路径时，PDF 使用 `path`，Word 使用 "
                 "`word.path`。不得补充域名、协议或改写为示例地址，也不得虚构返回中不存在的字段。",
             ],

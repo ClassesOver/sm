@@ -25,7 +25,7 @@ from smart_reporting.reporting.tools import ReportWorkspaceTaskToolkit
 from smart_reporting.skills import (
     CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillValidatorRegistry,
-    load_builtin_coding_skills,
+    load_sandbox_execution_skills,
     skill_script_receipt_hook,
 )
 from smart_reporting.task_execution.execution import (
@@ -46,6 +46,10 @@ from smart_reporting.task_execution.execution import (
     create_coding_tool_scheduler_hook,
     normalize_coding_function_call_arguments,
 )
+from smart_reporting.task_execution.execution_support import (
+    CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
+    CODEX_EXEC_SESSIONS_STATE_KEY,
+)
 from smart_reporting.task_execution.models import CodingScope, Lease
 from smart_reporting.task_execution.repository import CodingRepositoryError, CodingTaskRepository
 from smart_reporting.task_execution.tests.workspace_fakes import (
@@ -54,10 +58,6 @@ from smart_reporting.task_execution.tests.workspace_fakes import (
     AsyncFakeProcess,
     AsyncMemoryRegistry,
     service,
-)
-from smart_reporting.task_execution.tools import (
-    CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
-    CODEX_EXEC_SESSIONS_STATE_KEY,
 )
 from smart_reporting.workspace import (
     MANAGED_PROCESS_PREFIX,
@@ -537,7 +537,7 @@ def create_acceptance_registry(tmp_path):
         "Validate analysis artifacts.\n",
         encoding="utf-8",
     )
-    registry = SkillValidatorRegistry.from_skills(load_builtin_coding_skills(str(skill_root)))
+    registry = SkillValidatorRegistry.from_skills(load_sandbox_execution_skills(str(skill_root)))
     return registry, script
 
 
@@ -1565,6 +1565,23 @@ async def test_large_tool_output_has_stable_preview_and_exact_handle_reads(execu
     metadata["attempt"] += 1
     with pytest.raises(WorkspaceError, match="不属于当前"):
         await runtime.kernel.read_tool_output(bounded["outputHandle"], 0, 1024, runtime.context)
+
+
+@pytest.mark.anyio
+async def test_report_tool_output_honors_explicit_preview_window():
+    kernel = object.__new__(CodingExecutionKernel)
+    scope = SimpleNamespace(external_run_id="report-coding-visualization")
+    output = "x" * (40 * 1024)
+
+    bounded = await kernel.bound_tool_result(
+        scope,
+        {"output": output},
+        None,
+        preview_bytes=64 * 1024,
+    )
+
+    assert bounded["output"] == output
+    assert "TOOL_OUTPUT_TRUNCATED" not in bounded["output"]
 
 
 @pytest.mark.anyio

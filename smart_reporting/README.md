@@ -20,7 +20,8 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 - `smart-reporting` 的报表请求支持与 CLI 相同的自然语言或 `ReportRequestEnvelope` JSON 输入。
 - `GET /ready` 服务就绪检查。
 - `/workspace/*` 工作区文件接口。
-- `/reports/v1/download/*` 报告公开 bearer 下载接口，链接默认 30 天有效。
+- `/reports/v1/download/*` 报告公开 bearer 下载接口，链接默认 30 天有效；HTML 使用
+  `/reports/v1/download/{grant}/html` 在线预览。
 
 通用 AgentOS Console 的 run 请求可不携带 Workspace 请求头，此时沿用原生
 `user_id/session_id`，且不会生成默认 Odoo 身份。Odoo 集成请求必须同时使用
@@ -29,10 +30,14 @@ AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.app
 `odoo_session` 和 `thread`；服务端会用验签后的 `user/thread` 覆盖 AgentOS run 请求中的
 `user_id/session_id`。签名密钥由 `AGENT_WORKSPACE_HMAC_SECRET` 配置。
 
-AgentOS 中的 Reporting 正常发布时会将 PDF/Word 持久化到 PostgreSQL、签发默认 30 天有效的
-公开 bearer 下载授权，并返回基于 `AGENT_REPORT_PUBLIC_BASE_URL` 的完整下载 URL；持久化成功后
-删除对应 Daytona sandbox。过期授权会被删除，无有效授权引用的产物在 24 小时安全窗口后分批
-回收。Reporting CLI 不启动 HTTP 下载服务，仍返回 Workspace 相对路径。
+AgentOS 中的 Reporting 正常发布时会将 PDF、Word 和自包含 HTML 持久化到 PostgreSQL、签发默认
+30 天有效的公开 bearer 下载授权，并返回基于 `AGENT_REPORT_PUBLIC_BASE_URL` 的完整下载 URL；
+HTML 回执字段为 `html.previewUrl`。持久化成功后删除对应 Daytona sandbox。过期授权会被删除，
+无有效授权引用的产物在 24 小时安全窗口后分批回收。Reporting CLI 不启动 HTTP 下载服务，仍返回
+Workspace 相对路径，并在 `html` 字段提供 HTML 路径、大小和 SHA-256。
+
+HTML 是静态自包含文档：图片以内嵌 data URL 提供，禁止脚本、表单和外部资源；HTTP 预览响应通过
+sandbox Content-Security-Policy 隔离页面。
 
 ## CLI
 
@@ -42,7 +47,7 @@ Reporting CLI：
 AGENT_ENV_FILE=.env .venv-agent/bin/python -m smart_reporting.reporting.cli
 ```
 
-服务仅提供 Reporting 产品入口，通过顶层 Workflow 编排数据准备、分析、章节生成、双格式验收和发布。
+服务仅提供 Reporting 产品入口，通过顶层 Workflow 编排数据准备、分析、章节生成、三格式验收和发布。
 
 ## 配置
 

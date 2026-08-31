@@ -2,6 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+from ..checkpoint import CheckpointError
 from .analysis import _run_bounded
 from .base import (
     MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION,
@@ -44,6 +45,7 @@ from .base import (
     RunContext,
     SectionArtifact,
     SectionCitation,
+    SectionManagementQuestion,
     SectionWorkItem,
     Sequence,
     SourceWarning,
@@ -88,6 +90,47 @@ async def _run_section_batches_until_rework(
         if any(result[2] is not None for result in batch_results):
             break
     return results
+
+
+def _section_retry_context(error: Exception | CheckpointError | None) -> dict[str, Any] | None:
+    """把章节上轮失败的稳定字段带入 fresh retry，避免模型重新猜测冲突原因。"""
+
+    if error is None:
+        return None
+    if isinstance(error, CheckpointError):
+        return {
+            "code": error.code,
+            "message": error.message,
+            "details": dict(error.details) if isinstance(error.details, Mapping) else {},
+        }
+    if isinstance(error, ReportingError):
+        details = dict(error.details) if isinstance(error.details, Mapping) else {}
+        return {"code": error.code, "message": error.message, "details": details}
+    return {"code": "report_section_phase_failed", "message": str(error), "details": {}}
+
+
+def _section_claim_authoring_contract(work_item: SectionWorkItem) -> dict[str, Any]:
+    """从当前冻结 WorkItem 生成章节 claim 的动态约束，避免模型猜测业务指标代码。"""
+
+    return {
+        "allowedMetricCodes": [item.code for item in work_item.metric_definitions],
+        "managementQuestionRefs": [
+            item.model_dump(mode="json", by_alias=True)
+            for item in work_item.management_question_catalog
+        ],
+        "serverDerivedFields": ["periodBasis", "managementQuestion"],
+        "chartDerivedFields": [
+            "currentPeriod",
+            "comparisonPeriod",
+            "comparisonType",
+            "comparability",
+            "chartCitationIds",
+        ],
+        "standaloneClaimRequiredFields": ["currentPeriod"],
+        "comparisonRule": (
+            "comparisonType 非 none 时必须提供 comparisonPeriod；绑定图表时以图表冻结语义为准"
+        ),
+    }
 
 
 def _pending_analysis_rework_file(checkpoint: ReportingCheckpoint) -> FileIdentity | None:
@@ -276,6 +319,7 @@ class RuntimeSectionsMixin:
         citation_ids = {
             citation_id for item in selected_evidence for citation_id in item.citation_ids
         }
+        selected_metric_codes = {metric for item in selected_analyses for metric in item.metrics}
         receipts = tuple(
             item
             for item in analysis_artifact.profile_read_receipts
@@ -286,6 +330,7 @@ class RuntimeSectionsMixin:
             for item in analysis_artifact.evidence_manifest.charts
             if item.chart_id in chart_ids
         )
+        selected_metric_codes.update(code for chart in charts for code in chart.metric_codes)
         citations = tuple(
             SectionCitation(
                 citationId=item.citation_id,
@@ -313,7 +358,18 @@ class RuntimeSectionsMixin:
             ),
             analysisIds=tuple(section.analysis_ids),
             evidence=selected_evidence,
-            metricDefinitions=analysis_artifact.evidence_manifest.metric_definitions,
+            metricDefinitions=tuple(
+                item
+                for item in analysis_artifact.evidence_manifest.metric_definitions
+                if item.code in selected_metric_codes
+            ),
+            managementQuestionCatalog=tuple(
+                SectionManagementQuestion(
+                    ref=item.analysis_id,
+                    question=item.management_question,
+                )
+                for item in selected_analyses
+            ),
             # receipt 的完整查询正文只用于服务端血缘与最终 Manifest。章节只需要知道
             # 当前 evidence 已绑定哪些受信回执，避免把几十次 Profile 导航重复注入模型。
             profileReadReceiptIds=tuple(item.receipt_id for item in receipts),
@@ -469,7 +525,18 @@ class RuntimeSectionsMixin:
             files=self._merge_checkpoint_files(checkpoint.files, work_item_file),
         )
         await self._persist_reporting_checkpoint(run_context, checkpoint)
-        last_error: Exception | None = None
+        checkpoint_error = checkpoint.last_error
+        last_error: Exception | None = (
+            ReportingError(
+                checkpoint_error.code,
+                checkpoint_error.message,
+                details=checkpoint_error.details,
+            )
+            if checkpoint_error is not None
+            and checkpoint_error.phase == "section"
+            and checkpoint_error.section_code == work_item.section_code
+            else None
+        )
         max_attempts = MAX_REPORT_SECTION_PHASE_ATTEMPTS * (
             MAX_REPORT_ANALYSIS_REWORKS_PER_SECTION + 1
         )
@@ -516,9 +583,13 @@ class RuntimeSectionsMixin:
                 "phase": "section",
                 "sectionWorkItem": work_item_payload,
                 "completionConditions": list(work_item.completion_conditions),
+                "claimAuthoringContract": _section_claim_authoring_contract(work_item),
                 "sectionOutputPath": section_output_path,
                 "reworkRequestPath": rework_request_path,
             }
+            retry_context = _section_retry_context(last_error)
+            if retry_context is not None:
+                instruction_payload["retryContext"] = retry_context
             instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
             instruction_bytes = len(instruction.encode("utf-8"))
             if instruction_bytes > MAX_REPORT_INSTRUCTION_BYTES:
@@ -731,6 +802,9 @@ class RuntimeSectionsMixin:
                         "message": message or "独立章节阶段失败。",
                         "sectionCode": work_item.section_code,
                         "retryReason": code,
+                        "details": dict(error.details)
+                        if isinstance(error, ReportingError) and isinstance(error.details, Mapping)
+                        else None,
                     },
                 )
                 await self._persist_reporting_checkpoint(run_context, checkpoint)

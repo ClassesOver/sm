@@ -192,6 +192,8 @@ services:
     volumes:
       - ./dex/config.yaml.template:/etc/dex/config.yaml.template:ro
       - dex:/var/dex
+    tmpfs:
+      - /tmp:mode=1777
     entrypoint:
       - sh
       - -ec

@@ -460,12 +460,14 @@ def profile_csv_dataset(
         quality_warnings.append(f"数据集包含 {duplicate_row_count} 行重复记录。")
     if empty_row_count:
         quality_warnings.append(f"数据集包含 {empty_row_count} 行空记录。")
-    quality_warnings.extend(
-        str(alert)
-        for alert in profile.get("alerts", ())
-        if isinstance(alert, str)
-        and not (alert.startswith("Dataset has ") and " duplicate rows" in alert)
-    )
+    raw_alerts = profile.get("alerts", ())
+    if isinstance(raw_alerts, list):
+        quality_warnings.extend(
+            alert
+            for alert in raw_alerts
+            if isinstance(alert, str)
+            and not (alert.startswith("Dataset has ") and " duplicate rows" in alert)
+        )
     profile_content = json.dumps(
         profile,
         ensure_ascii=False,

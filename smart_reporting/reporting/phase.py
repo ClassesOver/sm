@@ -10,15 +10,19 @@ from typing import Any, Literal
 from agno.run import RunContext
 
 from .models import ReportingError
+from .tools.capabilities import tools_for_task
 
 ReportingPhase = Literal["analysis", "section"]
 ReportingTaskKind = Literal["analysis_item", "visualization", "section"]
 
 # Reporting 使用 1M 模型窗口。phase hard cap 是注意力预算，不是事实层上限：
-# 全局分析和独立章节只投影当前任务需要的事实摘要；完整 Profile、证据正文和
-# 工具结果继续通过受信文件与 outputHandle 按需读取。
+# 单项分析和独立章节只投影当前任务需要的事实摘要；完整 Profile、证据正文和
+# 工具结果继续通过受信文件与 outputHandle 按需读取。Visualization 需要在同一请求
+# 中保留全局冻结 facts 与 Skill 回执，直接使用 Reporting 已配置的输入预算。
 # 输出仍由模型级 reserve 单独预留，完整 Profile、工具原文和历史继续留在 checkpoint/handle。
-REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP = 128 * 1024
+# 单项分析的任务 JSON 可能包含跨 Dataset 的冻结 facts；上限需要覆盖真实的
+# 不可压缩首轮前缀，同时仍低于默认 Reporting 输入预算，给工具回执和重试留余量。
+REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP = 160 * 1024
 REPORTING_SECTION_INPUT_TOKEN_HARD_CAP = 48 * 1024
 
 REPORTING_PHASE_DEPENDENCY_KEY = "reportingPhase"
@@ -36,8 +40,16 @@ REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY = "visualizationFactQuer
 REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY = "visualizationAttemptToolLimit"
 REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY = "visualizationTotalToolLimit"
 REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY = "reportingVisualizationRecovery"
+REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY = (
+    "agentos_reporting_visualization_production_only"
+)
+REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY = "agentos_reporting_visualization_script_written"
+REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY = (
+    "agentos_reporting_visualization_script_failure_pending"
+)
 REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY = "reportingVisualInspectionMode"
 REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY = "agentos_reporting_visualization_tool_budget"
+REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY = "agentos_reporting_visualization_skill_cache"
 REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR = "_agentos_reporting_visualization_budget"
 REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY = "analysisFactBudgetVersion"
 REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY = "analysisFactQueryLimit"
@@ -45,55 +57,10 @@ REPORTING_ANALYSIS_FACT_QUERIES_USED_DEPENDENCY_KEY = "analysisFactQueriesUsed"
 REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY = "analysisRecovery"
 REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY = "agentos_reporting_analysis_fact_budget"
 REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR = "_agentos_reporting_analysis_fact_budget"
-REPORTING_ANALYSIS_FACT_QUERY_LIMIT = 2
+# 单项分析按计划复杂度可提升到 8 次；4 次是缺少复杂度信息时的安全默认值。
+REPORTING_ANALYSIS_FACT_QUERY_LIMIT = 4
 REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
 
-# 工具按生命周期白名单暴露。Agno callable-tool 缓存键包含 phase/taskKind，实际 Toolkit、
-# 模型请求和执行入口都只接受当前阶段白名单中的工具。
-# SectionWorkItem 已给出全部授权 evidence 路径和引用；章节 run 不得再执行脚本、
-# 修改工作区或浏览其他目录。大型只读结果仍可通过 outputHandle 分段恢复。
-REPORTING_SECTION_TOOL_NAMES = frozenset(
-    {
-        "read_file",
-        "read_tool_output",
-        "render_report_section",
-        "request_analysis_rework",
-    }
-)
-# 全局分析只保留当前事实、证据生成和 checkpoint 所需工具。Profile 精确读取统一走
-# query_profile；read_profile_pointer 仍保留为内部持久化/历史回放 API，但不再给模型第二
-# 个等价入口。原始文件统一用 read_file，避免 read_lines/search_text 与 JMESPath 查询
-# 形成三套检索方式。process 是 terminal 后台执行的必要伴随工具，不能与 terminal 合并。
-REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
-    {
-        "complete_analysis_item",
-        "process",
-        "query_analysis_context",
-        "query_analysis_facts",
-        "query_profile",
-        "read_file",
-        "read_tool_output",
-        "write_analysis_files",
-        "terminal",
-    }
-)
-REPORTING_VISUALIZATION_TOOL_NAMES = frozenset(
-    {
-        "finalize_report_analysis",
-        "get_skill_instructions",
-        "get_skill_reference",
-        "inspect_chart",
-        "process",
-        "query_analysis_context",
-        "query_analysis_facts",
-        "read_file",
-        "read_tool_output",
-        "register_report_charts",
-        "write_analysis_files",
-        "terminal",
-        "view_image",
-    }
-)
 # 可视化阶段的探索工具必须有独立上限；否则模型可能在创建脚本前耗尽总预算。
 REPORTING_VISUALIZATION_FACT_QUERY_LIMIT = 4
 REPORTING_VISUALIZATION_READ_FILE_LIMIT = 12
@@ -105,6 +72,14 @@ REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
         "query_analysis_facts",
         "read_file",
         "read_tool_output",
+    }
+)
+REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES = frozenset(
+    {
+        "write_analysis_files",
+        "terminal",
+        "register_report_charts",
+        "finalize_report_analysis",
     }
 )
 _REPORTING_PROJECTION_METRICS: ContextVar[dict[str, int] | None] = ContextVar(
@@ -669,6 +644,44 @@ def reporting_visualization_recovery_from_run_context(
     )
 
 
+def reporting_visualization_script_session_available_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    """仅在当前 Task 已登记脚本 session 时开放 process 的轮询能力。"""
+
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return False
+    sessions = run_context.session_state.get("reportingVisualizationSessions")
+    return (
+        isinstance(sessions, Sequence)
+        and not isinstance(sessions, (str, bytes))
+        and any(isinstance(session_id, str) and session_id for session_id in sessions)
+    )
+
+
+def reporting_visualization_production_only_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    """读取当前可视化 Task 的持久生产态，避免继续暴露探索工具。"""
+
+    if reporting_visualization_recovery_from_run_context(
+        run_context
+    ) or reporting_visualization_exploration_budget_exhausted_from_run_context(run_context):
+        return True
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return False
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
+    stored = run_context.session_state.get(REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY)
+    if stored is True:
+        return True
+    if not isinstance(stored, Mapping):
+        return False
+    return stored.get(identity) is True
+
+
 def reporting_analysis_recovery_from_run_context(run_context: RunContext | None) -> bool:
     dependencies = (
         run_context.dependencies
@@ -721,18 +734,59 @@ def reporting_visualization_exploration_count(
     )
 
 
+def reporting_visualization_exploration_budget_exhausted_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    """只要任一探索子预算用尽，就把当前可视化 run 收窄到生产工具。"""
+
+    if (
+        run_context is None
+        or reporting_phase_from_run_context(run_context) != "analysis"
+        or reporting_task_kind_from_run_context(run_context) != "visualization"
+    ):
+        return False
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+
+    def limit(key: str, default: int) -> int:
+        value = binding.get(key)
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+            else default
+        )
+
+    return any(
+        reporting_visualization_exploration_count(run_context, tool_name) >= maximum
+        for tool_name, maximum in (
+            (
+                "query_analysis_facts",
+                limit(
+                    REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+                    REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
+                ),
+            ),
+            (
+                "read_file",
+                limit(
+                    REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
+                    REPORTING_VISUALIZATION_READ_FILE_LIMIT,
+                ),
+            ),
+        )
+    )
+
+
 def reporting_phase_allows_tool(
     phase: ReportingPhase | None,
     tool_name: str,
     *,
     task_kind: ReportingTaskKind | None = None,
 ) -> bool:
-    if phase == "section":
-        return tool_name in REPORTING_SECTION_TOOL_NAMES
+    allowed = tools_for_task(phase, task_kind)
+    if allowed is not None:
+        return tool_name in allowed
     if phase == "analysis":
-        if task_kind == "analysis_item":
-            return tool_name in REPORTING_ANALYSIS_ITEM_TOOL_NAMES
-        if task_kind == "visualization":
-            return tool_name in REPORTING_VISUALIZATION_TOOL_NAMES
         return False
     return True

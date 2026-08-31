@@ -19,6 +19,7 @@ from ...task_execution.execution import (
     MAX_TOOL_OUTPUT_READ_BYTES,
     WorkspaceTaskToolkit,
 )
+from ...task_execution.repository_impl import TERMINAL_EXECUTION_STATUSES
 from ...workspace import (
     WorkspaceError,
     WorkspaceService,
@@ -39,14 +40,15 @@ from ..workflow.checkpoint import (
     FileIdentity,
     MetricDefinition,
     ReportBrief,
-    SectionClaim,
+    SectionClaimSubmission,
 )
 from ..workflow.repository import ReportingStateRepository
 from ..workflow.state import ReportingCommand, ReportingRunState, ReportingStateError
-from .analysis import RuntimeAnalysisMixin
+from .analysis import MAX_VISUALIZATION_SCRIPT_BYTES, RuntimeAnalysisMixin
+from .capabilities import tools_for_task
 from .profile import MAX_PROFILE_POINTER_ITEMS, RuntimeProfileMixin
 from .sections import RuntimeSectionsMixin
-from .validation import _analysis_write_parameters
+from .validation import ANALYSIS_WRITE_TOOL_NAMES, _analysis_write_parameters
 
 REPORT_WORKER_TOOLKIT_INSTRUCTIONS = (
     "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\n"
@@ -102,23 +104,34 @@ class ReportWorkspaceTaskToolkit(
         *args: Any,
         state_repository: ReportingStateRepository,
         vision_reviewer: ReportVisionReviewer | None = None,
+        phase: ReportingPhase | None = None,
+        task_kind: ReportingTaskKind | None = None,
         **kwargs: Any,
     ) -> None:
         self._vision_reviewer = vision_reviewer
         self._state_repository = state_repository
+        allowed_tools = tools_for_task(phase, task_kind)
+        self._assembly_allowed_tools = allowed_tools
+        self._assembly_internal_tools = {"finish_task"}
+        if phase == "analysis":
+            self._assembly_internal_tools.update(ANALYSIS_WRITE_TOOL_NAMES)
         super().__init__(*args, **kwargs)
         # Reporting 在 finalize 后由 Workflow 继续执行独立产物验收。Worker 收尾只绑定
         # 当前产物哈希，不重复要求 verify 或执行 Task acceptance validator。
         self.kernel.require_finish_verification = False
         self.kernel.evaluate_finish_acceptance = False
-        self.async_functions["finish_task"].parameters["properties"].pop("verification_ids", None)
+        finish_function = self.async_functions.get("finish_task")
+        if finish_function is not None:
+            finish_function.parameters["properties"].pop("verification_ids", None)
         self.functions.pop("verify", None)
         self.async_functions.pop("verify", None)
-        self.async_functions["view_image"].description = (
-            "使用独立视觉模型临时查看工作区图片；正式图表必须改用 inspect_chart 生成"
-            "绑定文件哈希的耐久检查回执。"
-            '示例：{"path":"analysis/charts/trend.png","detail":"high"}'
-        )
+        view_image = self.async_functions.get("view_image")
+        if view_image is not None:
+            view_image.description = (
+                "使用独立视觉模型临时查看工作区图片；正式图表必须改用 inspect_chart 生成"
+                "绑定文件哈希的耐久检查回执。"
+                '{"path":"analysis/charts/trend.png","detail":"high"}'
+            )
         # Toolkit 指令由通用 Coding 实现注入，其中仍声明了已删除的 verify 工具。
         # Reporting 必须让模型看到与实际 schema 一致的能力，避免 finalize 后进入
         # 不可满足的 verify -> finish_task 循环。
@@ -153,13 +166,18 @@ class ReportWorkspaceTaskToolkit(
                     "create_file 的 content 可以一次提交完整长脚本，整体受 4 MiB 写入意图"
                     "上限约束。后续精确修改使用 apply_patch/replace_text。"
                 ),
-                parameters=_analysis_write_parameters(self.async_functions),
+                parameters=(
+                    _analysis_write_parameters(self.async_functions)
+                    if phase != "section"
+                    else {"type": "object", "properties": {}, "additionalProperties": False}
+                ),
                 strict=True,
                 entrypoint=self.write_analysis_files,
                 pre_hook=_reset_stop_after_tool_call,
                 post_hook=_stop_after_nonretryable_tool_call,
             )
         )
+
         self.register(
             Function(
                 name="read_profile_pointer",
@@ -319,10 +337,10 @@ class ReportWorkspaceTaskToolkit(
             Function(
                 name="complete_analysis_item",
                 description=(
-                    "提交当前 analysisId 的摘要、Dataset、引用、Profile 回执和 Warning；"
+                    "提交当前 analysisId 的摘要、Dataset、引用、Profile 回执、图表绑定和 Warning；"
                     "服务端自动把当前不可变固定事实绑定为 evidence。只有固定事实未覆盖时才在 "
                     "evidencePaths 提交补充 evidence；服务端接受后结束当前独立 run。"
-                    "图表只能在后续 visualization 阶段登记。"
+                    "chartIds 仅用于绑定已有图表，不会触发图表生成。"
                 ),
                 parameters={
                     "type": "object",
@@ -350,6 +368,12 @@ class ReportWorkspaceTaskToolkit(
                         "citationIds": {
                             "type": "array",
                             "minItems": 1,
+                            "maxItems": 100,
+                            "uniqueItems": True,
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                        "chartIds": {
+                            "type": "array",
                             "maxItems": 100,
                             "uniqueItems": True,
                             "items": {"type": "string", "minLength": 1},
@@ -498,12 +522,8 @@ class ReportWorkspaceTaskToolkit(
                     "在图表源文件最终定稿后一次登记 Coding 根据本轮不可变 CSV 生成的报告图表；"
                     "每张图必须先调用 inspect_chart，服务端校验当前文件哈希的视觉回执、Dataset "
                     "citation 并决定发布路径。登记后不得改写或复用同一 chartId 的源文件。"
-                    '示例：{"charts":[{"chartId":"income_trend","sourcePath":'
-                    '"analysis/charts/income.png","title":"医疗收入月度趋势",'
-                    '"altText":"2025年医疗收入月度变化","citationIds":["citation_001"],'
-                    '"metricCodes":["income"],"currentPeriod":"2025年",'
-                    '"comparisonType":"none","sourceDatasetId":"dataset_001",'
-                    '"aggregationGrain":"month","comparability":"strict"}]}'
+                    "metricCodes、周期和 Dataset 必须逐字取自本轮已冻结分析事实，禁止使用"
+                    "income、revenue 等自然语言别名或猜测期间。"
                 ),
                 parameters={
                     "type": "object",
@@ -530,14 +550,11 @@ class ReportWorkspaceTaskToolkit(
                 description=(
                     "提交当前 SectionWorkItem 指定章节。每个 block 的 markdown 不得重复"
                     "服务端章节 title，内部标题从 ### 开始；可使用列表、引用、强调和表格，"
-                    "图片通过 chartIds 引用。"
-                    '示例：{"sectionCode":"executive_summary","blocks":[{"blockId":'
-                    '"overview","markdown":"### 核心结论\n\n- 医疗收入同比增长 8.2%",'
-                    '"citationIds":["citation_001"],"chartIds":["income_trend"],'
-                    '"claimIds":["claim_income"]}],"claims":[{"claimId":"claim_income",'
-                    '"metricCode":"income","value":"8.2%","periodBasis":"2025年",'
-                    '"managementQuestion":"收入增长是否可持续？","currentPeriod":"2025年",'
-                    '"citationIds":["citation_001"],"chartIds":["income_trend"]}]}'
+                    "图片通过 chartIds 引用。claim 使用 managementQuestionRef 绑定当前章节"
+                    "问题目录；periodBasis 和问题全文由服务端补齐，绑定图表时周期、比较语义、"
+                    "可比性和图表 citation 也由服务端补齐。metricCode 必须逐字取自当前"
+                    "SectionWorkItem.metricDefinitions.code，禁止使用 income、revenue 等自然语言别名；"
+                    "comparisonType 非 none 时必须填写 comparisonPeriod。"
                 ),
                 parameters={
                     "type": "object",
@@ -552,7 +569,7 @@ class ReportWorkspaceTaskToolkit(
                         "claims": {
                             "type": "array",
                             "maxItems": 500,
-                            "items": SectionClaim.model_json_schema(by_alias=True),
+                            "items": SectionClaimSubmission.model_json_schema(by_alias=True),
                         },
                     },
                     "required": ["sectionCode", "blocks", "claims"],
@@ -564,6 +581,22 @@ class ReportWorkspaceTaskToolkit(
                 post_hook=_stop_after_finished_phase_call,
             )
         )
+
+    def register(self, function: Any, name: str | None = None) -> None:
+        """按阶段能力在注册瞬间过滤工具，避免先暴露再删除。"""
+
+        allowed = self._assembly_allowed_tools
+        if allowed is not None:
+            tool_name = (
+                name or getattr(function, "name", None) or getattr(function, "__name__", None)
+            )
+            if (
+                isinstance(tool_name, str)
+                and tool_name not in allowed
+                and tool_name not in self._assembly_internal_tools
+            ):
+                return
+        super().register(function, name=name)
 
     async def view_image(
         self,
@@ -655,6 +688,30 @@ class ReportWorkspaceTaskToolkit(
             "finish_task",
         }
 
+    def _tool_preview_bytes(
+        self,
+        scope: Any,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        result: Any,
+    ) -> int | None:
+        _ = result
+        if (
+            self._active_reporting_phase(scope) != "analysis"
+            or self._active_reporting_task_kind(scope) != "visualization"
+            or tool_name != "read_file"
+        ):
+            return None
+        try:
+            requested = WorkspaceService.normalize_path(arguments.get("path"), allow_root=False)[0]
+            _parameters, contract = self._phase_parameters(scope, "analysis")
+            workspace = contract.get("visualizationWorkspace")
+            script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
+            signed = WorkspaceService.normalize_path(script_path, allow_root=False)[0]
+        except WorkspaceError:
+            return None
+        return MAX_VISUALIZATION_SCRIPT_BYTES if requested == signed else None
+
     def _no_progress_exempt(
         self,
         *,
@@ -673,6 +730,7 @@ class ReportWorkspaceTaskToolkit(
         tool_name: str,
         result: dict[str, Any],
         run_context: RunContext | None,
+        preview_bytes: int | None = None,
     ) -> dict[str, Any]:
         if (
             self._active_reporting_phase(scope) != "analysis"
@@ -685,6 +743,7 @@ class ReportWorkspaceTaskToolkit(
             result,
             run_context,
             retain=True,
+            preview_bytes=preview_bytes,
         )
 
     async def _record_and_bound_profile_result(
@@ -695,12 +754,14 @@ class ReportWorkspaceTaskToolkit(
         arguments: dict[str, Any],
         result: dict[str, Any],
         run_context: RunContext | None,
+        preview_bytes: int | None = None,
     ) -> dict[str, Any]:
         bounded = await self._bound_analysis_result(
             scope=scope,
             tool_name=tool_name,
             result=result,
             run_context=run_context,
+            preview_bytes=preview_bytes,
         )
         return bounded
 
@@ -843,6 +904,51 @@ class ReportWorkspaceTaskToolkit(
         if state is None:
             raise ReportingError("report_state_not_found", "Reporting 运行状态不存在。")
         return state
+
+    async def _ensure_visualization_terminal_settled(self, scope: Any) -> None:
+        """拒绝在签发脚本的 terminal execution 仍运行时推进生产阶段。
+
+        terminal 默认只等待有限时间，超时后会返回 ``status=running``；模型随后可能在同一
+        工具批次提交 register/finalize。文件尚未写完时，登记会得到 Daytona NotFound，
+        finalize 还可能绕过图表登记。执行记录是服务端唯一受信的完成状态，因此这里按当前
+        externalRunId、internalRunId 和 terminal kind 精确筛选未终态执行，要求模型先用
+        process poll/wait 收敛会话，再重试后续工具。
+        """
+
+        repository = getattr(self, "repository", None)
+        list_executions = getattr(repository, "list_executions", None)
+        external_run_id = getattr(scope, "external_run_id", None)
+        internal_run_id = getattr(scope, "internal_run_id", None)
+        if (
+            not callable(list_executions)
+            or not isinstance(external_run_id, str)
+            or not external_run_id
+            or not isinstance(internal_run_id, str)
+            or not internal_run_id
+        ):
+            return
+        executions = await list_executions(external_run_id)
+        pending = [
+            execution
+            for execution in executions
+            if getattr(execution, "internal_run_id", None) == internal_run_id
+            and getattr(execution, "kind", None) == "terminal"
+            and getattr(execution, "status", None) not in TERMINAL_EXECUTION_STATUSES
+        ]
+        if pending:
+            raise ReportingError(
+                "report_visualization_script_running",
+                "可视化脚本仍在执行，请先使用 process 等待同一脚本会话结束后再登记或完成。",
+                details={
+                    "executions": [
+                        {
+                            "executionId": str(getattr(item, "execution_id", "")),
+                            "status": str(getattr(item, "status", "")),
+                        }
+                        for item in pending[:10]
+                    ]
+                },
+            )
 
     @staticmethod
     def _analysis_output_root(contract: Mapping[str, Any]) -> str:
@@ -1335,6 +1441,20 @@ class ReportWorkspaceTaskToolkit(
                 for key in ("chartId", "sourceDatasetId", "citationDatasetIds")
                 if key in error.details
             }
+        elif (
+            code
+            in {
+                "report_period_basis_conflict",
+                "report_section_claim_brief_conflict",
+                "report_section_claim_chart_conflict",
+                "report_cross_source_inference_unsupported",
+            }
+            and isinstance(error, ReportingError)
+            and isinstance(error.details, Mapping)
+        ):
+            # Section 语义校验可能一次发现多个 claim/chart 冲突；完整保留受信
+            # expected/actual 字段，避免模型只能看到第一个错误后重新生成整个章节。
+            result["details"] = dict(error.details)
         elif (
             code
             in {

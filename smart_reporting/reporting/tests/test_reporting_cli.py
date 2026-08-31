@@ -23,6 +23,7 @@ from smart_reporting.reporting.cli import (
     parse_report_input,
     resume_workflow,
 )
+from smart_reporting.reporting.delivery.publishing import cli_result
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.controller import ReportWorkflowToolkit
 from smart_reporting.reporting.workflow.orchestration import (
@@ -121,6 +122,26 @@ def test_report_input_parsing_is_shared_with_agentos() -> None:
     assert parse_report_input("生成 2025 年运营报告") == {
         "version": "1",
         "prompt": "生成 2025 年运营报告",
+    }
+
+
+def test_cli_publication_result_includes_html_artifact() -> None:
+    result = cli_result(
+        path="reports/report.pdf",
+        size=1,
+        sha256="a" * 64,
+        word_path="reports/report.docx",
+        word_size=2,
+        word_sha256="b" * 64,
+        html_path="reports/report.html",
+        html_size=3,
+        html_sha256="c" * 64,
+    )
+
+    assert result["html"] == {
+        "path": "reports/report.html",
+        "size": 3,
+        "sha256": "c" * 64,
     }
 
 

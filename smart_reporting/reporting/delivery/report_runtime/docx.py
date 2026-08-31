@@ -24,6 +24,13 @@ _DOCX_FORBIDDEN_PARTS = ("word/vbaProject.bin", "word/embeddings/", "word/active
 _WORD_PAGE_FIELDS = {"page": "PAGE", "pages": "SECTIONPAGES"}
 
 
+def _fit_image_dimensions(
+    width: int, height: int, maximum_width: int, maximum_height: int
+) -> tuple[int, int]:
+    scale = min(1, maximum_width / width, maximum_height / height)
+    return int(width * scale), int(height * scale)
+
+
 def _render_docx(
     html_document: str,
     *,
@@ -410,11 +417,14 @@ def _postprocess_docx(path: Path, *, context: dict[str, Any], layout: dict[str, 
                     for run in paragraph.runs:
                         run.font.color.rgb = theme_colors["primary"]
     available_width = sections[-1].page_width - sections[-1].left_margin - sections[-1].right_margin
+    maximum_height = Mm(180)
     for shape in document.inline_shapes:
-        if shape.width > available_width:
-            ratio = available_width / shape.width
-            shape.width = int(shape.width * ratio)
-            shape.height = int(shape.height * ratio)
+        new_width, new_height = _fit_image_dimensions(
+            shape.width, shape.height, available_width, maximum_height
+        )
+        if (new_width, new_height) != (shape.width, shape.height):
+            shape.width = new_width
+            shape.height = new_height
 
     for paragraph in paragraphs[body_start_index + 1 :]:
         if paragraph.text.strip() in {context["organizationName"], context["generatedDate"]}:

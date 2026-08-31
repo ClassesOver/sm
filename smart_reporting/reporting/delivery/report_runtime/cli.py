@@ -28,6 +28,7 @@ def main(arguments: list[str] | None = None) -> int:
                 payload["temporary_path"],
                 payload.get("page_layout"),
                 payload.get("word_output_path"),
+                payload.get("html_output_path"),
             )
         elif action == "validate_pdf":
             result = runtime.validate_pdf(
@@ -36,6 +37,7 @@ def main(arguments: list[str] | None = None) -> int:
                 payload["temporary_directory"],
                 payload.get("artifact_manifest"),
                 payload.get("word_path"),
+                payload.get("html_path"),
             )
         else:
             raise ReportFailure("未知报表操作")

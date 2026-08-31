@@ -86,7 +86,8 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
     (
         "优先使用 query_analysis_facts 读取当前 analysis 的服务端固定事实；只有固定事实不能满足"
         "当前原子管理问题时，才读取授权 CSV 并用 write_analysis_files 创建最小补充脚本和 evidence。"
-        "固定事实足够时不得创建脚本或 evidence 文件，complete_analysis_item 的 evidencePaths 传空数组。"
+        "固定事实足够时不得创建脚本或 evidence 文件，complete_analysis_item 的 evidencePaths 传空数组；"
+        "如当前结论绑定已生成的图表，必须在 chartIds 中提交其 chartId。"
         "不得连接数据库、执行 SQL、扩大 Dataset 范围或处理其他 analysisId。"
     ),
     (
@@ -136,29 +137,49 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
 REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     "你是 Coding Agent 的智能报表可视化 Worker，本轮只整合全部已冻结 analysis evidence。",
     (
-        "默认只调用一次 query_analysis_facts 聚合读取全部事实、摘要、最小计划与 evidence/citation 身份；"
-        "只有回执明确 truncated 或缺少必需字段时才追加查询；"
+        "任务 JSON 的 visualizationFacts 已批量签发当前图表所需的 facts 文件和字段入口；"
+        "不得调用 query_analysis_facts、query_analysis_context 或 read_file 探索 facts/evidence。"
+        "visualizationFacts.metrics 已给出 metricIndex、total、各数组元素数和 dataPaths；"
+        "脚本只按 factFile.path 一次读取完整 JSON，并按 dataPaths 精确访问。"
         "不得重新执行单项分析、查询 Profile、连接数据库、执行 SQL 或改写已冻结 evidence。"
     ),
     (
-        "query_analysis_facts 返回的 analyses[].evidenceFiles[].path 都是相对工作区根目录"
+        "对已通过路径门禁的签发 scriptPath，read_file 默认一次读取完整脚本；"
+        "只有回执 outputTruncated=true 才调用 read_tool_output 分页恢复，outputTruncated=false 时禁止再次读取。"
+    ),
+    (
+        "visualizationFacts 中 factFile.path 和 evidenceFiles[].path 都是相对工作区根目录"
         "的完整受信路径。脚本必须逐字使用这些路径；不得相对 __file__、visualizationWorkspace 或当前目录"
         "重新拼接 evidence/facts，不得构造 analysis/evidence，也不得通过 cd 改变路径基准。"
+    ),
+    (
+        "visualizationFacts 是图表脚本的唯一事实入口索引；脚本可按其中签发的 factFile.path"
+        "逐字读取 JSON，并只使用列出的 fields/dataPaths。periodValues、topGroups、bottomGroups"
+        "都位于 metrics[metricIndex] 内，不在 facts 根节点；comparisons 和 correlations 位于根节点。"
+        "不要把 facts 文件交给 read_file，"
+        "不要构造新的 facts/evidence 路径，也不要为确认字段重复查询。"
+    ),
+    (
+        "chartRegistrationRules 是 register_report_charts 的预校验清单：metricCodes 只能取"
+        "非空 allowedMetricCodes；若 allowedMetricCodes=null，则为每张图使用语义明确、稳定的"
+        "metricCode。所有已登记图表的 metricCode 都必须在 finalize_report_analysis.metricDefinitions"
+        "中逐个定义同名 code。"
+        "comparisonType 为 period/yoy/mom 时必须填写 comparisonPeriod；"
+        " comparability=reference_only 时 title 和 altText 都必须包含“参考”。"
     ),
     (
         "任务 JSON 的 analysisCitationIds 是图表 citationId 的唯一受信来源，citationDatasetIds 是"
         " citationId 所属 Dataset 的唯一受信映射；必须逐字复用，不得查询 datasets[].citationIds、猜测或"
         "重建 Dataset 归属，也不得用 read_file、terminal 或目录探测寻找 citationId。"
-        "若需要读取冻结事实，只调用 query_analysis_facts；evidence 文件仅由签发图表脚本按"
-        "analyses[].evidenceFiles[].path 逐字读取。"
+        "冻结 facts 只按 visualizationFacts.factFile.path 由图表脚本一次读取；evidence 文件仅由签发"
+        "图表脚本按 visualizationFacts[].evidenceFiles[].path 逐字读取。"
     ),
     (
         "deterministicFactFiles 中每个文件的根节点直接是该 analysis 的 facts 对象，comparisons、metrics、"
-        "correlations 等字段都位于根节点；只有 query_analysis_facts 的可视化聚合回执才使用 analyses[] 包装。"
-        '读取单个文件时禁止假设 facts["analyses"]。'
+        'correlations 等字段都位于根节点；读取单个文件时禁止假设 facts["analyses"]。'
     ),
     (
-        "脚本只能依赖 query_analysis_facts 回执或任务 JSON 签发的 deterministicFactFiles/evidenceFiles 路径；"
+        "脚本只能依赖任务 JSON 签发的 visualizationFacts/deterministicFactFiles/evidenceFiles 路径；"
         "禁止读取未签发文件、外部绝对路径或硬编码字典。事实文件、分类分组或字段缺失、为空或无法解析时，"
         "必须跳过对应图表并输出结构化诊断；任何查询结果在循环前先规范化为可迭代的空行集合，"
         "查询结果为 None 时必须使用空行集合，不能继续访问其 rows()；"
@@ -169,6 +190,15 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "取得绑定当前文件哈希的通过回执后再使用 register_report_charts 登记；图表必须绑定已注册 citationId。"
     ),
     (
+        "可读性布局规则：分类轴只使用能唯一识别对象的最短业务名称；完整科室/组织层级可放在正文、表格、脚注或图表说明中；"
+        "Dataset 路径、血缘信息和其他内部标识不得进入坐标轴，也不得进入用户可见报告，只保留在 citation/审计元数据中；"
+        "不得泄露内部路径。业务期间可作为时间轴刻度，但来源文件名或内部元数据中的冗长日期前缀、内部标识或路径不得进入坐标轴。"
+        "TopN 或长标签优先使用横向条形图，按数据密度动态调整"
+        "画布高度，并采用语义缩写或换行；两个或少量指标优先使用紧凑对比图、哑铃图或表格。目标像素至少为 1200 x 675，"
+        "为标题、坐标轴、图例和标签保留清晰边界；这些是可读性原则，不限制其他更合适的图形表达，也不构成固定模板或"
+        "图表白名单。"
+    ),
+    (
         "可视化阶段有总工具调用和脚本失败硬预算。事实读取、脚本写入、脚本执行和视觉检查分别合并为最少批次；"
         "禁止对相同文件反复 read_file、terminal 或 inspect_chart，也不得在上下文恢复后重新探索已完成工作。"
     ),
@@ -177,7 +207,8 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "operation=create_file、path 和 content 一次提交完整脚本，不调用任何未注册的底层"
         "文件工具名，也不增加 arguments 包装。脚本和图表只写入任务 JSON 中 visualizationWorkspace"
         "签发的 scriptPath 和 chartOutputRoot；服务端提交脚本后，terminal 仅可执行 python3 <scriptPath>，"
-        "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。"
+        "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。只有 terminal 返回"
+        "running 和 session_id 后才可用 process，并且只允许 poll、wait 或 kill 该 session_id。"
     ),
     (
         "汇总全部分析形成 ReportBrief、共享指标口径、覆盖全部 Dataset 的 rowGrain/duplicateResolution"
@@ -227,9 +258,12 @@ REPORT_SECTION_AGENT_INSTRUCTIONS = [
         " citationIds 必须在对应数据事实正文块中引用。"
     ),
     (
-        "每个正文块必须引用至少一个结构化 claim；claim 必须绑定 ReportBrief 中的 managementQuestion、"
-        "冻结 metricCode、当前/比较期间、citationIds 与实际使用的 chartIds。reference_only 结论及其"
-        "正文必须明确标记为“参考”，不得据此生成严格同比、利润或效率结论。"
+        "每个正文块必须引用至少一个结构化 claim；claim 使用 SectionWorkItem 的"
+        "managementQuestionCatalog 中的 managementQuestionRef 绑定管理问题，提交冻结 metricCode、"
+        "value、citationIds 和实际使用的 chartIds。periodBasis、managementQuestion 由服务端补齐；"
+        "绑定图表时 currentPeriod、comparisonPeriod、comparisonType、comparability 和图表 citation"
+        "也由服务端从冻结图表派生，无需重复提交。无图表 claim 才需要提交 currentPeriod；"
+        "reference_only 结论及其正文必须明确标记为“参考”，不得据此生成严格同比、利润或效率结论。"
     ),
     "报告结论、数字、表格和图表必须来自当前冻结 evidence；不得年化、拟合、外推、补齐、平滑或作无依据归因。",
     "deterministicFactFiles 是服务端复算并校验哈希的固定事实，优先读取并沿用；可补充解释和非标准分析，但不得覆盖其中数值。",

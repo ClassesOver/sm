@@ -365,9 +365,10 @@ def _semantic_documents(
         ";color:"
         f"{theme['primary']}"
         "}tbody tr:nth-child(even){background:#F9FAFB}"
-        "img{display:block;max-width:100%;height:auto;margin:12px auto;break-inside:avoid}"
+        "img{display:block;max-width:100%;max-height:180mm;width:auto;height:auto;"
+        "object-fit:contain;margin:12px auto;break-inside:avoid}"
         "p:has(>img){break-after:avoid;margin-bottom:1mm}"
-        "p:has(>img)+p{break-before:avoid;margin-top:0;text-align:center;color:"
+        "p:has(>img)+p{break-before:avoid;break-after:avoid;margin-top:0;text-align:center;color:"
         f"{theme['muted']}"
         "}"
         "pre,code{white-space:pre-wrap;overflow-wrap:anywhere}"
@@ -398,12 +399,25 @@ def _semantic_documents(
     return pdf_document, word_document
 
 
+def _html_document(
+    body: str,
+    *,
+    context: dict[str, Any],
+    layout: dict[str, str],
+) -> str:
+    """构造浏览器预览文档；调用方必须先将图片替换为 data URL。"""
+
+    pdf_document, _ = _semantic_documents(body, context=context, layout=layout)
+    return "<!doctype html>" + pdf_document
+
+
 __all__ = [
     "REPORT_VISUAL_THEME",
     "_WORD_MARKERS",
     "_bind_heading_anchors",
     "_body_tokens",
     "_document_context",
+    "_html_document",
     "_markdown_title",
     "_normalize_cjk_strong_markers",
     "_normalize_report_markdown_segments",

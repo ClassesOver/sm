@@ -56,11 +56,57 @@ from smart_reporting.reporting.workflow.runtime.planning import (
     _PLANNER_DISPLAY_NAMES,
     _outline_candidate,
     _outline_validation_issues,
+    _row_preserving_requirement_ids,
+    _validate_reporting_profile_schema,
 )
 from smart_reporting.reporting.workflow.runtime.publication import (
     _analysis_quality_warnings,
 )
 from smart_reporting.reporting.workflow.runtime.validation import _normalize_requirement_periods
+
+
+def test_row_preserving_requirements_follow_effective_profile_without_legacy_fields() -> None:
+    requirement = type(
+        "Requirement",
+        (),
+        {"requirement_id": "r1", "tables": (type("Table", (), {"table": "custom.metrics"})(),)},
+    )()
+    profile = type("EffectiveProfile", (), {})()
+    profile.reconciliations = ()
+    assert _row_preserving_requirement_ids((requirement,), profile) == ()
+
+
+def test_reporting_profile_schema_validation_uses_replaced_profile_bindings() -> None:
+    profile = type(
+        "EffectiveProfile",
+        (),
+        {
+            "metrics": (type("Metric", (), {"field_ref": "custom.analytics.fact.amount"})(),),
+            "dimensions": (),
+            "scope_filters": (),
+            "measure_semantics": (),
+        },
+    )()
+    snapshot = type(
+        "Snapshot",
+        (),
+        {
+            "tables": (
+                type(
+                    "Table",
+                    (),
+                    {
+                        "source_id": "custom",
+                        "database": "analytics",
+                        "name": "fact",
+                        "columns": (type("Column", (), {"name": "amount"})(),),
+                    },
+                )(),
+            )
+        },
+    )()
+
+    _validate_reporting_profile_schema(profile, (snapshot,))
 
 
 def test_workflow_runtime_uses_package_boundaries() -> None:
@@ -360,6 +406,10 @@ async def test_confirm_source_keeps_internal_agent_out_of_request_state(
     source_id = "source-1"
     source = SimpleNamespace(id=source_id, name="测试数据源", database="reporting")
     profile = SimpleNamespace(
+        dimensions=(),
+        metrics=(),
+        reconciliations=(),
+        scope_filters=(),
         measure_semantics=(),
         profile_id="profile-1",
         effective_profile_hash="a" * 64,
@@ -371,6 +421,7 @@ async def test_confirm_source_keeps_internal_agent_out_of_request_state(
     snapshot = SimpleNamespace(
         revision="revision-1",
         schema_hash="b" * 64,
+        tables=(),
         model_dump=lambda **_: {
             "source": "metadata_api",
             "revision": "revision-1",
@@ -830,6 +881,12 @@ def _valid_outline_proposal() -> ReportOutlineProposal:
     )
 
 
+def _outline_proposal_with_forbidden_assumption() -> ReportOutlineProposal:
+    return _valid_outline_proposal().model_copy(
+        update={"assumptions": ("次均费用按成本与工作量之比估算。",)}
+    )
+
+
 def _outline_planner_stage() -> Agent:
     return ReportWorkflowRuntime._planning_agent(
         Agent(model=ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")),
@@ -854,6 +911,7 @@ async def test_generate_outline_retries_on_validation_error_instead_of_crashing(
             validator = getattr(_agent.model, "_report_response_validator")
             validator(json.dumps(_duplicate_analysis_outline_payload()))
         assert isinstance(payload.get("correction"), dict)
+        assert payload["correction"]["allowedPaths"] == ["sections"]
         feedback = payload["correction"]["validationFeedback"]
         assert feedback["code"] == "report_outline_invalid"
         return _valid_outline_proposal()
@@ -886,6 +944,48 @@ async def test_generate_outline_retries_on_validation_error_instead_of_crashing(
     outline = ReportOutline.model_validate(output.content)
     assert outline.sections[0].analysis_ids == ("analysis_001",)
     assert state[REPORT_OUTLINE_STATE_KEY]["sections"][0]["code"] == "section_001"
+
+
+@pytest.mark.anyio
+async def test_generate_outline_routes_assumption_failure_to_assumptions_only() -> None:
+    planner_calls = 0
+    stage = _outline_planner_stage()
+
+    async def fake_run_planner(_agent, payload, _run_context):
+        nonlocal planner_calls
+        planner_calls += 1
+        if planner_calls == 1:
+            return _outline_proposal_with_forbidden_assumption()
+        correction = payload["correction"]
+        assert correction["allowedPaths"] == ["assumptions"]
+        assert correction["validationFeedback"]["issues"][0]["path"] == "assumptions"
+        return _valid_outline_proposal()
+
+    envelope = reporting_contract.ReportRequestEnvelope.model_validate(
+        {
+            "reportGoal": "整体运营分析",
+            "reportType": "comprehensive",
+            "period": {"start": "2025-01-01", "end": "2025-12-31"},
+            "sourceIds": ["source-1"],
+        }
+    )
+    state: dict[str, Any] = {
+        REPORT_WORKFLOW_INPUT_STATE_KEY: envelope.model_dump(mode="json", by_alias=True),
+        REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY: _detailed_analysis_plan_payload(),
+    }
+    run_context = SimpleNamespace(session_state=state)
+    step_input = SimpleNamespace(additional_data=None)
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._outline_agent = stage
+    runtime._state = lambda _run_context: state
+    runtime._envelope = lambda _run_context: envelope
+    runtime._assert_state_safe = lambda _state: None
+    runtime._run_planner = fake_run_planner
+
+    output = await runtime.generate_outline(step_input, run_context)
+
+    assert planner_calls == 2
+    assert ReportOutline.model_validate(output.content).assumptions == ("收入数据来自财务系统",)
 
 
 @pytest.mark.anyio

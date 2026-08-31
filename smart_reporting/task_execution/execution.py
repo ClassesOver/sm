@@ -46,6 +46,12 @@ from ..workspace import (
     _thread,
 )
 from .acceptance import AcceptancePolicy, requirement_digest
+from .execution_support import (
+    CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
+    CODEX_EXEC_SESSIONS_STATE_KEY,
+    extract_apply_patch_command,
+    validate_command_policy,
+)
 from .models import CodingScope, Lease, TaskSnapshot
 from .repository_impl import (
     TERMINAL_EXECUTION_STATUSES,
@@ -55,15 +61,7 @@ from .repository_impl import (
     CodingTaskRepository,
     utcnow,
 )
-from .tools import (
-    CODEX_EXEC_CLOSED_SESSIONS_STATE_KEY,
-    CODEX_EXEC_SESSIONS_STATE_KEY,
-    PURE_CODING_TOOLKIT_INSTRUCTIONS,
-    CodingToolkit,
-    _extract_apply_patch_command,
-    _ManagedDaytonaTools,
-    build_workspace_changes,
-)
+from .tools import PURE_CODING_TOOLKIT_INSTRUCTIONS, _ManagedDaytonaTools, build_workspace_changes
 
 CODING_TASK_DEPENDENCY = "AgentOS 编码任务"
 CODING_FINISH_FAILURE_STATE_KEY = "agentos_coding_finish_failure"
@@ -200,7 +198,7 @@ def _normalize_function_call_arguments(
     state[state_key] = items[-50:]
 
 
-def _create_files_patch(files: list[dict[str, str]]) -> str:
+def create_files_patch(files: list[dict[str, str]]) -> str:
     lines: list[str] = []
     for item in files:
         content = item["content"].replace("\r\n", "\n").replace("\r", "\n")
@@ -674,12 +672,14 @@ class CodingExecutionKernel:
         run_context: RunContext | None,
         *,
         retain: bool = False,
+        preview_bytes: int | None = None,
     ) -> dict[str, Any]:
-        preview_bytes = (
-            MAX_REPORT_TOOL_PREVIEW_BYTES
-            if scope.external_run_id.startswith("report-coding-")
-            else MAX_TOOL_PREVIEW_BYTES
-        )
+        if preview_bytes is None:
+            preview_bytes = (
+                MAX_REPORT_TOOL_PREVIEW_BYTES
+                if scope.external_run_id.startswith("report-coding-")
+                else MAX_TOOL_PREVIEW_BYTES
+            )
         serialized = json.dumps(
             result, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
         )
@@ -1280,7 +1280,7 @@ class CodingExecutionKernel:
             raise WorkspaceError("terminal 的 background 和 pty 必须是布尔值。")
         if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 86_400:
             raise WorkspaceError("terminal timeout 必须是 1 至 86400 之间的整数秒。")
-        CodingToolkit._validate_command_policy(command, shell)
+        validate_command_policy(command, shell)
         if len(command.encode("utf-8")) > MAX_TERMINAL_COMMAND_BYTES:
             raise WorkspaceError(
                 f"terminal command 超过 {MAX_TERMINAL_COMMAND_BYTES} 字节；"
@@ -1395,7 +1395,7 @@ class CodingExecutionKernel:
         selected_shell = shell or "/bin/sh"
         if selected_shell not in {"/bin/sh", "/bin/bash"}:
             raise WorkspaceError("shell 只支持 /bin/sh 或 /bin/bash。")
-        patch = _extract_apply_patch_command(command) if isinstance(command, str) else None
+        patch = extract_apply_patch_command(command) if isinstance(command, str) else None
         if patch is None:
             self._validate_terminal_arguments(command, background, timeout, pty, selected_shell)
         elif workdir not in (None, "") or pty:
@@ -2276,7 +2276,7 @@ class CodingExecutionKernel:
             assert validator_id is not None
             return await self._verify_validator(validator_id, artifact_paths, run_context, scope)
         assert command is not None
-        if isinstance(command, str) and _extract_apply_patch_command(command) is not None:
+        if isinstance(command, str) and extract_apply_patch_command(command) is not None:
             raise WorkspaceError("verify 不接受 apply_patch；请提交真实验证命令。")
         provenance_error = await self._skill_script_verification_error(command, run_context, scope)
         if provenance_error is not None:
@@ -4304,6 +4304,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     result,
                     run_context,
                     retain=self._retain_bounded_tool_result(scope, tool_name),
+                    preview_bytes=self._tool_preview_bytes(scope, tool_name, arguments, result),
                 )
             if (
                 tool_name == "verify"
@@ -4380,6 +4381,18 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
 
         _ = scope, tool_name
         return False
+
+    def _tool_preview_bytes(
+        self,
+        scope: CodingTaskScope,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        result: Any,
+    ) -> int | None:
+        """允许专用 Toolkit 精确扩大单个工具回执，默认边界保持不变。"""
+
+        _ = scope, tool_name, arguments, result
+        return None
 
     def _no_progress_exempt(
         self,
@@ -4716,7 +4729,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
         files: list[dict[str, str]],
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        patch = _create_files_patch(files)
+        patch = create_files_patch(files)
         return await self._invoke(
             "create_files",
             {"files": files},
@@ -5037,5 +5050,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
 TASK_EXECUTION_DEPENDENCY = CODING_TASK_DEPENDENCY
 TaskExecutionKernel = CodingExecutionKernel
 WorkspaceTaskToolkit = WorkspaceCodingToolkit
+
 create_task_tool_scheduler_hook = create_coding_tool_scheduler_hook
 is_task_tool_scheduler_hook = is_coding_tool_scheduler_hook

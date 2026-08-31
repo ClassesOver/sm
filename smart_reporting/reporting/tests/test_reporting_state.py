@@ -328,6 +328,10 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
                     "analysis_002": {"analysisId": "analysis_002"},
                 },
                 "completedSections": ["overview", "income"],
+                "runningSections": {
+                    "overview": "overview-old-hash",
+                    "income": "income-old-hash",
+                },
                 "sectionArtifacts": {
                     "overview": {"sectionCode": "overview", "analysisIds": ["analysis_002"]},
                     "income": {"sectionCode": "income", "analysisIds": ["analysis_001"]},
@@ -391,6 +395,7 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
     assert rework.payload["completedAnalysisIds"] == ["analysis_002"]
     assert set(rework.payload["analysisItems"]) == {"analysis_002"}
     assert rework.payload["completedSections"] == ["overview"]
+    assert rework.payload["runningSections"] == {"overview": "overview-old-hash"}
     assert set(rework.payload["sectionArtifacts"]) == {"overview"}
     assert rework.payload["pendingSections"] == ["income"]
     assert [item["chartId"] for item in rework.payload["charts"]] == ["overview"]
@@ -407,7 +412,21 @@ def test_targeted_rework_only_invalidates_selected_analysis_and_dependent_sectio
     assert rework.payload["workflowCheckpoint"]["analysisManifestFile"] is None
     assert rework.payload["checkpointMirrorFile"] is None
 
-    running = apply_phase(rework, "start_analysis")
+    restarted_income = ReportingStateReducer.apply(
+        rework,
+        {
+            "name": "start_section",
+            "commandId": "restart-income",
+            "payload": {"sectionCode": "income", "workItemHash": "income-new-hash"},
+        },
+        rework.state_version,
+    ).state
+    assert restarted_income.payload["runningSections"] == {
+        "overview": "overview-old-hash",
+        "income": "income-new-hash",
+    }
+
+    running = apply_phase(restarted_income, "start_analysis")
     assert running.phase is ReportingPhase.ANALYSIS_RUNNING
     assert running.payload["currentAnalysisId"] == "analysis_001"
 

@@ -14,14 +14,17 @@ from agno.exceptions import StopAgentRun
 from agno.run import RunContext
 from agno.tools import Function
 from daytona.common.errors import DaytonaError
+from pydantic import ValidationError
 
 from smart_reporting.reporting.agent import (
     _REPORT_TOOL_FAILURE_STATE_KEY,
     _enforce_reporting_no_progress,
+    _report_tool_argument_failure,
     normalize_reporting_tool_arguments,
 )
 from smart_reporting.reporting.delivery.acceptance import build_report_phase_acceptance_contract
 from smart_reporting.reporting.delivery.artifacts_v1 import Citation
+from smart_reporting.reporting.delivery.draft_v1 import ReportChartRegistration
 from smart_reporting.reporting.hospital_operation.detailed_analysis import (
     DetailedAnalysisItem,
     DetailedAnalysisPlan,
@@ -32,6 +35,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_TASK_DEPENDENCY,
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
@@ -46,6 +50,7 @@ from smart_reporting.reporting.tests.workspace_fakes import service as fake_work
 from smart_reporting.reporting.tools.analysis import (
     MAX_ANALYSIS_WRITE_INTENT_BYTES,
     _derive_durable_analysis_binding,
+    _missing_metric_definition_codes,
     _normalize_analysis_summary_comparability,
 )
 from smart_reporting.reporting.tools.factory import build_report_worker_tools
@@ -71,6 +76,7 @@ from smart_reporting.reporting.tools.validation import (
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
     FileIdentity,
+    MetricDefinition,
     ProfileReadReceipt,
     SectionWorkItem,
 )
@@ -86,6 +92,87 @@ from smart_reporting.reporting.workflow.state import ReportingRunState
 from smart_reporting.task_execution.acceptance import normalize_acceptance_contract
 from smart_reporting.task_execution.execution import WorkspaceTaskToolkit
 from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
+
+
+def _chart_registration() -> ReportChartRegistration:
+    return ReportChartRegistration.model_validate(
+        {
+            "chartId": "income",
+            "sourcePath": "analysis/charts/income.png",
+            "title": "收入趋势",
+            "altText": "收入趋势图",
+            "citationIds": ["citation-1"],
+            "metricCodes": ["income"],
+            "currentPeriod": "2026-01",
+            "sourceDatasetId": "dataset-1",
+            "aggregationGrain": "month",
+        }
+    )
+
+
+def _chart_identity(*, width: int, height: int) -> dict[str, Any]:
+    return {
+        "sourcePath": "analysis/charts/income.png",
+        "size": 1024,
+        "sha256": "a" * 64,
+        "format": "PNG",
+        "mediaType": "image/png",
+        "extension": ".png",
+        "width": width,
+        "height": height,
+    }
+
+
+def test_missing_metric_definition_codes_covers_facts_derived_and_charts() -> None:
+    missing = _missing_metric_definition_codes(
+        fact_bundles=(
+            {
+                "metrics": [{"metricCodes": ["income_summary_total", "defined_metric"]}],
+                "derivedMetrics": [{"code": "income_margin"}],
+            },
+        ),
+        chart_metric_codes=("chart_only", "defined_metric"),
+        metric_definitions=(
+            MetricDefinition(
+                code="defined_metric",
+                name="已定义",
+                definition="测试指标",
+                periodBasis="月",
+            ),
+        ),
+    )
+
+    assert missing == ("chart_only", "income_margin", "income_summary_total")
+
+
+def test_section_unknown_metric_reports_current_work_item_contract() -> None:
+    with pytest.raises(ReportingError) as raised:
+        ReportWorkspaceTaskToolkit._normalize_section_claims(
+            section_code="section_002",
+            claims=[
+                {
+                    "claimId": "claim_001",
+                    "metricCode": "unknown_metric",
+                    "value": 1,
+                    "managementQuestionRef": "analysis_002",
+                    "citationIds": ["citation_001"],
+                }
+            ],
+            work_item=SimpleNamespace(
+                metric_definitions=(SimpleNamespace(code="revenue"),),
+                charts=(),
+                citations=(),
+                management_question_catalog=(),
+            ),
+        )
+
+    assert raised.value.code == "report_section_claim_metric_unknown"
+    assert raised.value.details == {
+        "sectionCode": "section_002",
+        "claimId": "claim_001",
+        "metricCode": "unknown_metric",
+        "expectedMetricCodes": ["revenue"],
+    }
 
 
 def write_functions() -> dict[str, Function]:
@@ -264,7 +351,7 @@ def test_analysis_fact_budget_contract_requires_all_v1_scalars_and_recovery_flag
         "analysisIds": ["analysis_001"],
         "analysisOutputRoot": "evidence/analysis_001",
         "analysisFactBudgetVersion": 1,
-        "analysisFactQueryLimit": 2,
+        "analysisFactQueryLimit": 4,
         "analysisFactQueriesUsed": 1,
         "analysisRecovery": False,
     }
@@ -276,7 +363,7 @@ def test_analysis_fact_budget_contract_requires_all_v1_scalars_and_recovery_flag
 
     assert reporting_analysis_fact_budget_contract_from_acceptance_contract(valid) == {
         "analysisFactBudgetVersion": 1,
-        "analysisFactQueryLimit": 2,
+        "analysisFactQueryLimit": 4,
         "analysisFactQueriesUsed": 1,
         "analysisRecovery": False,
     }
@@ -316,7 +403,7 @@ def test_historical_analysis_fact_contract_uses_fixed_defaults() -> None:
 
     assert reporting_analysis_fact_budget_contract_from_acceptance_contract(contract) == {
         "analysisFactBudgetVersion": 0,
-        "analysisFactQueryLimit": 2,
+        "analysisFactQueryLimit": 4,
         "analysisFactQueriesUsed": 0,
         "analysisRecovery": False,
     }
@@ -642,28 +729,27 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
     toolkit._durable_state = AsyncMock(
         return_value=SimpleNamespace(payload={"charts": [], "chartInspectionReceipts": [receipt]})
     )
-    identity = {
-        "chartId": "income",
-        "sourcePath": "analysis/charts/income.png",
-        "title": "收入趋势",
-        "altText": "收入趋势图",
-        "citationIds": ["citation-current", "citation-yoy"],
-        "metricCodes": ["income"],
-        "currentPeriod": "2026-01",
-        "comparisonPeriod": "2025-01",
-        "comparisonType": "yoy",
-        "sourceDatasetId": "dataset-current",
-        "aggregationGrain": "month",
-        "comparability": "strict",
-        "size": 1024,
-        "sha256": "a" * 64,
-        "format": "PNG",
-        "mediaType": "image/png",
-        "extension": ".png",
-        "width": 1200,
-        "height": 800,
-    }
-    toolkit._inspect_chart = AsyncMock(return_value=(identity, []))
+    toolkit._inspect_chart_file = AsyncMock(return_value=_chart_identity(width=1000, height=700))
+    expected_warnings = [
+        {
+            "code": "chart_low_resolution",
+            "chartId": "income",
+            "width": 1000,
+            "height": 700,
+            "minimumWidth": 1200,
+            "minimumHeight": 675,
+            "message": "图表尺寸偏低，仅作为非阻断质量告警。",
+        },
+        {
+            "code": "chart_low_effective_dpi",
+            "chartId": "income",
+            "width": 1000,
+            "height": 700,
+            "effectiveDpi": 146.0,
+            "minimumDpi": 150,
+            "message": "按 A4 正文全宽估算的有效分辨率偏低，仅作为非阻断质量告警。",
+        },
+    ]
     toolkit._apply_durable = AsyncMock()
 
     result = await toolkit.register_report_charts(
@@ -687,9 +773,259 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
     )
 
     assert result["ok"] is True
+    assert result["status"] == "completed"
+    assert result["warnings"] == expected_warnings
     toolkit._apply_durable.assert_awaited_once()
-    assert toolkit._apply_durable.await_args.kwargs["name"] == "register_charts"
-    assert toolkit._apply_durable.await_args.kwargs["payload"] == {"charts": [identity]}
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_after_recent_script_failure() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-script-failure", task=SimpleNamespace(mutation_sequence=1)
+    )
+    run_context = RunContext(
+        run_id="run-script-failure",
+        session_id="session-script-failure",
+        session_state={
+            REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY: {
+                "visualization-task:run-script-failure": {
+                    "lastScriptFailed": True,
+                    "diagnostics": ["[FAIL] chart: TypeError"],
+                }
+            }
+        },
+        dependencies={"AgentOS 编码任务": {"externalRunId": "visualization-task"}},
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: ({}, {})
+    toolkit._inspect_chart = AsyncMock()
+
+    result = await toolkit.register_report_charts([], run_context=run_context)
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_script_failed"
+    toolkit._inspect_chart.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_pending_failure_from_previous_retry() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-script-retry", task=SimpleNamespace(mutation_sequence=1)
+    )
+    run_context = RunContext(
+        run_id="run-script-failure-retry",
+        session_id="session-script-failure-retry",
+        session_state={
+            REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY: {
+                "visualization-task:run-script-failure": {
+                    "lastScriptFailed": True,
+                    "diagnostics": ["[FAIL] chart: TypeError"],
+                }
+            }
+        },
+        dependencies={REPORTING_TASK_DEPENDENCY: {"externalRunId": "visualization-task"}},
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: ({}, {})
+    toolkit._inspect_chart = AsyncMock()
+
+    result = await toolkit.register_report_charts([], run_context=run_context)
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_script_failed"
+    toolkit._inspect_chart.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_running_visualization_script() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-script-running",
+        external_run_id="visualization-task-running",
+        internal_run_id="run-script-running",
+        task=SimpleNamespace(mutation_sequence=1),
+    )
+    run_context = RunContext(
+        run_id="run-script-running",
+        session_id="session-script-running",
+        session_state={},
+        dependencies={REPORTING_TASK_DEPENDENCY: {"externalRunId": "visualization-task-running"}},
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit.repository = SimpleNamespace(
+        list_executions=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    execution_id="execution-running",
+                    internal_run_id="run-script-running",
+                    kind="terminal",
+                    status="running",
+                )
+            ]
+        )
+    )
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: ({}, {})
+    toolkit._inspect_chart = AsyncMock()
+
+    result = await toolkit.register_report_charts([], run_context=run_context)
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_script_running"
+    assert result["retryable"] is True
+    toolkit._inspect_chart.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_accepts_missing_optional_run_context() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-no-run-context", task=SimpleNamespace(mutation_sequence=1)
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": [],
+            "citationDatasetIds": {},
+            "visualInspectionMode": "deterministic",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts([], run_context=None)
+
+    assert result["ok"] is True
+    toolkit._apply_durable.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_rejects_metric_code_outside_frozen_catalog() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-metric-catalog", task=SimpleNamespace(mutation_sequence=1)
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "allowedMetricCodes": ["income_total"],
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+    toolkit._inspect_chart = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["invented_metric"],
+                "currentPeriod": "2026-01",
+                "comparisonType": "none",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+            }
+        ],
+        run_context=RunContext(run_id="run-metric-catalog", session_id="session-metric-catalog"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_chart_metric_unknown"
+    toolkit._inspect_chart.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_register_report_charts_allows_defined_metric_when_catalog_is_absent() -> None:
+    """null 目录允许 Worker 定义指标；finalize 的 manifest 仍负责冻结同名定义。"""
+
+    scope = SimpleNamespace(
+        thread_id="thread-no-metric-catalog", task=SimpleNamespace(mutation_sequence=1)
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "allowedMetricCodes": None,
+            "visualInspectionMode": "deterministic",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+    toolkit._inspect_chart = AsyncMock(
+        return_value=(
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["income_total"],
+                "currentPeriod": "2026-01",
+                "comparisonPeriod": None,
+                "comparisonType": "none",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+                "comparability": "strict",
+                "size": 1024,
+                "sha256": "a" * 64,
+                "format": "PNG",
+                "mediaType": "image/png",
+                "extension": ".png",
+                "width": 1200,
+                "height": 800,
+            },
+            [],
+        )
+    )
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.register_report_charts(
+        charts=[
+            {
+                "chartId": "income",
+                "sourcePath": "analysis/charts/income.png",
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["income_total"],
+                "currentPeriod": "2026-01",
+                "comparisonType": "none",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+            }
+        ],
+        run_context=RunContext(
+            run_id="run-no-metric-catalog", session_id="session-no-metric-catalog"
+        ),
+    )
+
+    assert result["ok"] is True
+    toolkit._apply_durable.assert_awaited_once()
 
 
 @pytest.mark.anyio
@@ -965,6 +1301,90 @@ async def test_inspect_chart_persists_hash_bound_receipt() -> None:
     toolkit._apply_durable.assert_awaited_once()
     assert toolkit._apply_durable.await_args.kwargs["name"] == "record_chart_inspection"
     assert toolkit._apply_durable.await_args.kwargs["payload"] == {"receipt": receipt}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("width", "height"), [(1199, 675), (1200, 674)])
+async def test_inspect_chart_warns_below_minimum_dimensions(width: int, height: int) -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._inspect_chart_file = AsyncMock(
+        return_value=_chart_identity(width=width, height=height)
+    )
+
+    identity, warnings = await toolkit._inspect_chart(
+        thread_id="thread-1",
+        registration=_chart_registration(),
+    )
+
+    assert identity["chartId"] == "income"
+    warning = next(item for item in warnings if item["code"] == "chart_low_resolution")
+    assert warning == {
+        "code": "chart_low_resolution",
+        "chartId": "income",
+        "width": width,
+        "height": height,
+        "minimumWidth": 1200,
+        "minimumHeight": 675,
+        "message": "图表尺寸偏低，仅作为非阻断质量告警。",
+    }
+
+
+@pytest.mark.anyio
+async def test_inspect_chart_warns_below_effective_a4_body_dpi() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._inspect_chart_file = AsyncMock(return_value=_chart_identity(width=1000, height=700))
+
+    identity, warnings = await toolkit._inspect_chart(
+        thread_id="thread-1",
+        registration=_chart_registration(),
+    )
+
+    assert identity["chartId"] == "income"
+    warning = next(item for item in warnings if item["code"] == "chart_low_effective_dpi")
+    assert warning == {
+        "code": "chart_low_effective_dpi",
+        "chartId": "income",
+        "width": 1000,
+        "height": 700,
+        "effectiveDpi": 146.0,
+        "minimumDpi": 150,
+        "message": "按 A4 正文全宽估算的有效分辨率偏低，仅作为非阻断质量告警。",
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("width", "expected_effective_dpi"), [(1027, 149.9), (1028, None)])
+async def test_inspect_chart_effective_dpi_uses_raw_threshold(
+    width: int, expected_effective_dpi: float | None
+) -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._inspect_chart_file = AsyncMock(return_value=_chart_identity(width=width, height=700))
+
+    identity, warnings = await toolkit._inspect_chart(
+        thread_id="thread-1",
+        registration=_chart_registration(),
+    )
+
+    assert identity["chartId"] == "income"
+    dpi_warnings = [item for item in warnings if item["code"] == "chart_low_effective_dpi"]
+    if expected_effective_dpi is None:
+        assert dpi_warnings == []
+    else:
+        assert dpi_warnings[0]["effectiveDpi"] == expected_effective_dpi
+
+
+@pytest.mark.anyio
+async def test_inspect_chart_at_minimum_dimensions_has_no_low_resolution_warning() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._inspect_chart_file = AsyncMock(return_value=_chart_identity(width=1200, height=675))
+
+    identity, warnings = await toolkit._inspect_chart(
+        thread_id="thread-1",
+        registration=_chart_registration(),
+    )
+
+    assert identity["chartId"] == "income"
+    assert not any(item["code"] == "chart_low_resolution" for item in warnings)
 
 
 @pytest.mark.anyio
@@ -1726,6 +2146,75 @@ async def test_visualization_facts_v1_aggregates_out_of_order_durable_items_in_p
         "evidenceFiles": [{"path": "evidence/one.json", "size": 8, "sha256": "c" * 64}],
         "citationIds": ["citation-1"],
     }
+
+
+@pytest.mark.anyio
+async def test_visualization_facts_keeps_complete_aggregate_in_128_kib_window() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=SimpleNamespace(thread_id="thread-1"))
+    )
+    identity = {"path": "facts/analysis_001.json", "size": 10, "sha256": "a" * 64}
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization",
+            "analysisIds": ["analysis_001"],
+            "deterministicFactFiles": {"analysis_001": identity},
+        },
+    )
+    toolkit._require_phase_tool = lambda *args, **kwargs: None
+    toolkit._read_trusted_json = AsyncMock(
+        return_value={"metrics": [{"label": "x" * 800, "value": index} for index in range(50)]}
+    )
+
+    async def return_result(**kwargs):
+        return kwargs["result"]
+
+    toolkit._record_and_bound_profile_result = AsyncMock(side_effect=return_result)
+
+    result = await toolkit.query_analysis_facts(
+        query="analyses[0].facts.metrics", purpose="一次读取完整指标", maxItems=50
+    )
+
+    assert result["itemLimit"] == 50
+    assert result["truncated"] is False
+    assert len(result["value"]) == 50
+    assert toolkit._record_and_bound_profile_result.await_args.kwargs["preview_bytes"] == 128 * 1024
+
+
+@pytest.mark.anyio
+async def test_analysis_item_facts_keeps_16_kib_output_boundary() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=SimpleNamespace(thread_id="thread-1"))
+    )
+    identity = {"path": "facts/analysis_001.json", "size": 10, "sha256": "a" * 64}
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "analysis_item",
+            "currentAnalysisId": "analysis_001",
+            "deterministicFactFiles": {"analysis_001": identity},
+        },
+    )
+    toolkit._require_phase_tool = lambda *args, **kwargs: None
+    toolkit._read_trusted_json = AsyncMock(
+        return_value={"metrics": [{"label": "x" * 800, "value": index} for index in range(50)]}
+    )
+
+    async def return_result(**kwargs):
+        return kwargs["result"]
+
+    toolkit._record_and_bound_profile_result = AsyncMock(side_effect=return_result)
+
+    result = await toolkit.query_analysis_facts(
+        query="metrics", purpose="读取当前分析指标", maxItems=50
+    )
+
+    assert result["itemLimit"] < 50
+    assert result["truncated"] is True
+    assert "preview_bytes" not in toolkit._record_and_bound_profile_result.await_args.kwargs
 
 
 def test_analysis_context_projection_is_typed_compact_and_current_dataset_only() -> None:
@@ -2699,7 +3188,7 @@ _WORKER_TOOL_SCHEMA_FINGERPRINTS = {
     "finalize_report_analysis": "72be07cfdd398672e02fd705ddded6e3d2780a44ff9ce0c282799063bc7a2d10",
     "inspect_chart": "c68d47005ca812279d27542dea8ab4cdcc2958f20ecff7bf93d3f2d569d65adf",
     "register_report_charts": "ef621148cfda9ec63c7889da077d35ee5fb12aa38a5f864614c3b5136f1b261a",
-    "render_report_section": "9806426527bb1d3c94bfce71e3a98421994b28121ea1315ef9c0007e6a2bc671",
+    "render_report_section": "1505d9293a4db37dc5c833fc096471406f43468a2b83134c8d5152aea7cc0a95",
 }
 
 
@@ -2829,6 +3318,61 @@ def test_vision_enabled_visualization_toolkit_exposes_inspection() -> None:
     )
 
 
+def test_render_report_section_schema_does_not_require_server_derived_claim_fields() -> None:
+    toolkit = ReportWorkspaceTaskToolkit(
+        fake_workspace_service(None),
+        AsyncMock(),
+        state_repository=AsyncMock(),
+    )
+
+    claim_schema = toolkit.async_functions["render_report_section"].parameters["properties"][
+        "claims"
+    ]["items"]
+
+    assert "managementQuestionRef" in claim_schema["properties"]
+    assert "periodBasis" not in claim_schema["properties"]
+    assert "managementQuestion" not in claim_schema["properties"]
+    assert "currentPeriod" not in claim_schema["required"]
+    assert "comparisonPeriod" not in claim_schema["required"]
+    assert "comparisonType" not in claim_schema["required"]
+
+
+def test_render_report_section_description_does_not_invent_metric_code() -> None:
+    toolkit = ReportWorkspaceTaskToolkit(
+        fake_workspace_service(None),
+        AsyncMock(),
+        state_repository=AsyncMock(),
+    )
+
+    description = toolkit.async_functions["render_report_section"].description or ""
+
+    assert '"metricCode":"income"' not in description
+    assert "SectionWorkItem.metricDefinitions.code" in description
+
+    chart_description = toolkit.async_functions["register_report_charts"].description or ""
+    assert '"metricCodes":["income"]' not in chart_description
+    assert "已冻结分析事实" in chart_description
+
+
+def test_dynamic_metric_tools_do_not_return_static_correction_examples() -> None:
+    error = ValidationError.from_exception_data(
+        "SectionClaimSubmission",
+        [
+            {
+                "type": "missing",
+                "loc": ("claims", 0, "comparisonPeriod"),
+                "input": None,
+            }
+        ],
+    )
+
+    section_failure = _report_tool_argument_failure("render_report_section", error, {})
+    chart_failure = _report_tool_argument_failure("register_report_charts", error, {})
+
+    assert "correctCallExample" not in section_failure
+    assert "correctCallExample" not in chart_failure
+
+
 @pytest.mark.anyio
 async def test_render_report_section_rejects_inline_image_before_writing_artifact() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
@@ -2873,7 +3417,9 @@ async def test_render_report_section_binds_chart_citations_into_block() -> None:
     toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
         return_value=SimpleNamespace(
             section_code="section_002",
-            report_brief=SimpleNamespace(management_questions=("预算执行如何？",)),
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_002", question="预算执行如何？"),
+            ),
             metric_definitions=(SimpleNamespace(code="revenue", period_basis="2026-01"),),
             charts=(
                 SimpleNamespace(
@@ -2913,10 +3459,8 @@ async def test_render_report_section_binds_chart_citations_into_block() -> None:
                 "claimId": "claim_revenue",
                 "metricCode": "revenue",
                 "value": 100,
-                "periodBasis": "2026-01",
-                "managementQuestion": "预算执行如何？",
-                "currentPeriod": "2026-01",
-                "citationIds": ["citation_004", "citation_010"],
+                "managementQuestionRef": "analysis_002",
+                "citationIds": ["citation_004"],
                 "chartIds": ["revenue_budget"],
             }
         ],
@@ -2926,6 +3470,388 @@ async def test_render_report_section_binds_chart_citations_into_block() -> None:
 
     payload = toolkit._write_phase_json.await_args.kwargs["payload"]
     assert payload["blocks"][0]["citationIds"] == ["citation_004", "citation_010"]
+
+
+@pytest.mark.anyio
+async def test_render_report_section_derives_frozen_claim_semantics_on_first_submission() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
+        {"sectionOutputPath": "sections/income.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            section_code="section_001",
+            management_question_catalog=(
+                SimpleNamespace(
+                    ref="analysis_001",
+                    question="2025年医疗收入总体规模及收入类型与构成结构如何？",
+                ),
+            ),
+            metric_definitions=(
+                SimpleNamespace(
+                    code="medical_income",
+                    period_basis="2025年1-11月累计口径",
+                ),
+            ),
+            charts=(
+                SimpleNamespace(
+                    chart_id="income_monthly_trend",
+                    citation_ids=("citation_007", "citation_008"),
+                    metric_codes=("medical_income",),
+                    source_dataset_id="dataset-1",
+                    current_period="2025年1-11月",
+                    comparison_period="2024年全年",
+                    comparison_type="period",
+                    comparability="reference_only",
+                ),
+            ),
+            citations=(
+                SimpleNamespace(citation_id="citation_007", dataset_id="dataset-1"),
+                SimpleNamespace(citation_id="citation_008", dataset_id="dataset-1"),
+            ),
+        )
+    )
+    toolkit._write_phase_json = AsyncMock(return_value={"path": "sections/income.json"})  # type: ignore[method-assign]
+    toolkit._finish_phase_task = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    await toolkit._render_isolated_section(
+        scope=SimpleNamespace(),
+        section_code="section_001",
+        blocks=[
+            {
+                "blockId": "income_overall",
+                "markdown": "医疗收入总体保持稳定。",
+                "citationIds": ["citation_007"],
+                "chartIds": ["income_monthly_trend"],
+                "claimIds": ["claim_income_total"],
+            }
+        ],
+        claims=[
+            {
+                "claimId": "claim_income_total",
+                "metricCode": "medical_income",
+                "value": "111.24亿元",
+                "managementQuestionRef": "analysis_001",
+                "citationIds": ["citation_007"],
+                "chartIds": ["income_monthly_trend"],
+                "conclusionType": "value",
+            }
+        ],
+        state={},
+        run_context=None,
+    )
+
+    payload = toolkit._write_phase_json.await_args.kwargs["payload"]
+    assert payload["claims"] == [
+        {
+            "claimId": "claim_income_total",
+            "metricCode": "medical_income",
+            "value": "111.24亿元",
+            "periodBasis": "2025年1-11月累计口径",
+            "comparison": None,
+            "managementQuestion": "2025年医疗收入总体规模及收入类型与构成结构如何？",
+            "currentPeriod": "2025年1-11月",
+            "comparisonPeriod": "2024年全年",
+            "comparisonType": "period",
+            "citationIds": ["citation_007", "citation_008"],
+            "chartIds": ["income_monthly_trend"],
+            "comparability": "reference_only",
+            "conclusionType": "value",
+            "aggregationGrain": None,
+            "entityGrain": None,
+        }
+    ]
+    assert payload["blocks"][0]["citationIds"] == ["citation_007", "citation_008"]
+    assert "参考" in payload["blocks"][0]["markdown"]
+
+
+@pytest.mark.anyio
+async def test_render_report_section_rejects_unknown_management_question_ref() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
+        {"sectionOutputPath": "sections/income.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            section_code="section_001",
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_001", question="收入表现如何？"),
+            ),
+            metric_definitions=(
+                SimpleNamespace(code="medical_income", period_basis="2025年累计口径"),
+            ),
+            charts=(),
+            citations=(SimpleNamespace(citation_id="citation_007", dataset_id="dataset-1"),),
+        )
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await toolkit._render_isolated_section(
+            scope=SimpleNamespace(),
+            section_code="section_001",
+            blocks=[
+                {
+                    "blockId": "income_overall",
+                    "markdown": "医疗收入总体保持稳定。",
+                    "citationIds": ["citation_007"],
+                    "claimIds": ["claim_income_total"],
+                }
+            ],
+            claims=[
+                {
+                    "claimId": "claim_income_total",
+                    "metricCode": "medical_income",
+                    "value": "111.24亿元",
+                    "managementQuestionRef": "analysis_999",
+                    "currentPeriod": "2025年1-11月",
+                    "citationIds": ["citation_007"],
+                }
+            ],
+            state={},
+            run_context=None,
+        )
+
+    assert raised.value.code == "report_section_claim_question_unknown"
+    assert raised.value.details == {
+        "sectionCode": "section_001",
+        "claimId": "claim_income_total",
+        "managementQuestionRef": "analysis_999",
+        "expectedManagementQuestionRefs": ["analysis_001"],
+    }
+
+
+@pytest.mark.anyio
+async def test_render_report_section_rejects_conflicting_chart_semantics() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
+        {"sectionOutputPath": "sections/income.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            section_code="section_001",
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_001", question="收入表现如何？"),
+            ),
+            metric_definitions=(
+                SimpleNamespace(code="medical_income", period_basis="2025年累计口径"),
+            ),
+            charts=(
+                SimpleNamespace(
+                    chart_id="income_monthly",
+                    citation_ids=("citation_007",),
+                    metric_codes=("medical_income",),
+                    source_dataset_id="dataset-1",
+                    current_period="2025年1-11月",
+                    comparison_period=None,
+                    comparison_type="none",
+                    comparability="strict",
+                ),
+                SimpleNamespace(
+                    chart_id="income_annual",
+                    citation_ids=("citation_008",),
+                    metric_codes=("medical_income",),
+                    source_dataset_id="dataset-1",
+                    current_period="2025年全年",
+                    comparison_period=None,
+                    comparison_type="none",
+                    comparability="strict",
+                ),
+            ),
+            citations=(
+                SimpleNamespace(citation_id="citation_007", dataset_id="dataset-1"),
+                SimpleNamespace(citation_id="citation_008", dataset_id="dataset-1"),
+            ),
+        )
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await toolkit._render_isolated_section(
+            scope=SimpleNamespace(),
+            section_code="section_001",
+            blocks=[
+                {
+                    "blockId": "income_overall",
+                    "markdown": "医疗收入总体保持稳定。",
+                    "citationIds": ["citation_007", "citation_008"],
+                    "chartIds": ["income_monthly", "income_annual"],
+                    "claimIds": ["claim_income_total"],
+                }
+            ],
+            claims=[
+                {
+                    "claimId": "claim_income_total",
+                    "metricCode": "medical_income",
+                    "value": "111.24亿元",
+                    "managementQuestionRef": "analysis_001",
+                    "citationIds": ["citation_007", "citation_008"],
+                    "chartIds": ["income_monthly", "income_annual"],
+                }
+            ],
+            state={},
+            run_context=None,
+        )
+
+    assert raised.value.code == "report_section_claim_chart_semantics_conflict"
+    assert raised.value.details == {
+        "sectionCode": "section_001",
+        "claimId": "claim_income_total",
+        "chartIds": ["income_monthly", "income_annual"],
+    }
+
+
+@pytest.mark.anyio
+async def test_render_report_section_reports_structured_chart_metric_conflict() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
+        {"sectionOutputPath": "sections/budget.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            section_code="section_002",
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_002", question="预算执行如何？"),
+            ),
+            metric_definitions=(
+                SimpleNamespace(code="revenue", period_basis="2026-01"),
+                SimpleNamespace(code="margin", period_basis="2026-01"),
+            ),
+            charts=(
+                SimpleNamespace(
+                    chart_id="revenue_budget",
+                    citation_ids=("citation_004", "citation_010"),
+                    metric_codes=("revenue",),
+                    source_dataset_id="dataset-1",
+                    current_period="2026-01",
+                    comparison_period=None,
+                    comparison_type="none",
+                    comparability="strict",
+                ),
+            ),
+            citations=(
+                SimpleNamespace(citation_id="citation_004", dataset_id="dataset-1"),
+                SimpleNamespace(citation_id="citation_010", dataset_id="dataset-1"),
+            ),
+        )
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await toolkit._render_isolated_section(
+            scope=SimpleNamespace(),
+            section_code="section_002",
+            blocks=[
+                {
+                    "blockId": "budget_overall",
+                    "markdown": "预算执行情况。",
+                    "citationIds": ["citation_004"],
+                    "chartIds": ["revenue_budget"],
+                    "claimIds": ["claim_revenue"],
+                }
+            ],
+            claims=[
+                {
+                    "claimId": "claim_revenue",
+                    "metricCode": "margin",
+                    "value": 100,
+                    "managementQuestionRef": "analysis_002",
+                    "citationIds": ["citation_004"],
+                    "chartIds": ["revenue_budget"],
+                }
+            ],
+            state={},
+            run_context=None,
+        )
+
+    assert raised.value.code == "report_section_claim_chart_conflict"
+    assert raised.value.details == {
+        "sectionCode": "section_002",
+        "claimId": "claim_revenue",
+        "chartId": "revenue_budget",
+        "conflictType": "metric_code",
+        "expectedMetricCodes": ["revenue"],
+        "actualMetricCode": "margin",
+    }
+    failure = ReportWorkspaceTaskToolkit._failure(raised.value)
+    assert failure["details"] == raised.value.details
+
+
+@pytest.mark.anyio
+async def test_render_report_section_overrides_submitted_chart_semantics_with_frozen_values() -> (
+    None
+):
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {"sectionOutputPath": "sections/budget.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(
+        return_value=SimpleNamespace(
+            section_code="section_002",
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_002", question="预算执行如何？"),
+            ),
+            metric_definitions=(SimpleNamespace(code="revenue", period_basis="2026-01"),),
+            charts=(
+                SimpleNamespace(
+                    chart_id="revenue_budget",
+                    citation_ids=("citation_004", "citation_010"),
+                    metric_codes=("revenue",),
+                    source_dataset_id="dataset-1",
+                    current_period="2026-01",
+                    comparison_period=None,
+                    comparison_type="none",
+                    comparability="strict",
+                ),
+            ),
+            citations=(
+                SimpleNamespace(citation_id="citation_004", dataset_id="dataset-1"),
+                SimpleNamespace(citation_id="citation_010", dataset_id="dataset-1"),
+            ),
+        )
+    )
+    toolkit._write_phase_json = AsyncMock(return_value={"path": "sections/budget.json"})
+    toolkit._finish_phase_task = AsyncMock(return_value={})
+
+    await toolkit._render_isolated_section(
+        scope=SimpleNamespace(),
+        section_code="section_002",
+        blocks=[
+            {
+                "blockId": "budget_overall",
+                "markdown": "预算执行情况。",
+                "citationIds": ["citation_004"],
+                "chartIds": ["revenue_budget"],
+                "claimIds": ["claim_revenue"],
+            }
+        ],
+        claims=[
+            {
+                "claimId": "claim_revenue",
+                "metricCode": "revenue",
+                "value": 100,
+                "managementQuestionRef": "analysis_002",
+                "currentPeriod": "错误期间",
+                "comparisonPeriod": "错误比较期间",
+                "comparisonType": "yoy",
+                "citationIds": ["citation_004"],
+                "chartIds": ["revenue_budget"],
+                "comparability": "reference_only",
+            },
+        ],
+        state={},
+        run_context=None,
+    )
+
+    [claim] = toolkit._write_phase_json.await_args.kwargs["payload"]["claims"]
+    assert claim["periodBasis"] == "2026-01"
+    assert claim["currentPeriod"] == "2026-01"
+    assert claim["comparisonPeriod"] is None
+    assert claim["comparisonType"] == "none"
+    assert claim["comparability"] == "strict"
+    assert claim["citationIds"] == ["citation_004", "citation_010"]
 
 
 def test_analysis_evidence_accepts_current_committed_identity() -> None:
@@ -3584,6 +4510,69 @@ async def test_visualization_read_allows_only_latest_committed_signed_script() -
     assert allowed is None
     assert stale["code"] == "report_visualization_script_identity_changed"
     assert unsigned["code"] == "report_visualization_evidence_path_forbidden"
+
+
+def test_visualization_signed_script_read_uses_64_kib_preview_window() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._active_reporting_phase = lambda _scope: "analysis"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization",
+            "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
+        },
+    )
+    scope = SimpleNamespace()
+
+    selected = toolkit._tool_preview_bytes(
+        scope,
+        "read_file",
+        {"path": "analysis/charts/trend.py"},
+        {"content": "x" * (40 * 1024)},
+    )
+    ordinary = toolkit._tool_preview_bytes(
+        scope,
+        "read_file",
+        {"path": "analysis/charts/other.py"},
+        {"content": "x" * (40 * 1024)},
+    )
+
+    assert selected == 64 * 1024
+    assert ordinary is None
+
+
+@pytest.mark.anyio
+async def test_visualization_script_over_64_kib_fails_before_write_intent() -> None:
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization",
+            "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
+        },
+    )
+
+    with pytest.raises(ReportingError) as raised:
+        await toolkit._preflight_analysis_python_write(
+            scope=SimpleNamespace(thread_id="thread-1"),
+            tool_name="create_files",
+            canonical={
+                "files": [
+                    {
+                        "path": "analysis/charts/trend.py",
+                        "content": "#" * (64 * 1024 + 1),
+                    }
+                ]
+            },
+        )
+
+    assert raised.value.code == "report_visualization_script_too_large"
+    assert raised.value.details == {
+        "path": "analysis/charts/trend.py",
+        "size": 64 * 1024 + 1,
+        "limit": 64 * 1024,
+    }
 
 
 def test_analysis_item_acceptance_contract_requires_single_id_and_output_root() -> None:

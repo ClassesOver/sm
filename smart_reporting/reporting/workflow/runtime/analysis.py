@@ -68,10 +68,25 @@ from .base import (
     reporting_phase_task_key,
     reporting_thinking_profile_from_model,
     time,
+    validate_metric_code_bindings,
 )
 from .datasets import _profile_coverage_instruction_projection
 
 __all__ = ["RuntimeAnalysisMixin", "_visualization_retry_budget"]
+
+
+def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int:
+    """按当前分析项复杂度分配事实查询额度，并保留硬上限。"""
+
+    metrics = analysis_plan.get("metrics") if isinstance(analysis_plan, Mapping) else None
+    datasets = analysis_plan.get("datasetIds") if isinstance(analysis_plan, Mapping) else None
+    periods = analysis_plan.get("periods") if isinstance(analysis_plan, Mapping) else None
+    complexity = sum(
+        len(value)
+        for value in (metrics, datasets, periods)
+        if isinstance(value, (list, tuple))
+    )
+    return min(8, max(4, 2 + (complexity + 2) // 3))
 
 
 class RuntimeAnalysisMixin:
@@ -722,6 +737,8 @@ class RuntimeAnalysisMixin:
                         "datasetIds",
                         "evidencePaths",
                         "citationIds",
+                        "metrics",
+                        "chartIds",
                         "profileReadReceiptIds",
                         "warnings",
                     }
@@ -795,7 +812,7 @@ class RuntimeAnalysisMixin:
                     "analysisIds": [analysis_id],
                     "currentAnalysisId": analysis_id,
                     "analysisFactBudgetVersion": 1,
-                    "analysisFactQueryLimit": 2,
+                    "analysisFactQueryLimit": _analysis_fact_query_limit_for_plan(analysis_plan),
                     "analysisFactQueriesUsed": analysis_fact_queries_used,
                     "analysisRecovery": analysis_recovery,
                     "analysisOutputRoot": (f"报表/智能分析/{report_run_id}/evidence/{analysis_id}"),
@@ -1054,6 +1071,12 @@ class RuntimeAnalysisMixin:
         )
         _ensure_visual_inspection_capability(checkpoint, visual_inspection_mode)
 
+        # 图表 Worker 需要一次拿到完整的、已校验身份的事实包；把 facts 读取放在
+        # Workflow 边界而不是交给模型反复 query/read，消除日志中因路径歧义产生的
+        # 探索往返。包只在本次 visualization 阶段首次构建，fresh retry 复用内存对象，
+        # 不重新下载或计算 deterministic facts。
+        visualization_facts_package: list[dict[str, Any]] | None = None
+
         for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
             started_trace = next(
                 (
@@ -1125,7 +1148,169 @@ class RuntimeAnalysisMixin:
             }
             analysis_items = durable_payload.get("analysisItems")
             visualization_budget = _visualization_dynamic_budget(analysis_items, fact_files)
+            if visualization_facts_package is None:
+                visualization_facts_package = []
+                for analysis in detailed_plan.analyses:
+                    fact_model = await self._read_identity_model(
+                        scope["threadId"],
+                        fact_files[analysis.analysis_id],
+                        DeterministicAnalysisBundle,
+                    )
+                    fact_payload = fact_model.model_dump(mode="json", by_alias=True)
+                    raw_metrics = fact_payload.get("metrics", [])
+                    raw_derived_metrics = fact_payload.get("derivedMetrics", [])
+                    raw_comparisons = fact_payload.get("comparisons", [])
+                    durable_item = (
+                        analysis_items.get(analysis.analysis_id)
+                        if isinstance(analysis_items, Mapping)
+                        else None
+                    )
+                    visualization_facts_package.append(
+                        {
+                            "analysisId": analysis.analysis_id,
+                            "plan": analysis_plans[analysis.analysis_id],
+                            "summary": (
+                                durable_item.get("summary")
+                                if isinstance(durable_item, Mapping)
+                                else None
+                            ),
+                            "factFile": fact_files[analysis.analysis_id].model_dump(
+                                mode="json", by_alias=True
+                            ),
+                            # 模型只需要知道可画哪些字段及其在真实 facts schema 中的精确位置。
+                            # 完整数值序列继续留在已验哈希的 facts 文件，由图表脚本按签发路径
+                            # 一次读取；禁止复制大数组，也禁止让模型猜 periodValues/topGroups
+                            # 位于根节点还是 metric 内。
+                            "metrics": [
+                                {
+                                    "metricIndex": metric_index,
+                                    **{
+                                        key: metric.get(key)
+                                        for key in (
+                                            "datasetId",
+                                            "field",
+                                            "metricCodes",
+                                            "aggregation",
+                                            "unit",
+                                            "scope",
+                                            "periodRoles",
+                                            "periodStart",
+                                            "periodEnd",
+                                            "total",
+                                        )
+                                    },
+                                    "periodValueCount": len(metric.get("periodValues", ())),
+                                    "topGroupCount": len(metric.get("topGroups", ())),
+                                    "bottomGroupCount": len(metric.get("bottomGroups", ())),
+                                    "dataPaths": {
+                                        "metric": f"metrics[{metric_index}]",
+                                        "periodValues": f"metrics[{metric_index}].periodValues",
+                                        "topGroups": f"metrics[{metric_index}].topGroups",
+                                        "bottomGroups": f"metrics[{metric_index}].bottomGroups",
+                                    },
+                                }
+                                for metric_index, metric in enumerate(raw_metrics)
+                                if isinstance(metric, Mapping)
+                            ],
+                            "derivedMetrics": [
+                                {
+                                    "derivedMetricIndex": metric_index,
+                                    **{
+                                        key: metric.get(key)
+                                        for key in (
+                                            "code",
+                                            "kind",
+                                            "unit",
+                                            "periodRole",
+                                            "periodStart",
+                                            "periodEnd",
+                                            "datasetIds",
+                                            "value",
+                                            "percentage",
+                                        )
+                                    },
+                                    "dataPath": f"derivedMetrics[{metric_index}]",
+                                }
+                                for metric_index, metric in enumerate(raw_derived_metrics)
+                                if isinstance(metric, Mapping)
+                            ],
+                            "comparisons": [
+                                {
+                                    "comparisonIndex": comparison_index,
+                                    **{
+                                        key: comparison.get(key)
+                                        for key in (
+                                            "comparisonType",
+                                            "field",
+                                            "unit",
+                                            "periodStart",
+                                            "periodEnd",
+                                            "currentDatasetId",
+                                            "baselineDatasetId",
+                                            "currentTotal",
+                                            "baselineTotal",
+                                            "change",
+                                            "changeRate",
+                                        )
+                                    },
+                                    "dataPath": f"comparisons[{comparison_index}]",
+                                }
+                                for comparison_index, comparison in enumerate(raw_comparisons)
+                                if isinstance(comparison, Mapping)
+                            ],
+                            "correlationCount": len(fact_payload.get("correlations", {})),
+                            "correlationsPath": "correlations",
+                            "reconciliationCount": len(fact_payload.get("reconciliations", ())),
+                            "reconciliationsPath": "reconciliations",
+                            "warningCount": len(fact_payload.get("warnings", ())),
+                            "warningsPath": "warnings",
+                            "fields": sorted(
+                                {
+                                    *(
+                                        metric["field"]
+                                        for metric in raw_metrics
+                                        if isinstance(metric, Mapping)
+                                        and isinstance(metric.get("field"), str)
+                                    ),
+                                }
+                            ),
+                            "allowedMetricCodes": sorted(
+                                {
+                                    *(
+                                        code
+                                        for metric in raw_metrics
+                                        if isinstance(metric, Mapping)
+                                        for code in metric.get("metricCodes", ())
+                                        if isinstance(code, str)
+                                    ),
+                                    *(
+                                        metric["code"]
+                                        for metric in raw_derived_metrics
+                                        if isinstance(metric, Mapping)
+                                        and isinstance(metric.get("code"), str)
+                                    ),
+                                }
+                            ),
+                            "evidenceFiles": (
+                                durable_item.get("evidenceFiles", [])
+                                if isinstance(durable_item, Mapping)
+                                else []
+                            ),
+                            "citationIds": (
+                                durable_item.get("citationIds", [])
+                                if isinstance(durable_item, Mapping)
+                                else []
+                            ),
+                        }
+                    )
             visualization_root = f"报表/智能分析/{run_context.run_id}/analysis"
+            allowed_metric_codes = sorted(
+                {
+                    code
+                    for item in visualization_facts_package
+                    for code in item["allowedMetricCodes"]
+                }
+            )
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "visualization",
@@ -1148,6 +1333,16 @@ class RuntimeAnalysisMixin:
                 "deterministicFactFiles": {
                     analysis_id: identity.model_dump(mode="json", by_alias=True)
                     for analysis_id, identity in fact_files.items()
+                },
+                "visualizationFacts": visualization_facts_package,
+                "chartRegistrationRules": {
+                    # null 明确表示冻结 facts 没有 Profile metric code，Worker 可定义
+                    # 图表 code，但 finalize 时必须以同名 metricDefinitions 冻结语义；
+                    # 非空目录仍由 register_report_charts 严格拒绝未知 code。
+                    "allowedMetricCodes": allowed_metric_codes or None,
+                    "comparisonPeriodRequiredFor": ["period", "yoy", "mom"],
+                    "referenceOnlyTitleAndAltTextMustContain": "参考",
+                    "vision": visual_inspection_mode == "vision",
                 },
                 # 可视化脚本与 evidence/facts 分属兄弟目录。由服务端签发完整工作区相对路径，
                 # 禁止 Worker 依据脚本位置猜测父目录，否则会把 evidence 错拼成 analysis/evidence。
@@ -1204,6 +1399,7 @@ class RuntimeAnalysisMixin:
                     "analysisDatasetIds": {
                         item.analysis_id: list(item.dataset_ids) for item in detailed_plan.analyses
                     },
+                    "allowedMetricCodes": allowed_metric_codes or None,
                     "deterministicFactFiles": {
                         analysis_id: identity.model_dump(mode="json", by_alias=True)
                         for analysis_id, identity in fact_files.items()
@@ -1660,6 +1856,14 @@ class RuntimeAnalysisMixin:
                     profile_hash=profile.effective_profile_hash,
                 )
             )
+            try:
+                validate_metric_code_bindings(bundle)
+            except ValueError as error:
+                raise ReportingError(
+                    "report_analysis_metric_definition_incomplete",
+                    "确定性数值事实缺少 Effective Profile 提供的权威指标定义，已拒绝冻结。",
+                    details={"analysisId": analysis.analysis_id, "reason": str(error)},
+                ) from error
             content = json.dumps(
                 bundle.model_dump(mode="json", by_alias=True),
                 ensure_ascii=False,
@@ -1939,13 +2143,15 @@ def _visualization_completion_conditions(
     )
     if _visualization_recovery_required(last_error):
         return [
-            "上一轮因工具调用或脚本失败达到上限而终止；禁止重新规划、重复读取事实或重新探索工作区",
+            "上一轮因工具调用或脚本失败达到上限而终止，且已关闭事实探索；禁止重新规划、重复读取事实或重新探索工作区",
             retained_requirement,
             "仅使用任务 JSON 中 deterministicFactFiles 签发的路径以及既有脚本和图表，完成尚缺的最小修复或执行",
             "整批图表只调用一次 register_report_charts，成功后立即调用 finalize_report_analysis",
         ]
     return [
         "只整合 completedAnalysisItems 和 deterministicFactFiles，不重跑单项分析",
+        "visualizationFacts 已提供完整字段目录和真实 dataPaths；图表脚本按 factFile.path 一次读取 facts，"
+        "不得调用 query_analysis_facts 或用 read_file 探索 facts/evidence",
         retained_requirement,
         "analysisCitationIds 是 citationId 的唯一受信来源；不得用 read_file、terminal 或目录探测寻找 citationId",
         "图表脚本只写入 visualizationWorkspace.scriptPath，服务端提交后 terminal 仅可执行 python3 <scriptPath>；"
@@ -1958,10 +2164,14 @@ def _visualization_completion_conditions(
 
 
 def _visualization_recovery_required(last_error: Exception | None) -> bool:
-    """仅预算类终态错误进入禁止重新探索的恢复模式。"""
+    """预算耗尽或 no-progress 终止后只允许复用既有可视化产物。"""
 
-    return isinstance(last_error, ReportingError) and last_error.code in (
-        _VISUALIZATION_RECOVERY_ERROR_CODES
+    return isinstance(last_error, ReportingError) and (
+        last_error.code in _VISUALIZATION_RECOVERY_ERROR_CODES
+        or (
+            isinstance(last_error.details, dict)
+            and last_error.details.get("terminalReason") == "tool_no_progress"
+        )
     )
 
 

@@ -22,20 +22,151 @@ from ..delivery.draft_v1 import (
     validate_report_draft_blocks,
 )
 from ..models import ReportingError
+from ..phase import (
+    REPORTING_TASK_DEPENDENCY,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
+)
 from ..workflow.checkpoint import (
     AnalysisReworkRequest,
     ChartVisualInspectionReceipt,
     FileIdentity,
     SectionArtifact,
+    SectionClaim,
+    SectionClaimSubmission,
     SectionWorkItem,
 )
 from .phase_output import REPORT_PHASE_OUTPUT_STATE_KEY
 from .validation import _stable_digest
 
 MAX_REPORT_CHART_BYTES = 10 * 1024 * 1024
+# 174mm 来源于 A4 纸张宽度 210mm 减去现有左右各 18mm 页边距，仅作质量估算，不能作为发布门禁。
+MIN_REPORT_CHART_WIDTH = 1200
+MIN_REPORT_CHART_HEIGHT = 675
+MIN_REPORT_CHART_EFFECTIVE_DPI = 150
+REPORT_BODY_WIDTH_INCHES = 174 / 25.4
 
 
 class RuntimeSectionsMixin:
+    @staticmethod
+    def _normalize_section_claims(
+        *,
+        section_code: str,
+        claims: list[dict[str, Any]],
+        work_item: SectionWorkItem,
+    ) -> tuple[SectionClaim, ...]:
+        submissions = tuple(SectionClaimSubmission.model_validate(item) for item in claims)
+        metrics_by_code = {item.code: item for item in work_item.metric_definitions}
+        charts_by_id = {item.chart_id: item for item in work_item.charts}
+        known_citations = {item.citation_id for item in work_item.citations}
+        questions_by_ref = {
+            item.ref: item.question
+            for item in getattr(work_item, "management_question_catalog", ())
+        }
+        normalized: list[SectionClaim] = []
+
+        for submission in submissions:
+            metric = metrics_by_code.get(submission.metric_code)
+            if metric is None:
+                raise ReportingError(
+                    "report_section_claim_metric_unknown",
+                    "章节 claim 引用了未冻结指标。",
+                    details={
+                        "sectionCode": section_code,
+                        "claimId": submission.claim_id,
+                        "metricCode": submission.metric_code,
+                        "expectedMetricCodes": sorted(metrics_by_code),
+                    },
+                )
+            management_question = questions_by_ref.get(submission.management_question_ref)
+            if management_question is None:
+                raise ReportingError(
+                    "report_section_claim_question_unknown",
+                    "章节 claim 引用了当前章节外的管理问题。",
+                    details={
+                        "sectionCode": section_code,
+                        "claimId": submission.claim_id,
+                        "managementQuestionRef": submission.management_question_ref,
+                        "expectedManagementQuestionRefs": list(questions_by_ref),
+                    },
+                )
+            if set(submission.citation_ids) - known_citations:
+                raise ReportingError(
+                    "report_section_claim_citation_unknown",
+                    "章节 claim 引用了 SectionWorkItem 外的 citation。",
+                )
+            if set(submission.chart_ids) - set(charts_by_id):
+                raise ReportingError(
+                    "report_section_claim_chart_unknown",
+                    "章节 claim 引用了 SectionWorkItem 外的 chart。",
+                )
+
+            selected_charts = tuple(charts_by_id[item] for item in submission.chart_ids)
+            citation_ids = list(submission.citation_ids)
+            if selected_charts:
+                # 图表周期与可比性来自分析阶段冻结契约，不能让章节模型重新转录或覆盖。
+                # 同一 claim 绑定多图时只有完全相同的语义才可确定性派生，否则失败关闭。
+                semantic_keys = {
+                    (
+                        chart.current_period,
+                        chart.comparison_period,
+                        chart.comparison_type,
+                        chart.comparability,
+                    )
+                    for chart in selected_charts
+                }
+                if len(semantic_keys) != 1:
+                    raise ReportingError(
+                        "report_section_claim_chart_semantics_conflict",
+                        "同一章节 claim 绑定的图表期间或可比性语义不一致。",
+                        details={
+                            "sectionCode": section_code,
+                            "claimId": submission.claim_id,
+                            "chartIds": list(submission.chart_ids),
+                        },
+                    )
+                current_period, comparison_period, comparison_type, comparability = next(
+                    iter(semantic_keys)
+                )
+                for chart in selected_charts:
+                    for citation_id in chart.citation_ids:
+                        if citation_id not in citation_ids:
+                            citation_ids.append(citation_id)
+            else:
+                if submission.current_period is None:
+                    raise ReportingError(
+                        "report_section_claim_period_missing",
+                        "未绑定图表的章节 claim 必须声明 currentPeriod。",
+                        details={
+                            "sectionCode": section_code,
+                            "claimId": submission.claim_id,
+                        },
+                    )
+                current_period = submission.current_period
+                comparison_period = submission.comparison_period
+                comparison_type = submission.comparison_type
+                comparability = submission.comparability
+
+            normalized.append(
+                SectionClaim(
+                    claimId=submission.claim_id,
+                    metricCode=submission.metric_code,
+                    value=submission.value,
+                    periodBasis=metric.period_basis,
+                    comparison=submission.comparison,
+                    managementQuestion=management_question,
+                    currentPeriod=current_period,
+                    comparisonPeriod=comparison_period,
+                    comparisonType=comparison_type,
+                    citationIds=tuple(citation_ids),
+                    chartIds=submission.chart_ids,
+                    comparability=comparability,
+                    conclusionType=submission.conclusion_type,
+                    aggregationGrain=submission.aggregation_grain,
+                    entityGrain=submission.entity_grain,
+                )
+            )
+        return tuple(normalized)
+
     @staticmethod
     def _require_analysis_rework_constraints(
         *,
@@ -190,30 +321,68 @@ class RuntimeSectionsMixin:
         # 明确回执重试，只通过 chartIds 登记图表。
         parsed_blocks = tuple(ReportDraftBlock.model_validate(item) for item in blocks)
         validate_report_draft_blocks(parsed_blocks)
+        normalized_claims = self._normalize_section_claims(
+            section_code=section_code,
+            claims=claims,
+            work_item=work_item,
+        )
         artifact = SectionArtifact.model_validate(
-            {"sectionCode": section_code, "blocks": parsed_blocks, "claims": claims}
+            {"sectionCode": section_code, "blocks": parsed_blocks, "claims": normalized_claims}
         )
         known_citations = {item.citation_id for item in work_item.citations}
         known_charts = {item.chart_id for item in work_item.charts}
         metrics_by_code = {item.code: item for item in work_item.metric_definitions}
         charts_by_id = {item.chart_id: item for item in work_item.charts}
         citation_datasets = {item.citation_id: item.dataset_id for item in work_item.citations}
+        management_questions = {
+            item.question for item in getattr(work_item, "management_question_catalog", ())
+        }
+        reference_claim_ids = {
+            claim.claim_id for claim in artifact.claims if claim.comparability == "reference_only"
+        }
+        normalized_reference_blocks = []
+        for block in artifact.blocks:
+            markdown = block.markdown
+            if reference_claim_ids.intersection(block.claim_ids) and "参考" not in markdown:
+                markdown = f"{markdown}\n\n> 注：相关比较仅作参考性对比。"
+            normalized_reference_blocks.append(block.model_copy(update={"markdown": markdown}))
+        artifact = artifact.model_copy(update={"blocks": tuple(normalized_reference_blocks)})
+        semantic_conflicts: list[dict[str, Any]] = []
         for claim in artifact.claims:
             metric = metrics_by_code.get(claim.metric_code)
             if metric is None:
                 raise ReportingError(
                     "report_section_claim_metric_unknown",
                     "章节 claim 引用了未冻结指标。",
+                    details={
+                        "sectionCode": section_code,
+                        "claimId": claim.claim_id,
+                        "metricCode": claim.metric_code,
+                        "expectedMetricCodes": sorted(metrics_by_code),
+                    },
                 )
             if claim.period_basis != metric.period_basis:
-                raise ReportingError(
-                    "report_period_basis_conflict",
-                    "章节 claim 的期间口径与冻结指标不一致。",
+                semantic_conflicts.append(
+                    {
+                        "code": "report_period_basis_conflict",
+                        "sectionCode": section_code,
+                        "claimId": claim.claim_id,
+                        "metricCode": claim.metric_code,
+                        "conflictType": "period_basis",
+                        "expectedPeriodBasis": metric.period_basis,
+                        "actualPeriodBasis": claim.period_basis,
+                    }
                 )
-            if claim.management_question not in work_item.report_brief.management_questions:
-                raise ReportingError(
-                    "report_section_claim_brief_conflict",
-                    "章节 claim 未绑定 ReportBrief 的管理问题。",
+            if claim.management_question not in management_questions:
+                semantic_conflicts.append(
+                    {
+                        "code": "report_section_claim_brief_conflict",
+                        "sectionCode": section_code,
+                        "claimId": claim.claim_id,
+                        "conflictType": "management_question",
+                        "expectedManagementQuestions": sorted(management_questions),
+                        "actualManagementQuestion": claim.management_question,
+                    }
                 )
             if set(claim.citation_ids) - known_citations:
                 raise ReportingError(
@@ -228,35 +397,117 @@ class RuntimeSectionsMixin:
             claim_datasets = {citation_datasets[citation_id] for citation_id in claim.citation_ids}
             for chart_id in claim.chart_ids:
                 chart = charts_by_id[chart_id]
-                if (
-                    claim.metric_code not in chart.metric_codes
-                    or set(chart.citation_ids) - set(claim.citation_ids)
-                    or chart.source_dataset_id not in claim_datasets
-                    or chart.current_period != claim.current_period
-                    or chart.comparison_period != claim.comparison_period
-                    or chart.comparison_type != claim.comparison_type
-                ):
-                    raise ReportingError(
-                        "report_section_claim_chart_conflict",
-                        "章节 claim 与冻结图表的指标、来源或期间语义不一致。",
+                # 每类冲突都返回冻结值和模型提交值，模型可据此修正单个字段；不能只给
+                # 一个复合布尔结果，否则 chart citation/期间冲突会反复消耗同一 run。
+                chart_details = {
+                    "sectionCode": section_code,
+                    "claimId": claim.claim_id,
+                    "chartId": chart_id,
+                }
+                if claim.metric_code not in chart.metric_codes:
+                    semantic_conflicts.append(
+                        {
+                            "code": "report_section_claim_chart_conflict",
+                            **chart_details,
+                            "conflictType": "metric_code",
+                            "expectedMetricCodes": list(chart.metric_codes),
+                            "actualMetricCode": claim.metric_code,
+                        }
+                    )
+                if set(chart.citation_ids) - set(claim.citation_ids):
+                    semantic_conflicts.append(
+                        {
+                            "code": "report_section_claim_chart_conflict",
+                            **chart_details,
+                            "conflictType": "citation_ids",
+                            "expectedCitationIds": list(chart.citation_ids),
+                            "actualCitationIds": list(claim.citation_ids),
+                        }
+                    )
+                if chart.source_dataset_id not in claim_datasets:
+                    semantic_conflicts.append(
+                        {
+                            "code": "report_section_claim_chart_conflict",
+                            **chart_details,
+                            "conflictType": "source_dataset_id",
+                            "expectedSourceDatasetId": chart.source_dataset_id,
+                            "actualCitationDatasetIds": sorted(claim_datasets),
+                        }
+                    )
+                if chart.current_period != claim.current_period:
+                    semantic_conflicts.append(
+                        {
+                            "code": "report_section_claim_chart_conflict",
+                            **chart_details,
+                            "conflictType": "current_period",
+                            "expectedCurrentPeriod": chart.current_period,
+                            "actualCurrentPeriod": claim.current_period,
+                        }
+                    )
+                if chart.comparison_period != claim.comparison_period:
+                    semantic_conflicts.append(
+                        {
+                            "code": "report_section_claim_chart_conflict",
+                            **chart_details,
+                            "conflictType": "comparison_period",
+                            "expectedComparisonPeriod": chart.comparison_period,
+                            "actualComparisonPeriod": claim.comparison_period,
+                        }
+                    )
+                if chart.comparison_type != claim.comparison_type:
+                    semantic_conflicts.append(
+                        {
+                            "code": "report_section_claim_chart_conflict",
+                            **chart_details,
+                            "conflictType": "comparison_type",
+                            "expectedComparisonType": chart.comparison_type,
+                            "actualComparisonType": claim.comparison_type,
+                        }
                     )
                 if (
                     chart.comparability == "reference_only"
                     and claim.comparability != "reference_only"
                 ):
-                    raise ReportingError(
-                        "report_cross_source_inference_unsupported",
-                        "reference_only 图表只能支持 reference_only claim。",
+                    semantic_conflicts.append(
+                        {
+                            "code": "report_cross_source_inference_unsupported",
+                            **chart_details,
+                            "conflictType": "comparability",
+                            "expectedComparability": "reference_only",
+                            "actualComparability": claim.comparability,
+                        }
                     )
             if claim.comparability == "reference_only":
                 claim_blocks = [
                     block for block in artifact.blocks if claim.claim_id in block.claim_ids
                 ]
                 if not claim_blocks or any("参考" not in block.markdown for block in claim_blocks):
-                    raise ReportingError(
-                        "report_cross_source_inference_unsupported",
-                        "reference_only claim 的正文必须明确标记为参考。",
+                    semantic_conflicts.append(
+                        {
+                            "code": "report_cross_source_inference_unsupported",
+                            "sectionCode": section_code,
+                            "claimId": claim.claim_id,
+                            "conflictType": "reference_marker",
+                            "expectedMarker": "参考",
+                            "actualMarker": None,
+                        }
                     )
+        if semantic_conflicts:
+            first = semantic_conflicts[0]
+            code = str(first["code"])
+            details = {key: value for key, value in first.items() if key != "code"}
+            if len(semantic_conflicts) > 1:
+                details["conflicts"] = [
+                    {key: value for key, value in conflict.items() if key != "code"}
+                    for conflict in semantic_conflicts
+                ]
+            messages = {
+                "report_period_basis_conflict": "章节 claim 的期间口径与冻结指标不一致。",
+                "report_section_claim_brief_conflict": "章节 claim 未绑定 ReportBrief 的管理问题。",
+                "report_section_claim_chart_conflict": "章节 claim 与冻结图表的指标、来源或期间语义不一致。",
+                "report_cross_source_inference_unsupported": "reference_only claim 的正文必须明确标记为参考。",
+            }
+            raise ReportingError(code, messages[code], details=details)
         referenced_citations = {
             citation_id for block in artifact.blocks for citation_id in block.citation_ids
         }
@@ -511,14 +762,29 @@ class RuntimeSectionsMixin:
         width = int(file_identity["width"])
         height = int(file_identity["height"])
         warnings: list[dict[str, Any]] = []
-        if width < 800 or height < 450:
+        if width < MIN_REPORT_CHART_WIDTH or height < MIN_REPORT_CHART_HEIGHT:
             warnings.append(
                 {
                     "code": "chart_low_resolution",
                     "chartId": registration.chart_id,
                     "width": width,
                     "height": height,
-                    "message": "图表分辨率偏低，已进入发布质量审核。",
+                    "minimumWidth": MIN_REPORT_CHART_WIDTH,
+                    "minimumHeight": MIN_REPORT_CHART_HEIGHT,
+                    "message": "图表尺寸偏低，仅作为非阻断质量告警。",
+                }
+            )
+        raw_effective_dpi = width / REPORT_BODY_WIDTH_INCHES
+        if raw_effective_dpi < MIN_REPORT_CHART_EFFECTIVE_DPI:
+            warnings.append(
+                {
+                    "code": "chart_low_effective_dpi",
+                    "chartId": registration.chart_id,
+                    "width": width,
+                    "height": height,
+                    "effectiveDpi": round(raw_effective_dpi, 1),
+                    "minimumDpi": MIN_REPORT_CHART_EFFECTIVE_DPI,
+                    "message": "按 A4 正文全宽估算的有效分辨率偏低，仅作为非阻断质量告警。",
                 }
             )
         ratio = width / height
@@ -620,6 +886,45 @@ class RuntimeSectionsMixin:
                     "report_phase_contract_invalid",
                     "register_report_charts 只允许 visualization Task 调用。",
                 )
+            await self._ensure_visualization_terminal_settled(scope)
+            state = self._session_state(run_context)
+            dependencies = (
+                run_context.dependencies
+                if run_context is not None and isinstance(run_context.dependencies, Mapping)
+                else {}
+            )
+            task_binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+            external_run_id = (
+                task_binding.get("externalRunId") if isinstance(task_binding, Mapping) else None
+            )
+            task_identity = (
+                f"{external_run_id or ''}:{run_context.run_id if run_context is not None else ''}"
+            )
+            pending = (
+                state.get(REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY)
+                if isinstance(state, Mapping)
+                else None
+            )
+            pending_failure = pending.get(task_identity) if isinstance(pending, Mapping) else None
+            if pending_failure is None and isinstance(external_run_id, str) and external_run_id:
+                prefix = f"{external_run_id}:"
+                for key, value in (
+                    reversed(tuple(pending.items())) if isinstance(pending, Mapping) else ()
+                ):
+                    if key == external_run_id or key.startswith(prefix):
+                        pending_failure = value
+                        break
+            if (
+                isinstance(pending_failure, Mapping)
+                and pending_failure.get("lastScriptFailed") is True
+            ):
+                raise ReportingError(
+                    "report_visualization_script_failed",
+                    "最近一次可视化脚本执行包含失败项，修正脚本并重新执行成功后才能登记图表。",
+                    details={
+                        "diagnostics": list(pending_failure.get("diagnostics", ()))[:20],
+                    },
+                )
             _parameters, phase_contract = self._phase_parameters(scope, "analysis")
             output_root = self._chart_output_root(phase_contract)
             visual_inspection_mode = phase_contract.get("visualInspectionMode", "vision")
@@ -655,6 +960,31 @@ class RuntimeSectionsMixin:
                     "Analysis Task citation 注册表未精确覆盖 citationIds。",
                 )
             parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
+            raw_allowed_metric_codes = phase_contract.get("allowedMetricCodes")
+            if raw_allowed_metric_codes is not None and (
+                not isinstance(raw_allowed_metric_codes, list)
+                or any(not isinstance(code, str) or not code for code in raw_allowed_metric_codes)
+                or len(raw_allowed_metric_codes) != len(set(raw_allowed_metric_codes))
+            ):
+                raise ReportingError(
+                    "report_phase_contract_invalid", "Analysis Task 指标注册表无效。"
+                )
+            if isinstance(raw_allowed_metric_codes, list):
+                allowed_metric_codes = set(raw_allowed_metric_codes)
+                unknown_metric_codes = sorted(
+                    {
+                        code
+                        for item in parsed
+                        for code in item.metric_codes
+                        if code not in allowed_metric_codes
+                    }
+                )
+                if unknown_metric_codes:
+                    raise ReportingError(
+                        "report_chart_metric_unknown",
+                        "图表引用了当前冻结 facts 未声明的指标代码。",
+                        details={"unknownMetricCodes": unknown_metric_codes},
+                    )
             if len({item.chart_id for item in parsed}) != len(parsed):
                 raise ReportingError(
                     "report_chart_registration_duplicate", "同一次登记的 chartId 不能重复。"

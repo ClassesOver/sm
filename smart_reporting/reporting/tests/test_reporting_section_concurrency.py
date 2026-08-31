@@ -19,10 +19,12 @@ from smart_reporting.reporting.hospital_operation.detailed_analysis import (
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.phase import REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR
 from smart_reporting.reporting.workflow.checkpoint import (
+    AnalysisChart,
     AnalysisDatasetSemantics,
     AnalysisEvidence,
     AnalysisEvidenceManifest,
     AnalysisReworkRequest,
+    ChartVisualInspectionReceipt,
     CheckpointError,
     CheckpointRetryUsage,
     CompletedSection,
@@ -49,7 +51,11 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _run_pending_analysis_items,
     _visualization_retry_usage,
 )
-from smart_reporting.reporting.workflow.runtime.sections import _run_bounded
+from smart_reporting.reporting.workflow.runtime.sections import (
+    _run_bounded,
+    _section_claim_authoring_contract,
+    _section_retry_context,
+)
 
 
 @pytest.mark.anyio
@@ -317,6 +323,55 @@ async def test_section_worker_defers_rework_transition_until_batch_finishes() ->
     assert [call.args[1].name for call in runtime._apply_durable_command.await_args_list] == [
         "start_section"
     ]
+    instruction = json.loads(runtime.task_runner.start.await_args.args[1])
+    assert instruction["claimAuthoringContract"] == {
+        "allowedMetricCodes": [],
+        "managementQuestionRefs": [
+            {
+                "ref": "analysis_001",
+                "question": "收入表现如何？",
+            }
+        ],
+        "serverDerivedFields": ["periodBasis", "managementQuestion"],
+        "chartDerivedFields": [
+            "currentPeriod",
+            "comparisonPeriod",
+            "comparisonType",
+            "comparability",
+            "chartCitationIds",
+        ],
+        "standaloneClaimRequiredFields": ["currentPeriod"],
+        "comparisonRule": (
+            "comparisonType 非 none 时必须提供 comparisonPeriod；绑定图表时以图表冻结语义为准"
+        ),
+    }
+
+
+def test_section_instruction_uses_frozen_metric_codes() -> None:
+    work_item = section_work_item("section_001").model_copy(
+        update={
+            "metric_definitions": (
+                MetricDefinition(
+                    code="income_summary_total",
+                    name="医疗收入",
+                    definition="冻结医疗收入",
+                    unit="元",
+                    periodBasis="2025年",
+                ),
+                MetricDefinition(
+                    code="cost_total",
+                    name="总成本",
+                    definition="冻结总成本",
+                    unit="元",
+                    periodBasis="2025年",
+                ),
+            )
+        }
+    )
+
+    contract = _section_claim_authoring_contract(work_item)
+
+    assert contract["allowedMetricCodes"] == ["income_summary_total", "cost_total"]
 
 
 def test_pending_analysis_rework_survives_fresh_retry_without_analysis_manifest() -> None:
@@ -376,6 +431,40 @@ def test_pending_analysis_rework_is_covered_by_later_visualization_freeze() -> N
     )
 
     assert runtime_sections._pending_analysis_rework_file(stored) is None
+
+
+def test_section_retry_context_preserves_structured_failure_details() -> None:
+    error = ReportingError(
+        "report_section_completion_conflict",
+        "章节图表绑定冲突。",
+        details={
+            "chartId": "chart-income",
+            "claimId": "claim-income",
+            "conflictType": "metric_mismatch",
+            "expected": "income_yoy",
+            "actual": "income_total",
+        },
+    )
+
+    assert _section_retry_context(error) == {
+        "code": "report_section_completion_conflict",
+        "message": "章节图表绑定冲突。",
+        "details": {
+            "chartId": "chart-income",
+            "claimId": "claim-income",
+            "conflictType": "metric_mismatch",
+            "expected": "income_yoy",
+            "actual": "income_total",
+        },
+    }
+    checkpoint_error = CheckpointError(
+        phase="section",
+        code=error.code,
+        message=error.message,
+        sectionCode="section_001",
+        details=error.details,
+    )
+    assert _section_retry_context(checkpoint_error) == _section_retry_context(error)
 
 
 @pytest.mark.anyio
@@ -891,7 +980,15 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     durable = SimpleNamespace(
         payload={
             "completedAnalysisIds": ["analysis_001"],
-            "analysisItems": {},
+            "analysisItems": {
+                "analysis_001": {
+                    "summary": "收入同比增长。",
+                    "evidenceFiles": [
+                        {"path": "evidence/income.json", "size": 2, "sha256": "e" * 64}
+                    ],
+                    "citationIds": ["citation-000"],
+                }
+            },
             "charts": [],
         }
     )
@@ -901,8 +998,9 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
         run=AsyncMock(
             side_effect=(
                 ReportingError(
-                    "report_visualization_tool_budget_exhausted",
-                    "当前可视化 Task 已达到工具调用上限。",
+                    "report_visualization_evidence_path_forbidden",
+                    "visualization 只能读取签发的最新已提交脚本。",
+                    details={"terminalReason": "tool_no_progress"},
                 ),
                 RuntimeError("stop after visualization retry"),
             )
@@ -924,6 +1022,42 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     runtime._envelope = lambda _run_context: SimpleNamespace(report_goal="经营分析")
     runtime._state = lambda _run_context: {"report_outline": {"title": "经营分析"}}
     runtime._worker_thinking_effort = lambda *, retry: "off"
+    fact_metrics = [
+        {
+            "field": f"income_{metric_index:03}",
+            "metricCodes": [],
+            "unit": "元",
+            "periodRoles": ["current"],
+            "periodStart": "2025-01-01",
+            "periodEnd": "2025-12-31",
+            "periodValues": [
+                {"period": f"period-{period_index:04}", "value": float(period_index)}
+                for period_index in range(1200)
+            ],
+        }
+        for metric_index in range(12)
+    ]
+    full_fact_payload = {
+        "version": "1",
+        "analysisId": "analysis_001",
+        "metrics": fact_metrics,
+        "derivedMetrics": [],
+        "comparisons": [],
+        "reconciliations": [],
+        "correlations": {},
+        "warnings": [],
+    }
+    assert len(json.dumps(full_fact_payload, ensure_ascii=False).encode("utf-8")) > (
+        runtime_analysis.MAX_REPORT_INSTRUCTION_BYTES
+    )
+
+    async def read_fact_model(*_args: Any, **_kwargs: Any) -> Any:
+        return SimpleNamespace(
+            analysis_id="analysis_001",
+            model_dump=lambda **_options: full_fact_payload,
+        )
+
+    runtime._read_identity_model = read_fact_model
 
     async def restore_facts(
         **kwargs: Any,
@@ -992,6 +1126,7 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
         "deterministic",
         "deterministic",
     ]
+    assert any("上一轮因工具调用" in item for item in instructions[1]["completionConditions"])
     assert [item["visualizationWorkspace"]["allowedTerminalCommand"] for item in instructions] == [
         "python3 报表/智能分析/run-1/analysis/charts.py",
         "python3 报表/智能分析/run-1/analysis/charts.py",
@@ -1003,6 +1138,71 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
         expected_fact_files,
         expected_fact_files,
     ]
+    expected_visualization_facts = [
+        {
+            "analysisId": "analysis_001",
+            "plan": {
+                "analysisId": "analysis_001",
+                "domain": "income",
+                "step": "收入趋势",
+                "primaryMetricFamily": "收入",
+                "datasetIds": ["dataset-income"],
+            },
+            "summary": "收入同比增长。",
+            "factFile": expected_fact_files["analysis_001"],
+            "metrics": [
+                {
+                    "datasetId": None,
+                    "metricIndex": metric_index,
+                    "field": f"income_{metric_index:03}",
+                    "metricCodes": [],
+                    "aggregation": None,
+                    "unit": "元",
+                    "scope": None,
+                    "periodRoles": ["current"],
+                    "periodStart": "2025-01-01",
+                    "periodEnd": "2025-12-31",
+                    "total": None,
+                    "periodValueCount": 1200,
+                    "topGroupCount": 0,
+                    "bottomGroupCount": 0,
+                    "dataPaths": {
+                        "metric": f"metrics[{metric_index}]",
+                        "periodValues": f"metrics[{metric_index}].periodValues",
+                        "topGroups": f"metrics[{metric_index}].topGroups",
+                        "bottomGroups": f"metrics[{metric_index}].bottomGroups",
+                    },
+                }
+                for metric_index in range(12)
+            ],
+            "derivedMetrics": [],
+            "comparisons": [],
+            "correlationCount": 0,
+            "correlationsPath": "correlations",
+            "reconciliationCount": 0,
+            "reconciliationsPath": "reconciliations",
+            "warningCount": 0,
+            "warningsPath": "warnings",
+            "fields": [f"income_{metric_index:03}" for metric_index in range(12)],
+            "allowedMetricCodes": [],
+            "evidenceFiles": [{"path": "evidence/income.json", "size": 2, "sha256": "e" * 64}],
+            "citationIds": ["citation-000"],
+        }
+    ]
+    assert [item["visualizationFacts"] for item in instructions] == [
+        expected_visualization_facts,
+        expected_visualization_facts,
+    ]
+    assert [item["chartRegistrationRules"]["allowedMetricCodes"] for item in instructions] == [
+        None,
+        None,
+    ]
+    assert all("facts" not in item["visualizationFacts"][0] for item in instructions)
+    assert all(
+        len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+        < runtime_analysis.MAX_REPORT_INSTRUCTION_BYTES
+        for item in instructions
+    )
     assert all("citationRegistry" not in item for item in instructions)
     assert all("snapshotHash" not in item for item in instructions)
     assert all(
@@ -1011,6 +1211,7 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     contracts = [call.kwargs["acceptance_contract"] for call in task_runner.start.await_args_list]
     phase_contracts = [item["requirements"][0]["parameters"]["phaseContract"] for item in contracts]
     assert [item["visualizationRecovery"] for item in phase_contracts] == [False, True]
+    assert [item["allowedMetricCodes"] for item in phase_contracts] == [None, None]
     assert [item["visualInspectionMode"] for item in phase_contracts] == [
         "deterministic",
         "deterministic",
@@ -1642,6 +1843,12 @@ def section_work_item(section_code: str) -> SectionWorkItem:
         },
         completionConditions=("说明收入表现",),
         analysisIds=("analysis_001",),
+        managementQuestionCatalog=(
+            {
+                "ref": "analysis_001",
+                "question": "收入表现如何？",
+            },
+        ),
         evidence=(
             AnalysisEvidence(
                 analysisId="analysis_001",
@@ -1663,6 +1870,124 @@ def section_work_item(section_code: str) -> SectionWorkItem:
         factSummaries=("当前冻结事实。",),
         markdownRequirements=("只使用冻结事实",),
     )
+
+
+def test_build_section_work_item_projects_selected_metrics_and_chart_semantics() -> None:
+    runtime = object.__new__(ReportWorkflowRuntime)
+    evidence_file = FileIdentity(path="analysis/evidence.json", size=1, sha256="e" * 64)
+    evidence = AnalysisEvidence(
+        analysisId="analysis_001",
+        summary="当前冻结事实。",
+        datasetIds=("dataset-1",),
+        evidenceFiles=(evidence_file,),
+        citationIds=("citation_001",),
+        chartIds=("revenue_trend",),
+    )
+    chart = AnalysisChart(
+        chartId="revenue_trend",
+        sourceFile={"path": "analysis/charts/revenue.png", "size": 1, "sha256": "a" * 64},
+        title="收入趋势",
+        altText="收入趋势图",
+        citationIds=("citation_001",),
+        metricCodes=("revenue",),
+        currentPeriod="2026-01",
+        comparisonPeriod="2025-01",
+        comparisonType="yoy",
+        sourceDatasetId="dataset-1",
+        aggregationGrain="month",
+        visualInspectionReceipt=ChartVisualInspectionReceipt(
+            sourcePath="analysis/charts/revenue.png",
+            sha256="a" * 64,
+            inspectionMode="deterministic",
+            visualReviewStatus="not_run",
+            inspectorId="deterministic-raster-inspector-v1",
+            reviewed=True,
+            requiresRevision=False,
+        ),
+    )
+    analysis_artifact = SimpleNamespace(
+        report_brief=ReportBrief(
+            objective="经营分析",
+            executiveSummary="收入表现摘要。",
+            managementQuestions=("收入表现如何？",),
+        ),
+        evidence_manifest=SimpleNamespace(
+            evidence=(evidence,),
+            metric_definitions=(
+                MetricDefinition(
+                    code="revenue",
+                    name="收入",
+                    definition="收入金额",
+                    unit="元",
+                    periodBasis="2026-01",
+                ),
+                MetricDefinition(
+                    code="margin",
+                    name="毛利率",
+                    definition="毛利率",
+                    unit="%",
+                    periodBasis="2026-01",
+                ),
+            ),
+            charts=(chart,),
+        ),
+        profile_read_receipts=(),
+    )
+    section = SimpleNamespace(
+        code="section_001",
+        section_number="1",
+        title="收入分析",
+        analysis_ids=("analysis_001",),
+        focus=("收入表现如何？",),
+    )
+    citation = Citation(
+        citationId="citation_001",
+        datasetId="dataset-1",
+        requirementId="requirement-1",
+        snapshotHash="f" * 64,
+    )
+
+    work_item = runtime._build_section_work_item(
+        section,
+        detailed_plan=DetailedAnalysisPlan(
+            datasetIds=("dataset-1",),
+            analyses=(
+                DetailedAnalysisItem(
+                    analysisId="analysis_001",
+                    domain="income",
+                    managementQuestion="收入表现如何？",
+                    primaryMetricFamily="收入",
+                    datasetIds=("dataset-1",),
+                    fields=("month", "revenue"),
+                    metrics=("revenue",),
+                    periods=("2026-01",),
+                    actions=("趋势",),
+                    evidenceSummary="固定事实",
+                    suggestedSection="收入分析",
+                    completionConditions=("完成",),
+                ),
+            ),
+        ),
+        analysis_artifact=analysis_artifact,
+        citation_bindings=(citation,),
+    )
+
+    assert tuple(item.code for item in work_item.metric_definitions) == ("revenue",)
+    assert [
+        item.model_dump(mode="json", by_alias=True)
+        for item in work_item.management_question_catalog
+    ] == [
+        {
+            "ref": "analysis_001",
+            "question": "收入表现如何？",
+        }
+    ]
+    assert len(work_item.markdown_requirements) <= 50
+    assert work_item.charts[0].current_period == "2026-01"
+    assert work_item.charts[0].comparison_period == "2025-01"
+    assert work_item.charts[0].comparison_type == "yoy"
+    assert work_item.charts[0].citation_ids == ("citation_001",)
+    assert not any("currentPeriod=" in item for item in work_item.markdown_requirements)
 
 
 def completed(section_code: str, digest: str) -> CompletedSection:
