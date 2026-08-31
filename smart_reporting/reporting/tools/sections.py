@@ -1292,6 +1292,64 @@ class RuntimeSectionsMixin:
             "mutation_sequence": getattr(scope.task, "mutation_sequence", 0),
         }
 
+    async def submit_visualization_charts(
+        self,
+        sectionCode: str,
+        charts: list[dict[str, Any]],
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        """章节 worker 终态:提交该章图表草案(允许零图)并按章收口。"""
+        try:
+            scope = await self.kernel.scope(run_context)
+            self._require_phase_tool(
+                scope,
+                allowed=frozenset({"analysis"}),
+                tool_name="submit_visualization_charts",
+                run_context=run_context,
+                task_kinds=frozenset({"visualization_section"}),
+            )
+            _parameters, phase_contract = self._phase_parameters(scope, "analysis")
+            contract_section_code = phase_contract.get("sectionCode")
+            if not isinstance(contract_section_code, str) or contract_section_code != sectionCode:
+                raise ReportingError(
+                    "report_visualization_section_invalid",
+                    "sectionCode 与当前章节 Task 契约不匹配。",
+                )
+            output_root = self._chart_output_root(phase_contract)
+            parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
+            inspected: list[dict[str, Any]] = []
+            files: list[dict[str, Any]] = []
+            for registration in parsed:
+                source_path = self._require_chart_output_path(registration.source_path, output_root)
+                identity = await self._inspect_chart_file(
+                    thread_id=scope.thread_id,
+                    path=source_path,
+                )
+                inspected.append(registration.model_dump(mode="json", by_alias=True))
+                files.append(
+                    FileIdentity(
+                        path=identity["sourcePath"],
+                        size=identity["size"],
+                        sha256=identity["sha256"],
+                    ).model_dump(mode="json", by_alias=True)
+                )
+            digest = _stable_digest({"charts": inspected, "files": files})
+            durable = await self._durable_state(scope)
+            await self._apply_durable(
+                scope,
+                name="submit_visualization_charts",
+                payload={"sectionCode": sectionCode, "charts": list(inspected), "files": files},
+                command_id=f"viz-section:{durable.revision}:{sectionCode}:{digest}",
+            )
+        except (ReportingError, ValidationError, WorkspaceError) as error:
+            return self._failure(error)
+        return {
+            "ok": True,
+            "status": "committed",
+            "sectionCode": sectionCode,
+            "chartCount": len(inspected),
+        }
+
     async def render_report_section(
         self,
         sectionCode: str,

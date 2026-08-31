@@ -787,6 +787,104 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
 
 
 @pytest.mark.anyio
+async def test_submit_visualization_charts_requires_section_task_kind() -> None:
+    scope = SimpleNamespace(thread_id="thread-finalize", task=SimpleNamespace(mutation_sequence=4))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+
+    def reject_non_section_task(*_args: Any, **kwargs: Any) -> None:
+        if kwargs["task_kinds"] != frozenset({"visualization_section"}):
+            raise AssertionError("unexpected task kind allowlist")
+        raise ReportingError("report_phase_tool_forbidden", "visualization_finalize 调用被拒")
+
+    toolkit._require_phase_tool = reject_non_section_task
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_finalize"
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[],
+        run_context=RunContext(run_id="run-finalize", session_id="session-finalize"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_phase_tool_forbidden"
+
+
+@pytest.mark.anyio
+async def test_submit_visualization_charts_commit_flow() -> None:
+    scope = SimpleNamespace(thread_id="thread-section", task=SimpleNamespace(mutation_sequence=7))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "sectionCode": "section_001",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001/attempt-2"},
+        },
+    )
+    identity = {
+        "sourcePath": "analysis/charts/section_001/attempt-2/income.png",
+        "size": 1024,
+        "sha256": "b" * 64,
+        "format": "PNG",
+        "mediaType": "image/png",
+        "extension": ".png",
+        "width": 1200,
+        "height": 800,
+    }
+    toolkit._inspect_chart_file = AsyncMock(return_value=identity)
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(revision=7))
+    toolkit._apply_durable = AsyncMock()
+    chart = {
+        "chartId": "income",
+        "sourcePath": identity["sourcePath"],
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[chart],
+        run_context=RunContext(run_id="run-section", session_id="session-section"),
+    )
+
+    assert result == {
+        "ok": True,
+        "status": "committed",
+        "sectionCode": "section_001",
+        "chartCount": 1,
+    }
+    durable_call = toolkit._apply_durable.await_args.kwargs
+    assert durable_call["name"] == "submit_visualization_charts"
+    assert durable_call["payload"] == {
+        "sectionCode": "section_001",
+        "charts": [
+            {
+                **chart,
+                "comparisonPeriod": None,
+                "comparisonType": "none",
+                "comparability": "strict",
+            }
+        ],
+        "files": [
+            {
+                "path": identity["sourcePath"],
+                "size": identity["size"],
+                "sha256": identity["sha256"],
+            }
+        ],
+    }
+    assert durable_call["command_id"].startswith("viz-section:7:section_001:")
+
+
+@pytest.mark.anyio
 async def test_register_report_charts_missing_file_returns_recoverable_failure() -> None:
     # 注册不存在的图表文件曾经让 _avalidate_existing_path 抛 WorkspaceError 穿透炸 run；
     # 这里改用可恢复的字段级回执,要求模型移除该图或先生成真实 PNG 再提交。
