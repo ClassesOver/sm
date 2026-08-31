@@ -5,10 +5,16 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import delete, update
 
 from smart_reporting.database import create_agent_database
 from smart_reporting.reporting.workflow import state as reporting_state_module
+from smart_reporting.reporting.workflow.checkpoint import (
+    CheckpointError,
+    ContextTrace,
+    ReportingCheckpoint,
+)
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 from smart_reporting.reporting.workflow.state import (
     ReportingPhase,
@@ -984,3 +990,89 @@ async def test_repository_rejects_legacy_schema_row(state_repository):
         )
     with pytest.raises(ReportingStateVersionUnsupported):
         await state_repository.get(state.report_run_id)
+
+
+def _minimal_checkpoint_payload() -> dict[str, object]:
+    """构造仅含必填字段的合法 v2 checkpoint 载荷,供 Schema 兼容性测试复用。"""
+    return {
+        "revision": 1,
+        "phase": "analysis",
+        "outlineHash": "0" * 64,
+        "profileCoverage": {
+            "authorizedDatasetCount": 1,
+            "coveredDatasetCount": 1,
+            "datasets": [
+                {
+                    "datasetId": "d1",
+                    "datasetPath": "d.csv",
+                    "datasetSize": 1,
+                    "datasetSnapshotHash": "1" * 64,
+                    "profileFile": {"path": "p.json", "size": 1, "sha256": "2" * 64},
+                    "rowCount": 1,
+                    "fieldCount": 1,
+                    "fields": ["x"],
+                }
+            ],
+        },
+    }
+
+
+def test_checkpoint_error_accepts_visualization_section_work_kind() -> None:
+    # 章节身份写入 sectionCode,analysisId 保持 analysis_NNN pattern 不变
+    error = CheckpointError.model_validate(
+        {
+            "phase": "analysis",
+            "code": "report_analysis_phase_failed",
+            "message": "章节图表 worker 失败。",
+            "workKind": "visualization_section",
+            "sectionCode": "section_001",
+        }
+    )
+    assert error.work_kind == "visualization_section"
+    assert error.section_code == "section_001"
+    assert error.analysis_id is None
+
+
+def test_checkpoint_error_rejects_section_code_in_analysis_id() -> None:
+    with pytest.raises(ValidationError):
+        CheckpointError.model_validate(
+            {
+                "phase": "analysis",
+                "code": "x",
+                "message": "m",
+                "workKind": "visualization_section",
+                "analysisId": "section_001",
+            }
+        )
+
+
+def test_checkpoint_error_accepts_visualization_finalize() -> None:
+    error = CheckpointError.model_validate(
+        {"phase": "analysis", "code": "x", "message": "m", "workKind": "visualization_finalize"}
+    )
+    assert error.work_kind == "visualization_finalize"
+
+
+def test_context_trace_accepts_new_work_kinds() -> None:
+    trace = ContextTrace.model_validate(
+        {
+            "phase": "analysis",
+            "workKind": "visualization_section",
+            "sectionCode": "section_001",
+            "attempt": 0,
+        }
+    )
+    assert trace.work_kind == "visualization_section"
+    finalize = ContextTrace.model_validate(
+        {"phase": "analysis", "workKind": "visualization_finalize", "attempt": 0}
+    )
+    assert finalize.work_kind == "visualization_finalize"
+
+
+def test_checkpoint_visualization_section_errors_default_empty() -> None:
+    checkpoint = ReportingCheckpoint.model_validate(_minimal_checkpoint_payload())
+    assert checkpoint.visualization_section_errors == {}
+    # 历史 checkpoint(无该字段)反序列化后必须仍是合法模型
+    payload = checkpoint.model_dump(mode="json", by_alias=True)
+    payload.pop("visualizationSectionErrors")
+    assert ReportingCheckpoint.model_validate(payload).visualization_section_errors == {}
