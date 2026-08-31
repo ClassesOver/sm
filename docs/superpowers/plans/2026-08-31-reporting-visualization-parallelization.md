@@ -15,7 +15,7 @@
 - 交付说明、用户可见文案、新增业务注释使用中文;协议字段、错误码、日志事件名用英文。
 - `register_report_charts` 的整批注册语义、durable 幂等键 `charts:{digest}`、`_finalize_reporting_sections` 消费逻辑、`SectionWorkItem.charts` 派生**不变**。
 - 错误码只增不改;`report_chart_file_missing`、`report_visualization_section_conflict` 为新增稳定英文标识。
-- checkpoint Literal 只增值不改值;`visualization` 值保留用于历史 trace 校验,但不再新发起该类任务。
+- 不考虑历史 task/checkpoint:删除旧 `visualization` taskKind/workKind 与恢复分支;升级后旧 run 必须重新发起。
 - 单章输出限额 16K(`_REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024`),汇总沿用 64K。
 - 并发配置 `AGENT_REPORT_VISUALIZATION_CONCURRENCY` 默认 1、上限 4,与 `analysis_concurrency` 完全同构。
 - 每个 Task 完成后运行定点 pytest + Ruff format/lint;Mypy 覆盖改动文件。测试不访问真实网络;PostgreSQL 场景标记 integration(本计划不需要)。
@@ -859,70 +859,47 @@ git commit -m "feat: 可视化按章节并行调度与汇总 worker 构造"
 
 ---
 
-### Task 10: 旧 checkpoint 迁移与全链路恢复测试
+### Task 10: 清理旧 visualization 协议分支
 
 **Files:**
-- Modify: `smart_reporting/reporting/workflow/runtime/analysis.py`(恢复入口:`workKind="visualization"` 未终态 trace 的废弃分支;`chartsRegistered=true` 的 finalize-only 分支)
-- Test: `smart_reporting/reporting/tests/test_reporting_state.py` 或新文件 `test_reporting_visualization_recovery.py`
+- Modify: `smart_reporting/reporting/phase.py`、`smart_reporting/reporting/workflow/checkpoint.py`、`smart_reporting/reporting/tools/capabilities.py`、`smart_reporting/reporting/workflow/execution.py`、`smart_reporting/reporting/instructions.py`
+- Test: 对应 `smart_reporting/reporting/tests/` 定点测试文件
 
 **Interfaces:**
 - Consumes: Task 9 的调度器。
-- Produces: 恢复期行为--legacy 未终态 task 标记废弃不恢复 run;`chartsRegistered=true` 且 `charts` 非空 -> 跳过章节重建直接 finalize;`chartsRegistered=false` -> 整段重建章节;attempt 与 legacy trace 不混算;`chartsRegistered` 标志语义不变。
+- Produces:旧 `visualization` 不再是 ReportingTaskKind、checkpoint workKind、能力矩阵项、指令路由或 execution terminal/recovery 分支;旧状态解析失败关闭。
 
 - [ ] **Step 1: 写失败测试**
 
 ```python
-async def test_legacy_unterminal_visualization_task_is_discarded() -> None:
-    checkpoint = checkpoint_with_legacy_visualization_trace(status="started")
-    runtime = make_runtime_with_checkpoint(checkpoint)
-    await runtime.run_coding_analysis(...)
-    # 断言:legacy task 未被恢复;章节任务全部重建;
-    # legacy trace 仍可被 ReportingCheckpoint 校验(未删值)
+def test_old_visualization_task_kind_is_rejected() -> None:
+    assert reporting_task_kind_from_acceptance_contract(old_visualization_contract) is None
 
 
-async def test_registered_but_unfrozen_run_goes_finalize_only() -> None:
-    checkpoint = checkpoint_with_legacy_visualization_trace(
-        status="started", charts_registered=True, charts=[chart_entry]
-    )
-    # 断言:不创建章节 task;汇总 task 输入含 registeredCharts;
-    # register 窗口已关(汇总只做 ReportBrief+finalize)
-
-
-async def test_visualization_section_errors_merge_keeps_both() -> None:
-    # 双章同时失败:合并后账本同时含 section_001 与 section_002,
-    # 各自 retryUsage 不丢失;恢复时两章各自重建
-    ...
+def test_old_visualization_work_kind_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ContextTrace.model_validate({"phase": "analysis", "workKind": "visualization"})
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd smart_reporting && python -m pytest reporting/tests -k "legacy_visualization or section_errors_merge" -v`
+Run: `cd smart_reporting && python -m pytest reporting/tests -k "old_visualization" -v`
 Expected: FAIL
 
 - [ ] **Step 3: 最小实现**
 
-`_run_analysis_phase` 恢复入口(对照 1080-1104 的 trace 扫描区)新增:发现 `workKind=="visualization"` 且 status=="started" 的 trace 时:
-
-```python
-            # 旧 in-flight visualization task 废弃:register 白名单已收紧到
-            # visualization_finalize,legacy run 无法完成登记;facts 已在启动
-            # 前置校验冻结(analysis.py:1134-1138),整段按新章节协议重建无损。
-            # chartsRegistered=true 且 charts 非空的 run 例外:登记窗口已关,
-            # 跳过章节重建,直接构造 finalize-only 汇总任务。
-```
-
-(按上述语义实现分支;merge 侧在 `_update_reporting_checkpoint` 对 `visualization_section_errors` 做按键合并,替代 361 行对 last_error 的覆盖语义。)
+删除所有旧 `visualization` 分支;同步收紧所有 Literal/解析集合/工具矩阵/终态映射/指令路由。全仓检索旧 taskKind 与 workKind 的运行时引用必须为零。
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd smart_reporting && python -m pytest reporting/tests -k "legacy_visualization or section_errors_merge or visualization" -q`
+Run: `cd smart_reporting && python -m pytest reporting/tests -k "old_visualization or visualization_section or visualization_finalize" -q`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
 
 ```bash
 git add smart_reporting/reporting/workflow/runtime/analysis.py smart_reporting/reporting/tests/
-git commit -m "feat: 旧 visualization checkpoint 废弃迁移与按章失败账本合并"
+git commit -m "refactor: 删除旧 visualization task 协议分支"
 ```
 
 ---
@@ -990,6 +967,6 @@ git commit -m "feat: 汇总 worker 语义目录受信投影与全局收口回归
 
 ## Self-Review 记录
 
-- Spec 覆盖:§5.1->Task 1;§7 矩阵前三行->Task 2、限额/能力矩阵->Task 3;§6.4 WorkspaceError->Task 4;§6.5 reducer->Task 5;§6.2 工具->Task 6;§7 终态/恢复指令->Task 7;§6.4 白名单+§7 指令模板->Task 8;§5.2-5.3 调度+§6.1/6.3 instruction->Task 9;§8 迁移+§5.4 账本->Task 10;§6.3 语义->Task 11。无缺口。
+- Spec 覆盖:§5.1->Task 1;§7 矩阵前三行->Task 2、限额/能力矩阵->Task 3;§6.4 WorkspaceError->Task 4;§6.5 reducer->Task 5;§6.2 工具->Task 6;§7 终态/恢复指令->Task 7;§6.4 白名单+§7 指令模板->Task 8;§5.2-5.3 调度+§6.1/6.3 instruction->Task 9;§8 旧协议清理->Task 10;§6.3 语义->Task 11。无缺口。
 - 占位符扫描:Task 3/6/9 的 `...` 均为"复用现有 fixture 构造方式"的指向性说明并给出了断言主体,非 TBD;实施者需读取相邻既有测试复用工厂(这是既有测试文件的既定模式,plan 已指明文件与函数名)。
 - 类型一致性:`visualization_section_errors`、`completedVisualizationSections`、`visualizationSections`、`report_chart_file_missing`、`report_visualization_section_conflict`、`viz-section:{sectionCode}`/`viz-finalize`、`charts/{sectionCode}/attempt-{n}/` 各任务间一致。

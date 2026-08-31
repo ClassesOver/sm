@@ -1,7 +1,7 @@
 # 可视化阶段按章节并行化设计
 
 - 日期:2026-08-31
-- 状态:已确认(用户批准五节设计;2026-08-31 评审 7 条意见已全部采纳并修订)
+- 状态:已确认(用户批准五节设计;2026-08-31 评审 7 条意见已全部采纳并修订;后续明确不考虑历史 task/checkpoint)
 - 背景:`/tmp/reporting_cli_20260831_112806/cli.log` 真实运行分析
 
 ## 1. 问题
@@ -69,15 +69,14 @@
 
 本次设计修改以下持久化 schema,属于同一交付内的显式协议升级:
 
-- `ContextTrace.work_kind` 与 `CheckpointError.work_kind`(`checkpoint.py:619/632`)的 Literal 新增 `visualization_section`、`visualization_finalize`;保留 `visualization` 值用于历史 trace 校验。
+- `ContextTrace.work_kind` 与 `CheckpointError.work_kind` 的 Literal 仅新增并保留当前协议所需的 `visualization_section`、`visualization_finalize`;不保留旧 `visualization` 值。
 - 章节身份**不写入 `analysisId`**(其 pattern 仅允许 `analysis_[0-9]{3,6}`,`checkpoint.py:622`),而是使用两模型**已有的** `sectionCode` 字段;`visualization_finalize` 的 trace 不设 sectionCode。
 - `ReportingCheckpoint` 新增 `visualization_section_errors: dict[str, CheckpointError]`(按 sectionCode 保存失败与 retryUsage,见 5.4);`last_error` 保留给汇总 worker 的全局终态失败。
-- 迁移期兼容见第 8 节。
 
 ### 5.2 章节图表 worker
 
 - **粒度**:每个提纲 sectionCode 一个 Task。
-- **task key**:`reporting_phase_task_key(run, revision, "analysis", analysis_id=f"viz-section:{sectionCode}", attempt)`(key 函数的 analysis_id 形参为自由字符串,现有 `analysis_id="visualization"` 同样不匹配 pattern)。
+- **task key**:`reporting_phase_task_key(run, revision, "analysis", section_code=sectionCode, task_kind="visualization_section", attempt)`;章节身份只写入 `sectionCode`,不复用 `analysisId`。
 - **trace**:`phase="analysis"`、`workKind="visualization_section"`、`sectionCode=sectionCode`、`analysisId=None`。
 - **调度**:复用 `_run_bounded`(`analysis.py:1891`,Semaphore+TaskGroup)的调度器,新写 `_run_pending_visualization_sections`(与 `_run_pending_analysis_items`:1922 同构):单章失败不取消兄弟章,收口后仅失败章 fresh attempt。
 - **并发度**:新配置 `AGENT_REPORT_VISUALIZATION_CONCURRENCY`,默认 1,上限 4。配置校验、env 解析、bootstrap 装配与 `analysis_concurrency`(`settings.py:254-259`、`workflow/runtime/base.py:404,422-423,434`、`bootstrap.py:70`)完全同构。
@@ -86,7 +85,7 @@
 ### 5.3 汇总 worker
 
 - **触发**:全部章节收口(含零图章,见 6.6)后。
-- **task key**:`reporting_phase_task_key(run, revision, "analysis", analysis_id="viz-finalize", attempt)`。
+- **task key**:`reporting_phase_task_key(run, revision, "analysis", task_key="viz-finalize", task_kind="visualization_finalize", attempt)`。
 - **trace**:`workKind="visualization_finalize"`。
 - **执行**:`register_report_charts`(整批,契约不变)+ 编写 ReportBrief + `finalize_report_analysis`;沿用现有全局收口链(`analysis.py:1532-1547` 的 durable 命令、1555-1580 的 checkpoint 迁移到 sections 阶段)。
 
@@ -153,10 +152,10 @@
 
 | 触点 | 文件:位置 | 变更 |
 |---|---|---|
-| 类型定义 | `reporting/phase.py:16` | `ReportingTaskKind` Literal += 两值;`visualization` 值保留(历史 checkpoint 校验) |
+| 类型定义 | `reporting/phase.py:16` | `ReportingTaskKind` 仅保留 `analysis_item`、`visualization_section`、`visualization_finalize`、`section` |
 | contract 解析 | `reporting/phase.py:218` | `reporting_task_kind_from_acceptance_contract` 白名单 += 两值 |
 | run-context 解析 | `reporting/phase.py:585` | `reporting_task_kind_from_run_context` 白名单 += 两值 |
-| 能力矩阵 | `reporting/tools/capabilities.py` | 新增 `REPORTING_VISUALIZATION_SECTION_TOOL_NAMES`(含 `submit_visualization_charts`、`write_analysis_files`、`terminal`、`inspect_chart`、只读工具;**不含** `register_report_charts`/`finalize_report_analysis`)与 `REPORTING_VISUALIZATION_FINALIZE_TOOL_NAMES`(见 6.3);`tools_for_task` 增两分支;`visualization` 分支保留(见第 8 节) |
+| 能力矩阵 | `reporting/tools/capabilities.py` | 新增 `REPORTING_VISUALIZATION_SECTION_TOOL_NAMES`(含 `submit_visualization_charts`、`write_analysis_files`、`terminal`、`inspect_chart`、只读工具;**不含** `register_report_charts`/`finalize_report_analysis`)与 `REPORTING_VISUALIZATION_FINALIZE_TOOL_NAMES`(见 6.3);`tools_for_task` 只保留当前 taskKind 分支 |
 | 终态工具 | `reporting/workflow/execution.py:493` | `visualization_section` -> `("submit_visualization_charts",)`;`visualization_finalize` -> `("finalize_report_analysis",)` |
 | 恢复指令 | `reporting/workflow/execution.py:505-530` | 新增两 kind 的 error-continuation 文案(章节:只补该章缺失动作后提交;汇总:只注册+冻结) |
 | 指令模板 | `reporting/instructions.py` | 新 kind 的指令/完成条件模板;现有 visualization 模板删除(见第 8 节) |
@@ -172,21 +171,20 @@
 - `_phase_request_model` 分支:`visualization_section` -> 16K、`visualization_finalize` -> 64K;`visualization` 分支删除(无新 run 携带,见第 8 节)。
 - 同步更新 `test_reporting_agent_projection.py:2954-2989` 参数化断言表。
 
-## 8. 旧 checkpoint 迁移(二选一:明确废弃)
+## 8. 旧协议边界
 
-**选择:废弃旧 in-flight visualization task,从 durable facts 重建。** 不保留 legacy 任务完成路径(避免 register 白名单与兼容承诺的矛盾)。
+**选择:不考虑历史。** 服务不支持旧 `visualization` taskKind、旧 `workKind="visualization"` checkpoint trace 或旧单 worker 任务恢复。升级后仍持有旧状态的 run 必须重新发起。
 
-- 恢复时发现 checkpoint 存在未终态的 `workKind="visualization"` trace:`task_runner` 中对应 task 标记废弃,不恢复其 run;由于 visualization 启动前置校验已冻结全部 analysis facts(`analysis.py:1134-1138`),重建章节任务无损。
-- `chartsRegistered=true` 且 `charts` 非空的 run(旧任务已注册图表但未冻结):跳过章节重建,直接构造汇总 worker(注册窗口已关,只做 ReportBrief+finalize);`chartsRegistered=false` 的 run:整段重建章节任务。
-- `workKind="visualization"` 保留在 checkpoint Literal(历史 trace 必须可校验);`ReportingTaskKind` 保留 `visualization` 值但能力矩阵不再为其生成新任务;agent 限额的 `visualization` 分支删除。
-- attempt 续号:章节 attempt 从该 sectionCode 自身的 trace 历史续号,不与 legacy `visualization` trace 混算。
+- 删除 `ReportingTaskKind`、checkpoint `workKind` Literal、能力矩阵、指令模板、终态工具映射和恢复指令中的旧 `visualization` 分支。
+- 不读取、不迁移、不重建旧 in-flight task;遇到旧 checkpoint 数据按当前 schema 的未知值失败关闭。
+- 章节 attempt 只按同一 `sectionCode` 的 `visualization_section` trace 续号。
 
 ## 9. 与现有架构约束的对齐
 
 - **AGENTS.md「Report Agent 与纯 Coding Agent 解耦」**:改动全部在 `smart_reporting/reporting/` 内部,不触碰 Coding Agent 边界。
 - **「每项能力只有一个权威实现」**:`_run_pending_visualization_sections` 复用 `_run_bounded` 调度器;`submit_visualization_charts` 复用 `ReportChartRegistration` schema 与 `_inspect_chart_file` 校验链。
 - **失败关闭**:`_visualization_dynamic_budget` 身份不一致仍拒绝;配置缺失沿用现有装配失败路径。
-- **协议不变量**:`register_report_charts` durable 写入、幂等键、section 派生链路不变;错误码只增不改;checkpoint schema 变更集中在第 5.1/5.4/8 节并配迁移测试。
+- **协议不变量**:`register_report_charts` durable 写入、幂等键、section 派生链路不变;错误码只增不改;checkpoint schema 只接受当前 workKind 值。
 
 ## 10. 测试与验证
 
@@ -205,7 +203,7 @@
 - **文件名冲突**:两章同名 PNG 隔离在不同 `charts/{sectionCode}/attempt-n/`;durable reducer 拒绝跨章重复 chartId/sourcePath。
 - **零图表章节**:空 charts 提交标记完成;与未提交可区分;全局零图在汇总处按既有错误码失败。
 - 汇总只在全章收口后执行;汇总失败重跑不影响章节产物。
-- **旧 visualization checkpoint 恢复**:未终态 legacy trace 废弃并重建章节;已注册未冻结走 finalize-only;历史 trace 校验通过。
+- **旧协议拒绝**:旧 `visualization` taskKind 和 checkpoint workKind 不被解析或恢复。
 - 按章预算拆分与失败关闭(身份不一致拒绝)。
 - **汇总语义冻结**:汇总 worker 的 `datasetSemantics`/`metricDefinitions` 从服务端投影目录提交,evidence dataset 精确覆盖校验通过。
 
@@ -228,6 +226,6 @@
 |---|---|
 | 章节数多于并发上限时排队退化 | 上限 4 对齐 analysis 并发;章节 worker 输入小,排队总时长仍远小于现状 |
 | 汇总 worker 成为新的单点长生成 | 其输出主要是注册参数+ReportBrief+语义提交(数 KB-十几 KB),远小于 64K;实测监控 |
-| checkpoint schema 扩展破坏旧数据兼容 | Literal 只增值不改值;`visualization_section_errors` 为新字段可默认空;迁移测试覆盖旧 checkpoint 校验 |
+| 升级时仍有旧单 worker run | 当前版本明确不支持恢复;重新发起报告运行 |
 | vision 模式回执跨 worker 校验 | 回执绑定 sha256 的校验逻辑不变,章节 worker 提交时已校验,汇总时复核 |
-| 旧 in-flight 任务废弃导致少量重跑 | 废弃仅发生在升级部署后的首次恢复;durable facts 已冻结,重跑范围限于图表生成 |
+| 旧单 worker run 无法恢复 | 当前版本明确不考虑历史;重新发起报告运行 |
