@@ -608,6 +608,33 @@ class ReportWorkspaceTaskToolkit(
                 post_hook=_stop_after_finished_phase_call,
             )
         )
+        self.register(
+            Function(
+                name="submit_visualization_charts",
+                description=(
+                    "提交当前 visualization_section 章节生成的全部图表草案；允许提交空数组，"
+                    "vision 模式下每张图必须先调用 inspect_chart；服务端会检查每个图表文件身份"
+                    "并按章节持久化，成功后结束当前 Task。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "sectionCode": {"type": "string", "minLength": 1, "maxLength": 128},
+                        "charts": {
+                            "type": "array",
+                            "maxItems": 100,
+                            "items": ReportChartRegistration.model_json_schema(by_alias=True),
+                        },
+                    },
+                    "required": ["sectionCode", "charts"],
+                    "additionalProperties": False,
+                },
+                strict=True,
+                entrypoint=self.submit_visualization_charts,
+                pre_hook=_reset_stop_after_tool_call,
+                post_hook=_stop_after_finished_phase_call,
+            )
+        )
 
     def register(self, function: Any, name: str | None = None) -> None:
         """按阶段能力在注册瞬间过滤工具，避免先暴露再删除。"""

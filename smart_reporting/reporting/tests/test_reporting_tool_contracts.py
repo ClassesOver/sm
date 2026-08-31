@@ -3992,7 +3992,7 @@ _WORKER_TOOL_SCHEMA_FINGERPRINTS = {
     "finalize_report_analysis": "0a5a381b7eda6a4b5cdf93302bdc5bd1bcb3aa411bc52745a972dee6f0e99d67",
     "inspect_chart": "c038586b8d6fa4ecefe1c9d75d4d35e217d9e3cf91719c4fd2a7ad78f775c9c6",
     "register_report_charts": "4522acf4b9385c526b7403964b4496ce179ccac2935246da7265de5daebb228c",
-    "submit_visualization_charts": "874571111efc572f8e47b837faf3b1a00ea4560f8f0257a8a69cd213e4505451",
+    "submit_visualization_charts": "63bc0a96de614d5cce6f8d19bd764bf2ccca240dbcae95a8a5249198bc5951d3",
     "render_report_section": "b74f37e7093dad682128cfe205c17116dd1bd3578b13575adb6d1ee3da20e724",
 }
 
