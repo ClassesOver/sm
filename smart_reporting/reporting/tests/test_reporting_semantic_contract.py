@@ -413,7 +413,7 @@ def _semantic_inputs(*, claim: SectionClaim, duplicate_resolution: str = "not_ap
         ),
     ],
 )
-def test_semantic_publication_issues_block_release(
+def test_semantic_publication_claim_issues_are_warnings(
     claim: SectionClaim, duplicate_resolution: str, code: str
 ) -> None:
     manifest, artifacts, citations = _semantic_inputs(
@@ -425,8 +425,9 @@ def test_semantic_publication_issues_block_release(
         section_artifacts=artifacts,
         citations=citations,
     )
-    assert gate["formalReleaseAllowed"] is False
-    assert code in {item["code"] for item in gate["issues"]}
+    assert gate["formalReleaseAllowed"] is True
+    assert gate["issues"] == []
+    assert code in {item["code"] for item in gate["warnings"]}
 
 
 def test_unreferenced_quality_warning_does_not_block_release() -> None:

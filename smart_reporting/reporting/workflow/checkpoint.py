@@ -541,6 +541,7 @@ class SectionArtifact(StrictModel):
     section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
     blocks: tuple[ReportDraftBlock, ...] = Field(min_length=1, max_length=200)
     claims: tuple[SectionClaim, ...] = Field(default=(), max_length=500)
+    warnings: tuple[dict[str, Any], ...] = Field(default=(), max_length=500)
 
     @model_validator(mode="after")
     def validate_claim_references(self) -> SectionArtifact:

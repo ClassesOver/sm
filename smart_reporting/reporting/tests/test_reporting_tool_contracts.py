@@ -50,6 +50,7 @@ from smart_reporting.reporting.tests.workspace_fakes import service as fake_work
 from smart_reporting.reporting.tools.analysis import (
     MAX_ANALYSIS_WRITE_INTENT_BYTES,
     _derive_durable_analysis_binding,
+    _fact_metric_codes,
     _missing_metric_definition_codes,
     _normalize_analysis_summary_comparability,
 )
@@ -145,34 +146,41 @@ def test_missing_metric_definition_codes_covers_facts_derived_and_charts() -> No
     assert missing == ("chart_only", "income_margin", "income_summary_total")
 
 
-def test_section_unknown_metric_reports_current_work_item_contract() -> None:
-    with pytest.raises(ReportingError) as raised:
-        ReportWorkspaceTaskToolkit._normalize_section_claims(
-            section_code="section_002",
-            claims=[
-                {
-                    "claimId": "claim_001",
-                    "metricCode": "unknown_metric",
-                    "value": 1,
-                    "managementQuestionRef": "analysis_002",
-                    "citationIds": ["citation_001"],
-                }
-            ],
-            work_item=SimpleNamespace(
-                metric_definitions=(SimpleNamespace(code="revenue"),),
-                charts=(),
-                citations=(),
-                management_question_catalog=(),
-            ),
-        )
+def test_fact_metric_codes_replace_generic_planner_placeholder() -> None:
+    assert _fact_metric_codes(
+        {
+            "metrics": [{"metricCodes": ["income_summary_total"]}],
+            "derivedMetrics": [{"code": "income_growth_rate"}],
+        }
+    ) == ("income_growth_rate", "income_summary_total")
 
-    assert raised.value.code == "report_section_claim_metric_unknown"
-    assert raised.value.details == {
-        "sectionCode": "section_002",
-        "claimId": "claim_001",
-        "metricCode": "unknown_metric",
-        "expectedMetricCodes": ["revenue"],
-    }
+
+def test_section_unknown_metric_is_preserved_with_warning() -> None:
+    normalized, warnings = ReportWorkspaceTaskToolkit._normalize_section_claims(
+        section_code="section_002",
+        claims=[
+            {
+                "claimId": "claim_001",
+                "metricCode": "income_summary_total",
+                "value": 1,
+                "managementQuestionRef": "analysis_002",
+                "currentPeriod": "2025年1-11月",
+                "citationIds": ["citation_001"],
+            }
+        ],
+        work_item=SimpleNamespace(
+            metric_definitions=(),
+            charts=(),
+            citations=(SimpleNamespace(citation_id="citation_001"),),
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_002", question="收入结构如何？"),
+            ),
+        ),
+    )
+
+    assert normalized[0].metric_code == "income_summary_total"
+    assert normalized[0].period_basis == "2025年1-11月"
+    assert [item["code"] for item in warnings] == ["report_section_claim_metric_unknown"]
 
 
 def write_functions() -> dict[str, Function]:
@@ -3567,7 +3575,7 @@ async def test_render_report_section_derives_frozen_claim_semantics_on_first_sub
 
 
 @pytest.mark.anyio
-async def test_render_report_section_rejects_unknown_management_question_ref() -> None:
+async def test_render_report_section_warns_for_unknown_management_question_ref() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
         {"sectionOutputPath": "sections/income.json"},
@@ -3587,43 +3595,100 @@ async def test_render_report_section_rejects_unknown_management_question_ref() -
         )
     )
 
-    with pytest.raises(ReportingError) as raised:
-        await toolkit._render_isolated_section(
-            scope=SimpleNamespace(),
-            section_code="section_001",
-            blocks=[
-                {
-                    "blockId": "income_overall",
-                    "markdown": "医疗收入总体保持稳定。",
-                    "citationIds": ["citation_007"],
-                    "claimIds": ["claim_income_total"],
-                }
-            ],
-            claims=[
-                {
-                    "claimId": "claim_income_total",
-                    "metricCode": "medical_income",
-                    "value": "111.24亿元",
-                    "managementQuestionRef": "analysis_999",
-                    "currentPeriod": "2025年1-11月",
-                    "citationIds": ["citation_007"],
-                }
-            ],
-            state={},
-            run_context=None,
-        )
+    toolkit._write_phase_json = AsyncMock(return_value={"path": "sections/income.json"})
+    toolkit._finish_phase_task = AsyncMock(return_value={})
 
-    assert raised.value.code == "report_section_claim_question_unknown"
-    assert raised.value.details == {
-        "sectionCode": "section_001",
-        "claimId": "claim_income_total",
-        "managementQuestionRef": "analysis_999",
-        "expectedManagementQuestionRefs": ["analysis_001"],
+    await toolkit._render_isolated_section(
+        scope=SimpleNamespace(),
+        section_code="section_001",
+        blocks=[
+            {
+                "blockId": "income_overall",
+                "markdown": "医疗收入总体保持稳定。",
+                "citationIds": ["citation_007"],
+                "claimIds": ["claim_income_total"],
+            }
+        ],
+        claims=[
+            {
+                "claimId": "claim_income_total",
+                "metricCode": "medical_income",
+                "value": "111.24亿元",
+                "managementQuestionRef": "analysis_999",
+                "currentPeriod": "2025年1-11月",
+                "citationIds": ["citation_007"],
+            }
+        ],
+        state={},
+        run_context=None,
+    )
+
+    payload = toolkit._write_phase_json.await_args.kwargs["payload"]
+    assert payload["claims"][0]["managementQuestion"] == "未绑定管理问题（analysis_999）"
+    assert payload["warnings"][0]["code"] == "report_section_claim_question_unknown"
+
+
+@pytest.mark.anyio
+async def test_render_report_section_omits_structurally_invalid_claim_with_warning() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {"sectionOutputPath": "sections/income.json"},
+        {},
+    )
+    toolkit._section_work_item = AsyncMock(
+        return_value=SimpleNamespace(
+            section_code="section_001",
+            management_question_catalog=(
+                SimpleNamespace(ref="analysis_001", question="收入表现如何？"),
+            ),
+            metric_definitions=(
+                SimpleNamespace(code="medical_income", period_basis="2025年累计口径"),
+            ),
+            charts=(),
+            citations=(SimpleNamespace(citation_id="citation_007", dataset_id="dataset-1"),),
+        )
+    )
+    toolkit._write_phase_json = AsyncMock(return_value={"path": "sections/income.json"})
+    toolkit._finish_phase_task = AsyncMock(return_value={})
+
+    await toolkit._render_isolated_section(
+        scope=SimpleNamespace(),
+        section_code="section_001",
+        blocks=[
+            {
+                "blockId": "income_overall",
+                "markdown": "医疗收入总体保持稳定。",
+                "citationIds": ["citation_007"],
+                "claimIds": ["claim_income_total"],
+            }
+        ],
+        claims=[
+            {
+                "claimId": "claim_income_total",
+                "metricCode": "medical_income",
+                "value": "111.24亿元",
+                "managementQuestionRef": "analysis_001",
+                "citationIds": ["citation_007"],
+                "conclusionType": "entity_ratio",
+            }
+        ],
+        state={},
+        run_context=None,
+    )
+
+    payload = toolkit._write_phase_json.await_args.kwargs["payload"]
+    assert payload["version"] == "1"
+    assert payload["claims"] == []
+    assert payload["blocks"][0]["claimIds"] == []
+    assert {item["code"] for item in payload["warnings"]} == {
+        "report_section_claim_invalid",
+        "report_section_block_claim_unknown",
+        "report_section_claim_period_missing",
     }
 
 
 @pytest.mark.anyio
-async def test_render_report_section_rejects_conflicting_chart_semantics() -> None:
+async def test_render_report_section_warns_for_conflicting_chart_semantics() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
         {"sectionOutputPath": "sections/income.json"},
@@ -3667,43 +3732,42 @@ async def test_render_report_section_rejects_conflicting_chart_semantics() -> No
         )
     )
 
-    with pytest.raises(ReportingError) as raised:
-        await toolkit._render_isolated_section(
-            scope=SimpleNamespace(),
-            section_code="section_001",
-            blocks=[
-                {
-                    "blockId": "income_overall",
-                    "markdown": "医疗收入总体保持稳定。",
-                    "citationIds": ["citation_007", "citation_008"],
-                    "chartIds": ["income_monthly", "income_annual"],
-                    "claimIds": ["claim_income_total"],
-                }
-            ],
-            claims=[
-                {
-                    "claimId": "claim_income_total",
-                    "metricCode": "medical_income",
-                    "value": "111.24亿元",
-                    "managementQuestionRef": "analysis_001",
-                    "citationIds": ["citation_007", "citation_008"],
-                    "chartIds": ["income_monthly", "income_annual"],
-                }
-            ],
-            state={},
-            run_context=None,
-        )
+    toolkit._write_phase_json = AsyncMock(return_value={"path": "sections/income.json"})
+    toolkit._finish_phase_task = AsyncMock(return_value={})
 
-    assert raised.value.code == "report_section_claim_chart_semantics_conflict"
-    assert raised.value.details == {
-        "sectionCode": "section_001",
-        "claimId": "claim_income_total",
-        "chartIds": ["income_monthly", "income_annual"],
-    }
+    await toolkit._render_isolated_section(
+        scope=SimpleNamespace(),
+        section_code="section_001",
+        blocks=[
+            {
+                "blockId": "income_overall",
+                "markdown": "医疗收入总体保持稳定。",
+                "citationIds": ["citation_007", "citation_008"],
+                "chartIds": ["income_monthly", "income_annual"],
+                "claimIds": ["claim_income_total"],
+            }
+        ],
+        claims=[
+            {
+                "claimId": "claim_income_total",
+                "metricCode": "medical_income",
+                "value": "111.24亿元",
+                "managementQuestionRef": "analysis_001",
+                "citationIds": ["citation_007", "citation_008"],
+                "chartIds": ["income_monthly", "income_annual"],
+            }
+        ],
+        state={},
+        run_context=None,
+    )
+
+    payload = toolkit._write_phase_json.await_args.kwargs["payload"]
+    assert payload["claims"][0]["chartIds"] == ["income_monthly"]
+    assert payload["warnings"][0]["code"] == "report_section_claim_chart_semantics_conflict"
 
 
 @pytest.mark.anyio
-async def test_render_report_section_reports_structured_chart_metric_conflict() -> None:
+async def test_render_report_section_warns_for_structured_chart_metric_conflict() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit._phase_parameters = lambda _scope, _phase: (  # type: ignore[method-assign]
         {"sectionOutputPath": "sections/budget.json"},
@@ -3738,35 +3802,42 @@ async def test_render_report_section_reports_structured_chart_metric_conflict() 
         )
     )
 
-    with pytest.raises(ReportingError) as raised:
-        await toolkit._render_isolated_section(
-            scope=SimpleNamespace(),
-            section_code="section_002",
-            blocks=[
-                {
-                    "blockId": "budget_overall",
-                    "markdown": "预算执行情况。",
-                    "citationIds": ["citation_004"],
-                    "chartIds": ["revenue_budget"],
-                    "claimIds": ["claim_revenue"],
-                }
-            ],
-            claims=[
-                {
-                    "claimId": "claim_revenue",
-                    "metricCode": "margin",
-                    "value": 100,
-                    "managementQuestionRef": "analysis_002",
-                    "citationIds": ["citation_004"],
-                    "chartIds": ["revenue_budget"],
-                }
-            ],
-            state={},
-            run_context=None,
-        )
+    toolkit._write_phase_json = AsyncMock(return_value={"path": "sections/budget.json"})
+    toolkit._finish_phase_task = AsyncMock(return_value={})
 
-    assert raised.value.code == "report_section_claim_chart_conflict"
-    assert raised.value.details == {
+    await toolkit._render_isolated_section(
+        scope=SimpleNamespace(),
+        section_code="section_002",
+        blocks=[
+            {
+                "blockId": "budget_overall",
+                "markdown": "预算执行情况。",
+                "citationIds": ["citation_004"],
+                "chartIds": ["revenue_budget"],
+                "claimIds": ["claim_revenue"],
+            }
+        ],
+        claims=[
+            {
+                "claimId": "claim_revenue",
+                "metricCode": "margin",
+                "value": 100,
+                "managementQuestionRef": "analysis_002",
+                "citationIds": ["citation_004"],
+                "chartIds": ["revenue_budget"],
+            }
+        ],
+        state={},
+        run_context=None,
+    )
+
+    payload = toolkit._write_phase_json.await_args.kwargs["payload"]
+    warning = next(
+        item
+        for item in payload["warnings"]
+        if item["code"] == "report_section_claim_chart_conflict"
+    )
+    assert warning["details"] == {
         "sectionCode": "section_002",
         "claimId": "claim_revenue",
         "chartId": "revenue_budget",
@@ -3774,8 +3845,6 @@ async def test_render_report_section_reports_structured_chart_metric_conflict() 
         "expectedMetricCodes": ["revenue"],
         "actualMetricCode": "margin",
     }
-    failure = ReportWorkspaceTaskToolkit._failure(raised.value)
-    assert failure["details"] == raised.value.details
 
 
 @pytest.mark.anyio

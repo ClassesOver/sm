@@ -61,6 +61,24 @@ _ANALYSIS_SUMMARY_SENTENCE_PATTERN = re.compile(r"[^。！？\n]+[。！？]?|\n
 _INCOMPARABLE_YOY_WARNING = "摘要中的比较期间长度不一致，已将“同比”规范为“参考对比”。"
 
 
+def _fact_metric_codes(bundle: Mapping[str, Any]) -> tuple[str, ...]:
+    """从单项确定性事实中提取真实指标代码，避免沿用计划阶段的通用占位符。"""
+
+    codes = {
+        code
+        for metric in bundle.get("metrics", ())
+        if isinstance(metric, Mapping)
+        for code in metric.get("metricCodes", ())
+        if isinstance(code, str) and code
+    }
+    codes.update(
+        metric["code"]
+        for metric in bundle.get("derivedMetrics", ())
+        if isinstance(metric, Mapping) and isinstance(metric.get("code"), str) and metric["code"]
+    )
+    return tuple(sorted(codes))
+
+
 def _missing_metric_definition_codes(
     *,
     fact_bundles: tuple[Mapping[str, Any], ...],
@@ -71,14 +89,7 @@ def _missing_metric_definition_codes(
 
     referenced: set[str] = {code for code in chart_metric_codes if isinstance(code, str) and code}
     for bundle in fact_bundles:
-        for metric in bundle.get("metrics", ()):
-            if isinstance(metric, Mapping):
-                referenced.update(
-                    code for code in metric.get("metricCodes", ()) if isinstance(code, str) and code
-                )
-        for metric in bundle.get("derivedMetrics", ()):
-            if isinstance(metric, Mapping) and isinstance(metric.get("code"), str):
-                referenced.add(metric["code"])
+        referenced.update(_fact_metric_codes(bundle))
     defined = {item.code for item in metric_definitions}
     return tuple(sorted(referenced - defined))
 
@@ -1029,7 +1040,7 @@ class RuntimeAnalysisMixin:
             supplied_metric_definitions = tuple(
                 MetricDefinition.model_validate(item) for item in metricDefinitions
             )
-            fact_bundles: list[Mapping[str, Any]] = []
+            fact_bundles: dict[str, Mapping[str, Any]] = {}
             deterministic_files = contract.get("deterministicFactFiles")
             if isinstance(deterministic_files, Mapping):
                 for analysis_id in expected_analysis_ids:
@@ -1065,7 +1076,7 @@ class RuntimeAnalysisMixin:
                             "report_analysis_evidence_invalid", "固定事实文件不是有效 JSON。"
                         ) from error
                     if isinstance(payload, Mapping):
-                        fact_bundles.append(payload)
+                        fact_bundles[analysis_id] = payload
             chart_metric_codes = tuple(
                 code
                 for chart in chart_registry.values()
@@ -1074,7 +1085,7 @@ class RuntimeAnalysisMixin:
                 if isinstance(code, str)
             )
             missing_metric_codes = _missing_metric_definition_codes(
-                fact_bundles=tuple(fact_bundles),
+                fact_bundles=tuple(fact_bundles.values()),
                 chart_metric_codes=chart_metric_codes,
                 metric_definitions=supplied_metric_definitions,
             )
@@ -1084,6 +1095,15 @@ class RuntimeAnalysisMixin:
                     "冻结事实或图表引用的指标缺少完整定义。",
                     details={"missingMetricCodes": list(missing_metric_codes)},
                 )
+            projected_evidence: list[AnalysisEvidence] = []
+            for evidence_item in parsed_evidence:
+                metric_codes = _fact_metric_codes(fact_bundles.get(evidence_item.analysis_id, {}))
+                projected_evidence.append(
+                    evidence_item.model_copy(update={"metrics": metric_codes})
+                    if metric_codes
+                    else evidence_item
+                )
+            parsed_evidence = projected_evidence
             bound_profile_receipt_ids = {
                 receipt_id
                 for item in parsed_evidence
@@ -1266,11 +1286,17 @@ class RuntimeAnalysisMixin:
             raw_plans = contract.get("analysisPlans")
             planned = raw_plans.get(analysisId) if isinstance(raw_plans, Mapping) else None
             planned_metrics = (
-                list(dict.fromkeys(value for value in planned.get("metrics", ()) if isinstance(value, str)))
+                list(
+                    dict.fromkeys(
+                        value for value in planned.get("metrics", ()) if isinstance(value, str)
+                    )
+                )
                 if isinstance(planned, Mapping)
                 else []
             )
-            chart_ids = list(dict.fromkeys(value for value in (chartIds or ()) if isinstance(value, str)))
+            chart_ids = list(
+                dict.fromkeys(value for value in (chartIds or ()) if isinstance(value, str))
+            )
             if chartIds is not None and len(chart_ids) != len(chartIds):
                 raise ReportingError(
                     "report_analysis_chart_invalid",

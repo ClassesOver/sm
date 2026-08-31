@@ -53,8 +53,40 @@ class RuntimeSectionsMixin:
         section_code: str,
         claims: list[dict[str, Any]],
         work_item: SectionWorkItem,
-    ) -> tuple[SectionClaim, ...]:
-        submissions = tuple(SectionClaimSubmission.model_validate(item) for item in claims)
+    ) -> tuple[tuple[SectionClaim, ...], tuple[dict[str, Any], ...]]:
+        warnings: list[dict[str, Any]] = []
+        submissions: list[SectionClaimSubmission] = []
+        seen_claim_ids: set[str] = set()
+        for index, item in enumerate(claims):
+            try:
+                submission = SectionClaimSubmission.model_validate(item)
+            except ValidationError as error:
+                warnings.append(
+                    {
+                        "code": "report_section_claim_invalid",
+                        "message": "章节 claim 结构无效，已省略该 claim。",
+                        "details": {
+                            "index": index,
+                            "errors": error.errors(
+                                include_url=False,
+                                include_context=False,
+                                include_input=False,
+                            ),
+                        },
+                    }
+                )
+                continue
+            if submission.claim_id in seen_claim_ids:
+                warnings.append(
+                    {
+                        "code": "report_section_claim_duplicate",
+                        "message": "章节 claimId 重复，已保留首次提交。",
+                        "details": {"claimId": submission.claim_id},
+                    }
+                )
+                continue
+            seen_claim_ids.add(submission.claim_id)
+            submissions.append(submission)
         metrics_by_code = {item.code: item for item in work_item.metric_definitions}
         charts_by_id = {item.chart_id: item for item in work_item.charts}
         known_citations = {item.citation_id for item in work_item.citations}
@@ -67,44 +99,82 @@ class RuntimeSectionsMixin:
         for submission in submissions:
             metric = metrics_by_code.get(submission.metric_code)
             if metric is None:
-                raise ReportingError(
-                    "report_section_claim_metric_unknown",
-                    "章节 claim 引用了未冻结指标。",
-                    details={
-                        "sectionCode": section_code,
-                        "claimId": submission.claim_id,
-                        "metricCode": submission.metric_code,
-                        "expectedMetricCodes": sorted(metrics_by_code),
-                    },
+                warnings.append(
+                    {
+                        "code": "report_section_claim_metric_unknown",
+                        "message": "章节 claim 引用了未冻结指标，已保留正文并标记警告。",
+                        "details": {
+                            "sectionCode": section_code,
+                            "claimId": submission.claim_id,
+                            "metricCode": submission.metric_code,
+                            "expectedMetricCodes": sorted(metrics_by_code),
+                        },
+                    }
                 )
             management_question = questions_by_ref.get(submission.management_question_ref)
             if management_question is None:
-                raise ReportingError(
-                    "report_section_claim_question_unknown",
-                    "章节 claim 引用了当前章节外的管理问题。",
-                    details={
-                        "sectionCode": section_code,
-                        "claimId": submission.claim_id,
-                        "managementQuestionRef": submission.management_question_ref,
-                        "expectedManagementQuestionRefs": list(questions_by_ref),
-                    },
+                warnings.append(
+                    {
+                        "code": "report_section_claim_question_unknown",
+                        "message": "章节 claim 未匹配当前章节管理问题，已保留并标记警告。",
+                        "details": {
+                            "sectionCode": section_code,
+                            "claimId": submission.claim_id,
+                            "managementQuestionRef": submission.management_question_ref,
+                            "expectedManagementQuestionRefs": list(questions_by_ref),
+                        },
+                    }
                 )
-            if set(submission.citation_ids) - known_citations:
-                raise ReportingError(
-                    "report_section_claim_citation_unknown",
-                    "章节 claim 引用了 SectionWorkItem 外的 citation。",
+                management_question = f"未绑定管理问题（{submission.management_question_ref}）"
+            unknown_citations = set(submission.citation_ids) - known_citations
+            citation_ids = [
+                citation_id
+                for citation_id in submission.citation_ids
+                if citation_id in known_citations
+            ]
+            if unknown_citations:
+                warnings.append(
+                    {
+                        "code": "report_section_claim_citation_unknown",
+                        "message": "章节 claim 的未知 citation 已从绑定中移除。",
+                        "details": {
+                            "sectionCode": section_code,
+                            "claimId": submission.claim_id,
+                            "unknownCitationIds": sorted(unknown_citations),
+                        },
+                    }
                 )
-            if set(submission.chart_ids) - set(charts_by_id):
-                raise ReportingError(
-                    "report_section_claim_chart_unknown",
-                    "章节 claim 引用了 SectionWorkItem 外的 chart。",
+            unknown_charts = set(submission.chart_ids) - set(charts_by_id)
+            chart_ids = tuple(
+                chart_id for chart_id in submission.chart_ids if chart_id in charts_by_id
+            )
+            if unknown_charts:
+                warnings.append(
+                    {
+                        "code": "report_section_claim_chart_unknown",
+                        "message": "章节 claim 的未知 chart 已从绑定中移除。",
+                        "details": {
+                            "sectionCode": section_code,
+                            "claimId": submission.claim_id,
+                            "unknownChartIds": sorted(unknown_charts),
+                        },
+                    }
                 )
+            if not citation_ids:
+                warnings.append(
+                    {
+                        "code": "report_section_claim_citation_missing",
+                        "message": "章节 claim 没有可验证 citation，已省略该 claim。",
+                        "details": {"sectionCode": section_code, "claimId": submission.claim_id},
+                    }
+                )
+                continue
 
-            selected_charts = tuple(charts_by_id[item] for item in submission.chart_ids)
-            citation_ids = list(submission.citation_ids)
+            selected_charts = tuple(charts_by_id[item] for item in chart_ids)
             if selected_charts:
                 # 图表周期与可比性来自分析阶段冻结契约，不能让章节模型重新转录或覆盖。
-                # 同一 claim 绑定多图时只有完全相同的语义才可确定性派生，否则失败关闭。
+                # 同一 claim 绑定多图时只有完全相同的语义才可确定性派生；冲突时保留
+                # 首张图的冻结语义并记录警告，避免模型原样重试阻塞整个章节。
                 semantic_keys = {
                     (
                         chart.current_period,
@@ -115,17 +185,25 @@ class RuntimeSectionsMixin:
                     for chart in selected_charts
                 }
                 if len(semantic_keys) != 1:
-                    raise ReportingError(
-                        "report_section_claim_chart_semantics_conflict",
-                        "同一章节 claim 绑定的图表期间或可比性语义不一致。",
-                        details={
-                            "sectionCode": section_code,
-                            "claimId": submission.claim_id,
-                            "chartIds": list(submission.chart_ids),
-                        },
+                    warnings.append(
+                        {
+                            "code": "report_section_claim_chart_semantics_conflict",
+                            "message": "同一 claim 的图表语义不一致，已使用首张图表的冻结语义。",
+                            "details": {
+                                "sectionCode": section_code,
+                                "claimId": submission.claim_id,
+                                "chartIds": list(chart_ids),
+                            },
+                        }
                     )
-                current_period, comparison_period, comparison_type, comparability = next(
-                    iter(semantic_keys)
+                    selected_charts = selected_charts[:1]
+                    chart_ids = (selected_charts[0].chart_id,)
+                first_chart = selected_charts[0]
+                current_period, comparison_period, comparison_type, comparability = (
+                    first_chart.current_period,
+                    first_chart.comparison_period,
+                    first_chart.comparison_type,
+                    first_chart.comparability,
                 )
                 for chart in selected_charts:
                     for citation_id in chart.citation_ids:
@@ -133,39 +211,63 @@ class RuntimeSectionsMixin:
                             citation_ids.append(citation_id)
             else:
                 if submission.current_period is None:
-                    raise ReportingError(
-                        "report_section_claim_period_missing",
-                        "未绑定图表的章节 claim 必须声明 currentPeriod。",
-                        details={
-                            "sectionCode": section_code,
-                            "claimId": submission.claim_id,
-                        },
+                    warnings.append(
+                        {
+                            "code": "report_section_claim_period_missing",
+                            "message": "章节 claim 未声明 currentPeriod，已使用指标期间口径。",
+                            "details": {
+                                "sectionCode": section_code,
+                                "claimId": submission.claim_id,
+                            },
+                        }
                     )
-                current_period = submission.current_period
+                current_period = submission.current_period or (
+                    metric.period_basis if metric is not None else "未声明期间"
+                )
                 comparison_period = submission.comparison_period
                 comparison_type = submission.comparison_type
                 comparability = submission.comparability
 
-            normalized.append(
-                SectionClaim(
+            try:
+                normalized_claim = SectionClaim(
                     claimId=submission.claim_id,
                     metricCode=submission.metric_code,
                     value=submission.value,
-                    periodBasis=metric.period_basis,
+                    periodBasis=(
+                        metric.period_basis
+                        if metric is not None
+                        else submission.current_period or "未冻结指标口径"
+                    ),
                     comparison=submission.comparison,
                     managementQuestion=management_question,
                     currentPeriod=current_period,
                     comparisonPeriod=comparison_period,
                     comparisonType=comparison_type,
                     citationIds=tuple(citation_ids),
-                    chartIds=submission.chart_ids,
+                    chartIds=chart_ids,
                     comparability=comparability,
                     conclusionType=submission.conclusion_type,
                     aggregationGrain=submission.aggregation_grain,
                     entityGrain=submission.entity_grain,
                 )
-            )
-        return tuple(normalized)
+            except ValidationError as error:
+                warnings.append(
+                    {
+                        "code": "report_section_claim_invalid",
+                        "message": "章节 claim 归一化后仍不满足结构约束，已省略该 claim。",
+                        "details": {
+                            "claimId": submission.claim_id,
+                            "errors": error.errors(
+                                include_url=False,
+                                include_context=False,
+                                include_input=False,
+                            ),
+                        },
+                    }
+                )
+                continue
+            normalized.append(normalized_claim)
+        return tuple(normalized), tuple(warnings)
 
     @staticmethod
     def _require_analysis_rework_constraints(
@@ -321,13 +423,56 @@ class RuntimeSectionsMixin:
         # 明确回执重试，只通过 chartIds 登记图表。
         parsed_blocks = tuple(ReportDraftBlock.model_validate(item) for item in blocks)
         validate_report_draft_blocks(parsed_blocks)
-        normalized_claims = self._normalize_section_claims(
+        normalized_claims, claim_warnings = self._normalize_section_claims(
             section_code=section_code,
             claims=claims,
             work_item=work_item,
         )
+        referenced_claim_ids = {claim_id for block in parsed_blocks for claim_id in block.claim_ids}
+        normalized_claims = tuple(
+            claim for claim in normalized_claims if claim.claim_id in referenced_claim_ids
+        )
+        normalized_claim_ids = {claim.claim_id for claim in normalized_claims}
+        normalized_blocks: list[ReportDraftBlock] = []
+        warning_items = list(claim_warnings)
+        for block in parsed_blocks:
+            unknown_claim_ids = set(block.claim_ids) - normalized_claim_ids
+            if unknown_claim_ids:
+                warning_items.append(
+                    {
+                        "code": "report_section_block_claim_unknown",
+                        "message": "正文 block 的无效 claim 引用已移除。",
+                        "details": {
+                            "sectionCode": section_code,
+                            "blockId": block.block_id,
+                            "unknownClaimIds": sorted(unknown_claim_ids),
+                        },
+                    }
+                )
+            normalized_blocks.append(
+                block.model_copy(
+                    update={
+                        "claim_ids": tuple(
+                            claim_id
+                            for claim_id in block.claim_ids
+                            if claim_id in normalized_claim_ids
+                        )
+                    }
+                )
+            )
+        artifact_version = (
+            "2"
+            if normalized_claims and all(block.claim_ids for block in normalized_blocks)
+            else "1"
+        )
         artifact = SectionArtifact.model_validate(
-            {"sectionCode": section_code, "blocks": parsed_blocks, "claims": normalized_claims}
+            {
+                "version": artifact_version,
+                "sectionCode": section_code,
+                "blocks": normalized_blocks,
+                "claims": normalized_claims,
+                "warnings": warning_items[-500:],
+            }
         )
         known_citations = {item.citation_id for item in work_item.citations}
         known_charts = {item.chart_id for item in work_item.charts}
@@ -351,17 +496,16 @@ class RuntimeSectionsMixin:
         for claim in artifact.claims:
             metric = metrics_by_code.get(claim.metric_code)
             if metric is None:
-                raise ReportingError(
-                    "report_section_claim_metric_unknown",
-                    "章节 claim 引用了未冻结指标。",
-                    details={
+                semantic_conflicts.append(
+                    {
+                        "code": "report_section_claim_metric_unknown",
                         "sectionCode": section_code,
                         "claimId": claim.claim_id,
                         "metricCode": claim.metric_code,
                         "expectedMetricCodes": sorted(metrics_by_code),
-                    },
+                    }
                 )
-            if claim.period_basis != metric.period_basis:
+            elif claim.period_basis != metric.period_basis:
                 semantic_conflicts.append(
                     {
                         "code": "report_period_basis_conflict",
@@ -383,16 +527,6 @@ class RuntimeSectionsMixin:
                         "expectedManagementQuestions": sorted(management_questions),
                         "actualManagementQuestion": claim.management_question,
                     }
-                )
-            if set(claim.citation_ids) - known_citations:
-                raise ReportingError(
-                    "report_section_claim_citation_unknown",
-                    "章节 claim 引用了 SectionWorkItem 外的 citation。",
-                )
-            if set(claim.chart_ids) - known_charts:
-                raise ReportingError(
-                    "report_section_claim_chart_unknown",
-                    "章节 claim 引用了 SectionWorkItem 外的 chart。",
                 )
             claim_datasets = {citation_datasets[citation_id] for citation_id in claim.citation_ids}
             for chart_id in claim.chart_ids:
@@ -493,21 +627,23 @@ class RuntimeSectionsMixin:
                         }
                     )
         if semantic_conflicts:
-            first = semantic_conflicts[0]
-            code = str(first["code"])
-            details = {key: value for key, value in first.items() if key != "code"}
-            if len(semantic_conflicts) > 1:
-                details["conflicts"] = [
-                    {key: value for key, value in conflict.items() if key != "code"}
-                    for conflict in semantic_conflicts
-                ]
             messages = {
+                "report_section_claim_metric_unknown": "章节 claim 引用了未冻结指标。",
                 "report_period_basis_conflict": "章节 claim 的期间口径与冻结指标不一致。",
                 "report_section_claim_brief_conflict": "章节 claim 未绑定 ReportBrief 的管理问题。",
                 "report_section_claim_chart_conflict": "章节 claim 与冻结图表的指标、来源或期间语义不一致。",
                 "report_cross_source_inference_unsupported": "reference_only claim 的正文必须明确标记为参考。",
             }
-            raise ReportingError(code, messages[code], details=details)
+            warning_items = list(artifact.warnings)
+            warning_items.extend(
+                {
+                    "code": str(conflict["code"]),
+                    "message": messages[str(conflict["code"])],
+                    "details": {key: value for key, value in conflict.items() if key != "code"},
+                }
+                for conflict in semantic_conflicts
+            )
+            artifact = artifact.model_copy(update={"warnings": tuple(warning_items[-500:])})
         referenced_citations = {
             citation_id for block in artifact.blocks for citation_id in block.citation_ids
         }

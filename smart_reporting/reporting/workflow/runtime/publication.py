@@ -57,15 +57,15 @@ def evaluate_publication_semantics(
     section_artifacts: tuple[SectionArtifact, ...],
     citations: tuple[SectionCitation, ...],
 ) -> dict[str, Any]:
-    """交叉核对冻结指标、Dataset 语义与正文 claim，只阻断实际发布的结论。"""
+    """交叉核对冻结指标、Dataset 语义与正文 claim，并返回非阻断质量警告。"""
 
-    issues: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     metrics = {item.code: item for item in evidence_manifest.metric_definitions}
     citation_datasets = {item.citation_id: item.dataset_id for item in citations}
     dataset_semantics = {item.dataset_id: item for item in evidence_manifest.dataset_semantics}
 
     def issue(code: str, claim_id: str) -> None:
-        issues.append(
+        warnings.append(
             {
                 "code": code,
                 "message": code,
@@ -115,7 +115,7 @@ def evaluate_publication_semantics(
                 "efficiency",
             }:
                 issue("report_cross_source_inference_unsupported", claim.claim_id)
-    return {"formalReleaseAllowed": not issues, "issues": issues}
+    return {"formalReleaseAllowed": True, "issues": [], "warnings": warnings}
 
 
 class RuntimePublicationMixin:
@@ -552,7 +552,10 @@ class RuntimePublicationMixin:
                     for item in authoritative_citations(lineage)
                 ),
             )
-            issues.extend(semantic_gate["issues"])
+            warnings.extend(semantic_gate["warnings"])
+            warnings.extend(
+                warning for artifact in section_artifacts for warning in artifact.warnings
+            )
         except (TypeError, ValueError, ValidationError, AttributeError):
             issue("analysis_checkpoint_invalid", "发布门禁无法核验冻结分析产物。")
 
