@@ -2363,8 +2363,7 @@ def _ensure_visual_inspection_capability(
             item.visual_inspection_mode
             for item in reversed(checkpoint.trace)
             if item.phase == "analysis"
-            and item.work_kind
-            in {"visualization", "visualization_section", "visualization_finalize"}
+            and item.work_kind in {"visualization_section", "visualization_finalize"}
             and item.visual_inspection_mode is not None
         ),
         None,
@@ -2379,9 +2378,7 @@ def _ensure_visual_inspection_capability(
 def _checkpoint_retry_error(
     checkpoint: ReportingCheckpoint,
     *,
-    work_kind: Literal[
-        "analysis_item", "visualization", "visualization_section", "visualization_finalize"
-    ],
+    work_kind: Literal["analysis_item", "visualization_section", "visualization_finalize"],
     analysis_id: str | None,
     retry_reason: str | None,
 ) -> ReportingError | None:
@@ -2435,9 +2432,7 @@ def _checkpoint_retry_error(
 def _checkpoint_retry_usage(
     error: Exception,
     *,
-    work_kind: Literal[
-        "analysis_item", "visualization", "visualization_section", "visualization_finalize"
-    ],
+    work_kind: Literal["analysis_item", "visualization_section", "visualization_finalize"],
 ) -> CheckpointRetryUsage:
     if work_kind == "analysis_item":
         return CheckpointRetryUsage(analysisFactQueriesUsed=_analysis_fact_retry_usage(error))

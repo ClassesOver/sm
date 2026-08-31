@@ -893,7 +893,7 @@ def test_pending_analysis_rework_is_covered_by_later_visualization_freeze() -> N
                 ContextTrace(
                     phase="analysis",
                     taskId="analysis-visualization",
-                    workKind="visualization",
+                    workKind="visualization_finalize",
                     status="completed",
                 ),
             ),
@@ -1264,7 +1264,7 @@ def test_fresh_retry_restores_stable_error_for_matching_failed_work() -> None:
     assert (
         _checkpoint_retry_error(
             stored,
-            work_kind="visualization",
+            work_kind="visualization_section",
             analysis_id=None,
             retry_reason=None,
         )
@@ -1284,7 +1284,7 @@ def test_fresh_retry_does_not_bind_another_work_items_error() -> None:
                 code="report_visualization_tool_budget_exhausted",
                 message="A 的预算耗尽。",
                 taskId="visualization-task-a",
-                workKind="visualization",
+                workKind="visualization_section",
                 attempt=0,
                 retryUsage=CheckpointRetryUsage(
                     visualizationReadUnitsUsed=11,
@@ -1299,14 +1299,14 @@ def test_fresh_retry_does_not_bind_another_work_items_error() -> None:
                 ContextTrace(
                     phase="analysis",
                     taskId="visualization-task-a",
-                    workKind="visualization",
+                    workKind="visualization_section",
                     attempt=0,
                     status="failed",
                 ),
                 ContextTrace(
                     phase="analysis",
                     taskId="visualization-task-b",
-                    workKind="visualization",
+                    workKind="visualization_section",
                     attempt=1,
                     status="failed",
                 ),
@@ -1317,7 +1317,7 @@ def test_fresh_retry_does_not_bind_another_work_items_error() -> None:
     with pytest.raises(ReportingError) as mismatch:
         _checkpoint_retry_error(
             stored,
-            work_kind="visualization",
+            work_kind="visualization_section",
             analysis_id=None,
             retry_reason=None,
         )
@@ -1326,7 +1326,7 @@ def test_fresh_retry_does_not_bind_another_work_items_error() -> None:
     only_a = stored.model_copy(update={"trace": stored.trace[:1]})
     restored = _checkpoint_retry_error(
         only_a,
-        work_kind="visualization",
+        work_kind="visualization_section",
         analysis_id=None,
         retry_reason=None,
     )
@@ -1388,7 +1388,7 @@ def test_visualization_capability_drift_fails_closed(
     trace = ContextTrace.model_construct(
         phase="analysis",
         task_id="visualization-task-1",
-        work_kind="visualization",
+        work_kind="visualization_section",
         attempt=0,
         status="failed",
         visual_inspection_mode=previous_mode,
@@ -1405,7 +1405,7 @@ def test_visualization_capability_is_stable_across_fresh_retry() -> None:
     trace = ContextTrace.model_construct(
         phase="analysis",
         task_id="visualization-task-1",
-        work_kind="visualization",
+        work_kind="visualization_section",
         attempt=0,
         status="failed",
         visual_inspection_mode="deterministic",

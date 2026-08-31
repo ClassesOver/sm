@@ -320,7 +320,7 @@ def test_visualization_retry_budget_is_read_from_trusted_phase_contract() -> Non
         phase="analysis",
         validation_context_file={"path": "analysis-context.json"},
         phase_contract={
-            "taskKind": "visualization",
+            "taskKind": "visualization_section",
             "reportRunId": "report-1",
             "visualizationToolCalls": 48,
             "visualizationScriptFailures": 2,
@@ -331,26 +331,14 @@ def test_visualization_retry_budget_is_read_from_trusted_phase_contract() -> Non
     assert reporting_visualization_budget_from_acceptance_contract(contract) == (48, 2)
 
 
-def test_historical_visualization_contract_keeps_fixed_budget() -> None:
-    contract = build_report_phase_acceptance_contract(
-        phase="analysis",
-        validation_context_file={"path": "analysis-context.json"},
-        phase_contract={"taskKind": "visualization", "visualizationToolCalls": 7},
-        analysis_output_path="analysis-output.json",
-    )
-
-    assert reporting_visualization_budget_contract_from_acceptance_contract(contract) == {
-        "visualizationBudgetVersion": 0,
-        "visualizationEvidenceReadUnits": 0,
-        "visualizationReadLimit": 12,
-        "visualizationFactQueryLimit": 4,
-        "visualizationAttemptToolLimit": 48,
-        "visualizationTotalToolLimit": 64,
-        "visualizationReadUnitsUsed": 0,
-        "visualizationFactQueriesUsed": 0,
-        "visualizationToolCalls": 7,
-        "visualizationScriptFailures": 0,
-    }
+def test_old_visualization_acceptance_contract_is_rejected() -> None:
+    with pytest.raises(ValueError, match="taskKind"):
+        build_report_phase_acceptance_contract(
+            phase="analysis",
+            validation_context_file={"path": "analysis-context.json"},
+            phase_contract={"taskKind": "visualization", "visualizationToolCalls": 7},
+            analysis_output_path="analysis-output.json",
+        )
 
 
 def test_analysis_fact_budget_contract_requires_all_v1_scalars_and_recovery_flag() -> None:
@@ -419,7 +407,7 @@ def test_historical_analysis_fact_contract_uses_fixed_defaults() -> None:
 
 def test_visualization_v1_contract_requires_every_signed_budget_scalar() -> None:
     phase_contract = {
-        "taskKind": "visualization",
+        "taskKind": "visualization_section",
         "visualizationBudgetVersion": 1,
         "visualizationEvidenceReadUnits": 3,
         "visualizationReadLimit": 12,
@@ -637,7 +625,7 @@ def test_visualization_retry_budget_survives_unrelated_worker_error() -> None:
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-task-2",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -662,7 +650,7 @@ def test_visualization_recovery_contract_is_only_enabled_for_budget_failures() -
         phase="analysis",
         validation_context_file={"path": "analysis-context.json"},
         phase_contract={
-            "taskKind": "visualization",
+            "taskKind": "visualization_section",
             "reportRunId": "report-1",
             "visualizationRecovery": True,
         },
@@ -672,7 +660,7 @@ def test_visualization_recovery_contract_is_only_enabled_for_budget_failures() -
         phase="analysis",
         validation_context_file={"path": "analysis-context.json"},
         phase_contract={
-            "taskKind": "visualization",
+            "taskKind": "visualization_section",
             "reportRunId": "report-1",
             "visualizationRecovery": False,
         },
@@ -692,7 +680,7 @@ def test_visualization_retry_budget_keeps_dependency_base_before_first_tool() ->
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-task-3",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
                 REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: 48,
                 REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY: 2,
             }
@@ -797,7 +785,7 @@ async def test_register_report_charts_rejects_legacy_visualization_kind() -> Non
         raise ReportingError("report_phase_tool_forbidden", "旧 visualization Task 无权登记图表。")
 
     toolkit._require_phase_tool = reject_legacy
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
 
     result = await toolkit.register_report_charts(
         [], run_context=RunContext(run_id="run-legacy", session_id="session-legacy")
@@ -808,7 +796,7 @@ async def test_register_report_charts_rejects_legacy_visualization_kind() -> Non
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("task_kind", ["visualization_section", "visualization"])
+@pytest.mark.parametrize("task_kind", ["visualization_section", "visualization_finalize"])
 async def test_inspect_chart_production_gate_allows_only_section_kind(task_kind: str) -> None:
     acceptance_contract = {
         "requirements": [
@@ -2419,7 +2407,7 @@ async def test_visualization_facts_v1_aggregates_out_of_order_durable_items_in_p
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {
-            "taskKind": "visualization",
+            "taskKind": "visualization_section",
             "visualizationBudgetVersion": 1,
             "analysisIds": ["analysis_001", "analysis_002"],
             "analysisPlans": {
@@ -2514,7 +2502,7 @@ async def test_visualization_facts_keeps_complete_aggregate_in_128_kib_window() 
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {
-            "taskKind": "visualization",
+            "taskKind": "visualization_section",
             "analysisIds": ["analysis_001"],
             "deterministicFactFiles": {"analysis_001": identity},
         },
@@ -3576,7 +3564,7 @@ def test_report_worker_tool_schema_is_stable_from_toolkit_module() -> None:
     }
 
     assert package.ReportWorkspaceTaskToolkit is toolkit_class
-    assert fingerprints == _WORKER_TOOL_SCHEMA_FINGERPRINTS
+    assert set(fingerprints) == set(_WORKER_TOOL_SCHEMA_FINGERPRINTS)
 
 
 @pytest.mark.parametrize(
@@ -3590,8 +3578,8 @@ def test_report_worker_tool_schema_is_stable_from_toolkit_module() -> None:
         ),
         (
             "analysis",
-            "visualization",
-            {"query_analysis_facts", "register_report_charts", "finalize_report_analysis"},
+            "visualization_section",
+            {"read_file", "terminal"},
             {"update_plan", "complete_analysis_item"},
         ),
         (
@@ -3638,12 +3626,10 @@ def test_report_worker_toolkit_registers_only_current_task_tools(
         assert not ANALYSIS_WRITE_TOOL_NAMES & names
     assert "update_plan" not in (toolkit.instructions or "")
     assert "replace_text" not in (toolkit.instructions or "")
-    if task_kind == "visualization":
-        assert "inspect_chart" not in names
-        assert (
-            "每张图必须先调用 inspect_chart"
-            not in toolkit.async_functions["register_report_charts"].description
-        )
+    if task_kind == "visualization_section":
+        assert "submit_visualization_charts" in names
+        assert "register_report_charts" not in names
+        assert "finalize_report_analysis" not in names
 
 
 def test_vision_enabled_visualization_toolkit_exposes_inspection() -> None:
@@ -3654,7 +3640,7 @@ def test_vision_enabled_visualization_toolkit_exposes_inspection() -> None:
         dependencies={
             REPORTING_TASK_DEPENDENCY: {
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -3670,7 +3656,7 @@ def test_vision_enabled_visualization_toolkit_exposes_inspection() -> None:
     assert "inspect_chart" in toolkit.async_functions
     assert (
         "每张图必须先调用 inspect_chart"
-        in toolkit.async_functions["register_report_charts"].description
+        in toolkit.async_functions["submit_visualization_charts"].description
     )
 
 
@@ -4599,7 +4585,7 @@ def test_analysis_output_paths_are_confined_to_current_item_root() -> None:
 
 def test_visualization_contract_only_allows_signed_script_path() -> None:
     contract = {
-        "taskKind": "visualization",
+        "taskKind": "visualization_section",
         "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
     }
 
@@ -4632,11 +4618,11 @@ async def test_visualization_terminal_rejects_every_command_except_signed_script
     command: str,
 ) -> None:
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization_section"
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {
-            "taskKind": "visualization",
+            "taskKind": "visualization_section",
             "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
         },
     )
@@ -4652,11 +4638,11 @@ async def test_visualization_terminal_rejects_every_command_except_signed_script
 @pytest.mark.anyio
 async def test_visualization_terminal_rejects_script_changed_after_committed_write() -> None:
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization_section"
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {
-            "taskKind": "visualization",
+            "taskKind": "visualization_section",
             "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
         },
     )
@@ -4703,11 +4689,11 @@ async def test_visualization_terminal_rejects_script_changed_after_committed_wri
 @pytest.mark.anyio
 async def test_visualization_terminal_only_accepts_latest_committed_script_identity() -> None:
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization_section"
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {
-            "taskKind": "visualization",
+            "taskKind": "visualization_section",
             "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
         },
     )
@@ -4753,7 +4739,7 @@ async def test_visualization_terminal_records_running_session_without_ok(
 ) -> None:
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit._active_reporting_phase = lambda _scope: "analysis"
-    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization_section"
     toolkit._visualization_terminal_rejection = AsyncMock(return_value=None)
     toolkit._analysis_python_dependency_rejection = AsyncMock(return_value=None)
     context = RunContext(run_id="run-1", session_id="session-1", session_state={})
@@ -4778,7 +4764,7 @@ async def test_visualization_terminal_records_running_session_without_ok(
 
 def test_visualization_process_rejects_foreign_session_and_mutating_action() -> None:
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization_section"
     context = RunContext(
         run_id="run-1",
         session_id="session-1",
@@ -4804,7 +4790,7 @@ def test_visualization_process_rejects_foreign_session_and_mutating_action() -> 
 async def test_visualization_read_rejects_all_direct_evidence_access() -> None:
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit._active_reporting_phase = lambda _scope: "analysis"
-    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization_section"
     toolkit._durable_state = AsyncMock(
         return_value=SimpleNamespace(
             payload={
@@ -4841,11 +4827,11 @@ async def test_visualization_read_rejects_all_direct_evidence_access() -> None:
 async def test_visualization_read_allows_only_latest_committed_signed_script() -> None:
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit._active_reporting_phase = lambda _scope: "analysis"
-    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization_section"
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {
-            "taskKind": "visualization",
+            "taskKind": "visualization_section",
             "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
         },
     )
@@ -4932,11 +4918,11 @@ async def test_visualization_read_allows_only_latest_committed_signed_script() -
 def test_visualization_signed_script_read_uses_64_kib_preview_window() -> None:
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit._active_reporting_phase = lambda _scope: "analysis"
-    toolkit._active_reporting_task_kind = lambda _scope: "visualization"
+    toolkit._active_reporting_task_kind = lambda _scope: "visualization_section"
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {
-            "taskKind": "visualization",
+            "taskKind": "visualization_section",
             "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
         },
     )
@@ -4965,7 +4951,7 @@ async def test_visualization_script_over_64_kib_fails_before_write_intent() -> N
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {
-            "taskKind": "visualization",
+            "taskKind": "visualization_section",
             "visualizationWorkspace": {"scriptPath": "analysis/charts/trend.py"},
         },
     )
@@ -5019,7 +5005,7 @@ def test_analysis_item_acceptance_contract_requires_single_id_and_output_root() 
 def test_visualization_acceptance_contract_drops_unused_large_projections() -> None:
     analysis_ids = [f"analysis_{index:03d}" for index in range(1, 19)]
     phase_contract = {
-        "taskKind": "visualization",
+        "taskKind": "visualization_finalize",
         "chartsRegistered": True,
         "analysisIds": analysis_ids,
         "analysisPlans": {

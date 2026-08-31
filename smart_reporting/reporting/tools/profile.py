@@ -440,7 +440,9 @@ class RuntimeProfileMixin:
             allowed=frozenset({"analysis"}),
             tool_name="query_analysis_context",
             run_context=run_context,
-            task_kinds=frozenset({"analysis_item", "visualization"}),
+            task_kinds=frozenset(
+                {"analysis_item", "visualization_section", "visualization_finalize"}
+            ),
         )
         validation_context = await self._read_trusted_json(
             thread_id=scope.thread_id,
@@ -537,7 +539,9 @@ class RuntimeProfileMixin:
             allowed=frozenset({"analysis"}),
             tool_name="query_analysis_facts",
             run_context=run_context,
-            task_kinds=frozenset({"analysis_item", "visualization"}),
+            task_kinds=frozenset(
+                {"analysis_item", "visualization_section", "visualization_finalize"}
+            ),
         )
         raw_fact_files = contract.get("deterministicFactFiles")
         if not isinstance(raw_fact_files, dict):
@@ -564,7 +568,10 @@ class RuntimeProfileMixin:
                 "report_analysis_facts_invalid", "当前 Task 的 facts 注册表不完整。"
             )
         durable_items: Mapping[str, Any] = {}
-        if task_kind == "visualization" and contract.get("visualizationBudgetVersion") == 1:
+        if (
+            task_kind in {"visualization_section", "visualization_finalize"}
+            and contract.get("visualizationBudgetVersion") == 1
+        ):
             durable = await self._durable_state(scope)
             raw_completed = durable.payload.get("completedAnalysisIds")
             completed_ids = [
@@ -583,7 +590,8 @@ class RuntimeProfileMixin:
             durable_items = raw_items
         plans = (
             durable.payload.get("analysisPlans")
-            if task_kind == "visualization" and contract.get("visualizationBudgetVersion") == 1
+            if task_kind in {"visualization_section", "visualization_finalize"}
+            and contract.get("visualizationBudgetVersion") == 1
             else contract.get("analysisPlans")
         )
         plans = plans if isinstance(plans, Mapping) else {}
@@ -643,7 +651,7 @@ class RuntimeProfileMixin:
         effective_limit = min(maxItems, MAX_PROFILE_POINTER_ITEMS)
         output_limit = (
             MAX_VISUALIZATION_FACTS_OUTPUT_BYTES
-            if task_kind == "visualization"
+            if task_kind in {"visualization_section", "visualization_finalize"}
             else MAX_PROFILE_POINTER_OUTPUT_BYTES
         )
         while True:
@@ -662,7 +670,7 @@ class RuntimeProfileMixin:
             if len(encoded) <= output_limit:
                 bound_options = (
                     {"preview_bytes": MAX_VISUALIZATION_FACTS_OUTPUT_BYTES}
-                    if task_kind == "visualization"
+                    if task_kind in {"visualization_section", "visualization_finalize"}
                     else {}
                 )
                 return await self._record_and_bound_profile_result(

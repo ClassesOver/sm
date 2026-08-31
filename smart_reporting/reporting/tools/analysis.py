@@ -389,7 +389,7 @@ class RuntimeAnalysisMixin:
         script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
         normalized_script = (
             WorkspaceService.normalize_path(script_path, allow_root=False)[0]
-            if contract.get("taskKind") == "visualization"
+            if contract.get("taskKind") == "visualization_section"
             else None
         )
         for change in changes:

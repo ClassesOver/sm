@@ -517,6 +517,33 @@ class ReportWorkspaceTaskToolkit(
         )
         self.register(
             Function(
+                name="submit_visualization_charts",
+                description=(
+                    "提交当前 visualization_section 的全部图表草案并结束该章节 worker；"
+                    "允许 charts 为空。每张图必须先调用 inspect_chart，且必须来自当前章节"
+                    "签发的 chartOutputRoot。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "sectionCode": {"type": "string", "minLength": 1, "maxLength": 128},
+                        "charts": {
+                            "type": "array",
+                            "maxItems": 100,
+                            "items": ReportChartRegistration.model_json_schema(by_alias=True),
+                        },
+                    },
+                    "required": ["sectionCode", "charts"],
+                    "additionalProperties": False,
+                },
+                strict=True,
+                entrypoint=self.submit_visualization_charts,
+                pre_hook=_reset_stop_after_tool_call,
+                post_hook=_stop_after_nonretryable_tool_call,
+            )
+        )
+        self.register(
+            Function(
                 name="register_report_charts",
                 description=(
                     "在图表源文件最终定稿后一次登记 Coding 根据本轮不可变 CSV 生成的报告图表；"
@@ -657,7 +684,6 @@ class ReportWorkspaceTaskToolkit(
         task_kind = phase_contract.get("taskKind") if isinstance(phase_contract, dict) else None
         if task_kind not in {
             "analysis_item",
-            "visualization",
             "visualization_section",
             "visualization_finalize",
             "section",
@@ -704,7 +730,7 @@ class ReportWorkspaceTaskToolkit(
         _ = result
         if (
             self._active_reporting_phase(scope) != "analysis"
-            or self._active_reporting_task_kind(scope) != "visualization"
+            or self._active_reporting_task_kind(scope) != "visualization_section"
             or tool_name != "read_file"
         ):
             return None
@@ -1001,7 +1027,7 @@ class ReportWorkspaceTaskToolkit(
         if contract.get("taskKind") == "analysis_item":
             cls._require_analysis_output_paths(contract, paths)
             return
-        if contract.get("taskKind") == "visualization":
+        if contract.get("taskKind") == "visualization_section":
             workspace = contract.get("visualizationWorkspace")
             script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
             try:
@@ -1067,7 +1093,7 @@ class ReportWorkspaceTaskToolkit(
     ) -> dict[str, Any] | None:
         if (
             self._active_reporting_phase(scope) != "analysis"
-            or self._active_reporting_task_kind(scope) != "visualization"
+            or self._active_reporting_task_kind(scope) != "visualization_section"
         ):
             return None
         try:
@@ -1111,7 +1137,7 @@ class ReportWorkspaceTaskToolkit(
     async def _visualization_terminal_rejection(
         self, *, scope: Any, arguments: Mapping[str, Any]
     ) -> dict[str, Any] | None:
-        if self._active_reporting_task_kind(scope) != "visualization":
+        if self._active_reporting_task_kind(scope) != "visualization_section":
             return None
         command = arguments.get("command")
         workdir = arguments.get("workdir")
@@ -1155,7 +1181,7 @@ class ReportWorkspaceTaskToolkit(
         arguments: Mapping[str, Any],
         run_context: RunContext | None,
     ) -> dict[str, Any] | None:
-        if self._active_reporting_task_kind(scope) != "visualization":
+        if self._active_reporting_task_kind(scope) != "visualization_section":
             return None
         state = self._session_state(run_context)
         sessions = state.get("reportingVisualizationSessions", ()) if state is not None else ()
@@ -1259,7 +1285,7 @@ class ReportWorkspaceTaskToolkit(
             result = await call(scope)
             if (
                 phase == "analysis"
-                and task_kind == "visualization"
+                and task_kind == "visualization_section"
                 and tool_name == "terminal"
                 and isinstance(result, Mapping)
                 and result.get("status") == "running"

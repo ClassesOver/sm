@@ -354,17 +354,6 @@ def build_report_agent_instructions(run_context: RunContext) -> list[str]:
     task_kind = reporting_task_kind_from_run_context(run_context)
     if phase == "section":
         return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *REPORT_SECTION_AGENT_INSTRUCTIONS]
-    if task_kind == "visualization":
-        visualization = list(REPORT_VISUALIZATION_AGENT_INSTRUCTIONS)
-        if reporting_visual_inspection_mode_from_run_context(run_context) == "deterministic":
-            visualization = [
-                item for item in visualization if "每张最终图表必须先调用 inspect_chart" not in item
-            ]
-            visualization.append(
-                "本 Task 的 visualInspectionMode=deterministic：禁止调用 inspect_chart；"
-                "register_report_charts 会执行确定性图片文件检查，并如实记录未运行模型视觉审查。"
-            )
-        return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *visualization]
     if task_kind == "visualization_section":
         visualization = list(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
         if reporting_visual_inspection_mode_from_run_context(run_context) == "deterministic":

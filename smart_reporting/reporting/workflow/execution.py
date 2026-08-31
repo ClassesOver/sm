@@ -28,6 +28,19 @@ from ..phase import (
     REPORTING_TASK_KIND_DEPENDENCY_KEY,
     REPORTING_THINKING_EFFORT_DEPENDENCY_KEY,
     REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+    REPORTING_VISUALIZATION_BUDGET_VERSION_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_EVIDENCE_READ_UNITS_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
+    REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
     bind_reporting_run_context,
     capture_reporting_projection_metrics,
     record_reporting_tool_event,
@@ -37,6 +50,11 @@ from ..phase import (
     reporting_task_kind_from_acceptance_contract,
     reporting_thinking_effort_from_acceptance_contract,
     reporting_visual_inspection_mode_from_acceptance_contract,
+    reporting_visualization_budget_contract_from_acceptance_contract,
+    reporting_visualization_budget_from_acceptance_contract,
+    reporting_visualization_recovery_from_acceptance_contract,
+    reporting_visualization_registered_from_acceptance_contract,
+    reporting_visualization_usage_from_run_context,
 )
 from .orchestration import record_step_model_metrics
 
@@ -232,6 +250,20 @@ class ReportTaskRunner:
                 visual_inspection_mode = reporting_visual_inspection_mode_from_acceptance_contract(
                     acceptance_contract
                 )
+                visualization_registered = (
+                    reporting_visualization_registered_from_acceptance_contract(acceptance_contract)
+                )
+                visualization_tool_calls, visualization_script_failures = (
+                    reporting_visualization_budget_from_acceptance_contract(acceptance_contract)
+                )
+                visualization_budget = (
+                    reporting_visualization_budget_contract_from_acceptance_contract(
+                        acceptance_contract
+                    )
+                )
+                visualization_recovery = reporting_visualization_recovery_from_acceptance_contract(
+                    acceptance_contract
+                )
                 analysis_fact_budget = (
                     reporting_analysis_fact_budget_contract_from_acceptance_contract(
                         acceptance_contract
@@ -267,6 +299,49 @@ class ReportTaskRunner:
                         "leaseEpoch": session.lease.epoch,
                         "attemptNo": attempt.attempt_no,
                         REPORTING_PHASE_DEPENDENCY_KEY: reporting_phase,
+                        **(
+                            {
+                                REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: visualization_tool_calls,
+                                REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY: visualization_script_failures,
+                                REPORTING_VISUALIZATION_BUDGET_VERSION_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationBudgetVersion"
+                                ],
+                                REPORTING_VISUALIZATION_EVIDENCE_READ_UNITS_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationEvidenceReadUnits"
+                                ],
+                                REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationReadLimit"
+                                ],
+                                REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationFactQueryLimit"
+                                ],
+                                REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationAttemptToolLimit"
+                                ],
+                                REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationTotalToolLimit"
+                                ],
+                                REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationReadUnitsUsed"
+                                ],
+                                REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationFactQueriesUsed"
+                                ],
+                                **(
+                                    {REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY: True}
+                                    if visualization_registered
+                                    else {}
+                                ),
+                                **(
+                                    {REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True}
+                                    if visualization_recovery
+                                    else {}
+                                ),
+                            }
+                            if reporting_task_kind
+                            in {"visualization_section", "visualization_finalize"}
+                            else {}
+                        ),
                         **(
                             {REPORTING_TASK_KIND_DEPENDENCY_KEY: reporting_task_kind}
                             if reporting_task_kind is not None
@@ -364,6 +439,15 @@ class ReportTaskRunner:
                                 worker_run_context
                             )
                         },
+                    )
+                if reporting_task_kind in {
+                    "visualization_section",
+                    "visualization_finalize",
+                } and isinstance(error, Exception):
+                    setattr(
+                        error,
+                        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+                        reporting_visualization_usage_from_run_context(worker_run_context),
                     )
                 await complete_cleanup(self._cancel_and_cleanup(scope, session.lease.epoch))
                 raise

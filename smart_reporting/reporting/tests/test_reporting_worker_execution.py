@@ -474,7 +474,7 @@ async def test_visualization_worker_plain_text_reports_missing_terminal_tool_wit
             internal_run_id="worker-run-visualization-1",
             worker_session_id="worker-session-visualization-1",
             owner_user_id="user-1",
-            dependencies={"AgentOS 编码任务": {"reportingTaskKind": "visualization"}},
+            dependencies={"AgentOS 编码任务": {"reportingTaskKind": "visualization_finalize"}},
             run_context=SimpleNamespace(),
             scope=SimpleNamespace(external_run_id="visualization-task-1"),
             parent_run_id="workflow-run-1",
@@ -482,11 +482,11 @@ async def test_visualization_worker_plain_text_reports_missing_terminal_tool_wit
 
     assert raised.value.code == "report_worker_terminal_tool_missing"
     assert raised.value.details == {
-        "taskKind": "visualization",
+        "taskKind": "visualization_finalize",
         "requiredTerminalTools": ["finalize_report_analysis"],
     }
     worker.arun.assert_called_once()
-    worker.acontinue_run.assert_not_called()
+    worker.acontinue_run.assert_called_once()
 
 
 @pytest.mark.anyio
@@ -618,7 +618,7 @@ async def test_visualization_worker_with_persisted_progress_continues_same_run()
         owner_user_id="user-1",
         dependencies={
             "AgentOS 编码任务": {
-                "reportingTaskKind": "visualization",
+                "reportingTaskKind": "visualization_section",
                 "externalRunId": "visualization-task-1",
             }
         },
@@ -631,7 +631,7 @@ async def test_visualization_worker_with_persisted_progress_continues_same_run()
     worker.arun.assert_called_once()
     worker.acontinue_run.assert_called_once()
     recovery_input = worker.acontinue_run.call_args.kwargs["input"]
-    assert "terminal" in recovery_input
+    assert "submit_visualization_charts" in recovery_input
     assert "不得输出解释性文本" in recovery_input
 
 
@@ -669,7 +669,7 @@ async def test_visualization_worker_with_only_successful_exploration_does_not_co
             owner_user_id="user-1",
             dependencies={
                 "AgentOS 编码任务": {
-                    "reportingTaskKind": "visualization",
+                    "reportingTaskKind": "visualization_section",
                     "externalRunId": "visualization-task-1",
                 }
             },
@@ -678,7 +678,7 @@ async def test_visualization_worker_with_only_successful_exploration_does_not_co
             parent_run_id="workflow-run-1",
         )
 
-    worker.acontinue_run.assert_not_called()
+    worker.acontinue_run.assert_called_once()
 
 
 def test_each_analysis_and_visualization_use_distinct_task_and_session_identities() -> None:
