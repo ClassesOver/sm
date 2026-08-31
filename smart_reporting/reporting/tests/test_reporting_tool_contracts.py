@@ -729,27 +729,7 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
     toolkit._durable_state = AsyncMock(
         return_value=SimpleNamespace(payload={"charts": [], "chartInspectionReceipts": [receipt]})
     )
-    identity = {
-        "chartId": "income",
-        "sourcePath": "analysis/charts/income.png",
-        "title": "收入趋势",
-        "altText": "收入趋势图",
-        "citationIds": ["citation-current", "citation-yoy"],
-        "metricCodes": ["income"],
-        "currentPeriod": "2026-01",
-        "comparisonPeriod": "2025-01",
-        "comparisonType": "yoy",
-        "sourceDatasetId": "dataset-current",
-        "aggregationGrain": "month",
-        "comparability": "strict",
-        "size": 1024,
-        "sha256": "a" * 64,
-        "format": "PNG",
-        "mediaType": "image/png",
-        "extension": ".png",
-        "width": 1000,
-        "height": 700,
-    }
+    toolkit._inspect_chart_file = AsyncMock(return_value=_chart_identity(width=1000, height=700))
     expected_warnings = [
         {
             "code": "chart_low_resolution",
@@ -765,12 +745,11 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
             "chartId": "income",
             "width": 1000,
             "height": 700,
-            "effectiveDpi": 146,
+            "effectiveDpi": 145,
             "minimumDpi": 150,
             "message": "按 A4 正文全宽估算的有效分辨率偏低，仅作为非阻断质量告警。",
         },
     ]
-    toolkit._inspect_chart = AsyncMock(return_value=(identity, expected_warnings))
     toolkit._apply_durable = AsyncMock()
 
     result = await toolkit.register_report_charts(
@@ -1367,10 +1346,45 @@ async def test_inspect_chart_warns_below_effective_a4_body_dpi() -> None:
         "chartId": "income",
         "width": 1000,
         "height": 700,
-        "effectiveDpi": 146,
+        "effectiveDpi": 145,
         "minimumDpi": 150,
         "message": "按 A4 正文全宽估算的有效分辨率偏低，仅作为非阻断质量告警。",
     }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("width", "expected_effective_dpi"), [(1027, 149), (1028, None)])
+async def test_inspect_chart_effective_dpi_uses_raw_threshold(
+    width: int, expected_effective_dpi: int | None
+) -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._inspect_chart_file = AsyncMock(return_value=_chart_identity(width=width, height=700))
+
+    identity, warnings = await toolkit._inspect_chart(
+        thread_id="thread-1",
+        registration=_chart_registration(),
+    )
+
+    assert identity["chartId"] == "income"
+    dpi_warnings = [item for item in warnings if item["code"] == "chart_low_effective_dpi"]
+    if expected_effective_dpi is None:
+        assert dpi_warnings == []
+    else:
+        assert dpi_warnings[0]["effectiveDpi"] == expected_effective_dpi
+
+
+@pytest.mark.anyio
+async def test_inspect_chart_at_minimum_dimensions_has_no_low_resolution_warning() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._inspect_chart_file = AsyncMock(return_value=_chart_identity(width=1200, height=675))
+
+    identity, warnings = await toolkit._inspect_chart(
+        thread_id="thread-1",
+        registration=_chart_registration(),
+    )
+
+    assert identity["chartId"] == "income"
+    assert not any(item["code"] == "chart_low_resolution" for item in warnings)
 
 
 @pytest.mark.anyio
