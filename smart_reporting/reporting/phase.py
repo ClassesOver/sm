@@ -13,7 +13,15 @@ from .models import ReportingError
 from .tools.capabilities import tools_for_task
 
 ReportingPhase = Literal["analysis", "section"]
-ReportingTaskKind = Literal["analysis_item", "visualization", "section"]
+# visualization_section/visualization_finalize 是可视化按章节并行化的新 taskKind；
+# visualization 值必须保留，历史 checkpoint 恢复的旧 run 仍依赖它识别任务身份。
+ReportingTaskKind = Literal[
+    "analysis_item",
+    "visualization",
+    "visualization_section",
+    "visualization_finalize",
+    "section",
+]
 
 # Reporting 使用 1M 模型窗口。phase hard cap 是注意力预算，不是事实层上限：
 # 单项分析和独立章节只投影当前任务需要的事实摘要；完整 Profile、证据正文和
@@ -229,7 +237,20 @@ def reporting_task_kind_from_acceptance_contract(value: Any) -> ReportingTaskKin
     parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
     phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
     task_kind = phase_contract.get("taskKind") if isinstance(phase_contract, Mapping) else None
-    return task_kind if task_kind in {"analysis_item", "visualization", "section"} else None
+    # 与 ReportingTaskKind Literal 保持同一白名单：未知 taskKind 一律拒绝为 None，
+    # 并行可视化新 kind 必须与历史 visualization 同时被接受。
+    return (
+        task_kind
+        if task_kind
+        in {
+            "analysis_item",
+            "visualization",
+            "visualization_section",
+            "visualization_finalize",
+            "section",
+        }
+        else None
+    )
 
 
 def reporting_thinking_effort_from_acceptance_contract(
@@ -592,7 +613,20 @@ def reporting_task_kind_from_run_context(
     task_kind = (
         binding.get(REPORTING_TASK_KIND_DEPENDENCY_KEY) if isinstance(binding, Mapping) else None
     )
-    return task_kind if task_kind in {"analysis_item", "visualization", "section"} else None
+    # 与 ReportingTaskKind Literal 保持同一白名单：未知 taskKind 一律拒绝为 None，
+    # 并行可视化新 kind 必须与历史 visualization 同时被接受。
+    return (
+        task_kind
+        if task_kind
+        in {
+            "analysis_item",
+            "visualization",
+            "visualization_section",
+            "visualization_finalize",
+            "section",
+        }
+        else None
+    )
 
 
 def reporting_thinking_effort_from_run_context(
