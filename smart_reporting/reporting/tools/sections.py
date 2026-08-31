@@ -39,6 +39,11 @@ from .phase_output import REPORT_PHASE_OUTPUT_STATE_KEY
 from .validation import _stable_digest
 
 MAX_REPORT_CHART_BYTES = 10 * 1024 * 1024
+# 174mm 来源于 A4 纸张宽度 210mm 减去现有左右各 18mm 页边距，仅作质量估算，不能作为发布门禁。
+MIN_REPORT_CHART_WIDTH = 1200
+MIN_REPORT_CHART_HEIGHT = 675
+MIN_REPORT_CHART_EFFECTIVE_DPI = 150
+REPORT_BODY_WIDTH_INCHES = 174 / 25.4
 
 
 class RuntimeSectionsMixin:
@@ -757,14 +762,29 @@ class RuntimeSectionsMixin:
         width = int(file_identity["width"])
         height = int(file_identity["height"])
         warnings: list[dict[str, Any]] = []
-        if width < 800 or height < 450:
+        if width < MIN_REPORT_CHART_WIDTH or height < MIN_REPORT_CHART_HEIGHT:
             warnings.append(
                 {
                     "code": "chart_low_resolution",
                     "chartId": registration.chart_id,
                     "width": width,
                     "height": height,
-                    "message": "图表分辨率偏低，已进入发布质量审核。",
+                    "minimumWidth": MIN_REPORT_CHART_WIDTH,
+                    "minimumHeight": MIN_REPORT_CHART_HEIGHT,
+                    "message": "图表尺寸偏低，仅作为非阻断质量告警。",
+                }
+            )
+        effective_dpi = round(width / REPORT_BODY_WIDTH_INCHES)
+        if effective_dpi < MIN_REPORT_CHART_EFFECTIVE_DPI:
+            warnings.append(
+                {
+                    "code": "chart_low_effective_dpi",
+                    "chartId": registration.chart_id,
+                    "width": width,
+                    "height": height,
+                    "effectiveDpi": effective_dpi,
+                    "minimumDpi": MIN_REPORT_CHART_EFFECTIVE_DPI,
+                    "message": "按 A4 正文全宽估算的有效分辨率偏低，仅作为非阻断质量告警。",
                 }
             )
         ratio = width / height

@@ -24,6 +24,7 @@ from smart_reporting.reporting.agent import (
 )
 from smart_reporting.reporting.delivery.acceptance import build_report_phase_acceptance_contract
 from smart_reporting.reporting.delivery.artifacts_v1 import Citation
+from smart_reporting.reporting.delivery.draft_v1 import ReportChartRegistration
 from smart_reporting.reporting.hospital_operation.detailed_analysis import (
     DetailedAnalysisItem,
     DetailedAnalysisPlan,
@@ -91,6 +92,35 @@ from smart_reporting.reporting.workflow.state import ReportingRunState
 from smart_reporting.task_execution.acceptance import normalize_acceptance_contract
 from smart_reporting.task_execution.execution import WorkspaceTaskToolkit
 from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
+
+
+def _chart_registration() -> ReportChartRegistration:
+    return ReportChartRegistration.model_validate(
+        {
+            "chartId": "income",
+            "sourcePath": "analysis/charts/income.png",
+            "title": "收入趋势",
+            "altText": "收入趋势图",
+            "citationIds": ["citation-1"],
+            "metricCodes": ["income"],
+            "currentPeriod": "2026-01",
+            "sourceDatasetId": "dataset-1",
+            "aggregationGrain": "month",
+        }
+    )
+
+
+def _chart_identity(*, width: int, height: int) -> dict[str, Any]:
+    return {
+        "sourcePath": "analysis/charts/income.png",
+        "size": 1024,
+        "sha256": "a" * 64,
+        "format": "PNG",
+        "mediaType": "image/png",
+        "extension": ".png",
+        "width": width,
+        "height": height,
+    }
 
 
 def test_missing_metric_definition_codes_covers_facts_derived_and_charts() -> None:
@@ -717,10 +747,30 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
         "format": "PNG",
         "mediaType": "image/png",
         "extension": ".png",
-        "width": 1200,
-        "height": 800,
+        "width": 1000,
+        "height": 700,
     }
-    toolkit._inspect_chart = AsyncMock(return_value=(identity, []))
+    expected_warnings = [
+        {
+            "code": "chart_low_resolution",
+            "chartId": "income",
+            "width": 1000,
+            "height": 700,
+            "minimumWidth": 1200,
+            "minimumHeight": 675,
+            "message": "图表尺寸偏低，仅作为非阻断质量告警。",
+        },
+        {
+            "code": "chart_low_effective_dpi",
+            "chartId": "income",
+            "width": 1000,
+            "height": 700,
+            "effectiveDpi": 146,
+            "minimumDpi": 150,
+            "message": "按 A4 正文全宽估算的有效分辨率偏低，仅作为非阻断质量告警。",
+        },
+    ]
+    toolkit._inspect_chart = AsyncMock(return_value=(identity, expected_warnings))
     toolkit._apply_durable = AsyncMock()
 
     result = await toolkit.register_report_charts(
@@ -744,6 +794,8 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
     )
 
     assert result["ok"] is True
+    assert result["status"] == "completed"
+    assert result["warnings"] == expected_warnings
     toolkit._apply_durable.assert_awaited_once()
 
 
@@ -1270,6 +1322,55 @@ async def test_inspect_chart_persists_hash_bound_receipt() -> None:
     toolkit._apply_durable.assert_awaited_once()
     assert toolkit._apply_durable.await_args.kwargs["name"] == "record_chart_inspection"
     assert toolkit._apply_durable.await_args.kwargs["payload"] == {"receipt": receipt}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("width", "height"), [(1199, 675), (1200, 674)])
+async def test_inspect_chart_warns_below_minimum_dimensions(width: int, height: int) -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._inspect_chart_file = AsyncMock(
+        return_value=_chart_identity(width=width, height=height)
+    )
+
+    identity, warnings = await toolkit._inspect_chart(
+        thread_id="thread-1",
+        registration=_chart_registration(),
+    )
+
+    assert identity["chartId"] == "income"
+    warning = next(item for item in warnings if item["code"] == "chart_low_resolution")
+    assert warning == {
+        "code": "chart_low_resolution",
+        "chartId": "income",
+        "width": width,
+        "height": height,
+        "minimumWidth": 1200,
+        "minimumHeight": 675,
+        "message": "图表尺寸偏低，仅作为非阻断质量告警。",
+    }
+
+
+@pytest.mark.anyio
+async def test_inspect_chart_warns_below_effective_a4_body_dpi() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit._inspect_chart_file = AsyncMock(return_value=_chart_identity(width=1000, height=700))
+
+    identity, warnings = await toolkit._inspect_chart(
+        thread_id="thread-1",
+        registration=_chart_registration(),
+    )
+
+    assert identity["chartId"] == "income"
+    warning = next(item for item in warnings if item["code"] == "chart_low_effective_dpi")
+    assert warning == {
+        "code": "chart_low_effective_dpi",
+        "chartId": "income",
+        "width": 1000,
+        "height": 700,
+        "effectiveDpi": 146,
+        "minimumDpi": 150,
+        "message": "按 A4 正文全宽估算的有效分辨率偏低，仅作为非阻断质量告警。",
+    }
 
 
 @pytest.mark.anyio
