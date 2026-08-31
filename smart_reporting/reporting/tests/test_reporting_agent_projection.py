@@ -1022,6 +1022,43 @@ def test_build_report_agent_instructions_for_visualization_task_kinds() -> None:
     assert not any("submit_visualization_charts" in item for item in finalize_instructions)
 
 
+@pytest.mark.parametrize("mode", ["vision", "deterministic"])
+def test_visualization_section_instructions_match_inspection_mode(mode: str) -> None:
+    context = RunContext(
+        run_id=f"run-visualization-section-{mode}",
+        session_id=f"session-visualization-section-{mode}",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
+                "reportingVisualInspectionMode": mode,
+            }
+        },
+    )
+
+    instructions = "\n".join(build_report_agent_instructions(context))
+
+    if mode == "vision":
+        assert "visualInspectionMode=vision：每张最终图表先调用 inspect_chart" in instructions
+        assert "禁止调用 inspect_chart" not in instructions
+    else:
+        assert "禁止调用 inspect_chart" in instructions
+        assert "visualInspectionMode=vision：" not in instructions
+
+    finalize_context = RunContext(
+        run_id=f"run-visualization-finalize-{mode}",
+        session_id=f"session-visualization-finalize-{mode}",
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_finalize",
+                "reportingVisualInspectionMode": mode,
+            }
+        },
+    )
+    assert "inspect_chart" not in "\n".join(build_report_agent_instructions(finalize_context))
+
+
 def test_section_instructions_match_server_derived_claim_contract() -> None:
     context = RunContext(
         run_id="run-section-contract",

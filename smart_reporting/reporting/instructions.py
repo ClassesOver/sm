@@ -249,7 +249,6 @@ REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS.extend(
         (
             "当前是 visualization_section Task，只处理任务 JSON 指定章节。脚本只能读取签发的"
             " visualizationFacts 和 evidenceFiles，写入签发的 scriptPath 与 chartOutputRoot；"
-            "visualInspectionMode=vision 时，每张最终图表先调用 inspect_chart，取得当前文件哈希绑定的通过回执；"
             "完成脚本并执行成功后，随后只调用一次 submit_visualization_charts 提交该章全部图表草案。"
             "不得调用全局图表登记或分析冻结终态。"
         ),
@@ -369,22 +368,21 @@ def build_report_agent_instructions(run_context: RunContext) -> list[str]:
     if task_kind == "visualization_section":
         visualization = list(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
         if reporting_visual_inspection_mode_from_run_context(run_context) == "deterministic":
-            visualization = [
-                item for item in visualization if "每张最终图表必须先调用 inspect_chart" not in item
-            ]
             visualization.append(
                 "本 Task 的 visualInspectionMode=deterministic：禁止调用 inspect_chart；"
                 "submit_visualization_charts 会执行确定性图片文件检查。"
             )
-        return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *visualization]
-    if task_kind == "visualization_finalize":
-        visualization = list(REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS)
-        if reporting_visual_inspection_mode_from_run_context(run_context) == "deterministic":
+        else:
             visualization.append(
-                "本 Task 的 visualInspectionMode=deterministic：沿用章节提交的确定性图片文件检查结果，"
-                "不得调用 inspect_chart。"
+                "本 Task 的 visualInspectionMode=vision：每张最终图表先调用 inspect_chart，"
+                "取得当前文件哈希绑定的通过回执。"
             )
         return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *visualization]
+    if task_kind == "visualization_finalize":
+        return [
+            *REPORT_WORKER_COMMON_INSTRUCTIONS,
+            *REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS,
+        ]
     if task_kind == "analysis_item":
         return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS]
     raise ValueError("Reporting Worker 缺少受信 taskKind。")

@@ -808,6 +808,66 @@ async def test_register_report_charts_rejects_legacy_visualization_kind() -> Non
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("task_kind", ["visualization_section", "visualization"])
+async def test_inspect_chart_production_gate_allows_only_section_kind(task_kind: str) -> None:
+    acceptance_contract = {
+        "requirements": [
+            {
+                "parameters": {
+                    "phase": "analysis",
+                    "phaseContract": {"taskKind": task_kind},
+                }
+            }
+        ]
+    }
+    scope = SimpleNamespace(
+        thread_id="thread-inspect-gate",
+        task=SimpleNamespace(acceptance_contract=acceptance_contract),
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "visualInspectionMode": "vision",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+        },
+    )
+    toolkit._inspect_chart_file = AsyncMock(
+        return_value={"sourcePath": "analysis/charts/income.png", "sha256": "a" * 64}
+    )
+    receipt = {
+        "sourcePath": "analysis/charts/income.png",
+        "sha256": "a" * 64,
+        "inspectionMode": "vision",
+        "visualReviewStatus": "passed",
+        "inspectorId": None,
+        "modelId": "vision-model",
+        "reviewed": True,
+        "requiresRevision": False,
+        "issues": [],
+        "summary": "检查完成",
+        "warnings": [],
+        "suggestions": [],
+    }
+    toolkit._vision_reviewer = SimpleNamespace(review=AsyncMock(return_value=receipt))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.inspect_chart(
+        path="analysis/charts/income.png",
+        run_context=RunContext(run_id="run-inspect-gate", session_id="session-inspect-gate"),
+    )
+
+    if task_kind == "visualization_section":
+        assert result["ok"] is True, result
+        toolkit._apply_durable.assert_awaited_once()
+    else:
+        assert result["ok"] is False
+        assert result["code"] == "report_phase_tool_forbidden"
+        toolkit._inspect_chart_file.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_submit_visualization_charts_requires_section_task_kind() -> None:
     scope = SimpleNamespace(thread_id="thread-finalize", task=SimpleNamespace(mutation_sequence=4))
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
@@ -1513,7 +1573,7 @@ async def test_inspect_chart_rejects_path_outside_signed_output_root() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {"visualizationWorkspace": {"chartOutputRoot": "analysis/charts"}},
@@ -1536,7 +1596,7 @@ async def test_inspect_chart_rejects_deterministic_mode_before_reading_file() ->
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {
@@ -1563,7 +1623,7 @@ async def test_inspect_chart_persists_hash_bound_receipt() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
     toolkit._phase_parameters = lambda *_args: (
         {},
         {"visualizationWorkspace": {"chartOutputRoot": "analysis/charts"}},

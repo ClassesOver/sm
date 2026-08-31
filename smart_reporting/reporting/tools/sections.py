@@ -966,12 +966,12 @@ class RuntimeSectionsMixin:
                 allowed=frozenset({"analysis"}),
                 tool_name="inspect_chart",
                 run_context=run_context,
-                task_kinds=frozenset({"visualization"}),
+                task_kinds=frozenset({"visualization_section"}),
             )
-            if self._active_reporting_task_kind(scope) != "visualization":
+            if self._active_reporting_task_kind(scope) != "visualization_section":
                 raise ReportingError(
                     "report_phase_contract_invalid",
-                    "inspect_chart 只允许 visualization Task 调用。",
+                    "inspect_chart 只允许 visualization_section Task 调用。",
                 )
             if detail not in {"high", "original"}:
                 raise ReportingError("report_chart_inspection_invalid", "图片 detail 无效。")

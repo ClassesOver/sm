@@ -655,7 +655,13 @@ class ReportWorkspaceTaskToolkit(
         parameters = cls._artifact_parameters(scope)
         phase_contract = parameters.get("phaseContract")
         task_kind = phase_contract.get("taskKind") if isinstance(phase_contract, dict) else None
-        if task_kind not in {"analysis_item", "visualization", "section"}:
+        if task_kind not in {
+            "analysis_item",
+            "visualization",
+            "visualization_section",
+            "visualization_finalize",
+            "section",
+        }:
             raise ReportingError("report_phase_contract_invalid", "Reporting taskKind 参数无效。")
         return cast(ReportingTaskKind, task_kind)
 
