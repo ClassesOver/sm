@@ -787,6 +787,62 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
 
 
 @pytest.mark.anyio
+async def test_register_report_charts_missing_file_returns_recoverable_failure() -> None:
+    # 注册不存在的图表文件曾经让 _avalidate_existing_path 抛 WorkspaceError 穿透炸 run；
+    # 这里改用可恢复的字段级回执,要求模型移除该图或先生成真实 PNG 再提交。
+    scope = SimpleNamespace(thread_id="thread-missing", task=SimpleNamespace(mutation_sequence=3))
+
+    @asynccontextmanager
+    async def client_context():
+        yield object()
+
+    service = SimpleNamespace(
+        normalize_path=lambda path, **_kwargs: (path, f"/workspace/{path}"),
+        _async_client=client_context,
+        _asandbox_for=AsyncMock(return_value=object()),
+        _avalidate_existing_path=AsyncMock(side_effect=WorkspaceError("图表源文件不存在")),
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope), service=service)
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "citationIds": ["citation-1"],
+            "citationDatasetIds": {"citation-1": "dataset-1"},
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts"},
+            "visualInspectionMode": "deterministic",
+        },
+    )
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+
+    result = await toolkit.register_report_charts(
+        charts=[
+            {
+                "chartId": "chart_missing",
+                "sourcePath": "analysis/charts/section_001/attempt-1/chart_x.png",
+                "title": "标题",
+                "altText": "图注",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["income"],
+                "currentPeriod": "2026-01",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+            }
+        ],
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_chart_file_missing"
+    assert result["retryable"] is True
+    # requiredActions 必须指示模型从清单移除该图或先生成再提交,不能让 WorkspaceError
+    # 穿透为 run 级失败后注入全量任务上下文滚入 tool_no_progress 终态。
+    assert any("移除" in action or "生成" in action for action in result["requiredActions"])
+
+
+@pytest.mark.anyio
 async def test_register_report_charts_rejects_after_recent_script_failure() -> None:
     scope = SimpleNamespace(
         thread_id="thread-script-failure", task=SimpleNamespace(mutation_sequence=1)
