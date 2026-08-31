@@ -1617,6 +1617,7 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
                 "step": "收入趋势",
                 "primaryMetricFamily": "收入",
                 "datasetIds": ["dataset-income"],
+                "organizationGrain": [],
             },
             "summary": "收入同比增长。",
             "factFile": expected_fact_files["analysis_001"],

@@ -1402,11 +1402,6 @@ class RuntimeAnalysisMixin:
             analysis_id=None,
             retry_reason=retry_reason,
         )
-        visual_inspection_mode: Literal["vision", "deterministic"] = (
-            "vision"
-            if getattr(getattr(self.report_worker, "model", None), "_report_vision_enabled", True)
-            else "deterministic"
-        )
         _ensure_visual_inspection_capability(checkpoint, visual_inspection_mode)
 
         # 图表 Worker 需要一次拿到完整的、已校验身份的事实包；把 facts 读取放在
@@ -1414,6 +1409,7 @@ class RuntimeAnalysisMixin:
         # 探索往返。包只在本次 visualization 阶段首次构建，fresh retry 复用内存对象，
         # 不重新下载或计算 deterministic facts。
         visualization_facts_package: list[dict[str, Any]] | None = None
+        fact_bundles: dict[str, dict[str, Any]] = {}
 
         for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
             started_trace = next(
@@ -1483,6 +1479,7 @@ class RuntimeAnalysisMixin:
                     "step": item.management_question,
                     "primaryMetricFamily": item.primary_metric_family,
                     "datasetIds": list(item.dataset_ids),
+                    "organizationGrain": list(item.organization_grain),
                 }
                 for item in detailed_plan.analyses
             }
@@ -1497,6 +1494,7 @@ class RuntimeAnalysisMixin:
                         DeterministicAnalysisBundle,
                     )
                     fact_payload = fact_model.model_dump(mode="json", by_alias=True)
+                    fact_bundles[analysis.analysis_id] = fact_payload
                     raw_metrics = fact_payload.get("metrics", [])
                     raw_derived_metrics = fact_payload.get("derivedMetrics", [])
                     raw_comparisons = fact_payload.get("comparisons", [])
@@ -1651,6 +1649,25 @@ class RuntimeAnalysisMixin:
                     for code in item["allowedMetricCodes"]
                 }
             )
+            if set(fact_bundles) != set(analysis_ids):
+                raise ReportingError(
+                    "report_analysis_evidence_incomplete",
+                    "确定性 facts 没有精确覆盖冻结分析计划。",
+                )
+            dataset_semantics, metric_definitions = _finalize_semantic_catalog(
+                analysis_plans=analysis_plans,
+                fact_bundles=fact_bundles,
+                dataset_ids=tuple(item.dataset_id for item in dataset_handles),
+            )
+            chart_registration_rules = {
+                # null 明确表示冻结 facts 没有 Profile metric code，Worker 可定义
+                # 图表 code，但 finalize 时必须以同名 metricDefinitions 冻结语义；
+                # 非空目录仍由 register_report_charts 严格拒绝未知 code。
+                "allowedMetricCodes": allowed_metric_codes or None,
+                "comparisonPeriodRequiredFor": ["period", "yoy", "mom"],
+                "referenceOnlyTitleAndAltTextMustContain": "参考",
+                "vision": visual_inspection_mode == "vision",
+            }
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "visualization_finalize",
@@ -1664,6 +1681,7 @@ class RuntimeAnalysisMixin:
                 "visualTheme": REPORT_VISUAL_THEME,
                 "registeredCharts": registered_charts,
                 "visualInspectionMode": visual_inspection_mode,
+                "analysisPlans": analysis_plans,
                 "analysisCitationIds": _visualization_analysis_citation_ids(
                     detailed_plan, citation_bindings
                 ),
@@ -1675,37 +1693,15 @@ class RuntimeAnalysisMixin:
                     for analysis_id, identity in fact_files.items()
                 },
                 "visualizationFacts": visualization_facts_package,
-                "datasetSemantics": [
-                    item.model_dump(mode="json", by_alias=True)
-                    for item in (
-                        checkpoint.evidence_manifest.dataset_semantics
-                        if checkpoint.evidence_manifest is not None
-                        else ()
-                    )
-                ],
-                "metricDefinitions": [
-                    item.model_dump(mode="json", by_alias=True)
-                    for item in (
-                        checkpoint.evidence_manifest.metric_definitions
-                        if checkpoint.evidence_manifest is not None
-                        else ()
-                    )
-                ],
+                "datasetSemantics": dataset_semantics,
+                "metricDefinitions": metric_definitions,
                 "sectionEvidenceCatalog": {
                     section_code: visualization_payload.get("visualizationSections", {}).get(
                         section_code, {}
                     )
                     for section_code in section_codes
                 },
-                "chartRegistrationRules": {
-                    # null 明确表示冻结 facts 没有 Profile metric code，Worker 可定义
-                    # 图表 code，但 finalize 时必须以同名 metricDefinitions 冻结语义；
-                    # 非空目录仍由 register_report_charts 严格拒绝未知 code。
-                    "allowedMetricCodes": allowed_metric_codes or None,
-                    "comparisonPeriodRequiredFor": ["period", "yoy", "mom"],
-                    "referenceOnlyTitleAndAltTextMustContain": "参考",
-                    "vision": visual_inspection_mode == "vision",
-                },
+                "chartRegistrationRules": chart_registration_rules,
                 # 可视化脚本与 evidence/facts 分属兄弟目录。由服务端签发完整工作区相对路径，
                 # 禁止 Worker 依据脚本位置猜测父目录，否则会把 evidence 错拼成 analysis/evidence。
                 "visualizationWorkspace": {
@@ -1757,22 +1753,8 @@ class RuntimeAnalysisMixin:
                     ),
                     "analysisIds": list(analysis_ids),
                     "currentAnalysisId": None,
-                    "datasetSemantics": [
-                        item.model_dump(mode="json", by_alias=True)
-                        for item in (
-                            checkpoint.evidence_manifest.dataset_semantics
-                            if checkpoint.evidence_manifest is not None
-                            else ()
-                        )
-                    ],
-                    "metricDefinitions": [
-                        item.model_dump(mode="json", by_alias=True)
-                        for item in (
-                            checkpoint.evidence_manifest.metric_definitions
-                            if checkpoint.evidence_manifest is not None
-                            else ()
-                        )
-                    ],
+                    "datasetSemantics": dataset_semantics,
+                    "metricDefinitions": metric_definitions,
                     "sectionEvidenceCatalog": {
                         section_code: visualization_payload.get("visualizationSections", {}).get(
                             section_code, {}
@@ -1842,7 +1824,7 @@ class RuntimeAnalysisMixin:
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 trace_metrics["duration_seconds"] = time.monotonic() - started_at
                 identity = await self._phase_artifact_from_receipt(
-                    scope["threadId"], receipt, (output_path,)
+                    scope["threadId"], cast(dict[str, Any], receipt), (output_path,)
                 )
                 artifact = cast(
                     AnalysisArtifact,
@@ -2478,6 +2460,101 @@ def _coding_detailed_analysis_plan(
             if allowed is None or item.analysis_id in allowed
         ],
     }
+
+
+def _finalize_semantic_catalog(
+    *,
+    analysis_plans: Mapping[str, Mapping[str, Any]],
+    fact_bundles: Mapping[str, Mapping[str, Any]],
+    dataset_ids: Sequence[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """从冻结计划、facts 与 Profile 投影 finalize 所需的紧凑语义目录。"""
+
+    grains_by_dataset: dict[str, set[str]] = {dataset_id: set() for dataset_id in dataset_ids}
+    for plan in analysis_plans.values():
+        raw_dataset_ids = plan.get("datasetIds")
+        raw_grain = plan.get("organizationGrain")
+        if not isinstance(raw_dataset_ids, Sequence) or isinstance(raw_dataset_ids, (str, bytes)):
+            continue
+        grains = (
+            {item for item in raw_grain if isinstance(item, str) and item}
+            if isinstance(raw_grain, Sequence) and not isinstance(raw_grain, (str, bytes))
+            else set()
+        )
+        for dataset_id in raw_dataset_ids:
+            if isinstance(dataset_id, str) and dataset_id in grains_by_dataset:
+                grains_by_dataset[dataset_id].update(grains)
+
+    dataset_semantics = []
+    for dataset_id in dataset_ids:
+        grains = grains_by_dataset[dataset_id]
+        dataset_semantics.append(
+            {
+                "datasetId": dataset_id,
+                "rowGrain": "+".join(sorted(grains)) or "record",
+                "duplicateResolution": "not_applicable",
+            }
+        )
+
+    facts_by_code: dict[str, list[Mapping[str, Any]]] = {}
+    for bundle in fact_bundles.values():
+        raw_metrics = bundle.get("metrics", ())
+        if isinstance(raw_metrics, Sequence) and not isinstance(raw_metrics, (str, bytes)):
+            for metric in raw_metrics:
+                if not isinstance(metric, Mapping):
+                    continue
+                raw_codes = metric.get("metricCodes", ())
+                if isinstance(raw_codes, Sequence) and not isinstance(raw_codes, (str, bytes)):
+                    for code in raw_codes:
+                        if isinstance(code, str) and code:
+                            facts_by_code.setdefault(code, []).append(metric)
+        raw_derived = bundle.get("derivedMetrics", ())
+        if isinstance(raw_derived, Sequence) and not isinstance(raw_derived, (str, bytes)):
+            for metric in raw_derived:
+                if isinstance(metric, Mapping) and isinstance(metric.get("code"), str):
+                    facts_by_code.setdefault(metric["code"], []).append(metric)
+
+    metric_definitions = []
+    for code in sorted(facts_by_code):
+        facts = facts_by_code[code]
+        name = code
+        formulas = sorted(
+            {
+                formula
+                for fact in facts
+                if isinstance((formula := fact.get("formula")), str) and formula
+            }
+        )
+        units = sorted(
+            {unit for fact in facts if isinstance((unit := fact.get("unit")), str) and unit}
+        )
+        starts = sorted(
+            {
+                value
+                for fact in facts
+                if isinstance((value := fact.get("periodStart")), str) and value
+            }
+        )
+        ends = sorted(
+            {value for fact in facts if isinstance((value := fact.get("periodEnd")), str) and value}
+        )
+        period_start = starts[0] if starts else None
+        period_end = ends[-1] if ends else None
+        period_basis = (
+            period_start
+            if period_start is not None and period_start == period_end
+            else " 至 ".join(item for item in (period_start, period_end) if item is not None)
+        )
+        metric_definitions.append(
+            {
+                "code": code,
+                "name": name,
+                "definition": "；".join((name, *formulas))[:2000],
+                "unit": units[0] if len(units) == 1 else None,
+                "periodBasis": period_basis or "未声明期间",
+            }
+        )
+    return dataset_semantics, metric_definitions
 
 
 def _visualization_analysis_citation_ids(

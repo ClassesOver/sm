@@ -81,6 +81,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
     ProfileReadReceipt,
     SectionWorkItem,
 )
+from smart_reporting.reporting.workflow.runtime import analysis as runtime_analysis
 from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_item_completion_conditions,
     _visualization_analysis_citation_ids,
@@ -5101,9 +5102,7 @@ def test_finalize_binding_is_derived_from_durable_analysis_item() -> None:
 
 
 @pytest.mark.anyio
-async def test_finalize_report_analysis_overrides_model_semantics_with_contract_projection() -> (
-    None
-):
+async def test_finalize_submit_semantics_from_projected_catalog() -> None:
     evidence_identity = {"path": "analysis/evidence.json", "size": 12, "sha256": "a" * 64}
     chart_identity = {"path": "analysis/charts/income.png", "size": 1024, "sha256": "b" * 64}
     chart_receipt = {
@@ -5134,14 +5133,39 @@ async def test_finalize_report_analysis_overrides_model_semantics_with_contract_
         "comparability": "strict",
         "visualInspectionReceipt": chart_receipt,
     }
-    contract_semantics = [
+    contract_semantics, contract_metrics = runtime_analysis._finalize_semantic_catalog(
+        analysis_plans={
+            "analysis_001": {
+                "analysisId": "analysis_001",
+                "datasetIds": ["dataset-1"],
+                "organizationGrain": ["record"],
+            }
+        },
+        fact_bundles={
+            "analysis_001": {
+                "metrics": [
+                    {
+                        "datasetId": "dataset-1",
+                        "metricCodes": ["income_total"],
+                        "formula": "sum(income)",
+                        "unit": "元",
+                        "periodStart": "2026-01",
+                        "periodEnd": "2026-01",
+                    }
+                ],
+                "derivedMetrics": [],
+            }
+        },
+        dataset_ids=("dataset-1",),
+    )
+    assert contract_semantics == [
         {"datasetId": "dataset-1", "rowGrain": "record", "duplicateResolution": "not_applicable"}
     ]
-    contract_metrics = [
+    assert contract_metrics == [
         {
             "code": "income_total",
-            "name": "医疗收入",
-            "definition": "授权 Dataset 收入字段按月汇总。",
+            "name": "income_total",
+            "definition": "income_total；sum(income)",
             "unit": "元",
             "periodBasis": "2026-01",
         }
@@ -5222,3 +5246,32 @@ async def test_finalize_report_analysis_overrides_model_semantics_with_contract_
     payload = toolkit._write_phase_json.await_args.kwargs["payload"]
     assert payload["evidenceManifest"]["datasetSemantics"] == contract_semantics
     assert payload["evidenceManifest"]["metricDefinitions"] == contract_metrics
+
+
+@pytest.mark.anyio
+async def test_global_zero_charts_fails_at_finalize() -> None:
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=SimpleNamespace(thread_id="thread-1"))
+    )
+    toolkit._session_state = lambda _run_context: {}
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._ensure_visualization_terminal_settled = AsyncMock()
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"charts": []}))
+    toolkit._phase_parameters = lambda *_args: pytest.fail(
+        "零图必须在读取 finalize phase contract 前失败"
+    )
+
+    result = await toolkit.finalize_report_analysis(
+        reportBrief={
+            "objective": "经营分析",
+            "executiveSummary": "摘要。",
+            "managementQuestions": ["经营表现如何？"],
+        },
+        datasetSemantics=[],
+        metricDefinitions=[],
+        run_context=RunContext(run_id="run-finalize", session_id="session-finalize"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_charts_not_registered"
