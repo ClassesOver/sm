@@ -616,9 +616,19 @@ class CheckpointError(StrictModel):
     retry_reason: str | None = Field(default=None, alias="retryReason", max_length=2000)
     details: dict[str, Any] | None = Field(default=None, max_length=50)
     task_id: str | None = Field(default=None, alias="taskId", max_length=128)
-    work_kind: Literal["analysis_item", "visualization", "section", "finalize"] | None = Field(
-        default=None, alias="workKind"
-    )
+    # work_kind 只增值不改值:visualization 保留用于历史 trace 校验,
+    # visualization_section/visualization_finalize 供并行章节图表 worker 与汇总 worker 区分身份。
+    work_kind: (
+        Literal[
+            "analysis_item",
+            "visualization",
+            "visualization_section",
+            "visualization_finalize",
+            "section",
+            "finalize",
+        ]
+        | None
+    ) = Field(default=None, alias="workKind")
     analysis_id: str | None = Field(
         default=None, alias="analysisId", pattern=r"^analysis_[0-9]{3,6}$"
     )
@@ -629,9 +639,17 @@ class CheckpointError(StrictModel):
 class ContextTrace(StrictModel):
     phase: Literal["analysis", "section", "finalize"]
     task_id: str | None = Field(default=None, alias="taskId", max_length=128)
-    work_kind: Literal["analysis_item", "visualization", "section", "finalize"] | None = Field(
-        default=None, alias="workKind"
-    )
+    work_kind: (
+        Literal[
+            "analysis_item",
+            "visualization",
+            "visualization_section",
+            "visualization_finalize",
+            "section",
+            "finalize",
+        ]
+        | None
+    ) = Field(default=None, alias="workKind")
     analysis_id: str | None = Field(
         default=None, alias="analysisId", pattern=r"^analysis_[0-9]{3,6}$"
     )
@@ -679,6 +697,11 @@ class ReportingCheckpoint(StrictModel):
     pending_sections: tuple[str, ...] = Field(default=(), alias="pendingSections", max_length=100)
     warnings: tuple[dict[str, Any], ...] = Field(default=(), max_length=500)
     last_error: CheckpointError | None = Field(default=None, alias="lastError")
+    # 按章保存 visualization_section 失败与预算账本;并发合并时按键合并,
+    # 不复用标量 last_error(后者保留给汇总 worker 的全局终态失败)。
+    visualization_section_errors: dict[str, CheckpointError] = Field(
+        default_factory=dict, alias="visualizationSectionErrors", max_length=200
+    )
     deterministic_fact_files: dict[str, FileIdentity] = Field(
         default_factory=dict,
         alias="deterministicFactFiles",
