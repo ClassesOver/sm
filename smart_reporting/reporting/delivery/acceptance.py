@@ -34,7 +34,7 @@ def build_report_phase_acceptance_contract(
         # citationRegistry 只用于模型指令展示，工具校验只消费 citationIds；visualization
         # 也不需要单项计划映射。避免把重复的大型投影塞进 16 KiB acceptance 参数。
         trusted_phase_contract.pop("citationRegistry", None)
-        if task_kind == "visualization":
+        if task_kind in {"visualization_section", "visualization_finalize"}:
             trusted_phase_contract.pop("analysisPlans", None)
             trusted_phase_contract.pop("analysisDatasetIds", None)
         if task_kind == "analysis_item":

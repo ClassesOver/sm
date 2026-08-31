@@ -236,6 +236,7 @@ MAX_SECTION_WORK_ITEM_BYTES = 256 * 1024
 
 _VISUALIZATION_RECOVERY_ERROR_CODES = frozenset(
     {
+        "report_worker_terminal_tool_missing",
         "report_visualization_tool_budget_exhausted",
         "report_visualization_exploration_budget_exhausted",
         "report_visualization_script_failure_limit_exhausted",

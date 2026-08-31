@@ -40,6 +40,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     reporting_analysis_fact_budget_contract_from_acceptance_contract,
+    reporting_task_kind_from_acceptance_contract,
     reporting_visualization_budget_contract_from_acceptance_contract,
     reporting_visualization_budget_from_acceptance_contract,
     reporting_visualization_budget_from_run_context,
@@ -76,6 +77,7 @@ from smart_reporting.reporting.tools.validation import (
 )
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
+    ContextTrace,
     FileIdentity,
     MetricDefinition,
     ProfileReadReceipt,
@@ -93,6 +95,25 @@ from smart_reporting.reporting.workflow.state import ReportingRunState
 from smart_reporting.task_execution.acceptance import normalize_acceptance_contract
 from smart_reporting.task_execution.execution import WorkspaceTaskToolkit
 from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
+
+
+def test_old_visualization_task_kind_is_rejected() -> None:
+    contract = build_report_phase_acceptance_contract(
+        phase="analysis",
+        validation_context_file={},
+        phase_contract={
+            "taskKind": "visualization",
+            "analysisOutputRoot": "analysis",
+        },
+        analysis_output_path="analysis/output.json",
+    )
+
+    assert reporting_task_kind_from_acceptance_contract(contract) is None
+
+
+def test_old_visualization_work_kind_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ContextTrace.model_validate({"phase": "analysis", "workKind": "visualization"})
 
 
 def _chart_registration() -> ReportChartRegistration:

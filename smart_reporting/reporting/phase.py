@@ -13,11 +13,8 @@ from .models import ReportingError
 from .tools.capabilities import tools_for_task
 
 ReportingPhase = Literal["analysis", "section"]
-# visualization_section/visualization_finalize 是可视化按章节并行化的新 taskKind；
-# visualization 值必须保留，历史 checkpoint 恢复的旧 run 仍依赖它识别任务身份。
 ReportingTaskKind = Literal[
     "analysis_item",
-    "visualization",
     "visualization_section",
     "visualization_finalize",
     "section",
@@ -238,13 +235,12 @@ def reporting_task_kind_from_acceptance_contract(value: Any) -> ReportingTaskKin
     phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
     task_kind = phase_contract.get("taskKind") if isinstance(phase_contract, Mapping) else None
     # 与 ReportingTaskKind Literal 保持同一白名单：未知 taskKind 一律拒绝为 None，
-    # 并行可视化新 kind 必须与历史 visualization 同时被接受。
+    # 旧 visualization 协议值不在白名单内，解析失败后由执行层失败关闭。
     return (
         task_kind
         if task_kind
         in {
             "analysis_item",
-            "visualization",
             "visualization_section",
             "visualization_finalize",
             "section",
@@ -348,7 +344,10 @@ def reporting_visualization_budget_from_acceptance_contract(value: Any) -> tuple
     requirement = requirements[0]
     parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
     phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
-    if not isinstance(phase_contract, Mapping) or phase_contract.get("taskKind") != "visualization":
+    if not isinstance(phase_contract, Mapping) or phase_contract.get("taskKind") not in {
+        "visualization_section",
+        "visualization_finalize",
+    }:
         return 0, 0
 
     def count(key: str) -> int:
@@ -374,7 +373,10 @@ def reporting_visualization_budget_contract_from_acceptance_contract(
         ):
             parameters = requirements[0].get("parameters")
             candidate = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
-            if isinstance(candidate, Mapping) and candidate.get("taskKind") == "visualization":
+            if isinstance(candidate, Mapping) and candidate.get("taskKind") in {
+                "visualization_section",
+                "visualization_finalize",
+            }:
                 phase_contract = candidate
 
     def count(key: str, default: int = 0) -> int:
@@ -614,13 +616,12 @@ def reporting_task_kind_from_run_context(
         binding.get(REPORTING_TASK_KIND_DEPENDENCY_KEY) if isinstance(binding, Mapping) else None
     )
     # 与 ReportingTaskKind Literal 保持同一白名单：未知 taskKind 一律拒绝为 None，
-    # 并行可视化新 kind 必须与历史 visualization 同时被接受。
+    # 旧 visualization 协议值不在白名单内，解析失败后由执行层失败关闭。
     return (
         task_kind
         if task_kind
         in {
             "analysis_item",
-            "visualization",
             "visualization_section",
             "visualization_finalize",
             "section",
@@ -776,7 +777,8 @@ def reporting_visualization_exploration_budget_exhausted_from_run_context(
     if (
         run_context is None
         or reporting_phase_from_run_context(run_context) != "analysis"
-        or reporting_task_kind_from_run_context(run_context) != "visualization"
+        or reporting_task_kind_from_run_context(run_context)
+        not in {"visualization_section", "visualization_finalize"}
     ):
         return False
     dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}

@@ -28,7 +28,7 @@ from smart_reporting.reporting.hospital_operation.outline import (
 )
 from smart_reporting.reporting.instructions import (
     REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
-    REPORT_VISUALIZATION_AGENT_INSTRUCTIONS,
+    REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS,
 )
 from smart_reporting.reporting.model_policy import (
     ReportingThinkingProfile,
@@ -534,7 +534,7 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
 
 
 def test_visualization_instructions_fail_closed_for_untrusted_or_missing_chart_data() -> None:
-    instructions = "\n".join(REPORT_VISUALIZATION_AGENT_INSTRUCTIONS)
+    instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
 
     assert "未签发文件" in instructions
     assert "缺失、为空或无法解析" in instructions

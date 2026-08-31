@@ -39,7 +39,6 @@ from ..phase import (
     REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
-    REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
     bind_reporting_run_context,
@@ -348,12 +347,15 @@ class ReportTaskRunner:
                                     visualization_budget["visualizationFactQueriesUsed"]
                                 ),
                             }
-                            if reporting_task_kind == "visualization"
+                            if reporting_task_kind
+                            in {"visualization_section", "visualization_finalize"}
                             else {}
                         ),
                         **(
                             {REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True}
-                            if reporting_task_kind == "visualization" and visualization_recovery
+                            if reporting_task_kind
+                            in {"visualization_section", "visualization_finalize"}
+                            and visualization_recovery
                             else {}
                         ),
                         **(
@@ -362,7 +364,8 @@ class ReportTaskRunner:
                                     visual_inspection_mode
                                 )
                             }
-                            if reporting_task_kind == "visualization"
+                            if reporting_task_kind
+                            in {"visualization_section", "visualization_finalize"}
                             and visual_inspection_mode is not None
                             else {}
                         ),
@@ -424,7 +427,7 @@ class ReportTaskRunner:
                     updated.state_version,
                     agno_status=str(getattr(output, "status", "completed")),
                 )
-                if reporting_task_kind == "visualization":
+                if reporting_task_kind in {"visualization_section", "visualization_finalize"}:
                     projection_metrics.update(
                         reporting_visualization_usage_from_run_context(worker_run_context)
                     )
@@ -437,7 +440,10 @@ class ReportTaskRunner:
             except BaseException as error:
                 if isinstance(error, anyio.get_cancelled_exc_class()):
                     task_outcome = "cancelled"
-                if reporting_task_kind == "visualization" and isinstance(error, Exception):
+                if reporting_task_kind in {
+                    "visualization_section",
+                    "visualization_finalize",
+                } and isinstance(error, Exception):
                     # fresh retry 可能由模型超时等非预算异常触发；异常本身必须原样上抛，
                     # 但已经发生的工具调用不能因此从零开始。
                     setattr(
@@ -497,8 +503,6 @@ class ReportTaskRunner:
             terminal_tools = ("submit_visualization_charts",)
         elif task_kind == "visualization_finalize":
             terminal_tools = ("finalize_report_analysis",)
-        elif task_kind == "visualization":
-            terminal_tools = ("finalize_report_analysis",)
         elif task_kind == "section":
             terminal_tools = ("render_report_section", "request_analysis_rework")
         else:
@@ -531,15 +535,6 @@ class ReportTaskRunner:
                             "服务端已保留全部章节图表草案。立即停止重新探索;"
                             "只调用一次 register_report_charts 整批登记,随后立即调用 "
                             "finalize_report_analysis。不得调用 read_file/query_analysis_facts,"
-                            "不得输出解释性文本。"
-                        )
-                    elif task_kind == "visualization" and recovery_attempt > 0:
-                        recovery_instruction = (
-                            "服务端已保留本 run 已成功提交的可视化工具进度。立即停止推演和重新探索；"
-                            "若脚本尚未执行，先且只调用一次 terminal 执行签发的脚本；"
-                            "脚本成功后按需调用 process 等待同一脚本会话结束；"
-                            "图表未登记时只调用一次 register_report_charts，随后立即调用 "
-                            "finalize_report_analysis。不得调用 read_file/query_analysis_facts，"
                             "不得输出解释性文本。"
                         )
                     else:
@@ -597,19 +592,10 @@ class ReportTaskRunner:
                     # 继续同一 Agno run 会把完整章节历史再次带入模型并放大探索，
                     # 交给外层 fresh attempt，恢复原始错误和章节边界。
                     raise missing_terminal
-                if task_kind == "visualization":
-                    session_state = getattr(run_context, "session_state", None)
-                    script_written = (
-                        session_state.get(REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY) is True
-                        if isinstance(session_state, Mapping)
-                        else False
-                    )
-                    if not script_written:
-                        # 没有已提交脚本时，continuation 只能重放探索，保持
-                        # fresh attempt 语义并让上层恢复原始错误与预算。
-                        raise missing_terminal
-                    # 脚本写入等成功 mutation 已由服务端持久化；同 run continuation
-                    # 可以从最后一条工具回执继续执行，避免重新携带完整 facts 投影。
+                if task_kind in {"visualization_section", "visualization_finalize"}:
+                    # 新协议的章节与汇总都有独立终态工具。成功的图表文件或章节草案已由
+                    # 服务端持久化，同 run continuation 只补当前终态，不能再借用旧单体
+                    # visualization 的 script-written 标志决定是否恢复。
                     use_continuation = True
                     continue
                 logger.warning(

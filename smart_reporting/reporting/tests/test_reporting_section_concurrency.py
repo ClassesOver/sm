@@ -1011,6 +1011,19 @@ def test_visualization_capability_is_stable_across_fresh_retry() -> None:
     runtime_analysis._ensure_visual_inspection_capability(stored, "deterministic")
 
 
+def test_visualization_missing_terminal_tool_enters_production_recovery() -> None:
+    error = ReportingError(
+        "report_worker_terminal_tool_missing",
+        "Reporting Worker 以普通文本结束，未提交当前阶段终态工具。",
+        details={
+            "taskKind": "visualization",
+            "requiredTerminalTools": ["finalize_report_analysis"],
+        },
+    )
+
+    assert runtime_analysis._visualization_recovery_required(error) is True
+
+
 @pytest.mark.anyio
 async def test_visualization_retry_projects_citation_ids_into_each_worker_instruction(
     monkeypatch: pytest.MonkeyPatch,

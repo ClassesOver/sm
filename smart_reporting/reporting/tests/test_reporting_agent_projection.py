@@ -985,7 +985,7 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
     assert "update_plan" not in instructions
     assert "replace_text" not in instructions
     assert "git_status" not in instructions
-    if task_kind == "visualization":
+    if task_kind in {"visualization_section", "visualization_finalize"}:
         assert "只调用 write_analysis_files" in instructions
         assert "evidenceFiles[].path" in instructions
         assert "不得构造 analysis/evidence" in instructions

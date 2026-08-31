@@ -134,7 +134,7 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
 ]
 
 
-REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
+REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS = [
     "你是 Coding Agent 的智能报表可视化 Worker，本轮只整合全部已冻结 analysis evidence。",
     (
         "任务 JSON 的 visualizationFacts 已批量签发当前图表所需的 facts 文件和字段入口；"
@@ -227,23 +227,7 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     *HOSPITAL_REPORT_WRITING_INSTRUCTIONS,
 ]
 
-# 章节可视化 worker 只负责当前章节的脚本、执行和草案提交；图表身份登记与
-# ReportBrief 冻结必须留在独立的 finalize worker，避免并行章节互相覆盖全局账本。
-REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS = [
-    item
-    for item in REPORT_VISUALIZATION_AGENT_INSTRUCTIONS
-    if not any(
-        phrase in item
-        for phrase in (
-            "chartRegistrationRules",
-            "每张最终图表必须先调用 inspect_chart",
-            "汇总全部分析形成 ReportBrief",
-            "register_report_charts 返回成功",
-            "finalize_report_analysis 接受后",
-            "不得调用 register_report_charts 或 finalize_report_analysis",
-        )
-    )
-]
+# 章节可视化 worker 只负责当前章节的脚本、执行和草案提交；全局登记与冻结由 finalize worker 完成。
 REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS.extend(
     [
         (
@@ -257,20 +241,11 @@ REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS.extend(
 
 # finalize worker 只消费服务端投影的全局语义目录和各章节草案，不再执行图表脚本或重新探索事实。
 REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS = [
-    item
-    for item in REPORT_VISUALIZATION_AGENT_INSTRUCTIONS
-    if any(
-        phrase in item
-        for phrase in (
-            "任务 JSON 的 visualizationFacts",
-            "chartRegistrationRules",
-            "任务 JSON 的 analysisCitationIds",
-            "deterministicFactFiles",
-            "汇总全部分析形成 ReportBrief",
-            "register_report_charts 返回成功",
-            "finalize_report_analysis 接受后",
-        )
-    )
+    "当前是 visualization_finalize Task，只消费任务 JSON 和 durable state 投影的全部章节图表草案与语义目录。",
+    "不得读取、写入或执行图表脚本，不得重新查询 facts、Profile 或工作区。",
+    "只调用一次 register_report_charts 整批登记，随后立即调用 finalize_report_analysis。",
+    "analysisCitationIds、citationDatasetIds、deterministicFactFiles 和 chartRegistrationRules 是唯一受信目录，不得猜测或改写。",
+    "metricDefinitions、datasetSemantics、ReportBrief 和全局 Warning 必须覆盖任务 JSON 规定的全部分析与 Dataset。",
 ]
 REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS.extend(
     [
@@ -354,17 +329,6 @@ def build_report_agent_instructions(run_context: RunContext) -> list[str]:
     task_kind = reporting_task_kind_from_run_context(run_context)
     if phase == "section":
         return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *REPORT_SECTION_AGENT_INSTRUCTIONS]
-    if task_kind == "visualization":
-        visualization = list(REPORT_VISUALIZATION_AGENT_INSTRUCTIONS)
-        if reporting_visual_inspection_mode_from_run_context(run_context) == "deterministic":
-            visualization = [
-                item for item in visualization if "每张最终图表必须先调用 inspect_chart" not in item
-            ]
-            visualization.append(
-                "本 Task 的 visualInspectionMode=deterministic：禁止调用 inspect_chart；"
-                "register_report_charts 会执行确定性图片文件检查，并如实记录未运行模型视觉审查。"
-            )
-        return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *visualization]
     if task_kind == "visualization_section":
         visualization = list(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
         if reporting_visual_inspection_mode_from_run_context(run_context) == "deterministic":

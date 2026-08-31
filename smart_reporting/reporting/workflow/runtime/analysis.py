@@ -1948,7 +1948,7 @@ class RuntimeAnalysisMixin:
                         "workKind": "visualization_finalize",
                         "attempt": attempt,
                         "retryUsage": _checkpoint_retry_usage(
-                            error, work_kind="visualization"
+                            error, work_kind="visualization_finalize"
                         ).model_dump(mode="json", by_alias=True),
                     },
                 )
@@ -2292,8 +2292,7 @@ def _ensure_visual_inspection_capability(
             item.visual_inspection_mode
             for item in reversed(checkpoint.trace)
             if item.phase == "analysis"
-            and item.work_kind
-            in {"visualization", "visualization_section", "visualization_finalize"}
+            and item.work_kind in {"visualization_section", "visualization_finalize"}
             and item.visual_inspection_mode is not None
         ),
         None,
@@ -2308,7 +2307,7 @@ def _ensure_visual_inspection_capability(
 def _checkpoint_retry_error(
     checkpoint: ReportingCheckpoint,
     *,
-    work_kind: Literal["analysis_item", "visualization"],
+    work_kind: Literal["analysis_item", "visualization_section", "visualization_finalize"],
     analysis_id: str | None,
     retry_reason: str | None,
 ) -> ReportingError | None:
@@ -2362,7 +2361,7 @@ def _checkpoint_retry_error(
 def _checkpoint_retry_usage(
     error: Exception,
     *,
-    work_kind: Literal["analysis_item", "visualization"],
+    work_kind: Literal["analysis_item", "visualization_section", "visualization_finalize"],
 ) -> CheckpointRetryUsage:
     if work_kind == "analysis_item":
         return CheckpointRetryUsage(analysisFactQueriesUsed=_analysis_fact_retry_usage(error))
@@ -2479,7 +2478,8 @@ def _visualization_completion_conditions(
     )
     if _visualization_recovery_required(last_error):
         return [
-            "上一轮因工具调用或脚本失败达到上限而终止，且已关闭事实探索；禁止重新规划、重复读取事实或重新探索工作区",
+            "上一轮因工具调用、脚本失败达到上限或未完成终态提交而终止，且已关闭事实探索；"
+            "禁止重新规划、重复读取事实或重新探索工作区",
             retained_requirement,
             "仅使用任务 JSON 中 deterministicFactFiles 签发的路径以及既有脚本和图表，完成尚缺的最小修复或执行",
             "整批图表只调用一次 register_report_charts，成功后立即调用 finalize_report_analysis",
@@ -2500,7 +2500,7 @@ def _visualization_completion_conditions(
 
 
 def _visualization_recovery_required(last_error: Exception | None) -> bool:
-    """预算耗尽或 no-progress 终止后只允许复用既有可视化产物。"""
+    """未提交终态、预算耗尽或 no-progress 后关闭重复探索。"""
 
     return isinstance(last_error, ReportingError) and (
         last_error.code in _VISUALIZATION_RECOVERY_ERROR_CODES
