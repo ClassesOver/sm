@@ -321,6 +321,65 @@ def test_checkpoint_replaces_same_visualization_section_error_on_fresh_attempt()
     assert merged.visualization_section_errors["section_001"].code == "second"
 
 
+def test_checkpoint_does_not_restore_stale_visualization_section_error() -> None:
+    current = analysis_checkpoint(
+        trace=(
+            ContextTrace(
+                phase="analysis",
+                taskId="section-task-attempt-1",
+                workKind="visualization_section",
+                sectionCode="section_001",
+                attempt=1,
+                status="failed",
+            ),
+        )
+    ).model_copy(
+        update={
+            "visualization_section_errors": {
+                "section_001": CheckpointError(
+                    phase="analysis",
+                    code="newer",
+                    message="newer",
+                    sectionCode="section_001",
+                    taskId="section-task-attempt-1",
+                    workKind="visualization_section",
+                    attempt=1,
+                )
+            }
+        }
+    )
+    incoming = analysis_checkpoint(
+        trace=(
+            ContextTrace(
+                phase="analysis",
+                taskId="section-task-attempt-0",
+                workKind="visualization_section",
+                sectionCode="section_001",
+                attempt=0,
+                status="failed",
+            ),
+        )
+    ).model_copy(
+        update={
+            "visualization_section_errors": {
+                "section_001": CheckpointError(
+                    phase="analysis",
+                    code="stale",
+                    message="stale",
+                    sectionCode="section_001",
+                    taskId="section-task-attempt-0",
+                    workKind="visualization_section",
+                    attempt=0,
+                )
+            }
+        }
+    )
+
+    merged = ReportWorkflowRuntime._merge_reporting_checkpoints(current, incoming)
+
+    assert merged.visualization_section_errors["section_001"].code == "newer"
+
+
 def test_checkpoint_clears_visualization_section_error_after_success() -> None:
     current = analysis_checkpoint().model_copy(
         update={
@@ -785,6 +844,45 @@ async def test_visualization_section_phase_reentry_recovers_ledger_error() -> No
         == "section_001"
     )
     assert persisted[-1].trace[-1].status == "completed"
+
+
+@pytest.mark.anyio
+async def test_visualization_section_reentry_rejects_attempt_budget_exhaustion() -> None:
+    durable_payload = _section_durable_payload()
+    stored = analysis_checkpoint(
+        trace=(
+            ContextTrace(
+                phase="analysis",
+                taskId="section-task-attempt-0",
+                workKind="visualization_section",
+                sectionCode="section_001",
+                attempt=0,
+                status="failed",
+            ),
+            ContextTrace(
+                phase="analysis",
+                taskId="section-task-attempt-1",
+                workKind="visualization_section",
+                sectionCode="section_001",
+                attempt=1,
+                status="failed",
+            ),
+        )
+    )
+    runtime, task_runner, persisted, starts = _section_worker_runtime(
+        durable_payload=durable_payload,
+        stored_checkpoint=stored,
+    )
+
+    for _ in range(2):
+        with pytest.raises(ReportingError) as raised:
+            await runtime._run_visualization_section_task("section_001")
+
+        assert raised.value.code == "report_visualization_section_attempts_exhausted"
+    assert starts == []
+    task_runner.start.assert_not_awaited()
+    task_runner.run.assert_not_awaited()
+    assert persisted == []
 
 
 @pytest.mark.anyio

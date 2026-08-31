@@ -158,16 +158,21 @@ class RuntimeAnalysisMixin:
         last_error: Exception | None = _visualization_section_retry_error(
             checkpoint, section_code=section_code
         )
+        matching = [
+            item
+            for item in checkpoint.trace
+            if item.phase == "analysis"
+            and item.work_kind == "visualization_section"
+            and item.section_code == section_code
+        ]
+        next_attempt = max((item.attempt for item in matching), default=-1) + 1
+        if next_attempt >= MAX_REPORT_SECTION_PHASE_ATTEMPTS:
+            raise ReportingError(
+                "report_visualization_section_attempts_exhausted",
+                "章节图表 fresh attempt 已达到上限，拒绝创建新的 Task。",
+            )
         scope = self._scope(run_context)
-        for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
-            matching = [
-                item
-                for item in checkpoint.trace
-                if item.phase == "analysis"
-                and item.work_kind == "visualization_section"
-                and item.section_code == section_code
-            ]
-            attempt = max((item.attempt for item in matching), default=-1) + 1
+        for attempt in range(next_attempt, MAX_REPORT_SECTION_PHASE_ATTEMPTS):
             root = f"报表/智能分析/{run_context.run_id}/analysis/charts/{section_code}/attempt-{attempt + 1}"
             task_id = reporting_phase_task_key(
                 str(run_context.run_id or "report"),
@@ -655,15 +660,31 @@ class RuntimeAnalysisMixin:
                 anonymous_trace.append(trace_item)
         section_errors = dict(current.visualization_section_errors)
         for section_code, error in incoming.visualization_section_errors.items():
-            section_errors[section_code] = error
-        for section_code in {
-            item.section_code
-            for item in incoming.trace
-            if item.work_kind == "visualization_section"
-            and item.status == "completed"
-            and item.section_code is not None
-        }:
-            section_errors.pop(section_code, None)
+            existing = section_errors.get(section_code)
+            # checkpoint 持久化可乱序回放；同章账本只能由更高 attempt，或同 attempt
+            # 的确定性 taskId 覆盖。否则旧 worker 的失败写回会抹掉新 worker 的恢复预算。
+            if existing is None or (
+                error.attempt if error.attempt is not None else -1,
+                error.task_id or "",
+            ) >= (
+                existing.attempt if existing.attempt is not None else -1,
+                existing.task_id or "",
+            ):
+                section_errors[section_code] = error
+        for section_code, error in tuple(section_errors.items()):
+            completed_attempts = (
+                (item.attempt, item.task_id or "")
+                for item in (*current.trace, *incoming.trace)
+                if item.work_kind == "visualization_section"
+                and item.status == "completed"
+                and item.section_code == section_code
+            )
+            if any(
+                completed_identity
+                >= (error.attempt if error.attempt is not None else -1, error.task_id or "")
+                for completed_identity in completed_attempts
+            ):
+                section_errors.pop(section_code)
         merged_phase = incoming.phase
         if current.phase == "completed" or incoming.phase == "completed":
             merged_phase = "completed"

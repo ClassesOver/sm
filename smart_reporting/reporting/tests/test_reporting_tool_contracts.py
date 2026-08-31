@@ -3440,6 +3440,59 @@ async def test_analysis_write_allows_valid_python_replace() -> None:
 
 
 @pytest.mark.anyio
+async def test_visualization_section_write_analysis_files_commits_signed_script() -> None:
+    @asynccontextmanager
+    async def context(value):
+        yield value
+
+    source = "print('chart')\n"
+    script_path = "analysis/charts/section_001/attempt-1/charts.py"
+    identity = {
+        "path": script_path,
+        "size": len(source.encode()),
+        "sha256": hashlib.sha256(source.encode()).hexdigest(),
+    }
+    scope = SimpleNamespace(thread_id="thread-1")
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.async_functions = write_functions()
+    toolkit.kernel = SimpleNamespace(
+        bound_external_run_id=lambda _run_context: "external-run-1",
+        task_scheduler=lambda _external_run_id: context(
+            SimpleNamespace(write=lambda: context(None))
+        ),
+        scope=AsyncMock(return_value=scope),
+        patch=AsyncMock(return_value={"ok": True}),
+        service=SimpleNamespace(abatch_hash_files=AsyncMock(return_value=[identity])),
+    )
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {
+            "taskKind": "visualization_section",
+            "visualizationWorkspace": {"scriptPath": script_path},
+        },
+    )
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.write_analysis_files(
+        operation="create_file",
+        path=script_path,
+        content=source,
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is True
+    assert result["artifacts"] == [identity]
+    toolkit.kernel.patch.assert_awaited_once()
+    assert toolkit._apply_durable.await_args_list[-1].kwargs == {
+        "name": "commit_write_intent",
+        "payload": {"intentId": result["intentSha256"], "artifacts": [identity]},
+        "command_id": f"write-commit:{result['intentSha256']}",
+    }
+
+
+@pytest.mark.anyio
 async def test_replace_text_not_found_returns_retryable_stable_error() -> None:
     @asynccontextmanager
     async def context(value):
