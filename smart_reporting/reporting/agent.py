@@ -263,10 +263,7 @@ def _visualization_skill_cache_key(
         return None
     if reporting_phase_from_run_context(run_context) != "analysis":
         return None
-    if reporting_task_kind_from_run_context(run_context) not in {
-        "visualization_section",
-        "visualization_finalize",
-    }:
+    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
         return None
     dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
     binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
@@ -576,12 +573,10 @@ def _visualization_exploration_budget_receipt(
     run_context: RunContext,
     function_name: str,
 ) -> dict[str, Any] | None:
-    if reporting_phase_from_run_context(
-        run_context
-    ) != "analysis" or reporting_task_kind_from_run_context(run_context) not in {
-        "visualization_section",
-        "visualization_finalize",
-    }:
+    if (
+        reporting_phase_from_run_context(run_context) != "analysis"
+        or reporting_task_kind_from_run_context(run_context) != "visualization_section"
+    ):
         return None
     # fresh recovery 只允许 read_file/read_tool_output 恢复已提交脚本；实际路径仍由
     # Toolkit 的脚本身份门禁校验。这不是 facts/evidence 探索，不能被旧探索预算拦截。
@@ -647,8 +642,7 @@ def _visualization_exploration_budget_receipt(
             "failureFingerprint": failure_fingerprint,
             "visualizationUsage": usage,
             "allowedTerminalTools": [
-                "register_report_charts",
-                "finalize_report_analysis",
+                "submit_visualization_charts",
             ],
         },
     }
@@ -661,8 +655,7 @@ def _reporting_visualization_tool_budget(
     if (
         function_name in {"register_report_charts", "finalize_report_analysis"}
         or reporting_phase_from_run_context(run_context) != "analysis"
-        or reporting_task_kind_from_run_context(run_context)
-        not in {"visualization_section", "visualization_finalize"}
+        or reporting_task_kind_from_run_context(run_context) != "visualization_section"
     ):
         # register/finalize 是可视化阶段的终态提交，不得被此前的探索调用挤占。
         # 图表登记仍受 durable registration 与 no-progress 门禁约束，重复提交不会绕过验收。
@@ -1559,7 +1552,7 @@ async def normalize_reporting_tool_arguments(
     ):
         _stop_analysis_fact_query_budget(run_context)
     if (
-        task_kind in {"visualization_section", "visualization_finalize"}
+        task_kind == "visualization_finalize"
         and function_name != "finalize_report_analysis"
         and (
             (
@@ -1605,8 +1598,7 @@ async def normalize_reporting_tool_arguments(
         if reporting_visual_inspection_mode_from_run_context(run_context) == "vision":
             details["allowedTerminalTools"] = [
                 "inspect_chart",
-                "register_report_charts",
-                "finalize_report_analysis",
+                "submit_visualization_charts",
             ]
         error = ReportingError(
             exploration_receipt["code"],
@@ -1705,7 +1697,7 @@ async def normalize_reporting_tool_arguments(
     succeeded = isinstance(result, dict) and result.get("ok") is True
     if (
         succeeded
-        and task_kind in {"visualization_section", "visualization_finalize"}
+        and task_kind == "visualization_section"
         and function_name == "write_analysis_files"
         and isinstance(state, dict)
     ):
@@ -1715,7 +1707,7 @@ async def normalize_reporting_tool_arguments(
         _cache_visualization_skill_result(run_context, skill_cache_key, function_name, result)
     if (
         succeeded
-        and task_kind in {"visualization_section", "visualization_finalize"}
+        and task_kind == "visualization_finalize"
         and function_name == "register_report_charts"
         and isinstance(state, dict)
     ):
@@ -1952,10 +1944,11 @@ def _visualization_production_tool_allowed(
     run_context: RunContext | None,
     tool_name: str,
 ) -> bool:
-    if reporting_task_kind_from_run_context(run_context) not in {
-        "visualization_section",
-        "visualization_finalize",
-    } or not reporting_visualization_production_only_from_run_context(run_context):
+    if reporting_task_kind_from_run_context(
+        run_context
+    ) != "visualization_section" or not reporting_visualization_production_only_from_run_context(
+        run_context
+    ):
         return True
     return (
         tool_name in REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES
@@ -1980,10 +1973,7 @@ def _visualization_lifecycle_tool_allowed(
 ) -> bool:
     """让模型 schema 与旧历史工具调用共享同一可视化生命周期门禁。"""
 
-    if reporting_task_kind_from_run_context(run_context) not in {
-        "visualization_section",
-        "visualization_finalize",
-    }:
+    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
         return True
     state = _reporting_session_state(run_context)
     if (
@@ -2031,7 +2021,7 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
             >= _analysis_fact_query_limit(run_context)
         )
         and not (
-            task_kind in {"visualization_section", "visualization_finalize"}
+            task_kind == "visualization_section"
             and run_context is not None
             and name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
             and not (
@@ -2046,7 +2036,7 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
             )
         )
         and not (
-            task_kind in {"visualization_section", "visualization_finalize"}
+            task_kind == "visualization_section"
             and not _visualization_production_tool_allowed(run_context, name)
         )
     ]
@@ -2657,7 +2647,11 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
         phase_cap = (
             REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
             if phase == "analysis"
-            and task_kind not in {"visualization_section", "visualization_finalize"}
+            and task_kind
+            not in {
+                "visualization_section",
+                "visualization_finalize",
+            }
             else REPORTING_SECTION_INPUT_TOKEN_HARD_CAP
             if phase == "section"
             else None

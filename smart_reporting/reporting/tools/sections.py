@@ -817,6 +817,38 @@ class RuntimeSectionsMixin:
             ) from error
 
     @staticmethod
+    def _section_chart_draft_catalog(
+        payload: Mapping[str, Any],
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        """读取 durable 章节图表草案;状态损坏或含重复身份时失败关闭,不猜测。"""
+
+        raw_sections = payload.get("visualizationSections", {})
+        if not isinstance(raw_sections, Mapping):
+            raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
+        charts_by_id: dict[str, dict[str, Any]] = {}
+        files_by_path: dict[str, dict[str, Any]] = {}
+        for section_code, section_draft in raw_sections.items():
+            if not isinstance(section_code, str) or not isinstance(section_draft, Mapping):
+                raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
+            raw_charts = section_draft.get("charts", ())
+            raw_files = section_draft.get("files", ())
+            if not isinstance(raw_charts, list) or not isinstance(raw_files, list):
+                raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
+            for chart in raw_charts:
+                if not isinstance(chart, Mapping) or not isinstance(chart.get("chartId"), str):
+                    raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
+                if chart["chartId"] in charts_by_id:
+                    raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
+                charts_by_id[chart["chartId"]] = dict(chart)
+            for file in raw_files:
+                if not isinstance(file, Mapping) or not isinstance(file.get("path"), str):
+                    raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
+                if file["path"] in files_by_path:
+                    raise ReportingError("report_state_invalid", "visualizationSections 状态损坏。")
+                files_by_path[file["path"]] = dict(file)
+        return charts_by_id, files_by_path
+
+    @staticmethod
     def _require_chart_output_path(path: str, output_root: str) -> str:
         try:
             normalized = WorkspaceService.normalize_path(path, allow_root=False)[0]
@@ -1174,6 +1206,42 @@ class RuntimeSectionsMixin:
                 for item in durable.payload.get("charts", ())
                 if isinstance(item, dict) and isinstance(item.get("chartId"), str)
             }
+            # 章节草案消费门禁:register 只能登记 durable visualizationSections 中
+            # 章节 worker 已提交的图表,且 chartId、sourcePath、全部注册元数据必须与
+            # 草案逐字一致。未提交路径、篡改元数据以及被 fresh attempt 作废的旧
+            # attempt 路径(草案已被新 attempt 替换)都会在落库前被确定性拒绝。
+            draft_charts_by_id, draft_files_by_path = self._section_chart_draft_catalog(
+                durable.payload
+            )
+            for registration in parsed:
+                draft_chart = draft_charts_by_id.get(registration.chart_id)
+                if draft_chart is None:
+                    raise ReportingError(
+                        "report_chart_draft_unknown",
+                        "图表不在 durable 章节草案中；只能登记章节 worker 已提交的图表。",
+                        details={
+                            "chartId": registration.chart_id,
+                            "sourcePath": registration.source_path,
+                        },
+                    )
+                if draft_chart != registration.model_dump(mode="json", by_alias=True):
+                    raise ReportingError(
+                        "report_chart_draft_conflict",
+                        "图表登记元数据与 durable 章节草案不一致。",
+                        details={
+                            "chartId": registration.chart_id,
+                            "sourcePath": registration.source_path,
+                        },
+                    )
+                if registration.source_path not in draft_files_by_path:
+                    raise ReportingError(
+                        "report_chart_draft_conflict",
+                        "图表登记缺少 durable 章节草案的文件身份。",
+                        details={
+                            "chartId": registration.chart_id,
+                            "sourcePath": registration.source_path,
+                        },
+                    )
             warnings: list[dict[str, Any]] = []
             registered: list[dict[str, Any]] = []
             inspected: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
@@ -1183,6 +1251,21 @@ class RuntimeSectionsMixin:
                     thread_id=scope.thread_id,
                     registration=registration,
                 )
+                # 文件身份复核:登记时实际文件的 size/sha256 必须与章节提交草案时
+                # 冻结的身份一致;文件在提交后被改写即拒绝,防止陈旧文件混入 manifest。
+                draft_file = draft_files_by_path[identity["sourcePath"]]
+                if (
+                    draft_file.get("size") != identity["size"]
+                    or draft_file.get("sha256") != identity["sha256"]
+                ):
+                    raise ReportingError(
+                        "report_chart_draft_conflict",
+                        "图表文件身份与 durable 章节草案不一致。",
+                        details={
+                            "chartId": registration.chart_id,
+                            "sourcePath": identity["sourcePath"],
+                        },
+                    )
                 if visual_inspection_mode == "deterministic":
                     parsed_receipt = ChartVisualInspectionReceipt(
                         sourcePath=identity["sourcePath"],

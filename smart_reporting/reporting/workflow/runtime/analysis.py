@@ -87,122 +87,35 @@ def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int
     return min(8, max(4, 2 + (complexity + 2) // 3))
 
 
-def _validated_dataset_ids(value: Any) -> tuple[str, ...]:
-    """校验 durable Dataset 绑定，避免不完整账本被当作可迭代序列消费。"""
-    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
-        raise ReportingError(
-            "report_analysis_dataset_inconsistent",
-            "durable analysis datasetIds 必须是非字符串字符串序列。",
-        )
-    dataset_ids = tuple(value)
-    if not dataset_ids or any(not isinstance(item, str) or not item for item in dataset_ids):
-        raise ReportingError(
-            "report_analysis_dataset_inconsistent",
-            "durable analysis datasetIds 必须是非空字符串序列。",
-        )
-    return dataset_ids
-
-
-def _finalize_semantic_catalog(
-    *,
-    analysis_plans: Mapping[str, Mapping[str, Any]],
-    fact_bundles: Mapping[str, Mapping[str, Any]],
-    dataset_ids: Sequence[str],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """从冻结计划和已验 facts 投影 finalize 所需的语义目录。"""
-    if not analysis_plans or not dataset_ids:
-        raise ReportingError(
-            "report_analysis_dataset_inconsistent",
-            "Finalize 语义目录缺少分析计划或 Dataset。",
-        )
-    authorized_ids = tuple(dataset_ids)
-    grains_by_dataset: dict[str, set[str]] = {dataset_id: set() for dataset_id in authorized_ids}
-    facts_by_code: dict[str, list[Mapping[str, Any]]] = {}
-    for analysis_id, plan in analysis_plans.items():
-        planned_ids = _validated_dataset_ids(plan.get("datasetIds"))
-        raw_grain = plan.get("organizationGrain")
-        grains = (
-            {item for item in raw_grain if isinstance(item, str) and item}
-            if isinstance(raw_grain, Sequence) and not isinstance(raw_grain, (str, bytes))
-            else set()
-        )
-        for dataset_id in planned_ids:
-            if dataset_id not in grains_by_dataset:
-                raise ReportingError(
-                    "report_analysis_dataset_inconsistent",
-                    "分析计划引用了未授权 Dataset。",
-                )
-            grains_by_dataset[dataset_id].update(grains)
-        bundle = fact_bundles.get(analysis_id)
-        if not isinstance(bundle, Mapping):
-            raise ReportingError(
-                "report_analysis_evidence_incomplete",
-                "确定性 facts 没有精确覆盖冻结分析计划。",
-            )
-        for key, code_key in (("metrics", "metricCodes"), ("derivedMetrics", "code")):
-            raw_metrics = bundle.get(key, ())
-            if not isinstance(raw_metrics, Sequence) or isinstance(raw_metrics, (str, bytes)):
-                continue
-            for metric in raw_metrics:
-                if not isinstance(metric, Mapping):
-                    continue
-                raw_codes = (
-                    metric.get(code_key, ()) if code_key != "code" else (metric.get("code"),)
-                )
-                if isinstance(raw_codes, str):
-                    raw_codes = (raw_codes,)
-                if isinstance(raw_codes, Sequence):
-                    for code in raw_codes:
-                        if isinstance(code, str) and code:
-                            facts_by_code.setdefault(code, []).append(metric)
-
-    dataset_semantics = [
-        {
-            "datasetId": dataset_id,
-            "rowGrain": "+".join(sorted(grains_by_dataset[dataset_id])) or "record",
-            "duplicateResolution": "not_applicable",
-        }
-        for dataset_id in authorized_ids
-    ]
-    metric_definitions = []
-    for code in sorted(facts_by_code):
-        facts = facts_by_code[code]
-        formulas = sorted(
-            {item.get("formula") for item in facts if isinstance(item.get("formula"), str)}
-        )
-        units = sorted({item.get("unit") for item in facts if isinstance(item.get("unit"), str)})
-        starts = sorted(
-            {item.get("periodStart") for item in facts if isinstance(item.get("periodStart"), str)}
-        )
-        ends = sorted(
-            {item.get("periodEnd") for item in facts if isinstance(item.get("periodEnd"), str)}
-        )
-        period_basis = (
-            starts[0]
-            if starts and starts == ends
-            else " 至 ".join(
-                item for item in (starts[0] if starts else None, ends[-1] if ends else None) if item
-            )
-        )
-        metric_definitions.append(
-            {
-                "code": code,
-                "name": code,
-                "definition": "；".join((code, *formulas))[:2000],
-                "unit": units[0] if len(units) == 1 else None,
-                "periodBasis": period_basis or "未声明期间",
-            }
-        )
-    return dataset_semantics, metric_definitions
-
-
 class RuntimeAnalysisMixin:
-    async def _run_visualization_finalize(self, **context: Any) -> None:
-        """汇总 worker 的显式入口；主分析阶段传入的上下文由现有冻结逻辑消费。"""
-        self._visualization_finalize_context = context
+    async def _run_visualization_finalize(
+        self,
+        *,
+        task_scope: TaskScope,
+        instruction: str,
+        acceptance_contract: dict[str, Any],
+        parent_run_id: str,
+    ) -> Mapping[str, Any]:
+        """启动并运行汇总 Task；产物冻结仍由调用方按 receipt 做身份校验。"""
+        task_id = task_scope.external_run_id
+        existing = await self.task_runner.repository.get_task_snapshot(task_id)
+        if existing is None:
+            await self.task_runner.start(
+                task_scope, instruction, acceptance_contract=acceptance_contract
+            )
+        elif existing.state in {TaskState.FAILED, TaskState.CANCELLED}:
+            raise ReportingError(
+                "report_analysis_task_terminal", "可视化汇总 Task 已在未签发阶段产物前终止。"
+            )
+        return await self.task_runner.run(task_scope, parent_run_id=parent_run_id)
 
     async def _run_visualization_section_task(self, section_code: str) -> None:
-        """执行单章图表 worker；章节草案由 durable submit 工具作为唯一完成信号。"""
+        """执行单章图表 worker；章节草案由 durable submit 工具作为唯一完成信号。
+
+        失败按 sectionCode 记入 checkpoint 账本并驱动同章 fresh retry(上限
+        MAX_REPORT_SECTION_PHASE_ATTEMPTS);重试章继承已消耗预算并关闭探索
+        (visualizationRecovery),已完成章由入口 durable 判定直接跳过。
+        """
         context = self._visualization_context
         run_context = context["run_context"]
         checkpoint = await self._current_reporting_checkpoint(run_context, context["checkpoint"])
@@ -219,15 +132,32 @@ class RuntimeAnalysisMixin:
             return
         analysis_items = payload.get("analysisItems", {})
         facts = []
+        section_analysis_items: dict[str, Mapping[str, Any]] = {}
+        section_fact_files: dict[str, FileIdentity] = {}
         for analysis_id in section.analysis_ids:
-            if analysis_id in context["fact_files"]:
-                facts.append(
-                    await self._visualization_section_fact_projection(
-                        analysis_id,
-                        context["fact_files"][analysis_id],
-                        analysis_items.get(analysis_id),
-                    )
+            fact_file = context["fact_files"].get(analysis_id)
+            durable_item = (
+                analysis_items.get(analysis_id) if isinstance(analysis_items, Mapping) else None
+            )
+            if fact_file is None or not isinstance(durable_item, Mapping):
+                raise ReportingError(
+                    "report_analysis_evidence_incomplete",
+                    f"章节 {section_code} 缺少 analysisId {analysis_id} 的冻结 facts 或 durable 分析项。",
                 )
+            facts.append(
+                await self._visualization_section_fact_projection(
+                    analysis_id, fact_file, durable_item
+                )
+            )
+            section_analysis_items[analysis_id] = durable_item
+            section_fact_files[analysis_id] = fact_file
+        # 按章动态预算以该章 analysisIds 的 evidence/fact 文件为基数,与全局汇总预算
+        # 同构但互不共享;TaskRunner 解析(visualizationBudgetVersion 等 10 个标量)
+        # 缺一即拒绝,因此必须整组注入 acceptance contract。
+        section_budget = _visualization_dynamic_budget(section_analysis_items, section_fact_files)
+        last_error: Exception | None = _visualization_section_retry_error(
+            checkpoint, section_code=section_code
+        )
         matching = [
             item
             for item in checkpoint.trace
@@ -235,120 +165,144 @@ class RuntimeAnalysisMixin:
             and item.work_kind == "visualization_section"
             and item.section_code == section_code
         ]
-        attempt = max((item.attempt for item in matching), default=-1) + 1
-        root = f"报表/智能分析/{run_context.run_id}/analysis/charts/{section_code}/attempt-{attempt + 1}"
-        task_id = reporting_phase_task_key(
-            str(run_context.run_id or "report"),
-            context["revision"],
-            "analysis",
-            analysis_id=f"viz-section:{section_code}",
-            attempt=attempt,
-        )
-        instruction_payload = {
-            "phase": "analysis",
-            "taskKind": "visualization_section",
-            "sectionCode": section_code,
-            "section": section.model_dump(mode="json", by_alias=True),
-            "analysisIds": list(section.analysis_ids),
-            "visualInspectionMode": context["visual_inspection_mode"],
-            "visualizationFacts": facts,
-            "visualizationWorkspace": {
-                "scriptPath": f"{root}/charts.py",
-                "chartOutputRoot": root,
-                "allowedTerminalCommand": f"python3 {root}/charts.py",
-            },
-            "completionConditions": [
-                "只处理当前 sectionCode 及其 outline.analysisIds；跨域章节不得扩大事实范围",
-                "脚本只写入签发的 scriptPath 和 chartOutputRoot",
-                "允许零图，最后且只调用一次 submit_visualization_charts",
-            ],
-        }
-        instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
-        if len(instruction.encode("utf-8")) > MAX_REPORT_INSTRUCTION_BYTES:
+        next_attempt = max((item.attempt for item in matching), default=-1) + 1
+        if next_attempt >= MAX_REPORT_SECTION_PHASE_ATTEMPTS:
             raise ReportingError(
-                "report_analysis_context_too_large", "单章可视化投影超过输入边界。"
+                "report_visualization_section_attempts_exhausted",
+                "章节图表 fresh attempt 已达到上限，拒绝创建新的 Task。",
             )
-        contract = build_report_phase_acceptance_contract(
-            phase="analysis",
-            validation_context_file=context["validation_context_file"].model_dump(
-                mode="json", by_alias=True
-            ),
-            phase_contract={
-                "reportRunId": str(run_context.run_id or context["external_run_id"]),
+        scope = self._scope(run_context)
+        for attempt in range(next_attempt, MAX_REPORT_SECTION_PHASE_ATTEMPTS):
+            root = f"报表/智能分析/{run_context.run_id}/analysis/charts/{section_code}/attempt-{attempt + 1}"
+            task_id = reporting_phase_task_key(
+                str(run_context.run_id or "report"),
+                context["revision"],
+                "analysis",
+                section_code=section_code,
+                task_kind="visualization_section",
+                attempt=attempt,
+            )
+            script_path = f"{root}/charts.py"
+            instruction_payload = {
+                "phase": "analysis",
                 "taskKind": "visualization_section",
                 "sectionCode": section_code,
+                "section": section.model_dump(mode="json", by_alias=True),
                 "analysisIds": list(section.analysis_ids),
                 "visualInspectionMode": context["visual_inspection_mode"],
-                "visualizationWorkspace": {"chartOutputRoot": root},
-            },
-            analysis_output_path=f"{root}/section.json",
-        )
-        scope = self._scope(run_context)
-        task_scope = TaskScope(
-            task_id,
-            scope["userId"],
-            scope["threadId"],
-            context["sandbox_id"],
-            str(self.report_worker.id),
-        )
-        checkpoint = self._update_reporting_checkpoint(
-            checkpoint,
-            trace=(
-                *checkpoint.trace,
-                ContextTrace(
-                    phase="analysis",
-                    taskId=task_id,
-                    workKind="visualization_section",
-                    sectionCode=section_code,
-                    attempt=attempt,
-                    instructionBytes=len(instruction.encode("utf-8")),
-                    projectedContextBytes=len(instruction.encode("utf-8")),
-                    visualInspectionMode=context["visual_inspection_mode"],
+                "visualizationFacts": facts,
+                "visualizationWorkspace": {
+                    "scriptPath": script_path,
+                    "chartOutputRoot": root,
+                    "allowedTerminalCommand": f"python3 {script_path}",
+                },
+                "completionConditions": _visualization_section_completion_conditions(last_error),
+            }
+            instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
+            if len(instruction.encode("utf-8")) > MAX_REPORT_INSTRUCTION_BYTES:
+                raise ReportingError(
+                    "report_analysis_context_too_large", "单章可视化投影超过输入边界。"
+                )
+            contract = build_report_phase_acceptance_contract(
+                phase="analysis",
+                validation_context_file=context["validation_context_file"].model_dump(
+                    mode="json", by_alias=True
                 ),
-            ),
-        )
-        await self._persist_reporting_checkpoint(run_context, checkpoint)
-        try:
-            existing = await self.task_runner.repository.get_task_snapshot(task_id)
-            if existing is None:
-                await self.task_runner.start(task_scope, instruction, acceptance_contract=contract)
-            elif existing.state in {TaskState.FAILED, TaskState.CANCELLED}:
-                raise ReportingError(
-                    "report_visualization_section_task_terminal", "章节图表 Task 未完成收尾即终止。"
-                )
-            await self.task_runner.run(task_scope, parent_run_id=str(run_context.run_id or ""))
-            latest = await self.state_repository.get(
-                str(run_context.run_id or context["external_run_id"])
-            )
-            latest_payload = latest.payload if latest is not None else {}
-            if section_code not in latest_payload.get("completedVisualizationSections", ()):
-                raise ReportingError(
-                    "report_visualization_section_incomplete", "章节图表 durable 收口缺失。"
-                )
-            checkpoint = self._replace_trace(checkpoint, task_id, status="completed")
-            await self._persist_reporting_checkpoint(run_context, checkpoint)
-        except Exception as error:
-            checkpoint = self._replace_trace(checkpoint, task_id, status="failed")
-            checkpoint = self._update_reporting_checkpoint(
-                checkpoint,
-                visualization_section_errors={
-                    **checkpoint.visualization_section_errors,
-                    section_code: {
-                        "phase": "analysis",
-                        "code": getattr(error, "code", "report_visualization_section_failed"),
-                        "message": str(getattr(error, "message", error))[:2000],
-                        "sectionCode": section_code,
-                        "taskId": task_id,
-                        "workKind": "visualization_section",
-                        "attempt": attempt,
-                        "retryUsage": _checkpoint_retry_usage(
-                            error, work_kind="visualization_section"
-                        ).model_dump(mode="json", by_alias=True),
+                phase_contract={
+                    "reportRunId": str(run_context.run_id or context["external_run_id"]),
+                    "taskKind": "visualization_section",
+                    "sectionCode": section_code,
+                    "analysisIds": list(section.analysis_ids),
+                    "visualInspectionMode": context["visual_inspection_mode"],
+                    "visualizationRecovery": _visualization_recovery_required(last_error),
+                    **section_budget,
+                    **_visualization_retry_usage(last_error),
+                    "visualizationWorkspace": {
+                        "scriptPath": script_path,
+                        "chartOutputRoot": root,
                     },
                 },
+                analysis_output_path=f"{root}/section.json",
+            )
+            task_scope = TaskScope(
+                task_id,
+                scope["userId"],
+                scope["threadId"],
+                context["sandbox_id"],
+                str(self.report_worker.id),
+            )
+            checkpoint = self._update_reporting_checkpoint(
+                checkpoint,
+                trace=(
+                    *checkpoint.trace,
+                    ContextTrace(
+                        phase="analysis",
+                        taskId=task_id,
+                        workKind="visualization_section",
+                        sectionCode=section_code,
+                        attempt=attempt,
+                        instructionBytes=len(instruction.encode("utf-8")),
+                        projectedContextBytes=len(instruction.encode("utf-8")),
+                        visualInspectionMode=context["visual_inspection_mode"],
+                    ),
+                ),
             )
             await self._persist_reporting_checkpoint(run_context, checkpoint)
-            raise
+            try:
+                existing = await self.task_runner.repository.get_task_snapshot(task_id)
+                if existing is None:
+                    await self.task_runner.start(
+                        task_scope, instruction, acceptance_contract=contract
+                    )
+                elif existing.state in {TaskState.FAILED, TaskState.CANCELLED}:
+                    raise ReportingError(
+                        "report_visualization_section_task_terminal",
+                        "章节图表 Task 未完成收尾即终止。",
+                    )
+                await self.task_runner.run(task_scope, parent_run_id=str(run_context.run_id or ""))
+                latest = await self.state_repository.get(
+                    str(run_context.run_id or context["external_run_id"])
+                )
+                latest_payload = latest.payload if latest is not None else {}
+                if section_code not in latest_payload.get("completedVisualizationSections", ()):
+                    raise ReportingError(
+                        "report_visualization_section_incomplete", "章节图表 durable 收口缺失。"
+                    )
+                checkpoint = self._replace_trace(checkpoint, task_id, status="completed")
+                checkpoint = self._update_reporting_checkpoint(
+                    checkpoint,
+                    visualization_section_errors={
+                        key: value
+                        for key, value in checkpoint.visualization_section_errors.items()
+                        if key != section_code
+                    },
+                )
+                await self._persist_reporting_checkpoint(run_context, checkpoint)
+                return
+            except Exception as error:
+                last_error = error
+                checkpoint = self._replace_trace(checkpoint, task_id, status="failed")
+                checkpoint = self._update_reporting_checkpoint(
+                    checkpoint,
+                    visualization_section_errors={
+                        **checkpoint.visualization_section_errors,
+                        section_code: {
+                            "phase": "analysis",
+                            "code": getattr(error, "code", "report_visualization_section_failed"),
+                            "message": str(getattr(error, "message", error))[:2000],
+                            "sectionCode": section_code,
+                            "taskId": task_id,
+                            "workKind": "visualization_section",
+                            "attempt": attempt,
+                            "retryUsage": _checkpoint_retry_usage(
+                                error, work_kind="visualization_section"
+                            ).model_dump(mode="json", by_alias=True),
+                        },
+                    },
+                )
+                await self._persist_reporting_checkpoint(run_context, checkpoint)
+        assert last_error is not None
+        raise last_error
 
     async def _visualization_section_fact_projection(
         self,
@@ -706,13 +660,31 @@ class RuntimeAnalysisMixin:
                 anonymous_trace.append(trace_item)
         section_errors = dict(current.visualization_section_errors)
         for section_code, error in incoming.visualization_section_errors.items():
-            existing_error = section_errors.get(section_code)
-            if existing_error is not None and existing_error != error:
-                raise ReportingError(
-                    "report_visualization_section_conflict",
-                    f"章节 {section_code} 的可视化失败账本身份不一致。",
-                )
-            section_errors[section_code] = error
+            existing = section_errors.get(section_code)
+            # checkpoint 持久化可乱序回放；同章账本只能由更高 attempt，或同 attempt
+            # 的确定性 taskId 覆盖。否则旧 worker 的失败写回会抹掉新 worker 的恢复预算。
+            if existing is None or (
+                error.attempt if error.attempt is not None else -1,
+                error.task_id or "",
+            ) >= (
+                existing.attempt if existing.attempt is not None else -1,
+                existing.task_id or "",
+            ):
+                section_errors[section_code] = error
+        for section_code, error in tuple(section_errors.items()):
+            completed_attempts = (
+                (item.attempt, item.task_id or "")
+                for item in (*current.trace, *incoming.trace)
+                if item.work_kind == "visualization_section"
+                and item.status == "completed"
+                and item.section_code == section_code
+            )
+            if any(
+                completed_identity
+                >= (error.attempt if error.attempt is not None else -1, error.task_id or "")
+                for completed_identity in completed_attempts
+            ):
+                section_errors.pop(section_code)
         merged_phase = incoming.phase
         if current.phase == "completed" or incoming.phase == "completed":
             merged_phase = "completed"
@@ -1477,19 +1449,22 @@ class RuntimeAnalysisMixin:
             analysis_id=None,
             retry_reason=retry_reason,
         )
-        visual_inspection_mode: Literal["vision", "deterministic"] = (
-            "vision"
-            if getattr(getattr(self.report_worker, "model", None), "_report_vision_enabled", True)
-            else "deterministic"
-        )
         _ensure_visual_inspection_capability(checkpoint, visual_inspection_mode)
+        # finalize 的 Dataset 语义必须来自本次已授权的 snapshot；空 handles 没有可绑定的
+        # 身份和语义，继续构造空目录会把不完整输入交给 worker，并可能产生无效 finalize
+        # Task。此校验位于 finalize Task 启动前，确保运行时边界直接拒绝且不产生副作用。
+        if not dataset_handles:
+            raise ReportingError(
+                "report_analysis_dataset_inconsistent",
+                "可视化汇总缺少授权 Dataset snapshot。",
+            )
 
         # 图表 Worker 需要一次拿到完整的、已校验身份的事实包；把 facts 读取放在
         # Workflow 边界而不是交给模型反复 query/read，消除日志中因路径歧义产生的
         # 探索往返。包只在本次 visualization 阶段首次构建，fresh retry 复用内存对象，
         # 不重新下载或计算 deterministic facts。
         visualization_facts_package: list[dict[str, Any]] | None = None
-        fact_bundles: dict[str, Mapping[str, Any]] = {}
+        fact_bundles: dict[str, dict[str, Any]] = {}
 
         for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
             started_trace = next(
@@ -1520,7 +1495,8 @@ class RuntimeAnalysisMixin:
                 str(run_context.run_id or "report"),
                 revision,
                 "analysis",
-                analysis_id="viz-finalize",
+                task_key="viz-finalize",
+                task_kind="visualization_finalize",
                 attempt=attempt,
             )
             output_path = (
@@ -1558,23 +1534,11 @@ class RuntimeAnalysisMixin:
                     "step": item.management_question,
                     "primaryMetricFamily": item.primary_metric_family,
                     "datasetIds": list(item.dataset_ids),
+                    "organizationGrain": list(item.organization_grain),
                 }
                 for item in detailed_plan.analyses
             }
             analysis_items = durable_payload.get("analysisItems")
-            if not isinstance(analysis_items, Mapping):
-                raise ReportingError(
-                    "report_analysis_evidence_incomplete",
-                    "耐久分析账本未完整覆盖全部 analysisId。",
-                )
-            for analysis_id, plan in analysis_plans.items():
-                durable_item = analysis_items.get(analysis_id)
-                if not isinstance(durable_item, Mapping):
-                    raise ReportingError(
-                        "report_analysis_evidence_incomplete",
-                        "耐久分析账本未完整覆盖全部 analysisId。",
-                    )
-                plan["datasetIds"] = list(_validated_dataset_ids(durable_item.get("datasetIds")))
             visualization_budget = _visualization_dynamic_budget(analysis_items, fact_files)
             if visualization_facts_package is None:
                 visualization_facts_package = []
@@ -1740,12 +1704,47 @@ class RuntimeAnalysisMixin:
                     for code in item["allowedMetricCodes"]
                 }
             )
-            dataset_semantics, metric_definitions = _finalize_semantic_catalog(
-                analysis_plans=analysis_plans,
-                fact_bundles=fact_bundles,
-                dataset_ids=tuple(item.dataset_id for item in dataset_handles),
-            )
+            if set(fact_bundles) != set(analysis_ids):
+                raise ReportingError(
+                    "report_analysis_evidence_incomplete",
+                    "确定性 facts 没有精确覆盖冻结分析计划。",
+                )
+            evidence_dataset_ids = {
+                dataset_id
+                for analysis_id in analysis_ids
+                for item in (
+                    (analysis_items.get(analysis_id),)
+                    if isinstance(analysis_items, Mapping)
+                    else ()
+                )
+                if isinstance(item, Mapping)
+                for dataset_id in _require_dataset_id_sequence(
+                    item.get("datasetIds"), error_message="durable analysis Dataset 无效。"
+                )
+            }
+            authorized_dataset_ids = {item.dataset_id for item in dataset_handles}
+            if authorized_dataset_ids and (
+                not evidence_dataset_ids
+                or not evidence_dataset_ids.issubset(authorized_dataset_ids)
+            ):
+                raise ReportingError(
+                    "report_analysis_dataset_inconsistent",
+                    "durable analysis evidence Dataset 不属于授权 Dataset snapshot。",
+                )
+            if authorized_dataset_ids:
+                dataset_semantics, metric_definitions = _finalize_semantic_catalog(
+                    analysis_plans=analysis_plans,
+                    fact_bundles=fact_bundles,
+                    dataset_ids=tuple(sorted(evidence_dataset_ids)),
+                )
+            else:
+                # 没有授权 snapshot 时不能伪造 Dataset 语义；保留空投影让 worker 的
+                # 终态校验先给出原始错误。真实报表入口总会提供非空授权 snapshot。
+                dataset_semantics, metric_definitions = [], []
             chart_registration_rules = {
+                # null 明确表示冻结 facts 没有 Profile metric code，Worker 可定义
+                # 图表 code，但 finalize 时必须以同名 metricDefinitions 冻结语义；
+                # 非空目录仍由 register_report_charts 严格拒绝未知 code。
                 "allowedMetricCodes": allowed_metric_codes or None,
                 "comparisonPeriodRequiredFor": ["period", "yoy", "mom"],
                 "referenceOnlyTitleAndAltTextMustContain": "参考",
@@ -1765,8 +1764,6 @@ class RuntimeAnalysisMixin:
                 "registeredCharts": registered_charts,
                 "visualInspectionMode": visual_inspection_mode,
                 "analysisPlans": analysis_plans,
-                "datasetSemantics": dataset_semantics,
-                "metricDefinitions": metric_definitions,
                 "analysisCitationIds": _visualization_analysis_citation_ids(
                     detailed_plan, citation_bindings
                 ),
@@ -1778,6 +1775,14 @@ class RuntimeAnalysisMixin:
                     for analysis_id, identity in fact_files.items()
                 },
                 "visualizationFacts": visualization_facts_package,
+                "datasetSemantics": dataset_semantics,
+                "metricDefinitions": metric_definitions,
+                "sectionEvidenceCatalog": {
+                    section_code: visualization_payload.get("visualizationSections", {}).get(
+                        section_code, {}
+                    )
+                    for section_code in section_codes
+                },
                 "chartRegistrationRules": chart_registration_rules,
                 # 可视化脚本与 evidence/facts 分属兄弟目录。由服务端签发完整工作区相对路径，
                 # 禁止 Worker 依据脚本位置猜测父目录，否则会把 evidence 错拼成 analysis/evidence。
@@ -1832,6 +1837,12 @@ class RuntimeAnalysisMixin:
                     "currentAnalysisId": None,
                     "datasetSemantics": dataset_semantics,
                     "metricDefinitions": metric_definitions,
+                    "sectionEvidenceCatalog": {
+                        section_code: visualization_payload.get("visualizationSections", {}).get(
+                            section_code, {}
+                        )
+                        for section_code in section_codes
+                    },
                     "analysisPlans": analysis_plans,
                     "analysisDatasetIds": {
                         item.analysis_id: list(item.dataset_ids) for item in detailed_plan.analyses
@@ -1841,7 +1852,8 @@ class RuntimeAnalysisMixin:
                         analysis_id: identity.model_dump(mode="json", by_alias=True)
                         for analysis_id, identity in fact_files.items()
                     },
-                    "datasetIds": [item.dataset_id for item in dataset_handles],
+                    "datasetIds": sorted(evidence_dataset_ids),
+                    "authorizedDatasetIds": [item.dataset_id for item in dataset_handles],
                     "citationIds": [item.citation_id for item in citation_bindings],
                     "citationRegistry": [
                         item.model_dump(mode="json", by_alias=True) for item in citation_bindings
@@ -1883,18 +1895,10 @@ class RuntimeAnalysisMixin:
             visualization_usage_metrics: Mapping[str, Any] = {}
             started_at = time.monotonic()
             try:
-                existing = await self.task_runner.repository.get_task_snapshot(task_id)
-                if existing is None:
-                    await self.task_runner.start(
-                        task_scope, instruction, acceptance_contract=contract
-                    )
-                elif existing.state in {TaskState.FAILED, TaskState.CANCELLED}:
-                    raise ReportingError(
-                        "report_analysis_task_terminal",
-                        "全局分析 task 已在未签发阶段产物前终止。",
-                    )
-                receipt = await self.task_runner.run(
-                    task_scope,
+                receipt = await self._run_visualization_finalize(
+                    task_scope=task_scope,
+                    instruction=instruction,
+                    acceptance_contract=contract,
                     parent_run_id=str(run_context.run_id or ""),
                 )
                 raw_projection_metrics = receipt.get("projectionMetrics")
@@ -1903,7 +1907,7 @@ class RuntimeAnalysisMixin:
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
                 trace_metrics["duration_seconds"] = time.monotonic() - started_at
                 identity = await self._phase_artifact_from_receipt(
-                    scope["threadId"], receipt, (output_path,)
+                    scope["threadId"], cast(dict[str, Any], receipt), (output_path,)
                 )
                 artifact = cast(
                     AnalysisArtifact,
@@ -2436,6 +2440,68 @@ def _ensure_visual_inspection_capability(
         )
 
 
+def _visualization_section_retry_error(
+    checkpoint: ReportingCheckpoint,
+    *,
+    section_code: str,
+) -> ReportingError | None:
+    """按 sectionCode 从失败账本恢复该章的稳定错误与预算,驱动章节 fresh retry。
+
+    账本条目必须与 trace 中该章最近一次失败记录的 taskId/attempt 完全一致,
+    且携带完整 retryUsage;否则说明 checkpoint 状态不可信(例如账本与 trace
+    来自不同写入轮次),必须失败关闭而不是静默重置预算。
+    """
+
+    stored = checkpoint.visualization_section_errors.get(section_code)
+    if stored is None:
+        return None
+    matching_failure = next(
+        (
+            item
+            for item in reversed(checkpoint.trace)
+            if item.phase == "analysis"
+            and item.work_kind == "visualization_section"
+            and item.section_code == section_code
+            and item.status == "failed"
+        ),
+        None,
+    )
+    if (
+        stored.phase != "analysis"
+        or stored.work_kind != "visualization_section"
+        or stored.section_code != section_code
+        or stored.retry_usage is None
+        or matching_failure is None
+        or stored.task_id != matching_failure.task_id
+        or stored.attempt != matching_failure.attempt
+    ):
+        raise ReportingError(
+            "report_semantic_contract_upgrade_required",
+            "运行中的 Reporting checkpoint 缺少可信章节恢复身份或预算，请重新分析。",
+        )
+    error = ReportingError(stored.code, stored.message)
+    setattr(
+        error,
+        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+        stored.retry_usage.model_dump(mode="python", by_alias=True),
+    )
+    return error
+
+
+def _visualization_section_completion_conditions(last_error: Exception | None) -> list[str]:
+    if _visualization_recovery_required(last_error):
+        return [
+            "上一轮本章因预算耗尽或无进展终止;禁止重新规划、探索事实或重复读取",
+            "脚本尚未执行或需要修复时,只把签发的 scriptPath 修复后执行一次",
+            "立即且只调用一次 submit_visualization_charts 提交该章现存图表草案;缺失的图表不要提交",
+        ]
+    return [
+        "只处理当前 sectionCode 及其 outline.analysisIds；跨域章节不得扩大事实范围",
+        "脚本只写入签发的 scriptPath 和 chartOutputRoot",
+        "允许零图，最后且只调用一次 submit_visualization_charts",
+    ]
+
+
 def _checkpoint_retry_error(
     checkpoint: ReportingCheckpoint,
     *,
@@ -2541,6 +2607,153 @@ def _coding_detailed_analysis_plan(
     }
 
 
+def _finalize_semantic_catalog(
+    *,
+    analysis_plans: Mapping[str, Mapping[str, Any]],
+    fact_bundles: Mapping[str, Mapping[str, Any]],
+    dataset_ids: Sequence[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """从冻结计划与 facts 投影目录；语义事实不完整时拒绝冻结。"""
+
+    _require_dataset_id_sequence(
+        dataset_ids,
+        error_message="evidence Dataset 集合不能为空。",
+        error_code="report_analysis_semantic_invalid",
+    )
+    if not analysis_plans:
+        raise ReportingError("report_analysis_semantic_invalid", "分析计划不能为空。")
+
+    grains_by_dataset: dict[str, set[str]] = {dataset_id: set() for dataset_id in dataset_ids}
+    planned_dataset_ids: set[str] = set()
+    for plan in analysis_plans.values():
+        raw_dataset_ids = plan.get("datasetIds")
+        raw_grain = plan.get("organizationGrain")
+        if not isinstance(raw_dataset_ids, Sequence) or isinstance(raw_dataset_ids, (str, bytes)):
+            raise ReportingError("report_analysis_dataset_inconsistent", "分析计划 Dataset 无效。")
+        if not isinstance(raw_grain, Sequence) or isinstance(raw_grain, (str, bytes)):
+            raise ReportingError(
+                "report_analysis_semantic_invalid", "分析计划缺少 organization grain。"
+            )
+        grains = {item for item in raw_grain if isinstance(item, str) and item}
+        if not grains:
+            raise ReportingError(
+                "report_analysis_semantic_invalid", "分析计划缺少 organization grain。"
+            )
+        for dataset_id in raw_dataset_ids:
+            if not isinstance(dataset_id, str) or not dataset_id:
+                raise ReportingError(
+                    "report_analysis_dataset_inconsistent", "分析计划包含无效 Dataset。"
+                )
+            planned_dataset_ids.add(dataset_id)
+            if dataset_id not in grains_by_dataset:
+                raise ReportingError(
+                    "report_analysis_semantic_invalid",
+                    "分析计划 Dataset 与 evidence-derived Dataset 不一致。",
+                )
+            grains_by_dataset[dataset_id].update(grains)
+    if planned_dataset_ids != set(dataset_ids):
+        raise ReportingError(
+            "report_analysis_dataset_inconsistent",
+            "分析计划 Dataset 必须精确覆盖 evidence-derived Dataset。",
+        )
+    if any(not grains for grains in grains_by_dataset.values()):
+        raise ReportingError(
+            "report_analysis_semantic_invalid", "Dataset 缺少冻结 organization grain。"
+        )
+
+    dataset_semantics = []
+    for dataset_id in dataset_ids:
+        grains = grains_by_dataset[dataset_id]
+        dataset_semantics.append(
+            {
+                "datasetId": dataset_id,
+                "rowGrain": "+".join(sorted(grains)) or "record",
+                "duplicateResolution": "not_applicable",
+            }
+        )
+
+    facts_by_code: dict[str, list[Mapping[str, Any]]] = {}
+    for bundle in fact_bundles.values():
+        raw_metrics = bundle.get("metrics", ())
+        if isinstance(raw_metrics, Sequence) and not isinstance(raw_metrics, (str, bytes)):
+            for metric in raw_metrics:
+                if not isinstance(metric, Mapping):
+                    continue
+                raw_codes = metric.get("metricCodes", ())
+                if isinstance(raw_codes, Sequence) and not isinstance(raw_codes, (str, bytes)):
+                    for code in raw_codes:
+                        if isinstance(code, str) and code:
+                            facts_by_code.setdefault(code, []).append(metric)
+        raw_derived = bundle.get("derivedMetrics", ())
+        if isinstance(raw_derived, Sequence) and not isinstance(raw_derived, (str, bytes)):
+            for metric in raw_derived:
+                if isinstance(metric, Mapping) and isinstance(metric.get("code"), str):
+                    facts_by_code.setdefault(metric["code"], []).append(metric)
+
+    metric_definitions = []
+    for code in sorted(facts_by_code):
+        facts = facts_by_code[code]
+        name = code
+        formulas = sorted(
+            {
+                formula
+                for fact in facts
+                if isinstance((formula := fact.get("formula")), str) and formula
+            }
+        )
+        units = sorted(
+            {unit for fact in facts if isinstance((unit := fact.get("unit")), str) and unit}
+        )
+        starts = sorted(
+            {
+                value
+                for fact in facts
+                if isinstance((value := fact.get("periodStart")), str) and value
+            }
+        )
+        ends = sorted(
+            {value for fact in facts if isinstance((value := fact.get("periodEnd")), str) and value}
+        )
+        if len(formulas) != len(facts) or len(units) != 1 or len(starts) != 1 or len(ends) != 1:
+            raise ReportingError(
+                "report_analysis_semantic_invalid",
+                f"指标 {code} 的 formula、unit 或期间缺失或冲突。",
+            )
+        period_start = starts[0]
+        period_end = ends[0]
+        period_basis = (
+            period_start
+            if period_start is not None and period_start == period_end
+            else " 至 ".join(item for item in (period_start, period_end) if item is not None)
+        )
+        metric_definitions.append(
+            {
+                "code": code,
+                "name": name,
+                "definition": "；".join((name, *formulas))[:2000],
+                "unit": units[0],
+                "periodBasis": period_basis,
+            }
+        )
+    return dataset_semantics, metric_definitions
+
+
+def _require_dataset_id_sequence(
+    value: object,
+    *,
+    error_message: str,
+    error_code: str = "report_analysis_dataset_inconsistent",
+) -> tuple[str, ...]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or not value
+        or any(not isinstance(item, str) or not item for item in value)
+    ):
+        raise ReportingError(error_code, error_message)
+    return tuple(value)
+
+
 def _visualization_analysis_citation_ids(
     plan: DetailedAnalysisPlan,
     citations: tuple[Citation, ...],
@@ -2610,8 +2823,7 @@ def _visualization_completion_conditions(
     )
     if _visualization_recovery_required(last_error):
         return [
-            "上一轮因工具调用、脚本失败达到上限或未完成终态提交而终止，且已关闭事实探索；"
-            "禁止重新规划、重复读取事实或重新探索工作区",
+            "上一轮因工具调用或脚本失败达到上限而终止，且已关闭事实探索；禁止重新规划、重复读取事实或重新探索工作区",
             retained_requirement,
             "仅使用任务 JSON 中 deterministicFactFiles 签发的路径以及既有脚本和图表，完成尚缺的最小修复或执行",
             "整批图表只调用一次 register_report_charts，成功后立即调用 finalize_report_analysis",
@@ -2632,7 +2844,7 @@ def _visualization_completion_conditions(
 
 
 def _visualization_recovery_required(last_error: Exception | None) -> bool:
-    """未提交终态、预算耗尽或 no-progress 后关闭重复探索。"""
+    """预算耗尽或 no-progress 终止后只允许复用既有可视化产物。"""
 
     return isinstance(last_error, ReportingError) and (
         last_error.code in _VISUALIZATION_RECOVERY_ERROR_CODES

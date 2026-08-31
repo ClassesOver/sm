@@ -66,7 +66,9 @@ REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR = "_agentos_reporting_analysis_fact_bu
 REPORTING_ANALYSIS_FACT_QUERY_LIMIT = 4
 REPORTING_TASK_DEPENDENCY = "AgentOS 编码任务"
 
-# 可视化阶段的探索工具必须有独立上限；否则模型可能在创建脚本前耗尽总预算。
+# 两类当前可视化 worker 共用受信预算与脚本状态。章节 worker 消耗探索、脚本和检查
+# 额度；finalize worker 只使用收口工具。旧 taskKind 不在该集合内，所有调用方据此拒绝。
+REPORTING_VISUALIZATION_TASK_KINDS = frozenset({"visualization_section", "visualization_finalize"})
 REPORTING_VISUALIZATION_FACT_QUERY_LIMIT = 4
 REPORTING_VISUALIZATION_READ_FILE_LIMIT = 12
 REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
@@ -83,10 +85,12 @@ REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES = frozenset(
     {
         "write_analysis_files",
         "terminal",
+        "submit_visualization_charts",
         "register_report_charts",
         "finalize_report_analysis",
     }
 )
+
 _REPORTING_PROJECTION_METRICS: ContextVar[dict[str, int] | None] = ContextVar(
     "reporting_projection_metrics", default=None
 )
@@ -234,8 +238,7 @@ def reporting_task_kind_from_acceptance_contract(value: Any) -> ReportingTaskKin
     parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
     phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
     task_kind = phase_contract.get("taskKind") if isinstance(phase_contract, Mapping) else None
-    # 与 ReportingTaskKind Literal 保持同一白名单：未知 taskKind 一律拒绝为 None，
-    # 旧 visualization 协议值不在白名单内，解析失败后由执行层失败关闭。
+    # 与 ReportingTaskKind Literal 保持同一白名单，未知 taskKind 一律拒绝为 None。
     return (
         task_kind
         if task_kind
@@ -268,46 +271,6 @@ def reporting_thinking_effort_from_acceptance_contract(
     return effort if effort in {"off", "high", "max"} else None
 
 
-def reporting_visualization_registered_from_acceptance_contract(value: Any) -> bool:
-    if not isinstance(value, Mapping):
-        return False
-    requirements = value.get("requirements")
-    if (
-        not isinstance(requirements, Sequence)
-        or isinstance(requirements, (str, bytes))
-        or len(requirements) != 1
-    ):
-        return False
-    requirement = requirements[0]
-    parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
-    phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
-    return (
-        phase_contract.get("chartsRegistered") is True
-        if isinstance(phase_contract, Mapping)
-        else False
-    )
-
-
-def reporting_visualization_recovery_from_acceptance_contract(value: Any) -> bool:
-    if not isinstance(value, Mapping):
-        return False
-    requirements = value.get("requirements")
-    if (
-        not isinstance(requirements, Sequence)
-        or isinstance(requirements, (str, bytes))
-        or len(requirements) != 1
-    ):
-        return False
-    requirement = requirements[0]
-    parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
-    phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
-    return (
-        phase_contract.get("visualizationRecovery") is True
-        if isinstance(phase_contract, Mapping)
-        else False
-    )
-
-
 def reporting_visual_inspection_mode_from_acceptance_contract(
     value: Any,
 ) -> Literal["vision", "deterministic"] | None:
@@ -329,61 +292,56 @@ def reporting_visual_inspection_mode_from_acceptance_contract(
     return mode if mode in {"vision", "deterministic"} else None
 
 
-def reporting_visualization_budget_from_acceptance_contract(value: Any) -> tuple[int, int]:
-    """读取 Workflow 签发的可视化累计预算，拒绝模型输入覆盖计数。"""
-
+def _visualization_phase_contract(value: Any) -> Mapping[str, Any] | None:
     if not isinstance(value, Mapping):
-        return 0, 0
+        return None
     requirements = value.get("requirements")
     if (
         not isinstance(requirements, Sequence)
         or isinstance(requirements, (str, bytes))
         or len(requirements) != 1
+        or not isinstance(requirements[0], Mapping)
     ):
-        return 0, 0
-    requirement = requirements[0]
-    parameters = requirement.get("parameters") if isinstance(requirement, Mapping) else None
-    phase_contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
-    if not isinstance(phase_contract, Mapping) or phase_contract.get("taskKind") not in {
-        "visualization_section",
-        "visualization_finalize",
-    }:
-        return 0, 0
+        return None
+    parameters = requirements[0].get("parameters")
+    contract = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
+    return (
+        contract
+        if isinstance(contract, Mapping)
+        and contract.get("taskKind") in REPORTING_VISUALIZATION_TASK_KINDS
+        else None
+    )
+
+
+def reporting_visualization_registered_from_acceptance_contract(value: Any) -> bool:
+    contract = _visualization_phase_contract(value)
+    return bool(
+        contract
+        and contract.get("taskKind") == "visualization_finalize"
+        and contract.get("chartsRegistered") is True
+    )
+
+
+def reporting_visualization_recovery_from_acceptance_contract(value: Any) -> bool:
+    contract = _visualization_phase_contract(value)
+    return bool(contract and contract.get("visualizationRecovery") is True)
+
+
+def reporting_visualization_budget_from_acceptance_contract(value: Any) -> tuple[int, int]:
+    contract = _visualization_phase_contract(value)
 
     def count(key: str) -> int:
-        raw = phase_contract.get(key, 0)
+        raw = contract.get(key, 0) if contract else 0
         return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
 
     return count("visualizationToolCalls"), count("visualizationScriptFailures")
 
 
-def reporting_visualization_budget_contract_from_acceptance_contract(
-    value: Any,
-) -> dict[str, int]:
-    """读取服务端签发的动态预算；历史契约保持原固定预算语义。"""
+def reporting_visualization_budget_contract_from_acceptance_contract(value: Any) -> dict[str, int]:
+    """读取当前可视化 worker 的服务端签发动态预算，拒绝旧 taskKind。"""
 
-    phase_contract: Mapping[str, Any] = {}
-    if isinstance(value, Mapping):
-        requirements = value.get("requirements")
-        if (
-            isinstance(requirements, Sequence)
-            and not isinstance(requirements, (str, bytes))
-            and len(requirements) == 1
-            and isinstance(requirements[0], Mapping)
-        ):
-            parameters = requirements[0].get("parameters")
-            candidate = parameters.get("phaseContract") if isinstance(parameters, Mapping) else None
-            if isinstance(candidate, Mapping) and candidate.get("taskKind") in {
-                "visualization_section",
-                "visualization_finalize",
-            }:
-                phase_contract = candidate
-
-    def count(key: str, default: int = 0) -> int:
-        raw = phase_contract.get(key, default)
-        return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else default
-
-    if "visualizationBudgetVersion" not in phase_contract:
+    contract = _visualization_phase_contract(value)
+    if contract is None:
         return {
             "visualizationBudgetVersion": 0,
             "visualizationEvidenceReadUnits": 0,
@@ -393,11 +351,10 @@ def reporting_visualization_budget_contract_from_acceptance_contract(
             "visualizationTotalToolLimit": 64,
             "visualizationReadUnitsUsed": 0,
             "visualizationFactQueriesUsed": 0,
-            "visualizationToolCalls": count("visualizationToolCalls"),
-            "visualizationScriptFailures": count("visualizationScriptFailures"),
+            "visualizationToolCalls": 0,
+            "visualizationScriptFailures": 0,
         }
-
-    version = phase_contract.get("visualizationBudgetVersion")
+    version = contract.get("visualizationBudgetVersion")
     required_nonnegative = (
         "visualizationEvidenceReadUnits",
         "visualizationReadUnitsUsed",
@@ -414,20 +371,19 @@ def reporting_visualization_budget_contract_from_acceptance_contract(
     invalid = [
         key
         for key in (*required_nonnegative, *required_positive)
-        if not isinstance(phase_contract.get(key), int)
-        or isinstance(phase_contract.get(key), bool)
-        or phase_contract[key] < int(key in required_positive)
+        if not isinstance(contract.get(key), int)
+        or isinstance(contract.get(key), bool)
+        or contract[key] < int(key in required_positive)
     ]
     if version != 1 or invalid:
-        # version 字段一旦存在就是新协议，不能再借用历史默认值补齐签发缺口。
         raise ReportingError(
             "report_phase_contract_invalid",
-            "visualization v1 动态预算标量缺失或无效。",
+            "visualization 动态预算标量缺失或无效。",
             details={"invalidFields": invalid, "version": version},
         )
     return {
         "visualizationBudgetVersion": 1,
-        **{key: phase_contract[key] for key in (*required_nonnegative, *required_positive)},
+        **{key: contract[key] for key in (*required_nonnegative, *required_positive)},
     }
 
 
@@ -485,90 +441,6 @@ def reporting_analysis_fact_budget_contract_from_acceptance_contract(
     }
 
 
-def reporting_visualization_budget_from_run_context(
-    run_context: RunContext | None,
-) -> tuple[int, int]:
-    """读取当前 worker 的累计预算，供任意 fresh retry 保留已经发生的调用。"""
-
-    if run_context is None or not isinstance(run_context.session_state, Mapping):
-        return 0, 0
-    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    binding = binding if isinstance(binding, Mapping) else {}
-    external_run_id = binding.get("externalRunId")
-    identity = f"{external_run_id or ''}:{run_context.run_id or ''}"
-    budgets = run_context.session_state.get(REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY)
-    stored = budgets.get(identity) if isinstance(budgets, Mapping) else None
-    stored = stored if isinstance(stored, Mapping) else {}
-
-    def count(value: Any) -> int:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
-    base_total = count(
-        stored.get(
-            "baseTotal",
-            binding.get(REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY),
-        )
-    )
-    base_failures = count(
-        stored.get(
-            "baseScriptFailures",
-            binding.get(REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY),
-        )
-    )
-    total = base_total + count(stored.get("attemptedCount")) + count(stored.get("inFlightCount"))
-    failures = base_failures + count(stored.get("scriptFailureCount"))
-    return total, failures
-
-
-def reporting_visualization_usage_from_run_context(
-    run_context: RunContext | None,
-) -> dict[str, int]:
-    """返回可跨 fresh retry 签发的全部累计预算使用量。"""
-
-    total, failures = reporting_visualization_budget_from_run_context(run_context)
-    if run_context is None or not isinstance(run_context.session_state, Mapping):
-        return {
-            "visualizationReadUnitsUsed": 0,
-            "visualizationFactQueriesUsed": 0,
-            "visualizationToolCalls": total,
-            "visualizationScriptFailures": failures,
-            "visualizationAttemptSuccessfulToolCalls": 0,
-            "visualizationAttemptRejectedToolCalls": 0,
-        }
-    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    binding = binding if isinstance(binding, Mapping) else {}
-    identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
-    budgets = run_context.session_state.get(REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY)
-    stored = budgets.get(identity) if isinstance(budgets, Mapping) else None
-    stored = stored if isinstance(stored, Mapping) else {}
-
-    def count(value: Any) -> int:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
-    attempt_calls = count(stored.get("attemptedCount")) + count(stored.get("inFlightCount"))
-    attempt_successes = count(stored.get("successfulCount"))
-    return {
-        "visualizationReadUnitsUsed": count(
-            stored.get(
-                "baseReadUnits", binding.get(REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY)
-            )
-        )
-        + count(stored.get("readUnitsUsed")),
-        "visualizationFactQueriesUsed": count(
-            stored.get(
-                "baseFactQueries", binding.get(REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY)
-            )
-        )
-        + count(stored.get("factQueriesUsed")),
-        "visualizationToolCalls": total,
-        "visualizationScriptFailures": failures,
-        "visualizationAttemptSuccessfulToolCalls": attempt_successes,
-        "visualizationAttemptRejectedToolCalls": max(attempt_calls - attempt_successes, 0),
-    }
-
-
 def reporting_analysis_fact_usage_from_run_context(run_context: RunContext | None) -> int:
     """读取当前分析项 facts 查询总数，fresh retry 必须继承已发生的额度。"""
 
@@ -615,8 +487,7 @@ def reporting_task_kind_from_run_context(
     task_kind = (
         binding.get(REPORTING_TASK_KIND_DEPENDENCY_KEY) if isinstance(binding, Mapping) else None
     )
-    # 与 ReportingTaskKind Literal 保持同一白名单：未知 taskKind 一律拒绝为 None，
-    # 旧 visualization 协议值不在白名单内，解析失败后由执行层失败关闭。
+    # 与 ReportingTaskKind Literal 保持同一白名单，未知 taskKind 一律拒绝为 None。
     return (
         task_kind
         if task_kind
@@ -647,9 +518,9 @@ def reporting_thinking_effort_from_run_context(
     return effort if effort in {"off", "high", "max"} else None
 
 
-def reporting_visualization_registered_from_run_context(
-    run_context: RunContext | None,
-) -> bool:
+def reporting_visualization_registered_from_run_context(run_context: RunContext | None) -> bool:
+    if reporting_task_kind_from_run_context(run_context) != "visualization_finalize":
+        return False
     dependencies = (
         run_context.dependencies
         if run_context is not None and isinstance(run_context.dependencies, Mapping)
@@ -663,9 +534,9 @@ def reporting_visualization_registered_from_run_context(
     )
 
 
-def reporting_visualization_recovery_from_run_context(
-    run_context: RunContext | None,
-) -> bool:
+def reporting_visualization_recovery_from_run_context(run_context: RunContext | None) -> bool:
+    if reporting_task_kind_from_run_context(run_context) not in REPORTING_VISUALIZATION_TASK_KINDS:
+        return False
     dependencies = (
         run_context.dependencies
         if run_context is not None and isinstance(run_context.dependencies, Mapping)
@@ -682,11 +553,13 @@ def reporting_visualization_recovery_from_run_context(
 def reporting_visualization_script_session_available_from_run_context(
     run_context: RunContext | None,
 ) -> bool:
-    """仅在当前 Task 已登记脚本 session 时开放 process 的轮询能力。"""
-
-    if run_context is None or not isinstance(run_context.session_state, Mapping):
+    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
         return False
-    sessions = run_context.session_state.get("reportingVisualizationSessions")
+    sessions = (
+        run_context.session_state.get("reportingVisualizationSessions")
+        if run_context is not None and isinstance(run_context.session_state, Mapping)
+        else None
+    )
     return (
         isinstance(sessions, Sequence)
         and not isinstance(sessions, (str, bytes))
@@ -694,11 +567,74 @@ def reporting_visualization_script_session_available_from_run_context(
     )
 
 
+def reporting_visualization_exploration_count(
+    run_context: RunContext | None, tool_name: str
+) -> int:
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return 0
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
+    budgets = run_context.session_state.get(REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY)
+    stored = budgets.get(identity) if isinstance(budgets, Mapping) else None
+    base_key, stored_key, in_flight_key = (
+        (REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY, "readUnitsUsed", "inFlightReadUnits")
+        if tool_name == "read_file"
+        else (
+            REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY,
+            "factQueriesUsed",
+            "inFlightFactQueries",
+        )
+    )
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    return (
+        count(binding.get(base_key))
+        + count(stored.get(stored_key) if isinstance(stored, Mapping) else 0)
+        + count(stored.get(in_flight_key) if isinstance(stored, Mapping) else 0)
+    )
+
+
+def reporting_visualization_exploration_budget_exhausted_from_run_context(
+    run_context: RunContext | None,
+) -> bool:
+    if (
+        reporting_phase_from_run_context(run_context) != "analysis"
+        or reporting_task_kind_from_run_context(run_context) != "visualization_section"
+    ):
+        return False
+    dependencies = (
+        run_context.dependencies
+        if run_context is not None and isinstance(run_context.dependencies, Mapping)
+        else {}
+    )
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+
+    def limit(key: str, default: int) -> int:
+        value = binding.get(key)
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+            else default
+        )
+
+    return reporting_visualization_exploration_count(run_context, "query_analysis_facts") >= limit(
+        REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
+        REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
+    ) or reporting_visualization_exploration_count(run_context, "read_file") >= limit(
+        REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY, REPORTING_VISUALIZATION_READ_FILE_LIMIT
+    )
+
+
 def reporting_visualization_production_only_from_run_context(
     run_context: RunContext | None,
 ) -> bool:
-    """读取当前可视化 Task 的持久生产态，避免继续暴露探索工具。"""
-
+    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
+        return False
     if reporting_visualization_recovery_from_run_context(
         run_context
     ) or reporting_visualization_exploration_budget_exhausted_from_run_context(run_context):
@@ -710,11 +646,83 @@ def reporting_visualization_production_only_from_run_context(
     binding = binding if isinstance(binding, Mapping) else {}
     identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
     stored = run_context.session_state.get(REPORTING_VISUALIZATION_PRODUCTION_ONLY_STATE_KEY)
-    if stored is True:
-        return True
-    if not isinstance(stored, Mapping):
-        return False
-    return stored.get(identity) is True
+    return stored is True or (isinstance(stored, Mapping) and stored.get(identity) is True)
+
+
+def reporting_visualization_budget_from_run_context(
+    run_context: RunContext | None,
+) -> tuple[int, int]:
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return 0, 0
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
+    budgets = run_context.session_state.get(REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY)
+    stored = budgets.get(identity) if isinstance(budgets, Mapping) else {}
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    return (
+        count(
+            stored.get("baseTotal", binding.get(REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY))
+        )
+        + count(stored.get("attemptedCount"))
+        + count(stored.get("inFlightCount")),
+        count(
+            stored.get(
+                "baseScriptFailures",
+                binding.get(REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY),
+            )
+        )
+        + count(stored.get("scriptFailureCount")),
+    )
+
+
+def reporting_visualization_usage_from_run_context(
+    run_context: RunContext | None,
+) -> dict[str, int]:
+    total, failures = reporting_visualization_budget_from_run_context(run_context)
+    if run_context is None or not isinstance(run_context.session_state, Mapping):
+        return {
+            "visualizationReadUnitsUsed": 0,
+            "visualizationFactQueriesUsed": 0,
+            "visualizationToolCalls": total,
+            "visualizationScriptFailures": failures,
+            "visualizationAttemptSuccessfulToolCalls": 0,
+            "visualizationAttemptRejectedToolCalls": 0,
+        }
+    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
+    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
+    binding = binding if isinstance(binding, Mapping) else {}
+    identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
+    budgets = run_context.session_state.get(REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY)
+    stored = budgets.get(identity) if isinstance(budgets, Mapping) else {}
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    attempts = count(stored.get("attemptedCount")) + count(stored.get("inFlightCount"))
+    successes = count(stored.get("successfulCount"))
+    return {
+        "visualizationReadUnitsUsed": count(
+            stored.get(
+                "baseReadUnits", binding.get(REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY)
+            )
+        )
+        + count(stored.get("readUnitsUsed")),
+        "visualizationFactQueriesUsed": count(
+            stored.get(
+                "baseFactQueries", binding.get(REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY)
+            )
+        )
+        + count(stored.get("factQueriesUsed")),
+        "visualizationToolCalls": total,
+        "visualizationScriptFailures": failures,
+        "visualizationAttemptSuccessfulToolCalls": successes,
+        "visualizationAttemptRejectedToolCalls": max(attempts - successes, 0),
+    }
 
 
 def reporting_analysis_recovery_from_run_context(run_context: RunContext | None) -> bool:
@@ -728,89 +736,6 @@ def reporting_analysis_recovery_from_run_context(run_context: RunContext | None)
         binding.get(REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY) is True
         if isinstance(binding, Mapping)
         else False
-    )
-
-
-def reporting_visualization_exploration_count(
-    run_context: RunContext | None,
-    tool_name: str,
-) -> int:
-    """读取当前可视化 run 中某类探索工具的已完成调用数。"""
-
-    if run_context is None or not isinstance(run_context.session_state, Mapping):
-        return 0
-    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    binding = binding if isinstance(binding, Mapping) else {}
-    identity = f"{binding.get('externalRunId') or ''}:{run_context.run_id or ''}"
-    budgets = run_context.session_state.get(REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY)
-    stored = budgets.get(identity) if isinstance(budgets, Mapping) else None
-    if tool_name == "read_file":
-        base_key = REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY
-        stored_key = "readUnitsUsed"
-        in_flight_key = "inFlightReadUnits"
-    else:
-        base_key = REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY
-        stored_key = "factQueriesUsed"
-        in_flight_key = "inFlightFactQueries"
-
-    def count(raw: Any) -> int:
-        return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
-
-    legacy_counts = stored.get("toolCounts") if isinstance(stored, Mapping) else None
-    stored_value = stored.get(stored_key) if isinstance(stored, Mapping) else None
-    if stored_value is None and isinstance(legacy_counts, Mapping):
-        stored_value = legacy_counts.get(tool_name)
-
-    return (
-        count(binding.get(base_key))
-        + count(stored_value)
-        + count(stored.get(in_flight_key) if isinstance(stored, Mapping) else 0)
-    )
-
-
-def reporting_visualization_exploration_budget_exhausted_from_run_context(
-    run_context: RunContext | None,
-) -> bool:
-    """只要任一探索子预算用尽，就把当前可视化 run 收窄到生产工具。"""
-
-    if (
-        run_context is None
-        or reporting_phase_from_run_context(run_context) != "analysis"
-        or reporting_task_kind_from_run_context(run_context)
-        not in {"visualization_section", "visualization_finalize"}
-    ):
-        return False
-    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    binding = binding if isinstance(binding, Mapping) else {}
-
-    def limit(key: str, default: int) -> int:
-        value = binding.get(key)
-        return (
-            value
-            if isinstance(value, int) and not isinstance(value, bool) and value > 0
-            else default
-        )
-
-    return any(
-        reporting_visualization_exploration_count(run_context, tool_name) >= maximum
-        for tool_name, maximum in (
-            (
-                "query_analysis_facts",
-                limit(
-                    REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY,
-                    REPORTING_VISUALIZATION_FACT_QUERY_LIMIT,
-                ),
-            ),
-            (
-                "read_file",
-                limit(
-                    REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY,
-                    REPORTING_VISUALIZATION_READ_FILE_LIMIT,
-                ),
-            ),
-        )
     )
 
 

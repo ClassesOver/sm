@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -616,6 +617,7 @@ class CheckpointError(StrictModel):
     retry_reason: str | None = Field(default=None, alias="retryReason", max_length=2000)
     details: dict[str, Any] | None = Field(default=None, max_length=50)
     task_id: str | None = Field(default=None, alias="taskId", max_length=128)
+    # visualization_section/visualization_finalize 区分并行章节图表 worker 与汇总 worker。
     work_kind: (
         Literal[
             "analysis_item",
@@ -797,18 +799,46 @@ def reporting_phase_task_key(
     *,
     analysis_id: str | None = None,
     section_code: str | None = None,
+    task_key: str | None = None,
+    task_kind: str | None = None,
     attempt: int = 0,
 ) -> str:
+    # 三种 analysis 身份分支与 taskKind 一一绑定，防止把可视化身份伪装成 analysisId：
+    # analysis_id 只属于 analysis_item（历史调用不传 taskKind）；section_code 只属于
+    # visualization_section；finalize 只接受固定 task_key "viz-finalize"，不接受任意
+    # 字符串。section phase 维持普通章节身份，不允许携带可视化 taskKind。
     if (
         revision < 1
         or attempt < 0
-        or (phase == "section") != bool(section_code)
-        or (phase == "section" and analysis_id is not None)
-        or (phase == "analysis" and (not analysis_id or section_code is not None))
+        or (phase == "section" and (not section_code or task_kind is not None))
+        or (phase == "section" and (analysis_id is not None or task_key is not None))
+        or (
+            phase == "analysis"
+            and sum(value is not None for value in (analysis_id, section_code, task_key)) != 1
+        )
+        or (
+            analysis_id is not None
+            and (
+                not re.fullmatch(r"analysis_[0-9]{3,6}", analysis_id)
+                or task_kind not in (None, "analysis_item")
+            )
+        )
+        or (
+            phase == "analysis"
+            and section_code is not None
+            and task_kind != "visualization_section"
+        )
+        or (
+            phase == "analysis"
+            and (
+                task_key is not None
+                and (task_key != "viz-finalize" or task_kind != "visualization_finalize")
+            )
+        )
     ):
         raise ValueError("Reporting phase task identity 无效")
     payload = (
-        f"{workflow_run_id}:{revision}:{phase}:{analysis_id or ''}:{section_code or ''}:{attempt}"
+        f"{workflow_run_id}:{revision}:{phase}:{analysis_id or task_key or ''}:{section_code or ''}:{attempt}"
     ).encode()
     return f"report-coding-{hashlib.sha256(payload).hexdigest()[:40]}"
 

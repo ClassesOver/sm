@@ -95,7 +95,7 @@ async def test_visualization_terminal_success_clears_pending_script_failure() ->
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-pending",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -121,7 +121,7 @@ async def test_visualization_skill_success_is_deduplicated_within_run() -> None:
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-skill-dedupe-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -155,7 +155,7 @@ async def test_visualization_skill_failure_is_not_cached_across_retry_run() -> N
         REPORTING_TASK_DEPENDENCY: {
             "externalRunId": "visualization-skill-retry-task",
             REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-            REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
         }
     }
     calls = 0
@@ -200,7 +200,7 @@ def test_phase_tool_admission_uses_capability_matrix() -> None:
     for phase, task_kind in (
         ("section", "section"),
         ("analysis", "analysis_item"),
-        ("analysis", "visualization"),
+        ("analysis", "visualization_section"),
     ):
         names = tools_for_task(phase, task_kind)
         assert names is not None
@@ -229,6 +229,37 @@ def test_reporting_task_kind_from_acceptance_contract_accepts_new_kinds(
         ]
     }
     assert reporting_task_kind_from_acceptance_contract(contract) == task_kind
+
+
+def test_old_visualization_task_kind_is_rejected() -> None:
+    contract = {
+        "requirements": [
+            {
+                "parameters": {
+                    "phase": "analysis",
+                    "phaseContract": {"taskKind": "visualization"},
+                }
+            }
+        ]
+    }
+
+    assert reporting_task_kind_from_acceptance_contract(contract) is None
+
+
+def test_old_visualization_run_context_task_kind_is_rejected() -> None:
+    run_context = RunContext(
+        run_id="run-old-visualization",
+        session_id="session-old-visualization",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+            }
+        },
+    )
+
+    assert reporting_task_kind_from_run_context(run_context) is None
 
 
 @pytest.mark.parametrize(
@@ -263,7 +294,7 @@ async def test_visualization_skill_concurrent_success_is_deduplicated() -> None:
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-skill-concurrent-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -303,7 +334,7 @@ async def test_visualization_skill_cache_rejects_invalid_entry_and_is_bounded() 
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-skill-cache-bounded-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
                 "visualizationAttemptToolLimit": 100,
                 "visualizationTotalToolLimit": 100,
             }
@@ -367,7 +398,7 @@ async def test_visualization_successful_script_write_records_recoverable_progres
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-script-write-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -528,13 +559,11 @@ def test_report_worker_caps_only_long_model_timeout(
             ],
         ),
         (
-            "visualization",
+            "visualization_section",
             [
                 "get_skill_instructions",
                 "get_skill_reference",
                 "inspect_chart",
-                "register_report_charts",
-                "finalize_report_analysis",
             ],
         ),
     ],
@@ -588,7 +617,7 @@ def test_visualization_projection_hides_process_until_script_session_exists() ->
         dependencies={
             REPORTING_TASK_DEPENDENCY: {
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -626,7 +655,7 @@ def test_visualization_projection_exposes_process_for_signed_script_session() ->
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-session",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -648,7 +677,7 @@ def test_visualization_initial_admission_rejects_hidden_exploration_calls() -> N
         dependencies={
             REPORTING_TASK_DEPENDENCY: {
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -697,7 +726,7 @@ def test_visualization_recovery_projection_removes_exploration_tools() -> None:
         dependencies={
             REPORTING_TASK_DEPENDENCY: {
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
                 REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True,
             }
         },
@@ -726,8 +755,6 @@ def test_visualization_recovery_projection_removes_exploration_tools() -> None:
         "read_tool_output",
         "write_analysis_files",
         "terminal",
-        "register_report_charts",
-        "finalize_report_analysis",
     ]
 
 
@@ -740,7 +767,7 @@ def test_visualization_production_only_projection_keeps_required_vision_inspecti
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-production-vision",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
                 "reportingVisualInspectionMode": "vision",
             }
         },
@@ -759,8 +786,6 @@ def test_visualization_production_only_projection_keeps_required_vision_inspecti
 
     assert [item["function"]["name"] for item in projected] == [
         "inspect_chart",
-        "register_report_charts",
-        "finalize_report_analysis",
     ]
 
 
@@ -779,17 +804,21 @@ def test_visualization_exploration_tools_are_hidden_after_their_subbudget() -> N
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-exploration",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
 
     with bind_reporting_run_context(context):
-        assert reporting_phase_allows_tool(
-            "analysis", "query_analysis_facts", task_kind="visualization"
+        assert not reporting_phase_allows_tool(
+            "analysis", "query_analysis_facts", task_kind="visualization_section"
         )
-        assert reporting_phase_allows_tool("analysis", "read_file", task_kind="visualization")
-        assert reporting_phase_allows_tool("analysis", "terminal", task_kind="visualization")
+        assert reporting_phase_allows_tool(
+            "analysis", "read_file", task_kind="visualization_section"
+        )
+        assert reporting_phase_allows_tool(
+            "analysis", "terminal", task_kind="visualization_section"
+        )
         projected = _phase_filtered_report_tools(
             [],
             [
@@ -863,7 +892,7 @@ def test_analysis_recovery_projection_keeps_only_completion() -> None:
     ("phase", "task_kind", "keeps_skills"),
     [
         ("analysis", "analysis_item", False),
-        ("analysis", "visualization", True),
+        ("analysis", "visualization_section", True),
         ("section", "section", False),
     ],
 )
@@ -943,7 +972,7 @@ def test_report_worker_tool_cache_key_separates_task_kinds_for_same_user() -> No
 
     assert _report_worker_tools_cache_key(
         context("analysis_item")
-    ) != _report_worker_tools_cache_key(context("visualization"))
+    ) != _report_worker_tools_cache_key(context("visualization_section"))
 
 
 def test_report_worker_tool_cache_key_separates_concurrent_analysis_tasks() -> None:
@@ -966,7 +995,7 @@ def test_report_worker_tool_cache_key_separates_concurrent_analysis_tasks() -> N
     )
 
 
-@pytest.mark.parametrize("task_kind", ["analysis_item", "visualization"])
+@pytest.mark.parametrize("task_kind", ["analysis_item", "visualization_section"])
 def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str) -> None:
     context = RunContext(
         run_id=f"run-{task_kind}",
@@ -985,7 +1014,7 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
     assert "update_plan" not in instructions
     assert "replace_text" not in instructions
     assert "git_status" not in instructions
-    if task_kind in {"visualization_section", "visualization_finalize"}:
+    if task_kind == "visualization_section":
         assert "只调用 write_analysis_files" in instructions
         assert "evidenceFiles[].path" in instructions
         assert "不得构造 analysis/evidence" in instructions
@@ -1088,7 +1117,7 @@ def test_visualization_instructions_require_readable_chart_layouts() -> None:
         dependencies={
             REPORTING_TASK_DEPENDENCY: {
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -1146,7 +1175,7 @@ def test_deterministic_visualization_instructions_forbid_inspect_chart() -> None
         dependencies={
             REPORTING_TASK_DEPENDENCY: {
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
                 "reportingVisualInspectionMode": "deterministic",
             }
         },
@@ -2249,7 +2278,9 @@ async def test_analysis_tool_budget_counts_only_success_and_isolates_tasks(monke
         )
     monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 1)
     monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 1)
-    visualization_context = context("run-visualization", "visualization-task", "visualization")
+    visualization_context = context(
+        "run-visualization", "visualization-task", "visualization_section"
+    )
     visualization = await normalize_reporting_tool_arguments(
         visualization_context,
         "query_analysis_facts",
@@ -2282,7 +2313,7 @@ async def test_visualization_total_budget_counts_failed_and_successful_calls(
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-total-budget-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -2333,7 +2364,7 @@ async def test_visualization_registration_is_reserved_outside_tool_budget(
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-register-budget-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_finalize",
             }
         },
     )
@@ -2370,7 +2401,7 @@ async def test_visualization_registration_is_reserved_outside_tool_budget(
     assert result == {"ok": True}
     assert registered is True
     assert (
-        reporting_visualization_usage_from_run_context(run_context)["visualizationToolCalls"] == 1
+        reporting_visualization_usage_from_run_context(run_context)["visualizationToolCalls"] == 0
     )
 
 
@@ -2386,7 +2417,7 @@ async def test_visualization_fact_exploration_subbudget_stops_current_run(
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-fact-subbudget-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -2432,7 +2463,7 @@ async def test_visualization_exploration_stop_skips_remaining_batch_calls() -> N
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-exploration-batch",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -2477,7 +2508,7 @@ def test_visualization_production_only_projection_keeps_only_production_tools() 
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-production-only",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
                 "reportingVisualInspectionMode": "deterministic",
             }
         },
@@ -2506,8 +2537,6 @@ def test_visualization_production_only_projection_keeps_only_production_tools() 
     assert [item["function"]["name"] for item in projected] == [
         "write_analysis_files",
         "terminal",
-        "register_report_charts",
-        "finalize_report_analysis",
     ]
 
 
@@ -2520,7 +2549,7 @@ def test_visualization_recovery_projection_is_production_only_on_fresh_run() -> 
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-retry",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
                 REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True,
                 "reportingVisualInspectionMode": "deterministic",
             }
@@ -2550,8 +2579,6 @@ def test_visualization_recovery_projection_is_production_only_on_fresh_run() -> 
         "read_file",
         "write_analysis_files",
         "terminal",
-        "register_report_charts",
-        "finalize_report_analysis",
     ]
 
 
@@ -2564,7 +2591,7 @@ def test_visualization_recovery_admission_keeps_script_read_and_production_calls
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-retry-admission",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
                 REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True,
                 "reportingVisualInspectionMode": "deterministic",
             }
@@ -2609,7 +2636,7 @@ async def test_visualization_argument_errors_consume_total_budget(
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-argument-budget-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -2645,7 +2672,7 @@ async def test_visualization_third_script_failure_stops_current_run(
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-script-failure-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -2699,7 +2726,7 @@ async def test_visualization_nonzero_terminal_exit_consumes_script_failure_budge
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-terminal-exit-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -2748,7 +2775,7 @@ async def test_visualization_exit_zero_self_check_errors_consume_script_failure_
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-self-check-failure-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
             }
         },
     )
@@ -2784,7 +2811,7 @@ async def test_visualization_retry_restores_cumulative_budget_from_contract(
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-retry-budget-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
                 REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: 3,
                 REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY: 2,
             }
@@ -2831,7 +2858,7 @@ async def test_visualization_retry_total_budget_cannot_be_reset(
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-retry-total-budget-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
                 REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: 3,
                 REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY: 0,
             }
@@ -2875,7 +2902,7 @@ async def test_visualization_registration_closes_self_check_tools_but_allows_fin
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-task",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_finalize",
             }
         },
     )
@@ -2922,7 +2949,7 @@ async def test_visualization_retry_uses_durable_registration_dependency_to_block
             REPORTING_TASK_DEPENDENCY: {
                 "externalRunId": "visualization-task-retry",
                 REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_finalize",
                 REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY: True,
             }
         },
@@ -3044,7 +3071,7 @@ async def test_concurrent_reporting_requests_keep_off_high_max_profiles_isolated
     off_model, high_model, max_model = await asyncio.gather(
         request("section", "section", "off"),
         request("analysis", "analysis_item", "high"),
-        request("analysis", "visualization", "max"),
+        request("analysis", "visualization_section", "max"),
     )
 
     assert len({id(off_model), id(high_model), id(max_model), id(model)}) == 4
@@ -3119,7 +3146,7 @@ def test_tools_for_task_visualization_finalize() -> None:
     ("phase", "task_kind", "expected_hard_cap"),
     [
         ("analysis", "analysis_item", 160 * 1024),
-        ("analysis", "visualization", 196_608),
+        ("analysis", "visualization_section", 196_608),
         ("section", "section", 48 * 1024),
     ],
 )
@@ -3172,7 +3199,7 @@ def test_reporting_worker_applies_task_input_hard_caps(
     ("phase", "task_kind", "expected_tool_choice"),
     [
         ("analysis", "analysis_item", "auto"),
-        ("analysis", "visualization", "required"),
+        ("analysis", "visualization_section", "required"),
         ("section", "section", "auto"),
     ],
 )

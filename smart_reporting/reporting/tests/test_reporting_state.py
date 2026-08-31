@@ -1278,6 +1278,18 @@ def test_context_trace_accepts_new_work_kinds() -> None:
     assert finalize.work_kind == "visualization_finalize"
 
 
+@pytest.mark.parametrize("model", [CheckpointError, ContextTrace])
+def test_old_visualization_work_kind_is_rejected(
+    model: type[CheckpointError | ContextTrace],
+) -> None:
+    payload = {"phase": "analysis", "workKind": "visualization"}
+    if model is CheckpointError:
+        payload.update({"code": "x", "message": "m"})
+
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
+
+
 def test_checkpoint_visualization_section_errors_default_empty() -> None:
     checkpoint = ReportingCheckpoint.model_validate(_minimal_checkpoint_payload())
     assert checkpoint.visualization_section_errors == {}

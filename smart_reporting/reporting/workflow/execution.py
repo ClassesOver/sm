@@ -247,6 +247,9 @@ class ReportTaskRunner:
                 reporting_thinking_effort = reporting_thinking_effort_from_acceptance_contract(
                     acceptance_contract
                 )
+                visual_inspection_mode = reporting_visual_inspection_mode_from_acceptance_contract(
+                    acceptance_contract
+                )
                 visualization_registered = (
                     reporting_visualization_registered_from_acceptance_contract(acceptance_contract)
                 )
@@ -259,9 +262,6 @@ class ReportTaskRunner:
                     )
                 )
                 visualization_recovery = reporting_visualization_recovery_from_acceptance_contract(
-                    acceptance_contract
-                )
-                visual_inspection_mode = reporting_visual_inspection_mode_from_acceptance_contract(
                     acceptance_contract
                 )
                 analysis_fact_budget = (
@@ -300,51 +300,42 @@ class ReportTaskRunner:
                         "attemptNo": attempt.attempt_no,
                         REPORTING_PHASE_DEPENDENCY_KEY: reporting_phase,
                         **(
-                            {REPORTING_TASK_KIND_DEPENDENCY_KEY: reporting_task_kind}
-                            if reporting_task_kind is not None
-                            else {}
-                        ),
-                        **(
-                            {REPORTING_THINKING_EFFORT_DEPENDENCY_KEY: (reporting_thinking_effort)}
-                            if reporting_thinking_effort is not None
-                            else {}
-                        ),
-                        **(
-                            {REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY: True}
-                            if visualization_registered
-                            else {}
-                        ),
-                        **(
                             {
-                                REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: (
-                                    visualization_tool_calls
+                                REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY: visualization_tool_calls,
+                                REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY: visualization_script_failures,
+                                REPORTING_VISUALIZATION_BUDGET_VERSION_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationBudgetVersion"
+                                ],
+                                REPORTING_VISUALIZATION_EVIDENCE_READ_UNITS_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationEvidenceReadUnits"
+                                ],
+                                REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationReadLimit"
+                                ],
+                                REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationFactQueryLimit"
+                                ],
+                                REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationAttemptToolLimit"
+                                ],
+                                REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationTotalToolLimit"
+                                ],
+                                REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationReadUnitsUsed"
+                                ],
+                                REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY: visualization_budget[
+                                    "visualizationFactQueriesUsed"
+                                ],
+                                **(
+                                    {REPORTING_VISUALIZATION_REGISTERED_DEPENDENCY_KEY: True}
+                                    if visualization_registered
+                                    else {}
                                 ),
-                                REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY: (
-                                    visualization_script_failures
-                                ),
-                                REPORTING_VISUALIZATION_BUDGET_VERSION_DEPENDENCY_KEY: (
-                                    visualization_budget["visualizationBudgetVersion"]
-                                ),
-                                REPORTING_VISUALIZATION_EVIDENCE_READ_UNITS_DEPENDENCY_KEY: (
-                                    visualization_budget["visualizationEvidenceReadUnits"]
-                                ),
-                                REPORTING_VISUALIZATION_READ_LIMIT_DEPENDENCY_KEY: (
-                                    visualization_budget["visualizationReadLimit"]
-                                ),
-                                REPORTING_VISUALIZATION_FACT_QUERY_LIMIT_DEPENDENCY_KEY: (
-                                    visualization_budget["visualizationFactQueryLimit"]
-                                ),
-                                REPORTING_VISUALIZATION_ATTEMPT_LIMIT_DEPENDENCY_KEY: (
-                                    visualization_budget["visualizationAttemptToolLimit"]
-                                ),
-                                REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY: (
-                                    visualization_budget["visualizationTotalToolLimit"]
-                                ),
-                                REPORTING_VISUALIZATION_READ_UNITS_DEPENDENCY_KEY: (
-                                    visualization_budget["visualizationReadUnitsUsed"]
-                                ),
-                                REPORTING_VISUALIZATION_FACT_QUERIES_DEPENDENCY_KEY: (
-                                    visualization_budget["visualizationFactQueriesUsed"]
+                                **(
+                                    {REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True}
+                                    if visualization_recovery
+                                    else {}
                                 ),
                             }
                             if reporting_task_kind
@@ -352,10 +343,13 @@ class ReportTaskRunner:
                             else {}
                         ),
                         **(
-                            {REPORTING_VISUALIZATION_RECOVERY_DEPENDENCY_KEY: True}
-                            if reporting_task_kind
-                            in {"visualization_section", "visualization_finalize"}
-                            and visualization_recovery
+                            {REPORTING_TASK_KIND_DEPENDENCY_KEY: reporting_task_kind}
+                            if reporting_task_kind is not None
+                            else {}
+                        ),
+                        **(
+                            {REPORTING_THINKING_EFFORT_DEPENDENCY_KEY: (reporting_thinking_effort)}
+                            if reporting_thinking_effort is not None
                             else {}
                         ),
                         **(
@@ -427,10 +421,6 @@ class ReportTaskRunner:
                     updated.state_version,
                     agno_status=str(getattr(output, "status", "completed")),
                 )
-                if reporting_task_kind in {"visualization_section", "visualization_finalize"}:
-                    projection_metrics.update(
-                        reporting_visualization_usage_from_run_context(worker_run_context)
-                    )
                 task_outcome = "completed"
                 return self._finish_receipt(
                     completed,
@@ -440,17 +430,6 @@ class ReportTaskRunner:
             except BaseException as error:
                 if isinstance(error, anyio.get_cancelled_exc_class()):
                     task_outcome = "cancelled"
-                if reporting_task_kind in {
-                    "visualization_section",
-                    "visualization_finalize",
-                } and isinstance(error, Exception):
-                    # fresh retry 可能由模型超时等非预算异常触发；异常本身必须原样上抛，
-                    # 但已经发生的工具调用不能因此从零开始。
-                    setattr(
-                        error,
-                        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
-                        reporting_visualization_usage_from_run_context(worker_run_context),
-                    )
                 if reporting_task_kind == "analysis_item" and isinstance(error, Exception):
                     setattr(
                         error,
@@ -460,6 +439,15 @@ class ReportTaskRunner:
                                 worker_run_context
                             )
                         },
+                    )
+                if reporting_task_kind in {
+                    "visualization_section",
+                    "visualization_finalize",
+                } and isinstance(error, Exception):
+                    setattr(
+                        error,
+                        REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR,
+                        reporting_visualization_usage_from_run_context(worker_run_context),
                     )
                 await complete_cleanup(self._cancel_and_cleanup(scope, session.lease.epoch))
                 raise
@@ -592,12 +580,6 @@ class ReportTaskRunner:
                     # 继续同一 Agno run 会把完整章节历史再次带入模型并放大探索，
                     # 交给外层 fresh attempt，恢复原始错误和章节边界。
                     raise missing_terminal
-                if task_kind in {"visualization_section", "visualization_finalize"}:
-                    # 新协议的章节与汇总都有独立终态工具。成功的图表文件或章节草案已由
-                    # 服务端持久化，同 run continuation 只补当前终态，不能再借用旧单体
-                    # visualization 的 script-written 标志决定是否恢复。
-                    use_continuation = True
-                    continue
                 logger.warning(
                     "report_worker_terminal_tool_missing_continuation run_id={} task_kind={} "
                     "required_tools={}",

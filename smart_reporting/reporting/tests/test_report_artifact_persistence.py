@@ -778,7 +778,7 @@ async def test_terminal_cleanup_cancels_phase_tasks_before_destroying_sandbox() 
         {
             "phase": "analysis",
             "taskId": task_ids[1],
-            "workKind": "visualization",
+            "workKind": "visualization_finalize",
         },
         {
             "phase": "section",
