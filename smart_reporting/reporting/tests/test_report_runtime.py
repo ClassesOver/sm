@@ -5,6 +5,7 @@ import shutil
 import uuid
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 from agno.run import RunContext
@@ -342,17 +343,13 @@ def test_page_number_context_uses_section_page_count(
     )
 
 
-def test_postprocess_docx_uses_section_page_count_field(tmp_path: Path) -> None:
-    docx = pytest.importorskip("docx")
-
-    path = tmp_path / "report.docx"
+def _docx_postprocess_fixture(docx: Any) -> Any:
     document = docx.Document()
     for text in (
         "测试报告",
         "__REPORT_COVER_END__",
         "目录",
         "__REPORT_TOC_FIELD_START__",
-        "经营概览",
         "__REPORT_TOC_FIELD_END__",
         "__REPORT_TOC_END__",
         "__REPORT_BODY_START__",
@@ -361,19 +358,32 @@ def test_postprocess_docx_uses_section_page_count_field(tmp_path: Path) -> None:
         "2026-08-17",
     ):
         document.add_paragraph(text)
+    return document
+
+
+def _docx_postprocess_context() -> dict[str, Any]:
+    return {
+        "title": "测试报告",
+        "periodLabel": "2025 年",
+        "organizationName": "测试机构",
+        "generatedByLabel": "Reporting Agent",
+        "watermarkText": "内部资料",
+        "generatedDate": "2026-08-17",
+        "sections": [{"code": "overview", "title": "经营概览"}],
+        "headingNumbers": [],
+    }
+
+
+def test_postprocess_docx_uses_section_page_count_field(tmp_path: Path) -> None:
+    docx = pytest.importorskip("docx")
+
+    path = tmp_path / "report.docx"
+    document = _docx_postprocess_fixture(docx)
     document.save(path)
 
     _postprocess_docx(
         path,
-        context={
-            "title": "测试报告",
-            "periodLabel": "2025 年",
-            "organizationName": "测试机构",
-            "generatedByLabel": "Reporting Agent",
-            "watermarkText": "内部资料",
-            "generatedDate": "2026-08-17",
-            "sections": [{"code": "overview", "title": "经营概览"}],
-        },
+        context=_docx_postprocess_context(),
         layout=DEFAULT_PAGE_LAYOUT,
     )
 
@@ -386,6 +396,32 @@ def test_postprocess_docx_uses_section_page_count_field(tmp_path: Path) -> None:
 
     assert "SECTIONPAGES" in footer_xml
     assert "NUMPAGES" not in footer_xml
+
+
+def test_postprocess_docx_scales_tall_image_within_page_bounds(tmp_path: Path) -> None:
+    docx = pytest.importorskip("docx")
+    from docx.shared import Mm
+    from PIL import Image
+
+    image_path = tmp_path / "tall.png"
+    Image.new("RGB", (600, 1800), "white").save(image_path)
+    path = tmp_path / "report.docx"
+    document = _docx_postprocess_fixture(docx)
+    document.add_picture(str(image_path))
+    document.save(path)
+
+    _postprocess_docx(
+        path,
+        context=_docx_postprocess_context(),
+        layout=DEFAULT_PAGE_LAYOUT,
+    )
+
+    processed = docx.Document(path)
+    assert len(processed.inline_shapes) == 1
+    shape = processed.inline_shapes[0]
+    assert shape.width <= Mm(174)
+    assert shape.height <= Mm(180)
+    assert abs(shape.width / shape.height - 1 / 3) < 0.001
 
 
 def test_word_page_fields_use_section_page_count() -> None:
