@@ -38,6 +38,7 @@ from smart_reporting.reporting.workflow.checkpoint import (
     SectionArtifact,
     SectionClaim,
     SectionWorkItem,
+    reporting_phase_task_key,
 )
 from smart_reporting.reporting.workflow.runtime import (
     REPORT_WORKFLOW_RESULT_STATE_KEY,
@@ -237,6 +238,166 @@ async def test_completed_visualization_sections_are_skipped() -> None:
     )
 
     assert observed == ["section_002", "section_003"]
+
+
+def test_visualization_task_identity_does_not_use_analysis_id_for_sections() -> None:
+    section_task = reporting_phase_task_key(
+        "run-1", 1, "analysis", section_code="section_001", task_kind="visualization_section"
+    )
+    finalize_task = reporting_phase_task_key(
+        "run-1", 1, "analysis", task_key="viz-finalize", task_kind="visualization_finalize"
+    )
+
+    assert section_task != finalize_task
+    with pytest.raises(ValueError):
+        reporting_phase_task_key(
+            "run-1", 1, "analysis", analysis_id="viz-section:section_001"
+        )
+
+
+def test_checkpoint_merges_distinct_visualization_section_errors() -> None:
+    first = analysis_checkpoint()
+    second = analysis_checkpoint()
+    first = first.model_copy(
+        update={
+            "visualization_section_errors": {
+                "section_001": CheckpointError(
+                    phase="analysis", code="first", message="first", sectionCode="section_001"
+                )
+            }
+        }
+    )
+    second = second.model_copy(
+        update={
+            "visualization_section_errors": {
+                "section_002": CheckpointError(
+                    phase="analysis", code="second", message="second", sectionCode="section_002"
+                )
+            }
+        }
+    )
+
+    merged = ReportWorkflowRuntime._merge_reporting_checkpoints(first, second)
+
+    assert set(merged.visualization_section_errors) == {"section_001", "section_002"}
+
+
+def test_checkpoint_replaces_same_visualization_section_error_on_fresh_attempt() -> None:
+    current = analysis_checkpoint().model_copy(
+        update={
+            "visualization_section_errors": {
+                "section_001": CheckpointError(
+                    phase="analysis", code="first", message="first", sectionCode="section_001", attempt=0
+                )
+            }
+        }
+    )
+    incoming = analysis_checkpoint().model_copy(
+        update={
+            "visualization_section_errors": {
+                "section_001": CheckpointError(
+                    phase="analysis", code="second", message="second", sectionCode="section_001", attempt=1
+                )
+            }
+        }
+    )
+
+    merged = ReportWorkflowRuntime._merge_reporting_checkpoints(current, incoming)
+
+    assert merged.visualization_section_errors["section_001"].code == "second"
+
+
+def test_checkpoint_clears_visualization_section_error_after_success() -> None:
+    current = analysis_checkpoint().model_copy(
+        update={
+            "visualization_section_errors": {
+                "section_001": CheckpointError(
+                    phase="analysis", code="first", message="first", sectionCode="section_001", attempt=0
+                )
+            }
+        }
+    )
+    incoming = analysis_checkpoint(trace=(
+        ContextTrace(
+            phase="analysis",
+            taskId="section-task",
+            workKind="visualization_section",
+            sectionCode="section_001",
+            attempt=1,
+            status="completed",
+        ),
+    ))
+
+    merged = ReportWorkflowRuntime._merge_reporting_checkpoints(current, incoming)
+
+    assert "section_001" not in merged.visualization_section_errors
+
+
+def test_visualization_task_identity_requires_section_or_explicit_finalize_key() -> None:
+    section_task = reporting_phase_task_key(
+        "run-1", 1, "analysis", section_code="section_001", task_kind="visualization_section"
+    )
+    finalize_task = reporting_phase_task_key(
+        "run-1", 1, "analysis", task_key="viz-finalize", task_kind="visualization_finalize"
+    )
+
+    assert section_task != finalize_task
+    with pytest.raises(ValueError):
+        reporting_phase_task_key(
+            "run-1", 1, "analysis", analysis_id="viz-section:section_001"
+        )
+
+
+@pytest.mark.anyio
+async def test_visualization_section_missing_fact_fails_closed() -> None:
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime._visualization_context = {
+        "run_context": SimpleNamespace(run_id="run-1"),
+        "checkpoint": analysis_checkpoint(),
+        "revision": 1,
+        "sandbox_id": "sandbox-1",
+        "external_run_id": "run-1",
+        "thread_id": "thread-1",
+        "validation_context_file": FileIdentity(path="validation.json", size=1, sha256="a" * 64),
+        "fact_files": {},
+        "visual_inspection_mode": "deterministic",
+    }
+    runtime._scope = lambda _context: {"externalRunId": "run-1", "threadId": "thread-1", "userId": "user-1"}
+    runtime._state = lambda _context: {
+        "report_outline": {
+            "reportType": "topic",
+            "title": "报告",
+            "sections": [
+                {"code": "section_001", "sectionNumber": "1", "title": "章节", "analysisIds": ["analysis_001"]}
+            ],
+        }
+    }
+    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(payload={"analysisItems": {}})))
+
+    with pytest.raises(ReportingError, match="冻结 facts"):
+        await runtime._run_visualization_section_task("section_001")
+
+
+@pytest.mark.anyio
+async def test_visualization_finalize_starts_and_runs_bound_task() -> None:
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.task_runner = SimpleNamespace(
+        repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
+        start=AsyncMock(),
+        run=AsyncMock(return_value={"status": "completed"}),
+    )
+    task_scope = SimpleNamespace(external_run_id="task-finalize")
+
+    receipt = await runtime._run_visualization_finalize(
+        task_scope=task_scope,
+        instruction='{"taskKind":"visualization_finalize"}',
+        acceptance_contract={"requirements": []},
+        parent_run_id="run-1",
+    )
+
+    runtime.task_runner.start.assert_awaited_once()
+    runtime.task_runner.run.assert_awaited_once()
+    assert receipt["status"] == "completed"
 
 
 def test_analysis_rework_constraints_bind_frozen_plan_and_profile_receipts() -> None:

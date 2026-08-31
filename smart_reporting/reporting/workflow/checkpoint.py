@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -801,18 +802,33 @@ def reporting_phase_task_key(
     *,
     analysis_id: str | None = None,
     section_code: str | None = None,
+    task_key: str | None = None,
+    task_kind: str | None = None,
     attempt: int = 0,
 ) -> str:
     if (
         revision < 1
         or attempt < 0
-        or (phase == "section") != bool(section_code)
-        or (phase == "section" and analysis_id is not None)
-        or (phase == "analysis" and (not analysis_id or section_code is not None))
+        or (phase == "section" and (not section_code or analysis_id is not None or task_key is not None))
+        or (
+            phase == "analysis"
+            and sum(value is not None for value in (analysis_id, section_code, task_key)) != 1
+        )
+        or (analysis_id is not None and not re.fullmatch(r"analysis_[0-9]{3,6}", analysis_id))
+        or (
+            phase == "analysis"
+            and section_code is not None
+            and task_kind != "visualization_section"
+        )
+        or (
+            phase == "analysis"
+            and task_key is not None
+            and (task_kind != "visualization_finalize" or not task_key.strip())
+        )
     ):
         raise ValueError("Reporting phase task identity 无效")
     payload = (
-        f"{workflow_run_id}:{revision}:{phase}:{analysis_id or ''}:{section_code or ''}:{attempt}"
+        f"{workflow_run_id}:{revision}:{phase}:{analysis_id or task_key or ''}:{section_code or ''}:{attempt}"
     ).encode()
     return f"report-coding-{hashlib.sha256(payload).hexdigest()[:40]}"
 

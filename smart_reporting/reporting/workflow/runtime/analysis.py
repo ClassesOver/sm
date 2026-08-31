@@ -88,9 +88,26 @@ def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int
 
 
 class RuntimeAnalysisMixin:
-    async def _run_visualization_finalize(self, **context: Any) -> None:
-        """汇总 worker 的显式入口；主分析阶段传入的上下文由现有冻结逻辑消费。"""
-        self._visualization_finalize_context = context
+    async def _run_visualization_finalize(
+        self,
+        *,
+        task_scope: TaskScope,
+        instruction: str,
+        acceptance_contract: dict[str, Any],
+        parent_run_id: str,
+    ) -> Mapping[str, Any]:
+        """启动并运行汇总 Task；产物冻结仍由调用方按 receipt 做身份校验。"""
+        task_id = task_scope.external_run_id
+        existing = await self.task_runner.repository.get_task_snapshot(task_id)
+        if existing is None:
+            await self.task_runner.start(
+                task_scope, instruction, acceptance_contract=acceptance_contract
+            )
+        elif existing.state in {TaskState.FAILED, TaskState.CANCELLED}:
+            raise ReportingError(
+                "report_analysis_task_terminal", "可视化汇总 Task 已在未签发阶段产物前终止。"
+            )
+        return await self.task_runner.run(task_scope, parent_run_id=parent_run_id)
 
     async def _run_visualization_section_task(self, section_code: str) -> None:
         """执行单章图表 worker；章节草案由 durable submit 工具作为唯一完成信号。"""
@@ -111,14 +128,18 @@ class RuntimeAnalysisMixin:
         analysis_items = payload.get("analysisItems", {})
         facts = []
         for analysis_id in section.analysis_ids:
-            if analysis_id in context["fact_files"]:
-                facts.append(
-                    await self._visualization_section_fact_projection(
-                        analysis_id,
-                        context["fact_files"][analysis_id],
-                        analysis_items.get(analysis_id),
-                    )
+            fact_file = context["fact_files"].get(analysis_id)
+            durable_item = analysis_items.get(analysis_id) if isinstance(analysis_items, Mapping) else None
+            if fact_file is None or not isinstance(durable_item, Mapping):
+                raise ReportingError(
+                    "report_analysis_evidence_incomplete",
+                    f"章节 {section_code} 缺少 analysisId {analysis_id} 的冻结 facts 或 durable 分析项。",
                 )
+            facts.append(
+                await self._visualization_section_fact_projection(
+                    analysis_id, fact_file, durable_item
+                )
+            )
         matching = [
             item
             for item in checkpoint.trace
@@ -132,7 +153,8 @@ class RuntimeAnalysisMixin:
             str(run_context.run_id or "report"),
             context["revision"],
             "analysis",
-            analysis_id=f"viz-section:{section_code}",
+            section_code=section_code,
+            task_kind="visualization_section",
             attempt=attempt,
         )
         instruction_payload = {
@@ -217,6 +239,14 @@ class RuntimeAnalysisMixin:
                     "report_visualization_section_incomplete", "章节图表 durable 收口缺失。"
                 )
             checkpoint = self._replace_trace(checkpoint, task_id, status="completed")
+            checkpoint = self._update_reporting_checkpoint(
+                checkpoint,
+                visualization_section_errors={
+                    key: value
+                    for key, value in checkpoint.visualization_section_errors.items()
+                    if key != section_code
+                },
+            )
             await self._persist_reporting_checkpoint(run_context, checkpoint)
         except Exception as error:
             checkpoint = self._replace_trace(checkpoint, task_id, status="failed")
@@ -597,13 +627,15 @@ class RuntimeAnalysisMixin:
                 anonymous_trace.append(trace_item)
         section_errors = dict(current.visualization_section_errors)
         for section_code, error in incoming.visualization_section_errors.items():
-            existing_error = section_errors.get(section_code)
-            if existing_error is not None and existing_error != error:
-                raise ReportingError(
-                    "report_visualization_section_conflict",
-                    f"章节 {section_code} 的可视化失败账本身份不一致。",
-                )
             section_errors[section_code] = error
+        for section_code in {
+            item.section_code
+            for item in incoming.trace
+            if item.work_kind == "visualization_section"
+            and item.status == "completed"
+            and item.section_code is not None
+        }:
+            section_errors.pop(section_code, None)
         merged_phase = incoming.phase
         if current.phase == "completed" or incoming.phase == "completed":
             merged_phase = "completed"
@@ -1410,7 +1442,8 @@ class RuntimeAnalysisMixin:
                 str(run_context.run_id or "report"),
                 revision,
                 "analysis",
-                analysis_id="viz-finalize",
+                task_key="viz-finalize",
+                task_kind="visualization_finalize",
                 attempt=attempt,
             )
             output_path = (
@@ -1640,6 +1673,28 @@ class RuntimeAnalysisMixin:
                     for analysis_id, identity in fact_files.items()
                 },
                 "visualizationFacts": visualization_facts_package,
+                "datasetSemantics": [
+                    item.model_dump(mode="json", by_alias=True)
+                    for item in (
+                        checkpoint.evidence_manifest.dataset_semantics
+                        if checkpoint.evidence_manifest is not None
+                        else ()
+                    )
+                ],
+                "metricDefinitions": [
+                    item.model_dump(mode="json", by_alias=True)
+                    for item in (
+                        checkpoint.evidence_manifest.metric_definitions
+                        if checkpoint.evidence_manifest is not None
+                        else ()
+                    )
+                ],
+                "sectionEvidenceCatalog": {
+                    section_code: visualization_payload.get("visualizationSections", {}).get(
+                        section_code, {}
+                    )
+                    for section_code in section_codes
+                },
                 "chartRegistrationRules": {
                     # null 明确表示冻结 facts 没有 Profile metric code，Worker 可定义
                     # 图表 code，但 finalize 时必须以同名 metricDefinitions 冻结语义；
@@ -1700,6 +1755,28 @@ class RuntimeAnalysisMixin:
                     ),
                     "analysisIds": list(analysis_ids),
                     "currentAnalysisId": None,
+                    "datasetSemantics": [
+                        item.model_dump(mode="json", by_alias=True)
+                        for item in (
+                            checkpoint.evidence_manifest.dataset_semantics
+                            if checkpoint.evidence_manifest is not None
+                            else ()
+                        )
+                    ],
+                    "metricDefinitions": [
+                        item.model_dump(mode="json", by_alias=True)
+                        for item in (
+                            checkpoint.evidence_manifest.metric_definitions
+                            if checkpoint.evidence_manifest is not None
+                            else ()
+                        )
+                    ],
+                    "sectionEvidenceCatalog": {
+                        section_code: visualization_payload.get("visualizationSections", {}).get(
+                            section_code, {}
+                        )
+                        for section_code in section_codes
+                    },
                     "analysisPlans": analysis_plans,
                     "analysisDatasetIds": {
                         item.analysis_id: list(item.dataset_ids) for item in detailed_plan.analyses
@@ -1751,18 +1828,10 @@ class RuntimeAnalysisMixin:
             visualization_usage_metrics: Mapping[str, Any] = {}
             started_at = time.monotonic()
             try:
-                existing = await self.task_runner.repository.get_task_snapshot(task_id)
-                if existing is None:
-                    await self.task_runner.start(
-                        task_scope, instruction, acceptance_contract=contract
-                    )
-                elif existing.state in {TaskState.FAILED, TaskState.CANCELLED}:
-                    raise ReportingError(
-                        "report_analysis_task_terminal",
-                        "全局分析 task 已在未签发阶段产物前终止。",
-                    )
-                receipt = await self.task_runner.run(
-                    task_scope,
+                receipt = await self._run_visualization_finalize(
+                    task_scope=task_scope,
+                    instruction=instruction,
+                    acceptance_contract=contract,
                     parent_run_id=str(run_context.run_id or ""),
                 )
                 raw_projection_metrics = receipt.get("projectionMetrics")
@@ -1948,7 +2017,7 @@ class RuntimeAnalysisMixin:
                         "workKind": "visualization_finalize",
                         "attempt": attempt,
                         "retryUsage": _checkpoint_retry_usage(
-                            error, work_kind="visualization"
+                            error, work_kind="visualization_finalize"
                         ).model_dump(mode="json", by_alias=True),
                     },
                 )
@@ -2308,7 +2377,9 @@ def _ensure_visual_inspection_capability(
 def _checkpoint_retry_error(
     checkpoint: ReportingCheckpoint,
     *,
-    work_kind: Literal["analysis_item", "visualization"],
+    work_kind: Literal[
+        "analysis_item", "visualization", "visualization_section", "visualization_finalize"
+    ],
     analysis_id: str | None,
     retry_reason: str | None,
 ) -> ReportingError | None:
@@ -2362,7 +2433,9 @@ def _checkpoint_retry_error(
 def _checkpoint_retry_usage(
     error: Exception,
     *,
-    work_kind: Literal["analysis_item", "visualization"],
+    work_kind: Literal[
+        "analysis_item", "visualization", "visualization_section", "visualization_finalize"
+    ],
 ) -> CheckpointRetryUsage:
     if work_kind == "analysis_item":
         return CheckpointRetryUsage(analysisFactQueriesUsed=_analysis_fact_retry_usage(error))

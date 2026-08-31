@@ -689,7 +689,7 @@ def test_each_analysis_and_visualization_use_distinct_task_and_session_identitie
         "workflow-run-1", 1, "analysis", analysis_id="analysis_002"
     )
     visualization = reporting_phase_task_key(
-        "workflow-run-1", 1, "analysis", analysis_id="visualization"
+        "workflow-run-1", 1, "analysis", task_key="viz-finalize", task_kind="visualization_finalize"
     )
     task_ids = {analysis_001, analysis_002, visualization}
 
