@@ -838,7 +838,18 @@ class RuntimeSectionsMixin:
         source_path, remote = self.kernel.service.normalize_path(path, allow_root=False)
         async with self.kernel.service._async_client() as client:
             sandbox = await self.kernel.service._asandbox_for(client, thread_id)
-            await self.kernel.service._avalidate_existing_path(sandbox, source_path)
+            try:
+                await self.kernel.service._avalidate_existing_path(sandbox, source_path)
+            except WorkspaceError as error:
+                # 图表文件未生成(SKIP)时给出可恢复的字段级回执:模型移除该
+                # 图或先生成再提交。不得让 WorkspaceError 穿透为 run 级失败,
+                # 否则 error continuation 会注入全量任务上下文并滚入
+                # tool_no_progress 8 连败终态(见 2026-08-31 真实运行分析)。
+                raise ReportingError(
+                    "report_chart_file_missing",
+                    "图表源文件不存在;未生成的图表不得提交登记。",
+                    details={"sourcePath": source_path},
+                ) from error
             info = await self.kernel.service._ainfo(sandbox, remote)
             if not self.kernel.service._is_regular_file(info):
                 raise ReportingError("report_chart_source_invalid", "图表源路径必须指向普通文件。")

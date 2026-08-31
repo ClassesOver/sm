@@ -1505,6 +1505,19 @@ class ReportWorkspaceTaskToolkit(
             result["requiredActions"] = [
                 "图表已完成不可变登记；不要改图或重复登记，立即调用 finalize_report_analysis。"
             ]
+        elif (
+            code == "report_chart_file_missing"
+            and isinstance(error, ReportingError)
+            and isinstance(error.details, Mapping)
+        ):
+            # 图表源文件未生成时给模型明确可恢复指引:不得原样重试触发
+            # tool_no_progress 终态。details 只回显 sourcePath,便于定位清单项。
+            result["details"] = {
+                "sourcePath": error.details.get("sourcePath"),
+            }
+            result["requiredActions"] = [
+                "从清单中移除该图表,或先生成 chartOutputRoot 下的真实 PNG 后再提交登记。"
+            ]
         elif code in {
             "report_profile_query_invalid",
             "report_analysis_context_query_invalid",
