@@ -3002,8 +3002,9 @@ async def test_concurrent_reporting_requests_keep_off_high_max_profiles_isolated
     ("phase", "task_kind", "expected_max_tokens"),
     [
         ("analysis", "analysis_item", 16_384),
-        ("analysis", "visualization", 65_536),
-        ("section", "section", 16_384),
+        ("analysis", "visualization_section", 16_384),
+        ("analysis", "visualization_finalize", 65_536),
+        ("analysis", "section", 16_384),
     ],
 )
 def test_reporting_worker_applies_phase_output_token_limits(
@@ -3034,6 +3035,24 @@ def test_reporting_worker_applies_phase_output_token_limits(
 
     assert request_model.max_tokens == expected_max_tokens
     assert model.max_tokens == 196_608
+
+
+def test_tools_for_task_visualization_section() -> None:
+    names = tools_for_task("analysis", "visualization_section")
+    assert names is not None
+    assert "submit_visualization_charts" in names
+    assert "write_analysis_files" in names
+    assert "terminal" in names
+    assert "register_report_charts" not in names
+    assert "finalize_report_analysis" not in names
+
+
+def test_tools_for_task_visualization_finalize() -> None:
+    names = tools_for_task("analysis", "visualization_finalize")
+    assert names is not None
+    assert "register_report_charts" in names
+    assert "finalize_report_analysis" in names
+    assert "submit_visualization_charts" not in names
 
 
 @pytest.mark.parametrize(

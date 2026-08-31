@@ -159,6 +159,7 @@ _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 # visualization 使用 64K；仍不直接放开到全局 reserve，避免兼容后端过量预分配。
 _REPORT_ANALYSIS_ITEM_OUTPUT_TOKEN_LIMIT = 16 * 1024
 _REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 64 * 1024
+_REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024
 _REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
 # 后端异常却可能持续数分钟才返回。Worker 仍保留既有一次同 run continuation，
@@ -2217,7 +2218,9 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
         if task_kind == "analysis_item":
             output_limit = _REPORT_ANALYSIS_ITEM_OUTPUT_TOKEN_LIMIT
-        elif task_kind == "visualization":
+        elif task_kind == "visualization_section":
+            output_limit = _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT
+        elif task_kind == "visualization_finalize":
             output_limit = _REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT
         elif task_kind == "section":
             output_limit = _REPORT_SECTION_OUTPUT_TOKEN_LIMIT
