@@ -203,6 +203,7 @@ class AgentSettings:
     report_context_token_budget: int
     report_output_token_reserve: int
     report_analysis_concurrency: int
+    report_visualization_concurrency: int
     report_section_concurrency: int
 
     @classmethod
@@ -254,6 +255,12 @@ class AgentSettings:
         report_analysis_concurrency = _positive_int(
             values,
             "AGENT_REPORT_ANALYSIS_CONCURRENCY",
+            1,
+            maximum=4,
+        )
+        report_visualization_concurrency = _positive_int(
+            values,
+            "AGENT_REPORT_VISUALIZATION_CONCURRENCY",
             1,
             maximum=4,
         )
@@ -334,5 +341,6 @@ class AgentSettings:
             report_context_token_budget=report_context_token_budget,
             report_output_token_reserve=report_output_token_reserve,
             report_analysis_concurrency=report_analysis_concurrency,
+            report_visualization_concurrency=report_visualization_concurrency,
             report_section_concurrency=report_section_concurrency,
         )

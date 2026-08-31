@@ -82,14 +82,264 @@ def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int
     datasets = analysis_plan.get("datasetIds") if isinstance(analysis_plan, Mapping) else None
     periods = analysis_plan.get("periods") if isinstance(analysis_plan, Mapping) else None
     complexity = sum(
-        len(value)
-        for value in (metrics, datasets, periods)
-        if isinstance(value, (list, tuple))
+        len(value) for value in (metrics, datasets, periods) if isinstance(value, (list, tuple))
     )
     return min(8, max(4, 2 + (complexity + 2) // 3))
 
 
 class RuntimeAnalysisMixin:
+    async def _run_visualization_finalize(self, **context: Any) -> None:
+        """汇总 worker 的显式入口；主分析阶段传入的上下文由现有冻结逻辑消费。"""
+        self._visualization_finalize_context = context
+
+    async def _run_visualization_section_task(self, section_code: str) -> None:
+        """执行单章图表 worker；章节草案由 durable submit 工具作为唯一完成信号。"""
+        context = self._visualization_context
+        run_context = context["run_context"]
+        checkpoint = await self._current_reporting_checkpoint(run_context, context["checkpoint"])
+        outline = _frozen_outline(self._state(run_context))
+        section = next((item for item in outline.sections if item.code == section_code), None)
+        if section is None:
+            raise ReportingError("report_visualization_section_invalid", "提纲中不存在当前章节。")
+        durable = await self.state_repository.get(
+            str(run_context.run_id or context["external_run_id"])
+        )
+        payload = durable.payload if durable is not None else {}
+        completed = payload.get("completedVisualizationSections", ())
+        if section_code in completed:
+            return
+        analysis_items = payload.get("analysisItems", {})
+        facts = []
+        for analysis_id in section.analysis_ids:
+            if analysis_id in context["fact_files"]:
+                facts.append(
+                    await self._visualization_section_fact_projection(
+                        analysis_id,
+                        context["fact_files"][analysis_id],
+                        analysis_items.get(analysis_id),
+                    )
+                )
+        matching = [
+            item
+            for item in checkpoint.trace
+            if item.phase == "analysis"
+            and item.work_kind == "visualization_section"
+            and item.section_code == section_code
+        ]
+        attempt = max((item.attempt for item in matching), default=-1) + 1
+        root = f"报表/智能分析/{run_context.run_id}/analysis/charts/{section_code}/attempt-{attempt + 1}"
+        task_id = reporting_phase_task_key(
+            str(run_context.run_id or "report"),
+            context["revision"],
+            "analysis",
+            analysis_id=f"viz-section:{section_code}",
+            attempt=attempt,
+        )
+        instruction_payload = {
+            "phase": "analysis",
+            "taskKind": "visualization_section",
+            "sectionCode": section_code,
+            "section": section.model_dump(mode="json", by_alias=True),
+            "analysisIds": list(section.analysis_ids),
+            "visualInspectionMode": context["visual_inspection_mode"],
+            "visualizationFacts": facts,
+            "visualizationWorkspace": {
+                "scriptPath": f"{root}/charts.py",
+                "chartOutputRoot": root,
+                "allowedTerminalCommand": f"python3 {root}/charts.py",
+            },
+            "completionConditions": [
+                "只处理当前 sectionCode 及其 outline.analysisIds；跨域章节不得扩大事实范围",
+                "脚本只写入签发的 scriptPath 和 chartOutputRoot",
+                "允许零图，最后且只调用一次 submit_visualization_charts",
+            ],
+        }
+        instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
+        if len(instruction.encode("utf-8")) > MAX_REPORT_INSTRUCTION_BYTES:
+            raise ReportingError(
+                "report_analysis_context_too_large", "单章可视化投影超过输入边界。"
+            )
+        contract = build_report_phase_acceptance_contract(
+            phase="analysis",
+            validation_context_file=context["validation_context_file"].model_dump(
+                mode="json", by_alias=True
+            ),
+            phase_contract={
+                "reportRunId": str(run_context.run_id or context["external_run_id"]),
+                "taskKind": "visualization_section",
+                "sectionCode": section_code,
+                "analysisIds": list(section.analysis_ids),
+                "visualInspectionMode": context["visual_inspection_mode"],
+                "visualizationWorkspace": {"chartOutputRoot": root},
+            },
+            analysis_output_path=f"{root}/section.json",
+        )
+        scope = self._scope(run_context)
+        task_scope = TaskScope(
+            task_id,
+            scope["userId"],
+            scope["threadId"],
+            context["sandbox_id"],
+            str(self.report_worker.id),
+        )
+        checkpoint = self._update_reporting_checkpoint(
+            checkpoint,
+            trace=(
+                *checkpoint.trace,
+                ContextTrace(
+                    phase="analysis",
+                    taskId=task_id,
+                    workKind="visualization_section",
+                    sectionCode=section_code,
+                    attempt=attempt,
+                    instructionBytes=len(instruction.encode("utf-8")),
+                    projectedContextBytes=len(instruction.encode("utf-8")),
+                    visualInspectionMode=context["visual_inspection_mode"],
+                ),
+            ),
+        )
+        await self._persist_reporting_checkpoint(run_context, checkpoint)
+        try:
+            existing = await self.task_runner.repository.get_task_snapshot(task_id)
+            if existing is None:
+                await self.task_runner.start(task_scope, instruction, acceptance_contract=contract)
+            elif existing.state in {TaskState.FAILED, TaskState.CANCELLED}:
+                raise ReportingError(
+                    "report_visualization_section_task_terminal", "章节图表 Task 未完成收尾即终止。"
+                )
+            await self.task_runner.run(task_scope, parent_run_id=str(run_context.run_id or ""))
+            latest = await self.state_repository.get(
+                str(run_context.run_id or context["external_run_id"])
+            )
+            latest_payload = latest.payload if latest is not None else {}
+            if section_code not in latest_payload.get("completedVisualizationSections", ()):
+                raise ReportingError(
+                    "report_visualization_section_incomplete", "章节图表 durable 收口缺失。"
+                )
+            checkpoint = self._replace_trace(checkpoint, task_id, status="completed")
+            await self._persist_reporting_checkpoint(run_context, checkpoint)
+        except Exception as error:
+            checkpoint = self._replace_trace(checkpoint, task_id, status="failed")
+            checkpoint = self._update_reporting_checkpoint(
+                checkpoint,
+                visualization_section_errors={
+                    **checkpoint.visualization_section_errors,
+                    section_code: {
+                        "phase": "analysis",
+                        "code": getattr(error, "code", "report_visualization_section_failed"),
+                        "message": str(getattr(error, "message", error))[:2000],
+                        "sectionCode": section_code,
+                        "taskId": task_id,
+                        "workKind": "visualization_section",
+                        "attempt": attempt,
+                        "retryUsage": _checkpoint_retry_usage(
+                            error, work_kind="visualization_section"
+                        ).model_dump(mode="json", by_alias=True),
+                    },
+                },
+            )
+            await self._persist_reporting_checkpoint(run_context, checkpoint)
+            raise
+
+    async def _visualization_section_fact_projection(
+        self,
+        analysis_id: str,
+        fact_file: FileIdentity,
+        durable_item: Any,
+    ) -> dict[str, Any]:
+        fact_model = await self._read_identity_model(
+            self._visualization_context["thread_id"], fact_file, DeterministicAnalysisBundle
+        )
+        payload = fact_model.model_dump(mode="json", by_alias=True)
+        return {
+            "analysisId": analysis_id,
+            "factFile": fact_file.model_dump(mode="json", by_alias=True),
+            "summary": durable_item.get("summary") if isinstance(durable_item, Mapping) else None,
+            "metrics": [
+                {
+                    "metricIndex": index,
+                    **{
+                        key: metric.get(key)
+                        for key in (
+                            "datasetId",
+                            "field",
+                            "metricCodes",
+                            "aggregation",
+                            "unit",
+                            "scope",
+                            "periodRoles",
+                            "periodStart",
+                            "periodEnd",
+                            "total",
+                        )
+                    },
+                    "periodValueCount": len(metric.get("periodValues", ())),
+                    "topGroupCount": len(metric.get("topGroups", ())),
+                    "bottomGroupCount": len(metric.get("bottomGroups", ())),
+                    "dataPaths": {
+                        "metric": f"metrics[{index}]",
+                        "periodValues": f"metrics[{index}].periodValues",
+                        "topGroups": f"metrics[{index}].topGroups",
+                        "bottomGroups": f"metrics[{index}].bottomGroups",
+                    },
+                }
+                for index, metric in enumerate(payload.get("metrics", ()))
+                if isinstance(metric, Mapping)
+            ],
+            "derivedMetrics": [
+                {
+                    "derivedMetricIndex": index,
+                    **{
+                        key: metric.get(key)
+                        for key in (
+                            "code",
+                            "kind",
+                            "unit",
+                            "periodRole",
+                            "periodStart",
+                            "periodEnd",
+                            "datasetIds",
+                            "value",
+                            "percentage",
+                        )
+                    },
+                    "dataPath": f"derivedMetrics[{index}]",
+                }
+                for index, metric in enumerate(payload.get("derivedMetrics", ()))
+                if isinstance(metric, Mapping)
+            ],
+            "comparisons": [
+                {
+                    "comparisonIndex": index,
+                    **{
+                        key: item.get(key)
+                        for key in (
+                            "comparisonType",
+                            "field",
+                            "unit",
+                            "periodStart",
+                            "periodEnd",
+                            "currentDatasetId",
+                            "baselineDatasetId",
+                            "currentTotal",
+                            "baselineTotal",
+                            "change",
+                            "changeRate",
+                        )
+                    },
+                    "dataPath": f"comparisons[{index}]",
+                }
+                for index, item in enumerate(payload.get("comparisons", ()))
+                if isinstance(item, Mapping)
+            ],
+            "evidenceFiles": durable_item.get("evidenceFiles", [])
+            if isinstance(durable_item, Mapping)
+            else [],
+            "citationIds": durable_item.get("citationIds", [])
+            if isinstance(durable_item, Mapping)
+            else [],
+        }
+
     async def run_coding_analysis(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
@@ -345,6 +595,15 @@ class RuntimeAnalysisMixin:
                 trace_by_task[trace_item.task_id] = trace_item
             elif trace_item not in anonymous_trace:
                 anonymous_trace.append(trace_item)
+        section_errors = dict(current.visualization_section_errors)
+        for section_code, error in incoming.visualization_section_errors.items():
+            existing_error = section_errors.get(section_code)
+            if existing_error is not None and existing_error != error:
+                raise ReportingError(
+                    "report_visualization_section_conflict",
+                    f"章节 {section_code} 的可视化失败账本身份不一致。",
+                )
+            section_errors[section_code] = error
         merged_phase = incoming.phase
         if current.phase == "completed" or incoming.phase == "completed":
             merged_phase = "completed"
@@ -360,6 +619,7 @@ class RuntimeAnalysisMixin:
             warnings=tuple((*current.warnings, *incoming.warnings)[-500:]),
             last_error=incoming.last_error or current.last_error,
             deterministic_fact_files=dict(deterministic_fact_files),
+            visualization_section_errors=section_errors,
             files=merged_files,
             trace=tuple((*anonymous_trace, *trace_by_task.values())),
         )
@@ -1058,9 +1318,53 @@ class RuntimeAnalysisMixin:
         )
         if scheduled_analysis_ids:
             checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)
+        visual_inspection_mode: Literal["vision", "deterministic"] = (
+            "vision"
+            if getattr(getattr(self.report_worker, "model", None), "_report_vision_enabled", True)
+            else "deterministic"
+        )
+        _ensure_visual_inspection_capability(checkpoint, visual_inspection_mode)
+        self._visualization_context = {
+            "run_context": run_context,
+            "checkpoint": checkpoint,
+            "revision": revision,
+            "sandbox_id": sandbox_id,
+            "external_run_id": str(run_context.run_id or scope["externalRunId"]),
+            "thread_id": scope["threadId"],
+            "validation_context_file": validation_context_file,
+            "fact_files": fact_files,
+            "visual_inspection_mode": visual_inspection_mode,
+        }
+        durable_visualization = await self.state_repository.get(
+            str(run_context.run_id or scope["externalRunId"])
+        )
+        visualization_payload = (
+            durable_visualization.payload if durable_visualization is not None else {}
+        )
+        completed_visualization_sections = {
+            item
+            for item in visualization_payload.get("completedVisualizationSections", ())
+            if isinstance(item, str)
+        }
+        raw_outline = self._state(run_context).get(REPORT_OUTLINE_STATE_KEY)
+        outline = (
+            _frozen_outline(self._state(run_context))
+            if isinstance(raw_outline, Mapping) and "sections" in raw_outline
+            else None
+        )
+        section_codes = (
+            tuple(section.code for section in outline.sections) if outline is not None else ()
+        )
+        await _run_pending_visualization_sections(
+            section_codes,
+            completed_section_codes=completed_visualization_sections,
+            concurrency=getattr(self, "visualization_concurrency", 1),
+            worker=self._run_visualization_section_task,
+        )
+        checkpoint = await self._current_reporting_checkpoint(run_context, checkpoint)
         last_error: Exception | None = _checkpoint_retry_error(
             checkpoint,
-            work_kind="visualization",
+            work_kind="visualization_finalize",
             analysis_id=None,
             retry_reason=retry_reason,
         )
@@ -1083,7 +1387,7 @@ class RuntimeAnalysisMixin:
                     item
                     for item in reversed(checkpoint.trace)
                     if item.phase == "analysis"
-                    and item.work_kind == "visualization"
+                    and item.work_kind == "visualization_finalize"
                     and item.status == "started"
                     and item.retry_reason == retry_reason
                 ),
@@ -1096,7 +1400,7 @@ class RuntimeAnalysisMixin:
                     (
                         item.attempt
                         for item in checkpoint.trace
-                        if item.phase == "analysis" and item.work_kind == "visualization"
+                        if item.phase == "analysis" and item.work_kind == "visualization_finalize"
                     ),
                     default=-1,
                 )
@@ -1106,7 +1410,7 @@ class RuntimeAnalysisMixin:
                 str(run_context.run_id or "report"),
                 revision,
                 "analysis",
-                analysis_id="visualization",
+                analysis_id="viz-finalize",
                 attempt=attempt,
             )
             output_path = (
@@ -1117,6 +1421,7 @@ class RuntimeAnalysisMixin:
                 str(run_context.run_id or scope["externalRunId"])
             )
             durable_payload = durable_state.payload if durable_state is not None else {}
+            visualization_payload = durable_payload
             registered_charts = [
                 dict(item)
                 for item in durable_payload.get("charts", ())
@@ -1313,7 +1618,7 @@ class RuntimeAnalysisMixin:
             )
             instruction_payload = {
                 "phase": "analysis",
-                "taskKind": "visualization",
+                "taskKind": "visualization_finalize",
                 "reportGoal": self._envelope(run_context).report_goal,
                 "completionConditions": _visualization_completion_conditions(
                     last_error,
@@ -1373,7 +1678,7 @@ class RuntimeAnalysisMixin:
                 ),
                 phase_contract={
                     "reportRunId": str(run_context.run_id or scope["externalRunId"]),
-                    "taskKind": "visualization",
+                    "taskKind": "visualization_finalize",
                     "chartsRegistered": charts_registered,
                     "retainedChartIds": [item["chartId"] for item in registered_charts],
                     "visualizationRecovery": _visualization_recovery_required(last_error),
@@ -1389,7 +1694,7 @@ class RuntimeAnalysisMixin:
                             item.status == "failed"
                             for item in checkpoint.trace
                             if item.phase == "analysis"
-                            and item.work_kind == "visualization"
+                            and item.work_kind == "visualization_finalize"
                             and item.retry_reason == retry_reason
                         )
                     ),
@@ -1431,7 +1736,7 @@ class RuntimeAnalysisMixin:
                         ContextTrace(
                             phase="analysis",
                             taskId=task_id,
-                            workKind="visualization",
+                            workKind="visualization_finalize",
                             attempt=attempt,
                             instructionBytes=instruction_bytes,
                             projectedContextBytes=instruction_bytes,
@@ -1640,7 +1945,7 @@ class RuntimeAnalysisMixin:
                         "message": message or "可视化冻结阶段失败。",
                         "retryReason": retry_reason,
                         "taskId": task_id,
-                        "workKind": "visualization",
+                        "workKind": "visualization_finalize",
                         "attempt": attempt,
                         "retryUsage": _checkpoint_retry_usage(
                             error, work_kind="visualization"
@@ -1948,6 +2253,36 @@ async def _run_pending_analysis_items(
     return pending
 
 
+async def _run_pending_visualization_sections(
+    section_codes: Sequence[str],
+    *,
+    completed_section_codes: set[str],
+    concurrency: int,
+    worker: Callable[[str], Awaitable[None]],
+) -> tuple[str, ...]:
+    """并发执行未完成图表章节，并在全部兄弟章节收口后汇总失败。"""
+
+    pending = tuple(code for code in section_codes if code not in completed_section_codes)
+    failures: dict[str, Exception] = {}
+
+    async def run_one(section_code: str) -> None:
+        try:
+            await worker(section_code)
+        except Exception as error:
+            # 章节 worker 自己先把稳定错误写入 checkpoint 账本。调度层必须等兄弟章节
+            # 全部结束后再失败，确保成功草案可 durable 冻结并在 fresh attempt 中跳过。
+            failures[section_code] = error
+
+    if pending:
+        await _run_bounded(pending, concurrency=concurrency, worker=run_one)
+    if failures:
+        raise ExceptionGroup(
+            "visualization sections failed",
+            [failures[code] for code in pending if code in failures],
+        )
+    return pending
+
+
 def _ensure_visual_inspection_capability(
     checkpoint: ReportingCheckpoint,
     current_mode: Literal["vision", "deterministic"],
@@ -1957,7 +2292,8 @@ def _ensure_visual_inspection_capability(
             item.visual_inspection_mode
             for item in reversed(checkpoint.trace)
             if item.phase == "analysis"
-            and item.work_kind == "visualization"
+            and item.work_kind
+            in {"visualization", "visualization_section", "visualization_finalize"}
             and item.visual_inspection_mode is not None
         ),
         None,
