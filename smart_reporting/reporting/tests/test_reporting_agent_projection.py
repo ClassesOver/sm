@@ -54,6 +54,8 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     bind_reporting_run_context,
     reporting_phase_allows_tool,
+    reporting_task_kind_from_acceptance_contract,
+    reporting_task_kind_from_run_context,
     reporting_visualization_production_only_from_run_context,
     reporting_visualization_usage_from_run_context,
 )
@@ -204,6 +206,51 @@ def test_phase_tool_admission_uses_capability_matrix() -> None:
         assert names is not None
         for name in names:
             assert reporting_phase_allows_tool(phase, name, task_kind=task_kind)
+
+
+@pytest.mark.parametrize(
+    ("task_kind",),
+    [
+        ("visualization_section",),
+        ("visualization_finalize",),
+    ],
+)
+def test_reporting_task_kind_from_acceptance_contract_accepts_new_kinds(
+    task_kind: str,
+) -> None:
+    contract = {
+        "requirements": [
+            {
+                "parameters": {
+                    "phase": "analysis",
+                    "phaseContract": {"taskKind": task_kind},
+                }
+            }
+        ]
+    }
+    assert reporting_task_kind_from_acceptance_contract(contract) == task_kind
+
+
+@pytest.mark.parametrize(
+    ("task_kind",),
+    [
+        ("visualization_section",),
+        ("visualization_finalize",),
+    ],
+)
+def test_reporting_task_kind_from_run_context_accepts_new_kinds(task_kind: str) -> None:
+    run_context = RunContext(
+        run_id=f"run-{task_kind}",
+        session_id=f"session-{task_kind}",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: task_kind,
+            }
+        },
+    )
+    assert reporting_task_kind_from_run_context(run_context) == task_kind
 
 
 @pytest.mark.anyio
