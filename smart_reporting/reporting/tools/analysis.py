@@ -883,6 +883,7 @@ class RuntimeAnalysisMixin:
             known_citation_ids = contract.get("citationIds")
             contract_dataset_semantics = contract.get("datasetSemantics")
             contract_metric_definitions = contract.get("metricDefinitions")
+            authorized_dataset_ids = contract.get("authorizedDatasetIds")
             if (
                 not isinstance(output_path, str)
                 or not isinstance(expected_analysis_ids, list)
@@ -890,6 +891,7 @@ class RuntimeAnalysisMixin:
                 or not isinstance(known_citation_ids, list)
                 or not isinstance(contract_dataset_semantics, list)
                 or not isinstance(contract_metric_definitions, list)
+                or not isinstance(authorized_dataset_ids, list)
             ):
                 raise ReportingError(
                     "report_phase_contract_invalid",
@@ -915,6 +917,22 @@ class RuntimeAnalysisMixin:
                 }
                 for item in expected_analysis_ids
             ]
+            evidence_dataset_ids = {
+                dataset_id
+                for item in evidence
+                for dataset_id in item.get("datasetIds", ())
+                if isinstance(dataset_id, str) and dataset_id
+            }
+            if set(known_dataset_ids) != evidence_dataset_ids:
+                raise ReportingError(
+                    "report_analysis_dataset_inconsistent",
+                    "phase contract Dataset 必须精确覆盖 durable analysis evidence Dataset。",
+                )
+            if not evidence_dataset_ids.issubset(set(authorized_dataset_ids)):
+                raise ReportingError(
+                    "report_analysis_dataset_inconsistent",
+                    "analysis evidence Dataset 不属于授权 Dataset snapshot。",
+                )
             # 语义目录的唯一受信来源是 acceptance contract 的服务端投影。模型提交的
             # datasetSemantics/metricDefinitions 参数仅保留接口兼容，一律被覆盖，
             # 任何模型侧改写都不得进入冻结 manifest；投影缺失时失败关闭。
@@ -922,7 +940,7 @@ class RuntimeAnalysisMixin:
             parsed_dataset_semantics = tuple(
                 AnalysisDatasetSemantics.model_validate(item) for item in contract_dataset_semantics
             )
-            if {item.dataset_id for item in parsed_dataset_semantics} != set(known_dataset_ids):
+            if {item.dataset_id for item in parsed_dataset_semantics} != evidence_dataset_ids:
                 raise ReportingError(
                     "report_analysis_dataset_semantics_incomplete",
                     "Dataset 语义必须精确覆盖全部授权 Dataset。",

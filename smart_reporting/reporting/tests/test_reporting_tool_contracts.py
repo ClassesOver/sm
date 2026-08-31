@@ -5133,44 +5133,20 @@ async def test_finalize_submit_semantics_from_projected_catalog() -> None:
         "comparability": "strict",
         "visualInspectionReceipt": chart_receipt,
     }
-    contract_semantics, contract_metrics = runtime_analysis._finalize_semantic_catalog(
-        analysis_plans={
-            "analysis_001": {
-                "analysisId": "analysis_001",
-                "datasetIds": ["dataset-1"],
-                "organizationGrain": ["record"],
-            }
-        },
-        fact_bundles={
-            "analysis_001": {
-                "metrics": [
-                    {
-                        "datasetId": "dataset-1",
-                        "metricCodes": ["income_total"],
-                        "formula": "sum(income)",
-                        "unit": "元",
-                        "periodStart": "2026-01",
-                        "periodEnd": "2026-01",
-                    }
-                ],
-                "derivedMetrics": [],
-            }
-        },
-        dataset_ids=("dataset-1",),
-    )
-    assert contract_semantics == [
-        {"datasetId": "dataset-1", "rowGrain": "record", "duplicateResolution": "not_applicable"}
-    ]
-    assert contract_metrics == [
-        {
-            "code": "income_total",
-            "name": "income_total",
-            "definition": "income_total；sum(income)",
-            "unit": "元",
-            "periodBasis": "2026-01",
-        }
-    ]
     state: dict[str, Any] = {}
+    fact_payload = {
+        "metrics": [
+            {
+                "datasetId": "dataset-1",
+                "metricCodes": ["income_total"],
+                "formula": "sum(income)",
+                "unit": "元",
+                "periodStart": "2026-01",
+                "periodEnd": "2026-01",
+            }
+        ],
+        "derivedMetrics": [],
+    }
     durable = SimpleNamespace(
         payload={
             "charts": [registered_chart],
@@ -5186,6 +5162,14 @@ async def test_finalize_submit_semantics_from_projected_catalog() -> None:
                     "warnings": [],
                 }
             },
+            "analysisPlans": {
+                "analysis_001": {
+                    "analysisId": "analysis_001",
+                    "datasetIds": ["dataset-1"],
+                    "organizationGrain": ["record"],
+                }
+            },
+            "deterministicFacts": {"analysis_001": fact_payload},
             "profileReadReceipts": [],
         }
     )
@@ -5211,9 +5195,26 @@ async def test_finalize_submit_semantics_from_projected_catalog() -> None:
             "taskKind": "visualization_finalize",
             "analysisIds": ["analysis_001"],
             "datasetIds": ["dataset-1"],
+            "authorizedDatasetIds": ["dataset-1"],
             "citationIds": ["citation-1"],
-            "datasetSemantics": contract_semantics,
-            "metricDefinitions": contract_metrics,
+            "analysisPlans": durable.payload["analysisPlans"],
+            "deterministicFacts": durable.payload["deterministicFacts"],
+            "datasetSemantics": [
+                {
+                    "datasetId": "dataset-1",
+                    "rowGrain": "record",
+                    "duplicateResolution": "not_applicable",
+                }
+            ],
+            "metricDefinitions": [
+                {
+                    "code": "income_total",
+                    "name": "income_total",
+                    "definition": "income_total；sum(income)",
+                    "unit": "元",
+                    "periodBasis": "2026-01",
+                }
+            ],
         },
     )
     toolkit._write_phase_json = AsyncMock(
@@ -5242,10 +5243,87 @@ async def test_finalize_submit_semantics_from_projected_catalog() -> None:
         run_context=RunContext(run_id="run-finalize", session_id="session-finalize"),
     )
 
-    assert result["status"] == "accepted"
+    assert result["status"] == "accepted", result
     payload = toolkit._write_phase_json.await_args.kwargs["payload"]
-    assert payload["evidenceManifest"]["datasetSemantics"] == contract_semantics
-    assert payload["evidenceManifest"]["metricDefinitions"] == contract_metrics
+    assert payload["evidenceManifest"]["datasetSemantics"] == [
+        {"datasetId": "dataset-1", "rowGrain": "record", "duplicateResolution": "not_applicable"}
+    ]
+    assert payload["evidenceManifest"]["metricDefinitions"] == [
+        {
+            "code": "income_total",
+            "name": "income_total",
+            "definition": "income_total；sum(income)",
+            "unit": "元",
+            "periodBasis": "2026-01",
+        }
+    ]
+
+
+def test_finalize_semantic_catalog_fails_closed_on_ambiguous_facts() -> None:
+    with pytest.raises(ReportingError) as missing_grain:
+        runtime_analysis._finalize_semantic_catalog(
+            analysis_plans={"a": {"datasetIds": ["d"]}},
+            fact_bundles={"a": {"metrics": []}},
+            dataset_ids=("d",),
+        )
+    assert missing_grain.value.code == "report_analysis_semantic_invalid"
+
+    with pytest.raises(ReportingError) as missing_period:
+        runtime_analysis._finalize_semantic_catalog(
+            analysis_plans={"a": {"datasetIds": ["d"], "organizationGrain": ["record"]}},
+            fact_bundles={"a": {"metrics": [{"metricCodes": ["m"], "unit": "元"}]}},
+            dataset_ids=("d",),
+        )
+    assert missing_period.value.code == "report_analysis_semantic_invalid"
+
+    with pytest.raises(ReportingError) as conflict_unit:
+        runtime_analysis._finalize_semantic_catalog(
+            analysis_plans={"a": {"datasetIds": ["d"], "organizationGrain": ["record"]}},
+            fact_bundles={
+                "a": {
+                    "metrics": [
+                        {
+                            "metricCodes": ["m"],
+                            "formula": "sum(x)",
+                            "unit": "元",
+                            "periodStart": "2026",
+                            "periodEnd": "2026",
+                        },
+                        {
+                            "metricCodes": ["m"],
+                            "formula": "sum(x)",
+                            "unit": "人",
+                            "periodStart": "2026",
+                            "periodEnd": "2026",
+                        },
+                    ]
+                }
+            },
+            dataset_ids=("d",),
+        )
+    assert conflict_unit.value.code == "report_analysis_semantic_invalid"
+
+
+def test_finalize_semantic_catalog_rejects_dataset_ids_outside_evidence() -> None:
+    with pytest.raises(ReportingError) as missing_evidence_dataset:
+        runtime_analysis._finalize_semantic_catalog(
+            analysis_plans={"a": {"datasetIds": ["d", "unused"], "organizationGrain": ["record"]}},
+            fact_bundles={
+                "a": {
+                    "metrics": [
+                        {
+                            "metricCodes": ["m"],
+                            "formula": "sum(x)",
+                            "unit": "元",
+                            "periodStart": "2026",
+                            "periodEnd": "2026",
+                        }
+                    ]
+                }
+            },
+            dataset_ids=("d",),
+        )
+    assert missing_evidence_dataset.value.code == "report_analysis_semantic_invalid"
 
 
 @pytest.mark.anyio

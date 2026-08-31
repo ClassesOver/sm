@@ -1654,11 +1654,37 @@ class RuntimeAnalysisMixin:
                     "report_analysis_evidence_incomplete",
                     "确定性 facts 没有精确覆盖冻结分析计划。",
                 )
-            dataset_semantics, metric_definitions = _finalize_semantic_catalog(
-                analysis_plans=analysis_plans,
-                fact_bundles=fact_bundles,
-                dataset_ids=tuple(item.dataset_id for item in dataset_handles),
-            )
+            evidence_dataset_ids = {
+                dataset_id
+                for analysis_id in analysis_ids
+                for item in (
+                    (analysis_items.get(analysis_id),)
+                    if isinstance(analysis_items, Mapping)
+                    else ()
+                )
+                if isinstance(item, Mapping)
+                for dataset_id in item.get("datasetIds", ())
+                if isinstance(dataset_id, str) and dataset_id
+            }
+            authorized_dataset_ids = {item.dataset_id for item in dataset_handles}
+            if authorized_dataset_ids and (
+                not evidence_dataset_ids
+                or not evidence_dataset_ids.issubset(authorized_dataset_ids)
+            ):
+                raise ReportingError(
+                    "report_analysis_dataset_inconsistent",
+                    "durable analysis evidence Dataset 不属于授权 Dataset snapshot。",
+                )
+            if authorized_dataset_ids:
+                dataset_semantics, metric_definitions = _finalize_semantic_catalog(
+                    analysis_plans=analysis_plans,
+                    fact_bundles=fact_bundles,
+                    dataset_ids=tuple(sorted(evidence_dataset_ids)),
+                )
+            else:
+                # 没有授权 snapshot 时不能伪造 Dataset 语义；保留空投影让 worker 的
+                # 终态校验先给出原始错误。真实报表入口总会提供非空授权 snapshot。
+                dataset_semantics, metric_definitions = [], []
             chart_registration_rules = {
                 # null 明确表示冻结 facts 没有 Profile metric code，Worker 可定义
                 # 图表 code，但 finalize 时必须以同名 metricDefinitions 冻结语义；
@@ -1770,7 +1796,8 @@ class RuntimeAnalysisMixin:
                         analysis_id: identity.model_dump(mode="json", by_alias=True)
                         for analysis_id, identity in fact_files.items()
                     },
-                    "datasetIds": [item.dataset_id for item in dataset_handles],
+                    "datasetIds": sorted(evidence_dataset_ids),
+                    "authorizedDatasetIds": [item.dataset_id for item in dataset_handles],
                     "citationIds": [item.citation_id for item in citation_bindings],
                     "citationRegistry": [
                         item.model_dump(mode="json", by_alias=True) for item in citation_bindings
@@ -2468,22 +2495,48 @@ def _finalize_semantic_catalog(
     fact_bundles: Mapping[str, Mapping[str, Any]],
     dataset_ids: Sequence[str],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """从冻结计划、facts 与 Profile 投影 finalize 所需的紧凑语义目录。"""
+    """从冻结计划与 facts 投影目录；语义事实不完整时拒绝冻结。"""
 
     grains_by_dataset: dict[str, set[str]] = {dataset_id: set() for dataset_id in dataset_ids}
+    planned_dataset_ids: set[str] = set()
     for plan in analysis_plans.values():
         raw_dataset_ids = plan.get("datasetIds")
         raw_grain = plan.get("organizationGrain")
-        if not isinstance(raw_dataset_ids, Sequence) or isinstance(raw_dataset_ids, (str, bytes)):
-            continue
-        grains = (
-            {item for item in raw_grain if isinstance(item, str) and item}
-            if isinstance(raw_grain, Sequence) and not isinstance(raw_grain, (str, bytes))
-            else set()
-        )
+        if (
+            not isinstance(raw_dataset_ids, Sequence)
+            or isinstance(raw_dataset_ids, (str, bytes))
+            or not isinstance(raw_grain, Sequence)
+            or isinstance(raw_grain, (str, bytes))
+        ):
+            raise ReportingError(
+                "report_analysis_semantic_invalid", "分析计划缺少 organization grain。"
+            )
+        grains = {item for item in raw_grain if isinstance(item, str) and item}
+        if not grains:
+            raise ReportingError(
+                "report_analysis_semantic_invalid", "分析计划缺少 organization grain。"
+            )
         for dataset_id in raw_dataset_ids:
-            if isinstance(dataset_id, str) and dataset_id in grains_by_dataset:
-                grains_by_dataset[dataset_id].update(grains)
+            if not isinstance(dataset_id, str) or not dataset_id:
+                raise ReportingError(
+                    "report_analysis_semantic_invalid", "分析计划包含无效 Dataset。"
+                )
+            planned_dataset_ids.add(dataset_id)
+            if dataset_id not in grains_by_dataset:
+                raise ReportingError(
+                    "report_analysis_semantic_invalid",
+                    "分析计划 Dataset 与 evidence-derived Dataset 不一致。",
+                )
+            grains_by_dataset[dataset_id].update(grains)
+    if planned_dataset_ids != set(dataset_ids):
+        raise ReportingError(
+            "report_analysis_semantic_invalid",
+            "分析计划 Dataset 必须精确覆盖 evidence-derived Dataset。",
+        )
+    if any(not grains for grains in grains_by_dataset.values()):
+        raise ReportingError(
+            "report_analysis_semantic_invalid", "Dataset 缺少冻结 organization grain。"
+        )
 
     dataset_semantics = []
     for dataset_id in dataset_ids:
@@ -2538,8 +2591,13 @@ def _finalize_semantic_catalog(
         ends = sorted(
             {value for fact in facts if isinstance((value := fact.get("periodEnd")), str) and value}
         )
-        period_start = starts[0] if starts else None
-        period_end = ends[-1] if ends else None
+        if len(formulas) != len(facts) or len(units) != 1 or len(starts) != 1 or len(ends) != 1:
+            raise ReportingError(
+                "report_analysis_semantic_invalid",
+                f"指标 {code} 的 formula、unit 或期间缺失或冲突。",
+            )
+        period_start = starts[0]
+        period_end = ends[0]
         period_basis = (
             period_start
             if period_start is not None and period_start == period_end
@@ -2550,8 +2608,8 @@ def _finalize_semantic_catalog(
                 "code": code,
                 "name": name,
                 "definition": "；".join((name, *formulas))[:2000],
-                "unit": units[0] if len(units) == 1 else None,
-                "periodBasis": period_basis or "未声明期间",
+                "unit": units[0],
+                "periodBasis": period_basis,
             }
         )
     return dataset_semantics, metric_definitions
