@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import math
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Any
@@ -783,7 +782,7 @@ class RuntimeSectionsMixin:
                     "chartId": registration.chart_id,
                     "width": width,
                     "height": height,
-                    "effectiveDpi": math.floor(raw_effective_dpi),
+                    "effectiveDpi": round(raw_effective_dpi, 1),
                     "minimumDpi": MIN_REPORT_CHART_EFFECTIVE_DPI,
                     "message": "按 A4 正文全宽估算的有效分辨率偏低，仅作为非阻断质量告警。",
                 }

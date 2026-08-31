@@ -745,7 +745,7 @@ async def test_register_report_charts_accepts_cross_dataset_comparison() -> None
             "chartId": "income",
             "width": 1000,
             "height": 700,
-            "effectiveDpi": 145,
+            "effectiveDpi": 146.0,
             "minimumDpi": 150,
             "message": "按 A4 正文全宽估算的有效分辨率偏低，仅作为非阻断质量告警。",
         },
@@ -1346,16 +1346,16 @@ async def test_inspect_chart_warns_below_effective_a4_body_dpi() -> None:
         "chartId": "income",
         "width": 1000,
         "height": 700,
-        "effectiveDpi": 145,
+        "effectiveDpi": 146.0,
         "minimumDpi": 150,
         "message": "按 A4 正文全宽估算的有效分辨率偏低，仅作为非阻断质量告警。",
     }
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(("width", "expected_effective_dpi"), [(1027, 149), (1028, None)])
+@pytest.mark.parametrize(("width", "expected_effective_dpi"), [(1027, 149.9), (1028, None)])
 async def test_inspect_chart_effective_dpi_uses_raw_threshold(
-    width: int, expected_effective_dpi: int | None
+    width: int, expected_effective_dpi: float | None
 ) -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit._inspect_chart_file = AsyncMock(return_value=_chart_identity(width=width, height=700))
