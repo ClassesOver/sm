@@ -123,7 +123,18 @@ def _derive_durable_analysis_binding(
     才能绑定 evidence。Dataset 相同不能证明该查询被当前结论使用。
     """
 
-    dataset_ids = [value for value in durable_item.get("datasetIds", ()) if isinstance(value, str)]
+    raw_dataset_ids = durable_item.get("datasetIds")
+    if (
+        isinstance(raw_dataset_ids, (str, bytes))
+        or not isinstance(raw_dataset_ids, (list, tuple))
+        or not raw_dataset_ids
+        or any(not isinstance(value, str) or not value for value in raw_dataset_ids)
+    ):
+        raise ReportingError(
+            "report_analysis_dataset_inconsistent",
+            "durable analysis datasetIds 必须是非空字符串序列。",
+        )
+    dataset_ids = list(raw_dataset_ids)
     explicit_receipt_ids = [
         value for value in durable_item.get("profileReadReceiptIds", ()) if isinstance(value, str)
     ]
@@ -886,6 +897,14 @@ class RuntimeAnalysisMixin:
                 raise ReportingError(
                     "report_phase_contract_invalid", "Analysis Task 缺少冻结注册表。"
                 )
+            if not known_dataset_ids or any(
+                not isinstance(dataset_id, str) or not dataset_id
+                for dataset_id in known_dataset_ids
+            ):
+                raise ReportingError(
+                    "report_analysis_dataset_inconsistent",
+                    "Finalize phase contract 的 datasetIds 必须是非空字符串序列。",
+                )
             submitted = durable.payload.get("analysisItems")
             if not isinstance(submitted, dict) or any(
                 not isinstance(submitted.get(item), dict) for item in expected_analysis_ids
@@ -906,10 +925,16 @@ class RuntimeAnalysisMixin:
                 }
                 for item in expected_analysis_ids
             ]
-            metricDefinitions = metricDefinitions or []
             warnings = warnings or []
+            projected_semantics = contract.get("datasetSemantics")
+            projected_metrics = contract.get("metricDefinitions")
+            if not isinstance(projected_semantics, list) or not isinstance(projected_metrics, list):
+                raise ReportingError(
+                    "report_analysis_semantic_contract_invalid",
+                    "Finalize phase contract 缺少服务端投影的语义目录。",
+                )
             parsed_dataset_semantics = tuple(
-                AnalysisDatasetSemantics.model_validate(item) for item in datasetSemantics
+                AnalysisDatasetSemantics.model_validate(item) for item in projected_semantics
             )
             if {item.dataset_id for item in parsed_dataset_semantics} != set(known_dataset_ids):
                 raise ReportingError(
@@ -1038,7 +1063,7 @@ class RuntimeAnalysisMixin:
                     "analysis evidence 必须按冻结顺序精确覆盖全部 analysisId。",
                 )
             supplied_metric_definitions = tuple(
-                MetricDefinition.model_validate(item) for item in metricDefinitions
+                MetricDefinition.model_validate(item) for item in projected_metrics
             )
             fact_bundles: dict[str, Mapping[str, Any]] = {}
             deterministic_files = contract.get("deterministicFactFiles")

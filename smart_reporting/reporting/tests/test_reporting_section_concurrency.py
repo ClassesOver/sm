@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from smart_reporting.reporting.data_sources import DatasetHandle
 from smart_reporting.reporting.delivery.artifacts_v1 import Citation
 from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
 from smart_reporting.reporting.hospital_operation.detailed_analysis import (
@@ -48,8 +49,10 @@ from smart_reporting.reporting.workflow.runtime import sections as runtime_secti
 from smart_reporting.reporting.workflow.runtime.analysis import (
     _analysis_fact_retry_usage,
     _checkpoint_retry_error,
+    _finalize_semantic_catalog,
     _run_pending_analysis_items,
     _run_pending_visualization_sections,
+    _validated_dataset_ids,
     _visualization_retry_usage,
 )
 from smart_reporting.reporting.workflow.runtime.sections import (
@@ -57,6 +60,29 @@ from smart_reporting.reporting.workflow.runtime.sections import (
     _section_claim_authoring_contract,
     _section_retry_context,
 )
+
+
+@pytest.mark.parametrize("value", [None, 1, ["dataset-1", 2]])
+def test_runtime_projection_rejects_malformed_durable_dataset_ids(value: Any) -> None:
+    with pytest.raises(ReportingError) as raised:
+        _validated_dataset_ids(value)
+    assert raised.value.code == "report_analysis_dataset_inconsistent"
+
+
+@pytest.mark.parametrize(
+    ("analysis_plans", "dataset_ids"),
+    [({}, ("dataset-1",)), ({"analysis_001": {"datasetIds": ["dataset-1"]}}, ())],
+)
+def test_finalize_semantic_catalog_fails_closed_without_analysis_or_datasets(
+    analysis_plans: dict[str, dict[str, Any]], dataset_ids: tuple[str, ...]
+) -> None:
+    with pytest.raises(ReportingError) as raised:
+        _finalize_semantic_catalog(
+            analysis_plans=analysis_plans,
+            fact_bundles={},
+            dataset_ids=dataset_ids,
+        )
+    assert raised.value.code == "report_analysis_dataset_inconsistent"
 
 
 @pytest.mark.anyio
@@ -1061,6 +1087,7 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
             "completedAnalysisIds": ["analysis_001"],
             "analysisItems": {
                 "analysis_001": {
+                    "datasetIds": ["dataset-income"],
                     "summary": "收入同比增长。",
                     "evidenceFiles": [
                         {"path": "evidence/income.json", "size": 2, "sha256": "e" * 64}
@@ -1170,7 +1197,18 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
                 path="validation/context.json", size=1, sha256="b" * 64
             ),
             detailed_plan=plan,
-            dataset_handles=(),
+            dataset_handles=(
+                DatasetHandle(
+                    dataset_id="dataset-income",
+                    source_id="source-1",
+                    path="datasets/income.csv",
+                    row_count=1,
+                    size=1,
+                    sha256="d" * 64,
+                    requirement_id="requirement-1",
+                    sql_hash="e" * 64,
+                ),
+            ),
             lineage=(),
             citation_bindings=tuple(
                 Citation(
@@ -1289,6 +1327,14 @@ async def test_visualization_retry_projects_citation_ids_into_each_worker_instru
     )
     contracts = [call.kwargs["acceptance_contract"] for call in task_runner.start.await_args_list]
     phase_contracts = [item["requirements"][0]["parameters"]["phaseContract"] for item in contracts]
+    assert phase_contracts[0]["datasetSemantics"] == [
+        {
+            "datasetId": "dataset-income",
+            "rowGrain": "record",
+            "duplicateResolution": "not_applicable",
+        }
+    ]
+    assert phase_contracts[0]["metricDefinitions"] == []
     assert [item["visualizationRecovery"] for item in phase_contracts] == [False, True]
     assert [item["allowedMetricCodes"] for item in phase_contracts] == [None, None]
     assert [item["visualInspectionMode"] for item in phase_contracts] == [

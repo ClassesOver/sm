@@ -87,6 +87,115 @@ def _analysis_fact_query_limit_for_plan(analysis_plan: Mapping[str, Any]) -> int
     return min(8, max(4, 2 + (complexity + 2) // 3))
 
 
+def _validated_dataset_ids(value: Any) -> tuple[str, ...]:
+    """校验 durable Dataset 绑定，避免不完整账本被当作可迭代序列消费。"""
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ReportingError(
+            "report_analysis_dataset_inconsistent",
+            "durable analysis datasetIds 必须是非字符串字符串序列。",
+        )
+    dataset_ids = tuple(value)
+    if not dataset_ids or any(not isinstance(item, str) or not item for item in dataset_ids):
+        raise ReportingError(
+            "report_analysis_dataset_inconsistent",
+            "durable analysis datasetIds 必须是非空字符串序列。",
+        )
+    return dataset_ids
+
+
+def _finalize_semantic_catalog(
+    *,
+    analysis_plans: Mapping[str, Mapping[str, Any]],
+    fact_bundles: Mapping[str, Mapping[str, Any]],
+    dataset_ids: Sequence[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """从冻结计划和已验 facts 投影 finalize 所需的语义目录。"""
+    if not analysis_plans or not dataset_ids:
+        raise ReportingError(
+            "report_analysis_dataset_inconsistent",
+            "Finalize 语义目录缺少分析计划或 Dataset。",
+        )
+    authorized_ids = tuple(dataset_ids)
+    grains_by_dataset: dict[str, set[str]] = {dataset_id: set() for dataset_id in authorized_ids}
+    facts_by_code: dict[str, list[Mapping[str, Any]]] = {}
+    for analysis_id, plan in analysis_plans.items():
+        planned_ids = _validated_dataset_ids(plan.get("datasetIds"))
+        raw_grain = plan.get("organizationGrain")
+        grains = (
+            {item for item in raw_grain if isinstance(item, str) and item}
+            if isinstance(raw_grain, Sequence) and not isinstance(raw_grain, (str, bytes))
+            else set()
+        )
+        for dataset_id in planned_ids:
+            if dataset_id not in grains_by_dataset:
+                raise ReportingError(
+                    "report_analysis_dataset_inconsistent",
+                    "分析计划引用了未授权 Dataset。",
+                )
+            grains_by_dataset[dataset_id].update(grains)
+        bundle = fact_bundles.get(analysis_id)
+        if not isinstance(bundle, Mapping):
+            raise ReportingError(
+                "report_analysis_evidence_incomplete",
+                "确定性 facts 没有精确覆盖冻结分析计划。",
+            )
+        for key, code_key in (("metrics", "metricCodes"), ("derivedMetrics", "code")):
+            raw_metrics = bundle.get(key, ())
+            if not isinstance(raw_metrics, Sequence) or isinstance(raw_metrics, (str, bytes)):
+                continue
+            for metric in raw_metrics:
+                if not isinstance(metric, Mapping):
+                    continue
+                raw_codes = (
+                    metric.get(code_key, ()) if code_key != "code" else (metric.get("code"),)
+                )
+                if isinstance(raw_codes, str):
+                    raw_codes = (raw_codes,)
+                if isinstance(raw_codes, Sequence):
+                    for code in raw_codes:
+                        if isinstance(code, str) and code:
+                            facts_by_code.setdefault(code, []).append(metric)
+
+    dataset_semantics = [
+        {
+            "datasetId": dataset_id,
+            "rowGrain": "+".join(sorted(grains_by_dataset[dataset_id])) or "record",
+            "duplicateResolution": "not_applicable",
+        }
+        for dataset_id in authorized_ids
+    ]
+    metric_definitions = []
+    for code in sorted(facts_by_code):
+        facts = facts_by_code[code]
+        formulas = sorted(
+            {item.get("formula") for item in facts if isinstance(item.get("formula"), str)}
+        )
+        units = sorted({item.get("unit") for item in facts if isinstance(item.get("unit"), str)})
+        starts = sorted(
+            {item.get("periodStart") for item in facts if isinstance(item.get("periodStart"), str)}
+        )
+        ends = sorted(
+            {item.get("periodEnd") for item in facts if isinstance(item.get("periodEnd"), str)}
+        )
+        period_basis = (
+            starts[0]
+            if starts and starts == ends
+            else " 至 ".join(
+                item for item in (starts[0] if starts else None, ends[-1] if ends else None) if item
+            )
+        )
+        metric_definitions.append(
+            {
+                "code": code,
+                "name": code,
+                "definition": "；".join((code, *formulas))[:2000],
+                "unit": units[0] if len(units) == 1 else None,
+                "periodBasis": period_basis or "未声明期间",
+            }
+        )
+    return dataset_semantics, metric_definitions
+
+
 class RuntimeAnalysisMixin:
     async def _run_visualization_finalize(self, **context: Any) -> None:
         """汇总 worker 的显式入口；主分析阶段传入的上下文由现有冻结逻辑消费。"""
@@ -1380,6 +1489,7 @@ class RuntimeAnalysisMixin:
         # 探索往返。包只在本次 visualization 阶段首次构建，fresh retry 复用内存对象，
         # 不重新下载或计算 deterministic facts。
         visualization_facts_package: list[dict[str, Any]] | None = None
+        fact_bundles: dict[str, Mapping[str, Any]] = {}
 
         for _ in range(MAX_REPORT_SECTION_PHASE_ATTEMPTS):
             started_trace = next(
@@ -1452,6 +1562,19 @@ class RuntimeAnalysisMixin:
                 for item in detailed_plan.analyses
             }
             analysis_items = durable_payload.get("analysisItems")
+            if not isinstance(analysis_items, Mapping):
+                raise ReportingError(
+                    "report_analysis_evidence_incomplete",
+                    "耐久分析账本未完整覆盖全部 analysisId。",
+                )
+            for analysis_id, plan in analysis_plans.items():
+                durable_item = analysis_items.get(analysis_id)
+                if not isinstance(durable_item, Mapping):
+                    raise ReportingError(
+                        "report_analysis_evidence_incomplete",
+                        "耐久分析账本未完整覆盖全部 analysisId。",
+                    )
+                plan["datasetIds"] = list(_validated_dataset_ids(durable_item.get("datasetIds")))
             visualization_budget = _visualization_dynamic_budget(analysis_items, fact_files)
             if visualization_facts_package is None:
                 visualization_facts_package = []
@@ -1462,6 +1585,7 @@ class RuntimeAnalysisMixin:
                         DeterministicAnalysisBundle,
                     )
                     fact_payload = fact_model.model_dump(mode="json", by_alias=True)
+                    fact_bundles[analysis.analysis_id] = fact_payload
                     raw_metrics = fact_payload.get("metrics", [])
                     raw_derived_metrics = fact_payload.get("derivedMetrics", [])
                     raw_comparisons = fact_payload.get("comparisons", [])
@@ -1616,6 +1740,17 @@ class RuntimeAnalysisMixin:
                     for code in item["allowedMetricCodes"]
                 }
             )
+            dataset_semantics, metric_definitions = _finalize_semantic_catalog(
+                analysis_plans=analysis_plans,
+                fact_bundles=fact_bundles,
+                dataset_ids=tuple(item.dataset_id for item in dataset_handles),
+            )
+            chart_registration_rules = {
+                "allowedMetricCodes": allowed_metric_codes or None,
+                "comparisonPeriodRequiredFor": ["period", "yoy", "mom"],
+                "referenceOnlyTitleAndAltTextMustContain": "参考",
+                "vision": visual_inspection_mode == "vision",
+            }
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "visualization_finalize",
@@ -1629,6 +1764,9 @@ class RuntimeAnalysisMixin:
                 "visualTheme": REPORT_VISUAL_THEME,
                 "registeredCharts": registered_charts,
                 "visualInspectionMode": visual_inspection_mode,
+                "analysisPlans": analysis_plans,
+                "datasetSemantics": dataset_semantics,
+                "metricDefinitions": metric_definitions,
                 "analysisCitationIds": _visualization_analysis_citation_ids(
                     detailed_plan, citation_bindings
                 ),
@@ -1640,15 +1778,7 @@ class RuntimeAnalysisMixin:
                     for analysis_id, identity in fact_files.items()
                 },
                 "visualizationFacts": visualization_facts_package,
-                "chartRegistrationRules": {
-                    # null 明确表示冻结 facts 没有 Profile metric code，Worker 可定义
-                    # 图表 code，但 finalize 时必须以同名 metricDefinitions 冻结语义；
-                    # 非空目录仍由 register_report_charts 严格拒绝未知 code。
-                    "allowedMetricCodes": allowed_metric_codes or None,
-                    "comparisonPeriodRequiredFor": ["period", "yoy", "mom"],
-                    "referenceOnlyTitleAndAltTextMustContain": "参考",
-                    "vision": visual_inspection_mode == "vision",
-                },
+                "chartRegistrationRules": chart_registration_rules,
                 # 可视化脚本与 evidence/facts 分属兄弟目录。由服务端签发完整工作区相对路径，
                 # 禁止 Worker 依据脚本位置猜测父目录，否则会把 evidence 错拼成 analysis/evidence。
                 "visualizationWorkspace": {
@@ -1700,6 +1830,8 @@ class RuntimeAnalysisMixin:
                     ),
                     "analysisIds": list(analysis_ids),
                     "currentAnalysisId": None,
+                    "datasetSemantics": dataset_semantics,
+                    "metricDefinitions": metric_definitions,
                     "analysisPlans": analysis_plans,
                     "analysisDatasetIds": {
                         item.analysis_id: list(item.dataset_ids) for item in detailed_plan.analyses
