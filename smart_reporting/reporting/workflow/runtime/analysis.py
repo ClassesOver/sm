@@ -129,7 +129,9 @@ class RuntimeAnalysisMixin:
         facts = []
         for analysis_id in section.analysis_ids:
             fact_file = context["fact_files"].get(analysis_id)
-            durable_item = analysis_items.get(analysis_id) if isinstance(analysis_items, Mapping) else None
+            durable_item = (
+                analysis_items.get(analysis_id) if isinstance(analysis_items, Mapping) else None
+            )
             if fact_file is None or not isinstance(durable_item, Mapping):
                 raise ReportingError(
                     "report_analysis_evidence_incomplete",

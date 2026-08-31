@@ -250,9 +250,7 @@ def test_visualization_task_identity_does_not_use_analysis_id_for_sections() -> 
 
     assert section_task != finalize_task
     with pytest.raises(ValueError):
-        reporting_phase_task_key(
-            "run-1", 1, "analysis", analysis_id="viz-section:section_001"
-        )
+        reporting_phase_task_key("run-1", 1, "analysis", analysis_id="viz-section:section_001")
 
 
 def test_checkpoint_merges_distinct_visualization_section_errors() -> None:
@@ -287,7 +285,11 @@ def test_checkpoint_replaces_same_visualization_section_error_on_fresh_attempt()
         update={
             "visualization_section_errors": {
                 "section_001": CheckpointError(
-                    phase="analysis", code="first", message="first", sectionCode="section_001", attempt=0
+                    phase="analysis",
+                    code="first",
+                    message="first",
+                    sectionCode="section_001",
+                    attempt=0,
                 )
             }
         }
@@ -296,7 +298,11 @@ def test_checkpoint_replaces_same_visualization_section_error_on_fresh_attempt()
         update={
             "visualization_section_errors": {
                 "section_001": CheckpointError(
-                    phase="analysis", code="second", message="second", sectionCode="section_001", attempt=1
+                    phase="analysis",
+                    code="second",
+                    message="second",
+                    sectionCode="section_001",
+                    attempt=1,
                 )
             }
         }
@@ -312,21 +318,27 @@ def test_checkpoint_clears_visualization_section_error_after_success() -> None:
         update={
             "visualization_section_errors": {
                 "section_001": CheckpointError(
-                    phase="analysis", code="first", message="first", sectionCode="section_001", attempt=0
+                    phase="analysis",
+                    code="first",
+                    message="first",
+                    sectionCode="section_001",
+                    attempt=0,
                 )
             }
         }
     )
-    incoming = analysis_checkpoint(trace=(
-        ContextTrace(
-            phase="analysis",
-            taskId="section-task",
-            workKind="visualization_section",
-            sectionCode="section_001",
-            attempt=1,
-            status="completed",
-        ),
-    ))
+    incoming = analysis_checkpoint(
+        trace=(
+            ContextTrace(
+                phase="analysis",
+                taskId="section-task",
+                workKind="visualization_section",
+                sectionCode="section_001",
+                attempt=1,
+                status="completed",
+            ),
+        )
+    )
 
     merged = ReportWorkflowRuntime._merge_reporting_checkpoints(current, incoming)
 
@@ -343,9 +355,54 @@ def test_visualization_task_identity_requires_section_or_explicit_finalize_key()
 
     assert section_task != finalize_task
     with pytest.raises(ValueError):
+        reporting_phase_task_key("run-1", 1, "analysis", analysis_id="viz-section:section_001")
+
+
+@pytest.mark.parametrize(
+    "identity_kwargs",
+    [
+        {"analysis_id": "analysis_001", "task_kind": "visualization_section"},
+        {"analysis_id": "analysis_001", "task_kind": "visualization_finalize"},
+        {"section_code": "section_001", "task_kind": "visualization_finalize"},
+        {"section_code": "section_001", "task_kind": "analysis_item"},
+        {"task_key": "viz-summary", "task_kind": "visualization_finalize"},
+        {"task_key": "viz-finalize", "task_kind": "visualization_section"},
+        {"task_key": "viz-finalize"},
+        {"section_code": "section_001"},
+        {
+            "analysis_id": "analysis_001",
+            "section_code": "section_001",
+            "task_kind": "visualization_section",
+        },
+        {
+            "analysis_id": "analysis_001",
+            "task_key": "viz-finalize",
+            "task_kind": "visualization_finalize",
+        },
+    ],
+)
+def test_visualization_task_identity_rejects_mismatched_kind_bindings(
+    identity_kwargs: dict[str, str],
+) -> None:
+    with pytest.raises(ValueError):
+        reporting_phase_task_key("run-1", 1, "analysis", **identity_kwargs)
+
+
+def test_visualization_task_identity_rejects_viz_kind_on_section_phase() -> None:
+    with pytest.raises(ValueError):
         reporting_phase_task_key(
-            "run-1", 1, "analysis", analysis_id="viz-section:section_001"
+            "run-1", 1, "section", section_code="section_001", task_kind="visualization_section"
         )
+
+
+def test_analysis_item_task_identity_accepts_explicit_kind_and_legacy_call() -> None:
+    explicit = reporting_phase_task_key(
+        "run-1", 1, "analysis", analysis_id="analysis_001", task_kind="analysis_item"
+    )
+    legacy = reporting_phase_task_key("run-1", 1, "analysis", analysis_id="analysis_001")
+
+    assert explicit == legacy
+    assert reporting_phase_task_key("run-1", 1, "section", section_code="section_001")
 
 
 @pytest.mark.anyio
@@ -362,17 +419,28 @@ async def test_visualization_section_missing_fact_fails_closed() -> None:
         "fact_files": {},
         "visual_inspection_mode": "deterministic",
     }
-    runtime._scope = lambda _context: {"externalRunId": "run-1", "threadId": "thread-1", "userId": "user-1"}
+    runtime._scope = lambda _context: {
+        "externalRunId": "run-1",
+        "threadId": "thread-1",
+        "userId": "user-1",
+    }
     runtime._state = lambda _context: {
         "report_outline": {
             "reportType": "topic",
             "title": "报告",
             "sections": [
-                {"code": "section_001", "sectionNumber": "1", "title": "章节", "analysisIds": ["analysis_001"]}
+                {
+                    "code": "section_001",
+                    "sectionNumber": "1",
+                    "title": "章节",
+                    "analysisIds": ["analysis_001"],
+                }
             ],
         }
     }
-    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(payload={"analysisItems": {}})))
+    runtime.state_repository = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(payload={"analysisItems": {}}))
+    )
 
     with pytest.raises(ReportingError, match="冻结 facts"):
         await runtime._run_visualization_section_task("section_001")
@@ -398,6 +466,181 @@ async def test_visualization_finalize_starts_and_runs_bound_task() -> None:
     runtime.task_runner.start.assert_awaited_once()
     runtime.task_runner.run.assert_awaited_once()
     assert receipt["status"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_global_zero_chart_finalize_fails_closed_after_all_sections_submit_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = analysis_plan("analysis_001")
+    checkpoint_before_visualization = checkpoint(completed=(), pending=()).model_copy(
+        update={
+            "phase": "analysis",
+            "report_brief": None,
+            "evidence_manifest": None,
+            "analysis_manifest_file": None,
+        }
+    )
+    fact_file = FileIdentity(path="facts/analysis_001.json", size=1, sha256="f" * 64)
+    payload: dict[str, Any] = {
+        "completedAnalysisIds": ["analysis_001"],
+        "analysisItems": {
+            "analysis_001": {
+                "analysisId": "analysis_001",
+                "summary": "收入事实已冻结。",
+                "datasetIds": ["dataset-1"],
+                "evidenceFiles": [
+                    {"path": "analysis/evidence.json", "size": 2, "sha256": "e" * 64}
+                ],
+                "citationIds": ["citation-001"],
+                "profileReadReceiptIds": [],
+                "chartIds": [],
+                "warnings": [],
+            }
+        },
+        "charts": [],
+        "chartsRegistered": False,
+        "visualizationSections": {},
+        "completedVisualizationSections": [],
+    }
+    durable = SimpleNamespace(payload=payload)
+
+    def commit_zero_chart_section(section_code: str) -> dict[str, Any]:
+        # 单章零图提交合法：durable reducer 允许空图表草案并收口该章。
+        payload["visualizationSections"][section_code] = {"charts": [], "files": []}
+        payload["completedVisualizationSections"].append(section_code)
+        return {"ok": True, "status": "committed", "sectionCode": section_code}
+
+    finalize_rejection = ReportingError(
+        "report_visualization_charts_not_registered",
+        "图表尚未完成登记，不能冻结可视化分析；请先成功调用 register_report_charts。",
+    )
+    run_calls: list[str] = []
+
+    def dispatch_worker_run(task_scope: Any, parent_run_id: str = "") -> dict[str, Any]:
+        # 前 2 次是章节 Task 的 submit_visualization_charts 收口，第 3 次是
+        # finalize Task 的真实工具拒绝：全局零图必须失败关闭。
+        run_calls.append(str(task_scope.external_run_id))
+        if len(run_calls) <= 2:
+            return commit_zero_chart_section(f"section_{len(run_calls):03d}")
+        raise finalize_rejection
+
+    task_runner = SimpleNamespace(
+        repository=SimpleNamespace(get_task_snapshot=AsyncMock(return_value=None)),
+        start=AsyncMock(),
+        run=AsyncMock(side_effect=dispatch_worker_run),
+    )
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.analysis_concurrency = 1
+    runtime.visualization_concurrency = 1
+    runtime.report_worker = SimpleNamespace(
+        id="report-worker",
+        model=SimpleNamespace(_report_vision_enabled=False),
+    )
+    runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=durable))
+    runtime.task_runner = task_runner
+    runtime._scope = lambda _run_context: {
+        "externalRunId": "run-1",
+        "threadId": "thread-1",
+        "userId": "user-1",
+    }
+    runtime._envelope = lambda _run_context: SimpleNamespace(report_goal="经营分析")
+    runtime._state = lambda _run_context: {
+        "report_outline": {
+            "reportType": "topic",
+            "title": "经营分析",
+            "sections": [
+                {
+                    "code": "section_001",
+                    "sectionNumber": "1",
+                    "title": "收入",
+                    "analysisIds": ["analysis_001"],
+                },
+                {
+                    "code": "section_002",
+                    "sectionNumber": "2",
+                    "title": "预算",
+                    "analysisIds": ["analysis_001"],
+                },
+            ],
+        }
+    }
+    runtime._worker_thinking_effort = lambda *, retry: "off"
+
+    async def read_fact_model(*_args: Any, **_kwargs: Any) -> Any:
+        return SimpleNamespace(
+            analysis_id="analysis_001",
+            model_dump=lambda **_options: {
+                "version": "1",
+                "analysisId": "analysis_001",
+                "metrics": [],
+                "derivedMetrics": [],
+                "comparisons": [],
+                "reconciliations": [],
+                "correlations": {},
+                "warnings": [],
+            },
+        )
+
+    runtime._read_identity_model = read_fact_model
+
+    async def restore_facts(
+        **kwargs: Any,
+    ) -> tuple[ReportingCheckpoint, dict[str, FileIdentity]]:
+        return kwargs["checkpoint"], {"analysis_001": fact_file}
+
+    async def run_analysis_item(*_args: Any, **_kwargs: Any) -> ReportingCheckpoint:
+        return checkpoint_before_visualization
+
+    async def current_checkpoint(*_args: Any, **_kwargs: Any) -> ReportingCheckpoint:
+        return checkpoint_before_visualization
+
+    async def persist_checkpoint(
+        _run_context: Any, stored: ReportingCheckpoint
+    ) -> ReportingCheckpoint:
+        return stored
+
+    runtime._restore_or_create_deterministic_analysis_facts = restore_facts
+    runtime._run_analysis_item_task = run_analysis_item
+    runtime._current_reporting_checkpoint = current_checkpoint
+    runtime._persist_reporting_checkpoint = persist_checkpoint
+    monkeypatch.setattr(runtime_analysis, "MAX_REPORT_SECTION_PHASE_ATTEMPTS", 1)
+
+    with pytest.raises(ReportingError) as raised:
+        await runtime._run_analysis_phase(
+            SimpleNamespace(run_id="run-1"),
+            checkpoint=checkpoint_before_visualization,
+            revision=1,
+            sandbox_id="sandbox-1",
+            validation_context_file=FileIdentity(
+                path="validation/context.json", size=1, sha256="b" * 64
+            ),
+            detailed_plan=plan,
+            dataset_handles=(),
+            lineage=(),
+            citation_bindings=(
+                Citation(
+                    citationId="citation-001",
+                    datasetId="dataset-1",
+                    requirementId="requirement-001",
+                    snapshotHash="0" * 64,
+                ),
+            ),
+            analysis_context_file=FileIdentity(
+                path="analysis/context.json", size=1, sha256="a" * 64
+            ),
+            feedback=None,
+            rework_request=None,
+        )
+
+    assert raised.value.code == "report_visualization_charts_not_registered"
+    assert payload["completedVisualizationSections"] == ["section_001", "section_002"]
+    assert payload["visualizationSections"] == {
+        "section_001": {"charts": [], "files": []},
+        "section_002": {"charts": [], "files": []},
+    }
+    assert task_runner.start.await_count == 3
+    assert task_runner.run.await_count == 3
 
 
 def test_analysis_rework_constraints_bind_frozen_plan_and_profile_receipts() -> None:

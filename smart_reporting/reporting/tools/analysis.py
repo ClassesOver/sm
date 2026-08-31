@@ -853,7 +853,11 @@ class RuntimeAnalysisMixin:
         warnings: list[str] | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        """冻结全局分析事实；后续章节只能消费该产物，不继承本 run 消息。"""
+        """冻结全局分析事实；后续章节只能消费该产物，不继承本 run 消息。
+
+        datasetSemantics/metricDefinitions 语义目录以 acceptance contract 的服务端投影
+        为唯一受信来源；模型提交的同名参数仅作接口兼容占位，会被直接覆盖。
+        """
 
         state = self._session_state(run_context)
         try:
@@ -877,14 +881,19 @@ class RuntimeAnalysisMixin:
             expected_analysis_ids = contract.get("analysisIds")
             known_dataset_ids = contract.get("datasetIds")
             known_citation_ids = contract.get("citationIds")
+            contract_dataset_semantics = contract.get("datasetSemantics")
+            contract_metric_definitions = contract.get("metricDefinitions")
             if (
                 not isinstance(output_path, str)
                 or not isinstance(expected_analysis_ids, list)
                 or not isinstance(known_dataset_ids, list)
                 or not isinstance(known_citation_ids, list)
+                or not isinstance(contract_dataset_semantics, list)
+                or not isinstance(contract_metric_definitions, list)
             ):
                 raise ReportingError(
-                    "report_phase_contract_invalid", "Analysis Task 缺少冻结注册表。"
+                    "report_phase_contract_invalid",
+                    "Analysis Task 缺少冻结注册表或服务端投影的语义目录。",
                 )
             submitted = durable.payload.get("analysisItems")
             if not isinstance(submitted, dict) or any(
@@ -906,10 +915,12 @@ class RuntimeAnalysisMixin:
                 }
                 for item in expected_analysis_ids
             ]
-            metricDefinitions = metricDefinitions or []
+            # 语义目录的唯一受信来源是 acceptance contract 的服务端投影。模型提交的
+            # datasetSemantics/metricDefinitions 参数仅保留接口兼容，一律被覆盖，
+            # 任何模型侧改写都不得进入冻结 manifest；投影缺失时失败关闭。
             warnings = warnings or []
             parsed_dataset_semantics = tuple(
-                AnalysisDatasetSemantics.model_validate(item) for item in datasetSemantics
+                AnalysisDatasetSemantics.model_validate(item) for item in contract_dataset_semantics
             )
             if {item.dataset_id for item in parsed_dataset_semantics} != set(known_dataset_ids):
                 raise ReportingError(
@@ -1037,8 +1048,8 @@ class RuntimeAnalysisMixin:
                     "report_analysis_evidence_incomplete",
                     "analysis evidence 必须按冻结顺序精确覆盖全部 analysisId。",
                 )
-            supplied_metric_definitions = tuple(
-                MetricDefinition.model_validate(item) for item in metricDefinitions
+            parsed_metric_definitions = tuple(
+                MetricDefinition.model_validate(item) for item in contract_metric_definitions
             )
             fact_bundles: dict[str, Mapping[str, Any]] = {}
             deterministic_files = contract.get("deterministicFactFiles")
@@ -1087,7 +1098,7 @@ class RuntimeAnalysisMixin:
             missing_metric_codes = _missing_metric_definition_codes(
                 fact_bundles=tuple(fact_bundles.values()),
                 chart_metric_codes=chart_metric_codes,
-                metric_definitions=supplied_metric_definitions,
+                metric_definitions=parsed_metric_definitions,
             )
             if missing_metric_codes:
                 raise ReportingError(
@@ -1192,7 +1203,7 @@ class RuntimeAnalysisMixin:
                 reportBrief=ReportBrief.model_validate(reportBrief),
                 evidenceManifest=AnalysisEvidenceManifest(
                     evidence=tuple(parsed_evidence),
-                    metricDefinitions=supplied_metric_definitions,
+                    metricDefinitions=parsed_metric_definitions,
                     charts=tuple(parsed_charts),
                     datasetSemantics=parsed_dataset_semantics,
                     warnings=tuple(warnings),

@@ -806,15 +806,26 @@ def reporting_phase_task_key(
     task_kind: str | None = None,
     attempt: int = 0,
 ) -> str:
+    # 三种 analysis 身份分支与 taskKind 一一绑定，防止把可视化身份伪装成 analysisId：
+    # analysis_id 只属于 analysis_item（历史调用不传 taskKind）；section_code 只属于
+    # visualization_section；finalize 只接受固定 task_key "viz-finalize"，不接受任意
+    # 字符串。section phase 维持普通章节身份，不允许携带可视化 taskKind。
     if (
         revision < 1
         or attempt < 0
-        or (phase == "section" and (not section_code or analysis_id is not None or task_key is not None))
+        or (phase == "section" and (not section_code or task_kind is not None))
+        or (phase == "section" and (analysis_id is not None or task_key is not None))
         or (
             phase == "analysis"
             and sum(value is not None for value in (analysis_id, section_code, task_key)) != 1
         )
-        or (analysis_id is not None and not re.fullmatch(r"analysis_[0-9]{3,6}", analysis_id))
+        or (
+            analysis_id is not None
+            and (
+                not re.fullmatch(r"analysis_[0-9]{3,6}", analysis_id)
+                or task_kind not in (None, "analysis_item")
+            )
+        )
         or (
             phase == "analysis"
             and section_code is not None
@@ -822,8 +833,10 @@ def reporting_phase_task_key(
         )
         or (
             phase == "analysis"
-            and task_key is not None
-            and (task_kind != "visualization_finalize" or not task_key.strip())
+            and (
+                task_key is not None
+                and (task_key != "viz-finalize" or task_kind != "visualization_finalize")
+            )
         )
     ):
         raise ValueError("Reporting phase task identity 无效")

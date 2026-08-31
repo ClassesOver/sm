@@ -5109,3 +5109,127 @@ def test_finalize_binding_is_derived_from_durable_analysis_item() -> None:
     assert derived["citationIds"] == ["citation-budget"]
     assert derived["chartIds"] == ["chart-budget"]
     assert derived["evidenceFiles"] == durable_item["evidenceFiles"]
+
+
+@pytest.mark.anyio
+async def test_finalize_report_analysis_overrides_model_semantics_with_contract_projection() -> (
+    None
+):
+    evidence_identity = {"path": "analysis/evidence.json", "size": 12, "sha256": "a" * 64}
+    chart_identity = {"path": "analysis/charts/income.png", "size": 1024, "sha256": "b" * 64}
+    chart_receipt = {
+        "sourcePath": "analysis/charts/income.png",
+        "sha256": "b" * 64,
+        "inspectionMode": "deterministic",
+        "visualReviewStatus": "not_run",
+        "inspectorId": "deterministic-raster-inspector-v1",
+        "reviewed": True,
+        "requiresRevision": False,
+        "summary": "已通过确定性图片文件检查；未运行模型视觉审查。",
+        "warnings": ("未运行模型视觉审查。",),
+    }
+    registered_chart = {
+        "chartId": "income_trend",
+        "sourcePath": "analysis/charts/income.png",
+        "size": 1024,
+        "sha256": "b" * 64,
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income_total"],
+        "currentPeriod": "2026-01",
+        "comparisonPeriod": None,
+        "comparisonType": "none",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+        "comparability": "strict",
+        "visualInspectionReceipt": chart_receipt,
+    }
+    contract_semantics = [
+        {"datasetId": "dataset-1", "rowGrain": "record", "duplicateResolution": "not_applicable"}
+    ]
+    contract_metrics = [
+        {
+            "code": "income_total",
+            "name": "医疗收入",
+            "definition": "授权 Dataset 收入字段按月汇总。",
+            "unit": "元",
+            "periodBasis": "2026-01",
+        }
+    ]
+    state: dict[str, Any] = {}
+    durable = SimpleNamespace(
+        payload={
+            "charts": [registered_chart],
+            "analysisItems": {
+                "analysis_001": {
+                    "analysisId": "analysis_001",
+                    "summary": "收入事实已冻结。",
+                    "datasetIds": ["dataset-1"],
+                    "evidenceFiles": [evidence_identity],
+                    "citationIds": ["citation-1"],
+                    "profileReadReceiptIds": [],
+                    "chartIds": ["income_trend"],
+                    "warnings": [],
+                }
+            },
+            "profileReadReceipts": [],
+        }
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=SimpleNamespace(thread_id="thread-1")),
+        service=SimpleNamespace(
+            ahash_file=AsyncMock(
+                side_effect=lambda _thread_id, path: {
+                    "analysis/evidence.json": evidence_identity,
+                    "analysis/charts/income.png": chart_identity,
+                }[path]
+            )
+        ),
+    )
+    toolkit._session_state = lambda _run_context: state
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._ensure_visualization_terminal_settled = AsyncMock()
+    toolkit._durable_state = AsyncMock(return_value=durable)
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {"analysisOutputPath": "analysis/final.json"},
+        {
+            "taskKind": "visualization_finalize",
+            "analysisIds": ["analysis_001"],
+            "datasetIds": ["dataset-1"],
+            "citationIds": ["citation-1"],
+            "datasetSemantics": contract_semantics,
+            "metricDefinitions": contract_metrics,
+        },
+    )
+    toolkit._write_phase_json = AsyncMock(
+        return_value={"path": "analysis/final.json", "size": 10, "sha256": "c" * 64}
+    )
+    toolkit._finish_phase_task = AsyncMock(return_value={"ok": True, "status": "accepted"})
+
+    result = await toolkit.finalize_report_analysis(
+        reportBrief={
+            "objective": "经营分析",
+            "executiveSummary": "收入摘要。",
+            "managementQuestions": ["收入表现如何？"],
+        },
+        datasetSemantics=[
+            {"datasetId": "dataset-1", "rowGrain": "month", "duplicateResolution": "resolved"}
+        ],
+        metricDefinitions=[
+            {
+                "code": "income_total",
+                "name": "被改写的指标",
+                "definition": "模型自定义口径。",
+                "unit": "元",
+                "periodBasis": "2025-01",
+            }
+        ],
+        run_context=RunContext(run_id="run-finalize", session_id="session-finalize"),
+    )
+
+    assert result["status"] == "accepted"
+    payload = toolkit._write_phase_json.await_args.kwargs["payload"]
+    assert payload["evidenceManifest"]["datasetSemantics"] == contract_semantics
+    assert payload["evidenceManifest"]["metricDefinitions"] == contract_metrics
