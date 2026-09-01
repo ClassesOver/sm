@@ -166,7 +166,8 @@ class ReportWorkspaceTaskToolkit(
                 name="create_or_write_analysis_file",
                 description=(
                     "创建或 CAS 覆盖一个 analysis 文件。首次创建仅传 path 和 content；"
-                    "覆盖已有文件必须额外传入当前 expected_sha256。服务端保存写入意图，"
+                    "不得传 expected_sha256 占位值。覆盖已有文件必须额外传入读取回执中的当前 "
+                    "expected_sha256。服务端保存写入意图，"
                     "完成写入和 SHA-256 校验后提交意图。"
                 ),
                 parameters=(

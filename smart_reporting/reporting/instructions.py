@@ -203,8 +203,9 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "禁止对相同文件反复 read_file、terminal 或 inspect_chart，也不得在上下文恢复后重新探索已完成工作。"
     ),
     (
-        "创建或修改图表脚本只调用 create_or_write_analysis_file 的公开扁平 schema；首次创建使用 "
-        "path 和 content 一次提交完整脚本；覆盖已有文件时附带 expected_sha256，不调用任何未注册的底层"
+        "创建或修改图表脚本只调用 create_or_write_analysis_file 的公开扁平 schema；首次创建只使用 "
+        "path 和 content 一次提交完整脚本，禁止传 expected_sha256、全零占位值或猜测哈希；覆盖已有文件"
+        "时才附带读取回执中的当前 expected_sha256，不调用任何未注册的底层"
         "文件工具名，也不增加 arguments 包装。脚本和图表只写入任务 JSON 中 visualizationWorkspace"
         "签发的 scriptPath 和 chartOutputRoot；服务端提交脚本后，terminal 仅可执行 python3 <scriptPath>，"
         "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。只有 terminal 返回"

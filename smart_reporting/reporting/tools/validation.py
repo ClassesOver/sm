@@ -36,7 +36,7 @@ def analysis_file_write_parameters() -> dict[str, Any]:
             "expected_sha256": {
                 "type": "string",
                 "pattern": "^[0-9a-f]{64}$",
-                "description": "仅覆盖已有文件时提供其当前 SHA-256。",
+                "description": "仅覆盖已有文件时提供读取回执中的当前 SHA-256；首次创建必须省略，禁止传全零或猜测值。",
             },
         },
         "required": ["path", "content"],

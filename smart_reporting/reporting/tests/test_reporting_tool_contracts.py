@@ -2578,6 +2578,7 @@ def test_create_or_write_analysis_file_schema_is_single_file_cas_contract() -> N
     assert set(parameters["properties"]) == {"path", "content", "expected_sha256"}
     assert "arguments" not in parameters["properties"]
     assert parameters["additionalProperties"] is False
+    assert "禁止传全零或猜测值" in parameters["properties"]["expected_sha256"]["description"]
 
 
 def test_create_or_write_analysis_file_rejects_unregistered_operation_fields() -> None:
@@ -3374,27 +3375,33 @@ async def test_analysis_write_path_conflict_returns_retryable_receipt() -> None:
 
 
 @pytest.mark.anyio
-async def test_analysis_write_rejects_zero_placeholder_hash_before_workspace_mutation() -> None:
+async def test_analysis_write_treats_zero_placeholder_hash_as_first_create() -> None:
     @asynccontextmanager
     async def context(value):
         yield value
 
     scope = SimpleNamespace(thread_id="thread-1")
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    identity = {
+        "path": "analysis/report.py",
+        "size": len(b"print('ok')\n"),
+        "sha256": hashlib.sha256(b"print('ok')\n").hexdigest(),
+    }
     toolkit.kernel = SimpleNamespace(
         bound_external_run_id=lambda _run_context: "external-run-1",
         task_scheduler=lambda _external_run_id: context(
             SimpleNamespace(write=lambda: context(None))
         ),
         scope=AsyncMock(return_value=scope),
-        patch=AsyncMock(),
+        patch=AsyncMock(return_value={"ok": True}),
+        service=SimpleNamespace(abatch_hash_files=AsyncMock(return_value=[identity])),
     )
     toolkit._phase_parameters = lambda _scope, _phase: (
         {},
         {"taskKind": "analysis_item", "analysisOutputRoot": "analysis"},
     )
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-    toolkit._durable_state = AsyncMock()
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
     toolkit._apply_durable = AsyncMock()
 
     result = await toolkit.create_or_write_analysis_file(
@@ -3404,16 +3411,11 @@ async def test_analysis_write_rejects_zero_placeholder_hash_before_workspace_mut
         run_context=RunContext(run_id="run-1", session_id="session-1"),
     )
 
-    assert result["ok"] is False
-    assert result["code"] == "report_analysis_write_intent_invalid"
-    assert "首次创建请不要传 expected_sha256" in result["message"]
-    assert result["details"] == {
-        "path": "arguments.expected_sha256",
-        "validator": "placeholder",
-    }
-    toolkit.kernel.patch.assert_not_awaited()
-    toolkit._durable_state.assert_not_awaited()
-    toolkit._apply_durable.assert_not_awaited()
+    assert result["ok"] is True
+    assert result["status"] == "committed"
+    assert result["artifacts"] == [identity]
+    assert toolkit.kernel.patch.await_args.args[0] == "patch"
+    toolkit._apply_durable.assert_awaited()
 
 
 @pytest.mark.anyio
@@ -3976,7 +3978,7 @@ _WORKER_TOOL_SCHEMA_FINGERPRINTS = {
     "query_profile": "985e869a7ec204ff3b7ff3b9d411338ce26bfacca34e004f878ccddab01731ec",
     "query_analysis_context": "1c4c56570eb9217299fc221e62d8ba48e08f5fac0c65f3b27df480360f7982d0",
     "query_analysis_facts": "ae90792e199a1560dbd951861bcc197d508d860f6cdbf0d6ffc0f89632a53c9d",
-    "create_or_write_analysis_file": "71e68f6ebe89a315dc342404e67375f84aa5a6815528f0beb8f15f5ccfe99704",
+    "create_or_write_analysis_file": "0a6eb74ba7bbb994583ac3743fbf80ab0d4266a76e181e3f66b18ec996c0b7ea",
     "complete_analysis_item": "9c2e0d1eff9bb28aec286154573bbc38c025bd1f3a5d30bb129593beed755fb9",
     "finalize_report_analysis": "0a5a381b7eda6a4b5cdf93302bdc5bd1bcb3aa411bc52745a972dee6f0e99d67",
     "inspect_chart": "c038586b8d6fa4ecefe1c9d75d4d35e217d9e3cf91719c4fd2a7ad78f775c9c6",

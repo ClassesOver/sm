@@ -1016,6 +1016,7 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
     assert "git_status" not in instructions
     if task_kind == "visualization_section":
         assert "只调用 create_or_write_analysis_file" in instructions
+        assert "禁止传 expected_sha256、全零占位值或猜测哈希" in instructions
         assert "evidenceFiles[].path" in instructions
         assert "不得构造 analysis/evidence" in instructions
         assert '禁止假设 facts["analyses"]' in instructions

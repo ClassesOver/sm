@@ -162,16 +162,10 @@ class RuntimeAnalysisMixin:
                 },
             ) from error
         if raw.get("expected_sha256") == "0" * 64:
-            # 全零不是任何文件内容的 SHA-256，只是模型常见的首次创建占位符。若让它
-            # 进入 overwrite，会把可恢复的参数错误泄露为底层路径不存在异常。
-            raise ReportingError(
-                "report_analysis_write_intent_invalid",
-                "expected_sha256 不能使用全零占位值；首次创建请不要传 expected_sha256。",
-                details={
-                    "path": "arguments.expected_sha256",
-                    "validator": "placeholder",
-                },
-            )
+            # 运行日志已证明模型会把全零当作首次创建占位符。该值不可能代表已读取文件的
+            # 当前身份；保留它会把创建错误地路由到 overwrite。归一化为缺省值后仍走原子
+            # create：目标已存在会保持冲突，绝不以全零绕过 CAS 覆盖。
+            raw.pop("expected_sha256")
         expected_states: dict[str, str] = {}
 
         def add_path(value: str, state: str) -> None:
