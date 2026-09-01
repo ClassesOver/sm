@@ -49,7 +49,6 @@ from smart_reporting.reporting.phase import (
     REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
-    REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     bind_reporting_run_context,
@@ -112,7 +111,7 @@ async def test_visualization_terminal_success_clears_pending_script_failure() ->
 
 
 @pytest.mark.anyio
-async def test_visualization_skill_success_is_deduplicated_within_run() -> None:
+async def test_visualization_skill_results_are_not_cached() -> None:
     run_context = RunContext(
         run_id="run-visualization-skill-dedupe",
         session_id="session-visualization-skill-dedupe",
@@ -146,54 +145,8 @@ async def test_visualization_skill_success_is_deduplicated_within_run() -> None:
     )
 
     assert first == second == {"ok": True, "reference": "rules"}
-    assert calls == 1
-
-
-@pytest.mark.anyio
-async def test_visualization_skill_failure_is_not_cached_across_retry_run() -> None:
-    dependencies = {
-        REPORTING_TASK_DEPENDENCY: {
-            "externalRunId": "visualization-skill-retry-task",
-            REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-            REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
-        }
-    }
-    calls = 0
-
-    def read_reference(**_: object) -> dict[str, object]:
-        nonlocal calls
-        calls += 1
-        return {"ok": calls > 1, "attempt": calls}
-
-    first_context = RunContext(
-        run_id="run-visualization-skill-retry-1",
-        session_id="session-visualization-skill-retry",
-        session_state={},
-        dependencies=dependencies,
-    )
-    second_context = RunContext(
-        run_id="run-visualization-skill-retry-2",
-        session_id="session-visualization-skill-retry",
-        session_state=first_context.session_state,
-        dependencies=dependencies,
-    )
-
-    first = await normalize_reporting_tool_arguments(
-        first_context,
-        "get_skill_reference",
-        read_reference,
-        {"reference_path": "guide.md"},
-    )
-    second = await normalize_reporting_tool_arguments(
-        second_context,
-        "get_skill_reference",
-        read_reference,
-        {"reference_path": "guide.md"},
-    )
-
-    assert first == {"ok": False, "attempt": 1}
-    assert second == {"ok": True, "attempt": 2}
     assert calls == 2
+    assert "agentos_reporting_visualization_skill_cache" not in run_context.session_state
 
 
 def test_phase_tool_admission_uses_capability_matrix() -> None:
@@ -284,84 +237,6 @@ def test_reporting_task_kind_from_run_context_accepts_new_kinds(task_kind: str) 
     assert reporting_task_kind_from_run_context(run_context) == task_kind
 
 
-@pytest.mark.anyio
-async def test_visualization_skill_concurrent_success_is_deduplicated() -> None:
-    run_context = RunContext(
-        run_id="run-visualization-skill-concurrent",
-        session_id="session-visualization-skill-concurrent",
-        session_state={},
-        dependencies={
-            REPORTING_TASK_DEPENDENCY: {
-                "externalRunId": "visualization-skill-concurrent-task",
-                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
-            }
-        },
-    )
-    calls = 0
-
-    async def read_reference(**_: object) -> dict[str, object]:
-        nonlocal calls
-        calls += 1
-        await asyncio.sleep(0.01)
-        return {"ok": True, "reference": "rules"}
-
-    results = await asyncio.gather(
-        *(
-            normalize_reporting_tool_arguments(
-                run_context,
-                "get_skill_reference",
-                read_reference,
-                {"reference_path": "guide.md"},
-            )
-            for _ in range(2)
-        )
-    )
-
-    assert results == [{"ok": True, "reference": "rules"}] * 2
-    assert calls == 1
-
-
-@pytest.mark.anyio
-async def test_visualization_skill_cache_rejects_invalid_entry_and_is_bounded() -> None:
-    run_context = RunContext(
-        run_id="run-visualization-skill-cache-bounded",
-        session_id="session-visualization-skill-cache-bounded",
-        session_state={
-            REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY: {"invalid": {"result": "bad"}}
-        },
-        dependencies={
-            REPORTING_TASK_DEPENDENCY: {
-                "externalRunId": "visualization-skill-cache-bounded-task",
-                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
-                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
-                "visualizationAttemptToolLimit": 100,
-                "visualizationTotalToolLimit": 100,
-            }
-        },
-    )
-    calls = 0
-
-    def read_reference(**_: object) -> dict[str, object]:
-        nonlocal calls
-        calls += 1
-        return {"ok": True, "reference": calls}
-
-    for index in range(65):
-        result = await normalize_reporting_tool_arguments(
-            run_context,
-            "get_skill_reference",
-            read_reference,
-            {"reference_path": f"guide-{index}.md"},
-        )
-        assert result["ok"] is True
-
-    cache = run_context.session_state[REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY]
-    assert isinstance(cache, dict)
-    assert len(cache) == 64
-    assert calls == 65
-
-
 def test_report_worker_disables_unused_session_summaries(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = AgentSettings.from_environment(
         {
@@ -405,7 +280,7 @@ async def test_visualization_successful_script_write_records_recoverable_progres
 
     result = await normalize_reporting_tool_arguments(
         run_context,
-        "create_or_write_analysis_file",
+        "create_analysis_file",
         lambda: {"ok": True, "status": "committed"},
         {},
     )
@@ -629,7 +504,7 @@ def test_visualization_projection_hides_process_until_script_session_exists() ->
             "read_tool_output",
             "process",
             "terminal",
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             "register_report_charts",
             "finalize_report_analysis",
         )
@@ -738,7 +613,7 @@ def test_visualization_recovery_projection_removes_exploration_tools() -> None:
             "read_file",
             "read_tool_output",
             "get_skill_reference",
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             "terminal",
             "register_report_charts",
             "finalize_report_analysis",
@@ -753,7 +628,7 @@ def test_visualization_recovery_projection_removes_exploration_tools() -> None:
     assert [item["function"]["name"] for item in projected] == [
         "read_file",
         "read_tool_output",
-        "create_or_write_analysis_file",
+        "create_analysis_file",
         "terminal",
     ]
 
@@ -877,7 +752,7 @@ def test_analysis_recovery_projection_keeps_only_completion() -> None:
         for name in (
             "query_analysis_facts",
             "query_profile",
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             "complete_analysis_item",
         )
     ]
@@ -1015,7 +890,8 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
     assert "replace_text" not in instructions
     assert "git_status" not in instructions
     if task_kind == "visualization_section":
-        assert "只调用 create_or_write_analysis_file" in instructions
+        assert "只调用 create_analysis_file" in instructions
+        assert "覆盖已有文件只调用 overwrite_analysis_file" in instructions
         assert "evidenceFiles[].path" in instructions
         assert "不得构造 analysis/evidence" in instructions
         assert '禁止假设 facts["analyses"]' in instructions
@@ -1268,7 +1144,7 @@ def test_section_projection_does_not_add_analysis_receipt_ledger() -> None:
         assert _with_reporting_durable_identities(messages) is messages
 
 
-def test_malformed_create_or_write_analysis_file_raises_original_json_error() -> None:
+def test_malformed_create_analysis_file_raises_original_json_error() -> None:
     model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
     raw_arguments = '{"path":"analysis/report.py","content":'
     assistant = Message(
@@ -1278,7 +1154,7 @@ def test_malformed_create_or_write_analysis_file_raises_original_json_error() ->
                 "id": "call-write-1",
                 "type": "function",
                 "function": {
-                    "name": "create_or_write_analysis_file",
+                    "name": "create_analysis_file",
                     "arguments": raw_arguments,
                 },
             }
@@ -1301,7 +1177,7 @@ def test_malformed_create_or_write_analysis_file_raises_original_json_error() ->
     assert messages[0].content == '{"phase":"analysis"}'
 
 
-def test_long_malformed_create_or_write_analysis_file_is_not_replaced_by_bounded_receipt() -> None:
+def test_long_malformed_create_analysis_file_is_not_replaced_by_bounded_receipt() -> None:
     model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
     raw_arguments = '{"path":"analysis/report.py","content":"' + ("x" * 2000)
     assistant = Message(
@@ -1311,7 +1187,7 @@ def test_long_malformed_create_or_write_analysis_file_is_not_replaced_by_bounded
                 "id": "call-write-long-invalid",
                 "type": "function",
                 "function": {
-                    "name": "create_or_write_analysis_file",
+                    "name": "create_analysis_file",
                     "arguments": raw_arguments,
                 },
             }
@@ -1327,7 +1203,7 @@ def test_long_malformed_create_or_write_analysis_file_is_not_replaced_by_bounded
     assert len(messages) == 1
 
 
-def test_create_or_write_analysis_file_does_not_autofix_trailing_json_brace() -> None:
+def test_create_analysis_file_does_not_autofix_trailing_json_brace() -> None:
     model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
     assistant = Message(
         role="assistant",
@@ -1336,7 +1212,7 @@ def test_create_or_write_analysis_file_does_not_autofix_trailing_json_brace() ->
                 "id": "call-write-2",
                 "type": "function",
                 "function": {
-                    "name": "create_or_write_analysis_file",
+                    "name": "create_analysis_file",
                     "arguments": ('{"path":"analysis/report.py","content":"pass\\n"}}'),
                 },
             }
@@ -2406,6 +2282,52 @@ async def test_visualization_registration_is_reserved_outside_tool_budget(
 
 
 @pytest.mark.anyio
+async def test_visualization_section_submission_is_reserved_outside_tool_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-submit-budget",
+        session_id="session-visualization-submit-budget",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-submit-budget-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
+            }
+        },
+    )
+    submitted = False
+
+    def submit() -> dict[str, bool]:
+        nonlocal submitted
+        submitted = True
+        return {"ok": True, "taskFinished": True}
+
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 1)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 1)
+
+    await normalize_reporting_tool_arguments(
+        run_context,
+        "query_analysis_facts",
+        lambda: {"ok": True},
+        {},
+    )
+    result = await normalize_reporting_tool_arguments(
+        run_context,
+        "submit_visualization_charts",
+        submit,
+        {},
+    )
+
+    assert result == {"ok": True, "taskFinished": True}
+    assert submitted is True
+    assert (
+        reporting_visualization_usage_from_run_context(run_context)["visualizationToolCalls"] == 1
+    )
+
+
+@pytest.mark.anyio
 async def test_visualization_fact_exploration_subbudget_stops_current_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2520,7 +2442,7 @@ def test_visualization_production_only_projection_keeps_only_production_tools() 
             "read_file",
             "read_tool_output",
             "get_skill_reference",
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             "terminal",
             "inspect_chart",
             "view_image",
@@ -2535,7 +2457,7 @@ def test_visualization_production_only_projection_keeps_only_production_tools() 
         )
 
     assert [item["function"]["name"] for item in projected] == [
-        "create_or_write_analysis_file",
+        "create_analysis_file",
         "terminal",
     ]
 
@@ -2563,7 +2485,7 @@ def test_visualization_recovery_projection_is_production_only_on_fresh_run() -> 
             "process",
             "view_image",
             "inspect_chart",
-            "create_or_write_analysis_file",
+            "create_analysis_file",
             "terminal",
             "register_report_charts",
             "finalize_report_analysis",
@@ -2577,7 +2499,7 @@ def test_visualization_recovery_projection_is_production_only_on_fresh_run() -> 
 
     assert [item["function"]["name"] for item in projected] == [
         "read_file",
-        "create_or_write_analysis_file",
+        "create_analysis_file",
         "terminal",
     ]
 
@@ -3128,7 +3050,7 @@ def test_tools_for_task_visualization_section() -> None:
     names = tools_for_task("analysis", "visualization_section")
     assert names is not None
     assert "submit_visualization_charts" in names
-    assert "create_or_write_analysis_file" in names
+    assert "create_analysis_file" in names
     assert "terminal" in names
     assert "register_report_charts" not in names
     assert "finalize_report_analysis" not in names
@@ -3284,6 +3206,15 @@ def test_reporting_facade_tools_use_same_strict_json_boundary() -> None:
     assert calls == []
     receipt = json.loads(messages[-1].content)
     assert receipt["code"] == "report_tool_arguments_json_invalid"
+    assert receipt["recovery"] == {
+        "kind": "regenerate_json_arguments",
+        "toolName": "report_workflow_start",
+        "schemaHint": {
+            "argumentsType": "object",
+            "allowedFields": [],
+            "requiredFields": [],
+        },
+    }
     assert receipt["schemaHint"] == {
         "argumentsType": "object",
         "allowedFields": [],

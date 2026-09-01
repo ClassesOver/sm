@@ -734,7 +734,7 @@ def test_write_intent_is_durable_and_identity_conflicts_fail_closed():
     state = apply_phase(initial_state(), "start_analysis")
     intent = {
         "intentId": "a" * 64,
-        "toolName": "create_or_write_analysis_file",
+        "toolName": "create_analysis_file",
         "arguments": {"path": "analysis/large.txt", "content": "x"},
         "affectedPaths": ["analysis/large.txt"],
         "expectedStates": {"analysis/large.txt": "present"},
@@ -779,14 +779,14 @@ def test_write_intent_commit_sequence_follows_actual_commit_order():
     intents = (
         {
             "intentId": "a" * 64,
-            "toolName": "create_or_write_analysis_file",
+            "toolName": "create_analysis_file",
             "arguments": {"path": "analysis/chart.py", "content": "a"},
             "affectedPaths": ["analysis/chart.py"],
             "expectedStates": {"analysis/chart.py": "present"},
         },
         {
             "intentId": "b" * 64,
-            "toolName": "create_or_write_analysis_file",
+            "toolName": "create_analysis_file",
             "arguments": {"path": "analysis/chart.py", "content": "b"},
             "affectedPaths": ["analysis/chart.py"],
             "expectedStates": {"analysis/chart.py": "present"},

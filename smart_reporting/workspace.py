@@ -3034,9 +3034,9 @@ def _is_controlled_raw_dataset(path: str) -> bool:
 BASE_TOOLKIT_INSTRUCTIONS = """
 基础工作区工具规则：
 - 所有工具都操作当前 thread 的同一个 Daytona sandbox，不是 AgentOS 宿主机；路径使用工作区相对路径。
-- 文件定位优先使用 rg 搜索，读取、stat、目录树、哈希和 Git 只读检查优先使用 workspace_* 专用工具；这些工具在 sandbox 内复用 sed、wc、stat、find、sha256sum 和 git，不要用 sandbox_exec 重复实现。
+- 文件定位优先使用 rg 搜索，读取和哈希只读检查优先使用 workspace_* 专用工具；这些工具在 sandbox 内复用 sed、wc 和 sha256sum，不要用 sandbox_exec 重复实现。
 - 修改已有文本遵循“读取和哈希 → 精确补丁 → 重新读取或检查”；已知原文件行坐标时使用 workspace_apply_hunks，同一任务涉及 create/update/delete/move 时优先使用 workspace_apply_changes，只有不依赖行坐标的纯文本多段替换使用 workspace_apply_patch_set。创建目录或复制普通文件使用对应 workspace_* 工具。
-- 对编码任务先检查相关文件、测试和 Git 状态，明确可验证的成功标准；完成修改后运行与改动匹配的测试或脚本，再检查输出和 workspace_git_diff，不能只凭写入成功声称完成。
+- 对任务先检查相关文件和测试，明确可验证的成功标准；完成修改后运行与改动匹配的测试或脚本，不能只凭写入成功声称完成。
 - Python 编码优先创建工作区内 `.py` 脚本并反复读取、精确修改和执行；使用当前沙箱已安装的解释器和依赖，不要默认安装新包或访问网络。
 - 独立的只读调用可放在同一工具批次；后一步依赖前一步结果时必须串行，并原样使用工具返回的路径、SHA-256、sessionId 和 commandId。
 - 短命令使用前台 sandbox_exec；后台命令默认使用短时限，只有明确的长构建、测试或服务才提高 timeout，最长 86400 秒，再用 sandbox_process_poll 轮询到 completed，每次分页原样使用返回的 nextOffset。需要输入、PTY 中断或终止时分别使用 sandbox_process_write、sandbox_process_interrupt 或 sandbox_process_stop，不要用 shell 后台符号绕过受管会话。
@@ -3112,10 +3112,6 @@ BASE_TOOL_PARAMETER_CONSTRAINTS: dict[str, dict[str, dict[str, Any]]] = {
     "workspace_read_lines": {
         "start_line": {"minimum": 1},
         "line_count": {"minimum": 1, "maximum": MAX_READ_LINES, "default": 200},
-    },
-    "workspace_tree": {
-        "max_depth": {"minimum": 1, "maximum": 32, "default": 4},
-        "limit": {"minimum": 1, "maximum": MAX_LIST_ENTRIES, "default": 200},
     },
     "workspace_search_files": {
         "pattern": {"minLength": 1, "maxLength": MAX_SEARCH_GLOB_BYTES, "default": "*"},
@@ -3276,17 +3272,6 @@ BASE_TOOL_PARAMETER_CONSTRAINTS: dict[str, dict[str, dict[str, Any]]] = {
                 },
             },
         },
-    },
-    "workspace_git_log": {
-        "revision": {"minLength": 1, "maxLength": 128, "default": "HEAD"},
-        "max_count": {
-            "minimum": 1,
-            "maximum": MAX_GIT_LOG_ENTRIES,
-            "default": 20,
-        },
-    },
-    "workspace_git_show": {
-        "revision": {"minLength": 1, "maxLength": 128, "default": "HEAD"},
     },
     "workspace_apply_changes": {
         "changes": {
@@ -3876,15 +3861,9 @@ class WorkspaceToolkit(DaytonaToolkit):
             self.workspace_list_files,
             self.workspace_read_file,
             self.workspace_read_lines,
-            self.workspace_stat,
-            self.workspace_tree,
             self.workspace_search_files,
             self.workspace_search_text,
             self.workspace_hash_file,
-            self.workspace_git_status,
-            self.workspace_git_diff,
-            self.workspace_git_log,
-            self.workspace_git_show,
             self.workspace_write_file,
             self.workspace_replace_file,
             self.workspace_move_file,
@@ -3957,36 +3936,6 @@ class WorkspaceToolkit(DaytonaToolkit):
             path,
             start_line,
             line_count,
-        )
-
-    async def workspace_stat(
-        self,
-        path: str = "",
-        run_context: RunContext | None = None,
-    ):
-        """使用 sandbox 内的 stat 读取普通文件或目录元数据。
-
-        Args:
-            path: 工作区相对文件或目录路径；空字符串表示工作区根目录。
-        """
-        return await self.service.astat(_thread(run_context), path)
-
-    async def workspace_tree(
-        self,
-        path: str = "",
-        max_depth: int = 4,
-        limit: int = 200,
-        run_context: RunContext | None = None,
-    ):
-        """使用 sandbox 内的 find 递归列出目录树，不读取文件内容。
-
-        Args:
-            path: 目录树根路径；空字符串表示工作区根目录。
-            max_depth: 最大递归深度，范围为 1 至 32。
-            limit: 最多返回的文件和目录条目数，上限为 500。
-        """
-        return await self.service.atree(
-            _thread(run_context), path, max_depth=max_depth, limit=limit
         )
 
     async def workspace_search_files(
@@ -4074,74 +4023,6 @@ class WorkspaceToolkit(DaytonaToolkit):
             path: 要计算哈希的工作区相对文件路径。
         """
         return await self.service.ahash_file(_thread(run_context), path)
-
-    async def workspace_git_status(
-        self,
-        repo_path: str = "",
-        run_context: RunContext | None = None,
-    ):
-        """读取 Git 工作区、暂存区和分支状态，不修改仓库。
-
-        Args:
-            repo_path: Git 仓库的工作区相对目录；空字符串表示工作区根目录。
-        """
-        return await self.service.agit_status(_thread(run_context), repo_path)
-
-    async def workspace_git_diff(
-        self,
-        repo_path: str = "",
-        staged: bool = False,
-        revision: str | None = None,
-        file_path: str | None = None,
-        run_context: RunContext | None = None,
-    ):
-        """读取 Git 未提交、暂存区或指定修订的差异，不接受自由 flags。
-
-        Args:
-            repo_path: Git 仓库的工作区相对目录；空字符串表示工作区根目录。
-            staged: 是否读取暂存区差异。
-            revision: 可选的基准分支、标签或提交哈希。
-            file_path: 可选的仓库内相对文件路径，用于限制差异范围。
-        """
-        return await self.service.agit_diff(
-            _thread(run_context), repo_path, staged, revision, file_path
-        )
-
-    async def workspace_git_log(
-        self,
-        repo_path: str = "",
-        revision: str = "HEAD",
-        max_count: int = 20,
-        file_path: str | None = None,
-        run_context: RunContext | None = None,
-    ):
-        """读取 Git 提交日志，不接受自由 flags。
-
-        Args:
-            repo_path: Git 仓库的工作区相对目录；空字符串表示工作区根目录。
-            revision: 起始分支、标签或提交哈希，默认为 HEAD。
-            max_count: 最多返回的提交数，范围为 1 至 100。
-            file_path: 可选的仓库内相对文件路径，用于限制日志范围。
-        """
-        return await self.service.agit_log(
-            _thread(run_context), repo_path, revision, max_count, file_path
-        )
-
-    async def workspace_git_show(
-        self,
-        repo_path: str = "",
-        revision: str = "HEAD",
-        file_path: str | None = None,
-        run_context: RunContext | None = None,
-    ):
-        """读取 Git 提交详情和补丁，不接受自由 flags。
-
-        Args:
-            repo_path: Git 仓库的工作区相对目录；空字符串表示工作区根目录。
-            revision: 要查看的分支、标签或提交哈希，默认为 HEAD。
-            file_path: 可选的仓库内相对文件路径，用于限制补丁范围。
-        """
-        return await self.service.agit_show(_thread(run_context), repo_path, revision, file_path)
 
     def workspace_write_file(self, path: str, content: str, run_context: RunContext | None = None):
         """在当前对话工作区中新建 UTF-8 文件；执行前需要确认。

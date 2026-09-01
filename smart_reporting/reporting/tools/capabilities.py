@@ -12,7 +12,8 @@ REPORTING_ANALYSIS_ITEM_TOOL_NAMES = frozenset(
         "query_profile",
         "read_file",
         "read_tool_output",
-        "create_or_write_analysis_file",
+        "create_analysis_file",
+        "overwrite_analysis_file",
         "terminal",
     }
 )
@@ -30,7 +31,8 @@ REPORTING_VISUALIZATION_SECTION_TOOL_NAMES = frozenset(
         "submit_visualization_charts",
         "terminal",
         "view_image",
-        "create_or_write_analysis_file",
+        "create_analysis_file",
+        "overwrite_analysis_file",
     }
 )
 REPORTING_VISUALIZATION_FINALIZE_TOOL_NAMES = frozenset(
@@ -40,7 +42,8 @@ REPORTING_VISUALIZATION_FINALIZE_TOOL_NAMES = frozenset(
         "read_file",
         "read_tool_output",
         "register_report_charts",
-        "create_or_write_analysis_file",
+        "create_analysis_file",
+        "overwrite_analysis_file",
     }
 )
 

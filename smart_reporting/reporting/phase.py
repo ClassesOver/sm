@@ -54,7 +54,6 @@ REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY = (
 )
 REPORTING_VISUAL_INSPECTION_MODE_DEPENDENCY_KEY = "reportingVisualInspectionMode"
 REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY = "agentos_reporting_visualization_tool_budget"
-REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY = "agentos_reporting_visualization_skill_cache"
 REPORTING_VISUALIZATION_BUDGET_ERROR_ATTR = "_agentos_reporting_visualization_budget"
 REPORTING_ANALYSIS_FACT_BUDGET_VERSION_DEPENDENCY_KEY = "analysisFactBudgetVersion"
 REPORTING_ANALYSIS_FACT_QUERY_LIMIT_DEPENDENCY_KEY = "analysisFactQueryLimit"
@@ -83,7 +82,8 @@ REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
 )
 REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES = frozenset(
     {
-        "create_or_write_analysis_file",
+        "create_analysis_file",
+        "overwrite_analysis_file",
         "terminal",
         "submit_visualization_charts",
         "register_report_charts",

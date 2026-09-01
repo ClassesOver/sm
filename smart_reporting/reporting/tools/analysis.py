@@ -40,7 +40,8 @@ from .phase_output import REPORT_PHASE_OUTPUT_STATE_KEY
 from .validation import (
     _jsonschema_error_message,
     _stable_digest,
-    analysis_file_write_parameters,
+    analysis_file_create_parameters,
+    analysis_file_overwrite_parameters,
 )
 
 MAX_ANALYSIS_PYTHON_DEPENDENCIES = 100
@@ -136,20 +137,25 @@ class RuntimeAnalysisMixin:
     def _validate_analysis_write_arguments(
         self, tool_name: str, arguments: Mapping[str, Any]
     ) -> tuple[dict[str, Any], tuple[str, ...], dict[str, str], int]:
-        """复用原工具 JSON Schema 与原生补丁解析器，冻结完整写入身份。"""
+        """按公开写入工具的互斥 schema 冻结完整写入身份。"""
 
-        if tool_name != "create_or_write_analysis_file":
+        schemas = {
+            "create_analysis_file": analysis_file_create_parameters,
+            "overwrite_analysis_file": analysis_file_overwrite_parameters,
+        }
+        schema_factory = schemas.get(tool_name)
+        if schema_factory is None:
             raise ReportingError(
                 "report_analysis_write_intent_invalid", "暂存工具不支持该写入类型。"
             )
         raw = deepcopy(dict(arguments))
         try:
-            Draft202012Validator(analysis_file_write_parameters()).validate(raw)
+            Draft202012Validator(schema_factory()).validate(raw)
         except JsonSchemaValidationError as error:
             path = "arguments"
             for part in error.absolute_path:
                 path += f"[{part}]" if isinstance(part, int) else f".{part}"
-            expected_fields = sorted(analysis_file_write_parameters()["properties"])
+            expected_fields = sorted(schema_factory()["properties"])
             raise ReportingError(
                 "report_analysis_write_intent_invalid",
                 f"{tool_name} 参数不符合公开 schema；请仅修正 details.path 指向的字段。",
@@ -193,7 +199,7 @@ class RuntimeAnalysisMixin:
         canonical: Mapping[str, Any],
     ) -> dict[str, dict[str, Any]]:
         contents: dict[str, str] = {}
-        if tool_name == "create_or_write_analysis_file":
+        if tool_name in {"create_analysis_file", "overwrite_analysis_file"}:
             path = canonical.get("path")
             content = canonical.get("content")
             if isinstance(path, str) and isinstance(content, str):
@@ -328,16 +334,18 @@ class RuntimeAnalysisMixin:
                     details={"path": path, "line": error.lineno, "offset": error.offset},
                 ) from error
 
-    async def create_or_write_analysis_file(
+    async def _write_analysis_file(
         self,
+        *,
+        tool_name: str,
         path: str,
         content: str,
-        expected_sha256: str | None = None,
+        expected_sha256: str | None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        """在单次调用内保存写入意图、执行写入并返回文件身份。"""
+        """保存固定操作的写入意图、执行写入并返回文件身份。"""
 
-        canonical_tool_name = "create_or_write_analysis_file"
+        canonical_tool_name = tool_name
         canonical_input = {
             "path": path,
             "content": content,
@@ -355,6 +363,26 @@ class RuntimeAnalysisMixin:
                 tool_name=canonical_tool_name,
                 canonical=canonical,
             )
+            if canonical_tool_name == "overwrite_analysis_file":
+                current_files = await self._analysis_write_hash_files(
+                    thread_id=scope.thread_id,
+                    paths=paths,
+                )
+                current_by_path = {
+                    item.get("path"): item for item in current_files if isinstance(item, dict)
+                }
+                missing_paths = [
+                    path
+                    for path in paths
+                    if not isinstance(current_by_path.get(path), dict)
+                    or current_by_path[path].get("missing") is True
+                ]
+                if missing_paths:
+                    raise ReportingError(
+                        "report_analysis_overwrite_target_missing",
+                        "CAS 覆盖目标文件不存在。",
+                        details={"paths": missing_paths},
+                    )
             payload = json.dumps(
                 {
                     "version": "1",
@@ -412,7 +440,7 @@ class RuntimeAnalysisMixin:
                 command_id=f"write-intent:{intent_sha256}",
             )
             try:
-                if canonical.get("expected_sha256") is not None:
+                if canonical_tool_name == "overwrite_analysis_file":
                     result = await self.kernel.patch(
                         "overwrite",
                         canonical["path"],
@@ -451,7 +479,7 @@ class RuntimeAnalysisMixin:
                     details={
                         "paths": list(paths),
                         "currentFiles": current_files,
-                        "recoveryOperation": "create_or_write_analysis_file",
+                        "recoveryOperation": "overwrite_analysis_file",
                     },
                 ) from error
             if result.get("ok") is not True:
@@ -494,12 +522,45 @@ class RuntimeAnalysisMixin:
                 self._require_phase_tool(
                     scope,
                     allowed=frozenset({"analysis"}),
-                    tool_name="create_or_write_analysis_file",
+                    tool_name=canonical_tool_name,
                     run_context=run_context,
                 )
                 return await call(scope)
         except (ReportingError, WorkspaceError, ValueError) as error:
             return self._failure(error)
+
+    async def create_analysis_file(
+        self,
+        path: str,
+        content: str,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        """原子创建此前不存在的 analysis 文件。"""
+
+        return await self._write_analysis_file(
+            tool_name="create_analysis_file",
+            path=path,
+            content=content,
+            expected_sha256=None,
+            run_context=run_context,
+        )
+
+    async def overwrite_analysis_file(
+        self,
+        path: str,
+        content: str,
+        expected_sha256: str,
+        run_context: RunContext | None = None,
+    ) -> dict[str, Any]:
+        """使用读取回执中的 SHA-256 原子覆盖已有 analysis 文件。"""
+
+        return await self._write_analysis_file(
+            tool_name="overwrite_analysis_file",
+            path=path,
+            content=content,
+            expected_sha256=expected_sha256,
+            run_context=run_context,
+        )
 
     @staticmethod
     def _direct_python_script_path(command: Any, workdir: Any) -> str | None:
@@ -1308,19 +1369,13 @@ class RuntimeAnalysisMixin:
                 )
             next_id = durable.payload.get("currentAnalysisId")
             self._complete_phase_plan(self._session_state(run_context))
-            finish_function = self.async_functions.get("finish_task")
-            if finish_function is None:
-                raise ReportingError(
-                    "report_phase_contract_invalid",
-                    "Reporting Worker 缺少底层 finish_task。",
-                )
             finish_result = await self.kernel.finish_task(
                 f"分析项 {analysisId} 已提交冻结事实与证据。",
                 [item["path"] for item in identities],
                 None,
                 [],
                 run_context,
-                finish_function,
+                self._finish_function,
                 _scope=scope,
             )
             if finish_result.get("status") != "accepted":
@@ -1408,7 +1463,7 @@ class RuntimeAnalysisMixin:
         if unregistered:
             raise ReportingError(
                 "report_analysis_evidence_not_registered",
-                "analysis evidence 必须先通过 create_or_write_analysis_file 登记。",
+                "analysis evidence 必须先通过 create_analysis_file 或 overwrite_analysis_file 登记。",
                 details={
                     "paths": unregistered,
                     "missingRegistration": unregistered,

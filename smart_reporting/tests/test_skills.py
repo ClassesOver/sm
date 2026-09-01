@@ -77,7 +77,8 @@ def test_load_reporting_skills_includes_sandbox_environment_without_tool_contrac
     assert "pytest" in instructions
     assert "network_block_all" in instructions
     assert "当前 Task 实际注册的工具" in instructions
-    assert "create_or_write_analysis_file" in instructions
+    assert "create_analysis_file" in instructions
+    assert "overwrite_analysis_file" in instructions
     assert "仅轮询同一 Task 启动的运行进程" in instructions
     for retired_tool_name in (
         "create_files",

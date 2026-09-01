@@ -517,7 +517,8 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "固定事实足够时不得创建脚本或 evidence 文件" in instructions
     assert "evidencePaths 传空数组" in instructions
     assert "deterministicFactFile 直接冻结为 evidence" in instructions
-    assert "首次任务默认只调用一次 query_analysis_facts" in instructions
+    assert "完整内联 deterministicFacts 时不得默认调用 query_analysis_facts" in instructions
+    assert "facts 被标记为 truncated" in instructions
     assert (
         "currentAnalysis 已固定 fields、metrics、organizationGrain、actions 和 limitations"
         in instructions
@@ -533,6 +534,14 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "不得猜测 /workspace" in instructions
     assert "不得用 pwd、ls、find 或 wc 探测" in instructions
     assert "不要给成功的脚本执行附加探测命令" in instructions
+    assert "首次写入使用 create_analysis_file" in instructions
+    assert "只有读取已有文件并取得当前 SHA-256 后才使用 overwrite_analysis_file" in instructions
+    assert (
+        "成功脚本的 stdout 仅输出 evidencePath、处理行数、固定事实对账值和核心可比指标"
+        in instructions
+    )
+    assert "完整聚合结果只写入 evidence JSON" in instructions
+    assert "只有证据直接证明因果链时才使用“导致”或“完全由”" in instructions
 
 
 def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:

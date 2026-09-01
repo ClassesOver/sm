@@ -1,5 +1,4 @@
 import ast
-import asyncio
 import hashlib
 import inspect
 import json
@@ -9,7 +8,7 @@ from copy import copy, deepcopy
 from dataclasses import fields
 from functools import partial
 from time import perf_counter
-from typing import Any, Literal, cast
+from typing import Any, cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -60,7 +59,7 @@ from .model_policy import (
     apply_reporting_thinking_profile,
     reporting_thinking_profile_from_model,
 )
-from .models import ReportingError, VisualizationSkillCacheEntry
+from .models import ReportingError
 from .phase import (
     REPORTING_ANALYSIS_FACT_BUDGET_ERROR_ATTR,
     REPORTING_ANALYSIS_FACT_QUERY_LIMIT,
@@ -80,7 +79,6 @@ from .phase import (
     REPORTING_VISUALIZATION_SCRIPT_FAILURE_PENDING_STATE_KEY,
     REPORTING_VISUALIZATION_SCRIPT_FAILURES_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY,
-    REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_BUDGET_STATE_KEY,
     REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY,
     REPORTING_VISUALIZATION_TOTAL_LIMIT_DEPENDENCY_KEY,
@@ -246,117 +244,6 @@ async def propagate_reporting_tool_errors(
 
 def _reporting_session_state(run_context: RunContext) -> dict[str, Any] | None:
     return run_context.session_state if isinstance(run_context.session_state, dict) else None
-
-
-_VISUALIZATION_SKILL_CACHE_LOCKS: dict[str, asyncio.Lock] = {}
-_VISUALIZATION_SKILL_CACHE_MAX_LOCKS = 128
-
-
-def _visualization_skill_cache_key(
-    run_context: RunContext,
-    function_name: str,
-    arguments: Mapping[str, Any],
-) -> str | None:
-    # 只读 Skill 结果可以在同一可视化 run 内复用；身份和参数必须完整参与键值，
-    # 防止不同用户、任务、重试或 Skill 路径之间发生结果串用。
-    if function_name not in {"get_skill_instructions", "get_skill_reference"}:
-        return None
-    if reporting_phase_from_run_context(run_context) != "analysis":
-        return None
-    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
-        return None
-    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    binding = binding if isinstance(binding, Mapping) else {}
-    external_run_id = binding.get("externalRunId")
-    if not isinstance(external_run_id, str) or not external_run_id:
-        return None
-    try:
-        normalized = json.dumps(
-            arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-    except (TypeError, ValueError):
-        return None
-    identity = {
-        "externalRunId": external_run_id,
-        "runId": str(run_context.run_id or ""),
-        "sessionId": str(run_context.session_id or ""),
-        "userId": str(run_context.user_id or ""),
-        "tool": function_name,
-        "arguments": normalized,
-    }
-    return hashlib.sha256(
-        json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
-def _cached_visualization_skill_result(
-    run_context: RunContext,
-    cache_key: str | None,
-) -> Any:
-    state = _reporting_session_state(run_context)
-    if state is None or cache_key is None:
-        return None
-    cache = state.get(REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY)
-    if not isinstance(cache, Mapping) or cache_key not in cache:
-        return None
-    try:
-        entry = VisualizationSkillCacheEntry.model_validate(cache[cache_key])
-    except ValidationError:
-        return None
-    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    binding = binding if isinstance(binding, Mapping) else {}
-    external_run_id = binding.get("externalRunId")
-    expected_user_id = str(run_context.user_id or "anonymous")
-    if (
-        entry.run_id != str(run_context.run_id or "")
-        or entry.session_id != str(run_context.session_id or "")
-        or entry.user_id != expected_user_id
-        or entry.external_run_id != external_run_id
-        or entry.tool_name not in {"get_skill_instructions", "get_skill_reference"}
-    ):
-        return None
-    return entry.result
-
-
-def _cache_visualization_skill_result(
-    run_context: RunContext,
-    cache_key: str | None,
-    function_name: str,
-    result: Any,
-) -> None:
-    if cache_key is None:
-        return
-    state = _reporting_session_state(run_context)
-    if state is None:
-        return
-    try:
-        json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    except (TypeError, ValueError):
-        return
-    dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    binding = binding if isinstance(binding, Mapping) else {}
-    external_run_id = binding.get("externalRunId")
-    if not isinstance(external_run_id, str) or not external_run_id:
-        return
-    try:
-        entry = VisualizationSkillCacheEntry(
-            runId=str(run_context.run_id or ""),
-            sessionId=str(run_context.session_id or ""),
-            userId=str(run_context.user_id or "anonymous"),
-            externalRunId=external_run_id,
-            toolName=cast(Literal["get_skill_instructions", "get_skill_reference"], function_name),
-            result=result,
-        )
-    except ValidationError:
-        return
-    cache = state.setdefault(REPORTING_VISUALIZATION_SKILL_CACHE_STATE_KEY, {})
-    if isinstance(cache, dict):
-        cache[cache_key] = entry.model_dump(mode="json", by_alias=True)
-        while len(cache) > 64:
-            cache.pop(next(iter(cache)))
 
 
 def _reporting_mutation_sequence(state: dict[str, Any] | None) -> int:
@@ -539,7 +426,9 @@ def _stop_analysis_fact_query_budget(run_context: RunContext) -> None:
             "code": error.code,
             "message": error.message,
             "requiredActions": ["结束本次 run，使用已内联的受信 facts 完成当前分析项。"],
+            "recovery": {"kind": "complete_with_inlined_facts"},
             "retryable": False,
+            "runDisposition": "stop_current_run",
             "details": details,
         },
         ensure_ascii=False,
@@ -561,7 +450,9 @@ def _stop_analysis_recovery(run_context: RunContext) -> None:
             "code": error.code,
             "message": error.message,
             "requiredActions": ["使用 instruction 中已内联的受信 facts，立即完成当前分析项。"],
+            "recovery": {"kind": "complete_with_inlined_facts"},
             "retryable": False,
+            "runDisposition": "stop_current_run",
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -632,7 +523,9 @@ def _visualization_exploration_budget_receipt(
         "requiredActions": [
             "停止读取事实和文件；复用当前上下文，直接创建或执行图表脚本。",
         ],
+        "recovery": {"kind": "produce_visualization_artifacts"},
         "retryable": False,
+        "runDisposition": "stop_current_run",
         "details": {
             "tool": counted_tool_name,
             "currentCount": current_count,
@@ -653,12 +546,17 @@ def _reporting_visualization_tool_budget(
     function_name: str,
 ) -> tuple[dict[str, Any], str, str] | None:
     if (
-        function_name in {"register_report_charts", "finalize_report_analysis"}
+        function_name
+        in {
+            "submit_visualization_charts",
+            "register_report_charts",
+            "finalize_report_analysis",
+        }
         or reporting_phase_from_run_context(run_context) != "analysis"
         or reporting_task_kind_from_run_context(run_context) != "visualization_section"
     ):
-        # register/finalize 是可视化阶段的终态提交，不得被此前的探索调用挤占。
-        # 图表登记仍受 durable registration 与 no-progress 门禁约束，重复提交不会绕过验收。
+        # 图表提交、登记和收口是可视化终态动作，不得被此前的探索调用挤占。
+        # 它们仍受 durable state、章节契约和 no-progress 门禁约束，重复调用不会绕过验收。
         return None
     state = _reporting_session_state(run_context)
     if state is None:
@@ -956,7 +854,9 @@ def _stop_exhausted_visualization_budget(
             "code": error.code,
             "message": error.message,
             "requiredActions": ["结束本次 run，交由上层按既有重试策略恢复当前 Task。"],
+            "recovery": {"kind": "fresh_task_retry"},
             "retryable": False,
+            "runDisposition": "stop_current_run",
             "details": details,
         },
         ensure_ascii=False,
@@ -1004,7 +904,9 @@ def _stop_exhausted_reporting_tool_budget(
             "code": error.code,
             "message": error.message,
             "requiredActions": ["结束本次 run，交由上层按既有重试策略重新执行当前 Task。"],
+            "recovery": {"kind": "fresh_task_retry"},
             "retryable": False,
+            "runDisposition": "stop_current_run",
             "details": details,
         },
         ensure_ascii=False,
@@ -1028,7 +930,9 @@ def _stop_closed_visualization(run_context: RunContext) -> None:
             "requiredActions": [
                 "结束本次 run；fresh retry 必须立即且只调用 finalize_report_analysis。"
             ],
+            "recovery": {"kind": "invoke_tool", "toolName": "finalize_report_analysis"},
             "retryable": False,
+            "runDisposition": "stop_current_run",
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -1097,7 +1001,7 @@ def _reporting_invalid_argument_receipt(
         attempt = int(previous) + 1 if isinstance(previous, int) else 1
         counts[tool_name] = attempt
         state[_REPORT_TOOL_ARGUMENT_ERROR_STATE_KEY] = counts
-    is_analysis_write = function_name == "create_or_write_analysis_file"
+    is_analysis_write = function_name in {"create_analysis_file", "overwrite_analysis_file"}
     receipt: dict[str, Any] = {
         "ok": False,
         "status": "rejected",
@@ -1107,7 +1011,7 @@ def _reporting_invalid_argument_receipt(
             else "report_tool_arguments_json_invalid"
         ),
         "message": (
-            "create_or_write_analysis_file 参数不是合法 JSON 对象；工具尚未执行，请按严格 schema 重试。"
+            f"{tool_name} 参数不是合法 JSON 对象；工具尚未执行，请按严格 schema 重试。"
             if is_analysis_write
             else f"{tool_name} 参数不是合法 JSON 对象；工具尚未执行，请按当前 schema 重试。"
         ),
@@ -1121,6 +1025,11 @@ def _reporting_invalid_argument_receipt(
             "jsonErrorMessage": error_message,
             "errorContextStart": context_start,
             "errorContext": error_context,
+        },
+        "recovery": {
+            "kind": "regenerate_json_arguments",
+            "toolName": tool_name,
+            "schemaHint": dict(schema_hint or {"argumentsType": "object"}),
         },
         "requiredActions": [
             f"下一条响应只调用一次 {tool_name}；参数必须是完整严格 JSON 对象，不得附加 Markdown 或解释文字。",
@@ -1229,6 +1138,10 @@ def _report_tool_argument_failure(
         ],
         "retryable": True,
         "details": _report_tool_argument_details(error, arguments),
+        "recovery": {
+            "kind": "use_tool_schema",
+            "toolName": function_name,
+        },
     }
     # 图表和章节 claim 的 metricCode/周期来自本次运行冻结的上下文，不能用
     # 静态示例回填，否则参数错误回执会再次诱导模型提交无效业务代码。
@@ -1238,6 +1151,11 @@ def _report_tool_argument_failure(
         result["correctCallExample"] = {
             "name": function_name,
             "arguments": expected,
+        }
+        result["recovery"] = {
+            "kind": "use_correct_call_example",
+            "toolName": function_name,
+            "correctCallExample": result["correctCallExample"],
         }
     return result
 
@@ -1364,7 +1282,9 @@ def _repeated_empty_profile_query_failure(details: Mapping[str, Any]) -> dict[st
         "requiredActions": [
             "不要再次提交相同查询；改用当前分析已有事实、其他合法查询，或明确记录该分布不可用。"
         ],
+        "recovery": {"kind": "change_query_strategy"},
         "retryable": False,
+        "runDisposition": "stop_current_run",
         "details": dict(details),
     }
 
@@ -1439,6 +1359,12 @@ def _enforce_reporting_no_progress(
     guided = dict(result)
     raw_details = result.get("details")
     details = dict(raw_details) if isinstance(raw_details, dict) else {}
+    raw_recovery = result.get("recovery")
+    recovery = (
+        dict(raw_recovery)
+        if isinstance(raw_recovery, Mapping)
+        else {"kind": "review_error_details", "code": code}
+    )
     details.update(
         {
             "failureFingerprint": fingerprint,
@@ -1464,9 +1390,9 @@ def _enforce_reporting_no_progress(
         or phase_failure_count >= _REPORT_TOOL_PHASE_FAILURE_LIMIT
     )
     if terminal_no_progress:
-        required_actions = [
-            "当前 Task 在没有任何成功工具进展时重复失败；结束本次 run，交由上层按既有重试策略恢复。"
-        ]
+        terminal_action = "本 run 已停止；上层恢复时必须先执行以上纠错动作，不得原样重放当前调用。"
+        if terminal_action not in required_actions:
+            required_actions.append(terminal_action)
         details["terminalReason"] = "tool_no_progress"
         message = result.get("message")
         if not isinstance(message, str) or not message:
@@ -1478,8 +1404,10 @@ def _enforce_reporting_no_progress(
                 "code": error.code,
                 "message": error.message,
                 "details": details,
+                "recovery": recovery,
                 "requiredActions": required_actions,
                 "retryable": False,
+                "runDisposition": "stop_current_run",
             }
         )
         serialized = json.dumps(
@@ -1493,6 +1421,7 @@ def _enforce_reporting_no_progress(
             "code": code,
             "message": result.get("message"),
             "details": details,
+            "recovery": recovery,
             "requiredActions": required_actions,
             "retryable": result.get("retryable", True),
         }
@@ -1505,35 +1434,8 @@ async def normalize_reporting_tool_arguments(
     function_name: str,
     function_call: Any,
     arguments: dict[str, Any],
-    *,
-    _skip_skill_cache: bool = False,
 ) -> Any:
     """执行 Reporting 工具并把参数错误收敛为可操作回执。"""
-
-    if not _skip_skill_cache:
-        cache_key = _visualization_skill_cache_key(run_context, function_name, arguments)
-        if cache_key is not None:
-            lock = _VISUALIZATION_SKILL_CACHE_LOCKS.setdefault(cache_key, asyncio.Lock())
-            if len(_VISUALIZATION_SKILL_CACHE_LOCKS) > _VISUALIZATION_SKILL_CACHE_MAX_LOCKS:
-                for stale_key, stale_lock in list(_VISUALIZATION_SKILL_CACHE_LOCKS.items()):
-                    if stale_key != cache_key and not stale_lock.locked():
-                        _VISUALIZATION_SKILL_CACHE_LOCKS.pop(stale_key, None)
-                        if (
-                            len(_VISUALIZATION_SKILL_CACHE_LOCKS)
-                            <= _VISUALIZATION_SKILL_CACHE_MAX_LOCKS
-                        ):
-                            break
-            async with lock:
-                cached = _cached_visualization_skill_result(run_context, cache_key)
-                if cached is not None:
-                    return cached
-                return await normalize_reporting_tool_arguments(
-                    run_context,
-                    function_name,
-                    function_call,
-                    arguments,
-                    _skip_skill_cache=True,
-                )
 
     task_kind = reporting_task_kind_from_run_context(run_context)
     state = _reporting_session_state(run_context)
@@ -1562,11 +1464,6 @@ async def normalize_reporting_tool_arguments(
         )
     ):
         _stop_closed_visualization(run_context)
-    skill_cache_key = _visualization_skill_cache_key(run_context, function_name, arguments)
-    if skill_cache_key is not None:
-        cached = _cached_visualization_skill_result(run_context, skill_cache_key)
-        if cached is not None:
-            return cached
     exploration_receipt = _visualization_exploration_budget_receipt(run_context, function_name)
     if exploration_receipt is not None:
         # 超出独立探索额度的调用仍是一次真实工具尝试，但不能再次增加 read/fact 用量。
@@ -1697,13 +1594,10 @@ async def normalize_reporting_tool_arguments(
     if (
         succeeded
         and task_kind == "visualization_section"
-        and function_name == "create_or_write_analysis_file"
+        and function_name in {"create_analysis_file", "overwrite_analysis_file"}
         and isinstance(state, dict)
     ):
         state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True
-    if succeeded:
-        # 仅缓存成功且可序列化的只读 Skill 结果；失败必须保留真实重试机会。
-        _cache_visualization_skill_result(run_context, skill_cache_key, function_name, result)
     if (
         succeeded
         and task_kind == "visualization_finalize"
@@ -2583,6 +2477,11 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                                 "status": "rejected",
                                 "code": "report_phase_tool_forbidden",
                                 "message": "当前 Reporting phase 不允许调用该工具，请使用本阶段已提供工具继续。",
+                                "requiredActions": [
+                                    "只调用当前 Task 实际注册的工具；不要重放被拒绝的工具调用。"
+                                ],
+                                "recovery": {"kind": "use_registered_phase_tools"},
+                                "retryable": True,
                             }
                             if phase_forbidden
                             else {
@@ -2590,6 +2489,11 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                                 "status": "skipped",
                                 "code": "report_vision_disabled",
                                 "message": "当前 Reporting Worker 未启用图片视觉工具，继续使用文本和文件证据。",
+                                "requiredActions": [
+                                    "继续使用已注册的文本和文件工具；不得重复调用视觉工具。"
+                                ],
+                                "recovery": {"kind": "continue_without_vision"},
+                                "retryable": True,
                             }
                             if not production_forbidden and not lifecycle_forbidden
                             else {
@@ -2597,6 +2501,11 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                                 "status": "rejected",
                                 "code": "report_visualization_production_only",
                                 "message": "当前可视化已进入生产态，请直接生成、登记或完成图表。",
+                                "requiredActions": [
+                                    "停止探索，直接使用当前注册的图表生成、登记或完成工具。"
+                                ],
+                                "recovery": {"kind": "produce_visualization_artifacts"},
+                                "retryable": True,
                             }
                         ),
                         ensure_ascii=False,

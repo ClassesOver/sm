@@ -53,7 +53,7 @@ from .analysis import MAX_VISUALIZATION_SCRIPT_BYTES, RuntimeAnalysisMixin
 from .capabilities import tools_for_task
 from .profile import MAX_PROFILE_POINTER_ITEMS, RuntimeProfileMixin
 from .sections import RuntimeSectionsMixin
-from .validation import analysis_file_write_parameters
+from .validation import analysis_file_create_parameters, analysis_file_overwrite_parameters
 
 REPORT_WORKER_TOOLKIT_INSTRUCTIONS = (
     "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\n"
@@ -119,6 +119,15 @@ class ReportWorkspaceTaskToolkit(
         self._assembly_allowed_tools = allowed_tools
         self._assembly_internal_tools = {"finish_task"}
         super().__init__(*args, **kwargs)
+        finish_function = self.async_functions.get("finish_task")
+        if finish_function is None:
+            raise ReportingError(
+                "report_phase_contract_invalid",
+                "Reporting Worker 缺少底层 finish_task。",
+            )
+        self._finish_function: Function = finish_function
+        # finish_task 由服务端阶段提交逻辑调用，不能进入模型可见工具 schema。
+        self.async_functions.pop("finish_task", None)
         for hidden_tool_name in ("create_files", "overwrite_file", "replace_text", "apply_patch"):
             self.functions.pop(hidden_tool_name, None)
             self.async_functions.pop(hidden_tool_name, None)
@@ -126,9 +135,7 @@ class ReportWorkspaceTaskToolkit(
         # 当前产物哈希，不重复要求 verify 或执行 Task acceptance validator。
         self.kernel.require_finish_verification = False
         self.kernel.evaluate_finish_acceptance = False
-        finish_function = self.async_functions.get("finish_task")
-        if finish_function is not None:
-            finish_function.parameters["properties"].pop("verification_ids", None)
+        self._finish_function.parameters["properties"].pop("verification_ids", None)
         self.functions.pop("verify", None)
         self.async_functions.pop("verify", None)
         view_image = self.async_functions.get("view_image")
@@ -161,25 +168,37 @@ class ReportWorkspaceTaskToolkit(
             updated = updated.replace("、目录列举及 Git 状态或差异", "")
             reporting_instruction_lines.append(updated)
         self.instructions = "\n".join(reporting_instruction_lines)
-        self.register(
-            Function(
-                name="create_or_write_analysis_file",
-                description=(
-                    "创建或 CAS 覆盖一个 analysis 文件。首次创建仅传 path 和 content；"
-                    "覆盖已有文件必须额外传入当前 expected_sha256。服务端保存写入意图，"
-                    "完成写入和 SHA-256 校验后提交意图。"
-                ),
-                parameters=(
-                    analysis_file_write_parameters()
-                    if phase != "section"
-                    else {"type": "object", "properties": {}, "additionalProperties": False}
-                ),
-                strict=True,
-                entrypoint=self.create_or_write_analysis_file,
-                pre_hook=_reset_stop_after_tool_call,
-                post_hook=_stop_after_nonretryable_tool_call,
+        for name, description, parameters, entrypoint in (
+            (
+                "create_analysis_file",
+                "创建此前不存在的 analysis 文件。只传 path 和 content；目标已存在时读取当前 "
+                "SHA-256 后改用 overwrite_analysis_file。服务端完成写入和 SHA-256 校验后提交意图。",
+                analysis_file_create_parameters,
+                self.create_analysis_file,
+            ),
+            (
+                "overwrite_analysis_file",
+                "使用读取回执中的 expected_sha256 CAS 覆盖已有 analysis 文件。目标不存在时改用 "
+                "create_analysis_file；服务端完成写入和 SHA-256 校验后提交意图。",
+                analysis_file_overwrite_parameters,
+                self.overwrite_analysis_file,
+            ),
+        ):
+            self.register(
+                Function(
+                    name=name,
+                    description=description,
+                    parameters=(
+                        parameters()
+                        if phase != "section"
+                        else {"type": "object", "properties": {}, "additionalProperties": False}
+                    ),
+                    strict=True,
+                    entrypoint=entrypoint,
+                    pre_hook=_reset_stop_after_tool_call,
+                    post_hook=_stop_after_nonretryable_tool_call,
+                )
             )
-        )
 
         self.register(
             Function(
@@ -1368,19 +1387,13 @@ class ReportWorkspaceTaskToolkit(
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._complete_phase_plan(state)
-        finish_function = self.async_functions.get("finish_task")
-        if finish_function is None:
-            raise ReportingError(
-                "report_phase_contract_invalid",
-                "Reporting Worker 缺少底层 finish_task。",
-            )
         finish_result = await self.kernel.finish_task(
             summary,
             [identity["path"]],
             None,
             [],
             run_context,
-            finish_function,
+            self._finish_function,
             _scope=scope,
         )
         if finish_result.get("status") != "accepted":
@@ -1460,7 +1473,7 @@ class ReportWorkspaceTaskToolkit(
                     "recoveryOperation": error.details.get("recoveryOperation"),
                 }
             result["requiredActions"] = [
-                "只使用 details.currentFiles 中当前 64 位 sha256 调用 create_or_write_analysis_file 覆盖。"
+                "只使用 details.currentFiles 中当前 64 位 sha256 调用 overwrite_analysis_file 覆盖。"
             ]
         elif (
             code == "report_analysis_dependency_missing"
@@ -1514,6 +1527,7 @@ class ReportWorkspaceTaskToolkit(
                 "report_analysis_evidence_missing",
                 "report_analysis_evidence_not_registered",
                 "report_analysis_evidence_identity_mismatch",
+                "report_analysis_overwrite_target_missing",
                 "report_profile_query_invalid",
                 "report_analysis_context_query_invalid",
                 "report_analysis_facts_query_invalid",
@@ -1527,18 +1541,20 @@ class ReportWorkspaceTaskToolkit(
             result["requiredActions"] = ["仅修正 validationErrors 指向的字段后重新调用当前工具。"]
         elif code == "report_analysis_evidence_missing":
             result["requiredActions"] = [
-                "先使用 create_or_write_analysis_file 写入真实 evidence，再重试当前 analysis 提交。"
+                "先使用 create_analysis_file 或 overwrite_analysis_file 写入真实 evidence，再重试当前 analysis 提交。"
             ]
         elif code == "report_analysis_evidence_not_registered":
             result["requiredActions"] = [
-                "通过 create_or_write_analysis_file 对 details.missingRegistration 中的文件做幂等登记，"
+                "通过 create_analysis_file 或 overwrite_analysis_file 对 details.missingRegistration 中的文件做幂等登记，"
                 "再重试当前 analysis 提交。"
             ]
         elif code == "report_analysis_evidence_identity_mismatch":
             result["requiredActions"] = [
-                "文件已在登记后发生变化；通过 create_or_write_analysis_file 提交当前内容和 SHA-256，"
+                "文件已在登记后发生变化；通过 overwrite_analysis_file 提交当前内容和 SHA-256，"
                 "再重试当前 analysis 提交。"
             ]
+        elif code == "report_analysis_overwrite_target_missing":
+            result["requiredActions"] = ["改用 create_analysis_file 创建该目标文件。"]
         elif code == "report_analysis_dependency_missing":
             result["requiredActions"] = [
                 "只创建 details.missingPaths 指向的缺失本地模块，再运行原脚本。"
@@ -1577,4 +1593,106 @@ class ReportWorkspaceTaskToolkit(
             result["requiredActions"] = [
                 "只使用 details.supportedFunctions 中的标准 JMESPath 函数改写 query。"
             ]
+        result["recovery"] = ReportWorkspaceTaskToolkit._recovery_for_failure(
+            code=code,
+            details=result.get("details"),
+            validation_errors=validation_errors,
+        )
+        if result["requiredActions"] == ["按服务端错误反馈修正后重试。"]:
+            result["requiredActions"] = [
+                "只依据 details 和 recovery 指向的受信字段修正当前提交；不得原样重试。"
+            ]
         return result
+
+    @staticmethod
+    def _recovery_for_failure(
+        *,
+        code: str,
+        details: Any,
+        validation_errors: Sequence[Mapping[str, str]],
+    ) -> dict[str, Any]:
+        """构造与文案分离的恢复事实，避免调度层或模型改写具体纠错步骤。
+
+        ``requiredActions`` 面向模型阅读，允许按上下文补充；本字段则只表达服务端已知的
+        稳定恢复目标。无法安全推导参数变换时保留定位信息，禁止猜测并自动改写业务参数。
+        """
+
+        normalized_details = details if isinstance(details, Mapping) else {}
+        tool_name = normalized_details.get("toolName")
+        path = normalized_details.get("path")
+        validator = normalized_details.get("validator")
+        expected_fields = normalized_details.get("expectedFields")
+        if validation_errors:
+            return {
+                "kind": "schema_validation",
+                "validationErrors": [dict(item) for item in validation_errors],
+            }
+        if (
+            code == "report_analysis_write_intent_invalid"
+            and isinstance(tool_name, str)
+            and isinstance(path, str)
+            and isinstance(validator, str)
+        ):
+            recovery: dict[str, Any] = {
+                "kind": "schema_validation",
+                "toolName": tool_name,
+                "path": path,
+                "validator": validator,
+            }
+            if isinstance(expected_fields, list):
+                recovery["expectedFields"] = [
+                    field for field in expected_fields if isinstance(field, str)
+                ]
+            return recovery
+        if code == "report_analysis_write_path_conflict":
+            return {
+                "kind": "overwrite_current_file",
+                "toolName": "overwrite_analysis_file",
+                "currentFiles": normalized_details.get("currentFiles", []),
+            }
+        if code == "report_analysis_overwrite_target_missing":
+            return {
+                "kind": "create_missing_file",
+                "toolName": "create_analysis_file",
+                "paths": normalized_details.get("paths", []),
+            }
+        if code == "report_analysis_dependency_missing":
+            return {
+                "kind": "create_missing_dependencies",
+                "missingPaths": normalized_details.get("missingPaths", []),
+            }
+        if code in {
+            "report_profile_query_invalid",
+            "report_analysis_context_query_invalid",
+            "report_analysis_facts_query_invalid",
+        }:
+            return {
+                "kind": "rewrite_jmespath_query",
+                "supportedFunctions": normalized_details.get("supportedFunctions", []),
+            }
+        if code == "report_analysis_evidence_missing":
+            return {"kind": "create_required_evidence"}
+        if code == "report_analysis_evidence_not_registered":
+            return {
+                "kind": "register_evidence",
+                "missingRegistration": normalized_details.get("missingRegistration", []),
+            }
+        if code == "report_analysis_evidence_identity_mismatch":
+            return {"kind": "refresh_evidence_identity"}
+        if code == "report_analysis_python_syntax_invalid":
+            return {
+                "kind": "fix_python_syntax",
+                "path": normalized_details.get("path"),
+                "line": normalized_details.get("line"),
+            }
+        if code == "report_chart_file_missing":
+            return {
+                "kind": "generate_or_remove_chart",
+                "sourcePath": normalized_details.get("sourcePath"),
+            }
+        if code == "report_analysis_rework_unresolvable":
+            return {"kind": "submit_limited_claim"}
+        return {
+            "kind": "review_error_details",
+            "code": code,
+        }

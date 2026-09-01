@@ -490,6 +490,37 @@ async def test_visualization_worker_plain_text_reports_missing_terminal_tool_wit
 
 
 @pytest.mark.anyio
+async def test_visualization_section_worker_does_not_continue_after_terminal_submission() -> None:
+    worker = SimpleNamespace(
+        model=_RecordedErrors([None]),
+        arun=MagicMock(return_value="initial-run"),
+        acontinue_run=MagicMock(return_value="unexpected-continuation"),
+    )
+    runner = cast(Any, object.__new__(ReportTaskRunner))
+    runner.worker = worker
+    runner.repository = SimpleNamespace(
+        get_task_snapshot=AsyncMock(return_value=SimpleNamespace(state=TaskState.FINISHING))
+    )
+    runner._consume_run = AsyncMock(return_value="submitted-charts")
+
+    output = await runner._run_worker(
+        continuing=False,
+        instruction="render visualization",
+        internal_run_id="worker-run-visualization-finished",
+        worker_session_id="worker-session-visualization-finished",
+        owner_user_id="user-1",
+        dependencies={"AgentOS 编码任务": {"reportingTaskKind": "visualization_section"}},
+        run_context=SimpleNamespace(),
+        scope=SimpleNamespace(external_run_id="visualization-task-finished"),
+        parent_run_id="workflow-run-1",
+    )
+
+    assert output == "submitted-charts"
+    worker.arun.assert_called_once()
+    worker.acontinue_run.assert_not_called()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("task_kind", "required_terminal_tools"),
     [
