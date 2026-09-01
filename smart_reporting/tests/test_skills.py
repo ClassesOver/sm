@@ -54,7 +54,7 @@ def test_load_skills_without_path_uses_no_loaders(monkeypatch):
     assert skills.get_all_skills() == []
 
 
-def test_load_sandbox_execution_skills_describes_sandbox_image_capabilities():
+def test_load_sandbox_execution_skills_describes_environment_without_tool_contract():
     skills = load_sandbox_execution_skills()
 
     assert [skill.name for skill in skills.get_all_skills()] == ["sandbox-tooling"]
@@ -68,22 +68,21 @@ def test_load_sandbox_execution_skills_describes_sandbox_image_capabilities():
 
     instructions = skill.instructions
     assert "sandbox-tools-20260723" not in instructions
-    assert "ripgrep" in instructions
+    assert "`rg`" in instructions
     assert "LibreOffice" in instructions
     assert "pytest" in instructions
     assert "Jedi" in instructions
     assert "WebSockets" in instructions
     assert "PostgreSQL" in instructions
     assert "network_block_all" in instructions
-    assert "apply_changes" not in instructions
-    assert "受控只读工具" in instructions
-    assert "read_tool_output" in instructions
-    assert "verify" in instructions
-    assert "terminal` 不计为验证" in instructions
-    assert "新文件使用一次 `create_files`" in instructions
-    assert "完整覆盖已有文件使用 `overwrite_file`" in instructions
-    assert "小范围精确修改优先使用 `replace_text`" in instructions
-    assert "多文件变更使用 `apply_patch`" in instructions
+    assert "当前 Task 实际注册的工具" in instructions
+    for retired_tool_name in (
+        "create_files",
+        "overwrite_file",
+        "replace_text",
+        "apply_patch",
+    ):
+        assert retired_tool_name not in instructions
     assert "image-source" not in instructions
     assert "镜像能力的权威来源" not in instructions
     assert "co" + "dex" not in instructions.lower()
