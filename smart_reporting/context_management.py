@@ -1388,17 +1388,6 @@ def _parallel_safe_tool(name: str, arguments: Any) -> bool:
     )
 
 
-def _tool_batch_admission(function_calls: list[Any]) -> tuple[bool, str]:
-    size = len(function_calls)
-    if size <= 1:
-        return True, "single"
-    if size <= CODING_TOOL_BATCH_LIMIT and all(
-        _parallel_safe_tool_call(function_call) for function_call in function_calls
-    ):
-        return True, "parallel_safe_read"
-    return True, "serialized"
-
-
 def _tool_batch_attributes(size: int, admitted: bool, admission: str) -> dict[str, Any]:
     return {
         "tool_batch_size": size,

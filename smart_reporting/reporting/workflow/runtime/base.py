@@ -119,7 +119,6 @@ from ...hospital_operation.outline import (
     ReportOutlineProposal,
     freeze_outline,
 )
-from ...hospital_operation.profiles import HospitalOperationProfile, ruijin_profile
 from ...instructions import (
     HOSPITAL_ANALYSIS_INSTRUCTIONS,
     HOSPITAL_DATA_UNDERSTANDING_INSTRUCTIONS,
