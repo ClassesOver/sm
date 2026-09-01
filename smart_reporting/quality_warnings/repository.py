@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, cast
@@ -19,7 +21,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    and_,
     insert,
+    or_,
     select,
     text,
     update,
@@ -33,6 +37,7 @@ from .models import (
     CheckContext,
     CheckScope,
     QualityWarningEvent,
+    QualityWarningPage,
     QualityWarningRecord,
     TenantScope,
     WarningFinding,
@@ -136,6 +141,10 @@ class QualityWarningRepository(Protocol):
         self, *, tenant: TenantScope, query: WarningQuery
     ) -> tuple[QualityWarningRecord, ...]: ...
 
+    async def list_warning_page(
+        self, *, tenant: TenantScope, query: WarningQuery
+    ) -> QualityWarningPage: ...
+
     async def get_warning(
         self, *, tenant: TenantScope, warning_id: UUID
     ) -> QualityWarningRecord | None: ...
@@ -211,6 +220,11 @@ class SqlAlchemyQualityWarningRepository:
     async def list_warnings(
         self, *, tenant: TenantScope, query: WarningQuery
     ) -> tuple[QualityWarningRecord, ...]:
+        return (await self.list_warning_page(tenant=tenant, query=query)).records
+
+    async def list_warning_page(
+        self, *, tenant: TenantScope, query: WarningQuery
+    ) -> QualityWarningPage:
         conditions = _tenant_conditions(tenant)
         conditions.append(quality_warnings_v1.c.status == query.status)
         if query.domain is not None:
@@ -225,6 +239,17 @@ class SqlAlchemyQualityWarningRepository:
             conditions.append(quality_warnings_v1.c.first_observed_at >= query.first_observed_after)
         if query.last_observed_before is not None:
             conditions.append(quality_warnings_v1.c.last_observed_at <= query.last_observed_before)
+        if query.cursor is not None:
+            observed_at, warning_id = _decode_cursor(query.cursor)
+            conditions.append(
+                or_(
+                    quality_warnings_v1.c.last_observed_at < observed_at,
+                    and_(
+                        quality_warnings_v1.c.last_observed_at == observed_at,
+                        quality_warnings_v1.c.warning_id < warning_id,
+                    ),
+                )
+            )
         statement = (
             select(quality_warnings_v1)
             .where(*conditions)
@@ -232,11 +257,13 @@ class SqlAlchemyQualityWarningRepository:
                 quality_warnings_v1.c.last_observed_at.desc(),
                 quality_warnings_v1.c.warning_id.desc(),
             )
-            .limit(query.limit)
+            .limit(query.limit + 1)
         )
         async with self.engine.connect() as connection:
             rows = (await connection.execute(statement)).mappings().all()
-        return tuple(_record_from_row(row) for row in rows)
+        records = tuple(_record_from_row(row) for row in rows[: query.limit])
+        next_cursor = _encode_cursor(records[-1]) if len(rows) > query.limit else None
+        return QualityWarningPage(records=records, next_cursor=next_cursor)
 
     async def get_warning(
         self, *, tenant: TenantScope, warning_id: UUID
@@ -544,3 +571,24 @@ def _event_from_row(row: RowMapping) -> QualityWarningEvent:
         occurred_at=_utc(cast(datetime, row["occurred_at"])),
         details=cast(dict[str, Any], row["details"]),
     )
+
+
+def _encode_cursor(record: QualityWarningRecord) -> str:
+    value = json.dumps(
+        {"lastObservedAt": record.last_observed_at.isoformat(), "warningId": str(record.warning_id)},
+        separators=(",", ":"),
+    )
+    return base64.urlsafe_b64encode(value.encode("ascii")).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(value: str) -> tuple[datetime, UUID]:
+    try:
+        payload = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        decoded = json.loads(payload.decode("ascii"))
+        observed_at = datetime.fromisoformat(str(decoded["lastObservedAt"]))
+        warning_id = UUID(str(decoded["warningId"]))
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("质量告警分页游标无效。") from error
+    if observed_at.tzinfo is None:
+        raise ValueError("质量告警分页游标无效。")
+    return observed_at, warning_id

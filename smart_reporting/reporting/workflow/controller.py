@@ -520,16 +520,23 @@ class ReportWorkflowController:
         if run_context is None:
             raise ReportingError("report_workflow_context_missing", "报表工作流缺少运行上下文。")
         dependency = (run_context.dependencies or {}).get(REPORT_WORKFLOW_SCOPE_DEPENDENCY)
-        resolved_external_run_id = (
-            external_run_id
-            or (dependency.get("externalRunId") if isinstance(dependency, dict) else None)
-            or run_context.run_id
-        )
+        resolved_external_run_id = external_run_id or run_context.run_id
         values = {
             "external_run_id": str(resolved_external_run_id or ""),
             "thread_id": str(run_context.session_id or ""),
             "user_id": str(run_context.user_id or ""),
         }
+        if isinstance(dependency, dict):
+            values["database"] = str(dependency.get("database") or "")
+            values["company_id"] = str(dependency.get("companyId") or "")
+        else:
+            values["database"] = ""
+            values["company_id"] = ""
+        if not values["database"] and not values["company_id"]:
+            values["database"] = "default"
+            values["company_id"] = "default"
+        elif not values["database"] or not values["company_id"]:
+            raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")
         if any(not value or len(value) > 256 for value in values.values()):
             raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")
         return values
@@ -549,6 +556,11 @@ class ReportWorkflowController:
                 "externalRunId": scope["external_run_id"],
                 "threadId": scope["thread_id"],
                 "userId": scope["user_id"],
+                **(
+                    {"database": scope["database"], "companyId": scope["company_id"]}
+                    if "database" in scope
+                    else {}
+                ),
             }
         }
 

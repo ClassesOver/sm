@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -81,6 +82,8 @@ def _app() -> FastAPI:
             request,
             user_id=str(claims.user),
             thread_id=thread,
+            database=claims.database,
+            company_id=str(claims.company),
         )
         return await call_next(request)
 
@@ -89,6 +92,7 @@ def _app() -> FastAPI:
         return {
             "requestUserId": getattr(request.state, "user_id", None),
             "requestSessionId": getattr(request.state, "session_id", None),
+            "requestDependencies": getattr(request.state, "dependencies", None),
         }
 
     @application.get("/workspace/files")
@@ -117,7 +121,11 @@ async def test_reporting_run_without_capability_uses_native_agentos_identity() -
         response = await client.post("/agents/smart-reporting/runs")
 
     assert response.status_code == 200
-    assert response.json() == {"requestUserId": None, "requestSessionId": None}
+    assert response.json() == {
+        "requestUserId": None,
+        "requestSessionId": None,
+        "requestDependencies": None,
+    }
 
 
 @pytest.mark.anyio
@@ -206,6 +214,25 @@ async def test_reporting_run_binds_all_odoo_identity_fields() -> None:
     assert response.json() == {
         "requestUserId": "7",
         "requestSessionId": "thread-1",
+        "requestDependencies": {
+            "AgentOS 报表工作流": {"database": "odoo", "companyId": "3"}
+        },
+    }
+
+
+def test_apply_report_identity_binds_capability_tenant_to_agentos_dependencies() -> None:
+    request = SimpleNamespace(state=SimpleNamespace())
+
+    apply_report_identity(
+        request,
+        user_id="7",
+        thread_id="thread-1",
+        database="odoo",
+        company_id="3",
+    )
+
+    assert request.state.dependencies == {
+        "AgentOS 报表工作流": {"database": "odoo", "companyId": "3"}
     }
 
 

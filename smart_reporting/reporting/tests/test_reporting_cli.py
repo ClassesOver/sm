@@ -210,6 +210,8 @@ async def test_resume_workflow_retries_only_failed_delivery_step() -> None:
         run_id="run-1",
         session_id="session-1",
         user_id="cli",
+        database="odoo",
+        company_id="3",
     )
 
     assert requirement.decision == "retry"
@@ -245,6 +247,8 @@ async def test_resume_workflow_rejects_non_delivery_error() -> None:
             run_id="run-1",
             session_id="session-1",
             user_id="cli",
+            database="odoo",
+            company_id="3",
         )
 
     assert raised.value.code == "report_workflow_resume_unsupported"
@@ -272,6 +276,8 @@ async def test_resume_workflow_continues_interrupted_running_checkpoint() -> Non
         run_id="run-1",
         session_id="session-1",
         user_id="cli",
+        database="odoo",
+        company_id="3",
     )
 
     assert result["status"] == "completed"
@@ -302,6 +308,8 @@ async def test_resume_workflow_cleans_up_failed_terminal_sandbox() -> None:
         run_id="run-1",
         session_id="session-1",
         user_id="cli",
+        database="odoo",
+        company_id="3",
     )
 
     assert result["status"] == "failed"
@@ -361,6 +369,8 @@ async def test_resume_workflow_rejects_concurrent_resume_of_same_run() -> None:
         "run_id": "run-1",
         "session_id": "session-1",
         "user_id": "cli",
+        "database": "odoo",
+        "company_id": "3",
     }
     first = asyncio.create_task(resume_workflow(**arguments))
     await entered.wait()
@@ -399,6 +409,8 @@ async def test_drive_workflow_holds_execution_lock_during_initial_run() -> None:
         run_id="run-1",
         session_id="session-1",
         user_id="cli",
+        database="odoo",
+        company_id="3",
     )
 
     assert result["status"] == "completed"
@@ -420,6 +432,8 @@ async def test_drive_workflow_cleans_up_terminal_sandbox(terminal_status: str) -
         run_id="run-1",
         session_id="session-1",
         user_id="cli",
+        database="odoo",
+        company_id="3",
     )
 
     assert result["status"] == terminal_status
@@ -449,6 +463,8 @@ async def test_drive_workflow_cleans_up_sandbox_when_initial_run_raises() -> Non
             run_id="run-1",
             session_id="session-1",
             user_id="cli",
+            database="odoo",
+            company_id="3",
         )
 
     cleanup.assert_awaited_once_with(
@@ -475,6 +491,8 @@ async def test_resume_workflow_rejects_cancelled_run() -> None:
             run_id="run-1",
             session_id="session-1",
             user_id="cli",
+            database="odoo",
+            company_id="3",
         )
 
     assert raised.value.code == "report_workflow_resume_invalid"
@@ -564,7 +582,22 @@ def test_reporting_cli_applies_requested_debug_setting() -> None:
     assert _cli_settings(disabled, debug=True).debug is True
 
 
-@pytest.mark.parametrize(("arguments", "expected"), [([], True), (["--no-debug"], False)])
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (["--tenant-database", "odoo", "--tenant-company-id", "3"], True),
+        (
+            [
+                "--tenant-database",
+                "odoo",
+                "--tenant-company-id",
+                "3",
+                "--no-debug",
+            ],
+            False,
+        ),
+    ],
+)
 def test_reporting_cli_debug_argument_defaults_enabled(
     monkeypatch: pytest.MonkeyPatch,
     arguments: list[str],
@@ -583,6 +616,31 @@ def test_reporting_cli_debug_argument_defaults_enabled(
     assert calls == [expected]
 
 
+def test_reporting_cli_allows_omitted_tenant_and_lets_run_cli_default_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_cli(**kwargs: object) -> dict[str, str]:
+        captured.update(kwargs)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(reporting_cli, "run_cli", fake_run_cli)
+
+    reporting_cli.main([])
+
+    assert captured["database"] is None
+    assert captured["company_id"] is None
+
+
+@pytest.mark.anyio
+async def test_run_cli_rejects_partial_tenant_before_runtime_setup() -> None:
+    with pytest.raises(ReportingError) as raised:
+        await reporting_cli.run_cli(database="odoo", company_id=None)
+
+    assert raised.value.code == "report_workflow_context_missing"
+
+
 def test_reporting_cli_returns_failure_exit_for_cancelled_workflow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -592,7 +650,7 @@ def test_reporting_cli_returns_failure_exit_for_cancelled_workflow(
     monkeypatch.setattr(reporting_cli, "run_cli", fake_run_cli)
 
     with pytest.raises(SystemExit) as raised:
-        reporting_cli.main([])
+        reporting_cli.main(["--tenant-database", "odoo", "--tenant-company-id", "3"])
 
     assert raised.value.code == 1
 
@@ -604,7 +662,7 @@ def test_reporting_cli_returns_130_for_keyboard_interrupt(monkeypatch: pytest.Mo
     monkeypatch.setattr(reporting_cli, "run_cli", interrupted)
 
     with pytest.raises(SystemExit) as raised:
-        reporting_cli.main([])
+        reporting_cli.main(["--tenant-database", "odoo", "--tenant-company-id", "3"])
 
     assert raised.value.code == 130
 

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import uuid4
 
+import httpx
 import pytest
 from pydantic import ValidationError
+from fastapi import FastAPI
 
 from smart_reporting.quality_warnings import (
     CheckContext,
     CheckScope,
     QualityWarningService,
+    QualityWarningPage,
+    QualityWarningRecord,
     TenantScope,
     WarningFinding,
     warning_fingerprint,
@@ -77,6 +83,70 @@ def test_tenant_scope_is_an_internal_contract_not_http_query_model() -> None:
 
     assert scope.database_name == "hospital"
     assert "databaseName" not in scope.model_json_schema().get("properties", {})
+
+
+@pytest.mark.anyio
+async def test_quality_warning_list_uses_capability_tenant_and_defaults_to_open() -> None:
+    from smart_reporting.quality_warnings.api import create_quality_warning_router
+
+    record = QualityWarningRecord(
+        warning_id=uuid4(),
+        tenant=TenantScope(database_name="hospital", company_id="42"),
+        domain="reporting",
+        rule_code="report_metric_definition_incomplete",
+        subject_type="metric",
+        subject_id="income_summary_total",
+        fingerprint="a" * 64,
+        status="open",
+        severity="warning",
+        message="指标定义不完整。",
+        details={},
+        first_observed_at=datetime.now(UTC),
+        last_observed_at=datetime.now(UTC),
+        resolved_at=None,
+        occurrence_count=1,
+        last_check_id="analysis-1",
+        version=1,
+    )
+
+    class Service:
+        async def list_warning_page(self, *, tenant, query):
+            assert tenant == record.tenant
+            assert query.status == "open"
+            return QualityWarningPage(records=(record,))
+
+    application = FastAPI()
+    application.state.agentos_context = SimpleNamespace(quality_warning_service=Service())
+
+    @application.middleware("http")
+    async def capability(request, call_next):
+        request.state.capability = SimpleNamespace(database="hospital", company=42)
+        return await call_next(request)
+
+    application.include_router(create_quality_warning_router())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.get("/quality-warnings")
+
+    assert response.status_code == 200
+    assert response.json()["records"][0]["warning_id"] == str(record.warning_id)
+
+
+@pytest.mark.anyio
+async def test_quality_warning_queries_require_verified_capability() -> None:
+    from smart_reporting.quality_warnings.api import create_quality_warning_router
+
+    application = FastAPI()
+    application.state.agentos_context = SimpleNamespace(quality_warning_service=object())
+    application.include_router(create_quality_warning_router())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.get("/quality-warnings")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "quality_warning_capability_required"}
 
 
 @pytest.mark.anyio
