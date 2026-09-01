@@ -1143,29 +1143,32 @@ def test_visualization_instructions_require_readable_chart_layouts() -> None:
         assert phrase in instructions
 
 
-def test_visualization_skill_contains_readable_chart_guidance() -> None:
+def test_visualization_skill_preserves_chart_generation_invariants() -> None:
     skill_path = REPORTING_BUILTIN_SKILLS_DIR / "report-visualization" / "SKILL.md"
+    reference_dir = skill_path.parent / "references"
     skill = skill_path.read_text(encoding="utf-8")
 
     for phrase in (
-        "最短业务名称",
-        "完整科室/组织层级可放在正文、表格、脚注或图表说明中",
-        "Dataset 路径、血缘信息和其他内部标识不得进入坐标轴，也不得进入用户可见报告，只保留在 citation/审计元数据中",
+        "趋势与变化",
+        "结构与贡献",
+        "分布与关系",
+        "不可变数据复算",
+        "当前 Task 实际注册的工具",
         "不得泄露内部路径",
-        "业务期间可作为时间轴刻度",
-        "来源文件名或内部元数据中的冗长日期前缀、内部标识或路径不得进入坐标轴",
         "1200 x 675",
         "横向条形图",
-        "动态调整画布高度",
-        "TopN 或长标签",
-        "语义缩写或换行",
-        "紧凑对比图",
-        "哑铃图或表格",
-        "为标题、坐标轴、图例和标签保留清晰边界",
-        "不限制其他更合适的图形表达",
         "不构成固定模板或图表白名单",
+        "联系表只用于检查",
+        "visualization_section",
+        "visualization_finalize",
+        "visualInspectionMode",
+        "submit_visualization_charts",
+        "taskFinished",
+        "reference_only",
+        "参考",
     ):
         assert phrase in skill
+    assert not reference_dir.exists()
 
 
 def test_deterministic_visualization_instructions_forbid_inspect_chart() -> None:

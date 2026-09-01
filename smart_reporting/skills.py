@@ -20,7 +20,6 @@ from .task_execution.acceptance import (
     validate_artifact_pattern,
 )
 
-BUILTIN_CODING_SKILLS_DIR = Path(__file__).with_name("builtin_skills")
 CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY = "agentos_coding_skill_script_receipts"
 CODING_SKILL_SCRIPT_ROOT = "/home/daytona/.agentos/skill-scripts"
 MAX_SKILL_SCRIPT_RECEIPTS = 64
@@ -324,7 +323,7 @@ def load_skills(path: str | None = None) -> Skills:
 
 
 def load_sandbox_execution_skills(additional_path: str | None = None) -> Skills:
-    loaders: list[SkillLoader] = [LocalSkills(str(BUILTIN_CODING_SKILLS_DIR))]
+    loaders: list[SkillLoader] = []
     skills_path = (additional_path or "").strip()
     if skills_path:
         loaders.append(LocalSkills(skills_path, validate=False))

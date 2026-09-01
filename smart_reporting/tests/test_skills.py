@@ -5,6 +5,7 @@ import pytest
 from agno.run import RunContext
 from agno.skills import LocalSkills, Skills
 
+from smart_reporting.reporting.delivery.acceptance import load_reporting_skills
 from smart_reporting.skills import (
     CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
     SkillAcceptanceError,
@@ -54,11 +55,14 @@ def test_load_skills_without_path_uses_no_loaders(monkeypatch):
     assert skills.get_all_skills() == []
 
 
-def test_load_sandbox_execution_skills_describes_environment_without_tool_contract():
-    skills = load_sandbox_execution_skills()
+def test_load_reporting_skills_includes_sandbox_environment_without_tool_contract():
+    skills = load_reporting_skills(None)
 
-    assert [skill.name for skill in skills.get_all_skills()] == ["sandbox-tooling"]
-    skill = skills.get_all_skills()[0]
+    assert {skill.name for skill in skills.get_all_skills()} == {
+        "report-visualization",
+        "sandbox-tooling",
+    }
+    skill = next(skill for skill in skills.get_all_skills() if skill.name == "sandbox-tooling")
     assert "Daytona" in skill.description
     assert {tool.name for tool in skills.get_tools()} == {
         "get_skill_instructions",
@@ -71,11 +75,10 @@ def test_load_sandbox_execution_skills_describes_environment_without_tool_contra
     assert "`rg`" in instructions
     assert "LibreOffice" in instructions
     assert "pytest" in instructions
-    assert "Jedi" in instructions
-    assert "WebSockets" in instructions
-    assert "PostgreSQL" in instructions
     assert "network_block_all" in instructions
     assert "当前 Task 实际注册的工具" in instructions
+    assert "create_or_write_analysis_file" in instructions
+    assert "仅轮询同一 Task 启动的运行进程" in instructions
     for retired_tool_name in (
         "create_files",
         "overwrite_file",
@@ -122,7 +125,7 @@ async def test_skill_script_hook_records_read_content_but_not_execution_output()
     assert len(context.session_state[CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY]) == 1
 
 
-def test_load_sandbox_execution_skills_appends_additional_directory(tmp_path):
+def test_load_sandbox_execution_skills_only_loads_additional_directory(tmp_path):
     create_skill(tmp_path)
     skill_file = tmp_path / "review" / "SKILL.md"
     skill_file.write_text(
@@ -135,10 +138,9 @@ def test_load_sandbox_execution_skills_appends_additional_directory(tmp_path):
 
     skills = load_sandbox_execution_skills(str(tmp_path))
 
-    assert [skill.name for skill in skills.get_all_skills()] == ["sandbox-tooling", "review"]
-    assert len(skills.loaders) == 2
-    assert skills.loaders[0].validate is True
-    assert skills.loaders[1].validate is False
+    assert [skill.name for skill in skills.get_all_skills()] == ["review"]
+    assert len(skills.loaders) == 1
+    assert skills.loaders[0].validate is False
 
 
 def test_public_skill_metadata_uses_skill_name_as_id(tmp_path):
