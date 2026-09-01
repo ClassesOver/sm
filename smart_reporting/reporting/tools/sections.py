@@ -1467,26 +1467,33 @@ class RuntimeSectionsMixin:
                         "report_visualization_section_conflict",
                         "当前章节图表文件身份与已提交事实不一致。",
                     )
-                return {
-                    "ok": True,
-                    "status": "already_committed",
-                    "sectionCode": sectionCode,
-                    "chartCount": len(inspected),
-                    "taskFinished": True,
-                    "warnings": warnings,
-                }
-            digest = _stable_digest({"charts": inspected, "files": files})
-            durable_result = await self._apply_durable_command(
-                scope,
-                name="submit_visualization_charts",
-                payload={"sectionCode": sectionCode, "charts": list(inspected), "files": files},
-                command_id=f"viz-section:{durable.revision}:{sectionCode}:{digest}",
+                status = "already_committed"
+            else:
+                digest = _stable_digest({"charts": inspected, "files": files})
+                durable_result = await self._apply_durable_command(
+                    scope,
+                    name="submit_visualization_charts",
+                    payload={"sectionCode": sectionCode, "charts": list(inspected), "files": files},
+                    command_id=f"viz-section:{durable.revision}:{sectionCode}:{digest}",
+                )
+                status = "already_committed" if durable_result.idempotent else "committed"
+            self._complete_phase_plan(self._session_state(run_context))
+            finish_result = await self.kernel.finish_task(
+                f"图表章节 {sectionCode} 已提交 {len(inspected)} 张图表。",
+                [file["path"] for file in files],
+                None,
+                [],
+                run_context,
+                self._finish_function,
+                _scope=scope,
             )
+            if finish_result.get("status") != "accepted":
+                return finish_result
         except (ReportingError, ValidationError, WorkspaceError) as error:
             return self._failure(error)
         return {
             "ok": True,
-            "status": "already_committed" if durable_result.idempotent else "committed",
+            "status": status,
             "sectionCode": sectionCode,
             "chartCount": len(inspected),
             "taskFinished": True,

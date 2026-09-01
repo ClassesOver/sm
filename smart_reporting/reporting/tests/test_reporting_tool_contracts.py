@@ -857,7 +857,12 @@ async def test_submit_visualization_charts_requires_section_task_kind() -> None:
 async def test_submit_visualization_charts_commit_flow() -> None:
     scope = SimpleNamespace(thread_id="thread-section", task=SimpleNamespace(mutation_sequence=7))
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    finish_function = SimpleNamespace(name="finish_task")
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=scope),
+        finish_task=AsyncMock(return_value={"ok": True, "status": "accepted"}),
+    )
+    toolkit._finish_function = finish_function
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
     toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
     toolkit._phase_parameters = lambda *_args: (
@@ -926,6 +931,8 @@ async def test_submit_visualization_charts_commit_flow() -> None:
             }
         ],
     }
+    assert toolkit.kernel.finish_task.await_args.args[1] == [identity["sourcePath"]]
+    assert toolkit.kernel.finish_task.await_args.args[5] is finish_function
     expected_digest = hashlib.sha256(
         json.dumps(
             {
@@ -946,6 +953,61 @@ async def test_submit_visualization_charts_commit_flow() -> None:
 
 
 @pytest.mark.anyio
+async def test_submit_visualization_charts_returns_finish_rejection_after_durable_commit() -> None:
+    scope = SimpleNamespace(thread_id="thread-section", task=SimpleNamespace(mutation_sequence=7))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=scope),
+        finish_task=AsyncMock(
+            return_value={"ok": False, "status": "rejected", "code": "finish_artifact_missing"}
+        ),
+    )
+    toolkit._finish_function = SimpleNamespace(name="finish_task")
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "sectionCode": "section_001",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
+        },
+    )
+    identity = {
+        "sourcePath": "analysis/charts/section_001/income.png",
+        "size": 1024,
+        "sha256": "b" * 64,
+        "format": "PNG",
+        "mediaType": "image/png",
+        "extension": ".png",
+        "width": 1200,
+        "height": 800,
+    }
+    toolkit._inspect_chart_file = AsyncMock(return_value=identity)
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(revision=7))
+    toolkit._apply_durable_command = AsyncMock(return_value=SimpleNamespace(idempotent=False))
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[
+            {
+                "chartId": "income",
+                "sourcePath": identity["sourcePath"],
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["income"],
+                "currentPeriod": "2026-01",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+            }
+        ],
+    )
+
+    assert result == {"ok": False, "status": "rejected", "code": "finish_artifact_missing"}
+    toolkit.kernel.finish_task.assert_awaited_once()
+
+
+@pytest.mark.anyio
 async def test_submit_visualization_charts_returns_already_committed_after_cas_replay() -> None:
     scope = SimpleNamespace(
         thread_id="thread-cas-replay", task=SimpleNamespace(mutation_sequence=7)
@@ -957,7 +1019,11 @@ async def test_submit_visualization_charts_returns_already_committed_after_cas_r
         report_run_id="run-cas-replay", state_version=8, revision=8, payload={}
     )
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=scope),
+        finish_task=AsyncMock(return_value={"ok": True, "status": "accepted"}),
+    )
+    toolkit._finish_function = SimpleNamespace(name="finish_task")
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
     toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
     toolkit._phase_parameters = lambda *_args: (
@@ -1010,7 +1076,11 @@ async def test_submit_visualization_charts_returns_already_committed_after_cas_r
 async def test_submit_visualization_charts_short_circuits_identical_durable_submission() -> None:
     scope = SimpleNamespace(thread_id="thread-duplicate", task=SimpleNamespace(mutation_sequence=7))
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=scope),
+        finish_task=AsyncMock(return_value={"ok": True, "status": "accepted"}),
+    )
+    toolkit._finish_function = SimpleNamespace(name="finish_task")
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
     toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
     toolkit._phase_parameters = lambda *_args: (
@@ -1163,7 +1233,11 @@ async def test_submit_visualization_charts_returns_warning_for_unmarked_referenc
 ):
     scope = SimpleNamespace(thread_id="thread-reference", task=SimpleNamespace(mutation_sequence=7))
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=scope),
+        finish_task=AsyncMock(return_value={"ok": True, "status": "accepted"}),
+    )
+    toolkit._finish_function = SimpleNamespace(name="finish_task")
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
     toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
     toolkit._phase_parameters = lambda *_args: (
@@ -1265,7 +1339,11 @@ async def test_submit_visualization_charts_rejects_section_code_mismatch() -> No
 async def test_submit_visualization_charts_allows_empty_charts() -> None:
     scope = SimpleNamespace(thread_id="thread-empty", task=SimpleNamespace())
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit.kernel = SimpleNamespace(
+        scope=AsyncMock(return_value=scope),
+        finish_task=AsyncMock(return_value={"ok": True, "status": "accepted"}),
+    )
+    toolkit._finish_function = SimpleNamespace(name="finish_task")
     toolkit._require_phase_tool = lambda *_args, **_kwargs: None
     toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
     toolkit._phase_parameters = lambda *_args: (
