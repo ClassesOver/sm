@@ -1517,6 +1517,52 @@ async def test_register_report_charts_rejects_running_visualization_script() -> 
 
 
 @pytest.mark.anyio
+async def test_submit_visualization_charts_rejects_running_script_before_empty_draft() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-section-script-running",
+        external_run_id="visualization-section-task-running",
+        internal_run_id="run-section-script-running",
+        task=SimpleNamespace(mutation_sequence=1),
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit.repository = SimpleNamespace(
+        list_executions=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    execution_id="execution-section-running",
+                    internal_run_id="run-section-script-running",
+                    kind="terminal",
+                    status="running",
+                )
+            ]
+        )
+    )
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "sectionCode": "section_001",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
+        },
+    )
+    toolkit._durable_state = AsyncMock()
+    toolkit._apply_durable_command = AsyncMock()
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[],
+        run_context=RunContext(run_id="run-section-script-running", session_id="session-running"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_script_running"
+    assert result["retryable"] is True
+    toolkit._durable_state.assert_not_awaited()
+    toolkit._apply_durable_command.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_register_report_charts_accepts_missing_optional_run_context() -> None:
     scope = SimpleNamespace(
         thread_id="thread-no-run-context", task=SimpleNamespace(mutation_sequence=1)
@@ -3325,6 +3371,49 @@ async def test_analysis_write_path_conflict_returns_retryable_receipt() -> None:
     assert "当前 64 位 sha256" in result["requiredActions"][0]
     assert "create_or_write_analysis_file" in result["requiredActions"][0]
     toolkit._apply_durable.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_analysis_write_rejects_zero_placeholder_hash_before_workspace_mutation() -> None:
+    @asynccontextmanager
+    async def context(value):
+        yield value
+
+    scope = SimpleNamespace(thread_id="thread-1")
+    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(
+        bound_external_run_id=lambda _run_context: "external-run-1",
+        task_scheduler=lambda _external_run_id: context(
+            SimpleNamespace(write=lambda: context(None))
+        ),
+        scope=AsyncMock(return_value=scope),
+        patch=AsyncMock(),
+    )
+    toolkit._phase_parameters = lambda _scope, _phase: (
+        {},
+        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis"},
+    )
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._durable_state = AsyncMock()
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.create_or_write_analysis_file(
+        path="analysis/report.py",
+        content="print('ok')\n",
+        expected_sha256="0" * 64,
+        run_context=RunContext(run_id="run-1", session_id="session-1"),
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "report_analysis_write_intent_invalid"
+    assert "首次创建请不要传 expected_sha256" in result["message"]
+    assert result["details"] == {
+        "path": "arguments.expected_sha256",
+        "validator": "placeholder",
+    }
+    toolkit.kernel.patch.assert_not_awaited()
+    toolkit._durable_state.assert_not_awaited()
+    toolkit._apply_durable.assert_not_awaited()
 
 
 @pytest.mark.anyio
