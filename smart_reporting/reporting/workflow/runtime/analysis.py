@@ -892,6 +892,44 @@ class RuntimeAnalysisMixin:
                 updates[field_name] = value
         return updates
 
+    @staticmethod
+    def _instruction_component_bytes(payload: Mapping[str, Any]) -> dict[str, int]:
+        """按主要上下文字段统计 UTF-8 字节数，不记录字段内容。"""
+        components = (
+            ("current_analysis", "currentAnalysis"),
+            ("deterministic_facts", "deterministicFacts"),
+            ("profile_coverage", "profileCoverage"),
+            ("analysis_context_file", "analysisContextFile"),
+            ("datasets", "datasets"),
+            ("dataset_lineage", "datasetLineage"),
+            ("citation_registry", "citationRegistry"),
+            ("completion_conditions", "completionConditions"),
+            ("durable_analysis_item", "durableAnalysisItem"),
+            ("outline", "outline"),
+            ("registered_charts", "registeredCharts"),
+            ("analysis_plans", "analysisPlans"),
+            ("analysis_citation_ids", "analysisCitationIds"),
+            ("citation_dataset_ids", "citationDatasetIds"),
+            ("deterministic_fact_files", "deterministicFactFiles"),
+            ("visualization_facts", "visualizationFacts"),
+            ("dataset_semantics", "datasetSemantics"),
+            ("metric_definitions", "metricDefinitions"),
+            ("section_evidence_catalog", "sectionEvidenceCatalog"),
+            ("chart_registration_rules", "chartRegistrationRules"),
+            ("visualization_workspace", "visualizationWorkspace"),
+            ("source_warnings", "sourceWarnings"),
+            ("review_feedback", "reviewFeedback"),
+        )
+        return {
+            name: len(
+                json.dumps(payload[field], ensure_ascii=False, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            )
+            for name, field in components
+            if field in payload
+        }
+
     async def _phase_artifact_from_receipt(
         self,
         thread_id: str,
@@ -1099,7 +1137,6 @@ class RuntimeAnalysisMixin:
                     mode="json", by_alias=True
                 ),
                 "deterministicFacts": deterministic_facts.model_dump(mode="json", by_alias=True),
-                "detailedAnalysisPlan": coding_analysis_plan,
                 "profileCoverage": _profile_coverage_instruction_projection(
                     checkpoint.profile_coverage,
                     analysis_context_file,
@@ -1126,6 +1163,7 @@ class RuntimeAnalysisMixin:
                 ),
                 "durableAnalysisItem": recovery_payload,
             }
+            instruction_component_bytes = self._instruction_component_bytes(instruction_payload)
             instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
             instruction_bytes = len(instruction.encode("utf-8"))
             if instruction_bytes > MAX_REPORT_INSTRUCTION_BYTES:
@@ -1258,11 +1296,12 @@ class RuntimeAnalysisMixin:
                 logger.info(
                     "report_phase_context phase=analysis work_kind=analysis_item "
                     "analysis_id=%s task_id=%s instruction_bytes=%s duration_seconds=%.3f "
-                    "tool_events=%s attempt=%s retry_reason=%s",
+                    "component_bytes=%s tool_events=%s attempt=%s retry_reason=%s",
                     analysis_id,
                     task_id,
                     instruction_bytes,
                     trace_metrics["duration_seconds"],
+                    instruction_component_bytes,
                     trace_metrics.get("tool_event_count", 0),
                     attempt,
                     retry_reason or "-",
@@ -1798,6 +1837,7 @@ class RuntimeAnalysisMixin:
                 "reviewFeedback": feedback,
                 "analysisOutputPath": output_path,
             }
+            instruction_component_bytes = self._instruction_component_bytes(instruction_payload)
             instruction = json.dumps(instruction_payload, ensure_ascii=False, separators=(",", ":"))
             instruction_bytes = len(instruction.encode("utf-8"))
             if instruction_bytes > MAX_REPORT_INSTRUCTION_BYTES:
@@ -2022,6 +2062,7 @@ class RuntimeAnalysisMixin:
                 logger.info(
                     "report_phase_context phase=analysis work_kind=visualization "
                     "task_id=%s instruction_bytes=%s duration_seconds=%.3f tool_events=%s "
+                    "component_bytes=%s "
                     "profile_receipts=%s model_input_tokens=%s model_requests=%s "
                     "max_projected_tokens=%s rebases=%s hard_cap=%s "
                     "completed_analysis=%s retry_reason=%s budget_version=%s "
@@ -2033,6 +2074,7 @@ class RuntimeAnalysisMixin:
                     instruction_bytes,
                     trace_metrics["duration_seconds"],
                     trace_metrics.get("tool_event_count", 0),
+                    instruction_component_bytes,
                     len(artifact.profile_read_receipts),
                     trace_metrics.get("model_input_tokens"),
                     trace_metrics.get("model_request_count", 0),
