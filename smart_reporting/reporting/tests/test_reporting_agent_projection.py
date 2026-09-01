@@ -2407,6 +2407,52 @@ async def test_visualization_registration_is_reserved_outside_tool_budget(
 
 
 @pytest.mark.anyio
+async def test_visualization_section_submission_is_reserved_outside_tool_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_context = RunContext(
+        run_id="run-visualization-submit-budget",
+        session_id="session-visualization-submit-budget",
+        session_state={},
+        dependencies={
+            REPORTING_TASK_DEPENDENCY: {
+                "externalRunId": "visualization-submit-budget-task",
+                REPORTING_PHASE_DEPENDENCY_KEY: "analysis",
+                REPORTING_TASK_KIND_DEPENDENCY_KEY: "visualization_section",
+            }
+        },
+    )
+    submitted = False
+
+    def submit() -> dict[str, bool]:
+        nonlocal submitted
+        submitted = True
+        return {"ok": True, "taskFinished": True}
+
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_ATTEMPT_TOOL_LIMIT", 1)
+    monkeypatch.setattr(report_agent_module, "_REPORT_VISUALIZATION_TOTAL_TOOL_LIMIT", 1)
+
+    await normalize_reporting_tool_arguments(
+        run_context,
+        "query_analysis_facts",
+        lambda: {"ok": True},
+        {},
+    )
+    result = await normalize_reporting_tool_arguments(
+        run_context,
+        "submit_visualization_charts",
+        submit,
+        {},
+    )
+
+    assert result == {"ok": True, "taskFinished": True}
+    assert submitted is True
+    assert (
+        reporting_visualization_usage_from_run_context(run_context)["visualizationToolCalls"] == 1
+    )
+
+
+@pytest.mark.anyio
 async def test_visualization_fact_exploration_subbudget_stops_current_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

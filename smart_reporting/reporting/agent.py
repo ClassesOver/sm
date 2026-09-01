@@ -659,12 +659,17 @@ def _reporting_visualization_tool_budget(
     function_name: str,
 ) -> tuple[dict[str, Any], str, str] | None:
     if (
-        function_name in {"register_report_charts", "finalize_report_analysis"}
+        function_name
+        in {
+            "submit_visualization_charts",
+            "register_report_charts",
+            "finalize_report_analysis",
+        }
         or reporting_phase_from_run_context(run_context) != "analysis"
         or reporting_task_kind_from_run_context(run_context) != "visualization_section"
     ):
-        # register/finalize 是可视化阶段的终态提交，不得被此前的探索调用挤占。
-        # 图表登记仍受 durable registration 与 no-progress 门禁约束，重复提交不会绕过验收。
+        # 图表提交、登记和收口是可视化终态动作，不得被此前的探索调用挤占。
+        # 它们仍受 durable state、章节契约和 no-progress 门禁约束，重复调用不会绕过验收。
         return None
     state = _reporting_session_state(run_context)
     if state is None:
