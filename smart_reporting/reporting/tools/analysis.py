@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 import shlex
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from pathlib import PurePosixPath
 from typing import Any
@@ -389,7 +389,7 @@ class RuntimeAnalysisMixin:
         script_path = workspace.get("scriptPath") if isinstance(workspace, Mapping) else None
         normalized_script = (
             WorkspaceService.normalize_path(script_path, allow_root=False)[0]
-            if contract.get("taskKind") == "visualization"
+            if contract.get("taskKind") == "visualization_section"
             else None
         )
         for change in changes:
@@ -853,7 +853,11 @@ class RuntimeAnalysisMixin:
         warnings: list[str] | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
-        """冻结全局分析事实；后续章节只能消费该产物，不继承本 run 消息。"""
+        """冻结全局分析事实；后续章节只能消费该产物，不继承本 run 消息。
+
+        datasetSemantics/metricDefinitions 语义目录以 acceptance contract 的服务端投影
+        为唯一受信来源；模型提交的同名参数仅作接口兼容占位，会被直接覆盖。
+        """
 
         state = self._session_state(run_context)
         try:
@@ -863,7 +867,7 @@ class RuntimeAnalysisMixin:
                 allowed=frozenset({"analysis"}),
                 tool_name="finalize_report_analysis",
                 run_context=run_context,
-                task_kinds=frozenset({"visualization"}),
+                task_kinds=frozenset({"visualization_finalize"}),
             )
             await self._ensure_visualization_terminal_settled(scope)
             durable = await self._durable_state(scope)
@@ -872,20 +876,58 @@ class RuntimeAnalysisMixin:
                     "report_visualization_charts_not_registered",
                     "图表尚未完成登记，不能冻结可视化分析；请先成功调用 register_report_charts。",
                 )
+            # Finalize 必须消费章节 worker 已提交的 durable 草案，而不能仅信任全局 charts
+            # registry。register 的门禁负责阻止新非法登记；这里再次验证当前 registry 的
+            # 每个图表都有对应章节草案和冻结文件身份，防止旧状态、人工写入或部分恢复绕过
+            # 章节收口契约后进入正式 AnalysisArtifact。
+            draft_charts_by_id, draft_files_by_path = self._section_chart_draft_catalog(
+                durable.payload
+            )
+            for chart in durable.payload["charts"]:
+                if not isinstance(chart, Mapping) or not isinstance(chart.get("chartId"), str):
+                    raise ReportingError(
+                        "report_visualization_section_draft_missing",
+                        "已登记图表缺少有效章节草案身份。",
+                    )
+                chart_id = chart["chartId"]
+                draft = draft_charts_by_id.get(chart_id)
+                source_path = chart.get("sourcePath")
+                draft_file = (
+                    draft_files_by_path.get(source_path) if isinstance(source_path, str) else None
+                )
+                if (
+                    draft is None
+                    or draft.get("sourcePath") != source_path
+                    or draft_file is None
+                    or draft_file.get("size") != chart.get("size")
+                    or draft_file.get("sha256") != chart.get("sha256")
+                ):
+                    raise ReportingError(
+                        "report_visualization_section_draft_missing",
+                        "已登记图表未被 durable 章节草案完整解释。",
+                        details={"chartId": chart_id, "sourcePath": source_path},
+                    )
             parameters, contract = self._phase_parameters(scope, "analysis")
             output_path = parameters.get("analysisOutputPath")
             expected_analysis_ids = contract.get("analysisIds")
             known_dataset_ids = contract.get("datasetIds")
             known_citation_ids = contract.get("citationIds")
+            contract_dataset_semantics = contract.get("datasetSemantics")
+            contract_metric_definitions = contract.get("metricDefinitions")
+            authorized_dataset_ids = contract.get("authorizedDatasetIds")
             if (
                 not isinstance(output_path, str)
                 or not isinstance(expected_analysis_ids, list)
-                or not isinstance(known_dataset_ids, list)
                 or not isinstance(known_citation_ids, list)
+                or not isinstance(contract_dataset_semantics, list)
+                or not isinstance(contract_metric_definitions, list)
             ):
                 raise ReportingError(
-                    "report_phase_contract_invalid", "Analysis Task 缺少冻结注册表。"
+                    "report_phase_contract_invalid",
+                    "Analysis Task 缺少冻结注册表或服务端投影的语义目录。",
                 )
+            known_dataset_ids = _require_dataset_id_sequence(known_dataset_ids)
+            authorized_dataset_ids = _require_dataset_id_sequence(authorized_dataset_ids)
             submitted = durable.payload.get("analysisItems")
             if not isinstance(submitted, dict) or any(
                 not isinstance(submitted.get(item), dict) for item in expected_analysis_ids
@@ -906,12 +948,29 @@ class RuntimeAnalysisMixin:
                 }
                 for item in expected_analysis_ids
             ]
-            metricDefinitions = metricDefinitions or []
+            evidence_dataset_ids = {
+                dataset_id
+                for item in evidence
+                for dataset_id in _require_dataset_id_sequence(item.get("datasetIds"))
+            }
+            if set(known_dataset_ids) != evidence_dataset_ids:
+                raise ReportingError(
+                    "report_analysis_dataset_inconsistent",
+                    "phase contract Dataset 必须精确覆盖 durable analysis evidence Dataset。",
+                )
+            if not evidence_dataset_ids.issubset(set(authorized_dataset_ids)):
+                raise ReportingError(
+                    "report_analysis_dataset_inconsistent",
+                    "analysis evidence Dataset 不属于授权 Dataset snapshot。",
+                )
+            # 语义目录的唯一受信来源是 acceptance contract 的服务端投影。模型提交的
+            # datasetSemantics/metricDefinitions 参数仅保留接口兼容，一律被覆盖，
+            # 任何模型侧改写都不得进入冻结 manifest；投影缺失时失败关闭。
             warnings = warnings or []
             parsed_dataset_semantics = tuple(
-                AnalysisDatasetSemantics.model_validate(item) for item in datasetSemantics
+                AnalysisDatasetSemantics.model_validate(item) for item in contract_dataset_semantics
             )
-            if {item.dataset_id for item in parsed_dataset_semantics} != set(known_dataset_ids):
+            if {item.dataset_id for item in parsed_dataset_semantics} != evidence_dataset_ids:
                 raise ReportingError(
                     "report_analysis_dataset_semantics_incomplete",
                     "Dataset 语义必须精确覆盖全部授权 Dataset。",
@@ -1037,8 +1096,8 @@ class RuntimeAnalysisMixin:
                     "report_analysis_evidence_incomplete",
                     "analysis evidence 必须按冻结顺序精确覆盖全部 analysisId。",
                 )
-            supplied_metric_definitions = tuple(
-                MetricDefinition.model_validate(item) for item in metricDefinitions
+            parsed_metric_definitions = tuple(
+                MetricDefinition.model_validate(item) for item in contract_metric_definitions
             )
             fact_bundles: dict[str, Mapping[str, Any]] = {}
             deterministic_files = contract.get("deterministicFactFiles")
@@ -1087,7 +1146,7 @@ class RuntimeAnalysisMixin:
             missing_metric_codes = _missing_metric_definition_codes(
                 fact_bundles=tuple(fact_bundles.values()),
                 chart_metric_codes=chart_metric_codes,
-                metric_definitions=supplied_metric_definitions,
+                metric_definitions=parsed_metric_definitions,
             )
             if missing_metric_codes:
                 raise ReportingError(
@@ -1192,7 +1251,7 @@ class RuntimeAnalysisMixin:
                 reportBrief=ReportBrief.model_validate(reportBrief),
                 evidenceManifest=AnalysisEvidenceManifest(
                     evidence=tuple(parsed_evidence),
-                    metricDefinitions=supplied_metric_definitions,
+                    metricDefinitions=parsed_metric_definitions,
                     charts=tuple(parsed_charts),
                     datasetSemantics=parsed_dataset_semantics,
                     warnings=tuple(warnings),
@@ -1540,3 +1599,14 @@ class RuntimeAnalysisMixin:
             identities=identities,
         )
         return durable
+
+
+def _require_dataset_id_sequence(value: object) -> list[str]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or not value
+        or any(not isinstance(item, str) or not item for item in value)
+    ):
+        raise ReportingError("report_analysis_dataset_inconsistent", "Dataset ID 序列无效。")
+    return list(value)

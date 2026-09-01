@@ -236,6 +236,7 @@ MAX_SECTION_WORK_ITEM_BYTES = 256 * 1024
 
 _VISUALIZATION_RECOVERY_ERROR_CODES = frozenset(
     {
+        "report_worker_terminal_tool_missing",
         "report_visualization_tool_budget_exhausted",
         "report_visualization_exploration_budget_exhausted",
         "report_visualization_script_failure_limit_exhausted",
@@ -402,6 +403,7 @@ class _ReportWorkflowRuntimeBase:
         report_public_base_url: str | None = None,
         state_repository: ReportingStateRepository,
         analysis_concurrency: int = 1,
+        visualization_concurrency: int = 1,
         section_concurrency: int = 1,
     ):
         if (download_grants is None) != (artifact_persistence is None):
@@ -421,6 +423,8 @@ class _ReportWorkflowRuntimeBase:
         self.state_repository = state_repository
         if isinstance(analysis_concurrency, bool) or not 1 <= analysis_concurrency <= 4:
             raise ValueError("analysis_concurrency 必须在 1 到 4 之间")
+        if isinstance(visualization_concurrency, bool) or not 1 <= visualization_concurrency <= 4:
+            raise ValueError("visualization_concurrency 必须在 1 到 4 之间")
         if isinstance(section_concurrency, bool) or not 1 <= section_concurrency <= 5:
             raise ValueError("section_concurrency 必须在 1 到 5 之间")
         if planner_reasoning_effort not in {"high", "max"}:
@@ -432,6 +436,7 @@ class _ReportWorkflowRuntimeBase:
         ):
             raise ValueError("planner_thinking_budget 必须是正整数")
         self.analysis_concurrency = analysis_concurrency
+        self.visualization_concurrency = visualization_concurrency
         self.section_concurrency = section_concurrency
         self._durable_command_lock = asyncio.Lock()
         self._checkpoint_persist_lock = asyncio.Lock()

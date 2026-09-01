@@ -154,7 +154,7 @@ def _pending_analysis_rework_file(checkpoint: ReportingCheckpoint) -> FileIdenti
     later_freeze = any(
         index > rework_index
         and item.phase == "analysis"
-        and item.work_kind == "visualization"
+        and item.work_kind == "visualization_finalize"
         and item.status == "completed"
         for index, item in enumerate(checkpoint.trace)
     )

@@ -5,10 +5,16 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import delete, update
 
 from smart_reporting.database import create_agent_database
 from smart_reporting.reporting.workflow import state as reporting_state_module
+from smart_reporting.reporting.workflow.checkpoint import (
+    CheckpointError,
+    ContextTrace,
+    ReportingCheckpoint,
+)
 from smart_reporting.reporting.workflow.repository import ReportingStateRepository
 from smart_reporting.reporting.workflow.state import (
     ReportingPhase,
@@ -38,11 +44,220 @@ def apply_phase(state: ReportingRunState, name: str) -> ReportingRunState:
     ).state
 
 
+def make_visualization_state() -> ReportingRunState:
+    return apply_phase(apply_phase(initial_state(), "start_analysis"), "start_visualization")
+
+
+def make_chart_registration(chart_id: str, source_path: str | None = None) -> dict[str, object]:
+    return {
+        "chartId": chart_id,
+        "sourcePath": source_path or f"analysis/charts/{chart_id}.png",
+        "title": chart_id,
+        "altText": f"{chart_id} chart",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["metric-1"],
+        "currentPeriod": "2026",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+
+
+def make_file_identity(path: str) -> dict[str, object]:
+    return {"path": path, "size": 1, "sha256": "a" * 64}
+
+
+def submit_section(
+    state: ReportingRunState,
+    section_code: str,
+    *,
+    chart_id: str = "chart_a",
+    source_path: str | None = None,
+) -> ReportingRunState:
+    return ReportingStateReducer.apply(
+        state,
+        {
+            "name": "submit_visualization_charts",
+            "commandId": f"submit-{section_code}",
+            "payload": {
+                "sectionCode": section_code,
+                "charts": [make_chart_registration(chart_id, source_path)],
+                "files": [],
+            },
+        },
+        state.state_version,
+    ).state
+
+
+def register_charts_state() -> ReportingRunState:
+    state = make_visualization_state()
+    return ReportingStateReducer.apply(
+        state,
+        {
+            "name": "register_charts",
+            "commandId": "register-charts",
+            "payload": {"charts": [{"chartId": "chart_a", "sha256": "a" * 64}]},
+        },
+        state.state_version,
+    ).state
+
+
+def state_with_chart(chart_id: str, section_code: str) -> ReportingRunState:
+    return submit_section(make_visualization_state(), section_code, chart_id=chart_id)
+
+
+def make_submit_command(section_code: str) -> dict[str, object]:
+    return {
+        "name": "submit_visualization_charts",
+        "commandId": f"submit-{section_code}",
+        "payload": {"sectionCode": section_code, "charts": [], "files": []},
+    }
+
+
 def test_repository_requires_postgresql() -> None:
     database = SimpleNamespace(db_engine=SimpleNamespace(dialect=SimpleNamespace(name="sqlite")))
 
     with pytest.raises(ValueError, match="只支持 PostgreSQL"):
         ReportingStateRepository(database)  # type: ignore[arg-type]
+
+
+def test_submit_visualization_charts_persists_section_submission() -> None:
+    result = ReportingStateReducer.apply(
+        make_visualization_state(),
+        {
+            "name": "submit_visualization_charts",
+            "commandId": "viz-section:1:section_001:abc",
+            "payload": {
+                "sectionCode": "section_001",
+                "charts": [make_chart_registration("chart_a")],
+                "files": [make_file_identity("charts/section_001/attempt-1/chart_a.png")],
+            },
+        },
+    )
+
+    payload = result.state.payload
+    assert payload["visualizationSections"]["section_001"]["charts"][0]["chartId"] == "chart_a"
+    assert payload["visualizationSections"]["section_001"]["files"] == [
+        make_file_identity("charts/section_001/attempt-1/chart_a.png")
+    ]
+    assert "section_001" in payload["completedVisualizationSections"]
+
+
+def test_submit_visualization_charts_allows_empty_charts() -> None:
+    result = ReportingStateReducer.apply(
+        make_visualization_state(),
+        {
+            "name": "submit_visualization_charts",
+            "commandId": "viz-section:1:section_002:empty",
+            "payload": {"sectionCode": "section_002", "charts": [], "files": []},
+        },
+    )
+
+    payload = result.state.payload
+    assert payload["visualizationSections"]["section_002"] == {"charts": [], "files": []}
+    assert "section_002" in payload["completedVisualizationSections"]
+
+
+def test_submit_visualization_charts_rejects_cross_section_duplicate() -> None:
+    state = state_with_chart("chart_a", "section_001")
+    with pytest.raises(ReportingStateError) as exc_info:
+        ReportingStateReducer.apply(
+            state,
+            {
+                "name": "submit_visualization_charts",
+                "commandId": "viz-section:1:section_002:def",
+                "payload": {
+                    "sectionCode": "section_002",
+                    "charts": [make_chart_registration("chart_a")],
+                    "files": [],
+                },
+            },
+        )
+    assert exc_info.value.code == "report_visualization_section_conflict"
+
+
+def test_submit_visualization_charts_rejects_cross_section_duplicate_source_path() -> None:
+    source_path = "analysis/charts/shared.png"
+    state = submit_section(
+        make_visualization_state(),
+        "section_001",
+        chart_id="chart_a",
+        source_path=source_path,
+    )
+
+    with pytest.raises(ReportingStateError) as exc_info:
+        ReportingStateReducer.apply(
+            state,
+            {
+                "name": "submit_visualization_charts",
+                "commandId": "viz-section:1:section_002:source-path-conflict",
+                "payload": {
+                    "sectionCode": "section_002",
+                    "charts": [make_chart_registration("chart_b", source_path)],
+                    "files": [],
+                },
+            },
+        )
+
+    assert exc_info.value.code == "report_visualization_section_conflict"
+
+
+def test_submit_visualization_charts_blocked_after_registration_closed() -> None:
+    with pytest.raises(ReportingStateError):
+        ReportingStateReducer.apply(register_charts_state(), make_submit_command("section_003"))
+
+
+def test_submit_visualization_charts_rejects_malformed_top_level_payload() -> None:
+    with pytest.raises(ReportingStateError) as exc_info:
+        ReportingStateReducer.apply(
+            make_visualization_state(),
+            {
+                "name": "submit_visualization_charts",
+                "commandId": "viz-section:1:malformed-top-level",
+                "payload": {
+                    "sectionCode": "section_001",
+                    "charts": {},
+                    "files": [],
+                },
+            },
+        )
+
+    assert exc_info.value.code == "report_visualization_section_invalid"
+
+
+def test_submit_visualization_charts_rejects_malformed_chart_and_file_payload() -> None:
+    with pytest.raises(ReportingStateError) as exc_info:
+        ReportingStateReducer.apply(
+            make_visualization_state(),
+            {
+                "name": "submit_visualization_charts",
+                "commandId": "viz-section:1:malformed-items",
+                "payload": {
+                    "sectionCode": "section_001",
+                    "charts": [{"chartId": "chart_a"}],
+                    "files": [{"path": "charts/chart_a.png", "size": 0, "sha256": "invalid"}],
+                },
+            },
+        )
+
+    assert exc_info.value.code == "report_visualization_section_invalid"
+
+
+def test_submit_visualization_charts_rejects_malformed_file_identity() -> None:
+    with pytest.raises(ReportingStateError) as exc_info:
+        ReportingStateReducer.apply(
+            make_visualization_state(),
+            {
+                "name": "submit_visualization_charts",
+                "commandId": "viz-section:1:malformed-file",
+                "payload": {
+                    "sectionCode": "section_001",
+                    "charts": [make_chart_registration("chart_a")],
+                    "files": [{"path": "charts/chart_a.png", "size": 1, "sha256": "invalid"}],
+                },
+            },
+        )
+
+    assert exc_info.value.code == "report_visualization_section_invalid"
 
 
 def _integration_database_url() -> str:
@@ -984,3 +1199,101 @@ async def test_repository_rejects_legacy_schema_row(state_repository):
         )
     with pytest.raises(ReportingStateVersionUnsupported):
         await state_repository.get(state.report_run_id)
+
+
+def _minimal_checkpoint_payload() -> dict[str, object]:
+    """构造仅含必填字段的合法 v2 checkpoint 载荷,供 Schema 兼容性测试复用。"""
+    return {
+        "revision": 1,
+        "phase": "analysis",
+        "outlineHash": "0" * 64,
+        "profileCoverage": {
+            "authorizedDatasetCount": 1,
+            "coveredDatasetCount": 1,
+            "datasets": [
+                {
+                    "datasetId": "d1",
+                    "datasetPath": "d.csv",
+                    "datasetSize": 1,
+                    "datasetSnapshotHash": "1" * 64,
+                    "profileFile": {"path": "p.json", "size": 1, "sha256": "2" * 64},
+                    "rowCount": 1,
+                    "fieldCount": 1,
+                    "fields": ["x"],
+                }
+            ],
+        },
+    }
+
+
+def test_checkpoint_error_accepts_visualization_section_work_kind() -> None:
+    # 章节身份写入 sectionCode,analysisId 保持 analysis_NNN pattern 不变
+    error = CheckpointError.model_validate(
+        {
+            "phase": "analysis",
+            "code": "report_analysis_phase_failed",
+            "message": "章节图表 worker 失败。",
+            "workKind": "visualization_section",
+            "sectionCode": "section_001",
+        }
+    )
+    assert error.work_kind == "visualization_section"
+    assert error.section_code == "section_001"
+    assert error.analysis_id is None
+
+
+def test_checkpoint_error_rejects_section_code_in_analysis_id() -> None:
+    with pytest.raises(ValidationError):
+        CheckpointError.model_validate(
+            {
+                "phase": "analysis",
+                "code": "x",
+                "message": "m",
+                "workKind": "visualization_section",
+                "analysisId": "section_001",
+            }
+        )
+
+
+def test_checkpoint_error_accepts_visualization_finalize() -> None:
+    error = CheckpointError.model_validate(
+        {"phase": "analysis", "code": "x", "message": "m", "workKind": "visualization_finalize"}
+    )
+    assert error.work_kind == "visualization_finalize"
+
+
+def test_context_trace_accepts_new_work_kinds() -> None:
+    trace = ContextTrace.model_validate(
+        {
+            "phase": "analysis",
+            "workKind": "visualization_section",
+            "sectionCode": "section_001",
+            "attempt": 0,
+        }
+    )
+    assert trace.work_kind == "visualization_section"
+    finalize = ContextTrace.model_validate(
+        {"phase": "analysis", "workKind": "visualization_finalize", "attempt": 0}
+    )
+    assert finalize.work_kind == "visualization_finalize"
+
+
+@pytest.mark.parametrize("model", [CheckpointError, ContextTrace])
+def test_old_visualization_work_kind_is_rejected(
+    model: type[CheckpointError | ContextTrace],
+) -> None:
+    payload = {"phase": "analysis", "workKind": "visualization"}
+    if model is CheckpointError:
+        payload.update({"code": "x", "message": "m"})
+
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
+
+
+def test_checkpoint_visualization_section_errors_default_empty() -> None:
+    checkpoint = ReportingCheckpoint.model_validate(_minimal_checkpoint_payload())
+    assert checkpoint.visualization_section_errors == {}
+    # 历史 checkpoint(无该字段)反序列化后必须仍是合法模型
+    payload = checkpoint.model_dump(mode="json", by_alias=True)
+    payload.pop("visualizationSectionErrors")
+    assert ReportingCheckpoint.model_validate(payload).visualization_section_errors == {}

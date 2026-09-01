@@ -159,6 +159,7 @@ _REPORT_TOOL_RUN_ERROR_ATTR = "_agentos_reporting_tool_run_error"
 # visualization 使用 64K；仍不直接放开到全局 reserve，避免兼容后端过量预分配。
 _REPORT_ANALYSIS_ITEM_OUTPUT_TOKEN_LIMIT = 16 * 1024
 _REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT = 64 * 1024
+_REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024
 _REPORT_SECTION_OUTPUT_TOKEN_LIMIT = 16 * 1024
 # 历史真实 Reporting CLI 中，成功模型调用 P99 约 69 秒、最长约 135 秒；单个
 # 后端异常却可能持续数分钟才返回。Worker 仍保留既有一次同 run continuation，
@@ -262,7 +263,7 @@ def _visualization_skill_cache_key(
         return None
     if reporting_phase_from_run_context(run_context) != "analysis":
         return None
-    if reporting_task_kind_from_run_context(run_context) != "visualization":
+    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
         return None
     dependencies = run_context.dependencies if isinstance(run_context.dependencies, Mapping) else {}
     binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
@@ -574,7 +575,7 @@ def _visualization_exploration_budget_receipt(
 ) -> dict[str, Any] | None:
     if (
         reporting_phase_from_run_context(run_context) != "analysis"
-        or reporting_task_kind_from_run_context(run_context) != "visualization"
+        or reporting_task_kind_from_run_context(run_context) != "visualization_section"
     ):
         return None
     # fresh recovery 只允许 read_file/read_tool_output 恢复已提交脚本；实际路径仍由
@@ -641,8 +642,7 @@ def _visualization_exploration_budget_receipt(
             "failureFingerprint": failure_fingerprint,
             "visualizationUsage": usage,
             "allowedTerminalTools": [
-                "register_report_charts",
-                "finalize_report_analysis",
+                "submit_visualization_charts",
             ],
         },
     }
@@ -655,7 +655,7 @@ def _reporting_visualization_tool_budget(
     if (
         function_name in {"register_report_charts", "finalize_report_analysis"}
         or reporting_phase_from_run_context(run_context) != "analysis"
-        or reporting_task_kind_from_run_context(run_context) != "visualization"
+        or reporting_task_kind_from_run_context(run_context) != "visualization_section"
     ):
         # register/finalize 是可视化阶段的终态提交，不得被此前的探索调用挤占。
         # 图表登记仍受 durable registration 与 no-progress 门禁约束，重复提交不会绕过验收。
@@ -980,12 +980,12 @@ def _stop_exhausted_reporting_tool_budget(
     }
     code = (
         "report_visualization_tool_budget_exhausted"
-        if task_kind == "visualization"
+        if task_kind in {"visualization_section", "visualization_finalize"}
         else "report_analysis_tool_budget_exhausted"
     )
     message = (
         "当前可视化 Task 已达到成功工具调用上限，已停止本次 run。"
-        if task_kind == "visualization"
+        if task_kind in {"visualization_section", "visualization_finalize"}
         else "当前分析项已达到成功工具调用上限，已停止本次 run。"
     )
     error = ReportingError(
@@ -1552,7 +1552,7 @@ async def normalize_reporting_tool_arguments(
     ):
         _stop_analysis_fact_query_budget(run_context)
     if (
-        task_kind == "visualization"
+        task_kind == "visualization_finalize"
         and function_name != "finalize_report_analysis"
         and (
             (
@@ -1598,8 +1598,7 @@ async def normalize_reporting_tool_arguments(
         if reporting_visual_inspection_mode_from_run_context(run_context) == "vision":
             details["allowedTerminalTools"] = [
                 "inspect_chart",
-                "register_report_charts",
-                "finalize_report_analysis",
+                "submit_visualization_charts",
             ]
         error = ReportingError(
             exploration_receipt["code"],
@@ -1698,7 +1697,7 @@ async def normalize_reporting_tool_arguments(
     succeeded = isinstance(result, dict) and result.get("ok") is True
     if (
         succeeded
-        and task_kind == "visualization"
+        and task_kind == "visualization_section"
         and function_name == "write_analysis_files"
         and isinstance(state, dict)
     ):
@@ -1708,7 +1707,7 @@ async def normalize_reporting_tool_arguments(
         _cache_visualization_skill_result(run_context, skill_cache_key, function_name, result)
     if (
         succeeded
-        and task_kind == "visualization"
+        and task_kind == "visualization_finalize"
         and function_name == "register_report_charts"
         and isinstance(state, dict)
     ):
@@ -1947,7 +1946,7 @@ def _visualization_production_tool_allowed(
 ) -> bool:
     if reporting_task_kind_from_run_context(
         run_context
-    ) != "visualization" or not reporting_visualization_production_only_from_run_context(
+    ) != "visualization_section" or not reporting_visualization_production_only_from_run_context(
         run_context
     ):
         return True
@@ -1974,12 +1973,11 @@ def _visualization_lifecycle_tool_allowed(
 ) -> bool:
     """让模型 schema 与旧历史工具调用共享同一可视化生命周期门禁。"""
 
-    if reporting_task_kind_from_run_context(run_context) != "visualization":
+    if reporting_task_kind_from_run_context(run_context) != "visualization_section":
         return True
     state = _reporting_session_state(run_context)
     if (
-        isinstance(state, Mapping)
-        and state.get(_REPORT_VISUALIZATION_REGISTERED_STATE_KEY) is True
+        isinstance(state, Mapping) and state.get(_REPORT_VISUALIZATION_REGISTERED_STATE_KEY) is True
     ) or reporting_visualization_registered_from_run_context(run_context):
         return tool_name == "finalize_report_analysis"
     if tool_name == "process":
@@ -2023,7 +2021,7 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
             >= _analysis_fact_query_limit(run_context)
         )
         and not (
-            task_kind == "visualization"
+            task_kind == "visualization_section"
             and run_context is not None
             and name in REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES
             and not (
@@ -2038,7 +2036,7 @@ def _phase_filtered_report_tools(messages: list[Message], tools: Any) -> Any:
             )
         )
         and not (
-            task_kind == "visualization"
+            task_kind == "visualization_section"
             and not _visualization_production_tool_allowed(run_context, name)
         )
     ]
@@ -2217,7 +2215,9 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
         task_kind = reporting_task_kind_from_run_context(current_reporting_run_context())
         if task_kind == "analysis_item":
             output_limit = _REPORT_ANALYSIS_ITEM_OUTPUT_TOKEN_LIMIT
-        elif task_kind == "visualization":
+        elif task_kind == "visualization_section":
+            output_limit = _REPORT_VISUALIZATION_SECTION_OUTPUT_TOKEN_LIMIT
+        elif task_kind == "visualization_finalize":
             output_limit = _REPORT_VISUALIZATION_OUTPUT_TOKEN_LIMIT
         elif task_kind == "section":
             output_limit = _REPORT_SECTION_OUTPUT_TOKEN_LIMIT
@@ -2234,7 +2234,10 @@ class ReportingOpenAIChat(ProjectedOpenAIChat):
 
     @staticmethod
     def _phase_request_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-        if reporting_task_kind_from_run_context(current_reporting_run_context()) != "visualization":
+        if reporting_task_kind_from_run_context(current_reporting_run_context()) not in {
+            "visualization_section",
+            "visualization_finalize",
+        }:
             return kwargs
         # visualization 没有合法的纯文本终态，每一轮都必须通过当前生命周期投影出的
         # 工具推进。使用 Agno 公共 tool_choice 契约保留工具选择自由，同时阻止模型把
@@ -2643,7 +2646,12 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
         # 只留下可重载哈希并诱发重复读取；因此它直接使用 Reporting 已配置的输入预算。
         phase_cap = (
             REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP
-            if phase == "analysis" and task_kind != "visualization"
+            if phase == "analysis"
+            and task_kind
+            not in {
+                "visualization_section",
+                "visualization_finalize",
+            }
             else REPORTING_SECTION_INPUT_TOKEN_HARD_CAP
             if phase == "section"
             else None

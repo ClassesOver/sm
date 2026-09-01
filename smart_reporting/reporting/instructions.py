@@ -227,6 +227,62 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
     *HOSPITAL_REPORT_WRITING_INSTRUCTIONS,
 ]
 
+# 章节可视化 worker 只负责当前章节的脚本、执行和草案提交；图表身份登记与
+# ReportBrief 冻结必须留在独立的 finalize worker，避免并行章节互相覆盖全局账本。
+REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS = [
+    item
+    for item in REPORT_VISUALIZATION_AGENT_INSTRUCTIONS
+    if not any(
+        phrase in item
+        for phrase in (
+            "chartRegistrationRules",
+            "每张最终图表必须先调用 inspect_chart",
+            "汇总全部分析形成 ReportBrief",
+            "register_report_charts 返回成功",
+            "finalize_report_analysis 接受后",
+            "不得调用 register_report_charts 或 finalize_report_analysis",
+        )
+    )
+]
+REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS.extend(
+    [
+        (
+            "当前是 visualization_section Task，只处理任务 JSON 指定章节。脚本只能读取签发的"
+            " visualizationFacts 和 evidenceFiles，写入签发的 scriptPath 与 chartOutputRoot；"
+            "完成脚本并执行成功后，随后只调用一次 submit_visualization_charts 提交该章全部图表草案。"
+            "不得调用全局图表登记或分析冻结终态。"
+        ),
+    ]
+)
+
+# finalize worker 只消费服务端投影的全局语义目录和各章节草案，不再执行图表脚本或重新探索事实。
+REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS = [
+    item
+    for item in REPORT_VISUALIZATION_AGENT_INSTRUCTIONS
+    if any(
+        phrase in item
+        for phrase in (
+            "任务 JSON 的 visualizationFacts",
+            "chartRegistrationRules",
+            "任务 JSON 的 analysisCitationIds",
+            "deterministicFactFiles",
+            "汇总全部分析形成 ReportBrief",
+            "register_report_charts 返回成功",
+            "finalize_report_analysis 接受后",
+        )
+    )
+]
+REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS.extend(
+    [
+        (
+            "当前是 visualization_finalize Task。章节图表草案、ReportBrief、metricDefinitions、"
+            "datasetSemantics 和全局 Warning 必须按任务 JSON 的受信语义目录投影使用；"
+            "不得猜测、重建或扩大目录。只调用一次 register_report_charts 整批登记，"
+            "随后立即调用 finalize_report_analysis。不得提交章节草案。"
+        ),
+    ]
+)
+
 
 # 章节 run 已由 Workflow 投影为独立 SectionWorkItem，不再承担数据分析或工作区开发。
 # 这里单独声明最小指令集，避免通用 Coding、全局分析和 Skill 使用规则继续占用章节注意力；
@@ -298,17 +354,24 @@ def build_report_agent_instructions(run_context: RunContext) -> list[str]:
     task_kind = reporting_task_kind_from_run_context(run_context)
     if phase == "section":
         return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *REPORT_SECTION_AGENT_INSTRUCTIONS]
-    if task_kind == "visualization":
-        visualization = list(REPORT_VISUALIZATION_AGENT_INSTRUCTIONS)
+    if task_kind == "visualization_section":
+        visualization = list(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
         if reporting_visual_inspection_mode_from_run_context(run_context) == "deterministic":
-            visualization = [
-                item for item in visualization if "每张最终图表必须先调用 inspect_chart" not in item
-            ]
             visualization.append(
                 "本 Task 的 visualInspectionMode=deterministic：禁止调用 inspect_chart；"
-                "register_report_charts 会执行确定性图片文件检查，并如实记录未运行模型视觉审查。"
+                "submit_visualization_charts 会执行确定性图片文件检查。"
+            )
+        else:
+            visualization.append(
+                "本 Task 的 visualInspectionMode=vision：每张最终图表先调用 inspect_chart，"
+                "取得当前文件哈希绑定的通过回执。"
             )
         return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *visualization]
+    if task_kind == "visualization_finalize":
+        return [
+            *REPORT_WORKER_COMMON_INSTRUCTIONS,
+            *REPORT_VISUALIZATION_FINALIZE_AGENT_INSTRUCTIONS,
+        ]
     if task_kind == "analysis_item":
         return [*REPORT_WORKER_COMMON_INSTRUCTIONS, *REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS]
     raise ValueError("Reporting Worker 缺少受信 taskKind。")

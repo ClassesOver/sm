@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import json
+import textwrap
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,7 +30,7 @@ from smart_reporting.reporting.hospital_operation.outline import (
 )
 from smart_reporting.reporting.instructions import (
     REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS,
-    REPORT_VISUALIZATION_AGENT_INSTRUCTIONS,
+    REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS,
 )
 from smart_reporting.reporting.model_policy import (
     ReportingThinkingProfile,
@@ -533,8 +535,37 @@ def test_analysis_item_instructions_submit_facts_without_model_evidence() -> Non
     assert "不要给成功的脚本执行附加探测命令" in instructions
 
 
+def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:
+    source = textwrap.dedent(inspect.getsource(ReportWorkflowRuntime._run_analysis_item_task))
+    tree = ast.parse(source)
+    string_keys = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+
+    assert "analysisPlans" in string_keys
+    assert "detailedAnalysisPlan" not in string_keys
+
+
+def test_instruction_component_bytes_reports_sizes_without_content() -> None:
+    payload = {
+        "currentAnalysis": {"summary": "收入"},
+        "deterministicFacts": {"facts": [1, 2]},
+        "analysisContextFile": {"path": "facts.json", "size": 10},
+        "ignoredField": {"secret": "不应记录"},
+    }
+
+    sizes = ReportWorkflowRuntime._instruction_component_bytes(payload)
+
+    assert sizes["current_analysis"] == len('{"summary":"收入"}'.encode())
+    assert sizes["deterministic_facts"] == len('{"facts":[1,2]}')
+    assert sizes["analysis_context_file"] == len('{"path":"facts.json","size":10}')
+    assert "ignoredField" not in sizes
+
+
 def test_visualization_instructions_fail_closed_for_untrusted_or_missing_chart_data() -> None:
-    instructions = "\n".join(REPORT_VISUALIZATION_AGENT_INSTRUCTIONS)
+    instructions = "\n".join(REPORT_VISUALIZATION_SECTION_AGENT_INSTRUCTIONS)
 
     assert "未签发文件" in instructions
     assert "缺失、为空或无法解析" in instructions
