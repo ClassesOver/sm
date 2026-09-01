@@ -113,8 +113,6 @@ class ReportChartRegistration(StrictModel):
         if self.comparability == "reference_only":
             if self.comparison_type in {"yoy", "mom"}:
                 raise ValueError("reference_only 图表不得声明严格同比或环比")
-            if "参考" not in self.title or "参考" not in self.alt_text:
-                raise ValueError("reference_only 图表标题和图注必须明确标记为参考")
         return self
 
 

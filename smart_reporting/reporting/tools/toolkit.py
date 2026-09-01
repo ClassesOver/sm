@@ -43,12 +43,17 @@ from ..workflow.checkpoint import (
     SectionClaimSubmission,
 )
 from ..workflow.repository import ReportingStateRepository
-from ..workflow.state import ReportingCommand, ReportingRunState, ReportingStateError
+from ..workflow.state import (
+    ReportingCommand,
+    ReportingReducerResult,
+    ReportingRunState,
+    ReportingStateError,
+)
 from .analysis import MAX_VISUALIZATION_SCRIPT_BYTES, RuntimeAnalysisMixin
 from .capabilities import tools_for_task
 from .profile import MAX_PROFILE_POINTER_ITEMS, RuntimeProfileMixin
 from .sections import RuntimeSectionsMixin
-from .validation import ANALYSIS_WRITE_TOOL_NAMES, _analysis_write_parameters
+from .validation import analysis_file_write_parameters
 
 REPORT_WORKER_TOOLKIT_INSTRUCTIONS = (
     "当前 Reporting Task 只能使用本轮实际注册的工具；未注册工具不存在。\n"
@@ -86,7 +91,7 @@ def _stop_after_finished_phase_call(fc: Any) -> None:
 
     fc.function.stop_after_tool_call = bool(
         isinstance(fc.result, dict)
-        and fc.result.get("status") == "accepted"
+        and fc.result.get("ok") is True
         and fc.result.get("taskFinished") is True
     )
 
@@ -113,9 +118,10 @@ class ReportWorkspaceTaskToolkit(
         allowed_tools = tools_for_task(phase, task_kind)
         self._assembly_allowed_tools = allowed_tools
         self._assembly_internal_tools = {"finish_task"}
-        if phase == "analysis":
-            self._assembly_internal_tools.update(ANALYSIS_WRITE_TOOL_NAMES)
         super().__init__(*args, **kwargs)
+        for hidden_tool_name in ("create_files", "overwrite_file", "replace_text", "apply_patch"):
+            self.functions.pop(hidden_tool_name, None)
+            self.async_functions.pop(hidden_tool_name, None)
         # Reporting 在 finalize 后由 Workflow 继续执行独立产物验收。Worker 收尾只绑定
         # 当前产物哈希，不重复要求 verify 或执行 Task acceptance validator。
         self.kernel.require_finish_verification = False
@@ -157,22 +163,19 @@ class ReportWorkspaceTaskToolkit(
         self.instructions = "\n".join(reporting_instruction_lines)
         self.register(
             Function(
-                name="write_analysis_files",
+                name="create_or_write_analysis_file",
                 description=(
-                    "执行一次 analysis 文件写入；服务端保存写入意图，完成写入和 SHA-256 "
-                    "校验后提交意图。公开参数必须使用扁平格式，不得嵌套 arguments："
-                    '{"operation":"create_file","path":"analysis/report.py",'
-                    '"content":"def main():\\n    pass\\n"}。'
-                    "create_file 的 content 可以一次提交完整长脚本，整体受 4 MiB 写入意图"
-                    "上限约束。后续精确修改使用 apply_patch/replace_text。"
+                    "创建或 CAS 覆盖一个 analysis 文件。首次创建仅传 path 和 content；"
+                    "覆盖已有文件必须额外传入当前 expected_sha256。服务端保存写入意图，"
+                    "完成写入和 SHA-256 校验后提交意图。"
                 ),
                 parameters=(
-                    _analysis_write_parameters(self.async_functions)
+                    analysis_file_write_parameters()
                     if phase != "section"
                     else {"type": "object", "properties": {}, "additionalProperties": False}
                 ),
                 strict=True,
-                entrypoint=self.write_analysis_files,
+                entrypoint=self.create_or_write_analysis_file,
                 pre_hook=_reset_stop_after_tool_call,
                 post_hook=_stop_after_nonretryable_tool_call,
             )
@@ -517,33 +520,6 @@ class ReportWorkspaceTaskToolkit(
         )
         self.register(
             Function(
-                name="submit_visualization_charts",
-                description=(
-                    "提交当前 visualization_section 的全部图表草案并结束该章节 worker；"
-                    "允许 charts 为空。每张图必须先调用 inspect_chart，且必须来自当前章节"
-                    "签发的 chartOutputRoot。"
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "sectionCode": {"type": "string", "minLength": 1, "maxLength": 128},
-                        "charts": {
-                            "type": "array",
-                            "maxItems": 100,
-                            "items": ReportChartRegistration.model_json_schema(by_alias=True),
-                        },
-                    },
-                    "required": ["sectionCode", "charts"],
-                    "additionalProperties": False,
-                },
-                strict=True,
-                entrypoint=self.submit_visualization_charts,
-                pre_hook=_reset_stop_after_tool_call,
-                post_hook=_stop_after_nonretryable_tool_call,
-            )
-        )
-        self.register(
-            Function(
                 name="register_report_charts",
                 description=(
                     "在图表源文件最终定稿后一次登记 Coding 根据本轮不可变 CSV 生成的报告图表；"
@@ -613,7 +589,8 @@ class ReportWorkspaceTaskToolkit(
                 name="submit_visualization_charts",
                 description=(
                     "提交当前 visualization_section 章节生成的全部图表草案；允许提交空数组，"
-                    "vision 模式下每张图必须先调用 inspect_chart；服务端会检查每个图表文件身份"
+                    "每张图必须先调用 inspect_chart，且必须来自当前章节签发的 chartOutputRoot；"
+                    "服务端会检查每个图表文件身份"
                     "并按章节持久化，成功后结束当前 Task。"
                 ),
                 parameters={
@@ -1232,14 +1209,16 @@ class ReportWorkspaceTaskToolkit(
             )
         return None
 
-    async def _apply_durable(
+    async def _apply_durable_command(
         self,
         scope: Any,
         *,
         name: str,
         payload: dict[str, Any],
         command_id: str,
-    ) -> ReportingRunState:
+    ) -> ReportingReducerResult:
+        """应用持久化 command，并保留 CAS 重试后的幂等语义。"""
+
         command = ReportingCommand(name=name, payload=payload, commandId=command_id)
         for _ in range(3):
             state = await self._durable_state(scope)
@@ -1249,12 +1228,30 @@ class ReportWorkspaceTaskToolkit(
                     command,
                     expected_version=state.state_version,
                 )
-                return result.state
+                return result
             except ReportingStateError as error:
                 if error.code == "report_state_conflict":
                     continue
                 raise ReportingError(error.code, error.message) from error
         raise ReportingError("report_state_conflict", "Reporting 状态并发更新冲突，请重试。")
+
+    async def _apply_durable(
+        self,
+        scope: Any,
+        *,
+        name: str,
+        payload: dict[str, Any],
+        command_id: str,
+    ) -> ReportingRunState:
+        """兼容既有工具调用方，只返回持久化后的状态。"""
+
+        result = await self._apply_durable_command(
+            scope,
+            name=name,
+            payload=payload,
+            command_id=command_id,
+        )
+        return result.state
 
     async def _invoke(
         self,
@@ -1462,14 +1459,9 @@ class ReportWorkspaceTaskToolkit(
                     "currentFiles": error.details.get("currentFiles", []),
                     "recoveryOperation": error.details.get("recoveryOperation"),
                 }
-            if error.details.get("recoveryOperation") == "overwrite_file":
-                result["requiredActions"] = [
-                    "只使用 details.currentFiles 中当前 64 位 sha256 调用 overwrite_file；不得用 create_file 覆盖。"
-                ]
-            else:
-                result["requiredActions"] = [
-                    "只基于 details.currentFiles 对当前内容提交非空 apply_patch；不得提交空 patch。"
-                ]
+            result["requiredActions"] = [
+                "只使用 details.currentFiles 中当前 64 位 sha256 调用 create_or_write_analysis_file 覆盖。"
+            ]
         elif (
             code == "report_analysis_dependency_missing"
             and isinstance(error, ReportingError)
@@ -1535,16 +1527,16 @@ class ReportWorkspaceTaskToolkit(
             result["requiredActions"] = ["仅修正 validationErrors 指向的字段后重新调用当前工具。"]
         elif code == "report_analysis_evidence_missing":
             result["requiredActions"] = [
-                "先使用 write_analysis_files 写入真实 evidence，再重试当前 analysis 提交。"
+                "先使用 create_or_write_analysis_file 写入真实 evidence，再重试当前 analysis 提交。"
             ]
         elif code == "report_analysis_evidence_not_registered":
             result["requiredActions"] = [
-                "通过 write_analysis_files 对 details.missingRegistration 中的文件做幂等登记，"
+                "通过 create_or_write_analysis_file 对 details.missingRegistration 中的文件做幂等登记，"
                 "再重试当前 analysis 提交。"
             ]
         elif code == "report_analysis_evidence_identity_mismatch":
             result["requiredActions"] = [
-                "文件已在登记后发生变化；通过 write_analysis_files 提交当前内容和 SHA-256，"
+                "文件已在登记后发生变化；通过 create_or_write_analysis_file 提交当前内容和 SHA-256，"
                 "再重试当前 analysis 提交。"
             ]
         elif code == "report_analysis_dependency_missing":

@@ -5,29 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
-from copy import deepcopy
 from typing import Any
 
 import jmespath
-from agno.tools import Function
 from jsonpointer import EndOfList, JsonPointer, JsonPointerException, escape
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
 from ..models import ReportingError
 
-ANALYSIS_WRITE_TOOL_NAMES = frozenset(
-    {"overwrite_file", "replace_text", "create_files", "apply_patch"}
-)
-ANALYSIS_WRITE_PUBLIC_TOOL_NAMES = frozenset(
-    {"create_file", "overwrite_file", "replace_text", "apply_patch"}
-)
-_ANALYSIS_WRITE_OPERATION_FIELDS = {
-    "create_file": frozenset({"path", "content"}),
-    "overwrite_file": frozenset({"path", "content", "expected_sha256"}),
-    "replace_text": frozenset({"path", "old_string", "new_string", "replace_all"}),
-    "apply_patch": frozenset({"patch"}),
-}
 JMESPATH_FUNCTION_NAMES = tuple(sorted(jmespath.functions.Functions.FUNCTION_TABLE))
 
 
@@ -37,79 +22,26 @@ def _stable_digest(value: Any) -> str:
     ).hexdigest()
 
 
-def _analysis_write_parameters(functions: Mapping[str, Function]) -> dict[str, Any]:
-    """从底层 Function 生成唯一的扁平写入 schema。"""
+def analysis_file_write_parameters() -> dict[str, Any]:
+    """返回唯一的 analysis 文件 CAS 写入 schema。"""
 
-    schemas: dict[str, dict[str, Any]] = {}
-    for tool_name in ANALYSIS_WRITE_TOOL_NAMES:
-        function = functions.get(tool_name)
-        if function is None or not isinstance(function.parameters, dict):
-            raise RuntimeError(f"缺少 analysis 写入原语 schema: {tool_name}")
-        schemas[tool_name] = deepcopy(function.parameters)
-    create_files = schemas["create_files"]["properties"]["files"]
-    create_files["maxItems"] = 1
-    create = create_files["items"]["properties"]
-    create["content"]["description"] = (
-        "完整文件内容。长脚本使用 content 单字符串一次提交；整体受 4 MiB 写入意图上限约束。"
-    )
-    overwrite = schemas["overwrite_file"]["properties"]
-    replace = schemas["replace_text"]["properties"]
-    patch = schemas["apply_patch"]["properties"]
     return {
         "type": "object",
         "properties": {
-            "operation": {
+            "path": {"type": "string", "minLength": 1},
+            "content": {
                 "type": "string",
-                "enum": sorted(ANALYSIS_WRITE_PUBLIC_TOOL_NAMES),
-                "description": (
-                    "选择一次写入操作。所有字段直接放在最外层，不得嵌套 arguments。"
-                    "新建完整脚本示例："
-                    '{"operation":"create_file","path":"analysis/report.py",'
-                    '"content":"def main():\\n    pass\\n"}。'
-                ),
+                "description": "完整文件内容；单次调用总写入意图不超过 4 MiB。",
             },
-            "path": deepcopy(create["path"]),
-            "content": deepcopy(create["content"]),
-            "expected_sha256": deepcopy(overwrite["expected_sha256"]),
-            "old_string": deepcopy(replace["old_string"]),
-            "new_string": deepcopy(replace["new_string"]),
-            "replace_all": deepcopy(replace["replace_all"]),
-            "patch": deepcopy(patch["patch"]),
+            "expected_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "description": "仅覆盖已有文件时提供其当前 SHA-256。",
+            },
         },
-        "required": ["operation"],
+        "required": ["path", "content"],
         "additionalProperties": False,
     }
-
-
-def _canonical_analysis_write_call(
-    tool_name: str,
-    arguments: Mapping[str, Any],
-) -> tuple[str, dict[str, Any]]:
-    """把公开简化入口映射到唯一的底层写入原语。"""
-
-    raw = deepcopy(dict(arguments))
-    if tool_name != "create_file":
-        return tool_name, raw
-    return "create_files", {"files": [raw]}
-
-
-def _analysis_write_operation_arguments(
-    operation: str,
-    arguments: Mapping[str, Any],
-) -> dict[str, Any]:
-    """清除兼容模型为其他写入分支补出的中性空值，保留真实冲突供严格校验拒绝。"""
-
-    allowed = _ANALYSIS_WRITE_OPERATION_FIELDS.get(operation, frozenset())
-    normalized: dict[str, Any] = {}
-    for key, value in arguments.items():
-        # 公开入口是扁平 schema，模型可能同时填充其他操作的字段；操作已经
-        # 明确选择后，只把当前分支字段映射到底层原语，避免无关字段触发严格 schema。
-        if key not in allowed:
-            continue
-        if value is None:
-            continue
-        normalized[key] = value
-    return normalized
 
 
 def _jmespath_reporting_error(

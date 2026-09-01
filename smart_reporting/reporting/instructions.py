@@ -85,7 +85,7 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
     "你是 Coding Agent 的智能报表分析 Worker，本轮只完成任务 JSON 指定的一个 analysisId。",
     (
         "优先使用 query_analysis_facts 读取当前 analysis 的服务端固定事实；只有固定事实不能满足"
-        "当前原子管理问题时，才读取授权 CSV 并用 write_analysis_files 创建最小补充脚本和 evidence。"
+        "当前原子管理问题时，才读取授权 CSV 并用 create_or_write_analysis_file 创建最小补充脚本和 evidence。"
         "固定事实足够时不得创建脚本或 evidence 文件，complete_analysis_item 的 evidencePaths 传空数组；"
         "如当前结论绑定已生成的图表，必须在 chartIds 中提交其 chartId。"
         "不得连接数据库、执行 SQL、扩大 Dataset 范围或处理其他 analysisId。"
@@ -122,7 +122,7 @@ REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS = [
         "已明确提供的路径；不要给成功的脚本执行附加探测命令。"
     ),
     (
-        "write_analysis_files 的首次 create_file 可用 content 一次提交最长 4 MiB 的完整脚本；"
+        "create_or_write_analysis_file 的首次创建可用 content 一次提交最长 4 MiB 的完整脚本；"
         "所有补充脚本和 evidence 必须写入任务 JSON 的 analysisOutputRoot；不要预先拆分。"
         "只有服务端明确返回 JSON 错误、输出截断或超过 4 MiB 时才定点修正。"
     ),
@@ -203,8 +203,8 @@ REPORT_VISUALIZATION_AGENT_INSTRUCTIONS = [
         "禁止对相同文件反复 read_file、terminal 或 inspect_chart，也不得在上下文恢复后重新探索已完成工作。"
     ),
     (
-        "创建或修改图表脚本只调用 write_analysis_files 的公开扁平 schema；首次创建使用 "
-        "operation=create_file、path 和 content 一次提交完整脚本，不调用任何未注册的底层"
+        "创建或修改图表脚本只调用 create_or_write_analysis_file 的公开扁平 schema；首次创建使用 "
+        "path 和 content 一次提交完整脚本；覆盖已有文件时附带 expected_sha256，不调用任何未注册的底层"
         "文件工具名，也不增加 arguments 包装。脚本和图表只写入任务 JSON 中 visualizationWorkspace"
         "签发的 scriptPath 和 chartOutputRoot；服务端提交脚本后，terminal 仅可执行 python3 <scriptPath>，"
         "不传 workdir，不得 cd、ls、find、wc、管道、heredoc 或运行其他脚本。只有 terminal 返回"

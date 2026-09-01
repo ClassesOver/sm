@@ -53,7 +53,6 @@ def build_report_worker_tools(
         # Toolkit、工具说明和模型 schema 使用同一最小能力集。执行入口仍保留受信
         # phase 复核，不能通过直接方法调用绕过服务端边界。finish_task 是阶段提交
         # 工具在服务端收尾时依赖的内部函数对象，即使当前模型不应直接调用，也不能
-        # 从 Toolkit 删除；write_analysis_files 同样依赖四个底层写入原语完成校验与
-        # 提交。模型请求层会按 phase 白名单继续隐藏这些内部依赖。
+        # 从 Toolkit 删除；analysis 写入只保留单一 CAS 入口，底层 Kernel 不作为模型工具。
         toolkit.instructions = REPORT_WORKER_TOOLKIT_INSTRUCTIONS
     return [toolkit]

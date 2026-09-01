@@ -15,8 +15,7 @@
 
 ## Skills 使用
 
-- 修改 Agno 或 AgentOS 时使用 `agno`，涉及 API 名称、参数、版本或升级时同时使用 `agno-docs` 核对官方文档。
-- 编写或评审 React 代码时使用 `vercel-react-best-practices`；做明确的 UI、UX 或可访问性审查时再使用 `web-design-guidelines`。
+- 修改 Agno 或 AgentOS 时使用 `agno`，涉及 API 名称、参数、版本或升级时同时使用 `agno` 核对官方文档。
 - 编写 Python 测试或调整 pytest 结构时使用 `python-testing-patterns`。
 - 仅在用户明确要求安全审查、安全报告或 secure-by-default 实现时使用 `security-best-practices`。
 - 修改跨端浏览器流程、Playwright 配置或用例时使用 `playwright-best-practices`。

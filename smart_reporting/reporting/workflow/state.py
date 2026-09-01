@@ -558,9 +558,31 @@ def apply(
         sections = payload.setdefault("visualizationSections", {})
         if not isinstance(sections, dict):
             raise ReportingStateError("report_state_invalid", "visualizationSections 状态损坏。")
+        # 工具层的预检只覆盖其读取到的快照；CAS 冲突重试会把同一 command 送入这里的
+        # 最新状态。sectionCode 一旦落库即为终态事实：完全一致的重放可继续走幂等路径，
+        # 任何 charts/files 差异都必须在写入前拒绝，不能由后来的提交覆盖原章节。
+        if section_code in sections:
+            existing_section = sections[section_code]
+            if not isinstance(existing_section, Mapping):
+                raise ReportingStateError(
+                    "report_state_invalid", "visualizationSections 状态损坏。"
+                )
+            existing_charts = existing_section.get("charts")
+            existing_files = existing_section.get("files")
+            if not isinstance(existing_charts, list) or not isinstance(existing_files, list):
+                raise ReportingStateError(
+                    "report_state_invalid", "visualizationSections 状态损坏。"
+                )
+            if existing_charts != parsed_charts or existing_files != parsed_files:
+                raise ReportingStateError(
+                    "report_visualization_section_conflict",
+                    "当前章节已提交不同的图表事实或文件身份。",
+                )
         existing_chart_ids: set[str] = set()
         existing_source_paths: set[str] = set()
-        for existing_section in sections.values():
+        for existing_section_code, existing_section in sections.items():
+            if existing_section_code == section_code:
+                continue
             if not isinstance(existing_section, Mapping):
                 raise ReportingStateError(
                     "report_state_invalid", "visualizationSections 状态损坏。"

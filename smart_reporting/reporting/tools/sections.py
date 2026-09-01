@@ -1400,6 +1400,50 @@ class RuntimeSectionsMixin:
                 )
             output_root = self._chart_output_root(phase_contract)
             parsed = tuple(ReportChartRegistration.model_validate(item) for item in charts)
+            serialized_charts = [
+                registration.model_dump(mode="json", by_alias=True) for registration in parsed
+            ]
+            warnings = []
+            for registration in parsed:
+                if registration.comparability != "reference_only":
+                    continue
+                missing_fields = [
+                    field_name
+                    for field_name, value in (
+                        ("title", registration.title),
+                        ("altText", registration.alt_text),
+                    )
+                    if "参考" not in value
+                ]
+                if missing_fields:
+                    warnings.append(
+                        {
+                            "code": "report_reference_only_marker_missing",
+                            "message": "reference_only 图表标题或图注缺少“参考”标记。",
+                            "details": {
+                                "chartId": registration.chart_id,
+                                "missingFields": missing_fields,
+                            },
+                        }
+                    )
+            durable = await self._durable_state(scope)
+            durable_payload = getattr(durable, "payload", {})
+            visualization_sections = (
+                durable_payload.get("visualizationSections", {})
+                if isinstance(durable_payload, dict)
+                else {}
+            )
+            existing = (
+                visualization_sections.get(sectionCode)
+                if isinstance(visualization_sections, dict)
+                else None
+            )
+            if isinstance(existing, dict):
+                if existing.get("charts") != serialized_charts:
+                    raise ReportingError(
+                        "report_visualization_section_conflict",
+                        "当前章节已提交不同的图表事实。",
+                    )
             inspected: list[dict[str, Any]] = []
             files: list[dict[str, Any]] = []
             for registration in parsed:
@@ -1416,9 +1460,22 @@ class RuntimeSectionsMixin:
                         sha256=identity["sha256"],
                     ).model_dump(mode="json", by_alias=True)
                 )
+            if isinstance(existing, dict):
+                if existing.get("files") != files:
+                    raise ReportingError(
+                        "report_visualization_section_conflict",
+                        "当前章节图表文件身份与已提交事实不一致。",
+                    )
+                return {
+                    "ok": True,
+                    "status": "already_committed",
+                    "sectionCode": sectionCode,
+                    "chartCount": len(inspected),
+                    "taskFinished": True,
+                    "warnings": warnings,
+                }
             digest = _stable_digest({"charts": inspected, "files": files})
-            durable = await self._durable_state(scope)
-            await self._apply_durable(
+            durable_result = await self._apply_durable_command(
                 scope,
                 name="submit_visualization_charts",
                 payload={"sectionCode": sectionCode, "charts": list(inspected), "files": files},
@@ -1428,9 +1485,11 @@ class RuntimeSectionsMixin:
             return self._failure(error)
         return {
             "ok": True,
-            "status": "committed",
+            "status": "already_committed" if durable_result.idempotent else "committed",
             "sectionCode": sectionCode,
             "chartCount": len(inspected),
+            "taskFinished": True,
+            "warnings": warnings,
         }
 
     async def render_report_section(

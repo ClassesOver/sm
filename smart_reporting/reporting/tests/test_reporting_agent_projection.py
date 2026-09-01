@@ -405,7 +405,7 @@ async def test_visualization_successful_script_write_records_recoverable_progres
 
     result = await normalize_reporting_tool_arguments(
         run_context,
-        "write_analysis_files",
+        "create_or_write_analysis_file",
         lambda: {"ok": True, "status": "committed"},
         {},
     )
@@ -629,7 +629,7 @@ def test_visualization_projection_hides_process_until_script_session_exists() ->
             "read_tool_output",
             "process",
             "terminal",
-            "write_analysis_files",
+            "create_or_write_analysis_file",
             "register_report_charts",
             "finalize_report_analysis",
         )
@@ -738,7 +738,7 @@ def test_visualization_recovery_projection_removes_exploration_tools() -> None:
             "read_file",
             "read_tool_output",
             "get_skill_reference",
-            "write_analysis_files",
+            "create_or_write_analysis_file",
             "terminal",
             "register_report_charts",
             "finalize_report_analysis",
@@ -753,7 +753,7 @@ def test_visualization_recovery_projection_removes_exploration_tools() -> None:
     assert [item["function"]["name"] for item in projected] == [
         "read_file",
         "read_tool_output",
-        "write_analysis_files",
+        "create_or_write_analysis_file",
         "terminal",
     ]
 
@@ -877,7 +877,7 @@ def test_analysis_recovery_projection_keeps_only_completion() -> None:
         for name in (
             "query_analysis_facts",
             "query_profile",
-            "write_analysis_files",
+            "create_or_write_analysis_file",
             "complete_analysis_item",
         )
     ]
@@ -1015,7 +1015,7 @@ def test_report_worker_instructions_exclude_generic_coding_tools(task_kind: str)
     assert "replace_text" not in instructions
     assert "git_status" not in instructions
     if task_kind == "visualization_section":
-        assert "只调用 write_analysis_files" in instructions
+        assert "只调用 create_or_write_analysis_file" in instructions
         assert "evidenceFiles[].path" in instructions
         assert "不得构造 analysis/evidence" in instructions
         assert '禁止假设 facts["analyses"]' in instructions
@@ -1143,29 +1143,32 @@ def test_visualization_instructions_require_readable_chart_layouts() -> None:
         assert phrase in instructions
 
 
-def test_visualization_skill_contains_readable_chart_guidance() -> None:
+def test_visualization_skill_preserves_chart_generation_invariants() -> None:
     skill_path = REPORTING_BUILTIN_SKILLS_DIR / "report-visualization" / "SKILL.md"
+    reference_dir = skill_path.parent / "references"
     skill = skill_path.read_text(encoding="utf-8")
 
     for phrase in (
-        "最短业务名称",
-        "完整科室/组织层级可放在正文、表格、脚注或图表说明中",
-        "Dataset 路径、血缘信息和其他内部标识不得进入坐标轴，也不得进入用户可见报告，只保留在 citation/审计元数据中",
+        "趋势与变化",
+        "结构与贡献",
+        "分布与关系",
+        "不可变数据复算",
+        "当前 Task 实际注册的工具",
         "不得泄露内部路径",
-        "业务期间可作为时间轴刻度",
-        "来源文件名或内部元数据中的冗长日期前缀、内部标识或路径不得进入坐标轴",
         "1200 x 675",
         "横向条形图",
-        "动态调整画布高度",
-        "TopN 或长标签",
-        "语义缩写或换行",
-        "紧凑对比图",
-        "哑铃图或表格",
-        "为标题、坐标轴、图例和标签保留清晰边界",
-        "不限制其他更合适的图形表达",
         "不构成固定模板或图表白名单",
+        "联系表只用于检查",
+        "visualization_section",
+        "visualization_finalize",
+        "visualInspectionMode",
+        "submit_visualization_charts",
+        "taskFinished",
+        "reference_only",
+        "参考",
     ):
         assert phrase in skill
+    assert not reference_dir.exists()
 
 
 def test_deterministic_visualization_instructions_forbid_inspect_chart() -> None:
@@ -1265,9 +1268,9 @@ def test_section_projection_does_not_add_analysis_receipt_ledger() -> None:
         assert _with_reporting_durable_identities(messages) is messages
 
 
-def test_malformed_write_analysis_files_raises_original_json_error() -> None:
+def test_malformed_create_or_write_analysis_file_raises_original_json_error() -> None:
     model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
-    raw_arguments = '{"toolName":"create_files","arguments":'
+    raw_arguments = '{"path":"analysis/report.py","content":'
     assistant = Message(
         role="assistant",
         tool_calls=[
@@ -1275,7 +1278,7 @@ def test_malformed_write_analysis_files_raises_original_json_error() -> None:
                 "id": "call-write-1",
                 "type": "function",
                 "function": {
-                    "name": "write_analysis_files",
+                    "name": "create_or_write_analysis_file",
                     "arguments": raw_arguments,
                 },
             }
@@ -1298,9 +1301,9 @@ def test_malformed_write_analysis_files_raises_original_json_error() -> None:
     assert messages[0].content == '{"phase":"analysis"}'
 
 
-def test_long_malformed_write_analysis_files_is_not_replaced_by_bounded_receipt() -> None:
+def test_long_malformed_create_or_write_analysis_file_is_not_replaced_by_bounded_receipt() -> None:
     model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
-    raw_arguments = '{"operation":"create_file","content":"' + ("x" * 2000)
+    raw_arguments = '{"path":"analysis/report.py","content":"' + ("x" * 2000)
     assistant = Message(
         role="assistant",
         tool_calls=[
@@ -1308,7 +1311,7 @@ def test_long_malformed_write_analysis_files_is_not_replaced_by_bounded_receipt(
                 "id": "call-write-long-invalid",
                 "type": "function",
                 "function": {
-                    "name": "write_analysis_files",
+                    "name": "create_or_write_analysis_file",
                     "arguments": raw_arguments,
                 },
             }
@@ -1324,7 +1327,7 @@ def test_long_malformed_write_analysis_files_is_not_replaced_by_bounded_receipt(
     assert len(messages) == 1
 
 
-def test_write_analysis_files_does_not_autofix_trailing_json_brace() -> None:
+def test_create_or_write_analysis_file_does_not_autofix_trailing_json_brace() -> None:
     model = ReportWorkerOpenAIChat(id="deepseek-v4-flash-0731", api_key="test")
     assistant = Message(
         role="assistant",
@@ -1333,11 +1336,8 @@ def test_write_analysis_files_does_not_autofix_trailing_json_brace() -> None:
                 "id": "call-write-2",
                 "type": "function",
                 "function": {
-                    "name": "write_analysis_files",
-                    "arguments": (
-                        '{"operation":"create_file","path":"analysis/report.py",'
-                        '"content":"pass\\n"}}'
-                    ),
+                    "name": "create_or_write_analysis_file",
+                    "arguments": ('{"path":"analysis/report.py","content":"pass\\n"}}'),
                 },
             }
         ],
@@ -2520,7 +2520,7 @@ def test_visualization_production_only_projection_keeps_only_production_tools() 
             "read_file",
             "read_tool_output",
             "get_skill_reference",
-            "write_analysis_files",
+            "create_or_write_analysis_file",
             "terminal",
             "inspect_chart",
             "view_image",
@@ -2535,7 +2535,7 @@ def test_visualization_production_only_projection_keeps_only_production_tools() 
         )
 
     assert [item["function"]["name"] for item in projected] == [
-        "write_analysis_files",
+        "create_or_write_analysis_file",
         "terminal",
     ]
 
@@ -2563,7 +2563,7 @@ def test_visualization_recovery_projection_is_production_only_on_fresh_run() -> 
             "process",
             "view_image",
             "inspect_chart",
-            "write_analysis_files",
+            "create_or_write_analysis_file",
             "terminal",
             "register_report_charts",
             "finalize_report_analysis",
@@ -2577,7 +2577,7 @@ def test_visualization_recovery_projection_is_production_only_on_fresh_run() -> 
 
     assert [item["function"]["name"] for item in projected] == [
         "read_file",
-        "write_analysis_files",
+        "create_or_write_analysis_file",
         "terminal",
     ]
 
@@ -3128,7 +3128,7 @@ def test_tools_for_task_visualization_section() -> None:
     names = tools_for_task("analysis", "visualization_section")
     assert names is not None
     assert "submit_visualization_charts" in names
-    assert "write_analysis_files" in names
+    assert "create_or_write_analysis_file" in names
     assert "terminal" in names
     assert "register_report_charts" not in names
     assert "finalize_report_analysis" not in names
