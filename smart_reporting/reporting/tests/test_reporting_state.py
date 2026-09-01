@@ -175,6 +175,57 @@ def test_submit_visualization_charts_rejects_cross_section_duplicate() -> None:
     assert exc_info.value.code == "report_visualization_section_conflict"
 
 
+def test_submit_visualization_charts_rejects_different_repeat_submission_for_section() -> None:
+    state = state_with_chart("chart_a", "section_001")
+
+    with pytest.raises(ReportingStateError) as exc_info:
+        ReportingStateReducer.apply(
+            state,
+            {
+                "name": "submit_visualization_charts",
+                "commandId": "viz-section:2:section_001:changed",
+                "payload": {
+                    "sectionCode": "section_001",
+                    "charts": [make_chart_registration("chart_b")],
+                    "files": [],
+                },
+            },
+            state.state_version,
+        )
+
+    assert exc_info.value.code == "report_visualization_section_conflict"
+
+
+def test_submit_visualization_charts_accepts_identical_repeat_submission_for_section() -> None:
+    state = state_with_chart("chart_a", "section_001")
+
+    result = ReportingStateReducer.apply(
+        state,
+        {
+            "name": "submit_visualization_charts",
+            "commandId": "viz-section:2:section_001:identical",
+            "payload": {
+                "sectionCode": "section_001",
+                "charts": [make_chart_registration("chart_a")],
+                "files": [],
+            },
+        },
+        state.state_version,
+    )
+
+    assert result.state.payload["visualizationSections"]["section_001"] == {
+        "charts": [
+            {
+                **make_chart_registration("chart_a"),
+                "comparisonPeriod": None,
+                "comparisonType": "none",
+                "comparability": "strict",
+            }
+        ],
+        "files": [],
+    }
+
+
 def test_submit_visualization_charts_rejects_cross_section_duplicate_source_path() -> None:
     source_path = "analysis/charts/shared.png"
     state = submit_section(
@@ -683,8 +734,8 @@ def test_write_intent_is_durable_and_identity_conflicts_fail_closed():
     state = apply_phase(initial_state(), "start_analysis")
     intent = {
         "intentId": "a" * 64,
-        "toolName": "create_files",
-        "arguments": {"files": [{"path": "analysis/large.txt", "content": "x"}]},
+        "toolName": "create_or_write_analysis_file",
+        "arguments": {"path": "analysis/large.txt", "content": "x"},
         "affectedPaths": ["analysis/large.txt"],
         "expectedStates": {"analysis/large.txt": "present"},
     }
@@ -728,15 +779,15 @@ def test_write_intent_commit_sequence_follows_actual_commit_order():
     intents = (
         {
             "intentId": "a" * 64,
-            "toolName": "create_files",
-            "arguments": {"files": [{"path": "analysis/chart.py", "content": "a"}]},
+            "toolName": "create_or_write_analysis_file",
+            "arguments": {"path": "analysis/chart.py", "content": "a"},
             "affectedPaths": ["analysis/chart.py"],
             "expectedStates": {"analysis/chart.py": "present"},
         },
         {
             "intentId": "b" * 64,
-            "toolName": "create_files",
-            "arguments": {"files": [{"path": "analysis/chart.py", "content": "b"}]},
+            "toolName": "create_or_write_analysis_file",
+            "arguments": {"path": "analysis/chart.py", "content": "b"},
             "affectedPaths": ["analysis/chart.py"],
             "expectedStates": {"analysis/chart.py": "present"},
         },

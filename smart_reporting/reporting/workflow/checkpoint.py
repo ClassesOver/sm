@@ -288,10 +288,6 @@ class AnalysisChart(StrictModel):
             raise ValueError("比较图表必须声明 comparisonPeriod")
         if self.comparability == "reference_only" and self.comparison_type in {"yoy", "mom"}:
             raise ValueError("reference_only 图表不得声明严格同比或环比")
-        if self.comparability == "reference_only" and (
-            "参考" not in self.title or "参考" not in self.alt_text
-        ):
-            raise ValueError("reference_only 图表标题和图注必须明确标记为参考")
         receipt = self.visual_inspection_receipt
         if receipt is not None and (
             receipt.source_path != self.source_file.path

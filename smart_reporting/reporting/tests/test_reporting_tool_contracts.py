@@ -12,7 +12,6 @@ import jmespath
 import pytest
 from agno.exceptions import StopAgentRun
 from agno.run import RunContext
-from agno.tools import Function
 from daytona.common.errors import DaytonaError
 from pydantic import ValidationError
 
@@ -63,16 +62,13 @@ from smart_reporting.reporting.tools.toolkit import (
     ReportWorkspaceTaskToolkit,
     _reset_stop_after_tool_call,
     _stop_after_accepted_tool_call,
+    _stop_after_finished_phase_call,
     _stop_after_nonretryable_tool_call,
 )
 from smart_reporting.reporting.tools.validation import (
-    ANALYSIS_WRITE_PUBLIC_TOOL_NAMES,
-    ANALYSIS_WRITE_TOOL_NAMES,
-    _analysis_write_operation_arguments,
-    _analysis_write_parameters,
     _bound_profile_pointer_value,
-    _canonical_analysis_write_call,
     _jmespath_reporting_error,
+    analysis_file_write_parameters,
 )
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
@@ -91,7 +87,11 @@ from smart_reporting.reporting.workflow.runtime.analysis import (
     _visualization_retry_budget,
     _visualization_retry_usage,
 )
-from smart_reporting.reporting.workflow.state import ReportingRunState
+from smart_reporting.reporting.workflow.state import (
+    ReportingReducerResult,
+    ReportingRunState,
+    ReportingStateError,
+)
 from smart_reporting.task_execution.acceptance import normalize_acceptance_contract
 from smart_reporting.task_execution.execution import WorkspaceTaskToolkit
 from smart_reporting.workspace import WorkspaceError, WorkspacePathConflict
@@ -205,62 +205,6 @@ def test_section_unknown_metric_is_preserved_with_warning() -> None:
     assert normalized[0].metric_code == "income_summary_total"
     assert normalized[0].period_basis == "2025年1-11月"
     assert [item["code"] for item in warnings] == ["report_section_claim_metric_unknown"]
-
-
-def write_functions() -> dict[str, Function]:
-    schemas = {
-        "apply_patch": {
-            "type": "object",
-            "properties": {"patch": {"type": "string", "minLength": 1}},
-            "required": ["patch"],
-            "additionalProperties": False,
-        },
-        "create_files": {
-            "type": "object",
-            "properties": {
-                "files": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "minLength": 1},
-                            "content": {"type": "string"},
-                        },
-                        "required": ["path", "content"],
-                        "additionalProperties": False,
-                    },
-                }
-            },
-            "required": ["files"],
-            "additionalProperties": False,
-        },
-        "overwrite_file": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "minLength": 1},
-                "content": {"type": "string"},
-                "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            },
-            "required": ["path", "content", "expected_sha256"],
-            "additionalProperties": False,
-        },
-        "replace_text": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "minLength": 1},
-                "old_string": {"type": "string", "minLength": 1},
-                "new_string": {"type": "string"},
-                "replace_all": {"type": "boolean", "default": False},
-            },
-            "required": ["path", "old_string", "new_string"],
-            "additionalProperties": False,
-        },
-    }
-    return {
-        name: Function(name=name, parameters=parameters, entrypoint=lambda: None)
-        for name, parameters in schemas.items()
-    }
 
 
 def test_analysis_item_budget_retry_forces_fixed_fact_submission() -> None:
@@ -934,7 +878,7 @@ async def test_submit_visualization_charts_commit_flow() -> None:
     }
     toolkit._inspect_chart_file = AsyncMock(return_value=identity)
     toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(revision=7))
-    toolkit._apply_durable = AsyncMock()
+    toolkit._apply_durable_command = AsyncMock(return_value=SimpleNamespace(idempotent=False))
     chart = {
         "chartId": "income",
         "sourcePath": identity["sourcePath"],
@@ -958,8 +902,10 @@ async def test_submit_visualization_charts_commit_flow() -> None:
         "status": "committed",
         "sectionCode": "section_001",
         "chartCount": 1,
+        "taskFinished": True,
+        "warnings": [],
     }
-    durable_call = toolkit._apply_durable.await_args.kwargs
+    durable_call = toolkit._apply_durable_command.await_args.kwargs
     assert durable_call["name"] == "submit_visualization_charts"
     assert durable_call["payload"] == {
         "sectionCode": "section_001",
@@ -991,6 +937,300 @@ async def test_submit_visualization_charts_commit_flow() -> None:
         ).encode()
     ).hexdigest()
     assert durable_call["command_id"] == f"viz-section:7:section_001:{expected_digest}"
+    function_call = SimpleNamespace(
+        function=SimpleNamespace(stop_after_tool_call=False), result=result
+    )
+    _stop_after_finished_phase_call(function_call)
+    assert function_call.function.stop_after_tool_call is True
+
+
+@pytest.mark.anyio
+async def test_submit_visualization_charts_returns_already_committed_after_cas_replay() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-cas-replay", task=SimpleNamespace(mutation_sequence=7)
+    )
+    initial = SimpleNamespace(
+        report_run_id="run-cas-replay", state_version=7, revision=7, payload={}
+    )
+    committed = SimpleNamespace(
+        report_run_id="run-cas-replay", state_version=8, revision=8, payload={}
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "sectionCode": "section_001",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
+        },
+    )
+    identity = {
+        "sourcePath": "analysis/charts/section_001/income.png",
+        "size": 1024,
+        "sha256": "b" * 64,
+        "format": "PNG",
+        "mediaType": "image/png",
+        "extension": ".png",
+        "width": 1200,
+        "height": 800,
+    }
+    toolkit._inspect_chart_file = AsyncMock(return_value=identity)
+    toolkit._durable_state = AsyncMock(side_effect=[initial, initial, committed])
+    toolkit._state_repository = SimpleNamespace(
+        apply=AsyncMock(
+            side_effect=[
+                ReportingStateError("report_state_conflict", "CAS conflict"),
+                ReportingReducerResult(state=committed, idempotent=True),
+            ]
+        )
+    )
+    chart = {
+        "chartId": "income",
+        "sourcePath": identity["sourcePath"],
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+
+    result = await toolkit.submit_visualization_charts(sectionCode="section_001", charts=[chart])
+
+    assert result["status"] == "already_committed"
+    assert result["taskFinished"] is True
+    assert toolkit._state_repository.apply.await_count == 2
+
+
+@pytest.mark.anyio
+async def test_submit_visualization_charts_short_circuits_identical_durable_submission() -> None:
+    scope = SimpleNamespace(thread_id="thread-duplicate", task=SimpleNamespace(mutation_sequence=7))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "sectionCode": "section_001",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
+        },
+    )
+    chart = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+    stored_chart = {
+        **chart,
+        "comparisonPeriod": None,
+        "comparisonType": "none",
+        "comparability": "strict",
+    }
+    identity = {
+        "sourcePath": chart["sourcePath"],
+        "size": 1024,
+        "sha256": "b" * 64,
+        "format": "PNG",
+        "mediaType": "image/png",
+        "extension": ".png",
+        "width": 1200,
+        "height": 800,
+    }
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            revision=7,
+            payload={
+                "visualizationSections": {
+                    "section_001": {
+                        "charts": [stored_chart],
+                        "files": [
+                            {
+                                "path": identity["sourcePath"],
+                                "size": identity["size"],
+                                "sha256": identity["sha256"],
+                            }
+                        ],
+                    }
+                }
+            },
+        )
+    )
+    toolkit._inspect_chart_file = AsyncMock(return_value=identity)
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.submit_visualization_charts(sectionCode="section_001", charts=[chart])
+
+    assert result == {
+        "ok": True,
+        "status": "already_committed",
+        "sectionCode": "section_001",
+        "chartCount": 1,
+        "taskFinished": True,
+        "warnings": [],
+    }
+    toolkit._inspect_chart_file.assert_awaited_once()
+    toolkit._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_submit_visualization_charts_rejects_changed_file_identity_after_submission() -> None:
+    scope = SimpleNamespace(
+        thread_id="thread-changed-file", task=SimpleNamespace(mutation_sequence=7)
+    )
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "sectionCode": "section_001",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
+        },
+    )
+    chart = {
+        "chartId": "income",
+        "sourcePath": "analysis/charts/section_001/income.png",
+        "title": "收入趋势",
+        "altText": "收入趋势图",
+        "citationIds": ["citation-1"],
+        "metricCodes": ["income"],
+        "currentPeriod": "2026-01",
+        "sourceDatasetId": "dataset-1",
+        "aggregationGrain": "month",
+    }
+    stored_chart = {
+        **chart,
+        "comparisonPeriod": None,
+        "comparisonType": "none",
+        "comparability": "strict",
+    }
+    toolkit._durable_state = AsyncMock(
+        return_value=SimpleNamespace(
+            revision=7,
+            payload={
+                "visualizationSections": {
+                    "section_001": {
+                        "charts": [stored_chart],
+                        "files": [
+                            {
+                                "path": chart["sourcePath"],
+                                "size": 1024,
+                                "sha256": "b" * 64,
+                            }
+                        ],
+                    }
+                }
+            },
+        )
+    )
+    toolkit._inspect_chart_file = AsyncMock(
+        return_value={
+            "sourcePath": chart["sourcePath"],
+            "size": 1024,
+            "sha256": "c" * 64,
+            "format": "PNG",
+            "mediaType": "image/png",
+            "extension": ".png",
+            "width": 1200,
+            "height": 800,
+        }
+    )
+    toolkit._apply_durable = AsyncMock()
+
+    result = await toolkit.submit_visualization_charts(sectionCode="section_001", charts=[chart])
+
+    assert result["ok"] is False
+    assert result["code"] == "report_visualization_section_conflict"
+    toolkit._inspect_chart_file.assert_awaited_once()
+    toolkit._apply_durable.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_submit_visualization_charts_returns_warning_for_unmarked_reference_only_chart() -> (
+    None
+):
+    scope = SimpleNamespace(thread_id="thread-reference", task=SimpleNamespace(mutation_sequence=7))
+    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
+    toolkit.kernel = SimpleNamespace(scope=AsyncMock(return_value=scope))
+    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
+    toolkit._active_reporting_task_kind = lambda *_args: "visualization_section"
+    toolkit._phase_parameters = lambda *_args: (
+        {},
+        {
+            "sectionCode": "section_001",
+            "visualizationWorkspace": {"chartOutputRoot": "analysis/charts/section_001"},
+        },
+    )
+    identity = {
+        "sourcePath": "analysis/charts/section_001/reference.png",
+        "size": 1024,
+        "sha256": "c" * 64,
+        "format": "PNG",
+        "mediaType": "image/png",
+        "extension": ".png",
+        "width": 1200,
+        "height": 800,
+    }
+    toolkit._inspect_chart_file = AsyncMock(return_value=identity)
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(revision=7))
+    toolkit._apply_durable_command = AsyncMock(return_value=SimpleNamespace(idempotent=False))
+
+    result = await toolkit.submit_visualization_charts(
+        sectionCode="section_001",
+        charts=[
+            {
+                "chartId": "reference_income",
+                "sourcePath": identity["sourcePath"],
+                "title": "收入趋势",
+                "altText": "收入趋势图",
+                "citationIds": ["citation-1"],
+                "metricCodes": ["income"],
+                "currentPeriod": "2026-01",
+                "sourceDatasetId": "dataset-1",
+                "aggregationGrain": "month",
+                "comparability": "reference_only",
+            }
+        ],
+    )
+
+    assert result["ok"] is True
+    assert result["taskFinished"] is True
+    assert result["warnings"] == [
+        {
+            "code": "report_reference_only_marker_missing",
+            "message": "reference_only 图表标题或图注缺少“参考”标记。",
+            "details": {
+                "chartId": "reference_income",
+                "missingFields": ["title", "altText"],
+            },
+        }
+    ]
+    toolkit._apply_durable_command.assert_awaited_once()
+
+
+def test_reference_only_chart_rejects_strict_yoy_even_without_reference_marker() -> None:
+    chart = _chart_registration().model_dump(mode="json", by_alias=True)
+    chart.update(
+        {
+            "comparability": "reference_only",
+            "comparisonType": "yoy",
+            "comparisonPeriod": "2025-01",
+        }
+    )
+
+    with pytest.raises(ValidationError, match="不得声明严格同比或环比"):
+        ReportChartRegistration.model_validate(chart)
 
 
 @pytest.mark.anyio
@@ -1035,7 +1275,7 @@ async def test_submit_visualization_charts_allows_empty_charts() -> None:
         },
     )
     toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(revision=9))
-    toolkit._apply_durable = AsyncMock()
+    toolkit._apply_durable_command = AsyncMock(return_value=SimpleNamespace(idempotent=False))
 
     result = await toolkit.submit_visualization_charts(
         sectionCode="section_001",
@@ -1045,7 +1285,7 @@ async def test_submit_visualization_charts_allows_empty_charts() -> None:
 
     assert result["ok"] is True
     assert result["chartCount"] == 0
-    durable_call = toolkit._apply_durable.await_args.kwargs
+    durable_call = toolkit._apply_durable_command.await_args.kwargs
     assert durable_call["payload"] == {"sectionCode": "section_001", "charts": [], "files": []}
 
 
@@ -1070,6 +1310,7 @@ async def test_submit_visualization_charts_missing_file_returns_recoverable_fail
             details={"sourcePath": "analysis/charts/section_001/missing.png"},
         )
     )
+    toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(revision=7, payload={}))
     toolkit._apply_durable = AsyncMock()
     chart = {
         "chartId": "income",
@@ -2284,314 +2525,69 @@ async def test_register_report_charts_requires_current_acceptable_inspection(
     assert result["code"] == code
 
 
-def test_write_analysis_files_schema_exposes_every_underlying_primitive() -> None:
-    parameters = _analysis_write_parameters(write_functions())
+def test_create_or_write_analysis_file_schema_is_single_file_cas_contract() -> None:
+    parameters = analysis_file_write_parameters()
 
-    assert parameters["properties"]["operation"]["enum"] == sorted(ANALYSIS_WRITE_PUBLIC_TOOL_NAMES)
-    assert parameters["required"] == ["operation"]
-    assert set(parameters["properties"]) == {
-        "operation",
-        "path",
-        "content",
-        "expected_sha256",
-        "old_string",
-        "new_string",
-        "replace_all",
-        "patch",
-    }
+    assert parameters["required"] == ["path", "content"]
+    assert set(parameters["properties"]) == {"path", "content", "expected_sha256"}
     assert "arguments" not in parameters["properties"]
-    assert "oneOf" not in parameters
-    assert (
-        '{"operation":"create_file","path":' in parameters["properties"]["operation"]["description"]
-    )
-    assert "content 单字符串" in parameters["properties"]["content"]["description"]
+    assert parameters["additionalProperties"] is False
 
 
-def test_write_analysis_files_create_file_is_canonicalized_to_existing_primitive() -> None:
-    tool_name, arguments = _canonical_analysis_write_call(
-        "create_file",
-        {
-            "path": "analysis/report.py",
-            "content": "def main():\n    return 1\n",
-        },
-    )
-
-    assert tool_name == "create_files"
-    assert arguments == {
-        "files": [
-            {
-                "path": "analysis/report.py",
-                "content": "def main():\n    return 1\n",
-            }
-        ]
-    }
-
-
-def test_write_analysis_files_drops_inactive_neutral_fields() -> None:
-    arguments = _analysis_write_operation_arguments(
-        "replace_text",
-        {
-            "path": "analysis/report.py",
-            "content": "",
-            "expected_sha256": "",
-            "old_string": "before",
-            "new_string": "after",
-            "replace_all": False,
-            "patch": "",
-        },
-    )
-
-    assert arguments == {
-        "path": "analysis/report.py",
-        "old_string": "before",
-        "new_string": "after",
-        "replace_all": False,
-    }
-
-
-def test_write_analysis_files_drops_empty_create_file_alternative() -> None:
-    arguments = _analysis_write_operation_arguments(
-        "create_file",
-        {
-            "path": "analysis/report.py",
-            "content": "print('ok')\n",
-            "expected_sha256": "",
-            "old_string": "",
-            "new_string": "",
-            "replace_all": False,
-            "patch": "",
-        },
-    )
-
-    assert arguments == {
-        "path": "analysis/report.py",
-        "content": "print('ok')\n",
-    }
-
-
-def test_write_analysis_files_drops_nonempty_inactive_create_file_fields() -> None:
-    arguments = _analysis_write_operation_arguments(
-        "create_file",
-        {
-            "path": "analysis/report.py",
-            "content": "print('ok')\n",
-            "expected_sha256": "0" * 64,
-            "old_string": "stale",
-            "new_string": "stale",
-            "replace_all": True,
-            "patch": "--- a/old.py\n+++ b/old.py\n",
-        },
-    )
-
-    assert arguments == {"path": "analysis/report.py", "content": "print('ok')\n"}
-
-
-@pytest.mark.parametrize(
-    ("operation", "arguments", "expected"),
-    [
-        (
-            "overwrite_file",
-            {
-                "path": "analysis/report.py",
-                "content": "after",
-                "expected_sha256": "a" * 64,
-                "old_string": "before",
-                "new_string": "after",
-                "replace_all": True,
-                "patch": "--- a/report.py\n+++ b/report.py\n",
-            },
-            {
-                "path": "analysis/report.py",
-                "content": "after",
-                "expected_sha256": "a" * 64,
-            },
-        ),
-        (
-            "replace_text",
-            {
-                "path": "analysis/report.py",
-                "old_string": "before",
-                "new_string": "after",
-                "replace_all": True,
-                "content": "ignored",
-                "expected_sha256": "a" * 64,
-                "patch": "--- a/report.py\n+++ b/report.py\n",
-            },
-            {
-                "path": "analysis/report.py",
-                "old_string": "before",
-                "new_string": "after",
-                "replace_all": True,
-            },
-        ),
-        (
-            "apply_patch",
-            {
-                "patch": "--- a/report.py\n+++ b/report.py\n@@ -1 +1 @@\n-before\n+after\n",
-                "path": "analysis/report.py",
-                "content": "ignored",
-                "expected_sha256": "a" * 64,
-                "old_string": "before",
-                "new_string": "after",
-                "replace_all": True,
-            },
-            {
-                "patch": "--- a/report.py\n+++ b/report.py\n@@ -1 +1 @@\n-before\n+after\n",
-            },
-        ),
-    ],
-)
-def test_write_analysis_files_drops_nonempty_inactive_fields_for_each_operation(
-    operation: str,
-    arguments: dict[str, object],
-    expected: dict[str, object],
-) -> None:
-    assert _analysis_write_operation_arguments(operation, arguments) == expected
-
-
-def test_write_analysis_files_create_file_accepts_complete_content() -> None:
-    tool_name, arguments = _canonical_analysis_write_call(
-        "create_file",
-        {
-            "path": "analysis/report.py",
-            "content": "def main():\n    return 1\n",
-        },
-    )
+def test_create_or_write_analysis_file_rejects_unregistered_operation_fields() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
-
-    canonical, paths, _expected_states, _payload_bytes = toolkit._validate_analysis_write_arguments(
-        tool_name, arguments
-    )
-
-    assert paths == ("analysis/report.py",)
-    assert canonical["files"][0]["content"] == "def main():\n    return 1\n"
-
-
-def test_write_analysis_files_rejects_content_lines() -> None:
-    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
 
     with pytest.raises(ReportingError) as raised:
         toolkit._validate_analysis_write_arguments(
-            "create_files",
-            {
-                "files": [
-                    {
-                        "path": "analysis/report.py",
-                        "contentLines": ["x = 1"],
-                    }
-                ]
-            },
+            "create_or_write_analysis_file",
+            {"path": "analysis/report.py", "content": "x = 1\n", "operation": "create_file"},
         )
 
     assert raised.value.code == "report_analysis_write_intent_invalid"
 
 
-def test_write_analysis_files_rejects_multiple_create_files_targets() -> None:
+def test_create_or_write_analysis_file_accepts_complete_long_content() -> None:
+    content = "".join(f"line_{index} = {index}\n" for index in range(500))
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
-
-    with pytest.raises(ReportingError) as raised:
-        toolkit._validate_analysis_write_arguments(
-            "create_files",
-            {
-                "files": [
-                    {"path": "analysis/a.py", "content": "a = 1\n"},
-                    {"path": "analysis/b.py", "content": "b = 2\n"},
-                ]
-            },
-        )
-
-    assert raised.value.code == "report_analysis_write_intent_invalid"
-    assert "一个文件" in raised.value.message
-
-
-def test_write_analysis_files_accepts_long_content_in_one_create() -> None:
-    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
 
     canonical, paths, _expected_states, _payload_bytes = toolkit._validate_analysis_write_arguments(
-        "create_files",
-        {
-            "files": [
-                {
-                    "path": "analysis/report.py",
-                    "content": "".join(f"line_{index} = {index}\n" for index in range(500)),
-                }
-            ]
-        },
+        "create_or_write_analysis_file",
+        {"path": "analysis/report.py", "content": content},
     )
 
     assert paths == ("analysis/report.py",)
-    content = canonical["files"][0]["content"]
-    assert content.startswith("line_0 = 0\n")
-    assert content.endswith("line_499 = 499\n")
-    assert len(content.splitlines()) == 500
+    assert canonical["content"] == content
 
 
-def test_write_analysis_files_accepts_long_single_content_line() -> None:
+def test_create_or_write_analysis_file_rejects_intent_over_four_mib() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
-    long_line = "payload = " + repr("x" * 4000)
-
-    canonical, paths, _expected_states, _payload_bytes = toolkit._validate_analysis_write_arguments(
-        "create_files",
-        {
-            "files": [
-                {
-                    "path": "analysis/report.py",
-                    "content": long_line,
-                }
-            ]
-        },
-    )
-
-    assert paths == ("analysis/report.py",)
-    assert canonical["files"][0]["content"] == long_line
-
-
-def test_write_analysis_files_rejects_intent_over_four_mib() -> None:
-    toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
 
     with pytest.raises(ReportingError) as raised:
         toolkit._validate_analysis_write_arguments(
-            "create_files",
-            {
-                "files": [
-                    {
-                        "path": "analysis/report.py",
-                        "content": "x" * MAX_ANALYSIS_WRITE_INTENT_BYTES,
-                    }
-                ]
-            },
+            "create_or_write_analysis_file",
+            {"path": "analysis/report.py", "content": "x" * MAX_ANALYSIS_WRITE_INTENT_BYTES},
         )
 
     assert raised.value.code == "report_analysis_write_intent_too_large"
 
 
-def test_write_analysis_files_validation_returns_actionable_field_details() -> None:
+def test_create_or_write_analysis_file_returns_actionable_schema_error() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
 
     with pytest.raises(ReportingError) as raised:
         toolkit._validate_analysis_write_arguments(
-            "replace_text",
-            {"path": "analysis/report.py", "old": "before", "new": "after"},
+            "create_or_write_analysis_file",
+            {"path": "analysis/report.py"},
         )
 
     assert raised.value.code == "report_analysis_write_intent_invalid"
     assert raised.value.details == {
-        "toolName": "replace_text",
+        "toolName": "create_or_write_analysis_file",
         "path": "arguments",
         "validator": "required",
-        "message": "'old_string' is a required property",
-        "expectedFields": ["new_string", "old_string", "path", "replace_all"],
+        "message": "'content' is a required property",
+        "expectedFields": ["content", "expected_sha256", "path"],
     }
-    failure = toolkit._failure(raised.value)
-    assert failure["details"] == raised.value.details
-    assert "details.expectedFields" in failure["requiredActions"][0]
 
 
 def test_reporting_tool_workspace_error_escapes_for_agent_retry() -> None:
@@ -3190,7 +3186,7 @@ def test_profile_receipt_command_id_binds_full_receipt_payload() -> None:
 
 
 @pytest.mark.anyio
-async def test_pending_create_files_recovers_matching_written_files() -> None:
+async def test_pending_analysis_file_write_recovers_matching_written_file() -> None:
     content = "x = 1\n"
     identity = {
         "path": "analysis/report.py",
@@ -3206,8 +3202,8 @@ async def test_pending_create_files_recovers_matching_written_files() -> None:
 
     result = await toolkit._recover_pending_analysis_write(
         scope=scope,
-        tool_name="create_files",
-        canonical={"files": [{"path": "analysis/report.py", "content": content}]},
+        tool_name="create_or_write_analysis_file",
+        canonical={"path": "analysis/report.py", "content": content},
         paths=("analysis/report.py",),
         intent_sha256="a" * 64,
         payload_bytes=123,
@@ -3230,7 +3226,7 @@ async def test_pending_create_files_recovers_matching_written_files() -> None:
 
 
 @pytest.mark.anyio
-async def test_pending_create_files_rejects_changed_written_file() -> None:
+async def test_pending_analysis_file_write_rejects_changed_written_file() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(
         service=SimpleNamespace(
@@ -3244,8 +3240,8 @@ async def test_pending_create_files_rejects_changed_written_file() -> None:
     with pytest.raises(ReportingError) as raised:
         await toolkit._recover_pending_analysis_write(
             scope=SimpleNamespace(thread_id="thread-1"),
-            tool_name="create_files",
-            canonical={"files": [{"path": "analysis/report.py", "content": "x = 1\n"}]},
+            tool_name="create_or_write_analysis_file",
+            canonical={"path": "analysis/report.py", "content": "x = 1\n"},
             paths=("analysis/report.py",),
             intent_sha256="a" * 64,
             payload_bytes=123,
@@ -3256,7 +3252,7 @@ async def test_pending_create_files_rejects_changed_written_file() -> None:
 
 
 @pytest.mark.anyio
-async def test_pending_create_files_with_missing_target_continues_write() -> None:
+async def test_pending_analysis_file_write_with_missing_target_continues_write() -> None:
     toolkit = object.__new__(ReportWorkspaceTaskToolkit)
     toolkit.kernel = SimpleNamespace(
         service=SimpleNamespace(
@@ -3269,8 +3265,8 @@ async def test_pending_create_files_with_missing_target_continues_write() -> Non
 
     result = await toolkit._recover_pending_analysis_write(
         scope=SimpleNamespace(thread_id="thread-1"),
-        tool_name="create_files",
-        canonical={"files": [{"path": "analysis/report.py", "content": "x = 1\n"}]},
+        tool_name="create_or_write_analysis_file",
+        canonical={"path": "analysis/report.py", "content": "x = 1\n"},
         paths=("analysis/report.py",),
         intent_sha256="a" * 64,
         payload_bytes=123,
@@ -3289,7 +3285,6 @@ async def test_analysis_write_path_conflict_returns_retryable_receipt() -> None:
     scheduler = SimpleNamespace(write=lambda: context(None))
     scope = SimpleNamespace(thread_id="thread-1")
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
     toolkit.kernel = SimpleNamespace(
         bound_external_run_id=lambda _run_context: "external-run-1",
         task_scheduler=lambda _external_run_id: context(scheduler),
@@ -3315,8 +3310,7 @@ async def test_analysis_write_path_conflict_returns_retryable_receipt() -> None:
     toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
     toolkit._apply_durable = AsyncMock()
 
-    result = await toolkit.write_analysis_files(
-        operation="create_file",
+    result = await toolkit.create_or_write_analysis_file(
         path="analysis/report.py",
         content="print('ok')\n",
         run_context=RunContext(run_id="run-1", session_id="session-1"),
@@ -3326,10 +3320,10 @@ async def test_analysis_write_path_conflict_returns_retryable_receipt() -> None:
     assert result["details"] == {
         "paths": ["analysis/report.py"],
         "currentFiles": [{"path": "analysis/report.py", "size": 12, "sha256": "a" * 64}],
-        "recoveryOperation": "overwrite_file",
+        "recoveryOperation": "create_or_write_analysis_file",
     }
     assert "当前 64 位 sha256" in result["requiredActions"][0]
-    assert "不得用 create_file 覆盖" in result["requiredActions"][0]
+    assert "create_or_write_analysis_file" in result["requiredActions"][0]
     toolkit._apply_durable.assert_awaited_once()
 
 
@@ -3339,15 +3333,14 @@ async def test_analysis_write_rejects_invalid_python_before_workspace_mutation()
     async def context(value):
         yield value
 
-    source = "print('ok')\n"
+    invalid_source = "print('"
     scope = SimpleNamespace(thread_id="thread-1")
     identity = {
         "path": "analysis/report.py",
-        "size": len(source.encode()),
-        "sha256": hashlib.sha256(source.encode()).hexdigest(),
+        "size": len(invalid_source.encode()),
+        "sha256": hashlib.sha256(invalid_source.encode()).hexdigest(),
     }
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
     toolkit.kernel = SimpleNamespace(
         bound_external_run_id=lambda _run_context: "external-run-1",
         task_scheduler=lambda _external_run_id: context(
@@ -3356,7 +3349,6 @@ async def test_analysis_write_rejects_invalid_python_before_workspace_mutation()
         scope=AsyncMock(return_value=scope),
         patch=AsyncMock(return_value={"ok": True}),
         service=SimpleNamespace(
-            file_bytes=lambda _thread_id, _path: (source.encode(), "text/x-python"),
             abatch_hash_files=AsyncMock(return_value=[identity]),
         ),
     )
@@ -3368,29 +3360,25 @@ async def test_analysis_write_rejects_invalid_python_before_workspace_mutation()
     toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
     toolkit._apply_durable = AsyncMock()
 
-    result = await toolkit.write_analysis_files(
-        operation="replace_text",
+    result = await toolkit.create_or_write_analysis_file(
         path="analysis/report.py",
-        old_string="print('ok')",
-        new_string="print('",
+        content=invalid_source,
         run_context=RunContext(run_id="run-1", session_id="session-1"),
     )
 
     assert result["ok"] is False
     assert result["code"] == "report_analysis_python_syntax_invalid"
     assert result["details"]["path"] == "analysis/report.py"
-    assert source == "print('ok')\n"
     toolkit.kernel.patch.assert_not_awaited()
     toolkit._apply_durable.assert_not_awaited()
 
 
 @pytest.mark.anyio
-async def test_analysis_write_allows_valid_python_replace() -> None:
+async def test_analysis_write_allows_valid_python_cas_update() -> None:
     @asynccontextmanager
     async def context(value):
         yield value
 
-    source = "print('ok')\n"
     updated = "print('done')\n"
     scope = SimpleNamespace(thread_id="thread-1")
     identity = {
@@ -3399,7 +3387,6 @@ async def test_analysis_write_allows_valid_python_replace() -> None:
         "sha256": hashlib.sha256(updated.encode()).hexdigest(),
     }
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
     toolkit.kernel = SimpleNamespace(
         bound_external_run_id=lambda _run_context: "external-run-1",
         task_scheduler=lambda _external_run_id: context(
@@ -3408,7 +3395,6 @@ async def test_analysis_write_allows_valid_python_replace() -> None:
         scope=AsyncMock(return_value=scope),
         patch=AsyncMock(return_value={"ok": True}),
         service=SimpleNamespace(
-            file_bytes=lambda _thread_id, _path: (source.encode(), "text/x-python"),
             abatch_hash_files=AsyncMock(return_value=[identity]),
         ),
     )
@@ -3420,11 +3406,10 @@ async def test_analysis_write_allows_valid_python_replace() -> None:
     toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
     toolkit._apply_durable = AsyncMock()
 
-    result = await toolkit.write_analysis_files(
-        operation="replace_text",
+    result = await toolkit.create_or_write_analysis_file(
         path="analysis/report.py",
-        old_string="print('ok')",
-        new_string="print('done')",
+        content=updated,
+        expected_sha256="a" * 64,
         run_context=RunContext(run_id="run-1", session_id="session-1"),
     )
 
@@ -3440,7 +3425,7 @@ async def test_analysis_write_allows_valid_python_replace() -> None:
 
 
 @pytest.mark.anyio
-async def test_visualization_section_write_analysis_files_commits_signed_script() -> None:
+async def test_visualization_section_analysis_file_write_commits_signed_script() -> None:
     @asynccontextmanager
     async def context(value):
         yield value
@@ -3454,7 +3439,6 @@ async def test_visualization_section_write_analysis_files_commits_signed_script(
     }
     scope = SimpleNamespace(thread_id="thread-1")
     toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
     toolkit.kernel = SimpleNamespace(
         bound_external_run_id=lambda _run_context: "external-run-1",
         task_scheduler=lambda _external_run_id: context(
@@ -3475,8 +3459,7 @@ async def test_visualization_section_write_analysis_files_commits_signed_script(
     toolkit._durable_state = AsyncMock(return_value=SimpleNamespace(payload={"writeIntents": {}}))
     toolkit._apply_durable = AsyncMock()
 
-    result = await toolkit.write_analysis_files(
-        operation="create_file",
+    result = await toolkit.create_or_write_analysis_file(
         path=script_path,
         content=source,
         run_context=RunContext(run_id="run-1", session_id="session-1"),
@@ -3490,89 +3473,6 @@ async def test_visualization_section_write_analysis_files_commits_signed_script(
         "payload": {"intentId": result["intentSha256"], "artifacts": [identity]},
         "command_id": f"write-commit:{result['intentSha256']}",
     }
-
-
-@pytest.mark.anyio
-async def test_replace_text_not_found_returns_retryable_stable_error() -> None:
-    @asynccontextmanager
-    async def context(value):
-        yield value
-
-    source = "print('ok')\n"
-    scope = SimpleNamespace(thread_id="thread-1")
-    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
-    toolkit.kernel = SimpleNamespace(
-        bound_external_run_id=lambda _run_context: "external-run-1",
-        task_scheduler=lambda _external_run_id: context(
-            SimpleNamespace(write=lambda: context(None))
-        ),
-        scope=AsyncMock(return_value=scope),
-        patch=AsyncMock(return_value={"ok": True}),
-        service=SimpleNamespace(
-            file_bytes=lambda _thread_id, _path: (source.encode(), "text/plain")
-        ),
-    )
-    toolkit._phase_parameters = lambda _scope, _phase: (
-        {},
-        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis"},
-    )
-    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-
-    result = await toolkit.write_analysis_files(
-        operation="replace_text",
-        path="analysis/report.py",
-        old_string="missing",
-        new_string="done",
-        run_context=RunContext(run_id="run-1", session_id="session-1"),
-    )
-
-    assert result["code"] == "report_replace_target_not_found"
-    assert result["retryable"] is True
-    assert result["details"]["path"] == "analysis/report.py"
-    assert result["details"]["matchCount"] == 0
-    assert len(result["details"]["preview"]) <= 200
-    assert "/" not in result["details"]["path"] or result["details"]["path"].startswith("analysis/")
-
-
-@pytest.mark.anyio
-async def test_replace_text_ambiguous_returns_retryable_stable_error() -> None:
-    @asynccontextmanager
-    async def context(value):
-        yield value
-
-    source = "x\nx\n"
-    scope = SimpleNamespace(thread_id="thread-1")
-    toolkit: Any = object.__new__(ReportWorkspaceTaskToolkit)
-    toolkit.async_functions = write_functions()
-    toolkit.kernel = SimpleNamespace(
-        bound_external_run_id=lambda _run_context: "external-run-1",
-        task_scheduler=lambda _external_run_id: context(
-            SimpleNamespace(write=lambda: context(None))
-        ),
-        scope=AsyncMock(return_value=scope),
-        patch=AsyncMock(return_value={"ok": True}),
-        service=SimpleNamespace(
-            file_bytes=lambda _thread_id, _path: (source.encode(), "text/plain")
-        ),
-    )
-    toolkit._phase_parameters = lambda _scope, _phase: (
-        {},
-        {"taskKind": "analysis_item", "analysisOutputRoot": "analysis"},
-    )
-    toolkit._require_phase_tool = lambda *_args, **_kwargs: None
-
-    result = await toolkit.write_analysis_files(
-        operation="replace_text",
-        path="analysis/report.py",
-        old_string="x",
-        new_string="y",
-        run_context=RunContext(run_id="run-1", session_id="session-1"),
-    )
-
-    assert result["code"] == "report_replace_target_ambiguous"
-    assert result["retryable"] is True
-    assert result["details"]["matchCount"] == 2
 
 
 @pytest.mark.anyio
@@ -3603,7 +3503,9 @@ def test_successful_tool_call_resets_no_progress_failure_count() -> None:
     assert context.session_state[_REPORT_TOOL_FAILURE_STATE_KEY]["phaseFailureCount"] == 2
 
     success = {"ok": True, "status": "accepted"}
-    assert _enforce_reporting_no_progress(context, "write_analysis_files", success) == success
+    assert (
+        _enforce_reporting_no_progress(context, "create_or_write_analysis_file", success) == success
+    )
     assert _REPORT_TOOL_FAILURE_STATE_KEY not in context.session_state
 
     assert _enforce_reporting_no_progress(context, "terminal", failure) == failure
@@ -3648,7 +3550,7 @@ def test_phase_failure_limit_stops_distinct_failures_without_progress() -> None:
     for index in range(7):
         result = _enforce_reporting_no_progress(
             context,
-            "write_analysis_files",
+            "create_or_write_analysis_file",
             {"ok": False, "code": "report_analysis_write_intent_invalid"},
             {"path": f"analysis/{index}.py"},
         )
@@ -3656,7 +3558,7 @@ def test_phase_failure_limit_stops_distinct_failures_without_progress() -> None:
     with pytest.raises(StopAgentRun) as stopped:
         _enforce_reporting_no_progress(
             context,
-            "write_analysis_files",
+            "create_or_write_analysis_file",
             {"ok": False, "code": "report_analysis_write_intent_invalid"},
             {"path": "analysis/7.py"},
         )
@@ -3767,19 +3669,17 @@ def test_analysis_context_tool_reserves_current_analysis_for_task_json() -> None
     assert "仅用于按需读取 Dataset 元数据" in description
 
 
-def test_analysis_tool_schemas_expose_flat_writes_and_standard_jmespath_patterns() -> None:
+def test_analysis_tool_schemas_expose_single_file_cas_and_standard_jmespath_patterns() -> None:
     toolkit = ReportWorkspaceTaskToolkit(
         fake_workspace_service(None),
         AsyncMock(),
         state_repository=AsyncMock(),
     )
 
-    write_tool = toolkit.async_functions["write_analysis_files"]
-    operation = write_tool.parameters["properties"]["operation"]
+    write_tool = toolkit.async_functions["create_or_write_analysis_file"]
 
-    assert "不得嵌套 arguments" in write_tool.description
-    assert "不得嵌套 arguments" in operation["description"]
-    assert '"operation":"create_file"' in operation["description"]
+    assert "创建或 CAS 覆盖" in write_tool.description
+    assert write_tool.parameters == analysis_file_write_parameters()
 
     expected_examples = {
         "query_profile": '"query":"values(variables)[0]"',
@@ -3973,7 +3873,7 @@ _WORKER_TOOL_SCHEMA_NAMES = (
     "query_profile",
     "query_analysis_context",
     "query_analysis_facts",
-    "write_analysis_files",
+    "create_or_write_analysis_file",
     "complete_analysis_item",
     "finalize_report_analysis",
     "inspect_chart",
@@ -3987,12 +3887,12 @@ _WORKER_TOOL_SCHEMA_FINGERPRINTS = {
     "query_profile": "985e869a7ec204ff3b7ff3b9d411338ce26bfacca34e004f878ccddab01731ec",
     "query_analysis_context": "1c4c56570eb9217299fc221e62d8ba48e08f5fac0c65f3b27df480360f7982d0",
     "query_analysis_facts": "ae90792e199a1560dbd951861bcc197d508d860f6cdbf0d6ffc0f89632a53c9d",
-    "write_analysis_files": "9a646ca7f0d6b907829aba11ee9094481221ffa1b4db9a6e611ddde742f423f5",
+    "create_or_write_analysis_file": "71e68f6ebe89a315dc342404e67375f84aa5a6815528f0beb8f15f5ccfe99704",
     "complete_analysis_item": "9c2e0d1eff9bb28aec286154573bbc38c025bd1f3a5d30bb129593beed755fb9",
     "finalize_report_analysis": "0a5a381b7eda6a4b5cdf93302bdc5bd1bcb3aa411bc52745a972dee6f0e99d67",
     "inspect_chart": "c038586b8d6fa4ecefe1c9d75d4d35e217d9e3cf91719c4fd2a7ad78f775c9c6",
     "register_report_charts": "4522acf4b9385c526b7403964b4496ce179ccac2935246da7265de5daebb228c",
-    "submit_visualization_charts": "63bc0a96de614d5cce6f8d19bd764bf2ccca240dbcae95a8a5249198bc5951d3",
+    "submit_visualization_charts": "716438f17d1a73e772599609eb24beaaf917329c766741f2f7eb3e46a3aa2bbc",
     "render_report_section": "b74f37e7093dad682128cfe205c17116dd1bd3578b13575adb6d1ee3da20e724",
 }
 
@@ -4048,7 +3948,7 @@ def test_report_worker_tool_schema_is_stable_from_toolkit_module() -> None:
             "section",
             "section",
             {"read_file", "render_report_section", "request_analysis_rework"},
-            {"update_plan", "replace_text", "query_analysis_facts"},
+            {"update_plan", "create_or_write_analysis_file", "query_analysis_facts"},
         ),
     ],
 )
@@ -4083,9 +3983,10 @@ def test_report_worker_toolkit_registers_only_current_task_tools(
     # 阶段工具通过 Toolkit 内部函数对象调用 finish_task 收尾；它仍由模型投影层隐藏。
     assert "finish_task" in names
     if phase == "analysis":
-        assert ANALYSIS_WRITE_TOOL_NAMES <= names
+        assert "create_or_write_analysis_file" in names
     else:
-        assert not ANALYSIS_WRITE_TOOL_NAMES & names
+        assert "create_or_write_analysis_file" not in names
+    assert not {"create_files", "overwrite_file", "replace_text", "apply_patch"} & names
     assert "update_plan" not in (toolkit.instructions or "")
     assert "replace_text" not in (toolkit.instructions or "")
     if task_kind == "visualization_section":
@@ -5421,14 +5322,10 @@ async def test_visualization_script_over_64_kib_fails_before_write_intent() -> N
     with pytest.raises(ReportingError) as raised:
         await toolkit._preflight_analysis_python_write(
             scope=SimpleNamespace(thread_id="thread-1"),
-            tool_name="create_files",
+            tool_name="create_or_write_analysis_file",
             canonical={
-                "files": [
-                    {
-                        "path": "analysis/charts/trend.py",
-                        "content": "#" * (64 * 1024 + 1),
-                    }
-                ]
+                "path": "analysis/charts/trend.py",
+                "content": "#" * (64 * 1024 + 1),
             },
         )
 

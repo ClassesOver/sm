@@ -1097,7 +1097,7 @@ def _reporting_invalid_argument_receipt(
         attempt = int(previous) + 1 if isinstance(previous, int) else 1
         counts[tool_name] = attempt
         state[_REPORT_TOOL_ARGUMENT_ERROR_STATE_KEY] = counts
-    is_analysis_write = function_name == "write_analysis_files"
+    is_analysis_write = function_name == "create_or_write_analysis_file"
     receipt: dict[str, Any] = {
         "ok": False,
         "status": "rejected",
@@ -1107,7 +1107,7 @@ def _reporting_invalid_argument_receipt(
             else "report_tool_arguments_json_invalid"
         ),
         "message": (
-            "write_analysis_files 参数不是合法 JSON 对象；工具尚未执行，请按严格 schema 重试。"
+            "create_or_write_analysis_file 参数不是合法 JSON 对象；工具尚未执行，请按严格 schema 重试。"
             if is_analysis_write
             else f"{tool_name} 参数不是合法 JSON 对象；工具尚未执行，请按当前 schema 重试。"
         ),
@@ -1128,14 +1128,13 @@ def _reporting_invalid_argument_receipt(
     }
     if is_analysis_write:
         receipt["retryContract"] = {
-            "operation": "create_file",
             "path": "analysis/<name>.py",
             "content": "# complete script\npass\n",
         }
         receipt["requiredActions"].append(
             "按 retryContract 使用 content 单字符串一次提交完整脚本。"
             if attempt == 1
-            else "继续优先使用 content 单字符串一次提交；只有再次失败或输出截断，或服务端明确报告超过 4 MiB 后，才使用 apply_patch/replace_text 定点续写。"
+            else "继续使用完整 content；已有文件时先按服务端回执提供 expected_sha256 后重试。"
         )
     else:
         receipt["requiredActions"].append(
@@ -1698,7 +1697,7 @@ async def normalize_reporting_tool_arguments(
     if (
         succeeded
         and task_kind == "visualization_section"
-        and function_name == "write_analysis_files"
+        and function_name == "create_or_write_analysis_file"
         and isinstance(state, dict)
     ):
         state[REPORTING_VISUALIZATION_SCRIPT_WRITTEN_STATE_KEY] = True

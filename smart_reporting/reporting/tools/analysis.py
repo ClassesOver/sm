@@ -21,11 +21,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 
-from ...task_execution.changes import (
-    build_workspace_changes,
-    create_files_patch,
-    parse_unified_diff,
-)
+from ...task_execution.changes import create_files_patch
 from ...workspace import WORKSPACE_ROOT, WorkspaceError, WorkspacePathConflict, WorkspaceService
 from ..models import ReportingError
 from ..workflow.checkpoint import (
@@ -42,11 +38,9 @@ from ..workflow.checkpoint import (
 from ..workflow.state import ReportingRunState
 from .phase_output import REPORT_PHASE_OUTPUT_STATE_KEY
 from .validation import (
-    ANALYSIS_WRITE_TOOL_NAMES,
-    _analysis_write_operation_arguments,
-    _canonical_analysis_write_call,
     _jsonschema_error_message,
     _stable_digest,
+    analysis_file_write_parameters,
 )
 
 MAX_ANALYSIS_PYTHON_DEPENDENCIES = 100
@@ -144,25 +138,18 @@ class RuntimeAnalysisMixin:
     ) -> tuple[dict[str, Any], tuple[str, ...], dict[str, str], int]:
         """复用原工具 JSON Schema 与原生补丁解析器，冻结完整写入身份。"""
 
-        function = self.async_functions.get(tool_name)
-        if tool_name not in ANALYSIS_WRITE_TOOL_NAMES or function is None:
+        if tool_name != "create_or_write_analysis_file":
             raise ReportingError(
                 "report_analysis_write_intent_invalid", "暂存工具不支持该写入类型。"
             )
         raw = deepcopy(dict(arguments))
-        if tool_name == "create_files" and isinstance(raw.get("files"), list):
-            if len(raw["files"]) != 1:
-                raise ReportingError(
-                    "report_analysis_write_intent_invalid",
-                    "create_files 每次只能提交一个文件；单个完整长脚本可在一次调用中提交。",
-                )
         try:
-            Draft202012Validator(function.parameters).validate(raw)
+            Draft202012Validator(analysis_file_write_parameters()).validate(raw)
         except JsonSchemaValidationError as error:
             path = "arguments"
             for part in error.absolute_path:
                 path += f"[{part}]" if isinstance(part, int) else f".{part}"
-            expected_fields = sorted(function.parameters.get("properties", {}).keys())
+            expected_fields = sorted(analysis_file_write_parameters()["properties"])
             raise ReportingError(
                 "report_analysis_write_intent_invalid",
                 f"{tool_name} 参数不符合公开 schema；请仅修正 details.path 指向的字段。",
@@ -174,9 +161,6 @@ class RuntimeAnalysisMixin:
                     "expectedFields": expected_fields,
                 },
             ) from error
-        if tool_name == "replace_text":
-            raw.setdefault("replace_all", False)
-
         expected_states: dict[str, str] = {}
 
         def add_path(value: str, state: str) -> None:
@@ -192,21 +176,7 @@ class RuntimeAnalysisMixin:
                 )
             expected_states[path] = state
 
-        if tool_name in {"overwrite_file", "replace_text"}:
-            add_path(raw["path"], "present")
-        elif tool_name == "create_files":
-            for item in raw["files"]:
-                add_path(item["path"], "present")
-        else:
-            try:
-                operations = parse_unified_diff(raw["patch"])
-            except WorkspaceError as error:
-                raise ReportingError("report_analysis_write_intent_invalid", str(error)) from error
-            for operation in operations:
-                if operation.operation == "delete":
-                    add_path(operation.path, "absent")
-                else:
-                    add_path(operation.path, "present")
+        add_path(raw["path"], "present")
 
         payload_bytes = len(
             json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -223,15 +193,7 @@ class RuntimeAnalysisMixin:
         canonical: Mapping[str, Any],
     ) -> dict[str, dict[str, Any]]:
         contents: dict[str, str] = {}
-        if tool_name == "create_files":
-            contents = {
-                item["path"]: item["content"]
-                for item in canonical.get("files", ())
-                if isinstance(item, Mapping)
-                and isinstance(item.get("path"), str)
-                and isinstance(item.get("content"), str)
-            }
-        elif tool_name == "overwrite_file":
+        if tool_name == "create_or_write_analysis_file":
             path = canonical.get("path")
             content = canonical.get("content")
             if isinstance(path, str) and isinstance(content, str):
@@ -314,73 +276,13 @@ class RuntimeAnalysisMixin:
     ) -> None:
         """在提交 Workspace mutation 前拒绝会破坏 Python 语法的写入。"""
 
-        if tool_name == "create_files":
-            changes = [
-                {
-                    "operation": "create",
-                    "path": WorkspaceService.normalize_path(item["path"], allow_root=False)[0],
-                    "content": item["content"],
-                }
-                for item in canonical["files"]
-            ]
-        elif tool_name == "overwrite_file":
-            changes = [
-                {
-                    "operation": "update",
-                    "path": WorkspaceService.normalize_path(canonical["path"], allow_root=False)[0],
-                    "content": canonical["content"],
-                }
-            ]
-        elif tool_name == "replace_text":
-
-            def replacement() -> list[dict[str, Any]]:
-                path = WorkspaceService.normalize_path(canonical["path"], allow_root=False)[0]
-                content, _mime = self.kernel.service.file_bytes(scope.thread_id, path)
-                try:
-                    original = content.decode("utf-8")
-                except UnicodeDecodeError as error:
-                    raise WorkspaceError("replace 模式只支持 UTF-8 文本文件。") from error
-                count = original.count(canonical["old_string"])
-                if count == 0:
-                    raise ReportingError(
-                        "report_replace_target_not_found",
-                        "old_string 在目标文件中不存在。",
-                        details={
-                            "path": path,
-                            "matchCount": 0,
-                            "preview": original[:200],
-                        },
-                    )
-                if count != 1 and not canonical["replace_all"]:
-                    raise ReportingError(
-                        "report_replace_target_ambiguous",
-                        "old_string 在目标文件中不唯一；请扩大上下文或启用 replace_all。",
-                        details={
-                            "path": path,
-                            "matchCount": count,
-                            "preview": original[:200],
-                        },
-                    )
-                return [
-                    {
-                        "operation": "update",
-                        "path": path,
-                        "content": original.replace(
-                            canonical["old_string"],
-                            canonical["new_string"],
-                            -1 if canonical["replace_all"] else 1,
-                        ),
-                    }
-                ]
-
-            changes = await asyncio.to_thread(replacement)
-        else:
-            changes = await asyncio.to_thread(
-                build_workspace_changes,
-                self.kernel.service,
-                scope.thread_id,
-                canonical["patch"],
-            )
+        changes = [
+            {
+                "operation": "update" if canonical.get("expected_sha256") else "create",
+                "path": WorkspaceService.normalize_path(canonical["path"], allow_root=False)[0],
+                "content": canonical["content"],
+            }
+        ]
 
         # Kernel patch 的实际提交发生在这之后；预检只使用同一候选文本，保证语法错误时
         # Workspace 与 write intent 都不产生可恢复但无效的中间状态。
@@ -426,35 +328,21 @@ class RuntimeAnalysisMixin:
                     details={"path": path, "line": error.lineno, "offset": error.offset},
                 ) from error
 
-    async def write_analysis_files(
+    async def create_or_write_analysis_file(
         self,
-        operation: str,
-        path: str | None = None,
-        content: str | None = None,
+        path: str,
+        content: str,
         expected_sha256: str | None = None,
-        old_string: str | None = None,
-        new_string: str | None = None,
-        replace_all: bool | None = None,
-        patch: str | None = None,
         run_context: RunContext | None = None,
     ) -> dict[str, Any]:
         """在单次调用内保存写入意图、执行写入并返回文件身份。"""
 
-        requested_arguments = _analysis_write_operation_arguments(
-            operation,
-            {
-                "path": path,
-                "content": content,
-                "expected_sha256": expected_sha256,
-                "old_string": old_string,
-                "new_string": new_string,
-                "replace_all": replace_all,
-                "patch": patch,
-            },
-        )
-        canonical_tool_name, canonical_input = _canonical_analysis_write_call(
-            operation, requested_arguments
-        )
+        canonical_tool_name = "create_or_write_analysis_file"
+        canonical_input = {
+            "path": path,
+            "content": content,
+            **({"expected_sha256": expected_sha256} if expected_sha256 is not None else {}),
+        }
 
         async def call(scope: Any) -> dict[str, Any]:
             _parameters, contract = self._phase_parameters(scope, "analysis")
@@ -524,7 +412,7 @@ class RuntimeAnalysisMixin:
                 command_id=f"write-intent:{intent_sha256}",
             )
             try:
-                if canonical_tool_name == "overwrite_file":
+                if canonical.get("expected_sha256") is not None:
                     result = await self.kernel.patch(
                         "overwrite",
                         canonical["path"],
@@ -537,23 +425,8 @@ class RuntimeAnalysisMixin:
                         expected_sha256=canonical["expected_sha256"],
                         _scope=scope,
                     )
-                elif canonical_tool_name == "replace_text":
-                    result = await self.kernel.patch(
-                        "replace",
-                        canonical["path"],
-                        canonical["old_string"],
-                        canonical["new_string"],
-                        canonical["replace_all"],
-                        None,
-                        run_context,
-                        _scope=scope,
-                    )
                 else:
-                    patch = (
-                        create_files_patch(canonical["files"])
-                        if canonical_tool_name == "create_files"
-                        else canonical["patch"]
-                    )
+                    patch = create_files_patch([canonical])
                     result = await self.kernel.patch(
                         "patch",
                         None,
@@ -572,18 +445,13 @@ class RuntimeAnalysisMixin:
                     )
                 except Exception:
                     current_files = []
-                recovery_operation = (
-                    "overwrite_file"
-                    if canonical_tool_name in {"create_files", "overwrite_file"}
-                    else "apply_patch"
-                )
                 raise ReportingError(
                     "report_analysis_write_path_conflict",
                     "写入目标文件已存在或内容身份已变化。",
                     details={
                         "paths": list(paths),
                         "currentFiles": current_files,
-                        "recoveryOperation": recovery_operation,
+                        "recoveryOperation": "create_or_write_analysis_file",
                     },
                 ) from error
             if result.get("ok") is not True:
@@ -626,7 +494,7 @@ class RuntimeAnalysisMixin:
                 self._require_phase_tool(
                     scope,
                     allowed=frozenset({"analysis"}),
-                    tool_name="write_analysis_files",
+                    tool_name="create_or_write_analysis_file",
                     run_context=run_context,
                 )
                 return await call(scope)
@@ -1540,7 +1408,7 @@ class RuntimeAnalysisMixin:
         if unregistered:
             raise ReportingError(
                 "report_analysis_evidence_not_registered",
-                "analysis evidence 必须先通过 write_analysis_files 登记。",
+                "analysis evidence 必须先通过 create_or_write_analysis_file 登记。",
                 details={
                     "paths": unregistered,
                     "missingRegistration": unregistered,

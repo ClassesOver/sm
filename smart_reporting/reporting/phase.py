@@ -83,7 +83,7 @@ REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
 )
 REPORTING_VISUALIZATION_PRODUCTION_TOOL_NAMES = frozenset(
     {
-        "write_analysis_files",
+        "create_or_write_analysis_file",
         "terminal",
         "submit_visualization_charts",
         "register_report_charts",
