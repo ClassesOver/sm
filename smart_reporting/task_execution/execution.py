@@ -22,7 +22,7 @@ from agno.utils.log import log_debug
 from daytona import SessionExecuteRequest
 from daytona.common.errors import DaytonaNotFoundError
 
-from ..agent_control import AGENT_PLAN_STATE_KEY, AgentControlToolkit, validated_agent_plan
+from ..agent_control import AGENT_PLAN_STATE_KEY, validated_agent_plan
 from ..observability import suppress_expected_probe_tracing
 from ..skills import (
     CODING_SKILL_SCRIPT_RECEIPTS_STATE_KEY,
@@ -109,22 +109,6 @@ def normalize_coding_function_call_arguments(
         run_context,
         state_key=CODING_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
         autofix_code="coding_tool_arguments_unwrapped",
-    )
-
-
-def normalize_function_call_arguments(
-    fc: Any,
-    run_context: RunContext | None = None,
-    *,
-    state_key: str,
-    autofix_code: str,
-) -> None:
-    """按 Function schema 解码一层 JSON 传输表示，不修补非法 JSON。"""
-    _normalize_function_call_arguments(
-        fc,
-        run_context,
-        state_key=state_key,
-        autofix_code=autofix_code,
     )
 
 
@@ -238,24 +222,10 @@ class _InstalledValidator:
 TOOL_SPECS = {
     "terminal": ToolSpec("workspace_write", False),
     "process": ToolSpec("process_control", False),
-    "create_file": ToolSpec("workspace_write", False),
-    "create_files": ToolSpec("workspace_write", False),
-    "overwrite_file": ToolSpec("workspace_write", False),
-    "replace_text": ToolSpec("workspace_write", False),
-    "apply_patch": ToolSpec("workspace_write", False),
-    "patch": ToolSpec("workspace_write", False),
-    "verify": ToolSpec("verification", False),
     "finish_task": ToolSpec("finish", False),
-    "update_plan": ToolSpec("workspace_write", False),
     "view_image": ToolSpec("read", True, "media"),
     "read_tool_output": ToolSpec("read", True, "paged_text"),
-    "list_files": ToolSpec("read", True),
     "read_file": ToolSpec("read", True),
-    "read_lines": ToolSpec("read", True),
-    "search_text": ToolSpec("read", True),
-    "tree": ToolSpec("read", True),
-    "git_status": ToolSpec("read", True),
-    "git_diff": ToolSpec("read", True),
 }
 
 NO_PROGRESS_EXEMPT_TOOLS = frozenset(
@@ -631,7 +601,6 @@ class CodingExecutionKernel:
         self.require_finish_verification = True
         self.evaluate_finish_acceptance = True
         self.workspace = WorkspaceToolkit(service)
-        self.plan = AgentControlToolkit(service)
         self._migration_lock = asyncio.Lock()
         self._terminal_runtimes: OrderedDict[tuple[str, str], str] = OrderedDict()
 
@@ -941,19 +910,6 @@ class CodingExecutionKernel:
 
     async def cleanup_disconnect(self, scope: CodingScope, current_epoch: int) -> None:
         await self._cleanup_executions(scope, current_epoch, old_only=False)
-
-    async def cleanup_task_outputs(self, scope: CodingScope) -> None:
-        task_dir = (
-            f"{TOOL_OUTPUT_ROOT}/{hashlib.sha256(scope.external_run_id.encode()).hexdigest()[:24]}"
-        )
-        try:
-            async with self.service._async_client() as client:
-                sandbox = await self.service._asandbox_for(client, scope.thread_id, create=False)
-                if sandbox is None or str(getattr(sandbox, "id", "") or "") != scope.sandbox_id:
-                    return
-                await sandbox.fs.delete_file(task_dir, recursive=True)
-        except (DaytonaNotFoundError, WorkspaceError):
-            pass
 
     async def _cleanup_executions(
         self, scope: CodingScope, current_epoch: int, *, old_only: bool
@@ -1859,11 +1815,6 @@ class CodingExecutionKernel:
             return {**self._public_execution(lost), "code": "execution_lost"}
         raise AssertionError("Daytona 客户端上下文未返回 sandbox。")
 
-    def apply_patch_sync(self, scope: CodingTaskScope, patch: str) -> dict[str, Any]:
-        changes = build_workspace_changes(self.service, scope.thread_id, patch)
-        result = self.service.apply_changes(scope.thread_id, changes)
-        return {**result, "ok": True, "message": "补丁已应用。"}
-
     @staticmethod
     def _reject_writable_skill_script_copy(
         changes: list[dict[str, Any]], run_context: RunContext | None
@@ -2060,183 +2011,6 @@ class CodingExecutionKernel:
             "execution_id": execution_id,
             "mutation_sequence": mutation_sequence,
             **({"replacements": replacements} if mode == "replace" else {}),
-        }
-
-    async def batch_copy_files(
-        self,
-        copies: list[dict[str, Any]],
-        run_context: RunContext | None,
-        *,
-        _scope: CodingTaskScope | None = None,
-    ) -> dict[str, Any]:
-        """在同一 Task mutation 中归档一组已哈希绑定的普通文件。"""
-        scope = _scope or await self.scope(run_context)
-        if not isinstance(copies, list) or not 1 <= len(copies) <= MAX_PATCH_FILES:
-            raise WorkspaceError(f"批量复制文件必须为 1 至 {MAX_PATCH_FILES} 项。")
-        normalized: list[dict[str, Any]] = []
-        for item in copies:
-            if not isinstance(item, dict) or set(item) != {
-                "source",
-                "destination",
-                "expected_sha256",
-                "expected_size",
-            }:
-                raise WorkspaceError("批量复制参数无效。")
-            source = WorkspaceService.normalize_path(item["source"], allow_root=False)[0]
-            destination = WorkspaceService.normalize_path(item["destination"], allow_root=False)[0]
-            expected_sha256 = self.service._validate_patch_hash(item["expected_sha256"])
-            expected_size = item["expected_size"]
-            if (
-                source == destination
-                or isinstance(expected_size, bool)
-                or not isinstance(expected_size, int)
-                or expected_size < 1
-            ):
-                raise WorkspaceError("批量复制源、目标或预期大小无效。")
-            normalized.append(
-                {
-                    "source": source,
-                    "destination": destination,
-                    "expected_sha256": expected_sha256,
-                    "expected_size": expected_size,
-                }
-            )
-        destinations = [item["destination"] for item in normalized]
-        if len(destinations) != len(set(destinations)):
-            raise WorkspaceError("批量复制目标路径不能重复。")
-
-        identities = await self.service.abatch_hash_files(
-            scope.thread_id,
-            [*(item["source"] for item in normalized), *destinations],
-        )
-        source_identities = identities[: len(normalized)]
-        destination_identities = identities[len(normalized) :]
-        pending: list[dict[str, Any]] = []
-        receipts: list[dict[str, Any]] = []
-        for item, source_identity, destination_identity in zip(
-            normalized, source_identities, destination_identities, strict=True
-        ):
-            if (
-                source_identity.get("missing") is True
-                or source_identity.get("sha256") != item["expected_sha256"]
-                or source_identity.get("size") != item["expected_size"]
-            ):
-                raise WorkspaceError("复制源文件在登记后发生变化，已拒绝归档。")
-            if destination_identity.get("missing") is not True:
-                if (
-                    destination_identity.get("sha256") != item["expected_sha256"]
-                    or destination_identity.get("size") != item["expected_size"]
-                ):
-                    raise WorkspacePathConflict(
-                        f"归档目标“{item['destination']}”已存在且身份不同。"
-                    )
-                receipts.append(
-                    {
-                        "source": item["source"],
-                        "path": item["destination"],
-                        "size": item["expected_size"],
-                        "beforeSha256": item["expected_sha256"],
-                        "afterSha256": item["expected_sha256"],
-                        "sha256": item["expected_sha256"],
-                        "status": "reused",
-                    }
-                )
-                continue
-            pending.append(item)
-
-        if not pending:
-            return {
-                "ok": True,
-                "status": "completed",
-                "files": receipts,
-                "execution_id": None,
-                "mutation_sequence": scope.task.mutation_sequence,
-            }
-
-        mutation_sequence = await self.repository.increment_mutation(
-            scope.external_run_id,
-            lease=scope.lease,
-            internal_run_id=scope.internal_run_id,
-        )
-        execution_id = uuid.uuid4().hex
-        operation_receipt = {
-            "files": [
-                {
-                    "path": item["destination"],
-                    "before_sha256": None,
-                    "after_sha256": item["expected_sha256"],
-                }
-                for item in pending
-            ],
-            "copies": [dict(item) for item in pending],
-        }
-        copy_session_id = (
-            "copy-"
-            + hashlib.sha256(
-                f"{scope.external_run_id}:{scope.attempt_no}:{mutation_sequence}".encode()
-            ).hexdigest()[:32]
-        )
-        await self.repository.reserve_execution(
-            execution_id=execution_id,
-            external_run_id=scope.external_run_id,
-            internal_run_id=scope.internal_run_id,
-            owner_user_id=scope.owner_user_id,
-            thread_id=scope.thread_id,
-            sandbox_id=scope.sandbox_id,
-            daytona_session_id=copy_session_id,
-            mutation_sequence=mutation_sequence,
-            kind="patch",
-            attempt_no=scope.attempt_no,
-            lease_epoch=scope.lease_epoch,
-            operation_receipt=operation_receipt,
-            lease=scope.lease,
-        )
-        await self._check_fence(scope, execution_id)
-        try:
-            for item in pending:
-                copied = await asyncio.to_thread(
-                    self.service.copy_file,
-                    scope.thread_id,
-                    item["source"],
-                    item["destination"],
-                )
-                await self._check_fence(scope, execution_id)
-                if (
-                    copied.get("sha256") != item["expected_sha256"]
-                    or copied.get("size") != item["expected_size"]
-                ):
-                    raise WorkspaceError("复制文件落盘身份与登记值不一致。")
-                receipts.append(
-                    {
-                        "source": item["source"],
-                        "path": item["destination"],
-                        "size": copied["size"],
-                        "beforeSha256": None,
-                        "afterSha256": copied["sha256"],
-                        "sha256": copied["sha256"],
-                        "status": "copied",
-                    }
-                )
-            await self.repository.update_execution(
-                execution_id,
-                status="completed",
-                exit_code=0,
-                operation_receipt={**operation_receipt, "copyReceipts": receipts},
-            )
-        except Exception:
-            await self.repository.update_execution(
-                execution_id,
-                status="failed",
-                exit_code=1,
-                operation_receipt={**operation_receipt, "copyReceipts": receipts},
-            )
-            raise
-        return {
-            "ok": True,
-            "status": "completed",
-            "files": sorted(receipts, key=lambda item: item["path"]),
-            "execution_id": execution_id,
-            "mutation_sequence": mutation_sequence,
         }
 
     async def verify(
@@ -3600,9 +3374,6 @@ class CodingExecutionKernel:
 
 
 class WorkspaceCodingToolkit(_ManagedDaytonaTools):
-    _FILE_MUTATION_TOOLS = frozenset(
-        {"create_file", "create_files", "overwrite_file", "replace_text", "apply_patch", "patch"}
-    )
     _PROCESS_OBSERVE_OR_CLEANUP_ACTIONS = frozenset({"list", "poll", "wait", "kill"})
     _FINISH_FILE_REPAIR_CODES = frozenset(
         {
@@ -3918,7 +3689,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                             _paths_related(entry["resource"], resource)
                             for resource in argument_resources
                         )
-                        and tool_name in {"terminal", "verify"}
+                        and tool_name == "terminal"
                     ),
                     None,
                 )
@@ -4039,18 +3810,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                     run_context,
                     retain=self._retain_bounded_tool_result(scope, tool_name),
                     preview_bytes=self._tool_preview_bytes(scope, tool_name, arguments, result),
-                )
-            if (
-                tool_name == "verify"
-                and isinstance(result, dict)
-                and isinstance(result.get("outputHandle"), str)
-                and isinstance(result.get("execution_id"), str)
-            ):
-                execution = await self.kernel.repository.get_execution(result["execution_id"])
-                receipt = dict(execution.operation_receipt or {}) if execution is not None else {}
-                receipt["output_handle"] = result["outputHandle"]
-                await self.kernel.repository.update_execution(
-                    result["execution_id"], operation_receipt=receipt
                 )
             if not exempt and state is not None:
                 if spec.effect == "read":
@@ -4204,8 +3963,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 return None
             if (
                 TOOL_SPECS[tool_name].effect == "read"
-                or tool_name in self._FILE_MUTATION_TOOLS
-                or tool_name == "verify"
             ):
                 return None
             failed_verification = next(
@@ -4248,34 +4005,20 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             repair_with_files = failure_code in self._FINISH_FILE_REPAIR_CODES or (
                 failure_code.startswith("finish_acceptance_")
             )
-            if failure_code == "finish_plan_incomplete" and tool_name == "update_plan":
-                return None
             if repair_with_files and (
                 TOOL_SPECS[tool_name].effect == "read"
-                or tool_name in self._FILE_MUTATION_TOOLS
-                or tool_name in {"verify", "update_plan"}
             ):
                 return None
             allowed_tools = (
-                ["finish_task", "update_plan"]
+                ["finish_task"]
                 if failure_code == "finish_plan_incomplete"
                 else [
                     "finish_task",
-                    "update_plan",
-                    "verify",
-                    "create_files",
-                    "overwrite_file",
-                    "replace_text",
-                    "apply_patch",
+                    "terminal",
+                    "process",
                     "view_image",
                     "read_tool_output",
-                    "list_files",
                     "read_file",
-                    "read_lines",
-                    "search_text",
-                    "tree",
-                    "git_status",
-                    "git_diff",
                 ]
                 if repair_with_files
                 else ["finish_task"]
@@ -4295,8 +4038,6 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 "requiredActions": list(finish_failure.get("requiredActions") or [])[:10],
                 "retryable": True,
             }
-        if tool_name == "update_plan":
-            return None
         return {
             "ok": False,
             "status": "rejected",
@@ -4305,7 +4046,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
             "details": {
                 "mutationSequence": mutation_sequence,
                 "verificationId": verification.execution_id,
-                "allowedTools": ["finish_task", "update_plan"],
+                "allowedTools": ["finish_task"],
                 **(
                     {"finishFailureCode": finish_failure.get("code")}
                     if repairing_finish_failure and isinstance(finish_failure, dict)
@@ -4317,7 +4058,7 @@ class WorkspaceCodingToolkit(_ManagedDaytonaTools):
                 if repairing_finish_failure and isinstance(finish_failure, dict)
                 else [
                     "若工作已全部完成，更新计划为 completed 后调用 finish_task；"
-                    "若仍需工作，先用 update_plan 标记下一真实步骤为 in_progress。"
+                    "若仍需工作，先完成当前真实修复步骤，再重新提交任务验收。"
                 ]
             ),
             "retryable": True,

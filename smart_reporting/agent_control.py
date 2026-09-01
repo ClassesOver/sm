@@ -1,10 +1,6 @@
 import re
 from typing import Any
 
-from agno.run import RunContext
-
-from .workspace import WorkspaceService
-
 AGENT_PLAN_STATE_KEY = "agentos_plan"
 MAX_PLAN_STEPS = 20
 MAX_PLAN_STEP_LENGTH = 300
@@ -49,28 +45,3 @@ def validated_agent_plan(value: object) -> dict[str, Any] | None:
     if active > 1:
         return None
     return {"plan": normalized, "explanation": explanation.strip()}
-
-
-class AgentControlToolkit:
-    """Coding 执行内核复用的计划状态操作。"""
-
-    def __init__(self, _service: WorkspaceService):
-        pass
-
-    def agent_update_plan(
-        self,
-        plan: list[dict[str, str]],
-        explanation: str | None = None,
-        run_context: RunContext | None = None,
-    ) -> dict[str, Any]:
-        if not isinstance(plan, list) or not 1 <= len(plan) <= MAX_PLAN_STEPS:
-            raise ValueError(f"计划必须包含 1 至 {MAX_PLAN_STEPS} 个步骤。")
-        value = validated_agent_plan({"plan": plan, "explanation": (explanation or "").strip()})
-        if value is None:
-            raise ValueError("计划格式、状态或内容无效，且最多只能有一个 in_progress 步骤。")
-        if run_context is None:
-            raise ValueError("缺少当前运行上下文。")
-        if run_context.session_state is None:
-            run_context.session_state = {}
-        run_context.session_state[AGENT_PLAN_STATE_KEY] = value
-        return {"ok": True, **value}
