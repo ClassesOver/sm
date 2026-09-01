@@ -673,11 +673,23 @@ def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:
     assert "detailedAnalysisPlan" not in string_keys
 
 
-def test_analysis_item_thinking_effort_follows_worker_retry_policy() -> None:
-    source = inspect.getsource(ReportWorkflowRuntime._run_analysis_item_task)
+def test_worker_thinking_effort_is_off_first_and_high_on_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = object.__new__(ReportWorkflowRuntime)
+    runtime.report_worker = SimpleNamespace(
+        model=ReportWorkerOpenAIChat(id="test-model", api_key="test-key")
+    )
 
-    assert "self._worker_thinking_effort(retry=retry)" in source
-    assert 'self._worker_thinking_effort(retry=True) if retry else "off"' not in source
+    class _Profile:
+        enabled = True
+
+    monkeypatch.setattr(
+        "smart_reporting.reporting.workflow.runtime.analysis.reporting_thinking_profile_from_model",
+        lambda _model: _Profile(),
+    )
+    assert runtime._worker_thinking_effort(retry=False) == "off"
+    assert runtime._worker_thinking_effort(retry=True) == "high"
 
 
 def test_instruction_component_bytes_reports_sizes_without_content() -> None:

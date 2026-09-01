@@ -961,7 +961,7 @@ class RuntimeAnalysisMixin:
         profile = reporting_thinking_profile_from_model(model)
         if not profile.enabled:
             return "off"
-        return "max" if retry else "high"
+        return "high" if retry else "off"
 
     async def _analysis_item_artifacts_from_receipt(
         self,
