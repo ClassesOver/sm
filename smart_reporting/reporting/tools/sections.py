@@ -1148,6 +1148,7 @@ class RuntimeSectionsMixin:
                 raise ReportingError(
                     "report_phase_contract_invalid", "Analysis Task 指标注册表无效。"
                 )
+            unknown_metric_codes: list[str] = []
             if isinstance(raw_allowed_metric_codes, list):
                 allowed_metric_codes = set(raw_allowed_metric_codes)
                 unknown_metric_codes = sorted(
@@ -1158,12 +1159,6 @@ class RuntimeSectionsMixin:
                         if code not in allowed_metric_codes
                     }
                 )
-                if unknown_metric_codes:
-                    raise ReportingError(
-                        "report_chart_metric_unknown",
-                        "图表引用了当前冻结 facts 未声明的指标代码。",
-                        details={"unknownMetricCodes": unknown_metric_codes},
-                    )
             if len({item.chart_id for item in parsed}) != len(parsed):
                 raise ReportingError(
                     "report_chart_registration_duplicate", "同一次登记的 chartId 不能重复。"
@@ -1243,6 +1238,15 @@ class RuntimeSectionsMixin:
                         },
                     )
             warnings: list[dict[str, Any]] = []
+            if isinstance(raw_allowed_metric_codes, list):
+                for code in unknown_metric_codes:
+                    warnings.append(
+                        {
+                            "code": "report_chart_metric_unfrozen",
+                            "message": "图表引用了尚未冻结定义的指标代码。",
+                            "details": {"metricCode": code},
+                        }
+                    )
             registered: list[dict[str, Any]] = []
             inspected: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
             for registration in parsed:

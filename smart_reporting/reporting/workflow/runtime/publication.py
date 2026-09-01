@@ -2,6 +2,7 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
+from ....quality_warnings import CheckContext, CheckScope, TenantScope, WarningFinding
 from ..checkpoint import AnalysisEvidenceManifest, SectionArtifact, SectionCitation
 from .base import (
     REPORT_ANALYSIS_PLAN_STATE_KEY,
@@ -63,6 +64,16 @@ def evaluate_publication_semantics(
     metrics = {item.code: item for item in evidence_manifest.metric_definitions}
     citation_datasets = {item.citation_id: item.dataset_id for item in citations}
     dataset_semantics = {item.dataset_id: item for item in evidence_manifest.dataset_semantics}
+
+    for chart in evidence_manifest.charts:
+        for metric_code in sorted(set(chart.metric_codes) - set(metrics)):
+            warnings.append(
+                {
+                    "code": "report_chart_metric_unfrozen",
+                    "message": "图表引用了尚未冻结定义的指标代码。",
+                    "details": {"chartId": chart.chart_id, "metricCode": metric_code},
+                }
+            )
 
     def issue(code: str, claim_id: str) -> None:
         warnings.append(
@@ -585,6 +596,49 @@ class RuntimePublicationMixin:
             except Exception:
                 issue("artifact_path_invalid", "已验收产物路径不可读取或越界。", field=key)
 
+        # 质量告警用于后续修复审计，与完整性/身份类发布阻断相互独立；即使正式发布
+        # 被 issues 阻断，也必须保留本次检查发现，避免丢失后续修复所需的历史记录。
+        if self.quality_warning_service is not None:
+            scope = self._scope(run_context)
+            tenant = TenantScope(database_name=scope["database"], company_id=scope["companyId"])
+            grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+            for item in warnings:
+                code = item.get("code") if isinstance(item, Mapping) else None
+                details = item.get("details", {}) if isinstance(item, Mapping) else {}
+                subject_id = details.get("claimId") or details.get("chartId")
+                if isinstance(code, str) and isinstance(subject_id, str):
+                    grouped.setdefault(
+                        (code, "section_claim" if "claimId" in details else "analysis_chart"), []
+                    ).append(item)
+            for (code, subject_type), items in grouped.items():
+                findings = tuple(
+                    WarningFinding(
+                        rule_code=code,
+                        subject_type=subject_type,
+                        subject_id=str(
+                            item["details"].get("claimId") or item["details"].get("chartId")
+                        ),
+                        message=str(item.get("message", code)),
+                        details={
+                            k: v
+                            for k, v in item.get("details", {}).items()
+                            if k in {"claimId", "chartId", "metricCode"}
+                        },
+                    )
+                    for item in items
+                )
+                covered = tuple(sorted({finding.subject_id for finding in findings}))
+                await self.quality_warning_service.record_successful_check(
+                    tenant=tenant,
+                    check_scope=CheckScope(
+                        domain="reporting",
+                        rule_code=code,
+                        subject_type=subject_type,
+                        covered_subject_ids=covered,
+                    ),
+                    findings=findings,
+                    context=CheckContext(check_id=f"publication:{run_context.run_id}"),
+                )
         return {
             "formalReleaseAllowed": not issues,
             "issues": issues,

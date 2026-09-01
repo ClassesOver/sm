@@ -7,6 +7,7 @@ from .models import (
     CheckContext,
     CheckScope,
     QualityWarningEvent,
+    QualityWarningPage,
     QualityWarningRecord,
     TenantScope,
     WarningFinding,
@@ -51,6 +52,11 @@ class QualityWarningService:
         self, *, tenant: TenantScope, query: WarningQuery
     ) -> tuple[QualityWarningRecord, ...]:
         return await self.repository.list_warnings(tenant=tenant, query=query)
+
+    async def list_warning_page(
+        self, *, tenant: TenantScope, query: WarningQuery
+    ) -> QualityWarningPage:
+        return await self.repository.list_warning_page(tenant=tenant, query=query)
 
     async def get_warning(
         self, *, tenant: TenantScope, warning_id: UUID

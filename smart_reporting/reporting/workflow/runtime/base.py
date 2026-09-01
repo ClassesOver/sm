@@ -35,6 +35,7 @@ from pydantic import (
 )
 
 from ....async_utils import complete_cleanup
+from ....quality_warnings.service import QualityWarningService
 from ....task_execution import TaskScope, TaskState
 from ....workspace import WorkspaceService
 from ...contract import (
@@ -400,6 +401,7 @@ class _ReportWorkflowRuntimeBase:
         metadata_client: ReportingMetadataClient | None = None,
         download_grants: ReportDownloadGrantService | None = None,
         artifact_persistence: ReportArtifactPersistenceService | None = None,
+        quality_warning_service: QualityWarningService | None = None,
         report_public_base_url: str | None = None,
         state_repository: ReportingStateRepository,
         analysis_concurrency: int = 1,
@@ -419,6 +421,7 @@ class _ReportWorkflowRuntimeBase:
         self.metadata_client = metadata_client
         self.download_grants = download_grants
         self.artifact_persistence = artifact_persistence
+        self.quality_warning_service = quality_warning_service
         self.report_public_base_url = report_public_base_url
         self.state_repository = state_repository
         if isinstance(analysis_concurrency, bool) or not 1 <= analysis_concurrency <= 4:
@@ -986,21 +989,32 @@ class _ReportWorkflowRuntimeBase:
         value = (run_context.dependencies or {}).get("AgentOS 报表工作流")
         if isinstance(value, dict):
             scope = {
-                key: str(value.get(key) or "") for key in ("externalRunId", "threadId", "userId")
+                key: str(value.get(key) or "")
+                for key in ("externalRunId", "threadId", "userId", "database", "companyId")
             }
         else:
             value = state.get(REPORT_WORKFLOW_SCOPE_STATE_KEY)
             scope = (
-                {key: str(value.get(key) or "") for key in ("externalRunId", "threadId", "userId")}
+                {
+                    key: str(value.get(key) or "")
+                    for key in ("externalRunId", "threadId", "userId", "database", "companyId")
+                }
                 if isinstance(value, dict)
                 else {
                     "externalRunId": str(run_context.run_id or ""),
                     "threadId": str(run_context.session_id or ""),
                     "userId": str(run_context.user_id or ""),
+                    "database": "",
+                    "companyId": "",
                 }
             )
+        if not scope["database"] and not scope["companyId"]:
+            scope["database"] = "default"
+            scope["companyId"] = "default"
+        elif not scope["database"] or not scope["companyId"]:
+            raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")
         if (
-            any(not item for item in scope.values())
+            any(not item for key, item in scope.items() if key not in {"database", "companyId"})
             or str(run_context.user_id or "") != scope["userId"]
         ):
             raise ReportingError("report_workflow_context_missing", "报表工作流作用域不完整。")

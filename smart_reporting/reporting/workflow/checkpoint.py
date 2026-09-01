@@ -334,7 +334,6 @@ class AnalysisEvidenceManifest(StrictModel):
         if len(semantic_dataset_ids) != len(set(semantic_dataset_ids)):
             raise ValueError("AnalysisDatasetSemantics datasetId 不能重复")
         known_charts = set(chart_ids)
-        known_metrics = set(metric_codes)
         known_datasets = {dataset_id for item in self.evidence for dataset_id in item.dataset_ids}
         if any(set(item.chart_ids) - known_charts for item in self.evidence):
             raise ValueError("analysis evidence 引用了未登记图表")
@@ -344,8 +343,7 @@ class AnalysisEvidenceManifest(StrictModel):
             item.visual_inspection_receipt is None for item in self.charts
         ):
             raise ValueError("v2 AnalysisEvidenceManifest 每张图表必须绑定视觉检查回执")
-        if any(set(item.metric_codes) - known_metrics for item in self.charts):
-            raise ValueError("AnalysisChart 引用了未冻结指标")
+        # 未冻结指标属于可修复语义质量问题，由发布检查记录告警。
         if any(item.source_dataset_id not in known_datasets for item in self.charts):
             raise ValueError("AnalysisChart 引用了未冻结 Dataset")
         if self.dataset_semantics and set(semantic_dataset_ids) != known_datasets:

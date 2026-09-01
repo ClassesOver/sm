@@ -1768,15 +1768,17 @@ class RuntimeAnalysisMixin:
                     "durable analysis evidence Dataset 不属于授权 Dataset snapshot。",
                 )
             if authorized_dataset_ids:
-                dataset_semantics, metric_definitions = _finalize_semantic_catalog(
-                    analysis_plans=analysis_plans,
-                    fact_bundles=fact_bundles,
-                    dataset_ids=tuple(sorted(evidence_dataset_ids)),
+                dataset_semantics, metric_definitions, semantic_findings = (
+                    _finalize_semantic_catalog(
+                        analysis_plans=analysis_plans,
+                        fact_bundles=fact_bundles,
+                        dataset_ids=tuple(sorted(evidence_dataset_ids)),
+                    )
                 )
             else:
                 # 没有授权 snapshot 时不能伪造 Dataset 语义；保留空投影让 worker 的
                 # 终态校验先给出原始错误。真实报表入口总会提供非空授权 snapshot。
-                dataset_semantics, metric_definitions = [], []
+                dataset_semantics, metric_definitions, semantic_findings = [], [], []
             chart_registration_rules = {
                 # null 明确表示冻结 facts 没有 Profile metric code，Worker 可定义
                 # 图表 code，但 finalize 时必须以同名 metricDefinitions 冻结语义；
@@ -1874,6 +1876,7 @@ class RuntimeAnalysisMixin:
                     "currentAnalysisId": None,
                     "datasetSemantics": dataset_semantics,
                     "metricDefinitions": metric_definitions,
+                    "semanticFindings": semantic_findings,
                     "sectionEvidenceCatalog": {
                         section_code: visualization_payload.get("visualizationSections", {}).get(
                             section_code, {}
@@ -2651,8 +2654,8 @@ def _finalize_semantic_catalog(
     analysis_plans: Mapping[str, Mapping[str, Any]],
     fact_bundles: Mapping[str, Mapping[str, Any]],
     dataset_ids: Sequence[str],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """从冻结计划与 facts 投影目录；语义事实不完整时拒绝冻结。"""
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """从冻结计划与 facts 投影目录；可修复语义缺陷以 finding 返回。"""
 
     _require_dataset_id_sequence(
         dataset_ids,
@@ -2669,15 +2672,11 @@ def _finalize_semantic_catalog(
         raw_grain = plan.get("organizationGrain")
         if not isinstance(raw_dataset_ids, Sequence) or isinstance(raw_dataset_ids, (str, bytes)):
             raise ReportingError("report_analysis_dataset_inconsistent", "分析计划 Dataset 无效。")
-        if not isinstance(raw_grain, Sequence) or isinstance(raw_grain, (str, bytes)):
-            raise ReportingError(
-                "report_analysis_semantic_invalid", "分析计划缺少 organization grain。"
-            )
-        grains = {item for item in raw_grain if isinstance(item, str) and item}
-        if not grains:
-            raise ReportingError(
-                "report_analysis_semantic_invalid", "分析计划缺少 organization grain。"
-            )
+        grains = (
+            {item for item in raw_grain if isinstance(item, str) and item}
+            if isinstance(raw_grain, Sequence) and not isinstance(raw_grain, (str, bytes))
+            else set()
+        )
         for dataset_id in raw_dataset_ids:
             if not isinstance(dataset_id, str) or not dataset_id:
                 raise ReportingError(
@@ -2695,10 +2694,18 @@ def _finalize_semantic_catalog(
             "report_analysis_dataset_inconsistent",
             "分析计划 Dataset 必须精确覆盖 evidence-derived Dataset。",
         )
-    if any(not grains for grains in grains_by_dataset.values()):
-        raise ReportingError(
-            "report_analysis_semantic_invalid", "Dataset 缺少冻结 organization grain。"
-        )
+    findings: list[dict[str, Any]] = []
+    for dataset_id, grains in grains_by_dataset.items():
+        if not grains:
+            findings.append(
+                {
+                    "ruleCode": "report_dataset_grain_missing",
+                    "subjectType": "dataset_semantics",
+                    "subjectId": dataset_id,
+                    "message": "Dataset 缺少 organization grain，需后续修复。",
+                    "details": {"reasonCode": "organization_grain_missing"},
+                }
+            )
 
     dataset_semantics = []
     for dataset_id in dataset_ids:
@@ -2706,7 +2713,7 @@ def _finalize_semantic_catalog(
         dataset_semantics.append(
             {
                 "datasetId": dataset_id,
-                "rowGrain": "+".join(sorted(grains)) or "record",
+                "rowGrain": "+".join(sorted(grains)) or "unknown",
                 "duplicateResolution": "not_applicable",
             }
         )
@@ -2743,27 +2750,56 @@ def _finalize_semantic_catalog(
         units = sorted(
             {unit for fact in facts if isinstance((unit := fact.get("unit")), str) and unit}
         )
-        starts = sorted(
+        periods = sorted(
             {
-                value
+                (period_start, period_end)
                 for fact in facts
-                if isinstance((value := fact.get("periodStart")), str) and value
+                if isinstance((period_start := fact.get("periodStart")), str)
+                and period_start
+                and isinstance((period_end := fact.get("periodEnd")), str)
+                and period_end
             }
         )
-        ends = sorted(
-            {value for fact in facts if isinstance((value := fact.get("periodEnd")), str) and value}
-        )
-        if len(formulas) != len(facts) or len(units) != 1 or len(starts) != 1 or len(ends) != 1:
-            raise ReportingError(
-                "report_analysis_semantic_invalid",
-                f"指标 {code} 的 formula、unit 或期间缺失或冲突。",
+        # 同一指标可在当前期、同比期等多个冻结事实中重复出现。目录只表达其
+        # 唯一计算定义和覆盖期间，不能把多个完整期间误判为定义冲突；但每条事实
+        # 仍必须具备完整 formula、unit 和期间边界，避免用部分证据补全语义目录。
+        if (
+            any(
+                not isinstance(fact.get("formula"), str)
+                or not fact["formula"]
+                or not isinstance(fact.get("unit"), str)
+                or not fact["unit"]
+                or not isinstance(fact.get("periodStart"), str)
+                or not fact["periodStart"]
+                or not isinstance(fact.get("periodEnd"), str)
+                or not fact["periodEnd"]
+                for fact in facts
             )
-        period_start = starts[0]
-        period_end = ends[0]
-        period_basis = (
-            period_start
-            if period_start is not None and period_start == period_end
-            else " 至 ".join(item for item in (period_start, period_end) if item is not None)
+            or len(formulas) != 1
+            or len(units) != 1
+        ):
+            missing_fields = []
+            if len(formulas) != 1:
+                missing_fields.append("formula")
+            if len(units) != 1:
+                missing_fields.append("unit")
+            if not periods or any(
+                not fact.get("periodStart") or not fact.get("periodEnd") for fact in facts
+            ):
+                missing_fields.append("period")
+            findings.append(
+                {
+                    "ruleCode": "report_metric_semantic_incomplete",
+                    "subjectType": "metric_definition",
+                    "subjectId": code,
+                    "message": f"指标 {code} 的语义定义缺失或冲突，需后续修复。",
+                    "details": {"metricCode": code, "missingFields": sorted(set(missing_fields))},
+                }
+            )
+            continue
+        period_basis = "；".join(
+            period_start if period_start == period_end else f"{period_start} 至 {period_end}"
+            for period_start, period_end in periods
         )
         metric_definitions.append(
             {
@@ -2774,7 +2810,7 @@ def _finalize_semantic_catalog(
                 "periodBasis": period_basis,
             }
         )
-    return dataset_semantics, metric_definitions
+    return dataset_semantics, metric_definitions, findings
 
 
 def _require_dataset_id_sequence(

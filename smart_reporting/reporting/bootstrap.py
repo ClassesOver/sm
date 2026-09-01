@@ -3,6 +3,7 @@
 from agno.agent import Agent
 
 from ..execution_context import ExecutionContext
+from ..quality_warnings.service import QualityWarningService
 from ..settings import AgentSettings
 from ..task_execution import TaskExecutionRepository
 from ..task_execution.execution import TaskExecutionKernel
@@ -25,6 +26,7 @@ def create_report_runtime(
     *,
     download_grants: ReportDownloadGrantService | None = None,
     artifact_persistence: ReportArtifactPersistenceService | None = None,
+    quality_warning_service: QualityWarningService | None = None,
     worker_event_sink: WorkerEventSink | None = None,
 ) -> tuple[Agent, ReportWorkflowRuntime]:
     task_repository = TaskExecutionRepository(context.database)
@@ -63,6 +65,7 @@ def create_report_runtime(
         ),
         download_grants=download_grants,
         artifact_persistence=artifact_persistence,
+        quality_warning_service=quality_warning_service,
         report_public_base_url=(
             settings.report_public_base_url if download_grants is not None else None
         ),

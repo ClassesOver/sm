@@ -115,6 +115,11 @@ class QualityWarningEvent(_FrozenModel):
     details: dict[str, JsonValue]
 
 
+class QualityWarningPage(_FrozenModel):
+    records: tuple[QualityWarningRecord, ...]
+    next_cursor: str | None = None
+
+
 class CheckContext(_FrozenModel):
     """可信运行上下文，仅在事件历史中保留定位所需的稳定标识。"""
 
