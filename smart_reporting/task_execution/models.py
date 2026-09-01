@@ -38,10 +38,6 @@ class InstructionState(StrEnum):
     REJECTED = "rejected"
 
 
-TERMINAL_TASK_STATES = frozenset({TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED})
-RUNNABLE_TASK_STATES = frozenset({TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED})
-
-
 def utcnow() -> datetime:
     return datetime.now(UTC)
 

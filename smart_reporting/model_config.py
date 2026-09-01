@@ -1,7 +1,4 @@
-from collections.abc import Callable
 from typing import Any
-
-AgentInstructions = str | list[str] | Callable[..., str | list[str]]
 
 OPENAI_COMPATIBLE_ROLE_MAP = {
     "system": "system",
