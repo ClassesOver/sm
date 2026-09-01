@@ -10,12 +10,14 @@ from .models import (
     WarningQuery,
     warning_fingerprint,
 )
+from .service import QualityWarningService
 
 __all__ = [
     "CheckContext",
     "CheckScope",
     "QualityWarningEvent",
     "QualityWarningRecord",
+    "QualityWarningService",
     "TenantScope",
     "WarningFinding",
     "WarningQuery",
