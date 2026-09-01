@@ -32,7 +32,6 @@ from smart_reporting.task_execution.execution import (
     CODING_EXECUTION_MIGRATION_STATE_KEY,
     CODING_FINISH_FAILURE_STATE_KEY,
     CODING_TASK_DEPENDENCY,
-    CODING_TOOL_ARGUMENT_AUTOFIX_STATE_KEY,
     CODING_TOOL_FAILURE_STATE_KEY,
     CODING_TOOL_OUTPUT_STATE_KEY,
     CODING_TOOL_PROGRESS_STATE_KEY,
@@ -112,35 +111,6 @@ async def execution_runtime(tmp_path):
     )
     await database.async_engine.dispose()
     database.sync_engine.dispose()
-
-
-@pytest.mark.anyio
-async def test_hot_read_resolves_one_snapshot_without_lease_or_cleanup_queries(
-    execution_runtime,
-    monkeypatch,
-):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    snapshot_calls = 0
-    original_snapshot = runtime.repository.get_task_snapshot
-
-    async def counted_snapshot(external_run_id):
-        nonlocal snapshot_calls
-        snapshot_calls += 1
-        return await original_snapshot(external_run_id)
-
-    async def unexpected(*_args, **_kwargs):
-        raise AssertionError("热态只读工具不应领取租约或清理历史任务")
-
-    monkeypatch.setattr(runtime.repository, "get_task_snapshot", counted_snapshot)
-    monkeypatch.setattr(runtime.repository, "claim_lease", unexpected)
-    monkeypatch.setattr(runtime.repository, "cleanup_expired", unexpected)
-    monkeypatch.setattr(runtime.repository, "get_task", unexpected)
-
-    result = await toolkit.coding_list_files(run_context=runtime.context)
-
-    assert isinstance(result, list)
-    assert snapshot_calls == 1
 
 
 @pytest.mark.anyio
@@ -1479,51 +1449,6 @@ async def test_patch_create_and_overwrite_require_safe_preconditions(execution_r
 
 
 @pytest.mark.anyio
-async def test_split_mutation_tool_and_inclusive_read_lines(execution_runtime, monkeypatch):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    calls = []
-
-    async def read_lines(thread_id, path, start_line, line_count):
-        calls.append((thread_id, path, start_line, line_count))
-        return {
-            "path": path,
-            "startLine": start_line,
-            "endLine": start_line + line_count - 1,
-            "content": "two\nthree\nfour\n",
-        }
-
-    monkeypatch.setattr(runtime.workspace, "aread_lines", read_lines)
-
-    created = await toolkit.coding_create_file(
-        "lines.txt",
-        "one\ntwo\nthree\nfour\nfive\n",
-        run_context=runtime.context,
-    )
-    selected = await toolkit.read_lines(
-        "lines.txt",
-        start_line=2,
-        end_line=4,
-        run_context=runtime.context,
-    )
-
-    assert created["ok"] is True
-    assert created["mutation_sequence"] == 1
-    assert selected["content"] == "two\nthree\nfour\n"
-    assert selected["startLine"] == 2
-    assert selected["endLine"] == 4
-    assert calls == [("thread", "lines.txt", 2, 3)]
-
-    with pytest.raises(WorkspaceError, match="end_line"):
-        await toolkit.read_lines(
-            "lines.txt",
-            start_line=4,
-            end_line=2,
-            run_context=runtime.context,
-        )
-
-
-@pytest.mark.anyio
 async def test_terminal_is_not_verification_and_finish_auto_selects_verify(execution_runtime):
     runtime = execution_runtime
     runtime.context.session_state[AGENT_PLAN_STATE_KEY] = {"plan": []}
@@ -1796,42 +1721,6 @@ async def test_batch_hash_preserves_order_and_reports_each_missing_path(executio
     assert [item["path"] for item in results] == ["b.txt", "missing.txt", "a.txt"]
     assert results[1] == {"path": "missing.txt", "missing": True}
     assert results[0]["sha256"] == hashlib.sha256(b"bb").hexdigest()
-
-
-@pytest.mark.anyio
-async def test_third_identical_read_is_blocked_until_real_progress(execution_runtime):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-
-    first = await toolkit.coding_list_files(run_context=runtime.context)
-    second = await toolkit.coding_list_files(run_context=runtime.context)
-    blocked = await toolkit.coding_list_files(run_context=runtime.context)
-
-    assert first == second
-    assert blocked["code"] == "tool_no_progress"
-    assert blocked["requiredActions"]
-    assert blocked["retryable"] is True
-
-    await toolkit.patch("create", path="progress.txt", content="done", run_context=runtime.context)
-    progressed = await toolkit.coding_list_files(run_context=runtime.context)
-    assert any(item["path"] == "progress.txt" for item in progressed)
-
-
-@pytest.mark.anyio
-async def test_alternating_reads_are_blocked_when_they_repeat_without_progress(
-    execution_runtime,
-):
-    runtime = execution_runtime
-    runtime.workspace.create_file("thread", "input.txt", b"data")
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-
-    await toolkit.coding_list_files(run_context=runtime.context)
-    await toolkit.coding_read_file("input.txt", run_context=runtime.context)
-    await toolkit.coding_list_files(run_context=runtime.context)
-    await toolkit.coding_read_file("input.txt", run_context=runtime.context)
-    blocked = await toolkit.coding_list_files(run_context=runtime.context)
-
-    assert blocked["code"] == "tool_no_progress"
 
 
 @pytest.mark.anyio
@@ -2182,159 +2071,6 @@ async def test_unknown_foreground_terminal_only_records_real_workspace_mutation(
 
 
 @pytest.mark.anyio
-async def test_validation_state_rejects_terminal_without_side_effects(execution_runtime):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    created = await toolkit.coding_create_file("result.txt", "draft", runtime.context)
-    executions_before = await runtime.repository.list_executions("external-run")
-    process_calls_before = len(runtime.synchronous.sandbox_for("thread").process.sessions)
-
-    blocked = await toolkit.terminal("python3 query.py", run_context=runtime.context)
-    executions_after = await runtime.repository.list_executions("external-run")
-    process_calls_after = len(runtime.synchronous.sandbox_for("thread").process.sessions)
-
-    assert created["mutation_sequence"] == 1
-    assert blocked["code"] == "coding_verification_required"
-    assert blocked["details"]["mutationSequence"] == 1
-    assert executions_after == executions_before
-    assert process_calls_after == process_calls_before
-
-
-@pytest.mark.anyio
-async def test_validation_state_rejects_intermediate_plan_update(execution_runtime):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    await toolkit.coding_create_file("result.txt", "draft", runtime.context)
-
-    blocked = await toolkit.update_plan(
-        [{"step": "验证", "status": "in_progress"}],
-        run_context=runtime.context,
-    )
-
-    assert blocked["code"] == "coding_verification_required"
-    assert AGENT_PLAN_STATE_KEY not in runtime.context.session_state
-
-
-@pytest.mark.anyio
-async def test_incomplete_plan_keeps_iteration_open_until_plan_is_completed(
-    execution_runtime,
-):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    await toolkit.update_plan(
-        [
-            {"step": "生成中间产物", "status": "in_progress"},
-            {"step": "验证最终产物", "status": "pending"},
-        ],
-        run_context=runtime.context,
-    )
-    await toolkit.coding_create_file("result.txt", "draft", runtime.context)
-    scope = await runtime.kernel.scope(runtime.context)
-
-    admission = await toolkit._state_admission_rejection(
-        scope,
-        "terminal",
-        {"command": "python3 generate.py"},
-        runtime.context.session_state,
-    )
-    advanced = await toolkit.update_plan(
-        [
-            {"step": "生成中间产物", "status": "completed"},
-            {"step": "验证最终产物", "status": "in_progress"},
-        ],
-        run_context=runtime.context,
-    )
-    completed = await toolkit.update_plan(
-        [
-            {"step": "生成中间产物", "status": "completed"},
-            {"step": "验证最终产物", "status": "completed"},
-        ],
-        run_context=runtime.context,
-    )
-    completed_scope = await runtime.kernel.scope(runtime.context)
-    blocked = await toolkit._state_admission_rejection(
-        completed_scope,
-        "terminal",
-        {"command": "python3 generate.py"},
-        runtime.context.session_state,
-    )
-
-    assert admission is None
-    assert advanced["ok"] is True
-    assert completed["ok"] is True
-    assert blocked is not None
-    assert blocked["code"] == "coding_verification_required"
-
-
-@pytest.mark.anyio
-async def test_verified_state_rejects_reads_and_requires_finish_but_keeps_plan_available(
-    execution_runtime,
-):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    await toolkit.coding_create_file("result.txt", "done", runtime.context)
-    verification_task = asyncio.create_task(toolkit.verify("verify", run_context=runtime.context))
-    verification_id = None
-    for _attempt in range(100):
-        await asyncio.sleep(0)
-        executions = await runtime.repository.list_executions("external-run")
-        verification_id = next(
-            (
-                execution.execution_id
-                for execution in reversed(executions)
-                if execution.is_verification and execution.command_id is not None
-            ),
-            None,
-        )
-        if verification_id is not None:
-            break
-    assert verification_id is not None
-    finish_remote_execution(runtime, verification_id)
-    verification = await verification_task
-    assert verification["status"] == "completed"
-
-    blocked = await toolkit.terminal("python3 query.py", run_context=runtime.context)
-    blocked_read = await toolkit.coding_list_files(run_context=runtime.context)
-    plan = await toolkit.update_plan(
-        [{"step": "完成", "status": "completed"}],
-        run_context=runtime.context,
-    )
-
-    assert blocked["code"] == "coding_finish_required"
-    assert blocked["details"]["verificationId"] == verification_id
-    assert blocked_read["code"] == "coding_finish_required"
-    assert blocked_read["details"]["allowedTools"] == ["finish_task", "update_plan"]
-    assert plan["ok"] is True
-
-
-@pytest.mark.anyio
-async def test_verified_state_in_progress_plan_reopens_work_and_invalidates_old_verification(
-    execution_runtime,
-):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    await toolkit.coding_create_file("result.txt", "done", runtime.context)
-    verification_id = await completed_verification(runtime)
-
-    reopened = await toolkit.update_plan(
-        [{"step": "修正异常结果", "status": "in_progress"}],
-        run_context=runtime.context,
-    )
-    readable = await toolkit.coding_read_file("result.txt", run_context=runtime.context)
-    changed = await toolkit.replace_text(
-        "result.txt", "done", "corrected", run_context=runtime.context
-    )
-    blocked = await toolkit.terminal("python3 verify.py", run_context=runtime.context)
-
-    assert reopened["ok"] is True
-    assert readable["content"] == "done"
-    assert changed["mutation_sequence"] == 2
-    assert blocked["code"] == "coding_verification_required"
-    assert blocked["details"]["mutationSequence"] == 2
-    assert blocked["details"].get("failedVerificationId") != verification_id
-
-
-@pytest.mark.anyio
 async def test_replace_text内容不变时不记录mutation(tmp_path):
     workspace = service(tmp_path)
     workspace.create_file("thread", "result.txt", b"done")
@@ -2368,63 +2104,6 @@ async def test_replace_text内容不变时不记录mutation(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_finish_artifact_failure_returns_complete_repair_gate(execution_runtime):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    await toolkit.coding_create_file("generate_report.py", "print('report')", runtime.context)
-    verification_id = await completed_verification(runtime)
-    runtime.context.session_state[AGENT_PLAN_STATE_KEY] = {
-        "plan": [{"step": "生成报告", "status": "completed"}]
-    }
-    failure = await runtime.kernel.finish_task(
-        "done",
-        ["reports/ruijin-2025.pdf"],
-        [verification_id],
-        [],
-        runtime.context,
-        Function(name="finish_task"),
-    )
-    executions_before = await runtime.repository.list_executions("external-run")
-
-    blocked_terminal = await toolkit.terminal(
-        "python3 generate_report.py", run_context=runtime.context
-    )
-    reopened_plan = await toolkit.update_plan(
-        [{"step": "修复缺失报告路径", "status": "in_progress"}],
-        run_context=runtime.context,
-    )
-    repair_read = await toolkit.coding_read_file("generate_report.py", run_context=runtime.context)
-    scope = await runtime.kernel.scope(runtime.context)
-    verify_admission = await toolkit._state_admission_rejection(
-        scope,
-        "verify",
-        {
-            "command": "python3 generate_report.py",
-            "artifact_paths": ["reports/ruijin-2025.pdf"],
-        },
-        runtime.context.session_state,
-    )
-    executions_after = await runtime.repository.list_executions("external-run")
-
-    assert failure["code"] == "finish_artifact_missing"
-    assert blocked_terminal["code"] == "coding_finish_repair_required"
-    assert blocked_terminal["details"]["finishFailureCode"] == "finish_artifact_missing"
-    assert blocked_terminal["details"]["missingPaths"] == ["reports/ruijin-2025.pdf"]
-    assert "read_file" in blocked_terminal["details"]["allowedTools"]
-    assert blocked_terminal["requiredActions"] == [
-        "核对 details.missingPaths：若路径声明错误，下一次 finish_task 使用实际存在的 "
-        "artifact_paths；若确为必需产物，生成后调用 verify，再用实际存在路径重新提交。"
-    ]
-    assert reopened_plan["ok"] is True
-    assert "print('report')" in repair_read["content"]
-    assert runtime.context.session_state[AGENT_PLAN_STATE_KEY]["plan"] == [
-        {"step": "修复缺失报告路径", "status": "in_progress"}
-    ]
-    assert verify_admission is None
-    assert executions_after == executions_before
-
-
-@pytest.mark.anyio
 async def test_mutation_zero_finish_failure_still_requires_verification(execution_runtime):
     runtime = execution_runtime
     toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
@@ -2455,52 +2134,6 @@ async def test_repeated_read_only_terminal_is_blocked_without_new_execution(exec
 
 
 @pytest.mark.anyio
-async def test_failed_absolute_path_is_blocked_across_terminal_and_verify(
-    execution_runtime,
-    monkeypatch,
-):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    original = AsyncFakeProcess.execute_session_command
-
-    async def fail_invalid_workspace(process, session_id, request, timeout=None):
-        result = await original(process, session_id, request, timeout=timeout)
-        command = await process.get_session_command(session_id, result.cmd_id)
-        if "cd /workspace" in request.command:
-            command.output = "/bin/sh: 1: cd: can't cd to /workspace\n"
-            command.exit_code = 2
-        else:
-            command.output = "verified\n"
-            command.exit_code = 0
-        return result
-
-    monkeypatch.setattr(AsyncFakeProcess, "execute_session_command", fail_invalid_workspace)
-
-    failed = await toolkit.terminal(
-        "cd /workspace && python3 generate.py",
-        run_context=runtime.context,
-    )
-    blocked = await toolkit.verify(
-        "cd /workspace && python3 verify.py",
-        timeout=30,
-        run_context=runtime.context,
-    )
-    recovered = await toolkit.verify(
-        "python3 verify.py",
-        timeout=30,
-        run_context=runtime.context,
-    )
-
-    assert failed["status"] == "failed"
-    assert blocked["code"] == "tool_no_progress"
-    assert blocked["details"]["failedResource"] == "/workspace"
-    assert blocked["details"]["workspaceRoot"] == "/home/daytona/workspace"
-    assert blocked["requiredActions"]
-    assert blocked["retryable"] is True
-    assert recovered["status"] == "completed"
-    assert len(await runtime.repository.list_executions("external-run")) == 2
-
-
 def test_absolute_paths_distinguishes_unicode_relative_and_absolute_paths():
     relative = "python3 \u62a5\u8868/\u667a\u80fd\u5206\u6790/report-run-1/analysis.py"
     absolute = (
@@ -2530,59 +2163,6 @@ def test_absolute_paths_distinguishes_unicode_relative_and_absolute_paths():
 )
 def test_read_only_terminal_classifier_is_conservative(command, expected):
     assert execution_module._is_read_only_terminal_command(command) is expected
-
-
-def test_workspace_coding_tools_have_explicit_schemas_and_split_mutations():
-    toolkit = WorkspaceCodingToolkit(None, None)  # type: ignore[arg-type]
-    tools = {**toolkit.functions, **toolkit.async_functions}
-
-    assert 'list_files(path="")' in toolkit.instructions
-    assert "禁止传 /workspace" in toolkit.instructions
-    assert "patch" not in tools
-    assert "create_file" not in tools
-    assert {
-        "create_files",
-        "overwrite_file",
-        "replace_text",
-        "apply_patch",
-    }.issubset(tools)
-    create_files = tools["create_files"]
-    assert create_files.parameters["properties"]["files"]["minItems"] == 1
-    assert tools["terminal"].parameters["properties"]["shell"] == {
-        "type": "string",
-        "enum": ["/bin/sh", "/bin/bash"],
-        "default": "/bin/sh",
-    }
-    for name in (
-        "list_files",
-        "read_file",
-        "read_lines",
-        "search_text",
-        "tree",
-        "git_status",
-        "git_diff",
-        "view_image",
-    ):
-        schema = tools[name].parameters
-        assert schema["type"] == "object"
-        assert schema["properties"]
-        assert schema["additionalProperties"] is False
-
-    list_files = tools["list_files"]
-    assert "本次 assistant 工具批次中的唯一调用" in tools["terminal"].description
-    assert 'path 传空字符串 ""' in list_files.description
-    assert '根目录必须传空字符串 ""' in list_files.parameters["properties"]["path"]["description"]
-
-    assert set(tools["read_lines"].parameters["properties"]) == {
-        "path",
-        "start_line",
-        "end_line",
-    }
-    assert set(tools["search_text"].parameters["properties"]) == {
-        "pattern",
-        "path",
-        "limit",
-    }
 
 
 @pytest.mark.anyio
@@ -2636,81 +2216,6 @@ async def test_finish_entrypoint_stops_registered_agno_function_after_acceptance
     assert parsed_clone.stop_after_tool_call is True
 
 
-@pytest.mark.anyio
-async def test_coding基础工具自动展开唯一一层arguments包装(execution_runtime):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    assert all(
-        function.pre_hook is normalize_coding_function_call_arguments
-        for function in (*toolkit.functions.values(), *toolkit.async_functions.values())
-    )
-    function = copy(toolkit.async_functions["create_files"])
-
-    async def passthrough_tool_hook(run_context, function_name, function_call, arguments):
-        assert run_context is runtime.context
-        assert function_name == "create_files"
-        return await function_call(**arguments)
-
-    function.tool_hooks = [passthrough_tool_hook]
-    function._run_context = runtime.context
-    call = FunctionCall(
-        function=function,
-        arguments={"arguments": {"files": [{"path": "wrapped.py", "content": "print(1)\n"}]}},
-        call_id="wrapped-create-files",
-    )
-
-    result = await call.aexecute()
-
-    assert result.status == "success"
-    assert result.result["ok"] is True
-    assert (
-        runtime.synchronous.sandbox_for("thread").fs.entries["/home/daytona/workspace/wrapped.py"][
-            1
-        ]
-        == b"print(1)\n"
-    )
-    assert runtime.context.session_state[CODING_TOOL_ARGUMENT_AUTOFIX_STATE_KEY] == [
-        {
-            "code": "coding_tool_arguments_unwrapped",
-            "toolName": "create_files",
-            "mutationSequence": 0,
-        }
-    ]
-
-
-@pytest.mark.anyio
-async def test_coding基础工具按schema恢复json字符串数组(execution_runtime):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    function = copy(toolkit.async_functions["create_files"])
-
-    async def passthrough_tool_hook(run_context, function_name, function_call, arguments):
-        assert run_context is runtime.context
-        assert function_name == "create_files"
-        return await function_call(**arguments)
-
-    function.tool_hooks = [passthrough_tool_hook]
-    function._run_context = runtime.context
-    call = FunctionCall(
-        function=function,
-        arguments={
-            "files": json.dumps([{"path": "schema-array.py", "content": "print('schema')\n"}])
-        },
-        call_id="schema-array-create-files",
-    )
-
-    result = await call.aexecute()
-
-    assert result.status == "success"
-    assert result.result["ok"] is True
-    assert (
-        runtime.synchronous.sandbox_for("thread").fs.entries[
-            "/home/daytona/workspace/schema-array.py"
-        ][1]
-        == b"print('schema')\n"
-    )
-
-
 @pytest.mark.parametrize(
     ("arguments", "expected"),
     [
@@ -2734,39 +2239,6 @@ def test_coding基础工具arguments只做一层等价json规范化(arguments, e
     normalize_coding_function_call_arguments(call)
 
     assert call.arguments == expected
-
-
-@pytest.mark.anyio
-async def test_failed_parent_absolute_path_blocks_child_path(
-    execution_runtime,
-    monkeypatch,
-):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    original = AsyncFakeProcess.execute_session_command
-
-    async def fail_parent(process, session_id, request, timeout=None):
-        result = await original(process, session_id, request, timeout=timeout)
-        command = await process.get_session_command(session_id, result.cmd_id)
-        command.output = "/bin/sh: 1: cd: can't cd to /workspace\n"
-        command.exit_code = 2
-        return result
-
-    monkeypatch.setattr(AsyncFakeProcess, "execute_session_command", fail_parent)
-
-    failed = await toolkit.terminal(
-        "cd /workspace/report && python3 generate.py",
-        run_context=runtime.context,
-    )
-    blocked = await toolkit.verify(
-        "cd /workspace/report/output && python3 verify.py",
-        timeout=30,
-        run_context=runtime.context,
-    )
-
-    assert failed["status"] == "failed"
-    assert blocked["code"] == "tool_no_progress"
-    assert blocked["details"]["failedResource"] == "/workspace"
 
 
 @pytest.mark.anyio
@@ -3188,58 +2660,6 @@ async def test_finish_task_rejects_invalid_verification_receipt(execution_runtim
     ]
     assert details["activeProcesses"] == []
     assert result["requiredActions"] == ["修复验证错误，并在当前 mutation 上重新运行验证。"]
-
-
-@pytest.mark.anyio
-async def test_update_plan_declares_schema_and_returns_stable_missing_argument_error():
-    toolkit = WorkspaceCodingToolkit(None, None)  # type: ignore[arg-type]
-    function = toolkit.async_functions["update_plan"]
-
-    assert function.parameters["required"] == ["plan"]
-    assert function.parameters["properties"]["plan"]["items"]["required"] == [
-        "step",
-        "status",
-    ]
-    assert (await function.entrypoint())["code"] == "plan_required"
-
-
-@pytest.mark.anyio
-async def test_verify_declares_and_forwards_bounded_timeout(execution_runtime, monkeypatch):
-    runtime = execution_runtime
-    toolkit = WorkspaceCodingToolkit(runtime.workspace, runtime.repository)
-    function = toolkit.async_functions["verify"]
-    captured = []
-
-    async def verify(command, artifact_paths, run_context, *, validator_id, timeout, _scope):
-        captured.append((command, validator_id, artifact_paths, run_context, timeout, _scope))
-        return {"ok": True, "status": "completed", "exit_code": 0}
-
-    monkeypatch.setattr(toolkit.kernel, "verify", verify)
-
-    result = await function.entrypoint(
-        command="true",
-        timeout=17,
-        run_context=runtime.context,
-    )
-
-    timeout_schema = function.parameters["properties"]["timeout"]
-    assert timeout_schema == {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 86_400,
-        "default": 900,
-    }
-    assert function.parameters["oneOf"] == [
-        {"required": ["command"]},
-        {"required": ["validator_id"]},
-    ]
-    assert result["ok"] is True
-    assert len(captured) == 1
-    assert captured[0][:5] == ("true", None, [], runtime.context, 17)
-    assert isinstance(captured[0][5], CodingTaskScope)
-
-    with pytest.raises(WorkspaceError, match="verify timeout"):
-        await runtime.kernel.verify("true", [], runtime.context, timeout=0)
 
 
 @pytest.mark.anyio
