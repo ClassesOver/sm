@@ -692,6 +692,7 @@ def test_runtime_planners_project_reasoning_to_vllm_chat_template() -> None:
         "enable_thinking": True,
         "thinking_budget": 8192,
         "chat_template_kwargs": {
+            "enable_thinking": True,
             "thinking": True,
             "reasoning_effort": "max",
         },

@@ -318,6 +318,7 @@ def test_report_worker_vllm_transport_preserves_reasoning_effort(
         "enable_thinking": True,
         "thinking_budget": 8192,
         "chat_template_kwargs": {
+            "enable_thinking": True,
             "thinking": True,
             "reasoning_effort": "high",
         },

@@ -42,6 +42,7 @@ def reasoning_transport_fields(
     # 空字典由环境能力开关在模型装配时放入，作为 transport 标记；未带标记的
     # OpenAI-compatible 服务继续使用 Agno 顶层 reasoning_effort，避免云端漂移。
     template_kwargs = dict(raw_template_kwargs)
+    template_kwargs["enable_thinking"] = enabled
     template_kwargs["thinking"] = enabled
     if enabled and reasoning_effort is not None:
         template_kwargs["reasoning_effort"] = reasoning_effort
