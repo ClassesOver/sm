@@ -305,6 +305,56 @@ def _message_text(message: Message) -> str:
     return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
 
 
+_CONTEXT_COMPONENT_ROLES = ("system", "user", "assistant", "tool", "other")
+
+
+def _serialized_context_bytes(value: Any) -> int:
+    if value is None:
+        return 0
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    except Exception:
+        encoded = str(value)
+    return len(encoded.encode("utf-8"))
+
+
+def _context_message_bytes(message: Message) -> tuple[str, int]:
+    role = str(message.role or "").lower()
+    bucket = role if role in _CONTEXT_COMPONENT_ROLES else "other"
+    payload = {
+        "role": role,
+        "content": _message_text(message),
+        "name": getattr(message, "name", None),
+        "toolName": getattr(message, "tool_name", None),
+        "toolCallId": getattr(message, "tool_call_id", None),
+        "toolArgs": getattr(message, "tool_args", None),
+        "toolCalls": getattr(message, "tool_calls", None),
+    }
+    return bucket, _serialized_context_bytes(payload)
+
+
+def _context_composition_bytes(
+    messages: list[Message], tools: Any = None, response_format: Any = None
+) -> dict[str, int]:
+    """统计上下文组成的字节量；只返回大小，不返回任何输入内容。"""
+
+    components = {role: 0 for role in _CONTEXT_COMPONENT_ROLES}
+    for message in messages:
+        try:
+            role, size = _context_message_bytes(message)
+        except Exception:
+            # 观测不能改变模型请求行为；遇到第三方 Message 的异常字段时只跳过该项。
+            continue
+        components[role] += size
+    components["message"] = sum(components.values())
+    components["tool_schema"] = _serialized_context_bytes(tools)
+    components["response_format"] = _serialized_context_bytes(response_format)
+    components["total"] = (
+        components["message"] + components["tool_schema"] + components["response_format"]
+    )
+    return components
+
+
 def _strip_stale_context(content: str) -> str:
     return _ADDITIONAL_CONTEXT.sub("", content).strip()
 
@@ -1058,6 +1108,28 @@ class CodingContextProjector:
             return _fallback_context_token_count(messages, tools, response_format)
 
     @staticmethod
+    def _composition_metrics(
+        messages: list[Message],
+        projected: list[Message],
+        tools: Any = None,
+        response_format: Any = None,
+    ) -> dict[str, int]:
+        canonical = _context_composition_bytes(messages, tools, response_format)
+        projected_components = _context_composition_bytes(projected, tools, response_format)
+        metrics: dict[str, int] = {
+            "tool_schema_bytes": canonical["tool_schema"],
+            "response_format_bytes": canonical["response_format"],
+        }
+        for role in _CONTEXT_COMPONENT_ROLES:
+            metrics[f"canonical_{role}_bytes"] = canonical[role]
+            metrics[f"projected_{role}_bytes"] = projected_components[role]
+        metrics["canonical_message_bytes"] = canonical["message"]
+        metrics["projected_message_bytes"] = projected_components["message"]
+        metrics["canonical_context_bytes"] = canonical["total"]
+        metrics["projected_context_bytes"] = projected_components["total"]
+        return metrics
+
+    @staticmethod
     def _complete_rounds(messages: list[Message]) -> list[list[Message]]:
         rounds: list[list[Message]] = []
         index = 0
@@ -1228,6 +1300,7 @@ class CodingContextProjector:
                 "checkpoint_bytes": 0,
                 "dropped_complete_rounds": 0,
                 "window_rebased": False,
+                **cls._composition_metrics(messages, projected, tools, response_format),
             }
             return projected
 
@@ -1274,6 +1347,7 @@ class CodingContextProjector:
             "checkpoint_bytes": len(checkpoint.encode("utf-8")),
             "dropped_complete_rounds": len(rounds) - len(selected_rounds),
             "window_rebased": True,
+            **cls._composition_metrics(messages, candidate, tools, response_format),
         }
         return candidate
 
@@ -1412,6 +1486,38 @@ def _set_current_span_attributes(attributes: dict[str, Any]) -> None:
         return
 
 
+def _log_context_composition(*, model_id: str, host: str, metrics: dict[str, Any]) -> None:
+    logger.info(
+        "model_context_composition model_id={} host={} "
+        "canonical_context_bytes={} projected_context_bytes={} "
+        "canonical_message_bytes={} projected_message_bytes={} "
+        "canonical_system_bytes={} projected_system_bytes={} "
+        "canonical_user_bytes={} projected_user_bytes={} "
+        "canonical_assistant_bytes={} projected_assistant_bytes={} "
+        "canonical_tool_bytes={} projected_tool_bytes={} "
+        "canonical_other_bytes={} projected_other_bytes={} "
+        "tool_schema_bytes={} response_format_bytes={}",
+        model_id,
+        host,
+        metrics.get("canonical_context_bytes", 0),
+        metrics.get("projected_context_bytes", 0),
+        metrics.get("canonical_message_bytes", 0),
+        metrics.get("projected_message_bytes", 0),
+        metrics.get("canonical_system_bytes", 0),
+        metrics.get("projected_system_bytes", 0),
+        metrics.get("canonical_user_bytes", 0),
+        metrics.get("projected_user_bytes", 0),
+        metrics.get("canonical_assistant_bytes", 0),
+        metrics.get("projected_assistant_bytes", 0),
+        metrics.get("canonical_tool_bytes", 0),
+        metrics.get("projected_tool_bytes", 0),
+        metrics.get("canonical_other_bytes", 0),
+        metrics.get("projected_other_bytes", 0),
+        metrics.get("tool_schema_bytes", 0),
+        metrics.get("response_format_bytes", 0),
+    )
+
+
 _CODING_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar(
     "coding_request_metrics", default=None
 )
@@ -1460,6 +1566,7 @@ class ProjectedOpenAIChat(OpenAIChat):
             metrics.get("projected_estimated_tokens", 0),
             str(bool(metrics.get("window_rebased", False))).lower(),
         )
+        _log_context_composition(model_id=model_id, host=host, metrics=metrics)
         token = _CODING_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         failed = False
@@ -1506,6 +1613,7 @@ class ProjectedOpenAIChat(OpenAIChat):
             metrics.get("projected_estimated_tokens", 0),
             str(bool(metrics.get("window_rebased", False))).lower(),
         )
+        _log_context_composition(model_id=model_id, host=host, metrics=metrics)
         token = _CODING_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
         failed = False
@@ -1552,6 +1660,7 @@ class ProjectedOpenAIChat(OpenAIChat):
             metrics.get("projected_estimated_tokens", 0),
             str(bool(metrics.get("window_rebased", False))).lower(),
         )
+        _log_context_composition(model_id=model_id, host=host, metrics=metrics)
         tool_calls: dict[int, dict[str, Any]] = {}
         token = _CODING_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
@@ -1619,6 +1728,7 @@ class ProjectedOpenAIChat(OpenAIChat):
             metrics.get("projected_estimated_tokens", 0),
             str(bool(metrics.get("window_rebased", False))).lower(),
         )
+        _log_context_composition(model_id=model_id, host=host, metrics=metrics)
         tool_calls: dict[int, dict[str, Any]] = {}
         token = _CODING_REQUEST_METRICS.set(metrics)
         provider_started_at = perf_counter()
