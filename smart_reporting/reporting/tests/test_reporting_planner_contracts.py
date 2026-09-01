@@ -557,6 +557,13 @@ def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:
     assert "detailedAnalysisPlan" not in string_keys
 
 
+def test_analysis_item_thinking_effort_follows_worker_retry_policy() -> None:
+    source = inspect.getsource(ReportWorkflowRuntime._run_analysis_item_task)
+
+    assert "self._worker_thinking_effort(retry=retry)" in source
+    assert 'self._worker_thinking_effort(retry=True) if retry else "off"' not in source
+
+
 def test_instruction_component_bytes_reports_sizes_without_content() -> None:
     payload = {
         "currentAnalysis": {"summary": "收入"},

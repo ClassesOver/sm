@@ -1182,12 +1182,9 @@ class RuntimeAnalysisMixin:
                 phase_contract={
                     "reportRunId": report_run_id,
                     "taskKind": "analysis_item",
-                    # 单项分析的正常路径以工具回执和固定事实为主，不需要持续开启深度
-                    # 思考；只有服务端判定上一次尝试失败时才升级，避免把每个分析项都
-                    # 付出完整 reasoning budget 的墙钟成本。
-                    "thinkingEffort": (
-                        self._worker_thinking_effort(retry=True) if retry else "off"
-                    ),
+                    # 单项分析首次继承 Worker 的 high 档位；只有服务端判定上一次尝试
+                    # 失败时才升为 max。全局关闭 thinking 时 Worker 策略仍会返回 off。
+                    "thinkingEffort": self._worker_thinking_effort(retry=retry),
                     "analysisIds": [analysis_id],
                     "currentAnalysisId": analysis_id,
                     "analysisFactBudgetVersion": 1,
