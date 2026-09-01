@@ -3285,6 +3285,15 @@ def test_reporting_facade_tools_use_same_strict_json_boundary() -> None:
     assert calls == []
     receipt = json.loads(messages[-1].content)
     assert receipt["code"] == "report_tool_arguments_json_invalid"
+    assert receipt["recovery"] == {
+        "kind": "regenerate_json_arguments",
+        "toolName": "report_workflow_start",
+        "schemaHint": {
+            "argumentsType": "object",
+            "allowedFields": [],
+            "requiredFields": [],
+        },
+    }
     assert receipt["schemaHint"] == {
         "argumentsType": "object",
         "allowedFields": [],

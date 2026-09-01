@@ -2637,6 +2637,114 @@ def test_create_or_write_analysis_file_returns_actionable_schema_error() -> None
     }
 
 
+def test_analysis_write_schema_rejection_has_machine_readable_recovery() -> None:
+    error = ReportingError(
+        "report_analysis_write_intent_invalid",
+        "首次创建不得传 expected_sha256。",
+        details={
+            "toolName": "create_or_write_analysis_file",
+            "path": "arguments.expected_sha256",
+            "validator": "placeholder",
+            "message": "首次创建不得传 expected_sha256。",
+            "expectedFields": ["content", "expected_sha256", "path"],
+        },
+    )
+
+    receipt = ReportWorkspaceTaskToolkit._failure(error)
+
+    assert receipt["recovery"] == {
+        "kind": "argument_patch",
+        "toolName": "create_or_write_analysis_file",
+        "argumentEdits": [
+            {
+                "op": "remove",
+                "path": "expected_sha256",
+                "reason": "首次创建不得提供该字段。",
+            }
+        ],
+    }
+    assert "删除 arguments.expected_sha256" in receipt["requiredActions"][0]
+
+
+def test_generic_schema_rejection_has_validation_recovery() -> None:
+    error = ReportingError(
+        "report_analysis_write_intent_invalid",
+        "缺少 content。",
+        details={
+            "toolName": "create_or_write_analysis_file",
+            "path": "arguments",
+            "validator": "required",
+            "message": "'content' is a required property",
+            "expectedFields": ["content", "expected_sha256", "path"],
+        },
+    )
+
+    receipt = ReportWorkspaceTaskToolkit._failure(error)
+
+    assert receipt["recovery"] == {
+        "kind": "schema_validation",
+        "toolName": "create_or_write_analysis_file",
+        "path": "arguments",
+        "validator": "required",
+        "expectedFields": ["content", "expected_sha256", "path"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("code", "details", "expected_kind"),
+    [
+        (
+            "report_analysis_write_path_conflict",
+            {"currentFiles": [{"path": "analysis/report.py", "sha256": "a" * 64}]},
+            "overwrite_current_file",
+        ),
+        (
+            "report_analysis_dependency_missing",
+            {"missingPaths": ["analysis/helper.py"]},
+            "create_missing_dependencies",
+        ),
+        ("report_analysis_evidence_missing", {}, "create_required_evidence"),
+        (
+            "report_analysis_evidence_not_registered",
+            {"missingRegistration": ["analysis/evidence.json"]},
+            "register_evidence",
+        ),
+        (
+            "report_analysis_evidence_identity_mismatch",
+            {},
+            "refresh_evidence_identity",
+        ),
+        (
+            "report_analysis_python_syntax_invalid",
+            {"path": "analysis/report.py", "line": 3},
+            "fix_python_syntax",
+        ),
+        (
+            "report_profile_query_invalid",
+            {"supportedFunctions": ["keys"]},
+            "rewrite_jmespath_query",
+        ),
+        (
+            "report_chart_file_missing",
+            {"sourcePath": "analysis/charts/income.png"},
+            "generate_or_remove_chart",
+        ),
+        ("report_analysis_rework_unresolvable", {}, "submit_limited_claim"),
+    ],
+)
+def test_failure_categories_expose_stable_recovery(
+    code: str,
+    details: dict[str, object],
+    expected_kind: str,
+) -> None:
+    receipt = ReportWorkspaceTaskToolkit._failure(
+        ReportingError(code, "需要纠正。", details=details)
+    )
+
+    assert receipt["recovery"]["kind"] == expected_kind
+    assert receipt["requiredActions"]
+
+
 def test_reporting_tool_workspace_error_escapes_for_agent_retry() -> None:
     error = WorkspaceError("daytona read failed")
 
@@ -3148,6 +3256,8 @@ async def test_repeated_empty_profile_query_is_rejected_across_purpose_changes()
             "不要再次提交相同查询；改用当前分析已有事实、其他合法查询，或明确记录该分布不可用。"
         ],
         "retryable": False,
+        "recovery": {"kind": "change_query_strategy"},
+        "runDisposition": "stop_current_run",
         "details": {
             "datasetId": "dataset-1",
             "query": "variables.department.distinct_values",
@@ -3622,6 +3732,36 @@ def test_repeated_failure_without_progress_stops_after_same_failure_limit() -> N
     assert receipt["details"]["failureFingerprint"]
     assert receipt["details"]["sameFailureCount"] == 3
     assert receipt["details"]["phaseFailureCount"] == 3
+    assert receipt["recovery"] == {
+        "kind": "review_error_details",
+        "code": "report_tool_arguments_invalid",
+    }
+
+
+def test_terminal_no_progress_preserves_original_recovery_and_actions() -> None:
+    context = RunContext(run_id="run-1", session_id="session-1", session_state={})
+    recovery = {
+        "kind": "argument_patch",
+        "toolName": "create_or_write_analysis_file",
+        "argumentEdits": [{"op": "remove", "path": "expected_sha256"}],
+    }
+    failure = {
+        "ok": False,
+        "code": "report_analysis_write_intent_invalid",
+        "requiredActions": ["删除 arguments.expected_sha256 后重试。"],
+        "recovery": recovery,
+    }
+
+    _enforce_reporting_no_progress(context, "create_or_write_analysis_file", failure)
+    _enforce_reporting_no_progress(context, "create_or_write_analysis_file", failure)
+    with pytest.raises(StopAgentRun) as stopped:
+        _enforce_reporting_no_progress(context, "create_or_write_analysis_file", failure)
+
+    receipt = json.loads(str(stopped.value))
+    assert receipt["recovery"] == recovery
+    assert receipt["requiredActions"][0] == "删除 arguments.expected_sha256 后重试。"
+    assert receipt["runDisposition"] == "stop_current_run"
+    assert receipt["retryable"] is False
 
 
 def test_nonretryable_reporting_tool_result_stops_function_run() -> None:
@@ -4167,6 +4307,14 @@ def test_dynamic_metric_tools_do_not_return_static_correction_examples() -> None
 
     assert "correctCallExample" not in section_failure
     assert "correctCallExample" not in chart_failure
+    assert section_failure["recovery"] == {
+        "kind": "use_tool_schema",
+        "toolName": "render_report_section",
+    }
+    assert chart_failure["recovery"] == {
+        "kind": "use_tool_schema",
+        "toolName": "register_report_charts",
+    }
 
 
 @pytest.mark.anyio

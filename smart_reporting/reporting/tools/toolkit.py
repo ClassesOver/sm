@@ -1545,10 +1545,21 @@ class ReportWorkspaceTaskToolkit(
                 "只创建 details.missingPaths 指向的缺失本地模块，再运行原脚本。"
             ]
         elif code == "report_analysis_write_intent_invalid":
-            result["requiredActions"] = [
-                "保持 toolName 不变，只按 details.expectedFields 和 details.path 修正 arguments；"
-                "不要在 arguments 内嵌套 toolName 或第二层 arguments。"
-            ]
+            details = result.get("details")
+            if (
+                isinstance(details, Mapping)
+                and details.get("toolName") == "create_or_write_analysis_file"
+                and details.get("path") == "arguments.expected_sha256"
+                and details.get("validator") == "placeholder"
+            ):
+                result["requiredActions"] = [
+                    "删除 arguments.expected_sha256；保留原 path 和 content 后重试。"
+                ]
+            else:
+                result["requiredActions"] = [
+                    "保持 toolName 不变，只按 details.expectedFields 和 details.path 修正 arguments；"
+                    "不要在 arguments 内嵌套 toolName 或第二层 arguments。"
+                ]
         elif code == "report_analysis_python_syntax_invalid":
             result["requiredActions"] = [
                 "修正 details.path 指向的 Python 语法错误后，使用原 operation 重新提交。"
@@ -1578,4 +1589,117 @@ class ReportWorkspaceTaskToolkit(
             result["requiredActions"] = [
                 "只使用 details.supportedFunctions 中的标准 JMESPath 函数改写 query。"
             ]
+        result["recovery"] = ReportWorkspaceTaskToolkit._recovery_for_failure(
+            code=code,
+            details=result.get("details"),
+            validation_errors=validation_errors,
+        )
+        if result["requiredActions"] == ["按服务端错误反馈修正后重试。"]:
+            result["requiredActions"] = [
+                "只依据 details 和 recovery 指向的受信字段修正当前提交；不得原样重试。"
+            ]
         return result
+
+    @staticmethod
+    def _recovery_for_failure(
+        *,
+        code: str,
+        details: Any,
+        validation_errors: Sequence[Mapping[str, str]],
+    ) -> dict[str, Any]:
+        """构造与文案分离的恢复事实，避免调度层或模型改写具体纠错步骤。
+
+        ``requiredActions`` 面向模型阅读，允许按上下文补充；本字段则只表达服务端已知的
+        稳定恢复目标。无法安全推导参数变换时保留定位信息，禁止猜测并自动改写业务参数。
+        """
+
+        normalized_details = details if isinstance(details, Mapping) else {}
+        tool_name = normalized_details.get("toolName")
+        path = normalized_details.get("path")
+        validator = normalized_details.get("validator")
+        expected_fields = normalized_details.get("expectedFields")
+        if (
+            code == "report_analysis_write_intent_invalid"
+            and tool_name == "create_or_write_analysis_file"
+            and path == "arguments.expected_sha256"
+            and validator == "placeholder"
+        ):
+            return {
+                "kind": "argument_patch",
+                "toolName": tool_name,
+                "argumentEdits": [
+                    {
+                        "op": "remove",
+                        "path": "expected_sha256",
+                        "reason": "首次创建不得提供该字段。",
+                    }
+                ],
+            }
+        if validation_errors:
+            return {
+                "kind": "schema_validation",
+                "validationErrors": [dict(item) for item in validation_errors],
+            }
+        if (
+            code == "report_analysis_write_intent_invalid"
+            and isinstance(tool_name, str)
+            and isinstance(path, str)
+            and isinstance(validator, str)
+        ):
+            recovery: dict[str, Any] = {
+                "kind": "schema_validation",
+                "toolName": tool_name,
+                "path": path,
+                "validator": validator,
+            }
+            if isinstance(expected_fields, list):
+                recovery["expectedFields"] = [
+                    field for field in expected_fields if isinstance(field, str)
+                ]
+            return recovery
+        if code == "report_analysis_write_path_conflict":
+            return {
+                "kind": "overwrite_current_file",
+                "toolName": "create_or_write_analysis_file",
+                "currentFiles": normalized_details.get("currentFiles", []),
+            }
+        if code == "report_analysis_dependency_missing":
+            return {
+                "kind": "create_missing_dependencies",
+                "missingPaths": normalized_details.get("missingPaths", []),
+            }
+        if code in {
+            "report_profile_query_invalid",
+            "report_analysis_context_query_invalid",
+            "report_analysis_facts_query_invalid",
+        }:
+            return {
+                "kind": "rewrite_jmespath_query",
+                "supportedFunctions": normalized_details.get("supportedFunctions", []),
+            }
+        if code == "report_analysis_evidence_missing":
+            return {"kind": "create_required_evidence"}
+        if code == "report_analysis_evidence_not_registered":
+            return {
+                "kind": "register_evidence",
+                "missingRegistration": normalized_details.get("missingRegistration", []),
+            }
+        if code == "report_analysis_evidence_identity_mismatch":
+            return {"kind": "refresh_evidence_identity"}
+        if code == "report_analysis_python_syntax_invalid":
+            return {
+                "kind": "fix_python_syntax",
+                "path": normalized_details.get("path"),
+                "line": normalized_details.get("line"),
+            }
+        if code == "report_chart_file_missing":
+            return {
+                "kind": "generate_or_remove_chart",
+                "sourcePath": normalized_details.get("sourcePath"),
+            }
+        if code == "report_analysis_rework_unresolvable":
+            return {"kind": "submit_limited_claim"}
+        return {
+            "kind": "review_error_details",
+            "code": code,
+        }

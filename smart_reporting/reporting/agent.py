@@ -539,7 +539,9 @@ def _stop_analysis_fact_query_budget(run_context: RunContext) -> None:
             "code": error.code,
             "message": error.message,
             "requiredActions": ["结束本次 run，使用已内联的受信 facts 完成当前分析项。"],
+            "recovery": {"kind": "complete_with_inlined_facts"},
             "retryable": False,
+            "runDisposition": "stop_current_run",
             "details": details,
         },
         ensure_ascii=False,
@@ -561,7 +563,9 @@ def _stop_analysis_recovery(run_context: RunContext) -> None:
             "code": error.code,
             "message": error.message,
             "requiredActions": ["使用 instruction 中已内联的受信 facts，立即完成当前分析项。"],
+            "recovery": {"kind": "complete_with_inlined_facts"},
             "retryable": False,
+            "runDisposition": "stop_current_run",
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -632,7 +636,9 @@ def _visualization_exploration_budget_receipt(
         "requiredActions": [
             "停止读取事实和文件；复用当前上下文，直接创建或执行图表脚本。",
         ],
+        "recovery": {"kind": "produce_visualization_artifacts"},
         "retryable": False,
+        "runDisposition": "stop_current_run",
         "details": {
             "tool": counted_tool_name,
             "currentCount": current_count,
@@ -956,7 +962,9 @@ def _stop_exhausted_visualization_budget(
             "code": error.code,
             "message": error.message,
             "requiredActions": ["结束本次 run，交由上层按既有重试策略恢复当前 Task。"],
+            "recovery": {"kind": "fresh_task_retry"},
             "retryable": False,
+            "runDisposition": "stop_current_run",
             "details": details,
         },
         ensure_ascii=False,
@@ -1004,7 +1012,9 @@ def _stop_exhausted_reporting_tool_budget(
             "code": error.code,
             "message": error.message,
             "requiredActions": ["结束本次 run，交由上层按既有重试策略重新执行当前 Task。"],
+            "recovery": {"kind": "fresh_task_retry"},
             "retryable": False,
+            "runDisposition": "stop_current_run",
             "details": details,
         },
         ensure_ascii=False,
@@ -1028,7 +1038,9 @@ def _stop_closed_visualization(run_context: RunContext) -> None:
             "requiredActions": [
                 "结束本次 run；fresh retry 必须立即且只调用 finalize_report_analysis。"
             ],
+            "recovery": {"kind": "invoke_tool", "toolName": "finalize_report_analysis"},
             "retryable": False,
+            "runDisposition": "stop_current_run",
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -1121,6 +1133,11 @@ def _reporting_invalid_argument_receipt(
             "jsonErrorMessage": error_message,
             "errorContextStart": context_start,
             "errorContext": error_context,
+        },
+        "recovery": {
+            "kind": "regenerate_json_arguments",
+            "toolName": tool_name,
+            "schemaHint": dict(schema_hint or {"argumentsType": "object"}),
         },
         "requiredActions": [
             f"下一条响应只调用一次 {tool_name}；参数必须是完整严格 JSON 对象，不得附加 Markdown 或解释文字。",
@@ -1229,6 +1246,10 @@ def _report_tool_argument_failure(
         ],
         "retryable": True,
         "details": _report_tool_argument_details(error, arguments),
+        "recovery": {
+            "kind": "use_tool_schema",
+            "toolName": function_name,
+        },
     }
     # 图表和章节 claim 的 metricCode/周期来自本次运行冻结的上下文，不能用
     # 静态示例回填，否则参数错误回执会再次诱导模型提交无效业务代码。
@@ -1238,6 +1259,11 @@ def _report_tool_argument_failure(
         result["correctCallExample"] = {
             "name": function_name,
             "arguments": expected,
+        }
+        result["recovery"] = {
+            "kind": "use_correct_call_example",
+            "toolName": function_name,
+            "correctCallExample": result["correctCallExample"],
         }
     return result
 
@@ -1364,7 +1390,9 @@ def _repeated_empty_profile_query_failure(details: Mapping[str, Any]) -> dict[st
         "requiredActions": [
             "不要再次提交相同查询；改用当前分析已有事实、其他合法查询，或明确记录该分布不可用。"
         ],
+        "recovery": {"kind": "change_query_strategy"},
         "retryable": False,
+        "runDisposition": "stop_current_run",
         "details": dict(details),
     }
 
@@ -1439,6 +1467,12 @@ def _enforce_reporting_no_progress(
     guided = dict(result)
     raw_details = result.get("details")
     details = dict(raw_details) if isinstance(raw_details, dict) else {}
+    raw_recovery = result.get("recovery")
+    recovery = (
+        dict(raw_recovery)
+        if isinstance(raw_recovery, Mapping)
+        else {"kind": "review_error_details", "code": code}
+    )
     details.update(
         {
             "failureFingerprint": fingerprint,
@@ -1464,9 +1498,9 @@ def _enforce_reporting_no_progress(
         or phase_failure_count >= _REPORT_TOOL_PHASE_FAILURE_LIMIT
     )
     if terminal_no_progress:
-        required_actions = [
-            "当前 Task 在没有任何成功工具进展时重复失败；结束本次 run，交由上层按既有重试策略恢复。"
-        ]
+        terminal_action = "本 run 已停止；上层恢复时必须先执行以上纠错动作，不得原样重放当前调用。"
+        if terminal_action not in required_actions:
+            required_actions.append(terminal_action)
         details["terminalReason"] = "tool_no_progress"
         message = result.get("message")
         if not isinstance(message, str) or not message:
@@ -1478,8 +1512,10 @@ def _enforce_reporting_no_progress(
                 "code": error.code,
                 "message": error.message,
                 "details": details,
+                "recovery": recovery,
                 "requiredActions": required_actions,
                 "retryable": False,
+                "runDisposition": "stop_current_run",
             }
         )
         serialized = json.dumps(
@@ -1493,6 +1529,7 @@ def _enforce_reporting_no_progress(
             "code": code,
             "message": result.get("message"),
             "details": details,
+            "recovery": recovery,
             "requiredActions": required_actions,
             "retryable": result.get("retryable", True),
         }
@@ -2583,6 +2620,11 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                                 "status": "rejected",
                                 "code": "report_phase_tool_forbidden",
                                 "message": "当前 Reporting phase 不允许调用该工具，请使用本阶段已提供工具继续。",
+                                "requiredActions": [
+                                    "只调用当前 Task 实际注册的工具；不要重放被拒绝的工具调用。"
+                                ],
+                                "recovery": {"kind": "use_registered_phase_tools"},
+                                "retryable": True,
                             }
                             if phase_forbidden
                             else {
@@ -2590,6 +2632,11 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                                 "status": "skipped",
                                 "code": "report_vision_disabled",
                                 "message": "当前 Reporting Worker 未启用图片视觉工具，继续使用文本和文件证据。",
+                                "requiredActions": [
+                                    "继续使用已注册的文本和文件工具；不得重复调用视觉工具。"
+                                ],
+                                "recovery": {"kind": "continue_without_vision"},
+                                "retryable": True,
                             }
                             if not production_forbidden and not lifecycle_forbidden
                             else {
@@ -2597,6 +2644,11 @@ class ReportWorkerOpenAIChat(ReportingOpenAIChat):
                                 "status": "rejected",
                                 "code": "report_visualization_production_only",
                                 "message": "当前可视化已进入生产态，请直接生成、登记或完成图表。",
+                                "requiredActions": [
+                                    "停止探索，直接使用当前注册的图表生成、登记或完成工具。"
+                                ],
+                                "recovery": {"kind": "produce_visualization_artifacts"},
+                                "retryable": True,
                             }
                         ),
                         ensure_ascii=False,
